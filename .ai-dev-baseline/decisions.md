@@ -6502,13 +6502,18 @@ limit: none of them is sufficient alone.
 ## D82 — the entry-point bootstrap is INLINED and pinned by identity, because it cannot source the library whose location it is computing
 - date:      2026-08-19
 - category:  project-delta
-- unknown:   #343. Every entry point resolved its own clone root with `REPO="$(cd "$(dirname
-             "${BASH_SOURCE[0]}")" && pwd)"`. Command substitution strips EVERY trailing newline,
-             so a clone directory named `clone<NL>` arrived already shortened into `clone` — a
-             different path that frequently exists — and the entry point then sourced, linked and
-             verified against that sibling, reporting success. #324's manifest guard cannot see
-             it: the value it is handed is already truncated and looks perfectly representable.
-             The issue named two candidate fixes and required the choice to be recorded.
+- unknown:   #343. Every entry point locates its own clone root before it can source
+             `scripts/lib/common.sh`, and the spellings differ — `"$(cd "$(dirname
+             "${BASH_SOURCE[0]}")" && pwd)"` in `install.sh`/`uninstall.sh`, the same shape after a
+             symlink walk in `bin/baseline`/`bin/agent-init`, a two-stage `here`/`root` in
+             `scripts/build.sh`, and an `_here`/`SELF_DIR` at greater depth in the adapters and the
+             `/release` skill. All end in a command substitution, which strips EVERY trailing
+             newline, so for the first five a clone named `clone<NL>` arrived already shortened into
+             `clone` — a different path that frequently exists — and the entry point then sourced,
+             linked and verified against that sibling, reporting success. #324's manifest guard
+             cannot see it: the value it is handed is already truncated and looks perfectly
+             representable. The issue named two candidate fixes and required the choice to be
+             recorded.
 - decision:  **Fix 1 — inline the lossless capture — in three parts.**
              1. **One canonical `ADB-BOOTSTRAP` block, byte-identical in all seven sites**, with the
                 per-site variation (`_adb_boot_src`, `_adb_boot_rel`) lifted OUT of the block into
@@ -6539,24 +6544,32 @@ limit: none of them is sufficient alone.
              new is that the check enforces BYTE-IDENTITY, which the bash-floor preamble's ~999
              duplicated lines never had — so this duplication cannot drift the way that one did.
 
-             **The issue's evidence list was wrong in two directions, and both were re-verified by
-             probe before acting.** It named the two ADAPTERS as defective sites: they are not.
-             Their capture resolves `…/clone<NL>/agents/<token>`, where the newline is INTERNAL and
-             therefore survives `$(…)` — exactly the correction D64 already recorded for the
-             manifest producer, which #343 did not carry over. And it MISSED `bin/agent-init`,
-             which carries the identical bootstrap, is installed onto PATH, and is defective. The
-             adapters are still given the canonical block, for uniformity and because their
-             correctness was an accident of their depth rather than a property of their spelling;
-             they are held by the coverage/identity/spelling rules, and are SKIPPED with a printed
-             reason by the mutation rule rather than counted as passing a test that cannot fire.
+             **The issue's evidence list was wrong in BOTH directions, and every correction was
+             re-verified by probe before acting.** It named the two ADAPTERS as defective sites:
+             they are not. Their capture resolves `…/clone<NL>/agents/<token>`, where the newline is
+             INTERNAL and therefore survives `$(…)` — exactly the correction D64 already recorded
+             for the manifest producer, which #343 did not carry over. And it MISSED two sites that
+             ARE defective: `bin/agent-init`, which carries the same bootstrap and is installed onto
+             PATH, and `scripts/build.sh`, which wrote regenerated artifacts through the truncated
+             root. A third pair — this repo's own `.claude/skills/release/{release,release-lib}.sh`
+             — is safe for the adapters' reason and was named by nobody; the open-world scan in the
+             guard is what surfaced it.
+
+             The four depth-safe sites are still given the canonical block, because correctness by
+             accident of depth is not correctness by construction. They are held by the coverage,
+             identity, spelling and wiring rules — each of which is driven red against a mutated
+             tree copy — and are SKIPPED with a printed reason by the behavioural mutation rather
+             than counted as passing a test that cannot fire for them.
 
              **`readlink -n` is load-bearing and the plain form cannot be rescued by a sentinel.**
              Measured on this machine: BSD `readlink` appends a terminating newline only when the
              value does not already end in one, so a target `a` and a target `a<NL>` both print
              `a<NL>` and are indistinguishable — no sentinel recovers a byte the tool never emitted.
              GNU `readlink` appends unconditionally, so `$(…)` strips both. `readlink -n` emits the
-             target raw on both, which is why the walk uses it. D30 bans only the CANONICALIZE
-             family (`-f`/`-e`/`-m`), so `-n` is inside the sub-floor carve-out already.
+             target raw on both, which is why the walk uses it. D30 itself names only `readlink -f`;
+             the CANONICALIZE-family reading (`-f`/`-e`/`-m`/`--canonicalize`) is D65's, implemented
+             in `check-bash-floor.sh`'s `readlink-f` row — and under either wording `-n` is
+             permitted, which that row's own comment states and this change relies on.
 
              **`pwd`, not `pwd -P`.** D59's sentinel is reused; its physical-path POLICY is not.
              `bin/baseline`'s own header requires logical spelling so the paths match how

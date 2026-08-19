@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — entry-point self-location guard (#343).
 #
-# Every entry point resolves its own clone root BEFORE it can source scripts/lib/common.sh, and
-# that resolution used to be `"$(cd "$(dirname "$src")" && pwd)"`. Command substitution strips
-# EVERY trailing newline, so a clone directory whose name ENDS in one arrived already shortened
-# into a DIFFERENT path that frequently exists — an innocent sibling clone. The entry point then
-# sourced, linked and verified against that sibling and reported success. #324's manifest guard
-# cannot see it: by the time `adb_agent_manifest` is handed the value it is already truncated and
-# looks perfectly representable.
+# THE INVARIANT: every entry point locates its own clone root before `scripts/lib/common.sh` is
+# available, and that resolution must be lossless — `$(…)` strips every trailing newline, so an
+# unsentinelled capture shortens a clone named `clone<NL>` onto a different, often-existing path.
+# The incident this closes, and why the fix is inlined rather than shared, are in D82.
 #
 # WHAT THIS PINS, and each rule is driven red by --mutation below:
 #   1. COVERAGE   — the declared site set and the files carrying the block are the SAME set, so a
@@ -49,7 +46,11 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+# THE SAME SENTINEL THIS FILE PINS. A bare `ROOT="$(pwd)"` here would name the truncated sibling in
+# exactly the checkout this suite exists to test, and every fixture would then be built from the
+# wrong tree while reporting on this one. The other 26 suites still carry the bare form (#404).
+ROOT="$(pwd && printf 'X')"; ROOT="${ROOT%X}"; ROOT="${ROOT%$'\n'}"
+[ -n "$ROOT" ] || { printf 'check-bootstrap: cannot resolve the repo root\n' >&2; exit 1; }
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 
@@ -62,7 +63,9 @@ bin/baseline
 bin/agent-init
 agents/codex/adapter.sh
 agents/gemini/adapter.sh
-scripts/build.sh"
+scripts/build.sh
+.claude/skills/release/release.sh
+.claude/skills/release/release-lib.sh"
 
 # The two that are reached through a PATH symlink and therefore walk one first.
 SYMWALK_SITES="bin/baseline
@@ -75,15 +78,23 @@ uninstall.sh
 bin/baseline
 bin/agent-init
 agents/codex/adapter.sh
-agents/gemini/adapter.sh"
+agents/gemini/adapter.sh
+.claude/skills/release/release-lib.sh"
 
-# The two adapters, whose PRE-FIX capture was already correct at their depth. Rule 4's mutation is
-# skipped for them and SAID to be skipped, rather than reported as a pass it never earned.
+# The sites whose PRE-FIX capture was already correct AT THEIR DEPTH: the clone's newline lands
+# INSIDE the resolved path (`…/clone<NL>/agents/codex`), where `$(…)` cannot reach it. Rule 4's
+# mutation is skipped for them and SAID to be skipped, rather than reported as a pass it never
+# earned. They still carry the block — correct by accident of depth is not correct by construction,
+# and rules 1-3, which DO fire for them, are what hold that.
 NOT_PREVIOUSLY_DEFECTIVE="agents/codex/adapter.sh
-agents/gemini/adapter.sh"
+agents/gemini/adapter.sh
+.claude/skills/release/release.sh
+.claude/skills/release/release-lib.sh"
 
 # `pass`/`fail` are initialized by check-lib.sh, sourced above — the ONE home for that counter.
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { printf 'check-bootstrap: could not create a work directory\n' >&2; exit 1; }
+# An empty `work` would turn every fixture path below into an absolute `/r4-*`, `/r5`, `/mut-*`.
+[ -n "$work" ] && [ -d "$work" ] || { printf 'check-bootstrap: work directory is unusable\n' >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 in_set() { case "
@@ -91,6 +102,18 @@ $1
 " in *"
 $2
 "*) return 0 ;; *) return 1 ;; esac; }
+
+# Every tracked shebang-bearing file, repo-relative. Falls back to `find` when the tree is not a
+# git repository — which is exactly the shape `--mutation` builds, and without the fallback every
+# mutation would go red because the scan found nothing rather than because the mutation worked.
+shebang_files() {
+  sf_list="$(git ls-files 2>/dev/null)"
+  [ -n "$sf_list" ] || sf_list="$(find . -name .git -prune -o -type f -print 2>/dev/null | sed 's|^\./||')"
+  printf '%s\n' "$sf_list" | while IFS= read -r sf; do
+    [ -n "$sf" ] && [ -f "$sf" ] || continue
+    head -n 1 "$sf" 2>/dev/null | grep -q '^#!.*bash' && printf '%s\n' "$sf"
+  done
+}
 
 # Print a marked block, BEGIN line through END line inclusive.
 extract_block() {
@@ -109,7 +132,52 @@ declared="$(printf '%s\n' "$BOOTSTRAP_SITES" | LC_ALL=C sort)"
 eq "$marked" "$declared" "coverage: the marked files are exactly the declared entry-point set"
 
 for s in $BOOTSTRAP_SITES; do
-  if [ -f "$s" ]; then ok; else bad "coverage: declared site $s does not exist"; fi
+  if [ -f "$s" ]; then ok; else bad "coverage: declared site $s does not exist"; continue; fi
+  # EXECUTABLE, not merely present. Four of these lost their mode bit to a mechanical rewrite in
+  # the very change that added this file, and a presence-only test passed the whole way through:
+  # `./install.sh` is the documented invocation and it had stopped working.
+  if [ -x "$s" ]; then ok; else bad "coverage: declared site $s is not executable"; fi
+done
+
+# THE OPEN-WORLD HALF, and the rule that makes coverage more than a tautology. The check above
+# compares the declared set with the files carrying the MARKER — and a brand-new entry point is
+# absent from BOTH, so it could ship a lossy bootstrap and leave this suite green. This scans every
+# tracked shebang-bearing file for a SELF-LOCATING capture that lacks the sentinel, so what brings
+# a file into scope is writing the defect, not remembering to mark it.
+#
+# SELF-LOCATING means the `cd` argument derives from `$0` or `${BASH_SOURCE…}`. That is the whole
+# distinction: `pinned-install.sh` canonicalizes a user-supplied `--project` directory with the same
+# `$(cd "$p" && pwd)` shape, and it is a different question with a different answer.
+#
+# THE EXEMPTIONS ARE NAMED, not globbed away, so a new one has to be classified rather than
+# inherited. Both are POST-SOURCE: they run once `scripts/lib/common.sh` is already reachable, so
+# they are free to use a shared primitive and are #404's scope, not this file's. The declared sites
+# are skipped here only because the rules below test them directly.
+POST_SOURCE_EXEMPT="scripts/lib/adopt-readiness.sh"
+
+scanned=0; unmarked=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    scripts/check-*.sh) continue ;;                  # post-source test infrastructure (#404)
+  esac
+  in_set "$POST_SOURCE_EXEMPT" "$f" && continue
+  in_set "$BOOTSTRAP_SITES" "$f" && continue
+  scanned=$((scanned + 1))
+  # A capture that mentions $0/BASH_SOURCE, closes right after `pwd` (or `pwd -P`), and therefore
+  # carries no sentinel. The fixed form reads `&& pwd && printf 'X')` and does not match.
+  grep -Eq '\$\(cd .*(\$0|BASH_SOURCE).*&& pwd( -P)?\)' "$f" 2>/dev/null && unmarked="$unmarked$f
+"
+done <<EOF
+$(shebang_files)
+EOF
+if [ "$scanned" -eq 0 ]; then
+  bad "coverage: the open-world scan examined ZERO files — it cannot answer, which is not a pass"
+else ok; fi
+eq "$unmarked" "" "coverage: no UNDECLARED file carries an unsentinelled self-locating capture"
+# The exemptions must still EXIST, or the list is quietly protecting nothing.
+for s in $POST_SOURCE_EXEMPT; do
+  if [ -f "$s" ]; then ok; else bad "coverage: exempted file $s no longer exists — prune the list"; fi
 done
 
 marked_sym="$(grep -rl '^# ADB-SYMWALK-BEGIN' --include='*.sh' --include='baseline' --include='agent-init' . 2>/dev/null \
@@ -147,14 +215,33 @@ has "$refsym" 'readlink -n --'    "identity: the symwalk reads link targets with
 # Rule 3 — SPELLING. No declared site still carries a superseded lossy capture.
 # ---------------------------------------------------------------------------
 for s in $BOOTSTRAP_SITES; do
-  if grep -q 'cd "\$(dirname' "$s"; then
-    bad "spelling: $s still carries the lossy \$(cd \"\$(dirname …)\" && pwd) capture"
+  # The same unsentinelled self-locating pattern the open-world scan uses, applied to the declared
+  # sites it skips — so one regex decides the question everywhere.
+  if grep -Eq '\$\(cd .*(\$0|BASH_SOURCE).*&& pwd( -P)?\)' "$s"; then
+    bad "spelling: $s still carries an unsentinelled self-locating capture"
   else ok; fi
 done
 for s in $SYMWALK_SITES; do
-  if grep -q 'readlink "\$' "$s"; then
-    bad "spelling: $s still carries a plain readlink capture (lossy on BSD)"
+  # `readlink` in ANY spelling that is not `-n` is lossy on BSD, so match the command and require
+  # the flag, rather than pinning one superseded form and going green on the next one.
+  if grep -Eq '(^|[^[:alnum:]_])readlink([[:space:]]+-[[:alnum:]-]+)*[[:space:]]' "$s" \
+     && ! grep -q 'readlink -n --' "$s"; then
+    bad "spelling: $s reads a link target without -n (lossy on BSD)"
   else ok; fi
+done
+
+# ---------------------------------------------------------------------------
+# Rule 3b — WIRING. The block computes `_adb_boot_abs`; a site that then ignores it is a site with
+# a correct, unused bootstrap. `scripts/build.sh` is why this rule exists: its `root=` assignment
+# sits AFTER the marker, so reverting just that one line put the defect back while coverage,
+# identity, spelling, resolution and isolation all stayed green.
+# ---------------------------------------------------------------------------
+for s in $BOOTSTRAP_SITES; do
+  wired="$(awk 'f { print; exit } index($0, "# ADB-BOOTSTRAP-END") == 1 { f = 1 }' "$s")"
+  case "$wired" in
+    *'="$_adb_boot_abs"') ok ;;
+    *) bad "wiring: the line after $s's block does not consume \$_adb_boot_abs (got [$wired])" ;;
+  esac
 done
 
 # ---------------------------------------------------------------------------
@@ -176,8 +263,8 @@ STUB
 
 # SETS `FX_NL` AND `FX_SIB`; it does NOT echo them. A `$(build_fixture …)` capture would strip the
 # clone's trailing newline on the way out — this file's entire subject — and every fixture would
-# silently be built against the sibling. The bug bit this harness during development, which is why
-# the contract is a global rather than a return value.
+# then be built against the sibling. The contract is a global for that reason; do not "tidy" it
+# into a return value.
 build_fixture() {   # <dest> <what adb_require_bash does>
   bf_dest="$1"; bf_after="$2"
   FX_NL="$bf_dest/clone
@@ -204,6 +291,7 @@ site_suffix() {
   case "$1" in
     agents/codex/adapter.sh)  printf '/agents/codex'  ;;
     agents/gemini/adapter.sh) printf '/agents/gemini' ;;
+    .claude/skills/release/*) printf '/.claude/skills/release' ;;
     *)                        printf '' ;;
   esac
 }
@@ -310,16 +398,63 @@ done
 # ---------------------------------------------------------------------------
 fx="$work/r5"; build_fixture "$fx" 'exit 0'; nlroot="$FX_NL"
 sib="$fx/clone"
-manifest() { find "$1" -type f | LC_ALL=C sort | while IFS= read -r p; do
-               printf '%s  ' "$p"; cksum < "$p"; done; }
+# THE MANIFEST COUNTS SYMLINKS AND DIRECTORIES, not just regular-file contents. The acceptance
+# criterion is "reads from, writes into, or LINKS AGAINST", and a regular-file checksum sees none
+# of a created symlink, a new empty directory, or a mode change.
+manifest() {
+  find "$1" \( -type f -o -type l -o -type d \) | LC_ALL=C sort | while IFS= read -r q; do
+    if [ -L "$q" ]; then printf '%s L %s\n' "$q" "$(readlink -n -- "$q" && printf 'X')"
+    elif [ -d "$q" ]; then printf '%s D\n' "$q"
+    else printf '%s F ' "$q"; cksum < "$q"; fi
+  done
+}
 before="$(manifest "$sib")"
+[ -n "$before" ] || bad "isolation: the sibling manifest is EMPTY — it cannot witness a change"
 for s in $CANARY_SITES; do
   out="$(bash "$nlroot/$s" 2>&1)"
   has   "$out" "ADBBOOT:RIGHT" "isolation: $s sources the real clone's library"
   hasnt "$out" "ADBBOOT:WRONG" "isolation: $s never sources the sibling's library"
 done
 after="$(manifest "$sib")"
-eq "$after" "$before" "isolation: the sibling tree is byte-identical after every entry point ran"
+eq "$after" "$before" "isolation: the sibling tree is unchanged after every entry point ran"
+
+# ---------------------------------------------------------------------------
+# Rule 5b — THE REAL INSTALLER, end to end. Rule 5 stops each entry point at the canary, which
+# proves WHICH library was sourced and nothing about what the entry point would then have DONE.
+# The acceptance criterion is about links and writes, so this runs `install.sh` for real out of a
+# full worktree copy in a newline-named clone, with a throwaway HOME, and asks the criterion
+# directly: did anything land in the sibling, and did anything at all get linked?
+#
+# The expected outcome is a LOUD REFUSAL, not a successful install: with the true path restored,
+# `adb_agent_manifest` sees a root it cannot represent and refuses (#324) — which is that guard
+# becoming reachable, and is what "resolves the true path or refuses loudly" means here.
+# ---------------------------------------------------------------------------
+e2e="$work/e2e"
+mkdir -p "$e2e"
+e2e_nl="$e2e/clone
+"
+e2e_sib="$e2e/clone"
+mkdir -p "$e2e_nl" "$e2e_sib/scripts/lib" "$e2e/home"
+if check_copy_worktree "$ROOT" "$e2e_nl"; then
+  cp "$ROOT/scripts/lib/common.sh" "$e2e_sib/scripts/lib/common.sh"
+  before="$(manifest "$e2e_sib")"
+  out="$(HOME="$e2e/home" bash "$e2e_nl/install.sh" --agent claude --no-hooks 2>&1)"; rc=$?
+  no "$rc" "install/e2e: installing from a newline-named clone is REFUSED"
+  has "$out" "cannot represent" "install/e2e: and the refusal names the unrepresentable root"
+  hasnt "$out" "CRLF" "install/e2e: it is NOT misreported as a CRLF-corrupted checkout"
+  eq "$(manifest "$e2e_sib")" "$before" "install/e2e: the sibling clone is untouched"
+  # Nothing linked anywhere, and in particular nothing pointing into the sibling.
+  intosib=0
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case "$(readlink -n -- "$l" && printf 'X')" in "$e2e_sib"*) intosib=$((intosib + 1)) ;; esac
+  done <<EOF
+$(find "$e2e/home" -type l 2>/dev/null)
+EOF
+  eq "$intosib" "0" "install/e2e: no link under HOME points into the sibling clone"
+else
+  bad "install/e2e: could not copy the worktree — the end-to-end case did not run"
+fi
 
 # ---------------------------------------------------------------------------
 # --mutation — the negative half. Each site's block is reverted to the superseded spelling ONE AT
@@ -355,6 +490,65 @@ if [ "$MODE" = "--mutation" ]; then
     else ok; fi
     eq "$got" "${fx}/clone${sfx}X" "mutation: $s with the pre-fix capture resolves the SIBLING (observed failing)"
   done
+
+  # ---------------------------------------------------------------------------
+  # THE STATIC RULES GET THE SAME TREATMENT, and they need a different harness. Rules 1-3b and 5
+  # read the TRACKED TREE, so a fixture cannot exercise them: the only way to watch them answer is
+  # to mutate a COPY of the repo and run this suite against it. Red for the wrong reason is not
+  # evidence, so every case asserts its OWN witness line and checks the edit applied first.
+  # ---------------------------------------------------------------------------
+  mutate_tree() {   # <tag> <witness> <mutator-shell> — the mutator runs with $c = the copy root
+    mt_tag="$1"; mt_witness="$2"; mt_body="$3"
+    c="$work/tree-$mt_tag"
+    if ! check_copy_worktree "$ROOT" "$c"; then
+      bad "tree-mutation/$mt_tag: could not copy the worktree"; return
+    fi
+    ( eval "$mt_body" ) || { bad "tree-mutation/$mt_tag: the mutator failed"; return; }
+    mt_out="$( cd "$c" && bash scripts/check-bootstrap.sh 2>&1 )"; mt_rc=$?
+    if [ "$mt_rc" -eq 0 ]; then
+      bad "tree-mutation/$mt_tag: the suite stayed GREEN under a defect it claims to catch"
+      return
+    fi
+    ok
+    has "$mt_out" "$mt_witness" "tree-mutation/$mt_tag: red on its own witness"
+  }
+
+  # 1. A BRAND-NEW entry point carrying the superseded spelling. This is the case the marker-based
+  #    coverage rule structurally cannot see — the new file is in neither the declared set nor the
+  #    marked set — and it is why the open-world scan exists.
+  mutate_tree new-entry-point "unsentinelled self-locating capture" '
+    printf "#!/usr/bin/env bash\nREPO=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")\" && pwd)\"\necho \"\$REPO\"\n" \
+      > "$c/bin/newcmd"
+    chmod +x "$c/bin/newcmd"
+    grep -q "dirname" "$c/bin/newcmd"'
+
+  # 2. A declared site loses its executable bit — the regression this diff itself shipped and a
+  #    presence-only coverage rule waved through.
+  mutate_tree lost-exec-bit "is not executable" '
+    chmod -x "$c/install.sh"
+    [ ! -x "$c/install.sh" ]'
+
+  # 3. One block drifts by a single comment byte, markers intact.
+  mutate_tree block-drift "byte-for-byte" '
+    awk "index(\$0, \"_adb_boot_dir=\\\"\\\${_adb_boot_src%/*}\\\"\") == 1 && !done { print \$0 \"   # drift\"; done = 1; next } { print }" \
+      "$c/bin/baseline" > "$c/.b" && mv "$c/.b" "$c/bin/baseline" && chmod +x "$c/bin/baseline"
+    grep -q "# drift" "$c/bin/baseline"'
+
+  # 4. The post-block wiring is reverted while the block itself stays perfect — the `scripts/build.sh`
+  #    shape, which every other rule passes.
+  mutate_tree wiring-reverted "does not consume" '
+    sed "s|^root=\"\$_adb_boot_abs\"$|root=\"\$(pwd)\"|" "$c/scripts/build.sh" > "$c/.b" \
+      && mv "$c/.b" "$c/scripts/build.sh" && chmod +x "$c/scripts/build.sh"
+    grep -q "^root=\"\$(pwd)\"$" "$c/scripts/build.sh"'
+
+  # 5. An ADAPTER is broken deliberately. Its pre-fix spelling cannot be driven red (that is the
+  #    documented skip above), but the rules that DO hold it must be shown answering — otherwise
+  #    "held by rules 1-3" is a positive assertion with no negative test behind it.
+  mutate_tree adapter-block-removed "carries no ADB-BOOTSTRAP block" '
+    awk "index(\$0, \"# ADB-BOOTSTRAP-BEGIN\") == 1 { s = 1 } index(\$0, \"# ADB-BOOTSTRAP-END\") == 1 { s = 0; next } !s" \
+      "$c/agents/codex/adapter.sh" > "$c/.a" && mv "$c/.a" "$c/agents/codex/adapter.sh" \
+      && chmod +x "$c/agents/codex/adapter.sh"
+    ! grep -q "ADB-BOOTSTRAP-BEGIN" "$c/agents/codex/adapter.sh"'
 
   # And the symwalk's two halves, reverted the same way, against the same decoy fixtures.
   for half in dirname readlink; do

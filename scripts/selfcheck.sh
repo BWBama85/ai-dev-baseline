@@ -592,20 +592,22 @@ add install-migration   bash scripts/check-install-migration.sh
 # makes the real installer exit non-zero, never dangling a link or disturbing a real dest (#48).
 add install-guard       bash scripts/check-install-guard.sh
 
-# Every entry point resolves its own clone root BEFORE it can source common.sh, and `$(…)` strips
-# every trailing newline — so a clone named `clone<NL>` arrived shortened onto an existing sibling
-# and the entry point sourced, linked and verified against the WRONG tree, silently (#343). This
-# pins the declared site set, the byte-identity of the shared block (a bootstrap cannot source the
-# library whose location it is computing, so identity stands in for reuse), and the resolution
-# itself against a real trailing-newline clone beside a real sibling.
+# Every entry point locates its own clone root BEFORE it can source common.sh, and `$(…)` strips
+# every trailing newline — so an unsentinelled capture shortens a clone named `clone<NL>` onto an
+# existing sibling, and the entry point sources, links and verifies against the WRONG tree (#343,
+# D82). This pins the declared site set plus an open-world scan for the defect in UNdeclared files,
+# the byte-identity of the shared block (a bootstrap cannot source the library whose location it is
+# computing, so identity stands in for reuse), the post-block wiring, and the resolution itself
+# against a real trailing-newline clone beside a real sibling.
 add bootstrap           bash scripts/check-bootstrap.sh
 
 # ...and that is a guard, whose failure mode is silence: a resolution check that resolves nothing
 # prints what a clean run prints. Each site's block is reverted to the superseded spelling ONE AT A
-# TIME, the revert is verified to have applied, and the fixture must come back red on that site's
-# own witness. The two adapters are SKIPPED with a printed reason rather than counted as passing —
-# their pre-fix capture was already correct at their depth (D64's correction, which #343's evidence
-# list did not carry over).
+# TIME and the fixture must come back red on that site's own witness; the STATIC rules, which read
+# the tracked tree and so cannot be driven by a fixture, are each driven red against a mutated COPY
+# of the repo. Every revert is verified to have applied first. The four depth-safe sites are
+# SKIPPED with a printed reason rather than counted as passing (D64's correction, which #343's
+# evidence list did not carry over).
 add bootstrap-mutation  bash scripts/check-bootstrap.sh --mutation
 
 # The SECOND install model writes into somebody else's repository (#285), so its refusals are the

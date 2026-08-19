@@ -73,13 +73,22 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
-- **Every entry point could be tricked into running from the wrong clone, silently (#343).** All of
-  them resolved their own repo root with `REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`, and
-  command substitution strips **every** trailing newline — so a clone directory named `clone<NL>`
-  arrived already shortened into `clone`, *a different path that frequently exists*. The entry point
-  then sourced that sibling's `common.sh`, linked `~/.claude/*` into it, and verified it as healthy.
-  #324's manifest guard could not see it: the value it was handed was already truncated and looked
-  perfectly representable.
+- **Entry points could be tricked into running from the wrong clone, silently (#343).** Each of them
+  locates its own repo root before it can source `scripts/lib/common.sh`, and the spellings differed
+  — `"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` in `install.sh` and `uninstall.sh`, the same
+  shape after a symlink walk in `bin/baseline` and `bin/agent-init`, a two-stage `here`/`root` in
+  `scripts/build.sh` — but all of them ended in a command substitution, and that strips **every**
+  trailing newline. So for those five, a clone directory named `clone<NL>` arrived already shortened
+  into `clone`, *a different path that frequently exists*: they then sourced that sibling's
+  `common.sh`, linked `~/.claude/*` into it, and reported the install healthy. #324's manifest guard
+  could not see it, because the value it was handed was already truncated and looked perfectly
+  representable.
+
+  **Four further sites were NOT defective and are fixed anyway:** the two adapters and this repo's
+  own `/release` skill sit deep enough that the clone's newline is *internal* to what they resolve,
+  where `$(…)` cannot reach it. Being correct by accident of depth is not the same as being correct
+  by construction, so they carry the same block — and the guard says out loud that its behavioural
+  mutation cannot fire for them, rather than counting them as passing a test it never ran.
 
   The capture is now lossless — `${src%/*}` instead of `$(dirname …)`, which cannot strip anything,
   and an `X` sentinel bounding what the `pwd` capture can lose — as **one byte-identical block in
@@ -93,10 +102,11 @@ only by a published release, which is what these entries are the notes for.
   `adb_agent_manifest` sees an unrepresentable root and refuses loudly, which is #324's guard
   becoming reachable for the case its own header had to disclaim.
 
-  **The issue's evidence list was wrong in two directions, and both were re-probed before acting.**
-  The two adapters it named are *not* defective — their newline is INTERNAL and survives `$(…)`,
-  the same correction D64 recorded for the manifest producer — and `bin/agent-init`, which it
-  omitted, is. `scripts/check-bootstrap.sh` pins the declared site set, the block's byte-identity
+  **The issue's evidence list was wrong in both directions, and every correction was re-probed
+  before acting.** The two adapters it named are *not* defective — their newline is INTERNAL and
+  survives `$(…)`, the same correction D64 recorded for the manifest producer. And it omitted two
+  sites that are: `bin/agent-init`, which is installed onto PATH, and `scripts/build.sh`, which
+  wrote regenerated artifacts through the truncated root. `scripts/check-bootstrap.sh` pins the declared site set, the block's byte-identity
   (a bootstrap cannot source the library whose location it is computing, so identity stands in for
   reuse — D30's rule one layer out), and the resolution itself against a real `clone<NL>` beside a
   real sibling. Its `--mutation` half reverts each site one at a time and requires the fixture to go

@@ -214,13 +214,11 @@ adb_unlink_if_ours() {
 # the producer's status, which is how the reproduced case reached `adb_link_manifest` at all.
 # Capture it first — `m="$(adb_agent_manifest …)" || return 1` — then feed `$m`.
 #
-# THE BLIND SPOT THIS ONCE HAD IS CLOSED UPSTREAM, not here (#343). A clone directory whose name
-# ENDS in a newline used to be truncated before this function was reached, by the `$(cd … && pwd)`
-# capture in the entry points' own bootstrap — so the value arriving here was already shortened onto
-# a sibling and looked perfectly representable. Those bootstraps now resolve losslessly, which is
-# what makes the refusal below reachable for that case at all; this function is unchanged. `$HOME`
-# always reached here intact (an environment variable is never passed through a substitution), as
-# does every INTERNAL tab or newline in either root.
+# THIS FUNCTION'S REACH DEPENDS ON ITS CALLERS RESOLVING LOSSLESSLY (#343, D82). A `<repo>` whose
+# name ends in a newline only arrives here intact because the entry-point bootstraps preserve it;
+# an unsentinelled `$(cd … && pwd)` upstream shortens it onto a sibling first, and what reaches this
+# check is then perfectly representable. `$HOME` needs no such help — an environment variable is
+# never passed through a substitution — nor does any INTERNAL tab or newline in either root.
 #
 # An unknown token prints nothing (return 0). Usage: adb_agent_manifest <agent> <repo> <home>
 # Emit "<src-skill-dir>\t<dest-parent>/<name>" manifest lines for every rendered skill folder
@@ -3588,13 +3586,10 @@ adb_crlf_scan() {
   # FAIL CLOSED ON A FAILED WALK. A preflight whose `find` errored and whose output was discarded
   # reports a clean tree — the silence-as-success failure mode this repo writes guards against.
   #
-  # NUL-DELIMITED, for the reason #259 already established elsewhere in this repo and #343 made
-  # reachable here. A newline-delimited listing splits every path under a directory whose NAME
-  # contains a newline into fragments; each fragment fails `[ -r ]`, `grep` exits 2, and the
-  # unreadable arm fires — so a clone whose root carries a newline was reported as a CRLF-corrupt
-  # tree. It refused, which is right, but for a reason that sends the operator to re-clone under
-  # WSL over a filesystem problem they do not have. Before #343 this was unreachable: the entry
-  # points truncated the root before handing it over, so the scan walked the SIBLING.
+  # NUL-DELIMITED (the reason #259 established elsewhere in this repo; D82 for why it became
+  # reachable here). A newline-delimited listing splits every path under a directory whose NAME
+  # contains a newline into fragments, each of which is unreadable — so the unreadable arm below
+  # fires and a clean tree is reported CRLF-corrupt.
   # THE LISTING GOES TO A FILE, NOT A VARIABLE, and that is forced rather than stylistic: a shell
   # variable cannot hold a NUL byte, so `$(find … -print0)` drops every delimiter it just asked for
   # and yields one run-together string. The redirect keeps the loop in THIS shell, so `found` still
