@@ -286,6 +286,20 @@ cmd_lint() {
       split("a an the this that it them pr prs pull issue issues branch branches", OBJ, " ")
       # An intent marker before the word is likewise a verb ("going to open", "let me close").
       split("to will can could should would must may let lets", MOD, " ")
+      # ATTRIBUTIVE HEAD NOUNS (#383). A status word immediately before one of these is an
+      # adjective describing a thing that has no PR/issue/CI state — "merged files", "green
+      # suite" — so it predicates nothing about the `#N` sharing its sentence.
+      # GROWN BY WITNESS ONLY, exactly like the token set above and for the mirror-image reason:
+      # every entry here is a new FALSE-NEGATIVE surface. `files` and `suite` are the two nouns
+      # that actually fired; their number-partners are included because a rule that fires on the
+      # plural of a word it exempts is a false positive waiting for the next sentence.
+      split("file files suite suites", ATTR, " ")
+      # IDIOMS: an exact previous-word + status-word bigram in which the status word is not a
+      # status at all. "in passing" is the whole list.
+      # THE SEPARATOR IS A COMMA because an entry contains a space, and a comma carries no regex
+      # meaning in any awk. POSIX leaves it to the implementation whether a one-character separator
+      # is an ERE, and `|` as an ERE is an empty alternation matching between every character.
+      split("in passing", IDIOM, ",")
     }
     # --- structure stripping: only prose declares -----------------------------------------
     # BUFFER, then resolve once. The filter is paragraph-aware because a CommonMark code span may
@@ -339,12 +353,21 @@ cmd_lint() {
             # Checked BEFORE punctuation is stripped, because stripping `#` is exactly what left
             # `nextw` empty and misread the object as absent.
             if (rest ~ /^[[:space:]]*#[0-9]+/) continue
+            # ATTRIBUTIVE POSITION, read off the RAW rest — the separator must be exactly ONE
+            # SPACE, and that is the load-bearing half of this carve-out rather than a detail.
+            # Read after punctuation is stripped, "PR #1 is merged; files are swept once" would
+            # present `files` as the next word and exempt a real claim; a single space cannot
+            # cross a clause boundary.
+            attrw = ""
+            if (rest ~ /^ [a-z]/) { attrw = substr(rest, 2); sub(/[^a-z0-9].*$/, "", attrw) }
             sub(/^[^a-z0-9]+/, "", rest)
             nextw = rest; sub(/[^a-z0-9].*$/, "", nextw)
             skip = 0
             for (o in OBJ) if (nextw == OBJ[o]) skip = 1
             prevw = pre; sub(/[^a-z0-9]+$/, "", prevw); sub(/^.*[^a-z0-9]/, "", prevw)
             for (m in MOD) if (prevw == MOD[m]) skip = 1
+            if (attrw != "") for (k in ATTR) if (attrw == ATTR[k]) skip = 1
+            for (q in IDIOM) if (prevw " " w == IDIOM[q]) skip = 1
             if (skip) continue
             # THE MASK BYTE NEVER LEAVES THIS PROGRAM. `s` comes from MD_MASK, so a quoted span is
             # \x01 here — and the Stop hook prints this excerpt verbatim to the operator

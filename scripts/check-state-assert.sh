@@ -412,6 +412,51 @@ eq "${ lint_rc 'CI is green on PR #194.'; }" 1 "...including CI"
 eq "${ lint_rc 'It fired on "CI on #196 is green".'; }" 1 "a double-quoted status is still a claim"
 eq "${ lint_rc 'It fired on `CI on #196 is green`.'; }" 0 "...while a backticked one is not"
 
+# --- 3b-l. ORDINARY ENGLISH IN ADJECTIVE AND IDIOM POSITION (#383) ---------------------------
+# Three shapes fired on live prose that asserts nothing, across multiple sessions and multiple
+# agents. All three are pinned VERBATIM as they were written, because a tidied paraphrase is a
+# fixture for a sentence nobody wrote — and each was observed RED against the pre-#383 library,
+# naming exactly the token the report named.
+#
+# The carve-outs are two narrow patterns, NOT a classifier:
+#   ATTR   a status word separated by EXACTLY ONE SPACE from a curated non-entity head noun.
+#   IDIOM  an exact previous-word + status-word bigram ("in passing").
+eq "${ lint_rc 'One stale reference discovered in passing (rendered skills still cite dead #25 in one place).'; }" 0 \
+   "\"in passing\" is an idiom, not a CI status"
+eq "${ lint_rc '- **#367** — the comment-reduction epic, with children **#370** (checks — sequenced after the consolidations so merged files aren'"'"'t swept twice), **#371** (ci.yml).'; }" 0 \
+   "\"merged files\" modifies a non-entity noun, so it predicates nothing about #370"
+eq "${ lint_rc '- First **#372** and **#373** — small, mechanical, and they make a green suite mean something everywhere.'; }" 0 \
+   "\"green suite\" likewise"
+
+# THE NEGATIVE PINS. Each carve-out is proven UNABLE to swallow its nearest-neighbour real claim;
+# without these the section above is indistinguishable from deleting the tokens outright.
+#
+# THE SEPARATOR IS WHAT CARRIES THIS. `merged; files` and `open, not` present the same next word as
+# `merged files` once punctuation is stripped, so the attributive test reads the RAW rest and
+# demands a single space — a separator that cannot cross a clause boundary.
+eq "${ lint_rc 'PR #383 is merged; files are swept once.'; }" 1 \
+   "a clause boundary is not attributive position — the real claim still fires"
+eq "${ lint_rc 'The branch for PR #383 is merged.'; }" 1 "...and a predicative merged-claim is untouched"
+eq "${ lint_rc 'The suite for PR #383 is green.'; }" 1 "...as is a predicative green-claim about a suite"
+eq "${ lint_rc 'The last check on PR #383 was passing.'; }" 1 "...and \"was passing\" is not the idiom"
+
+# THE TWO SHAPES THE ISSUE NAMES BY NAME, asserted PER OCCURRENCE rather than by exit code alone:
+# a carve-out that wrongly exempted one token would leave the other holding the return code red,
+# and the suite would never notice.
+eq "${ lint_rc "$SHIPPED"; }" 1 "the 2026-07-29 sentence is STILL a violation after the carve-outs"
+has "${ lint_out "$SHIPPED"; }" "open" "...and the stale parenthetical is still named"
+STILL_OPEN='PR #137 is still open, not merged.'
+eq "${ lint_rc "$STILL_OPEN"; }" 1 "\"still open, not merged\" is STILL a violation"
+has "${ lint_out "$STILL_OPEN" | cut -f2; }" "open" "...and \"open\" is one of the occurrences"
+has "${ lint_out "$STILL_OPEN" | cut -f2; }" "merged" "...and \"merged\" is the other"
+eq "${ lint_out "$STILL_OPEN" | wc -l | tr -d ' '; }" 2 "...both, not one standing in for the pair"
+
+# THE COST, stated rather than hidden — the same trade `draft` documents above. An attributive
+# claim about a real entity is now a miss, and that is the accepted direction: a gate that fires on
+# ordinary prose gets worked around, and then it protects nothing.
+eq "${ lint_rc 'PR #383 has a green suite.'; }" 0 \
+   "the accepted cost: an ATTRIBUTIVE claim about a real entity is no longer caught"
+
 # --- 3b-f. determinism + hygiene ---------------------------------------------------------------
 eq "${ lint_out "$SHIPPED"; }" "${ lint_out "$SHIPPED"; }" "lint is deterministic"
 eq "${ printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?"; }" 0 "empty input is clean"
@@ -522,6 +567,62 @@ has "$HOOK_OUT" "branch-verdict" "...and is routed to the branch predicate"
 run_hook 'PR #137 is still open.'
 has "$HOOK_OUT" "state-assert.sh" "a PR-state claim is still routed to observe"
 has "$HOOK_OUT" "ambiguous" "...and the merged-PR vs merged-branch ambiguity is called out"
+
+# --- 3c-2. THE FINAL MESSAGE IS THE PAYLOAD'S, NOT THE TRANSCRIPT'S LAST RECORD (#383) -------
+# A rejected draft is an ordinary assistant record, so the transcript ends with it until the retry
+# lands — and a hook that reads the file can lose that race and lint a sentence the operator has
+# already deleted. `last_assistant_message` is computed from the live message list and cannot.
+#
+# THE FIXTURES ARE THE REAL PAIR, from the session that produced the report: the superseded draft
+# is what the hook quoted, and the retry is what was actually on screen. The retry deliberately
+# carries NO status token at all, so this section proves the SOURCE question and never borrows a
+# pass from 3b-l's carve-outs.
+SA_SUPERSEDED='- First **#372** and **#373** — small, mechanical, and they make "green" mean something everywhere.'
+SA_RETRY='Restated without the status wording: #372 and #373 are the two verifier repairs, sequenced first.'
+
+# sa_msg <text> [true] — one assistant text record; the second argument marks it a subagent's.
+sa_msg() {
+  printf '{"type":"assistant","isSidechain":%s,"message":{"content":[{"type":"text","text":%s}]}}\n' \
+    "${2:-false}" "${ printf '%s' "$1" | jq -Rs .; }"
+}
+# sa_jsonl <text>... — a transcript whose records appear in argument order.
+sa_jsonl() { : > "$tdir/t.jsonl"; for _m in "$@"; do sa_msg "$_m" >> "$tdir/t.jsonl"; done; }
+sa_run() { HOOK_OUT="${ printf '%s' "$1" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?; }
+
+# THE REGRESSION FIXTURE. Observed RED against the pre-#383 hook, which blocks here — quoting the
+# superseded draft's wording at an operator who can no longer find it in the turn.
+sa_jsonl "$SA_RETRY" "$SA_SUPERSEDED"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" --arg m "$SA_RETRY" '{transcript_path:$t,last_assistant_message:$m}'; }"
+eq "$HOOK_RC" 0 "a clean retry passes even while the transcript still ends in the rejected draft"
+eq "$HOOK_OUT" "" "...silently"
+
+# ...and the payload cannot be used to LOSE a claim either: it is the source of truth in both
+# directions, so a dirty final message blocks over a clean transcript.
+sa_jsonl "$SA_RETRY"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" --arg m "$SA_SUPERSEDED" '{transcript_path:$t,last_assistant_message:$m}'; }"
+eq "$HOOK_RC" 2 "a dirty final message blocks even when the transcript's last record is clean"
+has "$HOOK_OUT" "mean something everywhere" "...and the excerpt is the PAYLOAD's sentence"
+
+# THE FALLBACK IS LOAD-BEARING, NOT DECORATION: a CLI that predates the field omits it, and there
+# the transcript is the only source there is. Absent and explicit-null behave alike.
+sa_jsonl "$SA_RETRY" "$SA_SUPERSEDED"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" '{transcript_path:$t}'; }"
+eq "$HOOK_RC" 2 "with no last_assistant_message the hook still reads the transcript"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" '{transcript_path:$t,last_assistant_message:null}'; }"
+eq "$HOOK_RC" 2 "...and an explicit null is the same as absent"
+
+# A SUBAGENT'S MESSAGE IS NOT THE TURN'S FINAL MESSAGE. Task sidechain records land in this same
+# log, so on the fallback path the last record can belong to an agent the operator never read.
+sa_jsonl "$SA_RETRY"
+sa_msg "$SA_SUPERSEDED" true >> "$tdir/t.jsonl"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" '{transcript_path:$t}'; }"
+eq "$HOOK_RC" 0 "a trailing SIDECHAIN record is skipped — the main thread's message is the final one"
+
+# THE TRANSCRIPT IS NOT REQUIRED when the payload answers. Pinned because the reverse — reading
+# the file first and treating the field as a corroborator — passes every case above while leaving
+# the race exactly where it was.
+sa_run "${ jq -n --arg m "$SA_SUPERSEDED" '{last_assistant_message:$m}'; }"
+eq "$HOOK_RC" 2 "a payload carrying only last_assistant_message needs no transcript at all"
 
 # The hook must be in the ONE hook enumeration, or install wires it and uninstall never removes it.
 has "$(bash -c '. scripts/lib/common.sh; adb_claude_hook_scripts')" "state-claim-gate.sh" \

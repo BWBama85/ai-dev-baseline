@@ -73,6 +73,31 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **The state-claim gate fired on ordinary English, and blocked turns over sentences that no longer
+  existed (#383).** Two defects, one gate.
+
+  The lint's verb carve-outs missed three shapes that assert nothing, each witnessed live: `in
+  passing` read as a CI status, `merged files` read as PR state, `green suite` read as CI. It now
+  carves out a status word separated by **exactly one space** from a curated non-entity head noun
+  (`file files suite suites`), and the exact bigram `in passing`. The separator is what keeps this
+  narrow: read after punctuation stripping, `PR #1 is merged; files are swept once` would present
+  `files` as the next word and exempt a real claim. The stated cost is that `PR #1 has a green
+  suite` is now a miss — the same precision-over-recall trade `draft` already documents. The third
+  candidate the issue floated, "a token not predicated of the co-sentential entity reference", was
+  **withdrawn**: it is coreference analysis, and the practice already rules a classifier over
+  arbitrary English out of scope.
+
+  Separately, the Stop hook resolved "the turn's final message" by reading the last assistant record
+  of the **transcript file**. A rejected draft is an ordinary assistant record, so between a retry
+  completing and its own records landing, that read returns the **superseded** message — and the
+  operator is blocked over a sentence they cannot find. Measured across this workstation's session
+  logs: 29 of 301 firings quoted the previous message. The hook now takes the text from the hook
+  payload's `last_assistant_message`, which is built from the live message list and cannot lag, and
+  falls back to the transcript only when that field is absent — so an older CLI keeps working and no
+  version floor is declared. On that fallback path, sidechain records are skipped: a Task subagent's
+  messages land in the same log, and one of them resolving as "the final message" lints text the
+  operator never wrote.
+
 - **Entry points could be tricked into running from the wrong clone, silently (#343).** Each of them
   locates its own repo root before it can source `scripts/lib/common.sh`, and the spellings differed
   — `"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` in `install.sh` and `uninstall.sh`, the same

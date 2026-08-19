@@ -169,10 +169,15 @@ When it fires, it names the offending excerpt and the command that can answer th
 the claim is re-read or removed.
 
 It is deliberately **precision-first**: quoting a status inside a fence, a code span, a blockquote
-or an HTML comment declares nothing, `open a PR` / `closed #195` are treated as verbs, and words
-that collide too often with ordinary prose are kept out of the token set entirely. It also
-never wedges a session — a missing `jq`, an unreadable transcript, a text-free turn or a broken
-linter install are all reported on stderr and then allowed through.
+or an HTML comment declares nothing, `open a PR` / `closed #195` are treated as verbs, a status
+word directly before a noun with no state of its own is an adjective (`merged files`, `green
+suite`), `in passing` is an idiom, and words that collide too often with ordinary prose are kept
+out of the token set entirely. It also never wedges a session — a missing `jq`, a text-free turn
+or a broken linter install are all reported on stderr and then allowed through.
+
+It reads the turn's final message from the hook payload's `last_assistant_message`, falling back to
+the transcript file when that field is absent (an older CLI) — and an unreadable transcript on that
+fallback path is likewise a no-op, never a block.
 
 To turn it off, remove its entry from `~/.claude/settings.json`, or shadow it per-repo with your
 own `.claude/scripts/state-claim-gate.sh` (see [A repo's own gate always wins](#8-a-repos-own-gate-always-wins)).

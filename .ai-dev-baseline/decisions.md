@@ -6580,3 +6580,56 @@ limit: none of them is sufficient alone.
              loudly, which is #324's guard finally becoming reachable. Verified: rc 1, one stderr
              line naming `$'/w/clone\n'`.
 - baseline-issue: n/a
+
+## D83 — the claim gate reads the payload's final message, and ordinary English earns two narrow carve-outs
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   #383 reported three shapes of ordinary prose that the state-claim lint flagged as
+             status claims, plus a fourth observation with no mechanism: after a Stop rejection, a
+             later firing quoted sentence text that was no longer in the retried final message.
+             The baseline had a home for the grammar (`state-assert.sh lint`) and for the gate
+             (`state-claim-gate.sh`), but no answer for either question — and the two candidate
+             fixes the issue floated ("a token not predicated of the co-sentential entity") were
+             semantic analysis the line-oriented matcher cannot do.
+- decision:  (1) TWO NARROW CARVE-OUTS, not a classifier, and the third candidate WITHDRAWN.
+                 `ATTR` — a status word separated by EXACTLY ONE SPACE from a curated non-entity
+                 head noun (`file files suite suites`) is an adjective: "merged files", "green
+                 suite". The separator is the load-bearing half. Read AFTER punctuation stripping,
+                 "PR #1 is merged; files are swept once" would present `files` as the next word and
+                 exempt a real claim; a single space cannot cross a clause boundary. The noun list
+                 grows BY WITNESS ONLY, the mirror of the token set's rule — every entry there is a
+                 new false-positive surface, every entry here a new false-negative one.
+                 `IDIOM` — an exact previous-word + status-word bigram. "in passing" is the list.
+                 "Not predicated of the co-sentential entity reference" is coreference analysis and
+                 was withdrawn rather than attempted: the practice already rules that a classifier
+                 over arbitrary English "would be theatre beyond a small documented grammar".
+             (2) THE COST IS STATED, NOT HIDDEN. `PR #1 has a green suite` is now a miss. That is
+                 the direction the practice already chose — misses are the accepted cost of not
+                 crying wolf — and it is pinned as a cost, the way `draft` already is.
+             (3) THE FOURTH OBSERVATION IS A REAL RACE, AND THE SOURCE WAS WRONG. The hook read the
+                 last assistant record of the transcript FILE. A rejected draft is an ordinary
+                 assistant record, so between the retry completing and its records landing, that
+                 read resolves the SUPERSEDED message. The payload already carries the answer:
+                 `last_assistant_message` is built from the live message list
+                 (`findLast(type=="assistant")`, text blocks joined with newlines — probed in the
+                 installed 2.1.235 binary, not recalled), so it is always THIS turn's text. The
+                 hook now prefers it and falls back to the transcript when the field is absent,
+                 which keeps every older CLI working with no declared version floor.
+             (4) SIDECHAIN RECORDS ARE EXCLUDED on the fallback path. A Task subagent's messages
+                 land in the same log, and one of them resolving as "the turn's final message"
+                 lints text the operator never wrote.
+- placement: `scripts/lib/state-assert.sh` (ATTR + IDIOM in `cmd_lint`) +
+             `agents/claude/scripts/state-claim-gate.sh` (payload-first resolution) +
+             `scripts/check-state-assert.sh` (3b-l and 3c-2) +
+             `base/practices/verify-before-asserting.md` and `docs/installation.md` (the
+             operator-facing description of when the gate fires).
+- reason:    project-delta rather than general: both halves are edits inside homes the baseline
+             already prescribes for exactly this content, so nothing was improvised and no new home
+             was invented. The evidence is recorded here rather than in the code because it is
+             incident history (comment class 2): measured across this workstation's own session
+             logs, 29 of 301 gate firings quoted the previous message rather than the current one —
+             the mechanism is intermittent, not deterministic, which is why it survived review as
+             an unexplained anecdote. The worked case is session
+             `febc77dc-237c-401d-92b4-b73f805d8112`, records 435/442/451/456: three consecutive
+             firings, each quoting the draft before the one on screen.
+- baseline-issue: n/a

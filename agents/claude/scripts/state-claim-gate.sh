@@ -76,27 +76,44 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-# Claude Code passes the hook payload as JSON on stdin; `transcript_path` names the JSONL session
-# log. Read stdin ONCE into a variable: it is a pipe, so a second read would get nothing.
+# Claude Code passes the hook payload as JSON on stdin. Read stdin ONCE into a variable: it is a
+# pipe, so a second read would get nothing.
 payload="$(cat 2>/dev/null || true)"
-transcript="$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null || true)"
-[ -n "$transcript" ] || exit 0
-[ -f "$transcript" ] || exit 0
 
-# The FINAL assistant message's text blocks — the user-visible summary, which is where narration
-# lives. Deliberately not every assistant block since the last user turn: intermediate blocks are
-# mostly tool orchestration, and linting them would trade precision for noise in a gate whose
-# whole value depends on being believed when it fires.
+# THE PAYLOAD IS THE SOURCE OF TRUTH FOR THE FINAL MESSAGE; the transcript is the FALLBACK (#383,
+# D83). `last_assistant_message` is computed from the live message list, so it is always THIS
+# turn's final text. The transcript is a file that the turn's own entries may not have reached
+# yet, and a read that loses the race resolves the PREVIOUS message instead — blocking a turn over
+# a sentence the operator can no longer see. The measurement is in D83.
 #
-# `-s` slurps the JSONL; a malformed trailing line (a session still being written) makes jq fail,
-# which is an unparseable transcript and therefore a no-op, not a block.
-text="$(jq -s -r '
-  [ .[] | select(type == "object") | select(.type == "assistant") ] as $a
-  | if ($a | length) == 0 then ""
-    else ($a | last | .message.content // [])
-         | map(select(type == "object") | select(.type == "text") | .text // "")
-         | join("\n")
-    end' "$transcript" 2>/dev/null || true)"
+# THE ORDER IS THE FIX. Do not reverse it, and do not drop the fallback: an absent field is an
+# older CLI, where the transcript is the only source there is.
+text="$(printf '%s' "$payload" | jq -r '.last_assistant_message // ""' 2>/dev/null || true)"
+
+if [ -z "$text" ]; then
+  # `transcript_path` names the JSONL session log. Its FINAL assistant message's text blocks are
+  # the user-visible summary, which is where narration lives. Deliberately not every assistant
+  # block since the last user turn: intermediate blocks are mostly tool orchestration, and linting
+  # them would trade precision for noise in a gate whose whole value depends on being believed
+  # when it fires.
+  #
+  # `-s` slurps the JSONL; a malformed trailing line (a session still being written) makes jq fail,
+  # which is an unparseable transcript and therefore a no-op, not a block.
+  #
+  # SIDECHAIN ENTRIES ARE EXCLUDED: a Task subagent's messages land in this same log, and one of
+  # them resolving as "the turn's final message" lints text the operator never wrote.
+  transcript="$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null || true)"
+  [ -n "$transcript" ] || exit 0
+  [ -f "$transcript" ] || exit 0
+  text="$(jq -s -r '
+    [ .[] | select(type == "object") | select(.type == "assistant")
+          | select(.isSidechain != true) ] as $a
+    | if ($a | length) == 0 then ""
+      else ($a | last | .message.content // [])
+           | map(select(type == "object") | select(.type == "text") | .text // "")
+           | join("\n")
+      end' "$transcript" 2>/dev/null || true)"
+fi
 [ -n "$text" ] || exit 0
 
 # Capture stderr separately: the linter's exit-1 is AMBIGUOUS, and discarding the diagnostic is
