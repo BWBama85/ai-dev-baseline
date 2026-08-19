@@ -8,6 +8,17 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-18
+
+This release adds a **second install model**. The global symlink install is unchanged and stays
+the default; beside it a project can now vendor one released version into its own tree, so an
+upstream change reaches it only when someone names a new version. Alongside it: one source can
+render a different instruction density to each agent, the below-floor bash carve-out is enforced
+by name rather than only by parse, and `baseline repo reconcile` gains a repair path. The major
+bump is the install contract — `agents/claude/scripts/statusline.sh` is removed, and retiring an
+installed path now has a declared disposal path that sweeps the dead symlink out of existing
+installs.
+
 ### Added
 
 - **A second install model: release-pinned, per project (#285).** The global symlink install is
@@ -4379,7 +4390,8 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.1.0...v2.0.0
