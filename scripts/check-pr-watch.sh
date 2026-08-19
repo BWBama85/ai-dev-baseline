@@ -1189,6 +1189,11 @@ w request-review --pr 1;  rc 14 "request-review: a declared reviewer with no kno
 has "$OUT" "no declared reviewer has a re-review trigger" "request-review: says why it skipped"
 reset_fx; declare_bots '[]'; receipt_fx
 w request-review --pr 1;  rc 14 "request-review: bots = [] has nobody to ask"
+# ...and it prints NO verdict line: the head SHA is not known on that path (reading it would spend
+# a call on a repo that just said nobody is coming), and stdout is contracted to be
+# "<verdict> <sha>" or nothing — never a verdict with an empty second field.
+wout request-review --pr 1
+eq "$OUT" "" "request-review: bots = [] prints no verdict line rather than one with an empty SHA"
 # ...and a KNOWN reviewer beside an unknown one is still asked.
 reset_fx; declare_bots "[\"$CODEX\", \"some-other-reviewer\"]"; receipt_fx
 w request-review --pr 1;  rc 0 "request-review: a known trigger beside an unknown reviewer still asks"

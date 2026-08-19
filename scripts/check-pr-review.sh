@@ -684,16 +684,12 @@ _gql_raw() { printf '%s\n' "$1" > "$S/graphql-raw.json"; }
 _pr_ok='"state":"OPEN","merged":false,"mergedAt":null,"headRefOid":"'"$HEAD_SHA"'","headRefName":"feature","baseRepository":{"nameWithOwner":"acme/widget"},"headRepository":{"nameWithOwner":"acme/widget"}'
 _rx_fresh='"reactions":{"totalCount":1,"nodes":[{"createdAt":"'"$AFTER_AT"'","user":{"login":"chatgpt-codex-connector","__typename":"User"}}]}'
 _cm_none='"comments":{"totalCount":0,"nodes":[]}'
-for missing in \
-  '"reviews":null' \
-  ; do
-  reset_fx
-  _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$missing"','"$_cm_none"','"$_rx_fresh"'}}}}'
-  g gate --pr 7
-  eq "$RC_" "20" "a NULL reviews connection -> 20; it must NOT let a fresh '+1' arm over a hidden rejection"
-  gout gate --pr 7
-  eq "$OUT" "" "...and prints NO head SHA — printing it is what authorizes the arm"
-done
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":null,'"$_cm_none"','"$_rx_fresh"'}}}}'
+g gate --pr 7
+eq "$RC_" "20" "a NULL reviews connection -> 20; it must NOT let a fresh '+1' arm over a hidden rejection"
+gout gate --pr 7
+eq "$OUT" "" "...and prints NO head SHA — printing it is what authorizes the arm"
 reset_fx
 _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},"comments":null,'"$_rx_fresh"'}}}}'
 g gate --pr 7; eq "$RC_" "20" "a NULL comments connection -> 20; it must not let a '+1' arm over a hidden comment"

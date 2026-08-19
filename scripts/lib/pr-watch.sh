@@ -553,9 +553,14 @@ cmd_request_review() {
   adb_require_gh jq || return 20
 
   # `bots = []` is an explicit "no async reviewer". Nobody to ask; not an error.
+  #
+  # NO VERDICT LINE HERE, deliberately. The head SHA is not known yet — reading it would spend a
+  # network call on a repo that just said nobody is coming — and stdout is contracted to be
+  # "<verdict> <sha>" or NOTHING AT ALL. Printing a bare `no-trigger ` would hand a caller doing
+  # `read -r verdict sha` an empty second field that looks like a SHA it failed to parse. The exit
+  # code carries the whole answer, which is what every caller branches on anyway.
   if [ -z "$want" ]; then
     echo "pr-watch: PR #$n — no async reviewers declared ([reviewers] bots = []); nothing to ask" >&2
-    printf 'no-trigger \n'
     return 14
   fi
 
