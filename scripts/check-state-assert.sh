@@ -477,8 +477,15 @@ eq "${ lint_rc 'Noted **in passing** while reading #383.'; }" 0 "...while markdo
 eq "${ lint_rc 'They make a green **suite** mean something for #383'; }" 0 "bold around the attributive NOUN alone"
 eq "${ lint_rc 'So merged **files** are not swept twice for #383'; }" 0 "...for the other witnessed noun"
 eq "${ lint_rc 'Mentioned in *passing* for #383'; }" 0 "...and italics around the idiom's status word"
+# ...ON BOTH SIDES OF THE SPACE (review round 2, second pass): when the STATUS word is the
+# emphasised one the closing delimiter lands BEFORE the space, so a skip that only looked after it
+# left the neighbour unread and the sentence firing.
+eq "${ lint_rc 'They make a **green** suite mean something for #383'; }" 0 "bold around the STATUS word alone"
+eq "${ lint_rc 'So *merged* files are not swept twice for #383'; }" 0 "...in italics, for the other witnessed noun"
+eq "${ lint_rc 'Mentioned **in** passing for #383'; }" 0 "...and around the idiom's previous word"
 # ...and skipping emphasis must not relax the separator itself: clause punctuation still fires.
 eq "${ lint_rc 'PR #383 is merged; **files** are swept once.'; }" 1 "a semicolon still breaks adjacency, bold or not"
+eq "${ lint_rc 'CI for PR #383 has a **green** suite.'; }" 1 "...nor does emphasis defeat the predication rule"
 
 # AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM (review round 2). "resulted in
 # passing" predicates the run it follows; "discovered in passing" modifies the verb. The lexical

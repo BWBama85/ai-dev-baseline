@@ -6647,7 +6647,10 @@ limit: none of them is sufficient alone.
                  ordinary prose — fired. They are skipped BY NAME rather than by relaxing the
                  separator to punctuation generally, because `,` `;` `—` must keep breaking
                  adjacency; that is the whole reason the reads are raw. The round-1 fixtures
-                 emphasised the WHOLE phrase, which is why they missed this.
+                 emphasised the WHOLE phrase, which is why they missed this — and the first cut of
+                 this very rule skipped delimiters only AFTER the space, which the reviewer caught
+                 on its second pass: with the STATUS word emphasised ("a **green** suite") the
+                 closing delimiter lands BEFORE it. Both sides are skipped.
                  AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM. "resulted in passing"
                  and "ended in passing" predicate the run they follow and were exempted; the
                  lexical difference from "discovered in passing" is the verb two words back, so

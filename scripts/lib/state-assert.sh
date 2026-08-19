@@ -380,9 +380,17 @@ cmd_lint() {
             # reading the delimiter as the neighbour fired on ordinary prose. They are skipped
             # HERE, by name, rather than by relaxing the separator: `,` `;` `—` still break both
             # reads, which is the whole point of taking them raw.
+            #
+            # ON BOTH SIDES OF THE SPACE, because either word may be the emphasised one. With the
+            # STATUS word emphasised ("a **green** suite") the closing delimiter lands BEFORE the
+            # space, so skipping only after it leaves the neighbour unread and the sentence firing.
             attrw = ""
-            if (rest ~ /^ [*_]*[a-z]/) {
-              attrw = substr(rest, 2); sub(/^[*_]+/, "", attrw); sub(/[^a-z0-9].*$/, "", attrw)
+            if (rest ~ /^[*_]* [*_]*[a-z]/) {
+              attrw = rest
+              sub(/^[*_]*/, "", attrw)   # the CLOSING delimiter of an emphasised status word
+              sub(/^ /, "", attrw)
+              sub(/^[*_]+/, "", attrw)   # ...and the OPENING one of an emphasised neighbour
+              sub(/[^a-z0-9].*$/, "", attrw)
             }
             idiomw = ""
             if (pre ~ /[^ ][ ][*_]*$/) {
