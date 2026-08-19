@@ -2006,6 +2006,25 @@ crlf_scan "$d2"
 eq "$CLRC" "1" "crlf: a CRLF SOURCED LIBRARY is caught — it has no shebang to select it by"
 has "$CLOUT" "common.sh" "crlf: the corrupted library is named"
 
+# A ROOT DIRECTORY WHOSE NAME ENDS IN A NEWLINE must scan CLEAN, and this is a #343 regression.
+# The walk used to hand `find`'s newline-delimited output through a shell variable, so every path
+# under such a root split into fragments; each fragment was unreadable, `grep` exited 2, and the
+# unreadable arm fired — reporting a perfectly clean tree as CRLF-corrupt and sending the operator
+# to re-clone under WSL over a filesystem problem they do not have. It was unreachable before #343
+# only because the entry points truncated the root before handing it over.
+d3="$work/crlf-nl/root
+"; mkdir -p "$d3/scripts"
+printf '#!/usr/bin/env bash\necho ok\n' > "$d3/scripts/fine.sh"
+crlf_scan "$d3"
+eq "$CLRC" "0" "crlf: a clean tree under a NEWLINE-named root scans clean (not misreported as CRLF)"
+hasnt "$CLOUT" "unreadable" "crlf: and no path under it is reported unverified"
+# ...and the scan must still be able to ANSWER there: a walk that reports every tree clean is the
+# silence-as-success failure this file exists to prevent.
+printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$d3/scripts/fine.sh"
+crlf_scan "$d3"
+eq "$CLRC" "1" "crlf: a CRLF file under a NEWLINE-named root is still caught"
+has "$CLOUT" "fine.sh" "crlf: and it is named"
+
 # ...and install.sh must refuse BEFORE it sources that library, or the diagnostic never arrives.
 # Its own scanner cannot cover this step: the source is what breaks.
 crlf_boot="$work/crlf-boot"; mkdir -p "$crlf_boot"

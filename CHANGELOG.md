@@ -73,6 +73,37 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **Every entry point could be tricked into running from the wrong clone, silently (#343).** All of
+  them resolved their own repo root with `REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`, and
+  command substitution strips **every** trailing newline — so a clone directory named `clone<NL>`
+  arrived already shortened into `clone`, *a different path that frequently exists*. The entry point
+  then sourced that sibling's `common.sh`, linked `~/.claude/*` into it, and verified it as healthy.
+  #324's manifest guard could not see it: the value it was handed was already truncated and looked
+  perfectly representable.
+
+  The capture is now lossless — `${src%/*}` instead of `$(dirname …)`, which cannot strip anything,
+  and an `X` sentinel bounding what the `pwd` capture can lose — as **one byte-identical block in
+  all seven sites**, with the per-site variation lifted out of it. `bin/baseline` and
+  `bin/agent-init` additionally carry a shared lossless symlink walk: `readlink -n` is load-bearing
+  there, because BSD `readlink` appends a terminator only when the value does not already end in
+  one, so a target `a` and a target `a<NL>` print identically and **no sentinel can recover the
+  difference**.
+
+  **This does not make such a clone work — it makes it refusable.** With the true path restored,
+  `adb_agent_manifest` sees an unrepresentable root and refuses loudly, which is #324's guard
+  becoming reachable for the case its own header had to disclaim.
+
+  **The issue's evidence list was wrong in two directions, and both were re-probed before acting.**
+  The two adapters it named are *not* defective — their newline is INTERNAL and survives `$(…)`,
+  the same correction D64 recorded for the manifest producer — and `bin/agent-init`, which it
+  omitted, is. `scripts/check-bootstrap.sh` pins the declared site set, the block's byte-identity
+  (a bootstrap cannot source the library whose location it is computing, so identity stands in for
+  reuse — D30's rule one layer out), and the resolution itself against a real `clone<NL>` beside a
+  real sibling. Its `--mutation` half reverts each site one at a time and requires the fixture to go
+  red on that site's own witness; the two adapters are **skipped with a printed reason** rather than
+  counted as passing a test that cannot fire for them. See D82.
+
+
 - **`pr-review.sh` no longer tells the operator that pushing a fix gets it re-reviewed.** It said
   "address the feedback and push (which moves the head, and is re-reviewed)"; a push triggers no
   review, which is the defect #169 exists to fix. It now names the step that does ask.

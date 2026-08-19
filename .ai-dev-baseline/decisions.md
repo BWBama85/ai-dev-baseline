@@ -6498,3 +6498,72 @@ limit: none of them is sufficient alone.
 
                  The probe remains the operator's to run: post `@codex review` on a live PR and
                  observe whether a review object, a second task, or nothing follows.
+
+## D82 — the entry-point bootstrap is INLINED and pinned by identity, because it cannot source the library whose location it is computing
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   #343. Every entry point resolved its own clone root with `REPO="$(cd "$(dirname
+             "${BASH_SOURCE[0]}")" && pwd)"`. Command substitution strips EVERY trailing newline,
+             so a clone directory named `clone<NL>` arrived already shortened into `clone` — a
+             different path that frequently exists — and the entry point then sourced, linked and
+             verified against that sibling, reporting success. #324's manifest guard cannot see
+             it: the value it is handed is already truncated and looks perfectly representable.
+             The issue named two candidate fixes and required the choice to be recorded.
+- decision:  **Fix 1 — inline the lossless capture — in three parts.**
+             1. **One canonical `ADB-BOOTSTRAP` block, byte-identical in all seven sites**, with the
+                per-site variation (`_adb_boot_src`, `_adb_boot_rel`) lifted OUT of the block into
+                two assignments above it, so identity is achievable rather than approximate.
+             2. **A second canonical `ADB-SYMWALK` block** in the two PATH-reachable commands, whose
+                symlink walk carried two further truncation sites of its own.
+             3. **`scripts/check-bootstrap.sh`** pins coverage, identity, spelling and resolution,
+                and its `--mutation` half reverts each site to the superseded spelling one at a time
+                and requires the fixture to go red on that site's own witness.
+- placement: `install.sh`, `uninstall.sh`, `bin/baseline`, `bin/agent-init`,
+             `agents/codex/adapter.sh`, `agents/gemini/adapter.sh`, `scripts/build.sh`;
+             `scripts/check-bootstrap.sh`; two steps in `scripts/selfcheck.sh`; the stale
+             "what this does not cover" notes in `scripts/lib/common.sh` and
+             `scripts/check-install-guard.sh`.
+- reason:    **Fix 2 is not merely awkward, it is unsafe, and the chicken-and-egg is the reason.**
+             The issue's own sketch was "source via the possibly-truncated path, then re-derive with
+             the sentinel and refuse a mismatch loudly". But sourcing IS execution: by the time the
+             re-derivation could refuse, the sibling tree's `common.sh` has already run with the
+             operator's privileges. The check is not late by a little, it is late by the whole
+             attack. A shared primitive can only own this resolution if something lossless has
+             already located it — which is fix 1 wearing a second hat.
+
+             **So the one-home law is honoured by PINNED IDENTITY rather than by reuse**, and that
+             is not a new exemption — it is D30/D31/D35's rule one layer out. Those carve-outs ask
+             *"does this code have to run in order to report that the interpreter is too old"*; this
+             one asks *"does this code have to run in order to FIND the shared library"*. Both
+             answer yes, and both are therefore held by a check instead of by a function. What is
+             new is that the check enforces BYTE-IDENTITY, which the bash-floor preamble's ~999
+             duplicated lines never had — so this duplication cannot drift the way that one did.
+
+             **The issue's evidence list was wrong in two directions, and both were re-verified by
+             probe before acting.** It named the two ADAPTERS as defective sites: they are not.
+             Their capture resolves `…/clone<NL>/agents/<token>`, where the newline is INTERNAL and
+             therefore survives `$(…)` — exactly the correction D64 already recorded for the
+             manifest producer, which #343 did not carry over. And it MISSED `bin/agent-init`,
+             which carries the identical bootstrap, is installed onto PATH, and is defective. The
+             adapters are still given the canonical block, for uniformity and because their
+             correctness was an accident of their depth rather than a property of their spelling;
+             they are held by the coverage/identity/spelling rules, and are SKIPPED with a printed
+             reason by the mutation rule rather than counted as passing a test that cannot fire.
+
+             **`readlink -n` is load-bearing and the plain form cannot be rescued by a sentinel.**
+             Measured on this machine: BSD `readlink` appends a terminating newline only when the
+             value does not already end in one, so a target `a` and a target `a<NL>` both print
+             `a<NL>` and are indistinguishable — no sentinel recovers a byte the tool never emitted.
+             GNU `readlink` appends unconditionally, so `$(…)` strips both. `readlink -n` emits the
+             target raw on both, which is why the walk uses it. D30 bans only the CANONICALIZE
+             family (`-f`/`-e`/`-m`), so `-n` is inside the sub-floor carve-out already.
+
+             **`pwd`, not `pwd -P`.** D59's sentinel is reused; its physical-path POLICY is not.
+             `bin/baseline`'s own header requires logical spelling so the paths match how
+             `install.sh` records its symlink targets, and its wrong-clone guard compares inodes.
+
+             **The fix does not make a newline-named clone WORK — it makes it REFUSABLE.** With the
+             true path restored, `adb_agent_manifest` sees an unrepresentable root and refuses
+             loudly, which is #324's guard finally becoming reachable. Verified: rc 1, one stderr
+             line naming `$'/w/clone\n'`.
+- baseline-issue: n/a
