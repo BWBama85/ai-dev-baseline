@@ -792,7 +792,21 @@ declare -a SLOW=()          # "secs name", for the summary
 # TERM, then grace, then KILL, matching `_adb_bounded_reap`: a bound that only sends TERM is not a
 # backstop, because anything that traps or ignores it survives.
 _cleanup() {
-  local p had=0
+  local p had=0 j
+  # `LIVE` IS NOT THE WHOLE TRUTH, and the gap between it and the truth is where a worker is lost.
+  # A worker is forked by `( … ) &` and recorded by `LIVE["$pid"]=1` on the NEXT statement; a
+  # cancellation landing between the two finds a running worker this loop cannot see, never
+  # signals it, and orphans it — the exact failure `LIVE` exists to prevent, one statement early.
+  # The window widens with CPU starvation, which is why it surfaced on a 3-core runner (#387).
+  #
+  # The shell's own job table has no such gap: bash records the job AT fork. `-r` restricts it to
+  # RUNNING jobs, so a pid bash has already reaped — whose number the kernel may have handed to an
+  # unrelated process — is never resurrected here. That is the same hazard the reaped-pid note in
+  # `run_pool` guards, and `-r` is what keeps this union on the safe side of it.
+  for j in $(jobs -rp 2>/dev/null); do
+    case "$j" in ''|*[!0-9]*) continue ;; esac
+    LIVE["$j"]=1
+  done
   for p in "${!LIVE[@]}"; do
     # `_adb_bounded_signal` (scripts/lib/common.sh, sourced above) IS this rule: guard the pid,
     # signal the GROUP, then the bare pid as the fallback for a worker whose `set -m` did not take.
