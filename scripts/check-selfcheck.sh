@@ -51,8 +51,117 @@ ROOT="$(pwd)"
 # shellcheck source=/dev/null
 . "$ROOT/scripts/check-lib.sh"   # ok/bad/eq/has/hasnt/yes/no + check_summary + check_exit_guard
 
+MODE=full
+case "${1:-}" in
+  "")         ;;
+  --mutation) MODE=mutation ;;
+  *) echo "usage: check-selfcheck.sh [--mutation]" >&2; exit 2 ;;
+esac
+[ "$#" -gt 1 ] && { echo "usage: check-selfcheck.sh [--mutation]" >&2; exit 2; }
+
 work="$(mktemp -d)" || { echo "check-selfcheck: cannot create a scratch dir" >&2; exit 1; }
-check_exit_guard "check-selfcheck" "rm -rf \"$work\""
+
+# cancel_sweep — ask every fixture's stubs to leave, and wait briefly for them to. Runs from the
+# EXIT trap BEFORE `$work` is removed, because removing it first is what makes the leak: the stubs
+# shut down cooperatively through `$ctl/STOP`, and deleting the directory takes that away while
+# they tick out the rest of their 180s backstop. A run interrupted anywhere — ^C, a harness
+# timeout, an assertion aborting a case — otherwise leaves them behind.
+cancel_sweep() {
+  local c deadline
+  for c in "$work"/*/ctl; do [ -d "$c" ] || continue; : > "$c/STOP" 2>/dev/null || :; done
+  deadline=$(( BASH_MONOSECONDS + 5 ))
+  while [ "$BASH_MONOSECONDS" -lt "$deadline" ]; do
+    for c in "$work"/*/ctl; do
+      [ -d "$c" ] || continue
+      [ -n "$(enrolled_alive "$c" 2>/dev/null)" ] && { sleep 0.1; continue 2; }
+    done
+    break
+  done
+  return 0
+}
+check_exit_guard "check-selfcheck" "cancel_sweep; rm -rf \"$work\""
+
+# ====================== --mutation: the CASES must be observed going red ========================
+# WHY THIS IS A MODE AND NOT FOUR MORE ASSERTIONS. A cancellation assertion's failure mode is
+# silence: a run that signalled nothing prints what a run with nothing to signal prints. Asserting
+# that the PREDICATE flips is a weaker claim than it looks — it leaves the assertion itself
+# untested, so deleting the `eq` at the end of a case would go unnoticed by the very rows that
+# claim to cover it. So each row breaks the dispatcher's reaping in ONE way, runs the WHOLE suite
+# against the broken copy, and requires it back at exit 1 carrying THAT CASE'S OWN assertion text.
+#
+# Every row is a single literal edit, which is what lets them ride `check_mutation_pool` rather
+# than a harness of their own: the shared one already encodes the discipline — the edit must
+# APPLY, the child must exit EXACTLY 1, and the failure must be the row's own witness rather than
+# an accidental one somewhere else in the suite.
+#
+# THE SHORTENED DEADLINE IS PAID FOR BY THE CONTROL. These runs lower `ADB_CANCEL_DEADLINE_SECS`,
+# and a deadline too short to let a CORRECT dispatcher finish reaping would redden every row for
+# the wrong reason. The control run below is an UNMUTATED copy at the SAME setting, required to
+# pass — so "the deadline did it" and "the mutation did it" cannot be confused.
+#
+# WHAT IS NOT COVERED, stated rather than implied: the historical defect 10.2 was written for — a
+# serial step run in the FOREGROUND, where a TERM aimed at the runner never reaches it — takes four
+# coordinated edits to restore and is not expressible as one literal. `serial-unreapable` proves
+# the serial case can go red on a defect that reaches it; it does not reproduce that shape.
+if [ "$MODE" = mutation ]; then
+  export ADB_CANCEL_DEADLINE_SECS=8
+
+  # mut_prepare <copy-dir> — a throwaway tree the nested suite can run in, and the path to mutate.
+  # `scripts` alone: that is this suite's whole mutation surface, and copying the repo's contents
+  # (with its ~66MB .git) four times over is the cost check_copy_subtrees exists to avoid.
+  mut_prepare() {
+    local d="$1"
+    check_copy_subtrees "$ROOT" "$d" scripts >/dev/null 2>&1 || return 1
+    printf '%s' "$d/scripts/selfcheck.sh"
+  }
+
+  # mut_run <copy-dir> — the nested suite, guarded by a parse check. A mutation that stops the
+  # runner PARSING has changed whether it runs at all rather than how it reaps: its fixture stages
+  # no workers, and the nested suite would still fail on the right witness, crediting the row for
+  # a defect it never exercised. Returning 9 makes the pool report an ABORT, which is what it was.
+  mut_run() {
+    local d="$1"
+    bash -n "$d/scripts/selfcheck.sh" 2>/dev/null \
+      || { printf 'the mutated selfcheck.sh no longer PARSES\n'; return 9; }
+    bash "$d/scripts/check-selfcheck.sh" 2>&1
+  }
+
+  # THE CONTROL, first. Every row below reads a FAILURE, and a copy that cannot pass at all would
+  # satisfy all four while exercising nothing.
+  mut_ctl="$work/control"
+  if mut_prepare "$mut_ctl" >/dev/null; then
+    mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
+    yes "$mut_rc" "control: an UNMUTATED copy passes at the same deadline the rows use (else every row below is red for the wrong reason)"
+    case "$mut_out" in *"83 passed"*|*" 0 failed"*) ok ;; *) bad "control: the unmutated copy did not report a clean suite" ;; esac
+  else
+    bad "control: could not build the unmutated copy"
+  fi
+
+  # One row per case. The first two share an edit deliberately: "cancellation signals nothing" is
+  # one defect, and BOTH the pool case and the serial case are required to see it.
+  #
+  # `for p in ""` empties the TERM loop, which also leaves `had` at 0 and so skips the KILL loop —
+  # one edit, nothing signalled at all.
+  check_mut "pool-unreapable" \
+    'for p in "${!LIVE[@]}"; do' 'for p in ""; do' \
+    'cancellation terminates the workers instead of orphaning them'
+  check_mut "serial-unreapable" \
+    'for p in "${!LIVE[@]}"; do' 'for p in ""; do' \
+    'cancelling --serial terminates the running step instead of leaving it behind'
+  # TERM survives; only the escalation goes. Every polite stub dies on the first TERM, so this is
+  # invisible to the other three cases and visible to the deaf one — which is why that case exists.
+  check_mut "no-kill-escalation" \
+    '_adb_bounded_signal KILL "$p"' ':' \
+    'the TERM -> grace -> KILL escalation stops a worker that ignores TERM'
+  # The fix itself, removed: `_cleanup` is back to reaping only what `LIVE` happens to hold.
+  check_mut "live-only-reaping" \
+    'LIVE["$j"]=1' ':' \
+    'a worker forked but not yet recorded in LIVE is still reaped'
+
+  check_mutation_pool "selfcheck-guard" "$work" mut_prepare mut_run 4
+  check_summary "selfcheck-guard-mutation"
+  exit 0
+fi
 
 # ============================== the fixture =====================================================
 # A minimal tree the REAL selfcheck.sh can run in: itself, the library it sources for the floor
@@ -464,21 +573,17 @@ RACE_SED='s#^      ( export GIT_OPTIONAL_LOCKS=0; run_step "\$name" ) >"\$out" 2
 # own traps a cancelled run kills the parent and leaves up to $JOBS check suites running
 # unattended.
 #
-# WHAT "STOPPED" MEANS HERE, and why it is not a heartbeat. These cases used to infer death from
-# two consecutive reads of the stubs' heartbeat files agreeing 0.5s apart, inside a 6s ceiling —
-# a sampled proxy, over EVERY heartbeat file in the control directory. Both halves were defects
-# (#387): the ceiling turned a slow runner's answer into a verdict, and the global read let ONE
-# surviving worker fail all three cases, which is exactly the byte-identical 3-for-3 signature the
-# macOS leg reported. A worker's death is observable directly, so it is observed directly: each
-# stub enrols its own pid, and a case waits for ITS OWN enrolled pids to be gone, to a deadline
-# it states.
+# WHAT "STOPPED" MEANS HERE, and why it is not a heartbeat. Death is directly observable, so it is
+# directly observed: each stub enrols its own pid, and a case waits for ITS OWN enrolled pids to be
+# gone. The predicate this replaced sampled heartbeat FILES, and read every one in the control
+# directory, so a single surviving worker failed all three cases at once (#387; D84 carries the
+# measurements and the diagnosis).
 #
-# THE DEADLINE IS NOT WHAT MAKES THESE PASS, and believing otherwise is how the ceiling got set to
-# 6s. Measured on the maintainer's machine at 50ms resolution: a registered worker is ALREADY DEAD
-# when the runner exits — the escalation is synchronous inside the TERM trap and ends in SIGKILL,
-# which nothing survives. So a case that runs out of deadline has not caught a slow machine; it has
-# caught a worker the runner never signalled. The deadline is generous so that a loaded runner is
-# never MISREAD as that, and for no other reason.
+# THE DEADLINE IS A GUARD AGAINST MISREADING A LOADED MACHINE, not the thing that makes a case
+# pass. A registered worker is reaped inside the runner's TERM trap, synchronously, ending in a
+# SIGKILL nothing survives — so the healthy answer arrives in about a second and a long deadline
+# costs a passing run nothing. What it buys is that a runner slow to even PROCESS the signal is
+# waited for rather than reported as an orphan.
 #
 # CANCEL ONLY ONCE THE SET IS CLOSED. A case that cancels while dispatch is still in flight is
 # asking its question of a set that is still growing, and "every enrolled pid is gone" is then a
@@ -492,8 +597,7 @@ RACE_SED='s#^      ( export GIT_OPTIONAL_LOCKS=0; run_step "\$name" ) >"\$out" 2
 # short one, because a worker that was never signalled is alive IMMEDIATELY and stays that way —
 # waiting 30s to be told so would buy nothing and cost it on a required check. It must still
 # exceed that 1s grace, or a mutation would "observe survival" during legitimate escalation.
-CANCEL_DEADLINE=30
-CANCEL_MUT_DEADLINE=5
+CANCEL_DEADLINE="${ADB_CANCEL_DEADLINE_SECS:-30}"
 
 # stub_state <pid> <pgid> — "alive" | "dead" | "gone". Follows check-common-lib.sh's `gc_alive`:
 # `kill -0` alone reports a ZOMBIE as alive, and a zombie is a worker that HAS stopped. The pgid is
@@ -527,8 +631,12 @@ enrolled_alive() {
     n="${f##*/}"; n="${n%.pid}"
     p=""; pg=""
     read -r p pg < "$f" 2>/dev/null || :
-    case "$p" in ''|*[!0-9]*) out="$out $n:?:?:unreadable"; continue ;; esac
-    st="$(stub_state "$p" "${pg:-}")"
+    # BOTH fields, or the enrolment is not readable. A pid without its pgid still identifies a
+    # process, but not OUR process: it is the pgid that tells a recycled number from the worker,
+    # and accepting a half-written line would drop that check silently rather than loudly.
+    case "$p$pg" in *[!0-9]*) out="$out $n:${p:-?}:${pg:-?}:unreadable"; continue ;; esac
+    [ -n "$p" ] && [ -n "$pg" ] || { out="$out $n:${p:-?}:${pg:-?}:unreadable"; continue ; }
+    st="$(stub_state "$p" "$pg")"
     [ "$st" = alive ] && out="$out $n:$p:${pg:-?}:$st"
   done
   printf '%s' "${out# }"
@@ -541,8 +649,9 @@ enrolled_count() {
   local ctl="$1" f p c=0
   for f in "$ctl"/*.pid; do
     [ -e "$f" ] || continue
-    p=""; read -r p _ < "$f" 2>/dev/null || :
-    case "$p" in ''|*[!0-9]*) continue ;; esac
+    p=""; pg=""; read -r p pg < "$f" 2>/dev/null || :
+    case "$p$pg" in *[!0-9]*) continue ;; esac
+    [ -n "$p" ] && [ -n "$pg" ] || continue
     c=$((c + 1))
   done
   printf '%s' "$c"
@@ -553,7 +662,9 @@ enrolled_count() {
 # pid means signalling a number the kernel may have recycled. Prints what refused to go, if any.
 stop_stubs() {
   local ctl="$1" deadline stragglers=""
-  : > "$ctl/STOP" 2>/dev/null || return 0
+  # A STOP that could not be WRITTEN is not a quiet shutdown, it is a shutdown that never happened.
+  # Reporting it as no stragglers would hide exactly the workers the caller is asking about.
+  : > "$ctl/STOP" 2>/dev/null || { printf 'STOP-unwritable'; return 0; }
   deadline=$(( BASH_MONOSECONDS + 15 ))
   while [ "$BASH_MONOSECONDS" -lt "$deadline" ]; do
     stragglers="$(enrolled_alive "$ctl")"
@@ -639,11 +750,10 @@ cancel_case() {
   return 0
 }
 
-# mut_parses <fixture> <label> — the control every mutation row owes. A mutation is supposed to
-# change what the runner DOES; one that stops it parsing changes whether it runs at all, and a
-# runner that dies on a syntax error stages no workers, survives nothing, and would sail through an
-# assertion that only asks whether a worker was left behind. This is not hypothetical: deleting the
-# KILL line outright left `for p in …; do done` and did exactly that.
+# mut_parses <fixture> <label> — the control an INJECTED fixture owes. 10.4 edits its copy of the
+# runner to hold the dispatch window open; an edit that stops it parsing changes whether the runner
+# runs at all rather than when it is cancelled, and stages no workers. `--mutation` owes the same
+# check for the same reason, and takes it in `mut_run`.
 mut_parses() {
   local fx="$1" label="$2" f rc=0
   for f in "$fx/scripts/selfcheck.sh" "$fx/scripts/lib/common.sh"; do
@@ -716,94 +826,11 @@ if mutate_line "$FXRACE/scripts/selfcheck.sh" \
     "a worker forked but not yet recorded in LIVE is still reaped ($CANCEL_DIAG)"
 fi
 
-# --- 10.5 MUTATIONS: each case observed failing on a deliberately broken dispatcher ------------
-# A cancellation assertion's failure mode is silence — a run that signalled nothing looks exactly
-# like a run that had nothing to signal — so each case above is required to come back the OTHER way
-# against a runner whose reaping is broken in the one way that case exists to catch. Every edit
-# goes through check-lib.sh's `check_mutate_line`, which fails loud when it matches nothing: a
-# mutation that silently did not apply would prove the opposite of what it claims.
-#
-# The mutations use the SHORT deadline. A worker nothing signalled is alive at once and stays
-# alive, so the long one would only make a required check slower — but it still has to clear the
-# runner's own 1s TERM->KILL grace, or a mutation would "observe survival" mid-escalation.
-
-# 10.5a — a cancellation that signals NOTHING. Both calls, because the escalation has two: silencing
-# only the TERM leaves the KILL a second later still reaping every worker, and the mutation would
-# then be green while claiming to strand them.
-#
-# NOT the mutation this row was first written as. "Signal the pid, never the group" was the obvious
-# choice — it is the defect `_adb_bounded_signal`'s group form exists to prevent — and it does not
-# work as a mutation here, because it is not observable: MEASURED on macOS, killing the worker
-# subshell takes the `bash check-<x>.sh` it was waiting on down with it, so the pool case stays
-# green with group delivery removed and the row would have proved the opposite of what it claimed.
-# The group form is still right, and this suite is simply not what demonstrates it.
-FXM="$work/fx-mut-silent"
-mkfx "$FXM" || bad "10.5a: could not build the fixture"
-mutated=1
-mutate_line "$FXM/scripts/selfcheck.sh" '    _adb_bounded_signal TERM "$p"' \
-  's|^    _adb_bounded_signal TERM "\$p"$|    :|' "10.5a" || mutated=0
-mutate_line "$FXM/scripts/selfcheck.sh" \
-  '      _adb_bounded_signal KILL "$p"      # guards the pid itself; see the TERM loop' \
-  's|^      _adb_bounded_signal KILL "\$p"      # guards the pid itself; see the TERM loop$|      :|' \
-  "10.5a" || mutated=0
-if [ "$mutated" -eq 1 ] && mut_parses "$FXM" "10.5a"; then
-  arm_cancel "$FXM"
-  cancel_case "$FXM" "mut silent" 4 "$CANCEL_MUT_DEADLINE" --jobs 4
-  eq "$CANCEL_TERMINATED" "0" \
-    "MUTATION 10.5a (cancellation signals nothing): the pool case must report a surviving worker ($CANCEL_DIAG)"
-fi
-
-# 10.5b — return `run_serial` to the foreground shape that predates its backgrounding. Four edits,
-# because that is what restoring it takes. The runner then cannot even process the TERM until its
-# step returns — bash defers a trapped signal under a foreground child — which is the defect, and
-# is why `cancel_case` polls the workers before it reaps the runner.
-FXM="$work/fx-mut-serial"
-mkfx "$FXM" || bad "10.5b: could not build the fixture"
-mutated=1
-mutate_line "$FXM/scripts/selfcheck.sh" '    run_step "$name" &' \
-  's#^    run_step "\$name" &$#    run_step "$name" || rc=$?#' "10.5b" || mutated=0
-mutate_line "$FXM/scripts/selfcheck.sh" '    pid=$!' 's#^    pid=\$!$#    pid=0#' "10.5b" || mutated=0
-mutate_line "$FXM/scripts/selfcheck.sh" '    LIVE["$pid"]=1' 's#^    LIVE\["\$pid"\]=1$#    :#' "10.5b" || mutated=0
-mutate_line "$FXM/scripts/selfcheck.sh" '    wait "$pid" || rc=$?' 's#^    wait "\$pid" || rc=\$?$#    :#' "10.5b" || mutated=0
-if [ "$mutated" -eq 1 ] && mut_parses "$FXM" "10.5b"; then
-  arm_cancel "$FXM"
-  cancel_case "$FXM" "mut serial" 1 "$CANCEL_MUT_DEADLINE" --serial
-  eq "$CANCEL_TERMINATED" "0" \
-    "MUTATION 10.5b (serial step in the foreground): the --serial case must report a surviving worker ($CANCEL_DIAG)"
-fi
-
-# 10.5c — delete the KILL half of the escalation. Only the deaf case can see this: every polite
-# stub dies on the first TERM, so the other three stay green with the whole loop removed.
-FXM="$work/fx-mut-kill"
-mkfx "$FXM" || bad "10.5c: could not build the fixture"
-if mutate_line "$FXM/scripts/selfcheck.sh" \
-     '      _adb_bounded_signal KILL "$p"      # guards the pid itself; see the TERM loop' \
-     's|^      _adb_bounded_signal KILL "\$p"      # guards the pid itself; see the TERM loop$|      :|' \
-     "10.5c" && mut_parses "$FXM" "10.5c"; then
-  arm_cancel "$FXM" deaf
-  cancel_case "$FXM" "mut kill" 4 "$CANCEL_MUT_DEADLINE" --jobs 4
-  eq "$CANCEL_TERMINATED" "0" \
-    "MUTATION 10.5c (no KILL escalation): the TERM-ignoring case must report a surviving worker ($CANCEL_DIAG)"
-fi
-
-# 10.5d — reopen the window 10.4 covers, behind the same dispatch gate. This is the row that proves
-# the FIX rather than the case: with the job-table union removed, `_cleanup` is back to reaping only
-# what `LIVE` happens to hold, and holds nothing at all this early.
-FXM="$work/fx-mut-race"
-mkfx "$FXM" || bad "10.5d: could not build the fixture"
-mutated=1
-mutate_line "$FXM/scripts/selfcheck.sh" \
-  '      ( export GIT_OPTIONAL_LOCKS=0; run_step "$name" ) >"$out" 2>&1 &' \
-  "$RACE_SED" "10.5d" || mutated=0
-mutate_line "$FXM/scripts/selfcheck.sh" '    LIVE["$j"]=1' 's#^    LIVE\["\$j"\]=1$#    :#' "10.5d" || mutated=0
-if [ "$mutated" -eq 1 ] && mut_parses "$FXM" "10.5d"; then
-  arm_cancel "$FXM"
-  : > "$FXM/ctl/HOLD"
-  cancel_case "$FXM" "mut race" 1 "$CANCEL_MUT_DEADLINE" --jobs 4
-  rm -f "$FXM/ctl/HOLD"
-  eq "$CANCEL_TERMINATED" "0" \
-    "MUTATION 10.5d (LIVE-only reaping): the mid-dispatch case must report a surviving worker ($CANCEL_DIAG)"
-fi
+# --- the negative half lives in `--mutation` --------------------------------------------------
+# Each case above is required to come back RED against a dispatcher broken in the one way that
+# case exists to catch. That proof runs the WHOLE suite against a mutated copy and reads its exit
+# status and its FAIL line, which cannot be done from inside this run — see the `--mutation` block
+# near the top, and `selfcheck-guard-mutation` in the registry.
 
 # ============================== 11. NUL bytes survive =========================================
 # The runner buffers to a FILE rather than a variable precisely so binary-ish output survives —

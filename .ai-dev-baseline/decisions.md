@@ -6735,7 +6735,7 @@ limit: none of them is sufficient alone.
                  construction.
              (5) THE SCOPE OVERRIDE IS THE OWNER'S, and it is recorded because the PR contradicts
                  the issue in writing. Asked with the measurements above, the owner chose "fix the
-                 cause AND do all four acceptance items" over the issue's test-only scope. Shipping
+                 cause AND do the issue's three acceptance criteria" over its test-only scope. Shipping
                  the acceptance items alone would have removed the 3x amplification and left the
                  flake: the case would still have gone red, correctly, whenever the race hit.
              (6) TWO FALSE GREENS WERE FOUND IN THE FIX ITSELF, by running it. Deleting the KILL
@@ -6758,3 +6758,26 @@ limit: none of them is sufficient alone.
              rather than in the code (`code-comments.md` class 2); what stays at the call site is
              the one-line constraint and the citation.
 - baseline-issue: n/a
+             (8) THE NEGATIVE HALF IS A SEPARATE MODE, because the first attempt at it was the
+                 weaker claim. Rows that assert the PREDICATE flips leave the assertion itself
+                 untested: deleting a case's `eq` would not have reddened any of them, so the
+                 comment "each case observed failing" was false as written. `--mutation` now runs
+                 the WHOLE suite against a copy of `selfcheck.sh` whose reaping is broken one way,
+                 through the shared `check_mutation_pool`, and requires exit 1 carrying THAT CASE'S
+                 OWN assertion text — observed rejecting a row that goes red on anything else
+                 ("caught by accident, not by the assertion that claims to cover it").
+                 Its rows are single literal edits because that is what the shared harness takes,
+                 and one consequence is stated rather than hidden: the FOREGROUND serial shape 10.2
+                 was written for needs four coordinated edits and is not expressible as one, so
+                 `serial-unreapable` proves that case can fire without reproducing that shape.
+                 The rows run at a SHORTENED deadline and an unmutated CONTROL runs at the same
+                 setting, so "the deadline reddened it" and "the mutation reddened it" cannot be
+                 confused — observed failing at a 1s deadline, below the runner's own 1s grace,
+                 with all four rows still red.
+- review:    Independent review (codex, medium) returned 12 REQUIRED findings against the first
+             implementation. The load-bearing one is (8). The rest: the `run_pool` comment still
+             said the fork/registration window "cannot be closed" after this diff closed it; the
+             `-r` claim that a reaped pid is "never resurrected" overstated a snapshot; a section
+             header repeated the disproven ceiling premise; an interrupted run could leave stubs
+             ticking for 180s because the EXIT guard removed `$work` — and with it the cooperative
+             STOP path — rather than using it first.
