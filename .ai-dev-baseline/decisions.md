@@ -6695,3 +6695,89 @@ limit: none of them is sufficient alone.
              three consecutive firings, each quoting the draft BEFORE the one then on screen — 447
              quotes 435, 452 quotes 442, 457 quotes 451.
 - baseline-issue: n/a
+
+## D84 — the cancellation flake was a real orphan, not a slow assertion, and #387's own out-of-scope line rested on the premise that disproved
+
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   #387 reported `check-selfcheck.sh`'s three cancellation assertions failing on
+             `macos-latest`, byte-identically, on diffs that touch neither the dispatcher nor the
+             suite — and, in a follow-up, on `main`'s own tip, where a red `selfcheck-macos`
+             blocks every PR branched from it. It classified the cause as timing ("the
+             TERM -> grace -> KILL sequence legitimately takes longer than the window") and put
+             ANY dispatcher change out of scope on that basis.
+- decision:  (1) THE PREMISE IS FALSE, AND IT WAS MEASURED. Instrumented at 50ms resolution on the
+                 maintainer's machine, the time between `wait "$runner"` returning and the last
+                 heartbeat write is **0.000s** in all three cases: the escalation is synchronous
+                 inside the TERM trap and ends in SIGKILL, which nothing survives. A registered
+                 worker is therefore ALREADY DEAD when the runner exits, and no ceiling — 6s or
+                 600s — can be the thing that separates a pass from a fail. A case that runs out
+                 of deadline has not caught a slow machine; it has caught a worker the runner
+                 NEVER SIGNALLED.
+             (2) THE DEFECT IS IN THE DISPATCHER, one statement wide. `run_pool` forks a worker
+                 with `( … ) &` and records it in `LIVE` on the NEXT statement; `_cleanup` reaps
+                 `LIVE`. A cancellation landing between the two orphans that worker. `run_pool`'s
+                 own comment named the window and called it unclosable in shell ("there is no way
+                 to fork and record atomically") — which is true of `LIVE` and false of the shell's
+                 JOB TABLE, which bash updates at fork. `_cleanup` now unions `jobs -rp` into
+                 `LIVE`. `-r`, because a pid bash has already reaped may since have been recycled,
+                 and resurrecting it is the hazard `run_pool`'s reaped-pid note guards; a probe
+                 confirmed `jobs -rp` excludes a Done job and sees an unregistered running one.
+             (3) PROVED BOTH WAYS, not argued. Injecting a 1.5s deschedule at exactly that point
+                 reproduces all three FAIL lines byte-identically to the CI logs; adding the union
+                 turns all three green with the injection still in place. That injection is now a
+                 shipped case (10.4) using a `HOLD` file rather than a sleep, so the cancellation
+                 is GUARANTEED to arrive before the registration instead of likely to.
+             (4) ONE SURVIVOR FAILED ALL THREE CASES, which is why the signature was 3-for-3. The
+                 old predicate `cat`-ed EVERY `*.beat` file in a control directory that `reset_ctl`
+                 only recreates, so a worker orphaned in case 1 kept writing into cases 2 and 3.
+                 Each case now waits on ITS OWN enrolled pids, so the cascade is gone by
+                 construction.
+             (5) THE SCOPE OVERRIDE IS THE OWNER'S, and it is recorded because the PR contradicts
+                 the issue in writing. Asked with the measurements above, the owner chose "fix the
+                 cause AND do the issue's three acceptance criteria" over its test-only scope. Shipping
+                 the acceptance items alone would have removed the 3x amplification and left the
+                 flake: the case would still have gone red, correctly, whenever the race hit.
+             (6) TWO FALSE GREENS WERE FOUND IN THE FIX ITSELF, by running it. Deleting the KILL
+                 line to make the deaf-worker mutation left `for p in …; do done` — a SYNTAX
+                 error — so the fixture never ran, staged no workers, and the "did anything
+                 survive?" assertion read `0` and passed. `mut_parses` now `bash -n`s every mutated
+                 fixture, and "never staged" is its own answer (`unstaged`) that fails against both
+                 `0` and `1` rather than spelling either. Separately, `> "$ctl/$name.pid"`
+                 truncates before it writes, so an enrolment is briefly an EMPTY file; skipping it
+                 would let a case conclude every worker had stopped about one whose pid it had not
+                 read yet. It now counts as present.
+             (7) `BASH_MONOSECONDS` IS SECONDS. Adopted from the gap-analysis pass and written as
+                 if it were milliseconds, which made every deadline 1000x too long — a 60-SECOND
+                 enrolment wait became 16 hours, and the suite looked hung. Probed, not recalled:
+                 `a=$BASH_MONOSECONDS; sleep 1; b=$BASH_MONOSECONDS` gives delta 1.
+- placement: `scripts/selfcheck.sh` (`_cleanup`), `scripts/check-selfcheck.sh` (section 10)
+- reason:    The measurements are the reason the fix is where it is, and none of them is derivable
+             from the diff — a later reader seeing `jobs -rp` in a cleanup path has no way to know
+             the alternative was tried, measured at 0.000s, and rejected. The incident belongs here
+             rather than in the code (`code-comments.md` class 2); what stays at the call site is
+             the one-line constraint and the citation.
+- baseline-issue: n/a
+             (8) THE NEGATIVE HALF IS A SEPARATE MODE, because the first attempt at it was the
+                 weaker claim. Rows that assert the PREDICATE flips leave the assertion itself
+                 untested: deleting a case's `eq` would not have reddened any of them, so the
+                 comment "each case observed failing" was false as written. `--mutation` now runs
+                 the WHOLE suite against a copy of `selfcheck.sh` whose reaping is broken one way,
+                 through the shared `check_mutation_pool`, and requires exit 1 carrying THAT CASE'S
+                 OWN assertion text — observed rejecting a row that goes red on anything else
+                 ("caught by accident, not by the assertion that claims to cover it").
+                 Its rows are single literal edits because that is what the shared harness takes,
+                 and one consequence is stated rather than hidden: the FOREGROUND serial shape 10.2
+                 was written for needs four coordinated edits and is not expressible as one, so
+                 `serial-unreapable` proves that case can fire without reproducing that shape.
+                 The rows run at a SHORTENED deadline and an unmutated CONTROL runs at the same
+                 setting, so "the deadline reddened it" and "the mutation reddened it" cannot be
+                 confused — observed failing at a 1s deadline, below the runner's own 1s grace,
+                 with all four rows still red.
+- review:    Independent review (codex, medium) returned 12 REQUIRED findings against the first
+             implementation. The load-bearing one is (8). The rest: the `run_pool` comment still
+             said the fork/registration window "cannot be closed" after this diff closed it; the
+             `-r` claim that a reaped pid is "never resurrected" overstated a snapshot; a section
+             header repeated the disproven ceiling premise; an interrupted run could leave stubs
+             ticking for 180s because the EXIT guard removed `$work` — and with it the cooperative
+             STOP path — rather than using it first.

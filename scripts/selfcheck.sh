@@ -679,6 +679,13 @@ add release-skill       bash scripts/check-release-skill.sh
 # tracked file.
 add selfcheck-guard     bash scripts/check-selfcheck.sh
 
+# ...and the cancellation cases owe the harder half of that, which cannot be paid from inside the
+# same run: each one is required to come back RED against a copy of THIS file whose reaping is
+# broken in the one way that case exists to catch. Every row runs the whole suite against its
+# mutated copy and reads its exit status and its FAIL line, so a case whose assertion was deleted
+# fails here instead of quietly covering nothing (#387).
+add selfcheck-guard-mutation bash scripts/check-selfcheck.sh --mutation
+
 add install-dry-run     step_install_dry_run
 
 # ======================================== the runner ===========================================
@@ -792,7 +799,23 @@ declare -a SLOW=()          # "secs name", for the summary
 # TERM, then grace, then KILL, matching `_adb_bounded_reap`: a bound that only sends TERM is not a
 # backstop, because anything that traps or ignores it survives.
 _cleanup() {
-  local p had=0
+  local p had=0 j
+  # `LIVE` IS NOT THE WHOLE TRUTH, and the gap between it and the truth is where a worker is lost.
+  # A worker is forked by `( … ) &` and recorded by `LIVE["$pid"]=1` on the NEXT statement; a
+  # cancellation landing between the two finds a running worker this loop cannot see, never
+  # signals it, and orphans it — the exact failure `LIVE` exists to prevent, one statement early.
+  # The window widens with CPU starvation, which is why it surfaced on a 3-core runner (#387).
+  #
+  # The shell's own job table has no such gap: bash records the job AT fork. `-r` restricts it to
+  # RUNNING jobs, so a pid bash has ALREADY reaped — whose number the kernel may since have handed
+  # to an unrelated process — is not listed. That NARROWS the reaped-pid hazard `run_pool`'s own
+  # note describes; it does not abolish it, because this is a snapshot: a job may exit and be
+  # reaped between the enumeration here and the signal below. That residue is the one `LIVE`
+  # already carries, and reading a fresher source does not widen it.
+  for j in $(jobs -rp 2>/dev/null); do
+    case "$j" in ''|*[!0-9]*) continue ;; esac
+    LIVE["$j"]=1
+  done
   for p in "${!LIVE[@]}"; do
     # `_adb_bounded_signal` (scripts/lib/common.sh, sourced above) IS this rule: guard the pid,
     # signal the GROUP, then the bare pid as the fallback for a worker whose `set -m` did not take.
@@ -928,9 +951,10 @@ run_pool() {   # names...
     # DROP IT FROM `LIVE` FIRST, before anything that can be interrupted. This pid has been reaped,
     # so the kernel may hand the number to an unrelated process; a signal arriving while it was
     # still listed would have `_cleanup` TERM a pid — and a process GROUP — that is no longer ours.
-    # (The mirror-image window, between `&` and the assignment below, cannot be closed in shell:
-    # there is no way to fork and record atomically. It is one statement wide and is stated here
-    # rather than papered over.)
+    # (The mirror-image window, between `&` and the assignment below, is real and CANNOT be closed
+    # in `LIVE` — there is no way to fork and record atomically. It is closed in `_cleanup`
+    # instead, from the shell's own job table, which bash populates at fork; see its header. That
+    # window orphaned a worker on a loaded runner for as long as it went uncovered, #387.)
     unset "LIVE[$pid]"
     running=$(( running - 1 ))
     name="${pid_name[$pid]}"; out="${pid_out[$pid]}"
