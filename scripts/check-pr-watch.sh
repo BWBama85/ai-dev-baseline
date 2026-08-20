@@ -85,13 +85,13 @@ PW="$ROOT/scripts/lib/pr-watch.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
+[ "$#" -gt 1 ] && { echo "usage: check-pr-watch.sh [--mutation]" >&2; exit 2; }
 MODE=full
 case "${1:-}" in
   "")         ;;
   --mutation) MODE=mutation ;;
   *)          echo "usage: check-pr-watch.sh [--mutation]" >&2; exit 2 ;;
 esac
-[ "$#" -gt 1 ] && { echo "usage: check-pr-watch.sh [--mutation]" >&2; exit 2; }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -402,9 +402,10 @@ check_pr_graphql_assembler "$S/assemble.jq"
 
 reset_fx() {
   rm -f "$S/reviews2.json" "$S/reactions2.json" "$S/comments2.json" "$S/polls" "$S/slept" "$S/calls"
-  # The slow-poll injection (#394) is per-scenario and MUST be swept: left behind, it would tax the
-  # first poll of every case that follows — and one of those is the bound case, which it would then
-  # break for exactly the reason this reset exists to prevent.
+  # The slow-poll injection (#394) is per-scenario and MUST be swept: left behind it would tax the
+  # first poll of every scenario that follows, and the one place it is set is the LAST case in
+  # section 11 — so a missing sweep is invisible there and shows up as unexplained seconds
+  # somewhere else entirely.
   rm -f "$S"/slow-[0-9]*
   rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json \
         "$S"/comments.[0-9]*.json "$S"/activity.[0-9]*.json
@@ -1181,25 +1182,35 @@ w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 12 "wait: stops as 
 # backstop, and the poll count is asserted so a re-tightened bound cannot quietly become the oracle
 # again. rc 12 IS the staleness claim rather than a weaker stand-in for rc 11: a `+1` wrongly
 # honoured for the new head returns 0 at poll 2 and never reaches poll 3 at all.
-reset_fx; declare_bots "[\"$CODEX\"]"
-pr_poll_fx 1 --sha "$OLD_SHA"
-pr_poll_fx 2
-pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
-# BOTH heads are dated, so "the previous head's era" is something the fixture STATES rather than
-# something this comment claims: bbbb arrives at 04:40, aaaa at 04:45, and the `+1` lands at 04:42
-# — after the head it belongs to, before the head it must not satisfy.
-activity_fx "$OLD_SHA"  "refs/heads/$HEAD_REF" "$BEFORE_AT" \
-            "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"
-# THE `+1` ARRIVES ON POLL 2, and it has to. With one declared reviewer a `+1` that is genuinely
-# fresh for the old head classifies `clean` on poll 1 and returns 0 there, so the watch could never
-# observe the move at all — which is why the fixture this case used to carry anchored only the NEW
-# head and left poll 1 pending for want of an anchor, testing the staleness rule nowhere.
-_reactions_into "$S/reactions.1.json"      # poll 1: nobody has said anything yet
-reaction_fx "$CODEX" "+1" "$ARRIVED_AT"    # polls 2+
+# ONE BUILDER FOR BOTH SCENARIOS BELOW, because they must stay the SAME scenario: the second is the
+# first with latency injected, and an edit that reached only one of them would leave the injected
+# run quietly testing something else while still reporting a pass.
+head_move_fx() {
+  reset_fx; declare_bots "[\"$CODEX\"]"
+  pr_poll_fx 1 --sha "$OLD_SHA"
+  pr_poll_fx 2
+  pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
+  # BOTH heads are dated, so "the previous head's era" is something the fixture STATES rather than
+  # something a comment claims: bbbb arrives at 04:40, aaaa at 04:45, and the `+1` lands at 04:42 —
+  # after the head it belongs to, before the head it must not satisfy. Only aaaa's record is READ
+  # (the anchor is fetched for the head being judged, and poll 1 carries no dated signal to judge);
+  # bbbb's is here so the era is legible, and so an edit that does put a signal on poll 1 finds the
+  # anchor it would then need instead of a pending verdict with no anchor behind it.
+  activity_fx "$OLD_SHA"  "refs/heads/$HEAD_REF" "$BEFORE_AT" \
+              "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"
+  # THE `+1` ARRIVES ON POLL 2, and it has to. With one declared reviewer a `+1` that is genuinely
+  # fresh for the old head classifies `clean` on poll 1 and returns 0 there, so the watch could
+  # never observe the move at all — which is why the fixture this case used to carry anchored only
+  # the NEW head and left poll 1 pending for want of an anchor, testing the staleness rule nowhere.
+  _reactions_into "$S/reactions.1.json"      # poll 1: nobody has said anything yet
+  reaction_fx "$CODEX" "+1" "$ARRIVED_AT"    # polls 2+
+}
+
+head_move_fx
 w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 12 "wait: a signal from the PREVIOUS head's era does not satisfy the new one"
 has "$OUT" "head moved $OLD_SHA -> $HEAD_SHA" "wait: reports that the head moved under it"
 has "$OUT" "predates this head's arrival" "wait: says WHY the previous era's signal does not count"
-eq "$(cat "$S/polls")" "3" "wait: ended on the fixture's terminal poll, not on its deadline"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "wait: ended on the fixture's terminal poll, not on its deadline"
 
 # THE SAME CASE, WITH THE FAILURE INJECTED (#394's first acceptance criterion). A first poll costing
 # more than the retired 3s bound is exactly the condition a loaded runner produced, and it is the
@@ -1210,18 +1221,11 @@ eq "$(cat "$S/polls")" "3" "wait: ended on the fixture's terminal poll, not on i
 #
 # 4 SECONDS, ONCE. It is a real nap, so it is a real cost; it is spent on the one scenario whose
 # recorded defect was a slow first poll, and nowhere else.
-reset_fx; declare_bots "[\"$CODEX\"]"
-pr_poll_fx 1 --sha "$OLD_SHA"
-pr_poll_fx 2
-pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
-activity_fx "$OLD_SHA"  "refs/heads/$HEAD_REF" "$BEFORE_AT" \
-            "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"
-_reactions_into "$S/reactions.1.json"
-reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+head_move_fx
 printf '4' > "$S/slow-1"
 w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 12 "wait: a first poll outliving the retired bound no longer ends the watch"
 has "$OUT" "head moved $OLD_SHA -> $HEAD_SHA" "wait: still reports the head move when the first poll is slow"
-eq "$(cat "$S/polls")" "3" "wait: a slow first poll costs latency, not polls"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "wait: a slow first poll costs latency, not polls"
 
 # ============ 11b. THE DEADLINE'S CLOCK IS NOT THE ENVIRONMENT'S TO SET (#258) ============
 # Every deadline assertion above passes on either clock source, which is exactly why they cannot
