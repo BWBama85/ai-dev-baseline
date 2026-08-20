@@ -6845,9 +6845,10 @@ limit: none of them is sufficient alone.
                  ZERO passed the whole suite 240/0. A clamped nap is `min(interval, remaining)`, so
                  the scenario now runs at TWO bounds and requires the nap to track them; no constant
                  can. The mutation the reviewer used is a shipped row (`nap-constant`).
-             (9) SIX MUTATIONS, EACH OBSERVED RED ON ITS OWN WITNESS, shipped as
+             (9) SEVEN MUTATIONS, EACH OBSERVED RED ON ITS OWN WITNESS, shipped as
                  `check-pr-watch.sh --mutation` on #387's precedent: the head-move report reworded,
-                 the nap clamp deleted, the deadline pinned below what a slow poll costs, the
+                 the nap clamp deleted, the nap made a constant, the nap made the ORIGINAL bound
+                 rather than what remains, the deadline pinned below what a slow poll costs, the
                  staleness comparison stripped of the backslash `common.sh` warns about, and its
                  diagnostic reworded. The last needs the longer literal `at $val predates this head`
                  — the short phrase also appears in the comment above the echo, and a row that edits
@@ -6858,6 +6859,31 @@ limit: none of them is sufficient alone.
                  `_check_mut_witness` asks only whether SOME `FAIL:` line carries the witness, so a
                  baseline already failing on it credits the row for a defect the mutation never
                  caused — and `--mutation` is runnable standalone, where no sibling step is watching.
+             (12) THE SECOND REVIEW ROUND FOUND TWO MORE REAL ONES, and both are the same shape as
+                 the first: an assertion that could not tell two values apart. (a) The clamp
+                 assertions ran inside `$( … )`, so every `rc`/`eq`/`bad` in `clamp_nap` counted into
+                 a DISCARDED subshell copy of `pass`/`fail` while `bad`'s text still reached stderr —
+                 the suite could PRINT `FAIL:` and exit 0, measured at "238 passed, 0 failed" over two
+                 FAIL lines. It sets a global now, so the call cannot be a command substitution. Fixing
+                 it revealed the size of the hole: the suite went 238 -> 242 assertions. (b) The
+                 ceiling compared the nap against `--max-secs` itself, so a watcher napping the
+                 ORIGINAL bound — oversleeping the deadline by whatever poll 1 cost — passed 242/0.
+                 `remaining` and the bound are only distinguishable once poll 1 has cost something
+                 MEASURABLE, so that scenario now forces 2s into it and the ceiling is
+                 `bound - 2`. Load can only lower `remaining` further, so the assertion cannot flake.
+             (13) ONE REVIEW FINDING WAS REFUTED BY MEASUREMENT, and adopted anyway. It held that
+                 `mut_run`'s bare `bash` would resolve /bin/bash 3.2 on a macOS box whose PATH lacks
+                 the Homebrew prefix, and that 3.2 would REJECT the copied suite while parsing,
+                 aborting every row. Neither half held: `/bin/bash -n` accepts the file, and running
+                 the real suite under `PATH=/usr/bin:/bin` passes 242/0 because `adb_require_bash`
+                 re-execs exactly as designed. The change to `"$BASH"` shipped regardless — parse-
+                 checking a 5.3 file with 3.2 asks the wrong question, and a re-exec per nested run
+                 is waste — but the decision log records what was measured, not what was claimed.
+             (14) THE POOL-STEP CLAIM WAS WRONG TWICE. First a stale count ("three" while five did
+                 it); then, fixing that, the generalization "every `*-mutation` step", which the
+                 reviewer showed is false — `bootstrap-mutation` and `fact-mutation` walk their rows
+                 synchronously. Both root docs now say SOME steps pool and name the mechanism to
+                 look for, rather than carrying a number or a category that neither survives.
              (11) THE COUNT OF POOL-RUNNING STEPS WAS ALREADY WRONG. `CLAUDE.md` and
                  `CONTRIBUTING.md` said "three registered steps run bounded pools of their own";
                  FIVE did (`common-lib-mutation`, `adopt-mutation`, `adopt-readiness-mutation`,

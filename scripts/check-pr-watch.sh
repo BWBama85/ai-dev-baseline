@@ -125,13 +125,19 @@ if [ "$MODE" = mutation ]; then
   # that stops either one PARSING has changed whether the code runs at all rather than how it
   # behaves, and the nested suite would still fail on the right witness — crediting the row for a
   # defect it never exercised. 9 makes the pool report an ABORT, which is what it was.
+  # `"$BASH"`, not a bare `bash` — the same rule the mono probe below states, for the same reason:
+  # this file has re-exec'd itself onto a >= 5.3 interpreter but did NOT rewrite `PATH`, so on macOS
+  # a bare `bash` still resolves /bin/bash 3.2.57. The nested suite gates its own interpreter and
+  # was measured surviving that (it re-execs and passes), so this is not the abort the review
+  # supposed — but parse-checking a 5.3 file with 3.2 is the wrong question to ask, and paying a
+  # re-exec per nested run is waste. `$BASH` is by construction the interpreter this file runs on.
   mut_run() {
     local d="$1"
-    bash -n "$d/scripts/lib/pr-watch.sh" 2>/dev/null \
+    "$BASH" -n "$d/scripts/lib/pr-watch.sh" 2>/dev/null \
       || { printf 'the mutated pr-watch.sh no longer PARSES\n'; return 9; }
-    bash -n "$d/scripts/lib/common.sh" 2>/dev/null \
+    "$BASH" -n "$d/scripts/lib/common.sh" 2>/dev/null \
       || { printf 'the mutated common.sh no longer PARSES\n'; return 9; }
-    bash "$d/scripts/check-pr-watch.sh" 2>&1
+    "$BASH" "$d/scripts/check-pr-watch.sh" 2>&1
   }
   # `scripts` alone is this suite's whole mutation surface, so the subtree copier rather than the
   # worktree one: five copies of the repo's ~66MB .git would be spent moving a tree about to be
@@ -163,10 +169,13 @@ if [ "$MODE" = mutation ]; then
     'head changed; any earlier signal no longer applies' \
     'wait: reports that the head moved under it'
   # The nap is no longer clamped to what remains, so an oversized `--interval` overshoots the bound.
+  # Deleting the clamp leaves the requested 3000, which overshoots both the bound and what remains —
+  # the same assertion `nap-is-the-bound` trips, from the other direction. Two defects, one witness:
+  # a row proves THAT assertion fires for THAT defect, not that it owns it.
   check_mut "nap-unclamped" \
     '[ "$nap" -gt "$remaining" ] && nap="$remaining"' \
     ':' \
-    'wait: never sleeps past the remaining bound'
+    'wait: sleeps what REMAINS, not the original bound'
   # The interval is ignored and the nap becomes a constant. Caught ONLY by the two-bound tracking
   # assertion — the ceilings above are satisfied by any constant that happens to sit under them,
   # which is exactly how the earlier single-scenario version of that case passed a flat zero.
@@ -174,6 +183,13 @@ if [ "$MODE" = mutation ]; then
     'nap="$OPT_INTERVAL"' \
     'nap=0' \
     'wait: the nap TRACKS the remaining bound'
+  # The nap becomes the ORIGINAL bound rather than what is left of it, so the watcher oversleeps the
+  # deadline by exactly however long the poll before it cost. Invisible to every ceiling that
+  # compares against `--max-secs` itself, which is why the scenario forces latency into poll 1.
+  check_mut "nap-is-the-bound" \
+    'nap="$remaining"' \
+    'nap="$OPT_MAX_SECS"' \
+    'wait: sleeps what REMAINS, not the original bound'
   # THE DEFECT #394 REPORTS, injected at its source: a deadline the fixture cannot outlive. Pinning
   # it to 3s reproduces what a starved runner did to the retired bound, and the case that must
   # notice is the one whose first poll is deliberately slow.
@@ -1161,20 +1177,27 @@ has "$OUT" "handing off" "wait: says it is handing off rather than claiming a ve
 # "238 passed, 0 failed" over two FAIL lines. That is the exact defect #394 is about — a guard that
 # cannot fail — reintroduced by the shape of the call rather than by the assertion.
 CLAMP_NAP=""
-clamp_nap() {   # <max-secs> -> sets CLAMP_NAP to the single recorded nap, or "" if there was not one
+CLAMP_SLOW=2   # seconds of latency forced into poll 1 of the FIRST scenario; see CLAMP_HI below
+clamp_nap() {   # <max-secs> [slow-secs] -> sets CLAMP_NAP to the single recorded nap, or "" if not one
   CLAMP_NAP=""
   reset_fx; declare_bots "[\"$CODEX\"]"
   pr_poll_fx 2 --state closed --merged-at "2026-07-25T05:00:00Z"
+  [ -n "${2:-}" ] && printf '%s' "$2" > "$S/slow-1"
   w wait --pr 1 --interval 3000 --max-secs "$1";  rc 12 "wait: the clamp scenario (--max-secs $1) ends on its fixture, not on its deadline"
   [ -f "$S/slept" ] || { bad "wait: expected exactly one recorded nap before the terminal poll (--max-secs $1)"; return 0; }
   eq "$(wc -l < "$S/slept" | tr -d ' ')" "1" "wait: took exactly one nap before the terminal poll (--max-secs $1)"
   CLAMP_NAP="$(head -1 "$S/slept")"
 }
-clamp_nap "$WATCH_BACKSTOP";              CLAMP_HI="$CLAMP_NAP"
-clamp_nap "$(( WATCH_BACKSTOP / 4 ))";    CLAMP_LO="$CLAMP_NAP"
-# The two ceilings first: never past the bound, and the oversized interval really was clamped away.
-if [ -n "$CLAMP_HI" ] && [ "$CLAMP_HI" -le "$WATCH_BACKSTOP" ] && [ "$CLAMP_HI" -lt 3000 ]; then ok
-else bad "wait: never sleeps past the remaining bound, and clamps the oversized interval down to it (got [$CLAMP_HI])"; fi
+clamp_nap "$WATCH_BACKSTOP" "$CLAMP_SLOW";  CLAMP_HI="$CLAMP_NAP"
+clamp_nap "$(( WATCH_BACKSTOP / 4 ))";      CLAMP_LO="$CLAMP_NAP"
+# THE CEILING IS THE REMAINING TIME, NOT THE BOUND, and telling those apart needs poll 1 to have
+# cost something MEASURABLE — which is why the first scenario forces `$CLAMP_SLOW` seconds into it.
+# Without that, `remaining` and `--max-secs` are the same integer and a watcher that napped the
+# ORIGINAL bound passed the whole suite while oversleeping the deadline by however long poll 1 took
+# (found in review; shipped as the `nap-is-the-bound` mutation). The injection makes `remaining`
+# provably `<= bound - CLAMP_SLOW`, and load can only lower it further, so this cannot flake.
+if [ -n "$CLAMP_HI" ] && [ "$CLAMP_HI" -le "$(( WATCH_BACKSTOP - CLAMP_SLOW ))" ] && [ "$CLAMP_HI" -lt 3000 ]; then ok
+else bad "wait: sleeps what REMAINS, not the original bound, and clamps the oversized interval down to it (got [$CLAMP_HI], want <= $(( WATCH_BACKSTOP - CLAMP_SLOW )))"; fi
 # Then the one no constant can satisfy. A correct nap is `bound - (what poll 1 cost)`, so the gap
 # between the two runs is the gap between the bounds less two poll costs — asserted as "most of it"
 # rather than exactly, because poll latency is the one quantity here that load moves.

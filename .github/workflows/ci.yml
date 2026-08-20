@@ -469,7 +469,7 @@ jobs:
       # a second job is a second required status context for branch protection to grow, and this
       # split does not earn one. It runs HERE and not only inside `selfcheck-macos`, because that
       # aggregate job is macOS: without this step every witness could regress on Linux unseen.
-      - name: ...and those cases must be able to fail — 6 mutations, each observed RED (#394)
+      - name: ...and those cases must be able to fail — 7 mutations, each observed RED (#394)
         run: bash scripts/check-pr-watch.sh --mutation
 
   state-assert:
