@@ -206,6 +206,16 @@ check_mut() {
   CHECK_MUT_NAMES+=("$1"); CHECK_MUT_OLD+=("$2"); CHECK_MUT_NEW+=("$3"); CHECK_MUT_WIT+=("$4")
 }
 
+# check_mut_reset — empty the table, for a suite that runs `check_mutation_pool` more than once.
+# A second pool call is how a suite whose witnesses live in TWO files covers both, since a pool
+# builds ONE target path for every row it runs; without this the first table's rows would be
+# re-run against the second target and scored "did not apply". It lives here, beside the arrays it
+# clears, so a caller neither reaches into check-lib's state nor carries a `disable=SC2034` for
+# assignments ShellCheck cannot see used across the source boundary.
+check_mut_reset() {
+  CHECK_MUT_NAMES=(); CHECK_MUT_OLD=(); CHECK_MUT_NEW=(); CHECK_MUT_WIT=()
+}
+
 # _check_mut_witness <output> <witness> — true when some line of <output> begins with `FAIL: ` and
 # carries <witness>. Per LINE, so a mid-label witness cannot match a passing assertion's echo.
 # `case` over a here-string, never `printf | grep -q`: pipefail promotes grep's early-exit SIGPIPE.
@@ -676,6 +686,14 @@ JQPROG
 # Reads the same `$S/*.json` fixtures the REST arms read, so a scenario that writes `review_fx …`
 # needs no change: only the TRANSPORT moved. `STUB_GRAPHQL_RAW` overrides the whole body (for the
 # malformed/partial-error cases), and `STUB_GRAPHQL_FAIL` makes the call fail outright.
+#
+# `$S/slow-<n>` MAKES POLL <n> COST THAT MANY SECONDS (#394) — the one knob here that is a fixture
+# rather than a response. A `wait` bounds itself with real elapsed time, so a case whose oracle is
+# something only a LATER poll can print is racing its own deadline: on a loaded runner the first
+# poll can outlive the bound and the watch ends before the fixture ever changes. This makes that
+# latency injectable, so "a slow poll no longer breaks this case" is a test rather than an anecdote.
+# `/bin/sleep`, NOT `sleep`: the suites shim `sleep` on PATH to record naps, and a nap this stub
+# took would be counted as one the watcher requested.
 check_pr_graphql_stub_body() {
   cat <<'BODY'
   if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
@@ -684,6 +702,7 @@ check_pr_graphql_stub_body() {
   _prf="$S/pr.json"; _n=0
   [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
   _n=$(( _n + 1 )); printf '%s' "$_n" > "$S/polls"
+  [ -f "$S/slow-$_n" ] && /bin/sleep "$(cat "$S/slow-$_n")"
   [ -f "$S/pr.$_n.json" ] && _prf="$S/pr.$_n.json"
   _fx() { if [ -f "$S/$1.$_n.json" ]; then printf '%s' "$S/$1.$_n.json"; else printf '%s' "$S/$1.json"; fi; }
   _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }

@@ -440,7 +440,12 @@ jobs:
   pr-watch:
     name: pr-watch
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # 25, not 10, because the mutation step below runs the whole suite once per row plus a control.
+    # Measured: 2m27s at this workstation's pool width, 3m36s with the pool forced to 2 — which is
+    # what a 2-core hosted runner gets — before that runner's own slower CPU is counted. A job that
+    # times out is a red CI leg that says nothing about the diff, which is the class of defect #394
+    # is about.
+    timeout-minutes: 25
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -456,6 +461,16 @@ jobs:
 
       - name: Unit-test the async-reviewer status detector (#49)
         run: bash scripts/check-pr-watch.sh
+
+      # ...and the bounded-wait cases are guards whose failure mode is SILENCE (#394), so each is
+      # injected with its own defect and must make the suite go red ON ITS OWN NAMED WITNESS.
+      #
+      # THIS STEP RIDES THE EXISTING JOB rather than adding one, for the reason `common-lib` states:
+      # a second job is a second required status context for branch protection to grow, and this
+      # split does not earn one. It runs HERE and not only inside `selfcheck-macos`, because that
+      # aggregate job is macOS: without this step every witness could regress on Linux unseen.
+      - name: ...and those cases must be able to fail — 7 mutations, each observed RED (#394)
+        run: bash scripts/check-pr-watch.sh --mutation
 
   state-assert:
     name: state-assert

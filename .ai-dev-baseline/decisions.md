@@ -6781,3 +6781,122 @@ limit: none of them is sufficient alone.
              header repeated the disproven ceiling premise; an interrupted run could leave stubs
              ticking for 180s because the EXIT guard removed `$work` — and with it the cooperative
              STOP path — rather than using it first.
+
+## D85 — the pr-watch flake was a deadline racing a fixture, not a window aging out, and the two roles of `--max-secs` are now named
+
+- date:      2026-08-20
+- category:  project-delta
+- unknown:   #394 reported `check-pr-watch.sh`'s "wait: reports that the head moved under it" case
+             failing under an 8-worker parallel `selfcheck` run and passing standalone on the same
+             commit, twice, with the same diagnostic. It suspected the shape #387 was filed for —
+             "the window ages past the boundary mid-case and the wait classifies the fixture's
+             activity as unprovably fresh".
+- decision:  (1) THAT SUSPECTED CAUSE IS FALSE, and the fixture says so without any measurement:
+                 every timestamp the case uses is a FIXED CONSTANT (`ARRIVED_AT`, `AFTER_AT`,
+                 `BEFORE_AT`), so no window it owns can age. What load stretches is POLL LATENCY
+                 against `cmd_wait`'s real-elapsed-time deadline. The case ran `--interval 1
+                 --max-secs 3` and asserted a message only the SECOND poll can print; a first poll
+                 costing more than 3s returns `11` at the deadline having classified once, so
+                 `rc 11` was satisfied VACUOUSLY and the only red was the missing message.
+             (2) PROVED BY INJECTION, not by argument, and the evidence is a byte-match. Adding a
+                 `$S/slow-<n>` hook to the shared GraphQL stub and giving poll 1 four seconds
+                 against the 3s bound reproduces the CI line exactly — `no recorded activity puts
+                 bbbb… on refs/heads/feature, so a date-scoped signal cannot be proved fresh` —
+                 with the poll counter reading **1** instead of the unloaded **4**. The counter is
+                 what settles it: the quoted diagnostic ALONE is also what a healthy poll 1 prints,
+                 so inferring "only one poll ran" from stderr would have been a guess.
+             (3) THE SIBLING WAS CONFIRMED THE SAME WAY, not assumed. "wait: expires at the bound
+                 with no terminal signal" paired an `rc 11` claim with a nap-clamp claim on one 3s
+                 bound; a nap only exists when a poll leaves time on the clock, so the same 4s
+                 injection turns it red on `expected at least one recorded nap before the bound
+                 expired`. The two claims are now separate cases: the deadline half keeps its small
+                 literal bound (with no terminal signal the loop can leave ONLY through the
+                 deadline, so load changes when it expires and not whether), and the clamp half
+                 gets a fixture-terminated scenario where the nap is produced rather than raced.
+             (4) THE RULE, because five `--max-secs` values in one section were being read as one
+                 thing. Where the DEADLINE is the oracle it must stay small; where a FIXTURE is the
+                 oracle it is a runaway backstop and must be far larger than any plausible
+                 classification. `WATCH_BACKSTOP=120` names the second, and 120 rather than 300 so a
+                 case that stops terminating costs the suite two minutes instead of five. That bound
+                 is on continued POLLING and nothing else: `cmd_wait` classifies and then checks the
+                 deadline, so a classification that never returns is not bounded by it.
+             (5) THE FIXTURE'S OWN PREMISE WAS FALSE, found by the gap-analysis pass. Its comment
+                 claimed the `+1` was "fresh for head A", but the activity fixture anchored only
+                 head B, so poll 1 was pending for want of an anchor and the staleness rule was
+                 tested nowhere in this case. It cannot be realized as written either: with one
+                 declared reviewer a `+1` genuinely fresh for head A returns `clean` on poll 1 and
+                 the watch never sees the move. Both heads are now dated and the `+1` arrives on
+                 poll 2 dated between them, so "the previous head's era" is a fact the fixture
+                 states rather than a claim its comment makes.
+             (6) rc 12 IS THE STALENESS ASSERTION, not a weaker stand-in for rc 11. Poll 3 closes
+                 the PR, so the watch leaves through a fixture — and a `+1` wrongly honoured for the
+                 new head returns 0 at poll 2 and never reaches poll 3 at all. What is given up is
+                 only the separate claim that THIS watch eventually expires, which the case above it
+                 already makes.
+             (7) THE POLL COUNT IS ASSERTED, AND IT IS NOT ENOUGH. `polls == 3` names the shape if
+                 the deadline ever becomes the oracle again — but on an idle machine a re-tightened
+                 bound still reads 3. So the scenario is ALSO re-run with a deliberately slow first
+                 poll, which is the one check a re-tightened bound cannot pass. That costs one real
+                 4-second nap PER SUITE RUN — and `--mutation` runs the suite once per row plus a
+                 control, so a full selfcheck pays it several times over, not once.
+             (8) THE FIRST CLAMP ASSERTIONS WERE A BRACKET, NOT A CLAMP CHECK, and the independent
+                 review demonstrated it rather than arguing it: `nap <= bound` plus `nap < interval`
+                 admits ANY constant inside the bracket, and a `pr-watch.sh` mutated to nap a flat
+                 ZERO passed the whole suite 240/0. A clamped nap is `min(interval, remaining)`, so
+                 the scenario now runs at TWO bounds and requires the nap to track them; no constant
+                 can. The mutation the reviewer used is a shipped row (`nap-constant`).
+             (9) SEVEN MUTATIONS, EACH OBSERVED RED ON ITS OWN WITNESS, shipped as
+                 `check-pr-watch.sh --mutation` on #387's precedent: the head-move report reworded,
+                 the nap clamp deleted, the nap made a constant, the nap made the ORIGINAL bound
+                 rather than what remains, the deadline pinned below what a slow poll costs, the
+                 staleness comparison stripped of the backslash `common.sh` warns about, and its
+                 diagnostic reworded. The last needs the longer literal `at $val predates this head`
+                 — the short phrase also appears in the comment above the echo, and a row that edits
+                 a comment tests nothing.
+             (10) THE CONTROL RUN WAS DROPPED AND PUT BACK. The first version argued that
+                 `check_mutate_literal`'s did-not-apply report plus selfcheck's own unmutated
+                 `pr-watch` step made a control redundant. Both are true and neither is the point:
+                 `_check_mut_witness` asks only whether SOME `FAIL:` line carries the witness, so a
+                 baseline already failing on it credits the row for a defect the mutation never
+                 caused — and `--mutation` is runnable standalone, where no sibling step is watching.
+             (12) THE SECOND REVIEW ROUND FOUND TWO MORE REAL ONES, and both are the same shape as
+                 the first: an assertion that could not tell two values apart. (a) The clamp
+                 assertions ran inside `$( … )`, so every `rc`/`eq`/`bad` in `clamp_nap` counted into
+                 a DISCARDED subshell copy of `pass`/`fail` while `bad`'s text still reached stderr —
+                 the suite could PRINT `FAIL:` and exit 0, measured at "238 passed, 0 failed" over two
+                 FAIL lines. It sets a global now, so the call cannot be a command substitution. Fixing
+                 it revealed the size of the hole: the suite went 238 -> 242 assertions. (b) The
+                 ceiling compared the nap against `--max-secs` itself, so a watcher napping the
+                 ORIGINAL bound — oversleeping the deadline by whatever poll 1 cost — passed 242/0.
+                 `remaining` and the bound are only distinguishable once poll 1 has cost something
+                 MEASURABLE, so that scenario now forces 2s into it and the ceiling is
+                 `bound - 2`. Load can only lower `remaining` further, so the assertion cannot flake.
+             (13) ONE REVIEW FINDING WAS REFUTED BY MEASUREMENT, and adopted anyway. It held that
+                 `mut_run`'s bare `bash` would resolve /bin/bash 3.2 on a macOS box whose PATH lacks
+                 the Homebrew prefix, and that 3.2 would REJECT the copied suite while parsing,
+                 aborting every row. Neither half held: `/bin/bash -n` accepts the file, and running
+                 the real suite under `PATH=/usr/bin:/bin` passes 242/0 because `adb_require_bash`
+                 re-execs exactly as designed. The change to `"$BASH"` shipped regardless — parse-
+                 checking a 5.3 file with 3.2 asks the wrong question, and a re-exec per nested run
+                 is waste — but the decision log records what was measured, not what was claimed.
+             (14) THE POOL-STEP CLAIM WAS WRONG TWICE. First a stale count ("three" while five did
+                 it); then, fixing that, the generalization "every `*-mutation` step", which the
+                 reviewer showed is false — `bootstrap-mutation` and `fact-mutation` walk their rows
+                 synchronously. Both root docs now say SOME steps pool and name the mechanism to
+                 look for, rather than carrying a number or a category that neither survives.
+             (11) THE COUNT OF POOL-RUNNING STEPS WAS ALREADY WRONG. `CLAUDE.md` and
+                 `CONTRIBUTING.md` said "three registered steps run bounded pools of their own";
+                 FIVE did (`common-lib-mutation`, `adopt-mutation`, `adopt-readiness-mutation`,
+                 `selfcheck-guard-mutation`, `roadmap`), and this diff makes six. Both now name the shape (`*-mutation` plus
+                 `roadmap`) rather than a number, for the reason golden rule 3 already gives about
+                 the step list.
+- placement: `scripts/check-pr-watch.sh` (section 11 + `--mutation`), `scripts/check-lib.sh`
+             (`$S/slow-<n>` in the shared stub, `check_mut_reset`), `scripts/selfcheck.sh`
+             (`pr-watch-mutation`)
+- reason:    The measurements are why the fix is what it is, and none of them survives in the diff:
+             a later reader seeing `WATCH_BACKSTOP` has no way to know the issue's own stated cause
+             was checked and disproved, that the poll counter — not the stderr line — is what
+             identified the mechanism, or that the sibling was confirmed rather than swept in on a
+             resemblance. `code-comments.md` puts the incident here (class 2) and leaves the
+             one-line constraints at the call sites.
+- baseline-issue: n/a

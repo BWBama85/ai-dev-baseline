@@ -450,6 +450,14 @@ add pr-review           bash scripts/check-pr-review.sh
 # unreadable path failing closed, and the bounded wait actually honouring its bound.
 add pr-watch            bash scripts/check-pr-watch.sh
 
+# The negative half of the step above, for the bounded-wait cases only (#394). Those cases are the
+# ones whose green means nothing on its own: the reported defect was a case that reached its `rc`
+# assertion after one poll, with the message it exists to assert never printed. Seven mutations —
+# five of the wait loop, two of the staleness rule it delegates to — plus an unmutated control, each
+# row required back RED on ITS OWN named witness, so "these cases can fire" is re-runnable rather
+# than a claim in a PR body.
+add pr-watch-mutation   bash scripts/check-pr-watch.sh --mutation
+
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
 # mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,
 # argument validation, and the three narrating workflows' wiring to it.

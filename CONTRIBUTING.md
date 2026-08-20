@@ -68,9 +68,9 @@ bash scripts/selfcheck.sh
 `scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
 `wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
 eight steps at once never interleave. Results therefore arrive in *completion* order, and the final
-`result` block names every failing step. That bound counts **steps, not processes** (#335): three
-of them run bounded pools of their own, so the real number of workers is higher than `--jobs`
-suggests. Turning it into a bound on processes was tried and measured and made the suite slower —
+`result` block names every failing step. That bound counts **steps, not processes** (#335): some
+steps run bounded pools of their own, so the real number of workers is higher than `--jobs`
+suggests — not every `*-mutation` step does, so read the suite rather than assuming. Turning it into a bound on processes was tried and measured and made the suite slower —
 see D66 for the table.
 
 **Expect minutes, not seconds, and read the run's own output rather than this sentence.** Eight
