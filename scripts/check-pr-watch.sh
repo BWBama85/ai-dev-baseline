@@ -1153,16 +1153,25 @@ has "$OUT" "handing off" "wait: says it is handing off rather than claiming a ve
 # constant inside it: with `<= bound` and `< interval` alone, a watcher that napped a flat ZERO
 # passed the whole suite (found in review). The clamped nap is `min(interval, remaining)`, so
 # halving the bound must halve it; a constant — 0, 1, or anything else — cannot track both.
-clamp_nap() {   # <max-secs> -> the single recorded nap, or the empty string if there was not exactly one
+# IT SETS A GLOBAL AND PRINTS NOTHING, so that `CLAMP_HI="$(clamp_nap …)"` is impossible to write.
+# A command substitution forks a SUBSHELL, and `ok`/`bad` increment `pass`/`fail` there — so every
+# assertion this function makes would be counted into a copy that is discarded on return, while
+# `bad`'s diagnostic still reached the log on stderr. The suite then PRINTS `FAIL:` and exits 0.
+# Measured on a copy: forcing the `rc` inside this function to disagree left the run reporting
+# "238 passed, 0 failed" over two FAIL lines. That is the exact defect #394 is about — a guard that
+# cannot fail — reintroduced by the shape of the call rather than by the assertion.
+CLAMP_NAP=""
+clamp_nap() {   # <max-secs> -> sets CLAMP_NAP to the single recorded nap, or "" if there was not one
+  CLAMP_NAP=""
   reset_fx; declare_bots "[\"$CODEX\"]"
   pr_poll_fx 2 --state closed --merged-at "2026-07-25T05:00:00Z"
   w wait --pr 1 --interval 3000 --max-secs "$1";  rc 12 "wait: the clamp scenario (--max-secs $1) ends on its fixture, not on its deadline"
   [ -f "$S/slept" ] || { bad "wait: expected exactly one recorded nap before the terminal poll (--max-secs $1)"; return 0; }
   eq "$(wc -l < "$S/slept" | tr -d ' ')" "1" "wait: took exactly one nap before the terminal poll (--max-secs $1)"
-  head -1 "$S/slept"
+  CLAMP_NAP="$(head -1 "$S/slept")"
 }
-CLAMP_HI="$(clamp_nap "$WATCH_BACKSTOP")"
-CLAMP_LO="$(clamp_nap "$(( WATCH_BACKSTOP / 4 ))")"
+clamp_nap "$WATCH_BACKSTOP";              CLAMP_HI="$CLAMP_NAP"
+clamp_nap "$(( WATCH_BACKSTOP / 4 ))";    CLAMP_LO="$CLAMP_NAP"
 # The two ceilings first: never past the bound, and the oversized interval really was clamped away.
 if [ -n "$CLAMP_HI" ] && [ "$CLAMP_HI" -le "$WATCH_BACKSTOP" ] && [ "$CLAMP_HI" -lt 3000 ]; then ok
 else bad "wait: never sleeps past the remaining bound, and clamps the oversized interval down to it (got [$CLAMP_HI])"; fi
