@@ -890,7 +890,12 @@ ROADMAP_BODY="$ROADMAP_DIR/body.md"   # the directory exists; this file does NOT
 
 ```bash
 # ADB-SNIPPET: locate-artifact
-ROADMAP_NUM="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number')"
+# HARD-STOP ON A FAILED READ. An errored `gh issue list` yields empty stdout, which counts as zero
+# and routes the run into adopt-or-bootstrap — where it can create a SECOND artifact, manufacturing
+# the split-brain the branch below exists to stop on. A missing `roadmap` label is NOT that case:
+# it is a clean read of zero rows (see below), so the exit status alone separates the two.
+ROADMAP_NUM="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number')" \
+  || { echo "ERROR: could not list roadmap-labeled issues — hard stop"; exit 1; }
 COUNT="$(printf '%s\n' "$ROADMAP_NUM" | sed '/^$/d' | wc -l | tr -d ' ')"
 ```
 
@@ -898,9 +903,14 @@ This is the one read whose cap is provably harmless — the branch below stops a
 so a cap can only ever *under*-report, and it cannot under-report to zero because a repo with ≥1
 labeled artifact returns ≥1 row at any cap. Every other list read here is paginated (step 1).
 
-Step 1's hard-stop-on-any-`gh`-error rule has one exception here: a repo that never created the
-`roadmap` label. Treat a *label-not-found* error on this query as **zero results** (the bootstrap
-path); a genuine auth/API error is still a hard stop.
+Step 1's hard-stop-on-any-`gh`-error rule applies here **without exception**, because the case that
+looked like one is not an error at all: a repo that never created the `roadmap` label gets an empty
+list, not a failure. Probed against `gh` 2.95.0 — `gh issue list --label <nonexistent> --json number`
+exits **0** with empty stdout and empty stderr — so the bootstrap path is reached by a *clean* read
+of zero rows, and every non-zero exit is an auth/API failure. The snippet therefore separates them
+on exit status alone, with no error text to parse. A `gh` that ever did error on an absent label
+would stop the run rather than bootstrap over it, which is the safe direction: the count feeds a
+branch whose wrong answer creates a duplicate artifact.
 
 Branch on the count — this is the whole split-brain contract:
 
@@ -1872,18 +1882,25 @@ if [ -n "$LABEL" ]; then
   # Omit the line unless the label actually exists — exact match, 404 => absent (NOT an error).
   if gh api "repos/$REPO/labels/$LABEL" >/dev/null 2>&1; then
     # Search API total_count is exact at any size; `-label:roadmap` drops the roadmap artifact.
-    N="$(gh api -X GET search/issues -f q="repo:$REPO is:issue is:open label:\"$LABEL\" -label:roadmap" --jq '.total_count')"
+    # HARD-STOPPED like every other read: an unchecked capture leaves N empty and renders the line
+    # as "LABEL:  blocker(s) open" — a finish-line report with no number in it. The 404 carve-out
+    # belongs to the probe ABOVE, which has already decided the label exists; a failure here is a
+    # failed read, not an absent label.
+    N="$(gh api -X GET search/issues -f q="repo:$REPO is:issue is:open label:\"$LABEL\" -label:roadmap" --jq '.total_count')" \
+      || { echo "ERROR: could not count open '$LABEL' issues — hard stop"; exit 1; }
     # emit "LABEL: N blocker(s) open" — singular "blocker" when N==1; when N==0 emit
     # "LABEL: 0 blockers open — destination reached"
   fi
 fi
 ```
 
-**The marker is optional and this line never fails the run.** If the marker is absent, or the
-repo has no such label (the `gh api …/labels/$LABEL` 404 above — the one non-fatal exception to
-step 1's hard-stop-on-error rule, exactly like the missing-`roadmap`-label carve-out in step 2),
-**omit the line entirely.** Which label a repo counts toward is project-specific configuration
-that belongs in the artifact, not baked into this agent-neutral skill.
+**The marker is optional, and an unconfigured or unrecognized gauge never fails the run.** If the
+marker is absent, or the repo has no such label (the `gh api …/labels/$LABEL` 404 above — this
+step's one exception to step 1's hard-stop-on-error rule), **omit the line entirely.** That
+exception covers the *probe*, not the count: once the label is known to exist, a failed count is an
+ordinary failed read and hard-stops, exactly as a failed `gh repo view` already does two lines up.
+Which label a repo counts toward is project-specific configuration that belongs in the artifact,
+not baked into this agent-neutral skill.
 
 **In release-readiness mode**, when `destination-label` is `release-blocker`, scope this count to
 the active release milestone `M` (open `release-blocker` issues **in `M`**), not repo-wide — so the

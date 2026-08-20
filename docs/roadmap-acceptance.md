@@ -83,6 +83,10 @@ Then test the split-brain guard — create a second marked issue and re-run:
 
 - [ ] With **two** `roadmap`-labeled issues, `/roadmap` **STOPS**, lists both, and asks the owner
       to retire one. It never guesses. (Remove the duplicate before continuing.)
+- [ ] With the token revoked (or `GH_TOKEN` set to garbage), `/roadmap` **STOPS** naming the failed
+      list — it never reads an errored `gh issue list` as "no labeled artifact" and bootstraps a
+      second one. A repo that simply lacks the `roadmap` label is *not* this case: that read
+      succeeds with zero rows, and bootstrap is correct.
 
 ## 3. Reconcile — done, new, and stale refs
 
@@ -222,6 +226,9 @@ Add `<!-- destination-label: release-blocker -->` to the artifact header, then r
       exclusion happens in the query, not by post-filtering).
 - [ ] With the marker **absent**, or the label nonexistent, the line is **omitted entirely** and
       the run still succeeds (a 404 on the label probe is not an error).
+- [ ] That carve-out is the **probe's**, not the count's: with the label present but the count read
+      failing, the run **STOPS** naming it, rather than printing `release-blocker:  blocker(s) open`
+      with no number and carrying on.
 
 ---
 
