@@ -6817,7 +6817,9 @@ limit: none of them is sufficient alone.
                  thing. Where the DEADLINE is the oracle it must stay small; where a FIXTURE is the
                  oracle it is a runaway backstop and must be far larger than any plausible
                  classification. `WATCH_BACKSTOP=120` names the second, and 120 rather than 300 so a
-                 case that stops terminating hangs for two minutes instead of five.
+                 case that stops terminating costs the suite two minutes instead of five. That bound
+                 is on continued POLLING and nothing else: `cmd_wait` classifies and then checks the
+                 deadline, so a classification that never returns is not bounded by it.
              (5) THE FIXTURE'S OWN PREMISE WAS FALSE, found by the gap-analysis pass. Its comment
                  claimed the `+1` was "fresh for head A", but the activity fixture anchored only
                  head B, so poll 1 was pending for want of an anchor and the staleness rule was
@@ -6835,14 +6837,33 @@ limit: none of them is sufficient alone.
                  the deadline ever becomes the oracle again — but on an idle machine a re-tightened
                  bound still reads 3. So the scenario is ALSO re-run with a deliberately slow first
                  poll, which is the one check a re-tightened bound cannot pass. That costs one real
-                 4-second nap, spent on the single scenario whose recorded defect was a slow poll.
-             (8) FIVE MUTATIONS, EACH OBSERVED RED ON ITS OWN WITNESS, shipped as
+                 4-second nap PER SUITE RUN — and `--mutation` runs the suite once per row plus a
+                 control, so a full selfcheck pays it several times over, not once.
+             (8) THE FIRST CLAMP ASSERTIONS WERE A BRACKET, NOT A CLAMP CHECK, and the independent
+                 review demonstrated it rather than arguing it: `nap <= bound` plus `nap < interval`
+                 admits ANY constant inside the bracket, and a `pr-watch.sh` mutated to nap a flat
+                 ZERO passed the whole suite 240/0. A clamped nap is `min(interval, remaining)`, so
+                 the scenario now runs at TWO bounds and requires the nap to track them; no constant
+                 can. The mutation the reviewer used is a shipped row (`nap-constant`).
+             (9) SIX MUTATIONS, EACH OBSERVED RED ON ITS OWN WITNESS, shipped as
                  `check-pr-watch.sh --mutation` on #387's precedent: the head-move report reworded,
                  the nap clamp deleted, the deadline pinned below what a slow poll costs, the
                  staleness comparison stripped of the backslash `common.sh` warns about, and its
                  diagnostic reworded. The last needs the longer literal `at $val predates this head`
                  — the short phrase also appears in the comment above the echo, and a row that edits
                  a comment tests nothing.
+             (10) THE CONTROL RUN WAS DROPPED AND PUT BACK. The first version argued that
+                 `check_mutate_literal`'s did-not-apply report plus selfcheck's own unmutated
+                 `pr-watch` step made a control redundant. Both are true and neither is the point:
+                 `_check_mut_witness` asks only whether SOME `FAIL:` line carries the witness, so a
+                 baseline already failing on it credits the row for a defect the mutation never
+                 caused — and `--mutation` is runnable standalone, where no sibling step is watching.
+             (11) THE COUNT OF POOL-RUNNING STEPS WAS ALREADY WRONG. `CLAUDE.md` and
+                 `CONTRIBUTING.md` said "three registered steps run bounded pools of their own";
+                 FIVE did (`common-lib-mutation`, `adopt-mutation`, `adopt-readiness-mutation`,
+                 `selfcheck-guard-mutation`, `roadmap`), and this diff makes six. Both now name the shape (`*-mutation` plus
+                 `roadmap`) rather than a number, for the reason golden rule 3 already gives about
+                 the step list.
 - placement: `scripts/check-pr-watch.sh` (section 11 + `--mutation`), `scripts/check-lib.sh`
              (`$S/slow-<n>` in the shared stub, `check_mut_reset`), `scripts/selfcheck.sh`
              (`pr-watch-mutation`)

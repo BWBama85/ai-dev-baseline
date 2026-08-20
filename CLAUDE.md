@@ -36,9 +36,11 @@ those. The rules below are specific to this repo's code.
    `wait -n` pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
    concurrent steps never interleave.
 
-   **That bound counts STEPS, not processes** (#335, D66) — three registered steps run bounded
-   pools of their own, so the real leaf count is higher than `--jobs` implies. Making it a bound on
-   processes was built and measured and is *not* shipped: every configuration tried came out slower
+   **That bound counts STEPS, not processes** (#335, D66) — every `*-mutation` step and `roadmap`
+   run bounded pools of their own, so the real leaf count is higher than `--jobs` implies. (Named
+   by shape rather than counted: this said "three" while five steps did it, because a count goes
+   stale the first time one is added and nothing says so — the same trap as the step list.)
+   Making it a bound on processes was built and measured and is *not* shipped: every configuration tried came out slower
    than leaving it alone, and D66 carries the table. What did ship is the sizing primitive
    (`adb_pool_size`), which is what stops a harness inventing its own number.
 

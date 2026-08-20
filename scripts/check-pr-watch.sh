@@ -94,16 +94,16 @@ case "${1:-}" in
 esac
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# A SUITE THAT SKIPS ITS OWN VERDICT MUST NOT REPORT SUCCESS. Plain `rm -rf` was enough while the
+# only way out was the bottom of the file; `--mutation` below adds an `exit 0` after its own
+# `check_summary`, and an edit that loses that call would exit 0 having counted nothing.
+check_exit_guard "check-pr-watch" "rm -rf \"$work\""
 
 # ============= --mutation: section 11's cases must be OBSERVED going red (#394) =================
-# WHY A MODE AND NOT MORE ASSERTIONS. Every case this table covers has the failure mode #394 was
-# filed for — it can pass while looking at nothing. The reported case satisfied `rc 11` after ONE
-# poll, with the message it exists to assert never printed; the nap-clamp case counted zero
-# oversized naps in a file that did not exist. Both are green states that prove nothing, and no
-# assertion inside the suite can tell them from real ones. So each row below breaks ONE thing this
-# section claims to catch, runs the WHOLE suite against the broken copy, and requires it back at
-# exit 1 carrying THAT CASE'S OWN witness (#213's `fires:` contract, via `check_mutation_pool`).
+# WHY A MODE AND NOT MORE ASSERTIONS. Section 11's cases can pass while looking at nothing — a
+# green there is not by itself evidence that anything was checked (D85). So each row breaks ONE
+# thing the section claims to catch, runs the WHOLE suite against the broken copy, and requires it
+# back at exit 1 carrying THAT CASE'S OWN witness (#213's `fires:` contract).
 #
 # SCOPED TO SECTION 11, said plainly so nobody reads it as more: it proves the BOUNDED-WAIT cases
 # can fire. It is not a mutation suite for `pr-watch.sh` at large, and the classification sections
@@ -113,12 +113,13 @@ trap 'rm -rf "$work"' EXIT
 # in two files — the wait loop's own reporting (`pr-watch.sh`) and the staleness rule it delegates
 # to (`common.sh`). That is the harness's shape, not a judgement about the rows.
 #
-# NO SEPARATE CONTROL RUN, unlike `check-selfcheck.sh --mutation`, and the difference is real
-# rather than an omission: that mode lowers a deadline for every row, so it owes a run proving an
-# UNMUTATED copy survives the same setting. Nothing here perturbs the copy — the rows are literal
-# edits and nothing else — so the control is already paid for twice over: `check_mutate_literal`
-# reports a row whose literal is absent as "tested NOTHING" rather than scoring it, and selfcheck
-# runs the unmutated suite as its own `pr-watch` step in the same invocation.
+# THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. Every row below reads a
+# FAILURE, and `_check_mut_witness` only asks whether SOME `FAIL:` line carries the row's witness —
+# so a copied baseline that already fails on that witness would credit the row for a defect the
+# mutation never caused. Checking that the literal APPLIED proves the edit landed, not that it is
+# what turned the suite red. The unmutated `pr-watch` step reddens the whole selfcheck if the tree
+# is broken, but it cannot make a STANDALONE `--mutation` invocation sound, and this mode is
+# runnable on its own.
 if [ "$MODE" = mutation ]; then
   # mut_run <copy-dir> — the nested suite, behind a parse check on both mutated files. A mutation
   # that stops either one PARSING has changed whether the code runs at all rather than how it
@@ -140,6 +141,20 @@ if [ "$MODE" = mutation ]; then
   mut_prep_common() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1
                       printf '%s' "$1/scripts/lib/common.sh"; }
 
+  # THE CONTROL. `mut_prep_watch` is used only to build an unmutated copy here; which file it names
+  # is irrelevant, because nothing is written to it.
+  mut_ctl="$work/control"
+  if mut_prep_watch "$mut_ctl" >/dev/null; then
+    mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
+    yes "$mut_rc" "control: an UNMUTATED copy passes (else every row below is red for the wrong reason)"
+    case "$mut_out" in
+      *" 0 failed"*) ok ;;
+      *) bad "control: the unmutated copy did not report a clean suite" ;;
+    esac
+  else
+    bad "control: could not build the unmutated copy"
+  fi
+
   # --- the wait loop's own reporting and bounding ----------------------------------------------
   # The head move goes unreported. The rest of the watch is untouched, so ONLY the two assertions
   # that read that line can catch it — which is the point.
@@ -151,7 +166,14 @@ if [ "$MODE" = mutation ]; then
   check_mut "nap-unclamped" \
     '[ "$nap" -gt "$remaining" ] && nap="$remaining"' \
     ':' \
-    'wait: clamped the oversized interval down to what remained'
+    'wait: never sleeps past the remaining bound'
+  # The interval is ignored and the nap becomes a constant. Caught ONLY by the two-bound tracking
+  # assertion — the ceilings above are satisfied by any constant that happens to sit under them,
+  # which is exactly how the earlier single-scenario version of that case passed a flat zero.
+  check_mut "nap-constant" \
+    'nap="$OPT_INTERVAL"' \
+    'nap=0' \
+    'wait: the nap TRACKS the remaining bound'
   # THE DEFECT #394 REPORTS, injected at its source: a deadline the fixture cannot outlive. Pinning
   # it to 3s reproduces what a starved runner did to the retired bound, and the case that must
   # notice is the one whose first poll is deliberately slow.
@@ -228,7 +250,8 @@ FORGED_COMMIT_AT="2026-07-25T00:00:00Z"
 #
 # 120s, not 300s and not 30s: a classification here forks a handful of stubbed processes and costs
 # ~0.3s unloaded, so this is a two-order-of-magnitude margin, while still bounding what a genuine
-# regression costs the suite (a case that stops terminating hangs for two minutes, not five).
+# regression costs the suite. That bound is on continued POLLING — `cmd_wait` classifies and checks
+# the deadline afterwards, so a classification that never returns is not bounded by it at all.
 WATCH_BACKSTOP=120
 
 # ============================ the recording gh stub ============================
@@ -1117,29 +1140,37 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 w wait --pr 1 --interval 30 --max-secs 3;  rc 11 "wait: expires at the bound with no terminal signal"
 has "$OUT" "handing off" "wait: says it is handing off rather than claiming a verdict"
 
-# The other half — the sleep must never overshoot the bound — USED TO RIDE THE CASE ABOVE, and that
-# is the second instance of #394's defect, confirmed by injection rather than assumed: a nap only
-# exists when a poll leaves time on the clock, so a first poll costing more than the 3s bound made
-# the watch return without sleeping and the assertion could not fire. Measured: a 4s first poll
-# against that case turned it red on `expected at least one recorded nap before the bound expired`.
+# The other half — the sleep must never overshoot the bound — USED TO RIDE THE CASE ABOVE, and a nap
+# only exists when a poll leaves time on the clock: a first poll outliving the bound made the watch
+# return without sleeping, and the assertion could not fire (the second instance of #394, D85).
 #
 # So the clamp gets its own scenario, where the nap is produced by a FIXTURE rather than by a race:
 # the PR closes on poll 2, so exactly one nap is taken, and the interval is far larger than the
 # bound so that nap must be the clamped value rather than the requested one. Load can only shorten
-# what remains — which keeps both assertions true — instead of deleting the nap altogether.
-reset_fx; declare_bots "[\"$CODEX\"]"
-pr_poll_fx 2 --state closed --merged-at "2026-07-25T05:00:00Z"
-w wait --pr 1 --interval 3000 --max-secs "$WATCH_BACKSTOP";  rc 12 "wait: the clamp scenario ends on its fixture, not on its deadline"
-if [ -f "$S/slept" ]; then
-  eq "$(wc -l < "$S/slept" | tr -d ' ')" "1" "wait: took exactly one nap before the terminal poll"
-  eq "$(awk -v b="$WATCH_BACKSTOP" '$1 > b {c++} END {print c+0}' "$S/slept")" "0" "wait: never sleeps past the remaining bound"
-  # Asserting the clamp FIRED, not merely that nothing exceeded the bound: an unclamped nap would
-  # be the requested 3000, and a `<= bound` test alone passes for a watcher that ignored `--interval`
-  # entirely. Both directions, so neither a missing clamp nor a missing interval reads as success.
-  eq "$(awk -v i=3000 '$1 >= i {c++} END {print c+0}' "$S/slept")" "0" "wait: clamped the oversized interval down to what remained"
-else
-  bad "wait: expected exactly one recorded nap before the terminal poll"
-fi
+# what remains, never delete the nap.
+# TWO BOUNDS, NOT ONE, and that is what makes this an assertion about the CLAMP rather than about
+# the nap's magnitude. A single scenario can only bracket the value, and a bracket admits any
+# constant inside it: with `<= bound` and `< interval` alone, a watcher that napped a flat ZERO
+# passed the whole suite (found in review). The clamped nap is `min(interval, remaining)`, so
+# halving the bound must halve it; a constant — 0, 1, or anything else — cannot track both.
+clamp_nap() {   # <max-secs> -> the single recorded nap, or the empty string if there was not exactly one
+  reset_fx; declare_bots "[\"$CODEX\"]"
+  pr_poll_fx 2 --state closed --merged-at "2026-07-25T05:00:00Z"
+  w wait --pr 1 --interval 3000 --max-secs "$1";  rc 12 "wait: the clamp scenario (--max-secs $1) ends on its fixture, not on its deadline"
+  [ -f "$S/slept" ] || { bad "wait: expected exactly one recorded nap before the terminal poll (--max-secs $1)"; return 0; }
+  eq "$(wc -l < "$S/slept" | tr -d ' ')" "1" "wait: took exactly one nap before the terminal poll (--max-secs $1)"
+  head -1 "$S/slept"
+}
+CLAMP_HI="$(clamp_nap "$WATCH_BACKSTOP")"
+CLAMP_LO="$(clamp_nap "$(( WATCH_BACKSTOP / 4 ))")"
+# The two ceilings first: never past the bound, and the oversized interval really was clamped away.
+if [ -n "$CLAMP_HI" ] && [ "$CLAMP_HI" -le "$WATCH_BACKSTOP" ] && [ "$CLAMP_HI" -lt 3000 ]; then ok
+else bad "wait: never sleeps past the remaining bound, and clamps the oversized interval down to it (got [$CLAMP_HI])"; fi
+# Then the one no constant can satisfy. A correct nap is `bound - (what poll 1 cost)`, so the gap
+# between the two runs is the gap between the bounds less two poll costs — asserted as "most of it"
+# rather than exactly, because poll latency is the one quantity here that load moves.
+if [ -n "$CLAMP_HI" ] && [ -n "$CLAMP_LO" ] && [ "$(( CLAMP_HI - CLAMP_LO ))" -ge "$(( WATCH_BACKSTOP / 2 ))" ]; then ok
+else bad "wait: the nap TRACKS the remaining bound rather than being any constant (got [$CLAMP_HI] vs [$CLAMP_LO])"; fi
 
 # A single transient error must not abandon a long watch...
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -1173,15 +1204,12 @@ w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 12 "wait: stops as 
 # THE WATCH IS ENDED BY A FIXTURE, NOT BY THE DEADLINE (#394, D85). This case's oracle is a line
 # only the SECOND poll can print, and `wait` bounds itself with real elapsed time — so a
 # `--max-secs` tight enough to end the watch is also tight enough for a loaded runner to reach
-# first. That is what shipped: the bound was 3s, a starved 8-worker CI run spent longer than that
-# in poll 1, the watch returned after ONE poll, `rc 11` was satisfied VACUOUSLY, and the only
-# failure was the missing message. Measured rather than supposed — injecting a 4s first poll
-# reproduces the CI line byte-for-byte, and the poll counter reads 1 instead of 4.
+# first, ending it after one poll with `rc` satisfied vacuously. Poll 3 therefore closes the PR,
+# and `--max-secs` is a runaway backstop. The poll count is asserted so a re-tightened bound cannot
+# quietly become the oracle again.
 #
-# So poll 3 closes the PR. The watch now leaves through a fixture, `--max-secs` is a runaway
-# backstop, and the poll count is asserted so a re-tightened bound cannot quietly become the oracle
-# again. rc 12 IS the staleness claim rather than a weaker stand-in for rc 11: a `+1` wrongly
-# honoured for the new head returns 0 at poll 2 and never reaches poll 3 at all.
+# rc 12 IS the staleness claim, not a weaker stand-in for rc 11: a `+1` wrongly honoured for the
+# new head returns 0 at poll 2 and never reaches poll 3 at all.
 # ONE BUILDER FOR BOTH SCENARIOS BELOW, because they must stay the SAME scenario: the second is the
 # first with latency injected, and an edit that reached only one of them would leave the injected
 # run quietly testing something else while still reporting a pass.
@@ -1192,10 +1220,10 @@ head_move_fx() {
   pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
   # BOTH heads are dated, so "the previous head's era" is something the fixture STATES rather than
   # something a comment claims: bbbb arrives at 04:40, aaaa at 04:45, and the `+1` lands at 04:42 —
-  # after the head it belongs to, before the head it must not satisfy. Only aaaa's record is READ
-  # (the anchor is fetched for the head being judged, and poll 1 carries no dated signal to judge);
-  # bbbb's is here so the era is legible, and so an edit that does put a signal on poll 1 finds the
-  # anchor it would then need instead of a pending verdict with no anchor behind it.
+  # after the head it belongs to, before the head it must not satisfy. `adb_head_anchor` reads
+  # every record and rejects the ones whose `after` is not the head being judged, so bbbb's is read
+  # but never SELECTED, and no verdict here turns on it. It is present so the era is legible, and
+  # so an edit that does put a dated signal on poll 1 finds the anchor it would then need.
   activity_fx "$OLD_SHA"  "refs/heads/$HEAD_REF" "$BEFORE_AT" \
               "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"
   # THE `+1` ARRIVES ON POLL 2, and it has to. With one declared reviewer a `+1` that is genuinely
@@ -1212,15 +1240,12 @@ has "$OUT" "head moved $OLD_SHA -> $HEAD_SHA" "wait: reports that the head moved
 has "$OUT" "predates this head's arrival" "wait: says WHY the previous era's signal does not count"
 eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "wait: ended on the fixture's terminal poll, not on its deadline"
 
-# THE SAME CASE, WITH THE FAILURE INJECTED (#394's first acceptance criterion). A first poll costing
-# more than the retired 3s bound is exactly the condition a loaded runner produced, and it is the
-# condition under which every assertion above used to be unreachable. Re-running the scenario with
-# that latency is what turns "it no longer depends on the clock" from a claim into a check — and it
-# is the ONE thing the poll-count assertion above cannot do, because a re-tightened `--max-secs`
-# still reads 3 polls on an idle machine.
+# THE SAME CASE WITH THE LATENCY INJECTED — the check a re-tightened `--max-secs` cannot pass, since
+# an idle machine still reads 3 polls under one. 4s exceeds the retired 3s bound (D85).
 #
-# 4 SECONDS, ONCE. It is a real nap, so it is a real cost; it is spent on the one scenario whose
-# recorded defect was a slow first poll, and nowhere else.
+# IT IS A REAL NAP, so it is a real cost, and the cost is per SUITE RUN rather than per selfcheck:
+# `--mutation` executes the suite once per row plus a control, so a full selfcheck pays it several
+# times over. Spent on this one scenario and nowhere else.
 head_move_fx
 printf '4' > "$S/slow-1"
 w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 12 "wait: a first poll outliving the retired bound no longer ends the watch"
