@@ -297,11 +297,15 @@ EOF
     fi
 
     # ACCUMULATE THROUGH STDIN, NEVER THROUGH ARGV. The obvious spelling — `jq --argjson acc "$acc"`
-    # — passes the whole accumulated document as one argv entry, and argv is bounded (ARG_MAX, 1 MiB
-    # on this project's macOS runner). That caps the enumeration at a few hundred threads with
-    # ordinary review bodies and fails as an opaque exec error, which would be this module shipping
-    # a NEW size cliff in the commit that removes the old one. A shell variable has no such bound and
-    # a pipe has none either, so both values go down stdin and `jq -s` joins them.
+    # — passes the whole accumulated document as one argv entry, and argv is bounded by ARG_MAX
+    # (1 MiB, `getconf ARG_MAX`, on this project's macOS runner). That would make this module ship a
+    # NEW size cliff in the very commit that removes the old one, and fail as an opaque exec error
+    # rather than as the loud shortfall everything else here is careful to produce.
+    #
+    # MEASURED, not argued (2026-08-20): a 600-thread accumulation with ordinary review bodies is
+    # 1,094,291 bytes, and `jq -nc --argjson a "$BIG" '$a|length'` dies with "argument list too
+    # long"; the stdin form below returns 600 for the same payload. A shell variable carries no such
+    # bound and neither does a pipe, so both values go down stdin and `jq -s` joins them.
     acc="$(printf '%s' "$raw" | jq -c '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null \
            | { IFS= read -r _page || _page=""
                [ -n "$_page" ] || exit 3
