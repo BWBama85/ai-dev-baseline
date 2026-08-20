@@ -1203,8 +1203,10 @@ exists*. A rung-2 or rung-3 run is **not** a failure and must not be reported as
 it and its code (`automerge-ok` 10–14/20, or the review gate 16/17/18/19/**21**/20). An armed PR
 that is silently waiting on something is the one outcome the operator cannot see: say what it is
 waiting on and what clears it. On code 16 the PR is **not armed at all** and is waiting on a
-*reviewer* — not the same as an armed PR waiting on threads. End with the `/resolve-pr-threads
-<PR#>` resume hint. Do not poll for bot reviews here; this step reports the state and ends.
+*reviewer* — not the same as an armed PR waiting on threads. End with the **`/resolve-pr-threads`**
+resume hint — bare, with no number: this repo has exactly one open PR at this moment, which is the
+one this run just created, and the skill infers it. Do not poll for bot reviews here; this step
+reports the state and ends.
 
 **Code 21 is not code 16.** On 21 the reviewer has **finished** and left something to read; nobody
 is being waited for. Say that, and point at the review body or issue comment — there may be no

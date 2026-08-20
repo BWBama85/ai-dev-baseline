@@ -609,7 +609,11 @@ exactly as it does today — one comment worse off, and no further rounds are at
 
 This skill switched your working tree to the PR head in step 1. Before exiting —
 on success **and** on every post-switch abort (an incomplete enumeration, a gate failure,
-an API failure) — return the tree to where it started. Leaving it on the PR head is
+an API failure) — return the tree to where it started.
+
+**Once, at the terminal exit — not per round.** Steps 1–7 may go round several times, and step 1's
+`git switch` is idempotent, so restoring between rounds would only switch away from the branch the
+next round is about to switch back to. Leaving it on the PR head is
 exactly what put a later run on a now-merged branch (issue #17). Prefer the branch you
 started on; fall back to the PR's **base** branch, then the repo default — never a
 hardcoded `main`.
