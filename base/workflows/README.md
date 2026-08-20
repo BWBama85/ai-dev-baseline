@@ -82,6 +82,7 @@ or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
 | `{{PR_REVIEW_LIB}}`     | pre-arm review-guard command **prefix**             | `bash "$HOME/.claude/scripts/lib/pr-review.sh"`     | `bash "$HOME/.codex/scripts/lib/pr-review.sh"`     | `bash "$HOME/.gemini/scripts/lib/pr-review.sh"`     |
 | `{{STATE_ASSERT_LIB}}`  | observe-and-render state command **prefix**         | `bash "$HOME/.claude/scripts/lib/state-assert.sh"`  | `bash "$HOME/.codex/scripts/lib/state-assert.sh"`  | `bash "$HOME/.gemini/scripts/lib/state-assert.sh"`  |
 | `{{PR_WATCH_LIB}}`      | async-reviewer status-detector command **prefix**   | `bash "$HOME/.claude/scripts/lib/pr-watch.sh"`      | `bash "$HOME/.codex/scripts/lib/pr-watch.sh"`      | `bash "$HOME/.gemini/scripts/lib/pr-watch.sh"`      |
+| `{{PR_THREADS_LIB}}`    | review-thread enumeration command **prefix**        | `bash "$HOME/.claude/scripts/lib/pr-threads.sh"`    | `bash "$HOME/.codex/scripts/lib/pr-threads.sh"`    | `bash "$HOME/.gemini/scripts/lib/pr-threads.sh"`    |
 | `{{CURRENT_AGENT}}`     | the agent token this skill is rendered for          | `claude`                                            | `codex`                                            | `gemini`                                           |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
 

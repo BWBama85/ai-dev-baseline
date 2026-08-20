@@ -7,6 +7,22 @@
 # finished with this PR, and did it find anything?" — and it can WAIT for that answer without
 # spending a single model token, because waiting is a `sleep` loop, not a conversation.
 #
+# SAY THE COST CLAIM EXACTLY, BECAUSE THE SHORT VERSION MISLED (#417). What is free is THE WAIT: one
+# process, a `sleep`, no model in it, however long `--max-secs` is. What is NOT free is RE-ENTERING
+# the model to start the next stretch of it — and that is a property of how a caller DISPATCHES this
+# command, not of this command. An agent harness that caps a foreground shell call at two minutes
+# turns a half-hour wait into fifteen model turns, each with context reloaded, and the library
+# cannot tell. Measured in the field on an adopting project: dozens of consecutive turns reading
+# "Waiting." — ran 2 shell commands — "Waiting."
+#
+# So the honest sentence is: THIS COMMAND spends no model tokens while waiting, and a caller keeps
+# that property only by dispatching it as a background task (or in a terminal), never by chunking it
+# across foreground calls. `base/workflows/resolve-pr-threads.md` step 0b carries the protocol.
+#
+# The per-poll lines on STDERR are not narration in that sense — they are written inside this one
+# process and read once, by whoever reads the stream. They stay: they are what makes a head that
+# moved mid-watch debuggable, and #394 pinned two of them.
+#
 # WHY IT IS NOT PART OF pr-review.sh. That module's header states its own boundary: "it does not
 # wait, poll, retry, resolve threads, or merge", and names this issue as the place a waiting watch
 # belongs. Growing it here would break that contract rather than respect it. `pr-review.sh gate`
@@ -118,7 +134,7 @@
 #   pr-watch.sh wait    --pr <number|url> \          # poll until terminal, bounded; 0 model tokens
 #                       [--interval <secs>] [--max-secs <secs>]
 #   pr-watch.sh request-review --pr <number|url> \   # ask for a re-review of the CURRENT head (#169)
-#                       [--max-rounds <n>]
+#                       [--max-rounds <n>]              # > `[reviewers] max_rounds` > built-in 6
 #   pr-watch.sh -h | --help
 #
 # PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
@@ -150,7 +166,9 @@
 #   13 already    — a re-review was already requested for THIS head. Idempotent no-op.
 #   14 no-trigger — no declared reviewer has a trigger phrase this module knows (or `bots = []`).
 #                   The caller carries on; the watch simply has nothing to wake it early.
-#   15 capped     — the round cap is reached. Stop looping and hand off to a human. NOTE it OUTRANKS
+#   15 capped     — the round cap is reached. Stop looping and hand off to a human; the diagnostic
+#                   names the observed count, the effective cap, WHICH of the three sources set it
+#                   (flag / agents.toml / built-in), and the two ways on. NOTE it OUTRANKS
 #                   13: at the cap, a repeat observation of an already-asked head reports `capped`
 #                   rather than `already`. Deliberate — the cap is the stronger instruction, and
 #                   checking `already` first would buy an anchor read on every capped call.
@@ -500,8 +518,13 @@ EOF
 # THE ROUND CAP IS COUNTED THE SAME WAY, and the same argument applies. #49 asked for "N rounds
 # (~3)" without saying what a round is; this module answers: a round is a re-review THIS mechanism
 # requested, so the cap counts trigger comments on the PR regardless of head. The reviewer's FIRST,
-# unrequested review is not a round — nobody asked for it — so a cap of 3 permits an initial review
-# plus three requested re-reviews.
+# unrequested review is not a round — nobody asked for it — so a cap of N permits an initial review
+# plus N requested re-reviews.
+#
+# AND IT COUNTS A HUMAN'S REQUESTS TOO, which is a documented consequence rather than a defect
+# (#416). The trigger comment this module posts and one an operator types are the same text from
+# the same login, so no read can tell them apart; a cap that tried to would need an authorship
+# signal GitHub does not provide. Say it where the cap is refused, and let the bound be raised.
 
 # adb_pw_trigger <login> — the phrase that asks <login> for a re-review, or non-zero when this
 # module knows of none. THE ONE HOME for per-reviewer trigger knowledge.
@@ -525,9 +548,56 @@ adb_pw_trigger() {
   esac
 }
 
-# The default round cap. Overridable with --max-rounds so a repo that wants exactly one retry can
-# say so; three is #49's own "~3".
-_ADB_PW_MAX_ROUNDS=3
+# THE BUILT-IN ROUND CAP, applied when neither the flag nor the manifest declares one.
+#
+# SIX, NOT THREE (#416). Three was #49's own "~3", written before anything had run the loop in
+# anger, and the first field session measured it wrong: a productive six-round resolve on an
+# adopting repo — every round pushing fixes, and round 5's fixes breeding three of round 6's
+# findings — hit the cap at 3, because four trigger comments already existed and all four were the
+# operator's own manual kick-starts. THE COUNTING IS CORRECT AND STAYS: the mechanism and a human
+# post as the same login, so they are structurally indistinguishable, and pretending otherwise
+# would need an authorship signal GitHub does not provide. That leaves the BOUND as the thing to
+# fix, and under `/resolve-pr-threads`' until-clean default a cap of 3 guarantees a premature
+# handoff on any pull request needing a fourth round.
+_ADB_PW_MAX_ROUNDS_DEFAULT=6
+# EMPTY until something declares one, and deliberately NOT pre-seeded with the default above: the
+# flag, the manifest and the built-in have to stay distinguishable, because the exit-15 handoff must
+# name WHICH of them produced the effective cap. An operator told "cap 6" with no source cannot tell
+# a repo policy from a built-in, and so cannot tell which file to edit.
+_ADB_PW_MAX_ROUNDS=""
+_ADB_PW_MAX_ROUNDS_SRC=""
+
+# _adb_pw_resolve_rounds — settle the effective cap: `--max-rounds` > `[reviewers] max_rounds` >
+# the built-in. Sets `_ADB_PW_MAX_ROUNDS` and `_ADB_PW_MAX_ROUNDS_SRC`; returns 2 on a value this
+# module or the manifest reader refuses.
+#
+# RESOLVED HERE rather than at parse time, because the manifest read costs a subprocess and neither
+# `observe` nor `wait` has a round cap to resolve.
+#
+# A MALFORMED MANIFEST VALUE IS A HARD ERROR, never a fall-back to the built-in (#416). Falling back
+# would hand the operator a cap they did not choose, from a file they thought they had configured,
+# with nothing said — and the bound is the one number that decides whether a productive loop is cut
+# short.
+_adb_pw_resolve_rounds() {
+  local cap crc
+  if [ -n "$_ADB_PW_MAX_ROUNDS" ]; then
+    require_uint "$_ADB_PW_MAX_ROUNDS" --max-rounds || return 2
+    _ADB_PW_MAX_ROUNDS_SRC="--max-rounds"
+    return 0
+  fi
+  cap="$(bash "$_ADB_PW_ROLE_DISPATCH" max-rounds)"; crc=$?
+  case "$crc" in
+    0) _ADB_PW_MAX_ROUNDS="$cap"
+       _ADB_PW_MAX_ROUNDS_SRC="agents.toml [reviewers] max_rounds" ;;
+    3) _ADB_PW_MAX_ROUNDS="$_ADB_PW_MAX_ROUNDS_DEFAULT"
+       _ADB_PW_MAX_ROUNDS_SRC="built-in default" ;;
+    2) echo "pr-watch: '[reviewers] max_rounds' is unusable (see above) — refusing to guess a round cap" >&2
+       return 2 ;;
+    *) echo "pr-watch: could not read '[reviewers] max_rounds' (broken install) — refusing to guess a round cap" >&2
+       return 2 ;;
+  esac
+  return 0
+}
 
 # cmd_request_review — ask every declared reviewer that has a known trigger to look at this head.
 #
@@ -550,7 +620,7 @@ cmd_request_review() {
   [ -n "$OPT_PR" ] || { echo "pr-watch: request-review requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
-  require_uint "$_ADB_PW_MAX_ROUNDS" --max-rounds || return 2
+  _adb_pw_resolve_rounds || return 2
   want="$(read_declared_bots)"; wrc=$?
   [ "$wrc" -eq 0 ] || return "$wrc"
   adb_require_gh jq || return 20
@@ -631,9 +701,16 @@ EOF
   rounds="$(adb_pw_count_receipts "$snap" "$phrases" "")" \
     || { echo "pr-watch: PR #$n — could not count previous re-review requests; refusing to ask again" >&2
          return 20; }
+  # THE CAP HANDOFF IS A SPECIFIED TERMINAL STATE, not an incidental refusal (#416). The field
+  # session that produced it got a bare "cap 3" and had to reverse-engineer both where the number
+  # came from and what to do next, so all four facts are stated: what was OBSERVED, what the
+  # effective bound is, WHICH of the three sources set it — an operator cannot otherwise tell a repo
+  # policy from a built-in, and so cannot tell which file to edit — and the two ways through.
   if [ "$rounds" -ge "$_ADB_PW_MAX_ROUNDS" ]; then
     printf 'capped %s\n' "$head"
-    echo "pr-watch: PR #$n — $rounds re-review request(s) already made (cap $_ADB_PW_MAX_ROUNDS); handing off to a human" >&2
+    echo "pr-watch: PR #$n — $rounds re-review request(s) observed on this pull request; cap $_ADB_PW_MAX_ROUNDS (from $_ADB_PW_MAX_ROUNDS_SRC). Not asking again." >&2
+    echo "pr-watch: MANUALLY POSTED TRIGGER COMMENTS SPEND THE SAME BUDGET — this mechanism and a human post as the same login, so they are indistinguishable by design." >&2
+    echo "pr-watch: two ways on: post the trigger comment on PR #$n yourself, or raise the bound (--max-rounds <n>, or '[reviewers] max_rounds' in agents.toml)." >&2
     return 15
   fi
 

@@ -119,8 +119,11 @@ installed `scripts/lib` and keep the skill delegating rather than re-deriving), 
 runtime guard that says which interpreter it got — and that lint is itself observed going red on
 every rule it owns), **selfcheck-guard** (the runner above is a guard too, so a deliberately failing
 step is observed still failing a *parallel* run, attributed by name and exit code — plus the
-concurrency bound, output atomicity and cancellation), and an **install→uninstall dry-run** (all
-three agents) into a throwaway `HOME`.
+concurrency bound, output atomicity and cancellation), **pr-threads** + **pr-threads-mutation** (the
+`/resolve-pr-threads` predicates: PR inference that refuses rather than guessing, and a review-thread
+enumeration that paginates and **proves** itself complete — with four mutations each observed going
+red, because the defect it replaces printed exactly what a clean run prints), and an
+**install→uninstall dry-run** (all three agents) into a throwaway `HOME`.
 
 Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
@@ -141,6 +144,7 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `base/roles.md` · `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent adapter, generated root doc, generated `skills/`; (Claude:) **hand-written** hook `scripts/` (not rendered — edit in place) |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
+| `scripts/lib/pr-watch.sh` · `pr-threads.sh` | The PR-review loop's two libraries: *is the reviewer done?* and *which threads are there?* (installs alongside) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
 | `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-self-test · claims · claims-self-test · practice-index · release-skill · selfcheck) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |

@@ -685,8 +685,25 @@ run the gate on the clean, committed tree. The phase order is a guideline, not a
 `gates_green` and `committed` may interleave when the gate only makes sense post-commit. This
 never means skipping the gate.
 
+**"Until green" is FIX-AND-RERUN, not a wait (#417).** The gate runner is a bounded, blocking
+command: you run it, it finishes, you read its status. There is nothing to poll and no wait
+primitive to reach for — so never turn it into an observe-narrate-observe loop, which is the
+turn-per-check shape #417 measured in the field. If a single gate run outlives your harness's
+foreground ceiling, dispatch **that one call** as a background task and read its result when the
+completion notification arrives; do not chunk it, and do not narrate between attempts.
+
 **Escape clause:** if the *same* gate fails three consecutive times after fixes, write the blocked
 marker (`reason`, `branch`, `issue`, `owner`) and stop.
+
+**Every wait this workflow names has exactly one home, and there are only three (#417).** Anything
+not on this list is not a wait you should invent:
+
+| What is waited on | Its home |
+| --- | --- |
+| a dispatched agent (gap-analysis, a review slot) | **a bounded call you wait for** — step 3 and step 8's completion contract. A background task where the harness caps foreground calls; never a poll of its output |
+| the async reviewer on the PR | **a library wait** — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" wait`, driven by `/resolve-pr-threads`, whose step 0b specifies the dispatch |
+| the project's gates | **a blocking command** — `bash "$HOME/.claude/scripts/lib/project-gates.sh" run`, above. Fix and re-run |
+| CI going green after the push | **report-and-end.** There is deliberately no CI watcher here: step 10 arms auto-merge or reports why it did not, and step 11 ends. GitHub merges when the required checks pass, with nobody sitting on the line |
 
 ### 7. First commit
 
@@ -1137,10 +1154,10 @@ re-run after the reviewer has finished can arm. A `COMMENTED` review does not co
 it returns **21**, because "the reviewer has spoken" is not "the reviewer is satisfied" — a
 reviewer can put actionable findings in a review **body** and create no inline threads at all.
 
-**Arming is still suspended — the watch does not lift it.** `/resolve-pr-threads <PR#> --watch`
-waits for the reviewer and resolves findings, but it does **not** arm auto-merge afterwards. On a
+**Arming is still suspended — the resolver does not lift it.** `/resolve-pr-threads` waits for the
+reviewer and resolves findings **by default**, but it does **not** arm auto-merge afterwards. On a
 bot-reviewed repo the operator still merges, or re-runs this workflow once the head has been
-reviewed. Do not tell them the watch will merge for them.
+reviewed. Do not tell them it will merge for them.
 
 Two things to say out loud in the close-out, because the operator no longer sees the merge dialog:
 
@@ -1185,13 +1202,16 @@ waiting on and what clears it. On code 16 the PR is **not armed at all** and is 
 
 **Code 21 is not code 16.** On 21 the reviewer has **finished** and left something to read; nobody
 is being waited for. Say that, and point at the review body or issue comment — there may be no
-inline threads, so `/resolve-pr-threads` may find nothing to resolve and `--watch` would wait for
-a reviewer that has already spoken.
+inline threads, so `/resolve-pr-threads` may find nothing to resolve, and its default wait would be
+waiting for a reviewer that has already spoken. Suggest **`/resolve-pr-threads <PR#> --once`** here:
+one pass, no wait.
 
-**On code 16, offer the waiting form of that hint.** `/resolve-pr-threads <PR#> --watch` waits for
-the reviewer in a shell poll loop and only then resolves, so the wait costs **no model tokens**;
-it exits quietly when the reviewer signals a clean pass. It is a **foreground** wait in a session
-the operator keeps, so suggest it rather than starting one — this step still ends here.
+**On code 16, the plain hint is already the waiting one.** `/resolve-pr-threads` waits for the
+reviewer by default and resolves only once it has spoken, exiting quietly on a clean pass. The
+waiting itself costs **no model tokens** — it is a `sleep` loop with no model in it — provided it is
+dispatched as a background task rather than chunked across foreground calls; the resolver's step 0b
+carries that protocol (#417). It is not detached from the session, and it switches the working tree
+to the PR's head branch, so **suggest it rather than starting one** — this step still ends here.
 
 ### 12. Reconcile every deferred / out-of-scope item (mandatory)
 

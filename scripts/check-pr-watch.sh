@@ -1380,7 +1380,7 @@ reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 w request-review --pr 1;  rc 0 "request-review: a head with no prior request is asked for once"
 eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "request-review: exactly ONE comment was actually posted"
 eq "$(cat "$S/posted")" "$TRIGGER" "request-review: the posted BODY is the reviewer's own documented trigger"
-has "$OUT" "round 1 of 3" "request-review: the round is reported against the cap"
+has "$OUT" "round 1 of 6" "request-review: the round is reported against the effective cap"
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 wout request-review --pr 1
 eq "$OUT" "requested $HEAD_SHA" "request-review: stdout is '<verdict> <sha>', like every other verdict here"
@@ -1466,18 +1466,80 @@ w request-review --pr 1;  rc 13 "request-review: a real request with stray white
 # --- THE ROUND CAP ----------------------------------------------------------------------------
 # Counted from the PR, at ANY head — anchoring it to the head would reset the cap on every push,
 # which is the runaway it exists to bound.
+#
+# THE BUILT-IN IS SIX (#416), raised from #49's untested "~3" after a field session measured three
+# wrong: a productive six-round resolve hit the cap because four trigger comments already existed,
+# all four posted by hand. Six receipts to reach it, so the fixture below is what a cap of 3 could
+# never have been tested with.
+reset_fx; declare_bots "[\"$CODEX\"]"
+receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" \
+           "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
+w request-review --pr 1;  rc 15 "request-review: the round cap refuses a seventh ask"
+has "$OUT" "cap 6" "request-review: the cap is named"
+# ...and THREE receipts no longer cap, which is the whole point of the raise: it is the exact
+# fixture that returned 15 before #416 and must now be allowed through.
 reset_fx; declare_bots "[\"$CODEX\"]"
 receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
-w request-review --pr 1;  rc 15 "request-review: the round cap refuses a fourth ask"
-has "$OUT" "cap 3" "request-review: the cap is named"
+w request-review --pr 1;  rc 0 "request-review: three prior requests no longer cap (the #416 raise)"
+reset_fx; declare_bots "[\"$CODEX\"]"
+receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" \
+           "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
 wout request-review --pr 1
 eq "$OUT" "capped $HEAD_SHA" "request-review: the capped verdict names the head"
-# ...and the cap is configurable, in both directions.
-w request-review --pr 1 --max-rounds 4;  rc 0 "request-review: --max-rounds raises the bound"
+
+# THE HANDOFF IS A SPECIFIED TERMINAL STATE, not an incidental refusal (#416). All four facts, so
+# the operator does not have to reverse-engineer the number or the remedy — which is exactly what
+# the field session had to do.
+reset_fx; declare_bots "[\"$CODEX\"]"
+receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" \
+           "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
+w request-review --pr 1;  rc 15 "capped: the handoff fires"
+has "$OUT" "6 re-review request(s) observed" "capped: it names the OBSERVED count"
+has "$OUT" "cap 6"                           "capped: ...and the effective cap"
+has "$OUT" "built-in default"                "capped: ...and WHICH source set it"
+has "$OUT" "MANUALLY POSTED TRIGGER COMMENTS SPEND THE SAME BUDGET" \
+   "capped: ...and that a human's own requests spend the same budget"
+has "$OUT" "--max-rounds"                    "capped: ...and the raise path"
+has "$OUT" "max_rounds"                      "capped: ...including the repo-level one"
+
+# --- CAP PRECEDENCE: --max-rounds > [reviewers] max_rounds > built-in (#416) -------------------
+# THE SOURCE IS ASSERTED ALONGSIDE THE VALUE, every time. A cap that is numerically right for the
+# wrong reason is how an operator edits the file that is not being read.
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx "$BEFORE_AT" "$TRIGGER"
-w request-review --pr 1 --max-rounds 1;  rc 15 "request-review: --max-rounds 1 caps after a single ask"
+w request-review --pr 1 --max-rounds 1;  rc 15 "precedence: --max-rounds 1 caps after a single ask"
+has "$OUT" "cap 1"        "precedence: the flag's value is the effective cap"
+has "$OUT" "--max-rounds" "precedence: ...and the flag is named as its source"
 w request-review --pr 1 --max-rounds 0;  rc 2  "request-review: --max-rounds 0 is a usage error, not an infinite loop"
 w request-review --pr 1 --max-rounds x;  rc 2  "request-review: a non-numeric --max-rounds is rejected"
+
+# The MANIFEST sets it when no flag does.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 2' > "$REPO/agents.toml"
+receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
+w request-review --pr 1;  rc 15 "precedence: [reviewers] max_rounds sets the cap"
+has "$OUT" "cap 2"                             "precedence: the manifest's value is the effective cap"
+has "$OUT" "agents.toml [reviewers] max_rounds" "precedence: ...and the manifest is named as its source"
+# ...and the FLAG still wins over it.
+w request-review --pr 1 --max-rounds 9;  rc 0 "precedence: --max-rounds overrides the manifest"
+
+# A MALFORMED MANIFEST VALUE IS A HARD ERROR, never a silent fall-back to the built-in. Falling back
+# would hand the operator a cap they did not choose, from a file they thought they had configured.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = "six"' > "$REPO/agents.toml"
+receipt_fx
+w request-review --pr 1;  rc 2 "precedence: a malformed max_rounds is exit 2, not the built-in 6"
+if [ -f "$S/posted" ]; then bad "precedence: nothing may be posted under an unusable cap"; else ok; fi
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 0' > "$REPO/agents.toml"
+receipt_fx
+w request-review --pr 1;  rc 2 "precedence: max_rounds = 0 is refused, not treated as unset"
+# ...and the flag still wins even over an unusable manifest value, because it is never consulted.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = "six"' > "$REPO/agents.toml"
+receipt_fx
+w request-review --pr 1 --max-rounds 3;  rc 0 "precedence: an explicit flag does not read the manifest at all"
+
+# `observe` and `wait` have NO round cap to resolve, so a malformed one must not break them: the
+# resolution is deliberately inside request-review rather than at parse time.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = "six"' > "$REPO/agents.toml"
+w observe --pr 1;  rc 11 "precedence: a malformed max_rounds does not affect observe"
+declare_bots "[\"$CODEX\"]"
 
 # --- A REVIEWER WITH NO KNOWN TRIGGER IS SKIPPED, NOT FAILED ----------------------------------
 # #169 requires exactly this: no request, no error. Posting a guessed phrase at an unknown bot is

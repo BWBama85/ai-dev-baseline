@@ -544,6 +544,55 @@ adb_dispatch_bots_comparable() {
   return 0
 }
 
+# adb_dispatch_max_rounds — the re-review round cap a repo declares, as `[reviewers] max_rounds`
+# (#416). The BOUND lives beside the reviewer declaration it modifies, because it is a fact about
+# how this repo's reviewer is driven and about nothing else.
+#
+#   0 + <n>  declared and usable — a bare positive integer
+#   3        not declared anywhere — the CALLER applies its own built-in default. Note this file
+#            deliberately does NOT supply one: the caller has to be able to tell a repo policy from
+#            a built-in, because its own diagnostic must name which produced the effective cap.
+#   2        declared but malformed — a HARD ERROR. Never a silent fall-back to the default: an
+#            operator who wrote a bound and got the built-in has a cap they did not choose and no
+#            way to notice.
+#
+# IT LAYERS repo → global like every other manifest key, through the one home
+# (`_adb_rd_layered_get`), so a workstation can carry a house default and a repo can override it.
+# The one key that is deliberately repo-ONLY is `[repo] reconcile-required-checks`, and its reason
+# does not apply here: that switch authorizes an unattended WRITE to branch protection, so reading
+# it globally would arm it in repositories the operator never considered. A retry bound authorizes
+# nothing — the worst a wrong one does is stop or continue a loop the operator is watching.
+#
+# A BARE INTEGER, because TOML integers are bare. `max_rounds = "6"` is a string, and accepting it
+# would mean this reader silently tolerates a type the format does not have — the direction in
+# which `max_rounds = "six"` degrades into something instead of being refused.
+adb_dispatch_max_rounds() {
+  local raw
+  raw="$(_adb_rd_layered_get reviewers max_rounds)" || return 3
+  case "$raw" in
+    ''|*[!0-9]*)
+      printf 'role-dispatch: [reviewers].max_rounds must be a bare positive integer (got %s)\n' \
+        "$(adb_display_value "$raw")" >&2
+      return 2 ;;
+  esac
+  # The LENGTH bound is not belt-and-braces: an all-digit value wider than a shell integer overflows
+  # the consumer's arithmetic, so a "bound" of 99999999999999999999 would pass a digits-only check
+  # and then compare as nonsense. 18 digits is the same ceiling `pr-watch.sh`'s `require_uint` and
+  # `roadmap-lib.sh`'s `is_uint` document, for the same reason.
+  if [ "${#raw}" -gt 18 ]; then
+    printf 'role-dispatch: [reviewers].max_rounds is too large (got %s)\n' "$(adb_display_value "$raw")" >&2
+    return 2
+  fi
+  # Zero is not a bound, it is a loop that can never run a round — and it would read as "capped"
+  # before the first ask, which is indistinguishable from a reviewer that refused.
+  if [ "$raw" -le 0 ]; then
+    printf 'role-dispatch: [reviewers].max_rounds must be greater than zero (got %s)\n' "$(adb_display_value "$raw")" >&2
+    return 2
+  fi
+  printf '%s\n' "$raw"
+  return 0
+}
+
 # --- invocation --------------------------------------------------------------------------------
 
 # Run <argv> with the hang backstop. THE mechanism lives once in common.sh as `adb_run_bounded`
@@ -984,11 +1033,15 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
                --comparable)  adb_dispatch_bots_comparable ;;
                *) echo "usage: role-dispatch.sh bots [--declared|--comparable]" >&2; exit 2 ;;
              esac ;;
+    max-rounds) # Prints the declared re-review round cap, or NOTHING with rc 3 when nothing
+             # declares one (the caller applies its own built-in). rc 2 = a declared but unusable
+             # value, which is a hard error rather than a silent fall-back to that built-in.
+             adb_dispatch_max_rounds ;;
     untrusted) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh untrusted <source>   # text on stdin" >&2; exit 2; }
              # A REQUIRED <source>: the envelope's whole job is telling the reader where the text
              # came from, and a defaulted "unknown" would silently ship an unlabelled payload from
              # a caller that simply forgot the argument.
              adb_untrusted_block "$2" ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | untrusted <source>]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | max-rounds | untrusted <source>]" >&2; exit 2 ;;
   esac
 fi

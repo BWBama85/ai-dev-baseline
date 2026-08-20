@@ -308,6 +308,59 @@ _undeclared="$( cd "$REPO" && HOME="$GHOME" bash -c '
 if [ "$_undeclared" -gt 0 ]; then ok; else bad "status 3 (undeclared) must still yield the default allowlist"; fi
 clr_repo; clr_global
 
+# ============================ max-rounds (#416) ============================
+# The re-review round bound, declared beside the reviewer it modifies. Its contract is a TRI-STATE
+# like `bots --declared`, and for the same reason: the consumer must be able to tell a repo policy
+# from a built-in, because its own diagnostic has to name which produced the effective cap.
+#
+# THIS READER SUPPLIES NO DEFAULT, deliberately. `pr-watch.sh` owns the built-in 6; if this file
+# also carried one, "which source set the cap" would have two answers and the exit-15 handoff could
+# name the wrong file to edit.
+clr_repo; clr_global
+rd max-rounds >/dev/null 2>&1
+eq "$?" "3" "max-rounds: undeclared is 3 — the caller applies its OWN built-in"
+eq "${ rd max-rounds 2>/dev/null; }" "" "max-rounds: ...and it prints nothing, never a number it invented"
+
+set_repo '[reviewers]' 'max_rounds = 9'
+eq "${ rd max-rounds; }" "9" "max-rounds: a declared bound is returned"
+rd max-rounds >/dev/null 2>&1; eq "$?" "0" "max-rounds: ...with a 0 status"
+
+# IT LAYERS repo -> global, like every other manifest key, through the one home. The repo-ONLY
+# carve-out (`[repo] reconcile-required-checks`) exists because that switch authorizes an unattended
+# WRITE to branch protection; a retry bound authorizes nothing.
+clr_repo; set_global '[reviewers]' 'max_rounds = 4'
+eq "${ rd max-rounds; }" "4" "max-rounds: a global declaration is honoured"
+set_repo '[reviewers]' 'max_rounds = 7'
+eq "${ rd max-rounds; }" "7" "max-rounds: ...and the repo wins over it"
+clr_global
+
+# EVERY MALFORMED SPELLING IS A HARD ERROR (2), never a silent fall-through to the caller's built-in.
+# An operator who wrote a bound and got the default has a cap they did not choose and no way to
+# notice — which is the one number that decides whether a productive loop is cut short.
+set_repo '[reviewers]' 'max_rounds = "6"'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a QUOTED integer is malformed (TOML integers are bare)"
+set_repo '[reviewers]' 'max_rounds = six'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a non-numeric value is malformed"
+set_repo '[reviewers]' 'max_rounds = 0'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: zero is refused — it is not a bound, it is a loop that never runs"
+set_repo '[reviewers]' 'max_rounds = -3'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a negative value is malformed"
+set_repo '[reviewers]' 'max_rounds = 3.5'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a float is malformed"
+# A digit string wider than a shell integer would overflow the consumer's arithmetic, so a
+# digits-only check is not enough — the "bound" would then compare as nonsense.
+set_repo '[reviewers]' 'max_rounds = 99999999999999999999'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an over-wide integer is refused, not silently overflowed"
+err="$(set_repo '[reviewers]' 'max_rounds = six'; rd max-rounds 2>&1 >/dev/null)"
+has "$err" "max_rounds" "max-rounds: the rejection names the key the operator must fix"
+
+# The key is INDEPENDENT of `bots`: declaring one must not require or disturb the other.
+set_repo '[reviewers]' 'max_rounds = 5'
+rd bots >/dev/null 2>&1; eq "$?" "0" "max-rounds: declaring it alone leaves the bots reader on its default"
+set_repo '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+rd max-rounds >/dev/null 2>&1; eq "$?" "3" "max-rounds: declaring bots alone leaves the bound undeclared"
+clr_repo; clr_global
+
 # ============================ invoke (PATH-stubbed agents) ============================
 # codex stub: capture the prompt from stdin and REFLECT it into --output-last-message (so the
 # test proves the prompt actually reached codex — the watchdog-stdin bug), while streaming noise

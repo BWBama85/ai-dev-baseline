@@ -608,9 +608,10 @@ What has **not** changed is that nothing re-asks: `/implement-issue` calls the g
 and no path re-arms afterwards (#168). So on a bot-reviewed repo an unattended run still ends with
 the PR unarmed — the operator merges, or re-runs the guard once the review has landed.
 
-**The waiting half shipped with #49; the arming half did not.** `/resolve-pr-threads <PR#> --watch`
-(`scripts/lib/pr-watch.sh`) waits for the reviewer in a shell poll loop and resolves any findings,
-but does not arm auto-merge afterwards — so unattended arming remains suspended on such repos.
+**The waiting half shipped with #49; the arming half did not.** `/resolve-pr-threads`
+(`scripts/lib/pr-watch.sh`) waits for the reviewer in a shell poll loop and resolves any findings —
+by default since #416, with no flag and no PR number needed when exactly one is open — but does not
+arm auto-merge afterwards, so unattended arming remains suspended on such repos.
 
 > **This guard used to read one surface of three, and wedged at `16` forever on two of them —
 > fixed by #167.** The connector signals "reviewed, nothing found" with a `+1` reaction and posts

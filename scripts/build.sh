@@ -362,6 +362,7 @@ render_agent_skill() {
   repo_settings="bash \"\$HOME/.$agent/scripts/lib/repo-settings.sh\""
   pr_review="bash \"\$HOME/.$agent/scripts/lib/pr-review.sh\""
   pr_watch="bash \"\$HOME/.$agent/scripts/lib/pr-watch.sh\""
+  pr_threads="bash \"\$HOME/.$agent/scripts/lib/pr-threads.sh\""
   cleanup_lib="bash \"\$HOME/.$agent/scripts/lib/cleanup-lib.sh\""
   implement_lib="bash \"\$HOME/.$agent/scripts/lib/implement-lib.sh\""
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
@@ -531,7 +532,7 @@ render_agent_skill() {
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v ci_health="$ci_health" \
       -v adopt_lib="$adopt_lib" -v adopt_readiness="$adopt_readiness" \
-      -v pr_watch="$pr_watch" -v actions_app_slug="$actions_app_slug" \
+      -v pr_watch="$pr_watch" -v pr_threads="$pr_threads" -v actions_app_slug="$actions_app_slug" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
       -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root" \
       -v skill_prefix="$skill_prefix" -v skill_extra_key="$skill_extra_key" \
@@ -589,6 +590,7 @@ render_agent_skill() {
       line = lreplace(line, "{{REPO_SETTINGS_LIB}}", repo_settings)
       line = lreplace(line, "{{PR_REVIEW_LIB}}",    pr_review)
       line = lreplace(line, "{{PR_WATCH_LIB}}",     pr_watch)
+      line = lreplace(line, "{{PR_THREADS_LIB}}",   pr_threads)
       line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
       line = lreplace(line, "{{IMPLEMENT_LIB}}",    implement_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)

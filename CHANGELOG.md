@@ -10,6 +10,75 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **`/resolve-pr-threads` needs no hand-holding any more (#416).** It was three kinds of manual: the
+  PR number was mandatory, the watch was behind `--watch`, and so was the re-review request — so a
+  flagless run pushed a fix, resolved the threads it had addressed, and ended **without telling the
+  reviewer to look again**, reproducing on the default path the exact stall #169 was filed to remove.
+
+  The default invocation is now bare `/resolve-pr-threads`. It **infers the PR** when exactly one is
+  open — zero and two-or-more are distinct refusals, and the second lists the candidates, because
+  resolving is a mutation and a guess that picks wrong resolves threads on the wrong pull request.
+  It **waits by default**, and it **always asks for the re-review** after a round that pushed a fix.
+  `--once` is the single-pass escape hatch (it still asks, then exits instead of waiting again), and
+  `--watch` is accepted and ignored — it names what is now the default.
+
+  **The round budget is repo-configurable and the built-in rose 3 → 6.** `[reviewers] max_rounds` in
+  `agents.toml`, with `--max-rounds <n>` overriding it and a malformed value a hard error rather than
+  a silent fall-back. Three was #49's untested "~3", and the first productive multi-round resolve
+  measured it wrong: every round pushed fixes, round 5's bred three of round 6's findings, and the
+  cap fired at 3 because four trigger comments already existed — all four the operator's own manual
+  kick-starts. **Manual requests spend the same budget by design**: the mechanism and a human post
+  the same text from the same login, so no read can tell them apart. The exit-15 handoff is now a
+  specified terminal state naming the observed count, the effective cap, which of the three sources
+  set it, and the two ways on.
+
+  This supersedes the "bounded at 3 rounds by default" statement in the #169 entry below, which
+  stands as the record of what shipped then.
+
+### Fixed
+
+- **`/resolve-pr-threads` read `reviewThreads(first:50)` unpaginated, and its own sanity check
+  confirmed the truncation (#418).** The connection returns **oldest-first**, so once a pull request
+  passed 50 threads the ones that fell off the page were the **newest** — exactly the current
+  review's findings. Worse, step 6's "remaining unresolved" check was the *same* `first:50` query, so
+  it counted inside the window that had hidden them and printed `0`, which is byte-for-byte what a
+  clean run prints. Observed live on an adopting repo: 54 threads existed, 5 were read, 5 were
+  resolved, and the run reported "remaining unresolved bot threads: 0" with four of the reviewer's
+  findings untouched.
+
+  Both reads now live in `scripts/lib/pr-threads.sh`, follow `pageInfo{hasNextPage endCursor}` to
+  exhaustion, and **prove** completeness against the connection's own `totalCount` — refusing with
+  exit 19, never a lower count and never "0 remaining". Three cheaper failures that satisfy the
+  arithmetic while dropping the newest threads are refused too: a repeated page, a cursor that does
+  not advance, and `hasNextPage: true` with no cursor. A larger constant was **not** the fix — 54
+  threads arrived in one working day, so raising 50 to 100 only moves the cliff.
+
+  The per-thread `comments(first:5)` is a **narrowed contract** rather than a raised number:
+  classification is decided by the head comment (complete by construction), ten are read for context,
+  and `comments_truncated` says when there are more. And the resolver's exact-anchored bot allowlist
+  — deliberately *not* the merge guards' asymmetric match — is now computed once in the library and
+  emitted as a per-thread `is_bot`, instead of being rebuilt twice in untestable workflow prose.
+
+  Guarded by `scripts/check-pr-threads.sh`, whose four mutations are each **observed going red** on
+  their own witness. That matters more than usual here: the defect it replaces printed exactly what a
+  clean run prints, so a green suite was never evidence that anything had been checked.
+
+- **The watch's "no model tokens" promise was true of the library and false as written (#417).**
+  Waiting really is a `sleep` loop with no model in it; what costs a full model turn is
+  **re-entering the model to start the next stretch of it**, and that is a property of how a caller
+  dispatches the command rather than of the command. Under a harness that caps foreground shell
+  calls, a half-hour wait became one turn per interval — measured in the field as dozens of
+  consecutive turns reading *"Waiting."* — *ran 2 shell commands* — *"Waiting."*
+
+  The dispatch is now specified rather than improvised. Where the harness runs a command detached and
+  re-invokes on completion, the wait is a **background task** and the notification is the wake signal
+  — no chunking, no polling, no per-round narration, and the library's own 30-minute default becomes
+  usable again. Where it does not, the chunk loop carries a stated per-chunk bound, a stated overall
+  budget, silence between chunks and one report at the end. Every wait the loop's workflows name now
+  has exactly one home — a library wait, a bounded call, a blocking command, or explicit
+  report-and-end — and no CI watcher was invented to fill a gap that did not exist.
+
+
 - **`/resolve-pr-threads --watch` can now go round again (#169).** The multi-round loop #49
   designed could never reach round 2: the Codex connector's own triggers are *open a PR*, *mark a
   draft ready*, and *comment `@codex review`* — **a push is not among them** — so after a resolve
