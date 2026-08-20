@@ -9,19 +9,18 @@
 #
 # SAY THE COST CLAIM EXACTLY, BECAUSE THE SHORT VERSION MISLED (#417). What is free is THE WAIT: one
 # process, a `sleep`, no model in it, however long `--max-secs` is. What is NOT free is RE-ENTERING
-# the model to start the next stretch of it — and that is a property of how a caller DISPATCHES this
-# command, not of this command. An agent harness that caps a foreground shell call at two minutes
-# turns a half-hour wait into fifteen model turns, each with context reloaded, and the library
-# cannot tell. Measured in the field on an adopting project: dozens of consecutive turns reading
-# "Waiting." — ran 2 shell commands — "Waiting."
+# the model to start the next stretch of it — a property of how a caller DISPATCHES this command,
+# not of this command, and one the library cannot see. So: THIS COMMAND spends no model tokens while
+# waiting, and a caller keeps that only by dispatching it as a background task (or in a terminal),
+# never by chunking it across foreground calls. base/workflows/resolve-pr-threads.md step 0b carries
+# the protocol; D86 carries the evidence.
 #
-# So the honest sentence is: THIS COMMAND spends no model tokens while waiting, and a caller keeps
-# that property only by dispatching it as a background task (or in a terminal), never by chunking it
-# across foreground calls. `base/workflows/resolve-pr-threads.md` step 0b carries the protocol.
-#
-# The per-poll lines on STDERR are not narration in that sense — they are written inside this one
-# process and read once, by whoever reads the stream. They stay: they are what makes a head that
-# moved mid-watch debuggable, and #394 pinned two of them.
+# AND `wait` IS QUIET WHILE IT POLLS. The one line a poll loop would repeat — "no terminal signal
+# yet" — is suppressed for the duration of the loop, because sixty identical lines across a
+# half-hour watch is per-poll narration by any reading. What is NOT suppressed is every EVENT: the
+# head moving under the watch, an unreadable poll, and the terminal verdict. Those are not per-poll,
+# they are what makes a watch debuggable after the fact, and #394/D85 pinned two of them.
+# `observe` classifies exactly once, so there the same line IS the answer and stays.
 #
 # WHY IT IS NOT PART OF pr-review.sh. That module's header states its own boundary: "it does not
 # wait, poll, retry, resolve threads, or merge", and names this issue as the place a waiting watch
@@ -294,6 +293,10 @@ OPT_MAX_SECS=1800
 # Consecutive unreadable polls tolerated before `wait` gives up. A single 502/rate-limit must not
 # abandon a 30-minute watch, but an endlessly unreadable API must not be waited on forever either.
 _ADB_PW_MAX_UNREADABLE=3
+# Set by `wait` around its poll loop so the repeated `pending` diagnostic is emitted once per
+# CLASSIFICATION rather than once per poll (#417). `observe` leaves it 0: a single classification's
+# diagnostic is the answer, not narration.
+_ADB_PW_QUIET_PENDING=0
 
 # --- helpers ---------------------------------------------------------------------------------
 
@@ -466,7 +469,17 @@ EOF
       # words than a re-statement here could ("no recorded activity puts <sha> on refs/heads/<ref>",
       # or "no head repository/ref … deleted fork?"). Carrying a boolean to paraphrase a line that
       # was already printed is state that can only go out of date.
-      echo "pr-watch: PR #$n at $head — no terminal signal yet from: $(adb_reviewers_in_class "$classes" none)" >&2
+      # SILENT UNDER `wait`, LOUD UNDER `observe` (#417). This is the ONE line a poll loop repeats,
+      # and repeating it is per-poll narration by any reading: a half-hour watch at 30s emits sixty
+      # identical "no terminal signal yet" lines, which is what the criterion "a wait reports when it
+      # starts, and once when it resolves or expires" exists to forbid. `observe` classifies exactly
+      # once, so there it IS the answer and stays.
+      #
+      # Only THIS line is suppressed. The event-driven diagnostics — the head moving under the watch,
+      # an unreadable poll, and every terminal verdict — are not per-poll and are what make a watch
+      # debuggable after the fact; #394/D85 pinned two of them.
+      [ "$_ADB_PW_QUIET_PENDING" = "1" ] \
+        || echo "pr-watch: PR #$n at $head — no terminal signal yet from: $(adb_reviewers_in_class "$classes" none)" >&2
       return 11 ;;
   esac
 }
@@ -550,15 +563,12 @@ adb_pw_trigger() {
 
 # THE BUILT-IN ROUND CAP, applied when neither the flag nor the manifest declares one.
 #
-# SIX, NOT THREE (#416). Three was #49's own "~3", written before anything had run the loop in
-# anger, and the first field session measured it wrong: a productive six-round resolve on an
-# adopting repo — every round pushing fixes, and round 5's fixes breeding three of round 6's
-# findings — hit the cap at 3, because four trigger comments already existed and all four were the
-# operator's own manual kick-starts. THE COUNTING IS CORRECT AND STAYS: the mechanism and a human
-# post as the same login, so they are structurally indistinguishable, and pretending otherwise
-# would need an authorship signal GitHub does not provide. That leaves the BOUND as the thing to
-# fix, and under `/resolve-pr-threads`' until-clean default a cap of 3 guarantees a premature
-# handoff on any pull request needing a fourth round.
+# SIX, NOT THREE (#416). THE COUNTING IS CORRECT AND STAYS: the cap counts every trigger comment on
+# the pull request regardless of author, because the mechanism and a human post the same text from
+# the same login and no read can tell them apart — so a human's own requests spend the budget, and
+# the exit-15 handoff says so. That leaves the BOUND as the thing to size, and under
+# `/resolve-pr-threads`' until-clean default three cuts off any pull request needing a fourth round.
+# D86 records the field measurement that set it at six.
 _ADB_PW_MAX_ROUNDS_DEFAULT=6
 # EMPTY until something declares one, and deliberately NOT pre-seeded with the default above: the
 # flag, the manifest and the built-in have to stay distinguishable, because the exit-15 handoff must
@@ -918,6 +928,10 @@ cmd_wait() {
   # every pass: the name is then true, and it stays correct whatever the counter's origin happens
   # to be — which is why a shell whose clock did not start at 0 was never the problem worth solving.
   deadline=$(( BASH_MONOSECONDS + OPT_MAX_SECS ))
+
+  # QUIET THE REPEATED PENDING LINE FOR THE DURATION OF THE LOOP (#417). Set here rather than at
+  # parse time so it covers exactly the polling, and `observe` — which classifies once — is unaffected.
+  _ADB_PW_QUIET_PENDING=1
 
   # Report an interruption honestly rather than letting the shell's default status stand in for a
   # verdict: an operator ^C is "we stopped watching", which is `pending`, not `clean`. `exit`, not

@@ -334,9 +334,15 @@ set_repo '[reviewers]' 'max_rounds = 7'
 eq "${ rd max-rounds; }" "7" "max-rounds: ...and the repo wins over it"
 clr_global
 
-# EVERY MALFORMED SPELLING IS A HARD ERROR (2), never a silent fall-through to the caller's built-in.
-# An operator who wrote a bound and got the default has a cap they did not choose and no way to
-# notice — which is the one number that decides whether a productive loop is cut short.
+# THE ACCEPTED FORM IS A PLAIN DECIMAL POSITIVE INTEGER, and every spelling outside it is a hard
+# error (2) rather than a silent fall-through to the caller's built-in — an operator who wrote a
+# bound and got the default has a cap they did not choose and no way to notice.
+#
+# SAY WHAT IS ACTUALLY COVERED, because the earlier version of this comment claimed "every malformed
+# spelling" and the reader did not validate TOML: it accepted `06`, which TOML forbids. The cases
+# below are the ones the reader now decides, not a claim to have implemented TOML. Two spellings TOML
+# would allow (`+6`, `1_000`) are deliberately refused too, and are asserted here so the narrowing is
+# a tested decision rather than an accident. Reported by the independent reviewer.
 set_repo '[reviewers]' 'max_rounds = "6"'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a QUOTED integer is malformed (TOML integers are bare)"
 set_repo '[reviewers]' 'max_rounds = six'
@@ -351,6 +357,20 @@ rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a float is malformed"
 # digits-only check is not enough — the "bound" would then compare as nonsense.
 set_repo '[reviewers]' 'max_rounds = 99999999999999999999'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an over-wide integer is refused, not silently overflowed"
+# A LEADING ZERO IS NOT A TOML INTEGER, and it must not reach arithmetic — where one reader sees 6
+# and another sees octal. This passed before the independent review caught it.
+set_repo '[reviewers]' 'max_rounds = 06'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a LEADING ZERO is refused (TOML has no such integer)"
+set_repo '[reviewers]' 'max_rounds = 011'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: ...including one that would read as octal"
+# Two spellings TOML DOES allow, refused deliberately: the accepted form is narrower than TOML's,
+# and that narrowing is asserted so it cannot drift into an accident.
+set_repo '[reviewers]' 'max_rounds = +6'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an explicit + sign is outside the accepted form"
+set_repo '[reviewers]' 'max_rounds = 1_000'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an underscore separator is outside the accepted form"
+err="$(set_repo '[reviewers]' 'max_rounds = 06'; rd max-rounds 2>&1 >/dev/null)"
+has "$err" "leading zero" "max-rounds: the leading-zero rejection says WHICH rule it broke"
 err="$(set_repo '[reviewers]' 'max_rounds = six'; rd max-rounds 2>&1 >/dev/null)"
 has "$err" "max_rounds" "max-rounds: the rejection names the key the operator must fix"
 

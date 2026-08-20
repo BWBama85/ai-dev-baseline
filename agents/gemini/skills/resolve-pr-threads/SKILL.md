@@ -153,24 +153,31 @@ bash "$HOME/.gemini/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM" --interval 30 -
 `base/practices/shell.md` is explicit that a harness-tracked task signals its own completion and
 that hand-rolled polling is for external state the harness cannot see.
 
-**B — a chunked foreground wait (only where there is no such facility).** A shell tool has its own
-ceiling — commonly ~2 minutes by default, ~10 minutes maximum — and a wait longer than the harness
-allows is not a longer wait, it is a **killed** one, which loses the verdict. So the chunk loop is
-*specified* rather than improvised:
+**B — a single bounded foreground wait (where there is no such facility).** A shell tool has its
+own ceiling — commonly ~2 minutes by default, ~10 minutes maximum — and a wait longer than the
+harness allows is not a longer wait, it is a **killed** one, which loses the verdict. So size
+`--max-secs` to fit *under your ceiling* and make expiry **terminal**:
 
-- **each chunk is `--max-secs 540`**, which sits under a 600s ceiling with margin. Raise your shell
-  tool's timeout to at least 600000 ms for these calls;
-- **at most 4 chunks — an overall bound of 36 minutes**, which is the library's own 1800s default
-  rounded to a chunk boundary. You are the loop driver; count them;
-- **re-invoke silently.** No output between chunks. Report **once** when the wait starts and
-  **once** when it resolves or expires;
-- on the 5th chunk, stop and report the timeout exactly as code `11` below.
+```bash
+bash "$HOME/.gemini/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM" --interval 30 --max-secs 540
+```
 
-The limit worth stating: a harness that re-enters *between* chunks restarts that count, so B's
-overall bound is carried by the driver rather than proved by anything. That is a real weakness of
-the fallback and is the reason A is preferred, not a detail to paper over. The **round** cap in step
-7 is what bounds the loop structurally in either mode, because it is derived from the pull request
-itself and survives a restart.
+**One call, one bound, and `11` ends the round** — report the timeout and hand back to the operator,
+exactly as the table below says. Do **not** re-invoke it in a loop to synthesize a longer wait.
+
+That restriction is the whole point, and it is worth stating why the obvious alternative was
+rejected rather than left for the next reader to re-invent. A chunk loop needs an overall deadline,
+and a deadline the *driver* counts is not a deadline: a harness that re-enters between chunks
+restarts the count, and nothing anywhere notices. The round cap cannot stand in for it either —
+that cap bounds re-review *requests*, which are only posted after a round that **pushed** something,
+so a reviewer that simply goes silent never increments it and would be waited on indefinitely. A
+bound that can be silently restarted is the shape `base/practices/shell.md` forbids: *a wrong
+predicate must expire loudly; it must never spin silently.*
+
+So the fallback's bound is the one thing that is genuinely hard here — a single `--max-secs`
+enforced inside one process, by `pr-watch.sh`'s own monotonic deadline. A harness with a small
+ceiling therefore gets a **short** wait rather than a fake long one, and the operator re-runs or
+uses A or C. Trading reach for a bound that cannot lie is the right way round.
 
 **C — neither, and you would rather not wait at all:** run the library in a terminal you keep — it
 is a plain command with no agent in the loop — and re-run this skill with `--once` when it reports
@@ -179,6 +186,11 @@ findings:
 ```
 bash "$HOME/.gemini/scripts/lib/pr-watch.sh" wait --pr N --interval 30 --max-secs 1800
 ```
+
+**No per-round narration, in any mode.** Report **once** when the wait starts and **once** when it
+resolves or expires. The library is quiet while it polls — since #417 `wait` prints no line per
+pending poll, only the events that matter (the head moving under it, an unreadable poll, and the
+terminal verdict) — and you should be too.
 
 **In every mode the verdict reaches you as an EXIT CODE.** Make the `wait` call the last command in
 its block; assigning it to a variable makes the block exit 0 for every verdict and the table below
@@ -269,13 +281,25 @@ and resolution still happens in steps 1–8, under exactly the rules they alread
 Require only `gh` and `jq` — the gate runner (Step 4) auto-detects the project's stack, so this skill does not hard-require any particular package manager.
 
 ```bash
-# The first BARE INTEGER, not the first token: the argument list may lead with a flag, and
-# `awk '{print $1}'` would then hand every read below a PR number of "--once". With NO integer,
-# ask the same predicate step 0a did — these blocks may run as separate shells, so this one
-# re-resolves rather than borrowing a variable that may not exist.
+# THE PARSER IS STEP 0a's, CHARACTER FOR CHARACTER, and that is load-bearing rather than tidy.
+# These blocks may run as separate shells, so this one re-resolves instead of borrowing a variable
+# — and a parser that differs by one arm resolves a DIFFERENT PR than the step that already ran.
+#
+# The arm that matters is `--max-rounds`: a loop that only hunts the first bare integer reads that
+# flag's VALUE as the pull request. `/resolve-pr-threads --max-rounds 9` would infer the PR in step
+# 0a and then target PR 9 here, and `--max-rounds 9 42` would target 9 instead of the explicit 42 —
+# replying on and RESOLVING threads on a pull request nobody named. Skipping the value is the whole
+# job of `_want_rounds`.
 PR_NUM=""
+_want_rounds=0
 for a in $ARGUMENTS; do
-  case "$a" in ''|*[!0-9]*) ;; *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;; esac
+  if [ "$_want_rounds" = "1" ]; then _want_rounds=0; continue; fi
+  case "$a" in
+    --max-rounds)  _want_rounds=1 ;;
+    --once|--watch) ;;
+    ''|*[!0-9]*)   ;;
+    *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
+  esac
 done
 if [ -z "$PR_NUM" ]; then
   PR_NUM="$(bash "$HOME/.gemini/scripts/lib/pr-threads.sh" infer-pr)" || { echo "ERROR: could not determine which PR to resolve (see above)"; exit 1; }
@@ -324,7 +348,21 @@ fi
 
 # Capture the branch to RESTORE to on exit (issue #17: never strand the tree on the
 # PR head). This runs before any switch, so on the dirty-abort above nothing moved.
-ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+#
+# CAPTURED ONCE FOR THE WHOLE RUN, NOT ONCE PER ROUND. Step 7 sends the loop back through this step,
+# and by then the tree is ALREADY on the PR head — so a fresh capture would record the PR branch as
+# "where we started", and step 8 would faithfully restore the tree to the branch it was supposed to
+# leave. That is issue #17's own defect, re-introduced by the loop rather than by a missing restore.
+# The guard is the emptiness test: round 2 finds it already set and leaves it alone.
+#
+# `${ORIG_BRANCH:-}` and not `$ORIG_BRANCH`, because these blocks may run as separate shells and an
+# unset variable under `set -u` would abort the step. If a later round genuinely runs in a fresh
+# shell that lost the value, it re-captures the PR branch — which is why the SUMMARY must carry the
+# starting branch too, and why step 8 falls back to the PR's base and then the default.
+if [ -z "${ORIG_BRANCH:-}" ]; then
+  ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+  echo "ORIG_BRANCH=$ORIG_BRANCH   # carry this value into every later round and into step 8"
+fi
 if [ "$ORIG_BRANCH" != "$PR_BRANCH" ]; then
   echo "Switching working tree from '$ORIG_BRANCH' to '$PR_BRANCH' (PR #$PR_NUM's head); will restore '$ORIG_BRANCH' on exit."
 fi
@@ -346,7 +384,9 @@ The connection returns **oldest-first**, so once a PR passed 50 threads the ones
 page were the **newest** — exactly the current review's findings, which are the ones the round exists
 to address. Measured live on an adopting repo: 54 threads existed, 5 were read, 5 were resolved, and
 step 6's check — the same `first:50` query — reported *"remaining unresolved: 0"* while four of the
-reviewer's findings sat untouched. A short read reported what a clean run reports.
+reviewer's findings sat untouched. Read exactly: the query returned **50** threads (45 already
+resolved, plus the 5 oldest of a 9-thread new batch); 5 were resolved; the **4 newest were never
+read by either pass**. A short read reported what a clean run reports.
 
 So the enumeration lives in a tested library now, and it **proves itself complete**: it follows
 `pageInfo{hasNextPage endCursor}` to exhaustion and compares what it accumulated against the

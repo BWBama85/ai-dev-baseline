@@ -2,12 +2,8 @@
 # ai-dev-baseline — unit tests for the /resolve-pr-threads decision predicates
 # (scripts/lib/pr-threads.sh, #416 + #418). OFFLINE: no network, no gh auth, no real repo touched.
 #
-# THE ONE DANGEROUS DIRECTION IS REPORTING FEWER THREADS THAN EXIST, and #418 is the worked example
-# of how that ships green: both reads were `reviewThreads(first:50)` with no cursor, the connection
-# is OLDEST-FIRST, and the step-6 "remaining unresolved" check re-used the same truncating window —
-# so the guard that exists to catch a short read CONFIRMED it. On the live pull request that found
-# it, 54 threads existed, 5 were seen, 5 were resolved, and the check said "0 remaining" while four
-# of the current review's findings sat unaddressed.
+# THE ONE DANGEROUS DIRECTION IS REPORTING FEWER THREADS THAN EXIST, and a short read is observable
+# to nobody: it prints what a clean run prints. D86 records the incident that proved it.
 #
 # Every case below is a way that could happen again:
 #
@@ -138,7 +134,16 @@ if [ "$MODE" = mutation ]; then
     'if [ "$uniq" -ne "$got" ]; then' \
     'if false; then' \
     'list: a repeated page is refused, not counted as completeness'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 4
+  # #418's OWN SHAPE, as a mutation. With the count proof disabled, the resolved-page-plus-overflow
+  # fixture is exactly the live incident: the read returns 50 of 54, the 4 newest are invisible, and
+  # `remaining` reports a number instead of refusing. This row is what proves the new witness case
+  # can fire — the other rows all use uniformly-unresolved fixtures, where truncation shows up in
+  # the count immediately and the incident could not have happened.
+  check_mut "short-read-on-the-418-shape" \
+    'echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2' \
+    ':' \
+    'the #418 shape: the refusal names the exact live shortfall'
+  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 5
   check_summary "check-pr-threads --mutation"
   exit 0
 fi
@@ -216,11 +221,17 @@ calls_for()    { if [ -f "$S/calls" ]; then grep -c "^$1\$" "$S/calls"; else pri
 #   One GraphQL page document. Thread ids are `T<n>` and n increases with the page, so the fixture
 #   reproduces #418's property — the threads a truncating read drops are the NEWEST — and a test can
 #   assert WHICH threads are missing rather than only how many.
+#
+#   IT MODELS `comments(first:10)`, emitting `min(comments-total, 10)` comment nodes. Emitting ONE
+#   node regardless made `comments_read` unable to tell `first:10` from `first:1`, so the assertion
+#   that ten context comments are retained proved nothing — the fixture, not the code, was deciding
+#   the answer. Reported by the independent reviewer.
 mkpage() {
-  jq -n --arg key "$1" --argjson total "$2" --argjson more "$3" --arg next "$4" \
+  jq -n --argjson total "$2" --argjson more "$3" --arg next "$4" \
         --argjson from "$5" --argjson count "$6" \
         --arg who "${7:-chatgpt-codex-connector}" --argjson resolved "${8:-false}" \
         --argjson ctotal "${9:-1}" --arg slug "${10:-acme/widget}" '
+    ([$ctotal, 10] | min) as $cread |
     { data: { repository: { pullRequest: {
         baseRepository: { nameWithOwner: $slug },
         reviewThreads: {
@@ -228,9 +239,44 @@ mkpage() {
           pageInfo: { hasNextPage: $more, endCursor: $next },
           nodes: [ range($from; $from + $count) as $i | {
             id: "T\($i)", isResolved: $resolved, isOutdated: false,
-            comments: { totalCount: $ctotal, nodes: [ {
-              id: "C\($i)", author: { login: $who }, path: "a.txt", line: $i,
-              body: "finding \($i)", createdAt: "2026-08-20T00:00:00Z" } ] } } ] } } } } }' \
+            comments: { totalCount: $ctotal,
+                        nodes: [ range(0; $cread) as $c | {
+                          id: "C\($i)_\($c)", author: { login: $who }, path: "a.txt", line: $i,
+                          body: "finding \($i) comment \($c)",
+                          createdAt: "2026-08-20T00:00:00Z" } ] } } ] } } } } }' \
+    > "$S/page-$1.json"
+}
+
+# mkmixed <cursor-key> <totalCount> <hasNext> <next> <resolved-count> <unresolved-count>
+#   THE #418 WITNESS SHAPE, which none of the fixtures above reproduce and which the owner's own
+#   evidence describes: a page whose threads are mostly ALREADY RESOLVED, with the unresolved ones
+#   pushed past the page boundary. On the live pull request that was 45 resolved + 9 new, so a
+#   `first:50` window held 45 resolved + the 5 OLDEST of the new batch — the within-page unresolved
+#   count read 5, all 5 were resolved, the check then read 0, and the 4 NEWEST were invisible to
+#   both. A fixture whose threads are uniformly unresolved cannot exhibit that, because the
+#   truncation shows up in the count immediately. Reported by the independent reviewer.
+# <res-from> and <unres-from> offset the ids so a SECOND page carries different threads. Without
+# them page two re-used `U0..`, the accumulated set held duplicates, and the distinct-id proof
+# correctly refused — the guard catching a bad fixture, which is what it is for.
+mkmixed() {
+  jq -n --argjson total "$2" --argjson more "$3" --arg next "$4" \
+        --argjson res "$5" --argjson unres "$6" \
+        --argjson rfrom "${7:-0}" --argjson ufrom "${8:-0}" --arg who "chatgpt-codex-connector" '
+    { data: { repository: { pullRequest: {
+        baseRepository: { nameWithOwner: "acme/widget" },
+        reviewThreads: {
+          totalCount: $total,
+          pageInfo: { hasNextPage: $more, endCursor: $next },
+          nodes: ( [ range($rfrom; $rfrom + $res) as $i | {
+                       id: "R\($i)", isResolved: true, isOutdated: false,
+                       comments: { totalCount: 1, nodes: [ {
+                         id: "RC\($i)", author: { login: $who }, path: "a.txt", line: $i,
+                         body: "old finding \($i)", createdAt: "2026-08-20T07:00:00Z" } ] } } ]
+                 + [ range($ufrom; $ufrom + $unres) as $i | {
+                       id: "U\($i)", isResolved: false, isOutdated: false,
+                       comments: { totalCount: 1, nodes: [ {
+                         id: "UC\($i)", author: { login: $who }, path: "b.txt", line: $i,
+                         body: "new finding \($i)", createdAt: "2026-08-20T21:15:26Z" } ] } } ] ) } } } } }' \
     > "$S/page-$1.json"
 }
 
@@ -360,6 +406,38 @@ pt list --pr 1
 eq "$RC" "19" "list: a repeated page is refused, not counted as completeness"
 has "$ERR" "distinct ids" "list: ...and says the pages overlapped"
 
+# --- #418's OWN SHAPE: A RESOLVED PAGE WITH UNRESOLVED OVERFLOW --------------------------------
+# THE FIXTURE THAT REPRODUCES THE LIVE INCIDENT, and the one every case above is blind to. On the
+# pull request that found the bug the page was 45 ALREADY-RESOLVED threads plus the 5 oldest of a
+# 9-thread new batch, with the 4 NEWEST past the boundary. The old guard counted unresolved threads
+# INSIDE that window, got 5, resolved all 5, re-counted inside the same window, and truthfully said
+# 0 — while four findings sat unaddressed.
+#
+# A fixture whose threads are uniformly unresolved cannot exhibit that: the truncation shows up in
+# the count immediately, so the within-page check would have caught it and the incident could not
+# have happened. That is why this shape is its own case rather than a variation. Named by the
+# independent reviewer.
+reset_fx; declare_bots "[\"$CODEX\"]"
+mkmixed 1 54 false "" 45 5          # the page: 45 resolved + 5 unresolved; totalCount says 54
+pt remaining --pr 1
+eq "$RC" "19" "the #418 shape: a resolved page hiding unresolved overflow REFUSES"
+eq "$OUT" ""  "the #418 shape: ...and reports NO count — 5, and certainly not 0"
+has "$ERR" "read 50 of totalCount 54" "the #418 shape: the refusal names the exact live shortfall"
+# ...and the resolve pass refuses on the same read, so a round cannot act on the truncated page and
+# then have the check bless it.
+pt list --pr 1
+eq "$RC" "19" "the #418 shape: the resolve pass refuses too, not just the check"
+
+# THE CONTROL FOR THAT SHAPE: when the overflow is actually PAGED, the same 54 threads read cleanly
+# and the count is the 9 unresolved ones — so the case above is red for truncation, not for the
+# mixed resolved/unresolved shape itself.
+reset_fx; declare_bots "[\"$CODEX\"]"
+mkmixed 1  54 true  c2 45 5 0 0
+mkmixed c2 54 false ""  0  4 0 5
+pt remaining --pr 1
+eq "$RC" "0" "the #418 shape, PAGED: the same pull request reads cleanly across two pages"
+eq "$OUT" "9" "the #418 shape, PAGED: all 9 unresolved threads are counted, including the 4 newest"
+
 # --- EVERY UNREADABLE PATH REFUSES ------------------------------------------------------------
 reset_fx; mkpage 1 6 false "" 0 6
 STUB_FAIL_GQL=1 pt list --pr 1
@@ -441,7 +519,7 @@ eq "$RC" "18" "remaining: a malformed [reviewers] bots is 18 there too"
 reset_fx; declare_bots "[\"$CODEX\"]"; mkpage 1 1 false "" 0 1 "$CODEX" false 25
 pt list --pr 1
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_total')"     "25"   "list: a thread reports how many comments it HAS"
-eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_read')"      "1"    "list: ...and how many were read"
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_read')"      "10"   "list: ...and that TEN were actually read (not one — the query says first:10)"
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "true" "list: ...and flags the difference, rather than hiding it"
 reset_fx; mkpage 1 1 false "" 0 1 "$CODEX" false 1
 pt list --pr 1

@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — /resolve-pr-threads' decision predicates (issues #416, #418).
 #
-# /resolve-pr-threads is prose an agent executes, so its load-bearing READS used to live only as
-# inline `gh api graphql` blocks in the skill body — unexecutable, and therefore untestable. That
-# is exactly how #418 happened: BOTH thread reads were `reviewThreads(first:50)` with no cursor,
-# the connection returns OLDEST-FIRST, and the step-6 "remaining unresolved" check re-used the same
-# truncating window — so the guard that exists to catch a short read CONFIRMED it instead. On the
-# live PR that found it, 54 threads existed, 5 were seen, 5 were resolved, and the check reported
-# "remaining unresolved bot threads: 0" while four of the current review's findings sat unaddressed.
+# /resolve-pr-threads is prose an agent executes, so its load-bearing READS lived only as inline
+# `gh api graphql` blocks in the skill body — unexecutable, and therefore untestable. This library is
+# the ONE home for those decisions so they can be regression-tested offline
+# (scripts/check-pr-threads.sh) and CITED by the workflow rather than restated: the DRY discipline of
+# docs/design-principles.md, and the same split cleanup-lib.sh makes for /cleanup.
 #
-# This library is the ONE home for those decisions so they can be regression-tested offline
-# (scripts/check-pr-threads.sh) and CITED by the workflow instead of restated — the DRY discipline
-# of docs/design-principles.md: source the shared primitive, never copy it. It is the same split
-# scripts/lib/cleanup-lib.sh makes for /cleanup and scripts/lib/roadmap-lib.sh for /roadmap.
+# A truncated thread read is observable to nobody: it prints what a clean run prints. The incident
+# that proved it, and the alternatives weighed against this design, are in D86.
 #
 # WHY NOT pr-watch.sh. That module's header states its own boundary — "it does not resolve threads,
 # edit code, push, or merge" — and enumerating the threads a resolver is about to reply on and
@@ -21,67 +17,49 @@
 # are there, and which of them may I touch?"
 #
 # ------------------------------------------------------------------------------------------------
-# THE TRUNCATION RULE, AND WHY IT IS A HARD ERROR RATHER THAN A LARGER CONSTANT
+# THE CONTRACT: A READ EITHER PROVES ITSELF COMPLETE OR REFUSES
 #
-# `first: N` on a GraphQL connection is a page size, not a ceiling on reality. Raising 50 to 100
-# moves the cliff; it does not remove it, and the first adopting repo to run the loop in anger
-# accumulated 54 threads in one working day. Two properties make a silent short read worse than an
-# ordinary truncation:
+# `first: N` is a page size, not a ceiling on reality, so every read here paginates to exhaustion
+# via `pageInfo{hasNextPage endCursor}` and then proves what it accumulated against the connection's
+# own `totalCount`. A read that cannot be proved complete is exit 19; there is no path on which it
+# prints a count.
 #
-#   1. THE CONNECTION IS OLDEST-FIRST, so the threads that fall off a `first:` page are the NEWEST
-#      — exactly the current review's findings, which are the ones the round exists to address.
-#      Verified by live probe on this repo's PR #415 (2026-08-20): six threads came back ordered
-#      07:45:57Z, 07:45:57Z, then 19:28:48Z four times.
-#   2. A COUNT COMPUTED INSIDE THE TRUNCATED WINDOW CANNOT SEE ITS OWN EDGE. "0 remaining" from a
-#      short read is byte-for-byte what a clean run prints — the guard-that-cannot-answer-wrong
-#      shape base/practices/self-review.md names.
+# Three cheaper failures are refused beside the shortfall, because arithmetic alone is not
+# completeness: a repeated page (duplicate thread ids) satisfies `read >= totalCount` while carrying
+# none of the newest threads, a cursor that does not advance loops on one page, and
+# `hasNextPage: true` with no cursor cannot be followed at all.
 #
-# So every read here PAGINATES to exhaustion via `pageInfo{hasNextPage endCursor}` and then proves
-# what it accumulated against the connection's own `totalCount`. A shortfall is exit 19 naming both
-# numbers. There is no path on which an incomplete read prints a count.
+# TWO CONSTRAINTS A LATER EDIT MUST NOT "SIMPLIFY" AWAY:
 #
-# THE CURSOR LOOP IS HAND-ROLLED RATHER THAN `gh api graphql --paginate`, for one reason that is
-# about the guard and not about taste: the completeness proof must compare THIS module's own
-# accumulation against `totalCount`, and the negative test must be able to watch the loop iterate.
-# `--paginate` is gh's own loop, so a stub could only exercise it by re-implementing pagination
-# inside the stub — testing the fixture instead of the code. Each page is one ordinary
-# `gh api graphql` call a stub can answer, count, and vary.
+#   * THE CONNECTION IS OLDEST-FIRST, so what a `first:` page drops is the NEWEST threads — the
+#     current review's findings, which is exactly what the caller is here to address. Raising the
+#     page size moves that cliff rather than removing it.
+#   * A COUNT COMPUTED INSIDE A TRUNCATED WINDOW CANNOT SEE ITS OWN EDGE, which is why `remaining`
+#     shares this read instead of running its own query. "0 remaining" from a short read is
+#     byte-for-byte what a clean run prints — the guard-that-cannot-answer-wrong shape
+#     base/practices/self-review.md names.
 #
-# ARITHMETIC ALONE IS NOT COMPLETENESS, which is why three cheaper failures are refused beside the
-# shortfall: a repeated page (duplicate thread ids) satisfies `read >= totalCount` while carrying
-# none of the newest threads, a cursor that does not advance loops on one page forever, and a
-# `hasNextPage: true` with no cursor cannot be followed at all. Reported by the independent
-# gap-analysis pass.
+# The cursor loop is hand-rolled rather than `gh api graphql --paginate` so that the completeness
+# proof compares THIS module's own accumulation, and so the negative test can watch the loop
+# iterate. D86 records why that was chosen over the alternatives.
 #
 # ------------------------------------------------------------------------------------------------
-# THE PER-THREAD COMMENT PAGE IS DELIBERATELY NOT PAGINATED, AND SAYS SO
+# THE PER-THREAD COMMENT PAGE IS A NARROWED CONTRACT, NOT A PAGE SIZE
 #
-# `comments(first:N)` inside each thread was `first:5`. The contract is narrowed rather than the
-# number raised, and the two halves are separate:
-#
-#   * CLASSIFICATION is decided by the thread's HEAD comment — its author login is what the
-#     resolvable-bot allowlist matches, and page one always carries it. That half is complete by
-#     construction and is stated as the contract.
-#   * CONTEXT is the rest of the conversation, and a later reply can clarify, refute or reopen a
-#     finding. Ten are read, and when a thread carries more the record says so.
-#
-# What was wrong was never the number; it was the SILENCE. Every thread now carries
-# `comments_total`, `comments_read` and `comments_truncated`, so an agent that needs the rest knows
-# there IS a rest and can fetch it. Raising the constant without the flag would have moved the same
-# blind spot to a different number.
+# Classification is decided by the thread's HEAD comment — its author login is what the allowlist
+# matches — and page one always carries it, so that half is complete by construction. The rest of
+# the conversation is context a later reply can change: ten are read, and `comments_total`,
+# `comments_read` and `comments_truncated` say when there are more. The flag is the contract; the
+# number is not.
 #
 # ------------------------------------------------------------------------------------------------
-# THE ALLOWLIST IS BUILT HERE, ONCE, AND IT IS THE RESOLVER'S — NOT THE MERGE GUARDS'
+# THE ALLOWLIST HERE IS THE RESOLVER'S, NOT THE MERGE GUARDS'
 #
-# base/roles.md is explicit that `[reviewers] bots` has two readers with deliberately different
-# semantics. The merge guards match ASYMMETRICALLY (a bare `foo` accepts `foo` or `foo[bot]`); the
-# resolver matches EXACTLY — anchored and case-insensitive — because it is deciding whose threads it
-# may silently resolve, and an over-broad match there touches a thread nobody meant it to. This
-# module implements the RESOLVER's rule; do not "unify" it with `adb_reviewer_match_jq`.
-#
-# It was built TWICE in the workflow prose — step 1's `$BOT_RE` and step 6's `: "${BOT_RE:=…}"`
-# re-derivation — which is two untestable copies of one predicate. `list` emits a per-thread
-# `is_bot`, so the workflow no longer builds it at all.
+# base/roles.md gives `[reviewers] bots` two readers with deliberately different semantics. The merge
+# guards match ASYMMETRICALLY (a bare `foo` accepts `foo` or `foo[bot]`); this one matches EXACTLY —
+# anchored, case-insensitive — because it decides whose threads may be resolved without a human
+# looking, and an over-broad match there touches a thread nobody meant it to. Do not "unify" it with
+# `adb_reviewer_match_jq`. `list` emits the verdict as a per-thread `is_bot` so the rule has one home.
 #
 # ------------------------------------------------------------------------------------------------
 # Usage:
@@ -156,6 +134,10 @@ _ADB_PT_MAX_PAGES=100
 # How many comments of each thread are read. See the header: the number is not the contract, the
 # `comments_truncated` flag is.
 _ADB_PT_COMMENTS=10
+# How many open pull requests `infer-pr` will list. A page size, not a ceiling on reality — which is
+# why the ambiguous refusal says "at least" once it is saturated rather than reporting the limit as
+# an exact count.
+_ADB_PT_PR_LIMIT=100
 
 # The thread query, written ONCE. The first page and every cursor page send this exact document;
 # the only difference between them is whether an `endCursor` variable accompanies it, which is a
@@ -220,7 +202,7 @@ _adb_pt_bot_re() {
 # or malformed response. Never a partial array.
 _adb_pt_fetch() {
   local n="$1" slug="$2" arg="$3" owner name cursor="" prev_cursor="" page=0
-  local raw parsed fields total more gotslug src got uniq acc="[]"
+  local raw parsed fields total="" page_total more gotslug src got uniq acc="[]"
   local -a curarg=()
   case "$slug" in
     */*) owner="${slug%%/*}"; name="${slug#*/}" ;;
@@ -278,9 +260,14 @@ _adb_pt_fetch() {
     fields="$(printf '%s' "$parsed" | jq -r '(.total|tostring), (.more|tostring), .next, .slug' 2>/dev/null)" \
       || { echo "pr-threads: could not read the page state of PR #$n (page $page)" >&2; return 20; }
     prev_cursor="$cursor"
-    { IFS= read -r total; IFS= read -r more; IFS= read -r cursor; IFS= read -r gotslug; } <<EOF
+    { IFS= read -r page_total; IFS= read -r more; IFS= read -r cursor; IFS= read -r gotslug; } <<EOF
 $fields
 EOF
+    # KEEP THE LARGEST totalCount ANY PAGE REPORTED, not the last one. Overwriting per page meant the
+    # proof below compared against whatever the FINAL page happened to claim, so a count that shrank
+    # mid-pagination would lower the bar the read has to clear — the one direction this module must
+    # never be wrong in. Taking the max makes a shrinking count unable to mask a shortfall.
+    [ -n "$total" ] && [ "$page_total" -le "$total" ] || total="$page_total"
 
     # PROVE THIS READ ADDRESSED THE REPOSITORY THE CALLER MEANT, on the FIRST page and before any
     # thread id is accumulated. The caller replies on and RESOLVES the ids this returns, so
@@ -339,10 +326,25 @@ EOF
 
   # THE COMPLETENESS PROOF, and the whole reason this module exists: an incomplete read is LOUD.
   #
-  # `-lt`, not `-ne`. A connection whose totalCount LAGS its own nodes is not a shortfall — GitHub's
-  # counts are eventually consistent, and a thread created mid-pagination can appear in `nodes`
-  # before it is counted — and refusing that would make the resolver refuse threads it had
-  # successfully read. The direction that must never pass silently is the other one.
+  # `-lt`, not `-ne`, AND THE ASYMMETRY IS ARGUED FROM THIS MODULE'S CONTRACT RATHER THAN FROM ANY
+  # CLAIM ABOUT GITHUB. An earlier version of this comment justified it by asserting that the
+  # connection's counts are eventually consistent; that is a third-party behaviour claim, it was
+  # never resolved against a vendor source, and `base/practices/third-party-claims.md` says recall
+  # does not close one. So it is gone, and the argument is the local one that does hold:
+  #
+  #   read < totalCount  — threads exist that this read did not return. That IS the defect (#418),
+  #                        and it is refused.
+  #   read > totalCount  — more threads were returned than the connection counts. Whatever explains
+  #                        it, it cannot be an UNDER-read, which is the only direction this module
+  #                        promises anything about. Refusing here would make the resolver decline
+  #                        work it had successfully read, on a discrepancy in the safe direction.
+  #
+  # It is still evidence that the response is internally inconsistent, so it is REPORTED rather than
+  # silently accepted — an operator seeing it can decide, and a future reader has the fact rather
+  # than the silence. Reported by the independent reviewer.
+  if [ "$got" -gt "$total" ]; then
+    echo "pr-threads: PR #$n — note: read $got threads but totalCount is $total; the response is internally inconsistent, though not an under-read" >&2
+  fi
   if [ "$got" -lt "$total" ]; then
     echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2
     return 19
@@ -375,7 +377,7 @@ cmd_infer_pr() {
   # names the repository up front instead.
   slug="$(adb_pr_query_slug pr-threads "")" \
     || { echo "pr-threads: could not resolve which repository to list pull requests for" >&2; return 20; }
-  raw="$(gh pr list --repo "$slug" --state open --limit 100 --json number,title,headRefName,isDraft,url 2>/dev/null)" \
+  raw="$(gh pr list --repo "$slug" --state open --limit "$_ADB_PT_PR_LIMIT" --json number,title,headRefName,isDraft,url 2>/dev/null)" \
     || { echo "pr-threads: could not list the open pull requests of $slug" >&2; return 20; }
   [ -n "$raw" ] \
     || { echo "pr-threads: could not list this repository's open pull requests (empty response body)" >&2; return 20; }
@@ -397,7 +399,16 @@ cmd_infer_pr() {
   list="$(printf '%s' "$raw" | jq -r 'sort_by(.number)[]
            | "  #\(.number)\(if .isDraft then " [draft]" else "" end)  \(.headRefName)  \(.title)  \(.url)"' 2>/dev/null)" \
     || { echo "pr-threads: could not render the open pull requests" >&2; return 20; }
-  echo "pr-threads: $n open pull requests — name the one you mean; this never guesses:" >&2
+  # SAY "AT LEAST" WHEN THE LISTING IS SATURATED. `--limit` is a page size, so a repository with more
+  # open pull requests than the limit would otherwise be reported as having EXACTLY the limit, and
+  # the message would promise a complete candidate list it did not have. The refusal is correct
+  # either way — two or more is a refusal — but a count stated as exact when it is a ceiling is the
+  # same class of quiet inaccuracy this module exists to remove. Reported by the independent reviewer.
+  if [ "$n" -ge "$_ADB_PT_PR_LIMIT" ]; then
+    echo "pr-threads: at least $n open pull requests (the listing is capped at $_ADB_PT_PR_LIMIT) — name the one you mean; this never guesses. Showing the first $n:" >&2
+  else
+    echo "pr-threads: $n open pull requests — name the one you mean; this never guesses:" >&2
+  fi
   printf '%s\n' "$list" >&2
   return 11
 }

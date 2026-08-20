@@ -563,17 +563,34 @@ adb_dispatch_bots_comparable() {
 # it globally would arm it in repositories the operator never considered. A retry bound authorizes
 # nothing — the worst a wrong one does is stop or continue a loop the operator is watching.
 #
-# A BARE INTEGER, because TOML integers are bare. `max_rounds = "6"` is a string, and accepting it
-# would mean this reader silently tolerates a type the format does not have — the direction in
-# which `max_rounds = "six"` degrades into something instead of being refused.
+# THE ACCEPTED FORM IS NARROWER THAN "A TOML INTEGER", AND THAT IS STATED RATHER THAN IMPLIED.
+# This reader accepts exactly a plain decimal positive integer: no quotes, no sign, no underscore
+# separators, no leading zero. TOML 1.0 would also allow `+6` and `1_000`, and those are REFUSED
+# here — a retry bound is a small number and a spelling that needs a thousands separator is far more
+# likely a typo than an intent. What matters is that the boundary is written down, because the
+# earlier version of this comment claimed to validate "a TOML integer" and did not: it accepted
+# `06`, which TOML forbids, and passed it straight to arithmetic. Reported by the independent
+# reviewer.
+#
+# A quoted value is refused for the same reason it is dangerous: `max_rounds = "6"` is a STRING, and
+# tolerating a type the format does not have here is the direction in which `max_rounds = "six"`
+# degrades into something rather than being rejected.
 adb_dispatch_max_rounds() {
   local raw
   raw="$(_adb_rd_layered_get reviewers max_rounds)" || return 3
   case "$raw" in
     ''|*[!0-9]*)
-      printf 'role-dispatch: [reviewers].max_rounds must be a bare positive integer (got %s)\n' \
+      printf 'role-dispatch: [reviewers].max_rounds must be a plain decimal positive integer — no quotes, sign, underscores or leading zero (got %s)\n' \
         "$(adb_display_value "$raw")" >&2
       return 2 ;;
+  esac
+  # A LEADING ZERO IS NOT A TOML INTEGER AT ALL, so `06` must not reach the arithmetic below — where
+  # it would be read as 6 by one shell and, in another context, as octal. Refuse the spelling rather
+  # than guess which was meant.
+  case "$raw" in
+    0*) printf 'role-dispatch: [reviewers].max_rounds must not carry a leading zero — TOML has no such integer (got %s)\n' \
+          "$(adb_display_value "$raw")" >&2
+        return 2 ;;
   esac
   # The LENGTH bound is not belt-and-braces: an all-digit value wider than a shell integer overflows
   # the consumer's arithmetic, so a "bound" of 99999999999999999999 would pass a digits-only check

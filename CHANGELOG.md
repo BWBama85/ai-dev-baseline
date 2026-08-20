@@ -42,9 +42,11 @@ only by a published release, which is what these entries are the notes for.
   passed 50 threads the ones that fell off the page were the **newest** — exactly the current
   review's findings. Worse, step 6's "remaining unresolved" check was the *same* `first:50` query, so
   it counted inside the window that had hidden them and printed `0`, which is byte-for-byte what a
-  clean run prints. Observed live on an adopting repo: 54 threads existed, 5 were read, 5 were
+  clean run prints. Observed live on an adopting repo: 54 threads existed, 50 were read, 5 were
   resolved, and the run reported "remaining unresolved bot threads: 0" with four of the reviewer's
-  findings untouched.
+  findings untouched. Precisely: the query returned **50** threads — 45 already resolved plus the 5
+  oldest of a 9-thread new batch — so 5 were the only unresolved ones it could see, and the 4 newest
+  were never read by either pass.
 
   Both reads now live in `scripts/lib/pr-threads.sh`, follow `pageInfo{hasNextPage endCursor}` to
   exhaustion, and **prove** completeness against the connection's own `totalCount` — refusing with
