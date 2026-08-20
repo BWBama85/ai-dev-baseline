@@ -6781,3 +6781,75 @@ limit: none of them is sufficient alone.
              header repeated the disproven ceiling premise; an interrupted run could leave stubs
              ticking for 180s because the EXIT guard removed `$work` — and with it the cooperative
              STOP path — rather than using it first.
+
+## D85 — the pr-watch flake was a deadline racing a fixture, not a window aging out, and the two roles of `--max-secs` are now named
+
+- date:      2026-08-20
+- category:  project-delta
+- unknown:   #394 reported `check-pr-watch.sh`'s "wait: reports that the head moved under it" case
+             failing under an 8-worker parallel `selfcheck` run and passing standalone on the same
+             commit, twice, with the same diagnostic. It suspected the shape #387 was filed for —
+             "the window ages past the boundary mid-case and the wait classifies the fixture's
+             activity as unprovably fresh".
+- decision:  (1) THAT SUSPECTED CAUSE IS FALSE, and the fixture says so without any measurement:
+                 every timestamp the case uses is a FIXED CONSTANT (`ARRIVED_AT`, `AFTER_AT`,
+                 `BEFORE_AT`), so no window it owns can age. What load stretches is POLL LATENCY
+                 against `cmd_wait`'s real-elapsed-time deadline. The case ran `--interval 1
+                 --max-secs 3` and asserted a message only the SECOND poll can print; a first poll
+                 costing more than 3s returns `11` at the deadline having classified once, so
+                 `rc 11` was satisfied VACUOUSLY and the only red was the missing message.
+             (2) PROVED BY INJECTION, not by argument, and the evidence is a byte-match. Adding a
+                 `$S/slow-<n>` hook to the shared GraphQL stub and giving poll 1 four seconds
+                 against the 3s bound reproduces the CI line exactly — `no recorded activity puts
+                 bbbb… on refs/heads/feature, so a date-scoped signal cannot be proved fresh` —
+                 with the poll counter reading **1** instead of the unloaded **4**. The counter is
+                 what settles it: the quoted diagnostic ALONE is also what a healthy poll 1 prints,
+                 so inferring "only one poll ran" from stderr would have been a guess.
+             (3) THE SIBLING WAS CONFIRMED THE SAME WAY, not assumed. "wait: expires at the bound
+                 with no terminal signal" paired an `rc 11` claim with a nap-clamp claim on one 3s
+                 bound; a nap only exists when a poll leaves time on the clock, so the same 4s
+                 injection turns it red on `expected at least one recorded nap before the bound
+                 expired`. The two claims are now separate cases: the deadline half keeps its small
+                 literal bound (with no terminal signal the loop can leave ONLY through the
+                 deadline, so load changes when it expires and not whether), and the clamp half
+                 gets a fixture-terminated scenario where the nap is produced rather than raced.
+             (4) THE RULE, because five `--max-secs` values in one section were being read as one
+                 thing. Where the DEADLINE is the oracle it must stay small; where a FIXTURE is the
+                 oracle it is a runaway backstop and must be far larger than any plausible
+                 classification. `WATCH_BACKSTOP=120` names the second, and 120 rather than 300 so a
+                 case that stops terminating hangs for two minutes instead of five.
+             (5) THE FIXTURE'S OWN PREMISE WAS FALSE, found by the gap-analysis pass. Its comment
+                 claimed the `+1` was "fresh for head A", but the activity fixture anchored only
+                 head B, so poll 1 was pending for want of an anchor and the staleness rule was
+                 tested nowhere in this case. It cannot be realized as written either: with one
+                 declared reviewer a `+1` genuinely fresh for head A returns `clean` on poll 1 and
+                 the watch never sees the move. Both heads are now dated and the `+1` arrives on
+                 poll 2 dated between them, so "the previous head's era" is a fact the fixture
+                 states rather than a claim its comment makes.
+             (6) rc 12 IS THE STALENESS ASSERTION, not a weaker stand-in for rc 11. Poll 3 closes
+                 the PR, so the watch leaves through a fixture — and a `+1` wrongly honoured for the
+                 new head returns 0 at poll 2 and never reaches poll 3 at all. What is given up is
+                 only the separate claim that THIS watch eventually expires, which the case above it
+                 already makes.
+             (7) THE POLL COUNT IS ASSERTED, AND IT IS NOT ENOUGH. `polls == 3` names the shape if
+                 the deadline ever becomes the oracle again — but on an idle machine a re-tightened
+                 bound still reads 3. So the scenario is ALSO re-run with a deliberately slow first
+                 poll, which is the one check a re-tightened bound cannot pass. That costs one real
+                 4-second nap, spent on the single scenario whose recorded defect was a slow poll.
+             (8) FIVE MUTATIONS, EACH OBSERVED RED ON ITS OWN WITNESS, shipped as
+                 `check-pr-watch.sh --mutation` on #387's precedent: the head-move report reworded,
+                 the nap clamp deleted, the deadline pinned below what a slow poll costs, the
+                 staleness comparison stripped of the backslash `common.sh` warns about, and its
+                 diagnostic reworded. The last needs the longer literal `at $val predates this head`
+                 — the short phrase also appears in the comment above the echo, and a row that edits
+                 a comment tests nothing.
+- placement: `scripts/check-pr-watch.sh` (section 11 + `--mutation`), `scripts/check-lib.sh`
+             (`$S/slow-<n>` in the shared stub, `check_mut_reset`), `scripts/selfcheck.sh`
+             (`pr-watch-mutation`)
+- reason:    The measurements are why the fix is what it is, and none of them survives in the diff:
+             a later reader seeing `WATCH_BACKSTOP` has no way to know the issue's own stated cause
+             was checked and disproved, that the poll counter — not the stderr line — is what
+             identified the mechanism, or that the sibling was confirmed rather than swept in on a
+             resemblance. `code-comments.md` puts the incident here (class 2) and leaves the
+             one-line constraints at the call sites.
+- baseline-issue: n/a
