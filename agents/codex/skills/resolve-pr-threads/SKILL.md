@@ -273,8 +273,8 @@ and resolution still happens in steps 1–8, under exactly the rules they alread
 > **The wait is not detached, whichever dispatch you used.** A background *task* still dies with the
 > session that started it, and steps 1–8 switch your working tree to the PR's head branch — so do
 > not start one in a tree another session is working in. Watch-by-default makes that the ordinary
-> exposure rather than the opt-in one. A genuinely session-surviving watcher is #171, and isolating
-> its working tree is #172; neither is in scope here.
+> exposure rather than the opt-in one. **#171 owns both halves** — a session-surviving watcher and
+> the tree isolation it needs — and neither is in scope here.
 
 ### 1. Preflight
 
