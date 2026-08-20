@@ -83,6 +83,13 @@ Then test the split-brain guard — create a second marked issue and re-run:
 
 - [ ] With **two** `roadmap`-labeled issues, `/roadmap` **STOPS**, lists both, and asks the owner
       to retire one. It never guesses. (Remove the duplicate before continuing.)
+- [ ] **[auto]** A *failed* artifact list **STOPS** the run naming that read — it is never counted
+      as "no labeled artifact" and bootstrapped over into a second one. Do not try to reproduce
+      this by revoking the token: step 1's `gh auth status` gate fires first and stops with its own
+      `ERROR: gh not authenticated`, so the manual route cannot reach this diagnostic at all. The
+      automated case injects the failure past that gate (`fail-issuelist`, `check-roadmap-e2e.sh`
+      §1). A repo that simply lacks the `roadmap` label is *not* this case: that read succeeds with
+      zero rows, and bootstrap is correct.
 
 ## 3. Reconcile — done, new, and stale refs
 
@@ -222,6 +229,11 @@ Add `<!-- destination-label: release-blocker -->` to the artifact header, then r
       exclusion happens in the query, not by post-filtering).
 - [ ] With the marker **absent**, or the label nonexistent, the line is **omitted entirely** and
       the run still succeeds (a 404 on the label probe is not an error).
+- [ ] **[auto]** That carve-out is the **probe's**, not the count's: with the label present but the
+      count read failing, the run **STOPS** naming it, rather than printing
+      `release-blocker:  blocker(s) open` with no number and carrying on (`fail-search`,
+      `check-roadmap-e2e.sh` §5). The probe itself still reads *any* failure as "label absent" —
+      #413.
 
 ---
 

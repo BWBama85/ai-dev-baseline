@@ -450,6 +450,19 @@ printf '31\n52\n' > "$FIX/roadmap-nums"
 run_snippet locate-artifact 'printf "COUNT=%s\n" "$COUNT"' >/dev/null
 has "$OUT" "COUNT=2" "two labeled artifacts count 2 (the split-brain STOP the workflow must never guess through)"
 
+# --- A FAILED READ IS NOT ZERO RESULTS (#389) ------------------------------------------------
+# The bootstrap branch is selected by COUNT=0, and an errored `gh issue list` produces an empty
+# capture that counts as exactly that — so an expired token routes the run into adopt-or-bootstrap,
+# which can create a SECOND artifact and manufacture the split-brain the case above hard-stops on.
+# The tail is the half that matters: `COUNT=` absent proves the snippet EXITED rather than falling
+# through with an empty capture, which a bare exit-status assertion cannot distinguish once a later
+# line happens to fail for its own reasons.
+fix_default; : > "$FIX/fail-issuelist"
+run_snippet locate-artifact 'printf "COUNT=%s\n" "$COUNT"' >/dev/null
+no "$RC_" "a failing roadmap-artifact list hard-stops instead of counting zero"
+has "$OUT" "could not list roadmap-labeled issues" "...naming that read"
+hasnt "$OUT" "COUNT=" "...and never reaches the bootstrap branch with an empty capture"
+
 # ============================================================================================
 # 2. ADOPT SCAN — a pre-existing roadmap must be found at ANY backlog size (#79 + acceptance §2)
 # ============================================================================================
@@ -1123,6 +1136,16 @@ ADB_UNSET=N run_snippet gauge 'printf "DONE N=%s\n" "${N:-unset}"' >/dev/null
 eq "$RC_" 0 "a 404 on the label probe is not an error (the gauge line is simply omitted)"
 has "$OUT" "DONE N=unset" "...and the run continues past it having counted nothing"
 
+# ...but that carve-out is the PROBE's, not the COUNT's (#389). Past a probe that already resolved
+# the label, a failing count is an ordinary failed read: unchecked, it leaves N empty and renders
+# "release-blocker:  blocker(s) open" — a finish line with no number on it — and the run continues
+# to emit a batch against a gauge that counted nothing.
+fix_default; : > "$FIX/fail-search"
+ADB_UNSET=N run_snippet gauge 'printf "REACHED N=%s\n" "${N:-unset}"' >/dev/null
+no "$RC_" "a CONFIGURED gauge hard-stops when the count read fails"
+has "$OUT" "could not count open 'release-blocker' issues" "...naming that read and the label it counted"
+hasnt "$OUT" "REACHED" "...and does not fall through with an empty count"
+
 # --- AN UNCONFIGURED GAUGE DECIDES BEFORE IT RESOLVES ANYTHING (#218, executed by #376) -------
 # The gauge is OPTIONAL. Every line it needs — the slug, the slug's validation, the label probe —
 # belongs INSIDE the `[ -n "$LABEL" ]` conditional, because a step that can fail the run before it
@@ -1279,6 +1302,19 @@ has "$OUT" "fixed: #5 → milestone Backlog (was unmilestoned)" "...defaulting N
 has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" "...and RELEASE_MODE to classic mode"
 hasnt "$OUT" "WARN:" "...so the overlay carve-out does not fire on a repo that never adopted it"
 eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 2 "...and both repairs are real tracker writes"
+
+# BACKLOG_TITLE is the third optional input, and the only one whose default names a MILESTONE
+# (#389). It is the `backlog-milestone` marker, absent on every repo that never set one, so this
+# snippet run as its own invocation gets no value for it — a bare `$BACKLOG_TITLE` dies under
+# `set -u` and takes step 4b's whole sweep with it. Asserting the REPAIR, not merely a clean exit:
+# a default of `""` also survives `set -u`, resolves no milestone, and escalates every unmilestoned
+# issue as an owner question instead of repairing it.
+fix_default
+limbo_issues 5 12 31
+ADB_UNSET="BACKLOG_TITLE" ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+eq "$RC_" 0 "the autofix snippet runs with BACKLOG_TITLE unset (it defaults the marker)"
+has "$OUT" "fixed: #5 → milestone Backlog (was unmilestoned)" "...to 'Backlog', the documented default"
+hasnt "$OUT" "? unmilestoned:" "...so no issue is escalated for want of a milestone that resolves"
 
 # --- 7b. IDEMPOTENT: the second run finds nothing (#109's acceptance) ------------------------
 # Model the post-repair tracker — which is what the first run produced — and re-run.
@@ -1543,6 +1579,18 @@ eq "$(grep -- '--add-label release-blocker' "$FIX/calls" 2>/dev/null | wc -l | t
    "every promotion carries --add-label release-blocker"
 eq "$(grep -- '--milestone Next release' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 2 \
    "...and names the milestone by TITLE, resolved from its number"
+
+# --- 9b-bis. BACKLOG_TITLE IS OPTIONAL HERE TOO (#389) --------------------------------------
+# The second home of the `backlog-milestone` default, and the one where losing it is silent rather
+# than fatal in an obvious way: `BACKLOG` selects the candidate universe, so a default of `""` (or
+# a marker nobody set, under a bare expansion) partitions every backlog issue into OFF_BACKLOG and
+# composes an EMPTY milestone — a release armed with nothing, which the readiness predicate then
+# reads as `met`. So the assertion is the PROMOTION, not the exit status.
+fix_default
+compose_issues '102!' '112!' 20 80 31
+ADB_UNSET="BACKLOG_TITLE" ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$RC_" 0 "the compose snippet runs with BACKLOG_TITLE unset (it defaults the marker)"
+eq "${ promoted; }" "102 112" "...to 'Backlog', so the backlog membership is still the candidate universe"
 
 # --- 9c. dependency closure: a prerequisite is pulled in even when it is not a bug -----------
 # Without this the milestone holds a blocker whose prerequisite sits in the backlog — it can never
