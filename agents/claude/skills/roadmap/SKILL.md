@@ -905,9 +905,11 @@ labeled artifact returns ≥1 row at any cap. Every other list read here is pagi
 
 Step 1's hard-stop-on-any-`gh`-error rule applies here **without exception**, because the case that
 looked like one is not an error at all: a repo that never created the `roadmap` label gets an empty
-list, not a failure. Probed against `gh` 2.95.0 — `gh issue list --label <nonexistent> --json number`
-exits **0** with empty stdout and empty stderr — so the bootstrap path is reached by a *clean* read
-of zero rows, and every non-zero exit is an auth/API failure. The snippet therefore separates them
+list, not a failure. Probed against `gh` 2.95.0: the form above — `--json number --jq '.[].number'`
+— exits **0** with empty stdout and empty stderr. (Quote it without the `--jq` and it still exits 0,
+printing `[]`; the emptiness is the filter's, the exit status is `gh`'s, and it is the status this
+turns on.) So the bootstrap path is reached by a *clean* read of zero rows, and every non-zero exit
+is an auth/API failure. The snippet therefore separates them
 on exit status alone, with no error text to parse. A `gh` that ever did error on an absent label
 would stop the run rather than bootstrap over it, which is the safe direction: the count feeds a
 branch whose wrong answer creates a duplicate artifact.
@@ -1899,8 +1901,10 @@ marker is absent, or the repo has no such label (the `gh api …/labels/$LABEL` 
 step's one exception to step 1's hard-stop-on-error rule), **omit the line entirely.** That
 exception covers the *probe*, not the count: once the label is known to exist, a failed count is an
 ordinary failed read and hard-stops, exactly as a failed `gh repo view` already does two lines up.
-Which label a repo counts toward is project-specific configuration that belongs in the artifact,
-not baked into this agent-neutral skill.
+Read the probe's `if` for what it actually decides, though — it takes **any** non-zero as "label
+absent", a 403 or a 5xx along with the 404, so a broken read omits the gauge instead of stopping it
+(#413). Which label a repo counts toward is project-specific configuration that belongs in the
+artifact, not baked into this agent-neutral skill.
 
 **In release-readiness mode**, when `destination-label` is `release-blocker`, scope this count to
 the active release milestone `M` (open `release-blocker` issues **in `M`**), not repo-wide — so the
