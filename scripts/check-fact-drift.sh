@@ -955,12 +955,25 @@ fact backstop-stale-ms   absent:'(4[28]0|600)[,]?000' \
 # them back — a `#420` followed by a seconds unit fires exactly as a bare one does. What is exempt
 # is only a `#420` that is NOT making a claim about seconds, which is what an issue reference is.
 #
+# THE UNIT MUST END AS A UNIT, and that trailing boundary is the whole difference between a carve-out
+# and a new false positive. Written as `(s|sec)` it matched the FIRST LETTER of the next word, so
+# `#420 shipped` and `#420 sentinel` — ordinary prose in the very files that document this issue —
+# reported the retired bound. The alternation is longest-first and is followed by a non-word
+# assertion, so `#420 seconds` fires and `#420 sentinel` does not. Reported by the declared reviewer
+# on PR #426.
+#
+# The witnesses below cover the FIRING direction, as `fires:` always does. The quiet direction has no
+# standing witness and deliberately does not need one: this carve-out's failure mode is LOUD — a
+# regression here turns ordinary prose in a pinned file red on the next run — which is the opposite
+# of the silent-guard shape `absent:` witnesses exist for.
+#
 # `backstop-secs` positively pinning the live 2700 is a second line of defence but NOT a substitute,
 # and the earlier version of this comment leaned on it too hard: nothing stops an old value and the
 # new one coexisting, so that pin can be green while a stale sentence sits three lines away. That is
 # the whole reason this `absent:` rule exists next to it.
-fact backstop-stale-secs absent:'(^|[^0-9#])420([^0-9]|$)|#420[[:space:]-]*(s|sec)' \
-  'fires:bounded at 420 s' 'fires:420' 'fires:a #420-second timeout' 'fires:#420 sec' -- $_bs_all
+fact backstop-stale-secs absent:'(^|[^0-9#])420([^0-9]|$)|#420[[:space:]-]*(seconds|second|secs|sec|s)([^[:alnum:]_]|$)' \
+  'fires:bounded at 420 s' 'fires:420' 'fires:a #420-second timeout' 'fires:#420 sec' \
+  'fires:#420 seconds later' 'fires:#420 secs, roughly'                               -- $_bs_all
 # The alternations here were BRACKETS — `[≥>]` and `3[–-]7` — until #213's witnesses were written
 # against them. A bracket expression holding a multibyte character is matched BYTEWISE under a C
 # locale, so `3[–-]7` could not match `3–7 min` there at all: a pin that fired on a UTF-8 dev box

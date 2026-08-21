@@ -7243,11 +7243,18 @@ survive is the part a later reader needs.
                  The first fix simply excluded `#` from the leading context, and the independent
                  review was right that this **opened a hole rather than narrowing a false positive**:
                  `#420-second timeout` is a stale duration claim wearing a citation's clothes, and
-                 that exemption waves it through. The rule now carries a second alternative —
-                 `#420[[:space:]-]*(s|sec)` — so a `#420` followed by a seconds unit fires exactly
-                 as a bare `420` does, and what is exempt is only a `#420` making no claim about
-                 seconds. Two witnesses were added for that alternative and both were observed going
-                 red under `--mutation`.
+                 that exemption waves it through. The rule now carries a second alternative, so a
+                 `#420` followed by a seconds unit fires exactly as a bare `420` does, and what is
+                 exempt is only a `#420` making no claim about seconds.
+
+                 THAT ALTERNATIVE THEN NEEDED A TRAILING BOUNDARY, which the declared reviewer caught
+                 on PR #426: written as `(s|sec)` it matched the first letter of the following word,
+                 so `#420 shipped` and `#420 sentinel` — ordinary prose in the very files documenting
+                 this issue — reported the retired bound. The unit alternation is longest-first and is
+                 followed by a non-word assertion. Four witnesses now cover the firing direction and
+                 all were observed going red under `--mutation`; the quiet direction has no standing
+                 witness and does not need one, because this carve-out fails LOUD — a regression turns
+                 legitimate prose red rather than passing in silence.
 
                  The claim that "`backstop-secs` positively pins the live 2700, so the absent rule is
                  not the only line of defence" is likewise retired: nothing prevents an old value and
