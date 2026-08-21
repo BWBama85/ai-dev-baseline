@@ -68,17 +68,44 @@ those. The rules below are specific to this repo's code.
      when a parallel failure is hard to attribute — it is the debugging mode, and it is what the
      acceptance criterion means by "reproduces today's behaviour".
    - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),
-     **`--jobs N`** caps concurrency, **`--list`** prints the registry as
-     `name<TAB>command<TAB>pool|serial`.
+     **`--skip a,b`** runs everything except them (same unknown-name contract, and the skipped
+     names are printed — twice, since #339 — because a step dropped in silence is indistinguishable
+     from one that passed), **`--jobs N`** caps concurrency, **`--list`** prints the registry as
+     `name<TAB>command<TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive`, and
+     **`--summarize <log>`** turns a captured run into the Markdown digest CI puts in its job
+     summary.
 
-   **`build-drift` is the one step pinned to a serial prologue**, because it runs `scripts/build.sh`,
-   which rewrites tracked generated files — every other step only reads the tree or works inside its
-   own `mktemp -d`. Since #268 each individual file is published by **rename**, so no single one is
-   observable half-written; what is still not atomic is the transition *across* files, so a reader
-   that starts mid-build sees a **mixed generation**. That is why the fix did not retire the pin.
-   The full reasoning, including what is deliberately *not* serialized, is in
-   `scripts/selfcheck.sh`'s "concurrency contract" header. Two concurrent selfcheck runs in one
-   checkout are still unsupported (#250).
+   **The serial prologue holds TWO lanes, for two different reasons** (#423), and `--list`'s fourth
+   field is which:
+
+   - **`mutates-tree` — `build-drift` alone.** It runs `scripts/build.sh`, which rewrites tracked
+     generated files; every other step only reads the tree or works inside its own `mktemp -d`.
+     Since #268 each individual file is published by **rename**, so no single one is observable
+     half-written; what is still not atomic is the transition *across* files, so a reader that
+     starts mid-build sees a **mixed generation**. That is why the fix did not retire the pin.
+   - **`load-sensitive` — `session-currency`, `install-migration`, `install-guard`,
+     `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`.** These assert on signal
+     delivery, worker reaping and installer writes, and every one passes unloaded and on the
+     ubuntu leg. **Two of them account for all four reds** over 08-19..08-21 — `session-currency`
+     and `selfcheck-guard` (with `selfcheck-guard-mutation`), one of those runs on `main`, so not
+     any PR's diff. The three `install-*` steps have **never** failed there: they join because they
+     drive the same installer writes and cost seconds, not because they flapped. `ci-discipline.md` names timing assumptions and shared-state
+     writes as "'flaky' causes that are actually real", so isolating them is the fix, not a
+     tolerance. `pinned-install` is deliberately **not** here: it appears in none of those reds and
+     costs 273s, and isolating on suspicion is how the leg got long.
+
+   The lane is asked of the runner (`--list`), never grepped out of the arrays, so a step cannot be
+   reported in one lane and dispatched in the other. The full reasoning, including what is
+   deliberately *not* serialized, is in `scripts/selfcheck.sh`'s "concurrency contract" header. Two
+   concurrent selfcheck runs in one checkout are still unsupported (#250).
+
+   **CI runs one step fewer on the macOS leg** (#339). `selfcheck-macos` passes
+   `--skip adopt-readiness-mutation`: that step answers a logic question, not a platform one, and
+   the ubuntu `adopt` job already runs it on every PR — where `check-fact-drift.sh` now pins the
+   invocation, because after the skip that job is its **only** per-PR execution. Measured on run
+   32451790033 (green, `main`, 2026-08-21): the job was 1086s and the run's critical path, of which
+   that one step was 680s. A plain local `bash scripts/selfcheck.sh` still runs the whole registry —
+   the skip is a CI-invocation choice, never a new default.
 
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
@@ -103,7 +130,7 @@ those. The rules below are specific to this repo's code.
      `ubuntu-26.04` and `macos-latest` (`selfcheck-macos`) — and a workstation is one of them. A
      local green speaks for the OS you are sitting at, not for the other runner's image or its
      Homebrew bootstrap;
-   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 28 CI jobs — the 27
+   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 31 CI jobs — the 30
      per-PR jobs plus the scheduled WSL smoke (#2), which reaches it through `wsl -d …` — but is
      omitted from `selfcheck` deliberately: what it adds beyond the entry gate is an assertion
      about the **machine** and about `command -v bash`, which is a CI-image question. (Before
@@ -193,7 +220,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) *signalled a clean pass* for the PR's **current head commit**? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Reads the same three surfaces and the same shared classifier as `pr-watch.sh`, so the two can no longer disagree about what a signal means; `COMMENTED` is **21** ("review complete, attention required"), not a satisfied review (#167). Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-skill). Since #260 the mirror is a step **registry** dispatched through a bounded `wait -n` pool — see golden rule 3 for the flags and the serial prologue |
-| `scripts/check-selfcheck.sh` | The runner above is a guard too, so it gets what guards get here (#260). A job pool's failure mode is silence — a dispatcher that drops a worker's status, or reaps a job and blames the wrong step, prints what a clean run prints — so this drives the **real** `selfcheck.sh` over a throwaway fixture of stub steps and requires a deliberately failing step to still fail the run, attributed by name and exit code. Also pins collect-all, output atomicity, the concurrency bound (both that it is respected *and* that the pool is genuinely concurrent), `--serial` ordering, the prologue running alone, and cancellation reaping workers instead of orphaning them. Never mutates the tracked tree |
+| `scripts/check-selfcheck.sh` | The runner above is a guard too, so it gets what guards get here (#260). A job pool's failure mode is silence — a dispatcher that drops a worker's status, or reaps a job and blames the wrong step, prints what a clean run prints — so this drives the **real** `selfcheck.sh` over a throwaway fixture of stub steps and requires a deliberately failing step to still fail the run, attributed by name and exit code. Also pins collect-all, output atomicity, the concurrency bound (both that it is respected *and* that the pool is genuinely concurrent), `--serial` ordering, the prologue running alone, cancellation reaping workers instead of orphaning them, and — since #339/#423 — `--skip`'s fail-closed contract plus the proof that a skipped step **never executed** (asked of the event log, not of the printed output), the exact membership of both prologue lanes, and every `--summarize` case including the two that must SAY they found nothing. Never mutates the tracked tree |
 | `scripts/check-build-atomic.sh` | `build.sh` must publish a generated file by **rename**, never by truncating it in place (#268). `build-drift` proves the artifacts MATCH; it cannot prove anything about the write, because a *successful* build is exactly where the two shapes are indistinguishable — and it runs against the tracked tree, so it cannot inject a failure without damaging the checkout it is checking. This faults a copied `build.sh` mid-render inside a `mktemp -d` fixture and requires the destination to survive byte-exact (compared with `cmp`, since `[ "$(cat f)" = … ]` strips trailing newlines and cannot see a dropped final one). Observed failing: three mutations of the publish mechanism (naive publish · fixed temp name · EXIT trap dropped), each required to make the assertion above it go red, and each verifying its own edit applied. Never mutates the tracked tree |
 | `scripts/render-size.sh` · `scripts/check-render-size.sh` | What the rendered artifacts COST to load (#359, D71) — `name<TAB>lines<TAB>words<TAB>approx_tokens` for every root doc and every agent's every skill, plus a `TOTAL` row, on stdout. A **report, not a gate**: it fails only on mechanics (an expected artifact missing, unreadable or zero-byte) and **never** on size, because the owner rejected caps. `approx_tokens` is `ceil(bytes/4)` — a heuristic, comparable to itself across commits of this corpus and to nothing else. The expected set is derived from `base/workflows/` and the agent table, never globbed from `agents/`, or a skill that failed to render would simply be absent from the report. The guard drives every mechanical rule red under a `mktemp -d`, and pins the no-ceiling direction too. Never mutates the tracked tree |
 | `scripts/check-fact-drift.sh --mutation` · `--self-test` | The negative half of the anti-drift lint, **proven able to fail** (#213). A `absent:` rule declares the real superseded spellings it catches (`fires:<witness>`); `--mutation` injects each into a **copy** of every pinned file and requires the lint to come back red; `--self-test` drives both guard rails against deliberately broken rules so they are themselves observed failing. It was a standalone `check-fact-guard.sh` until #377 — the same copy-and-mutate scaffold in two files — and the fold is deliberately **not** a precedent: `check-bash-floor-guard.sh` must stay separate (its fixtures are 5.3-only, its subject 3.2-parseable) and `check-selfcheck.sh` folded into `selfcheck.sh` would recurse. Never mutates the working tree |

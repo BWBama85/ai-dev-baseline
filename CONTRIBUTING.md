@@ -84,10 +84,28 @@ Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`**
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
 care about (`--list` prints every name; an unknown name is an error rather than a quiet no-op).
-In a default (parallel) run `build-drift` goes first and alone, because it is the one step that
-rewrites files in the working tree; everything else either reads the tree or works in its own
-temporary directory. Under `--serial` it simply takes its declared place, and `--only` can leave it
-out altogether.
+**`--skip <name>,<name>`** is its complement, with the same contract and one addition: the skipped
+names are printed, before the run and again in the `result` block, because a step that vanishes
+quietly looks exactly like a step that passed.
+
+In a default (parallel) run a **serial prologue** goes first, one step at a time, and it holds two
+lanes for two different reasons — `--list`'s fourth field says which. `build-drift` is
+`mutates-tree`: it rewrites files in the working tree that other steps read. `session-currency`,
+`install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation` and
+`install-dry-run` are `load-sensitive` (#423): they assert on signal delivery, worker reaping and
+installer writes, and they pass unloaded and on Linux. Two of them — `session-currency` and
+`selfcheck-guard` (with its mutation mode) — were the whole of that job's flakiness on the 3-core
+`macos-latest`. The three install steps have never failed there; they join because they drive the
+same installer writes and cost seconds, so isolating them is nearly free. Everything else reads the tree or works in its own
+temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
+declared places, and `--only` / `--skip` can leave any of them out.
+
+CI's macOS leg runs one step fewer: it passes `--skip adopt-readiness-mutation`, which the ubuntu
+`adopt` job already runs on every PR (#339). Your local run is unaffected in *coverage* — a plain
+`bash scripts/selfcheck.sh` is still the whole registry — but it does get **longer**, because the
+six isolated steps no longer overlap with anything: about 90 seconds' worth, measured serially on a
+10-core machine. The dated range above was taken before that lane existed and has not been
+re-measured; the `result` block is the current answer, as it says.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335
@@ -128,8 +146,8 @@ red, because the defect it replaces printed exactly what a clean run prints), an
 Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
 them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
-its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 28 CI
-jobs (the 27 per-PR jobs plus the scheduled WSL smoke #2 added, which reaches it through `wsl -d …`)
+its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 31 CI
+jobs (the 30 per-PR jobs plus the scheduled WSL smoke #2 added, which reaches it through `wsl -d …`)
 — is still omitted locally, but since #256 the reason is different: what it adds beyond the
 entry gate is an assertion about the machine and about `command -v bash`, which is a CI-image
 question. (A contributor below the floor no longer gets a pass here — `selfcheck.sh` gates its own
@@ -149,7 +167,7 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-self-test · claims · claims-self-test · practice-index · release-skill · selfcheck) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent · ci-runners |
-| `.github/workflows/ci.yml` | 26 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-self-test · claims · claims-self-test · claims-live (CI-only) · practice-index · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
+| `.github/workflows/ci.yml` | 29 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-self-test · claims · claims-self-test · claims-live (CI-only) · practice-index · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
 | `.github/workflows/wsl-smoke.yml` | The Windows leg (#2): **one** `windows-latest` job, on a weekly `schedule` + `workflow_dispatch` + `push: tags`, **never per-PR**. Installs `Ubuntu-26.04` into WSL2, then creates an ordinary user and — **as that user**, because root's `CAP_DAC_OVERRIDE` inverts a permission fixture in the suite (#271) — clones onto the Linux filesystem and runs the installer + `selfcheck.sh` there. Its own file so `repo-settings.sh` can never discover or add it as a required context — discovery skips a workflow with no `pull_request` trigger (an admin can still require any context by hand) |
 
 ## Adding a new agent

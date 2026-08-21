@@ -468,23 +468,97 @@ eq "$(jq -r '.SessionStart[0].hooks[0].command' "$hooks_json")" \
 tmo="$(jq -r '.SessionStart[0].hooks[0].timeout' "$hooks_json")"
 if [ "$tmo" -gt 0 ] && [ "$tmo" -le 120 ]; then ok; else bad "SessionStart timeout should be bounded and small (got $tmo)"; fi
 
+# --- capturing what the installer SAID, not just whether it exited -------------
+#
+# Every install/uninstall call below is captured and asserted on BOTH streams AND the status.
+# Asserting the status alone is not enough and the reason is a call-site constraint: `wire_hooks`
+# (install.sh:175-220) has five WARN branches and one of them — missing `jq`, install.sh:176-180 —
+# returns **0**, so the only known path to "nothing wired, install succeeded" is invisible to an
+# rc check. Evidence and history: D87.
+INSTALLER_OUT=""; INSTALLER_RC=0
+# <label> is first so every call site reads the same way and `installer_clean` can forward "$@";
+# this half only needs the last two.
+run_installer() {   # run_installer <label> <home> <script> — capture both streams AND the status
+  INSTALLER_OUT="$(HOME="$2" bash "$3" --agent claude 2>&1)"; INSTALLER_RC=$?
+}
+
+# installer_clean <label> <home> <script> — run it and require BOTH rc 0 and no WARN.
+# installer_clean <label> <home> <script> — require BOTH rc 0 and no WARN.
+#
+# The `bad` text is ONE physical line on purpose: the CI digest (`selfcheck.sh --summarize`)
+# carries a witness by its first line, so folding the transcript in would push the cause off the
+# end of the digest that exists to show it. The transcript is not discarded either — command
+# substitution captured it, so on failure this prints it once, indented, before the verdict.
+installer_clean() {
+  local label="$1" warns bad_rc=0
+  run_installer "$@"
+  [ "$INSTALLER_RC" -eq 0 ] || bad_rc=1
+  warns="$(printf '%s\n' "$INSTALLER_OUT" | grep -c '^  WARN' || true)"
+  if [ "$bad_rc" -eq 1 ] || [ "$warns" -ne 0 ]; then
+    printf '  --- %s: full installer transcript (rc %s) ---\n' "$label" "$INSTALLER_RC" >&2
+    printf '%s\n' "$INSTALLER_OUT" | sed 's/^/  | /' >&2
+  fi
+  if [ "$bad_rc" -eq 0 ]; then ok; else
+    bad "$label: exited $INSTALLER_RC — $(printf '%s' "$INSTALLER_OUT" | grep -E '^  (WARN|ERROR)' | tr '\n' ' ')"
+  fi
+  if [ "$warns" -eq 0 ]; then ok; else
+    bad "$label: exited $INSTALLER_RC but reported $warns WARN(s) — $(printf '%s' "$INSTALLER_OUT" | grep '^  WARN' | tr '\n' ' ')"
+  fi
+}
+
+# THE REHEARSAL, on the exact shape that happened. The stub reproduces install.sh's tolerated
+# degradation verbatim — the WARN text and the exit 0 are copied from the probe described above,
+# not invented — because an assertion that has never been seen rejecting anything is a guard that
+# reports safety it never checked (base/practices/self-review.md).
+cat > "$work/warn-install.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'claude → (adapter)\n'
+printf '  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually\n'
+exit 0
+STUB
+cat > "$work/fail-install.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '  WARN   ~/.claude/settings.json is not valid JSON — hooks NOT wired\n'
+exit 1
+STUB
+cat > "$work/ok-install.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '  hooks  wired global Stop gates + SessionStart currency check\n'
+exit 0
+STUB
+expect_rejection "installer_clean must REJECT rc 0 with a WARN (the 08-21 shape: missing jq, install.sh:176-180)" \
+  installer_clean "rehearsal" "$work" "$work/warn-install.sh"
+expect_rejection "installer_clean must REJECT a non-zero status" \
+  installer_clean "rehearsal" "$work" "$work/fail-install.sh"
+# ...and must ACCEPT a clean run, or it would be a guard that can only ever fail.
+installer_clean "installer_clean accepts a clean install (rc 0, no WARN)" "$work" "$work/ok-install.sh"
+# ...and the REHEARSAL PREDICATE is pinned in BOTH directions, because its failure mode is silence:
+# a `rejects` stuck on true certifies every helper below it while checking nothing, and one stuck
+# on false reddens the suite for no reason. Asserted on its STATUS, never by applying it to itself
+# — self-application is circular, and a `rejects` that always answered "it rejected" would agree.
+if rejects installer_clean "rehearsal" "$work" "$work/ok-install.sh"; then
+  bad "rejects must NOT fire on a helper that ACCEPTS its input"
+else ok; fi
+if rejects installer_clean "rehearsal" "$work" "$work/warn-install.sh"; then ok
+else bad "rejects must fire on a helper that REJECTS its input"; fi
+
 # install → the entry is wired, user hooks survive, re-install does not double-add;
 # uninstall → the entry is gone and no dangling command is left behind.
 ih="$work/installhome"; mkdir -p "$ih/.claude"
 jq -n '{hooks:{SessionStart:[{hooks:[{type:"command",command:"/usr/local/bin/my-own-hook.sh"}]}],
                Stop:[{hooks:[{type:"command",command:"/usr/local/bin/my-stop-hook.sh"}]}]}}' \
   > "$ih/.claude/settings.json"
-HOME="$ih" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+installer_clean "install into a populated settings.json" "$ih" "$ROOT/install.sh"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command | test("session-currency\\.sh$"))] | length' \
       "$ih/.claude/settings.json")" "1" "install wires exactly one SessionStart currency hook"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "install preserves a user's own SessionStart hook"
 eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "install preserves a user's own Stop hook"
-HOME="$ih" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+installer_clean "re-install into the same HOME" "$ih" "$ROOT/install.sh"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command | test("session-currency\\.sh$"))] | length' \
       "$ih/.claude/settings.json")" "1" "re-install does not double-add the SessionStart hook"
-HOME="$ih" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+installer_clean "uninstall from a populated settings.json" "$ih" "$ROOT/uninstall.sh"
 eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-currency\\.sh$"))] | length' \
       "$ih/.claude/settings.json")" "0" "uninstall removes the SessionStart hook (no dangling command)"
 eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
@@ -497,7 +571,7 @@ eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/usr/local/bin/
 # every future self-heal. The gates would never come back.
 eh="$work/emptysettings"; mkdir -p "$eh/.claude"
 : > "$eh/.claude/settings.json"
-HOME="$eh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+installer_clean "install into an EMPTY settings.json" "$eh" "$ROOT/install.sh"
 if [ -s "$eh/.claude/settings.json" ]; then ok; else bad "install must never leave a 0-byte settings.json"; fi
 eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-currency\\.sh$"))] | length' \
       "$eh/.claude/settings.json")" "1" "install wires the hook into a previously-empty settings.json"
@@ -506,8 +580,14 @@ eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-cur
 # success there is enforcement silently off (bin/baseline's self-heal gates only on this status).
 bh="$work/badsettings"; mkdir -p "$bh/.claude"
 printf 'this is not json\n' > "$bh/.claude/settings.json"
-HOME="$bh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1; rc=$?
-no "$rc" "install exits non-zero when settings.json is not valid JSON"
+# The one call that already asserted its status — and still discarded the WARN that says WHICH of
+# wire_hooks' five branches refused. `no "$rc"` passes identically for "not valid JSON", "could not
+# read settings.hooks.json" and "could not write", so a regression that swapped one refusal for
+# another would be invisible here. Assert the branch, not just the rejection.
+run_installer "install over a corrupt settings.json" "$bh" "$ROOT/install.sh"
+no "$INSTALLER_RC" "install exits non-zero when settings.json is not valid JSON"
+has "$INSTALLER_OUT" "is not valid JSON" \
+  "...and SAYS which of wire_hooks' five refusals it was"
 eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.json is left byte-identical"
 
 # OWNERSHIP IS BY FULL PATH. A user's own hook that merely SHARES A FILENAME with one of ours
@@ -518,10 +598,10 @@ jq -n '{hooks:{
     PreToolUse:[{hooks:[{type:"command",command:"/custom/precommit-gate.sh"}]}],
     Stop:[{hooks:[{type:"command",command:"/custom/session-currency.sh"}]}]}}' \
   > "$uh/.claude/settings.json"
-HOME="$uh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+installer_clean "install into a HOME carrying same-named user hooks" "$uh" "$ROOT/install.sh"
 eq "$(jq '[.hooks.PreToolUse[]?.hooks[]? | select(.command == "/custom/precommit-gate.sh")] | length' \
       "$uh/.claude/settings.json")" "1" "install keeps a same-named user hook under another event"
-HOME="$uh" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+installer_clean "uninstall from a HOME carrying same-named user hooks" "$uh" "$ROOT/uninstall.sh"
 eq "$(jq '[.hooks.PreToolUse[]?.hooks[]? | select(.command == "/custom/precommit-gate.sh")] | length' \
       "$uh/.claude/settings.json")" "1" "uninstall keeps a same-named user hook under another event"
 eq "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command == "/custom/session-currency.sh")] | length' \

@@ -112,6 +112,49 @@ has()  { case "$1" in *"$2"*) ok ;; *) bad "$3: [$1] missing [$2]" ;; esac; }
 # hasnt <haystack> <needle> <label> — assert needle is NOT a substring of haystack.
 hasnt() { case "$1" in *"$2"*) bad "$3: [$1] unexpectedly contains [$2]" ;; *) ok ;; esac; }
 
+# expect_rejection <label> <assertion-helper> [args…] — run an assertion helper that MUST record a
+# failure, and count ONE assertion for whether it did. The rehearsal a guard needs before it can be
+# trusted: `base/practices/self-review.md` requires a check to be OBSERVED going red on an input it
+# is supposed to reject, and a suite cannot observe that by simply calling the helper — the failure
+# it wants to see is the one that would redden the suite.
+#
+# IT BELONGS IN THIS FAMILY, not at a call site. The header above says callers touch pass/fail only
+# through ok / bad / bad_quiet / check_summary, and a helper that snapshots and restores them from
+# outside is a second accounting style reaching into this one's private state (review finding).
+# Here it IS this family, so the invariant holds by construction.
+#
+# The subject's own `FAIL:` line is discarded: a deliberate rehearsal printed alongside real
+# findings would be read as a real finding — by a person, and by the CI digest that harvests
+# `FAIL:` lines (`selfcheck.sh --summarize`).
+#
+# Arguments: <label> then the command. Globals: pass, fail (restored). Outputs: none on success.
+# Returns: 0 always; the verdict is recorded as an assertion.
+# THE PREDICATE AND THE ASSERTION ARE SPLIT, and that is what makes the rehearsal testable.
+# Folded together, the helper could only be proven by applying it to itself — and self-application
+# is circular: an `expect_rejection` that always recorded success would certify itself. (Measured:
+# it did. The mutation that broke it left the suite green.) `rejects` is the logic and records
+# NOTHING, so a suite can assert on its STATUS in both directions with ordinary ok/bad.
+#
+# rejects <assertion-helper> [args…] — did the subject record a failure?
+# Globals: pass, fail (read and restored, never left modified). Outputs: none — the subject's own
+# `FAIL:` line is discarded, or a deliberate rehearsal would be read as a real finding by a person
+# and by the CI digest that harvests `FAIL:` lines. Returns: 0 if it rejected, 1 if it accepted.
+rejects() {
+  local p0="$pass" f0="$fail" fired
+  "$@" >/dev/null 2>&1
+  fired=$(( fail - f0 ))
+  pass="$p0"; fail="$f0"
+  [ "$fired" -gt 0 ]
+}
+
+# expect_rejection <label> <assertion-helper> [args…] — assert that the subject REJECTS its input.
+# The rehearsal `base/practices/self-review.md` asks for: a check is not done until it has been
+# observed going red on something it is supposed to reject.
+expect_rejection() {
+  local label="$1"; shift
+  if rejects "$@"; then ok; else bad "$label (it ACCEPTED an input it must reject)"; fi
+}
+
 # check_enumerated <label> <item>… — a `mapfile`-built list is USABLE: non-empty, and carrying no
 # blank entry. Returns 0 when it is, else records ONE failure and returns 1 (#259).
 #

@@ -25,7 +25,7 @@
 #   2. The OTHER PLATFORM. CI runs this same offline suite on ubuntu-26.04 AND macos-latest, and a
 #      workstation is one of them. Nothing here speaks for the other runner's image or its Homebrew
 #      bootstrap.
-#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 28 CI jobs (the 27 per-PR
+#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 31 CI jobs (the 30 per-PR
 #      jobs, plus the scheduled WSL smoke #2 added, which reaches it through `wsl -d …`). Still omitted
 #      here, but the reason CHANGED when #256 landed. It is no longer "so a contributor on 5.2 can
 #      run selfcheck": they cannot, because line 1 of this script now gates its own interpreter and
@@ -101,6 +101,36 @@ fail=0
 # rule can separate. #250 was about run data landing on shared, guessable paths; a tracked working
 # tree is neither, so the two never met. Stated here so the omission stays a decision.
 PINNED_STEPS=(build-drift)
+
+# THE SECOND SERIAL LANE (#423). `PINNED_STEPS` is a CORRECTNESS rule — build-drift rewrites
+# tracked files other steps read. This one is a RELIABILITY rule: these steps assert on signal
+# delivery, worker reaping and installer writes, and they fail under pool contention on a
+# small-core runner while passing unloaded and on Linux. Two arrays, not one, because a new step
+# has to answer a different question to join each. Evidence, alternatives and why `pinned-install`
+# is excluded: D87.
+ISOLATED_STEPS=(session-currency install-migration install-guard selfcheck-guard selfcheck-guard-mutation install-dry-run)
+
+# lane_of <step> — `serial` if the step runs in the serial prologue, else `pool`. THE one home for
+# that decision: the dispatcher's split and `--list`'s third field both call it, so a step can
+# never be REPORTED in one lane and DISPATCHED in the other. Two arrays, one answer.
+lane_of() {
+  local _p
+  for _p in "${PINNED_STEPS[@]}" "${ISOLATED_STEPS[@]}"; do
+    [ "$1" = "$_p" ] && { printf 'serial\n'; return 0; }
+  done
+  printf 'pool\n'
+}
+
+# lane_reason <step> — WHY it is in that lane: `mutates-tree` (it rewrites tracked files other
+# steps read), `load-sensitive` (it asserts on signal timing or installer writes and flaps under
+# contention), or `concurrent`. A separate answer from lane_of because the two are separate
+# questions, and the one a reader needs when deciding where a NEW step belongs is this one.
+lane_reason() {
+  local _p
+  for _p in "${PINNED_STEPS[@]}";   do [ "$1" = "$_p" ] && { printf 'mutates-tree\n';   return 0; }; done
+  for _p in "${ISOLATED_STEPS[@]}"; do [ "$1" = "$_p" ] && { printf 'load-sensitive\n'; return 0; }; done
+  printf 'concurrent\n'
+}
 
 # Concurrent git against ONE repo, made safe the documented way rather than by hoping. `git diff`
 # and friends opportunistically write back a refreshed index, and two of them racing produce
@@ -716,10 +746,15 @@ JOBS=0
 SERIAL=0
 ONLY=""
 ONLY_GIVEN=0   # distinct from ONLY="" — see the --only handling below
+SKIP=""
+SKIP_GIVEN=0   # same distinction, same reason (#339)
+SUMMARIZE=""
+SUMMARIZE_GIVEN=0   # same distinction as --only/--skip: `--summarize ""` must not fall through
 
 usage() {
   cat <<'USAGE'
-usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--list]
+usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip a,b,...]
+                                 [--list] [--summarize FILE]
 
   --serial      Run every step sequentially, in declaration order, with output streaming
                 live. Reach for this when a parallel failure is hard to attribute.
@@ -727,9 +762,20 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--list]
                 --serial is the mode that does not.
   --only a,b    Run only the named steps (still honouring the serial prologue). An unknown
                 name is an error — a filter that silently selects nothing is not a pass.
-  --list        Print the registry as "<name><TAB><command><TAB>pool|serial" and exit. This is
-                the runner's own answer to "what does it run", so a guard can ask instead of
-                grepping. The third field says whether the step runs in the serial prologue.
+  --skip a,b    Run everything EXCEPT the named steps. Same unknown-name contract as --only,
+                and the skipped names are printed — a step dropped silently is indistinguishable
+                from one that passed. Composes with --only: --only selects, --skip subtracts.
+                This is a per-invocation choice for a caller that runs the suite twice on two
+                platforms; a plain run always executes the whole registry.
+  --list        Print the registry as
+                "<name><TAB><command><TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive"
+                and exit. This is the runner's own answer to "what does it run", so a guard can
+                ask instead of grepping. The third field says whether the step runs in the serial
+                prologue; the fourth says why.
+  --summarize F Read a captured run of this suite from F and print a Markdown digest of what
+                failed — the step names and their FAIL: witness lines — then exit 0. For a CI job
+                summary, so a recurring red is readable without opening the log. A reporter, never
+                a gate: it does not re-run anything and its status describes only itself.
 USAGE
 }
 
@@ -760,35 +806,103 @@ while [ "$#" -gt 0 ]; do
       # would make `--only ""` — which is what `--only "$LIST"` becomes when LIST is empty — run
       # the entire suite instead of erroring: a filter silently doing the opposite of narrowing.
       ONLY="$2"; ONLY_GIVEN=1; shift ;;
+    --skip)
+      [ "$#" -ge 2 ] || { echo "selfcheck: --skip needs a value" >&2; exit 2; }
+      # Recorded separately from its value for the SAME reason as --only, and the failure it
+      # prevents is the mirror image: `--skip "$LIST"` with an empty LIST is a flag that skips
+      # NOTHING while its author believes it skipped something. --only silently widening and
+      # --skip silently not-narrowing are one bug with two spellings; both are errors.
+      SKIP="$2"; SKIP_GIVEN=1; shift ;;
     # A terminal mode is RECORDED here and acted on after the loop, not executed mid-parse.
     # Exiting inside the loop made rejection depend on argument ORDER: `--list --nonsense` printed
     # the registry and exited 0 while `--nonsense --list` errored. An unknown flag is an error
     # wherever it appears.
     --list) LIST=1 ;;
+    --summarize)
+      [ "$#" -ge 2 ] || { echo "selfcheck: --summarize needs a file" >&2; exit 2; }
+      # Keyed on the FLAG, not on a non-empty value. Without the bit, `--summarize ""` fell through
+      # to the ordinary path and RAN THE SUITE — a reporting flag silently becoming a 20-minute run.
+      SUMMARIZE="$2"; SUMMARIZE_GIVEN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "selfcheck: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 
-if [ "$LIST" -eq 1 ]; then
-  # Three TAB-separated fields: name, command, and whether it runs in the serial prologue.
-  # The third is here so a guard can ask the runner which steps are pinned instead of grepping
-  # PINNED_STEPS out of this file — and, unlike a grep, asking cannot pass while the array it
-  # read has stopped being the one the dispatcher consults.
-  for _s in "${STEP_ORDER[@]}"; do
-    _where=pool
-    for _p in "${PINNED_STEPS[@]}"; do [ "$_s" = "$_p" ] && _where=serial; done
-    printf '%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$_where"
-  done
-  exit 0
-fi
+# --summarize: a Markdown digest of a captured run, for a CI job summary (#423).
+#
+# THREE CONSTRAINTS, each of which breaks something if changed:
+#   * it parses `=== <name> ===`, `FAIL: <witness>` and the terminal `FAILED: <names>` — all three
+#     written by this file, which is why the reader lives beside the writer rather than in YAML;
+#   * every branch PRINTS. A digest that quietly extracted nothing reads exactly like a clean run;
+#   * witnesses go in an INDENTED block, never a fence or a span. Witness text is arbitrary and a
+#     backtick run in it would close a fence and render assertion text as markup in a page a
+#     maintainer reads. Step names are validated against the slug pattern before they enter a span,
+#     for the same reason — the `FAILED:` line is text from a log, not a value `add` vouched for.
+# Rationale: D87.
+summarize_run() {   # <captured-log>
+  local log="$1" failed witnesses _f
+  # `-f` before `-r`: `-r` alone is true for a readable DIRECTORY, which then parsed as a log with
+  # no markers in it and rendered an invented "the run was cancelled" report. A FIFO would have
+  # been worse — `sed` on it blocks until someone writes, with the job's timeout as the only bound.
+  if [ ! -f "$log" ] || [ ! -r "$log" ]; then
+    printf 'selfcheck: --summarize needs a readable regular file, got %s\n' "$log" >&2
+    return 2
+  fi
+  # The LAST such line. ONE captured run is the contract: the caller truncates its log per run, and
+  # a file holding two APPENDED runs is NOT supported — this would take the later verdict while the
+  # witness scan below gathered both runs' lines. Said plainly rather than claimed to work.
+  failed="$(sed -n 's/^FAILED: //p' "$log" | tail -1)"
+  # A GREEN log gets an honest heading, not the red one. The CI step only calls this on a failure,
+  # so this branch is not on that path — but a reporter that says "failed" over a passing run is
+  # one somebody eventually quotes, and the cost of being right here is three lines.
+  if [ -z "$failed" ] && grep -q '^ALL CHECKS PASSED$' "$log" 2>/dev/null; then
+    printf '### `selfcheck` passed\n\nNo failing steps in the captured run.\n'
+    return 0
+  fi
+  printf '### `selfcheck` failed\n\n'
+  if [ -n "$failed" ]; then
+    printf '**Failed step(s):**'
+    # EVERY TOKEN IS RE-VALIDATED before it enters a code span. `add` constrains what may be
+    # REGISTERED; it says nothing about a line read back out of a log, which any step's own output
+    # can forge by printing `FAILED: ` at the start of a line. A name carrying a backtick would
+    # close the span and render the rest as markup in a page a maintainer reads. A token that is
+    # not a [A-Za-z0-9_-] slug is reported as unparsable rather than rendered.
+    # shellcheck disable=SC2086  # deliberate word-split of a space-joined name list
+    for _f in $failed; do
+      case "$_f" in
+        *[!A-Za-z0-9_-]*|'') printf ' (one unparsable name omitted)' ;;
+        *) printf ' `%s`' "$_f" ;;
+      esac
+    done
+    printf '\n\n'
+  else
+    printf 'The run emitted no `FAILED:` line — it did not reach its `result` block, so it was\n'
+    printf 'cancelled, killed, or died before finishing. Nothing below is a step verdict.\n\n'
+  fi
+  # `if cmd; then` and NOT `cmd && … || …`: in the latter, a non-zero from the SUCCESS branch's
+  # last command falls through into the failure branch, so the digest would print both stories.
+  # awk exits 1 when it matched nothing, which is the whole signal here.
+  if witnesses="$(awk '
+      /^=== / { step = $0; sub(/^=== /, "", step); sub(/ ===$/, "", step); next }
+      /^FAIL: / { if (step != "") { printf "    %s: %s\n", step, substr($0, 7); c++ } }
+      END { exit (c ? 0 : 1) }
+    ' "$log")"; then
+    printf 'Witness lines, verbatim:\n\n%s\n\n' "$witnesses"
+  else
+    printf 'No `FAIL:` witness lines were found in the captured output. Either the failing step\n'
+    printf 'reported some other way, or this digest stopped matching what the suite prints —\n'
+    printf 'open the job log rather than reading this as "nothing was wrong".\n\n'
+  fi
+  printf 'Full output is in the job log for this step.\n'
+  return 0
+}
 
-[ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
-
-# --only, applied to the declared order so the selection keeps it. An unknown name EXITS rather
-# than being skipped: a filter that quietly matches nothing runs zero checks and reports the same
-# clean verdict a full green run reports (base/practices/self-review.md).
+# SELECTION IS VALIDATED BEFORE THE TERMINAL MODES, and the order is the fix for a real hole
+# (found in review). With the modes first, `--skip does-not-exist --list` and
+# `--skip does-not-exist --summarize f` both exited 0: the unknown name was never looked at,
+# because the code that looks at it ran after the exit. A contract that holds only when no other
+# flag is present is not the contract these flags document.
 declare -a SELECTED=()
 if [ "$ONLY_GIVEN" -eq 1 ]; then
   declare -A _want=()
@@ -804,6 +918,66 @@ else
   SELECTED=("${STEP_ORDER[@]}")
 fi
 
+# --skip, subtracted from whatever the selection is by now, so `--only` and `--skip` compose in the
+# obvious order: select, then remove. An unknown name EXITS for the same reason `--only`'s does —
+# a filter naming a step that no longer exists is a stale invocation, and silently honouring it
+# would drop the guard the caller thought it was keeping.
+#
+# A name that IS registered but is not in the current selection is NOT an error: `--only a --skip b`
+# asked for a to run and b not to, and b is not running. That composes; it does not silently
+# no-op.
+declare -a SKIPPED=()
+if [ "$SKIP_GIVEN" -eq 1 ]; then
+  declare -A _drop=()
+  IFS=, read -r -a _skip_names <<< "$SKIP"
+  for _n in "${_skip_names[@]}"; do
+    [ -n "$_n" ] || continue
+    [ -n "${STEP_CMD[$_n]+x}" ] || { printf 'selfcheck: --skip names an unknown step: %s\n' "$_n" >&2; exit 2; }
+    _drop["$_n"]=1
+  done
+  # `--skip ""` and `--skip ,,` both land here having named nothing. See the parser's note: a skip
+  # flag that skips nothing is the mirror of `--only ""` running everything, and neither may pass.
+  [ "${#_drop[@]}" -gt 0 ] || { echo "selfcheck: --skip named no steps" >&2; exit 2; }
+  declare -a _kept=()
+  for _s in "${SELECTED[@]}"; do
+    if [ -n "${_drop[$_s]+x}" ]; then SKIPPED+=("$_s"); else _kept+=("$_s"); fi
+  done
+  [ "${#_kept[@]}" -gt 0 ] || { echo "selfcheck: --skip removed every step" >&2; exit 2; }
+  SELECTED=("${_kept[@]}")
+fi
+
+
+if [ "$SUMMARIZE_GIVEN" -eq 1 ]; then
+  [ "$LIST" -eq 0 ] || { echo "selfcheck: --list and --summarize are both terminal modes; pick one" >&2; exit 2; }
+  [ -n "$SUMMARIZE" ] || { echo "selfcheck: --summarize needs a file, got an empty path" >&2; exit 2; }
+  summarize_run "$SUMMARIZE"
+  exit $?
+fi
+
+if [ "$LIST" -eq 1 ]; then
+  # FOUR TAB-separated fields: name, command, whether it runs in the serial prologue, and WHY.
+  #
+  # The third is here so a guard can ask the runner which steps are pinned instead of grepping the
+  # arrays out of this file — and, unlike a grep, asking cannot pass while the array it read has
+  # stopped being the one the dispatcher consults.
+  #
+  # The fourth arrived with the second lane (#423) and the split matters: field 3 keeps its exact
+  # original meaning, so `$3 == "serial"` still answers "does this run in the prologue" correctly
+  # rather than silently answering it for only one of the two lanes. Widening field 3 into a
+  # three-valued lane name would have made every existing correct query wrong without erroring,
+  # which is the silent-wrong-answer shape this suite exists to prevent. The REASON goes in a new
+  # field instead: `concurrent` | `mutates-tree` | `load-sensitive`.
+  for _s in "${STEP_ORDER[@]}"; do
+    printf '%s\t%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$(lane_of "$_s")" "$(lane_reason "$_s")"
+  done
+  exit 0
+fi
+
+[ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
+
+# --only, applied to the declared order so the selection keeps it. An unknown name EXITS rather
+# than being skipped: a filter that quietly matches nothing runs zero checks and reports the same
+# clean verdict a full green run reports (base/practices/self-review.md).
 WORK="$(mktemp -d)" || { echo "selfcheck: FATAL — cannot create a scratch directory" >&2; exit 2; }
 declare -A LIVE=()          # pid -> 1, for the signal path
 declare -a FAILED=()        # step names, in emission order
@@ -992,10 +1166,16 @@ run_pool() {   # names...
 # concurrency contract at the top of this file for why each one is there.
 declare -a PROLOGUE=() POOLED=()
 for _s in "${SELECTED[@]}"; do
-  _pinned=0
-  for _p in "${PINNED_STEPS[@]}"; do [ "$_s" = "$_p" ] && _pinned=1; done
-  if [ "$_pinned" -eq 1 ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
+  if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
 done
+
+# SAY WHAT WAS SKIPPED, BY NAME, BEFORE ANYTHING RUNS. A step dropped from the selection produces
+# exactly what a step that passed produces: nothing. This line and its twin in the `result` block
+# are the whole difference between "the caller chose not to run this" and "this silently stopped
+# running" — and the second is the failure this suite exists to make impossible. Printed in BOTH
+# modes, and repeated at the end because a 20-minute log's header is not where a reader looks.
+[ "${#SKIPPED[@]}" -gt 0 ] && printf 'selfcheck: SKIPPED %s step(s) by request: %s\n' \
+  "${#SKIPPED[@]}" "${SKIPPED[*]}"
 
 RUN_T0="$EPOCHSECONDS"
 if [ "$SERIAL" -eq 1 ]; then
@@ -1016,6 +1196,10 @@ banner "result"
 printf '%s step(s) in %sm%02ds — %s passed, %s failed\n' \
   "${#SELECTED[@]}" "$(( RUN_SECS / 60 ))" "$(( RUN_SECS % 60 ))" \
   "$(( ${#SELECTED[@]} - ${#FAILED[@]} ))" "${#FAILED[@]}"
+# The count above is of what RAN, so on its own it cannot distinguish a smaller registry from a
+# filtered one. Naming the skipped steps here is what keeps `57 step(s)` and `56 step(s)` from
+# being the same sentence to a reader.
+[ "${#SKIPPED[@]}" -gt 0 ] && printf 'skipped: %s\n' "${SKIPPED[*]}"
 # The slowest few, because under a pool the wall clock is the longest single step and knowing
 # which one that is turns "make it faster" into a specific question.
 if [ "${#SLOW[@]}" -gt 0 ]; then
