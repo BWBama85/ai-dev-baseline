@@ -111,7 +111,7 @@ PINNED_STEPS=(build-drift)
 # 3-4 vCPU macOS hosted runner where the pool's bound counts STEPS while some steps run pools of
 # their own (D66). Four reds mined from CI over 08-19..08-21, on four different commits and one of
 # them on `main`, name exactly two suites plus their mutation mode; the install-exercising trio
-# joins them because it drives the same installer writes for pennies (1-4s each).
+# joins them because it drives the same installer writes and costs seconds, not minutes.
 #
 # `base/practices/ci-discipline.md` names timing assumptions and shared-state writes under
 # "'flaky' causes that are actually real", so this is a fix rather than a tolerance.
@@ -769,7 +769,8 @@ SUMMARIZE=""
 
 usage() {
   cat <<'USAGE'
-usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--list]
+usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip a,b,...]
+                                 [--list] [--summarize FILE]
 
   --serial      Run every step sequentially, in declaration order, with output streaming
                 live. Reach for this when a parallel failure is hard to attribute.
@@ -871,6 +872,13 @@ summarize_run() {   # <captured-log>
   # The LAST such line: one run emits at most one, and taking the last is right if a log ever
   # carries two (a re-run appended to the same file) — the later verdict is the current one.
   failed="$(sed -n 's/^FAILED: //p' "$log" | tail -1)"
+  # A GREEN log gets an honest heading, not the red one. The CI step only calls this on a failure,
+  # so this branch is not on that path — but a reporter that says "failed" over a passing run is
+  # one somebody eventually quotes, and the cost of being right here is three lines.
+  if [ -z "$failed" ] && grep -q '^ALL CHECKS PASSED$' "$log" 2>/dev/null; then
+    printf '### `selfcheck` passed\n\nNo failing steps in the captured run.\n'
+    return 0
+  fi
   printf '### `selfcheck` failed\n\n'
   if [ -n "$failed" ]; then
     printf '**Failed step(s):**'

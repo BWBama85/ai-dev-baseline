@@ -491,10 +491,10 @@ if [ "$tmo" -gt 0 ] && [ "$tmo" -le 120 ]; then ok; else bad "SessionStart timeo
 #
 # INSTALLER_OUT / INSTALLER_RC are left set for a caller that wants to assert something further.
 INSTALLER_OUT=""; INSTALLER_RC=0
+# <label> is first so every call site reads the same way and `installer_clean` can forward "$@";
+# this half only needs the last two.
 run_installer() {   # run_installer <label> <home> <script> — capture both streams AND the status
-  local label="$1" home="$2" script="$3"
-  INSTALLER_OUT="$(HOME="$home" bash "$script" --agent claude 2>&1)"; INSTALLER_RC=$?
-  printf '%s' "$label" >/dev/null   # label is used by the assertions below, not here
+  INSTALLER_OUT="$(HOME="$2" bash "$3" --agent claude 2>&1)"; INSTALLER_RC=$?
 }
 
 # installer_clean <label> <home> <script> — run it and require BOTH rc 0 and no WARN.

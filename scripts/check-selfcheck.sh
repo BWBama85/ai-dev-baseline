@@ -132,7 +132,7 @@ if [ "$MODE" = mutation ]; then
   if mut_prepare "$mut_ctl" >/dev/null; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes at the same deadline the rows use (else every row below is red for the wrong reason)"
-    case "$mut_out" in *"116 passed"*|*" 0 failed"*) ok ;; *) bad "control: the unmutated copy did not report a clean suite" ;; esac
+    case "$mut_out" in *"119 passed"*|*" 0 failed"*) ok ;; *) bad "control: the unmutated copy did not report a clean suite" ;; esac
   else
     bad "control: could not build the unmutated copy"
   fi
@@ -690,6 +690,16 @@ printf '=== gates ===\nboom\nFAIL (exit 3, 1s)\n=== result ===\nFAILED: gates\nS
 summarize "$sum_fx/nowit.log"
 has "$OUT" '`gates`' "the failed step is still named when it produced no witness"
 has "$OUT" "No \`FAIL:\` witness lines were found" "...and the absence of witnesses is STATED"
+
+# A GREEN log must NOT be captioned "failed". CI only calls this on a red run, so this branch is
+# off that path — which is exactly why it needs an assertion: nothing else would ever exercise it,
+# and a reporter that says "failed" over a passing run is one somebody eventually quotes.
+printf '=== gates ===\nfine\nPASS (1s)\n=== result ===\n1 step(s) in 0m01s — 1 passed, 0 failed\nALL CHECKS PASSED\n' \
+  > "$sum_fx/green.log"
+summarize "$sum_fx/green.log"
+yes "$RC_" "--summarize exits 0 on a green log"
+has "$OUT" '`selfcheck` passed' "a green log is captioned PASSED, not failed"
+hasnt "$OUT" '`selfcheck` failed' "...and never carries the red heading"
 
 # Reporter errors are the reporter's own, and they fail closed rather than printing a hopeful blank.
 summarize "$sum_fx/does-not-exist.log"
