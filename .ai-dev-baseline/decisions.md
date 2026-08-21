@@ -6996,3 +6996,40 @@ limit: none of them is sufficient alone.
              `/cleanup`'s sweep obligations, and rejected — they would simply add it. `code-comments.md`
              puts that reasoning here (class 3) and leaves the one-line constraints at the call sites.
 - baseline-issue: n/a
+
+### AMENDED 2026-08-21, DURING REVIEW OF PR #419 — two of the decisions above were SUPERSEDED
+
+The entry is amended rather than rewritten: what was decided first, and why it did not survive, is
+the part a later reader needs. Both changes came from the declared reviewer on the PR, and in both
+cases the original decision was defensible when written and wrong once its consequence was named.
+
+- **(2) THE CHUNKED FOREGROUND FALLBACK IS GONE.** As first decided, the fallback kept a four-chunk
+  / 36-minute budget held by the driver, with the harness-re-entry weakness stated in the prose. The
+  reviewer's objection is the one that settles it: a deadline a re-entry silently restarts is not a
+  deadline, and the round cap cannot stand in for it — that cap only advances after a round that
+  PUSHED something, so a reviewer that simply goes silent never increments it. What ships is a
+  SINGLE bounded foreground call sized to fit under the harness ceiling, with expiry terminal. A
+  short honest wait beats a long fake one; `base/practices/shell.md` says the same thing now.
+
+- **(9) THE PER-POLL `pending` LINE IS SUPPRESSED AFTER ALL.** As first decided, `pr-watch.sh` kept
+  every stderr line on the ground that they are written inside one process and are not model turns.
+  That reasoning is still true of the EVENT lines and they are still emitted — the head moving, an
+  unreadable poll, the terminal verdict, including the two #394/D85 pinned. It was not true of the
+  ONE line a poll loop repeats: sixty identical "no terminal signal yet" lines across a half-hour
+  watch is per-poll narration by any reading, which is what #417's criterion forbids. `wait` is
+  quiet while polling and names the silent reviewer ONCE, at the deadline.
+
+  That fix needed a second attempt, and the reason is worth keeping: the detail was first stashed in
+  a shell variable, but `wait` calls `classify` inside `$( … )` — a subshell — so the assignment was
+  discarded and the deadline printed nothing. It goes through a file now. The same discarded-subshell
+  defect then recurred on the manifest-layer fix below, which is why it is recorded here rather than
+  left as a footnote: it is the third instance in one session, and D85 already records a fourth in
+  `check-pr-watch.sh`'s own clamp assertions.
+
+- **WHAT ELSE THE REVIEW CHANGED**, in one line each, because the entry above describes the design
+  and these are the corrections to it: the completeness proof refuses an inconsistent `totalCount`
+  in BOTH directions and across pages, rather than accepting an over-count or picking the largest;
+  repository identity is proved on every page rather than the first; every node and its nested
+  comments connection is type-checked, because a malformed one was silently dropped from the count;
+  both argument parsers validate `--max-rounds` and the manifest-backed cap BEFORE any live work;
+  and the cap handoff names which `agents.toml` supplied the bound.

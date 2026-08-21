@@ -310,11 +310,20 @@ _adb_pt_fetch() {
     { IFS= read -r page_total; IFS= read -r more; IFS= read -r cursor; IFS= read -r gotslug; } <<EOF
 $fields
 EOF
-    # KEEP THE LARGEST totalCount ANY PAGE REPORTED, not the last one. Overwriting per page meant the
-    # proof below compared against whatever the FINAL page happened to claim, so a count that shrank
-    # mid-pagination would lower the bar the read has to clear — the one direction this module must
-    # never be wrong in. Taking the max makes a shrinking count unable to mask a shortfall.
-    [ -n "$total" ] && [ "$page_total" -le "$total" ] || total="$page_total"
+    # THE COUNT MUST NOT CHANGE BETWEEN PAGES, and "keep the largest" was not enough. That rule
+    # stopped a SHRINKING count from lowering the bar, but it still accepted a connection that
+    # contradicts itself: page 1 claiming 154 over 100 nodes and page 2 claiming 100 over 54 leaves
+    # `got` and `total` both 154 with every id distinct, and the read passes — even though, once the
+    # counts disagree, NEITHER of them proves a further thread was not omitted. Selecting one as
+    # authoritative is exactly the "pick the flattering number" move the rest of this module
+    # refuses. Same reasoning as the `-ne` comparison below, applied across pages instead of within
+    # one. Reported by the declared reviewer on PR #419.
+    if [ -z "$total" ]; then
+      total="$page_total"
+    elif [ "$page_total" -ne "$total" ]; then
+      echo "pr-threads: PR #$n — totalCount changed between pages ($total then $page_total); the connection contradicts itself, so completeness cannot be proved" >&2
+      return 19
+    fi
 
     # PROVE THIS READ ADDRESSED THE REPOSITORY THE CALLER MEANT — on EVERY page, before any of its
     # thread ids is accumulated. The caller replies on and RESOLVES the ids this returns, so

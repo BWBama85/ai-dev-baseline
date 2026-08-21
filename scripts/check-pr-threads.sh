@@ -494,6 +494,29 @@ pt list --pr 1
 eq "$RC" "0" "control: totalCount ABOVE the node count is ordinary truncation, not an error"
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "true" "control: ...and is flagged"
 
+# A CONNECTION THAT CONTRADICTS ITSELF ACROSS PAGES IS REFUSED, not resolved by picking a number.
+# The exact shape: page 1 says 154 over 100 nodes, page 2 says 100 over 54. `got` and `total` both
+# land on 154, every id is distinct, and the arithmetic is satisfied — but once the counts disagree,
+# neither proves a further thread was not omitted.
+reset_fx; declare_bots "[\"$CODEX\"]"
+mkpage 1  154 true  c2 0   100
+mkpage c2 100 false ""  100 54
+pt list --pr 1
+eq "$RC" "19" "a totalCount that CHANGES between pages is refused, not reconciled"
+has "$ERR" "changed between pages" "...and says the connection contradicts itself"
+# ...in the other direction too: a count that GROWS mid-pagination is equally unprovable.
+reset_fx
+mkpage 1  154 true  c2 0   100
+mkpage c2 200 false ""  100 54
+pt list --pr 1
+eq "$RC" "19" "a totalCount that GROWS between pages is refused as well"
+# The control: a stable count across pages still reads cleanly.
+reset_fx
+mkpage 1  154 true  c2 0   100
+mkpage c2 154 false ""  100 54
+pt list --pr 1
+eq "$RC" "0" "control: a STABLE totalCount across pages still reads cleanly"
+
 # --- EVERY UNREADABLE PATH REFUSES ------------------------------------------------------------
 reset_fx; mkpage 1 6 false "" 0 6
 STUB_FAIL_GQL=1 pt list --pr 1
