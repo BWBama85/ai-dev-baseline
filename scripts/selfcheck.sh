@@ -466,9 +466,10 @@ add pr-threads          bash scripts/check-pr-threads.sh
 
 # The negative half of the step above (#418). Its cases are guards, and a guard's failure mode is
 # silence: the shipped defect was a `first:50` read whose own remaining-count check shared the
-# truncating window, so it printed exactly what a clean run prints. Four mutations — the cursor loop
-# stopped, the cursor never sent, the count proof disabled, the identity proof disabled — plus an
-# unmutated control, each required back RED on ITS OWN named witness.
+# truncating window, so it printed exactly what a clean run prints. Six mutations — the cursor loop
+# stopped, the cursor never sent, the count proof disabled, the count proof disabled against #418's
+# OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, and the per-node type
+# check disabled — plus an unmutated control, each required back RED on ITS OWN named witness.
 add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
 
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):

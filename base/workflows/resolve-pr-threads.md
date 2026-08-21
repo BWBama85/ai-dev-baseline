@@ -103,6 +103,14 @@ for a in {{ARGS}}; do
       0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
       0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
     esac
+    # ...and the SAME WIDTH BOUND the library applies. An all-digit value wider than a shell integer
+    # overflows the arithmetic downstream, so `pr-watch.sh`'s validator caps it at 18 digits — but
+    # that validator only runs in step 7, AFTER the wait, the fixes, the push and the thread
+    # resolutions, so catching it there means discovering the cap was invalid once everything it
+    # governs has already happened. A length test rather than a `?`-glob: the glob has to be
+    # counted by eye to be read, and the first attempt at this line was miscounted.
+    # Reported by the declared reviewer on PR #419.
+    [ "${#a}" -le 18 ] || { echo "ERROR: --max-rounds is too large (got '$a')"; exit 1; }
     MAX_ROUNDS="$a"; _want_rounds=0; continue
   fi
   case "$a" in
@@ -317,6 +325,14 @@ for a in {{ARGS}}; do
       0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
       0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
     esac
+    # ...and the SAME WIDTH BOUND the library applies. An all-digit value wider than a shell integer
+    # overflows the arithmetic downstream, so `pr-watch.sh`'s validator caps it at 18 digits — but
+    # that validator only runs in step 7, AFTER the wait, the fixes, the push and the thread
+    # resolutions, so catching it there means discovering the cap was invalid once everything it
+    # governs has already happened. A length test rather than a `?`-glob: the glob has to be
+    # counted by eye to be read, and the first attempt at this line was miscounted.
+    # Reported by the declared reviewer on PR #419.
+    [ "${#a}" -le 18 ] || { echo "ERROR: --max-rounds is too large (got '$a')"; exit 1; }
     _want_rounds=0; continue
   fi
   case "$a" in

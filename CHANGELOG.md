@@ -55,13 +55,14 @@ only by a published release, which is what these entries are the notes for.
   not advance, and `hasNextPage: true` with no cursor. A larger constant was **not** the fix — 54
   threads arrived in one working day, so raising 50 to 100 only moves the cliff.
 
-  The per-thread `comments(first:5)` is a **narrowed contract** rather than a raised number:
+  The per-thread comment page is a **narrowed contract** rather than a raised number — `first:5`
+  became `first:10`, and the number is not the point:
   classification is decided by the head comment (complete by construction), ten are read for context,
   and `comments_truncated` says when there are more. And the resolver's exact-anchored bot allowlist
   — deliberately *not* the merge guards' asymmetric match — is now computed once in the library and
   emitted as a per-thread `is_bot`, instead of being rebuilt twice in untestable workflow prose.
 
-  Guarded by `scripts/check-pr-threads.sh`, whose four mutations are each **observed going red** on
+  Guarded by `scripts/check-pr-threads.sh`, whose six mutations are each **observed going red** on
   their own witness. That matters more than usual here: the defect it replaces printed exactly what a
   clean run prints, so a green suite was never evidence that anything had been checked.
 
@@ -75,9 +76,11 @@ only by a published release, which is what these entries are the notes for.
   The dispatch is now specified rather than improvised. Where the harness runs a command detached and
   re-invokes on completion, the wait is a **background task** and the notification is the wake signal
   — no chunking, no polling, no per-round narration, and the library's own 30-minute default becomes
-  usable again. Where it does not, the chunk loop carries a stated per-chunk bound, a stated overall
-  budget, silence between chunks and one report at the end. Every wait the loop's workflows name now
-  has exactly one home — a library wait, a bounded call, a blocking command, or explicit
+  usable again. Where it does not, the wait is a **single bounded call** sized to fit under that
+  ceiling, with expiry terminal — deliberately not a chunk loop, because a chunk loop's overall
+  deadline is held by the driver and a harness re-entry restarts it silently, and a bound that can
+  be silently restarted is not a bound. A short honest wait beats a long fake one. Every wait the
+  loop's workflows name now has exactly one home — a library wait, a bounded call, a blocking command, or explicit
   report-and-end — and no CI watcher was invented to fill a gap that did not exist.
 
 
