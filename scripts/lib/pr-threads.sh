@@ -351,19 +351,20 @@ EOF
   #
   #   read < totalCount  — threads exist that this read did not return. That IS the defect (#418),
   #                        and it is refused.
-  #   read > totalCount  — more threads were returned than the connection counts. Whatever explains
-  #                        it, it cannot be an UNDER-read, which is the only direction this module
-  #                        promises anything about. Refusing here would make the resolver decline
-  #                        work it had successfully read, on a discrepancy in the safe direction.
-  #
-  # It is still evidence that the response is internally inconsistent, so it is REPORTED rather than
-  # silently accepted — an operator seeing it can decide, and a future reader has the fact rather
-  # than the silence. Reported by the independent reviewer.
-  if [ "$got" -gt "$total" ]; then
-    echo "pr-threads: PR #$n — note: read $got threads but totalCount is $total; the response is internally inconsistent, though not an under-read" >&2
-  fi
-  if [ "$got" -lt "$total" ]; then
-    echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2
+  #   read > totalCount  — more threads were returned than the connection counts. This ALSO refuses,
+  #                        and the reasoning that once said otherwise was wrong: an earlier version
+  #                        argued it "cannot be an under-read", but that only holds if `totalCount`
+  #                        is trustworthy — and this branch is the proof that it is NOT. A response
+  #                        claiming `totalCount: 1` while returning two nodes may equally have
+  #                        omitted a third, so an inconsistent count cannot establish completeness
+  #                        in either direction. Under a complete-or-refuse contract, unprovable is
+  #                        refused. Reported by the declared reviewer on PR #419.
+  if [ "$got" -ne "$total" ]; then
+    if [ "$got" -gt "$total" ]; then
+      echo "pr-threads: PR #$n — read $got threads but totalCount is $total; the response is internally inconsistent, so completeness cannot be proved either way" >&2
+    else
+      echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2
+    fi
     return 19
   fi
   printf '%s' "$acc"

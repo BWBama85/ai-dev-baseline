@@ -114,6 +114,12 @@ for a in $ARGUMENTS; do
     --once)        ONCE=1 ;;
     --watch)       : ;;   # accepted, ignored: it names the default (see Arguments)
     --max-rounds)  _want_rounds=1 ;;
+    # AN UNKNOWN OPTION IS AN ERROR, NOT A TOKEN TO IGNORE — and watch-by-default is what makes it
+    # matter. A silently discarded `--onca` used to cost a flag; now it turns an explicitly
+    # requested ONE-PASS run into the unattended waiting loop, which is the opposite of what the
+    # operator typed. This arm must precede the catch-alls, which would otherwise swallow it.
+    # Reported by the declared reviewer on PR #419.
+    -*)            echo "ERROR: unknown option '$a' (expected --once, --watch or --max-rounds)"; exit 1 ;;
     ''|*[!0-9]*)   ;;
     *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
   esac
@@ -321,6 +327,7 @@ for a in $ARGUMENTS; do
   case "$a" in
     --max-rounds)  _want_rounds=1 ;;
     --once|--watch) ;;
+    -*)            echo "ERROR: unknown option '$a' (expected --once, --watch or --max-rounds)"; exit 1 ;;
     ''|*[!0-9]*)   ;;
     *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
   esac
@@ -406,11 +413,11 @@ bash "$HOME/.gemini/scripts/lib/pr-threads.sh" list --pr "$PR_NUM" > .gemini/sta
 **This used to be a `reviewThreads(first:50)` read with no cursor, and it was silently wrong (#418).**
 The connection returns **oldest-first**, so once a PR passed 50 threads the ones that fell off the
 page were the **newest** — exactly the current review's findings, which are the ones the round exists
-to address. Measured live on an adopting repo: 54 threads existed, 5 were read, 5 were resolved, and
-step 6's check — the same `first:50` query — reported *"remaining unresolved: 0"* while four of the
-reviewer's findings sat untouched. Read exactly: the query returned **50** threads (45 already
-resolved, plus the 5 oldest of a 9-thread new batch); 5 were resolved; the **4 newest were never
-read by either pass**. A short read reported what a clean run reports.
+to address. Measured live on an adopting repo: 54 threads existed, the query returned **50** of them
+(45 already resolved, plus the 5 oldest of a 9-thread new batch), those 5 were the only unresolved
+ones it could see, and step 6's check — the same `first:50` query — reported *"remaining unresolved:
+0"* while the **4 newest were never read by either pass**. A short read reported what a clean run
+reports.
 
 So the enumeration lives in a tested library now, and it **proves itself complete**: it follows
 `pageInfo{hasNextPage endCursor}` to exhaustion and compares what it accumulated against the

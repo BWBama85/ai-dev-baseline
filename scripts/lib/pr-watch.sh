@@ -958,7 +958,12 @@ cmd_wait() {
   # `return`: a trap handler runs in the current shell context, so `return` inside one is only
   # meaningful while a function frame happens to be live and its status is easy to lose. This file
   # is a run-only entry point (the dispatch below executes on load), so exiting is unambiguous.
-  trap 'echo "pr-watch: interrupted — no terminal verdict reached" >&2; exit 11' INT TERM
+  # THE SIGNAL PATH CLEANS UP TOO. An operator ^C on a half-hour watch would otherwise leave an
+  # `adb-pw-pending.*` file behind every time, and the interrupt path is the one an operator takes
+  # MOST often on a long wait. Reported by the declared reviewer on PR #419.
+  trap 'echo "pr-watch: interrupted — no terminal verdict reached" >&2
+        [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
+        exit 11' INT TERM
 
   while :; do
     out="$(classify "$n" "$want")"; rc=$?

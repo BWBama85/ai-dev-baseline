@@ -125,7 +125,7 @@ if [ "$MODE" = mutation ]; then
   # THE COMPLETENESS PROOF ITSELF. With the comparison disabled a short read reports a count — the
   # "0 remaining" over unaddressed findings that #418 observed live.
   check_mut "short-read-silent" \
-    'if [ "$got" -lt "$total" ]; then' \
+    'if [ "$got" -ne "$total" ]; then' \
     'if false; then' \
     'remaining: a short read REFUSES rather than reporting a count'
   # ...and its identity half: a page served twice satisfies `read >= totalCount` while carrying
@@ -141,7 +141,7 @@ if [ "$MODE" = mutation ]; then
   # the count immediately and the incident could not have happened.
   check_mut "short-read-on-the-418-shape" \
     'echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2' \
-    ':' \
+    'echo "pr-threads: nothing to see here" >&2' \
     'the #418 shape: the refusal names the exact live shortfall'
   # The node-level check, injected out. A malformed node then passes the completeness proof and is
   # dropped by the count — the shape the declared reviewer named on PR #419.
@@ -405,12 +405,16 @@ has "$ERR" "did not advance" "list: ...and says which"
 
 # A REPEATED PAGE SATISFIES THE ARITHMETIC WHILE CARRYING NONE OF THE NEWEST THREADS. `read >=
 # totalCount` is true here (200 >= 154) and every id is a duplicate, so identity is what catches it.
+# totalCount 200 and two identical 100-node pages: `got == total`, so the ARITHMETIC is satisfied and
+# only the distinct-id proof can catch it. A fixture where the counts also disagree would be refused
+# by the count check first, and this case would pass without the identity rule existing at all.
 reset_fx
-mkpage 1  154 true  c2 0 100
-mkpage c2 154 false ""  0 100
+mkpage 1  200 true  c2 0 100
+mkpage c2 200 false ""  0 100
 pt list --pr 1
 eq "$RC" "19" "list: a repeated page is refused, not counted as completeness"
 has "$ERR" "distinct ids" "list: ...and says the pages overlapped"
+hasnt "$ERR" "of totalCount" "list: ...caught by the IDENTITY proof, not by the arithmetic"
 
 # --- #418's OWN SHAPE: A RESOLVED PAGE WITH UNRESOLVED OVERFLOW --------------------------------
 # THE FIXTURE THAT REPRODUCES THE LIVE INCIDENT, and the one every case above is blind to. On the

@@ -121,7 +121,7 @@ every rule it owns), **selfcheck-guard** (the runner above is a guard too, so a 
 step is observed still failing a *parallel* run, attributed by name and exit code — plus the
 concurrency bound, output atomicity and cancellation), **pr-threads** + **pr-threads-mutation** (the
 `/resolve-pr-threads` predicates: PR inference that refuses rather than guessing, and a review-thread
-enumeration that paginates and **proves** itself complete — with four mutations each observed going
+enumeration that paginates and **proves** itself complete — with six mutations each observed going
 red, because the defect it replaces printed exactly what a clean run prints), and an
 **install→uninstall dry-run** (all three agents) into a throwaway `HOME`.
 
