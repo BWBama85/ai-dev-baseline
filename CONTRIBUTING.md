@@ -146,7 +146,7 @@ red, because the defect it replaces printed exactly what a clean run prints), an
 Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
 them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
-its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 28 CI
+its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 31 CI
 jobs (the 30 per-PR jobs plus the scheduled WSL smoke #2 added, which reaches it through `wsl -d …`)
 — is still omitted locally, but since #256 the reason is different: what it adds beyond the
 entry gate is an assertion about the machine and about `command -v bash`, which is a CI-image
