@@ -875,6 +875,24 @@ from one that is still waiting.
 `scripts/lib/pr-watch.sh`'s `wait` is the worked example: bounded, in-shell, one
 waiter for one event, so a long wait costs no model tokens.
 
+**But a cheap wait is only cheap if it is DISPATCHED cheaply, and that is the
+caller's half.** The command spends nothing while waiting; re-entering the model
+to start its next stretch costs a full turn, and an agent harness that caps a
+foreground shell call well under the bound forces exactly that. Measured on an
+adopting project: dozens of consecutive turns of *"Waiting."* — *ran 2 shell
+commands* — *"Waiting."*, one per interval. So where the harness runs a command
+detached and re-invokes on completion, **dispatch a long wait as a background
+task and let the notification be the wake signal** — that is the same rule as
+*never poll what already notifies*, applied to a wait you started yourself.
+
+**Where it does not, take the SHORT wait rather than faking a long one.** Size the
+bound to fit under the harness ceiling, run it once, and treat expiry as terminal.
+Do **not** chunk it across repeated foreground calls to synthesize a longer wait:
+the overall deadline is then held by the driver, a re-entry restarts it silently,
+and a bound that can be silently restarted is not a bound — the rule two lines up.
+Report once when the wait starts and once when it resolves or expires; never one
+line per interval.
+
 Measured on 2026-08-15 in this repo: two orphaned loops — one whose completion
 pattern matched no line the log could produce, the second chained to the first —
 spun unbounded and redundant to a task notification the session already had, until

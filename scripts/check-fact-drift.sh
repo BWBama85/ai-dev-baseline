@@ -1308,6 +1308,33 @@ fact pr-onread-shared "absent:gh api graphql" "fires:gh api graphql -f owner=" -
 # classification snapshot must not pay for. The positive rule above still proves its CLASSIFY path
 # routes through the shared reader.
 
+# --- FACT: the re-review round cap and its config surface (#416) ------------------------------
+# The BOUND is restated in five places that must agree — the library that owns it, the workflow that
+# forwards it, the two manifest documents an operator reads, and the root doc's library table — and
+# a bound that differs between the code and the file telling you how to set it is worse than one
+# nobody documented: the operator edits the key, gets the built-in, and has no way to notice.
+#
+# The `6` is pinned as `built-in 6` rather than as a bare digit on purpose: a bare `6` occurs in
+# prose constantly (six rungs, six mutations), so the rule would pass on text that says nothing
+# about this cap, which is a pin that cannot fail.
+fact review-round-cap 'fixed:built-in 6' -- \
+  base/workflows/resolve-pr-threads.md templates/agents.toml base/roles.md
+fact review-round-cap 'fixed:_ADB_PW_MAX_ROUNDS_DEFAULT=6' -- scripts/lib/pr-watch.sh
+# ...and the RETIRED value must not come back. `absent:` with a witness, because a positive pin on
+# the new number cannot catch a stale sentence three lines away that still says the old one — which
+# is exactly the shape the changelog and D80 legitimately keep, and why neither is in this list.
+# Those two are dated historical records; rewriting them would be falsifying history.
+fact review-round-cap-retired 'absent:The default is 3' \
+  'fires:mechanism has posted, at any head. The default is 3; `--max-rounds N` changes it.' -- \
+  base/workflows/resolve-pr-threads.md
+fact review-round-cap-retired 'absent:_ADB_PW_MAX_ROUNDS=3' \
+  'fires:_ADB_PW_MAX_ROUNDS=3' -- scripts/lib/pr-watch.sh
+# The KEY is the operator's whole interface to it, so the three documents that name it must agree on
+# its spelling — a doc that says `max-rounds` for a TOML key nothing reads is a silent no-op.
+fact review-round-cap-key 'fixed:max_rounds' -- \
+  templates/agents.toml base/roles.md scripts/lib/role-dispatch.sh scripts/lib/pr-watch.sh \
+  base/workflows/resolve-pr-threads.md
+
 # --- FACT: the one-read COST figure, measured once and restated in two operative headers (#174) ---
 # `adb_pr_snapshot` and `pr-watch.sh`'s poll budget both quote the same measurement, and a budget
 # nobody recomputes is how the poll-cost comment in that very file went stale TWICE — it said

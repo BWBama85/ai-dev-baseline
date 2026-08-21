@@ -232,6 +232,10 @@ is cleared by `/resolve-pr-threads` — so it has its own manifest home, `[revie
 #   unset → the built-in default set of common review bots
 #   []    → disable bot-thread auto-resolution entirely
 bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
+
+# How many re-review rounds /resolve-pr-threads may request. Optional.
+#   unset → the built-in 6;  `--max-rounds <n>` overrides both
+max_rounds = 6
 ```
 
 `role-dispatch.sh bots` reads this (repo → global → the built-in default allowlist) and
@@ -254,6 +258,32 @@ reviewed the PR's **current head commit**. The two readers differ only on *unset
 a permissive default is harmless when deciding which threads to resolve and is exactly wrong as a
 merge gate, so the gate fails closed on an undeclared repo. A repo with no async reviewer declares
 `bots = []` and keeps unattended arming. See `docs/roles-and-agents.md`.
+
+### `max_rounds` — the re-review round bound (#416)
+
+`/resolve-pr-threads` does not merely resolve what is there; it asks the reviewer to look again and
+goes round until the reviewer passes. `max_rounds` is that loop's bound, and it lives here because
+it is a fact about how **this repo's declared reviewer** is driven.
+
+A **round** is one trigger comment this mechanism posts to wake the reviewer after a fix is pushed.
+The cap counts **every** trigger comment on the pull request, at any head — derived from the PR
+rather than from local state, which is what makes it survive a restarted or resumed session with no
+counter to reset.
+
+**A human's own `@codex review` comments spend the same budget**, and that is by design: the
+mechanism and a person post the same text from the same login, so no read can tell them apart, and a
+cap that tried would need an authorship signal GitHub does not provide. Say it plainly rather than
+letting an operator discover it as a surprise cap.
+
+Precedence is `--max-rounds <n>` > `[reviewers] max_rounds` > the built-in **6**, and a malformed
+value is a **hard error** rather than a silent fall-back to that built-in — an operator who wrote a
+bound and got the default has a cap they did not choose and no way to notice. It layers repo →
+global like every other manifest key.
+
+**The default is 6 because the field measured 3 wrong.** The first productive multi-round resolve on
+an adopting repo — every round pushing fixes, round 5's fixes breeding three of round 6's findings —
+hit the cap at 3, because four requests already existed and all four were the operator's own manual
+kick-starts. `role-dispatch.sh max-rounds` reads it; `pr-watch.sh request-review` owns the built-in.
 
 ## Scope: bespoke orchestration stays project-scoped
 

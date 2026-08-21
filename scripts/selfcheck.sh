@@ -458,6 +458,20 @@ add pr-watch            bash scripts/check-pr-watch.sh
 # than a claim in a PR body.
 add pr-watch-mutation   bash scripts/check-pr-watch.sh --mutation
 
+# Unit tests for the /resolve-pr-threads decision predicates (scripts/lib/pr-threads.sh, #416/#418):
+# argument-less PR inference refusing rather than guessing, the COMPLETE thread enumeration across a
+# cursor, and the completeness proof that makes a short read loud instead of letting it report
+# "0 remaining".
+add pr-threads          bash scripts/check-pr-threads.sh
+
+# The negative half of the step above (#418). Its cases are guards, and a guard's failure mode is
+# silence: the shipped defect was a `first:50` read whose own remaining-count check shared the
+# truncating window, so it printed exactly what a clean run prints. Six mutations — the cursor loop
+# stopped, the cursor never sent, the count proof disabled, the count proof disabled against #418's
+# OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, and the per-node type
+# check disabled — plus an unmutated control, each required back RED on ITS OWN named witness.
+add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
+
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
 # mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,
 # argument validation, and the three narrating workflows' wiring to it.

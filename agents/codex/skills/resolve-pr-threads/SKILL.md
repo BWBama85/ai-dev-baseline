@@ -8,18 +8,30 @@
 # variable — fill it in when you run a step. Some other refs (Stop-hook gating,
 # /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
 name: resolve-pr-threads
-description: Resolve unresolved bot-authored review threads on an open PR. Switches the working tree to the PR's head branch, addresses findings (commit + push if needed), replies, then marks each thread Resolved via GraphQL so branch protection unblocks merge. With --watch it first waits for the async reviewer to finish, spending no model tokens while it waits.
+description: Wait for the async reviewer, then address and resolve its review threads on an open PR — by default, and with no arguments. Infers the PR when exactly one is open, switches the working tree to its head branch, addresses findings (commit + push if needed), replies, marks each thread Resolved via GraphQL so branch protection unblocks merge, then asks for a re-review and goes round again until the reviewer passes, a guard refuses, or the round cap is reached. --once does a single pass instead.
 ---
 
 # /resolve-pr-threads
 
-Address and resolve every unresolved **bot-authored** review thread on the PR named by `$ARGUMENTS` so the repo's "all comments must be resolved" branch protection releases. The PR number is the **first bare integer** in those arguments — the rest may carry flags such as `--watch` (step 0).
+Wait for the async reviewer, then address and resolve every unresolved **bot-authored** review thread on the PR so the repo's "all comments must be resolved" branch protection releases — and go round again until the reviewer is satisfied. `$ARGUMENTS` may be **empty**: the PR number is the first bare integer in it, and when there is none the PR is **inferred** (step 0).
+
+**The default is the whole loop.** Wait → classify → fix → reply → resolve → ask for a re-review → wait again. Both documented reasons to invoke this skill are async-reviewer cases, so waiting is the ordinary mode rather than a marked one; `--once` is how you ask for a single pass instead.
 
 > **Side effect:** this skill `git switch`-es your working tree to the PR's head branch. If you're mid-task on an unrelated branch, finish or stash that work first. The skill aborts on a dirty tree to protect uncommitted changes, but it will not warn before changing branches on a clean tree.
 
+## Arguments
+
+| Form | Meaning |
+| --- | --- |
+| *(nothing)* | infer the PR, then run the loop. **This is the intended invocation.** |
+| `<pr-number>` | that PR — an explicit number always wins over inference |
+| `--once` | one pass: resolve what is there now, ask for the re-review if this pass pushed a fix, then **exit instead of waiting again** |
+| `--max-rounds <n>` | override the re-review round cap for this invocation |
+| `--watch` | **accepted and ignored.** It names what is now the default. Not an error: every existing invocation, hint and doc spells it, and erroring on the old spelling would break them for no gain |
+
 ## When to invoke
 
-- **After `/implement-issue` exits** with bot reviews not yet posted. The skill is the documented resume path for the bot-wait window expiring before the configured bot reviewer arrives.
+- **After `/implement-issue` exits** with bot reviews not yet posted — which is the ordinary end state, because step 10 runs seconds after the PR opens and a reviewer that takes minutes has definitionally not reviewed yet. Invoke it with **no arguments**: there is exactly one open PR, and it is the one that was just opened.
 - **Any time** Codex, Copilot, or another configured bot reviewer posts findings on an existing PR. Idempotent — safe to re-run if more threads appear later.
 
 ## Scope
@@ -65,56 +77,167 @@ default set covers the common GitHub review bots:
 
 ## Steps
 
-### 0. Optional: wait for the reviewer first (`--watch`)
+### 0. Resolve the PR, then wait for the reviewer
 
-**Skip this step entirely unless `--watch` appears in the arguments.** Without it every step below
-behaves exactly as it always has.
+**This step runs by default.** `--once` skips only the *waiting*; the PR resolution below always
+happens, because every later step needs a number.
 
-`/implement-issue` opens a PR and ends; the async reviewer arrives minutes later, usually after the
-session is gone. `--watch` closes that gap without paying for it: the waiting happens in a **shell
-poll loop**, so the bound can be half an hour and **no model tokens are spent while merely
-waiting** — the model is not in the loop at all, and only re-enters if there is something to do.
+#### 0a. Which PR?
+
+An explicit bare integer in the arguments wins. With none, ask — never assume, and never take "the
+branch I am on" as the answer:
 
 ```bash
-# Self-contained, like every other fenced block here: these steps may run as separate shell
-# invocations that share no variables, so this block resolves the PR number itself rather than
-# borrowing step 1's. Both parsers take the first BARE INTEGER, so "--watch 42" and "42 --watch"
-# behave identically — taking the first TOKEN would read "--watch" as the PR number.
-WATCH=0
+# The FIRST BARE INTEGER, not the first token: the argument list may lead with a flag, and
+# `awk '{print $1}'` would hand every read below a PR number of "--once".
 PR_NUM=""
+ONCE=0
+MAX_ROUNDS=""
+_want_rounds=0
 for a in $ARGUMENTS; do
+  # VALIDATE THE CAP HERE, BEFORE ANY LIVE WORK. `request-review` rejects a bad value too, but it
+  # runs at the END of a round — after the wait, the fixes, the push and the thread resolutions —
+  # so a typo would be caught only once everything it could affect had already happened. And an
+  # OPTION swallowed as the value is worse than a bad number: `--max-rounds --once` would store
+  # `--once` as the cap AND leave ONCE=0, so an operator who asked for a single pass silently gets
+  # the full waiting loop. Refuse both shapes at parse time.
+  if [ "$_want_rounds" = "1" ]; then
+    case "$a" in
+      -*)          echo "ERROR: --max-rounds needs a value, but got the option '$a'"; exit 1 ;;
+      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer (got '$a')"; exit 1 ;;
+      0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
+      0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
+    esac
+    # ...and the SAME WIDTH BOUND the library applies. An all-digit value wider than a shell integer
+    # overflows the arithmetic downstream, so `pr-watch.sh`'s validator caps it at 18 digits — but
+    # that validator only runs in step 7, AFTER the wait, the fixes, the push and the thread
+    # resolutions, so catching it there means discovering the cap was invalid once everything it
+    # governs has already happened. A length test rather than a `?`-glob: the glob has to be
+    # counted by eye to be read, and the first attempt at this line was miscounted.
+    # Reported by the declared reviewer on PR #419.
+    [ "${#a}" -le 18 ] || { echo "ERROR: --max-rounds is too large (got '$a')"; exit 1; }
+    MAX_ROUNDS="$a"; _want_rounds=0; continue
+  fi
   case "$a" in
-    --watch) WATCH=1 ;;
-    ''|*[!0-9]*) ;;
+    --once)        ONCE=1 ;;
+    --watch)       : ;;   # accepted, ignored: it names the default (see Arguments)
+    --max-rounds)  _want_rounds=1 ;;
+    # AN UNKNOWN OPTION IS AN ERROR, NOT A TOKEN TO IGNORE — and watch-by-default is what makes it
+    # matter. A silently discarded `--onca` used to cost a flag; now it turns an explicitly
+    # requested ONE-PASS run into the unattended waiting loop, which is the opposite of what the
+    # operator typed. This arm must precede the catch-alls, which would otherwise swallow it.
+    # Reported by the declared reviewer on PR #419.
+    -*)            echo "ERROR: unknown option '$a' (expected --once, --watch or --max-rounds)"; exit 1 ;;
+    ''|*[!0-9]*)   ;;
     *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
   esac
 done
-[ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
+[ "$_want_rounds" = "1" ] && { echo "ERROR: --max-rounds needs a value"; exit 1; }
 
-if [ "$WATCH" = "1" ]; then
-  # --max-secs is passed EXPLICITLY and is deliberately far below the library's own 30-minute
-  # default, because this call runs inside an agent's shell-tool invocation and that tool has its
-  # own ceiling (commonly ~2 minutes by default, ~10 minutes maximum). A wait longer than the
-  # harness allows does not "wait longer" — it gets KILLED mid-wait, which loses the verdict
-  # entirely. 540s sits under a 600s ceiling with margin, and the connector has been taking ~3
-  # minutes on this repo, so it converges well inside that.
-  #
-  # RAISE YOUR SHELL TOOL'S TIMEOUT to at least 600000ms for this one call. If your harness cannot,
-  # lower --max-secs to fit it rather than letting the call be killed.
-  #
-  # For a genuinely long watch, run the library directly in a terminal you keep — it is a plain
-  # command with no agent in the loop:
-  #     bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait --pr N --interval 30 --max-secs 1800
-  # then run this skill without --watch once it reports findings.
-  #
-  # The call is the LAST command in this block ON PURPOSE: its exit status becomes the block's, so
-  # the verdict reaches you as an exit code. Assigning it to a variable would make the block exit 0
-  # for every verdict and the table below unusable.
-  bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM" --max-secs 540
-else
-  exit 10   # not watching: behave exactly as an ordinary invocation, i.e. "there is work to do"
+if [ -z "$PR_NUM" ]; then
+  # INFERENCE, and it never guesses (#416). Exactly one open PR is the ordinary loop state — the
+  # one /implement-issue just opened — and making the operator look its number up to type it back
+  # in was the hand-holding this replaced. Zero and two-or-more are refusals with distinct codes,
+  # because resolving is a MUTATION: a guess that picks wrong replies on and resolves the threads
+  # of a pull request nobody asked about.
+  PR_NUM="$(bash "$HOME/.codex/scripts/lib/pr-threads.sh" infer-pr)" || {
+    echo "ERROR: could not determine which PR to resolve (see above)"; exit 1; }
 fi
+# VALIDATE THE MANIFEST-BACKED CAP HERE TOO, not only the flag. The flag is checked above, but a
+# cap declared as `[reviewers] max_rounds` is not read until step 7 — so a malformed declaration
+# like `max_rounds = "six"` survives the whole wait, the fixes, the push and the resolutions, and
+# only then reports a hard configuration error. Ask the reader now; an UNDECLARED cap (rc 3) is the
+# normal case and means the built-in applies.
+if [ -z "${MAX_ROUNDS:-}" ]; then
+  bash "$HOME/.codex/scripts/lib/role-dispatch.sh" max-rounds >/dev/null; _mrc=$?
+  case "$_mrc" in
+    0|3) : ;;   # declared and usable, or undeclared -> the library's built-in
+    *)   echo "ERROR: '[reviewers] max_rounds' is unusable (see above) — fix agents.toml before running"; exit 1 ;;
+  esac
+fi
+echo "PR_NUM=$PR_NUM ONCE=$ONCE MAX_ROUNDS=${MAX_ROUNDS:-<default>}"
 ```
+
+`infer-pr` exits `10` when nothing is open and `11` when several are — the second lists the
+candidates, with number, draft status, head branch, title and URL, in numeric order. Report the
+message and stop; do **not** pick one.
+
+**Carry `$PR_NUM`, `$ONCE` and `$MAX_ROUNDS` forward yourself.** These fenced blocks may run as
+separate shells that share no variables, so every later block that needs the number either resolves
+it again by the same rule or takes the literal value you read here.
+
+#### 0b. Wait for the reviewer
+
+`/implement-issue` opens a PR and ends; the async reviewer arrives minutes later. This is the step
+that closes that gap, and **how you run it decides what it costs.**
+
+**The wait itself is free** — `bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait` is a `sleep` loop in one process, with no
+model in it. What is *not* free is re-entering the model to start the next chunk of it, and that is
+a property of the **dispatch**, not of the library (#417). Measured in the field: a wait driven as
+one foreground shell call per interval produced dozens of consecutive model turns — *"Waiting."* ·
+*ran 2 shell commands* · *"Waiting."* — each one a full turn with context reloaded.
+
+So pick the dispatch by what your harness offers, in this order:
+
+**A — a background task (preferred).** Where the harness runs a command detached and re-invokes you
+when it finishes — Claude Code does — dispatch the wait as a **background task** and let the
+completion notification be the wake signal. Read the exit code from the task result. No chunking,
+no polling, no per-round narration, and the library's own 30-minute default becomes usable again
+because no foreground ceiling applies:
+
+```bash
+bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM" --interval 30 --max-secs 1800
+```
+
+**Do not poll the task's output to guess whether it is done.** The outcome is the task completing;
+`base/practices/shell.md` is explicit that a harness-tracked task signals its own completion and
+that hand-rolled polling is for external state the harness cannot see.
+
+**B — a single bounded foreground wait (where there is no such facility).** A shell tool has its
+own ceiling — commonly ~2 minutes by default, ~10 minutes maximum — and a wait longer than the
+harness allows is not a longer wait, it is a **killed** one, which loses the verdict. So size
+`--max-secs` to fit *under your ceiling* and make expiry **terminal**:
+
+```bash
+bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM" --interval 30 --max-secs 540
+```
+
+**One call, one bound, and `11` ends the round** — report the timeout and hand back to the operator,
+exactly as the table below says. Do **not** re-invoke it in a loop to synthesize a longer wait.
+
+That restriction is the whole point, and it is worth stating why the obvious alternative was
+rejected rather than left for the next reader to re-invent. A chunk loop needs an overall deadline,
+and a deadline the *driver* counts is not a deadline: a harness that re-enters between chunks
+restarts the count, and nothing anywhere notices. The round cap cannot stand in for it either —
+that cap bounds re-review *requests*, which are only posted after a round that **pushed** something,
+so a reviewer that simply goes silent never increments it and would be waited on indefinitely. A
+bound that can be silently restarted is the shape `base/practices/shell.md` forbids: *a wrong
+predicate must expire loudly; it must never spin silently.*
+
+So the fallback's bound is the one thing that is genuinely hard here — a single `--max-secs`
+enforced inside one process, by `pr-watch.sh`'s own monotonic deadline. A harness with a small
+ceiling therefore gets a **short** wait rather than a fake long one, and the operator re-runs or
+uses A or C. Trading reach for a bound that cannot lie is the right way round.
+
+**C — neither, and you would rather not wait at all:** run the library in a terminal you keep — it
+is a plain command with no agent in the loop — and re-run this skill with `--once` when it reports
+findings:
+
+```
+bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait --pr N --interval 30 --max-secs 1800
+```
+
+**No per-round narration, in any mode.** Report **once** when the wait starts and **once** when it
+resolves or expires. The library is quiet while it polls — since #417 `wait` prints no line per
+pending poll, only the events that matter (the head moving under it, an unreadable poll, and the
+terminal verdict) — and you should be too.
+
+**In every mode the verdict reaches you as an EXIT CODE.** Make the `wait` call the last command in
+its block; assigning it to a variable makes the block exit 0 for every verdict and the table below
+unusable.
+
+**`--once` skips 0b entirely** and enters step 1 as if the code were `10` — there is work to do, or
+there is not, and one pass will find out.
 
 **Branch on that block's EXIT CODE** (not on its stdout — codes `2`, `17`, `18` and `20` print no
 verdict line at all). Only `10` continues into the resolve flow; every other code is a terminal
@@ -131,9 +254,10 @@ answer this skill reports and exits on, because there is nothing to resolve:
 | `20` | live state was unreadable | say so and **exit** — never assume a clean pass |
 | `2`  | bad arguments (e.g. a PR number of `0`, or a URL naming another repository) | report the message and **exit** |
 
-**A killed call is not a verdict.** If the shell tool times out mid-wait, you get no code and no
-answer — do not treat that as "clean" or as "no findings". Report that the wait was cut short and
-either re-run with a smaller `--max-secs` or run the library directly in a terminal.
+**A killed call is not a verdict — in EITHER mode.** If the shell tool times out mid-wait, or a
+background task is cancelled, you get no code and no answer. Do not treat that as "clean" or as "no
+findings": report that the wait was cut short, and either re-run it (dispatch A), lower
+`--max-secs` to fit your ceiling (dispatch B), or run the library directly in a terminal (C).
 
 **`11` has a second cause worth reading the stderr for (#175).** A `+1` and a task-mode comment carry
 no commit, so their freshness is proved against GitHub's own record of *when the head ref became this
@@ -147,7 +271,8 @@ so the head arrives with a record.
 **Why a clean pass is a distinct answer, not "no threads found".** A clean Codex pass produces **no
 review object at all** — only a `+1` reaction. Running the ordinary flow against such a PR would
 fetch zero threads and report "nothing to do", which is the right action for the wrong reason and
-is indistinguishable from *the reviewer has not started yet*. `--watch` tells those two apart.
+is indistinguishable from *the reviewer has not started yet*. The wait tells those two apart, which
+is one reason it is now the default rather than a flag.
 
 ### ⚠ `10` does not guarantee there are threads to resolve
 
@@ -185,23 +310,59 @@ branch. `git cat-file -t <sha>` and `gh pr view <PR#> --json headRefOid` settle 
 **This step never mutates anything.** It observes and it waits. Every branch switch, commit, push,
 and resolution still happens in steps 1–8, under exactly the rules they already state.
 
-> **Run `--watch` in the foreground, in a session you are keeping.** The wait is cheap but it is
-> not detached: it lives as long as the invoking process does, and steps 1–8 switch your working
-> tree to the PR's head branch. Do not start a watch in a tree another session is working in. A
-> genuinely session-surviving watcher is #171, and isolating its working tree is #172.
+> **The wait is not detached, whichever dispatch you used.** A background *task* still dies with the
+> session that started it, and steps 1–8 switch your working tree to the PR's head branch — so do
+> not start one in a tree another session is working in. Watch-by-default makes that the ordinary
+> exposure rather than the opt-in one. **#171 owns both halves** — a session-surviving watcher and
+> the tree isolation it needs — and neither is in scope here.
 
 ### 1. Preflight
 
 Require only `gh` and `jq` — the gate runner (Step 4) auto-detects the project's stack, so this skill does not hard-require any particular package manager.
 
 ```bash
-# The first BARE INTEGER, not the first token: the argument list may lead with `--watch` (step 0),
-# and `awk '{print $1}'` would then hand every read below a PR number of "--watch".
+# THE PARSER IS STEP 0a's, CHARACTER FOR CHARACTER, and that is load-bearing rather than tidy.
+# These blocks may run as separate shells, so this one re-resolves instead of borrowing a variable
+# — and a parser that differs by one arm resolves a DIFFERENT PR than the step that already ran.
+#
+# The arm that matters is `--max-rounds`: a loop that only hunts the first bare integer reads that
+# flag's VALUE as the pull request. `/resolve-pr-threads --max-rounds 9` would infer the PR in step
+# 0a and then target PR 9 here, and `--max-rounds 9 42` would target 9 instead of the explicit 42 —
+# replying on and RESOLVING threads on a pull request nobody named. Skipping the value is the whole
+# job of `_want_rounds`.
 PR_NUM=""
+_want_rounds=0
 for a in $ARGUMENTS; do
-  case "$a" in ''|*[!0-9]*) ;; *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;; esac
+  # Same refusal as step 0a: these two must agree about whether the invocation is even legal, not
+  # merely about which pull request it names.
+  if [ "$_want_rounds" = "1" ]; then
+    case "$a" in
+      -*)          echo "ERROR: --max-rounds needs a value, but got the option '$a'"; exit 1 ;;
+      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer (got '$a')"; exit 1 ;;
+      0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
+      0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
+    esac
+    # ...and the SAME WIDTH BOUND the library applies. An all-digit value wider than a shell integer
+    # overflows the arithmetic downstream, so `pr-watch.sh`'s validator caps it at 18 digits — but
+    # that validator only runs in step 7, AFTER the wait, the fixes, the push and the thread
+    # resolutions, so catching it there means discovering the cap was invalid once everything it
+    # governs has already happened. A length test rather than a `?`-glob: the glob has to be
+    # counted by eye to be read, and the first attempt at this line was miscounted.
+    # Reported by the declared reviewer on PR #419.
+    [ "${#a}" -le 18 ] || { echo "ERROR: --max-rounds is too large (got '$a')"; exit 1; }
+    _want_rounds=0; continue
+  fi
+  case "$a" in
+    --max-rounds)  _want_rounds=1 ;;
+    --once|--watch) ;;
+    -*)            echo "ERROR: unknown option '$a' (expected --once, --watch or --max-rounds)"; exit 1 ;;
+    ''|*[!0-9]*)   ;;
+    *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
+  esac
 done
-[ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
+if [ -z "$PR_NUM" ]; then
+  PR_NUM="$(bash "$HOME/.codex/scripts/lib/pr-threads.sh" infer-pr)" || { echo "ERROR: could not determine which PR to resolve (see above)"; exit 1; }
+fi
 
 if ! command -v gh >/dev/null 2>&1; then
   export PATH="/opt/homebrew/bin:$PATH"
@@ -209,11 +370,16 @@ fi
 command -v gh || { echo "MISSING:gh"; exit 1; }
 command -v jq || { echo "MISSING:jq"; exit 1; }
 
-# Derive the resolvable-bot login allowlist from the manifest (single source — base/roles.md),
-# BEFORE any branch switch so an early exit strands nothing. Check the helper's EXIT STATUS: a
-# non-zero status means the helper failed (broken install / malformed `[reviewers] bots`), which
-# must fail loud — NOT be mistaken for the empty-output `bots = []` disable, or a runtime failure
-# would silently leave every bot thread unresolved.
+# Is auto-resolution disabled at all? Ask the manifest BEFORE any branch switch, so an early exit
+# strands nothing. Check the helper's EXIT STATUS: a non-zero status means the helper failed (broken
+# install / malformed `[reviewers] bots`), which must fail loud — NOT be mistaken for the
+# empty-output `bots = []` disable, or a runtime failure would silently leave every thread
+# unresolved while reporting success.
+#
+# THE ALLOWLIST REGEX IS NOT BUILT HERE ANY MORE. It used to be assembled in this block and
+# RE-assembled in step 6, two untestable copies of one predicate with a comment warning about the
+# empty-regex trap between them. `bash "$HOME/.codex/scripts/lib/pr-threads.sh" list` now emits a per-thread `is_bot` computed
+# from the same manifest read, so the rule has one home and that home has tests.
 if ! KNOWN_BOTS="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots)"; then
   echo "ERROR: could not read the bot allowlist (broken install or malformed [reviewers] bots) — aborting rather than silently skipping every thread." >&2
   exit 1
@@ -221,9 +387,6 @@ fi
 if [ -z "$KNOWN_BOTS" ]; then
   echo "Bot-thread auto-resolution is disabled ([reviewers] bots = []). Nothing to do."; exit 0
 fi
-# Build an anchored, case-insensitive exact-match alternation. Regex-escape the [ and ] that
-# appear in `foo[bot]` logins so they match literally, then join the logins with `|`.
-BOT_RE="(?i)^($(printf '%s\n' "$KNOWN_BOTS" | sed 's/[][]/\\&/g' | paste -sd'|' -))$"
 ```
 
 Confirm the PR exists and is open. Capture the head branch so we can check out and push if fixes are needed.
@@ -244,7 +407,21 @@ fi
 
 # Capture the branch to RESTORE to on exit (issue #17: never strand the tree on the
 # PR head). This runs before any switch, so on the dirty-abort above nothing moved.
-ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+#
+# CAPTURED ONCE FOR THE WHOLE RUN, NOT ONCE PER ROUND. Step 7 sends the loop back through this step,
+# and by then the tree is ALREADY on the PR head — so a fresh capture would record the PR branch as
+# "where we started", and step 8 would faithfully restore the tree to the branch it was supposed to
+# leave. That is issue #17's own defect, re-introduced by the loop rather than by a missing restore.
+# The guard is the emptiness test: round 2 finds it already set and leaves it alone.
+#
+# `${ORIG_BRANCH:-}` and not `$ORIG_BRANCH`, because these blocks may run as separate shells and an
+# unset variable under `set -u` would abort the step. If a later round genuinely runs in a fresh
+# shell that lost the value, it re-captures the PR branch — which is why the SUMMARY must carry the
+# starting branch too, and why step 8 falls back to the PR's base and then the default.
+if [ -z "${ORIG_BRANCH:-}" ]; then
+  ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+  echo "ORIG_BRANCH=$ORIG_BRANCH   # carry this value into every later round and into step 8"
+fi
 if [ "$ORIG_BRANCH" != "$PR_BRANCH" ]; then
   echo "Switching working tree from '$ORIG_BRANCH' to '$PR_BRANCH' (PR #$PR_NUM's head); will restore '$ORIG_BRANCH' on exit."
 fi
@@ -255,55 +432,70 @@ git fetch origin "$PR_BRANCH" --quiet || true
 git switch "$PR_BRANCH" 2>/dev/null || git switch -c "$PR_BRANCH" "origin/$PR_BRANCH"
 ```
 
-### 2. Fetch unresolved threads
+### 2. Fetch every review thread — completely
 
 ```bash
-OWNER=$(gh repo view --json owner -q .owner.login)
-REPO=$(gh repo view --json name -q .name)
-
-gh api graphql -f query='
-query($owner:String!,$repo:String!,$num:Int!){
-  repository(owner:$owner,name:$repo){
-    pullRequest(number:$num){
-      reviewThreads(first:50){
-        nodes{
-          id isResolved isOutdated
-          comments(first:5){
-            nodes{ id author{login} path line body createdAt }
-          }
-        }
-      }
-    }
-  }
-}' -f owner="$OWNER" -f repo="$REPO" -F num="$PR_NUM" > .codex/state/threads-$PR_NUM.json
+bash "$HOME/.codex/scripts/lib/pr-threads.sh" list --pr "$PR_NUM" > .codex/state/threads-$PR_NUM.json
 ```
 
-50-thread cap is a hard ceiling. If the response indicates ≥50 unresolved threads (anomaly), abort and ask the user — paginating would risk dropping context across calls.
+**This used to be a `reviewThreads(first:50)` read with no cursor, and it was silently wrong (#418).**
+The connection returns **oldest-first**, so once a PR passed 50 threads the ones that fell off the
+page were the **newest** — exactly the current review's findings, which are the ones the round exists
+to address. Measured live on an adopting repo: 54 threads existed, the query returned **50** of them
+(45 already resolved, plus the 5 oldest of a 9-thread new batch), those 5 were the only unresolved
+ones it could see, and step 6's check — the same `first:50` query — reported *"remaining unresolved:
+0"* while the **4 newest were never read by either pass**. A short read reported what a clean run
+reports.
 
-```bash
-TOTAL=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length' .codex/state/threads-$PR_NUM.json)
-# Default-if-empty guard: jq failure or malformed response would otherwise
-# yield a shell syntax error on the integer comparison below.
-if [ "${TOTAL:-0}" -ge 50 ]; then
-  echo "ERROR: $TOTAL unresolved threads on PR #$PR_NUM — pagination not implemented. Triage manually."
-  exit 1
-fi
-```
+So the enumeration lives in a tested library now, and it **proves itself complete**: it follows
+`pageInfo{hasNextPage endCursor}` to exhaustion and compares what it accumulated against the
+connection's own `totalCount`. A larger constant is not a fix — it moves the cliff.
 
-This abort happens **after** the step-1 branch switch, so run **step 8 (restore the
-starting branch)** before exiting — do not leave the tree stranded on the PR head.
+**Branch on the EXIT CODE.** `0` is the only one that continues:
+
+| Code | Meaning | What to do |
+| ---- | ------- | ---------- |
+| `0`  | every thread was read, and the read proved it | continue to step 3 |
+| `19` | the enumeration **could not be proved complete** — a shortfall against `totalCount`, a repeated page, or a cursor that did not advance | **stop.** Report the message (it names the numbers) and run **step 8** first, because step 1 already switched the tree. Never fall back to a partial list |
+| `18` | `[reviewers] bots` is malformed | fix `agents.toml`; step 8, then exit |
+| `20` | live state was unreadable | say so; step 8, then exit |
+| `2`  | bad arguments, or the reads answered for another repository | report the message; step 8, then exit |
+
+The document is `{ pr, total, bots, threads: [ … ] }`, where `bots` is the declared allowlist as a
+lower-cased list — **not** a regex. That distinction is load-bearing: an allowlist assembled as
+`^(a|b)$` is only as exact as its escaping, and a configured login carrying a metacharacter
+(`foo.bar`) matched a real, different account (`foo-bar`), which would have let the resolver
+silently resolve a human's thread. Exact string comparison makes the documented property true by
+construction. Each thread carries `id`, `isResolved`,
+`isOutdated`, the head comment's `author`/`path`/`line`/`body`/`createdAt`, its `comments`, and two
+fields step 3 depends on:
+
+- **`is_bot`** — the resolver's own **exact, anchored, case-insensitive** allowlist verdict. This is
+  deliberately *not* the merge guards' asymmetric match (`base/roles.md` explains why the same
+  manifest key has two readers): resolving a thread is a mutation, so an over-broad match here
+  touches a thread nobody meant it to.
+- **`comments_truncated`** — ten comments per thread are read, which is a **narrowed contract, not a
+  raised constant**. Classification is decided by the *head* comment, and page one always carries
+  it; the rest of the conversation is context, and a later reply can clarify, refute or reopen a
+  finding. When a thread carries more than ten, this flag says so — so a thread whose meaning
+  depends on its tail is visible rather than silently half-read. Read the rest with
+  `gh api graphql` when it is flagged and the head is not enough.
 
 ### 3. Classify each thread
 
-For every unresolved thread, read it with the Read tool (load `.codex/state/threads-$PR_NUM.json`) and decide one of:
+For every thread with `isResolved: false`, read it with the Read tool (load `.codex/state/threads-$PR_NUM.json`) and decide one of. **A thread already `isResolved` is skipped silently** — that is what makes a second run of this skill a no-op.
 
 | Disposition                     | Criteria                                                                                       | Action                                                                                                               |
 | ------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | **Legitimate code change**      | The bot found a real bug or correctness issue you agree with.                                  | Edit the relevant file, run gates, commit, push, then reply + resolve.                                               |
 | **Already addressed**           | A prior commit in this PR (yours or `/code-review`'s) already fixed the underlying issue.      | Reply with `Addressed in <sha>: <one-line summary>`. Then resolve.                                                   |
 | **Disagree with reason**        | The bot's claim is wrong, doesn't apply to the codebase, or is a style preference you decline. | Reply with `Declined: <one-sentence reason>`. Then resolve. Branch protection cares about resolution, not agreement. |
-| **Human-authored**              | Author login is NOT in the `[reviewers] bots` allowlist (test with `$BOT_RE`).                  | Skip. Log it in the summary and let the human handle.                                                                |
-| **Login not in the allowlist**  | Author login is not in `[reviewers] bots` — including an unlisted `[bot]` account.             | Skip + log (treat as human-authored). List it in `[reviewers] bots` to resolve it.                                  |
+| **Human-authored**              | `is_bot` is `false` — the author login is not in the `[reviewers] bots` allowlist.              | Skip. Log it in the summary and let the human handle.                                                                |
+| **Login not in the allowlist**  | `is_bot` is `false` for an account that merely *looks* like a bot, including an unlisted `[bot]` one. | Skip + log (treat as human-authored). List it in `[reviewers] bots` to resolve it.                                  |
+
+**Read `is_bot`; do not re-derive it.** The field is computed by `bash "$HOME/.codex/scripts/lib/pr-threads.sh"` from the same
+manifest read, under the resolver's own exact-anchored rule. Rebuilding the regex here is what this
+workflow used to do twice, in two blocks nothing could test.
 
 Use Read to inspect each thread; use Edit/Write for fixes; use the Bash commands below for replies and resolution.
 
@@ -381,30 +573,29 @@ Both calls must succeed for a thread to count as resolved. If the reply mutation
 
 ### 6. Verify + summary
 
-After processing every thread:
+After processing every thread, re-count what is left:
 
 ```bash
-# Reuse $BOT_RE from step 1; re-derive it here if this block runs in a fresh shell. Without this,
-# an empty $BOT_RE would make jq's test("") match EVERY login, over-counting human threads.
-: "${BOT_RE:=(?i)^($(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots | sed 's/[][]/\\&/g' | paste -sd'|' -))$}"
-# Sanity check: re-fetch and count remaining unresolved bot threads.
-REMAINING=$(gh api graphql -f query='
-query($owner:String!,$repo:String!,$num:Int!){
-  repository(owner:$owner,name:$repo){
-    pullRequest(number:$num){
-      reviewThreads(first:50){ nodes{ isResolved comments(first:1){ nodes{ author{login} } } } }
-    }
-  }
-}' -f owner="$OWNER" -f repo="$REPO" -F num="$PR_NUM" \
-| jq --arg re "$BOT_RE" '[.data.repository.pullRequest.reviewThreads.nodes[]
-        | select(.isResolved==false)
-        | select(.comments.nodes[0].author.login | test($re))]
-       | length')
-echo "Remaining unresolved bot threads on PR #$PR_NUM: $REMAINING"
+REMAINING="$(bash "$HOME/.codex/scripts/lib/pr-threads.sh" remaining --pr "$PR_NUM")"; RC=$?
 ```
 
-`$REMAINING` above is the whole point of the re-fetch: it is counted **now**, not carried from
-step 1. Any PR status the summary states follows the same rule via
+**THIS CHECK USED TO CONFIRM THE BUG IT EXISTS TO CATCH (#418).** It was the *same*
+`reviewThreads(first:50)` query as step 2, so on a PR past 50 threads it counted inside the very
+window that had hidden the newest findings — and printed `0`, which is exactly what a clean run
+prints. `base/practices/self-review.md` names that shape: a guard that cannot answer wrong is worse
+than no guard, because it costs a read and reports safety it never checked.
+
+It now shares step 2's **proved-complete** enumeration, so `0` can only ever be said about a read
+that proved itself whole. Branch on the code:
+
+| Code | Meaning | What to do |
+| ---- | ------- | ---------- |
+| `0`  | the count is over a complete read | report it |
+| `19` | the read could not be proved complete | **do not report a count, and never report `0`.** Say the enumeration failed, name the shortfall the message gives, and hand back to the operator |
+| `18` / `20` / `2` | malformed declaration · unreadable state · wrong repository | report the message; no count |
+
+`$REMAINING` is the whole point of the re-fetch: it is counted **now**, not carried from step 2. Any
+PR status the summary states follows the same rule via
 `bash "$HOME/.codex/scripts/lib/state-assert.sh" observe pr "$PR_NUM"` (`base/practices/verify-before-asserting.md`).
 
 Emit a concise summary to the user:
@@ -418,17 +609,27 @@ Emit a concise summary to the user:
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
 
+**One summary per RUN, not per round.** Steps 0–7 may go round several times; a per-round report is
+the narration #417 is about. Keep the counts and emit them once, when the loop reaches a terminal
+state (step 7's table), naming which terminal state it was.
 
-### 7. Ask for a re-review, and go round again (`--watch` only)
 
-**Skip this step entirely unless `--watch` was given.** Without it this skill is one pass, exactly
-as it always was, and the operator decides what happens next.
+### 7. Ask for a re-review, and go round again
+
+**This step runs whenever step 4 pushed a fix — no flag required (#416).** It used to be gated on
+`--watch`, alongside the wait, and that gating reproduced on the default path the exact stall #169
+was filed to remove: a flagless run pushed a fix, resolved the addressed threads, and ended without
+ever telling the reviewer to look again.
 
 You addressed findings, pushed, and resolved the threads. **The reviewer does not know.** Its own
 triggers — quoted from every lightweight review body it posts — are *open a pull request for
 review*, *mark a draft as ready*, and *comment `@codex review`*. A push is not among them, and the
 watch is right to refuse a review pinned to the superseded head, so without this step round 2 never
-happens and `--watch` always ends in a timeout.
+happens and every multi-round resolve ends in a structural timeout.
+
+**`--once` still asks.** It means *do not go round again*, not *do not tell the reviewer* — the ask
+is what makes the operator's next run useful, and withholding it would leave the PR in exactly the
+stalled state above. So under `--once`: request, report, and exit rather than returning to step 0.
 
 Ask, then wait again. **Only when step 4 actually pushed something**: re-asking for a review of a
 head nobody changed is spam.
@@ -446,7 +647,14 @@ if [ -z "${LAST_SHA:-}" ]; then
   echo "no fix was pushed this round; not requesting a re-review"
   exit 30   # nothing changed -> waiting again would re-find the same findings. STOP LOOPING.
 fi
-bash "$HOME/.codex/scripts/lib/pr-watch.sh" request-review --pr "$PR_NUM"
+# `--max-rounds` is forwarded when the invocation carried one (step 0a's $MAX_ROUNDS). Parsed ONCE,
+# passed to EVERY round: a flag the workflow accepted and then dropped would advertise a bound it
+# never applied. With none, the library resolves `[reviewers] max_rounds`, then its built-in 6.
+if [ -n "${MAX_ROUNDS:-}" ]; then
+  bash "$HOME/.codex/scripts/lib/pr-watch.sh" request-review --pr "$PR_NUM" --max-rounds "$MAX_ROUNDS"
+else
+  bash "$HOME/.codex/scripts/lib/pr-watch.sh" request-review --pr "$PR_NUM"
+fi
 ```
 
 **Branch on that block's EXIT CODE.** Only `0` goes round again; the rest are terminal answers to
@@ -454,19 +662,46 @@ report. None of `13`/`14`/`15`/`30` is a failure — each names a different reas
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `0`  | a re-review was requested for this head | **`unset LAST_SHA`**, go back to step 0's wait, then round again from step 1 |
+| `0`  | a re-review was requested for this head | **`unset LAST_SHA`**, go back to step 0b's wait, then round again from step 1 — unless `--once`, which reports and exits here |
 | `30` | this round pushed nothing | report what was declined or already addressed and **exit** — another wait would be handed the same findings |
-| `13` | already requested for this head (someone asked before you) | do **not** ask again; **`unset LAST_SHA`** and go back to the wait, since a response to that existing request is still coming |
+| `13` | already requested for this head (someone asked before you) | do **not** ask again; **`unset LAST_SHA`** and go back to the wait, since a response to that existing request is still coming (again, `--once` exits instead) |
 | `14` | no declared reviewer has a trigger this baseline knows | report it and **exit** — nothing will wake the watch, so a further round would only time out |
 | `15` | the round cap is reached | report it and **exit**; hand back to the operator |
 | `12` | the PR is no longer OPEN | report it and **exit** |
 | `20` | live state unreadable, or this head's arrival could not be dated | report it and **exit** — never re-ask on an unprovable receipt, that is how a reviewer gets spammed every poll |
 | `17` / `18` / `2` | the declaration is missing, malformed, or the arguments are bad | same remedies as step 0's table; **exit** |
 
-**The loop is bounded, and the bound is counted from the pull request itself** — every request this
-mechanism has posted, at any head. The default is 3; `--max-rounds N` changes it. There is no local
-counter to reset and none to go stale, which is what makes a resumed or restarted session pick up
-where the last one left off instead of starting the count again.
+#### Every exit from the loop names which one it was
+
+The loop leaves through exactly three kinds of door, and the report says which:
+
+- **a clean pass observed for the current head** — step 0b's code `0`;
+- **a terminal guard refusal** — every non-zero row in this table and in step 0b's, `30` included.
+  A round that pushed nothing is a refusal like any other: continuing would hand the next wait the
+  same findings forever, so "no progress" is a reason to stop, not a reason to spin;
+- **the stated bound** — `15` (the round cap) or `11` (a round's own wait expiring).
+
+**The loop's bound is the ROUND CAP, and it is counted from the pull request itself** — every
+request this mechanism has posted, at any head. There is no local counter to reset and none to go
+stale, which is what makes a resumed or restarted session pick up where the last one left off
+instead of starting the count again. Each round's *wait* keeps its own `--max-secs`; the two
+together are the overall bound, and both are enforced by tested code rather than by a clock this
+prose asks you to hold.
+
+**The cap resolves as `--max-rounds` > `[reviewers] max_rounds` > the built-in 6**, and a malformed
+manifest value is a hard error rather than a silent fall-back to that built-in.
+
+**Six, not three, and the raise came from the field (#416).** Three was #49's own "~3", written
+before anything had run the loop in anger. The first productive multi-round resolve on an adopting
+repo — every round pushing fixes, round 5's fixes breeding three of round 6's findings — hit the cap
+at 3, because four trigger comments already existed and **all four were the operator's own manual
+kick-starts.**
+
+**Manual `@codex review` comments spend the same budget, by design.** The cap counts every trigger
+comment on the pull request regardless of author, and it must: this mechanism and a human post the
+same text from the same login, so no read can tell them apart. A cap that tried would need an
+authorship signal GitHub does not provide. Set `[reviewers] max_rounds` if your PRs routinely need
+more rounds than six.
 
 **One request per (reviewer, head), for a single watcher.** The receipt is the comment: a trigger
 comment newer than the moment this head arrived means the ask already happened. Two watchers polling
@@ -482,8 +717,12 @@ exactly as it does today — one comment worse off, and no further rounds are at
 ### 8. Restore the starting branch (never strand the tree)
 
 This skill switched your working tree to the PR head in step 1. Before exiting —
-on success **and** on every post-switch abort (the ≥50-thread guard, a gate failure,
-an API failure) — return the tree to where it started. Leaving it on the PR head is
+on success **and** on every post-switch abort (an incomplete enumeration, a gate failure,
+an API failure) — return the tree to where it started.
+
+**Once, at the terminal exit — not per round.** Steps 1–7 may go round several times, and step 1's
+`git switch` is idempotent, so restoring between rounds would only switch away from the branch the
+next round is about to switch back to. Leaving it on the PR head is
 exactly what put a later run on a now-merged branch (issue #17). Prefer the branch you
 started on; fall back to the PR's **base** branch, then the repo default — never a
 hardcoded `main`.
@@ -518,8 +757,18 @@ fi
 
 ## Failure modes
 
-- **PR is not OPEN** (closed, merged, draft) → abort with a clear message. This skill only addresses live review traffic.
+- **PR is not OPEN** (closed or merged) → abort with a clear message. This skill only addresses live
+  review traffic. **A draft is OPEN and is not this case**: it accumulates review threads like any
+  other pull request, step 1's check admits it, and inference lists it (marked `[draft]`) rather than
+  hiding it — excluding it in one place and admitting it in the other would make the two disagree
+  about the same pull request.
 - **Working tree dirty** → abort. The user must commit or stash before invoking; otherwise we'd risk losing their in-progress work when we check out the PR branch.
 - **Bot finding is ambiguous** (vague comment, can't tell what change is asked for) → reply `Need clarification: <what you don't understand>`, do **not** resolve. Let the human pick it up.
 - **All gates red after a fix attempt** → revert the fix in a new commit, leave the thread unresolved with a reply explaining the conflict, ask the user — then run step 8 to restore the starting branch so the tree isn't stranded on the PR head.
-- **≥50 unresolved threads** → abort; pagination is intentionally not implemented.
+- **The thread enumeration cannot be proved complete** (`bash "$HOME/.codex/scripts/lib/pr-threads.sh"` exit `19`) → abort, run
+  step 8, and report the shortfall the message names. Never resolve from a partial list and never
+  report a remaining-count over one: a short read prints exactly what a clean run prints, which is
+  how #418 shipped. There is no thread-count ceiling any more — the enumeration paginates — so this
+  is a *broken read*, not a large PR.
+- **No PR number, and inference refused** (`infer-pr` exit `10` or `11`) → report which, and stop.
+  With several open, name the one you mean; this never guesses, because resolving is a mutation.

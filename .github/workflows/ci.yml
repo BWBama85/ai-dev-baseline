@@ -472,6 +472,16 @@ jobs:
       - name: ...and those cases must be able to fail — 7 mutations, each observed RED (#394)
         run: bash scripts/check-pr-watch.sh --mutation
 
+      # Rides this job rather than adding one: a second job is a second required status context for
+      # branch protection to grow. One job, two libraries of the same PR-review loop.
+      - name: Unit-test the /resolve-pr-threads decision predicates (#416, #418)
+        run: bash scripts/check-pr-threads.sh
+
+      # ...and the completeness proof must be able to fail (#418). Its failure mode is SILENCE: the
+      # shipped defect printed exactly what a clean run prints.
+      - name: ...and that proof must be able to fail — 6 mutations, each observed RED (#418)
+        run: bash scripts/check-pr-threads.sh --mutation
+
   state-assert:
     name: state-assert
     runs-on: ubuntu-26.04

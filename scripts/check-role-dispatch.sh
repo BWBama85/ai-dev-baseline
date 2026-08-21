@@ -308,6 +308,97 @@ _undeclared="$( cd "$REPO" && HOME="$GHOME" bash -c '
 if [ "$_undeclared" -gt 0 ]; then ok; else bad "status 3 (undeclared) must still yield the default allowlist"; fi
 clr_repo; clr_global
 
+# ============================ max-rounds (#416) ============================
+# The re-review round bound, declared beside the reviewer it modifies. Its contract is a TRI-STATE
+# like `bots --declared`, and for the same reason: the consumer must be able to tell a repo policy
+# from a built-in, because its own diagnostic has to name which produced the effective cap.
+#
+# THIS READER SUPPLIES NO DEFAULT, deliberately. `pr-watch.sh` owns the built-in 6; if this file
+# also carried one, "which source set the cap" would have two answers and the exit-15 handoff could
+# name the wrong file to edit.
+clr_repo; clr_global
+rd max-rounds >/dev/null 2>&1
+eq "$?" "3" "max-rounds: undeclared is 3 — the caller applies its OWN built-in"
+eq "${ rd max-rounds 2>/dev/null; }" "" "max-rounds: ...and it prints nothing, never a number it invented"
+
+set_repo '[reviewers]' 'max_rounds = 9'
+eq "${ rd max-rounds; }" "9" "max-rounds: a declared bound is returned"
+rd max-rounds >/dev/null 2>&1; eq "$?" "0" "max-rounds: ...with a 0 status"
+
+# IT LAYERS repo -> global, like every other manifest key, through the one home. The repo-ONLY
+# carve-out (`[repo] reconcile-required-checks`) exists because that switch authorizes an unattended
+# WRITE to branch protection; a retry bound authorizes nothing.
+clr_repo; set_global '[reviewers]' 'max_rounds = 4'
+eq "${ rd max-rounds; }" "4" "max-rounds: a global declaration is honoured"
+set_repo '[reviewers]' 'max_rounds = 7'
+eq "${ rd max-rounds; }" "7" "max-rounds: ...and the repo wins over it"
+clr_global
+
+# THE ACCEPTED FORM IS A PLAIN DECIMAL POSITIVE INTEGER, and every spelling outside it is a hard
+# error (2) rather than a silent fall-through to the caller's built-in — an operator who wrote a
+# bound and got the default has a cap they did not choose and no way to notice.
+#
+# SAY WHAT IS ACTUALLY COVERED, because the earlier version of this comment claimed "every malformed
+# spelling" and the reader did not validate TOML: it accepted `06`, which TOML forbids. The cases
+# below are the ones the reader now decides, not a claim to have implemented TOML. Two spellings TOML
+# would allow (`+6`, `1_000`) are deliberately refused too, and are asserted here so the narrowing is
+# a tested decision rather than an accident. Reported by the independent reviewer.
+set_repo '[reviewers]' 'max_rounds = "6"'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a QUOTED integer is malformed (TOML integers are bare)"
+set_repo '[reviewers]' 'max_rounds = six'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a non-numeric value is malformed"
+set_repo '[reviewers]' 'max_rounds = 0'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: zero is refused — it is not a bound, it is a loop that never runs"
+set_repo '[reviewers]' 'max_rounds = -3'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a negative value is malformed"
+set_repo '[reviewers]' 'max_rounds = 3.5'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a float is malformed"
+# A digit string wider than a shell integer would overflow the consumer's arithmetic, so a
+# digits-only check is not enough — the "bound" would then compare as nonsense.
+set_repo '[reviewers]' 'max_rounds = 99999999999999999999'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an over-wide integer is refused, not silently overflowed"
+# A LEADING ZERO IS NOT A TOML INTEGER, and it must not reach arithmetic — where one reader sees 6
+# and another sees octal. This passed before the independent review caught it.
+set_repo '[reviewers]' 'max_rounds = 06'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a LEADING ZERO is refused (TOML has no such integer)"
+set_repo '[reviewers]' 'max_rounds = 011'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: ...including one that would read as octal"
+# Two spellings TOML DOES allow, refused deliberately: the accepted form is narrower than TOML's,
+# and that narrowing is asserted so it cannot drift into an accident.
+set_repo '[reviewers]' 'max_rounds = +6'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an explicit + sign is outside the accepted form"
+set_repo '[reviewers]' 'max_rounds = 1_000'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: an underscore separator is outside the accepted form"
+err="$(set_repo '[reviewers]' 'max_rounds = 06'; rd max-rounds 2>&1 >/dev/null)"
+has "$err" "leading zero" "max-rounds: the leading-zero rejection says WHICH rule it broke"
+err="$(set_repo '[reviewers]' 'max_rounds = six'; rd max-rounds 2>&1 >/dev/null)"
+has "$err" "max_rounds" "max-rounds: the rejection names the key the operator must fix"
+
+# `--with-source` NAMES THE WINNING LAYER, because "agents.toml [reviewers] max_rounds" names the
+# repo file and the global one equally — and the cap handoff exists to tell an operator WHICH file
+# to edit. The layer is an OUTPUT rather than a global: every caller invokes the layered reader
+# inside `$( … )`, a subshell, so a global assignment is discarded before it can be read. That was
+# the first attempt and it returned an empty layer every time. Reported by the declared reviewer.
+clr_repo; set_global '[reviewers]' 'max_rounds = 4'
+eq "${ rd max-rounds --with-source; }" "4 global" "max-rounds --with-source: names the GLOBAL layer"
+set_repo '[reviewers]' 'max_rounds = 9'
+eq "${ rd max-rounds --with-source; }" "9 repo"   "max-rounds --with-source: names the REPO layer when it wins"
+eq "${ rd max-rounds; }" "9" "max-rounds: the bare form is unchanged — no layer appended"
+clr_global
+eq "${ rd max-rounds --with-source; }" "9 repo" "max-rounds --with-source: repo-only still names its layer"
+# The flag must not soften any refusal: a malformed value is still a hard error through it.
+set_repo '[reviewers]' 'max_rounds = "x"'
+rd max-rounds --with-source >/dev/null 2>&1; eq "$?" "2" "max-rounds --with-source: a malformed value is still 2"
+clr_repo; clr_global
+rd max-rounds --with-source >/dev/null 2>&1; eq "$?" "3" "max-rounds --with-source: undeclared is still 3"
+
+# The key is INDEPENDENT of `bots`: declaring one must not require or disturb the other.
+set_repo '[reviewers]' 'max_rounds = 5'
+rd bots >/dev/null 2>&1; eq "$?" "0" "max-rounds: declaring it alone leaves the bots reader on its default"
+set_repo '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+rd max-rounds >/dev/null 2>&1; eq "$?" "3" "max-rounds: declaring bots alone leaves the bound undeclared"
+clr_repo; clr_global
+
 # ============================ invoke (PATH-stubbed agents) ============================
 # codex stub: capture the prompt from stdin and REFLECT it into --output-last-message (so the
 # test proves the prompt actually reached codex — the watchdog-stdin bug), while streaming noise

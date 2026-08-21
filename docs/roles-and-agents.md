@@ -407,10 +407,14 @@ and closing it needs an identity that is not a login string (tracked in #207).
 Expect the guard to skip arming on a bot-reviewed repo: step 10 runs seconds after the PR opens,
 so a reviewer that takes minutes has definitionally not reviewed yet. That is the intended trade.
 
-**The waiting half now exists** (#49): `/resolve-pr-threads <PR#> --watch` polls for the reviewer
-in a shell loop — no model tokens are spent while waiting — and runs the resolve flow only if
-findings land. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended
-on a bot-reviewed repo. Whether the watcher should arm is an open decision, not an oversight: #49's
+**The waiting half now exists** (#49), and since #416 it is the **default**: `/resolve-pr-threads`,
+with no arguments, infers the one open PR, polls for the reviewer in a shell loop, resolves any
+findings, asks for a re-review and goes round again until the reviewer passes or the round cap
+(`[reviewers] max_rounds`, built-in 6) is reached. The waiting itself spends no model tokens — it is
+a `sleep` loop with no model in it — provided the caller dispatches it as a background task rather
+than chunking it across foreground shell calls, which is #417 and is specified in the skill's step
+0b. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended on a
+bot-reviewed repo. Whether the watcher should arm is an open decision, not an oversight: #49's
 own text says it must "never merge", while this page and `docs/repo-settings.md` were written
 expecting it to arm. That contradiction is #168, tracked rather than resolved by assumption.
 

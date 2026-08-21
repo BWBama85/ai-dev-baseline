@@ -6900,3 +6900,136 @@ limit: none of them is sufficient alone.
              resemblance. `code-comments.md` puts the incident here (class 2) and leaves the
              one-line constraints at the call sites.
 - baseline-issue: n/a
+
+## D86 — `/resolve-pr-threads` waits by default, its thread reads prove themselves complete, and the round cap moves to the manifest
+
+- date:      2026-08-20
+- category:  project-delta
+- unknown:   Three issues landed on one branch (#418 → #417 → #416) and each needed a decision the
+             issue bodies deliberately left open. #416 named one of them explicitly ("the
+             implementer's call with the owner"); the independent gap-analysis pass returned four
+             more as BLOCKING. None was escalated, because each is answerable from this repo's own
+             law or from the issues' own text — recorded here so the answers are auditable rather
+             than implicit in a diff.
+- decision:  (1) THE ONE-PASS ESCAPE HATCH SURVIVES, AS `--once`. #416 pinned only the default and
+                 delegated this. Dropping single-pass entirely would have removed the mode
+                 `/implement-issue` step 11 wants on code 21 — where the reviewer has ALREADY
+                 spoken and a wait would be waiting for nobody. `--watch` is accepted and IGNORED
+                 rather than rejected: it names what is now the default, every existing invocation
+                 and doc spells it, and erroring on the old spelling breaks them for no gain.
+                 `--once` still POSTS the re-review request when the pass pushed a fix — it means
+                 "do not go round again", not "do not tell the reviewer", and withholding the ask
+                 would leave the PR in exactly the stall #169 was filed for.
+             (2) THE LOOP'S OVERALL BOUND IS THE ROUND CAP, NOT A WALL CLOCK. #416 asks for "a
+                 stated overall bound" and #417 for "a hard overall deadline across chunks". The
+                 tempting implementation — a deadline file under the state dir, sized per chunk —
+                 was designed and REJECTED: it re-creates the local-counter problem `pr-watch.sh`'s
+                 own header argues against ("a marker file would make 'have I already asked?'
+                 unanswerable to the second process and wrong after a crash"), and it adds a state
+                 family that `cleanup-lib.sh state-scan`, `/cleanup` and `admit` would each have to
+                 learn — real sweep obligations for a path this repo's own primary agent never
+                 takes. What ships instead is two bounds that already exist and are already tested:
+                 each round's wait keeps `--max-secs`, and the LOOP is bounded by the round cap,
+                 which is counted from the pull request and is therefore restart-proof. The
+                 chunked-foreground fallback carries its 4-chunk / 36-minute budget in the driver,
+                 and the workflow SAYS that a harness re-entering between chunks restarts that
+                 count — a stated weakness of the fallback, which is why dispatch A is preferred.
+             (3) `[reviewers] max_rounds` LAYERS repo → global, like every other manifest key. The
+                 repo-ONLY carve-out in this manifest is `[repo] reconcile-required-checks`, and its
+                 own comment gives the reason: it authorizes an unattended WRITE to branch
+                 protection, so reading it globally would arm it in repositories the operator never
+                 considered. A retry bound authorizes nothing — the worst a wrong one does is stop
+                 or continue a loop the operator is watching — so the general rule applies and
+                 `_adb_rd_layered_get` stays the one home for the precedence.
+             (4) CODE 30 IS A TERMINAL GUARD REFUSAL. #416's criterion says the loop exits only on a
+                 clean pass, a terminal guard refusal, or the stated deadline. A round that pushed
+                 nothing is a refusal like any other: continuing hands the next wait the same
+                 findings forever. The workflow now says the three doors out loud and requires the
+                 report to name which one it left through.
+             (5) THE ENUMERATION MOVED INTO A LIBRARY, WHICH IS WHAT MADE #418 TESTABLE AT ALL. Both
+                 reads were inline prose, so the defect could not be regression-tested where it
+                 lived. `scripts/lib/pr-threads.sh` is the `cleanup-lib.sh` split applied to the
+                 resolver, and #418's own body invited it. It is deliberately NOT part of
+                 `pr-watch.sh`, whose header forbids it growing thread work.
+             (6) A LARGER CONSTANT WAS NOT THE FIX, AND ARITHMETIC ALONE IS NOT COMPLETENESS. `first:
+                 N` is a page size; raising 50 to 100 moves the cliff. The read paginates and then
+                 PROVES itself against `totalCount` — and, on the gap-analysis pass's finding, also
+                 against three cheaper failures that satisfy the arithmetic while dropping the
+                 newest threads: a repeated page (duplicate ids), a cursor that does not advance,
+                 and `hasNextPage: true` with no cursor.
+             (7) THE CURSOR LOOP IS HAND-ROLLED RATHER THAN `gh api graphql --paginate`. Not taste:
+                 the completeness proof must compare THIS module's own accumulation against
+                 `totalCount`, and the negative test must be able to watch the loop iterate. With
+                 `--paginate` the loop is gh's, so a stub could only exercise it by re-implementing
+                 pagination inside the stub — testing the fixture instead of the code.
+             (8) THE PER-THREAD COMMENT PAGE IS A NARROWED CONTRACT, NOT A RAISED NUMBER. `comments
+                 (first:5)` became `first:10` PLUS `comments_total` / `comments_read` /
+                 `comments_truncated`. Classification is decided by the head comment and is complete
+                 by construction; the tail is context a later reply can change, so the record says
+                 when there is more. Raising the constant alone would have moved the same blind spot
+                 to a different number.
+             (9) THE ZERO-TOKEN CLAIM WAS TRUE OF THE LIBRARY AND FALSE AS WRITTEN. #417's evidence
+                 is a transcript of dozens of consecutive model turns ("Waiting." — ran 2 shell
+                 commands — "Waiting."). The library really does spend nothing while waiting; what
+                 costs a turn is RE-ENTERING the model to start the next stretch, which is a
+                 property of the DISPATCH. So the fix is the dispatch protocol (background task
+                 where the harness has one; a specified chunk loop where it does not) plus honest
+                 wording at all six sites that carried the short version. What was deliberately NOT
+                 done is stripping `pr-watch.sh`'s per-poll stderr: those lines are written inside
+                 one process and read once, they are not model turns, and #394/D85 pinned two of
+                 them as the only way a head that moved mid-watch is debuggable.
+             (10) NO CI WATCHER WAS INVENTED. #417's third path asks that every named wait have a
+                 home. The gap-analysis pass pushed back that the gate wait already has one —
+                 `project-gates.sh run` is a blocking command and "until green" means fix-and-rerun
+                 — and that no CI polling loop exists to fix. Correct: the inventory table in
+                 `implement-issue.md` step 6 names four waits and routes the CI one to
+                 report-and-end, which is what step 10/11 already did.
+- placement: `scripts/lib/pr-threads.sh` (new), `scripts/check-pr-threads.sh` (+ `--mutation`),
+             `scripts/lib/pr-watch.sh` (cap resolution + handoff), `scripts/lib/role-dispatch.sh`
+             (`adb_dispatch_max_rounds`), `base/workflows/resolve-pr-threads.md`,
+             `base/workflows/implement-issue.md`, `base/practices/shell.md`, `templates/agents.toml`,
+             `base/roles.md`, `scripts/selfcheck.sh`, `scripts/check-fact-drift.sh`,
+             `.github/workflows/ci.yml`
+- reason:    Five of these were live questions with two defensible answers each, and the diff records
+             only the answer. (2) in particular ships the SIMPLER of two designs, and a later reader
+             seeing no deadline file has no way to know the alternative was designed, costed against
+             `/cleanup`'s sweep obligations, and rejected — they would simply add it. `code-comments.md`
+             puts that reasoning here (class 3) and leaves the one-line constraints at the call sites.
+- baseline-issue: n/a
+
+### AMENDED 2026-08-21, DURING REVIEW OF PR #419 — two of the decisions above were SUPERSEDED
+
+The entry is amended rather than rewritten: what was decided first, and why it did not survive, is
+the part a later reader needs. Both changes came from the declared reviewer on the PR, and in both
+cases the original decision was defensible when written and wrong once its consequence was named.
+
+- **(2) THE CHUNKED FOREGROUND FALLBACK IS GONE.** As first decided, the fallback kept a four-chunk
+  / 36-minute budget held by the driver, with the harness-re-entry weakness stated in the prose. The
+  reviewer's objection is the one that settles it: a deadline a re-entry silently restarts is not a
+  deadline, and the round cap cannot stand in for it — that cap only advances after a round that
+  PUSHED something, so a reviewer that simply goes silent never increments it. What ships is a
+  SINGLE bounded foreground call sized to fit under the harness ceiling, with expiry terminal. A
+  short honest wait beats a long fake one; `base/practices/shell.md` says the same thing now.
+
+- **(9) THE PER-POLL `pending` LINE IS SUPPRESSED AFTER ALL.** As first decided, `pr-watch.sh` kept
+  every stderr line on the ground that they are written inside one process and are not model turns.
+  That reasoning is still true of the EVENT lines and they are still emitted — the head moving, an
+  unreadable poll, the terminal verdict, including the two #394/D85 pinned. It was not true of the
+  ONE line a poll loop repeats: sixty identical "no terminal signal yet" lines across a half-hour
+  watch is per-poll narration by any reading, which is what #417's criterion forbids. `wait` is
+  quiet while polling and names the silent reviewer ONCE, at the deadline.
+
+  That fix needed a second attempt, and the reason is worth keeping: the detail was first stashed in
+  a shell variable, but `wait` calls `classify` inside `$( … )` — a subshell — so the assignment was
+  discarded and the deadline printed nothing. It goes through a file now. The same discarded-subshell
+  defect then recurred on the manifest-layer fix below, which is why it is recorded here rather than
+  left as a footnote: it is the third instance in one session, and D85 already records a fourth in
+  `check-pr-watch.sh`'s own clamp assertions.
+
+- **WHAT ELSE THE REVIEW CHANGED**, in one line each, because the entry above describes the design
+  and these are the corrections to it: the completeness proof refuses an inconsistent `totalCount`
+  in BOTH directions and across pages, rather than accepting an over-count or picking the largest;
+  repository identity is proved on every page rather than the first; every node and its nested
+  comments connection is type-checked, because a malformed one was silently dropped from the count;
+  both argument parsers validate `--max-rounds` and the manifest-backed cap BEFORE any live work;
+  and the cap handoff names which `agents.toml` supplied the bound.

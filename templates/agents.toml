@@ -103,6 +103,26 @@ debug        = "claude"     # owns root-cause investigations.
 # See docs/roles-and-agents.md.
 # [reviewers]
 # bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
+#
+# Optional, in the same table: how many re-review rounds /resolve-pr-threads may request (#416).
+#
+# A "round" is one trigger comment (`@codex review`) this mechanism posts to wake the reviewer after
+# a fix is pushed. The cap counts EVERY trigger comment on the pull request, at any head — which is
+# what makes it restart-proof, since there is no local counter to reset or go stale.
+#
+# YOUR OWN MANUAL REQUESTS SPEND THE SAME BUDGET, and that is by design rather than an oversight:
+# the mechanism and a human post the same text from the same login, so no read can tell them apart.
+# A cap that tried would need an authorship signal GitHub does not provide.
+#
+# Precedence: `--max-rounds <n>` > this key > the built-in 6. A malformed value is a HARD ERROR,
+# never a silent fall-back to that built-in — an operator who wrote a bound and got the default has
+# a cap they did not choose and no way to notice.
+#
+# Raise it if your PRs routinely need more than six rounds. The default was 6 rather than 3 because
+# the first productive multi-round resolve measured 3 wrong: every round pushed fixes, round 5's
+# fixes bred three of round 6's findings, and the cap fired at 3 because four requests already
+# existed — all four posted by hand.
+# max_rounds = 6
 
 # Optional: let the loop REPAIR required-check drift, not merely detect it (#333).
 #

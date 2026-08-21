@@ -204,10 +204,24 @@ _adb_rd_valid_token() {
 # resolution never falls through a bad higher-precedence value to the next layer). Return 1 when
 # neither manifest defines the key. The ONE home for the repo→global precedence — both the role
 # lookup (`roles`) and the bot allowlist (`reviewers`) go through it, so the order can't drift.
+#
+# `--with-layer` prefixes the answer with WHICH layer supplied it — `repo <value>` or
+# `global <value>` — because a caller that reports a value to an operator has to be able to say
+# which file to edit. It is an OUTPUT rather than a global, and that is not a style preference:
+# every caller invokes this function inside `$( … )`, which is a subshell, so an assignment to a
+# global here is discarded before the caller can read it. That was the first attempt, and it
+# returned an empty layer for every case. Callers that omit the flag are byte-for-byte unaffected.
 _adb_rd_layered_get() {
-  local section="$1" key="$2" raw
-  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then printf '%s' "$raw"; return 0; fi
-  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then printf '%s' "$raw"; return 0; fi
+  local section="$1" key="$2" with_layer=0 raw
+  [ "${3:-}" = "--with-layer" ] && with_layer=1
+  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then
+    [ "$with_layer" -eq 1 ] && printf 'repo '
+    printf '%s' "$raw"; return 0
+  fi
+  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then
+    [ "$with_layer" -eq 1 ] && printf 'global '
+    printf '%s' "$raw"; return 0
+  fi
   return 1
 }
 
@@ -541,6 +555,86 @@ adb_dispatch_bots_comparable() {
     return 18
   fi
   [ -z "$want" ] || printf '%s\n' "$want"
+  return 0
+}
+
+# adb_dispatch_max_rounds — the re-review round cap a repo declares, as `[reviewers] max_rounds`
+# (#416). The BOUND lives beside the reviewer declaration it modifies, because it is a fact about
+# how this repo's reviewer is driven and about nothing else.
+#
+#   0 + <n>  declared and usable — a bare positive integer
+#   3        not declared anywhere — the CALLER applies its own built-in default. Note this file
+#            deliberately does NOT supply one: the caller has to be able to tell a repo policy from
+#            a built-in, because its own diagnostic must name which produced the effective cap.
+#   2        declared but malformed — a HARD ERROR. Never a silent fall-back to the default: an
+#            operator who wrote a bound and got the built-in has a cap they did not choose and no
+#            way to notice.
+#
+# IT LAYERS repo → global like every other manifest key, through the one home
+# (`_adb_rd_layered_get`), so a workstation can carry a house default and a repo can override it.
+# The one key that is deliberately repo-ONLY is `[repo] reconcile-required-checks`, and its reason
+# does not apply here: that switch authorizes an unattended WRITE to branch protection, so reading
+# it globally would arm it in repositories the operator never considered. A retry bound authorizes
+# nothing — the worst a wrong one does is stop or continue a loop the operator is watching.
+#
+# THE ACCEPTED FORM IS NARROWER THAN "A TOML INTEGER", AND THAT IS STATED RATHER THAN IMPLIED.
+# This reader accepts exactly a plain decimal positive integer: no quotes, no sign, no underscore
+# separators, no leading zero. TOML 1.0 would also allow `+6` and `1_000`, and those are REFUSED
+# here — a retry bound is a small number and a spelling that needs a thousands separator is far more
+# likely a typo than an intent. What matters is that the boundary is written down, because the
+# earlier version of this comment claimed to validate "a TOML integer" and did not: it accepted
+# `06`, which TOML forbids, and passed it straight to arithmetic. Reported by the independent
+# reviewer.
+#
+# A quoted value is refused for the same reason it is dangerous: `max_rounds = "6"` is a STRING, and
+# tolerating a type the format does not have here is the direction in which `max_rounds = "six"`
+# degrades into something rather than being rejected.
+# With `--with-source` it prints `<value> <layer>` where <layer> is `repo` or `global`, so a caller
+# reporting the effective cap can name WHICH agents.toml to edit — the repository's or
+# `~/.config/ai-dev-baseline/agents.toml`. The bare form is unchanged, so existing callers are
+# untouched. Reported by the declared reviewer on PR #419.
+adb_dispatch_max_rounds() {
+  local raw layer="" with_source=0
+  [ "${1:-}" = "--with-source" ] && with_source=1
+  if [ "$with_source" -eq 1 ]; then
+    raw="$(_adb_rd_layered_get reviewers max_rounds --with-layer)" || return 3
+    layer="${raw%% *}"; raw="${raw#* }"
+  else
+    raw="$(_adb_rd_layered_get reviewers max_rounds)" || return 3
+  fi
+  case "$raw" in
+    ''|*[!0-9]*)
+      printf 'role-dispatch: [reviewers].max_rounds must be a plain decimal positive integer — no quotes, sign, underscores or leading zero (got %s)\n' \
+        "$(adb_display_value "$raw")" >&2
+      return 2 ;;
+  esac
+  # A LEADING ZERO IS NOT A TOML INTEGER AT ALL, so `06` must not reach the arithmetic below — where
+  # it would be read as 6 by one shell and, in another context, as octal. Refuse the spelling rather
+  # than guess which was meant.
+  case "$raw" in
+    0*) printf 'role-dispatch: [reviewers].max_rounds must not carry a leading zero — TOML has no such integer (got %s)\n' \
+          "$(adb_display_value "$raw")" >&2
+        return 2 ;;
+  esac
+  # The LENGTH bound is not belt-and-braces: an all-digit value wider than a shell integer overflows
+  # the consumer's arithmetic, so a "bound" of 99999999999999999999 would pass a digits-only check
+  # and then compare as nonsense. 18 digits is the same ceiling `pr-watch.sh`'s `require_uint` and
+  # `roadmap-lib.sh`'s `is_uint` document, for the same reason.
+  if [ "${#raw}" -gt 18 ]; then
+    printf 'role-dispatch: [reviewers].max_rounds is too large (got %s)\n' "$(adb_display_value "$raw")" >&2
+    return 2
+  fi
+  # Zero is not a bound, it is a loop that can never run a round — and it would read as "capped"
+  # before the first ask, which is indistinguishable from a reviewer that refused.
+  if [ "$raw" -le 0 ]; then
+    printf 'role-dispatch: [reviewers].max_rounds must be greater than zero (got %s)\n' "$(adb_display_value "$raw")" >&2
+    return 2
+  fi
+  if [ "$with_source" -eq 1 ]; then
+    printf '%s %s\n' "$raw" "$layer"
+  else
+    printf '%s\n' "$raw"
+  fi
   return 0
 }
 
@@ -984,11 +1078,17 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
                --comparable)  adb_dispatch_bots_comparable ;;
                *) echo "usage: role-dispatch.sh bots [--declared|--comparable]" >&2; exit 2 ;;
              esac ;;
+    max-rounds) # Prints the declared re-review round cap, or NOTHING with rc 3 when nothing
+             # declares one (the caller applies its own built-in). rc 2 = a declared but unusable
+             # value, which is a hard error rather than a silent fall-back to that built-in.
+             # `--with-source` appends the winning layer (`repo`|`global`) so a caller can name
+             # which agents.toml to edit.
+             adb_dispatch_max_rounds "${2:-}" ;;
     untrusted) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh untrusted <source>   # text on stdin" >&2; exit 2; }
              # A REQUIRED <source>: the envelope's whole job is telling the reader where the text
              # came from, and a defaulted "unknown" would silently ship an unlabelled payload from
              # a caller that simply forgot the argument.
              adb_untrusted_block "$2" ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | untrusted <source>]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | max-rounds | untrusted <source>]" >&2; exit 2 ;;
   esac
 fi
