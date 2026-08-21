@@ -204,10 +204,24 @@ _adb_rd_valid_token() {
 # resolution never falls through a bad higher-precedence value to the next layer). Return 1 when
 # neither manifest defines the key. The ONE home for the repo→global precedence — both the role
 # lookup (`roles`) and the bot allowlist (`reviewers`) go through it, so the order can't drift.
+#
+# `--with-layer` prefixes the answer with WHICH layer supplied it — `repo <value>` or
+# `global <value>` — because a caller that reports a value to an operator has to be able to say
+# which file to edit. It is an OUTPUT rather than a global, and that is not a style preference:
+# every caller invokes this function inside `$( … )`, which is a subshell, so an assignment to a
+# global here is discarded before the caller can read it. That was the first attempt, and it
+# returned an empty layer for every case. Callers that omit the flag are byte-for-byte unaffected.
 _adb_rd_layered_get() {
-  local section="$1" key="$2" raw
-  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then printf '%s' "$raw"; return 0; fi
-  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then printf '%s' "$raw"; return 0; fi
+  local section="$1" key="$2" with_layer=0 raw
+  [ "${3:-}" = "--with-layer" ] && with_layer=1
+  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then
+    [ "$with_layer" -eq 1 ] && printf 'repo '
+    printf '%s' "$raw"; return 0
+  fi
+  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then
+    [ "$with_layer" -eq 1 ] && printf 'global '
+    printf '%s' "$raw"; return 0
+  fi
   return 1
 }
 
@@ -575,9 +589,19 @@ adb_dispatch_bots_comparable() {
 # A quoted value is refused for the same reason it is dangerous: `max_rounds = "6"` is a STRING, and
 # tolerating a type the format does not have here is the direction in which `max_rounds = "six"`
 # degrades into something rather than being rejected.
+# With `--with-source` it prints `<value> <layer>` where <layer> is `repo` or `global`, so a caller
+# reporting the effective cap can name WHICH agents.toml to edit — the repository's or
+# `~/.config/ai-dev-baseline/agents.toml`. The bare form is unchanged, so existing callers are
+# untouched. Reported by the declared reviewer on PR #419.
 adb_dispatch_max_rounds() {
-  local raw
-  raw="$(_adb_rd_layered_get reviewers max_rounds)" || return 3
+  local raw layer="" with_source=0
+  [ "${1:-}" = "--with-source" ] && with_source=1
+  if [ "$with_source" -eq 1 ]; then
+    raw="$(_adb_rd_layered_get reviewers max_rounds --with-layer)" || return 3
+    layer="${raw%% *}"; raw="${raw#* }"
+  else
+    raw="$(_adb_rd_layered_get reviewers max_rounds)" || return 3
+  fi
   case "$raw" in
     ''|*[!0-9]*)
       printf 'role-dispatch: [reviewers].max_rounds must be a plain decimal positive integer — no quotes, sign, underscores or leading zero (got %s)\n' \
@@ -606,7 +630,11 @@ adb_dispatch_max_rounds() {
     printf 'role-dispatch: [reviewers].max_rounds must be greater than zero (got %s)\n' "$(adb_display_value "$raw")" >&2
     return 2
   fi
-  printf '%s\n' "$raw"
+  if [ "$with_source" -eq 1 ]; then
+    printf '%s %s\n' "$raw" "$layer"
+  else
+    printf '%s\n' "$raw"
+  fi
   return 0
 }
 
@@ -1053,7 +1081,9 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     max-rounds) # Prints the declared re-review round cap, or NOTHING with rc 3 when nothing
              # declares one (the caller applies its own built-in). rc 2 = a declared but unusable
              # value, which is a hard error rather than a silent fall-back to that built-in.
-             adb_dispatch_max_rounds ;;
+             # `--with-source` appends the winning layer (`repo`|`global`) so a caller can name
+             # which agents.toml to edit.
+             adb_dispatch_max_rounds "${2:-}" ;;
     untrusted) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh untrusted <source>   # text on stdin" >&2; exit 2; }
              # A REQUIRED <source>: the envelope's whole job is telling the reader where the text
              # came from, and a defaulted "unknown" would silently ship an unlabelled payload from

@@ -496,6 +496,32 @@ reset_fx; mkpage 1 3 false "" 0 3
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes[2].comments)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt list --pr 1
 eq "$RC" "20" "a node with no comments connection is unreadable — classification reads its head"
+# THE SAME DEFECT ONE LEVEL DEEPER: `comments: {totalCount: 1, nodes: []}` satisfies "nodes is an
+# array", so the head author defaults to "" and an unresolved BOT thread is read as non-bot and
+# vanishes from the count. Identical outcome to the missing-isResolved case, different nesting.
+reset_fx; mkpage 1 3 false "" 0 3
+jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes = []' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt remaining --pr 1
+eq "$RC" "20" "an unresolved thread with an EMPTY comments page is unreadable, not a non-bot thread"
+eq "$OUT" ""  "...and prints no count, so the missing thread cannot vanish into a 0"
+# A non-numeric nested totalCount would be read as zero by `// 0`, hiding truncated context.
+reset_fx; mkpage 1 3 false "" 0 3
+jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "20" "a thread with no comments totalCount is unreadable, not silently zero"
+# A null author (a deleted GitHub account) on an UNRESOLVED thread cannot be classified either.
+reset_fx; mkpage 1 3 false "" 0 3
+jq '.data.repository.pullRequest.reviewThreads.nodes[1].comments.nodes[0].author = null' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt remaining --pr 1
+eq "$RC" "20" "an unresolved thread with a null head author is unreadable"
+# ...but the SAME shape on a RESOLVED thread is fine: it cannot affect the count, and refusing there
+# would block the whole enumeration over an old thread whose author account was since deleted.
+reset_fx; mkpage 1 3 false "" 0 3 "$CODEX" true
+jq '.data.repository.pullRequest.reviewThreads.nodes[1].comments.nodes[0].author = null' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt remaining --pr 1
+eq "$RC" "0" "a RESOLVED thread with a null head author does not block the enumeration"
+eq "$OUT" "0" "...and counts nothing, correctly"
+
 # The control: an intact page of the same shape still reads cleanly, so the rules above are not
 # simply refusing everything.
 reset_fx; mkpage 1 3 false "" 0 3

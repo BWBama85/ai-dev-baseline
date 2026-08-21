@@ -610,10 +610,20 @@ _adb_pw_resolve_rounds() {
     _ADB_PW_MAX_ROUNDS_SRC="--max-rounds"
     return 0
   fi
-  cap="$(bash "$_ADB_PW_ROLE_DISPATCH" max-rounds)"; crc=$?
+  # `--with-source`, so the handoff can say WHICH agents.toml set the bound. The key layers repo →
+  # global, and "agents.toml [reviewers] max_rounds" names both equally — leaving an operator at the
+  # terminal 15 state with the one thing the message exists to give them still ambiguous. Reported
+  # by the declared reviewer on PR #419.
+  cap="$(bash "$_ADB_PW_ROLE_DISPATCH" max-rounds --with-source)"; crc=$?
   case "$crc" in
-    0) _ADB_PW_MAX_ROUNDS="$cap"
-       _ADB_PW_MAX_ROUNDS_SRC="agents.toml [reviewers] max_rounds" ;;
+    0) _ADB_PW_MAX_ROUNDS="${cap%% *}"
+       case "${cap##* }" in
+         global) _ADB_PW_MAX_ROUNDS_SRC="[reviewers] max_rounds in the GLOBAL manifest (~/.config/ai-dev-baseline/agents.toml)" ;;
+         repo)   _ADB_PW_MAX_ROUNDS_SRC="[reviewers] max_rounds in this repo's agents.toml" ;;
+         # A reader that answered 0 without naming a layer is a broken install, not a third layer:
+         # say the key and stop short of naming a file that may not be the one.
+         *)      _ADB_PW_MAX_ROUNDS_SRC="[reviewers] max_rounds (layer unreported)" ;;
+       esac ;;
     3) _ADB_PW_MAX_ROUNDS="$_ADB_PW_MAX_ROUNDS_DEFAULT"
        _ADB_PW_MAX_ROUNDS_SRC="built-in default" ;;
     2) echo "pr-watch: '[reviewers] max_rounds' is unusable (see above) — refusing to guess a round cap" >&2

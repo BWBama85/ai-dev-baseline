@@ -1528,7 +1528,10 @@ reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 2' > "
 receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
 w request-review --pr 1;  rc 15 "precedence: [reviewers] max_rounds sets the cap"
 has "$OUT" "cap 2"                             "precedence: the manifest's value is the effective cap"
-has "$OUT" "agents.toml [reviewers] max_rounds" "precedence: ...and the manifest is named as its source"
+has "$OUT" "[reviewers] max_rounds" "precedence: ...and the manifest key is named as its source"
+# NAMING THE KEY IS NOT ENOUGH — it must name WHICH agents.toml, because the key layers repo →
+# global and the handoff exists to tell the operator which file to edit.
+has "$OUT" "this repo's agents.toml" "precedence: ...and it names the REPO layer specifically"
 # ...and the FLAG still wins over it.
 w request-review --pr 1 --max-rounds 9;  rc 0 "precedence: --max-rounds overrides the manifest"
 

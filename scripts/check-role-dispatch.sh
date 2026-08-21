@@ -374,6 +374,24 @@ has "$err" "leading zero" "max-rounds: the leading-zero rejection says WHICH rul
 err="$(set_repo '[reviewers]' 'max_rounds = six'; rd max-rounds 2>&1 >/dev/null)"
 has "$err" "max_rounds" "max-rounds: the rejection names the key the operator must fix"
 
+# `--with-source` NAMES THE WINNING LAYER, because "agents.toml [reviewers] max_rounds" names the
+# repo file and the global one equally — and the cap handoff exists to tell an operator WHICH file
+# to edit. The layer is an OUTPUT rather than a global: every caller invokes the layered reader
+# inside `$( … )`, a subshell, so a global assignment is discarded before it can be read. That was
+# the first attempt and it returned an empty layer every time. Reported by the declared reviewer.
+clr_repo; set_global '[reviewers]' 'max_rounds = 4'
+eq "${ rd max-rounds --with-source; }" "4 global" "max-rounds --with-source: names the GLOBAL layer"
+set_repo '[reviewers]' 'max_rounds = 9'
+eq "${ rd max-rounds --with-source; }" "9 repo"   "max-rounds --with-source: names the REPO layer when it wins"
+eq "${ rd max-rounds; }" "9" "max-rounds: the bare form is unchanged — no layer appended"
+clr_global
+eq "${ rd max-rounds --with-source; }" "9 repo" "max-rounds --with-source: repo-only still names its layer"
+# The flag must not soften any refusal: a malformed value is still a hard error through it.
+set_repo '[reviewers]' 'max_rounds = "x"'
+rd max-rounds --with-source >/dev/null 2>&1; eq "$?" "2" "max-rounds --with-source: a malformed value is still 2"
+clr_repo; clr_global
+rd max-rounds --with-source >/dev/null 2>&1; eq "$?" "3" "max-rounds --with-source: undeclared is still 3"
+
 # The key is INDEPENDENT of `bots`: declaring one must not require or disturb the other.
 set_repo '[reviewers]' 'max_rounds = 5'
 rd bots >/dev/null 2>&1; eq "$?" "0" "max-rounds: declaring it alone leaves the bots reader on its default"

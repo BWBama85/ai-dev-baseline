@@ -244,6 +244,18 @@ _adb_pt_fetch() {
     # the same reason at higher stakes: it is what the caller RESOLVES threads by, so an empty one
     # aims a mutation at nothing. Reported by the declared reviewer on PR #419.
     #
+    # AND THE NESTED CONNECTION IS CHECKED TOO — the same defect one level deeper, which the first
+    # pass at this rule missed. `comments: {totalCount: 1, nodes: []}` satisfies "nodes is an
+    # array": `cmd_list` then defaults the absent head author to `""`, `cmd_remaining` reads that as
+    # non-bot, and an unresolved BOT thread disappears from the count. Identical outcome, different
+    # nesting level. A non-numeric `totalCount` is refused for the neighbouring reason: `// 0` would
+    # read it as zero and hide the truncation `comments_truncated` exists to expose.
+    #
+    # THE HEAD-AUTHOR RULE IS SCOPED TO UNRESOLVED THREADS, deliberately. That is exactly the set
+    # whose classification decides the count, so it closes the hole completely — while a rule over
+    # ALL threads would refuse the whole enumeration for an old RESOLVED thread whose author account
+    # was since deleted (GitHub returns `author: null`), which is a false refusal bought for nothing.
+    #
     # (Written here rather than inside the jq program: a jq comment sits in a single-quoted shell
     # string, so one apostrophe in it ends the string.)
     parsed="$(printf '%s' "$raw" | jq -c '
@@ -259,6 +271,13 @@ _adb_pt_fetch() {
           then error("a review thread carries no boolean isResolved") else . end
         | if any($t.nodes[]; (.comments | type) != "object" or (.comments.nodes | type) != "array")
           then error("a review thread carries no comments connection") else . end
+        | if any($t.nodes[]; (.comments.totalCount | type) != "number")
+          then error("a review thread carries no comments totalCount") else . end
+        | if any($t.nodes[]; (.isResolved == false)
+                   and (((.comments.nodes | length) == 0)
+                        or ((.comments.nodes[0].author.login | type) != "string")
+                        or ((.comments.nodes[0].author.login | length) == 0)))
+          then error("an unresolved review thread carries no usable head comment author") else . end
         | if ($t.totalCount | type) != "number" then error("the reviewThreads connection carries no totalCount") else . end
         | if (($t.totalCount | floor) != $t.totalCount) or ($t.totalCount < 0)
           then error("the reviewThreads connection carries an impossible totalCount") else . end
