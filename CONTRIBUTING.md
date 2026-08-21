@@ -99,8 +99,11 @@ temporary directory and runs in the pool. Under `--serial` the prologue steps si
 declared places, and `--only` / `--skip` can leave any of them out.
 
 CI's macOS leg runs one step fewer: it passes `--skip adopt-readiness-mutation`, which the ubuntu
-`adopt` job already runs on every PR (#339). Your local run is unaffected — a plain
-`bash scripts/selfcheck.sh` is still the whole registry.
+`adopt` job already runs on every PR (#339). Your local run is unaffected in *coverage* — a plain
+`bash scripts/selfcheck.sh` is still the whole registry — but it does get **longer**, because the
+six isolated steps no longer overlap with anything: about 90 seconds' worth, measured serially on a
+10-core machine. The dated range above was taken before that lane existed and has not been
+re-measured; the `result` block is the current answer, as it says.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335
