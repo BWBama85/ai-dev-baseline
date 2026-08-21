@@ -944,8 +944,23 @@ fact backstop-env     fixed:'ADB_DISPATCH_TIMEOUT_SECS'   -- $_bs_num
 fact backstop-stale-ms   absent:'(4[28]0|600)[,]?000' \
   'fires:ADB_DISPATCH_TIMEOUT_MS=420000' 'fires:a 480000 ms ceiling' \
   'fires:timeout: 600000' 'fires:roughly 420,000 ms'                                    -- $_bs_all
-fact backstop-stale-secs absent:'(^|[^0-9])420([^0-9]|$)' \
-  'fires:bounded at 420 s' 'fires:420'                                                  -- $_bs_all
+# AN ISSUE CITATION IS NOT A DURATION, AND THE EXEMPTION IS NARROWER THAN "ANY `#420`" (#420).
+# The retired bound and the issue that added the uncapped round sentinel share three digits, and the
+# original `(^|[^0-9])420(...)` could not tell them apart: `(#420)` in the very files that document
+# that sentinel reported the 420-second backstop as having come back.
+#
+# EXEMPTING EVERY `#`-PREFIXED 420 WOULD HAVE OPENED A REAL HOLE, and the independent review named
+# it: `#420-second timeout` and `#420 sec` are stale duration claims wearing the citation's clothes,
+# and a leading-context exclusion alone waves them through. So the second alternative below puts
+# them back — a `#420` followed by a seconds unit fires exactly as a bare one does. What is exempt
+# is only a `#420` that is NOT making a claim about seconds, which is what an issue reference is.
+#
+# `backstop-secs` positively pinning the live 2700 is a second line of defence but NOT a substitute,
+# and the earlier version of this comment leaned on it too hard: nothing stops an old value and the
+# new one coexisting, so that pin can be green while a stale sentence sits three lines away. That is
+# the whole reason this `absent:` rule exists next to it.
+fact backstop-stale-secs absent:'(^|[^0-9#])420([^0-9]|$)|#420[[:space:]-]*(s|sec)' \
+  'fires:bounded at 420 s' 'fires:420' 'fires:a #420-second timeout' 'fires:#420 sec' -- $_bs_all
 # The alternations here were BRACKETS — `[≥>]` and `3[–-]7` — until #213's witnesses were written
 # against them. A bracket expression holding a multibyte character is matched BYTEWISE under a C
 # locale, so `3[–-]7` could not match `3–7 min` there at all: a pin that fired on a UTF-8 dev box
@@ -1334,6 +1349,31 @@ fact review-round-cap-retired 'absent:_ADB_PW_MAX_ROUNDS=3' \
 fact review-round-cap-key 'fixed:max_rounds' -- \
   templates/agents.toml base/roles.md scripts/lib/role-dispatch.sh scripts/lib/pr-watch.sh \
   base/workflows/resolve-pr-threads.md
+
+# --- FACT: `0` means uncapped, and every surface that decides or documents it must say so (#420) ---
+# FIVE HAND-WRITTEN SURFACES, and a sentinel is worthless the moment one of them forgets it: two
+# libraries decide it (the flag and the manifest), two documents advertise it to an operator, and
+# the workflow prose validates it before either library is reached. A surface that drops it does not
+# fail loudly — the flag or key simply goes back to being an error, or the operator never learns the
+# spelling exists — which is exactly the silence this lint is for.
+fact review-round-cap-uncapped 'fixed:uncapped' -- \
+  templates/agents.toml base/roles.md base/workflows/resolve-pr-threads.md \
+  scripts/lib/pr-watch.sh scripts/lib/role-dispatch.sh
+# ...and the REFUSAL it replaced must not come back. This is the pin that stands in for a
+# behavioural suite over the workflow's two parser copies: nothing executes that markdown offline,
+# so a revert there is invisible to every other gate here — but a reverted copy necessarily
+# resurrects its own retired line, and the witness IS that line.
+#
+# SCOPED AWAY FROM `require_uint`, deliberately. `pr-watch.sh` still says "must be greater than
+# zero" and must keep saying it: that message belongs to the SHARED validator, where `--interval`
+# and `--max-secs` genuinely reject zero. Pinning the bare phrase would forbid a sentence that is
+# still true, so each rule below names the option or the key it is about.
+fact review-round-cap-uncapped 'absent:--max-rounds must be greater than zero' \
+  'fires:0)           echo "ERROR: --max-rounds must be greater than zero (got '"'"'$a'"'"')"; exit 1 ;;' -- \
+  base/workflows/resolve-pr-threads.md
+fact review-round-cap-uncapped 'absent:max_rounds must be greater than zero' \
+  'fires:printf '"'"'role-dispatch: [reviewers].max_rounds must be greater than zero (got %s)\n'"'"' "$(adb_display_value "$raw")" >&2' -- \
+  scripts/lib/role-dispatch.sh
 
 # --- FACT: the one-read COST figure, measured once and restated in two operative headers (#174) ---
 # `adb_pr_snapshot` and `pr-watch.sh`'s poll budget both quote the same measurement, and a budget

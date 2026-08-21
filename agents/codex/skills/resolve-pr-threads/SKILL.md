@@ -26,7 +26,7 @@ Wait for the async reviewer, then address and resolve every unresolved **bot-aut
 | *(nothing)* | infer the PR, then run the loop. **This is the intended invocation.** |
 | `<pr-number>` | that PR — an explicit number always wins over inference |
 | `--once` | one pass: resolve what is there now, ask for the re-review if this pass pushed a fix, then **exit instead of waiting again** |
-| `--max-rounds <n>` | override the re-review round cap for this invocation |
+| `--max-rounds <n>` | override the re-review round cap for this invocation. **`0` means uncapped** — no round ceiling (#420) |
 | `--watch` | **accepted and ignored.** It names what is now the default. Not an error: every existing invocation, hint and doc spells it, and erroring on the old spelling would break them for no gain |
 
 ## When to invoke
@@ -103,9 +103,13 @@ for a in $ARGUMENTS; do
   # the full waiting loop. Refuse both shapes at parse time.
   if [ "$_want_rounds" = "1" ]; then
     case "$a" in
-      -*)          echo "ERROR: --max-rounds needs a value, but got the option '$a'"; exit 1 ;;
-      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer (got '$a')"; exit 1 ;;
-      0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
+      -*)          echo "ERROR: --max-rounds needs a value (a positive integer, or 0 for uncapped), but got the option '$a'"; exit 1 ;;
+      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer, or 0 for uncapped (got '$a')"; exit 1 ;;
+      # `0` IS THE UNCAPPED SENTINEL (#420), and this arm must PRECEDE the leading-zero one, which
+      # matches `0` too and would otherwise claim it. `00` and `06` stay refused there: TOML has no
+      # such integer, and a second spelling for uncapped is exactly what "0 is the only sentinel"
+      # forbids.
+      0)           : ;;
       0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
     esac
     # ...and the SAME WIDTH BOUND the library applies. An all-digit value wider than a shell integer
@@ -155,7 +159,11 @@ if [ -z "${MAX_ROUNDS:-}" ]; then
     *)   echo "ERROR: '[reviewers] max_rounds' is unusable (see above) — fix agents.toml before running"; exit 1 ;;
   esac
 fi
-echo "PR_NUM=$PR_NUM ONCE=$ONCE MAX_ROUNDS=${MAX_ROUNDS:-<default>}"
+# RENDER THE SENTINEL, do not print it bare: `MAX_ROUNDS=0` reads as "zero rounds", which is the
+# opposite of what it means.
+_mr_show="${MAX_ROUNDS:-<default>}"
+[ "$_mr_show" = "0" ] && _mr_show="0 (uncapped)"
+echo "PR_NUM=$PR_NUM ONCE=$ONCE MAX_ROUNDS=$_mr_show"
 ```
 
 `infer-pr` exits `10` when nothing is open and `11` when several are — the second lists the
@@ -337,9 +345,13 @@ for a in $ARGUMENTS; do
   # merely about which pull request it names.
   if [ "$_want_rounds" = "1" ]; then
     case "$a" in
-      -*)          echo "ERROR: --max-rounds needs a value, but got the option '$a'"; exit 1 ;;
-      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer (got '$a')"; exit 1 ;;
-      0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
+      -*)          echo "ERROR: --max-rounds needs a value (a positive integer, or 0 for uncapped), but got the option '$a'"; exit 1 ;;
+      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer, or 0 for uncapped (got '$a')"; exit 1 ;;
+      # `0` IS THE UNCAPPED SENTINEL (#420), and this arm must PRECEDE the leading-zero one, which
+      # matches `0` too and would otherwise claim it. `00` and `06` stay refused there: TOML has no
+      # such integer, and a second spelling for uncapped is exactly what "0 is the only sentinel"
+      # forbids.
+      0)           : ;;
       0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
     esac
     # ...and the SAME WIDTH BOUND the library applies. An all-digit value wider than a shell integer
@@ -360,6 +372,12 @@ for a in $ARGUMENTS; do
     *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
   esac
 done
+# A TRAILING `--max-rounds` WITH NO VALUE, refused here as step 0a refuses it. This block claims to
+# be step 0a's parser "character for character", and it was not: the post-loop check was missing, so
+# the two disagreed about whether the invocation is legal at all. Step 0a runs first and exits, so
+# the prescribed sequence never reached it — but these blocks may run as separate shells, and a
+# claim of identity that is false is worse than no claim. Named by the independent review.
+[ "$_want_rounds" = "1" ] && { echo "ERROR: --max-rounds needs a value"; exit 1; }
 if [ -z "$PR_NUM" ]; then
   PR_NUM="$(bash "$HOME/.codex/scripts/lib/pr-threads.sh" infer-pr)" || { echo "ERROR: could not determine which PR to resolve (see above)"; exit 1; }
 fi
@@ -647,7 +665,10 @@ if [ -z "${LAST_SHA:-}" ]; then
   echo "no fix was pushed this round; not requesting a re-review"
   exit 30   # nothing changed -> waiting again would re-find the same findings. STOP LOOPING.
 fi
-# `--max-rounds` is forwarded when the invocation carried one (step 0a's $MAX_ROUNDS). Parsed ONCE,
+# `--max-rounds` is forwarded when the invocation carried one (step 0a's $MAX_ROUNDS). `-n` and not
+# an arithmetic test, because the sentinel `0` IS a value the operator gave: `[ "$MAX_ROUNDS" -gt 0 ]`
+# would drop it and silently fall back to the manifest, turning an uncapped run into a capped one.
+# Parsed ONCE,
 # passed to EVERY round: a flag the workflow accepted and then dropped would advertise a bound it
 # never applied. With none, the library resolves `[reviewers] max_rounds`, then its built-in 6.
 if [ -n "${MAX_ROUNDS:-}" ]; then
@@ -666,7 +687,7 @@ report. None of `13`/`14`/`15`/`30` is a failure — each names a different reas
 | `30` | this round pushed nothing | report what was declined or already addressed and **exit** — another wait would be handed the same findings |
 | `13` | already requested for this head (someone asked before you) | do **not** ask again; **`unset LAST_SHA`** and go back to the wait, since a response to that existing request is still coming (again, `--once` exits instead) |
 | `14` | no declared reviewer has a trigger this baseline knows | report it and **exit** — nothing will wake the watch, so a further round would only time out |
-| `15` | the round cap is reached | report it and **exit**; hand back to the operator |
+| `15` | the round cap is reached (never under an uncapped cap of `0`) | report it and **exit**; hand back to the operator |
 | `12` | the PR is no longer OPEN | report it and **exit** |
 | `20` | live state unreadable, or this head's arrival could not be dated | report it and **exit** — never re-ask on an unprovable receipt, that is how a reviewer gets spammed every poll |
 | `17` / `18` / `2` | the declaration is missing, malformed, or the arguments are bad | same remedies as step 0's table; **exit** |
@@ -681,15 +702,45 @@ The loop leaves through exactly three kinds of door, and the report says which:
   same findings forever, so "no progress" is a reason to stop, not a reason to spin;
 - **the stated bound** — `15` (the round cap) or `11` (a round's own wait expiring).
 
-**The loop's bound is the ROUND CAP, and it is counted from the pull request itself** — every
-request this mechanism has posted, at any head. There is no local counter to reset and none to go
-stale, which is what makes a resumed or restarted session pick up where the last one left off
+**The loop's OVERALL bound is the ROUND CAP, and it is counted from the pull request itself** —
+every request this mechanism has posted, at any head. There is no local counter to reset and none to
+go stale, which is what makes a resumed or restarted session pick up where the last one left off
 instead of starting the count again. Each round's *wait* keeps its own `--max-secs`; the two
 together are the overall bound, and both are enforced by tested code rather than by a clock this
 prose asks you to hold.
 
+**Unless the operator declares `0`, which removes that overall bound on purpose** — see the
+sentinel below.
+
 **The cap resolves as `--max-rounds` > `[reviewers] max_rounds` > the built-in 6**, and a malformed
 manifest value is a hard error rather than a silent fall-back to that built-in.
+
+**`0` at either surface means UNCAPPED (#420)** — the loop runs until the reviewer passes or some
+other terminal guard fires, and exit 15 never happens. It follows the `[gates] "" disables`
+precedent: a zero-value sentinel disabling a mechanism, spelled in the config surface's own
+vocabulary, so a project can declare *"run until clean"* explicitly instead of picking a number and
+hoping it is big enough. **`0` is the only sentinel** — `-1`, `1.5`, `00`, an empty value and any
+non-integer stay hard errors, in the direction of refusing rather than guessing.
+
+**The trade is real and is the owner's to make per repo.** The round cap is this loop's only
+*overall* bound, so uncapping it leaves both documented runaway modes live: a reviewer that never
+comes back clean, and a connector in task mode where the trigger comment's effect is an unproven
+vendor claim, so a no-op ask spends a round with nothing arriving. It is recorded as a deliberate
+deviation in `.ai-dev-baseline/decisions.md` (D88), not left as an accident.
+
+**What still bounds an uncapped loop**, because "no round ceiling" is not "no limits" and an
+operator turning this on should know exactly what is left:
+
+- **Per-head idempotency.** At most one request per (reviewer, head), so the loop cannot tight-spin:
+  every round still costs an intervening head-moving push plus a review arrival or a watch timeout.
+- **Every per-round deadline.** Each round's own wait keeps its `--max-secs`. Uncapped rounds, never
+  unbounded waits.
+- **A round that pushed nothing exits** with code `30`, rather than re-finding the same findings.
+- **The receipt read refuses past 100 comments.** `request-review` proves whether this head was
+  already asked about by reading the PR's issue comments, and it reads at most 100 — beyond that it
+  returns `20` rather than risk re-posting. That is a pre-existing bound and it is fail-closed, but
+  an uncapped loop is the configuration most likely to reach it, so it is named here rather than met
+  as a surprise.
 
 **Six, not three, and the raise came from the field (#416).** Three was #49's own "~3", written
 before anything had run the loop in anger. The first productive multi-round resolve on an adopting

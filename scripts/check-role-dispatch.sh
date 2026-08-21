@@ -347,8 +347,13 @@ set_repo '[reviewers]' 'max_rounds = "6"'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a QUOTED integer is malformed (TOML integers are bare)"
 set_repo '[reviewers]' 'max_rounds = six'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a non-numeric value is malformed"
+# ZERO IS THE UNCAPPED SENTINEL (#420), not a refusal. This assertion is the inversion of the one
+# #416 shipped, and it is pinned in BOTH halves — the status AND the printed value — because a
+# reader that returned 3 here would also "not refuse", and 3 means undeclared, which sends the
+# caller to its built-in 6. Uncapped and capped-at-6 are opposite answers.
 set_repo '[reviewers]' 'max_rounds = 0'
-rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: zero is refused — it is not a bound, it is a loop that never runs"
+rd max-rounds >/dev/null 2>&1; eq "$?" "0" "max-rounds: zero is the UNCAPPED sentinel, not a refusal (#420)"
+eq "${ rd max-rounds; }" "0" "max-rounds: ...and it is returned as 0, not swallowed into 'undeclared'"
 set_repo '[reviewers]' 'max_rounds = -3'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a negative value is malformed"
 set_repo '[reviewers]' 'max_rounds = 3.5'
@@ -363,6 +368,14 @@ set_repo '[reviewers]' 'max_rounds = 06'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: a LEADING ZERO is refused (TOML has no such integer)"
 set_repo '[reviewers]' 'max_rounds = 011'
 rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: ...including one that would read as octal"
+# `00` IS THE LEADING-ZERO RULE, NOT A SECOND SPELLING OF THE SENTINEL (#420). This is the exact
+# hole a numeric sentinel test opens: `[ "$raw" -eq 0 ]` is true for `00` and `0000`, so a reader
+# written that way would quietly accept spellings TOML does not have as "uncapped" — and "0 is the
+# only sentinel" would be false with nothing saying so.
+set_repo '[reviewers]' 'max_rounds = 00'
+rd max-rounds >/dev/null 2>&1; eq "$?" "2" "max-rounds: 00 is a leading zero, NOT a second spelling of uncapped"
+err="$(set_repo '[reviewers]' 'max_rounds = 00'; rd max-rounds 2>&1 >/dev/null)"
+has "$err" "leading zero" "max-rounds: ...and it is refused by THAT rule, so the message is not misleading"
 # Two spellings TOML DOES allow, refused deliberately: the accepted form is narrower than TOML's,
 # and that narrowing is asserted so it cannot drift into an accident.
 set_repo '[reviewers]' 'max_rounds = +6'
@@ -386,6 +399,14 @@ eq "${ rd max-rounds --with-source; }" "9 repo"   "max-rounds --with-source: nam
 eq "${ rd max-rounds; }" "9" "max-rounds: the bare form is unchanged — no layer appended"
 clr_global
 eq "${ rd max-rounds --with-source; }" "9 repo" "max-rounds --with-source: repo-only still names its layer"
+# THE SENTINEL CARRIES ITS LAYER TOO. The consumer splits `<value> <layer>` on the space, so a
+# sentinel that lost its layer would leave the uncapped diagnostic unable to say WHICH agents.toml
+# removed the ceiling — which is the one thing an operator needs when they did not expect it.
+set_repo '[reviewers]' 'max_rounds = 0'
+eq "${ rd max-rounds --with-source; }" "0 repo" "max-rounds --with-source: the uncapped sentinel names its layer (#420)"
+clr_repo; set_global '[reviewers]' 'max_rounds = 0'
+eq "${ rd max-rounds --with-source; }" "0 global" "max-rounds --with-source: ...from the global layer too"
+clr_global; set_repo '[reviewers]' 'max_rounds = 9'
 # The flag must not soften any refusal: a malformed value is still a hard error through it.
 set_repo '[reviewers]' 'max_rounds = "x"'
 rd max-rounds --with-source >/dev/null 2>&1; eq "$?" "2" "max-rounds --with-source: a malformed value is still 2"

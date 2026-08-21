@@ -65,6 +65,33 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **`[reviewers] max_rounds = 0` means UNCAPPED — an explicit "run until clean" (#420).** #416 made
+  the re-review round budget repo-configurable but gave it no uncapped semantic, so a project that
+  wanted the loop to run until the reviewer passes had to pick a number and hope it was big enough.
+  A number chosen that way is not a bound anyone reasoned about, and #416's own history is the
+  evidence: the built-in went 3 → 6 because a real multi-round resolve hit a guessed 3.
+
+  `0` at either surface — `[reviewers] max_rounds` or `--max-rounds 0` — removes the round ceiling,
+  and exit 15 becomes unreachable. It follows the **`[gates] "" disables` precedent**: a zero-value
+  sentinel disabling a mechanism, spelled in the config surface's own vocabulary. **`0` is the only
+  sentinel** — `-1`, `1.5`, `00`, an empty value and every non-integer stay hard errors in both
+  directions. It is matched as the exact *string* `0`, before any arithmetic, because
+  `[ "$x" -eq 0 ]` is true for `00` too and would have invented a second spelling in silence.
+
+  **The trade is deliberate and is recorded as a deviation (D88), not left as an accident.** The
+  round cap was the loop's only *overall* bound, so both documented runaway modes stay real: a
+  reviewer that never comes back clean, and a connector in task mode where the trigger comment's
+  effect is an unproven vendor claim. What still holds is named at every surface that advertises the
+  sentinel — **per-head idempotency** (at most one request per reviewer per head, so an uncapped loop
+  cannot tight-spin), **every per-round deadline**, a round that pushed nothing exiting `30`, and the
+  receipt read's pre-existing fail-closed refusal past 100 comments. The success line now reads
+  `UNCAPPED, from <source>` rather than the false `round N of 0`, naming the source that removed the
+  ceiling — `--max-rounds` for the flag, or *which* `agents.toml` for the manifest — for the same
+  reason the exit-15 handoff names its source.
+
+  This amends the #416 entry below, which stands as the record of what shipped then: the round cap
+  is the loop's overall bound **unless a repo declares `0`**.
+
 - **`/resolve-pr-threads` needs no hand-holding any more (#416).** It was three kinds of manual: the
   PR number was mandatory, the watch was behind `--watch`, and so was the re-review request — so a
   flagless run pushed a fix, resolved the threads it had addressed, and ended **without telling the
