@@ -327,6 +327,21 @@ pt infer-pr
 _scoped="$(grep -c -- '--repo acme/widget' "$work/gh-argv" 2>/dev/null || printf '0')"
 if [ "$_scoped" -ge 1 ]; then ok; else bad "infer-pr: the PR list is not scoped to the checkout's own repository (GH_REPO could redirect it)"; fi
 
+# A SINGLETON WITHOUT A USABLE NUMBER IS UNREADABLE, NOT A SUCCESSFUL INFERENCE. `jq -r
+# '.[0].number'` on `[{}]` prints the four characters `null` and exits 0, so the workflow would
+# carry `PR_NUM=null` into the wait and fail much later as a bad argument. The contract here is a
+# bare number or a refusal.
+reset_fx; printf '%s\n' '[{}]' > "$S/prlist.json"
+pt infer-pr
+eq "$RC" "20" "infer-pr: a singleton with no number is unreadable, not a successful inference"
+eq "$OUT" ""  "infer-pr: ...and prints nothing — never the string 'null'"
+reset_fx; printf '%s\n' '[{"number":0,"title":"z","headRefName":"b","isDraft":false,"url":"u"}]' > "$S/prlist.json"
+pt infer-pr
+eq "$RC" "20" "infer-pr: a zero PR number is not usable"
+reset_fx; printf '%s\n' '[{"number":"42","title":"z","headRefName":"b","isDraft":false,"url":"u"}]' > "$S/prlist.json"
+pt infer-pr
+eq "$RC" "20" "infer-pr: a STRING number is not usable"
+
 reset_fx; printf '%s\n' '[]' > "$S/prlist.json"
 STUB_FAIL_PRLIST=1 pt infer-pr
 eq "$RC" "20" "infer-pr: an unreadable list is 20, never 'no open PRs'"
@@ -447,6 +462,37 @@ mkmixed c2 54 false ""  0  4 0 5
 pt remaining --pr 1
 eq "$RC" "0" "the #418 shape, PAGED: the same pull request reads cleanly across two pages"
 eq "$OUT" "9" "the #418 shape, PAGED: all 9 unresolved threads are counted, including the 4 newest"
+
+# THE IDENTITY CHECK RUNS ON EVERY PAGE, not just the first. A response that answers correctly on
+# page 1 and returns a foreign repository on page 2 would otherwise have that page's thread ids
+# accumulated unchecked — and the resolver replies to and RESOLVES the ids this returns.
+reset_fx; declare_bots "[\"$CODEX\"]"
+mkpage 1  154 true  c2 0   100
+mkpage c2 154 false ""  100 54 "$CODEX" false 1 "someone/else"
+pt list --pr 1
+eq "$RC" "2" "the identity check runs on page TWO as well, not only page one"
+has "$ERR" "refusing" "...and refuses rather than accumulating that page's ids"
+
+# THE NESTED TOTAL IS BOUNDED BY ITS OWN NODES, exactly as the outer connection is. `totalCount: 1`
+# carrying two nodes makes `comments_truncated` compute FALSE, telling the resolver the visible
+# context is complete when the contradictory count cannot prove replies were not omitted.
+reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 5
+jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount = 1' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "20" "a nested totalCount BELOW its own node count is refused"
+reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 5
+jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount = -1' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "20" "a NEGATIVE nested totalCount is refused"
+reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 5
+jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount = 1.5' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "20" "a FRACTIONAL nested totalCount is refused"
+# The control: a consistent over-count (more comments than returned) is the ordinary truncated case.
+reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 25
+pt list --pr 1
+eq "$RC" "0" "control: totalCount ABOVE the node count is ordinary truncation, not an error"
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "true" "control: ...and is flagged"
 
 # --- EVERY UNREADABLE PATH REFUSES ------------------------------------------------------------
 reset_fx; mkpage 1 6 false "" 0 6

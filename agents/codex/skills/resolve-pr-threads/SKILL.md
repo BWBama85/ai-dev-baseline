@@ -143,6 +143,18 @@ if [ -z "$PR_NUM" ]; then
   PR_NUM="$(bash "$HOME/.codex/scripts/lib/pr-threads.sh" infer-pr)" || {
     echo "ERROR: could not determine which PR to resolve (see above)"; exit 1; }
 fi
+# VALIDATE THE MANIFEST-BACKED CAP HERE TOO, not only the flag. The flag is checked above, but a
+# cap declared as `[reviewers] max_rounds` is not read until step 7 — so a malformed declaration
+# like `max_rounds = "six"` survives the whole wait, the fixes, the push and the resolutions, and
+# only then reports a hard configuration error. Ask the reader now; an UNDECLARED cap (rc 3) is the
+# normal case and means the built-in applies.
+if [ -z "${MAX_ROUNDS:-}" ]; then
+  bash "$HOME/.codex/scripts/lib/role-dispatch.sh" max-rounds >/dev/null; _mrc=$?
+  case "$_mrc" in
+    0|3) : ;;   # declared and usable, or undeclared -> the library's built-in
+    *)   echo "ERROR: '[reviewers] max_rounds' is unusable (see above) — fix agents.toml before running"; exit 1 ;;
+  esac
+fi
 echo "PR_NUM=$PR_NUM ONCE=$ONCE MAX_ROUNDS=${MAX_ROUNDS:-<default>}"
 ```
 

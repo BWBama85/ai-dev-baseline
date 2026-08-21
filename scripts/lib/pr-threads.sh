@@ -244,6 +244,13 @@ _adb_pt_fetch() {
     # the same reason at higher stakes: it is what the caller RESOLVES threads by, so an empty one
     # aims a mutation at nothing. Reported by the declared reviewer on PR #419.
     #
+    # THE NESTED TOTAL IS BOUNDED BY ITS OWN NODES, exactly as the outer connection is. A
+    # `totalCount: 1` carrying two nodes is internally inconsistent, and accepting it makes
+    # `comments_truncated` compute FALSE — telling the resolver the visible context is complete when
+    # the contradictory count cannot prove that further replies were not omitted. The outer
+    # connection already refuses over-counts for the same reason; this is the same rule one level
+    # in. Reported by the declared reviewer on PR #419.
+    #
     # AND THE NESTED CONNECTION IS CHECKED TOO — the same defect one level deeper, which the first
     # pass at this rule missed. `comments: {totalCount: 1, nodes: []}` satisfies "nodes is an
     # array": `cmd_list` then defaults the absent head author to `""`, `cmd_remaining` reads that as
@@ -273,6 +280,10 @@ _adb_pt_fetch() {
           then error("a review thread carries no comments connection") else . end
         | if any($t.nodes[]; (.comments.totalCount | type) != "number")
           then error("a review thread carries no comments totalCount") else . end
+        | if any($t.nodes[]; ((.comments.totalCount | floor) != .comments.totalCount)
+                             or (.comments.totalCount < 0)
+                             or (.comments.totalCount < (.comments.nodes | length)))
+          then error("a review thread carries an impossible comments totalCount") else . end
         | if any($t.nodes[]; (.isResolved == false)
                    and (((.comments.nodes | length) == 0)
                         or ((.comments.nodes[0].author.login | type) != "string")
@@ -305,19 +316,24 @@ EOF
     # never be wrong in. Taking the max makes a shrinking count unable to mask a shortfall.
     [ -n "$total" ] && [ "$page_total" -le "$total" ] || total="$page_total"
 
-    # PROVE THIS READ ADDRESSED THE REPOSITORY THE CALLER MEANT, on the FIRST page and before any
-    # thread id is accumulated. The caller replies on and RESOLVES the ids this returns, so
-    # answering about the wrong repository here is a mutation on a stranger's pull request. Both
-    # rules — `GH_REPO` redirecting a bare number, and a URL naming another repo — live in
+    # PROVE THIS READ ADDRESSED THE REPOSITORY THE CALLER MEANT — on EVERY page, before any of its
+    # thread ids is accumulated. The caller replies on and RESOLVES the ids this returns, so
+    # answering about the wrong repository is a mutation on a stranger's pull request. Both rules —
+    # `GH_REPO` redirecting a bare number, and a URL naming another repo — live in
     # `adb_pr_slug_check` (#173) rather than being re-derived here.
-    if [ "$page" -eq 1 ]; then
-      adb_pr_slug_check pr-threads "$n" "$arg" "$gotslug"; src=$?
-      case "$src" in
-        0) ;;
-        2) return 2 ;;
-        *) return 20 ;;
-      esac
-    fi
+    #
+    # PAGE ONE IS NOT ENOUGH, which is what this check originally assumed. A multi-page response
+    # that answers correctly on page 1 and then returns a foreign or absent `baseRepository` on a
+    # later page had that page's ids accumulated unchecked — and if its counts and ids were
+    # otherwise consistent, the resolver went on to reply to and resolve globally-addressed ids
+    # from it. Checking per page costs one comparison against a value already in hand. Reported by
+    # the declared reviewer on PR #419.
+    adb_pr_slug_check pr-threads "$n" "$arg" "$gotslug"; src=$?
+    case "$src" in
+      0) ;;
+      2) return 2 ;;
+      *) return 20 ;;
+    esac
 
     # ACCUMULATE THROUGH STDIN, NEVER THROUGH ARGV. The obvious spelling — `jq --argjson acc "$acc"`
     # — passes the whole accumulated document as one argv entry, and argv is bounded by ARG_MAX
@@ -403,7 +419,7 @@ EOF
 # would make inference and explicit invocation disagree about the same pull request. The candidate
 # listing marks it, so the ≥2 refusal is actionable rather than merely correct.
 cmd_infer_pr() {
-  local raw n list slug
+  local raw n list slug one
   adb_require_gh jq || return 20
   # SCOPE THE LIST TO THIS CHECKOUT'S OWN REPOSITORY, explicitly. A bare `gh pr list` resolves the
   # repository from gh's own rules, which `GH_REPO` silently redirects — and the number it would
@@ -427,8 +443,18 @@ cmd_infer_pr() {
   case "$n" in
     0) echo "pr-threads: this repository has no open pull request — nothing to resolve. Open one, or name a pull request explicitly." >&2
        return 10 ;;
-    1) printf '%s' "$raw" | jq -r '.[0].number' 2>/dev/null \
-         || { echo "pr-threads: could not read the number of the one open pull request" >&2; return 20; }
+    1) # VALIDATE BEFORE EMITTING. `jq -r '.[0].number'` on `[{}]` prints the four characters
+       # `null` and exits 0, so a malformed response was reported as a SUCCESSFUL inference and
+       # `PR_NUM=null` was carried into the wait — surfacing much later as a bad argument instead
+       # of as the unreadable external state it is. This subcommand's contract is a bare number or
+       # a refusal. Reported by the declared reviewer on PR #419.
+       one="$(printf '%s' "$raw" | jq -r 'if (.[0].number | type) != "number"
+                                             or ((.[0].number | floor) != .[0].number)
+                                             or (.[0].number <= 0)
+                                          then error("no usable number") else .[0].number end' 2>/dev/null)" \
+         || { echo "pr-threads: the one open pull request carries no usable number — refusing to infer" >&2; return 20; }
+       case "$one" in ''|*[!0-9]*) echo "pr-threads: the one open pull request carries no usable number — refusing to infer" >&2; return 20 ;; esac
+       printf '%s\n' "$one"
        return 0 ;;
   esac
   # SORTED NUMERICALLY, so the refusal is a deterministic contract a test can pin rather than
