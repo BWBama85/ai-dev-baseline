@@ -234,7 +234,7 @@ is cleared by `/resolve-pr-threads` — so it has its own manifest home, `[revie
 bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 
 # How many re-review rounds /resolve-pr-threads may request. Optional.
-#   unset → the built-in 6;  `--max-rounds <n>` overrides both
+#   unset → the built-in 6;  0 → uncapped;  `--max-rounds <n>` overrides both
 max_rounds = 6
 ```
 
@@ -279,6 +279,19 @@ Precedence is `--max-rounds <n>` > `[reviewers] max_rounds` > the built-in **6**
 value is a **hard error** rather than a silent fall-back to that built-in — an operator who wrote a
 bound and got the default has a cap they did not choose and no way to notice. It layers repo →
 global like every other manifest key.
+
+**`0` means uncapped, at both surfaces (#420).** It is the `[gates] "" disables` precedent applied
+here — a zero-value sentinel disabling a mechanism, spelled in the config surface's own vocabulary —
+so a project can declare *"run until clean, no round ceiling"* explicitly rather than by picking a
+number and hoping it is big enough. **It is the only sentinel:** `-1`, `1.5`, `00`, an empty value
+and any non-integer stay hard errors, in both directions, never a silent fallback.
+
+**The trade is deliberate and is recorded as a deviation** (`.ai-dev-baseline/decisions.md`, D88),
+because the round cap is the loop's only *overall* bound and uncapping it means a reviewer that
+never comes back clean keeps the loop going. What still holds: **per-head idempotency** — at most
+one request per (reviewer, head), so every round costs an intervening head-moving push plus a review
+arrival or a watch timeout, and the loop cannot tight-spin — and **every per-round deadline**.
+Uncapped rounds, never unbounded waits.
 
 **The default is 6 because the field measured 3 wrong.** The first productive multi-round resolve on
 an adopting repo — every round pushing fixes, round 5's fixes breeding three of round 6's findings —

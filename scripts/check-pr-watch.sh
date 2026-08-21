@@ -1520,8 +1520,10 @@ reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx "$BEFORE_AT" "$TRIGGER"
 w request-review --pr 1 --max-rounds 1;  rc 15 "precedence: --max-rounds 1 caps after a single ask"
 has "$OUT" "cap 1"        "precedence: the flag's value is the effective cap"
 has "$OUT" "--max-rounds" "precedence: ...and the flag is named as its source"
-w request-review --pr 1 --max-rounds 0;  rc 2  "request-review: --max-rounds 0 is a usage error, not an infinite loop"
 w request-review --pr 1 --max-rounds x;  rc 2  "request-review: a non-numeric --max-rounds is rejected"
+# `--max-rounds 0` WAS a usage error here until #420, and is now the uncapped sentinel. Its own
+# section below owns it, because proving "uncapped" needs a fixture that would cap under any
+# positive bound, and this block's is one receipt.
 
 # The MANIFEST sets it when no flag does.
 reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 2' > "$REPO/agents.toml"
@@ -1541,13 +1543,105 @@ reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = "six"'
 receipt_fx
 w request-review --pr 1;  rc 2 "precedence: a malformed max_rounds is exit 2, not the built-in 6"
 if [ -f "$S/posted" ]; then bad "precedence: nothing may be posted under an unusable cap"; else ok; fi
-reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 0' > "$REPO/agents.toml"
-receipt_fx
-w request-review --pr 1;  rc 2 "precedence: max_rounds = 0 is refused, not treated as unset"
+# `max_rounds = 0` WAS refused here until #420. What survived the change is the half that still
+# matters — it must not be read as UNSET — and the uncapped section below proves it with a fixture
+# that tells the two apart, which `receipt_fx` with no receipts could never do.
 # ...and the flag still wins even over an unusable manifest value, because it is never consulted.
 reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = "six"' > "$REPO/agents.toml"
 receipt_fx
 w request-review --pr 1 --max-rounds 3;  rc 0 "precedence: an explicit flag does not read the manifest at all"
+
+# --- THE UNCAPPED SENTINEL: 0 removes the ceiling entirely (#420) ------------------------------
+# `[gates] "" disables` applied to a round budget: a zero-value sentinel disabling a mechanism,
+# spelled in the config surface's own vocabulary. A project must be able to say "run until clean"
+# outright rather than pick a number and hope it is big enough.
+#
+# EVERY CASE HERE USES A SEVEN-RECEIPT FIXTURE — one MORE than the built-in 6 — and that is the
+# whole design of this section rather than an arbitrary number. Under any bound this suite can
+# produce, seven receipts cap; so a green below cannot be a bound that merely happens to be large,
+# and it cannot be a fixture too small to reach any bound. The CONTROL immediately after each pass
+# runs the SAME fixture against a positive cap and requires 15, which is what turns that argument
+# from an assertion about the code into an observation about this fixture.
+sevenfold() { receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" \
+                         "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" \
+                         "$BEFORE_AT" "$TRIGGER"; }
+
+# THE FLAG PATH.
+reset_fx; declare_bots "[\"$CODEX\"]"; sevenfold
+w request-review --pr 1 --max-rounds 0;  rc 0 "uncapped: --max-rounds 0 asks past the built-in 6 (#420)"
+# THE POST ITSELF, not the diagnostic about it: an assertion on the log line alone stays green if
+# the request never crosses the wire. The suite's own rule, stated at the happy path above.
+eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "uncapped: ...and exactly ONE comment was really posted"
+has "$OUT" "UNCAPPED" "uncapped: the round line SAYS uncapped rather than the false 'of 0'"
+has "$OUT" "--max-rounds" "uncapped: ...and names which source removed the ceiling"
+# THE CONTROL. Same fixture, a positive cap: it must cap. Without this, the pass above is equally
+# consistent with a fixture that never reached any bound.
+reset_fx; declare_bots "[\"$CODEX\"]"; sevenfold
+w request-review --pr 1 --max-rounds 6;  rc 15 "control: the SAME fixture caps at 6 — so the pass above is the sentinel, not the fixture"
+
+# IDEMPOTENCY IS UNTOUCHED BY THE SENTINEL, which is the acceptance criterion's other half and the
+# property that keeps an uncapped loop from tight-spinning. Uncapped means no CEILING, not "ask
+# again on every poll": a head already asked about is still 13, and still posts nothing.
+reset_fx; declare_bots "[\"$CODEX\"]"; sevenfold
+w request-review --pr 1 --max-rounds 0;  rc 0 "uncapped: the first ask about a fresh head is made"
+w request-review --pr 1 --max-rounds 0;  rc 13 "uncapped: a head already asked about is STILL 13, not a re-post"
+eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "uncapped: ...and nothing further crossed the wire"
+
+# THE MANIFEST PATH, and the half of the retired assertion that still matters: `0` must not read as
+# UNSET. Those two answers are opposite — unset sends the caller to its built-in 6, which caps this
+# fixture — so the seven receipts are what tell them apart.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 0' > "$REPO/agents.toml"
+sevenfold
+w request-review --pr 1;  rc 0 "uncapped: [reviewers] max_rounds = 0 removes the ceiling, and is NOT read as unset"
+eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "uncapped: ...posting exactly one comment"
+has "$OUT" "UNCAPPED" "uncapped: the manifest sentinel reports uncapped too"
+has "$OUT" "this repo's agents.toml" "uncapped: ...and names WHICH agents.toml removed the ceiling"
+# ...and the flag still wins over the manifest, in the direction that RE-IMPOSES a bound: an
+# operator overriding an uncapped repo policy for one invocation must get the cap they asked for.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 0' > "$REPO/agents.toml"
+sevenfold
+w request-review --pr 1 --max-rounds 6;  rc 15 "uncapped: an explicit --max-rounds re-imposes a bound over an uncapped manifest"
+# ...and the reverse: the flag uncaps a repo whose manifest declares a bound this fixture exceeds.
+reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" 'max_rounds = 2' > "$REPO/agents.toml"
+sevenfold
+w request-review --pr 1 --max-rounds 0;  rc 0 "uncapped: --max-rounds 0 uncaps a repo that declared a bound"
+
+# `0` IS THE ONLY SENTINEL. Every one of these would become a second spelling of "uncapped" under a
+# numeric test (`-eq 0` is true for `00`) or a relaxed shared validator, and each must refuse with
+# NOTHING POSTED — a malformed bound that posts first and errors after has already spent the round.
+declare_bots "[\"$CODEX\"]"
+for _bad in 00 -1 1.5 x; do
+  reset_fx; declare_bots "[\"$CODEX\"]"; sevenfold
+  w request-review --pr 1 --max-rounds "$_bad"
+  rc 2 "sentinel: --max-rounds $_bad is refused, never a second spelling of uncapped"
+  if [ -f "$S/posted" ]; then bad "sentinel: nothing may be posted under the refused cap '$_bad'"; else ok; fi
+done
+# An EMPTY value is its own refusal and must stay one: it would otherwise leave the module's
+# "no flag was given" encoding in place and fall through to the manifest, so an operator who typed
+# a bound would silently get the repo's.
+reset_fx; declare_bots "[\"$CODEX\"]"; sevenfold
+w request-review --pr 1 --max-rounds "";  rc 2 "sentinel: an EMPTY --max-rounds is refused, not treated as absent"
+# ...AND NAMES THE DOMAIN. The empty check returns before `_adb_pw_resolve_rounds` is ever reached,
+# so it is the one refusal that does not inherit that function's diagnostic — and `""` is named in
+# the acceptance criteria alongside `-1` and `1.5`. A status-only assertion here passed while the
+# message said nothing about what to type instead. Named by the independent review.
+has "$OUT" "0 for uncapped" "sentinel: ...and the empty refusal names the accepted domain too"
+# THE DIAGNOSTIC NAMES THE WHOLE ACCEPTED DOMAIN, sentinel included. The shared `require_uint` says
+# "a positive integer", which is the truth for --interval and --max-secs and half of it here — and
+# half a domain is how an operator concludes there is no uncapped spelling.
+reset_fx; declare_bots "[\"$CODEX\"]"; sevenfold
+w request-review --pr 1 --max-rounds -1
+has "$OUT" "0 for uncapped" "sentinel: the refusal names the accepted domain, INCLUDING the sentinel"
+
+# THE MANIFEST'S DOMAIN, likewise — same rule, the other surface.
+for _bad in '00' '-1' '3.5' '""'; do
+  reset_fx; printf '%s\n' '[reviewers]' "bots = [\"$CODEX\"]" "max_rounds = $_bad" > "$REPO/agents.toml"
+  sevenfold
+  w request-review --pr 1
+  rc 2 "sentinel: [reviewers] max_rounds = $_bad is refused, never a second spelling of uncapped"
+  if [ -f "$S/posted" ]; then bad "sentinel: nothing may be posted under the refused manifest cap '$_bad'"; else ok; fi
+done
+declare_bots "[\"$CODEX\"]"
 
 # `observe` and `wait` have NO round cap to resolve, so a malformed one must not break them: the
 # resolution is deliberately inside request-review rather than at parse time.

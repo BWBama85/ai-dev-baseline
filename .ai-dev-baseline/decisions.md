@@ -7169,3 +7169,94 @@ survive is the part a later reader needs.
   now parses the summary and requires assertions to have run AND none to have failed — parsed
   rather than pinned, because an exact number would need re-bumping by every future PR and would
   become the next stale figure.
+
+## D88 — DEVIATION: `max_rounds = 0` removes the resolve loop's only overall bound, by owner decision
+- date:          2026-08-21
+- category:      deviation
+- baseline-rule: `base/practices/shell.md` — *"Every poll loop carries a hard deadline — a timeout,
+                 or a maximum iteration count. A wrong predicate must expire loudly; it must never
+                 spin silently."* D86 (2) then made the round cap that iteration count for
+                 `/resolve-pr-threads` specifically: *"THE LOOP'S OVERALL BOUND IS THE ROUND CAP,
+                 NOT A WALL CLOCK"*, chosen over a per-chunk deadline file precisely because it is
+                 restart-proof. **This entry amends that sentence rather than leaving it to be read
+                 as still unconditional:** the round cap is the loop's overall bound *unless the
+                 operator declares `max_rounds = 0`*, and D86's own reasoning for preferring it over
+                 a wall clock is untouched — it is about which mechanism bounds the loop, not about
+                 whether an operator may decline the bound.
+- conflict:      #416's decided spec takes a positive integer and has no uncapped semantic, so a
+                 project that wants "run until clean" must pick a number and hope it is big enough.
+                 A number chosen that way is not a bound anyone reasoned about; it is a guess that
+                 either cuts a productive loop short or is so large it bounds nothing, and #416's
+                 own history is the evidence — the built-in went 3 → 6 because a real multi-round
+                 resolve hit a guessed 3. The owner's decision of 2026-08-20 is that declining the
+                 ceiling should be sayable OUT LOUD, at the config surface, rather than approximated.
+- scope:         `[reviewers] max_rounds = 0` in `agents.toml` and `--max-rounds 0`. The BEHAVIOURAL
+                 change is confined to `pr-watch.sh request-review`'s exit-15 arm, which the sentinel
+                 skips; the sentinel itself also reaches the two readers that validate the value
+                 (`adb_dispatch_max_rounds` and `_adb_pw_resolve_rounds`), the source-resolution that
+                 records which layer supplied it, the successful-request diagnostic (`UNCAPPED, from
+                 <source>` rather than `of 0`), and both copies of the workflow's argument parser.
+                 An earlier draft of this field said "the exit-15 arm and nothing else", which was
+                 the behaviour and not the scope — named by the independent review. Opt-in per repo
+                 or per invocation; the built-in stays 6 and every other refusal is unchanged.
+- reason:        The trade is real and is accepted rather than argued away. Both documented runaway
+                 modes survive: a reviewer that never comes back clean, and a connector in task mode
+                 where the trigger comment's effect is an unproven vendor claim (D81), so a no-op ask
+                 spends a round with nothing arriving.
+
+                 What still bounds an uncapped loop, and what the implementation therefore had to
+                 leave intact:
+
+                 - **Per-head idempotency.** At most one request per (reviewer, head). This is what
+                   stops "uncapped" from meaning "tight-spin": every round costs an intervening
+                   head-moving push plus a review arrival or a watch timeout. The regression suite
+                   pins it under the sentinel specifically (13 `already`, one comment on the wire),
+                   because it is the property whose loss would turn this from a long loop into a
+                   reviewer-spamming one.
+                 - **Every per-round deadline.** Each round's wait keeps its `--max-secs`. Uncapped
+                   rounds, never unbounded waits — which is the half of the shell-discipline rule
+                   that is NOT being deviated from, and saying which half matters more than the
+                   deviation label.
+                 - **A round that pushed nothing exits `30`.**
+                 - **The receipt read refuses past 100 comments.** `adb_pw_receipts` reads
+                   `comments(last:100)` and returns 20 rather than risk re-posting when more exist,
+                   so an uncapped loop is not literally unbounded — it terminates, fail-closed, at a
+                   ceiling it did not choose. That bound is PRE-EXISTING and out of scope here
+                   (paginating it is a second `#418`-shaped completeness proof), but an uncapped
+                   loop is the configuration most likely to reach it, so it is documented at every
+                   surface that advertises the sentinel instead of being met as a surprise.
+
+                 **The spelling is `[gates] "" disables` applied to a number.** That precedent is
+                 what makes a zero-value sentinel legible here rather than a special case invented
+                 for one key: a config surface disabling a mechanism in its own vocabulary. `0` is
+                 the ONLY sentinel — `-1`, `1.5`, `00`, an empty value and every non-integer stay
+                 hard errors — and the implementation matches it as the exact STRING `0`, before any
+                 arithmetic, because `[ "$x" -eq 0 ]` is also true for `00` and would have invented a
+                 second spelling silently.
+
+                 **One lint was narrowed to land this, and it is named rather than buried.**
+                 `check-fact-drift.sh`'s `backstop-stale-secs` forbids the retired 420-second
+                 dispatch bound as `(^|[^0-9])420([^0-9]|$)`, which cannot tell that duration from
+                 issue **#420** — so citing this issue in the files that document the sentinel
+                 reported the retired backstop as having returned.
+
+                 The first fix simply excluded `#` from the leading context, and the independent
+                 review was right that this **opened a hole rather than narrowing a false positive**:
+                 `#420-second timeout` is a stale duration claim wearing a citation's clothes, and
+                 that exemption waves it through. The rule now carries a second alternative, so a
+                 `#420` followed by a seconds unit fires exactly as a bare `420` does, and what is
+                 exempt is only a `#420` making no claim about seconds.
+
+                 THAT ALTERNATIVE THEN NEEDED A TRAILING BOUNDARY, which the declared reviewer caught
+                 on PR #426: written as `(s|sec)` it matched the first letter of the following word,
+                 so `#420 shipped` and `#420 sentinel` — ordinary prose in the very files documenting
+                 this issue — reported the retired bound. The unit alternation is longest-first and is
+                 followed by a non-word assertion. Four witnesses now cover the firing direction and
+                 all were observed going red under `--mutation`; the quiet direction has no standing
+                 witness and does not need one, because this carve-out fails LOUD — a regression turns
+                 legitimate prose red rather than passing in silence.
+
+                 The claim that "`backstop-secs` positively pins the live 2700, so the absent rule is
+                 not the only line of defence" is likewise retired: nothing prevents an old value and
+                 the new one from coexisting, so that pin can be green while a stale sentence sits
+                 three lines away — which is the reason this `absent:` rule exists beside it.

@@ -123,6 +123,15 @@ debug        = "claude"     # owns root-cause investigations.
 # fixes bred three of round 6's findings, and the cap fired at 3 because four requests already
 # existed — all four posted by hand.
 # max_rounds = 6
+#
+# `max_rounds = 0` means UNCAPPED — run until the reviewer is clean, with no round ceiling (#420).
+# It follows the `[gates] "" disables` precedent: a zero-value sentinel disabling a mechanism, so a
+# project can say "until clean" outright instead of picking a number and hoping. THE TRADE, stated
+# because it is real: uncapped removes the loop's only OVERALL bound, so a reviewer that never comes
+# back clean keeps it going. Per-head idempotency (one request per reviewer per head) and every
+# per-round deadline still apply, so it cannot tight-spin. `0` is the only sentinel — `-1`, `00` and
+# any non-integer remain hard errors.
+# max_rounds = 0
 
 # Optional: let the loop REPAIR required-check drift, not merely detect it (#333).
 #
