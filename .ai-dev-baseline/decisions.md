@@ -7033,3 +7033,92 @@ cases the original decision was defensible when written and wrong once its conse
   comments connection is type-checked, because a malformed one was silently dropped from the count;
   both argument parsers validate `--max-rounds` and the manifest-backed cap BEFORE any live work;
   and the cap handoff names which `agents.toml` supplied the bound.
+
+## D87 — the flapping suites leave the contended pool, the macOS leg drops the step ubuntu already ran, and a red run explains itself
+- date:      2026-08-21
+- category:  project-delta
+- unknown:   `selfcheck-macos` was both the longest CI leg and the only one that failed. Four reds
+             over 08-19..08-21 (one of them on `main`, so not any PR's diff) named two suites plus a
+             mutation mode; the ubuntu leg failed zero times on the same commits. Neither the
+             baseline nor this repo had a rule for "a job that is red because of its own load", and
+             the two obvious moves contradict each other: isolating suites makes the leg longer,
+             and the leg's length is half the complaint.
+- decision:  Three changes, and the ORDER between two of them is load-bearing.
+
+             **1. A second serial lane, `load-sensitive` (#423).** `session-currency`,
+             `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`
+             and `install-dry-run` move out of the contended pool into the serial prologue. It is a
+             SEPARATE array from `PINNED_STEPS`, not an addition to it, because the two answer
+             different questions — `build-drift` must be alone for CORRECTNESS (it rewrites tracked
+             files other steps read), these must be alone for RELIABILITY — and one array would
+             leave a later reader unable to tell which question a new step has to answer.
+             `pinned-install` is deliberately excluded: it appears in none of the four reds and
+             costs 273s, and isolating on suspicion is what made the leg long.
+
+             **2. `--skip`, and the macOS leg uses it (#339).** `selfcheck-macos` runs
+             `--skip adopt-readiness-mutation`. Same fail-closed contract as `--only` — unknown
+             name, empty value, comma-only value and "removed everything" are all exit 2 — plus the
+             skipped names printed twice, because a dropped step and a passing step produce the
+             same output otherwise. `check-fact-drift.sh` gains a pin on the ubuntu invocation,
+             which stopped being redundant the moment the macOS one went away.
+
+             **3. `--summarize <log>`, a CI job-summary digest (#423 item 5).** A red
+             `selfcheck-macos` now writes the failed step names and their `FAIL:` witness lines into
+             the job summary, so a recurrence is readable without log spelunking.
+- placement: `scripts/selfcheck.sh` (the lane, `--skip`, `--summarize`),
+             `scripts/check-selfcheck.sh` (their guards), `scripts/check-session-currency.sh` (the
+             capture-and-assert), `scripts/check-fact-drift.sh` (the wiring pin),
+             `.github/workflows/ci.yml`, `CLAUDE.md`, `CONTRIBUTING.md`, `docs/ci-runners.md`.
+- reason:    Four points, each of which was decided against a plausible alternative.
+
+             **The sequencing is not a preference.** Moving six suites into a prologue that runs
+             them one at a time ADDS their wall clock (~114s estimated for the macOS runner; 88s
+             measured serially on a 10-core workstation). On its own that regresses the duration
+             half of the complaint. #339's skip removes 680s of a 1086s job — measured on run
+             32451790033, green on `main`, where that job was also the run's critical path and the
+             next job was 535s. Landing them together is what makes the fix a net shrink; landing
+             #423(a) alone would not have been.
+
+             **The digest lives in `selfcheck.sh`, not in the workflow.** It reads three things the
+             runner prints a few hundred lines above — the `=== name ===` banner, `FAIL:` from
+             check-lib.sh's `bad`, and the terminal `FAILED:` line. A copy in YAML would be a
+             second reader of a contract with one writer, drifting on the first edit, and
+             untestable by the suite. As a mode of the existing entry point it needs no new
+             bash-floor registration and `check-selfcheck.sh` drives it over fixtures.
+
+             **The witness block is INDENTED, never fenced.** Same choice, same reason, as the
+             required-drift summary already in `ci.yml`: witness text is arbitrary and could carry
+             a backtick run that closes a fence, rendering assertion text as markup in a page a
+             maintainer reads. Step NAMES are safe in a code span, provably — `add` rejects any
+             name outside `[A-Za-z0-9_-]`.
+
+             **`--list` grew a FOURTH field rather than widening its third.** Making field 3
+             three-valued (`pool|serial|isolated`) would have left every existing `$3 == "serial"`
+             query silently answering for one lane only — a correct query made wrong without
+             erroring, which is the exact shape this suite exists to prevent. Field 3 keeps its
+             meaning (does it run in the prologue); field 4 carries the reason.
+- baseline-issue: n/a
+
+### What this entry does NOT claim
+
+**The 08-21 cause is still not proven, and the fix does not depend on proving it.** #423 withdrew
+the torn-write hypothesis (`wire_hooks` already publishes by rename), leaving the signature —
+rc 0, a non-empty fixture, zero hooks wired — unexplained. The leading hypothesis is `wire_hooks`'
+fifth WARN branch, the missing-`jq` degradation that returns **0** (`install.sh:176-180`), and it
+was PROBED this run: with `jq` off `PATH`, `install.sh --agent claude` exits 0, prints
+`WARN jq not found — cannot wire hooks`, wires 0 hooks and leaves settings.json non-empty at 381
+bytes. That reproduces the *signature*, not the *transient* — how `command -v jq` fails inside a
+suite that required `jq` at startup is what the captured WARN will answer at the next occurrence.
+So `check-session-currency.sh` now captures both streams and the status of all seven install and
+uninstall invocations and asserts on both, and the rc-0-with-WARN case is named explicitly, because
+asserting the status alone cannot catch it.
+
+**The acceptance bar is a soak nobody has run yet.** #423's amended criterion is ≥10 consecutive
+green `selfcheck-macos` runs on the hosted runner AFTER these land — deliberately replacing a
+deterministic-reproduction gate, because a load race on a 3-4 vCPU hosted runner may never
+reproduce off it (96/0 standalone, 57/57 under the full parallel suite on a workstation). Nothing
+in this PR can satisfy that, so #423 stays open on merge and is referenced rather than closed. Do
+not read a green CI run on this branch as the soak.
+
+**No claim is made that the pool bound should count processes.** D66 measured that and it was
+slower; this entry moves specific steps out of contention instead, which is a different change.

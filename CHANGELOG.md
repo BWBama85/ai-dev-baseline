@@ -8,6 +8,51 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`selfcheck-macos` was the longest CI leg and the only one that failed (#339, #423).** Four reds
+  over 08-19..08-21 — one of them on `main`, so not any PR's diff — while the ubuntu leg failed zero
+  times on the same commits. Both halves are one change, and the ordering between them is
+  load-bearing rather than a preference.
+
+  **The load-sensitive suites leave the contended pool.** `session-currency`, `install-migration`,
+  `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation` and `install-dry-run` now run in
+  the serial prologue. They assert on signal delivery, worker reaping and installer writes; they
+  pass unloaded and on Linux, and they were the whole of that job's flakiness on a 3-4 vCPU runner
+  where the pool's bound counts **steps** while some steps run pools of their own (D66).
+  `ci-discipline.md` already named timing assumptions and shared-state writes as *"'flaky' causes
+  that are actually real"*, so this is a fix and not a tolerance. It is a **second array**, not an
+  addition to `PINNED_STEPS`: `build-drift` is isolated for correctness (it rewrites tracked files
+  others read), these for reliability, and one name covering two rules leaves the next reader
+  unable to tell which question a new step must answer. `pinned-install` is deliberately **not**
+  moved — it appears in none of the four reds and costs 273s.
+
+  **And the macOS leg stops re-running the step ubuntu already ran.** `selfcheck-macos` now passes
+  `--skip adopt-readiness-mutation`. That step re-runs the whole readiness suite once per injected
+  defect, 38 times, to answer a question about *logic*, and the ubuntu `adopt` job answers it on
+  every PR. Measured on run 32451790033 (green, `main`, 2026-08-21): the job was **1086s** and the
+  run's critical path, of which that one step was **680s**. Isolation alone would have made the leg
+  longer; together they net-shrink it. `check-fact-drift.sh` now pins the ubuntu invocation, which
+  stopped being redundant the moment the macOS one went away.
+
+  **A red run explains itself.** `selfcheck.sh --summarize <log>` renders the failed step names and
+  their `FAIL:` witness lines as Markdown, and `selfcheck-macos` writes it into the job summary —
+  so a recurrence is readable from the Actions UI without log spelunking. It lives in `selfcheck.sh`
+  rather than in YAML because it reads three things `selfcheck.sh` itself prints, and a second
+  reader of a one-writer contract drifts on the first edit. Witnesses render in an **indented** code
+  block, never a fence: assertion text is arbitrary and a backtick run would close one.
+
+  **`check-session-currency.sh` stops throwing away the answer.** All seven `install.sh` /
+  `uninstall.sh` invocations captured both streams *and* the status into `/dev/null`; the 08-21 red
+  therefore said `got [0] want [1]` and nothing else, and cost a whole mining session. They now
+  capture both and assert on both — including **rejecting rc 0 that carries a `WARN`**, because
+  `wire_hooks` has five WARN branches and the missing-`jq` one returns **0** (`install.sh:176-180`),
+  which is the only known path to that exact signature. Probed: with `jq` off `PATH` the installer
+  exits 0, warns, wires 0 hooks and leaves `settings.json` non-empty — the signature exactly.
+
+  **The soak is still owed.** #423's amended acceptance is ≥10 consecutive green `selfcheck-macos`
+  runs on the hosted runner *after* this lands, which no PR can satisfy; #423 stays open. See D87.
+
 ### Added
 
 - **`/resolve-pr-threads` needs no hand-holding any more (#416).** It was three kinds of manual: the

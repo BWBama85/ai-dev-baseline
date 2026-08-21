@@ -84,10 +84,23 @@ Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`**
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
 care about (`--list` prints every name; an unknown name is an error rather than a quiet no-op).
-In a default (parallel) run `build-drift` goes first and alone, because it is the one step that
-rewrites files in the working tree; everything else either reads the tree or works in its own
-temporary directory. Under `--serial` it simply takes its declared place, and `--only` can leave it
-out altogether.
+**`--skip <name>,<name>`** is its complement, with the same contract and one addition: the skipped
+names are printed, before the run and again in the `result` block, because a step that vanishes
+quietly looks exactly like a step that passed.
+
+In a default (parallel) run a **serial prologue** goes first, one step at a time, and it holds two
+lanes for two different reasons — `--list`'s fourth field says which. `build-drift` is
+`mutates-tree`: it rewrites files in the working tree that other steps read. `session-currency`,
+`install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation` and
+`install-dry-run` are `load-sensitive` (#423): they assert on signal delivery, worker reaping and
+installer writes, they pass unloaded and on Linux, and under contention on a 3-4 vCPU macOS runner
+they were the whole of that job's flakiness. Everything else reads the tree or works in its own
+temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
+declared places, and `--only` / `--skip` can leave any of them out.
+
+CI's macOS leg runs one step fewer: it passes `--skip adopt-readiness-mutation`, which the ubuntu
+`adopt` job already runs on every PR (#339). Your local run is unaffected — a plain
+`bash scripts/selfcheck.sh` is still the whole registry.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335

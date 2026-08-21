@@ -1143,8 +1143,12 @@ jobs:
 
       # The completion contract rides THIS job rather than a new one, for the reason stated above:
       # a second job is a second required status context for branch protection to grow, and this
-      # split does not earn one. Same two invocations, same both-platform reasoning — registering
-      # only in selfcheck.sh would exercise these on macOS alone.
+      # split does not earn one. Registering only in selfcheck.sh would exercise these on macOS
+      # alone — and since #339 the second of them runs ONLY here: `selfcheck-macos` skips
+      # `adopt-readiness-mutation` by name, because asking a logic question twice on two platforms
+      # answers it no better. So this step is now the only per-PR execution of it, which is why
+      # check-fact-drift.sh pins the invocation: dropping it here would end that coverage outright
+      # rather than halve it.
       - name: adoption completion contract — the twelve rungs and the fail-closed verdict (#81)
         run: bash scripts/check-adopt-readiness.sh
 
@@ -1280,7 +1284,10 @@ jobs:
   #   1. `scripts/selfcheck.sh` IS the full offline suite by construction — it is this repo's CI
   #      mirror, kept in lockstep with the jobs above by CLAUDE.md golden rule 3. Mirroring the
   #      jobs individually would need a 27th hand-added job every time a check-*.sh lands, and the
-  #      one that got forgotten would be invisible.
+  #      one that got forgotten would be invisible. What THIS job runs is that registry less one
+  #      named step (#339, `--skip` on its run step) — a per-invocation choice the log states out
+  #      loud, not a smaller registry, and the skipped step still gates every PR from the ubuntu
+  #      `adopt` job.
   #   2. A `strategy.matrix` is NOT an option here: repo-settings.sh discovery skips matrix jobs
   #      because their check-run names gain a matrix suffix (docs/repo-settings.md). Converting the
   #      jobs above would leave 26 required contexts reporting nothing — a repo-wide merge
@@ -1292,13 +1299,16 @@ jobs:
   selfcheck-macos:
     name: selfcheck-macos
     runs-on: macos-latest
-    # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite plus a Homebrew
-    # install first. Since #260 the suite dispatches its steps through a bounded `wait -n` pool
-    # rather than sequentially, but that bound counts STEPS and three of them run pools of their
-    # own — so the real worker count here is higher than `--jobs` suggests, on a runner with 3
-    # cores against a workstation's ten. Bounding processes instead was tried and measured under
-    # #335 and did not help (D66). The headroom therefore stays as it was rather than being
-    # trimmed to a number this runner will not reproduce.
+    # Generous next to the Linux jobs' 10: this one runs the offline suite plus a Homebrew install
+    # first. Since #260 the suite dispatches its steps through a bounded `wait -n` pool rather than
+    # sequentially, but that bound counts STEPS and SOME of them run pools of their own — so the
+    # real worker count here is higher than `--jobs` suggests, on a runner with 3-4 cores against a
+    # workstation's ten. ("Three" stood here until #423; the live answer is the code, not a count
+    # in a comment — D66.) Bounding processes instead was tried and measured under #335 and did not
+    # help (D66). Since #423 the load-sensitive suites are lifted out of that contention into the
+    # serial prologue, and since #339 the single most expensive step does not run here at all; the
+    # headroom nonetheless stays as it was rather than being trimmed to a number this runner will
+    # not reproduce.
     timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1353,8 +1363,35 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The full offline suite. shellcheck is installed above for a reason: selfcheck SKIPs that
-      # step when the binary is absent, so without it "the full suite on macOS" would be false in
-      # precisely the silent way this repo keeps writing guards against.
-      - name: The full offline suite, on Homebrew bash
-        run: bash scripts/selfcheck.sh
+      # The offline suite, less ONE step. shellcheck is installed above for a reason: selfcheck
+      # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
+      # false in precisely the silent way this repo keeps writing guards against.
+      #
+      # `--skip adopt-readiness-mutation` (#339). That step answers a LOGIC question — can the
+      # readiness verifier's guards fail closed? — not a platform one, and it already runs on the
+      # ubuntu `adopt` job on every PR (below, `check-adopt-readiness.sh --mutation`, pinned by
+      # check-fact-drift.sh so it cannot be dropped there silently). It re-runs the whole readiness
+      # suite once per injected defect, 38 times, which made it the most expensive step in the
+      # suite with the least platform-specific content — the worst possible candidate for running
+      # on both legs. Measured on run 32451790033 (green, main, 2026-08-21): this job 1086s and the
+      # run's critical path, of which this one step was 680s. `adopt-readiness` itself — the
+      # non-mutation half — still runs here, so the readiness contract keeps its macOS coverage.
+      #
+      # The skip is VISIBLE: selfcheck names it before the run and again in the `result` block, so
+      # a reader can tell "the caller chose not to run this" from "this stopped running".
+      #
+      # THE OUTPUT IS CAPTURED so a red run explains itself in the job summary (#423 item 5).
+      # `pipefail` is what keeps the suite's own status rather than tee's — without it this step
+      # would report tee's cheerful 0 and gate nothing at all.
+      - name: The offline suite on Homebrew bash, less the step the ubuntu leg already runs
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/selfcheck.log"
+          rc=0
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation 2>&1 | tee "$log" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            bash scripts/selfcheck.sh --summarize "$log" >> "$GITHUB_STEP_SUMMARY" \
+              || echo "selfcheck failed and the digest could not be produced — open the job log." \
+                   >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"

@@ -13,8 +13,9 @@ it. Every job here *launches* on a bash at or above the floor — that is precis
 proves — so no job's own shell is ever the bootstrap case `adb_require_bash` exists for. The
 sub-floor half goes looking for an older interpreter **on the machine** instead, and `macos-latest`
 is the only per-PR environment that has one: `/bin/bash`, permanently 3.2.57. It reaches the check
-through `selfcheck-macos`, which runs the whole offline suite there, so the parse and evaluation
-probes really do run under 3.2 on that job.
+through `selfcheck-macos`, which runs the offline suite there, so the parse and evaluation probes
+really do run under 3.2 on that job. (That job skips one named step since #339 — see below. It is
+not this one: `bash-floor` still runs, and it is what carries `--sub-floor`.)
 
 On the Ubuntu runner there is no bash below the floor at all, so the half states a **SKIP** and
 names every interpreter it probed. That is the honest answer rather than a gap: running the parse
@@ -286,6 +287,21 @@ So the Linux jobs stay statically named, and macOS is **one aggregate job** —
 construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). Mirroring the jobs
 individually would need a 27th hand-added job every time a `check-*.sh` lands, and the forgotten
 one would be invisible.
+
+**Less exactly one named step, since #339.** The job invokes `--skip adopt-readiness-mutation`.
+That step re-runs the whole adoption-readiness suite once per injected defect, 38 times, to answer
+a question about *logic* — can the verifier's guards fail closed? — and the ubuntu `adopt` job
+already answers it on every PR. On run 32451790033 it was 680s of a 1086s job that was the run's
+critical path. The registry is not smaller and the local suite is unchanged: this is a
+per-invocation `--skip`, the log names it twice, an unknown name is an error rather than a quiet
+no-op, and `check-fact-drift.sh` pins the ubuntu invocation because that job is now the step's
+only per-PR execution. The non-mutation `adopt-readiness` half still runs here, so the readiness
+contract keeps macOS coverage.
+
+**And the load-sensitive suites run in the serial prologue here, as everywhere** (#423). They are
+the ones that flapped on this runner and nowhere else — `session-currency`, `selfcheck-guard` and
+`selfcheck-guard-mutation`, plus the cheap install-exercising trio — because a 3-4 vCPU hosted
+runner is where the pool's step-count bound diverges most from the real process count (D66).
 
 The two CI-only steps are deliberately not duplicated on macOS: `required-drift` and the live claim
 lint assert facts about this repo's *settings and tracker*, which are platform-independent.

@@ -132,7 +132,7 @@ if [ "$MODE" = mutation ]; then
   if mut_prepare "$mut_ctl" >/dev/null; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes at the same deadline the rows use (else every row below is red for the wrong reason)"
-    case "$mut_out" in *"83 passed"*|*" 0 failed"*) ok ;; *) bad "control: the unmutated copy did not report a clean suite" ;; esac
+    case "$mut_out" in *"116 passed"*|*" 0 failed"*) ok ;; *) bad "control: the unmutated copy did not report a clean suite" ;; esac
   else
     bad "control: could not build the unmutated copy"
   fi
@@ -422,9 +422,33 @@ eq "$(sed -n 's/^=== \(.*\) ===$/\1/p' <<< "$OUT" | head -1)" "zulu" \
 eq "$(awk '/^\+zulu$/{getline nxt; print nxt}' "$FX/ctl/events")" "-zulu" \
   "the prologue step runs ALONE — no pooled step overlapped it"
 
-# ...and the REAL runner pins build-drift, asked of the runner rather than grepped out of it.
+# ...and the REAL runner's prologue is exactly this set, asked of the runner rather than grepped
+# out of it. TWO LANES share the prologue since #423 and they are pinned SEPARATELY, because the
+# whole reason they are separate arrays is that they answer different questions: `mutates-tree` is
+# a correctness requirement (build.sh rewrites files other steps read) and `load-sensitive` is a
+# reliability one (these flap under contention on a 3-4 vCPU runner). A single combined pin would
+# stay green while a step moved from one lane to the other, which is a silent change of reason.
 real_pinned="$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$3 == "serial" {print $1}' | tr '\n' ' ')"
-eq "$real_pinned" "build-drift " "the shipped runner's serial prologue is exactly build-drift"
+eq "$real_pinned" \
+  "build-drift session-currency install-migration install-guard selfcheck-guard selfcheck-guard-mutation install-dry-run " \
+  "the shipped runner's serial prologue is exactly the two lanes' members, in declaration order"
+eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$4 == "mutates-tree" {print $1}' | tr '\n' ' ')" \
+  "build-drift " "the tracked-tree-mutating lane is exactly build-drift"
+eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$4 == "load-sensitive" {print $1}' | tr '\n' ' ')" \
+  "session-currency install-migration install-guard selfcheck-guard selfcheck-guard-mutation install-dry-run " \
+  "the load-sensitive lane is exactly the suites #423 mined out of CI, plus the install trio"
+# THE TWO FIELDS MUST AGREE, in both directions. They are computed by different functions over
+# different arrays, so nothing structural stops `lane_of` and `lane_reason` from disagreeing — and
+# a step reported `pool`/`load-sensitive` (or `serial`/`concurrent`) would be dispatched by one
+# answer and read by the other, which is exactly the drift the third field was added to end.
+eq "$(bash "$ROOT/scripts/selfcheck.sh" --list \
+       | awk -F'\t' '($3 == "serial") != ($4 != "concurrent") {n++} END {print n + 0}')" "0" \
+  "--list's lane and its reason never disagree about any step"
+# pinned-install stays POOLED, deliberately (#423): it appears in none of the four mined reds and
+# costs 273s on the macOS runner. Isolating a suite on suspicion is what makes the leg long, and
+# the length is the other half of the complaint this change answers.
+eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$1 == "pinned-install" {print $3}')" "pool" \
+  "pinned-install is NOT isolated — speculative isolation is out of scope by decision"
 
 # ============================== 7b. FUNCTION-valued steps ====================================
 # Six of the shipped registry's commands are shell FUNCTIONS (`step_shellcheck`,
@@ -537,13 +561,143 @@ eq "$RC_" "2" "--jobs with no value is rejected"
 sc --nonsense
 eq "$RC_" "2" "an unknown flag is rejected rather than ignored"
 
-# --list is the registry contract other guards read; it must stay three TAB-separated fields.
+# --list is the registry contract other guards read; it must stay FOUR TAB-separated fields (#423
+# added the fourth). Field 3 keeps its original meaning — does this run in the serial prologue —
+# so a consumer asking `$3 == "serial"` still gets the right answer across both lanes; the reason
+# went into a new field rather than widening field 3 into three values, which would have made
+# every existing correct query silently wrong instead of erroring.
 sc --list
 yes "$RC_" "--list exits 0"
-eq "$(printf '%s\n' "$OUT" | awk -F'\t' 'NF != 3 {n++} END {print n + 0}')" "0" \
-  "--list emits exactly three TAB-separated fields on every row"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' 'NF != 4 {n++} END {print n + 0}')" "0" \
+  "--list emits exactly four TAB-separated fields on every row"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$3 != "pool" && $3 != "serial" {n++} END {print n + 0}')" "0" \
   "--list's third field is always pool or serial"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' \
+       '$4 != "concurrent" && $4 != "mutates-tree" && $4 != "load-sensitive" {n++} END {print n + 0}')" "0" \
+  "--list's fourth field is always one of the three declared reasons"
+
+# ============================== 8b. --skip ====================================================
+# The mirror of --only, and it earns the same fail-closed treatment for the mirror-image reason.
+# --only's historical defect was a narrowing flag that silently WIDENED when handed an empty value;
+# --skip's equivalent is a flag that silently narrows NOTHING, so `--skip "$LIST"` with an empty
+# LIST runs the guard its author believed had been dropped — or, worse, reports a full-registry run
+# as if the caller's intent had been honoured. Every one of these is an error, never a quiet pass.
+sc --skip nosuchstep
+eq "$RC_" "2" "--skip with an unknown step name is an error"
+has "$OUT" "unknown step" "...and says which"
+hasnt "$OUT" "ALL CHECKS PASSED" "...and never reports a pass"
+sc --skip ""
+eq "$RC_" "2" "--skip with an empty value is an error, and never a full run"
+hasnt "$OUT" "ALL CHECKS PASSED" "...and never reports the whole suite as passed"
+sc --skip ,,
+eq "$RC_" "2" "--skip that names nothing is an error, not a no-op"
+sc --skip
+eq "$RC_" "2" "--skip with no value is rejected"
+sc --only gates --skip gates
+eq "$RC_" "2" "--skip that removes every selected step is an error, not an empty pass"
+
+# THE POSITIVE HALF, and it is the one that matters: a skipped step must NOT EXECUTE, the run must
+# still pass, and the skip must be VISIBLE BY NAME. The first of those is asked of the event log
+# rather than of the output — a step that ran and whose block was merely not printed would satisfy
+# any assertion made about the text alone, and "it silently still ran" is the failure mode a skip
+# flag has.
+reset_ctl
+sc --only "$ONLY" --skip gates --jobs 4
+yes "$RC_" "a run with a step skipped still passes"
+eq "$(grep -c '^+gates$' "$FX/ctl/events")" "0" "the skipped step never EXECUTED (not merely unprinted)"
+eq "$(grep -c '^+claims$' "$FX/ctl/events")" "1" "...while the steps around it did"
+has "$OUT" "SKIPPED 1 step(s) by request: gates" "the skip is announced by name before the run"
+has "$OUT" "skipped: gates" "...and again in the result block, where a CI reader looks"
+hasnt "$OUT" "=== gates ===" "the skipped step emits no block"
+# A plain run must still be the WHOLE registry: the skip is a per-invocation choice, never a new
+# default, and a default that quietly shed a step is the silent-coverage-loss this flag exists to
+# make impossible.
+reset_ctl
+sc --only "$ONLY" --jobs 4
+eq "$(grep -c '^+gates$' "$FX/ctl/events")" "1" "with no --skip, every selected step runs"
+hasnt "$OUT" "SKIPPED" "...and nothing is announced as skipped"
+
+# ============================== 8c. --summarize ===============================================
+# The CI job-summary digest (#423 item 5). A digest's failure mode is silence — one that extracted
+# nothing reads exactly like a clean run to the person it exists for — so every case below asserts
+# that it SAYS what it could not find rather than rendering an empty section.
+sum_fx="$work/summarize"; mkdir -p "$sum_fx"
+summarize() { OUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$1" 2>&1)"; RC_=$?; return 0; }
+
+# The real 08-21 shape, reproduced from the CI log that produced it: one failed step, one witness.
+cat > "$sum_fx/one.log" <<'LOG'
+=== practice-index ===
+practice-index: PASS
+PASS (0s)
+=== session-currency ===
+FAIL: install wires exactly one SessionStart currency hook: got [0] want [1]
+FAIL (exit 1, 37s)
+=== result ===
+57 step(s) in 17m51s — 56 passed, 1 failed
+FAILED: session-currency
+SOME CHECKS FAILED
+LOG
+summarize "$sum_fx/one.log"
+yes "$RC_" "--summarize exits 0 on a red log (it is a reporter, not a gate)"
+has "$OUT" '`session-currency`' "the digest NAMES the failed step"
+has "$OUT" "    session-currency: install wires exactly one SessionStart currency hook: got [0] want [1]"   "the witness is carried verbatim, in an INDENTED block a witness cannot break out of"
+hasnt "$OUT" "practice-index" "a PASSING step's banner is not reported as a failure"
+
+# The 08-19 shape: one step, several witnesses, all of which must survive.
+cat > "$sum_fx/many.log" <<'LOG'
+=== selfcheck-guard ===
+FAIL: cancellation terminates the workers instead of orphaning them: got [0] want [1]
+FAIL: cancelling --serial terminates the running step instead of leaving it behind: got [0] want [1]
+FAIL: the TERM -> grace -> KILL escalation stops a worker that ignores TERM: got [0] want [1]
+FAIL (exit 1, 37s)
+=== result ===
+FAILED: selfcheck-guard
+SOME CHECKS FAILED
+LOG
+summarize "$sum_fx/many.log"
+eq "$(printf '%s\n' "$OUT" | grep -c '^    selfcheck-guard: ')" "3" "every witness line survives, none dropped"
+
+# Two failing steps: each witness must be attributed to ITS OWN step, which is the whole reason the
+# extractor tracks banners instead of just grepping FAIL:.
+cat > "$sum_fx/two.log" <<'LOG'
+=== session-currency ===
+FAIL: install wires exactly one SessionStart currency hook: got [0] want [1]
+FAIL (exit 1, 37s)
+=== selfcheck-guard ===
+FAIL: cancellation terminates the workers instead of orphaning them: got [0] want [1]
+FAIL (exit 1, 14s)
+=== result ===
+FAILED: session-currency selfcheck-guard
+SOME CHECKS FAILED
+LOG
+summarize "$sum_fx/two.log"
+has "$OUT" '`session-currency`' "both failed steps are named (1/2)"
+has "$OUT" '`selfcheck-guard`' "both failed steps are named (2/2)"
+has "$OUT" "    session-currency: install wires exactly one" "witness 1 is attributed to its own step"
+has "$OUT" "    selfcheck-guard: cancellation terminates" "witness 2 is attributed to its own step"
+
+# A run KILLED before its result block — no FAILED: line at all. "Any selfcheck red" includes this,
+# and the digest must say the run never finished rather than imply nothing failed.
+printf '=== gates ===\nstill working\n' > "$sum_fx/abort.log"
+summarize "$sum_fx/abort.log"
+yes "$RC_" "--summarize exits 0 on a log that never reached the result block"
+has "$OUT" "no \`FAILED:\` line" "an aborted run is NAMED as aborted, not rendered as an empty digest"
+
+# A failure with no witnesses — a step that died rather than asserting. The digest must volunteer
+# that it found none, because an empty witness section is indistinguishable from a clean run.
+printf '=== gates ===\nboom\nFAIL (exit 3, 1s)\n=== result ===\nFAILED: gates\nSOME CHECKS FAILED\n' \
+  > "$sum_fx/nowit.log"
+summarize "$sum_fx/nowit.log"
+has "$OUT" '`gates`' "the failed step is still named when it produced no witness"
+has "$OUT" "No \`FAIL:\` witness lines were found" "...and the absence of witnesses is STATED"
+
+# Reporter errors are the reporter's own, and they fail closed rather than printing a hopeful blank.
+summarize "$sum_fx/does-not-exist.log"
+eq "$RC_" "2" "--summarize on an unreadable file is an error"
+sc --summarize
+eq "$RC_" "2" "--summarize with no file is rejected"
+OUT="$(bash "$ROOT/scripts/selfcheck.sh" --list --summarize "$sum_fx/one.log" 2>&1)"; RC_=$?
+eq "$RC_" "2" "--list and --summarize together are rejected rather than silently ordered"
 
 # ============================== 9. large output ===============================================
 # A step's buffer is a file precisely so a big one survives; a variable would have eaten the

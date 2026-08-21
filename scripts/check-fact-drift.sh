@@ -1465,6 +1465,19 @@ fact fact-selftest-wired 'regex:^[^#]*check-fact-drift\.sh --self-test' -- \
 # local mirror or CI fails here.
 fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# Same family, and it became load-bearing when #339 stopped running this step on the macOS leg.
+# Before that, the ubuntu invocation and the selfcheck registration were redundant halves of one
+# coverage; now `.github/workflows/ci.yml` holds the ONLY per-PR execution of it — `selfcheck-macos`
+# passes `--skip adopt-readiness-mutation`, so the registry entry alone no longer runs anywhere on
+# a pull request. Dropping the ubuntu step would therefore end the coverage outright rather than
+# halve it, and would do so silently: every remaining job stays green, because the thing that
+# stopped happening is a check.
+#
+# BOTH FILES stay pinned, not just the workflow. The registry entry is what a plain local
+# `selfcheck.sh` runs, which is the other half of golden rule 3's promise, and un-wiring it there
+# would leave contributors' pre-push gate quietly one guard short.
+fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
 
 # --- what selfcheck COSTS, and the figure that replaced (#335) ----------------
 #
