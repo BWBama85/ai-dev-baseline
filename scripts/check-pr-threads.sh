@@ -628,6 +628,36 @@ pt list --pr 1
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" \
    "list: the match is anchored — a login containing a declared one is not a match"
 
+# A METACHARACTER IN A CONFIGURED LOGIN MUST NOT WIDEN THE MATCH. The allowlist used to be a regex
+# escaping only `[` and `]`, so `bots = ["foo.bar"]` produced `^(foo.bar)$` — and `.` matched the
+# real, DIFFERENT login `foo-bar`, letting the resolver silently resolve a human's thread. The
+# comparison is an exact string match now, so exactness is a property of the design rather than of
+# the escaping. Reported by the declared reviewer on PR #419.
+reset_fx; declare_bots '["foo.bar"]'; mkpage 1 1 false "" 0 1 "foo-bar"
+pt list --pr 1
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" \
+   "a regex metacharacter in a declared login does NOT widen the match (foo.bar must not match foo-bar)"
+pt remaining --pr 1
+eq "$OUT" "0" "...and such a thread is not counted as a bot thread"
+# ...the literal login it names still matches, so the escape did not simply break matching.
+reset_fx; declare_bots '["foo.bar"]'; mkpage 1 1 false "" 0 1 "foo.bar"
+pt list --pr 1
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "true" "...but the LITERAL login still matches"
+# Other metacharacters are equally inert.
+reset_fx; declare_bots '["a+b"]'; mkpage 1 1 false "" 0 1 "aab"
+pt list --pr 1
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" "a plus sign in a declared login is literal, not a quantifier"
+reset_fx; declare_bots '["x|y"]'; mkpage 1 1 false "" 0 1 "x"
+pt list --pr 1
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" "a pipe in a declared login is literal, not an alternation"
+# The `[bot]` suffix — the one bracket case the old escaping existed for — still matches literally.
+reset_fx; declare_bots '["gemini-code-assist[bot]"]'; mkpage 1 1 false "" 0 1 "gemini-code-assist[bot]"
+pt list --pr 1
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "true" "a [bot]-suffixed login still matches literally"
+reset_fx; declare_bots '["gemini-code-assist[bot]"]'; mkpage 1 1 false "" 0 1 "gemini-code-assistb"
+pt list --pr 1
+eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" "...and its brackets are not a character class"
+
 # `bots = []` MUST CLASSIFY NOTHING. jq's `test("")` matches EVERY string, so an empty allowlist
 # handed straight to the matcher would mark every thread a bot and auto-resolve a human's. That
 # trap used to live as a COMMENT in the workflow, beside a default nothing could exercise.
@@ -635,7 +665,7 @@ reset_fx; declare_bots '[]'; mkpage 1 3 false "" 0 3 "$CODEX"
 pt list --pr 1
 eq "$RC" "0" "list: bots = [] still enumerates (the disable is about resolving, not reading)"
 eq "$(printf '%s' "$OUT" | jq -r '[.threads[]|select(.is_bot)]|length')" "0" \
-   "list: bots = [] classifies NOTHING as a bot (test(\"\") must not match every login)"
+   "list: bots = [] classifies NOTHING as a bot"
 pt remaining --pr 1
 eq "$OUT" "0" "remaining: bots = [] counts nothing"
 

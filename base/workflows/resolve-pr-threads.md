@@ -456,7 +456,12 @@ connection's own `totalCount`. A larger constant is not a fix — it moves the c
 | `20` | live state was unreadable | say so; step 8, then exit |
 | `2`  | bad arguments, or the reads answered for another repository | report the message; step 8, then exit |
 
-The document is `{ pr, total, bot_re, threads: [ … ] }`. Each thread carries `id`, `isResolved`,
+The document is `{ pr, total, bots, threads: [ … ] }`, where `bots` is the declared allowlist as a
+lower-cased list — **not** a regex. That distinction is load-bearing: an allowlist assembled as
+`^(a|b)$` is only as exact as its escaping, and a configured login carrying a metacharacter
+(`foo.bar`) matched a real, different account (`foo-bar`), which would have let the resolver
+silently resolve a human's thread. Exact string comparison makes the documented property true by
+construction. Each thread carries `id`, `isResolved`,
 `isOutdated`, the head comment's `author`/`path`/`line`/`body`/`createdAt`, its `comments`, and two
 fields step 3 depends on:
 

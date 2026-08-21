@@ -166,8 +166,20 @@ _ADB_PT_QUERY='
 
 # --- the resolvable-login allowlist -------------------------------------------------------------
 
-# _adb_pt_bot_re — the resolver's EXACT, anchored, case-insensitive allowlist as one jq regex, or
-# this module's code for why it could not be built. Prints NOTHING (status 0) for `bots = []`.
+# _adb_pt_bots — the resolver's allowlist as a JSON array of lower-cased logins, or this module's
+# code for why it could not be read. Prints `[]` for the `bots = []` disable.
+#
+# A LIST COMPARED EXACTLY, NOT A REGEX. This used to build `(?i)^(a|b)$` and escape only `[` and
+# `]` — which makes "exact allowlist" a property of the ESCAPING rather than of the design, and the
+# escaping was incomplete. `bots = ["foo.bar"]` produced `^(foo.bar)$`, where `.` is a metacharacter
+# that matches any byte, so it also matched the real, different login `foo-bar` — and this predicate
+# decides whether a thread may be silently resolved, so the consequence was auto-resolving a HUMAN's
+# thread, the one thing this workflow promises never to do.
+#
+# Escaping the remaining metacharacters would have fixed that instance. Removing the regex fixes the
+# CLASS: with a lower-cased list and `. == $l`, exactness is true by construction and no future
+# login can smuggle a metacharacter through. Case-insensitivity survives as a fold on both sides.
+# Reported by the declared reviewer on PR #419.
 #
 # `bash <path>` rather than sourcing, exactly as pr-watch.sh does: it keeps role-dispatch.sh's
 # globals and shell options out of this file and preserves the process boundary the harness
@@ -178,8 +190,8 @@ _ADB_PT_QUERY='
 # `bots = []` disable; empty-and-non-zero is a broken install or a malformed declaration, and
 # reading the second as the first would silently classify EVERY thread as human — resolving nothing
 # while reporting success, which is the same silent no-op class this repo keeps paying for.
-_adb_pt_bot_re() {
-  local logins drc
+_adb_pt_bots() {
+  local logins drc out
   logins="$(bash "$_ADB_PT_ROLE_DISPATCH" bots)"; drc=$?
   if [ "$drc" -ne 0 ]; then
     echo "pr-threads: could not read '[reviewers] bots' — refusing to classify threads by guessing" >&2
@@ -187,10 +199,11 @@ _adb_pt_bot_re() {
     [ "$drc" -eq 2 ] && return 18
     return 20
   fi
-  [ -n "$logins" ] || return 0
-  # Regex-escape the `[` and `]` of a `foo[bot]` login so they match literally, then anchor the
-  # alternation. `(?i)`, because GitHub logins are case-insensitive.
-  printf '(?i)^(%s)$' "$(printf '%s\n' "$logins" | sed 's/[][]/\\&/g' | paste -sd'|' -)"
+  [ -n "$logins" ] || { printf '[]'; return 0; }
+  # `-R -s` reads the lines as raw text, so a login is never interpreted as anything but a string.
+  out="$(printf '%s\n' "$logins" | jq -R -s -c 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
+    || { echo "pr-threads: could not read '[reviewers] bots'" >&2; return 20; }
+  printf '%s' "$out"
 }
 
 # --- the complete enumeration -------------------------------------------------------------------
@@ -500,20 +513,19 @@ cmd_list() {
   # THE MANIFEST IS READ BEFORE THE NETWORK. A malformed `[reviewers] bots` is a configuration fact
   # knowable without a round trip, and reporting it after the reads would make the operator wait for
   # an enumeration whose classification was never going to work.
-  re="$(_adb_pt_bot_re)"; rrc=$?
+  re="$(_adb_pt_bots)"; rrc=$?
   [ "$rrc" -eq 0 ] || return "$rrc"
   slug="$(adb_pr_query_slug pr-threads "$OPT_PR")" \
     || { echo "pr-threads: could not resolve which repository to read for PR #$n" >&2; return 20; }
   nodes="$(_adb_pt_fetch "$n" "$slug" "$OPT_PR")" || return $?
 
-  # `bots = []` must classify NOTHING as a bot — and jq's `test("")` matches EVERY string, so the
-  # emptiness is tested in jq rather than handed to the matcher. That trap used to live in the
-  # workflow as a comment beside a `: "${BOT_RE:=…}"` default nothing could exercise; here it is
-  # one line of a tested predicate.
-  out="$(printf '%s' "$nodes" | jq -c --arg re "$re" --argjson pr "$n" '
+  # `bots = []` classifies NOTHING as a bot, and with an exact list that is simply an empty `any`
+  # rather than a trap to remember: the regex form needed a guard because jq's `test("")` matches
+  # EVERY string, which is how an empty allowlist could have marked every thread a bot.
+  out="$(printf '%s' "$nodes" | jq -c --argjson bots "$re" --argjson pr "$n" '
       { pr: $pr,
         total: length,
-        bot_re: $re,
+        bots: $bots,
         threads: [ .[] | (.comments.nodes[0] // {}) as $head | {
           id, isResolved, isOutdated,
           author:    ($head.author.login // ""),
@@ -521,7 +533,7 @@ cmd_list() {
           line:      ($head.line // null),
           createdAt: ($head.createdAt // ""),
           body:      ($head.body // ""),
-          is_bot:    (($re != "") and (($head.author.login // "") | test($re))),
+          is_bot:    ((($head.author.login // "") | ascii_downcase) as $l | any($bots[]; . == $l)),
           comments_total:     (.comments.totalCount // 0),
           comments_read:      (.comments.nodes | length),
           comments_truncated: ((.comments.totalCount // 0) > (.comments.nodes | length)),
@@ -542,15 +554,15 @@ cmd_remaining() {
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-threads: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
   adb_require_gh jq || return 20
-  re="$(_adb_pt_bot_re)"; rrc=$?
+  re="$(_adb_pt_bots)"; rrc=$?
   [ "$rrc" -eq 0 ] || return "$rrc"
   slug="$(adb_pr_query_slug pr-threads "$OPT_PR")" \
     || { echo "pr-threads: could not resolve which repository to read for PR #$n" >&2; return 20; }
   nodes="$(_adb_pt_fetch "$n" "$slug" "$OPT_PR")" || return $?
-  out="$(printf '%s' "$nodes" | jq -r --arg re "$re" '
+  out="$(printf '%s' "$nodes" | jq -r --argjson bots "$re" '
       [ .[] | select(.isResolved == false)
-            | (.comments.nodes[0].author.login // "") as $who
-            | select(($re != "") and ($who | test($re))) ] | length' 2>/dev/null)" \
+            | ((.comments.nodes[0].author.login // "") | ascii_downcase) as $who
+            | select(any($bots[]; . == $who)) ] | length' 2>/dev/null)" \
     || { echo "pr-threads: could not count the unresolved bot threads of PR #$n" >&2; return 20; }
   case "$out" in ''|*[!0-9]*) echo "pr-threads: could not count the unresolved bot threads of PR #$n" >&2; return 20 ;; esac
   printf '%s\n' "$out"
