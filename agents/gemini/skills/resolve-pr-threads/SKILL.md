@@ -95,7 +95,21 @@ ONCE=0
 MAX_ROUNDS=""
 _want_rounds=0
 for a in $ARGUMENTS; do
-  if [ "$_want_rounds" = "1" ]; then MAX_ROUNDS="$a"; _want_rounds=0; continue; fi
+  # VALIDATE THE CAP HERE, BEFORE ANY LIVE WORK. `request-review` rejects a bad value too, but it
+  # runs at the END of a round — after the wait, the fixes, the push and the thread resolutions —
+  # so a typo would be caught only once everything it could affect had already happened. And an
+  # OPTION swallowed as the value is worse than a bad number: `--max-rounds --once` would store
+  # `--once` as the cap AND leave ONCE=0, so an operator who asked for a single pass silently gets
+  # the full waiting loop. Refuse both shapes at parse time.
+  if [ "$_want_rounds" = "1" ]; then
+    case "$a" in
+      -*)          echo "ERROR: --max-rounds needs a value, but got the option '$a'"; exit 1 ;;
+      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer (got '$a')"; exit 1 ;;
+      0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
+      0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
+    esac
+    MAX_ROUNDS="$a"; _want_rounds=0; continue
+  fi
   case "$a" in
     --once)        ONCE=1 ;;
     --watch)       : ;;   # accepted, ignored: it names the default (see Arguments)
@@ -293,7 +307,17 @@ Require only `gh` and `jq` — the gate runner (Step 4) auto-detects the project
 PR_NUM=""
 _want_rounds=0
 for a in $ARGUMENTS; do
-  if [ "$_want_rounds" = "1" ]; then _want_rounds=0; continue; fi
+  # Same refusal as step 0a: these two must agree about whether the invocation is even legal, not
+  # merely about which pull request it names.
+  if [ "$_want_rounds" = "1" ]; then
+    case "$a" in
+      -*)          echo "ERROR: --max-rounds needs a value, but got the option '$a'"; exit 1 ;;
+      ''|*[!0-9]*) echo "ERROR: --max-rounds must be a positive integer (got '$a')"; exit 1 ;;
+      0)           echo "ERROR: --max-rounds must be greater than zero (got '$a')"; exit 1 ;;
+      0*)          echo "ERROR: --max-rounds must not carry a leading zero (got '$a')"; exit 1 ;;
+    esac
+    _want_rounds=0; continue
+  fi
   case "$a" in
     --max-rounds)  _want_rounds=1 ;;
     --once|--watch) ;;

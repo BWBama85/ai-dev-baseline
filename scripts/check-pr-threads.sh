@@ -143,7 +143,13 @@ if [ "$MODE" = mutation ]; then
     'echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2' \
     ':' \
     'the #418 shape: the refusal names the exact live shortfall'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 5
+  # The node-level check, injected out. A malformed node then passes the completeness proof and is
+  # dropped by the count — the shape the declared reviewer named on PR #419.
+  check_mut "node-validation-dropped" \
+    'if any($t.nodes[]; (.isResolved | type) != "boolean")' \
+    'if (false)' \
+    'a node with NO isResolved is unreadable — never a count with that thread dropped'
+  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 6
   check_summary "check-pr-threads --mutation"
   exit 0
 fi
@@ -462,6 +468,36 @@ reset_fx; mkpage 1 6 false "" 0 6
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt list --pr 1
 eq "$RC" "20" "list: a connection with no nodes array is unreadable, not empty"
+
+# --- EVERY NODE IS TYPE-CHECKED, NOT JUST THE ARRAY AROUND THEM -------------------------------
+# A node that satisfies `totalCount` but carries no usable `isResolved` passes the completeness
+# proof and is then SILENTLY DROPPED by the `.isResolved == false` predicate — unreadable state
+# turned into a LOWER count, which is the one direction this module must never be wrong in.
+# Reported by the declared reviewer on PR #419.
+reset_fx; declare_bots "[\"$CODEX\"]"; mkpage 1 3 false "" 0 3
+jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].isResolved)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt remaining --pr 1
+eq "$RC" "20" "a node with NO isResolved is unreadable — never a count with that thread dropped"
+eq "$OUT" ""  "...and prints no count at all"
+reset_fx; mkpage 1 3 false "" 0 3
+jq '.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = "false"' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt remaining --pr 1
+eq "$RC" "20" "a STRING isResolved is unreadable too — jq would compare it unequal and drop the thread"
+# The id is what the caller RESOLVES threads by, so an empty one aims a mutation at nothing.
+reset_fx; mkpage 1 3 false "" 0 3
+jq '.data.repository.pullRequest.reviewThreads.nodes[1].id = ""' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "20" "an EMPTY thread id is unreadable — it is what a resolve mutation is aimed at"
+reset_fx; mkpage 1 3 false "" 0 3
+jq 'del(.data.repository.pullRequest.reviewThreads.nodes[2].comments)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "20" "a node with no comments connection is unreadable — classification reads its head"
+# The control: an intact page of the same shape still reads cleanly, so the rules above are not
+# simply refusing everything.
+reset_fx; mkpage 1 3 false "" 0 3
+pt remaining --pr 1
+eq "$RC" "0" "control: an intact page still reads cleanly"
+eq "$OUT" "3" "control: ...and counts every unresolved bot thread"
 
 # --- THE READS MUST ADDRESS THIS REPOSITORY ---------------------------------------------------
 # The caller REPLIES ON and RESOLVES the ids this returns, so answering about another repository is

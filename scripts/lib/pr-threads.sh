@@ -235,6 +235,17 @@ _adb_pt_fetch() {
     # `// []` would read a malformed or absent connection as "no threads", which is precisely the
     # shortfall this module exists to make loud. Every field the completeness proof rests on is
     # type-checked before it is trusted.
+    #
+    # EVERY NODE IS CHECKED, NOT JUST THE ARRAY AROUND THEM, and the gap that closes is not
+    # cosmetic. A node whose `isResolved` is absent or non-boolean sails through the completeness
+    # proof — it still counts toward `totalCount` — and is then silently DROPPED by the
+    # `.isResolved == false` predicate in `remaining`, turning unreadable state into a LOWER count.
+    # That is the one direction this module promises never to be wrong in. The id is checked for
+    # the same reason at higher stakes: it is what the caller RESOLVES threads by, so an empty one
+    # aims a mutation at nothing. Reported by the declared reviewer on PR #419.
+    #
+    # (Written here rather than inside the jq program: a jq comment sits in a single-quoted shell
+    # string, so one apostrophe in it ends the string.)
     parsed="$(printf '%s' "$raw" | jq -c '
         if (.errors | length) > 0 then error("graphql errors") else . end
         | (.data.repository.pullRequest // null) as $p
@@ -242,6 +253,12 @@ _adb_pt_fetch() {
         | ($p.reviewThreads // null) as $t
         | if $t == null then error("no reviewThreads connection") else . end
         | if ($t.nodes | type) != "array" then error("the reviewThreads connection carries no nodes array") else . end
+        | if any($t.nodes[]; (.id | type) != "string" or (.id | length) == 0)
+          then error("a review thread carries no usable id") else . end
+        | if any($t.nodes[]; (.isResolved | type) != "boolean")
+          then error("a review thread carries no boolean isResolved") else . end
+        | if any($t.nodes[]; (.comments | type) != "object" or (.comments.nodes | type) != "array")
+          then error("a review thread carries no comments connection") else . end
         | if ($t.totalCount | type) != "number" then error("the reviewThreads connection carries no totalCount") else . end
         | if (($t.totalCount | floor) != $t.totalCount) or ($t.totalCount < 0)
           then error("the reviewThreads connection carries an impossible totalCount") else . end

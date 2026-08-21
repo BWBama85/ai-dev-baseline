@@ -297,6 +297,9 @@ _ADB_PW_MAX_UNREADABLE=3
 # CLASSIFICATION rather than once per poll (#417). `observe` leaves it 0: a single classification's
 # diagnostic is the answer, not narration.
 _ADB_PW_QUIET_PENDING=0
+# Where `classify` records the reviewers it last saw with no terminal signal, so the deadline
+# handoff can name them once. A PATH rather than a value: see the pending arm of `classify`.
+_ADB_PW_PENDING_SINK=""
 
 # --- helpers ---------------------------------------------------------------------------------
 
@@ -364,7 +367,7 @@ read_declared_bots() {
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
   local n="$1" want="$2" qslug pjson pfields head state merged gotslug src headslug headref
-  local classes verdict
+  local classes verdict pending_from
 
   # THE IDENTITY PREDICATE IS NO LONGER APPLIED HERE. `adb_reviewer_match_jq` used to be hoisted into
   # a local and pasted in front of three separate jq passes in this function; all three now happen
@@ -478,8 +481,20 @@ EOF
       # Only THIS line is suppressed. The event-driven diagnostics — the head moving under the watch,
       # an unreadable poll, and every terminal verdict — are not per-poll and are what make a watch
       # debuggable after the fact; #394/D85 pinned two of them.
+      # THE DETAIL SURVIVES THE SUPPRESSION, VIA A FILE AND NOT A VARIABLE. Suppressing the per-poll
+      # line must not cost the operator the ONE fact the timeout handoff needs — WHICH reviewer is
+      # still silent; on a multi-reviewer repo a deadline reached with one reviewer clean and
+      # another quiet is useless as a bare "expired". Reported by the declared reviewer on PR #419.
+      #
+      # A FILE, because `wait` calls this function inside `$( … )` to capture the verdict, and a
+      # command substitution is a SUBSHELL: an assignment here would be discarded before the
+      # deadline path could read it. That is the same discarded-subshell-state defect D85 records
+      # in this suite's own clamp assertions, so it is worth naming rather than re-discovering.
+      # `$_ADB_PW_PENDING_SINK` is empty for `observe`, which classifies once and prints directly.
+      pending_from="$(adb_reviewers_in_class "$classes" none)"
+      [ -n "$_ADB_PW_PENDING_SINK" ] && printf '%s' "$pending_from" > "$_ADB_PW_PENDING_SINK"
       [ "$_ADB_PW_QUIET_PENDING" = "1" ] \
-        || echo "pr-watch: PR #$n at $head — no terminal signal yet from: $(adb_reviewers_in_class "$classes" none)" >&2
+        || echo "pr-watch: PR #$n at $head — no terminal signal yet from: $pending_from" >&2
       return 11 ;;
   esac
 }
@@ -893,7 +908,7 @@ cmd_observe() {
 }
 
 cmd_wait() {
-  local n want wrc rc out deadline remaining nap unreadable=0 lasthead="" head
+  local n want wrc rc out deadline remaining nap unreadable=0 lasthead="" head pending_from
 
   [ -n "$OPT_PR" ] || { echo "pr-watch: wait requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
@@ -932,6 +947,11 @@ cmd_wait() {
   # QUIET THE REPEATED PENDING LINE FOR THE DURATION OF THE LOOP (#417). Set here rather than at
   # parse time so it covers exactly the polling, and `observe` — which classifies once — is unaffected.
   _ADB_PW_QUIET_PENDING=1
+  # ...and give `classify` somewhere to leave the detail the suppression hides, so the deadline can
+  # still name who is silent. Best-effort: if the sink cannot be created the watch runs exactly as
+  # before and the handoff falls back to its generic wording, which is a lost diagnostic and never
+  # a wrong verdict.
+  _ADB_PW_PENDING_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-pending.XXXXXX" 2>/dev/null || printf '')"
 
   # Report an interruption honestly rather than letting the shell's default status stand in for a
   # verdict: an operator ^C is "we stopped watching", which is `pending`, not `clean`. `exit`, not
@@ -951,12 +971,14 @@ cmd_wait() {
         # where the contract promises "<verdict> <sha>" or nothing at all.
         [ -n "$out" ] && printf '%s\n' "$out"
         trap - INT TERM
+        [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
         return "$rc" ;;
       20)
         unreadable=$(( unreadable + 1 ))
         if [ "$unreadable" -ge "$_ADB_PW_MAX_UNREADABLE" ]; then
           echo "pr-watch: $unreadable consecutive unreadable polls — giving up rather than guessing" >&2
           trap - INT TERM
+          [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
           return 20
         fi
         echo "pr-watch: unreadable poll $unreadable/$_ADB_PW_MAX_UNREADABLE — retrying" >&2 ;;
@@ -979,7 +1001,18 @@ cmd_wait() {
       # silently get two empty strings instead of noticing there was no answer. Reachable whenever
       # the deadline lands on a transient failure before the 3-strike arm fires.
       [ -n "$out" ] && printf '%s\n' "$out"
-      echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with no terminal signal; handing off" >&2
+      # NAME WHO IS STILL SILENT, once, here. This is the whole reason the per-poll line's content
+      # is recorded rather than merely suppressed: a timeout that says only "expired" hands the
+      # operator no reviewer to investigate.
+      pending_from=""
+      [ -n "$_ADB_PW_PENDING_SINK" ] && [ -f "$_ADB_PW_PENDING_SINK" ] \
+        && pending_from="$(cat "$_ADB_PW_PENDING_SINK" 2>/dev/null)"
+      if [ -n "$pending_from" ]; then
+        echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with no terminal signal from: $pending_from; handing off" >&2
+      else
+        echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with no terminal signal; handing off" >&2
+      fi
+      [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
       trap - INT TERM
       return 11
     fi

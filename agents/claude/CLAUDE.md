@@ -883,9 +883,15 @@ adopting project: dozens of consecutive turns of *"Waiting."* — *ran 2 shell
 commands* — *"Waiting."*, one per interval. So where the harness runs a command
 detached and re-invokes on completion, **dispatch a long wait as a background
 task and let the notification be the wake signal** — that is the same rule as
-*never poll what already notifies*, applied to a wait you started yourself. Where
-it does not, chunk it deliberately: a stated per-chunk bound, a stated overall
-bound, no output between chunks, and one report at the end.
+*never poll what already notifies*, applied to a wait you started yourself.
+
+**Where it does not, take the SHORT wait rather than faking a long one.** Size the
+bound to fit under the harness ceiling, run it once, and treat expiry as terminal.
+Do **not** chunk it across repeated foreground calls to synthesize a longer wait:
+the overall deadline is then held by the driver, a re-entry restarts it silently,
+and a bound that can be silently restarted is not a bound — the rule two lines up.
+Report once when the wait starts and once when it resolves or expires; never one
+line per interval.
 
 Measured on 2026-08-15 in this repo: two orphaned loops — one whose completion
 pattern matched no line the log could produce, the second chained to the first —

@@ -1155,6 +1155,17 @@ w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 10 "wait: converges
 reset_fx; declare_bots "[\"$CODEX\"]"
 w wait --pr 1 --interval 30 --max-secs 3;  rc 11 "wait: expires at the bound with no terminal signal"
 has "$OUT" "handing off" "wait: says it is handing off rather than claiming a verdict"
+# THE TIMEOUT MUST NAME WHO IS STILL SILENT. Suppressing the per-poll `pending` line (#417) must not
+# cost the operator the one fact this handoff exists to deliver: on a multi-reviewer repo a deadline
+# reached with one reviewer clean and another quiet is useless as a bare "expired". The detail is
+# captured on every classification and printed ONCE, here. Reported by the declared reviewer on
+# PR #419.
+has "$OUT" "$CODEX" "wait: the timeout NAMES the reviewer still lacking a terminal signal"
+# ...and the loop is otherwise quiet: the per-poll line must not appear once per poll. With a 30s
+# interval this run polls once, so the check that matters is that the phrase appears EXACTLY once —
+# the deadline's copy — rather than once per classification plus once at the end.
+eq "$(printf '%s\n' "$OUT" | grep -c 'no terminal signal')" "1" \
+   "wait: the silent-reviewer detail is printed ONCE, not per poll"
 
 # The other half — the sleep must never overshoot the bound — USED TO RIDE THE CASE ABOVE, and a nap
 # only exists when a poll leaves time on the clock: a first poll outliving the bound made the watch
