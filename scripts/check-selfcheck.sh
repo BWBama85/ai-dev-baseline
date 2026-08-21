@@ -132,7 +132,18 @@ if [ "$MODE" = mutation ]; then
   if mut_prepare "$mut_ctl" >/dev/null; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes at the same deadline the rows use (else every row below is red for the wrong reason)"
-    case "$mut_out" in *"119 passed"*|*" 0 failed"*) ok ;; *) bad "control: the unmutated copy did not report a clean suite" ;; esac
+    # BOTH HALVES, and neither alone (review finding). This was `*"83 passed"*|*" 0 failed"*` — an
+    # alternation, so a nested suite reporting `0 passed, 0 failed` satisfied it while running
+    # nothing, and the pass count was decorative: bumping it 83 -> 116 -> 119 changed no verdict.
+    # A count is PARSED rather than pinned, because an exact number would have to be re-bumped by
+    # every future PR that adds an assertion to this file, and a pin nobody can keep current is the
+    # next stale figure. What must hold is that the control RAN assertions and none of them failed.
+    mut_pass="$(printf '%s\n' "$mut_out" | sed -n 's/.*check-selfcheck: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed.*/\1 \2/p' | tail -1)"
+    case "$mut_pass" in
+      ''|'0 '*) bad "control: the unmutated copy reported no assertions at all (got '${mut_pass:-<no summary>}')" ;;
+      *' 0')    ok ;;
+      *)        bad "control: the unmutated copy reported failures (got '$mut_pass')" ;;
+    esac
   else
     bad "control: could not build the unmutated copy"
   fi
@@ -157,6 +168,22 @@ if [ "$MODE" = mutation ]; then
   check_mut "live-only-reaping" \
     'LIVE["$j"]=1' ':' \
     'a worker forked but not yet recorded in LIVE is still reaped'
+  # The two LANE pins (#423). Both are single literal edits, so they ride the same harness. A lane
+  # is policy rather than mechanism, which is exactly why it needs a standing proof: emptying the
+  # array changes no behaviour any other assertion watches — every step still runs, and every step
+  # still passes — so without these rows the pins would be the kind of check that cannot answer
+  # wrong.
+  check_mut "lane-emptied" \
+    'ISOLATED_STEPS=(session-currency install-migration install-guard selfcheck-guard selfcheck-guard-mutation install-dry-run)' \
+    'ISOLATED_STEPS=()' \
+    'the load-sensitive lane is exactly the suites'
+  # lane_reason stops recognising the isolated lane while lane_of still does, so the two fields
+  # disagree — the one defect a single-array design could not have had, and the reason the guard
+  # asks BOTH questions rather than trusting one.
+  check_mut "lane-reason-lost" \
+    'for _p in "${ISOLATED_STEPS[@]}"; do [ "$1" = "$_p" ] && { printf '"'"'load-sensitive\n'"'"'; return 0; }; done' \
+    ':' \
+    "--list's lane and its reason never disagree about any step"
 
   check_mutation_pool "selfcheck-guard" "$work" mut_prepare mut_run 4
   check_summary "selfcheck-guard-mutation"
@@ -596,6 +623,18 @@ eq "$RC_" "2" "--skip with no value is rejected"
 sc --only gates --skip gates
 eq "$RC_" "2" "--skip that removes every selected step is an error, not an empty pass"
 
+# A TERMINAL MODE MUST NOT BYPASS THE CONTRACT (review finding). Selection used to be validated
+# AFTER `--list` and `--summarize` exited, so `--skip does-not-exist --list` returned 0 and printed
+# the registry — the documented "an unknown name is an error" held only when no other flag was
+# present. That is worse than not having the rule: the invocation LOOKS validated.
+sc --skip nosuchstep --list
+eq "$RC_" "2" "--list does not excuse an unknown --skip name"
+hasnt "$OUT" "$(printf 'gates\t')" "...and the registry is not printed over the error"
+sc --only nosuchstep --list
+eq "$RC_" "2" "--list does not excuse an unknown --only name either"
+sc --skip nosuchstep --summarize "$work/whatever.log"
+eq "$RC_" "2" "--summarize does not excuse an unknown --skip name"
+
 # THE POSITIVE HALF, and it is the one that matters: a skipped step must NOT EXECUTE, the run must
 # still pass, and the skip must be VISIBLE BY NAME. The first of those is asked of the event log
 # rather than of the output — a step that ran and whose block was merely not printed would satisfy
@@ -701,11 +740,35 @@ yes "$RC_" "--summarize exits 0 on a green log"
 has "$OUT" '`selfcheck` passed' "a green log is captioned PASSED, not failed"
 hasnt "$OUT" '`selfcheck` failed' "...and never carries the red heading"
 
+# A FORGED `FAILED:` LINE MUST NOT REACH A CODE SPAN (review finding). `add` constrains what may be
+# REGISTERED; it vouches for nothing read back out of a log, and any step's own output can print a
+# line starting `FAILED: `. A name carrying a backtick would close the span and render the rest of
+# the line as markup in a page a maintainer reads.
+printf '=== gates ===\nFAIL: real witness\nFAIL (exit 1, 1s)\n=== result ===\nFAILED: gates x`**INJECTED**`\nSOME CHECKS FAILED\n' \
+  > "$sum_fx/forged.log"
+summarize "$sum_fx/forged.log"
+yes "$RC_" "--summarize survives a forged FAILED: line"
+has "$OUT" '`gates`' "the legitimate name still renders"
+hasnt "$OUT" '**INJECTED**' "the forged markup is NOT rendered"
+has "$OUT" "unparsable name omitted" "...and its omission is STATED, not silent"
+
 # Reporter errors are the reporter's own, and they fail closed rather than printing a hopeful blank.
 summarize "$sum_fx/does-not-exist.log"
 eq "$RC_" "2" "--summarize on an unreadable file is an error"
+# `-r` alone is true for a readable DIRECTORY, which parsed as a log with no markers and produced
+# an invented "the run was cancelled" report — a reporter inventing a verdict about a run that does
+# not exist. A FIFO would have been worse: `sed` on it blocks with no bound but the job timeout.
+summarize "$sum_fx"
+eq "$RC_" "2" "--summarize on a DIRECTORY is an error, not an invented 'cancelled' report"
 sc --summarize
 eq "$RC_" "2" "--summarize with no file is rejected"
+# `--summarize ""` had no GIVEN bit, so it fell through to the ordinary path: a reporting flag
+# silently becoming a full run of the suite. Both spellings, because `--list` is what exposed it.
+sc --summarize ""
+eq "$RC_" "2" "--summarize with an empty path is rejected, and never a full run"
+hasnt "$OUT" "ALL CHECKS PASSED" "...and never reports the whole suite as passed"
+sc --summarize "" --list
+eq "$RC_" "2" "--summarize with an empty path is rejected even alongside --list"
 OUT="$(bash "$ROOT/scripts/selfcheck.sh" --list --summarize "$sum_fx/one.log" 2>&1)"; RC_=$?
 eq "$RC_" "2" "--list and --summarize together are rejected rather than silently ordered"
 

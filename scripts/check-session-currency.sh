@@ -468,28 +468,13 @@ eq "$(jq -r '.SessionStart[0].hooks[0].command' "$hooks_json")" \
 tmo="$(jq -r '.SessionStart[0].hooks[0].timeout' "$hooks_json")"
 if [ "$tmo" -gt 0 ] && [ "$tmo" -le 120 ]; then ok; else bad "SessionStart timeout should be bounded and small (got $tmo)"; fi
 
-# --- capturing what the installer SAID, because #423 proved the alternative -----
+# --- capturing what the installer SAID, not just whether it exited -------------
 #
-# Every install/uninstall call below used to be `… >/dev/null 2>&1` with no rc and no output kept.
-# On 2026-08-21 that cost a whole mining session: `selfcheck-macos` went red on
-# `install wires exactly one SessionStart currency hook: got [0] want [1]`, and the log held
-# nothing else — the answer had been printed and thrown away on every one of these lines.
-#
-# `wire_hooks` (install.sh:175-220) has FIVE WARN branches and they do not agree about status:
-# four return 1, and the missing-jq one returns **0**, documented there as "the ONE tolerated
-# degradation". So asserting the exit status alone cannot catch the shape that actually happened —
-# rc 0, a non-empty fixture, and nothing wired. PROBED, this run, against a PATH with no jq:
-# `install.sh --agent claude` exits **0**, prints
-# `  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually`,
-# wires **0** hooks and leaves settings.json non-empty (381 bytes) — the 08-21 signature exactly.
-# Hence both halves are asserted, and the WARN half is the one that names the leading hypothesis.
-#
-# THE DIAGNOSTIC IS ONE PHYSICAL LINE, deliberately. `bad` prints `FAIL: <text>`, and the CI job
-# summary (`selfcheck.sh --summarize`) carries a witness by its first line — so folding the whole
-# ~20-line installer transcript in would push the cause off the end of the digest that exists to
-# show it. The WARN lines alone are the cause; the rest is in the log.
-#
-# INSTALLER_OUT / INSTALLER_RC are left set for a caller that wants to assert something further.
+# Every install/uninstall call below is captured and asserted on BOTH streams AND the status.
+# Asserting the status alone is not enough and the reason is a call-site constraint: `wire_hooks`
+# (install.sh:175-220) has five WARN branches and one of them — missing `jq`, install.sh:176-180 —
+# returns **0**, so the only known path to "nothing wired, install succeeded" is invisible to an
+# rc check. Evidence and history: D87.
 INSTALLER_OUT=""; INSTALLER_RC=0
 # <label> is first so every call site reads the same way and `installer_clean` can forward "$@";
 # this half only needs the last two.
@@ -498,30 +483,27 @@ run_installer() {   # run_installer <label> <home> <script> — capture both str
 }
 
 # installer_clean <label> <home> <script> — run it and require BOTH rc 0 and no WARN.
+# installer_clean <label> <home> <script> — require BOTH rc 0 and no WARN.
+#
+# The `bad` text is ONE physical line on purpose: the CI digest (`selfcheck.sh --summarize`)
+# carries a witness by its first line, so folding the transcript in would push the cause off the
+# end of the digest that exists to show it. The transcript is not discarded either — command
+# substitution captured it, so on failure this prints it once, indented, before the verdict.
 installer_clean() {
-  local label="$1" warns
+  local label="$1" warns bad_rc=0
   run_installer "$@"
-  if [ "$INSTALLER_RC" -eq 0 ]; then ok; else
+  [ "$INSTALLER_RC" -eq 0 ] || bad_rc=1
+  warns="$(printf '%s\n' "$INSTALLER_OUT" | grep -c '^  WARN' || true)"
+  if [ "$bad_rc" -eq 1 ] || [ "$warns" -ne 0 ]; then
+    printf '  --- %s: full installer transcript (rc %s) ---\n' "$label" "$INSTALLER_RC" >&2
+    printf '%s\n' "$INSTALLER_OUT" | sed 's/^/  | /' >&2
+  fi
+  if [ "$bad_rc" -eq 0 ]; then ok; else
     bad "$label: exited $INSTALLER_RC — $(printf '%s' "$INSTALLER_OUT" | grep -E '^  (WARN|ERROR)' | tr '\n' ' ')"
   fi
-  warns="$(printf '%s\n' "$INSTALLER_OUT" | grep -c '^  WARN' || true)"
   if [ "$warns" -eq 0 ]; then ok; else
     bad "$label: exited $INSTALLER_RC but reported $warns WARN(s) — $(printf '%s' "$INSTALLER_OUT" | grep '^  WARN' | tr '\n' ' ')"
   fi
-}
-
-# expect_rejection <label> <cmd…> — run an assertion helper that MUST record a failure, and count
-# ONE assertion for whether it did. A guard whose failure mode is silence has to be watched going
-# red, and the counters are restored so the rehearsal never pollutes the suite's own tally. Its
-# `FAIL:` line is discarded for the same reason: a reader (and the CI digest) must not see a
-# deliberate rehearsal alongside real findings.
-expect_rejection() {
-  local label="$1"; shift
-  local _p0="$pass" _f0="$fail" fired
-  "$@" >/dev/null 2>&1
-  fired=$(( fail - _f0 ))
-  pass="$_p0"; fail="$_f0"
-  if [ "$fired" -gt 0 ]; then ok; else bad "$label"; fi
 }
 
 # THE REHEARSAL, on the exact shape that happened. The stub reproduces install.sh's tolerated
@@ -550,6 +532,15 @@ expect_rejection "installer_clean must REJECT a non-zero status" \
   installer_clean "rehearsal" "$work" "$work/fail-install.sh"
 # ...and must ACCEPT a clean run, or it would be a guard that can only ever fail.
 installer_clean "installer_clean accepts a clean install (rc 0, no WARN)" "$work" "$work/ok-install.sh"
+# ...and the REHEARSAL PREDICATE is pinned in BOTH directions, because its failure mode is silence:
+# a `rejects` stuck on true certifies every helper below it while checking nothing, and one stuck
+# on false reddens the suite for no reason. Asserted on its STATUS, never by applying it to itself
+# — self-application is circular, and a `rejects` that always answered "it rejected" would agree.
+if rejects installer_clean "rehearsal" "$work" "$work/ok-install.sh"; then
+  bad "rejects must NOT fire on a helper that ACCEPTS its input"
+else ok; fi
+if rejects installer_clean "rehearsal" "$work" "$work/warn-install.sh"; then ok
+else bad "rejects must fire on a helper that REJECTS its input"; fi
 
 # install → the entry is wired, user hooks survive, re-install does not double-add;
 # uninstall → the entry is gone and no dangling command is left behind.

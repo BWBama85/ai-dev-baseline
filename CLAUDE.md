@@ -85,9 +85,11 @@ those. The rules below are specific to this repo's code.
      starts mid-build sees a **mixed generation**. That is why the fix did not retire the pin.
    - **`load-sensitive` — `session-currency`, `install-migration`, `install-guard`,
      `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`.** These assert on signal
-     delivery, worker reaping and installer writes. Every one passes unloaded and on the ubuntu
-     leg, and they were the whole of `selfcheck-macos`'s four reds over 08-19..08-21 — one of them
-     on `main`, so not any PR's diff. `ci-discipline.md` names timing assumptions and shared-state
+     delivery, worker reaping and installer writes, and every one passes unloaded and on the
+     ubuntu leg. **Two of them account for all four reds** over 08-19..08-21 — `session-currency`
+     and `selfcheck-guard` (with `selfcheck-guard-mutation`), one of those runs on `main`, so not
+     any PR's diff. The three `install-*` steps have **never** failed there: they join because they
+     drive the same installer writes and cost seconds, not because they flapped. `ci-discipline.md` names timing assumptions and shared-state
      writes as "'flaky' causes that are actually real", so isolating them is the fix, not a
      tolerance. `pinned-install` is deliberately **not** here: it appears in none of those reds and
      costs 273s, and isolating on suspicion is how the leg got long.
@@ -128,7 +130,7 @@ those. The rules below are specific to this repo's code.
      `ubuntu-26.04` and `macos-latest` (`selfcheck-macos`) — and a workstation is one of them. A
      local green speaks for the OS you are sitting at, not for the other runner's image or its
      Homebrew bootstrap;
-   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 28 CI jobs — the 27
+   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 31 CI jobs — the 30
      per-PR jobs plus the scheduled WSL smoke (#2), which reaches it through `wsl -d …` — but is
      omitted from `selfcheck` deliberately: what it adds beyond the entry gate is an assertion
      about the **machine** and about `command -v bash`, which is a CI-image question. (Before

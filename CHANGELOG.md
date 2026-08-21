@@ -17,9 +17,11 @@ only by a published release, which is what these entries are the notes for.
 
   **The load-sensitive suites leave the contended pool.** `session-currency`, `install-migration`,
   `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation` and `install-dry-run` now run in
-  the serial prologue. They assert on signal delivery, worker reaping and installer writes; they
-  pass unloaded and on Linux, and they were the whole of that job's flakiness on a 3-4 vCPU runner
-  where the pool's bound counts **steps** while some steps run pools of their own (D66).
+  the serial prologue. They assert on signal delivery, worker reaping and installer writes, and
+  they pass unloaded and on Linux. **Two of them carry all four reds** — `session-currency` and
+  `selfcheck-guard`/`selfcheck-guard-mutation` — on a 3-core runner where the pool's bound counts
+  **steps** while some steps run pools of their own (D66). The three `install-*` steps have never
+  failed there and are named as joining for exercising the same installer writes, not for flapping.
   `ci-discipline.md` already named timing assumptions and shared-state writes as *"'flaky' causes
   that are actually real"*, so this is a fix and not a tolerance. It is a **second array**, not an
   addition to `PINNED_STEPS`: `build-drift` is isolated for correctness (it rewrites tracked files
@@ -52,6 +54,14 @@ only by a published release, which is what these entries are the notes for.
 
   **The soak is still owed.** #423's amended acceptance is ≥10 consecutive green `selfcheck-macos`
   runs on the hosted runner *after* this lands, which no PR can satisfy; #423 stays open. See D87.
+
+  **Review changed four of these decisions**, and D87's amendment records each: the digest
+  re-validates every step name it reads out of a log (a `FAILED:` line is forgeable text, not a
+  value `add` vouched for); `--only`/`--skip` names are validated *before* `--list`/`--summarize`,
+  which used to exit 0 without ever looking at them; the digest is a separate `if: failure()` step,
+  because a step killed by a signal never reaches its own trailing code; and the rehearsal helper
+  moved into `check-lib.sh`'s assertion family, split into a `rejects` predicate that is pinned in
+  both directions — proving it by applying it to itself was circular, and measurably so.
 
 ### Added
 

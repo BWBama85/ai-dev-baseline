@@ -149,7 +149,7 @@ the *checkout* — CRLF from a Windows-side clone, `/mnt/c` DrvFs semantics — 
 `.github/workflows/wsl-smoke.yml` is **one job, in its own file**, on a weekly `schedule` plus
 `workflow_dispatch` plus `push: tags`. Two structural reasons it is not a job in `ci.yml`:
 
-1. A `schedule:` fires a whole workflow **file**, so one added to `ci.yml` would run **all 27** of
+1. A `schedule:` fires a whole workflow **file**, so one added to `ci.yml` would run **all 30** of
    its jobs weekly to gain this one — no trigger filter can scope a schedule to a single job. (This
    used to be stated as "`ci.yml` has only unfiltered triggers"; since #165 its `push:` is filtered
    to `main`, which changes that sentence without touching the reason.)
@@ -277,15 +277,15 @@ Because it would deadlock every merge in the repo.
 
 `scripts/lib/repo-settings.sh` discovery **skips matrix jobs** — their check-run names gain a
 matrix suffix, so a statically-required context name can never match (`docs/repo-settings.md`).
-Converting the 26 Linux jobs to a two-platform matrix would leave 26 required contexts reporting
-nothing at all, while the 52 suffixed replacements stayed undiscoverable. Required-but-never-
+Converting the 29 Linux jobs to a two-platform matrix would leave 29 required contexts reporting
+nothing at all, while the 58 suffixed replacements stayed undiscoverable. Required-but-never-
 reported is the phantom deadlock `automerge-ok` code `13` names, and clearing it needs an admin
 token.
 
 So the Linux jobs stay statically named, and macOS is **one aggregate job** —
 `selfcheck-macos`, running `scripts/selfcheck.sh`, which *is* the full offline suite by
 construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). Mirroring the jobs
-individually would need a 27th hand-added job every time a `check-*.sh` lands, and the forgotten
+individually would need a 31st hand-added job every time a `check-*.sh` lands, and the forgotten
 one would be invisible.
 
 **Less exactly one named step, since #339.** The job invokes `--skip adopt-readiness-mutation`.
@@ -298,10 +298,11 @@ no-op, and `check-fact-drift.sh` pins the ubuntu invocation because that job is 
 only per-PR execution. The non-mutation `adopt-readiness` half still runs here, so the readiness
 contract keeps macOS coverage.
 
-**And the load-sensitive suites run in the serial prologue here, as everywhere** (#423). They are
-the ones that flapped on this runner and nowhere else — `session-currency`, `selfcheck-guard` and
-`selfcheck-guard-mutation`, plus the cheap install-exercising trio — because a 3-4 vCPU hosted
-runner is where the pool's step-count bound diverges most from the real process count (D66).
+**And the load-sensitive suites run in the serial prologue here, as everywhere** (#423).
+`session-currency`, `selfcheck-guard` and `selfcheck-guard-mutation` are the ones that flapped on
+this runner and nowhere else, because a 3-core `macos-latest` is where the pool's step-count bound
+diverges most from the real process count (D66). The cheap install-exercising trio joins them for
+exercising the same installer writes, not for having failed — it never has.
 
 The two CI-only steps are deliberately not duplicated on macOS: `required-drift` and the live claim
 lint assert facts about this repo's *settings and tracker*, which are platform-independent.

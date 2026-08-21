@@ -7089,8 +7089,8 @@ cases the original decision was defensible when written and wrong once its conse
              **The witness block is INDENTED, never fenced.** Same choice, same reason, as the
              required-drift summary already in `ci.yml`: witness text is arbitrary and could carry
              a backtick run that closes a fence, rendering assertion text as markup in a page a
-             maintainer reads. Step NAMES are safe in a code span, provably — `add` rejects any
-             name outside `[A-Za-z0-9_-]`.
+             maintainer reads. Step NAMES go in a code span, and each one is RE-VALIDATED against
+             the slug pattern first — see the amendment below, which is where this entry was wrong.
 
              **`--list` grew a FOURTH field rather than widening its third.** Making field 3
              three-valued (`pool|serial|isolated`) would have left every existing `$3 == "serial"`
@@ -7115,10 +7115,57 @@ asserting the status alone cannot catch it.
 
 **The acceptance bar is a soak nobody has run yet.** #423's amended criterion is ≥10 consecutive
 green `selfcheck-macos` runs on the hosted runner AFTER these land — deliberately replacing a
-deterministic-reproduction gate, because a load race on a 3-4 vCPU hosted runner may never
+deterministic-reproduction gate, because a load race on a 3-core hosted runner may never
 reproduce off it (96/0 standalone, 57/57 under the full parallel suite on a workstation). Nothing
 in this PR can satisfy that, so #423 stays open on merge and is referenced rather than closed. Do
 not read a green CI run on this branch as the soak.
 
 **No claim is made that the pool bound should count processes.** D66 measured that and it was
 slower; this entry moves specific steps out of contention instead, which is a different change.
+
+**The three `install-*` steps did NOT flap.** `session-currency` and `selfcheck-guard` (with its
+mutation mode) account for all four reds. `install-migration`, `install-guard` and `install-dry-run`
+have never failed on that runner; they join the lane because they drive the same installer writes
+and cost seconds, so isolating them is nearly free. Four shipped sentences said otherwise until
+review caught it, and the distinction matters: "these flapped" is evidence, "these are cheap and
+adjacent" is a judgement call, and only one of them is falsifiable.
+
+### AMENDED 2026-08-21, SAME DAY, DURING REVIEW — four of the decisions above were WRONG
+
+Recorded as an amendment rather than a rewrite, because what was decided first and why it did not
+survive is the part a later reader needs.
+
+- **THE `add`-VALIDATES-NAMES ARGUMENT DOES NOT APPLY, and it was the load-bearing half of the
+  witness-safety claim.** `add` constrains what may be REGISTERED. The digest reads its step names
+  out of a `FAILED:` line in a LOG, which any step's own output can forge by printing that prefix
+  at the start of a line — so a name carrying a backtick would close the code span and render the
+  rest as markup. Proven in review with `FAILED: x` + a backtick + `**INJECTED**`. Every token is
+  now re-validated against `[A-Za-z0-9_-]` before it enters a span, and an unparsable one is
+  reported as omitted rather than rendered. The indented-block choice for WITNESSES was right and
+  is unchanged; the claim that names were safe *because `add` said so* was not.
+
+- **SELECTION VALIDATION RAN AFTER THE TERMINAL MODES**, so `--skip does-not-exist --list` and
+  `--skip does-not-exist --summarize f` both exited 0 with no error. The documented "an unknown
+  name is an error" held only when no other flag was present, which is worse than not having the
+  rule — the invocation looks validated. The selection is now built before either terminal mode.
+  `--summarize` also gained the GIVEN bit `--only`/`--skip` already had: without it,
+  `--summarize ""` fell through and RAN THE SUITE.
+
+- **THE DIGEST WAS WRITTEN INLINE IN THE SUITE'S OWN STEP**, where a step killed by a signal or the
+  OOM killer never reaches it — absent for exactly the failures least able to explain themselves.
+  It is a separate `if: failure()` step now. A job-level timeout still stops later steps, so the
+  claim is "a step that failed", not "any red"; naming the gap is part of the fix.
+
+- **THE REHEARSAL HELPER WAS CIRCULAR AND REACHED INTO PRIVATE STATE.** `expect_rejection` snapshotted
+  `check-lib.sh`'s `pass`/`fail` from a call site, which that file's own header forbids; it now lives
+  in that assertion family. And proving it by applying it to itself does not work — MEASURED: a
+  version that always recorded success certified itself and left the suite green. The predicate is
+  split out as `rejects`, which records nothing and returns a status, so a suite pins it in both
+  directions with ordinary `ok`/`bad`. Both directions were then observed red on their own witness.
+
+- **AND ONE PRE-EXISTING DEFECT THE REVIEW SURFACED**: the mutation control's
+  `*"N passed"*|*" 0 failed"*` alternation was satisfied by a nested suite reporting `0 passed,
+  0 failed`. Bumping the count 83 -> 116 -> 119 across this session changed no verdict at all. It
+  now parses the summary and requires assertions to have run AND none to have failed — parsed
+  rather than pinned, because an exact number would need re-bumping by every future PR and would
+  become the next stale figure.
