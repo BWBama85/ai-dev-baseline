@@ -31,6 +31,7 @@ Sweep each of these before opening a pull request.
 <!-- adb:checklist:begin -->
 - `partial-validation` — For every validator, name what the CONSUMER actually reads and check exactly that: the final byte as well as the line count, every field the record grammar requires rather than the ones that happen to be present, and the spec grammar rather than what a permissive parser tolerates. Grep the siblings — this class has never appeared alone.
 - `stale-doc-claim` — When a diff changes what a surface DOES, grep the shipped prose that describes it — templates/, base/workflows/, base/practices/, README — and check every command name you write actually resolves. A doc that describes the old behaviour is read by adopters who have no other source.
+- `metric-scope-mismatch` — Before reporting a number, state the claim it must support and check the number can support it: a lifetime count over an append-only file cannot show a per-round trend, and a figure the command does not emit cannot be filled from one that sounds similar.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -46,4 +47,11 @@ One line per resolved review thread, newest last.
 - `stale-doc-claim` `templates/agents.toml:166` `a119e75` `PRRT_kwDOTfywrM6b1wra` PR #429 2026-08-24 — template still described [mcp] required as inert after it gained a consumer
 - `metric-scope-mismatch` `scripts/lib/pattern-ledger.sh:639` `a119e75` `PRRT_kwDOTfywrM6b1wrI` PR #429 2026-08-24 — reported a lifetime count where the claim made about it needed a per-round one
 - `batch-attribution` `base/workflows/resolve-pr-threads.md:564` `a119e75` `PRRT_kwDOTfywrM6b1wrO` PR #429 2026-08-24 — one sha captured after the batch was applied to every item, though each had its own
+- `partial-validation` `scripts/lib/docs-lib.sh:241` `9e91aaf` `PRRT_kwDOTfywrM6b21ax` PR #429 2026-08-24 — every empty split element was treated as legal; only the empty array and one trailing comma are
+- `partial-validation` `scripts/lib/pattern-ledger.sh:498` `9e91aaf` `PRRT_kwDOTfywrM6b21a1` PR #429 2026-08-24 — record validated only the hits region, then appended into a ledger every reader refuses
+- `partial-validation` `scripts/lib/pattern-ledger.sh:709` `9e91aaf` `PRRT_kwDOTfywrM6b21au` PR #429 2026-08-24 — verify accepted a duplicated checklist class that every operational reader rejects
+- `metric-scope-mismatch` `scripts/lib/pattern-ledger.sh:673` `9e91aaf` `PRRT_kwDOTfywrM6b21aq` PR #429 2026-08-24 — the summary asked for four round figures where the command supplied two
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:559` `9e91aaf` `PRRT_kwDOTfywrM6b21ah` PR #429 2026-08-24 — an already-addressed legitimate finding was resolved without a ledger hit, understating recurrence
+- `durable-reference` `base/workflows/resolve-pr-threads.md:580` `9e91aaf` `PRRT_kwDOTfywrM6b21a5` PR #429 2026-08-24 — a sha recorded as an audit link stops resolving once the branch is squash-merged and deleted
+- `awk-v-escaping` `scripts/lib/pattern-ledger.sh:441` `9e91aaf` `selffound-classes-awk-v` PR #429 2026-08-24 — multi-line list passed via awk -v, which cannot carry a newline; ENVIRON is the documented fix in this same file
 <!-- adb:hits:end -->

@@ -534,8 +534,15 @@ cmd_classes() {
   hits="$(_adb_pl_hits "$ledger")"      || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
   promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
   [ -n "$hits" ] || exit 0
-  printf '%s\n' "$hits" | awk -F'\t' -v TAB="$TAB" -v prom="$promoted" '
-    BEGIN { n = split(prom, p, "\n"); for (i = 1; i <= n; i++) if (p[i] != "") isprom[p[i]] = 1 }
+  # THE PROMOTED LIST TRAVELS THROUGH THE ENVIRONMENT, not through `awk -v`. Its value is
+  # MULTI-LINE, and `-v` cannot carry a newline — awk dies with "newline in string" the moment a
+  # second class is promoted. Every fixture in the suite had at most one, so 120 assertions passed
+  # over a `classes`, `due`, `stats` and `promote` that break on any real project's second
+  # promotion. `_adb_pl_insert` in this same file already documents this exact trap and uses
+  # ENVIRON for it; reintroducing it 200 lines later is what the promoted `partial-validation` rule
+  # means by "grep the siblings". Found by dogfooding this ledger on its own pull request.
+  printf '%s\n' "$hits" | ADB_PL_PROM="$promoted" awk -F'\t' -v TAB="$TAB" '
+    BEGIN { n = split(ENVIRON["ADB_PL_PROM"], p, "\n"); for (i = 1; i <= n; i++) if (p[i] != "") isprom[p[i]] = 1 }
     $1 != "" { c[$1]++ }
     END { for (k in c) printf "%d%s%s%s%d\n", c[k], TAB, k, TAB, (k in isprom ? 1 : 0) }
   ' | LC_ALL=C sort -t"$TAB" -k1,1nr -k2,2

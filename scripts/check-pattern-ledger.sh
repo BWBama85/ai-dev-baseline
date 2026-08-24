@@ -197,6 +197,13 @@ if [ "$MODE" = mutation ]; then
     '    ckdupes=""' \
     'a duplicated checklist class is refused by `verify` — verify included'
 
+  # THE MULTI-LINE PROMOTED LIST (PR #429, found by dogfooding). Restores the `-v` spelling, which
+  # is what shipped and what a later edit would reach for again.
+  check_mut promoted-list-via-v \
+    'ADB_PL_PROM="$promoted" awk -F'"'"'\t'"'"' -v TAB="$TAB"' \
+    'awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
+    'classes survives a SECOND promoted class'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -444,6 +451,21 @@ bash "$PL" due --ledger "$L7" >/dev/null 2>&1
 eq "$?" 11 "a promoted class is no longer due"
 eq "$(bash "$PL" classes --ledger "$L7" | awk -F'\t' '$2=="promo-class"{print $3}')" 1 \
    "classes marks the promoted class"
+
+# TWO PROMOTED CLASSES, which no fixture had until this assertion. The promoted list was passed to
+# awk with `-v`, which cannot carry a newline — so `classes`, `due`, `stats` and `promote` all died
+# with "newline in string" on any project's SECOND promotion, while 120 assertions passed over
+# fixtures that never had one. A count of one is the worst possible fixture for a list.
+seed "$L7" second-class 2 >/dev/null 2>&1
+bash "$PL" promote --ledger "$L7" --class second-class --rule 'and sweep this too' >/dev/null 2>&1
+CLS2="$(bash "$PL" classes --ledger "$L7" 2>&1)"; CRC2=$?
+eq "$CRC2" 0 "classes survives a SECOND promoted class"
+hasnt "$CLS2" "newline in string" "…without awk choking on the multi-line list"
+eq "$(printf '%s' "$CLS2" | awk -F'\t' '$2=="promo-class"{print $3}')"   1 "…and still marks the first as promoted"
+eq "$(printf '%s' "$CLS2" | awk -F'\t' '$2=="second-class"{print $3}')"  1 "…and the second"
+bash "$PL" due --ledger "$L7" >/dev/null 2>&1
+eq "$?" 11 "…and due is clean with both promoted"
+eq "$(bash "$PL" stats --ledger "$L7" | awk -F'\t' '$1=="promoted"{print $2}')" 2 "…and stats counts both"
 
 # =============================== 7b. the partial-validation siblings (PR #429) ===================
 # All three are the SAME class the round-1 fixes promoted a checklist rule for: a check that covers
