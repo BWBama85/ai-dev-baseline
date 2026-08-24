@@ -32,6 +32,7 @@ Sweep each of these before opening a pull request.
 - `partial-validation` — For every validator, name what the CONSUMER actually reads and check exactly that: the final byte as well as the line count, every field the record grammar requires rather than the ones that happen to be present, and the spec grammar rather than what a permissive parser tolerates. Grep the siblings — this class has never appeared alone.
 - `stale-doc-claim` — When a diff changes what a surface DOES, grep the shipped prose that describes it — templates/, base/workflows/, base/practices/, README — and check every command name you write actually resolves. A doc that describes the old behaviour is read by adopters who have no other source.
 - `metric-scope-mismatch` — Before reporting a number, state the claim it must support and check the number can support it: a lifetime count over an append-only file cannot show a per-round trend, and a figure the command does not emit cannot be filled from one that sounds similar.
+- `evidence-discarded` — When a field is mandatory because a reader needs it, find every place that reader is served and check each one renders it. Run-state files are swept, so a report is often the only surviving copy — and a fix applied to the success path leaves the failure path, where the evidence matters most.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -58,4 +59,9 @@ One line per resolved review thread, newest last.
 - `third-party-default` `base/workflows/resolve-pr-threads.md:592` `e99acc6` `PRRT_kwDOTfywrM6b3iVA` PR #429 2026-08-24 — git rev-parse --short follows core.abbrev, whose minimum is below the grammar we require
 - `rerun-not-idempotent` `base/workflows/resolve-pr-threads.md:642` `e99acc6` `PRRT_kwDOTfywrM6b3iVF` PR #429 2026-08-24 — an unconditional commit aborted the documented crash-recovery rerun when nothing had changed
 - `evidence-discarded` `scripts/lib/docs-lib.sh:425` `e99acc6` `PRRT_kwDOTfywrM6b3iVH` PR #429 2026-08-24 — a field made mandatory for the reader was collected and never rendered to them
+- `partial-validation` `scripts/lib/docs-lib.sh:220` `26c9f5a` `PRRT_kwDOTfywrM6b37La` PR #429 2026-08-24 — a present-but-empty declaration answered with the code an ABSENT one gets
+- `evidence-discarded` `scripts/lib/docs-lib.sh:446` `26c9f5a` `PRRT_kwDOTfywrM6b37Ld` PR #429 2026-08-24 — fixed the clean arm last round and left the degraded arm dropping the same evidence
+- `false-guarantee` `scripts/lib/pattern-ledger.sh:459` `26c9f5a` `PRRT_kwDOTfywrM6b37Lf` PR #429 2026-08-24 — a header asserted serialization from a mechanism the actual writer never invokes
+- `partial-validation` `scripts/lib/pattern-ledger.sh:601` `26c9f5a` `PRRT_kwDOTfywrM6b37Lj` PR #429 2026-08-24 — an early return exited before the validation every other path performs
+- `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:751` `26c9f5a` `PRRT_kwDOTfywrM6b37Lk` PR #429 2026-08-24 — absent and zero were reported identically though the workflow calls them different facts
 <!-- adb:hits:end -->
