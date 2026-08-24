@@ -562,7 +562,7 @@ adb_dispatch_bots_comparable() {
 # (#416). The BOUND lives beside the reviewer declaration it modifies, because it is a fact about
 # how this repo's reviewer is driven and about nothing else.
 #
-#   0 + <n>  declared and usable — a bare positive integer
+#   0 + <n>  declared and usable — a bare positive integer, or the uncapped sentinel `0` (#420)
 #   3        not declared anywhere — the CALLER applies its own built-in default. Note this file
 #            deliberately does NOT supply one: the caller has to be able to tell a repo policy from
 #            a built-in, because its own diagnostic must name which produced the effective cap.
@@ -577,9 +577,23 @@ adb_dispatch_bots_comparable() {
 # it globally would arm it in repositories the operator never considered. A retry bound authorizes
 # nothing — the worst a wrong one does is stop or continue a loop the operator is watching.
 #
+# ZERO MEANS UNCAPPED, AND IT IS THE ONLY SENTINEL (#420). It follows the `[gates] "" disables`
+# precedent — a zero-value sentinel disabling a mechanism, spelled in the config surface's own
+# vocabulary — because a project must be able to declare "run until clean, no round ceiling"
+# explicitly rather than by picking a number and hoping it is big enough. What it disables is the
+# caller's round CEILING and nothing else; this reader neither knows nor cares what the caller does
+# with it.
+#
+# IT IS MATCHED AS THE EXACT STRING `0`, BEFORE the leading-zero rule below and before any
+# arithmetic, and both halves of that are load-bearing. Before the leading-zero rule, because `0*`
+# claims `0` too and would report the wrong error for the one spelling that is now legal. Before
+# arithmetic, because `[ "$raw" -eq 0 ]` is TRUE for `00` and for `0000` — so a numeric test would
+# quietly promote spellings TOML does not have into the sentinel, which is the opposite of "0 is the
+# only sentinel".
+#
 # THE ACCEPTED FORM IS NARROWER THAN "A TOML INTEGER", AND THAT IS STATED RATHER THAN IMPLIED.
-# This reader accepts exactly a plain decimal positive integer: no quotes, no sign, no underscore
-# separators, no leading zero. TOML 1.0 would also allow `+6` and `1_000`, and those are REFUSED
+# This reader accepts exactly a plain decimal positive integer, or `0`: no quotes, no sign, no
+# underscore separators, no leading zero. TOML 1.0 would also allow `+6` and `1_000`, and those are REFUSED
 # here — a retry bound is a small number and a spelling that needs a thousands separator is far more
 # likely a typo than an intent. What matters is that the boundary is written down, because the
 # earlier version of this comment claimed to validate "a TOML integer" and did not: it accepted
@@ -604,14 +618,21 @@ adb_dispatch_max_rounds() {
   fi
   case "$raw" in
     ''|*[!0-9]*)
-      printf 'role-dispatch: [reviewers].max_rounds must be a plain decimal positive integer — no quotes, sign, underscores or leading zero (got %s)\n' \
+      printf 'role-dispatch: [reviewers].max_rounds must be a plain decimal positive integer, or 0 for uncapped — no quotes, sign, underscores or leading zero (got %s)\n' \
         "$(adb_display_value "$raw")" >&2
       return 2 ;;
   esac
+  # ONE CASE, TWO ARMS, IN THIS ORDER. `0` is the uncapped sentinel and `0*` is the leading-zero
+  # refusal, and `0*` matches `0` — so splitting these into two statements, or writing them the
+  # other way round, hands `0` the "must not carry a leading zero" error and the sentinel is
+  # unreachable.
+  #
   # A LEADING ZERO IS NOT A TOML INTEGER AT ALL, so `06` must not reach the arithmetic below — where
   # it would be read as 6 by one shell and, in another context, as octal. Refuse the spelling rather
-  # than guess which was meant.
+  # than guess which was meant. `00` is that rule and not the sentinel: TOML has no such integer, so
+  # accepting it would invent a second spelling for uncapped.
   case "$raw" in
+    0)  ;;
     0*) printf 'role-dispatch: [reviewers].max_rounds must not carry a leading zero — TOML has no such integer (got %s)\n' \
           "$(adb_display_value "$raw")" >&2
         return 2 ;;
@@ -624,12 +645,11 @@ adb_dispatch_max_rounds() {
     printf 'role-dispatch: [reviewers].max_rounds is too large (got %s)\n' "$(adb_display_value "$raw")" >&2
     return 2
   fi
-  # Zero is not a bound, it is a loop that can never run a round — and it would read as "capped"
-  # before the first ask, which is indistinguishable from a reviewer that refused.
-  if [ "$raw" -le 0 ]; then
-    printf 'role-dispatch: [reviewers].max_rounds must be greater than zero (got %s)\n' "$(adb_display_value "$raw")" >&2
-    return 2
-  fi
+  # NO "GREATER THAN ZERO" ARM, AND ITS ABSENCE IS DELIBERATE RATHER THAN AN OVERSIGHT (#420). One
+  # stood here while zero was refused. Every value that could reach it is now digits-only, at most 18
+  # of them, and — by the case above — either the exact string `0` or a spelling that does not start
+  # with one, so the smallest survivor is 1 and the test could never answer. A check that cannot fire
+  # reports safety it never verified, which is worse than no check.
   if [ "$with_source" -eq 1 ]; then
     printf '%s %s\n' "$raw" "$layer"
   else

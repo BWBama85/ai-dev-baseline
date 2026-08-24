@@ -134,6 +134,7 @@
 #                       [--interval <secs>] [--max-secs <secs>]
 #   pr-watch.sh request-review --pr <number|url> \   # ask for a re-review of the CURRENT head (#169)
 #                       [--max-rounds <n>]              # > `[reviewers] max_rounds` > built-in 6
+#                                                       # <n> = 0 means UNCAPPED (#420)
 #   pr-watch.sh -h | --help
 #
 # PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
@@ -171,6 +172,9 @@
 #                   13: at the cap, a repeat observation of an already-asked head reports `capped`
 #                   rather than `already`. Deliberate — the cap is the stronger instruction, and
 #                   checking `already` first would buy an anchor read on every capped call.
+#                   UNDER THE UNCAPPED SENTINEL THIS CODE IS UNREACHABLE (#420) — a cap of `0` is
+#                   the operator declaring there is no ceiling, so 13 becomes the only repeat
+#                   answer and the ordering above stops mattering. Every other code is untouched.
 #   17 undeclared — the repo declares no `[reviewers] bots`, so it cannot be known whether a
 #                   reviewer is coming. FAIL CLOSED. Declare them, or `bots = []` if there are none.
 #   18 config     — `[reviewers] bots` is present but malformed. Fix agents.toml.
@@ -313,6 +317,11 @@ _ADB_PW_PENDING_SINK=""
 # require_uint <value> <option-name> — a positive integer, or usage. Rejects the empty string, a
 # sign, and any non-digit; a zero interval would spin the poll loop as a busy-wait and a zero bound
 # would make `wait` return before its first read.
+#
+# ZERO IS REJECTED HERE AND MUST STAY REJECTED. `--max-rounds 0` is legal (#420), but it is legal
+# because `_adb_pw_resolve_rounds` answers it BEFORE calling this — never because this validator
+# learned about it. Widening the shared rule to admit the one option with a meaning for zero would
+# hand `--interval` and `--max-secs` the two failures the paragraph above describes.
 #
 # The LENGTH bound is not belt-and-braces: an all-digit value wider than a shell integer overflows
 # the `$(( deadline - BASH_MONOSECONDS ))` arithmetic below, so `--max-secs 99999999999999999999` would pass
@@ -592,6 +601,20 @@ _ADB_PW_MAX_ROUNDS_DEFAULT=6
 _ADB_PW_MAX_ROUNDS=""
 _ADB_PW_MAX_ROUNDS_SRC=""
 
+# _adb_pw_uncapped — is the effective cap the uncapped sentinel `0` (#420)?
+#
+# Globals: reads `_ADB_PW_MAX_ROUNDS`.
+# Returns: 0 when the loop has no round ceiling, 1 otherwise.
+#
+# ONE PREDICATE, because two sites ask — the capped arm and the round report — and they must never
+# disagree about what the effective cap means. A second inline `= "0"` is how one of them keeps
+# saying `of 0` after the other has learned better.
+#
+# A STRING COMPARISON, NOT `-eq`. `[ "$x" -eq 0 ]` is also true for `00`, and the sentinel is the
+# exact spelling `0` and nothing else; the two readers that can set this variable each enforce that
+# before it arrives here, and this keeps the invariant local rather than assumed.
+_adb_pw_uncapped() { [ "$_ADB_PW_MAX_ROUNDS" = "0" ]; }
+
 # _adb_pw_resolve_rounds — settle the effective cap: `--max-rounds` > `[reviewers] max_rounds` >
 # the built-in. Sets `_ADB_PW_MAX_ROUNDS` and `_ADB_PW_MAX_ROUNDS_SRC`; returns 2 on a value this
 # module or the manifest reader refuses.
@@ -606,7 +629,30 @@ _ADB_PW_MAX_ROUNDS_SRC=""
 _adb_pw_resolve_rounds() {
   local cap crc
   if [ -n "$_ADB_PW_MAX_ROUNDS" ]; then
-    require_uint "$_ADB_PW_MAX_ROUNDS" --max-rounds || return 2
+    # THE UNCAPPED SENTINEL IS CHECKED BEFORE `require_uint`, AND `require_uint` IS NOT RELAXED TO
+    # ADMIT IT (#420). That validator is shared with `--interval` and `--max-secs`, where zero is
+    # genuinely invalid — a zero interval busy-waits and a zero bound expires before the first read
+    # — so widening it here would silently legalize both. The exception belongs to the one option
+    # that has a meaning for zero.
+    #
+    # ASKED THROUGH THE PREDICATE, not through a second inline `= "0"` — the flag's raw value IS
+    # `_ADB_PW_MAX_ROUNDS` at this point, and a string compare is safe on an unvalidated one. The
+    # predicate's own header makes the argument: two sites that spell the sentinel separately are
+    # two sites that can disagree about it.
+    #
+    # EXACT `0`, so `--max-rounds 00` still falls through to `require_uint` and is refused there.
+    # One spelling for uncapped, matching the manifest reader's own rule.
+    if ! _adb_pw_uncapped; then
+      # NAME THE DOMAIN THIS OPTION ACCEPTS, not the shared validator's. `require_uint` says "must
+      # be a positive integer", which is the truth for `--interval` and `--max-secs` and is now half
+      # the truth here — and half a domain is how an operator concludes there is no uncapped
+      # spelling. A second line rather than a widened message, so the shared validator keeps saying
+      # exactly what it enforces.
+      require_uint "$_ADB_PW_MAX_ROUNDS" --max-rounds || {
+        echo "pr-watch: --max-rounds takes a positive integer, or 0 for uncapped (no round ceiling)" >&2
+        return 2
+      }
+    fi
     _ADB_PW_MAX_ROUNDS_SRC="--max-rounds"
     return 0
   fi
@@ -650,7 +696,7 @@ _adb_pw_resolve_rounds() {
 #   2  usage       — bad or missing arguments.
 cmd_request_review() {
   local n want wrc qslug snap pfields head state gotslug headslug headref qerr
-  local phrases="" who trig posted=0 anchor arc rounds fresh recheck rfields nowhead nowstate
+  local phrases="" who trig posted=0 anchor arc rounds fresh recheck rfields nowhead nowstate capnote
 
   [ -n "$OPT_PR" ] || { echo "pr-watch: request-review requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
@@ -741,7 +787,11 @@ EOF
   # came from and what to do next, so all four facts are stated: what was OBSERVED, what the
   # effective bound is, WHICH of the three sources set it — an operator cannot otherwise tell a repo
   # policy from a built-in, and so cannot tell which file to edit — and the two ways through.
-  if [ "$rounds" -ge "$_ADB_PW_MAX_ROUNDS" ]; then
+  # THE SENTINEL IS TESTED FIRST, and it has to be: `rounds -ge 0` is true for every count there
+  # is, so a cap of `0` reaching this comparison would report `capped` before the first ask — the
+  # exact inversion of what the operator asked for, and indistinguishable from a reviewer that
+  # refused. Under the sentinel the whole arm is skipped and exit 15 becomes unreachable (#420).
+  if ! _adb_pw_uncapped && [ "$rounds" -ge "$_ADB_PW_MAX_ROUNDS" ]; then
     printf 'capped %s\n' "$head"
     echo "pr-watch: PR #$n — $rounds re-review request(s) observed on this pull request; cap $_ADB_PW_MAX_ROUNDS (from $_ADB_PW_MAX_ROUNDS_SRC). Not asking again." >&2
     echo "pr-watch: MANUALLY POSTED TRIGGER COMMENTS SPEND THE SAME BUDGET — this mechanism and a human post as the same login, so they are indistinguishable by design." >&2
@@ -810,7 +860,20 @@ EOF
     [ -n "$trig" ] || continue
     gh api "repos/$qslug/issues/$n/comments" -f body="$trig" >/dev/null 2>&1 \
       || { echo "pr-watch: PR #$n — could not post the re-review request '$trig'" >&2; return 20; }
-    echo "pr-watch: PR #$n at $head — requested a re-review with '$trig' (round $(( rounds + 1 )) of $_ADB_PW_MAX_ROUNDS)" >&2
+    # SAY "uncapped" RATHER THAN "of 0", and NAME THE SOURCE while doing it. `of 0` is a false
+    # statement about the bound — it reads as a budget already spent — and an operator who has
+    # just removed the loop's only overall ceiling is the one who most needs to see that it is
+    # gone, and which file said so. Same argument as the exit-15 handoff, which names its source
+    # for the same reason.
+    #
+    # ONLY THE CAP NOTE VARIES, so only it is written twice: duplicating the whole line is how the
+    # capped and uncapped reports drift into describing the same event differently.
+    if _adb_pw_uncapped; then
+      capnote="; UNCAPPED, from $_ADB_PW_MAX_ROUNDS_SRC — this loop has no round ceiling"
+    else
+      capnote=" of $_ADB_PW_MAX_ROUNDS"
+    fi
+    echo "pr-watch: PR #$n at $head — requested a re-review with '$trig' (round $(( rounds + 1 ))$capnote)" >&2
     posted=1
   done <<EOF
 $phrases
@@ -1063,7 +1126,11 @@ parse_opts() {
         OPT_MAX_SECS="$2"; shift ;;
       --max-rounds)
         [ "$#" -ge 2 ] || { echo "pr-watch: --max-rounds needs a value" >&2; exit 2; }
-        [ -n "$2" ] || { echo "pr-watch: --max-rounds must not be empty" >&2; exit 2; }
+        # EMPTY IS STILL REFUSED, and that is not redundant with the validation in
+        # `_adb_pw_resolve_rounds`: an empty value would leave `_ADB_PW_MAX_ROUNDS` empty, which is
+        # this module's encoding for "no flag was given" — so `--max-rounds ""` would silently fall
+        # through to the manifest instead of erroring. `0` is not empty and is unaffected.
+        [ -n "$2" ] || { echo "pr-watch: --max-rounds must not be empty; it takes a positive integer, or 0 for uncapped (no round ceiling)" >&2; exit 2; }
         _ADB_PW_MAX_ROUNDS="$2"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "pr-watch: unknown option '$1'" >&2; usage >&2; exit 2 ;;
