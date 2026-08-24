@@ -164,7 +164,7 @@ _adb_dl_append() {
 # VALIDATED THROUGH THE WRITER'S OWN PREDICATES, so the grammar keeps one home and a reader cannot
 # drift from what `probe-record` and `consulted` will actually produce.
 _adb_dl_records() {
-  local f="$1" kind a b c n
+  local f="$1" kind a b c
   [ -f "$f" ] || return 0
   while IFS="$TAB" read -r kind a b c; do
     [ -n "$kind" ] || continue
@@ -186,10 +186,15 @@ _adb_dl_records() {
       *) return 1 ;;
     esac
   done < "$f"
-  n="$(wc -l < "$f" | tr -d ' ')"
-  # A FINAL LINE WITHOUT A NEWLINE is a truncated write, and `read` drops it silently — so the
-  # readers would adjudicate over a file whose last record they never saw.
-  [ "$(wc -c < "$f" | tr -d ' ')" -eq 0 ] || [ "$n" -gt 0 ] || return 1
+  # THE FINAL BYTE MUST BE A NEWLINE, and testing "does the file contain any newline" was not that.
+  # `read` silently DROPS an unterminated last line, so the loop above never validates it — while
+  # `cmd_verdict`'s awk reads it perfectly well. A file holding one complete record plus an
+  # unterminated `probe<TAB>server<TAB>usable` therefore passed validation, and that ghost record
+  # then OVERRODE an earlier degraded result to return a clean verdict with no evidence: the exact
+  # fail-open this module exists to prevent, reachable by appending one line without a newline.
+  # Reported by the declared reviewer on PR #429.
+  [ -s "$f" ] || return 0
+  [ "$(tail -c 1 "$f" | wc -l | tr -d ' ')" -eq 1 ] || return 1
   return 0
 }
 
@@ -218,6 +223,30 @@ _adb_dl_mcp_key() {
     *) printf 'docs-lib: [mcp] %s in the %s manifest is not an array (got %s)\n' \
          "$key" "$layer" "$(adb_display_value "$raw")" >&2; return 18 ;;
   esac
+  # EVERY ELEMENT MUST BE A QUOTED TOML STRING. `adb_toml_array` is deliberately permissive — it
+  # strips one quote layer when present and passes a bare token through otherwise — so
+  # `required = [context7]` parsed to a usable name and returned SUCCESS, where the documented
+  # answer for a malformed declaration is 18. TOML has no bare-word array element, so accepting one
+  # means this reader and the spec disagree about what the operator actually wrote, and a probe
+  # could then earn a clean verdict against a manifest no TOML parser would load.
+  # Reported by the declared reviewer on PR #429.
+  if ! printf '%s' "$raw" | awk '
+        {
+          s = $0
+          sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*$/, "", s)
+          n = split(s, parts, ",")
+          for (i = 1; i <= n; i++) {
+            e = parts[i]
+            gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)
+            if (e == "") continue                       # empty array, or a trailing comma
+            if (e !~ /^".*"$/) { bad = 1; exit }
+          }
+        }
+        END { exit (bad ? 1 : 0) }'; then
+    printf 'docs-lib: [mcp] %s in the %s manifest is not a quoted-string array (got %s). TOML has no bare-word array element.\n' \
+      "$key" "$layer" "$(adb_display_value "$raw")" >&2
+    return 18
+  fi
   # EVERY ELEMENT IS VALIDATED, against the same charset `probe-record` enforces. A declared name
   # the recorder can never accept — `"bad name"`, say — is not a harmless typo: nothing could ever
   # record a result for it, so `verdict` would report the run DEGRADED forever, blaming a server

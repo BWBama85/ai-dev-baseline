@@ -564,7 +564,7 @@ you just read the finding and wrote the fix. Nothing recovers that later.
 **Record one hit per thread you fixed**, before you resolve the thread in step 5:
 
 ```bash
-bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> --site <path[:line]> --fix "$LAST_SHA" \
+bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> --site <path[:line]> --fix "$FIX_SHA" \
   --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>'
 ```
 
@@ -573,9 +573,22 @@ bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> --site 
   neither ever reaches a threshold. Read the promoted checklist and the existing classes
   (`bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" classes`) before inventing a new slug — reusing an existing one is
   almost always right, and is what makes the mechanism work at all.
-- **`--fix` is the commit that carried the CORRECTION**, which is why this step sits after step 4's
-  push and before step 5. The ledger entry itself is committed separately, in 4c: a commit cannot
-  name its own hash, so the fix lands first and the ledger records it second.
+- **`--fix` is the commit that carried THAT thread's correction — not the round's head.** Step 4
+  explicitly permits several commits in one round, so `$LAST_SHA` (captured once, after the push)
+  names the *last* of them. Recording every thread against it breaks the audit link the ledger
+  exists for: `git show <fix>` would not contain the correction the entry points at. Capture each
+  commit's own sha as you make it, and record each thread against the one that fixed it:
+
+  ```bash
+  git commit -m "address bot review on PR #$PR_NUM: <summary>"
+  FIX_SHA="$(git rev-parse --short HEAD)"   # THIS thread's fix, not the round's head
+  ```
+
+  A commit that genuinely bundles several threads shares its sha across them — accurate, because
+  one commit really did fix them all. The defect is the reverse: one sha across threads that were
+  fixed in *different* commits. Reported by the declared reviewer on PR #429.
+- The ledger entry itself is committed separately, in 4c: a commit cannot name its own hash, so the
+  fixes land first and the ledger records them second.
 - **Record BEFORE you resolve.** The two are not atomic, and the orders fail differently: recording
   first can duplicate after a crash, which `record` absorbs (it is keyed on the thread id and
   returns 10 for a repeat), while resolving first can lose the only copy of the signal. Prefer the
@@ -693,7 +706,7 @@ Emit a concise summary to the user:
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
 >
-> Findings this round: <count> · recurring-class hits: <n> · new classes: <n> · promoted: <n>
+> Findings this round: <count> · recurring-class hits this PR: <pr-recurring> · new classes: <n> · promoted: <n>
 > Ledger: <hits> hits across <classes> classes, <promoted> promoted (threshold <t>).
 
 **The last two lines are the point of the whole mechanism, not decoration (#421).** Its honest
@@ -710,7 +723,13 @@ case "$SRC" in
 esac
 ```
 
-**`recurring` counts HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes.**
+**Report `pr-recurring`, not `recurring`, as the round figure.** `recurring` is a LIFETIME count
+over an append-only file, so it can only ever rise — and it jumps by every prior hit the moment a
+class crosses the threshold. A summary quoting it would print a number that grows whatever the
+round did, which is the opposite of a trend. `pr-recurring` is the same quantity filtered to this
+pull request; lifetime counts still decide *which* classes are recurring.
+
+**Both count HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes.**
 That is the quantity that should fall as the checklist starts working: classes accumulate forever,
 while a repeat hit in a class this project already promoted a rule for is exactly the avoidable
 one. A round where `recurring` is a large share of the findings is the loop telling you the

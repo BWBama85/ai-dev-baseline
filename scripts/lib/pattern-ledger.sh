@@ -330,7 +330,12 @@ _adb_pl_hits() {
     _adb_pl_ok_span   "$s"  || return 1
     _adb_pl_ok_fix    "$f"  || return 1
     _adb_pl_ok_thread "$th" || return 1
-    [ -z "$pr" ] || _adb_pl_ok_pr "$pr" || return 1
+    # THE PR IS REQUIRED, not optional-if-present. The raw parser emits an empty field when a
+    # hand-edited record has lost its `PR #<n>` segment, and permitting that let the hit count
+    # toward promotion while `stats --pr` omitted it — a per-PR figure lower than the records
+    # actually attributable to that run, from a record the writer could never have produced.
+    # Missing and invalid are now the same answer. Reported by the declared reviewer on PR #429.
+    _adb_pl_ok_pr "$pr" || return 1
     # THE DUPLICATE IS A DEFECT, not a duplicate hit: `record` refuses one, so a pair here means a
     # hand edit or a merge that took both sides of the same record — and the count is now higher
     # than the number of findings that actually happened, in the direction that promotes.
@@ -349,7 +354,19 @@ _adb_pl_promoted_raw() {
   printf '%s\n' "$region" | awk -F'`' '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == "" { next }
-    { if (NF < 3 || $2 == "") { bad = 1; exit } print $2 }
+    # NF >= 3 AND A NON-EMPTY RULE BODY. A damaged line like ``- `collection-identity` `` splits
+    # into three backtick fields with an empty third, so a count-only test accepted it — and
+    # `checklist` then injected a class name carrying NO instruction into the gap-analysis and
+    # self-review prompts, silently dropping the sweep that class had earned. The separator is
+    # display; the TEXT after it is the contract. Reported by the declared reviewer on PR #429.
+    {
+      if (NF < 3 || $2 == "") { bad = 1; exit }
+      rest = $0
+      sub(/^[^`]*`[^`]*`/, "", rest)
+      gsub(/^[[:space:]]*(—|--)?[[:space:]]*/, "", rest)
+      if (rest == "") { bad = 1; exit }
+      print $2
+    }
     END { if (bad) exit 1 }
   '
 }
@@ -613,12 +630,12 @@ cmd_checklist() {
 # That is the quantity that should fall as the checklist starts working: classes accumulate
 # forever, while repeat hits in a known class are exactly the avoidable ones.
 cmd_stats() {
-  local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0
+  local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0 prrecur=0
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   if [ ! -f "$ledger" ]; then
     printf 'hits\t0\nclasses\t0\nrecurring\t0\npromoted\t0\nthreshold\t%s\nthreshold-source\t%s\n' "$t" "$tsrc"
-    [ -n "$OPT_PR" ] && printf 'pr-hits\t0\n'
+    [ -n "$OPT_PR" ] && printf 'pr-hits\t0\npr-recurring\t0\n'
     exit 0
   fi
   hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
@@ -639,11 +656,21 @@ cmd_stats() {
       END { n = 0; for (i in rows) if (c[rows[i]] >= t) n++; print n }')"
     if [ -n "$OPT_PR" ]; then
       thispr="$(printf '%s\n' "$hits" | awk -F'\t' -v p="$OPT_PR" '$5 == p { n++ } END { print n + 0 }')"
+      # RECURRING HITS *IN THIS PR*, decided by LIFETIME class counts. The unscoped `recurring`
+      # below is a lifetime figure over an append-only file, so it can only ever rise — and it
+      # jumps by every prior hit at the moment a class crosses the threshold. It therefore cannot
+      # carry the per-round trend the resolve summary is judged by, which is the one number #421
+      # says makes the mechanism falsifiable. Lifetime counts still decide WHICH classes are
+      # recurring; only the reported count is filtered.
+      # Reported by the declared reviewer on PR #429.
+      prrecur="$(printf '%s\n' "$hits" | awk -F'\t' -v t="$t" -v p="$OPT_PR" '
+        NF && $1 != "" { c[$1]++; cls[NR] = $1; prs[NR] = $5 }
+        END { n = 0; for (i in cls) if (c[cls[i]] >= t && prs[i] == p) n++; print n + 0 }')"
     fi
   fi
   printf 'hits\t%s\nclasses\t%s\nrecurring\t%s\npromoted\t%s\nthreshold\t%s\nthreshold-source\t%s\n' \
     "$total" "$classes" "$recurring" "$promoted" "$t" "$tsrc"
-  [ -n "$OPT_PR" ] && printf 'pr-hits\t%s\n' "$thispr"
+  [ -n "$OPT_PR" ] && printf 'pr-hits\t%s\npr-recurring\t%s\n' "$thispr" "$prrecur"
   return 0
 }
 
@@ -668,6 +695,10 @@ cmd_verify() {
       _adb_pl_ok_span   "$s"  || { printf 'pattern-ledger: record %s has an invalid site "%s"\n' "$nh" "$s" >&2; bad=1; }
       _adb_pl_ok_fix    "$f"  || { printf 'pattern-ledger: record %s has an invalid fix "%s"\n' "$nh" "$f" >&2; bad=1; }
       _adb_pl_ok_thread "$th" || { printf 'pattern-ledger: record %s has an invalid thread "%s"\n' "$nh" "$th" >&2; bad=1; }
+      # THE PR TOO, or `verify` and the readers disagree about the same file — which is the exact
+      # split that made the original defect invisible: one command said 18 while another counted
+      # the record and promoted on it.
+      _adb_pl_ok_pr "$_pr" || { printf 'pattern-ledger: record %s has a missing or invalid PR number ("%s")\n' "$nh" "$_pr" >&2; bad=1; }
     done < <(printf '%s\n' "$hits")
   fi
   if [ -n "$promoted" ]; then

@@ -171,6 +171,20 @@ if [ "$MODE" = mutation ]; then
     '    :' \
     'a duplicated thread id is refused by `due`, not only by verify'
 
+  # THE PR REQUIREMENT (PR #429). Reverting it to the optional-if-present form is the exact
+  # regression, so the row spells that form rather than deleting the check.
+  check_mut pr-optional-again \
+    '    _adb_pl_ok_pr "$pr" || return 1' \
+    '    [ -z "$pr" ] || _adb_pl_ok_pr "$pr" || return 1' \
+    'a hit with no PR segment is refused by `classes`'
+
+  # THE CHECKLIST RULE BODY (PR #429). Without it a class name with no instruction reaches the
+  # prompt surface, which is where an empty rule is invisible.
+  check_mut checklist-body-unchecked \
+    '      if (rest == "") { bad = 1; exit }' \
+    '      if (0) { bad = 1; exit }' \
+    'a checklist rule with no instruction text is refused by `checklist`'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -249,6 +263,17 @@ sed 's/PR #100/PR #0/' "$L2" > "$work/l2-badpr.md"
 bash "$PL" classes --ledger "$work/l2-badpr.md" >/dev/null 2>&1
 eq "$?" 18 "a hand-edited PR number outside the domain is refused by the readers"
 
+# A MISSING PR SEGMENT IS THE SAME ANSWER AS AN INVALID ONE (PR #429). The raw parser emits an
+# empty field for it, and permitting that let the hit count toward promotion while `stats --pr`
+# omitted it — a per-PR figure lower than the records actually attributable to that run, from a
+# record `record` could never have produced. `verify` is asserted alongside the readers because a
+# validator that disagrees with them is how the original defect stayed invisible.
+sed 's/ PR #100 / /' "$L2" > "$work/l2-nopr.md"
+for sub in classes due stats checklist verify; do
+  bash "$PL" "$sub" --ledger "$work/l2-nopr.md" >/dev/null 2>&1
+  eq "$?" 18 "a hit with no PR segment is refused by \`$sub\`"
+done
+
 # `verify` still NAMES the offending record, which is why it reads through the raw parser: a
 # validator that only said "does not parse" would leave the operator hunting the line by hand.
 V2="$(bash "$PL" verify --ledger "$work/l2-dup.md" 2>&1)"
@@ -297,6 +322,26 @@ eq "$?" 18 "a malformed hit record is refused"
 bash "$PL" record --ledger "$work/l3-cut.md" --class x-class --site a.sh --fix abc1234 \
   --pr 1 --thread T-new >/dev/null 2>&1
 eq "$?" 18 "record refuses to append to a ledger that does not parse"
+
+# A CHECKLIST RULE MUST CARRY INSTRUCTION TEXT (PR #429). ``- `class` `` splits into three
+# backtick fields with an empty third, so a count-only test accepted it — and `checklist` then fed
+# a class name with NO instruction into the gap-analysis and self-review prompts, silently dropping
+# the sweep that class had earned. The prompt surface is exactly where an empty rule is invisible.
+seed "$L3" ruleless 2 >/dev/null 2>&1
+bash "$PL" promote --ledger "$L3" --class ruleless --rule 'sweep the siblings too' >/dev/null 2>&1
+# ANCHORED ON THE SEPARATOR, so it strikes ONLY the checklist rule. `^- \`ruleless\` .*` also
+# matches this class's HIT lines, which begin identically — the first draft did that, destroyed the
+# hits region, and the assertions below then passed for the wrong reason: 18 came from the hits
+# region being unreadable, so the mutation that disables the rule-body check stayed GREEN. A hit's
+# second field is a code span; a rule's is the separator, and that is what tells them apart.
+sed 's/^- `ruleless` —.*/- `ruleless`/' "$L3" > "$work/l3-norule.md"
+for sub in checklist verify classes; do
+  bash "$PL" "$sub" --ledger "$work/l3-norule.md" >/dev/null 2>&1
+  eq "$?" 18 "a checklist rule with no instruction text is refused by \`$sub\`"
+done
+# …and a well-formed rule is still emitted, so the check is not simply refusing everything.
+CKOK="$(bash "$PL" checklist --ledger "$L3" 2>/dev/null)"
+has "$CKOK" "sweep the siblings too" "a well-formed rule still reaches the prompt surface"
 
 # =============================== 4. the prompt surface carries no free text ======================
 # `checklist` is the ONLY output that reaches another agent's prompt. A hit's summary is a
@@ -403,6 +448,30 @@ eq "$(printf '%s' "$S" | awk -F'\t' '$1=="recurring"{print $2}')" 3 \
    "recurring counts HITS in at-threshold classes (3), not the number of such classes (1)"
 eq "$(printf '%s' "$S" | awk -F'\t' '$1=="pr-hits"{print $2}')"   3 "stats scopes to one PR when asked"
 
+# `pr-recurring` IS THE ROUND FIGURE; `recurring` IS NOT (PR #429). The ledger is append-only, so
+# the lifetime count can only ever rise — and it jumps by every prior hit the moment a class
+# crosses the threshold. A summary quoting it would print a number that grows whatever the round
+# did, which is the opposite of the trend #421 says makes the mechanism falsifiable. The fixture
+# makes the two differ: 3 recurring hits in PR 200, 1 in PR 202, lifetime 4.
+# RECORDED DIRECTLY, not via `seed`: that helper derives its thread id from <class>-<index>, so
+# `seed recur-class 1 202` re-offers `T-recur-class-1`, which is already present and correctly
+# dedupes to a no-op — adding nothing and leaving the assertion below testing the old fixture.
+bash "$PL" record --ledger "$L8" --class recur-class --site other.sh:1 --fix aaa1111 \
+  --pr 202 --thread T-recur-class-in-202 --date 2026-08-24 >/dev/null 2>&1
+S2="$(bash "$PL" stats --ledger "$L8" --pr 202)"
+eq "$(printf '%s' "$S2" | awk -F'\t' '$1=="recurring"{print $2}')"    4 \
+   "lifetime recurring counts every hit in an at-threshold class"
+eq "$(printf '%s' "$S2" | awk -F'\t' '$1=="pr-recurring"{print $2}')" 1 \
+   "…while pr-recurring counts only this PR's — the figure a round trend can be read from"
+S3="$(bash "$PL" stats --ledger "$L8" --pr 200)"
+eq "$(printf '%s' "$S3" | awk -F'\t' '$1=="pr-recurring"{print $2}')" 3 \
+   "…and it differs per PR, which a lifetime count never could"
+# The solo class sits in PR 201 and is below the threshold, so it appears in neither figure.
+S4="$(bash "$PL" stats --ledger "$L8" --pr 201)"
+eq "$(printf '%s' "$S4" | awk -F'\t' '$1=="pr-hits"{print $2}')"      1 "the solo class's PR has a hit"
+eq "$(printf '%s' "$S4" | awk -F'\t' '$1=="pr-recurring"{print $2}')" 0 \
+   "…but a below-threshold class contributes nothing to pr-recurring"
+
 # An absent ledger is zero, and it says so rather than failing: a project on its first run has not
 # broken anything. A ledger that could not be READ is a different fact and is 18 (asserted above).
 eq "$(bash "$PL" stats --ledger "$work/nope.md" | awk -F'\t' '$1=="hits"{print $2}')" 0 \
@@ -414,7 +483,10 @@ eq "$(bash "$PL" classes --ledger "$work/nope.md" >/dev/null 2>&1; echo $?)" 0 \
 # A validator that scanned zero records prints what one that scanned forty prints. The count is
 # what tells them apart (base/practices/self-review.md).
 V="$(bash "$PL" verify --ledger "$L8" 2>&1)"
-has "$V" "4 hit(s)" "verify says how many records it actually checked"
+# FIVE, because the pr-recurring fixture above added a fourth hit of `recur-class` in PR 202.
+# The number is the point of the assertion — a validator that scanned zero prints what one that
+# scanned forty prints — so it tracks the fixture rather than being loosened to a wildcard.
+has "$V" "5 hit(s)" "verify says how many records it actually checked"
 has "$V" "checklist rule(s) checked" "…and how many rules"
 
 # =============================== 10. the call sites are wired ===================================
@@ -430,6 +502,26 @@ has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} record'    "the resolver records a h
 has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} due'       "…and asks what has become a pattern"
 has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} promote'   "…and promotes it through a tracked file"
 has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} stats'     "…and reports the trend the mechanism is judged by"
+
+# THE PER-THREAD FIX SHA (PR #429). Step 4 permits several commits in one round, so `$LAST_SHA` —
+# captured once, after the push — names the LAST of them. Recording every thread against it breaks
+# the audit link the ledger exists for: `git show <fix>` would not contain the correction the entry
+# points at.
+RESTXT="$(cat "$RES")"
+has   "$RESTXT" '--fix "$FIX_SHA"' "the resolver records each thread against ITS OWN fix commit"
+hasnt "$RESTXT" '--fix "$LAST_SHA"' "…never against the round's head sha"
+has   "$RESTXT" 'FIX_SHA="$(git rev-parse --short HEAD)"' "…and says how to capture it, per commit"
+
+# THE ROUND FIGURE IS THE PR-SCOPED ONE. `recurring` is a lifetime count over an append-only file,
+# so a summary quoting it prints a number that grows whatever the round did.
+has "$RESTXT" 'pr-recurring' "the summary reports pr-recurring, the figure a trend can be read from"
+
+# THE RECOVERY HINT MUST NAME A COMMAND THAT EXISTS. The first draft pointed at
+# `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown
+# command at exactly the moment they need a working diagnostic.
+IMPTXT2="$(cat "$IMP")"
+has   "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} verify' "the malformed-ledger path invokes the real verifier"
+hasnt "$IMPTXT2" 'baseline patterns verify'      "…and not a CLI subcommand nothing implements"
 has "$(cat "$IMP")" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side)"
 # BOTH read sites, separately. One `checklist` call would satisfy a single `has`, and the two ends
 # are different claims: the gap dispatch acts before the code exists, the self-review after.

@@ -158,6 +158,20 @@ if [ "$MODE" = mutation ]; then
     '    false && {' \
     'a declared server name outside the recordable charset is refused'
 
+  # THE UNTERMINATED-FINAL-RECORD CHECK (P1, PR #429). The row restores the superseded predicate
+  # — "does the file contain any newline" — rather than deleting the test, because that spelling is
+  # what shipped and is what a careless edit would reach for again.
+  check_mut final-newline-unchecked \
+    '  [ "$(tail -c 1 "$f" | wc -l | tr -d '"'"' '"'"')" -eq 1 ] || return 1' \
+    '  [ "$(wc -l < "$f" | tr -d '"'"' '"'"')" -gt 0 ] || return 1' \
+    'an unterminated final record is refused, not silently skipped then read by awk'
+
+  # THE QUOTED-ARRAY GRAMMAR (PR #429).
+  check_mut unquoted-array-accepted \
+    '            if (e !~ /^".*"$/) { bad = 1; exit }' \
+    '            if (0) { bad = 1; exit }' \
+    'an unquoted array element ([context7]) is refused as malformed TOML'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/docs-lib.sh"
@@ -365,6 +379,22 @@ hostile "a consulted record with a bad rung"    "$(printf 'consulted\tsurface\t9
 hostile "a consulted record missing its source" "$(printf 'consulted\tsurface\t2')"
 hostile "a none-needed record with extra fields" "$(printf 'none-needed\tjust\tstray')"
 
+# THE UNTERMINATED FINAL RECORD (P1, PR #429). `read` DROPS a last line with no newline, so the
+# validator never saw it — while `cmd_verdict`'s awk reads it perfectly well. One complete record
+# plus an unterminated `usable` therefore passed validation and the ghost record then OVERRODE the
+# earlier degraded result, returning clean with no evidence. Written with `printf` and no trailing
+# newline, because that is the only way to build the shape.
+printf 'probe\tcontext7\tdegraded\tauth failure inside HTTP 200\n' > "$D10/state/docs-consulted.tsv"
+printf 'probe\tcontext7\tusable' >> "$D10/state/docs-consulted.tsv"
+dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "an unterminated final record is refused, not silently skipped then read by awk"
+dl report --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…by the report too"
+# A single unterminated record, with nothing before it, is the same defect without the override.
+printf 'probe\tcontext7\tusable\tev' > "$D10/state/docs-consulted.tsv"
+dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and so is a lone unterminated record"
+
 # A well-formed file still passes, so the validator is not simply refusing everything — the failure
 # mode a whole-file check most easily degrades into.
 printf 'probe\tcontext7\tusable\tresolve-library-id returned 5\nnone-needed\ttrivial\n' \
@@ -385,6 +415,29 @@ OUT="$(dl mcp-required --manifest "$D11/agents.toml" 2>&1 >/dev/null)"
 has "$OUT" "DEGRADED" "…and the diagnostic says what would otherwise happen forever"
 dl verdict --state "$D11/state" --manifest "$D11/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "…and the verdict refuses rather than degrading on a name nothing could match"
+
+# QUOTED-STRING ARRAYS ONLY (PR #429). `adb_toml_array` is permissive — it strips one quote layer
+# when present and passes a bare token through otherwise — so `required = [context7]` parsed to a
+# usable name and returned SUCCESS where the documented answer for a malformed declaration is 18.
+# TOML has no bare-word array element, so accepting one means this reader and the spec disagree
+# about what the operator wrote, and a probe could earn a clean verdict against a manifest no TOML
+# parser would load.
+for bad in '[context7]' '["a", b]' '[ctx, "b"]'; do
+  D13="$(fixture "unquoted$(printf '%s' "$bad" | tr -dc 'a-z')" "[mcp]
+required = $bad
+")"
+  dl mcp-required --manifest "$D13/agents.toml" >/dev/null 2>&1
+  eq "$?" 18 "an unquoted array element ($bad) is refused as malformed TOML"
+done
+for good in '["context7"]' '[]' '["a", "b"]'; do
+  D14="$(fixture "quoted$(printf '%s' "$good" | tr -dc 'ab')" "[mcp]
+required = $good
+")"
+  dl mcp-required --manifest "$D14/agents.toml" >/dev/null 2>&1
+  RCG=$?
+  [ "$RCG" -eq 0 ] || [ "$RCG" -eq 1 ] || bad "a well-formed array ($good) must not be refused (rc $RCG)"
+  [ "$RCG" -eq 0 ] || [ "$RCG" -eq 1 ] && ok
+done
 
 # An EMPTY repo-level declaration must not fall through to the global manifest — the operator wrote
 # something, and inheriting the machine's list instead is a value they did not choose.
@@ -468,6 +521,16 @@ PRAC="$(cat base/practices/third-party-claims.md)"
 has "$PRAC" 'first time in this project' "the practice carries the proportional trigger list"
 has "$PRAC" 'language-core idiom'        "…and the skip list that keeps it performable"
 has "$PRAC" 'Docs consulted'             "…and names the report contract that makes it auditable"
+
+# THE SHIPPED TEMPLATE MUST DESCRIBE THE BEHAVIOUR THAT NOW EXISTS (PR #429). `install.sh` writes
+# `templates/agents.toml` for new adopters, and it still said nothing health-checks a declared
+# server and that the key is a human-readable declaration only — so a new project would reasonably
+# conclude `[mcp] required` is inert, which is the opposite of true since #422 gave it a consumer.
+TPL="$(cat templates/agents.toml)"
+has   "$TPL" 'DRIVES A REAL PREFLIGHT' "the shipped template says the key now drives a preflight"
+has   "$TPL" 'FAIL-CLOSED'             "…and that the adjudication is fail-closed"
+has   "$TPL" 'DEGRADED'                "…and what a failing server does to the run"
+hasnt "$TPL" 'DECLARATION ONLY'        "…and no longer describes the key as inert"
 
 # The state file owes /cleanup a classification and `admit` a clear — a name one can sweep and the
 # other cannot is a stale file a fresh run's marker makes read as live.

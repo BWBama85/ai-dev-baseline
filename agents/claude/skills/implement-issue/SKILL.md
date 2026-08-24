@@ -530,7 +530,8 @@ CHECKLIST="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" checklist)"; CRC
 case "$CRC" in
   0)  : ;;   # a checklist, or none yet — both fine
   18) echo "NOTE: .ai-dev-baseline/patterns.md does not parse; gap analysis will run WITHOUT this
-             project's learned classes. Fix it with: baseline patterns verify" ;;
+             project's learned classes. It names the offending record:"
+      bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" verify ;;
   *)  echo "NOTE: could not read the pattern ledger (rc $CRC); proceeding without it" ;;
 esac
 if [ -n "$CHECKLIST" ]; then
