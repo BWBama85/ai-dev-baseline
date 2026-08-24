@@ -54,4 +54,8 @@ One line per resolved review thread, newest last.
 - `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:559` `9e91aaf` `PRRT_kwDOTfywrM6b21ah` PR #429 2026-08-24 — an already-addressed legitimate finding was resolved without a ledger hit, understating recurrence
 - `durable-reference` `base/workflows/resolve-pr-threads.md:580` `9e91aaf` `PRRT_kwDOTfywrM6b21a5` PR #429 2026-08-24 — a sha recorded as an audit link stops resolving once the branch is squash-merged and deleted
 - `awk-v-escaping` `scripts/lib/pattern-ledger.sh:441` `9e91aaf` `selffound-classes-awk-v` PR #429 2026-08-24 — multi-line list passed via awk -v, which cannot carry a newline; ENVIRON is the documented fix in this same file
+- `partial-validation` `scripts/lib/docs-lib.sh:266` `e99acc6` `PRRT_kwDOTfywrM6b3iU7` PR #429 2026-08-24 — an empty quoted array element passed the grammar, then vanished in the parser
+- `third-party-default` `base/workflows/resolve-pr-threads.md:592` `e99acc6` `PRRT_kwDOTfywrM6b3iVA` PR #429 2026-08-24 — git rev-parse --short follows core.abbrev, whose minimum is below the grammar we require
+- `rerun-not-idempotent` `base/workflows/resolve-pr-threads.md:642` `e99acc6` `PRRT_kwDOTfywrM6b3iVF` PR #429 2026-08-24 — an unconditional commit aborted the documented crash-recovery rerun when nothing had changed
+- `evidence-discarded` `scripts/lib/docs-lib.sh:425` `e99acc6` `PRRT_kwDOTfywrM6b3iVH` PR #429 2026-08-24 — a field made mandatory for the reader was collected and never rendered to them
 <!-- adb:hits:end -->
