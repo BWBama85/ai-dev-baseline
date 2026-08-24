@@ -427,6 +427,26 @@ has "$(section "$IMP" '### 5b.')" '{{DOCS_LIB}} consulted' \
    "…and step 5b is where the records are written, ahead of both"
 has "$IMPTXT" 'Docs consulted' "the PR body carries the named block"
 
+# THE EXIT-CODE ARMS, not just the command. Searching for `{{DOCS_LIB}} report` passes on a step
+# that calls it and ignores every code it can return — which is the difference between a contract
+# and a mention. The 11 arm is the one that matters: it is the whole mechanism #422 rests on, so
+# the step must name what to do about it rather than falling into a bare `*)`.
+REPORTBLOCK="$(section "$IMP" '### 10. Push + open PR')"
+has "$REPORTBLOCK" '11)' "the PR-body step handles code 11 explicitly"
+has "$REPORTBLOCK" 'NOTHING WAS RECORDED' "…and says what code 11 means, not merely that it exists"
+has "$REPORTBLOCK" 'none-needed' "…and names the way out of it"
+VERDICTBLOCK="$(section "$IMP" '### 5b.')"
+for code in '0)' '10)' '18)'; do
+  has "$VERDICTBLOCK" "  $code" "step 5b handles verdict code ${code%)} explicitly"
+done
+has "$VERDICTBLOCK" 'rung 3' "…and code 10 names the rung the run falls back to"
+
+# The step must also state the disposition in the CLOSE-OUT, and say which of the three it was —
+# a report rendered into the PR body and omitted from the operator's summary is half-stated.
+CLOSEOUT="$(section "$IMP" '### 11. Close-out')"
+has "$CLOSEOUT" 'none needed' "the close-out names the none-needed disposition"
+has "$CLOSEOUT" 'DEGRADED'    "…and the degraded one"
+
 # EVERY STATE-TOUCHING CALL NAMES THE STATE DIRECTORY. The library has to default to something when
 # nobody passes `--state`, and any default names ONE agent's directory — so a rendered skill that
 # omitted the flag would write its record into another agent's state, silently: the records are

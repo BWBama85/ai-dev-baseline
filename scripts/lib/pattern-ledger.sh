@@ -96,6 +96,15 @@
 # /cleanup sweeps run-state whose PR has resolved, and a ledger swept on merge would forget exactly
 # the thing it exists to remember.
 #
+# CONCURRENCY, STATED RATHER THAN LOCKED. `_adb_pl_insert` publishes by rename, so no reader ever
+# sees a half-written file — but it is a read-modify-write, and two writers racing it would have
+# the second rename discard the first's record. That is not locked, and the bound is why: this
+# module is driven by `/resolve-pr-threads`, and `/implement-issue`'s run admission already permits
+# only one run per checkout per agent, so the workflow that writes here is sequential by
+# construction. Two *checkouts* writing one ledger is a git-merge question, not a locking one, and
+# the template says how it resolves. A caller that genuinely needs concurrent writes must serialize
+# them itself; the public command contract does not do it for you.
+#
 # Requires: awk, and a writable ledger directory. No network, no gh, no jq.
 
 set -uo pipefail

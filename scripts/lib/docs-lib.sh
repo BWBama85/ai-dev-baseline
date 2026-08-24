@@ -74,6 +74,11 @@
 # key that way ("a run that cannot reach one is DEGRADED; say so instead of proceeding quietly"),
 # so the loud part is the SAYING. D90 records the reading.
 #
+# CONCURRENCY, STATED RATHER THAN LOCKED. Records are appended with `>>`, which is atomic for the
+# short lines this module writes, so two writers interleave records rather than corrupting one. No
+# read-modify-write happens here at all, so there is nothing for a second writer to clobber. The
+# ordering between records is not guaranteed under concurrency, and nothing reads it.
+#
 # Requires: awk. No network, no gh, no jq.
 
 set -uo pipefail
@@ -359,6 +364,15 @@ cmd_report() {
   fi
   if [ "$n_none" -gt 0 ]; then
     awk -F'\t' '$1 == "none-needed" { printf "- none needed: %s\n", $2 }' "$f"
+  fi
+  # BOTH KINDS IN ONE RUN IS NOT AN ERROR, BUT IT IS WORTH SAYING. A run can legitimately declare
+  # its surfaces trivial and then discover one that is not — the record is append-only and there is
+  # no supersession rule, deliberately, because the earlier judgement is part of the audit trail.
+  # What must not happen is the two sitting side by side looking like one coherent statement, so
+  # the later consultation is named as superseding the scope of the earlier claim.
+  if [ "$n_consulted" -gt 0 ] && [ "$n_none" -gt 0 ]; then
+    printf '\n_This run recorded both: a surface was resolved after an earlier "none needed". The\n'
+    printf '_"none needed" covers only what had been considered at that point._\n'
   fi
 
   # The MCP line is part of the same block, because a degraded server changes what the rungs above
