@@ -166,6 +166,13 @@ if [ "$MODE" = mutation ]; then
     '  [ "$(wc -l < "$f" | tr -d '"'"' '"'"')" -gt 0 ] || return 1' \
     'an unterminated final record is refused, not silently skipped then read by awk'
 
+  # THE EMPTY-INTERIOR-ELEMENT RULE (PR #429). Restores the superseded predicate — "every empty
+  # element is fine" — rather than deleting the check, because that spelling is what shipped.
+  check_mut empty-elements-allowed \
+    '              if (n == 1) continue                      # []' \
+    '              continue' \
+    'an empty interior array element ([, "a"]) is refused'
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
     '            if (e !~ /^".*"$/) { bad = 1; exit }' \
@@ -429,7 +436,18 @@ required = $bad
   dl mcp-required --manifest "$D13/agents.toml" >/dev/null 2>&1
   eq "$?" 18 "an unquoted array element ($bad) is refused as malformed TOML"
 done
-for good in '["context7"]' '[]' '["a", "b"]'; do
+# AN EMPTY ELEMENT IS LEGAL IN EXACTLY TWO PLACES (PR #429) — the empty array, and TOML's single
+# trailing comma. Treating every empty split field as fine accepted a leading comma and a repeated
+# one, which is the same partial-validation shape corrected twice elsewhere in this diff: the check
+# covered less than the grammar it claimed to enforce.
+for bad in '[, "a"]' '["a",,]' '[,]' '["a", , "b"]'; do
+  D15="$(fixture "emptyelem$(printf '%s' "$bad" | tr -dc 'ab')$(printf '%s' "$bad" | wc -c | tr -d ' ')" "[mcp]
+required = $bad
+")"
+  dl mcp-required --manifest "$D15/agents.toml" >/dev/null 2>&1
+  eq "$?" 18 "an empty interior array element ($bad) is refused"
+done
+for good in '["context7"]' '[]' '["a", "b"]' '["a",]'; do
   D14="$(fixture "quoted$(printf '%s' "$good" | tr -dc 'ab')" "[mcp]
 required = $good
 ")"

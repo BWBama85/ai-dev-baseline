@@ -568,6 +568,19 @@ you just read the finding and wrote the fix. Nothing recovers that later.
   neither ever reaches a threshold. Read the promoted checklist and the existing classes
   (`{{PATTERN_LEDGER_LIB}} classes`) before inventing a new slug — reusing an existing one is
   almost always right, and is what makes the mechanism work at all.
+- **The sha resolves through the PULL REQUEST, not necessarily through the default branch.** On a
+  repo that squash-merges — which this baseline prefers — the per-thread commits never become
+  ancestors of the default branch, so after the branch is deleted `git show <fix>` fails in a fresh
+  clone and the audit link would be broken by design. It is not: GitHub keeps a merged pull
+  request's own commits, so `refs/pull/<n>/head` and `gh api repos/{owner}/{repo}/pulls/<n>/commits`
+  resolve them for as long as the PR exists. **That is why every hit stores `--pr` as well**, and
+  why the PR number is the durable half of the reference. Read a fix with:
+
+  ```bash
+  git fetch origin "refs/pull/$PR_NUM/head" && git show <fix>
+  ```
+
+  Reported by the declared reviewer on PR #429.
 - **`--fix` is the commit that carried THAT thread's correction — not the round's head.** Step 4
   explicitly permits several commits in one round, so `$LAST_SHA` (captured once, after the push)
   names the *last* of them. Recording every thread against it breaks the audit link the ledger
@@ -584,6 +597,12 @@ you just read the finding and wrote the fix. Nothing recovers that later.
   fixed in *different* commits. Reported by the declared reviewer on PR #429.
 - The ledger entry itself is committed separately, in 4c: a commit cannot name its own hash, so the
   fixes land first and the ledger records them second.
+- **Record an ALREADY-ADDRESSED finding too, against the commit that actually fixed it.** Step 3
+  classifies a legitimate finding an earlier commit already fixed as *Already addressed* — it is
+  still a real finding of a real class, and skipping it makes the recurrence count understate
+  exactly the history the ledger exists to keep. Verify the earlier sha first (`git cat-file -t`),
+  then record against it. What is NOT recorded is a **declined** finding: nothing was wrong, so
+  there is no class to carry forward. Reported by the declared reviewer on PR #429.
 - **Record BEFORE you resolve.** The two are not atomic, and the orders fail differently: recording
   first can duplicate after a crash, which `record` absorbs (it is keyed on the thread id and
   returns 10 for a repeat), while resolving first can lose the only copy of the signal. Prefer the
@@ -717,6 +736,12 @@ case "$SRC" in
   *)  : ;;   # no ledger yet -> say so; zero and absent are different facts
 esac
 ```
+
+**`stats --pr` supplies three of the four round figures — `pr-hits`, `pr-recurring` and
+`pr-new-classes`. The fourth, `promoted`, comes from YOUR OWN step-4c calls**, because nothing
+timestamps a promotion and the ledger cannot tell this round's from last month's. Count the
+`promote` invocations that returned 0. Substituting the lifetime `promoted` field there would print
+a number that grows whatever the round did.
 
 **Report `pr-recurring`, not `recurring`, as the round figure.** `recurring` is a LIFETIME count
 over an append-only file, so it can only ever rise — and it jumps by every prior hit the moment a

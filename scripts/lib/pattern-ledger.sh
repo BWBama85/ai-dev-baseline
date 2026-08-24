@@ -244,6 +244,15 @@ to the project's own review settings.)
 The only lines with a machine-read grammar are the ones between the markers below; the prose
 around them is yours.
 
+**Resolving a `fix` sha after the pull request merged.** On a squash-merging repo the per-thread
+commits never become ancestors of the default branch, so a bare `git show <fix>` fails once the
+branch is gone. GitHub keeps the pull request's own commits, so fetch them by PR number — which is
+why every entry carries one:
+
+```sh
+git fetch origin "refs/pull/<pr>/head" && git show <fix>
+```
+
 **Two branches can both append here, and that is handled by ordinary means.** Git may report a
 conflict when two pull requests add hits at the same point — take both sides; the entries are
 independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
@@ -495,7 +504,13 @@ cmd_record() {
   # re-offers hits that are already here. That is the ordinary case, so it exits 10 and says
   # nothing alarming — it is not a failure and must not read like one.
   local hits
-  hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse — refusing to append to a ledger whose existing records cannot be read\n' "$ledger" >&2; exit 18; }
+  # BOTH REGIONS, before appending anything. Validating only the hits half let `record` report a
+  # hit written successfully into a file from which no reader can then read a count or a checklist
+  # — the refuse-whole contract holding for reads and not for writes. Same partial-validation shape
+  # as the PR field and the empty array element: the check covered less than the consumers do.
+  # Reported by the declared reviewer on PR #429.
+  hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse (the hits region) — refusing to append to a ledger whose existing records cannot be read\n' "$ledger" >&2; exit 18; }
+  _adb_pl_promoted "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n' "$ledger" >&2; exit 18; }
   if printf '%s\n' "$hits" | awk -F'\t' -v t="$OPT_THREAD" '$4 == t { found = 1 } END { exit !found }'; then
     printf 'pattern-ledger: thread %s is already recorded — nothing appended\n' "$OPT_THREAD" >&2
     exit 10
@@ -630,12 +645,12 @@ cmd_checklist() {
 # That is the quantity that should fall as the checklist starts working: classes accumulate
 # forever, while repeat hits in a known class are exactly the avoidable ones.
 cmd_stats() {
-  local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0 prrecur=0
+  local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0 prrecur=0 prnew=0
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   if [ ! -f "$ledger" ]; then
     printf 'hits\t0\nclasses\t0\nrecurring\t0\npromoted\t0\nthreshold\t%s\nthreshold-source\t%s\n' "$t" "$tsrc"
-    [ -n "$OPT_PR" ] && printf 'pr-hits\t0\npr-recurring\t0\n'
+    [ -n "$OPT_PR" ] && printf 'pr-hits\t0\npr-recurring\t0\npr-new-classes\t0\n'
     exit 0
   fi
   hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
@@ -663,6 +678,14 @@ cmd_stats() {
       # says makes the mechanism falsifiable. Lifetime counts still decide WHICH classes are
       # recurring; only the reported count is filtered.
       # Reported by the declared reviewer on PR #429.
+      # CLASSES FIRST SEEN IN THIS PR. Derivable, because the hits region is append-only and
+      # ordered: a class is new to this run when no earlier record carries it. `promoted this
+      # round` is NOT derivable — nothing timestamps a promotion — so the workflow captures that
+      # from its own `promote` calls rather than this command inventing a number for it.
+      # Reported by the declared reviewer on PR #429.
+      prnew="$(printf '%s\n' "$hits" | awk -F'\t' -v p="$OPT_PR" '
+        NF && $1 != "" { if (!($1 in first)) first[$1] = $5 }
+        END { n = 0; for (k in first) if (first[k] == p) n++; print n + 0 }')"
       prrecur="$(printf '%s\n' "$hits" | awk -F'\t' -v t="$t" -v p="$OPT_PR" '
         NF && $1 != "" { c[$1]++; cls[NR] = $1; prs[NR] = $5 }
         END { n = 0; for (i in cls) if (c[cls[i]] >= t && prs[i] == p) n++; print n + 0 }')"
@@ -670,7 +693,7 @@ cmd_stats() {
   fi
   printf 'hits\t%s\nclasses\t%s\nrecurring\t%s\npromoted\t%s\nthreshold\t%s\nthreshold-source\t%s\n' \
     "$total" "$classes" "$recurring" "$promoted" "$t" "$tsrc"
-  [ -n "$OPT_PR" ] && printf 'pr-hits\t%s\npr-recurring\t%s\n' "$thispr" "$prrecur"
+  [ -n "$OPT_PR" ] && printf 'pr-hits\t%s\npr-recurring\t%s\npr-new-classes\t%s\n' "$thispr" "$prrecur" "$prnew"
   return 0
 }
 
@@ -715,6 +738,17 @@ cmd_verify() {
   if [ -n "$hits" ]; then
     dupes="$(printf '%s\n' "$hits" | awk -F'\t' 'NF { print $4 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
     [ -z "$dupes" ] || { printf 'pattern-ledger: duplicate thread id(s): %s\n' "$(printf '%s' "$dupes" | tr '\n' ' ')" >&2; bad=1; }
+  fi
+  # A DUPLICATED CHECKLIST CLASS, for the same reason and with the same consequence. `promote`
+  # refuses one, so a pair means a hand edit or a merge that took both sides — and every
+  # operational reader already returns 18 for it while `verify` validated each slug independently
+  # and said `ok`. The command advertised as the recovery diagnostic disagreeing with every reader
+  # is precisely the split that made the first version of this defect invisible.
+  # Reported by the declared reviewer on PR #429.
+  local ckdupes=""
+  if [ -n "$promoted" ]; then
+    ckdupes="$(printf '%s\n' "$promoted" | awk 'NF' | LC_ALL=C sort | LC_ALL=C uniq -d)"
+    [ -z "$ckdupes" ] || { printf 'pattern-ledger: duplicate checklist class(es): %s\n' "$(printf '%s' "$ckdupes" | tr '\n' ' ')" >&2; bad=1; }
   fi
   [ "$bad" -eq 0 ] || exit 18
   printf 'ok %s hit(s), %s checklist rule(s) checked in %s\n' "$nh" "$np" "$ledger"

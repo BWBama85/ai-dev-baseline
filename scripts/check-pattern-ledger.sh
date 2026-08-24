@@ -185,6 +185,18 @@ if [ "$MODE" = mutation ]; then
     '      if (0) { bad = 1; exit }' \
     'a checklist rule with no instruction text is refused by `checklist`'
 
+  # RECORD MUST VALIDATE BOTH REGIONS (PR #429).
+  check_mut record-checks-one-region \
+    '  _adb_pl_promoted "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n'"'"' "$ledger" >&2; exit 18; }' \
+    '  :' \
+    'record refuses a ledger whose CHECKLIST region is damaged, not just its hits'
+
+  # VERIFY MUST AGREE WITH THE READERS ABOUT A DUPLICATED CHECKLIST CLASS (PR #429).
+  check_mut verify-misses-dup-class \
+    '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | awk '"'"'NF'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
+    '    ckdupes=""' \
+    'a duplicated checklist class is refused by `verify` — verify included'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -433,6 +445,30 @@ eq "$?" 11 "a promoted class is no longer due"
 eq "$(bash "$PL" classes --ledger "$L7" | awk -F'\t' '$2=="promo-class"{print $3}')" 1 \
    "classes marks the promoted class"
 
+# =============================== 7b. the partial-validation siblings (PR #429) ===================
+# All three are the SAME class the round-1 fixes promoted a checklist rule for: a check that covers
+# less than its consumers do. They are asserted together because that is how the class is found —
+# by sweeping the siblings rather than fixing the reported instance.
+L7b="$work/l7b.md"
+seed "$L7b" ck-dupe 2 || bad "fixture: could not seed"
+bash "$PL" promote --ledger "$L7b" --class ck-dupe --rule 'sweep it' >/dev/null 2>&1
+
+# (i) `verify` must agree with the readers about a duplicated checklist class.
+awk '{print} /^- `ck-dupe` —/ && !d {print; d=1}' "$L7b" > "$work/l7b-dupck.md"
+for sub in verify checklist classes; do
+  bash "$PL" "$sub" --ledger "$work/l7b-dupck.md" >/dev/null 2>&1
+  eq "$?" 18 "a duplicated checklist class is refused by \`$sub\` — verify included"
+done
+DV="$(bash "$PL" verify --ledger "$work/l7b-dupck.md" 2>&1)"
+has "$DV" "duplicate checklist class" "…and verify NAMES it, as it already does for thread ids"
+
+# (ii) `record` must validate BOTH regions before appending. Validating only the hits half reported
+# a hit written into a file every reader then refuses.
+sed 's/<!-- adb:checklist:begin -->//' "$L7b" > "$work/l7b-badck.md"
+bash "$PL" record --ledger "$work/l7b-badck.md" --class other --site s.sh --fix abc1234 \
+  --pr 1 --thread T-new-one >/dev/null 2>&1
+eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just its hits"
+
 # =============================== 8. stats, and what `recurring` counts ===========================
 # `recurring` is HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes. That
 # distinction is the whole reported signal: classes accumulate forever, while a repeat hit in a
@@ -503,11 +539,25 @@ has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} due'       "…and asks what has bec
 has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} promote'   "…and promotes it through a tracked file"
 has "$(cat "$RES")" '{{PATTERN_LEDGER_LIB}} stats'     "…and reports the trend the mechanism is judged by"
 
+RESTXT="$(cat "$RES")"
+
+# THE SHA IS RESOLVED THROUGH THE PULL REQUEST (P1, PR #429). On a squash-merging repo — which
+# this baseline prefers — the per-thread commits never become ancestors of the default branch, so
+# a bare `git show <fix>` breaks in a fresh clone once the branch is deleted, and the ledger's
+# advertised audit link would be broken by design. The PR number is the durable half.
+has "$RESTXT" 'refs/pull/' "the resolver says how to resolve a fix sha after a squash merge"
+has "$(cat "$ROOT/scripts/lib/pattern-ledger.sh")" 'refs/pull/' \
+   "…and the ledger's own template says it too, for a reader who never sees the workflow"
+
+# AN ALREADY-ADDRESSED FINDING IS STILL A FINDING (PR #429). Skipping it makes the recurrence count
+# understate exactly the history the ledger exists to keep.
+has "$RESTXT" 'ALREADY-ADDRESSED finding too' "the resolver records already-addressed findings"
+has "$RESTXT" 'declined'                      "…and says which disposition is NOT recorded"
+
 # THE PER-THREAD FIX SHA (PR #429). Step 4 permits several commits in one round, so `$LAST_SHA` —
 # captured once, after the push — names the LAST of them. Recording every thread against it breaks
 # the audit link the ledger exists for: `git show <fix>` would not contain the correction the entry
 # points at.
-RESTXT="$(cat "$RES")"
 has   "$RESTXT" '--fix "$FIX_SHA"' "the resolver records each thread against ITS OWN fix commit"
 hasnt "$RESTXT" '--fix "$LAST_SHA"' "…never against the round's head sha"
 has   "$RESTXT" 'FIX_SHA="$(git rev-parse --short HEAD)"' "…and says how to capture it, per commit"
@@ -515,6 +565,11 @@ has   "$RESTXT" 'FIX_SHA="$(git rev-parse --short HEAD)"' "…and says how to ca
 # THE ROUND FIGURE IS THE PR-SCOPED ONE. `recurring` is a lifetime count over an append-only file,
 # so a summary quoting it prints a number that grows whatever the round did.
 has "$RESTXT" 'pr-recurring' "the summary reports pr-recurring, the figure a trend can be read from"
+has "$RESTXT" 'pr-new-classes' "…and pr-new-classes, which stats now supplies"
+# `promoted this round` is NOT derivable from an append-only file with no promotion timestamps, so
+# the workflow must say where it comes from instead of implying `stats` supplies it.
+has "$RESTXT" 'comes from YOUR OWN step-4c calls' \
+   "…and says the fourth figure comes from the resolver's own promote calls, not from stats"
 
 # THE RECOVERY HINT MUST NAME A COMMAND THAT EXISTS. The first draft pointed at
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown

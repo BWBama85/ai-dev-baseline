@@ -238,7 +238,17 @@ _adb_dl_mcp_key() {
           for (i = 1; i <= n; i++) {
             e = parts[i]
             gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)
-            if (e == "") continue                       # empty array, or a trailing comma
+            if (e == "") {
+              # AN EMPTY ELEMENT IS LEGAL IN EXACTLY TWO PLACES: the whole array is empty (n == 1),
+              # or it is the single trailing comma TOML permits (the last split field). A LEADING
+              # comma (`[, "a"]`) or a repeated one (`["a",,]`) lands here too, and treating every
+              # empty element as fine accepted both — which is the same partial-validation shape
+              # this file has now been corrected for three times: the check covered less than the
+              # grammar it claimed to enforce. Reported by the declared reviewer on PR #429.
+              if (n == 1) continue                      # []
+              if (i == n) continue                      # one trailing comma
+              bad = 1; exit
+            }
             if (e !~ /^".*"$/) { bad = 1; exit }
           }
         }
