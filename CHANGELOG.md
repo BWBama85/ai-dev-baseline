@@ -8,6 +8,52 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Added
+
+- **The loop keeps what its review threads taught it (#421).** Every resolved review thread was a
+  labeled example — a finding, its class, the site, and the commit that closed it — and the loop
+  discarded all of it at the moment of resolution. Nothing carried a finding *class* forward, so
+  the same class recurred across rounds and across pull requests.
+
+  `.ai-dev-baseline/patterns.md` is now a tracked, agent-neutral **pattern ledger** beside
+  `decisions.md` (D89). `/resolve-pr-threads` records a classified hit as each thread is resolved
+  as a real code change — the moment that knowledge is cheapest, because the agent has just read
+  the finding and written the fix. A class seen **twice** is a pattern rather than an incident and
+  is owed a rule; `/implement-issue` reads the promoted checklist back at **both** ends, into the
+  gap-analysis dispatch and into the pre-PR self-review sweep.
+
+  **Promotion goes through the normal pull-request path**, which is what makes the checklist safe
+  to feed into a prompt. The record grammar splits operative fields (class, site, fix, thread —
+  closed charsets, validated at write time) from one display field, and `checklist` — the only
+  subcommand whose output reaches another agent — emits promoted rules and nothing else. A hit's
+  summary is a reviewer's own words, and on a public repository a reviewer is anyone; a rule's
+  authority is the repo write access that landed it.
+
+  The resolve summary now reports findings-per-round and recurring-class hits, because #421's own
+  honest boundary makes that trend the only evidence the mechanism works — a summary that stopped
+  printing it would make the claim unfalsifiable.
+
+- **Vendor documentation is consulted proportionally, and the run says which (#422).** The duty in
+  `third-party-claims.md` triggered on *a claim already in doubt*, which an agent confident in
+  stale recall never has — so it consulted nothing and shipped the anti-pattern. The trigger is now
+  *a surface you are about to use*, with an explicit skip list (language-core idiom, or a shape
+  that already exists here and survived review) so the rule stays performable: a hello-world
+  function consults nothing.
+
+  `/implement-issue` gains step 5b — name the surfaces the diff will touch, resolve each nontrivial
+  one through the existing ladder, and carry a **"Docs consulted"** block into the PR body and the
+  close-out, recording *what answered* rather than merely which rung did. A run that needed nothing
+  says so explicitly; an **unstated** disposition is the defect, and `docs-lib.sh report` returns a
+  distinct code for it rather than empty output somebody could paste past.
+
+  **`[mcp] required` finally has a consumer.** Each declared server must answer one real read-only
+  query, and the adjudication is **fail-closed**: a server with no recorded result is reported
+  DEGRADED exactly as a failing one is, so skipping the probe cannot buy a clean verdict. A
+  degraded server degrades the run and is named in the report rather than stopping it (D90) — it is
+  a preferred source with a lower rung underneath, not a broken install. What is deliberately not
+  claimed is that the agent really issued the query: MCP is an in-harness protocol and no shell
+  gate reaches it, so the mechanism is the recorded evidence and review is what reads it.
+
 ### Fixed
 
 - **`selfcheck-macos` was the longest CI leg and the only one that failed (#339, #423).** Four reds

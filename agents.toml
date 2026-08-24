@@ -105,3 +105,17 @@ test = "full"
 typecheck = "na"
 lint      = "na"
 format    = "na"
+
+# MCP servers this project's agents should expect (#422 gave this key its first consumer).
+#
+# DECLARATION ONLY — nothing here installs or starts a server. `/implement-issue` step 5b asks the
+# agent to put one real read-only query to each entry and adjudicates the result fail-closed: a
+# server with no recorded result is reported DEGRADED exactly as a failing one is, so skipping the
+# probe cannot buy a clean verdict. A degraded server degrades the run and is named; it does not
+# stop it (D90).
+#
+# context7 is here because this repo writes shell against gh, git and GitHub's GraphQL API, and
+# `third-party-claims.md` makes it the required first documentation source for all three.
+[mcp]
+required = ["context7"]
+optional = []

@@ -434,17 +434,26 @@ cmd_classes() {
 # there are none, so a caller can branch on the code instead of testing whether stdout was empty:
 # an empty stdout is also what a broken read produces, and those two must never look alike.
 cmd_due() {
-  local ledger t tsrc line n out=""
+  local ledger t tsrc line n out="" rows crc
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   [ -n "$t" ] || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   [ -f "$ledger" ] || exit 11
+  # CAPTURED AND ITS STATUS CHECKED, never consumed straight from `< <(cmd_classes)`. A process
+  # substitution runs in a SUBSHELL, so `cmd_classes`'s `exit 18` terminated only that subshell:
+  # the loop read no lines, `out` stayed empty, and a ledger this module cannot parse came back as
+  # 11 — "no class is due". That is the count-too-low direction wearing the ordinary answer's face,
+  # on the one subcommand whose whole job is to say what earned a rule.
+  rows="$(cmd_classes)"; crc=$?
+  [ "$crc" -eq 0 ] || exit "$crc"
   while IFS="$TAB" read -r n line _prom; do
     [ -n "$n" ] || continue
     [ "$_prom" = "0" ] || continue
     [ "$n" -ge "$t" ] || continue
     out="${out}${line}${TAB}${n}"$'\n'
-  done < <(cmd_classes)
+  done <<ROWS
+$rows
+ROWS
   [ -n "$out" ] || exit 11
   printf '%s' "$out"
   printf 'pattern-ledger: threshold %s (from %s)\n' "$t" "$tsrc" >&2
@@ -474,7 +483,14 @@ cmd_promote() {
     exit 13
   fi
 
-  count="$(cmd_classes | awk -F"$TAB" -v c="$OPT_CLASS" '$2 == c { print $1; exit }')"
+  # SAME TRAP AS `due`: a pipeline reports its LAST command's status, so `cmd_classes | awk`
+  # returns awk's — and a ledger that does not parse would arrive as no input, `count` would fall
+  # to 0, and the refusal would be 12 ("below the threshold") for a file nobody could read. Read
+  # first, check the status, then parse.
+  local rows crc
+  rows="$(cmd_classes)"; crc=$?
+  [ "$crc" -eq 0 ] || exit "$crc"
+  count="$(printf '%s\n' "$rows" | awk -F"$TAB" -v c="$OPT_CLASS" '$2 == c { print $1; exit }')"
   [ -n "$count" ] || count=0
   if [ "$count" -lt "$t" ]; then
     printf 'pattern-ledger: %s has %s hit(s), threshold is %s (from %s) — not promoting\n' \

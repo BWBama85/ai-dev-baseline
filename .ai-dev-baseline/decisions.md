@@ -7260,3 +7260,75 @@ survive is the part a later reader needs.
                  not the only line of defence" is likewise retired: nothing prevents an old value and
                  the new one from coexisting, so that pin can be green while a stale sentence sits
                  three lines away — which is the reason this `absent:` rule exists beside it.
+
+## D89 — the pattern ledger's home is `.ai-dev-baseline/patterns.md`, tracked
+- date:      2026-08-24
+- category:  project-delta
+- unknown:   #421 asks for a per-project ledger of recurring review-finding classes and the
+             checklist they earn. `handling-the-unknown.md`'s table had no home for "a recurring
+             finding class this project keeps hitting", and the issue explicitly left the placement
+             to the implementer while requiring that it be recorded either way. The baseline's
+             existing memory surfaces are each the wrong grain or the wrong scope: `decisions.md`
+             is incident-grained and hand-written, `base/practices/*.md` is framework-level and
+             owner-curated, and Claude Code's auto memory is per-repo but Claude-only and fed by
+             nobody deliberately.
+- decision:  One tracked, agent-neutral Markdown file at `.ai-dev-baseline/patterns.md`, beside
+             `decisions.md`, with two marker-delimited machine-read regions and free prose around
+             them. TRACKED rather than gitignored, and that is the load-bearing half: promotion
+             changes an operative instruction, so it must arrive as a diff a human approves. The
+             row was added to `handling-the-unknown.md`'s prescribed-home table, which is what
+             makes it a home rather than a path somebody picked.
+- placement: `base/practices/handling-the-unknown.md` (the table) · `.ai-dev-baseline/patterns.md`
+             (the artifact) · `scripts/lib/pattern-ledger.sh` (the reader/writer) ·
+             `scripts/lib/adopt-lib.sh` (`patterns` kind, scan arm and prescribed-home row)
+- reason:    Markdown because a promotion IS a reviewed diff and somebody has to read it;
+             `.ai-dev-baseline/` because `decisions.md` already established that directory as the
+             cross-agent, non-`.claude/` home for project memory, and the one-home rule then makes
+             any per-agent copy a derived cache rather than a second source. Outside the state
+             directory because /cleanup sweeps run-state whose PR has resolved, and a ledger swept
+             on merge would forget precisely what it exists to remember.
+
+             ADOPTION HAD TO BE TAUGHT THE NAME, not merely allowed to fall through. `/adopt`'s
+             scan descends into `.ai-dev-baseline/` by explicit filename, so an unnamed file there
+             is not classified `other` — it is INVISIBLE, which satisfies neither reading of the
+             acceptance criterion. The classifier returns `keep`, so a migration plan can never
+             propose deleting an adopting project's accumulated classes.
+- baseline-issue: n/a (this repo IS the baseline; #421 is the tracked work)
+
+## D90 — a declared MCP server that cannot answer DEGRADES the run; it does not fail it
+- date:          2026-08-24
+- category:      deviation
+- baseline-rule: `docs/design-principles.md` §5 — *"A missing OPTIONAL dependency degrades to a
+                 safe no-op; it never crashes or corrupts. A missing REQUIRED dependency — one the
+                 mechanism cannot function without — FAILS LOUD, never silently no-ops."*
+- conflict:      #422 gives `[mcp] required` its first consumer, and the key is spelled
+                 *required*. Read literally, §5 says an unreachable `context7` must fail the run.
+                 That is the wrong outcome and `templates/agents.toml` already said so at the point
+                 the key was introduced: *"a run that cannot reach one is DEGRADED; say so instead
+                 of proceeding quietly."*
+- scope:         `scripts/lib/docs-lib.sh verdict` (exit 10) and `/implement-issue` step 5b, which
+                 reports the degradation and carries on at rung 3. Nothing else; a missing
+                 `common.sh` still fails loud everywhere it did before.
+- reason:        §5's distinction is between "this repo has nothing for me to do" and "my own
+                 install is broken", and a documentation server is neither. It is a preferred
+                 SOURCE with a lower rung underneath it, and `third-party-claims.md`'s ladder
+                 already prescribes descending: an unavailable rung 2 becomes rung 3, current
+                 vendor documentation via web search. Failing the run would make declaring
+                 `required` strictly worse than leaving it out, so every project would leave it
+                 out and the declaration would mean nothing.
+
+                 SO THE LOUD PART IS THE SAYING, and that is where the enforcement went. The
+                 adjudication is fail-closed in the direction that actually protects the rule: a
+                 declared server with NO recorded probe scores identically to one that failed, so
+                 an agent cannot buy a clean verdict by skipping the preflight. Silence is the
+                 failure mode being defended against, and silence is what is refused.
+
+                 WHAT IS NOT CLAIMED. MCP is an in-harness protocol; `codex mcp` and `claude mcp`
+                 expose list/get over the CONFIGURATION, neither exposes a generic tool-call
+                 interface, and Gemini exposes no equivalent. No shell gate can therefore prove the
+                 agent issued the query it recorded. A preflight built on `mcp list` would be
+                 worse than none, since a server with a bad credential still reports Connected and
+                 returns the auth failure inside an HTTP 200 result — the exact case the practice's
+                 connected-is-not-usable paragraph names. The mechanism is the recorded evidence
+                 and the report line; review is what reads them, and the practice's
+                 "What this does NOT enforce" section says so in the same words.
