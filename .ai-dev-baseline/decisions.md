@@ -7328,11 +7328,30 @@ survive is the part a later reader needs.
                  `claude mcp --help` lists add/add-from-claude-desktop/add-json/get/list/login/
                  logout/remove/reset-project-choices/serve. Every one manages CONFIGURATION, and
                  `serve` runs the agent AS an MCP server rather than calling another one's tools —
-                 so neither CLI offers a generic tool call, and no shell gate can prove the agent
-                 issued the query it recorded. `agy` is NOT installed on the machine this was
-                 decided on, so no probe was made for the Gemini path and none is claimed; the
-                 split does not depend on it, because the agent-side half is the same for any
-                 harness that can reach its own MCP tools.
+                 so no agent CLI offers a generic MCP tool call as a subcommand.
+
+                 BUT "NO SHELL CAN REACH MCP" WOULD BE TOO STRONG, and the independent review was
+                 right to say so: `claude -p` accepts `--mcp-config`, `--strict-mcp-config` and
+                 `--allowed-tools`, so a shell CAN launch a headless agent that calls an MCP tool
+                 and thereby establish PRESENT usability independently. What no gate can do is
+                 authenticate the HISTORICAL action — that the agent which wrote a record actually
+                 issued the query it claims. That is the honest boundary, and it is narrower than
+                 the one first written here. An independent live preflight built on `claude -p`
+                 is a real future option for a Claude-driven run; it is not implemented, and it
+                 would not generalize to the other two harnesses. `agy` IS installed here
+                 (`/Users/brentwilson/.local/bin/agy`, also on PATH via Zentty) and `agy --help`
+                 lists no `mcp` subcommand and no `--mcp-config` flag at all.
+
+                 THE FIRST DRAFT OF THIS ENTRY SAID `agy` WAS NOT INSTALLED, AND THAT WAS FALSE.
+                 The probe behind it was `command -v agy … | grep -i mcp | head -5 || echo "NOT
+                 INSTALLED"`, whose `||` can never fire — `head` succeeds whatever `grep` does — so
+                 the branch printed nothing and the silence was read as absence. A machine-state
+                 fact was then written into a decision log from a check that could not answer
+                 wrong, which is precisely the guard failure `self-review.md` describes, committed
+                 in the same run as a feature about resolving claims properly. The independent
+                 review caught it. Recorded rather than quietly corrected, because the shape is the
+                 lesson: a probe is a guard, and a guard is not done until it has been observed
+                 answering.
 
                  THE AVAILABLE CHECK IS THE INSUFFICIENT ONE, which is the sharper reason. The
                  probe also showed `claude mcp list`/`get` HEALTH-CHECK approved servers, so a

@@ -118,11 +118,6 @@ die() { printf 'pattern-ledger: %s\n' "$*" >&2; exit 2; }
 usage() { adb_usage "$0"; }
 
 TAB="$(printf '\t')"
-# NOT `NL="$(printf '\n')"`, which is the EMPTY STRING: command substitution strips trailing
-# newlines, so that spelling turns `case "$x" in *"$NL"*)` into a substring test against "" — which
-# matches EVERY value, and every validator below would reject everything. The same trap
-# scripts/lib/cleanup-lib.sh names beside its own TAB.
-NL=$'\n'
 
 # The built-in threshold. TWO, because #421 fixes the meaning: "a class recurring past a threshold
 # (default 2 — a pattern, not an incident)". One occurrence is the incident; the second is what
@@ -157,9 +152,13 @@ _adb_pl_ok_thread() {
   [ "${#1}" -le 256 ]
 }
 
+# A POSITIVE whole number — zero is refused, because both callers' diagnostics say "positive" and
+# a predicate that accepts `0` while its message forbids it is a contract nobody can rely on.
+# `-gt 0` rather than a `!= 0` string test, so `0`, `00` and `000` are all caught.
 _adb_pl_ok_pr() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
-  [ "${#1}" -le 12 ]
+  [ "${#1}" -le 12 ] || return 1
+  [ "$1" -gt 0 ]
 }
 
 _adb_pl_ok_date() {
@@ -177,8 +176,12 @@ _adb_pl_ok_date() {
 # relaxed, for the display fields.
 _adb_pl_ok_span() {
   [ -n "$1" ] || return 1
-  case "$1" in *'`'*|*"$TAB"*) return 1 ;; esac
-  case "$1" in *"$NL"*) return 1 ;; esac
+  # THE DELIMITER TEST IS `adb_tsv_field_safe`'s — one home for "can this be a field in a
+  # TAB-separated, newline-terminated record", which is the exact question, and whose header
+  # records why forgery rather than corruption is the failure it prevents. The BACKTICK and the
+  # control-character rules below are this format's own additions and stay here.
+  adb_tsv_field_safe "$1" || return 1
+  case "$1" in *'`'*) return 1 ;; esac
   # Refuse control characters wholesale. `tr -d` and a length compare rather than a glob, because
   # a bracket expression naming the control range is not portable across the shells this runs in.
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
@@ -189,8 +192,7 @@ _adb_pl_ok_span() {
 # which matters because review findings routinely quote identifiers.
 _adb_pl_ok_text() {
   [ -n "$1" ] || return 1
-  case "$1" in *"$TAB"*) return 1 ;; esac
-  case "$1" in *"$NL"*) return 1 ;; esac
+  adb_tsv_field_safe "$1" || return 1
   # A value containing a region marker could close the region it lives in and silently truncate
   # every record after it — the count-too-low direction this module must never take.
   case "$1" in *'<!-- adb:'*) return 1 ;; esac
@@ -224,8 +226,10 @@ both receive the promoted checklist.
 
 **The checklist is the operative half.** A class seen more than once is a pattern rather than an
 incident, and is owed a rule: a sweep to run before the next pull request opens. Rules land here
-through the normal pull-request path, so every one of them was reviewed by a human before any
-agent was told to follow it.
+through the normal pull-request path, so a rule only takes effect once a change carrying it has
+been merged — which takes repository write access, and is reviewable in the diff like any other
+change. (Write access is what the guarantee actually rests on; whether a human read the diff is up
+to the project's own review settings.)
 
 **Editing by hand is fine.** Reword a rule that reads badly, delete one that stopped being true.
 The only lines with a machine-read grammar are the ones between the markers below; the prose
@@ -276,7 +280,7 @@ _adb_pl_region() {
 # and none of them may contain one (enforced by the validators at write time). A line inside the
 # region that does not carry four spans is MALFORMED and fails the whole read (1) rather than being
 # skipped — skipping is how a count silently drops.
-_adb_pl_hits() {
+_adb_pl_hits_raw() {
   local region
   region="$(_adb_pl_region "$1" "$_ADB_PL_HIT_BEGIN" "$_ADB_PL_HIT_END")" || return 1
   printf '%s\n' "$region" | awk -F'`' '
@@ -293,8 +297,44 @@ _adb_pl_hits() {
   '
 }
 
+# _adb_pl_hits <file> — the same records, but only if EVERY ONE obeys the grammar and no thread id
+# repeats. This is the function every reader calls; `_adb_pl_hits_raw` exists for `verify`, which
+# has to enumerate the bad records in order to name them.
+#
+# THE VALIDATION LIVES HERE RATHER THAN IN `verify`, and that placement is the whole finding. With
+# the checks only in `verify`, a hand-edited or badly-merged ledger reached `classes`, `due`,
+# `stats` and `checklist` unchallenged — and a duplicated thread id then counted one finding twice,
+# carrying a class to a promotion nothing earned. `verify` reported 18 while `due` reported the
+# class as ready, which is the "refused whole" claim being false at the readers that act on it.
+#
+# VALIDATED THROUGH THE WRITER'S OWN PREDICATES, not a second set of regexes here. The grammar has
+# one home; a reader that re-spelled it would drift from the writer, and the drift would show up as
+# records the writer cannot produce being accepted (or vice versa).
+_adb_pl_hits() {
+  local raw c s f th pr
+  raw="$(_adb_pl_hits_raw "$1")" || return 1
+  [ -n "$raw" ] || return 0
+  local -A seen=()
+  while IFS="$TAB" read -r c s f th pr; do
+    [ -n "$c$s$f$th" ] || continue
+    _adb_pl_ok_class  "$c"  || return 1
+    _adb_pl_ok_span   "$s"  || return 1
+    _adb_pl_ok_fix    "$f"  || return 1
+    _adb_pl_ok_thread "$th" || return 1
+    [ -z "$pr" ] || _adb_pl_ok_pr "$pr" || return 1
+    # THE DUPLICATE IS A DEFECT, not a duplicate hit: `record` refuses one, so a pair here means a
+    # hand edit or a merge that took both sides of the same record — and the count is now higher
+    # than the number of findings that actually happened, in the direction that promotes.
+    [ -z "${seen[$th]+x}" ] || return 1
+    seen["$th"]=1
+  done <<RAW
+$raw
+RAW
+  printf '%s\n' "$raw"
+}
+
 # _adb_pl_promoted <file> — the promoted class slugs, one per line.
-_adb_pl_promoted() {
+_adb_pl_promoted_raw() {
   local region
   region="$(_adb_pl_region "$1" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || return 1
   printf '%s\n' "$region" | awk -F'`' '
@@ -303,6 +343,26 @@ _adb_pl_promoted() {
     { if (NF < 3 || $2 == "") { bad = 1; exit } print $2 }
     END { if (bad) exit 1 }
   '
+}
+
+# _adb_pl_promoted <file> — the same slugs, but only if every rule names a valid class and no class
+# appears twice. Same placement argument as `_adb_pl_hits`: a reader that skipped this would let a
+# hand-edited checklist reach the prompt surface, and a class listed twice would make `promote`'s
+# already-promoted check answer about the wrong entry.
+_adb_pl_promoted() {
+  local raw c
+  raw="$(_adb_pl_promoted_raw "$1")" || return 1
+  [ -n "$raw" ] || return 0
+  local -A seen=()
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    _adb_pl_ok_class "$c" || return 1
+    [ -z "${seen[$c]+x}" ] || return 1
+    seen["$c"]=1
+  done <<RAW
+$raw
+RAW
+  printf '%s\n' "$raw"
 }
 
 # --- the threshold ------------------------------------------------------------------------------
@@ -316,25 +376,28 @@ _adb_pl_promoted() {
 _adb_pl_threshold() {
   local v src file
   if [ -n "${OPT_THRESHOLD:-}" ]; then
-    _adb_pl_ok_pr "$OPT_THRESHOLD" && [ "$OPT_THRESHOLD" -ge 1 ] \
-      || die "--threshold must be a positive whole number, got '$OPT_THRESHOLD'"
+    _adb_pl_ok_pr "$OPT_THRESHOLD" \
+      || die "--threshold must be a positive whole number, got $(adb_display_value "$OPT_THRESHOLD")"
     printf '%s flag\n' "$OPT_THRESHOLD"; return 0
   fi
-  for file in "$(adb_repo_root 2>/dev/null)/agents.toml" "$(adb_global_manifest)"; do
-    [ -f "$file" ] || continue
-    v="$(adb_toml_get "$file" patterns threshold 2>/dev/null)" || continue
-    [ -n "$v" ] || continue
+  # THE PRECEDENCE RULE IS `adb_toml_layered_get`'s, not this module's. It used to be a `for` loop
+  # over the two manifests here, and that loop had a real defect the shared primitive does not:
+  # `[ -n "$v" ] || continue` fell THROUGH an empty repo-level declaration to the global one, so a
+  # project that wrote `threshold =` got the machine's value while believing it had set its own.
+  # A higher-precedence layer that defines the key wins even when its value is unusable — that is
+  # the whole point, and it is why the validation below fails loud instead of reading on.
+  local layered
+  if layered="$(adb_toml_layered_get "$(adb_repo_root 2>/dev/null)/agents.toml" \
+                                     "$(adb_global_manifest)" patterns threshold --with-layer)"; then
+    src="${layered%% *}"; v="${layered#* }"
     v="$(adb_toml_unquote "$v")"
-    if ! _adb_pl_ok_pr "$v" || [ "$v" -lt 1 ]; then
-      printf 'pattern-ledger: [patterns] threshold in %s is "%s" — must be a positive whole number\n' "$file" "$v" >&2
+    if ! _adb_pl_ok_pr "$v"; then
+      printf 'pattern-ledger: [patterns] threshold in the %s manifest is %s — must be a positive whole number\n' \
+        "$src" "$(adb_display_value "$v")" >&2
       return 2
     fi
-    case "$file" in
-      */.config/ai-dev-baseline/*) src=global ;;
-      *) src=agents.toml ;;
-    esac
     printf '%s %s\n' "$v" "$src"; return 0
-  done
+  fi
   printf '%s built-in\n' "$_ADB_PL_DEFAULT_THRESHOLD"
 }
 
@@ -371,20 +434,20 @@ cmd_record() {
   [ -n "$OPT_THREAD" ] || die "record: --thread is required"
 
   _adb_pl_ok_class "$OPT_CLASS" || {
-    printf 'pattern-ledger: refusing class "%s" — a class is [a-z][a-z0-9-]* up to 48 chars. It is
-  the unit recurrence is counted in, so it has to be the SAME string next time.\n' "$OPT_CLASS" >&2; exit 19; }
+    printf 'pattern-ledger: refusing class %s — a class is [a-z][a-z0-9-]* up to 48 chars. It is
+  the unit recurrence is counted in, so it has to be the SAME string next time.\n' "$(adb_display_value "$OPT_CLASS")" >&2; exit 19; }
   _adb_pl_ok_span "$OPT_SITE" || {
-    printf 'pattern-ledger: refusing site "%s" — no backtick, tab, newline or control character.\n' "$OPT_SITE" >&2; exit 19; }
+    printf 'pattern-ledger: refusing site %s — no backtick, tab, newline or control character.\n' "$(adb_display_value "$OPT_SITE")" >&2; exit 19; }
   _adb_pl_ok_fix "$OPT_FIX" || {
-    printf 'pattern-ledger: refusing fix "%s" — 7-40 lowercase hex digits (a commit sha).\n' "$OPT_FIX" >&2; exit 19; }
+    printf 'pattern-ledger: refusing fix %s — 7-40 lowercase hex digits (a commit sha).\n' "$(adb_display_value "$OPT_FIX")" >&2; exit 19; }
   _adb_pl_ok_pr "$OPT_PR" || {
-    printf 'pattern-ledger: refusing pr "%s" — a positive whole number.\n' "$OPT_PR" >&2; exit 19; }
+    printf 'pattern-ledger: refusing pr %s — a positive whole number.\n' "$(adb_display_value "$OPT_PR")" >&2; exit 19; }
   _adb_pl_ok_thread "$OPT_THREAD" || {
-    printf 'pattern-ledger: refusing thread "%s" — [A-Za-z0-9_=-] up to 256 chars (a review thread node id).\n' "$OPT_THREAD" >&2; exit 19; }
+    printf 'pattern-ledger: refusing thread %s — [A-Za-z0-9_=-] up to 256 chars (a review thread node id).\n' "$(adb_display_value "$OPT_THREAD")" >&2; exit 19; }
 
   local date="${OPT_DATE:-$(date -u +%Y-%m-%d)}"
   _adb_pl_ok_date "$date" || {
-    printf 'pattern-ledger: refusing date "%s" — YYYY-MM-DD.\n' "$date" >&2; exit 19; }
+    printf 'pattern-ledger: refusing date %s — YYYY-MM-DD.\n' "$(adb_display_value "$date")" >&2; exit 19; }
 
   local summary="${OPT_SUMMARY:-}"
   if [ -n "$summary" ]; then
@@ -473,7 +536,7 @@ ROWS
 cmd_promote() {
   [ -n "$OPT_CLASS" ] || die "promote: --class is required"
   [ -n "$OPT_RULE" ]  || die "promote: --rule is required"
-  _adb_pl_ok_class "$OPT_CLASS" || { printf 'pattern-ledger: refusing class "%s"\n' "$OPT_CLASS" >&2; exit 19; }
+  _adb_pl_ok_class "$OPT_CLASS" || { printf 'pattern-ledger: refusing class %s\n' "$(adb_display_value "$OPT_CLASS")" >&2; exit 19; }
   _adb_pl_ok_text "$OPT_RULE"   || {
     printf 'pattern-ledger: refusing rule — one printable line, no tab, no newline, and it may not
   contain "<!-- adb:".\n' >&2; exit 19; }
@@ -582,8 +645,11 @@ cmd_verify() {
   local ledger hits promoted nh=0 np=0 bad=0 c s f th
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   [ -f "$ledger" ] || { printf 'pattern-ledger: no ledger at %s\n' "$ledger" >&2; exit 20; }
-  hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s — the hits region is missing, duplicated, crossed, or holds a record that is not in the grammar\n' "$ledger" >&2; exit 18; }
-  promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s — the checklist region is missing, duplicated, crossed, or holds a rule that is not in the grammar\n' "$ledger" >&2; exit 18; }
+  # THE RAW PARSERS, deliberately. `verify` exists to NAME the bad record, and the validating
+  # readers refuse the file whole — correct for every other caller, useless for this one, which
+  # would then report "does not parse" without saying which line.
+  hits="$(_adb_pl_hits_raw "$ledger")" || { printf 'pattern-ledger: %s — the hits region is missing, duplicated, crossed, or holds a record that is not in the grammar\n' "$ledger" >&2; exit 18; }
+  promoted="$(_adb_pl_promoted_raw "$ledger")" || { printf 'pattern-ledger: %s — the checklist region is missing, duplicated, crossed, or holds a rule that is not in the grammar\n' "$ledger" >&2; exit 18; }
 
   if [ -n "$hits" ]; then
     while IFS="$TAB" read -r c s f th _pr; do

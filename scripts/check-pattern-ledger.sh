@@ -158,6 +158,19 @@ if [ "$MODE" = mutation ]; then
   # <copy-dir> -> PRINT the path to mutate, nothing else (check_mutation_pool's contract).
   # `base` rides along because the call-site assertions below read the workflow sources; without
   # it every mutation child would fail on a missing file rather than on its own witness.
+  # THE READ-SIDE VALIDATION ITSELF. It was added because the independent review reproduced a
+  # false promotion from a duplicated thread id; without a row here, deleting it again would be
+  # invisible to every assertion except by accident.
+  check_mut reader-skips-validation \
+    '    _adb_pl_ok_class  "$c"  || return 1' \
+    '    :' \
+    'a hand-edited invalid class (BadClass) is refused by the readers'
+
+  check_mut reader-skips-dupes \
+    '    [ -z "${seen[$th]+x}" ] || return 1' \
+    '    :' \
+    'a duplicated thread id is refused by `due`, not only by verify'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -209,8 +222,37 @@ eq "$(bash "$PL" stats --ledger "$L2" | awk -F'\t' '$1=="hits"{print $2}')" 1 \
 # A hand-edited duplicate is a DEFECT, because `record` cannot produce one: two branches merging
 # the same record, or an edit, inflates the count above the number of findings that happened.
 awk '{print} /^- `dupe-class`/ && !d {print; d=1}' "$L2" > "$work/l2-dup.md"
-bash "$PL" verify --ledger "$work/l2-dup.md" >/dev/null 2>&1
-eq "$?" 18 "a duplicated thread id in the file is a defect verify reports"
+# EVERY READER, not just `verify`. With the check only in `verify`, the independent review
+# reproduced `due` reporting `dup-class<TAB>2` and exit 0 on this exact file — a class carried to a
+# promotion by one finding counted twice, while `verify` said 18. A validator nothing consults
+# before acting is a validator that does not protect the count.
+for sub in classes due stats checklist verify promote; do
+  case "$sub" in
+    promote) bash "$PL" promote --ledger "$work/l2-dup.md" --class dupe-class --rule x >/dev/null 2>&1 ;;
+    *)       bash "$PL" "$sub" --ledger "$work/l2-dup.md" >/dev/null 2>&1 ;;
+  esac
+  eq "$?" 18 "a duplicated thread id is refused by \`$sub\`, not only by verify"
+done
+
+# The same argument for a hand-edited field OUTSIDE the writer's grammar. `record` cannot produce
+# any of these, so each one means the file was edited or merged badly — and each must stop every
+# reader rather than being counted.
+for bad in 'BadClass' '9leading' '-leading'; do
+  sed "s/^- \`dupe-class\`/- \`$bad\`/" "$L2" > "$work/l2-badclass.md"
+  bash "$PL" classes --ledger "$work/l2-badclass.md" >/dev/null 2>&1
+  eq "$?" 18 "a hand-edited invalid class ($bad) is refused by the readers, not only by verify"
+done
+sed 's/`abc1231`/`zzz`/' "$L2" > "$work/l2-badfix.md"
+bash "$PL" due --ledger "$work/l2-badfix.md" >/dev/null 2>&1
+eq "$?" 18 "a hand-edited invalid fix sha is refused by the readers"
+sed 's/PR #100/PR #0/' "$L2" > "$work/l2-badpr.md"
+bash "$PL" classes --ledger "$work/l2-badpr.md" >/dev/null 2>&1
+eq "$?" 18 "a hand-edited PR number outside the domain is refused by the readers"
+
+# `verify` still NAMES the offending record, which is why it reads through the raw parser: a
+# validator that only said "does not parse" would leave the operator hunting the line by hand.
+V2="$(bash "$PL" verify --ledger "$work/l2-dup.md" 2>&1)"
+has "$V2" "duplicate thread id" "verify still names WHAT is wrong, not merely that something is"
 
 # =============================== 3. a damaged ledger is refused WHOLE ============================
 # The truncated-region shape is the dangerous one: it reports FEWER hits than exist and looks
@@ -298,6 +340,10 @@ refused "a too-short fix sha is refused"          19 --class guard-class --site 
 refused "a non-hex fix sha is refused"            19 --class guard-class --site a.sh    --fix zzzzzzz --pr 1 --thread T-g6
 refused "a thread id with a space is refused"     19 --class guard-class --site a.sh    --fix abc1234 --pr 1 --thread 'a b'
 refused "a non-numeric --pr is refused"           19 --class guard-class --site a.sh    --fix abc1234 --pr x --thread T-g7
+# ZERO IS NOT POSITIVE, and the diagnostic has always said "positive". A predicate that accepts a
+# value its own message forbids is a contract nobody can rely on.
+refused "--pr 0 is refused"                      19 --class guard-class --site a.sh    --fix abc1234 --pr 0 --thread T-g0
+refused "--pr 00 is refused too"                 19 --class guard-class --site a.sh    --fix abc1234 --pr 00 --thread T-g00
 # THE INJECTION THAT MATTERS: a summary carrying a region marker would CLOSE the hits region and
 # make every record after it invisible — the count-too-low direction, caused by a reviewer's text.
 refused "a region marker in a summary is refused" 19 --class guard-class --site a.sh --fix abc1234 \

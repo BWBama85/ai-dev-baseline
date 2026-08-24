@@ -2999,6 +2999,42 @@ adb_toml_get() {
   ' "$file"
 }
 
+# adb_toml_layered_get <repo-toml> <global-toml> <section> <key> [--with-layer] — the raw
+# `[<section>].<key>` value from the repo manifest, else the global one.
+#
+# Returns 0 if the key is defined in EITHER, 1 when neither defines it. THE REPO LAYER WINS EVEN
+# WHEN ITS VALUE IS INVALID, and that is the load-bearing part rather than an implementation
+# detail: falling through a bad higher-precedence value to the next layer hands the operator a
+# setting they did not choose, from a file they thought they had configured, with nothing said.
+# Every caller must therefore validate what comes back and fail loud, never re-read the next layer.
+#
+# `--with-layer` prefixes the answer with WHICH layer supplied it (`repo ` / `global `), because a
+# caller reporting a value to an operator has to be able to say which file to edit. It is an
+# OUTPUT and not a global: every caller invokes this inside `$( … )`, which is a subshell, so an
+# assignment to a global here would be discarded before the caller could read it.
+#
+# THE PATHS ARE ARGUMENTS, not file-scope constants, which is what makes this shareable. It was
+# private to `role-dispatch.sh` as `_adb_rd_layered_get` with the paths baked in, and two later
+# modules (#421's threshold, #422's `[mcp]`) then re-implemented the same precedence — three
+# spellings of one rule, which is exactly the drift `docs/design-principles.md` forbids. Promoted
+# here so the order cannot differ between the roles reader, the ledger and the docs duty.
+#
+# bash 3.2-safe: plain positionals and `case`, no 5.3 construct, because this file must parse and
+# run below the floor (D30/D35).
+adb_toml_layered_get() {
+  local repo_toml="$1" global_toml="$2" section="$3" key="$4" with_layer=0 raw
+  [ "${5:-}" = "--with-layer" ] && with_layer=1
+  if raw="$(adb_toml_get "$repo_toml" "$section" "$key")"; then
+    [ "$with_layer" -eq 1 ] && printf 'repo '
+    printf '%s' "$raw"; return 0
+  fi
+  if raw="$(adb_toml_get "$global_toml" "$section" "$key")"; then
+    [ "$with_layer" -eq 1 ] && printf 'global '
+    printf '%s' "$raw"; return 0
+  fi
+  return 1
+}
+
 # Strip one layer of surrounding double quotes from a scalar TOML value.
 # ("" → empty string; "pnpm test" → pnpm test). Leaves an array ([...]) untouched.
 adb_toml_unquote() {

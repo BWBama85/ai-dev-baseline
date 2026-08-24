@@ -47,12 +47,19 @@ only by a published release, which is what these entries are the notes for.
   distinct code for it rather than empty output somebody could paste past.
 
   **`[mcp] required` finally has a consumer.** Each declared server must answer one real read-only
-  query, and the adjudication is **fail-closed**: a server with no recorded result is reported
-  DEGRADED exactly as a failing one is, so skipping the probe cannot buy a clean verdict. A
-  degraded server degrades the run and is named in the report rather than stopping it (D90) — it is
-  a preferred source with a lower rung underneath, not a broken install. What is deliberately not
-  claimed is that the agent really issued the query: MCP is an in-harness protocol and no shell
-  gate reaches it, so the mechanism is the recorded evidence and review is what reads it.
+  query, and the adjudication is **fail-closed** in both directions that matter: a server with no
+  recorded result, *and* a stored record outside the grammar, are each reported DEGRADED exactly as
+  a failing one is — so neither skipping the probe nor hand-writing a result buys a clean verdict.
+  A declared name nothing could ever record a result for (`"bad name"`) is refused at the manifest,
+  where the message can name the file, rather than degrading every future run and blaming a server
+  that was never the problem.
+
+  A degraded server degrades the run and is named in the report rather than stopping it (D90) — it
+  is a preferred source with a lower rung underneath, not a broken install. What is deliberately
+  **not** claimed is that the agent really issued the query. A shell can reach MCP indirectly
+  (`claude -p --mcp-config`), so present usability is establishable; what no gate can do is
+  authenticate the historical action another agent recorded. The mechanism is the recorded evidence
+  and the report line, and review is what reads them.
 
 ### Fixed
 

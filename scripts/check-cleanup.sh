@@ -1145,8 +1145,8 @@ else
       }
     }' ; }"
   if [ -n "$sweeparms" ]; then
-    eq "$sweeparms" "gaps issue review threads " \
-       "6 the sweep loop's delete arms are EXACTLY gaps/issue/review/threads — no default arm, so 'unsafe' cannot be deleted"
+    eq "$sweeparms" "gaps issue review docs threads " \
+       "6 the sweep loop's delete arms are EXACTLY gaps/issue/review/docs/threads — no default arm, so 'unsafe' cannot be deleted"
   else
     bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
   fi
@@ -1251,7 +1251,11 @@ else
   # older families carry: whatever /cleanup can sweep, admit must be able to clear.
   ilw="$work/il"; mkdir -p "$ilw"
   ilarms=0
-  for armname in gaps issue review; do
+  # `docs` joins them for #422 — the documentation-duty record, which carries what this run says
+  # it consulted. Same obligation as the three older families: whatever /cleanup can sweep, `admit`
+  # must be able to clear, or a previous run's stated disposition survives into a fresh run whose
+  # marker makes it read as current.
+  for armname in gaps issue review docs; do
     # Anchored on the arm's BODY (`printf 'gaps\t…`), not on its label: the gaps arm's label starts
     # with `gap-prompt.txt` and the review arm's with `review-prompt.txt`, so neither begins with
     # the kind it emits. Matching the emit line and reporting the label above it reads the pairing
@@ -1318,7 +1322,7 @@ else
       bad "6 the $armname arm exposes no family glob — the symlink agreement check asserted NOTHING"
     fi
   done
-  eq "$ilarms" "3" "6 all three artifact families (gaps, issue, review) were actually read from state-scan"
+  eq "$ilarms" "4" "6 all four artifact families (gaps, issue, review, docs) were actually read from state-scan"
 
   # A failure to clear must REFUSE and release, never report success over artifacts it did not
   # remove. A read-only state dir (mode 500) is the reproducible form of that.
@@ -1828,11 +1832,11 @@ eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'state-scan --with-identity'; }" "1
 # really a checksum.
 has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
 # EVERY deleting arm, not just the one this issue was reported against.
-for arm in gaps issue review threads; do
+for arm in gaps issue review docs threads; do
   has "$SW_SNIPPET" "    $arm)" "8d the $arm arm is present in the sweep"
 done
-eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "4" \
-   "8d …and all four pass the judged identity to the delete"
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "5" \
+   "8d …and all five pass the judged identity to the delete"
 hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
 ' "8d no arm still deletes by pathname alone"
 

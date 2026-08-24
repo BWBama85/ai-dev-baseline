@@ -211,18 +211,13 @@ _adb_rd_valid_token() {
 # every caller invokes this function inside `$( … )`, which is a subshell, so an assignment to a
 # global here is discarded before the caller can read it. That was the first attempt, and it
 # returned an empty layer for every case. Callers that omit the flag are byte-for-byte unaffected.
+# NOW A THIN WRAPPER over `adb_toml_layered_get` in common.sh, which owns the precedence rule
+# itself. It stays as a named function because this module's two callers want the paths bound —
+# the shared primitive takes them as arguments precisely so it can serve modules with different
+# manifests (#421's ledger, #422's `[mcp]`), and re-typing them at each call site here would be
+# the same duplication one level down.
 _adb_rd_layered_get() {
-  local section="$1" key="$2" with_layer=0 raw
-  [ "${3:-}" = "--with-layer" ] && with_layer=1
-  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then
-    [ "$with_layer" -eq 1 ] && printf 'repo '
-    printf '%s' "$raw"; return 0
-  fi
-  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then
-    [ "$with_layer" -eq 1 ] && printf 'global '
-    printf '%s' "$raw"; return 0
-  fi
-  return 1
+  adb_toml_layered_get "$_ADB_RD_REPO_TOML" "$_ADB_RD_GLOBAL_TOML" "$@"
 }
 
 # The built-in default for a role that is UNSET or set to "": gap_analysis skips (no output, 0

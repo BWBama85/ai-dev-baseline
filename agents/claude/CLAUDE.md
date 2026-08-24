@@ -1081,15 +1081,21 @@ credential to every clone, every fork, and every CI log that prints the file
 - **Nothing proves a declared MCP server was actually queried.** `[mcp] required` does
   now have a consumer (#422): `/implement-issue` asks the agent to put one real
   read-only query to each declared required server and adjudicates the result
-  **fail-closed** — a server with no recorded result is reported DEGRADED, exactly as a
-  failing one is, so skipping the probe cannot buy a clean verdict. What that does not
-  establish is that the query was really issued; MCP is an in-harness protocol and no
-  shell gate can reach it. The mechanism is the recorded evidence and the report line,
-  and review is what reads them.
+  **fail-closed** — a server with no recorded result, or a stored record outside the
+  grammar, is reported DEGRADED exactly as a failing one is, so neither skipping the
+  probe nor hand-writing a result can buy a clean verdict. What that does not establish
+  is that the query was really issued. A shell *can* reach MCP indirectly — `claude -p`
+  takes `--mcp-config` and `--allowed-tools`, so a headless agent could be launched to
+  test a server's PRESENT usability — but no gate can authenticate the HISTORICAL action
+  another agent recorded. The mechanism is the recorded evidence and the report line, and
+  review is what reads them.
 - **Nothing decides whether a surface was "complex enough" to need docs.** The trigger
-  list above is judgment, like the comment classes. What is mechanical is only that the
-  run stated *some* disposition: `/implement-issue` fails its own report step when the
-  record is empty.
+  list above is judgment, like the comment classes.
+- **The empty-disposition check reports; it does not gate.** `/implement-issue`'s report
+  step returns a distinct code when a run recorded nothing, and the step says to go back
+  and state the disposition — but nothing *stops* the run, and no hook enforces it. It is
+  a loud, reviewable omission rather than a blocked one, which is the same posture as the
+  comment classes: enforcement is review-side, or it is nowhere.
 - **`debugging.md` still owns the diagnosis.** A resolved documentation fact is
   evidence toward a root cause, never the root cause: "the docs say X" does not
   close an investigation that has not reproduced the failure.

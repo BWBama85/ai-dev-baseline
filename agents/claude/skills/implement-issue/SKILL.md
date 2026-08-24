@@ -520,10 +520,19 @@ PROMPT
 #     is the ONE subcommand whose output reaches a prompt, and it carries no summary, site or sha.
 #     It also keeps the prompt BOUNDED: the hit history grows forever, the checklist does not.
 #
-#     `|| true`, because rc 18 (a ledger that does not parse) and rc 20 (no ledger at all) are both
-#     legitimate here — a project with no ledger yet is the ordinary first run, and gap analysis is
-#     not the step that should die over it. The empty test below is what decides.
-CHECKLIST="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" checklist 2>/dev/null || true)"
+#     BRANCH ON THE CODE; do NOT swallow it. This block used to read
+#     `"$(… checklist 2>/dev/null || true)"`, which turned a ledger that does not parse into an
+#     empty checklist and dispatched gap analysis as if the project had never learned anything —
+#     the refuse-whole contract being false at one of its two principal consumers, silently. An
+#     ABSENT ledger is rc 0 with empty output (the ordinary first run); rc 20 is "not in a git
+#     repository"; only rc 18 means the file is damaged, and that is worth a line.
+CHECKLIST="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" checklist)"; CRC=$?
+case "$CRC" in
+  0)  : ;;   # a checklist, or none yet — both fine
+  18) echo "NOTE: .ai-dev-baseline/patterns.md does not parse; gap analysis will run WITHOUT this
+             project's learned classes. Fix it with: baseline patterns verify" ;;
+  *)  echo "NOTE: could not read the pattern ledger (rc $CRC); proceeding without it" ;;
+esac
 if [ -n "$CHECKLIST" ]; then
   {
     printf '\n%s\n' "This project keeps a ledger of review-finding classes it has already paid for."
@@ -723,9 +732,13 @@ Not `mcp list`, not the connection status: a server with a bad credential still 
 still answers `tools/list`, and returns the auth failure **inside an HTTP 200 tool result**. Judge
 the tool RESULT (`third-party-claims.md`).
 
-You perform the probe because only you can — MCP is an in-harness protocol and no shell command
-reaches it. The library owns the adjudication, and it is **fail-closed**: a declared server with no
-recorded result is DEGRADED exactly as a failing one is, so skipping the probe cannot buy a clean
+You perform the probe because you are the one already holding the connection. MCP is an in-harness
+protocol and no agent CLI exposes a generic tool call as a subcommand — `codex mcp` and `claude mcp`
+manage configuration. (A shell *could* reach a server indirectly, by launching `claude -p` with
+`--mcp-config`; that would establish a server's present usability, not that *this* run consulted it.
+It is not what this step does.) The library owns the adjudication, and it is **fail-closed**: a
+declared server with no recorded result — or a stored record outside the grammar — is DEGRADED
+exactly as a failing one is, so neither skipping the probe nor hand-writing a result buys a clean
 verdict.
 
 ```bash
@@ -839,9 +852,10 @@ somebody wrote after fixing an instance:
 ```bash
 bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" checklist; CRC=$?
 case "$CRC" in
-  0)  : ;;   # sweep the diff for EVERY rule it printed, then do the open-ended pass
+  0)  : ;;   # a checklist to sweep, or none yet — an ABSENT ledger is 0 with empty output, which
+             # is the ordinary first run and is not a problem
   18) echo "NOTE: the pattern ledger does not parse — fix .ai-dev-baseline/patterns.md"; ;;
-  *)  : ;;   # no ledger yet: nothing to sweep, and nothing is wrong. Ordinary on a first run.
+  *)  : ;;   # 20: not in a git repository, or the ledger path is unreadable
 esac
 ```
 

@@ -113,9 +113,12 @@ if [ "$MODE" = mutation ]; then
 
   # A malformed declaration reads as "none declared" — the flattering answer, which reports a
   # project that asked for a preflight as one that declined.
+  # RETARGETED when `_adb_dl_mcp_key` was rewritten to use the shared layered read: the old row's
+  # literal no longer existed, so it applied to nothing and the harness caught it as a row that
+  # tests NOTHING — which is the harness doing its job on its own table.
   check_mut malformed-reads-as-none \
-    "      *) printf 'docs-lib: [mcp] %s in %s is not an array (got %s)\\n' \"\$key\" \"\$file\" \"\$raw\" >&2; return 18 ;;" \
-    "      *) return 1 ;;" \
+    '>&2; return 18 ;;' \
+    '>&2; return 1 ;;' \
     'a malformed [mcp] required is 18, never "none declared"'
 
   # The report stops refusing silence: an unstated disposition would render as an empty block
@@ -140,6 +143,20 @@ if [ "$MODE" = mutation ]; then
     "tr -d '[:cntrl:]'" \
     "tr -d ''" \
     'a control character in evidence is refused'
+
+  # THE READ-SIDE VALIDATION, added after the review reproduced a clean verdict from a record the
+  # writer would never have produced. Without a row here, deleting it again is invisible.
+  check_mut readers-skip-validation \
+    '  _adb_dl_records "$f" >/dev/null || {' \
+    '  false && {' \
+    'verdict refuses a probe record with no evidence'
+
+  # And the declaration's element check, whose absence turns a typo into a permanent degradation
+  # that blames the wrong thing.
+  check_mut declaration-elements-unchecked \
+    '    _adb_dl_ok_server "$one" || {' \
+    '    false && {' \
+    'a declared server name outside the recordable charset is refused'
 
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
@@ -323,6 +340,62 @@ eq "$?" 2 "…and a consultation demands the source that answered"
   "…and none of them wrote a record"
 dl verdict --state "$D9/state" --manifest "$D9/agents.toml" >/dev/null 2>&1
 eq "$?" 10 "…so the server is still unproven — a refused probe never counts as one"
+
+# =============================== 8b. hostile READ-BACK, not just write-time refusal ==============
+# The suite drove every field through `probe-record` and never wrote a malformed record directly —
+# so it proved the WRITER refuses bad input while the READERS accepted it. The independent review
+# reproduced the consequence: a hand-written `probe<TAB>context7<TAB>usable` with no evidence
+# earned exit 0 from `verdict`, which is the clean verdict nobody earned that this whole module
+# exists to prevent. Write the bytes directly, then read them.
+D10="$(fixture readback '[mcp]
+required = ["context7"]
+')"
+hostile() {   # <label> <record-line>
+  printf '%s\n' "$2" > "$D10/state/docs-consulted.tsv"
+  dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+  eq "$?" 18 "verdict refuses $1"
+  dl report --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+  eq "$?" 18 "report refuses $1"
+}
+hostile "a probe record with no evidence"       "$(printf 'probe\tcontext7\tusable')"
+hostile "a probe record with an unknown result" "$(printf 'probe\tcontext7\tmaybe\tev')"
+hostile "a probe record with a bad server name" "$(printf 'probe\tbad name\tusable\tev')"
+hostile "an unknown record type"                "$(printf 'bogus\tx\ty\tz')"
+hostile "a consulted record with a bad rung"    "$(printf 'consulted\tsurface\t9\tsrc')"
+hostile "a consulted record missing its source" "$(printf 'consulted\tsurface\t2')"
+hostile "a none-needed record with extra fields" "$(printf 'none-needed\tjust\tstray')"
+
+# A well-formed file still passes, so the validator is not simply refusing everything — the failure
+# mode a whole-file check most easily degrades into.
+printf 'probe\tcontext7\tusable\tresolve-library-id returned 5\nnone-needed\ttrivial\n' \
+  > "$D10/state/docs-consulted.tsv"
+dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 0 "…and a well-formed file still earns a clean verdict"
+
+# =============================== 8c. the declaration's elements ==================================
+# A declared name the recorder can never accept is not a harmless typo: nothing could ever record a
+# result for it, so the run would report DEGRADED forever and blame a server that was never the
+# problem. Caught at the declaration, where the message can name the file to fix.
+D11="$(fixture badname '[mcp]
+required = ["bad name"]
+')"
+dl mcp-required --manifest "$D11/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a declared server name outside the recordable charset is refused"
+OUT="$(dl mcp-required --manifest "$D11/agents.toml" 2>&1 >/dev/null)"
+has "$OUT" "DEGRADED" "…and the diagnostic says what would otherwise happen forever"
+dl verdict --state "$D11/state" --manifest "$D11/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and the verdict refuses rather than degrading on a name nothing could match"
+
+# An EMPTY repo-level declaration must not fall through to the global manifest — the operator wrote
+# something, and inheriting the machine's list instead is a value they did not choose.
+mkdir -p "$FHOME/.config/ai-dev-baseline"
+printf '[mcp]\nrequired = ["global-only"]\n' > "$FHOME/.config/ai-dev-baseline/agents.toml"
+D12="$(fixture emptyrepo '[mcp]
+required = []
+')"
+eq "$(dl mcp-required --manifest "$D12/agents.toml" | wc -l | tr -d ' ')" 0 \
+   "an empty repo declaration wins over the global one, rather than falling through to it"
+rm -f "$FHOME/.config/ai-dev-baseline/agents.toml"
 
 # =============================== 9. the call sites are wired ====================================
 IMP=base/workflows/implement-issue.md

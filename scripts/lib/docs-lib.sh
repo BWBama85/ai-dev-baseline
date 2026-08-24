@@ -93,10 +93,6 @@ die() { printf 'docs-lib: %s\n' "$*" >&2; exit 2; }
 usage() { adb_usage "$0"; }
 
 TAB="$(printf '\t')"
-# NOT `$(printf '\n')` — command substitution strips it and leaves the empty string, which turns
-# every `case … in *"$NL"*)` below into a test that matches everything. Same trap named beside
-# scripts/lib/cleanup-lib.sh's own TAB.
-NL=$'\n'
 
 # The run-scoped record file. One TSV, under the agent's own state directory, because it is run
 # evidence and not project history — the ledger in .ai-dev-baseline/ is the durable artifact, this
@@ -110,7 +106,11 @@ _ADB_DL_FILE=docs-consulted.tsv
 # as `usable`. Refuse rather than escape.
 _adb_dl_ok_field() {
   [ -n "$1" ] || return 1
-  case "$1" in *"$TAB"*|*"$NL"*) return 1 ;; esac
+  # THE DELIMITER TEST IS `adb_tsv_field_safe`'s — one home for exactly this question, and its
+  # header records why the failure is FORGERY rather than corruption: a value carrying a delimiter
+  # does not make the record malformed, it makes TWO records, the second entirely chosen by
+  # whoever supplied the value. The control-character rule below is this module's own addition.
+  adb_tsv_field_safe "$1" || return 1
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
 }
 
@@ -136,14 +136,56 @@ _adb_dl_file() {
   printf '%s/%s\n' "$d" "$_ADB_DL_FILE"
 }
 
-# Append one record. Created on first write; the state directory must already exist, because this
-# module is not the thing that decides where a run's state lives.
+# Append one record, creating the file — and the state directory — on first write. The directory is
+# created rather than required: the caller names it (`--state`), and a run whose very first docs
+# action precedes any other state write would otherwise fail on a directory it is entitled to have.
 _adb_dl_append() {
   local f d
   f="$(_adb_dl_file)" || exit 20
   d="$(dirname "$f")"
   [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'docs-lib: cannot create %s\n' "$d" >&2; exit 20; }
   printf '%s\n' "$*" >> "$f" || { printf 'docs-lib: cannot write %s\n' "$f" >&2; exit 20; }
+}
+
+# _adb_dl_records <file> — every stored record, but only if the WHOLE file obeys the grammar.
+#
+# THE READERS USED TO PARSE WITHOUT VALIDATING, and the independent review reproduced what that
+# costs: a hand-written `probe<TAB>context7<TAB>usable` — three fields, no evidence — earned exit 0
+# from `verdict`. So the adjudication enforced "a missing server result degrades" while the header
+# claimed "silence or unverifiable evidence degrades", and the difference is a clean verdict nobody
+# earned. An unknown record type, a short line, or a field the writer would have refused now stops
+# both readers (18) instead of being skipped or half-read.
+#
+# VALIDATED THROUGH THE WRITER'S OWN PREDICATES, so the grammar keeps one home and a reader cannot
+# drift from what `probe-record` and `consulted` will actually produce.
+_adb_dl_records() {
+  local f="$1" kind a b c n
+  [ -f "$f" ] || return 0
+  while IFS="$TAB" read -r kind a b c; do
+    [ -n "$kind" ] || continue
+    case "$kind" in
+      probe)
+        _adb_dl_ok_server "$a" || return 1
+        case "$b" in usable|degraded|absent) ;; *) return 1 ;; esac
+        _adb_dl_ok_field "$c" || return 1 ;;
+      consulted)
+        _adb_dl_ok_field "$a" || return 1
+        case "$b" in 1|2|3) ;; *) return 1 ;; esac
+        _adb_dl_ok_field "$c" || return 1 ;;
+      none-needed)
+        _adb_dl_ok_field "$a" || return 1
+        # EXACTLY TWO FIELDS. A third would mean a tab reached a justification, which is the
+        # forgery case `_adb_dl_ok_field` exists to prevent — caught here as well, because by the
+        # time it is on disk the writer's check is behind us.
+        [ -z "$b$c" ] || return 1 ;;
+      *) return 1 ;;
+    esac
+  done < "$f"
+  n="$(wc -l < "$f" | tr -d ' ')"
+  # A FINAL LINE WITHOUT A NEWLINE is a truncated write, and `read` drops it silently — so the
+  # readers would adjudicate over a file whose last record they never saw.
+  [ "$(wc -c < "$f" | tr -d ' ')" -eq 0 ] || [ "$n" -gt 0 ] || return 1
+  return 0
 }
 
 # --- the manifest -------------------------------------------------------------------------------
@@ -155,21 +197,38 @@ _adb_dl_append() {
 # plausible typo, and reading it as an undeclared key would report a project that asked for a
 # preflight as a project that declined one.
 _adb_dl_mcp_key() {
-  local key="$1" file raw
-  for file in "${OPT_MANIFEST:-$(adb_repo_root 2>/dev/null)/agents.toml}" "$(adb_global_manifest)"; do
-    [ -f "$file" ] || continue
-    raw="$(adb_toml_get "$file" mcp "$key" 2>/dev/null)" || continue
-    [ -n "$raw" ] || continue
-    case "$raw" in
-      \[*\]) ;;
-      *) printf 'docs-lib: [mcp] %s in %s is not an array (got %s)\n' "$key" "$file" "$raw" >&2; return 18 ;;
-    esac
-    adb_toml_array "$raw"
-    return 0
-  done
-  return 1
-  # `--manifest` deliberately replaces only the FIRST element: a test that points at a throwaway
-  # manifest still layers the real global one underneath, which is what the runtime does.
+  local key="$1" raw layer layered parsed one
+  # THE PRECEDENCE RULE IS `adb_toml_layered_get`'s (common.sh), not a third copy of it. The loop
+  # this replaced also fell THROUGH an empty repo-level declaration to the global manifest, so a
+  # project that wrote `required =` silently inherited the machine's list.
+  #
+  # `--manifest` replaces only the REPO layer: a test pointing at a throwaway manifest still has
+  # the real global one underneath, which is what the runtime does.
+  layered="$(adb_toml_layered_get "${OPT_MANIFEST:-$(adb_repo_root 2>/dev/null)/agents.toml}" \
+                                  "$(adb_global_manifest)" mcp "$key" --with-layer)" || return 1
+  layer="${layered%% *}"; raw="${layered#* }"
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    \[*\]) ;;
+    *) printf 'docs-lib: [mcp] %s in the %s manifest is not an array (got %s)\n' \
+         "$key" "$layer" "$(adb_display_value "$raw")" >&2; return 18 ;;
+  esac
+  # EVERY ELEMENT IS VALIDATED, against the same charset `probe-record` enforces. A declared name
+  # the recorder can never accept — `"bad name"`, say — is not a harmless typo: nothing could ever
+  # record a result for it, so `verdict` would report the run DEGRADED forever, blaming a server
+  # that was never the problem. Caught here, where the message can name the file to fix.
+  parsed="$(adb_toml_array "$raw")"
+  while IFS= read -r one; do
+    [ -n "$one" ] || continue
+    _adb_dl_ok_server "$one" || {
+      printf 'docs-lib: [mcp] %s in the %s manifest names %s, which is not a usable server name ([A-Za-z0-9_.-]). Nothing could record a result for it, so every run would report DEGRADED.\n' \
+        "$key" "$layer" "$(adb_display_value "$one")" >&2
+      return 18; }
+  done <<ELEMS
+$parsed
+ELEMS
+  printf '%s' "$parsed" | awk 'NF'
+  return 0
 }
 
 # --- subcommands --------------------------------------------------------------------------------
@@ -182,7 +241,7 @@ cmd_probe_record() {
   [ -n "$OPT_RESULT" ]   || die "probe-record: --result is required"
   [ -n "$OPT_EVIDENCE" ] || die "probe-record: --evidence is required"
   _adb_dl_ok_server "$OPT_SERVER" || {
-    printf 'docs-lib: refusing server "%s" — [A-Za-z0-9_.-] up to 128 chars, matching the declared name.\n' "$OPT_SERVER" >&2; exit 19; }
+    printf 'docs-lib: refusing server %s — [A-Za-z0-9_.-] up to 128 chars, matching the declared name.\n' "$(adb_display_value "$OPT_SERVER")" >&2; exit 19; }
   case "$OPT_RESULT" in
     usable|degraded|absent) ;;
     *) die "probe-record: --result must be usable, degraded or absent (got '$OPT_RESULT')" ;;
@@ -239,6 +298,9 @@ cmd_verdict() {
     printf 'docs-lib: [mcp] required is empty — nothing to preflight\n'; return 0
   fi
   f="$(_adb_dl_file)" || exit 20
+  _adb_dl_records "$f" >/dev/null || {
+    printf 'docs-lib: %s holds a record that is not in the grammar — refusing to adjudicate over a file this module would not have written\n' "$f" >&2
+    return 18; }
   [ -f "$f" ] && probes="$(awk -F'\t' '$1 == "probe" { print $2 "\t" $3 }' "$f")"
 
   # THE LAST RECORD FOR A SERVER WINS, which is why the awk keeps assigning instead of exiting on
@@ -276,6 +338,9 @@ cmd_verdict() {
 cmd_report() {
   local f n_consulted=0 n_none=0 n_probe=0 required rc vrc
   f="$(_adb_dl_file)" || exit 20
+  _adb_dl_records "$f" >/dev/null || {
+    printf 'docs-lib: %s holds a record that is not in the grammar — refusing to render a report from it\n' "$f" >&2
+    return 18; }
   if [ -f "$f" ]; then
     n_consulted="$(awk -F'\t' '$1 == "consulted"'   "$f" | wc -l | tr -d ' ')"
     n_none="$(awk -F'\t'      '$1 == "none-needed"' "$f" | wc -l | tr -d ' ')"
