@@ -714,6 +714,12 @@ case "$MRC" in
 esac
 ```
 
+**Every call below passes `--state .gemini/state`, and that is not boilerplate.** Without it the
+library falls back to a default that names ONE agent's state directory, so a run driven by a
+different agent would write its documentation record into a directory its own `admit` never clears
+and its own `/cleanup` never sweeps — silently, since the records would still be written and the
+report would still render. The state directory is the caller's to name.
+
 **For each declared server, issue ONE REAL READ-ONLY QUERY yourself, then record what happened.**
 Not `mcp list`, not the connection status: a server with a bad credential still reports Connected,
 still answers `tools/list`, and returns the auth failure **inside an HTTP 200 tool result**. Judge
@@ -726,10 +732,10 @@ verdict.
 
 ```bash
 # after actually calling one cheap read-only tool on <server>:
-bash "$HOME/.gemini/scripts/lib/docs-lib.sh" probe-record --server <name> --result usable|degraded|absent \
+bash "$HOME/.gemini/scripts/lib/docs-lib.sh" probe-record --state .gemini/state --server <name> --result usable|degraded|absent \
   --evidence '<what you observed — the call and its result, not "it worked">'
 
-bash "$HOME/.gemini/scripts/lib/docs-lib.sh" verdict; VRC=$?
+bash "$HOME/.gemini/scripts/lib/docs-lib.sh" verdict --state .gemini/state; VRC=$?
 case "$VRC" in
   0)  : ;;   # every declared required server answered
   10) : ;;   # DEGRADED — proceed on rung 3 (current vendor docs via web search) and SAY SO in the
@@ -754,7 +760,7 @@ external service · a choice between patterns the vendor documents — and its s
 idiom, or a shape that already exists in this project and survived review.
 
 ```bash
-bash "$HOME/.gemini/scripts/lib/docs-lib.sh" consulted --surface '<the API/service/flag>' --rung <1|2|3> \
+bash "$HOME/.gemini/scripts/lib/docs-lib.sh" consulted --state .gemini/state --surface '<the API/service/flag>' --rung <1|2|3> \
   --source '<WHAT answered — "probed: gh --version -> 2.62.0", or a context7 library id plus the
              concept, or a vendor URL fetched this run>'
 ```
@@ -765,13 +771,13 @@ guess one reader downstream; `resolve-library-id("bash") returned 5 libraries` c
 **A run that needed nothing says so, explicitly:**
 
 ```bash
-bash "$HOME/.gemini/scripts/lib/docs-lib.sh" none-needed --justification '<why every surface here is trivial or already-proven>'
+bash "$HOME/.gemini/scripts/lib/docs-lib.sh" none-needed --state .gemini/state --justification '<why every surface here is trivial or already-proven>'
 ```
 
 That is a complete, legitimate outcome — the proportionality rule is real, not ceremonial, and a
 hello-world function consults nothing. What is **not** legitimate is silence: an unstated
 disposition is indistinguishable from an agent that never considered the question, which is why
-`bash "$HOME/.gemini/scripts/lib/docs-lib.sh" report` returns **11** for a run that recorded neither kind. Step 10 and step 11 both
+the report step below returns **11** for a run that recorded neither kind. Step 10 and step 11 both
 render that report, so an empty record surfaces there rather than passing unnoticed.
 
 ### 6. Implement
@@ -1148,7 +1154,7 @@ fully-resolved issue (each on its own line), `Refs #N` for any sliced. After `gh
 disposition as it was decided; this renders them:
 
 ```bash
-bash "$HOME/.gemini/scripts/lib/docs-lib.sh" report; DRC=$?
+bash "$HOME/.gemini/scripts/lib/docs-lib.sh" report --state .gemini/state; DRC=$?
 case "$DRC" in
   0)  : ;;   # paste the block into the PR body
   11) : ;;   # NOTHING WAS RECORDED. Do not paste an empty section and do not invent one: go back
@@ -1337,7 +1343,7 @@ silently drop a skipped item), grouped Setup → Implementation → Review → S
 **Needs attention** block for anything not ✅ and a **Follow-up issues filed** block (each with its
 milestone + one-line rationale).
 
-**State the documentation disposition, in one line (#422).** Render it with `bash "$HOME/.gemini/scripts/lib/docs-lib.sh" report`
+**State the documentation disposition, in one line (#422).** Render it with `bash "$HOME/.gemini/scripts/lib/docs-lib.sh" report --state .gemini/state`
 — the same block the PR body carries — and say which of the three it was: surfaces resolved (naming
 what answered, per rung), **none needed** with the justification, or a **DEGRADED** MCP preflight
 naming the server and the rung the run fell to. Code `11` means this run stated nothing, which is

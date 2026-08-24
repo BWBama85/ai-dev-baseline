@@ -231,6 +231,13 @@ agent was told to follow it.
 The only lines with a machine-read grammar are the ones between the markers below; the prose
 around them is yours.
 
+**Two branches can both append here, and that is handled by ordinary means.** Git may report a
+conflict when two pull requests add hits at the same point — take both sides; the entries are
+independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
+is decided by *reading this file*, never by a counter carried in a branch: two branches that each
+recorded a class's first hit merge into a file holding two, and the next run promotes it. The
+mechanism converges rather than missing the class permanently.
+
 ## Promoted checklist
 
 Sweep each of these before opening a pull request.

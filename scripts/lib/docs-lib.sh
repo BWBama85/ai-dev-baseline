@@ -303,6 +303,12 @@ cmd_report() {
       printf -- '- MCP preflight: **DEGRADED** — %s\n' "$(cmd_verdict 2>&1 >/dev/null | awk -F'did not answer: ' 'NF > 1 { print $2 }' | head -1)"
       printf -- '  This run fell back to rung 3 (current vendor documentation via web search).\n'
     fi
+  elif [ "$rc" -eq 18 ]; then
+    # NOT the "declares nothing" line. A malformed declaration is a project that ASKED for a
+    # preflight and mis-spelled it, and reporting that as "declares no [mcp] required" tells the
+    # reader the opposite of what is true — the flattering reading, in the one block whose job is
+    # to be audited.
+    printf '\n- MCP preflight: **UNREADABLE** — `[mcp] required` is malformed; fix agents.toml.\n'
   elif [ "$n_probe" -gt 0 ]; then
     printf '\n- MCP preflight: probes recorded, but this repo declares no `[mcp] required`.\n'
   fi

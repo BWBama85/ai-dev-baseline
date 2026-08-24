@@ -225,6 +225,14 @@ dl mcp-required --manifest "$D4/agents.toml" >/dev/null 2>&1
 eq "$?" 18 'a malformed [mcp] required is 18, never "none declared"'
 dl verdict --state "$D4/state" --manifest "$D4/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "…and the verdict refuses rather than passing"
+# AND THE REPORT SAYS SO, rather than reporting the opposite. A malformed declaration is a project
+# that asked for a preflight and mis-spelled it; rendering that as "declares no [mcp] required" is
+# the flattering reading, in the one block whose entire job is to be audited.
+dl none-needed --state "$D4/state" --justification 'trivial' >/dev/null 2>&1
+dl probe-record --state "$D4/state" --server context7 --result usable --evidence ok >/dev/null 2>&1
+R4="$(dl report --state "$D4/state" --manifest "$D4/agents.toml" 2>/dev/null)"
+has   "$R4" "UNREADABLE"                 "the report names a malformed declaration as unreadable"
+hasnt "$R4" "declares no"                "…and never as a project that declared nothing"
 
 # An explicitly EMPTY array is a declaration that there is nothing to preflight — distinct from a
 # malformed one, and distinct from absent.
@@ -346,6 +354,21 @@ has "$(section "$IMP" '### 11. Close-out')" '{{DOCS_LIB}} report' \
 has "$(section "$IMP" '### 5b.')" '{{DOCS_LIB}} consulted' \
    "…and step 5b is where the records are written, ahead of both"
 has "$IMPTXT" 'Docs consulted' "the PR body carries the named block"
+
+# EVERY STATE-TOUCHING CALL NAMES THE STATE DIRECTORY. The library has to default to something when
+# nobody passes `--state`, and any default names ONE agent's directory — so a rendered skill that
+# omitted the flag would write its record into another agent's state, silently: the records are
+# still written and the report still renders, only into a directory that agent's own `admit` never
+# clears and its own /cleanup never sweeps. Caught in self-review after the Codex render was read
+# back; asserted here because nothing else in the suite could see it.
+for sub in probe-record verdict consulted none-needed report; do
+  while IFS= read -r line; do
+    case "$line" in
+      *'--state {{STATE_DIR}}'*) ok ;;
+      *) bad "the workflow calls \`$sub\` without --state {{STATE_DIR}}: [$line]" ;;
+    esac
+  done < <(grep -F "{{DOCS_LIB}} $sub" "$IMP")
+done
 
 # The practice must carry the trigger AND the skip list. A duty that fires on everything is one
 # nobody performs, so the skip half is load-bearing rather than a softener.
