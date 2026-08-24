@@ -183,12 +183,10 @@ if [ "$MODE" = mutation ]; then
     '    :' \
     'a hand-edited PR number outside the domain is refused by the readers'
 
-  # THE CHECKLIST RULE BODY (PR #429). Without it a class name with no instruction reaches the
-  # prompt surface, which is where an empty rule is invisible.
-  check_mut checklist-body-unchecked \
-    '      if (rest == "") { bad = 1; exit }' \
-    '      if (0) { bad = 1; exit }' \
-    'a checklist rule with no instruction text is refused by `checklist`'
+  # THE AWK-SIDE EMPTY-RULE CHECK HAS NO ROW ANY MORE. Once `_adb_pl_ok_text` validated the rule
+  # text on the shell side, an empty rule was refused there too — so disabling the awk test changed
+  # no behaviour and the row stayed GREEN, which the harness reported. The empty case is now
+  # covered by `rule-text-unchecked` below, which mutates the check that actually decides it.
 
   # RECORD MUST VALIDATE BOTH REGIONS (PR #429).
   check_mut record-checks-one-region \
@@ -198,7 +196,7 @@ if [ "$MODE" = mutation ]; then
 
   # VERIFY MUST AGREE WITH THE READERS ABOUT A DUPLICATED CHECKLIST CLASS (PR #429).
   check_mut verify-misses-dup-class \
-    '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | awk '"'"'NF'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
+    '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | awk -F'"'"'\t'"'"' '"'"'NF { print $1 }'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
     '    ckdupes=""' \
     'a duplicated checklist class is refused by `verify` — verify included'
 
@@ -220,6 +218,23 @@ if [ "$MODE" = mutation ]; then
     '  _adb_pl_hits "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the hits region)\n'"'"' "$ledger" >&2; exit 18; }' \
     '  :' \
     "promote refuses a damaged hits region instead of returning 'already promoted'"
+
+  # THE LOCK `record` TAKES (PR #429). The reported defect was an ORDERING — the template written
+  # before the lock — and that regression is a multi-line restructure `check_mutate_literal` cannot
+  # express as one literal. What it can do is remove the lock this ordering depends on, which
+  # proves the first-writer assertion is able to fire at all; the ordering itself is covered by
+  # that behavioural assertion and not by an injection, and saying so is better than shipping a
+  # row that silently applies to nothing.
+  check_mut record-unlocked \
+    '  _adb_pl_lock "$ledger" || exit 20' \
+    '  :' \
+    '25 concurrent writers creating the ledger for the FIRST time all land'
+
+  # THE RULE-TEXT VALIDATION (PR #429).
+  check_mut rule-text-unchecked \
+    '    _adb_pl_ok_text "$rule" || return 1' \
+    '    :' \
+    'a checklist rule carrying a tab is refused by `checklist`'
 
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
@@ -397,6 +412,36 @@ bash "$PL" verify --ledger "$L3b" >/dev/null 2>&1
 eq "$?" 0 "…while a summary containing backticks still parses"
 eq "$(bash "$PL" stats --ledger "$L3b" --pr 7 | awk -F'\t' '$1=="pr-hits"{print $2}')" 1 \
    "…and is still attributed to its own PR"
+
+# THE CHECKLIST RULE TEXT OBEYS THE WRITER'"'"'S GRAMMAR (PR #429). Requiring only "non-empty
+# after the class" accepted a suffix carrying bytes `promote` refuses — a tab, a control character,
+# a region marker — and `checklist` then emitted that raw line straight into an agent prompt, which
+# is the one output of this module that reaches another model.
+# A DISTINCT PATH. `$work/l3-rule.md` is already section 3's DELIBERATELY BROKEN fixture, so
+# reusing the name appended these records to a ledger with a malformed checklist rule and every
+# assertion below came back 18 — passing the refusals for the wrong reason and failing the one
+# positive case. Fourth fixture-validity bug of this pull request; they are recorded as their own
+# class in the ledger.
+L3c="$work/rule-grammar.md"
+bash "$PL" record --ledger "$L3c" --class rulec --site a.sh --fix abc1231 --pr 1 --thread R1 >/dev/null 2>&1
+bash "$PL" record --ledger "$L3c" --class rulec --site b.sh --fix abc1232 --pr 1 --thread R2 >/dev/null 2>&1
+bash "$PL" promote --ledger "$L3c" --class rulec --rule 'do it properly' >/dev/null 2>&1
+awk -v t="$(printf '\t')" '{ if ($0 ~ /^- `rulec` —/) print "- `rulec` — do it" t "FORGED"; else print }' \
+  "$L3c" > "$work/l3-forged.md"
+for sub in verify checklist classes; do
+  bash "$PL" "$sub" --ledger "$work/l3-forged.md" >/dev/null 2>&1
+  eq "$?" 18 "a checklist rule carrying a tab is refused by \`$sub\`"
+done
+sed 's/^- `rulec` — .*/- `rulec` do it/' "$L3c" > "$work/l3-nosep.md"
+bash "$PL" checklist --ledger "$work/l3-nosep.md" >/dev/null 2>&1
+eq "$?" 18 "…and so is a rule written without the separator the writer emits"
+# …while a rule containing a LEGITIMATE code span still works, since the rule is taken from the
+# whole line rather than from a backtick-split field.
+bash "$PL" record --ledger "$L3c" --class spanc --site a.sh --fix abc1233 --pr 1 --thread R3 >/dev/null 2>&1
+bash "$PL" record --ledger "$L3c" --class spanc --site b.sh --fix abc1234 --pr 1 --thread R4 >/dev/null 2>&1
+bash "$PL" promote --ledger "$L3c" --class spanc --rule 'grep for `adb_toml_array` at every call site' >/dev/null 2>&1
+has "$(bash "$PL" checklist --ledger "$L3c" 2>/dev/null)" 'grep for `adb_toml_array` at every call site' \
+   "…and a rule containing a code span survives unchanged"
 
 # =============================== 4. the prompt surface carries no free text ======================
 # `checklist` is the ONLY output that reaches another agent's prompt. A hit's summary is a
@@ -579,6 +624,33 @@ eq "$(bash "$PL" checklist --ledger "$L7d" 2>/dev/null | grep -c '`pp-c`')" 1 \
    "…and 15 concurrent promotes of ONE class produce exactly ONE rule"
 bash "$PL" verify --ledger "$L7d" >/dev/null 2>&1
 eq "$?" 0 "…and the ledger still parses, rather than being destroyed by its own writers"
+
+# THE FIRST LEDGER IS CREATED INSIDE THE LOCK (PR #429). Two processes recording the first hits
+# concurrently could both see the file absent; the slower then wrote the TEMPLATE over a ledger the
+# faster had already created and inserted into, erasing that hit. The existence test has to happen
+# where the decision is protected.
+L7e="$work/deep/first.md"
+for i in $(seq 1 25); do
+  bash "$PL" record --ledger "$L7e" --class firstc --site "s$i.sh" \
+    --fix "$(printf 'abcd%03d' "$i")" --pr 1 --thread "F$i" >/dev/null 2>&1 &
+done
+wait
+eq "$(bash "$PL" classes --ledger "$L7e" 2>/dev/null | awk -F'\t' '$2=="firstc"{print $1}')" 25 \
+   "25 concurrent writers creating the ledger for the FIRST time all land"
+
+# THE LOCK PATH IS NOT SHELL SOURCE (PR #429). The EXIT trap interpolated the ledger path into text
+# `trap` evaluates later, so a directory named with a quote and a command ran it. Reproduced by the
+# reviewer; asserted here because an injection that is fixed without a test is an injection waiting
+# to come back.
+INJDIR="$work/inj/x'\'';touch INJECTED;#"
+mkdir -p "$INJDIR"
+bash "$PL" record --ledger "$INJDIR/p.md" --class injc --site s.sh --fix abc1234 --pr 1 --thread INJ1 >/dev/null 2>&1
+if [ -e "$INJDIR/INJECTED" ] || [ -e "$work/INJECTED" ] || [ -e "INJECTED" ]; then
+  bad "a ledger path containing shell syntax EXECUTED it — the EXIT trap is evaluating the path"
+  rm -f "$INJDIR/INJECTED" "$work/INJECTED" INJECTED 2>/dev/null
+else
+  ok
+fi
 
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.

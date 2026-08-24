@@ -618,6 +618,12 @@ bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" record --class <slug> --site 
 - **rc 10 is a no-op, not an error** — this thread is already in the ledger, which is exactly what a
   re-run over the same pull request should find. rc 19 means a field was refused; fix the value,
   do not work around it.
+- **rc 18 STOPS THE ROUND — do not continue to step 5.** A ledger that does not parse means every
+  `record` above stored nothing, and resolving the threads anyway means the next run does not
+  enumerate them: their history is then gone for good, which is the record-before-resolve guarantee
+  failing in the one case it exists for. Repair the ledger — `bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" verify` names
+  the offending record — confirm the hits are recorded, and only then resolve.
+  Reported by the declared reviewer on PR #429.
 
 #### 4c. Promote what has become a pattern
 
@@ -628,7 +634,10 @@ bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" due; DRC=$?
 case "$DRC" in
   0)  : ;;   # each line is `<class>TAB<count>` — write a rule for each, below
   11) : ;;   # nothing is due. THE ORDINARY CASE.
-  18) echo "NOTE: the pattern ledger does not parse — fix .ai-dev-baseline/patterns.md"; ;;
+  18) echo "STOP: the pattern ledger does not parse, so nothing was recorded this round."
+      echo "      Resolving now would lose these findings permanently — repair it first:"
+      bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" verify
+      exit 1 ;;
   *)  : ;;
 esac
 

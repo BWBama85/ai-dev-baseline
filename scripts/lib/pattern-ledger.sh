@@ -388,11 +388,20 @@ _adb_pl_promoted_raw() {
     # display; the TEXT after it is the contract. Reported by the declared reviewer on PR #429.
     {
       if (NF < 3 || $2 == "") { bad = 1; exit }
+      # THE WRITER'"'"'S COMPLETE LINE SHAPE, and the rule TEXT emitted for validation. Requiring
+      # only "non-empty after the class" accepted a suffix carrying bytes `promote` refuses — a tab
+      # or a control character — and `checklist` then emitted that raw line straight into an
+      # agent'"'"'s prompt. The shell side validates the text with the writer'"'"'s own predicate;
+      # this side pins the shape it must arrive in. Reported by the declared reviewer on PR #429.
+      # THE WHOLE LINE, not a field: a rule may itself contain code spans, so $NF is not the rule
+      # and splitting on backticks cannot recover it. Strip the exact prefix the writer emits.
+      # (No apostrophes in this comment: the awk program is a single-quoted shell string, and one
+      # would close it — which is exactly how the first version of this line failed to parse.)
       rest = $0
-      sub(/^[^`]*`[^`]*`/, "", rest)
-      gsub(/^[[:space:]]*(—|--)?[[:space:]]*/, "", rest)
+      sub(/^- `[^`]*` — /, "", rest)
+      if (rest == $0) { bad = 1; exit }   # the separator was not there in the writer'"'"'s form
       if (rest == "") { bad = 1; exit }
-      print $2
+      printf "%s\t%s\n", $2, rest
     }
     END { if (bad) exit 1 }
   '
@@ -403,19 +412,25 @@ _adb_pl_promoted_raw() {
 # hand-edited checklist reach the prompt surface, and a class listed twice would make `promote`'s
 # already-promoted check answer about the wrong entry.
 _adb_pl_promoted() {
-  local raw c
+  local raw c rule out=""
   raw="$(_adb_pl_promoted_raw "$1")" || return 1
   [ -n "$raw" ] || return 0
   local -A seen=()
-  while IFS= read -r c; do
+  while IFS="$TAB" read -r c rule; do
     [ -n "$c" ] || continue
     _adb_pl_ok_class "$c" || return 1
+    # THE RULE TEXT, THROUGH THE WRITER'"'"'S OWN PREDICATE. `promote` refuses a tab, a newline, a
+    # control character and an `<!-- adb:` marker; a hand edit or a merge can introduce any of them,
+    # and `checklist` feeds this text to another agent. Validating only the class left the half
+    # that actually reaches a prompt unchecked.
+    _adb_pl_ok_text "$rule" || return 1
     [ -z "${seen[$c]+x}" ] || return 1
     seen["$c"]=1
+    out="${out}${c}"$'\n'
   done <<RAW
 $raw
 RAW
-  printf '%s\n' "$raw"
+  printf '%s' "$out"
 }
 
 # --- the threshold ------------------------------------------------------------------------------
@@ -566,11 +581,9 @@ cmd_record() {
 
   local ledger; ledger="$(_adb_pl_resolve_ledger)" || exit 20
 
-  if [ ! -f "$ledger" ]; then
-    mkdir -p "$(dirname "$ledger")" 2>/dev/null || { printf 'pattern-ledger: cannot create %s\n' "$(dirname "$ledger")" >&2; exit 20; }
-    _adb_pl_template > "$ledger" || { printf 'pattern-ledger: cannot write %s\n' "$ledger" >&2; exit 20; }
-  fi
-  [ -r "$ledger" ] && [ -w "$ledger" ] || { printf 'pattern-ledger: %s is not readable and writable\n' "$ledger" >&2; exit 20; }
+  # THE PARENT DIRECTORY IS MADE FIRST — the lock lives beside the ledger, so `_adb_pl_lock` needs
+  # somewhere to mkdir. Creating the LEDGER, though, waits for the lock.
+  mkdir -p "$(dirname "$ledger")" 2>/dev/null || { printf 'pattern-ledger: cannot create %s\n' "$(dirname "$ledger")" >&2; exit 20; }
 
   # EXACTLY-ONCE, keyed on the review thread. The resolver records BEFORE it resolves the thread
   # (a crash between the two must not lose the signal), so a re-run over the same pull request
@@ -583,8 +596,23 @@ cmd_record() {
   # the check and the act one operation. Reported by the declared reviewer on PR #429.
   _adb_pl_lock "$ledger" || exit 20
   export _ADB_PL_LOCK_HELD="$ledger"
-  # shellcheck disable=SC2064  # $ledger is expanded NOW on purpose: the trap must name this file.
-  trap "_adb_pl_unlock '$ledger'" EXIT
+  # THE TRAP TEXT IS FIXED; the path travels in a VARIABLE. `trap "… '$ledger'" EXIT` interpolates
+  # the path into shell source that `trap` evaluates later — so a ledger under a directory named
+  # `x'"'"'; touch INJECTED; #` executed that command when the trap fired. Reproduced by the
+  # reviewer on PR #429. Single quotes here mean the handler is a constant string and the expansion
+  # happens at trap time, where a path is an argument and not syntax.
+  _ADB_PL_LOCKED_FILE="$ledger"
+  trap '_adb_pl_unlock "$_ADB_PL_LOCKED_FILE"' EXIT
+
+  # CREATED INSIDE THE CRITICAL SECTION, and re-checked here rather than above. Two processes
+  # recording the first hits concurrently could both see the ledger absent; the slower one then
+  # wrote the template over a file the faster one had already created AND inserted into, erasing
+  # that hit before either locked insert finished. The existence test has to happen where the
+  # decision is protected. Reported by the declared reviewer on PR #429.
+  if [ ! -f "$ledger" ]; then
+    _adb_pl_template > "$ledger" || { printf 'pattern-ledger: cannot write %s\n' "$ledger" >&2; exit 20; }
+  fi
+  [ -r "$ledger" ] && [ -w "$ledger" ] || { printf 'pattern-ledger: %s is not readable and writable\n' "$ledger" >&2; exit 20; }
 
   local hits
   # BOTH REGIONS, before appending anything. Validating only the hits half let `record` report a
@@ -686,8 +714,13 @@ cmd_promote() {
   # class has no rule yet" would both append one, and the reviewer measured that too.
   _adb_pl_lock "$ledger" || exit 20
   export _ADB_PL_LOCK_HELD="$ledger"
-  # shellcheck disable=SC2064  # $ledger is expanded NOW on purpose: the trap must name this file.
-  trap "_adb_pl_unlock '$ledger'" EXIT
+  # THE TRAP TEXT IS FIXED; the path travels in a VARIABLE. `trap "… '$ledger'" EXIT` interpolates
+  # the path into shell source that `trap` evaluates later — so a ledger under a directory named
+  # `x'"'"'; touch INJECTED; #` executed that command when the trap fired. Reproduced by the
+  # reviewer on PR #429. Single quotes here mean the handler is a constant string and the expansion
+  # happens at trap time, where a path is an argument and not syntax.
+  _ADB_PL_LOCKED_FILE="$ledger"
+  trap '_adb_pl_unlock "$_ADB_PL_LOCKED_FILE"' EXIT
 
   local promoted count
   _adb_pl_hits "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the hits region)\n' "$ledger" >&2; exit 18; }
@@ -836,10 +869,11 @@ cmd_verify() {
     done < <(printf '%s\n' "$hits")
   fi
   if [ -n "$promoted" ]; then
-    while IFS= read -r c; do
+    while IFS="$TAB" read -r c _rule; do
       [ -n "$c" ] || continue
       np=$((np + 1))
       _adb_pl_ok_class "$c" || { printf 'pattern-ledger: checklist rule %s names an invalid class "%s"\n' "$np" "$c" >&2; bad=1; }
+      _adb_pl_ok_text  "$_rule" || { printf 'pattern-ledger: checklist rule %s (%s) carries text this module would not write — a tab, a newline, a control character, or a region marker\n' "$np" "$c" >&2; bad=1; }
     done < <(printf '%s\n' "$promoted")
   fi
   # A DUPLICATE THREAD ID IS A DEFECT, not a duplicate hit: `record` refuses one, so a pair here
@@ -858,7 +892,7 @@ cmd_verify() {
   # Reported by the declared reviewer on PR #429.
   local ckdupes=""
   if [ -n "$promoted" ]; then
-    ckdupes="$(printf '%s\n' "$promoted" | awk 'NF' | LC_ALL=C sort | LC_ALL=C uniq -d)"
+    ckdupes="$(printf '%s\n' "$promoted" | awk -F'\t' 'NF { print $1 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
     [ -z "$ckdupes" ] || { printf 'pattern-ledger: duplicate checklist class(es): %s\n' "$(printf '%s' "$ckdupes" | tr '\n' ' ')" >&2; bad=1; }
   fi
   [ "$bad" -eq 0 ] || exit 18
