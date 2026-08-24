@@ -11,10 +11,9 @@
 #
 # WHAT IS AND IS NOT PROVEN HERE, stated plainly because the boundary is the design (D90):
 #
-#   MCP is an in-harness protocol. `codex mcp` and `claude mcp` expose list/get over the
-#   CONFIGURATION and neither exposes a generic tool-call interface; Gemini exposes none. No shell
-#   test can therefore issue a real MCP query, and a suite that stubbed one would be testing its own
-#   stub. What this module owns — and what is tested here — is the DECLARATION read, the record
+#   MCP is an in-harness protocol. Probed 2026-08-24: every subcommand of `codex mcp` and
+#   `claude mcp` manages CONFIGURATION, and neither exposes a generic tool call. No shell test can
+#   therefore issue a real MCP query, and a suite that stubbed one would be testing its own stub. What this module owns — and what is tested here — is the DECLARATION read, the record
 #   grammar, and a fail-closed adjudication in which silence scores exactly as failure. What it does
 #   not own, and no assertion below pretends to cover, is that the agent really issued the query.
 #

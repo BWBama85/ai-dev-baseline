@@ -7323,12 +7323,23 @@ survive is the part a later reader needs.
                  an agent cannot buy a clean verdict by skipping the preflight. Silence is the
                  failure mode being defended against, and silence is what is refused.
 
-                 WHAT IS NOT CLAIMED. MCP is an in-harness protocol; `codex mcp` and `claude mcp`
-                 expose list/get over the CONFIGURATION, neither exposes a generic tool-call
-                 interface, and Gemini exposes no equivalent. No shell gate can therefore prove the
-                 agent issued the query it recorded. A preflight built on `mcp list` would be
-                 worse than none, since a server with a bad credential still reports Connected and
-                 returns the auth failure inside an HTTP 200 result — the exact case the practice's
-                 connected-is-not-usable paragraph names. The mechanism is the recorded evidence
-                 and the report line; review is what reads them, and the practice's
-                 "What this does NOT enforce" section says so in the same words.
+                 WHAT IS NOT CLAIMED, and how the CLI facts were established. Probed this run
+                 (rung 1, 2026-08-24): `codex mcp --help` lists list/get/add/remove/login/logout;
+                 `claude mcp --help` lists add/add-from-claude-desktop/add-json/get/list/login/
+                 logout/remove/reset-project-choices/serve. Every one manages CONFIGURATION, and
+                 `serve` runs the agent AS an MCP server rather than calling another one's tools —
+                 so neither CLI offers a generic tool call, and no shell gate can prove the agent
+                 issued the query it recorded. `agy` is NOT installed on the machine this was
+                 decided on, so no probe was made for the Gemini path and none is claimed; the
+                 split does not depend on it, because the agent-side half is the same for any
+                 harness that can reach its own MCP tools.
+
+                 THE AVAILABLE CHECK IS THE INSUFFICIENT ONE, which is the sharper reason. The
+                 probe also showed `claude mcp list`/`get` HEALTH-CHECK approved servers, so a
+                 preflight could cheaply learn a server is Connected — and that is exactly the
+                 signal `third-party-claims.md`'s connected-is-not-usable paragraph rejects: a bad
+                 credential still reports Connected, still answers `tools/list`, and returns the
+                 auth failure inside an HTTP 200 tool result. A preflight built on it would be
+                 worse than none, carrying an assurance nobody earned. The mechanism is the
+                 recorded evidence and the report line; review is what reads them, and the
+                 practice's "What this does NOT enforce" section says so in the same words.

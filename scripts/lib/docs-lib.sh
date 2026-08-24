@@ -41,11 +41,17 @@
 # ------------------------------------------------------------------------------------------------
 # WHO PERFORMS THE PROBE, AND WHY IT IS NOT THIS SCRIPT
 #
-# MCP is an in-harness protocol, not a command line. `codex mcp` and `claude mcp` expose list/get
-# over the CONFIGURATION; neither exposes a generic tool-call interface, and Gemini exposes no
-# equivalent at all. A shell script therefore cannot issue the real query the duty requires, and a
-# preflight built on `mcp list` would report a dead server as present — which is precisely the
-# failure the practice's connected-is-not-usable paragraph exists to name.
+# MCP is an in-harness protocol, not a command line. Probed 2026-08-24: `codex mcp` offers
+# list/get/add/remove/login/logout and `claude mcp` offers add/get/list/login/logout/remove/serve —
+# every one of them CONFIGURATION management, and `serve` runs the agent AS a server rather than
+# calling another one's tools. Neither exposes a generic tool call.
+#
+# WHAT THEY DO OFFER IS EXACTLY THE INSUFFICIENT SIGNAL. `claude mcp list`/`get` health-check
+# approved servers, so a preflight could cheaply learn that a server is Connected — and the
+# practice's connected-is-not-usable paragraph is about precisely that: a bad credential still
+# reports Connected, still answers `tools/list`, and returns the auth failure INSIDE an HTTP 200
+# tool result. Building the preflight on that check would report a dead server as present, which
+# is worse than not checking, because it would carry an assurance nobody earned.
 #
 # So the work is split at the only line that holds for all three agents:
 #
