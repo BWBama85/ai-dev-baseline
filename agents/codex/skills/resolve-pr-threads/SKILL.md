@@ -554,6 +554,72 @@ git push origin "$PR_BRANCH"
 LAST_SHA=$(git rev-parse --short HEAD)
 ```
 
+#### 4b. Record what each fix taught this project (#421)
+
+**This is where the loop's richest signal is created, and where it used to be thrown away.** A
+thread you just resolved as a real code change is a labeled example — a finding, its class, the
+site, and the commit that closed it — and you know all four right now, at their cheapest, because
+you just read the finding and wrote the fix. Nothing recovers that later.
+
+**Record one hit per thread you fixed**, before you resolve the thread in step 5:
+
+```bash
+bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" record --class <slug> --site <path[:line]> --fix "$LAST_SHA" \
+  --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>'
+```
+
+- **The class is your judgement, and it must be the SAME STRING next time.** It is the unit
+  recurrence is counted in, so `collection-identity` and `identity-comparison` are two classes and
+  neither ever reaches a threshold. Read the promoted checklist and the existing classes
+  (`bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" classes`) before inventing a new slug — reusing an existing one is
+  almost always right, and is what makes the mechanism work at all.
+- **`--fix` is the commit that carried the CORRECTION**, which is why this step sits after step 4's
+  push and before step 5. The ledger entry itself is committed separately, in 4c: a commit cannot
+  name its own hash, so the fix lands first and the ledger records it second.
+- **Record BEFORE you resolve.** The two are not atomic, and the orders fail differently: recording
+  first can duplicate after a crash, which `record` absorbs (it is keyed on the thread id and
+  returns 10 for a repeat), while resolving first can lose the only copy of the signal. Prefer the
+  recoverable failure.
+- **rc 10 is a no-op, not an error** — this thread is already in the ledger, which is exactly what a
+  re-run over the same pull request should find. rc 19 means a field was refused; fix the value,
+  do not work around it.
+
+#### 4c. Promote what has become a pattern
+
+A class this project has now hit twice is a pattern rather than an incident, and is owed a rule:
+
+```bash
+bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" due; DRC=$?
+case "$DRC" in
+  0)  : ;;   # each line is `<class>TAB<count>` — write a rule for each, below
+  11) : ;;   # nothing is due. THE ORDINARY CASE.
+  18) echo "NOTE: the pattern ledger does not parse — fix .ai-dev-baseline/patterns.md"; ;;
+  *)  : ;;
+esac
+
+bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" promote --class <slug> --rule '<the sweep to run before the next PR>'
+```
+
+**Write the rule as an instruction, not a description.** "Grep every site that compares a
+collection by identity, not just the one reported" is a sweep somebody can run; "collection
+identity bugs" is a label. The rule is what a future self-review pass and gap-analysis dispatch
+receive, so it has to say what to *do*.
+
+**Then commit the ledger — a SECOND commit, and a tracked one.** Promotion is a change to an
+operative instruction, so it goes through the normal pull-request path and a human sees it in the
+diff. That is the whole reason the checklist is safe to feed into a prompt: a rule's authority
+comes from the review that landed it, never from the review comment that inspired it.
+
+```bash
+git add .ai-dev-baseline/patterns.md
+git commit -m "chore: record review-finding classes from PR #$PR_NUM"
+git push origin "$PR_BRANCH"
+```
+
+**Do NOT fold this into the fix commit.** `--fix` names that commit's hash, so the ledger entry
+must land after it — and keeping them separate also keeps a reviewer's `git show` of the fix free
+of bookkeeping.
+
 ### 5. Reply + resolve each thread
 
 **Re-check the PR state first.** Addressing findings (step 4) can take substantial
@@ -626,6 +692,34 @@ Emit a concise summary to the user:
 > - Skipped (human-authored): <count>
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
+>
+> Findings this round: <count> · recurring-class hits: <n> · new classes: <n> · promoted: <n>
+> Ledger: <hits> hits across <classes> classes, <promoted> promoted (threshold <t>).
+
+**The last two lines are the point of the whole mechanism, not decoration (#421).** Its honest
+boundary is that this is context-level learning whose ceiling is prompt adherence — so the claim
+that it works is only ever the trend in these numbers, and a summary that stops printing them makes
+the claim unfalsifiable. Read them from the ledger rather than counting by hand:
+
+```bash
+bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM"; SRC=$?
+case "$SRC" in
+  0)  : ;;   # TSV: hits, classes, recurring, promoted, threshold, threshold-source, pr-hits
+  18) echo "NOTE: the pattern ledger does not parse — report no counts rather than wrong ones"; ;;
+  *)  : ;;   # no ledger yet -> say so; zero and absent are different facts
+esac
+```
+
+**`recurring` counts HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes.**
+That is the quantity that should fall as the checklist starts working: classes accumulate forever,
+while a repeat hit in a class this project already promoted a rule for is exactly the avoidable
+one. A round where `recurring` is a large share of the findings is the loop telling you the
+checklist is not being swept — which is a finding about the *process*, and belongs in the summary
+where somebody will see it.
+
+**A count you could not read is not zero.** On 18 or a missing ledger, say which; never print `0`
+for a read that failed, for the same reason step 6 refuses to print `0 remaining` over a
+truncated enumeration.
 
 **One summary per RUN, not per round.** Steps 0–7 may go round several times; a per-round report is
 the narration #417 is about. Keep the counts and emit them once, when the loop reaches a terminal
