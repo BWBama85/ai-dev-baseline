@@ -550,8 +550,15 @@ cmd_stats() {
     exit 0
   fi
   hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
-  promoted="$(_adb_pl_promoted "$ledger" | awk 'NF' | wc -l | tr -d ' ')" \
+  # READ, THEN COUNT — two statements. As one pipeline this depended on `pipefail` to surface
+  # `_adb_pl_promoted`'s status, and a pipeline's `$?` is otherwise its LAST command's: `tr` always
+  # succeeds, so a malformed checklist region would have been counted as zero promoted rules
+  # instead of refusing. It happens to be correct today because this file sets `pipefail`, which
+  # is exactly the kind of load-bearing implicitness a later edit removes without noticing.
+  local promoted_raw
+  promoted_raw="$(_adb_pl_promoted "$ledger")" \
     || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
+  promoted="$(printf '%s\n' "$promoted_raw" | awk 'NF' | wc -l | tr -d ' ')"
   if [ -n "$hits" ]; then
     total="$(printf '%s\n' "$hits" | awk 'NF' | wc -l | tr -d ' ')"
     classes="$(printf '%s\n' "$hits" | awk -F'\t' 'NF && $1 != "" { c[$1] } END { print length(c) }')"

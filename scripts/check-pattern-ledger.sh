@@ -230,6 +230,20 @@ done
 bash "$PL" checklist --ledger "$work/l3-cut.md" >/dev/null 2>&1
 eq "$?" 18 "checklist refuses a half-readable ledger"
 
+# THE CHECKLIST REGION IS THE OTHER HALF, and it fails in the opposite direction from the hits
+# region — a reader that lost it would report FEWER promoted rules, i.e. sweep less than the
+# project asked for. Every reader must refuse that too, `stats` included: its promoted count was a
+# pipeline whose `$?` is its last command's, so it surfaced the failure only because this file sets
+# `pipefail`. Asserted so the two-statement form cannot quietly regress to the one-liner.
+sed 's/<!-- adb:checklist:begin -->//' "$L3" > "$work/l3-ck.md"
+for sub in classes stats verify checklist due; do
+  bash "$PL" "$sub" --ledger "$work/l3-ck.md" >/dev/null 2>&1
+  eq "$?" 18 "a truncated checklist region is refused by \`$sub\`"
+done
+sed 's/^- `trunc-class` — .*/- no code span here/' "$L3" > "$work/l3-rule.md"
+bash "$PL" checklist --ledger "$work/l3-rule.md" >/dev/null 2>&1
+eq "$?" 18 "a checklist rule that is not in the grammar is refused"
+
 # A record that is not in the grammar must FAIL the read, never be skipped: skipping is the same
 # undercount by another route.
 sed 's/^- `trunc-class` `s2.sh:2`.*/- this is not a record/' "$L3" > "$work/l3-bad.md"
