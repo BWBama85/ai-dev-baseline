@@ -262,12 +262,23 @@ _adb_dl_mcp_key() {
             # reporting success with NO servers for an operator who declared one. It has to be
             # caught HERE, on the raw literal: after parsing, `[""]` and the legal `[]` are
             # indistinguishable. Reported by the declared reviewer on PR #429.
-            if (e !~ /^"[^"]+"$/) { bad = 1; exit }
+            # THE FULL NAME GRAMMAR, ON THE RAW VALUE. `adb_toml_array` trims whitespace INSIDE
+            # the quotes, so `[" context7 "]` reached the charset check as `context7` and passed —
+            # validating a normalized replacement rather than what the operator wrote, and letting
+            # a probe for a DIFFERENT name earn a clean verdict. A whitespace-only string was
+            # likewise normalized to empty and slipped past the empty-name rule. The raw literal
+            # here is the only place the actual value still exists.
+            # Reported by the declared reviewer on PR #429.
+            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }
           }
         }
         END { exit (bad ? 1 : 0) }'; then
-    printf 'docs-lib: [mcp] %s in the %s manifest is not a quoted-string array (got %s). TOML has no bare-word array element.\n' \
+    printf 'docs-lib: [mcp] %s in the %s manifest is not a well-formed array of server names (got %s).\n' \
       "$key" "$layer" "$(adb_display_value "$raw")" >&2
+    printf 'docs-lib: each element must be a QUOTED, non-empty name of [A-Za-z0-9_.-] — TOML has no\n' >&2
+    printf 'docs-lib: bare-word element, and a name carrying whitespace is not the name a probe\n' >&2
+    printf 'docs-lib: result could ever match — so every run would report DEGRADED, blaming a server\n' >&2
+    printf 'docs-lib: that was never the problem.\n' >&2
     return 18
   fi
   # EVERY ELEMENT IS VALIDATED, against the same charset `probe-record` enforces. A declared name
@@ -277,6 +288,10 @@ _adb_dl_mcp_key() {
   parsed="$(adb_toml_array "$raw")"
   while IFS= read -r one; do
     [ -n "$one" ] || continue
+    # REDUNDANT BY CONSTRUCTION with the raw grammar above, which already proved every element
+    # matches this charset — kept as insurance against `adb_toml_array` changing what it returns,
+    # and deliberately carrying no mutation row, because a row for a branch the code cannot reach
+    # would claim a coverage that does not exist.
     _adb_dl_ok_server "$one" || {
       printf 'docs-lib: [mcp] %s in the %s manifest names %s, which is not a usable server name ([A-Za-z0-9_.-]). Nothing could record a result for it, so every run would report DEGRADED.\n' \
         "$key" "$layer" "$(adb_display_value "$one")" >&2

@@ -315,8 +315,18 @@ _adb_pl_hits_raw() {
     {
       if (NF < 9)             { bad = 1; exit }
       if ($2 == "" || $4 == "" || $6 == "" || $8 == "") { bad = 1; exit }
-      pr = ""
-      if (match($9, /PR #[0-9]+/)) pr = substr($9, RSTART + 4, RLENGTH - 4)
+      # THE WHOLE SUFFIX, not a substring search. `match($9, /PR #[0-9]+/)` found its pattern
+      # ANYWHERE, so a hand-edited `garbage PR #999xyz no-date` parsed cleanly and was attributed
+      # to PR 999 — malformed data counted against a pull request it never belonged to. The writer
+      # emits exactly ` PR #<n> <date>` with an optional ` — <summary>`, so that is what is
+      # required. Reconstructed across $9..$NF because a summary may itself contain backticks.
+      # Reported by the declared reviewer on PR #429.
+      suffix = $9
+      for (i = 10; i <= NF; i++) suffix = suffix "`" $i
+      if (suffix !~ /^ PR #[0-9]+ [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]( — .*)?$/) { bad = 1; exit }
+      pr = suffix
+      sub(/^ PR #/, "", pr)
+      sub(/ .*$/, "", pr)
       printf "%s\t%s\t%s\t%s\t%s\n", $2, $4, $6, $8, pr
     }
     END { if (bad) exit 1 }
@@ -461,7 +471,7 @@ _ADB_PL_LOCK_STALE_SECS=300
 
 # _adb_pl_lock <ledger> — take the ledger's write lock, or fail. Prints nothing on success.
 _adb_pl_lock() {
-  local dir="$1.lock" waited=0 age
+  local dir="$1.lock" waited=0 age tomb
   while ! mkdir "$dir" 2>/dev/null; do
     # A LOCK OLDER THAN THE STALE AGE IS BROKEN, so a writer killed mid-insert cannot wedge the
     # ledger permanently. `adb_age_secs` is the shared primitive for this question; if it cannot
@@ -469,8 +479,17 @@ _adb_pl_lock() {
     # two concurrent writers.
     age="$(adb_age_secs "$dir" 2>/dev/null)" || age=""
     if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then
-      printf 'pattern-ledger: breaking a stale write lock (%ss old): %s\n' "$age" "$dir" >&2
-      rmdir "$dir" 2>/dev/null || rm -rf "$dir" 2>/dev/null
+      # RENAME TO A TOMBSTONE, THEN DELETE — never `rmdir` the observed directory. Two writers can
+      # see the same stale lock: with a bare removal the first deletes it and takes a FRESH lock,
+      # and the second then deletes the first writer's live lock and takes one too, so both enter
+      # the critical section during recovery. `mv` onto a name that does not exist is a single
+      # rename(2): exactly one writer wins it, and the loser's `mv` fails because the source is
+      # already gone. Reported by the declared reviewer on PR #429.
+      tomb="$dir.stale.$$"
+      if mv "$dir" "$tomb" 2>/dev/null; then
+        printf 'pattern-ledger: broke a stale write lock (%ss old): %s\n' "$age" "$dir" >&2
+        rm -rf "$tomb" 2>/dev/null
+      fi
       continue
     fi
     if [ "$waited" -ge "$_ADB_PL_LOCK_WAIT_SECS" ]; then
@@ -487,11 +506,18 @@ _adb_pl_lock() {
 _adb_pl_unlock() { rmdir "$1.lock" 2>/dev/null || rm -rf "$1.lock" 2>/dev/null; }
 
 _adb_pl_insert() {
-  local file="$1" end="$2" line="$3" tmp rc=0
-  # THE WHOLE READ-MODIFY-WRITE IS INSIDE THE LOCK, not just the rename. The rename was always
-  # atomic; what was unprotected is the window between reading the file and replacing it, which is
-  # where a concurrent writer's record is lost.
-  _adb_pl_lock "$file" || return 1
+  local file="$1" end="$2" line="$3" tmp rc=0 held_here=0
+  # THE CALLER MAY ALREADY HOLD THE LOCK, and for `record` and `promote` it must — see their
+  # headers. Locking only the read-modify-write here fixed lost updates and left the real race
+  # untouched: both commands CHECK a precondition (this thread is not recorded; this class has no
+  # rule) and then ACT on it, so two runs could both pass the check outside the lock and then
+  # serialize two inserts of the same thing. Measured by the reviewer: 30 parallel `record` calls
+  # for one thread produced 30 rows, which every reader then refuses as a duplicate.
+  # `_ADB_PL_LOCK_HELD` is how a holder says so. Reported by the declared reviewer on PR #429.
+  if [ "${_ADB_PL_LOCK_HELD:-}" != "$file" ]; then
+    _adb_pl_lock "$file" || return 1
+    held_here=1
+  fi
   tmp="$(mktemp "${file}.XXXXXX")" || { _adb_pl_unlock "$file"; return 1; }
   if ! ADB_PL_LINE="$line" awk -v e="$end" '
         { l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l) }
@@ -499,10 +525,10 @@ _adb_pl_insert() {
         { print }
         END { if (!done) exit 1 }
       ' "$file" > "$tmp"; then
-    rm -f "$tmp"; _adb_pl_unlock "$file"; return 1
+    rm -f "$tmp"; [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"; return 1
   fi
   mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }
-  _adb_pl_unlock "$file"
+  [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"
   return "$rc"
 }
 
@@ -550,6 +576,16 @@ cmd_record() {
   # (a crash between the two must not lose the signal), so a re-run over the same pull request
   # re-offers hits that are already here. That is the ordinary case, so it exits 10 and says
   # nothing alarming — it is not a failure and must not read like one.
+  # THE LOCK SPANS CHECK-THEN-ACT. The dedupe test below and the insert that follows it are one
+  # decision: two runs that both read "this thread is not recorded" and then both insert produce a
+  # duplicate that every reader refuses. Measured by the reviewer: 30 parallel `record` calls for
+  # one thread produced 30 rows. Taking the lock HERE, not inside `_adb_pl_insert`, is what makes
+  # the check and the act one operation. Reported by the declared reviewer on PR #429.
+  _adb_pl_lock "$ledger" || exit 20
+  export _ADB_PL_LOCK_HELD="$ledger"
+  # shellcheck disable=SC2064  # $ledger is expanded NOW on purpose: the trap must name this file.
+  trap "_adb_pl_unlock '$ledger'" EXIT
+
   local hits
   # BOTH REGIONS, before appending anything. Validating only the hits half let `record` report a
   # hit written successfully into a file from which no reader can then read a count or a checklist
@@ -646,6 +682,13 @@ cmd_promote() {
   # checklist rule" and the resolver carried on over a file every reader is documented to refuse
   # whole. Validating here puts the refuse-whole contract ahead of every exit from this command,
   # not just the ones that happen to read the hits. Reported by the declared reviewer on PR #429.
+  # SAME CRITICAL SECTION AS `record`, and for the same reason: two runs that both read "this
+  # class has no rule yet" would both append one, and the reviewer measured that too.
+  _adb_pl_lock "$ledger" || exit 20
+  export _ADB_PL_LOCK_HELD="$ledger"
+  # shellcheck disable=SC2064  # $ledger is expanded NOW on purpose: the trap must name this file.
+  trap "_adb_pl_unlock '$ledger'" EXIT
+
   local promoted count
   _adb_pl_hits "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the hits region)\n' "$ledger" >&2; exit 18; }
   promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }

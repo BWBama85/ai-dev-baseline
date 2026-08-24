@@ -151,12 +151,13 @@ if [ "$MODE" = mutation ]; then
     '  false && {' \
     'verdict refuses a probe record with no evidence'
 
-  # And the declaration's element check, whose absence turns a typo into a permanent degradation
-  # that blames the wrong thing.
-  check_mut declaration-elements-unchecked \
-    '    _adb_dl_ok_server "$one" || {' \
-    '    false && {' \
-    'a declared server name outside the recordable charset is refused'
+  # THE PER-ELEMENT `_adb_dl_ok_server` CHECK HAS NO ROW, deliberately. Since the raw grammar
+  # validates `^"[A-Za-z0-9_.-]+"$` on the literal, every value that reaches that check has already
+  # been proved to match it — so disabling it changes no behaviour and a row here would report a
+  # defect the code cannot have. That is the unfirable-guard shape this harness exists to catch,
+  # and it caught this row when the raw check landed. The check itself stays as insurance against
+  # `adb_toml_array` changing what it returns; the honest statement is that nothing currently
+  # proves it, and no row pretends otherwise.
 
   # THE UNTERMINATED-FINAL-RECORD CHECK (P1, PR #429). The row restores the superseded predicate
   # — "does the file contain any newline" — rather than deleting the test, because that spelling is
@@ -176,7 +177,7 @@ if [ "$MODE" = mutation ]; then
   # THE EMPTY-QUOTED-NAME CHECK (PR #429). Restores the permissive `.*` that shipped — the
   # spelling a later edit would reach for, and the one that cannot tell `[""]` from `[]`.
   check_mut empty-name-skipped \
-    '            if (e !~ /^"[^"]+"$/) { bad = 1; exit }' \
+    '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
     '            if (e !~ /^".*"$/) { bad = 1; exit }' \
     'an empty quoted server name is refused, not silently dropped'
 
@@ -188,7 +189,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
-    '            if (e !~ /^"[^"]+"$/) { bad = 1; exit }' \
+    '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
     '            if (0) { bad = 1; exit }' \
     'an unquoted array element ([context7]) is refused as malformed TOML'
 
@@ -481,6 +482,24 @@ eq "$RC16" 0 "…while a legally EMPTY array is accepted (declared, zero element
 eq "$OUT16" "" "…and lists no servers"
 dl verdict --state "$D16b/state" --manifest "$D16b/agents.toml" >/dev/null 2>&1
 eq "$?" 0 "…and its verdict still passes with nothing to preflight"
+
+# THE NAME IS VALIDATED ON THE RAW VALUE (PR #429). `adb_toml_array` trims whitespace INSIDE the
+# quotes, so `[" context7 "]` reached the charset check already normalized to `context7` and
+# passed — a probe for a DIFFERENT name than the operator declared could then earn a clean verdict.
+# A whitespace-only string normalized to empty and slipped past the empty-name rule the same way.
+for bad in '[" context7 "]' '["  "]' '["ctx 7"]'; do
+  D18="$(fixture "wsname$(printf '%s' "$bad" | tr -dc 'a-z0-9')" "[mcp]
+required = $bad
+")"
+  dl mcp-required --manifest "$D18/agents.toml" >/dev/null 2>&1
+  eq "$?" 18 "a server name that survives only whitespace normalization ($bad) is refused"
+done
+# …and a name using the full legal charset is still accepted, so the rule is not simply narrower.
+D19="$(fixture charsetok '[mcp]
+required = ["ctx.7_a-b"]
+')"
+eq "$(dl mcp-required --manifest "$D19/agents.toml")" "ctx.7_a-b" \
+   "…while a name of [A-Za-z0-9_.-] still parses unchanged"
 
 for good in '["context7"]' '[]' '["a", "b"]' '["a",]'; do
   D14="$(fixture "quoted$(printf '%s' "$good" | tr -dc 'ab')" "[mcp]

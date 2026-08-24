@@ -173,10 +173,15 @@ if [ "$MODE" = mutation ]; then
 
   # THE PR REQUIREMENT (PR #429). Reverting it to the optional-if-present form is the exact
   # regression, so the row spells that form rather than deleting the check.
-  check_mut pr-optional-again \
+  # RETARGETED after the suffix grammar landed: a MISSING `PR #<n>` segment is now caught by the
+  # suffix check before the field validator sees it, so the old "optional if present" mutation
+  # became invisible — the harness reported it staying green, which is the harness working on its
+  # own table. What the field check still uniquely owns is the DOMAIN: `PR #0` satisfies the
+  # suffix grammar and must still be refused.
+  check_mut pr-domain-unchecked \
     '    _adb_pl_ok_pr "$pr" || return 1' \
-    '    [ -z "$pr" ] || _adb_pl_ok_pr "$pr" || return 1' \
-    'a hit with no PR segment is refused by `classes`'
+    '    :' \
+    'a hand-edited PR number outside the domain is refused by the readers'
 
   # THE CHECKLIST RULE BODY (PR #429). Without it a class name with no instruction reaches the
   # prompt surface, which is where an empty rule is invisible.
@@ -374,6 +379,25 @@ done
 CKOK="$(bash "$PL" checklist --ledger "$L3" 2>/dev/null)"
 has "$CKOK" "sweep the siblings too" "a well-formed rule still reaches the prompt surface"
 
+# THE RECORD SUFFIX MUST MATCH THE WRITER'"'"'S GRAMMAR (PR #429). A substring search for
+# `PR #[0-9]+` found its pattern ANYWHERE, so a hand-edited `garbage PR #999xyz no-date` parsed
+# cleanly and `stats --pr 999` counted it — malformed data attributed to a pull request it never
+# belonged to. The whole suffix is now required.
+sed 's/ PR #100 2026-.*/ garbage PR #999xyz no-date/' "$L3" > "$work/l3-badsuffix.md"
+for sub in verify classes stats; do
+  bash "$PL" "$sub" --ledger "$work/l3-badsuffix.md" >/dev/null 2>&1
+  eq "$?" 18 "a structurally invalid record suffix is refused by \`$sub\`"
+done
+# …and a legitimate summary containing BACKTICKS still parses, since the suffix is reconstructed
+# across every field a code span may have split.
+L3b="$work/l3-ticks.md"
+bash "$PL" record --ledger "$L3b" --class tick-cls --site s.sh --fix abc1231 --pr 7 --thread TK1 \
+  --summary 'the `helper` compared two ways' --date 2026-08-24 >/dev/null 2>&1
+bash "$PL" verify --ledger "$L3b" >/dev/null 2>&1
+eq "$?" 0 "…while a summary containing backticks still parses"
+eq "$(bash "$PL" stats --ledger "$L3b" --pr 7 | awk -F'\t' '$1=="pr-hits"{print $2}')" 1 \
+   "…and is still attributed to its own PR"
+
 # =============================== 4. the prompt surface carries no free text ======================
 # `checklist` is the ONLY output that reaches another agent's prompt. A hit's summary is a
 # reviewer's own words and on a public repository a reviewer is anyone; a promoted rule got there
@@ -531,6 +555,30 @@ eq "$(bash "$PL" classes --ledger "$L7c" | awk -F'\t' '$2=="conc"{print $1}')" 2
 bash "$PL" verify --ledger "$L7c" >/dev/null 2>&1
 eq "$?" 0 "…and the ledger still parses afterwards"
 [ -d "$L7c.lock" ] && bad "the write lock leaked after every writer finished" || ok
+
+# THE CRITICAL SECTION SPANS CHECK-THEN-ACT (PR #429). Locking only the read-modify-write fixed
+# lost updates and left the real race: both `record` and `promote` CHECK a precondition and then
+# ACT on it, so two runs could both pass the check outside the lock and then serialize two inserts
+# of the same thing. The reviewer measured 30 parallel records of ONE thread producing 30 rows —
+# which every reader then refuses as a duplicate, so the ledger destroys itself under concurrency.
+L7d="$work/l7d.md"
+bash "$PL" record --ledger "$L7d" --class seed-d --site s.sh --fix abc1231 --pr 1 --thread T0 >/dev/null 2>&1
+for i in $(seq 1 30); do
+  bash "$PL" record --ledger "$L7d" --class same-c --site s.sh --fix abc1234 --pr 1 --thread SAME >/dev/null 2>&1 &
+done
+wait
+eq "$(grep -c '`SAME`' "$L7d")" 1 "30 concurrent records of ONE thread produce exactly ONE row"
+
+bash "$PL" record --ledger "$L7d" --class pp-c --site a.sh --fix abc1231 --pr 1 --thread P1 >/dev/null 2>&1
+bash "$PL" record --ledger "$L7d" --class pp-c --site b.sh --fix abc1232 --pr 1 --thread P2 >/dev/null 2>&1
+for i in $(seq 1 15); do
+  bash "$PL" promote --ledger "$L7d" --class pp-c --rule 'sweep' >/dev/null 2>&1 &
+done
+wait
+eq "$(bash "$PL" checklist --ledger "$L7d" 2>/dev/null | grep -c '`pp-c`')" 1 \
+   "…and 15 concurrent promotes of ONE class produce exactly ONE rule"
+bash "$PL" verify --ledger "$L7d" >/dev/null 2>&1
+eq "$?" 0 "…and the ledger still parses, rather than being destroyed by its own writers"
 
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
