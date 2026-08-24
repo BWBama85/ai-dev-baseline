@@ -746,10 +746,21 @@ the claim unfalsifiable. Read them from the ledger rather than counting by hand:
 ```bash
 {{PATTERN_LEDGER_LIB}} stats --pr "$PR_NUM"; SRC=$?
 case "$SRC" in
-  0)  : ;;   # TSV: hits, classes, recurring, promoted, threshold, threshold-source, pr-hits
+  0)  : ;;   # TSV: ledger, hits, classes, recurring, promoted, threshold, threshold-source,
+             # and — with --pr — pr-hits, pr-recurring, pr-new-classes
   18) echo "NOTE: the pattern ledger does not parse — report no counts rather than wrong ones"; ;;
-  *)  : ;;   # no ledger yet -> say so; zero and absent are different facts
+  *)  : ;;   # 20: the ledger path could not be resolved at all
 esac
+```
+
+**ABSENT AND ZERO ARE DIFFERENT FACTS, and the `ledger` field is how you tell them apart.** A
+project on its first resolver run has no `.ai-dev-baseline/patterns.md` at all, which is not a
+problem and not an empty ledger — say "no ledger yet (this is the first run)" rather than reporting
+a history of zero. `stats` emits `ledger<TAB>absent` or `ledger<TAB>present` as its first line,
+because a caller should not have to stat the file to answer something the command already knows.
+
+```bash
+LEDGER_STATE="$(printf '%s\n' "$STATS" | awk -F'\t' '$1=="ledger"{print $2}')"
 ```
 
 **`stats --pr` supplies three of the four round figures — `pr-hits`, `pr-recurring` and

@@ -96,14 +96,22 @@
 # /cleanup sweeps run-state whose PR has resolved, and a ledger swept on merge would forget exactly
 # the thing it exists to remember.
 #
-# CONCURRENCY, STATED RATHER THAN LOCKED. `_adb_pl_insert` publishes by rename, so no reader ever
-# sees a half-written file — but it is a read-modify-write, and two writers racing it would have
-# the second rename discard the first's record. That is not locked, and the bound is why: this
-# module is driven by `/resolve-pr-threads`, and `/implement-issue`'s run admission already permits
-# only one run per checkout per agent, so the workflow that writes here is sequential by
-# construction. Two *checkouts* writing one ledger is a git-merge question, not a locking one, and
-# the template says how it resolves. A caller that genuinely needs concurrent writes must serialize
-# them itself; the public command contract does not do it for you.
+# CONCURRENCY IS LOCKED, because the argument for not locking it was false. An earlier version of
+# this header claimed the writer was sequential by construction, on the ground that
+# `/implement-issue`'s run admission permits one run per checkout per agent. But the writer here is
+# `/resolve-pr-threads`, which never takes that claim — so nothing serialized two overlapping
+# resolver runs, and `_adb_pl_insert`'s read-modify-write would have the second rename silently
+# discard every hit the first wrote. Silent loss of the signal this module exists to keep is the
+# one outcome it must not have, so the guarantee is now real rather than asserted.
+# Reported by the declared reviewer on PR #429.
+#
+# `mkdir` is the lock: it is atomic on every POSIX filesystem, needs no helper, and leaves a
+# directory a human can see and remove. The wait is bounded and the failure is loud — a caller that
+# cannot take the lock is told, never left to write anyway. A lock older than the stale age is
+# broken with a note, so a killed writer cannot block the ledger forever.
+#
+# Two *checkouts* writing one ledger is still a git-merge question, not a locking one, and the
+# template says how that resolves.
 #
 # Requires: awk, and a writable ledger directory. No network, no gh, no jq.
 
@@ -445,18 +453,57 @@ _adb_pl_threshold() {
 #
 # Published by RENAME, for the reason #268 established for the build: a reader that starts mid-write
 # must see the old file whole or the new file whole, never a truncated one.
+# How long to wait for the write lock, and when to declare an existing one abandoned. The wait is
+# short because every holder does one read-modify-write of a small file; the stale age is generous
+# because breaking a LIVE lock is the failure that loses data, and waiting a little longer is not.
+_ADB_PL_LOCK_WAIT_SECS=30
+_ADB_PL_LOCK_STALE_SECS=300
+
+# _adb_pl_lock <ledger> — take the ledger's write lock, or fail. Prints nothing on success.
+_adb_pl_lock() {
+  local dir="$1.lock" waited=0 age
+  while ! mkdir "$dir" 2>/dev/null; do
+    # A LOCK OLDER THAN THE STALE AGE IS BROKEN, so a writer killed mid-insert cannot wedge the
+    # ledger permanently. `adb_age_secs` is the shared primitive for this question; if it cannot
+    # answer, the lock is treated as live, which fails closed toward waiting rather than toward
+    # two concurrent writers.
+    age="$(adb_age_secs "$dir" 2>/dev/null)" || age=""
+    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then
+      printf 'pattern-ledger: breaking a stale write lock (%ss old): %s\n' "$age" "$dir" >&2
+      rmdir "$dir" 2>/dev/null || rm -rf "$dir" 2>/dev/null
+      continue
+    fi
+    if [ "$waited" -ge "$_ADB_PL_LOCK_WAIT_SECS" ]; then
+      printf 'pattern-ledger: could not take the write lock after %ss: %s\n' "$waited" "$dir" >&2
+      printf 'pattern-ledger: another writer holds it. Nothing was written.\n' >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+_adb_pl_unlock() { rmdir "$1.lock" 2>/dev/null || rm -rf "$1.lock" 2>/dev/null; }
+
 _adb_pl_insert() {
-  local file="$1" end="$2" line="$3" tmp
-  tmp="$(mktemp "${file}.XXXXXX")" || return 1
+  local file="$1" end="$2" line="$3" tmp rc=0
+  # THE WHOLE READ-MODIFY-WRITE IS INSIDE THE LOCK, not just the rename. The rename was always
+  # atomic; what was unprotected is the window between reading the file and replacing it, which is
+  # where a concurrent writer's record is lost.
+  _adb_pl_lock "$file" || return 1
+  tmp="$(mktemp "${file}.XXXXXX")" || { _adb_pl_unlock "$file"; return 1; }
   if ! ADB_PL_LINE="$line" awk -v e="$end" '
         { l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l) }
         l == e && !done { print ENVIRON["ADB_PL_LINE"]; done = 1 }
         { print }
         END { if (!done) exit 1 }
       ' "$file" > "$tmp"; then
-    rm -f "$tmp"; return 1
+    rm -f "$tmp"; _adb_pl_unlock "$file"; return 1
   fi
-  mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }
+  _adb_pl_unlock "$file"
+  return "$rc"
 }
 
 # --- subcommands --------------------------------------------------------------------------------
@@ -594,8 +641,14 @@ cmd_promote() {
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   [ -f "$ledger" ] || { printf 'pattern-ledger: no ledger at %s — nothing has been recorded yet\n' "$ledger" >&2; exit 12; }
 
+  # BOTH REGIONS, BEFORE THE EARLY RETURN. The `already promoted` arm below exits 13 without ever
+  # reaching `cmd_classes`, so a ledger whose HITS region was damaged reported "already has a
+  # checklist rule" and the resolver carried on over a file every reader is documented to refuse
+  # whole. Validating here puts the refuse-whole contract ahead of every exit from this command,
+  # not just the ones that happen to read the hits. Reported by the declared reviewer on PR #429.
   local promoted count
-  promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
+  _adb_pl_hits "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the hits region)\n' "$ledger" >&2; exit 18; }
+  promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
   if printf '%s\n' "$promoted" | awk -v c="$OPT_CLASS" '$0 == c { f = 1 } END { exit !f }'; then
     printf 'pattern-ledger: %s already has a checklist rule\n' "$OPT_CLASS" >&2
     exit 13
@@ -656,6 +709,13 @@ cmd_stats() {
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   if [ ! -f "$ledger" ]; then
+    # ABSENT IS ITS OWN FACT, emitted as a field rather than left to be inferred from zeros. The
+    # resolver's summary is required to distinguish "this project has no ledger yet" from "the
+    # ledger is empty", and it could not: `stats` returned 0 with zero-valued fields for both, so
+    # the workflow's own "no ledger yet" arm was unreachable. A caller must not have to stat the
+    # file to answer a question this command already knows.
+    # Reported by the declared reviewer on PR #429.
+    printf 'ledger\tabsent\n'
     printf 'hits\t0\nclasses\t0\nrecurring\t0\npromoted\t0\nthreshold\t%s\nthreshold-source\t%s\n' "$t" "$tsrc"
     [ -n "$OPT_PR" ] && printf 'pr-hits\t0\npr-recurring\t0\npr-new-classes\t0\n'
     exit 0
@@ -698,6 +758,7 @@ cmd_stats() {
         END { n = 0; for (i in cls) if (c[cls[i]] >= t && prs[i] == p) n++; print n + 0 }')"
     fi
   fi
+  printf 'ledger\tpresent\n'
   printf 'hits\t%s\nclasses\t%s\nrecurring\t%s\npromoted\t%s\nthreshold\t%s\nthreshold-source\t%s\n' \
     "$total" "$classes" "$recurring" "$promoted" "$t" "$tsrc"
   [ -n "$OPT_PR" ] && printf 'pr-hits\t%s\npr-recurring\t%s\npr-new-classes\t%s\n' "$thispr" "$prrecur" "$prnew"

@@ -204,6 +204,18 @@ if [ "$MODE" = mutation ]; then
     'awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
     'classes survives a SECOND promoted class'
 
+  # THE ABSENT/PRESENT DISTINCTION (PR #429).
+  check_mut absent-indistinguishable \
+    "    printf 'ledger\\tabsent\\n'" \
+    "    printf 'ledger\\tpresent\\n'" \
+    '…and says so explicitly, rather than leaving it inferred from zeros'
+
+  # PROMOTE'"'"'S EARLY RETURN MUST NOT SKIP THE HITS CHECK (PR #429).
+  check_mut promote-early-return-unchecked \
+    '  _adb_pl_hits "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the hits region)\n'"'"' "$ledger" >&2; exit 18; }' \
+    '  :' \
+    "promote refuses a damaged hits region instead of returning 'already promoted'"
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -484,12 +496,50 @@ done
 DV="$(bash "$PL" verify --ledger "$work/l7b-dupck.md" 2>&1)"
 has "$DV" "duplicate checklist class" "…and verify NAMES it, as it already does for thread ids"
 
+# (iii) `promote` must validate both regions BEFORE its early `already promoted` return, or a
+# damaged hits region is reported as "already has a checklist rule" and the resolver carries on
+# over a file every reader refuses whole.
+sed 's/<!-- adb:hits:begin -->//' "$L7b" > "$work/l7b-badhits.md"
+bash "$PL" promote --ledger "$work/l7b-badhits.md" --class ck-dupe --rule x >/dev/null 2>&1
+eq "$?" 18 "promote refuses a damaged hits region instead of returning 'already promoted'"
+
 # (ii) `record` must validate BOTH regions before appending. Validating only the hits half reported
 # a hit written into a file every reader then refuses.
 sed 's/<!-- adb:checklist:begin -->//' "$L7b" > "$work/l7b-badck.md"
 bash "$PL" record --ledger "$work/l7b-badck.md" --class other --site s.sh --fix abc1234 \
   --pr 1 --thread T-new-one >/dev/null 2>&1
 eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just its hits"
+
+# =============================== 7c. concurrent writers lose nothing (PR #429) ===================
+# The header used to argue no lock was needed because `/implement-issue`'s run admission permits one
+# run per checkout — but the writer here is `/resolve-pr-threads`, which never takes that claim. So
+# nothing serialized two overlapping resolver runs and the second rename silently discarded the
+# first's records: loss of the signal this module exists to keep, argued away rather than tested.
+#
+# TWENTY REAL CONCURRENT WRITERS, not a mocked lock. Note the sha: `abcd%03d`, because `abc12$i` is
+# SIX characters for a single digit and the writer correctly refuses it — the first version of this
+# fixture "lost" nine writers that had never been valid, and read as a broken lock.
+L7c="$work/l7c.md"
+bash "$PL" record --ledger "$L7c" --class seed-c --site s.sh --fix abc1231 --pr 1 --thread T0 >/dev/null 2>&1
+for i in $(seq 1 20); do
+  bash "$PL" record --ledger "$L7c" --class conc --site "s$i.sh" \
+    --fix "$(printf 'abcd%03d' "$i")" --pr 2 --thread "C$i" >/dev/null 2>&1 &
+done
+wait
+eq "$(bash "$PL" classes --ledger "$L7c" | awk -F'\t' '$2=="conc"{print $1}')" 20 \
+   "twenty concurrent writers all land — none is silently discarded by a racing rename"
+bash "$PL" verify --ledger "$L7c" >/dev/null 2>&1
+eq "$?" 0 "…and the ledger still parses afterwards"
+[ -d "$L7c.lock" ] && bad "the write lock leaked after every writer finished" || ok
+
+# A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
+# take the lock and proceeds anyway.
+mkdir "$L7c.lock"
+BEFORE7c="$(cksum < "$L7c")"
+( ADB_PL_LOCK_TEST=1 timeout 8 bash "$PL" record --ledger "$L7c" --class blocked --site s.sh \
+    --fix abc1234 --pr 1 --thread T-blocked >/dev/null 2>&1 )
+eq "$(cksum < "$L7c")" "$BEFORE7c" "a writer that cannot take the lock writes NOTHING"
+rmdir "$L7c.lock"
 
 # =============================== 8. stats, and what `recurring` counts ===========================
 # `recurring` is HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes. That
@@ -534,6 +584,15 @@ eq "$(printf '%s' "$S4" | awk -F'\t' '$1=="pr-recurring"{print $2}')" 0 \
 # broken anything. A ledger that could not be READ is a different fact and is 18 (asserted above).
 eq "$(bash "$PL" stats --ledger "$work/nope.md" | awk -F'\t' '$1=="hits"{print $2}')" 0 \
    "an absent ledger reports zero hits, not an error"
+# ABSENT AND ZERO ARE DIFFERENT FACTS (PR #429). The resolver's summary is required to distinguish
+# "no ledger yet" from "an empty ledger", and could not: both came back as 0 with zero-valued
+# fields, so the workflow's own no-ledger arm was unreachable.
+eq "$(bash "$PL" stats --ledger "$work/nope.md" | awk -F'\t' '$1=="ledger"{print $2}')" absent \
+   "…and says so explicitly, rather than leaving it inferred from zeros"
+EMPTYL="$work/empty-ledger.md"
+bash "$PL" record --ledger "$EMPTYL" --class x-cls --site s.sh --fix abc1234 --pr 1 --thread TE1 >/dev/null 2>&1
+eq "$(bash "$PL" stats --ledger "$EMPTYL" | awk -F'\t' '$1=="ledger"{print $2}')" present \
+   "…while a ledger that exists reports present, so the two are distinguishable"
 eq "$(bash "$PL" classes --ledger "$work/nope.md" >/dev/null 2>&1; echo $?)" 0 \
    "…and classes is empty-but-successful, since a first run has nothing wrong with it"
 

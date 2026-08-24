@@ -217,7 +217,15 @@ _adb_dl_mcp_key() {
   layered="$(adb_toml_layered_get "${OPT_MANIFEST:-$(adb_repo_root 2>/dev/null)/agents.toml}" \
                                   "$(adb_global_manifest)" mcp "$key" --with-layer)" || return 1
   layer="${layered%% *}"; raw="${layered#* }"
-  [ -n "$raw" ] || return 1
+  # PRESENT-BUT-EMPTY IS MALFORMED, NOT UNDECLARED. `required =` is invalid TOML, and the layered
+  # reader returns success with an empty value for it — so this used to answer with the same `1` an
+  # absent key gets, silently skipping the preflight for a project that plainly tried to configure
+  # one. Reported by the declared reviewer on PR #429.
+  if [ -z "$raw" ]; then
+    printf 'docs-lib: [mcp] %s in the %s manifest is present but empty — not valid TOML, and not the same as leaving the key out.\n' \
+      "$key" "$layer" >&2
+    return 18
+  fi
   case "$raw" in
     \[*\]) ;;
     *) printf 'docs-lib: [mcp] %s in the %s manifest is not an array (got %s)\n' \
@@ -385,7 +393,7 @@ cmd_verdict() {
 # is a distinct code the workflow step must handle, never an empty string it can print and move on
 # from.
 cmd_report() {
-  local f n_consulted=0 n_none=0 n_probe=0 required rc vrc
+  local f n_consulted=0 n_none=0 n_probe=0 required rc vrc _srv _ev
   f="$(_adb_dl_file)" || exit 20
   _adb_dl_records "$f" >/dev/null || {
     printf 'docs-lib: %s holds a record that is not in the grammar — refusing to render a report from it\n' "$f" >&2
@@ -443,6 +451,20 @@ $required
 SERVERS
     else
       printf -- '- MCP preflight: **DEGRADED** — %s\n' "$(cmd_verdict 2>&1 >/dev/null | awk -F'did not answer: ' 'NF > 1 { print $2 }' | head -1)"
+      # THE EVIDENCE, ON THIS ARM TOO. The clean arm gained it first and this one was left
+      # asserting only a status — which is backwards: a reader needs the auth error or the failed
+      # query far more than the text of a success, and the record file is swept, so this is the
+      # only place either survives. Same `evidence-discarded` class as the clean arm, missed by
+      # fixing the reported instance instead of sweeping the siblings.
+      # Reported by the declared reviewer on PR #429.
+      while IFS= read -r _srv; do
+        [ -n "$_srv" ] || continue
+        _ev="$(awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }' "$f")"
+        [ -n "$_ev" ] || _ev='(no probe was recorded for this server)'
+        printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
+      done <<SERVERS
+$required
+SERVERS
       printf -- '  This run fell back to rung 3 (current vendor documentation via web search).\n'
     fi
   elif [ "$rc" -eq 18 ]; then
