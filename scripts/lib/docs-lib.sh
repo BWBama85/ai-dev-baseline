@@ -249,7 +249,12 @@ _adb_dl_mcp_key() {
               if (i == n) continue                      # one trailing comma
               bad = 1; exit
             }
-            if (e !~ /^".*"$/) { bad = 1; exit }
+            # NON-EMPTY between the quotes. `[""]` is syntactically a quoted string, so `.*`
+            # admitted it — and `adb_toml_array` then drops empty elements, leaving `mcp-required`
+            # reporting success with NO servers for an operator who declared one. It has to be
+            # caught HERE, on the raw literal: after parsing, `[""]` and the legal `[]` are
+            # indistinguishable. Reported by the declared reviewer on PR #429.
+            if (e !~ /^"[^"]+"$/) { bad = 1; exit }
           }
         }
         END { exit (bad ? 1 : 0) }'; then
@@ -422,7 +427,20 @@ cmd_report() {
     printf '\n'
     cmd_verdict >/dev/null 2>&1; vrc=$?
     if [ "$vrc" -eq 0 ]; then
-      printf -- '- MCP preflight: %s answered a real query.\n' "$(printf '%s' "$required" | tr '\n' ' ' | sed 's/ $//')"
+      # THE EVIDENCE IS RENDERED, not merely demanded. `probe-record` requires `--evidence` so a
+      # reader can re-run what answered — and this block used to drop it, asserting only that the
+      # server "answered". The record file is gitignored run state that `admit` and /cleanup remove,
+      # so the report is the ONLY place that evidence ever reaches a reviewer: withholding it here
+      # made the mandatory field unreadable by the audience it exists for.
+      # Reported by the declared reviewer on PR #429.
+      printf -- '- MCP preflight: every required server answered a real query.\n'
+      while IFS= read -r _srv; do
+        [ -n "$_srv" ] || continue
+        printf -- '  - `%s` — %s\n' "$_srv" \
+          "$(awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }' "$f")"
+      done <<SERVERS
+$required
+SERVERS
     else
       printf -- '- MCP preflight: **DEGRADED** — %s\n' "$(cmd_verdict 2>&1 >/dev/null | awk -F'did not answer: ' 'NF > 1 { print $2 }' | head -1)"
       printf -- '  This run fell back to rung 3 (current vendor documentation via web search).\n'

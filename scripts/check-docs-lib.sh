@@ -173,9 +173,22 @@ if [ "$MODE" = mutation ]; then
     '              continue' \
     'an empty interior array element ([, "a"]) is refused'
 
+  # THE EMPTY-QUOTED-NAME CHECK (PR #429). Restores the permissive `.*` that shipped — the
+  # spelling a later edit would reach for, and the one that cannot tell `[""]` from `[]`.
+  check_mut empty-name-skipped \
+    '            if (e !~ /^"[^"]+"$/) { bad = 1; exit }' \
+    '            if (e !~ /^".*"$/) { bad = 1; exit }' \
+    'an empty quoted server name is refused, not silently dropped'
+
+  # THE EVIDENCE RENDER (PR #429).
+  check_mut evidence-not-rendered \
+    "'\$1 == \"probe\" && \$2 == n { e = \$4 } END { print e }'" \
+    "'\$1 == \"probe\" && \$2 == n { e = \"\" } END { print e }'" \
+    "the report renders each required server's probe evidence"
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
-    '            if (e !~ /^".*"$/) { bad = 1; exit }' \
+    '            if (e !~ /^"[^"]+"$/) { bad = 1; exit }' \
     '            if (0) { bad = 1; exit }' \
     'an unquoted array element ([context7]) is refused as malformed TOML'
 
@@ -447,6 +460,28 @@ required = $bad
   dl mcp-required --manifest "$D15/agents.toml" >/dev/null 2>&1
   eq "$?" 18 "an empty interior array element ($bad) is refused"
 done
+# AN EMPTY QUOTED ELEMENT (PR #429). `[""]` passes the quoted-string grammar, so the check above
+# admits it and `adb_toml_array` emits an empty element — which a `continue` silently dropped,
+# leaving mcp-required reporting success with NO servers for an operator who declared one.
+D16="$(fixture emptyname '[mcp]
+required = [""]
+')"
+dl mcp-required --manifest "$D16/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "an empty quoted server name is refused, not silently dropped"
+dl verdict --state "$D16/state" --manifest "$D16/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and the verdict refuses rather than reporting nothing to preflight"
+# THE LEGAL EMPTY ARRAY MUST SURVIVE IT. `adb_toml_array` drops empty elements, so after parsing
+# `[""]` and `[]` are byte-identical — a check written on the decoded side rejects both, which the
+# first attempt at this fix did. That is why it lives in the grammar scan of the raw literal.
+D16b="$(fixture emptyarr2 '[mcp]
+required = []
+')"
+OUT16="$(dl mcp-required --manifest "$D16b/agents.toml" 2>/dev/null)"; RC16=$?
+eq "$RC16" 0 "…while a legally EMPTY array is accepted (declared, zero elements) rather than malformed"
+eq "$OUT16" "" "…and lists no servers"
+dl verdict --state "$D16b/state" --manifest "$D16b/agents.toml" >/dev/null 2>&1
+eq "$?" 0 "…and its verdict still passes with nothing to preflight"
+
 for good in '["context7"]' '[]' '["a", "b"]' '["a",]'; do
   D14="$(fixture "quoted$(printf '%s' "$good" | tr -dc 'ab')" "[mcp]
 required = $good
@@ -539,6 +574,20 @@ PRAC="$(cat base/practices/third-party-claims.md)"
 has "$PRAC" 'first time in this project' "the practice carries the proportional trigger list"
 has "$PRAC" 'language-core idiom'        "…and the skip list that keeps it performable"
 has "$PRAC" 'Docs consulted'             "…and names the report contract that makes it auditable"
+
+# THE REPORT MUST CARRY THE PROBE EVIDENCE (PR #429). `probe-record` demands `--evidence` so a
+# reader can re-run what answered, and the record file is gitignored run state that `admit` and
+# /cleanup remove — so the report is the ONLY place that evidence ever reaches a reviewer. A block
+# that asserted only "the server answered" made the mandatory field unreadable by its audience.
+D17="$(fixture evidence '[mcp]
+required = ["context7"]
+')"
+dl probe-record --state "$D17/state" --server context7 --result usable \
+   --evidence 'DISTINCTIVE-EVIDENCE-MARKER' >/dev/null 2>&1
+dl none-needed --state "$D17/state" --justification 'trivial' >/dev/null 2>&1
+R17="$(dl report --state "$D17/state" --manifest "$D17/agents.toml" 2>/dev/null)"
+has "$R17" "DISTINCTIVE-EVIDENCE-MARKER" "the report renders each required server's probe evidence"
+has "$R17" "context7"                    "…named by the server it belongs to"
 
 # THE SHIPPED TEMPLATE MUST DESCRIBE THE BEHAVIOUR THAT NOW EXISTS (PR #429). `install.sh` writes
 # `templates/agents.toml` for new adopters, and it still said nothing health-checks a declared

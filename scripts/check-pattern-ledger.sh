@@ -582,7 +582,22 @@ has "$RESTXT" 'declined'                      "…and says which disposition is 
 # points at.
 has   "$RESTXT" '--fix "$FIX_SHA"' "the resolver records each thread against ITS OWN fix commit"
 hasnt "$RESTXT" '--fix "$LAST_SHA"' "…never against the round's head sha"
-has   "$RESTXT" 'FIX_SHA="$(git rev-parse --short HEAD)"' "…and says how to capture it, per commit"
+has   "$RESTXT" 'FIX_SHA="$(git rev-parse --short=7 HEAD)"' "…and says how to capture it, per commit"
+# `--short=7`, NOT a bare `--short`. Git's `--short[=<length>]` follows the effective `core.abbrev`,
+# whose documented minimum is 4 — and `_adb_pl_ok_fix` requires 7. Probed: with core.abbrev=4 a
+# bare `--short` returned 4 characters, so step 4b would refuse EVERY hit with rc 19 and record
+# nothing at all. Pinned as an absence too, because the bare form is the one a later edit types.
+hasnt "$RESTXT" 'FIX_SHA="$(git rev-parse --short HEAD)"' \
+   "…using an explicit width, never the bare --short that follows core.abbrev"
+
+# THE LEDGER COMMIT MUST BE A NO-OP ON AN IDEMPOTENT RE-RUN (PR #429). `record` returns 10 for a
+# hit already stored, so a resolver that crashed after committing the ledger but before resolving
+# the threads leaves the worktree unchanged — and an unconditional `git commit` then aborts the
+# round before it resolves anything, defeating the record-before-resolve recovery this workflow
+# deliberately chose.
+has "$RESTXT" 'git diff --cached --quiet -- .ai-dev-baseline/patterns.md' \
+   "the ledger commit is guarded on whether anything is actually staged"
+has "$RESTXT" 'every hit was already recorded' "…and says why nothing to commit is a normal outcome"
 
 # THE ROUND FIGURE IS THE PR-SCOPED ONE. `recurring` is a lifetime count over an append-only file,
 # so a summary quoting it prints a number that grows whatever the round did.

@@ -589,7 +589,12 @@ you just read the finding and wrote the fix. Nothing recovers that later.
 
   ```bash
   git commit -m "address bot review on PR #$PR_NUM: <summary>"
-  FIX_SHA="$(git rev-parse --short HEAD)"   # THIS thread's fix, not the round's head
+  # `--short=7`, NOT a bare `--short`. Git's `--short[=<length>]` defaults to the effective
+  # `core.abbrev`, whose documented minimum is 4 — and the ledger's record grammar requires 7 to 40
+  # hex digits, so a repo configured with `core.abbrev = 4` refuses EVERY hit with rc 19 and step
+  # 4b silently records nothing. Probed: with core.abbrev=4 a bare `--short` returned 4 characters
+  # and `--short=7` returned 7. Reported by the declared reviewer on PR #429.
+  FIX_SHA="$(git rev-parse --short=7 HEAD)"   # THIS thread's fix, not the round's head
   ```
 
   A commit that genuinely bundles several threads shares its sha across them — accurate, because
@@ -639,8 +644,18 @@ comes from the review that landed it, never from the review comment that inspire
 
 ```bash
 git add .ai-dev-baseline/patterns.md
-git commit -m "chore: record review-finding classes from PR #$PR_NUM"
-git push origin "$PR_BRANCH"
+# GUARDED, because a re-run must be able to reach step 5. `record` is keyed on the thread id and
+# returns 10 for a hit already stored, so a resolver that crashed AFTER committing the ledger but
+# BEFORE resolving the threads leaves the worktree unchanged on its next run — and an unconditional
+# `git commit` then exits non-zero with "nothing to commit", aborting the round before it resolves
+# anything. That defeats the record-before-resolve recovery this workflow deliberately chose.
+# Reported by the declared reviewer on PR #429.
+if git diff --cached --quiet -- .ai-dev-baseline/patterns.md; then
+  echo "ledger unchanged this round (every hit was already recorded) — nothing to commit"
+else
+  git commit -m "chore: record review-finding classes from PR #$PR_NUM"
+  git push origin "$PR_BRANCH"
+fi
 ```
 
 **Do NOT fold this into the fix commit.** `--fix` names that commit's hash, so the ledger entry
