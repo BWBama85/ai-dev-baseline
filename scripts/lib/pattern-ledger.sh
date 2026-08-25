@@ -515,6 +515,26 @@ _adb_pl_threshold() {
 _ADB_PL_LOCK_WAIT_SECS=30
 _ADB_PL_LOCK_STALE_SECS=300
 
+# _adb_pl_owner_gone <lock-dir> — can we PROVE the lock's owner is no longer running?
+#
+# True only when the lock records a host we are on and a pid that no longer exists. Everything else
+# — no metadata, an unreadable file, another host, a pid still alive — answers NO, because the cost
+# of a wrong "yes" is two writers in the critical section and the cost of a wrong "no" is a wait
+# that ends in a loud, actionable refusal. Cross-host locks on a shared filesystem are therefore
+# never reclaimed automatically, and the diagnostic says so rather than pretending.
+_adb_pl_owner_gone() {
+  local meta="$1/meta" host pid
+  [ -r "$meta" ] || return 1
+  IFS="$TAB" read -r host pid < "$meta" 2>/dev/null || return 1
+  [ -n "$host" ] && [ -n "$pid" ] || return 1
+  [ "$host" = "$(uname -n 2>/dev/null)" ] || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  # `kill -0` asks whether the pid exists. A pid we do not own answers EPERM rather than ESRCH,
+  # which is still "alive", so this errs toward not reclaiming.
+  kill -0 "$pid" 2>/dev/null && return 1
+  return 0
+}
+
 # _adb_pl_lock <ledger> — take the ledger's write lock, or fail. Prints nothing on success.
 #
 # THE LOCK CARRIES AN OWNER TOKEN, and `_adb_pl_unlock` removes the directory only while that token
@@ -531,7 +551,13 @@ _adb_pl_lock() {
     # answer, the lock is treated as live, which fails closed toward waiting rather than toward
     # two concurrent writers.
     age="$(adb_age_secs "$dir" 2>/dev/null)" || age=""
-    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then
+    # AGE IS NOT DEATH, and reclaiming on age alone is what made this unsafe. A writer suspended
+    # past the stale interval is still ALIVE and may still be holding a prepared replacement file:
+    # reclaim its lock, let a successor update the ledger, and the original resumes and renames its
+    # stale copy over the successor's work. The tokenized release stops it deleting their LOCK; it
+    # cannot stop that write. So the owner must be PROVEN GONE before anything is reclaimed.
+    # Reported by the declared reviewer on PR #429.
+    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then
       # RENAME TO A TOMBSTONE, THEN DELETE — never `rmdir` the observed directory. Two writers can
       # see the same stale lock: with a bare removal the first deletes it and takes a FRESH lock,
       # and the second then deletes the first writer's live lock and takes one too, so both enter
@@ -548,6 +574,9 @@ _adb_pl_lock() {
     if [ "$waited" -ge "$_ADB_PL_LOCK_WAIT_SECS" ]; then
       printf 'pattern-ledger: could not take the write lock after %ss: %s\n' "$waited" "$dir" >&2
       printf 'pattern-ledger: another writer holds it. Nothing was written.\n' >&2
+      printf 'pattern-ledger: a lock is only reclaimed when its owner is PROVEN gone (same host, pid\n' >&2
+      printf 'pattern-ledger: no longer running). A live-but-stuck writer, or one on another host, is\n' >&2
+      printf 'pattern-ledger: never reclaimed automatically — remove %s by hand once you are sure.\n' "$dir" >&2
       return 1
     fi
     sleep 1
@@ -568,6 +597,10 @@ _adb_pl_lock() {
     _adb_pl_lock "$1"
     return $?
   fi
+  # WHO WE ARE, so a later contender can tell a dead owner from a slow one. Advisory only: it is
+  # read to decide RECLAMATION, never to decide release, so a torn or missing write degrades to
+  # "cannot prove dead", which is the safe answer.
+  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$dir/meta" 2>/dev/null || true
   return 0
 }
 
@@ -583,6 +616,11 @@ _adb_pl_unlock() {
   # second succeeds only while the directory is empty, so a successor's marker keeps their lock.
   # Neither can delete a lock we do not hold, which a read-then-delete could.
   rmdir "$dir/$_ADB_PL_LOCK_TOKEN" 2>/dev/null || return 0
+  # THE METADATA GOES WITH IT. `meta` is a FILE inside the lock directory, so leaving it there makes
+  # the `rmdir` below fail forever and the lock leaks — every later writer then waits out its bound
+  # and gives up. Removing it is safe precisely here: the `rmdir` above succeeding proves this was
+  # our lock, and nobody can create `$dir` while it still exists.
+  rm -f "$dir/meta" 2>/dev/null
   rmdir "$dir" 2>/dev/null || true
 }
 
@@ -615,6 +653,18 @@ _adb_pl_insert() {
         END { if (!done) exit 1 }
       ' "$file" > "$tmp"; then
     rm -f "$tmp"; [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"; return 1
+  fi
+  # THE LEASE IS RE-VERIFIED IMMEDIATELY BEFORE THE RENAME. Everything above — reading the file,
+  # running awk, writing the replacement — takes time, and a writer suspended across it may have had
+  # its lock reclaimed and a successor may have updated the ledger meanwhile. Renaming a replacement
+  # built from the PRE-successor contents would silently discard their work. Reclamation now refuses
+  # to take a lock whose owner is still alive, so this window should never open; checking anyway is
+  # what makes that a belt rather than an argument, and it costs one `[ -d ]`.
+  # Reported by the declared reviewer on PR #429.
+  if [ ! -d "$file.lock/${_ADB_PL_LOCK_TOKEN:-}" ]; then
+    printf 'pattern-ledger: this writer'"'"'s lock was revoked while it prepared its update — discarding it rather than overwriting whoever holds the ledger now.\n' >&2
+    rm -f "$tmp"
+    return 1
   fi
   mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }
   [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"

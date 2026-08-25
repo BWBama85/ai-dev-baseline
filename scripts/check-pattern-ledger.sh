@@ -268,6 +268,12 @@ if [ "$MODE" = mutation ]; then
     '  rm -rf "$dir" 2>/dev/null || true' \
     "release removed a co-resident marker"
 
+  # THE DEATH PROOF (PR #429). Restores age-alone reclamation, which is what shipped.
+  check_mut reclaims-live-owner \
+    '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then' \
+    '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then' \
+    "a stale-but-LIVE owner's lock was reclaimed"
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -781,6 +787,46 @@ mkdir -p "$L7h.lock/OURS" "$L7h.lock/THEIRS"
 [ -d "$L7h.lock/OURS" ]   && bad "release did not remove our own marker" || ok
 [ -d "$L7h.lock/THEIRS" ] && ok || bad "release removed a co-resident marker — rmdir was not what refused the non-empty directory"
 rm -rf "$L7h.lock"
+
+# THE LOCK DIRECTORY IS ACTUALLY EMPTIED, or it leaks and every later writer waits out its bound.
+# `meta` is a FILE inside it, and leaving it there made `rmdir` fail forever — 50 assertions in
+# this suite went red on the first run after the metadata landed, which is the harness catching a
+# regression in the fix rather than in the thing it fixed.
+L7k="$work/leak.md"
+bash "$PL" record --ledger "$L7k" --class leakc --site s.sh --fix abc1231 --pr 1 --thread LK1 >/dev/null 2>&1
+[ -e "$L7k.lock" ] && bad "the lock directory survived a successful release — it will block every later writer" || ok
+bash "$PL" record --ledger "$L7k" --class leakc --site s2.sh --fix abc1232 --pr 1 --thread LK2 >/dev/null 2>&1
+eq "$?" 0 "…and a second write in the same ledger is not blocked by the first"
+
+# AGE IS NOT DEATH (PR #429). A writer suspended past the stale interval is still ALIVE and may
+# still hold a prepared replacement file — reclaim its lock, let a successor update the ledger, and
+# the original resumes and renames its stale copy over their work. The tokenized release stops it
+# deleting their LOCK; nothing stopped that WRITE. Reclamation now requires proof the owner is gone.
+L7i="$work/live.md"
+bash "$PL" record --ledger "$L7i" --class livec --site s.sh --fix abc1231 --pr 1 --thread LV1 >/dev/null 2>&1
+mkdir -p "$L7i.lock/LIVE-TOKEN"
+printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$L7i.lock/meta"   # this suite is alive
+touch -t 200001010000 "$L7i.lock" 2>/dev/null                          # …and long past stale
+( _ADB_PL_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" --class livec \
+    --site s2.sh --fix abc1232 --pr 1 --thread LV2 ) >/dev/null 2>&1
+[ -d "$L7i.lock/LIVE-TOKEN" ] && ok || bad "a stale-but-LIVE owner's lock was reclaimed — age was treated as death"
+# …and the contender wrote nothing rather than proceeding beside the live owner.
+eq "$(bash "$PL" classes --ledger "$L7i" 2>/dev/null | awk -F'\t' '$2=="livec"{print $1}')" 1 \
+   "…and the blocked writer appended nothing"
+
+# A PROVABLY DEAD owner IS reclaimed, or a killed writer would wedge the ledger forever.
+printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$L7i.lock/meta"
+bash "$PL" record --ledger "$L7i" --class deadc --site s.sh --fix abc1233 --pr 1 --thread DV1 >/dev/null 2>&1
+eq "$?" 0 "a lock whose owner is provably gone IS reclaimed"
+
+# A lock with NO metadata is not reclaimable either — "cannot prove dead" must read as alive.
+L7j="$work/nometa.md"
+bash "$PL" record --ledger "$L7j" --class nmc --site s.sh --fix abc1231 --pr 1 --thread NM1 >/dev/null 2>&1
+mkdir -p "$L7j.lock/ORPHAN"; touch -t 200001010000 "$L7j.lock" 2>/dev/null
+( _ADB_PL_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7j" --class nmc \
+    --site s2.sh --fix abc1232 --pr 1 --thread NM2 ) >/dev/null 2>&1
+[ -d "$L7j.lock/ORPHAN" ] && ok || bad "a lock with no owner metadata was reclaimed — unprovable must mean alive"
+rm -rf "$L7i.lock" "$L7j.lock"
 
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
