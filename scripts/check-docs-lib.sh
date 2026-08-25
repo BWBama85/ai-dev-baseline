@@ -187,6 +187,24 @@ if [ "$MODE" = mutation ]; then
     "'\$1 == \"probe\" && \$2 == n { e = \"\" } END { print e }'" \
     "the report renders each required server's probe evidence"
 
+  # THE REPORT'"'"'S STATUS ON A MALFORMED MANIFEST (PR #429).
+  check_mut report-status-swallowed \
+    '    _report_rc=18' \
+    '    :' \
+    'report refuses to return success over a malformed manifest'
+
+  # THE DUPLICATE-KEY SCAN (PR #429).
+  check_mut duplicate-key-unchecked \
+    '    if [ "${_dupes:-0}" -gt 1 ]; then' \
+    '    if false; then' \
+    'a key declared twice in [mcp] is refused'
+
+  # THE FIELD BOUND (PR #429).
+  check_mut field-bound-removed \
+    '  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
+    '  :' \
+    'an oversized field is refused, so a record cannot span two writes'
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
@@ -607,6 +625,56 @@ dl none-needed --state "$D17/state" --justification 'trivial' >/dev/null 2>&1
 R17="$(dl report --state "$D17/state" --manifest "$D17/agents.toml" 2>/dev/null)"
 has "$R17" "DISTINCTIVE-EVIDENCE-MARKER" "the report renders each required server's probe evidence"
 has "$R17" "context7"                    "…named by the server it belongs to"
+
+# A MALFORMED MANIFEST MUST NOT RENDER AS A GOOD RUN (PR #429). `report` printed UNREADABLE and
+# then returned `printf`'"'"'s 0 — which is the arm step 10 reads as "paste the block".
+D20="$(fixture reportbad '[mcp]
+required = "not-an-array"
+')"
+dl none-needed --state "$D20/state" --justification 'trivial' >/dev/null 2>&1
+dl report --state "$D20/state" --manifest "$D20/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "report refuses to return success over a malformed manifest"
+has "$(dl report --state "$D20/state" --manifest "$D20/agents.toml" 2>/dev/null)" "UNREADABLE" \
+   "…while still saying what is wrong"
+
+# A KEY DECLARED TWICE IS INVALID TOML (PR #429). `adb_toml_get` stops at the first match, so the
+# first array was accepted and a probe for only those servers could earn a clean verdict on a file
+# no TOML parser would load.
+D21="$(fixture dupkey '[mcp]
+required = ["a"]
+required = ["b"]
+')"
+dl mcp-required --manifest "$D21/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a key declared twice in [mcp] is refused"
+dl verdict --state "$D21/state" --manifest "$D21/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and the verdict refuses too, rather than probing the first array"
+# The counter must be scoped to the TABLE, or an unrelated key of the same name elsewhere would
+# be blamed — the over-reach direction for this kind of scan.
+D22="$(fixture dupkeyscope '[mcp]
+required = ["a"]
+
+[roles]
+required = ["x"]
+')"
+eq "$(dl mcp-required --manifest "$D22/agents.toml")" "a" \
+   "…while the same key name in ANOTHER table is not a duplicate"
+
+# EVERY FIELD IS LENGTH-BOUNDED (PR #429), and that is a concurrency guarantee rather than a style
+# rule: stdio splits an oversized buffer into several writes, and two appenders then interleave
+# halves of two records. The reviewer produced malformed TSV from 30 concurrent 100 KiB appends.
+D23="$(fixture fieldbound '[mcp]
+required = ["context7"]
+')"
+BIGV="$(head -c 100000 /dev/zero | tr '\0' 'x')"
+dl probe-record --state "$D23/state" --server context7 --result usable --evidence "$BIGV" >/dev/null 2>&1
+eq "$?" 19 "an oversized field is refused, so a record cannot span two writes"
+[ -f "$D23/state/docs-consulted.tsv" ] && bad "the refused oversized record still created the file" || ok
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  dl probe-record --state "$D23/state" --server context7 --result usable --evidence "ok $i" >/dev/null 2>&1 &
+done
+wait
+dl verdict --state "$D23/state" --manifest "$D23/agents.toml" >/dev/null 2>&1
+eq "$?" 0 "…and 15 concurrent bounded appends still parse as whole records"
 
 # THE SHIPPED TEMPLATE MUST DESCRIBE THE BEHAVIOUR THAT NOW EXISTS (PR #429). `install.sh` writes
 # `templates/agents.toml` for new adopters, and it still said nothing health-checks a declared

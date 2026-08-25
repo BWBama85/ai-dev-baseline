@@ -533,7 +533,15 @@ _adb_pl_insert() {
     _adb_pl_lock "$file" || return 1
     held_here=1
   fi
-  tmp="$(mktemp "${file}.XXXXXX")" || { _adb_pl_unlock "$file"; return 1; }
+  tmp="$(mktemp "${file}.XXXXXX")" || { [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"; return 1; }
+  # THE LEDGER KEEPS ITS MODE. `mktemp` creates 0600 and the rename below installs that over the
+  # tracked file, so with an ordinary umask the first `record` silently took `patterns.md` from
+  # 0644 to 0600 — invisible in the diff, because git tracks only the execute bit, and enough to
+  # stop everyone else in a shared checkout from reading the project's ledger. `cp -p` copies the
+  # existing mode onto the temp (the redirection below truncates the content but keeps the mode),
+  # which avoids `stat`'s incompatible flags between macOS and GNU.
+  # Reported by the declared reviewer on PR #429.
+  cp -p "$file" "$tmp" 2>/dev/null || true
   if ! ADB_PL_LINE="$line" awk -v e="$end" '
         { l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l) }
         l == e && !done { print ENVIRON["ADB_PL_LINE"]; done = 1 }

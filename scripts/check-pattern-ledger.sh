@@ -236,6 +236,12 @@ if [ "$MODE" = mutation ]; then
     '    :' \
     'a checklist rule carrying a tab is refused by `checklist`'
 
+  # THE MODE PRESERVATION (PR #429).
+  check_mut mode-not-preserved \
+    '  cp -p "$file" "$tmp" 2>/dev/null || true' \
+    '  :' \
+    "the ledger lost its mode to mktemp"
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -651,6 +657,26 @@ if [ -e "$INJDIR/INJECTED" ] || [ -e "$work/INJECTED" ] || [ -e "INJECTED" ]; th
 else
   ok
 fi
+
+# THE LEDGER KEEPS ITS FILE MODE (PR #429). `mktemp` creates 0600 and the rename installs that
+# over the tracked file, so with an ordinary umask the FIRST record silently took `patterns.md`
+# from 0644 to 0600 — invisible in the diff, since git tracks only the execute bit, and enough to
+# stop everyone else in a shared checkout reading the project ledger.
+L7f="$work/mode.md"
+( umask 022
+  bash "$PL" record --ledger "$L7f" --class modec --site s.sh --fix abc1231 --pr 1 --thread M1 >/dev/null 2>&1
+  bash "$PL" record --ledger "$L7f" --class modec --site s2.sh --fix abc1232 --pr 1 --thread M2 >/dev/null 2>&1 )
+case "$(ls -l "$L7f" | awk '{print substr($1,1,10)}')" in
+  -rw-r--r--) ok ;;
+  *) bad "the ledger lost its mode to mktemp's 0600: $(ls -l "$L7f" | awk '{print $1}')" ;;
+esac
+# A DELIBERATE mode is preserved too — the fix copies the existing mode rather than forcing 0644.
+chmod 0640 "$L7f"
+bash "$PL" record --ledger "$L7f" --class modec --site s3.sh --fix abc1233 --pr 1 --thread M3 >/dev/null 2>&1
+case "$(ls -l "$L7f" | awk '{print substr($1,1,10)}')" in
+  -rw-r-----) ok ;;
+  *) bad "a deliberately restricted ledger mode was not preserved: $(ls -l "$L7f" | awk '{print $1}')" ;;
+esac
 
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.

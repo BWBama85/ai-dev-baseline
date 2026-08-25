@@ -74,10 +74,13 @@
 # key that way ("a run that cannot reach one is DEGRADED; say so instead of proceeding quietly"),
 # so the loud part is the SAYING. D90 records the reading.
 #
-# CONCURRENCY, STATED RATHER THAN LOCKED. Records are appended with `>>`, which is atomic for the
-# short lines this module writes, so two writers interleave records rather than corrupting one. No
-# read-modify-write happens here at all, so there is nothing for a second writer to clobber. The
-# ordering between records is not guaranteed under concurrency, and nothing reads it.
+# CONCURRENCY, STATED AND BOUNDED. Records are appended with `>>` and no read-modify-write happens
+# here at all, so there is nothing for a second writer to clobber. What makes the append itself
+# safe is that every field is length-bounded (`_ADB_DL_FIELD_MAX`): a whole record then fits in one
+# stdio buffer and reaches the file as a single write(), which is atomic under O_APPEND. The
+# earlier version of this paragraph claimed safety "for the short lines this module writes" while
+# enforcing shortness nowhere, and the reviewer produced malformed TSV from 30 concurrent appends
+# of 100 KiB evidence. Record ORDER is still not guaranteed, and nothing reads it.
 #
 # Requires: awk. No network, no gh, no jq.
 
@@ -109,8 +112,17 @@ _ADB_DL_FILE=docs-consulted.tsv
 # The record file is TSV read back with `IFS=<tab> read`, so a tab or newline in a value does not
 # corrupt a display — it FORGES A FIELD, and a forged field is how a `degraded` record reads back
 # as `usable`. Refuse rather than escape.
+# The per-field byte bound. It is a CONCURRENCY guarantee, not a style rule: records are appended
+# with `>>`, and a single write() to a file opened O_APPEND is atomic — but stdio splits a buffer
+# larger than its own into SEVERAL writes, and two writers then interleave halves of two records.
+# Reproduced by the reviewer on PR #429: 30 concurrent appends carrying 100 KiB of evidence
+# produced malformed TSV that `report` then refused. Keeping every field under this bound keeps a
+# whole record inside one stdio buffer, and 512 bytes is far more than one line of evidence needs.
+_ADB_DL_FIELD_MAX=512
+
 _adb_dl_ok_field() {
   [ -n "$1" ] || return 1
+  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1
   # THE DELIMITER TEST IS `adb_tsv_field_safe`'s — one home for exactly this question, and its
   # header records why the failure is FORGERY rather than corruption: a value carrying a delimiter
   # does not make the record malformed, it makes TWO records, the second entirely chosen by
@@ -207,7 +219,7 @@ _adb_dl_records() {
 # plausible typo, and reading it as an undeclared key would report a project that asked for a
 # preflight as a project that declined one.
 _adb_dl_mcp_key() {
-  local key="$1" raw layer layered parsed one
+  local key="$1" raw layer layered parsed one _dupfile _dupes
   # THE PRECEDENCE RULE IS `adb_toml_layered_get`'s (common.sh), not a third copy of it. The loop
   # this replaced also fell THROUGH an empty repo-level declaration to the global manifest, so a
   # project that wrote `required =` silently inherited the machine's list.
@@ -225,6 +237,29 @@ _adb_dl_mcp_key() {
     printf 'docs-lib: [mcp] %s in the %s manifest is present but empty — not valid TOML, and not the same as leaving the key out.\n' \
       "$key" "$layer" >&2
     return 18
+  fi
+  # A KEY DECLARED TWICE IN ONE TABLE IS INVALID TOML, and `adb_toml_get` stops at the first
+  # match — so a manifest repeating `required = [...]` had its FIRST array accepted while a real
+  # TOML parser would reject the file outright, and a probe for only those servers could then earn
+  # a clean verdict. Counted in the file the layered read actually answered from, so a duplicate in
+  # the global manifest is not blamed on the repo one.
+  # Reported by the declared reviewer on PR #429.
+  case "$layer" in
+    repo)   _dupfile="${OPT_MANIFEST:-$(adb_repo_root 2>/dev/null)/agents.toml}" ;;
+    global) _dupfile="$(adb_global_manifest)" ;;
+    *)      _dupfile="" ;;
+  esac
+  if [ -n "$_dupfile" ] && [ -f "$_dupfile" ]; then
+    _dupes="$(awk -v k="$key" '
+      /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*$/, "", hdr)
+                          intbl = (hdr == "mcp"); next }
+      intbl && $0 ~ ("^[[:space:]]*" k "[[:space:]]*=") { n++ }
+      END { print n + 0 }' "$_dupfile")"
+    if [ "${_dupes:-0}" -gt 1 ]; then
+      printf 'docs-lib: [mcp] %s is declared %s times in the %s manifest — that is not valid TOML, and only the first would ever be read.\n' \
+        "$key" "$_dupes" "$layer" >&2
+      return 18
+    fi
   fi
   case "$raw" in
     \[*\]) ;;
@@ -408,7 +443,7 @@ cmd_verdict() {
 # is a distinct code the workflow step must handle, never an empty string it can print and move on
 # from.
 cmd_report() {
-  local f n_consulted=0 n_none=0 n_probe=0 required rc vrc _srv _ev
+  local f n_consulted=0 n_none=0 n_probe=0 required rc vrc _srv _ev _report_rc=0
   f="$(_adb_dl_file)" || exit 20
   _adb_dl_records "$f" >/dev/null || {
     printf 'docs-lib: %s holds a record that is not in the grammar — refusing to render a report from it\n' "$f" >&2
@@ -487,10 +522,15 @@ SERVERS
     # preflight and mis-spelled it, and reporting that as "declares no [mcp] required" tells the
     # reader the opposite of what is true — the flattering reading, in the one block whose job is
     # to be audited.
+    # AND THE STATUS SAYS SO. Printing UNREADABLE and then returning `printf`'s 0 told step 10
+    # "paste the block", which is the arm meaning a successfully rendered report — so a malformed
+    # manifest was reported as a good run. Reported by the declared reviewer on PR #429.
+    _report_rc=18
     printf '\n- MCP preflight: **UNREADABLE** — `[mcp] required` is malformed; fix agents.toml.\n'
   elif [ "$n_probe" -gt 0 ]; then
     printf '\n- MCP preflight: probes recorded, but this repo declares no `[mcp] required`.\n'
   fi
+  return "$_report_rc"
 }
 
 # --- arguments ----------------------------------------------------------------------------------
