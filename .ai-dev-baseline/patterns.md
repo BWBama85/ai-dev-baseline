@@ -108,4 +108,10 @@ One line per resolved review thread, newest last.
 - `ledger-coverage-gap` `base/workflows/implement-issue.md:745` `55d200e` `PRRT_kwDOTfywrM6b-wZP` PR #429 2026-08-25 — a preflight probed the names one step writes and not the names another does
 - `stale-doc-claim` `scripts/selfcheck.sh:526` `55d200e` `PRRT_kwDOTfywrM6b-wZR` PR #429 2026-08-25 — comments quoted mutation totals that the suites had long since outgrown
 - `stale-doc-claim` `scripts/selfcheck.sh:533` `55d200e` `PRRT_kwDOTfywrM6b-wZT` PR #429 2026-08-25 — a comment restated a claim the decision log had explicitly retired
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:588` `8c7d788` `PRRT_kwDOTfywrM6cIxmw` PR #429 2026-08-25 — an if-branch consumed a status the round was required to stop on
+- `partial-validation` `scripts/lib/docs-lib.sh:290` `8c7d788` `PRRT_kwDOTfywrM6cIxmz` PR #429 2026-08-25 — a normalization taught to one reader and not to its sibling scanner
+- `partial-validation` `scripts/lib/pattern-ledger.sh:486` `8c7d788` `PRRT_kwDOTfywrM6cIxm2` PR #429 2026-08-25 — the same normalization missing from the second sibling scanner
+- `toctou` `scripts/lib/pattern-ledger.sh:588` `8c7d788` `PRRT_kwDOTfywrM6cIxm9` PR #429 2026-08-25 — a retry path skipped the sleep and the counter, so the bound never applied
+- `false-guarantee` `scripts/lib/pattern-ledger.sh:269` `8c7d788` `PRRT_kwDOTfywrM6cIxnC` PR #429 2026-08-25 — a template claimed convergence on a path that exits before the check that would converge it
+- `evidence-discarded` `scripts/lib/docs-lib.sh:520` `8c7d788` `PRRT_kwDOTfywrM6cIxnF` PR #429 2026-08-25 — stored text was rendered into markup unescaped, hiding the evidence it was kept for
 <!-- adb:hits:end -->
