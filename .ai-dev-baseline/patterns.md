@@ -36,6 +36,7 @@ Sweep each of these before opening a pull request.
 - `toctou` — When a command checks a precondition and then acts on it, the lock must span BOTH — locking only the write leaves the decision racing. And never reclaim a lock by deleting the directory you observed: rename it to a unique name first, so exactly one recoverer wins and nobody deletes a lock somebody else just took.
 - `ledger-coverage-gap` — A signal this loop captures must reach the consumer that needs it: record every legitimate finding including one an earlier commit already fixed, and treat a failed record as terminal rather than resolving threads whose history was never stored.
 - `false-guarantee` — A comment asserting a safety property is a claim, not a mechanism. Name what enforces it in the same breath — a lock, a bound, a validator — and if the answer is "the caller is sequential" or "the lines are short", check that something makes it so. Both instances of this class were headers arguing a guarantee the code did not provide.
+- `markup-injection` — Stored text that later lands in a structured artifact must be neutralized against THAT artifact's structure, not against structure in general: escape `&<>` for anything rendered as Markdown or HTML, and refuse the region markers that delimit a file whose sections are machine-managed. Both instances were text kept as evidence that could forge the frame it was displayed in — ask, for every stored field, which document it is written into and what characters mean something there.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -113,5 +114,12 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/pattern-ledger.sh:486` `8c7d788` `PRRT_kwDOTfywrM6cIxm2` PR #429 2026-08-25 — the same normalization missing from the second sibling scanner
 - `toctou` `scripts/lib/pattern-ledger.sh:588` `8c7d788` `PRRT_kwDOTfywrM6cIxm9` PR #429 2026-08-25 — a retry path skipped the sleep and the counter, so the bound never applied
 - `false-guarantee` `scripts/lib/pattern-ledger.sh:269` `8c7d788` `PRRT_kwDOTfywrM6cIxnC` PR #429 2026-08-25 — a template claimed convergence on a path that exits before the check that would converge it
-- `evidence-discarded` `scripts/lib/docs-lib.sh:520` `8c7d788` `PRRT_kwDOTfywrM6cIxnF` PR #429 2026-08-25 — stored text was rendered into markup unescaped, hiding the evidence it was kept for
+- `markup-injection` `scripts/lib/docs-lib.sh:520` `8c7d788` `PRRT_kwDOTfywrM6cIxnF` PR #429 2026-08-25 — stored text was rendered into markup unescaped, hiding the evidence it was kept for
+- `precondition-ordering` `base/workflows/resolve-pr-threads.md:288` `3134b4b` `PRRT_kwDOTfywrM6cKc4w` PR #429 2026-08-25 — a step that reads and commits ran before the switch that makes its target legal
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:297` `3134b4b` `PRRT_kwDOTfywrM6cKc40` PR #429 2026-08-25 — a wildcard arm only warned, so an earned promotion stayed unwritten on a clean pass
+- `partial-validation` `scripts/lib/common.sh:2990` `3134b4b` `PRRT_kwDOTfywrM6cKc43` PR #429 2026-08-25 — a table header was accepted without the closing bracket its grammar requires
+- `markup-injection` `scripts/lib/pattern-ledger.sh:220` `3134b4b` `PRRT_kwDOTfywrM6cKc46` PR #429 2026-08-25 — a stored summary could carry the region markers that delimit the file it is written into
+- `partial-validation` `scripts/lib/docs-lib.sh:216` `3134b4b` `PRRT_kwDOTfywrM6cKc4_` PR #429 2026-08-25 — a NUL byte was parsed rather than refused, normalizing a record the writer could not produce
+- `partial-validation` `scripts/lib/pattern-ledger.sh:563` `3134b4b` `PRRT_kwDOTfywrM6cKc5D` PR #429 2026-08-25 — an override was checked for positivity but not for a width the shell can compare
+- `toctou` `scripts/lib/docs-lib.sh:472` `3134b4b` `PRRT_kwDOTfywrM6cKc5J` PR #429 2026-08-25 — a declaration was re-read per call, so a verdict and its evidence could disagree
 <!-- adb:hits:end -->
