@@ -120,9 +120,17 @@ _ADB_DL_FILE=docs-consulted.tsv
 # whole record inside one stdio buffer, and 512 bytes is far more than one line of evidence needs.
 _ADB_DL_FIELD_MAX=512
 
+# _adb_dl_bytes <value> — the value's length in BYTES.
+#
+# `${#var}` counts CHARACTERS in the caller's locale, and the atomic-write guarantee is about
+# bytes: two fields of 512 four-byte characters are ~4 KiB of record, which stdio splits and two
+# appenders then interleave. The reviewer reproduced six malformed lines from 200 concurrent calls
+# that all passed a 512-"byte" check. Reported by the declared reviewer on PR #429.
+_adb_dl_bytes() { printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '; }
+
 _adb_dl_ok_field() {
   [ -n "$1" ] || return 1
-  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1
+  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1
   # THE DELIMITER TEST IS `adb_tsv_field_safe`'s — one home for exactly this question, and its
   # header records why the failure is FORGERY rather than corruption: a value carrying a delimiter
   # does not make the record malformed, it makes TWO records, the second entirely chosen by
@@ -156,8 +164,18 @@ _adb_dl_file() {
 # Append one record, creating the file — and the state directory — on first write. The directory is
 # created rather than required: the caller names it (`--state`), and a run whose very first docs
 # action precedes any other state write would otherwise fail on a directory it is entitled to have.
+# The whole-record bound. Bounding each FIELD is necessary and not sufficient: three bounded fields
+# plus their separators still add up, and it is the assembled record that must reach the file in
+# one write. Checked here, at the single place every record is written.
+_ADB_DL_RECORD_MAX=2048
+
 _adb_dl_append() {
   local f d
+  if [ "$(_adb_dl_bytes "$*")" -gt "$_ADB_DL_RECORD_MAX" ]; then
+    printf 'docs-lib: refusing a %s-byte record — the append bound is %s bytes, because a record larger than one stdio buffer can be split and interleaved with another writer.\n' \
+      "$(_adb_dl_bytes "$*")" "$_ADB_DL_RECORD_MAX" >&2
+    exit 19
+  fi
   f="$(_adb_dl_file)" || exit 20
   d="$(dirname "$f")"
   [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'docs-lib: cannot create %s\n' "$d" >&2; exit 20; }

@@ -244,11 +244,9 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     "the ledger lost its mode to mktemp"
 
-  # THE OWNER TOKEN ON RELEASE (PR #429).
-  check_mut unlock-ignores-owner \
-    '  [ "$(cat "$dir/owner" 2>/dev/null)" = "${_ADB_PL_LOCK_TOKEN:-}" ] || return 0' \
-    '  :' \
-    "a stale writer deleted a SUCCESSOR's lock"
+  # THE OWNER-FILE ROW IS RETIRED. It mutated a `cat "$dir/owner"` check that no longer exists:
+  # the token became a SUBDIRECTORY precisely because reading a file and then deleting was
+  # check-then-act. `unlock-check-then-act` below covers the property it was written for.
 
   # THE COMPLETE-SCALAR CHECK (PR #429).
   # TARGETS THE AWK GUARD, not the message: `return 2` stopped being unique once this check added
@@ -257,6 +255,18 @@ if [ "$MODE" = mutation ]; then
     '              bad = 1; exit' \
     '              next' \
     'an unterminated quoted threshold is refused, not silently reconstructed'
+
+  # THE DUPLICATE-THRESHOLD SCAN (PR #429).
+  check_mut duplicate-threshold-unchecked \
+    '              if (++seen > 1) { bad = 1; exit }' \
+    '              seen = 1' \
+    'a threshold declared twice is refused, not silently resolved to the first'
+
+  # THE ATOMIC RELEASE (PR #429). Restores the read-then-delete form that shipped.
+  check_mut unlock-check-then-act \
+    '  rmdir "$dir" 2>/dev/null || true' \
+    '  rm -rf "$dir" 2>/dev/null || true' \
+    "release removed a co-resident marker"
 
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
@@ -546,6 +556,12 @@ no "$RC" "a malformed [patterns] threshold is a hard error"
 printf '[patterns]\nthreshold = "2\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
 HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
 eq "$?" 2 "an unterminated quoted threshold is refused, not silently reconstructed"
+# A KEY DECLARED TWICE IS INVALID TOML (PR #429), and `adb_toml_get` returns the FIRST — so a
+# duplicate silently used the earlier value. The `[mcp]` reader already refused this; its sibling
+# here did not, which is the class my own promoted rule says to sweep for.
+printf '[patterns]\nthreshold = 2\nthreshold = 99\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
+HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
+eq "$?" 2 "a threshold declared twice is refused, not silently resolved to the first"
 for sub in due stats; do
   HOME="$MHOME" bash "$PL" "$sub" --ledger "$L1" >/dev/null 2>&1
   eq "$?" 2 "…and \`$sub\` refuses it too, rather than running on a value nobody wrote"
@@ -732,6 +748,40 @@ rm -rf "$L7g.lock"
 bash "$PL" record --ledger "$L7g" --class ownc --site s2.sh --fix abc1232 --pr 1 --thread O2 >/dev/null 2>&1
 [ -d "$L7g.lock" ] && bad "the owning writer failed to release its own lock" || ok
 
+# RELEASE IS ATOMIC, NOT CHECK-THEN-ACT (PR #429). Reading an `owner` file and then deleting the
+# directory leaves a window: a successor can reclaim the stale lock and create a fresh one between
+# the read and the `rm`, and the original writer then deletes THEIRS. The token is a SUBDIRECTORY
+# now, so release is two `rmdir`s that can only ever remove our own marker and an empty parent.
+L7h="$work/relock.md"
+bash "$PL" record --ledger "$L7h" --class relc --site s.sh --fix abc1231 --pr 1 --thread RL1 >/dev/null 2>&1
+mkdir -p "$L7h.lock/SOMEONE-ELSE-TOKEN"
+(
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
+  eval "$(sed -n '/^_adb_pl_unlock()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
+  _ADB_PL_LOCK_TOKEN="MINE-AND-STALE"
+  _adb_pl_unlock "$L7h"
+)
+[ -d "$L7h.lock/SOMEONE-ELSE-TOKEN" ] && ok || bad "a stale writer deleted a successor's lock marker"
+[ -d "$L7h.lock" ] && ok || bad "a stale writer deleted a successor's lock directory"
+rm -rf "$L7h.lock"
+
+# AND THE PARENT rmdir REFUSES A NON-EMPTY DIRECTORY. That second `rmdir` is the half that keeps a
+# co-resident marker alive; `rm -rf` in its place would take the whole directory with it. Only this
+# shape witnesses it — with just our own marker present the directory is empty afterwards and both
+# spellings behave identically.
+mkdir -p "$L7h.lock/OURS" "$L7h.lock/THEIRS"
+(
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
+  eval "$(sed -n '/^_adb_pl_unlock()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
+  _ADB_PL_LOCK_TOKEN="OURS"
+  _adb_pl_unlock "$L7h"
+)
+[ -d "$L7h.lock/OURS" ]   && bad "release did not remove our own marker" || ok
+[ -d "$L7h.lock/THEIRS" ] && ok || bad "release removed a co-resident marker — rmdir was not what refused the non-empty directory"
+rm -rf "$L7h.lock"
+
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
 mkdir "$L7c.lock"
@@ -872,6 +922,9 @@ has "$RESTXT" 'ROUND_FINDINGS' "…and reports the DIFFERENCE as the round figur
 # figure: when a class crosses the threshold every EARLIER hit becomes recurring too, so a round
 # adding a class's second hit would see the scalar go 0 -> 2 and report two findings for one.
 has   "$RESTXT" 'ROUND_CLASSES' "the resolver tracks which classes THIS round recorded"
+# ONLY FOR ROWS ACTUALLY APPENDED. rc 10 is the crash-recovery rerun — already recorded, nothing
+# added — so counting it would make this accumulator disagree with the snapshots beside it.
+has   "$RESTXT" 'ONLY WHEN `record` RETURNED 0' "…and only for hits it actually appended, not rc 10"
 hasnt "$RESTXT" 'ROUND_RECURRING="$(( $(_field "$STATS_AFTER" pr-recurring)' \
    "…and does not subtract cumulative pr-recurring, which reclassifies the past"
 # The stats capture must be assigned, or the block that reads it aborts under set -u.

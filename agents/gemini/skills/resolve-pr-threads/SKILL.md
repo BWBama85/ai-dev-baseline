@@ -574,7 +574,13 @@ ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurri
 round actually added rather than from a cumulative figure that reclassifies the past:
 
 ```bash
-ROUND_CLASSES="${ROUND_CLASSES}<slug>"$'\n'
+# ONLY WHEN `record` RETURNED 0. rc 10 means the hit was ALREADY in the ledger — the crash-recovery
+# rerun this workflow deliberately supports — so no row was appended and step 6 must not count it
+# as a finding this round. Appending unconditionally made this accumulator disagree with the
+# before/after snapshots it sits beside. Reported by the declared reviewer on PR #429.
+if bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> … ; then
+  ROUND_CLASSES="${ROUND_CLASSES}<slug>"$'\n'
+fi
 ```
 
 **Record one hit per thread you fixed**, before you resolve the thread in step 5:

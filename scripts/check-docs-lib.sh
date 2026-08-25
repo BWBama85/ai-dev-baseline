@@ -201,15 +201,21 @@ if [ "$MODE" = mutation ]; then
 
   # THE FIELD BOUND (PR #429).
   check_mut field-bound-removed \
-    '  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
+    '  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     '  :' \
-    'an oversized field is refused, so a record cannot span two writes'
+    'a 600-byte field is refused by the FIELD bound, though the record bound would allow it'
 
   # THE ARITY PASS (PR #429). Removing it returns the check to `read`, which folds tabs.
   check_mut arity-via-read \
     "    \$1 == \"probe\"       { if (NF != 4) { bad = 1; exit } next }" \
     "    \$1 == \"probe\"       { next }" \
     'verdict refuses a record with a trailing empty column'
+
+  # THE BYTE MEASUREMENT (PR #429). Restores `${#1}`, which counts characters.
+  check_mut bound-counts-characters \
+    '  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
+    '  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
+    'a field of 512 MULTIBYTE characters is refused'
 
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
@@ -449,6 +455,23 @@ eq "$?" 18 "…by the report too"
 printf 'probe\tcontext7\tusable\tev' > "$D10/state/docs-consulted.tsv"
 dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "…and so is a lone unterminated record"
+
+# THE BOUND IS IN BYTES, NOT CHARACTERS (PR #429). `${#var}` counts characters in the caller's
+# locale, and the atomic-write guarantee is about bytes — 512 four-byte characters is 2 KiB, so a
+# record could pass a "512-byte" check and still be split across two writes. The reviewer produced
+# six malformed lines from 200 concurrent calls that all passed the character check.
+MBIG="$(awk 'BEGIN { s = ""; for (i = 0; i < 512; i++) s = s "é"; print s }')"
+dl probe-record --state "$D10/state" --server context7 --result usable --evidence "$MBIG" >/dev/null 2>&1
+eq "$?" 19 "a field of 512 MULTIBYTE characters is refused — the bound counts bytes"
+ABIG="$(awk 'BEGIN { s = ""; for (i = 0; i < 500; i++) s = s "a"; print s }')"
+dl probe-record --state "$D10/state" --server context7 --result usable --evidence "$ABIG" >/dev/null 2>&1
+eq "$?" 0 "…while 500 ASCII characters still fit"
+# A FIELD BETWEEN THE TWO BOUNDS — over the 512-byte FIELD limit, under the 2048-byte RECORD limit.
+# This is the only shape the field bound alone refuses: the 100 KiB cases above are caught by the
+# record bound too, so they cannot witness it.
+MIDBIG="$(awk 'BEGIN { s = ""; for (i = 0; i < 600; i++) s = s "a"; print s }')"
+dl probe-record --state "$D10/state" --server context7 --result usable --evidence "$MIDBIG" >/dev/null 2>&1
+eq "$?" 19 "a 600-byte field is refused by the FIELD bound, though the record bound would allow it"
 
 # A well-formed file still passes, so the validator is not simply refusing everything — the failure
 # mode a whole-file check most easily degrades into.

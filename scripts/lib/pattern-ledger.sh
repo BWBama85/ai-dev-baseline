@@ -469,11 +469,15 @@ _adb_pl_threshold() {
       *)      _tfile="" ;;
     esac
     if [ -n "$_tfile" ] && [ -f "$_tfile" ]; then
+      # DUPLICATES TOO, in the same pass. `adb_toml_get` returns the FIRST assignment, so a manifest
+      # declaring `threshold` twice was accepted and silently used the earlier value — the same
+      # defect already fixed for `[mcp]`, in the sibling this scan is modelled on and which I did
+      # not sweep. Reported by the declared reviewer on PR #429.
       if ! awk '
             /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*$/, "", hdr)
                                 intbl = (hdr == "patterns"); next }
             intbl && $0 ~ /^[[:space:]]*threshold[[:space:]]*=/ {
-              seen = 1
+              if (++seen > 1) { bad = 1; exit }
               # A complete scalar: a bare integer, or a fully quoted one. Trailing comment allowed.
               if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/) next
               if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*(#.*)?$/) next
@@ -481,7 +485,7 @@ _adb_pl_threshold() {
             }
             END { exit (bad ? 1 : 0) }
           ' "$_tfile"; then
-        printf 'pattern-ledger: [patterns] threshold in the %s manifest is not a complete TOML scalar (an unterminated quote?) — refusing rather than guessing what was meant.\n' "$src" >&2
+        printf 'pattern-ledger: [patterns] threshold in the %s manifest is not a single, complete TOML scalar — an unterminated quote, or the key declared more than once. Refusing rather than guessing what was meant.\n' "$src" >&2
         return 2
       fi
     fi
@@ -534,7 +538,7 @@ _adb_pl_lock() {
       # the critical section during recovery. `mv` onto a name that does not exist is a single
       # rename(2): exactly one writer wins it, and the loser's `mv` fails because the source is
       # already gone. Reported by the declared reviewer on PR #429.
-      tomb="$dir.stale.$$"
+      tomb="$dir.stale.$$.$RANDOM"
       if mv "$dir" "$tomb" 2>/dev/null; then
         printf 'pattern-ledger: broke a stale write lock (%ss old): %s\n' "$age" "$dir" >&2
         rm -rf "$tomb" 2>/dev/null
@@ -549,9 +553,21 @@ _adb_pl_lock() {
     sleep 1
     waited=$((waited + 1))
   done
-  # WRITTEN AFTER the mkdir won, which is what makes it this writer's: the directory creation is
-  # the atomic claim, and the token merely records who holds it.
-  printf '%s\n' "$_ADB_PL_LOCK_TOKEN" > "$dir/owner" 2>/dev/null || true
+  # THE TOKEN IS A SUBDIRECTORY, not a file, and that is what makes release atomic. Reading an
+  # `owner` file and then deleting the directory is check-then-act: a successor can reclaim the
+  # stale lock and create a fresh one between the read and the `rm`, and the original writer then
+  # deletes THEIR lock. With the token as a directory, release is `rmdir "$dir/$TOKEN"` — which can
+  # only ever remove our own marker — followed by `rmdir "$dir"`, which succeeds only while the
+  # directory is empty, so a successor's marker keeps their lock alive.
+  # Reported by the declared reviewer on PR #429.
+  #
+  # A FAILURE HERE MEANS THE PARENT WAS YANKED between our winning `mkdir` and this one — a
+  # stale-breaker renaming it away. We never held the lock, so there is nothing to release: start
+  # the whole acquisition again rather than returning success over a lock we do not have.
+  if ! mkdir "$dir/$_ADB_PL_LOCK_TOKEN" 2>/dev/null; then
+    _adb_pl_lock "$1"
+    return $?
+  fi
   return 0
 }
 
@@ -561,9 +577,13 @@ _adb_pl_lock() {
 # the same reason: fail toward leaving a lock that expires on its own.
 _adb_pl_unlock() {
   local dir="$1.lock"
-  [ -d "$dir" ] || return 0
-  [ "$(cat "$dir/owner" 2>/dev/null)" = "${_ADB_PL_LOCK_TOKEN:-}" ] || return 0
-  rm -rf "$dir" 2>/dev/null
+  [ -n "${_ADB_PL_LOCK_TOKEN:-}" ] || return 0
+  # TWO rmdirs, NO test. `rmdir` is the check: the first removes only the marker we created, and
+  # fails harmlessly if our lock was reclaimed and the directory now holds somebody else's. The
+  # second succeeds only while the directory is empty, so a successor's marker keeps their lock.
+  # Neither can delete a lock we do not hold, which a read-then-delete could.
+  rmdir "$dir/$_ADB_PL_LOCK_TOKEN" 2>/dev/null || return 0
+  rmdir "$dir" 2>/dev/null || true
 }
 
 _adb_pl_insert() {
