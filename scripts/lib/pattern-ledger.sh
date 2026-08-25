@@ -454,10 +454,37 @@ _adb_pl_threshold() {
   # project that wrote `threshold =` got the machine's value while believing it had set its own.
   # A higher-precedence layer that defines the key wins even when its value is unusable — that is
   # the whole point, and it is why the validation below fails loud instead of reading on.
-  local layered
+  local layered _tfile
   if layered="$(adb_toml_layered_get "$(adb_repo_root 2>/dev/null)/agents.toml" \
                                      "$(adb_global_manifest)" patterns threshold --with-layer)"; then
     src="${layered%% *}"; v="${layered#* }"
+    # THE RAW SCALAR MUST BE SYNTACTICALLY COMPLETE. `adb_toml_get` walks to the closing quote and,
+    # not finding one, RECONSTRUCTS the value with both quotes — so `threshold = "2` (invalid TOML,
+    # no closing quote) came back as `"2"`, unquoted to `2`, and was accepted. The reconstructed
+    # value cannot be told from a well-formed one, so the source line is the only place the defect
+    # still exists. Reported by the declared reviewer on PR #429.
+    case "$src" in
+      repo)   _tfile="$(adb_repo_root 2>/dev/null)/agents.toml" ;;
+      global) _tfile="$(adb_global_manifest)" ;;
+      *)      _tfile="" ;;
+    esac
+    if [ -n "$_tfile" ] && [ -f "$_tfile" ]; then
+      if ! awk '
+            /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*$/, "", hdr)
+                                intbl = (hdr == "patterns"); next }
+            intbl && $0 ~ /^[[:space:]]*threshold[[:space:]]*=/ {
+              seen = 1
+              # A complete scalar: a bare integer, or a fully quoted one. Trailing comment allowed.
+              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/) next
+              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*(#.*)?$/) next
+              bad = 1; exit
+            }
+            END { exit (bad ? 1 : 0) }
+          ' "$_tfile"; then
+        printf 'pattern-ledger: [patterns] threshold in the %s manifest is not a complete TOML scalar (an unterminated quote?) — refusing rather than guessing what was meant.\n' "$src" >&2
+        return 2
+      fi
+    fi
     v="$(adb_toml_unquote "$v")"
     if ! _adb_pl_ok_pr "$v"; then
       printf 'pattern-ledger: [patterns] threshold in the %s manifest is %s — must be a positive whole number\n' \

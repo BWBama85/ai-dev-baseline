@@ -178,6 +178,19 @@ _adb_dl_append() {
 _adb_dl_records() {
   local f="$1" kind a b c
   [ -f "$f" ] || return 0
+  # ARITY IS CHECKED IN awk, BEFORE the shell loop, because `read` cannot check it. Tab is IFS
+  # WHITESPACE, so `IFS=<tab> read` collapses adjacent tabs and strips trailing ones — which means
+  # `probe<TAB>server<TAB>usable<TAB>evidence<TAB>` (an extra empty column) arrived at the loop
+  # below looking exactly like a well-formed four-field record, and this module promises to refuse
+  # every record it would not itself write. `awk -F'\t'` does no folding, so NF is the real count.
+  # Reported by the declared reviewer on PR #429.
+  awk -F'\t' '
+    $1 == "probe"       { if (NF != 4) { bad = 1; exit } next }
+    $1 == "consulted"   { if (NF != 4) { bad = 1; exit } next }
+    $1 == "none-needed" { if (NF != 2) { bad = 1; exit } next }
+    { bad = 1; exit }
+    END { exit (bad ? 1 : 0) }
+  ' "$f" || return 1
   while IFS="$TAB" read -r kind a b c; do
     [ -n "$kind" ] || continue
     case "$kind" in
@@ -191,9 +204,8 @@ _adb_dl_records() {
         _adb_dl_ok_field "$c" || return 1 ;;
       none-needed)
         _adb_dl_ok_field "$a" || return 1
-        # EXACTLY TWO FIELDS. A third would mean a tab reached a justification, which is the
-        # forgery case `_adb_dl_ok_field` exists to prevent — caught here as well, because by the
-        # time it is on disk the writer's check is behind us.
+        # Exactly two fields — now also guaranteed by the arity pass above, and kept because a
+        # reader auditing this loop should not have to look elsewhere to see that the rule exists.
         [ -z "$b$c" ] || return 1 ;;
       *) return 1 ;;
     esac

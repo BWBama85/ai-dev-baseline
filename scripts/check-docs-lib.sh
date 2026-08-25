@@ -205,6 +205,12 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     'an oversized field is refused, so a record cannot span two writes'
 
+  # THE ARITY PASS (PR #429). Removing it returns the check to `read`, which folds tabs.
+  check_mut arity-via-read \
+    "    \$1 == \"probe\"       { if (NF != 4) { bad = 1; exit } next }" \
+    "    \$1 == \"probe\"       { next }" \
+    'verdict refuses a record with a trailing empty column'
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
@@ -417,6 +423,13 @@ hostile "an unknown record type"                "$(printf 'bogus\tx\ty\tz')"
 hostile "a consulted record with a bad rung"    "$(printf 'consulted\tsurface\t9\tsrc')"
 hostile "a consulted record missing its source" "$(printf 'consulted\tsurface\t2')"
 hostile "a none-needed record with extra fields" "$(printf 'none-needed\tjust\tstray')"
+# TAB IS IFS WHITESPACE, so `IFS=<tab> read` COLLAPSES adjacent tabs and STRIPS trailing ones —
+# a trailing empty column therefore reached the field loop looking like a well-formed record, and
+# this module promises to refuse every record it would not itself write. Arity is checked in awk,
+# which does no folding. Reported by the declared reviewer on PR #429.
+hostile "a record with a trailing empty column" "$(printf 'probe\tcontext7\tusable\tev\t')"
+hostile "a record with adjacent tabs"           "$(printf 'probe\tcontext7\t\tusable\tev')"
+hostile "a none-needed record with a trailing tab" "$(printf 'none-needed\tjust\t')"
 
 # THE UNTERMINATED FINAL RECORD (P1, PR #429). `read` DROPS a last line with no newline, so the
 # validator never saw it — while `cmd_verdict`'s awk reads it perfectly well. One complete record
@@ -424,7 +437,10 @@ hostile "a none-needed record with extra fields" "$(printf 'none-needed\tjust\ts
 # earlier degraded result, returning clean with no evidence. Written with `printf` and no trailing
 # newline, because that is the only way to build the shape.
 printf 'probe\tcontext7\tdegraded\tauth failure inside HTTP 200\n' > "$D10/state/docs-consulted.tsv"
-printf 'probe\tcontext7\tusable' >> "$D10/state/docs-consulted.tsv"
+# FOUR FIELDS, so the ARITY pass cannot catch it and only the final-byte check can. With three,
+# the arity check refuses it and this case stopped isolating the newline rule — the mutation then
+# went red on somebody else's assertion.
+printf 'probe\tcontext7\tusable\tghost evidence' >> "$D10/state/docs-consulted.tsv"
 dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "an unterminated final record is refused, not silently skipped then read by awk"
 dl report --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1

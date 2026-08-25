@@ -567,6 +567,14 @@ did *this* round find". Step 6 subtracts these.
 
 ```bash
 STATS_BEFORE="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
+ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring from it
+```
+
+…and append to it as each hit is recorded, so step 6 can count recurring hits from the rows this
+round actually added rather than from a cumulative figure that reclassifies the past:
+
+```bash
+ROUND_CLASSES="${ROUND_CLASSES}<slug>"$'\n'
 ```
 
 **Record one hit per thread you fixed**, before you resolve the thread in step 5:
@@ -656,11 +664,15 @@ bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" due; DRC=$?
 case "$DRC" in
   0)  : ;;   # each line is `<class>TAB<count>` — write a rule for each, below
   11) : ;;   # nothing is due. THE ORDINARY CASE.
+  # EVERY OTHER CODE STOPS. `due` returns 2 before reading a single class when
+  # `[patterns] threshold` is malformed, and a `*)` that shrugged at it let the round go on to
+  # commit and resolve without ever learning which classes were owed a rule.
+  2)  echo "STOP: [patterns] threshold is unusable — fix agents.toml before resolving."; exit 1 ;;
   18) echo "STOP: the pattern ledger does not parse, so nothing was recorded this round."
       echo "      Resolving now would lose these findings permanently — repair it first:"
       bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" verify
       exit 1 ;;
-  *)  : ;;
+  *)  echo "STOP: could not determine which classes are due (rc $DRC) — nothing was promoted."; exit 1 ;;
 esac
 
 bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" promote --class <slug> --rule '<the sweep to run before the next PR>'
@@ -779,7 +791,10 @@ that it works is only ever the trend in these numbers, and a summary that stops 
 the claim unfalsifiable. Read them from the ledger rather than counting by hand:
 
 ```bash
-bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM"; SRC=$?
+# CAPTURED ONCE, status kept, and every figure below read out of THIS value. An earlier draft ran
+# `stats` without assigning it and then read a `$STATS` nothing had ever set — which under `set -u`
+# aborts the block and otherwise leaves every number empty.
+STATS_AFTER="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"; SRC=$?
 case "$SRC" in
   0)  : ;;   # TSV: ledger, hits, classes, recurring, promoted, threshold, threshold-source,
              # and — with --pr — pr-hits, pr-recurring, pr-new-classes
@@ -795,7 +810,7 @@ a history of zero. `stats` emits `ledger<TAB>absent` or `ledger<TAB>present` as 
 because a caller should not have to stat the file to answer something the command already knows.
 
 ```bash
-LEDGER_STATE="$(printf '%s\n' "$STATS" | awk -F'\t' '$1=="ledger"{print $2}')"
+LEDGER_STATE="$(printf '%s\n' "$STATS_AFTER" | awk -F'\t' '$1=="ledger"{print $2}')"
 ```
 
 **A ROUND IS A DELTA, and `--pr` is not a round.** Every round of one pull request records under
@@ -806,13 +821,27 @@ The ledger has no round identifier and should not grow one: **snapshot before, s
 report the difference.**
 
 ```bash
-# `$STATS_BEFORE` was captured at the top of step 4b, before this round recorded anything.
-STATS_AFTER="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
+# `$STATS_BEFORE` and `$ROUND_CLASSES` were captured in step 4b; `$STATS_AFTER` just above.
 _field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
-ROUND_FINDINGS="$(( $(_field "$STATS_AFTER" pr-hits)        - $(_field "$STATS_BEFORE" pr-hits) ))"
-ROUND_RECURRING="$(( $(_field "$STATS_AFTER" pr-recurring)  - $(_field "$STATS_BEFORE" pr-recurring) ))"
-ROUND_NEW="$(( $(_field "$STATS_AFTER" pr-new-classes)      - $(_field "$STATS_BEFORE" pr-new-classes) ))"
-ROUND_PROMOTED="$(( $(_field "$STATS_AFTER" promoted)       - $(_field "$STATS_BEFORE" promoted) ))"
+ROUND_FINDINGS="$(( $(_field "$STATS_AFTER" pr-hits)   - $(_field "$STATS_BEFORE" pr-hits) ))"
+ROUND_NEW="$((      $(_field "$STATS_AFTER" pr-new-classes) - $(_field "$STATS_BEFORE" pr-new-classes) ))"
+ROUND_PROMOTED="$(( $(_field "$STATS_AFTER" promoted)  - $(_field "$STATS_BEFORE" promoted) ))"
+
+# RECURRING IS COUNTED FROM THE ROWS THIS ROUND APPENDED — NOT as a difference of the cumulative
+# figure. Subtracting `pr-recurring` is wrong in a way that only shows up at the threshold: when a
+# class crosses it, every EARLIER hit becomes recurring too, so a round that added the second hit of
+# a class sees the scalar go 0 -> 2 and would report two recurring findings for one. Reclassifying
+# the past is correct for the cumulative number and wrong for a round.
+CLASSES_AFTER="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" classes)"
+THRESH="$(_field "$STATS_AFTER" threshold)"
+ROUND_RECURRING=0
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  n="$(printf '%s\n' "$CLASSES_AFTER" | awk -F'\t' -v k="$c" '$2==k{print $1}')"
+  [ -n "$n" ] && [ "$n" -ge "$THRESH" ] && ROUND_RECURRING=$((ROUND_RECURRING + 1))
+done <<ROUNDCLS
+$ROUND_CLASSES
+ROUNDCLS
 ```
 
 **The cumulative figures are still worth reporting — just labelled as what they are.** "4 findings

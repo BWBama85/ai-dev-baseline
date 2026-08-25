@@ -150,9 +150,11 @@ if [ "$MODE" = mutation ]; then
   # assertion about WORDING rather than the one about BEHAVIOUR. `break` is the defect that
   # matters: the loop abandons the malformed value and falls through to the built-in, handing the
   # operator a threshold they did not choose, from a file they thought they had configured.
+  # RETARGETED for the same reason: `return 2` is now shared with the complete-scalar guard, and
+  # the first occurrence is that one. The DOMAIN test is what this row is about.
   check_mut bad-threshold-silent \
-    '      return 2' \
-    '      break' \
+    '    if ! _adb_pl_ok_pr "$v"; then' \
+    '    if false; then' \
     'a malformed [patterns] threshold is a hard error'
 
   # <copy-dir> -> PRINT the path to mutate, nothing else (check_mutation_pool's contract).
@@ -247,6 +249,14 @@ if [ "$MODE" = mutation ]; then
     '  [ "$(cat "$dir/owner" 2>/dev/null)" = "${_ADB_PL_LOCK_TOKEN:-}" ] || return 0' \
     '  :' \
     "a stale writer deleted a SUCCESSOR's lock"
+
+  # THE COMPLETE-SCALAR CHECK (PR #429).
+  # TARGETS THE AWK GUARD, not the message: `return 2` stopped being unique once this check added
+  # one of its own, and a row aimed at a shared literal mutates whichever comes first.
+  check_mut threshold-scalar-unchecked \
+    '              bad = 1; exit' \
+    '              next' \
+    'an unterminated quoted threshold is refused, not silently reconstructed'
 
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
@@ -528,6 +538,25 @@ eq "$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" | awk '{print $2}')" glo
 printf '[patterns]\nthreshold = "six"\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
 OUT="$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" 2>&1)"; RC=$?
 no "$RC" "a malformed [patterns] threshold is a hard error"
+
+# AN INCOMPLETE SCALAR IS MALFORMED TOO (PR #429). `adb_toml_get` walks to the closing quote and,
+# not finding one, RECONSTRUCTS the value with both — so `threshold = "2` came back as `"2"`,
+# unquoted to `2`, and was accepted. The reconstructed value is indistinguishable from a good one,
+# so the check has to read the source line.
+printf '[patterns]\nthreshold = "2\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
+HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
+eq "$?" 2 "an unterminated quoted threshold is refused, not silently reconstructed"
+for sub in due stats; do
+  HOME="$MHOME" bash "$PL" "$sub" --ledger "$L1" >/dev/null 2>&1
+  eq "$?" 2 "…and \`$sub\` refuses it too, rather than running on a value nobody wrote"
+done
+# …while every COMPLETE spelling still works, so the check has not simply narrowed the domain.
+for good in 'threshold = 3' 'threshold = "3"' 'threshold = 3 # a comment'; do
+  printf '[patterns]\n%s\n' "$good" > "$MHOME/.config/ai-dev-baseline/agents.toml"
+  eq "$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" | awk '{print $1}')" 3 \
+     "a complete scalar ($good) is still accepted"
+done
+rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
 has "$OUT" "positive whole number" "…and it names the domain rather than silently using the built-in"
 
 # =============================== 7. promote's own preconditions ==================================
@@ -839,6 +868,18 @@ has "$RESTXT" 'pr-recurring' "the summary reports pr-recurring, the figure a tre
 has "$RESTXT" 'STATS_BEFORE' "the resolver snapshots the ledger before recording the round"
 has "$RESTXT" 'STATS_AFTER'  "…and again afterwards"
 has "$RESTXT" 'ROUND_FINDINGS' "…and reports the DIFFERENCE as the round figure"
+# RECURRING IS COUNTED FROM THE ROWS THIS ROUND APPENDED, not subtracted from the cumulative
+# figure: when a class crosses the threshold every EARLIER hit becomes recurring too, so a round
+# adding a class's second hit would see the scalar go 0 -> 2 and report two findings for one.
+has   "$RESTXT" 'ROUND_CLASSES' "the resolver tracks which classes THIS round recorded"
+hasnt "$RESTXT" 'ROUND_RECURRING="$(( $(_field "$STATS_AFTER" pr-recurring)' \
+   "…and does not subtract cumulative pr-recurring, which reclassifies the past"
+# The stats capture must be assigned, or the block that reads it aborts under set -u.
+has   "$RESTXT" 'STATS_AFTER="$(' "the stats output is captured, not run and discarded"
+hasnt "$RESTXT" 'printf '"'"'%s\n'"'"' "$STATS" |' "…and nothing reads a variable never assigned"
+# `due` failing must stop the round; a wildcard that shrugged let it commit and resolve without
+# ever learning which classes were owed a rule.
+has "$RESTXT" 'STOP: [patterns] threshold is unusable' "a due failure stops the round"
 has "$RESTXT" 'This PR so far' "…while still reporting the cumulative figure, labelled as cumulative"
 
 # EVERY FAILED RECORD STOPS THE ROUND (PR #429). Naming only rc 18 left rc 20 — a lock timeout, an
