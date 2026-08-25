@@ -34,6 +34,7 @@ Sweep each of these before opening a pull request.
 - `metric-scope-mismatch` — Before reporting a number, state the claim it must support and check the number can support it: a lifetime count over an append-only file cannot show a per-round trend, and a figure the command does not emit cannot be filled from one that sounds similar.
 - `evidence-discarded` — When a field is mandatory because a reader needs it, find every place that reader is served and check each one renders it. Run-state files are swept, so a report is often the only surviving copy — and a fix applied to the success path leaves the failure path, where the evidence matters most.
 - `toctou` — When a command checks a precondition and then acts on it, the lock must span BOTH — locking only the write leaves the decision racing. And never reclaim a lock by deleting the directory you observed: rename it to a unique name first, so exactly one recoverer wins and nobody deletes a lock somebody else just took.
+- `ledger-coverage-gap` — A signal this loop captures must reach the consumer that needs it: record every legitimate finding including one an earlier commit already fixed, and treat a failed record as terminal rather than resolving threads whose history was never stored.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -69,4 +70,8 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/pattern-ledger.sh:474` `fee323a` `PRRT_kwDOTfywrM6b4VjN` PR #429 2026-08-24 — stale-lock recovery could delete a lock another writer had just acquired
 - `partial-validation` `scripts/lib/pattern-ledger.sh:320` `fee323a` `PRRT_kwDOTfywrM6b4VjP` PR #429 2026-08-24 — a substring search stood in for the record grammar, so junk parsed and mis-attributed
 - `partial-validation` `scripts/lib/docs-lib.sh:280` `fee323a` `PRRT_kwDOTfywrM6b4VjS` PR #429 2026-08-24 — validated the parser output instead of the value the operator actually wrote
+- `toctou` `scripts/lib/pattern-ledger.sh:571` `75572cd` `PRRT_kwDOTfywrM6b4xm_` PR #429 2026-08-25 — the file was created before the lock that protects deciding whether to create it
+- `partial-validation` `scripts/lib/pattern-ledger.sh:394` `75572cd` `PRRT_kwDOTfywrM6b4xnC` PR #429 2026-08-25 — the parser checked the rule was non-empty but not that it obeyed the writer grammar
+- `shell-injection` `scripts/lib/pattern-ledger.sh:587` `75572cd` `PRRT_kwDOTfywrM6b4xnF` PR #429 2026-08-25 — a path was interpolated into trap text, which is shell source evaluated later
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:629` `75572cd` `PRRT_kwDOTfywrM6b4xnJ` PR #429 2026-08-25 — a failed record only warned, so the round resolved the threads and lost the findings
 <!-- adb:hits:end -->
