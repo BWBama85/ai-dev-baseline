@@ -35,7 +35,9 @@
 #                    an agent that never considered the question.
 #   18 config      — `[mcp] required` / `optional` is present but malformed.
 #   19 refused     — a field this module will not store (a tab, a newline, a control character).
-#   20 unknown     — the state directory could not be read or written.
+#   20 unknown     — the state directory could not be read or written, or an agents.toml EXISTS
+#                    but could not be read. Never folded into 1: an unreadable declaration is not
+#                    an absent one.
 #   2  usage
 #
 # ------------------------------------------------------------------------------------------------
@@ -266,8 +268,18 @@ _adb_dl_records() {
 # A KEY THAT IS PRESENT BUT NOT AN ARRAY IS 18, never "none". `required = "context7"` is a
 # plausible typo, and reading it as an undeclared key would report a project that asked for a
 # preflight as a project that declined one.
+# _adb_dl_manifest_read_failed <rc> <key> — the diagnostic for a layered read that answered neither
+# 0 nor 1, naming both candidate files since the reader does not say which one failed.
+_adb_dl_manifest_read_failed() {
+  local _repo="${OPT_MANIFEST:-$(adb_repo_root 2>/dev/null)/agents.toml}"
+  case "$1" in
+    2) printf 'docs-lib: an agents.toml exists but could not be read — refusing to report [mcp] %s as undeclared. Check %s and %s.\n' "$2" "$_repo" "$(adb_global_manifest)" >&2 ;;
+    *) printf 'docs-lib: an agents.toml contains a NUL byte and is not TOML — refusing to read [mcp] %s from it. Check %s and %s.\n' "$2" "$_repo" "$(adb_global_manifest)" >&2 ;;
+  esac
+}
+
 _adb_dl_mcp_key() {
-  local key="$1" raw layer layered parsed one _dupfile _dupes _dupkeys _duptbls
+  local key="$1" raw layer layered parsed one _dupfile _dupes _dupkeys _duptbls _lrc
   # THE PRECEDENCE RULE IS `adb_toml_layered_get`'s (common.sh), not a third copy of it. The loop
   # this replaced also fell THROUGH an empty repo-level declaration to the global manifest, so a
   # project that wrote `required =` silently inherited the machine's list.
@@ -275,7 +287,21 @@ _adb_dl_mcp_key() {
   # `--manifest` replaces only the REPO layer: a test pointing at a throwaway manifest still has
   # the real global one underneath, which is what the runtime does.
   layered="$(adb_toml_layered_get "${OPT_MANIFEST:-$(adb_repo_root 2>/dev/null)/agents.toml}" \
-                                  "$(adb_global_manifest)" mcp "$key" --with-layer)" || return 1
+                                  "$(adb_global_manifest)" mcp "$key" --with-layer)"; _lrc=$?
+  # A READ FAILURE IS NOT "NONE DECLARED". The layered reader distinguishes an absent key (1) from
+  # a manifest that EXISTS but could not be read (2) or contains a NUL byte (3), and this function
+  # used to fold all three into the 1 that step 5b reads as "no preflight configured" — so an
+  # unreadable repo manifest declaring `[mcp] required` silently skipped the preflight, and a NUL
+  # in a declaration was dropped by command substitution before any grammar check, leaving
+  # `contex<NUL>t7` reading as a clean `context7` that an ordinary probe could then satisfy. 20 and
+  # 18 respectively, naming both candidate files, since the reader does not say which one failed.
+  # Reported by the declared reviewer on PR #429.
+  case "$_lrc" in
+    0) ;;
+    1) return 1 ;;
+    2) _adb_dl_manifest_read_failed 2 "$key"; return 20 ;;
+    *) _adb_dl_manifest_read_failed 3 "$key"; return 18 ;;
+  esac
   layer="${layered%% *}"; raw="${layered#* }"
   # PRESENT-BUT-EMPTY IS MALFORMED, NOT UNDECLARED. `required =` is invalid TOML, and the layered
   # reader returns success with an empty value for it — so this used to answer with the same `1` an
@@ -627,6 +653,13 @@ SERVERS
     # manifest was reported as a good run. Reported by the declared reviewer on PR #429.
     _report_rc=18
     printf '\n- MCP preflight: **UNREADABLE** — `[mcp] required` is malformed; fix agents.toml.\n'
+  elif [ "$rc" -eq 20 ]; then
+    # THE SAME ARM FOR A MANIFEST THAT COULD NOT BE READ AT ALL. Without it a 20 fell through to
+    # the lines below and the block rendered as a clean run with nothing declared — the status
+    # swallowed one arm further down than the case the previous fix covered.
+    # Reported by the declared reviewer on PR #429.
+    _report_rc=20
+    printf '\n- MCP preflight: **UNREADABLE** — an agents.toml exists but could not be read; fix its permissions.\n'
   elif [ "$n_probe" -gt 0 ]; then
     printf '\n- MCP preflight: probes recorded, but this repo declares no `[mcp] required`.\n'
   fi

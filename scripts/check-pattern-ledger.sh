@@ -336,6 +336,42 @@ if [ "$MODE" = mutation ]; then
     "  case \"\$1\" in *'<!-- adb:'*) return 1 ;; esac" \
     'a summary opening an HTML comment is refused'
 
+  # THE READERS' SUMMARY VALIDATION (PR #429). The raw parser used to discard the summary, so no
+  # reader could apply the writer's predicate to it; a hand-edited `<!--` then hid every later
+  # record in the review view while `verify` said ok.
+  check_mut summary-unvalidated \
+    '    if [ -n "$summ" ]; then _adb_pl_ok_text "$summ" || return 1; fi' \
+    '    :' \
+    'a hand-edited summary opening an HTML comment is refused by the readers'
+
+  # THE LEDGER'"'"'S NUL SCAN (PR #429). The witness carries the NUL at the END of a summary, where
+  # macOS awk'"'"'s C-string truncation leaves a perfectly valid record behind and gawk'"'"'s retained
+  # byte is dropped by command substitution — so with the scan deleted, both platforms read a
+  # clean ledger, and the scan is the only guard that can fire.
+  check_mut ledger-nul-normalized \
+    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$1\" | wc -c | tr -d ' ')\" -eq \"\$(LC_ALL=C wc -c < \"\$1\" | tr -d ' ')\" ] || return 1" \
+    "  :" \
+    'a NUL byte at the end of a stored summary is refused, not normalized away'
+
+  # FIRST-SEEN BY DATE, NOT ROW (PR #429). Restores the first-row test that shipped.
+  check_mut first-seen-by-row \
+    '        NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }' \
+    '        NF && $1 != "" { if (!($1 in first)) { first[$1] = $5; firstd[$1] = $6 } }' \
+    'a class whose EARLIER-dated row a merge placed later is credited to that earlier PR'
+
+  # THE LOUD TOMBSTONE FAILURE (PR #429). Restores the silent `rm -rf` that shipped. Its witness
+  # is root-skipped like `reclaim-busy-spin`'"'"'s, and for the same reason: the case is a permission.
+  check_mut tombstone-failure-silent \
+    '        if ! rm -rf "$tomb" 2>/dev/null || [ -e "$tomb" ]; then' \
+    '        if false; then' \
+    'a stale-lock tombstone that cannot be removed is a loud failure, not a silent success'
+
+  # THE THRESHOLD READ-FAILURE ARM (PR #429). Restores the fall-through to the built-in.
+  check_mut threshold-read-failure-as-builtin \
+    '    *) printf '"'"'pattern-ledger: an agents.toml contains a NUL byte and is not TOML — refusing to read a threshold from it. Check %s and %s.\n'"'"' "$(adb_repo_root 2>/dev/null)/agents.toml" "$(adb_global_manifest)" >&2; return 2 ;;' \
+    '    *) ;;' \
+    'a global manifest carrying a NUL byte is a hard error, never the built-in threshold'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -618,6 +654,62 @@ eq "$?" 0 "a backtick in a SUMMARY is accepted — it cannot move a parsed field
 eq "$(bash "$PL" classes --ledger "$L5" | awk -F'\t' '$2=="guard-class"{print $1}')" 2 \
    "…and the record it wrote still parses to the right class"
 
+# =============================== 5b. the READERS validate the display field (PR #429) ============
+# The raw parser used to discard the summary after checking the suffix shape, so a hand edit or a
+# merge that put `<!--` into one passed every reader — and GitHub then rendered everything after
+# it, to the hits end marker, as one HTML comment. The writer's predicate now runs on the read side
+# too, which is the refuse-whole contract holding for the display field.
+L5b="$work/l5b.md"
+seed "$L5b" sumc 2 || bad "fixture: could not seed"
+sed 's/hit 1 of sumc/hit 1 of sumc <!-- hidden/' "$L5b" > "$L5b.tmp" && mv "$L5b.tmp" "$L5b"
+# THE WITNESS IS A READER, NOT `verify`. `verify` carries its own summary check, so with the
+# readers' check deleted it still says 18 — and a mutation row pinned to it went red on the reader
+# assertions instead of on its own witness, which the harness reported. `classes` is the reader.
+bash "$PL" classes --ledger "$L5b" >/dev/null 2>&1
+eq "$?" 18 "a hand-edited summary opening an HTML comment is refused by the readers"
+for sub in due stats checklist; do
+  bash "$PL" "$sub" --ledger "$L5b" >/dev/null 2>&1
+  eq "$?" 18 "…and \`$sub\` refuses the ledger whole"
+done
+bash "$PL" verify --ledger "$L5b" >/dev/null 2>&1
+eq "$?" 18 "…and verify agrees, rather than saying ok over a file every reader refuses"
+VOUT="$(bash "$PL" verify --ledger "$L5b" 2>&1 >/dev/null)"
+has "$VOUT" "carries a summary this module would not write" "…and names the record"
+# A CONTROL CHARACTER AT THE END OF A SUMMARY, where `read` would strip a tab before the shell
+# predicate saw it — caught in awk, on the reconstructed suffix.
+L5c="$work/l5c.md"
+seed "$L5c" tabc 1 || bad "fixture: could not seed"
+sed "s/hit 1 of tabc/hit 1 of tabc$(printf '\t')/" "$L5c" > "$L5c.tmp" && mv "$L5c.tmp" "$L5c"
+bash "$PL" classes --ledger "$L5c" >/dev/null 2>&1
+eq "$?" 18 "a summary ending in a TAB is refused — awk sees the byte read would have stripped"
+# A SEPARATOR WITH NOTHING BEHIND IT is a hand edit the writer cannot produce.
+L5d="$work/l5d.md"
+bash "$PL" record --ledger "$L5d" --class sepc --site s.sh --fix abc1234 --pr 1 --thread SEP1 --date 2026-08-24 >/dev/null 2>&1
+sed 's/PR #1 2026-08-24$/PR #1 2026-08-24 — /' "$L5d" > "$L5d.tmp" && mv "$L5d.tmp" "$L5d"
+bash "$PL" classes --ledger "$L5d" >/dev/null 2>&1
+eq "$?" 18 "a summary separator with no summary behind it is refused, not read as no summary"
+# …while every summary the writer emits still reads back, including one holding a backtick.
+bash "$PL" verify --ledger "$L5" >/dev/null 2>&1
+eq "$?" 0 "…and every writer-produced summary still verifies"
+
+# A NUL BYTE IN THE LEDGER (PR #429). Every reader captures the region through command
+# substitution, which DISCARDS the byte: a stored `nu<NUL>lk` class would read as a real class.
+# Injected at the END of a summary too, where macOS awk's truncation leaves a valid record and
+# gawk's retained byte is dropped by the substitution — so the byte scan is the only guard that
+# can fire there, and it is the mutation witness.
+L5e="$work/l5e.md"
+seed "$L5e" nulc 1 || bad "fixture: could not seed"
+perl -pe 's/hit 1 of nulc/hit 1 of nulc\x00/' "$L5e" > "$L5e.tmp" && mv "$L5e.tmp" "$L5e"
+bash "$PL" verify --ledger "$L5e" >/dev/null 2>&1
+eq "$?" 18 "a NUL byte at the end of a stored summary is refused, not normalized away"
+bash "$PL" classes --ledger "$L5e" >/dev/null 2>&1
+eq "$?" 18 "…by classes too"
+L5f="$work/l5f.md"
+seed "$L5f" nulk 2 || bad "fixture: could not seed"
+perl -pe 's/`nulk`/`nu\x00lk`/' "$L5f" > "$L5f.tmp" && mv "$L5f.tmp" "$L5f"
+bash "$PL" due --ledger "$L5f" >/dev/null 2>&1
+eq "$?" 18 "a NUL inside a stored CLASS is refused rather than counted toward a promotion"
+
 # =============================== 6. the threshold declaration fails loud =========================
 # A malformed configured value is a hard error, never a silent fall-back. Falling back hands the
 # operator a threshold they did not choose from a file they thought they had configured — and this
@@ -692,6 +784,15 @@ printf '[patterns]\nthreshold = 1234567890123\n' > "$MHOME/.config/ai-dev-baseli
 DOUT="$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" 2>&1)"; DRC2=$?
 no "$DRC2" "a syntactically valid but out-of-domain threshold is still a hard error"
 has "$DOUT" "positive whole number" "…and THAT is where the domain message belongs"
+rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
+# A MANIFEST THAT CANNOT BE READ AS TOML IS A HARD ERROR, NEVER THE BUILT-IN (PR #429). The layered
+# reader returns 3 for a NUL byte (and 2 for an unreadable file) without consulting the next layer,
+# and this reader used to take any non-zero as "undeclared" and print the built-in.
+printf '[patterns]\nthreshold = 2\000\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
+NOUT="$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" 2>&1)"; NRC=$?
+no "$NRC" "a global manifest carrying a NUL byte is a hard error, never the built-in threshold"
+has "$NOUT" "NUL byte" "…and the diagnostic says so"
+hasnt "$NOUT" "built-in" "…and no built-in value is printed"
 rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
 
 # =============================== 7. promote's own preconditions ==================================
@@ -1010,6 +1111,28 @@ else
   ok   # running as root: the permission the case depends on does not exist
 fi
 
+# A TOMBSTONE THAT CANNOT BE REMOVED IS A LOUD FAILURE (PR #429). The contender wins the rename
+# but cannot delete what is inside — here a read-only subdirectory stands in for the dead owner's
+# 0755 lock in a group-writable checkout — and it used to carry on, leaving an unignored
+# `patterns.md.lock.stale.*` tree that the resolver's dirty-tree guard then trips over every round.
+# Skipped as root, which can delete anything.
+if [ "$(id -u)" -ne 0 ]; then
+  L7t="$work/tomb"; mkdir -p "$L7t"
+  bash "$PL" record --ledger "$L7t/p.md" --class tombc --site s.sh --fix abc1231 --pr 1 --thread TB1 >/dev/null 2>&1
+  mkdir -p "$L7t/p.md.lock/DEADTOKEN" "$L7t/p.md.lock/keep"
+  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$L7t/p.md.lock/meta"   # provably gone
+  : > "$L7t/p.md.lock/keep/pin"; chmod 555 "$L7t/p.md.lock/keep"                  # …and undeletable
+  touch -t 200001010000 "$L7t/p.md.lock" 2>/dev/null                              # …and stale
+  TOUT="$(ADB_PATTERN_LOCK_WAIT_SECS=2 timeout 25 bash "$PL" record --ledger "$L7t/p.md" --class tombc \
+      --site s2.sh --fix abc1232 --pr 1 --thread TB2 2>&1 >/dev/null)"; TRC=$?
+  no "$TRC" "a stale-lock tombstone that cannot be removed is a loud failure, not a silent success"
+  has "$TOUT" "could not remove the stale lock" "…and the diagnostic names what was left behind"
+  eq "$(grep -c 'TB2' "$L7t/p.md")" 0 "…and nothing was written past it"
+  chmod -R u+w "$L7t" 2>/dev/null; rm -rf "$L7t"
+else
+  ok; ok; ok
+fi
+
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
 mkdir "$L7c.lock"
@@ -1057,6 +1180,22 @@ S4="$(bash "$PL" stats --ledger "$L8" --pr 201)"
 eq "$(printf '%s' "$S4" | awk -F'\t' '$1=="pr-hits"{print $2}')"      1 "the solo class's PR has a hit"
 eq "$(printf '%s' "$S4" | awk -F'\t' '$1=="pr-recurring"{print $2}')" 0 \
    "…but a below-threshold class contributes nothing to pr-recurring"
+
+# FIRST-SEEN IS DECIDED BY THE RECORD DATE, NOT BY ROW POSITION (PR #429). Two branches that both
+# appended are told to keep both sides of the conflict, and nothing preserves their order: here the
+# LATER PR's row lands first, as a merge can place it. Row order would credit the class to PR 300.
+L8b="$work/l8b.md"
+bash "$PL" record --ledger "$L8b" --class merged-class --site a.sh --fix abc1234 --pr 300 --thread MG-300 --date 2026-08-20 >/dev/null 2>&1
+bash "$PL" record --ledger "$L8b" --class merged-class --site b.sh --fix abc1235 --pr 100 --thread MG-100 --date 2026-08-10 >/dev/null 2>&1
+eq "$(bash "$PL" stats --ledger "$L8b" --pr 100 | awk -F'\t' '$1=="pr-new-classes"{print $2}')" 1 \
+   "a class whose EARLIER-dated row a merge placed later is credited to that earlier PR"
+eq "$(bash "$PL" stats --ledger "$L8b" --pr 300 | awk -F'\t' '$1=="pr-new-classes"{print $2}')" 0 \
+   "…and not to the later PR whose row happens to come first"
+# A SAME-DAY TIE IS THE STATED RESIDUE: the stamp has day resolution, so row order still decides it.
+bash "$PL" record --ledger "$L8b" --class tie-class --site c.sh --fix abc1236 --pr 300 --thread TIE-300 --date 2026-08-21 >/dev/null 2>&1
+bash "$PL" record --ledger "$L8b" --class tie-class --site d.sh --fix abc1237 --pr 100 --thread TIE-100 --date 2026-08-21 >/dev/null 2>&1
+eq "$(bash "$PL" stats --ledger "$L8b" --pr 300 | awk -F'\t' '$1=="pr-new-classes"{print $2}')" 1 \
+   "…while a same-day tie falls back to row order — the residue the stamp's resolution leaves"
 
 # An absent ledger is zero, and it says so rather than failing: a project on its first run has not
 # broken anything. A ledger that could not be READ is a different fact and is 18 (asserted above).

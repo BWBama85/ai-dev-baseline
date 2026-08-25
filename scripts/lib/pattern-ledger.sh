@@ -301,6 +301,12 @@ TPL
 # refusal is the whole reason the region is delimited rather than found by heading: a truncated
 # region reads as "this project has recorded fewer hits", which is the one wrong direction.
 _adb_pl_region() {
+  # NUL BYTES ARE REFUSED ON THE RAW BYTES, BEFORE ANY COMMAND SUBSTITUTION. Every reader captures
+  # this region with `$( … )`, and bash DISCARDS an embedded NUL there — so a stored class of
+  # `partial<NUL>-validation` reached the validators as `partial-validation` and counted toward
+  # that class's promotion, a record the writer could never have produced. The same defect, and
+  # the same fix, as docs-lib's record reader. Reported by the declared reviewer on PR #429.
+  [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c | tr -d ' ')" -eq "$(LC_ALL=C wc -c < "$1" | tr -d ' ')" ] || return 1
   awk -v b="$2" -v e="$3" '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == b { nb++; inb = 1; next }
@@ -310,12 +316,21 @@ _adb_pl_region() {
   ' "$1"
 }
 
-# _adb_pl_hits <file> — one `<class>TAB<site>TAB<fix>TAB<thread>TAB<pr>` record per hit.
+# _adb_pl_hits_raw <file> — one `<class>TAB<site>TAB<fix>TAB<thread>TAB<pr>TAB<date>TAB<summary>`
+# record per hit; the summary field is empty when the record carries none.
 #
 # Splits on the backtick, which is exact: the four operative fields are the first four code spans
 # and none of them may contain one (enforced by the validators at write time). A line inside the
 # region that does not carry four spans is MALFORMED and fails the whole read (1) rather than being
 # skipped — skipping is how a count silently drops.
+#
+# THE SUMMARY IS EMITTED, NOT DISCARDED. This parser used to reconstruct the whole suffix and then
+# print only the PR number, so no reader ever saw the summary again — and a hand edit or a merge
+# that put `<!--` into one passed `verify`, `classes`, `due` and `checklist` while GitHub rendered
+# everything after it, up to the hits end marker, as one HTML comment. The writer refuses that
+# text; the readers now apply the writer's own predicate to it (`_adb_pl_hits`), which is the
+# refuse-whole contract holding for the display field as it already did for the operative ones.
+# Reported by the declared reviewer on PR #429.
 _adb_pl_hits_raw() {
   local region
   region="$(_adb_pl_region "$1" "$_ADB_PL_HIT_BEGIN" "$_ADB_PL_HIT_END")" || return 1
@@ -338,11 +353,23 @@ _adb_pl_hits_raw() {
       # Reported by the declared reviewer on PR #429.
       suffix = $9
       for (i = 10; i <= NF; i++) suffix = suffix "`" $i
-      if (suffix !~ /^ PR #[0-9]+ [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]( — .*)?$/) { bad = 1; exit }
+      # `.+` AFTER THE SEPARATOR, not `.*`: the writer never emits a separator with nothing behind
+      # it, so `PR #1 2026-08-24 — ` is a hand edit and is refused rather than read as no summary.
+      if (suffix !~ /^ PR #[0-9]+ [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]( — .+)?$/) { bad = 1; exit }
       pr = suffix
       sub(/^ PR #/, "", pr)
       sub(/ .*$/, "", pr)
-      printf "%s\t%s\t%s\t%s\t%s\n", $2, $4, $6, $8, pr
+      dt = suffix
+      sub(/^ PR #[0-9]+ /, "", dt)
+      sub(/ .*$/, "", dt)
+      summ = suffix
+      if (!sub(/^ PR #[0-9]+ [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — /, "", summ)) summ = ""
+      # A CONTROL CHARACTER IN THE SUMMARY IS REFUSED HERE, in awk, and not left to the shell
+      # predicate alone: a TAB would split the field the shell reads, and `read` strips a trailing
+      # one before `_adb_pl_ok_text` could see it. The predicate still runs on what arrives; this
+      # is the structural half that makes what arrives the whole summary.
+      if (summ ~ /[[:cntrl:]]/) { bad = 1; exit }
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $2, $4, $6, $8, pr, dt, summ
     }
     END { if (bad) exit 1 }
   '
@@ -362,11 +389,11 @@ _adb_pl_hits_raw() {
 # one home; a reader that re-spelled it would drift from the writer, and the drift would show up as
 # records the writer cannot produce being accepted (or vice versa).
 _adb_pl_hits() {
-  local raw c s f th pr
+  local raw c s f th pr dt summ
   raw="$(_adb_pl_hits_raw "$1")" || return 1
   [ -n "$raw" ] || return 0
   local -A seen=()
-  while IFS="$TAB" read -r c s f th pr; do
+  while IFS="$TAB" read -r c s f th pr dt summ; do
     [ -n "$c$s$f$th" ] || continue
     _adb_pl_ok_class  "$c"  || return 1
     _adb_pl_ok_span   "$s"  || return 1
@@ -378,6 +405,12 @@ _adb_pl_hits() {
     # actually attributable to that run, from a record the writer could never have produced.
     # Missing and invalid are now the same answer. Reported by the declared reviewer on PR #429.
     _adb_pl_ok_pr "$pr" || return 1
+    _adb_pl_ok_date "$dt" || return 1
+    # THE SUMMARY TOO, WITH THE WRITER'S PREDICATE. A summary is display, but it is display inside
+    # a file whose structure is markup: `<!--` in it hides every record after it in the review
+    # view, and the writer refuses exactly that. Empty means the record carries none.
+    # Reported by the declared reviewer on PR #429.
+    if [ -n "$summ" ]; then _adb_pl_ok_text "$summ" || return 1; fi
     # THE DUPLICATE IS A DEFECT, not a duplicate hit: `record` refuses one, so a pair here means a
     # hand edit or a merge that took both sides of the same record — and the count is now higher
     # than the number of findings that actually happened, in the direction that promotes.
@@ -469,9 +502,20 @@ _adb_pl_threshold() {
   # project that wrote `threshold =` got the machine's value while believing it had set its own.
   # A higher-precedence layer that defines the key wins even when its value is unusable — that is
   # the whole point, and it is why the validation below fails loud instead of reading on.
-  local layered _tfile
-  if layered="$(adb_toml_layered_get "$(adb_repo_root 2>/dev/null)/agents.toml" \
-                                     "$(adb_global_manifest)" patterns threshold --with-layer)"; then
+  local layered _tfile _lrc
+  layered="$(adb_toml_layered_get "$(adb_repo_root 2>/dev/null)/agents.toml" \
+                                  "$(adb_global_manifest)" patterns threshold --with-layer)"; _lrc=$?
+  # A MANIFEST THAT EXISTS BUT CANNOT BE READ IS A HARD ERROR, NOT THE BUILT-IN. The layered reader
+  # returns 2 (unreadable) or 3 (contains a NUL byte) without consulting the next layer; treating
+  # either as "undeclared" here handed the operator the built-in threshold in place of the one in
+  # a file they could not read — the fall-through this function's own header forbids, by another
+  # route. Reported by the declared reviewer on PR #429.
+  case "$_lrc" in
+    0|1) ;;
+    2) printf 'pattern-ledger: an agents.toml exists but could not be read — refusing to fall back to a lower layer or the built-in threshold. Check %s and %s.\n' "$(adb_repo_root 2>/dev/null)/agents.toml" "$(adb_global_manifest)" >&2; return 2 ;;
+    *) printf 'pattern-ledger: an agents.toml contains a NUL byte and is not TOML — refusing to read a threshold from it. Check %s and %s.\n' "$(adb_repo_root 2>/dev/null)/agents.toml" "$(adb_global_manifest)" >&2; return 2 ;;
+  esac
+  if [ "$_lrc" -eq 0 ]; then
     src="${layered%% *}"; v="${layered#* }"
     # THE RAW SCALAR MUST BE SYNTACTICALLY COMPLETE. `adb_toml_get` walks to the closing quote and,
     # not finding one, RECONSTRUCTS the value with both quotes — so `threshold = "2` (invalid TOML,
@@ -622,7 +666,17 @@ _adb_pl_lock() {
       tomb="$dir.stale.$$.$RANDOM"
       if mv "$dir" "$tomb" 2>/dev/null; then
         printf 'pattern-ledger: broke a stale write lock (%ss old): %s\n' "$age" "$dir" >&2
-        rm -rf "$tomb" 2>/dev/null
+        # A TOMBSTONE THAT CANNOT BE REMOVED IS A LOUD FAILURE, not debris left in silence. In a
+        # group-writable checkout a contender can RENAME the dead owner's 0755 lock directory
+        # (the parent is writable) but cannot unlink `meta` or the token inside it, so this `rm`
+        # failed, the contender carried on, and an unignored `patterns.md.lock.stale.*` tree was
+        # left in the working tree — where the resolver's dirty-tree guard then aborts every later
+        # round. Refusing here names the path; proceeding would hide it.
+        # Reported by the declared reviewer on PR #429.
+        if ! rm -rf "$tomb" 2>/dev/null || [ -e "$tomb" ]; then
+          printf 'pattern-ledger: could not remove the stale lock %s after renaming it — it is owned by another user, or its contents are not deletable here. Nothing was written; remove it by hand.\n' "$tomb" >&2
+          return 1
+        fi
         continue
       fi
       # A FAILED RECLAMATION FALLS THROUGH TO THE WAIT, it does not retry immediately. An
@@ -1025,13 +1079,19 @@ cmd_stats() {
       # says makes the mechanism falsifiable. Lifetime counts still decide WHICH classes are
       # recurring; only the reported count is filtered.
       # Reported by the declared reviewer on PR #429.
-      # CLASSES FIRST SEEN IN THIS PR. Derivable, because the hits region is append-only and
-      # ordered: a class is new to this run when no earlier record carries it. `promoted this
-      # round` is NOT derivable — nothing timestamps a promotion — so the workflow captures that
-      # from its own `promote` calls rather than this command inventing a number for it.
+      # CLASSES FIRST SEEN IN THIS PR — decided by the record DATE, not by row position. The hits
+      # region is append-only on one branch, but the ledger's own header tells two branches that
+      # both appended to take both sides of the conflict, and nothing says in which order: a
+      # later PR's row can land above an earlier merged row of the same class, and a first-row
+      # test then credited the class to the wrong pull request. The date is the ordering fact
+      # every record already carries and a merge cannot reorder. What it cannot settle is two PRs
+      # recording one class on the SAME day, where row order still decides — a residue of the
+      # day-resolution stamp, stated rather than hidden. `promoted this round` is NOT derivable —
+      # nothing timestamps a promotion — so the workflow captures that from its own `promote`
+      # calls rather than this command inventing a number for it.
       # Reported by the declared reviewer on PR #429.
       prnew="$(printf '%s\n' "$hits" | awk -F'\t' -v p="$OPT_PR" '
-        NF && $1 != "" { if (!($1 in first)) first[$1] = $5 }
+        NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }
         END { n = 0; for (k in first) if (first[k] == p) n++; print n + 0 }')"
       prrecur="$(printf '%s\n' "$hits" | awk -F'\t' -v t="$t" -v p="$OPT_PR" '
         NF && $1 != "" { c[$1]++; cls[NR] = $1; prs[NR] = $5 }
@@ -1059,7 +1119,7 @@ cmd_verify() {
   promoted="$(_adb_pl_promoted_raw "$ledger")" || { printf 'pattern-ledger: %s — the checklist region is missing, duplicated, crossed, or holds a rule that is not in the grammar\n' "$ledger" >&2; exit 18; }
 
   if [ -n "$hits" ]; then
-    while IFS="$TAB" read -r c s f th _pr; do
+    while IFS="$TAB" read -r c s f th _pr _dt _summ; do
       [ -n "$c$s$f$th" ] || continue
       nh=$((nh + 1))
       _adb_pl_ok_class  "$c"  || { printf 'pattern-ledger: record %s has an invalid class "%s"\n' "$nh" "$c" >&2; bad=1; }
@@ -1070,6 +1130,12 @@ cmd_verify() {
       # split that made the original defect invisible: one command said 18 while another counted
       # the record and promoted on it.
       _adb_pl_ok_pr "$_pr" || { printf 'pattern-ledger: record %s has a missing or invalid PR number ("%s")\n' "$nh" "$_pr" >&2; bad=1; }
+      _adb_pl_ok_date "$_dt" || { printf 'pattern-ledger: record %s has an invalid date ("%s")\n' "$nh" "$_dt" >&2; bad=1; }
+      # THE SUMMARY, so `verify` and the readers agree about it — the same split that hid the
+      # duplicate-thread defect. Reported by the declared reviewer on PR #429.
+      if [ -n "$_summ" ] && ! _adb_pl_ok_text "$_summ"; then
+        printf 'pattern-ledger: record %s carries a summary this module would not write — a control character, or an HTML comment marker\n' "$nh" >&2; bad=1
+      fi
     done < <(printf '%s\n' "$hits")
   fi
   if [ -n "$promoted" ]; then

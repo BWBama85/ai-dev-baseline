@@ -243,6 +243,18 @@ if [ "$MODE" = mutation ]; then
     "  :" \
     'a NUL in the FINAL field is refused — awk truncation cannot see it'
 
+  # THE NUL-MANIFEST ARM (PR #429). Restores the fold-into-"none declared" that shipped: the
+  # manifest took the command-substitution path unscanned, so the byte was simply dropped.
+  check_mut nul-manifest-as-none \
+    '    *) _adb_dl_manifest_read_failed 3 "$key"; return 18 ;;' \
+    '    *) return 1 ;;' \
+    'a NUL byte in the manifest is refused as malformed TOML, not normalized to a clean name'
+
+  # THE UNREADABLE-MANIFEST ARM HAS NO ROW, deliberately: its witness needs a file the suite cannot
+  # read, which does not exist for root, and a row whose witness cannot fire under one legitimate
+  # runner would report a defect the harness could not see. The behavioural assertion below still
+  # runs wherever permissions apply.
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
@@ -650,6 +662,39 @@ required = []
 eq "$(dl mcp-required --manifest "$D12/agents.toml" | wc -l | tr -d ' ')" 0 \
    "an empty repo declaration wins over the global one, rather than falling through to it"
 rm -f "$FHOME/.config/ai-dev-baseline/agents.toml"
+
+# A NUL BYTE IN THE MANIFEST ITSELF (PR #429). The record file was already scanned for one; the
+# manifest took the command-substitution path unscanned, so `required = ["contex<NUL>t7"]` parsed
+# to a clean `context7` — a name the operator never wrote, which an ordinary probe then satisfied.
+D20="$(fixture nulmanifest '[mcp]
+required = ["placeholder"]
+')"
+printf '[mcp]\nrequired = ["contex\000t7"]\n' > "$D20/agents.toml"
+dl mcp-required --manifest "$D20/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a NUL byte in the manifest is refused as malformed TOML, not normalized to a clean name"
+dl verdict --state "$D20/state" --manifest "$D20/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and the verdict refuses rather than adjudicating a name nobody declared"
+# AN UNREADABLE MANIFEST IS 20, NEVER "NONE DECLARED" (PR #429). A read failure used to arrive as
+# the 1 that step 5b reads as "no preflight configured", so an unreadable repo manifest declaring
+# `[mcp] required` skipped the preflight silently. Skipped as root, which can read anything.
+if [ "$(id -u)" -ne 0 ]; then
+  D21="$(fixture unreadable '[mcp]
+required = ["context7"]
+')"
+  dl none-needed --state "$D21/state" --justification 'a disposition, so the report has one' >/dev/null 2>&1
+  chmod 000 "$D21/agents.toml"
+  dl mcp-required --manifest "$D21/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "an unreadable manifest is 20 — a read failure, not an absent declaration"
+  dl verdict --state "$D21/state" --manifest "$D21/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "…and the verdict refuses rather than reporting nothing to preflight"
+  dl report --state "$D21/state" --manifest "$D21/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "…and the report returns it rather than rendering a clean block"
+  R21="$(dl report --state "$D21/state" --manifest "$D21/agents.toml" 2>/dev/null)"
+  has "$R21" "UNREADABLE" "…and says UNREADABLE in the block a reviewer reads"
+  chmod 644 "$D21/agents.toml"
+else
+  ok; ok; ok; ok
+fi
 
 # =============================== 9. the call sites are wired ====================================
 IMP=base/workflows/implement-issue.md

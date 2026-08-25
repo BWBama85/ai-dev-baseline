@@ -2956,10 +2956,21 @@ adb_install_source() {
 # backslashes and all (escape *decoding* like `\"`→`"` is intentionally out of scope;
 # the value is returned as written). Inline tables and multi-line values are out of
 # scope (see docs/design-principles.md).
+# Returns 0 with the value on stdout; 1 when the file is missing or the key is absent; 2 when the
+# file EXISTS but cannot be read; 3 when it contains a NUL byte and so is not TOML at all.
+#
+# 2 AND 3 ARE NOT 1, and every layered caller depends on the difference. A read that cannot
+# happen used to come back as "key absent", so an unreadable repo manifest fell through to the
+# global one or to a built-in — the operator's configuration silently replaced by a value from a
+# file they never chose. And a NUL is checked on the raw bytes because command substitution and
+# `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
+# a value the operator never wrote. Reported by the declared reviewer on PR #429.
 # Usage: adb_toml_get <file> <table> <key>
 adb_toml_get() {
   local file="$1" table="$2" key="$3"
   [ -f "$file" ] || return 1
+  [ -r "$file" ] || return 2
+  [ "$(LC_ALL=C tr -d '\000' < "$file" | wc -c | tr -d ' ')" -eq "$(wc -c < "$file" | tr -d ' ')" ] || return 3
   awk -v tbl="$table" -v key="$key" '
     # A table header toggles whether we are inside the target table. The header name is
     # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
@@ -3018,6 +3029,9 @@ adb_toml_get() {
     }
     END { if (!found) exit 1 }
   ' "$file"
+  # THE AWK STATUS IS MAPPED, not passed through. 1 is "not found"; anything else is awk failing
+  # to read the file part-way, which is a read error and must not be reported as absence.
+  case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
 # adb_toml_layered_get <repo-toml> <global-toml> <section> <key> [--with-layer] — the raw
@@ -3028,6 +3042,13 @@ adb_toml_get() {
 # detail: falling through a bad higher-precedence value to the next layer hands the operator a
 # setting they did not choose, from a file they thought they had configured, with nothing said.
 # Every caller must therefore validate what comes back and fail loud, never re-read the next layer.
+#
+# A LAYER THAT CANNOT BE READ IS NOT A LAYER THAT DEFINES NOTHING. `adb_toml_get`'s 2 (exists but
+# unreadable) and 3 (contains a NUL byte) are returned as-is, from whichever layer produced them,
+# and the next layer is NOT consulted — for exactly the reason above: an unreadable repo manifest
+# that declares `[mcp] required` used to read as "not declared", and the consumer then skipped the
+# preflight the operator had configured. Callers must treat any status above 1 as a hard error.
+# Reported by the declared reviewer on PR #429.
 #
 # `--with-layer` prefixes the answer with WHICH layer supplied it (`repo ` / `global `), because a
 # caller reporting a value to an operator has to be able to say which file to edit. It is an
@@ -3043,16 +3064,22 @@ adb_toml_get() {
 # bash 3.2-safe: plain positionals and `case`, no 5.3 construct, because this file must parse and
 # run below the floor (D30/D35).
 adb_toml_layered_get() {
-  local repo_toml="$1" global_toml="$2" section="$3" key="$4" with_layer=0 raw
+  local repo_toml="$1" global_toml="$2" section="$3" key="$4" with_layer=0 raw rc
   [ "${5:-}" = "--with-layer" ] && with_layer=1
-  if raw="$(adb_toml_get "$repo_toml" "$section" "$key")"; then
-    [ "$with_layer" -eq 1 ] && printf 'repo '
-    printf '%s' "$raw"; return 0
-  fi
-  if raw="$(adb_toml_get "$global_toml" "$section" "$key")"; then
-    [ "$with_layer" -eq 1 ] && printf 'global '
-    printf '%s' "$raw"; return 0
-  fi
+  raw="$(adb_toml_get "$repo_toml" "$section" "$key")"; rc=$?
+  case "$rc" in
+    0) [ "$with_layer" -eq 1 ] && printf 'repo '
+       printf '%s' "$raw"; return 0 ;;
+    1) ;;
+    *) return "$rc" ;;
+  esac
+  raw="$(adb_toml_get "$global_toml" "$section" "$key")"; rc=$?
+  case "$rc" in
+    0) [ "$with_layer" -eq 1 ] && printf 'global '
+       printf '%s' "$raw"; return 0 ;;
+    1) ;;
+    *) return "$rc" ;;
+  esac
   return 1
 }
 

@@ -723,6 +723,12 @@ case "$MRC" in
   1)  : ;;   # `[mcp] required` is not declared. THE ORDINARY CASE and not a problem: `[mcp]`
              # is optional per repo. Skip to 5b-ii; say nothing.
   18) echo "STOP: [mcp] required is malformed — fix agents.toml"; exit 1 ;;
+  # 20 IS "AN agents.toml EXISTS BUT COULD NOT BE READ" — a permissions or corruption fact about
+  # the checkout, not an absent declaration. It used to arrive here as rc 1 and skip the preflight
+  # the operator had configured; the library now keeps it distinct, and it stops the run for the
+  # same reason 18 does: nothing else that reads the manifest can be trusted either.
+  # Reported by the declared reviewer on PR #429.
+  20) echo "STOP: an agents.toml exists but could not be read (rc 20) — fix it before running"; exit 1 ;;
   *)  echo "NOTE: could not read [mcp] (rc $MRC) — treat every server as unproven"; ;;
 esac
 ```
