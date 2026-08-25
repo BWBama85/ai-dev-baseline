@@ -91,4 +91,5 @@ One line per resolved review thread, newest last.
 - `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:572` `630ac96` `PRRT_kwDOTfywrM6b7dvK` PR #429 2026-08-25 — a side accumulator counted the idempotent no-op that the snapshots correctly ignored
 - `false-guarantee` `scripts/lib/docs-lib.sh:125` `630ac96` `PRRT_kwDOTfywrM6b7dvN` PR #429 2026-08-25 — a byte bound was measured in characters, so the guarantee it named did not hold
 - `partial-validation` `scripts/lib/pattern-ledger.sh:480` `630ac96` `PRRT_kwDOTfywrM6b7dvQ` PR #429 2026-08-25 — the duplicate-key rule was applied to one manifest table and not its sibling
+- `toctou` `scripts/lib/pattern-ledger.sh:542` `b5306a6` `PRRT_kwDOTfywrM6b8GSs` PR #429 2026-08-25 — reclamation used age as a proxy for death, so a live writer could still land its prepared write
 <!-- adb:hits:end -->
