@@ -92,4 +92,8 @@ One line per resolved review thread, newest last.
 - `false-guarantee` `scripts/lib/docs-lib.sh:125` `630ac96` `PRRT_kwDOTfywrM6b7dvN` PR #429 2026-08-25 — a byte bound was measured in characters, so the guarantee it named did not hold
 - `partial-validation` `scripts/lib/pattern-ledger.sh:480` `630ac96` `PRRT_kwDOTfywrM6b7dvQ` PR #429 2026-08-25 — the duplicate-key rule was applied to one manifest table and not its sibling
 - `toctou` `scripts/lib/pattern-ledger.sh:542` `b5306a6` `PRRT_kwDOTfywrM6b8GSs` PR #429 2026-08-25 — reclamation used age as a proxy for death, so a live writer could still land its prepared write
+- `partial-validation` `scripts/lib/docs-lib.sh:286` `631b8db` `PRRT_kwDOTfywrM6b8wnx` PR #429 2026-08-25 — the duplicate rule counted keys but not repeated table headers
+- `partial-validation` `scripts/lib/pattern-ledger.sh:940` `631b8db` `PRRT_kwDOTfywrM6b8wn2` PR #429 2026-08-25 — a filter argument was never validated, so a typo read as a real PR with no findings
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:804` `631b8db` `PRRT_kwDOTfywrM6b8wn3` PR #429 2026-08-25 — a failure arm promised no counts and then fell through to the arithmetic
+- `partial-validation` `scripts/lib/pattern-ledger.sh:482` `631b8db` `PRRT_kwDOTfywrM6b8wn6` PR #429 2026-08-25 — a scalar grammar accepted literals the spec forbids
 <!-- adb:hits:end -->
