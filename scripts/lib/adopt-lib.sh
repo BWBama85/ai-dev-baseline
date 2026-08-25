@@ -1225,13 +1225,18 @@ TOML
 
 cmd_pin_read() {
   [ "$#" -eq 2 ] || die "pin-read: needs <pin-file> <key>"
-  local file="$1" key="$2" v
+  local file="$1" key="$2" v rc
   [ -f "$file" ] || die "pin-read: no such pin file: $file"
   case "$key" in
     version|commit|adopted|stack|agents) ;;
     *) die "pin-read: unknown pin key: $key" ;;
   esac
-  v="$(adb_toml_get "$file" upstream "$key")" || return 1
+  v="$(adb_toml_get "$file" upstream "$key")"; rc=$?
+  # 2 AND 3 ARE NOT 1: a pin that exists but cannot be read, or carries a NUL byte, must not read as
+  # "key absent" — `pin-drift` would then report no drift at all. 20, with the shared diagnostic.
+  # Reported by the declared reviewer on PR #429.
+  [ "$rc" -le 1 ] || { adb_toml_read_error "$file" "$rc"; return 20; }
+  [ "$rc" -eq 0 ] || return 1
   if [ "$key" = agents ]; then adb_toml_array "$v"; else adb_toml_unquote "$v"; fi
 }
 

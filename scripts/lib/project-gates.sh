@@ -519,9 +519,30 @@ _adb_eco_php() {
 }
 
 # Print every gate record for a repo (built-in axes first, then open-set custom gates).
+# _adb_manifest_readable <root> — 0 when there is no agents.toml or it can be read as TOML; 2,
+# with a FATAL line, when one exists but cannot be (unreadable, or carrying a NUL byte).
+#
+# THE GUARD EVERY ENTRY POINT PASSES. `adb_toml_get` distinguishes "key absent" (1) from "file
+# unreadable" (2) and "not TOML" (3), and every read below used to treat all three as absent — so
+# an agents.toml the operator had written was silently replaced by auto-detection: a gate they
+# disabled with `""` ran, a command they declared became a default, a gate they added vanished. A
+# gate system that quietly runs a different set than the one configured is the fail-silent class
+# #35 exists to prevent, so this refuses loud instead. The probe key never exists; the status it
+# returns is about the FILE. Reported by the declared reviewer on PR #429.
+_adb_manifest_readable() {
+  local toml="$1/agents.toml" rc
+  [ -f "$toml" ] || return 0
+  adb_toml_get "$toml" gates __adb_probe__ >/dev/null 2>&1; rc=$?
+  [ "$rc" -le 1 ] && return 0
+  adb_toml_read_error "$toml" "$rc"
+  printf 'project-gates: FATAL — refusing to detect, report or run gates over an agents.toml that cannot be read as TOML: a declared gate could silently become an auto-detected one, or vanish\n' >&2
+  return 2
+}
+
 _adb_gate_records() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local toml="$root/agents.toml"
+  _adb_manifest_readable "$root" || return 2
   local d_typecheck="" d_lint="" d_test="" d_format="" key eco
 
   # --- single-primary-ecosystem detection: first ecosystem that yields a command wins.
@@ -607,6 +628,9 @@ EOF
 adb_detect_gates() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local rec state label cmd scope cadence
+  # BEFORE THE PIPE: a status returned inside `_adb_gate_records | while …` is the loop's, not
+  # the records', so the guard has to run where its answer can be returned.
+  _adb_manifest_readable "$root" || return 2
   # Split exactly, even though only state/label/cmd are used here — see _adb_rec_split. A
   # reader that "happens to work because the fields it needs are the non-empty leading ones"
   # is the bug one field-append away. The two-column stdout contract is unchanged;
@@ -623,6 +647,7 @@ adb_detect_gates() {
 adb_status_gates() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local out
+  _adb_manifest_readable "$root" || return 2
   # A non-default cadence is shown, because "why did that gate not run at turn-end?" is
   # otherwise unanswerable from `status` — the surface an operator reaches for first.
   out="$(_adb_gate_records "$root" | awk -F"$_ADB_TAB" '
@@ -666,6 +691,7 @@ adb_run_gates() {
     *) printf 'project-gates: FATAL — unknown run context "%s" (want turn-end|full)\n' "$context" >&2
        return 2 ;;
   esac
+  _adb_manifest_readable "$root" || return 2
   local records; records="$(_adb_gate_records "$root")"
   [ -z "$records" ] && return 0
 

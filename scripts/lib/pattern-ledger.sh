@@ -20,6 +20,7 @@
 #   pattern-ledger.sh stats     [--ledger <file>] [--threshold <n>] [--pr <n>]
 #   pattern-ledger.sh verify    [--ledger <file>]
 #   pattern-ledger.sh threshold [--ledger <file>]           # the effective threshold + its source
+#   pattern-ledger.sh reclaim   [--ledger <file>]           # remove an abandoned write lock (22 = held)
 #   pattern-ledger.sh -h | --help
 #
 # Globals read: ADB_PATTERN_LEDGER (default <repo-root>/.ai-dev-baseline/patterns.md).
@@ -40,6 +41,8 @@
 #   21 oversized  — `checklist` / `verify`: the promoted checklist exceeds the prompt budget (see
 #                   "What may be stored"). NOTHING is emitted: a truncated checklist would drop the
 #                   sweep a class earned, silently, which is the count-too-low direction.
+#   22 held       — `reclaim`: the write lock is held by a writer that is alive, on another host,
+#                   unrecorded, or not yet stale. Nothing was removed.
 #   2  usage      — bad or missing arguments.
 #
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is reporting a class as *rarer than it is*. A count
@@ -262,6 +265,26 @@ _adb_pl_resolve_ledger() {
   local root; root="$(adb_repo_root 2>/dev/null)" || root=""
   [ -n "$root" ] || { printf 'pattern-ledger: not inside a git repository and no --ledger given\n' >&2; return 1; }
   printf '%s/.ai-dev-baseline/patterns.md\n' "$root"
+}
+
+# _adb_pl_ledger_state <file> — 0 present and readable · 1 absent · 2 INACCESSIBLE: the file
+# exists but cannot be read, or cannot be seen because its directory cannot be searched.
+#
+# ABSENT AND INACCESSIBLE ARE DIFFERENT ANSWERS, and `-f` gives the same one for both: it is false
+# for a file inside a directory this process cannot search, so `checklist` returned 0 with no
+# output over a ledger that held a promoted rule, and both /implement-issue consumers proceeded as
+# if the project had learned nothing. A file that exists but cannot be read failed inside the
+# region reader and came back as 18 — malformed — which names the wrong repair. Every "no ledger
+# yet" shortcut asks this instead. Reported by the declared reviewer on PR #429.
+_adb_pl_ledger_state() {
+  local d
+  if [ -e "$1" ]; then [ -r "$1" ] && return 0; return 2; fi
+  d="$(dirname "$1")"
+  if [ -d "$d" ] && [ ! -x "$d" ]; then return 2; fi
+  return 1
+}
+_adb_pl_inaccessible() {
+  printf 'pattern-ledger: %s exists but cannot be read — the file or its directory is not accessible. Refusing to treat it as absent.\n' "$1" >&2
 }
 
 # The template a first `record` creates. The prose is part of the artifact: this file is read by
@@ -877,7 +900,9 @@ cmd_record() {
   # wrote the template over a file the faster one had already created AND inserted into, erasing
   # that hit before either locked insert finished. The existence test has to happen where the
   # decision is protected. Reported by the declared reviewer on PR #429.
-  if [ ! -f "$ledger" ]; then
+  local _lst; _adb_pl_ledger_state "$ledger"; _lst=$?
+  [ "$_lst" -ne 2 ] || { _adb_pl_inaccessible "$ledger"; exit 20; }
+  if [ "$_lst" -eq 1 ]; then
     # STAGED AND RENAMED, like every other write. A direct redirection that is killed part-way — or
     # hits a full filesystem — leaves a HALF-WRITTEN ledger: the call returns 20, and every retry
     # then finds the file present and returns 18, so a first-run failure needs manual repair.
@@ -923,7 +948,7 @@ cmd_record() {
 cmd_classes() {
   local ledger hits promoted
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
-  [ -f "$ledger" ] || exit 0            # no ledger yet is no classes, not an error
+  _adb_pl_ledger_state "$ledger"; case $? in 1) exit 0 ;; 2) _adb_pl_inaccessible "$ledger"; exit 20 ;; esac   # no ledger yet is no classes, not an error
   hits="$(_adb_pl_hits "$ledger")"      || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
   promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
   [ -n "$hits" ] || exit 0
@@ -949,7 +974,7 @@ cmd_due() {
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   [ -n "$t" ] || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
-  [ -f "$ledger" ] || exit 11
+  _adb_pl_ledger_state "$ledger"; case $? in 1) exit 11 ;; 2) _adb_pl_inaccessible "$ledger"; exit 20 ;; esac
   # CAPTURED AND ITS STATUS CHECKED, never consumed straight from `< <(cmd_classes)`. A process
   # substitution runs in a SUBSHELL, so `cmd_classes`'s `exit 18` terminated only that subshell:
   # the loop read no lines, `out` stayed empty, and a ledger this module cannot parse came back as
@@ -984,7 +1009,10 @@ cmd_promote() {
   local ledger t tsrc
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
-  [ -f "$ledger" ] || { printf 'pattern-ledger: no ledger at %s — nothing has been recorded yet\n' "$ledger" >&2; exit 12; }
+  _adb_pl_ledger_state "$ledger"; case $? in
+    1) printf 'pattern-ledger: no ledger at %s — nothing has been recorded yet\n' "$ledger" >&2; exit 12 ;;
+    2) _adb_pl_inaccessible "$ledger"; exit 20 ;;
+  esac
 
   # BOTH REGIONS, BEFORE THE EARLY RETURN. The `already promoted` arm below exits 13 without ever
   # reaching `cmd_classes`, so a ledger whose HITS region was damaged reported "already has a
@@ -1052,7 +1080,7 @@ cmd_promote() {
 cmd_checklist() {
   local ledger region
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
-  [ -f "$ledger" ] || exit 0
+  _adb_pl_ledger_state "$ledger"; case $? in 1) exit 0 ;; 2) _adb_pl_inaccessible "$ledger"; exit 20 ;; esac
   # BOTH REGIONS, even though only one is emitted. This module's contract is that a ledger it
   # cannot parse is refused WHOLE rather than read in part, and this is the subcommand where
   # breaking that would be quietest: the checklist half can be perfectly well-formed while the hits
@@ -1088,7 +1116,7 @@ cmd_checklist() {
 # That is the quantity that should fall as the checklist starts working: classes accumulate
 # forever, while repeat hits in a known class are exactly the avoidable ones.
 cmd_stats() {
-  local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0 prrecur=0 prnew=0
+  local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0 prrecur=0 prnew=0 _lst
   # THE FILTER IS VALIDATED, or a mistyped one is indistinguishable from a real pull request with
   # no findings: `--pr not-a-pr` and `--pr 0` both returned success with every PR-scoped metric at
   # zero, which is a falsely clean summary for any caller outside the workflow's own numeric
@@ -1098,7 +1126,9 @@ cmd_stats() {
   fi
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
-  if [ ! -f "$ledger" ]; then
+  _adb_pl_ledger_state "$ledger"; _lst=$?
+  [ "$_lst" -ne 2 ] || { _adb_pl_inaccessible "$ledger"; exit 20; }
+  if [ "$_lst" -eq 1 ]; then
     # ABSENT IS ITS OWN FACT, emitted as a field rather than left to be inferred from zeros. The
     # resolver's summary is required to distinguish "this project has no ledger yet" from "the
     # ledger is empty", and it could not: `stats` returned 0 with zero-valued fields for both, so
@@ -1167,7 +1197,10 @@ cmd_stats() {
 cmd_verify() {
   local ledger hits promoted nh=0 np=0 bad=0 c s f th
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
-  [ -f "$ledger" ] || { printf 'pattern-ledger: no ledger at %s\n' "$ledger" >&2; exit 20; }
+  _adb_pl_ledger_state "$ledger"; case $? in
+    1) printf 'pattern-ledger: no ledger at %s\n' "$ledger" >&2; exit 20 ;;
+    2) _adb_pl_inaccessible "$ledger"; exit 20 ;;
+  esac
   # THE RAW PARSERS, deliberately. `verify` exists to NAME the bad record, and the validating
   # readers refuse the file whole — correct for every other caller, useless for this one, which
   # would then report "does not parse" without saying which line.
@@ -1235,6 +1268,54 @@ cmd_verify() {
   printf 'ok %s hit(s), %s checklist rule(s) checked in %s (checklist %s of %s bytes)\n' "$nh" "$np" "$ledger" "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES"
 }
 
+# `reclaim` — remove an ABANDONED write lock, or say why not.
+#
+# A resolver killed while holding the lock leaves `<ledger>.lock/` — an untracked directory beside
+# the tracked ledger — and `/resolve-pr-threads` step 1's dirty-tree guard then refused the tree
+# before any write here could reach the stale-lock reclamation `_adb_pl_lock` carries. So the
+# advertised recovery sat behind the one check that made it unreachable, and the workflow stayed
+# stranded until somebody removed the directory by hand. This is that reclamation as a command,
+# run by step 1 BEFORE its guard: the SAME death proof (`_adb_pl_owner_gone` plus the stale age),
+# the same tombstone rename so two contenders cannot both remove one lock, and the same loud
+# failure when the tombstone cannot be deleted. A lock that is live, on another host, unrecorded,
+# or not yet stale is left alone and reported (22) — a reason to stop, never a reason to bypass
+# the guard. Tombstones left by an earlier interrupted reclamation are swept too.
+# Reported by the declared reviewer on PR #429.
+cmd_reclaim() {
+  local ledger dir age tomb t rc=0 did=0
+  ledger="$(_adb_pl_resolve_ledger)" || exit 20
+  dir="$ledger.lock"
+  for t in "$dir".stale.*; do
+    [ -e "$t" ] || continue
+    if ! rm -rf "$t" 2>/dev/null || [ -e "$t" ]; then
+      printf 'pattern-ledger: could not remove the stale-lock tombstone %s — remove it by hand.\n' "$t" >&2; rc=20
+    else
+      printf 'pattern-ledger: removed a leftover stale-lock tombstone: %s\n' "$t"; did=1
+    fi
+  done
+  if [ -d "$dir" ]; then
+    age="$(adb_age_secs "$dir" 2>/dev/null)" || age=""
+    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then   # the writers' own proof
+      tomb="$dir.stale.$$.$RANDOM"
+      if ! mv "$dir" "$tomb" 2>/dev/null; then
+        printf 'pattern-ledger: could not rename %s — another contender may have reclaimed it, or its directory is not writable; re-run.\n' "$dir" >&2
+        exit 20
+      fi
+      if ! rm -rf "$tomb" 2>/dev/null || [ -e "$tomb" ]; then
+        printf 'pattern-ledger: could not remove the stale lock %s after renaming it — it is owned by another user, or its contents are not deletable here. Remove it by hand.\n' "$tomb" >&2
+        exit 20
+      fi
+      printf 'pattern-ledger: reclaimed a stale write lock (%ss old, owner gone): %s\n' "$age" "$dir"; did=1
+    else
+      printf 'pattern-ledger: %s is HELD — its owner is alive, on another host, unrecorded, or the lock is not yet stale (%ss old). Nothing reclaimed; remove it by hand only once you are sure.\n' "$dir" "${age:-?}" >&2
+      exit 22
+    fi
+  fi
+  [ "$rc" -eq 0 ] || exit "$rc"
+  [ "$did" -eq 1 ] || printf 'pattern-ledger: no lock at %s\n' "$dir"
+  exit 0
+}
+
 cmd_threshold() {
   local t src
   read -r t src < <(_adb_pl_threshold) || exit 2
@@ -1278,5 +1359,6 @@ case "$SUB" in
   stats)     cmd_stats ;;
   verify)    cmd_verify ;;
   threshold) cmd_threshold ;;
-  *)         die "unknown subcommand '$SUB' (record|classes|due|promote|checklist|stats|verify|threshold)" ;;
+  reclaim)   cmd_reclaim ;;
+  *)         die "unknown subcommand '$SUB' (record|classes|due|promote|checklist|stats|verify|threshold|reclaim)" ;;
 esac

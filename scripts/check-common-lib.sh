@@ -109,6 +109,11 @@ adb_toml_layered_get "$work/nope.toml" "$work/nope2.toml" roles primary >/dev/nu
 eq "$?" 1 "…and neither layer defining the key is still 1"
 eq "$(adb_toml_layered_get "$f" "$work/nope.toml" roles primary --with-layer)" 'repo "claude"' \
    "…and --with-layer still names the layer that answered"
+# THE SHARED DIAGNOSTIC — one home for the two sentences every consumer prints (PR #429).
+adb_toml_read_error "$z" 3 2>/dev/null; yes $? "adb_toml_read_error accepts status 3"
+has "$(adb_toml_read_error "$z" 3 2>&1)" "NUL byte"          "…and names the NUL byte for 3"
+has "$(adb_toml_read_error "$z" 2 2>&1)" "could not be read" "…and the read failure for 2"
+adb_toml_read_error "$z" 1 2>/dev/null; no $? "…and returns 1 for a status that is not a read failure"
 
 # key present in a DIFFERENT table must not match
 eq "$(adb_toml_get "$f" roles typecheck 2>/dev/null)" "" "key scoped to its table"

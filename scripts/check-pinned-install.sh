@@ -389,6 +389,17 @@ out="$(bash "$PI" status --project "$P" 2>&1)"; rc=$?
 has "$out" "mode:    pinned" "status: reports the mode"
 has "$out" "payload: intact" "status: reports an untouched payload as intact"
 
+# A PIN THAT CANNOT BE READ NEVER DEFAULTS (PR #429). `adb_toml_get` returns 3 for a NUL byte, and
+# the pin readers discarded it — so `source = "private/fork"` with a NUL appended read as no
+# source, and `status`/`upgrade` consulted the public default in its place.
+cp "$P/.ai-dev-baseline/upstream.toml" "$P/.pin.bak"
+printf '\000' >> "$P/.ai-dev-baseline/upstream.toml"
+out="$(bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "status: a pin carrying a NUL byte is 20 (unverifiable) — not global (11), not pinned (0)"
+has "$out" "NUL byte" "status: …and the diagnostic names the byte"
+hasnt "$out" "source:" "status: …and no source is printed — the public default was never substituted"
+mv "$P/.pin.bak" "$P/.ai-dev-baseline/upstream.toml"
+
 printf '\n# local edit\n' >> "$P/.claude/skills/cleanup/SKILL.md"
 out="$(bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
 has "$out" "altered  .claude/skills/cleanup/SKILL.md" "status: names a locally modified file"

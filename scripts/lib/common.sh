@@ -3083,6 +3083,19 @@ adb_toml_layered_get() {
   return 1
 }
 
+# adb_toml_read_error <file> <rc> — the diagnostic for an `adb_toml_get` status above 1, on stderr.
+#
+# One home for the two sentences, so a consumer that has to refuse a manifest it cannot read says
+# the same thing whichever module it lives in. Returns 1 for any other status, so a caller can use
+# it as the test as well as the message. bash 3.2-safe (D30).
+adb_toml_read_error() {
+  case "${2:-}" in
+    2) printf 'toml: %s exists but could not be read — refusing to treat it as absent\n' "$1" >&2 ;;
+    3) printf 'toml: %s contains a NUL byte and is not TOML — refusing to read it\n' "$1" >&2 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Strip one layer of surrounding double quotes from a scalar TOML value.
 # ("" → empty string; "pnpm test" → pnpm test). Leaves an array ([...]) untouched.
 adb_toml_unquote() {

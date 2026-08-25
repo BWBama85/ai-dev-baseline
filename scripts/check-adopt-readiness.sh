@@ -248,6 +248,12 @@ has "$out" "manifest${TAB}todo" "probe: an agents.toml with no [roles] is still 
 printf '[roles]\nprimary = "claude"\n' > "$d/agents.toml"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}ok" "probe: [roles] primary makes the manifest rung ok"
+# A MANIFEST THAT CANNOT BE READ AS TOML IS UNKNOWN, NEVER TODO (PR #429): the rung cannot say what
+# it declares, and `unknown` is the one answer the verdict never turns green.
+printf '[roles]\nprimary = "claude"\000\n' > "$d/agents.toml"
+out="$(ar probe "$d")"
+has "$out" "manifest${TAB}unknown" "probe: an agents.toml carrying a NUL byte is unknown, not 'no [roles] primary'"
+printf '[roles]\nprimary = "claude"\n' > "$d/agents.toml"
 
 # --- decisions
 has "$out" "decisions${TAB}todo" "probe: no decision log is todo"

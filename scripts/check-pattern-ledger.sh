@@ -399,6 +399,13 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'an over-budget checklist is refused with 21, not emitted into a prompt'
 
+  # RECLAIM'"'"'S DEATH PROOF (PR #429). The literal carries the trailing comment so it is distinct
+  # from `_adb_pl_lock`'"'"'s identical test, which `reclaims-live-owner` targets (first occurrence).
+  check_mut reclaim-ignores-death-proof \
+    '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then   # the writers'"'"' own proof' \
+    '    if [ -n "$age" ]; then   # the writers'"'"' own proof' \
+    'reclaim leaves a LIVE owner'"'"'s lock alone (22)'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -1215,6 +1222,58 @@ else
   ok; ok; ok
 fi
 
+# `reclaim` — THE STALE-LOCK RECOVERY AS A COMMAND (PR #429), because step 1's dirty-tree guard
+# refused the tree before any writer could reach the reclamation it carries.
+L7r="$work/reclaim"; mkdir -p "$L7r"
+bash "$PL" record --ledger "$L7r/p.md" --class recl --site s.sh --fix abc1231 --pr 1 --thread RC1 >/dev/null 2>&1
+bash "$PL" reclaim --ledger "$L7r/p.md" >/dev/null 2>&1
+eq "$?" 0 "reclaim: no lock is 0"
+mkdir -p "$L7r/p.md.lock/LIVE"; printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$L7r/p.md.lock/meta"
+touch -t 200001010000 "$L7r/p.md.lock" 2>/dev/null
+bash "$PL" reclaim --ledger "$L7r/p.md" >/dev/null 2>&1
+eq "$?" 22 "reclaim leaves a LIVE owner's lock alone (22)"
+[ -d "$L7r/p.md.lock/LIVE" ] && ok || bad "reclaim removed a live owner's lock"
+rm -rf "$L7r/p.md.lock"
+mkdir -p "$L7r/p.md.lock/ORPHAN"; touch -t 200001010000 "$L7r/p.md.lock" 2>/dev/null   # no meta: unprovable
+bash "$PL" reclaim --ledger "$L7r/p.md" >/dev/null 2>&1
+eq "$?" 22 "reclaim: a lock with no owner metadata is unprovable, so it is held (22)"
+rm -rf "$L7r/p.md.lock"
+mkdir -p "$L7r/p.md.lock/DEAD"; printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$L7r/p.md.lock/meta"
+touch -t 200001010000 "$L7r/p.md.lock" 2>/dev/null
+mkdir -p "$L7r/p.md.lock.stale.1.2"                                                   # a leftover tombstone
+ROUT="$(bash "$PL" reclaim --ledger "$L7r/p.md" 2>&1)"; RRC=$?
+eq "$RRC" 0 "reclaim: a stale lock whose owner is provably gone is removed (0)"
+[ -e "$L7r/p.md.lock" ] && bad "reclaim left the dead owner's lock in place" || ok
+[ -e "$L7r/p.md.lock.stale.1.2" ] && bad "reclaim left a leftover tombstone in place" || ok
+has "$ROUT" "reclaimed a stale write lock" "…and says so"
+mkdir -p "$L7r/p.md.lock/FRESH"; printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$L7r/p.md.lock/meta"   # dead but NOT stale
+bash "$PL" reclaim --ledger "$L7r/p.md" >/dev/null 2>&1
+eq "$?" 22 "reclaim: a dead owner's lock that is not yet stale is left alone — age is part of the proof"
+rm -rf "$L7r"
+
+# AN INACCESSIBLE LEDGER IS 20, NEVER ABSENT (PR #429). `-f` is false inside a directory that
+# cannot be searched, so `checklist` returned 0 and nothing over a ledger holding a promoted rule,
+# and both consumers proceeded as if the project had learned nothing. Skipped as root.
+if [ "$(id -u)" -ne 0 ]; then
+  L7x="$work/inacc"; mkdir -p "$L7x"
+  seed "$L7x/p.md" inacc-class 2 || bad "fixture: could not seed"
+  bash "$PL" promote --ledger "$L7x/p.md" --class inacc-class --rule 'a rule that must not vanish' >/dev/null 2>&1
+  chmod 000 "$L7x"
+  for sub in checklist classes due stats verify; do
+    bash "$PL" "$sub" --ledger "$L7x/p.md" >/dev/null 2>&1
+    eq "$?" 20 "an unsearchable ledger directory is 20 from \`$sub\`, never absent"
+  done
+  eq "$(bash "$PL" checklist --ledger "$L7x/p.md" 2>/dev/null | wc -c | tr -d ' ')" 0 "…and checklist emits nothing rather than an empty success"
+  chmod 755 "$L7x"; chmod 000 "$L7x/p.md"
+  bash "$PL" checklist --ledger "$L7x/p.md" >/dev/null 2>&1
+  eq "$?" 20 "an unreadable ledger FILE is 20 from checklist — not the malformed 18"
+  bash "$PL" record --ledger "$L7x/p.md" --class inacc-class --site t.sh --fix abc1239 --pr 1 --thread INACC-W >/dev/null 2>&1
+  eq "$?" 20 "…and record refuses (20) rather than creating a fresh ledger over it"
+  chmod 644 "$L7x/p.md"; rm -rf "$L7x"
+else
+  for _ in 1 2 3 4 5 6 7 8; do ok; done
+fi
+
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
 mkdir "$L7c.lock"
@@ -1426,6 +1485,14 @@ has "$RESTXT" 'run step 8 (restore the starting branch) FIRST' \
 # …AND A PROMOTION IT PUSHES MOVES THE HEAD (PR #429): the clean signal was for the previous SHA.
 has "$RESTXT" 'A promotion pushed here moves the head' \
    "…and a promotion pushed on a clean pass is re-reviewed rather than reported clean"
+# STEP 1 RECLAIMS AN ABANDONED LOCK BEFORE ITS DIRTY-TREE GUARD (PR #429), or the recovery the
+# writers carry is unreachable.
+has "$RESTXT" '{{PATTERN_LEDGER_LIB}} reclaim' "step 1 reclaims an abandoned ledger lock"
+eq "$(( $(grep -n '{{PATTERN_LEDGER_LIB}} reclaim' "$RES" | head -1 | cut -d: -f1) < $(grep -n 'working tree dirty' "$RES" | head -1 | cut -d: -f1) ))" 1 \
+   "…BEFORE the dirty-tree guard, which would otherwise refuse the lock as dirt"
+# THE LEDGER PUSH IS REQUIRED AND IS A HEAD MOVE (PR #429).
+has "$RESTXT" 'STOP: could not push the ledger commit' "a failed ledger push stops the round before any thread is resolved"
+has "$RESTXT" 'A LEDGER PUSH MOVES THE HEAD' "…and a successful one sets LAST_SHA so step 7 asks for a re-review"
 # THE ROUND FIGURES COME FROM THIS INVOCATION'"'"'S OWN RECEIPTS, not from PR-wide subtraction —
 # `--pr` is shared, so two overlapping resolver runs would each report the other's work as theirs.
 has   "$RESTXT" 'ROUND_FINDINGS="$(printf' "round findings are counted from the rows this run appended"

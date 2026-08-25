@@ -141,6 +141,13 @@ _ar_is_rung() {
 # It runs INSIDE the project, because role-dispatch resolves the manifest from the repository it
 # is standing in — asked from anywhere else it would validate THIS repo's manifest and report on
 # somebody else's.
+# _ar_manifest_unreadable <file> — true when `adb_toml_get` cannot READ the file (2 unreadable, 3 a
+# NUL byte), as opposed to not finding the key. Asked before any rung reads a value out of it.
+_ar_manifest_unreadable() {
+  adb_toml_get "$1" roles primary >/dev/null 2>&1
+  [ "$?" -ge 2 ]
+}
+
 _ar_primary_ok() {
   local root="$1" tok
   # THE REPO'S OWN MANIFEST MUST DECLARE IT. `resolve` deliberately falls back to the global
@@ -443,6 +450,11 @@ cmd_probe() {
   # silent-default shape this contract exists to surface.
   if [ ! -f "$root/agents.toml" ]; then
     _ar_emit manifest todo "no agents.toml — run bin/agent-init, or apply /adopt's proposal"
+  elif _ar_manifest_unreadable "$root/agents.toml"; then
+    # UNKNOWN, never todo: the rung cannot say what the manifest declares, and `unknown` is the one
+    # answer the verdict never turns green. It used to fall to the "no [roles] primary" todo, which
+    # names the wrong repair. Reported by the declared reviewer on PR #429.
+    _ar_emit manifest unknown "agents.toml exists but could not be read as TOML (unreadable, or it contains a NUL byte) — nothing that reads the manifest can be trusted; fix the file"
   elif _ar_primary_ok "$root"; then
     _ar_emit manifest ok "agents.toml declares [roles] primary = $(adb_toml_unquote "$(adb_toml_get "$root/agents.toml" roles primary)")"
   elif adb_toml_get "$root/agents.toml" roles primary >/dev/null 2>&1; then

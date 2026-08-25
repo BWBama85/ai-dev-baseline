@@ -1189,9 +1189,12 @@ disposition as it was decided; this renders them:
 bash "$HOME/.codex/scripts/lib/docs-lib.sh" report --state .codex/state; DRC=$?
 case "$DRC" in
   0)  : ;;   # paste the block into the PR body
-  11) : ;;   # NOTHING WAS RECORDED. Do not paste an empty section and do not invent one: go back
-             # and state the disposition step 5b owed — either what you resolved, or `none-needed`
-             # with its justification. An unstated disposition is the defect (#422).
+  # NOTHING WAS RECORDED — and this arm is TERMINAL, not a comment. As a no-op it let the fenced
+  # path walk on to `gh pr create` without the block, which is exactly the unstated disposition
+  # #422 exists to make impossible. Do not paste an empty section and do not invent one: go back
+  # to step 5b and state the disposition it owed — either what you resolved, or `none-needed`
+  # with its justification — then render again. Reported by the declared reviewer on PR #429.
+  11) echo "STOP: no documentation disposition was recorded (rc 11) — state it in step 5b, then re-run this block"; exit 1 ;;
   *)  : ;;   # 18/20 -> report the message; the block cannot be rendered
 esac
 ```

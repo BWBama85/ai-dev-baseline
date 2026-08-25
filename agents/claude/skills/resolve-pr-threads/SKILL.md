@@ -292,8 +292,8 @@ again, and the first implementation after the threshold misses the sweep the cla
 1, so nothing has resolved the PR's metadata or moved the tree: run as written, this would read
 whatever branch the checkout happens to be on and commit the promotion there. On `main` that is a
 push to the default branch, which `## Important rules` forbids outright. Do step 1's preflight
-SUBSET — the `gh pr view`, the OPEN check, the dirty-tree guard, the `ORIG_BRANCH` capture and the
-`git switch` — and only then reconcile. Step 8 restores the branch on the way out, exactly as it
+SUBSET — the `gh pr view`, the OPEN check, the lock reclaim, the dirty-tree guard, the
+`ORIG_BRANCH` capture and the `git switch` — and only then reconcile. Step 8 restores the branch on the way out, exactly as it
 does for the ordinary path. Reported by the declared reviewer on PR #429.
 
 **Not step 1's bots-disabled exit.** Step 1 also reads `[reviewers] bots` and exits at `bots = []`
@@ -474,6 +474,21 @@ PR_STATE=$(echo "$PR_META" | jq -r .state)
 PR_BRANCH=$(echo "$PR_META" | jq -r .headRefName)
 PR_BASE=$(echo "$PR_META" | jq -r .baseRefName)   # restore fallback if the start branch is gone
 [ "$PR_STATE" = "OPEN" ] || { echo "ERROR: PR #$PR_NUM is $PR_STATE"; exit 1; }
+
+# AN ABANDONED LEDGER LOCK IS RECONCILED BEFORE THE DIRTY-TREE GUARD, or it never can be. A
+# resolver killed while holding `.ai-dev-baseline/patterns.md.lock/` leaves that untracked
+# directory beside the tracked ledger; the guard below then refuses the tree, and the stale-lock
+# reclamation `record` and `promote` carry is never reached — the advertised recovery sat behind
+# the one check that made it unreachable. `reclaim` applies the SAME death proof the writers do: a
+# lock whose owner is provably gone and past the stale age is removed; a live or unprovable one is
+# left alone and reported, which is a reason to stop, not to bypass the guard.
+# Reported by the declared reviewer on PR #429.
+bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" reclaim; LRC=$?
+case "$LRC" in
+  0)  : ;;
+  22) echo "ERROR: another writer holds the pattern-ledger lock (see above) — wait for it, or remove the lock by hand once you are sure its owner is gone"; exit 1 ;;
+  *)  echo "ERROR: could not reconcile the pattern-ledger lock (rc $LRC) — see above"; exit 1 ;;
+esac
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "ERROR: working tree dirty; commit or stash before invoking"
@@ -795,7 +810,25 @@ if git diff --cached --quiet -- .ai-dev-baseline/patterns.md; then
   echo "ledger unchanged this round (every hit was already recorded) — nothing to commit"
 else
   git commit -m "chore: record review-finding classes from PR #$PR_NUM"
-  git push origin "$PR_BRANCH"
+  # THE PUSH IS REQUIRED, NOT ATTEMPTED. Unguarded, a push that failed — a network error, a
+  # permission, a non-fast-forward — fell through to step 5, which resolved the threads while
+  # their records existed only in this checkout's local commit; a later resolver never enumerates
+  # a resolved thread, so a discarded or reset checkout then lost the history, and any promotion
+  # it earned, for good. The local commit is still here: push it by hand and re-run — `record` is
+  # idempotent and the commit above is guarded, so the re-run reaches step 5 cleanly.
+  # Reported by the declared reviewer on PR #429.
+  git push origin "$PR_BRANCH" || {
+    echo "STOP: could not push the ledger commit — its records exist only locally."
+    echo "      Resolving now would erase them from every future run; push by hand, then re-run."
+    # run step 8 (restore the starting branch) FIRST, then:
+    exit 1
+  }
+  # A LEDGER PUSH MOVES THE HEAD, so it is a pushed change like a fix. A round whose legitimate
+  # findings were all already addressed by earlier commits makes NO fix commit, so step 4 never
+  # set `LAST_SHA` — and step 7 then took its empty-`LAST_SHA` exit and requested no re-review,
+  # leaving the new head unreviewed. Set it here from the ledger commit, so step 7 asks.
+  # Reported by the declared reviewer on PR #429.
+  LAST_SHA="$(git rev-parse --short=7 HEAD)"
 fi
 ```
 

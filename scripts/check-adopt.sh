@@ -648,6 +648,12 @@ qdrift="$(bash "$AD" pin-drift "$QD/pin.toml" "$QD")"
 hasnt "$qdrift" "$QD log"  "pin-drift must not emit the raw unquoted path"
 has   "$qdrift" 'qu\ ote\;dir' "pin-drift shell-quotes the baseline path"
 eq "$(bash "$AD" pin-read "$WORK/upstream.toml" nope >/dev/null 2>&1; echo $?)" 2 "pin-read rejects an unknown key"
+# A PIN THAT CANNOT BE READ AS TOML IS 20, NOT "KEY ABSENT" (PR #429) — `pin-drift` would otherwise
+# report no drift at all over a pin it never read.
+cp "$WORK/upstream.toml" "$WORK/upstream-nul.toml"; printf '\000' >> "$WORK/upstream-nul.toml"
+bash "$AD" pin-read "$WORK/upstream-nul.toml" commit >/dev/null 2>&1
+eq "$?" 20 "pin-read: a pin carrying a NUL byte is 20, not the absent-key 1"
+has "$(bash "$AD" pin-read "$WORK/upstream-nul.toml" commit 2>&1 >/dev/null)" "NUL byte" "…and names the byte"
 eq "$(bash "$AD" pin-read "$WORK/missing.toml" commit >/dev/null 2>&1; echo $?)" 2 "pin-read on a missing file exits 2"
 
 drift="$(bash "$AD" pin-drift "$WORK/upstream.toml" "$ROOT")"

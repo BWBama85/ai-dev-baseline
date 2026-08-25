@@ -450,16 +450,30 @@ _pi_receipt_path() { printf '%s/.ai-dev-baseline/pinned-files.sha256' "$1"; }
 # ABSENT MEANS GLOBAL, not "pinned". `/adopt` already writes this pin for projects running the
 # global symlink model (D60), so presence of the file is not the discriminator — the `mode` key is,
 # and a pin written before this key existed is a global-mode pin by construction.
+#
+# A PIN THAT EXISTS BUT CANNOT BE READ AS TOML IS NEITHER MODE. `adb_toml_get` returns 2 (unreadable)
+# and 3 (a NUL byte) for that, and these readers discarded both — so a pin with a NUL anywhere in
+# it read as "no mode" here and as "no source" in `_pi_pin_source`, which then fell back to the
+# public default: `status` and `upgrade` consulted, and would have installed from, a repository the
+# operator never named. Now `unreadable` is printed — a value no pin can carry — with status 20 and
+# the shared diagnostic, and every caller checks the status before it trusts the value.
+# Reported by the declared reviewer on PR #429.
 _pi_pin_mode() {
-  local f; f="$(_pi_pin_path "$1")"
+  local f raw rc; f="$(_pi_pin_path "$1")"
   [ -f "$f" ] || return 0
-  adb_toml_unquote "$(adb_toml_get "$f" upstream mode 2>/dev/null)" 2>/dev/null
+  raw="$(adb_toml_get "$f" upstream mode 2>/dev/null)"; rc=$?
+  if [ "$rc" -ge 2 ]; then adb_toml_read_error "$f" "$rc"; printf 'unreadable'; return 20; fi
+  [ "$rc" -eq 0 ] || return 0
+  adb_toml_unquote "$raw"
 }
 
 _pi_pin_get() {
-  local f; f="$(_pi_pin_path "$1")"
+  local f raw rc; f="$(_pi_pin_path "$1")"
   [ -f "$f" ] || return 1
-  adb_toml_unquote "$(adb_toml_get "$f" upstream "$2" 2>/dev/null)" 2>/dev/null
+  raw="$(adb_toml_get "$f" upstream "$2" 2>/dev/null)"; rc=$?
+  if [ "$rc" -ge 2 ]; then adb_toml_read_error "$f" "$rc"; return 20; fi
+  [ "$rc" -eq 0 ] || return 1
+  adb_toml_unquote "$raw"
 }
 
 # _pi_pin_source <project-root> — the release repository this project was installed from.
@@ -467,8 +481,10 @@ _pi_pin_get() {
 # THE PIN WINS OVER THE ENVIRONMENT. A project installed from a private fork must not have `status`
 # or `upgrade` quietly consult the public default because the operator's shell no longer carries
 # ADB_PINNED_REPO — that reads a different repository's releases and would rewrite the pin to it.
+# …AND A PIN THAT CANNOT BE READ NEVER DEFAULTS. Status 20 here means "refuse", not "public".
 _pi_pin_source() {
-  local s; s="$(_pi_pin_get "$1" source 2>/dev/null)" || s=""
+  local s rc; s="$(_pi_pin_get "$1" source)"; rc=$?
+  case "$rc" in 0) ;; 1) s="" ;; *) return 20 ;; esac
   if [ -n "$s" ]; then printf '%s' "$s"; else printf '%s' "$PI_DEFAULT_REPO"; fi
 }
 
@@ -1163,7 +1179,8 @@ cmd_install() {
   # either a syntax error or a different command.
   trap 'rm -rf "$work"' EXIT
 
-  local source_repo; source_repo="$(_pi_pin_source "$p")"
+  local source_repo; source_repo="$(_pi_pin_source "$p")" \
+    || { _pi_err "install: the pin exists but could not be read — refusing to guess the release repository"; rm -rf "$work"; trap - EXIT; return 10; }
   if [ -z "$artifact" ]; then
     _pi_say "fetching ai-dev-baseline ${version#v} from $source_repo …"
     artifact="$(_pi_fetch "${version#v}" "$work" "$source_repo")" || { rm -rf "$work"; trap - EXIT; return 13; }
@@ -1187,7 +1204,8 @@ cmd_install() {
   # property of the archive, so an earlier check would have had to refuse on the mere EXISTENCE of
   # a pin and re-running the same version would not have been idempotent.
   local mode cur prior_stack=""
-  mode="$(_pi_pin_mode "$p")"
+  mode="$(_pi_pin_mode "$p")" \
+    || { _pi_err "install: the pin exists but could not be read — refusing to install over it"; rm -rf "$work"; trap - EXIT; return 10; }
   if [ -f "$(_pi_pin_path "$p")" ] && [ "$mode" != pinned ]; then
     # A GLOBAL-MODE PIN IS NOT CONVERTED SILENTLY. It carries /adopt's `commit` and `stack` — state
     # this installer cannot reconstruct — and D60 records that file as /adopt's. Overwriting it
@@ -1423,7 +1441,8 @@ cmd_upgrade() {
   [ -n "$p" ] || p="$(_pi_project_root)" || p=""
   [ -n "$p" ] || { _pi_err "upgrade: --project not given and the current directory is not in a git repository"; return 2; }
   p="$(cd "$p" && pwd)"
-  [ "$(_pi_pin_mode "$p")" = pinned ] || { _pi_err "upgrade: this project is not pinned — use 'install' first"; return 10; }
+  local _m; _m="$(_pi_pin_mode "$p")" || { _pi_err "upgrade: the pin exists but could not be read"; return 10; }
+  [ "$_m" = pinned ] || { _pi_err "upgrade: this project is not pinned — use 'install' first"; return 10; }
 
   # The agent set is READ BACK FROM THE PIN, never re-defaulted: an upgrade that silently dropped
   # an agent would leave that agent's vendored payload behind.
@@ -1459,7 +1478,7 @@ cmd_status() {
   [ -n "$p" ] || { _pi_err "status: not in a git repository and --project was not given"; return 2; }
   p="$(cd "$p" && pwd)"
 
-  local mode; mode="$(_pi_pin_mode "$p")"
+  local mode; mode="$(_pi_pin_mode "$p")" || return 20   # unverifiable: the diagnostic is printed
   if [ "$mode" != pinned ]; then
     if [ -f "$(_pi_pin_path "$p")" ]; then
       _pi_say "mode: global (an /adopt pin is present, but it records no pinned payload)"
@@ -1470,7 +1489,7 @@ cmd_status() {
   fi
 
   local ver src agents
-  ver="$(_pi_pin_get "$p" version)"; src="$(_pi_pin_source "$p")"
+  ver="$(_pi_pin_get "$p" version)"; src="$(_pi_pin_source "$p")" || return 20
   agents="$(_pi_pin_agents "$p" | tr '\n' ',')"
   _pi_say "mode:    pinned"
   _pi_say "version: ${ver:-<unrecorded>}"
@@ -1553,10 +1572,11 @@ cmd_notice() {
     esac
   done
   [ -n "$p" ] || p="$(_pi_project_root)" || return 11
-  [ "$(_pi_pin_mode "$p")" = pinned ] || return 11
+  local _m; _m="$(_pi_pin_mode "$p")" || return 20
+  [ "$_m" = pinned ] || return 11
   local ver rp counts missing altered records src newest agents
   ver="$(_pi_pin_get "$p" version)"
-  src="$(_pi_pin_source "$p")"
+  src="$(_pi_pin_source "$p")" || return 20
   agents="$(_pi_pin_agents "$p" | tr '\n' ',')"
   printf 'baseline: this project runs a PINNED baseline payload (%s) — the global install does not govern it.\n' \
     "${ver:-version unrecorded}" >&2
@@ -1597,7 +1617,8 @@ cmd_uninstall() {
   [ -n "$p" ] || p="$(_pi_project_root)" || p=""
   [ -n "$p" ] || { _pi_err "uninstall: not in a git repository and --project was not given"; return 2; }
   p="$(cd "$p" && pwd)"
-  [ "$(_pi_pin_mode "$p")" = pinned ] || { _pi_err "uninstall: this project has no pinned install"; return 10; }
+  local _m; _m="$(_pi_pin_mode "$p")" || { _pi_err "uninstall: the pin exists but could not be read — refusing to act on it"; return 10; }
+  [ "$_m" = pinned ] || { _pi_err "uninstall: this project has no pinned install"; return 10; }
 
   local rp; rp="$(_pi_receipt_path "$p")"
   [ -f "$rp" ] || { _pi_err "uninstall: no receipt at ${rp#"$p"/} — refusing to guess which files are ours"; return 10; }

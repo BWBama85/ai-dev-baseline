@@ -1631,10 +1631,16 @@ cmd_required_drift() {
 #   20 unknown — unreadable live state, failed discovery, or a write whose effect could not be
 #                confirmed; FAIL CLOSED
 _adb_rs_reconcile_declared() {
-  local toml raw
+  local toml raw rc
   toml="$(adb_repo_root)/agents.toml"
   [ -f "$toml" ] || return 1
-  raw="$(adb_toml_get "$toml" repo reconcile-required-checks)" || return 1
+  raw="$(adb_toml_get "$toml" repo reconcile-required-checks)"; rc=$?
+  # A MANIFEST THAT CANNOT BE READ IS NOT "NOT DECLARED". 2 and 3 used to read as the undeclared 1,
+  # so an unreadable or NUL-carrying agents.toml that DID declare the reconcile was skipped (17) as
+  # if the operator had never asked. Returned as 20 so the caller fails closed.
+  # Reported by the declared reviewer on PR #429.
+  [ "$rc" -le 1 ] || { adb_toml_read_error "$toml" "$rc"; return 20; }
+  [ "$rc" -eq 0 ] || return 1
   # THE RAW VALUE, DELIBERATELY NOT UNQUOTED (independent-review find). The bare TOML boolean `true`
   # is the only enabling value: `false`, `1`, `yes`, a typo — and the STRING `"true"` — are all off.
   # This line previously ran the value through `adb_toml_unquote`, which turns `"true"` into `true`,
@@ -1706,10 +1712,13 @@ _adb_rs_tree_is_tip() {
 
 cmd_reconcile() {
   local branch drifted rc ctx kept missing actor sha_before contexts_before
-  if ! _adb_rs_reconcile_declared; then
-    adb_info "repo-settings: reconcile is not declared for this repo — set '[repo] reconcile-required-checks = true' in agents.toml to enable it"
-    return 17
-  fi
+  local _drc; _adb_rs_reconcile_declared; _drc=$?
+  case "$_drc" in
+    0)  ;;
+    20) echo "repo-settings: agents.toml exists but could not be read as TOML — cannot tell whether reconcile is declared; FAIL CLOSED" >&2; return 20 ;;
+    *)  adb_info "repo-settings: reconcile is not declared for this repo — set '[repo] reconcile-required-checks = true' in agents.toml to enable it"
+        return 17 ;;
+  esac
   require_gh
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — cannot reconcile" >&2; return 20; }
 

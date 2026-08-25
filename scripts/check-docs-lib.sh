@@ -758,6 +758,10 @@ IMPTXT="$(cat "$IMP")"
 has "$IMPTXT" '{{DOCS_LIB}} mcp-required' "/implement-issue reads the [mcp] declaration (#422's missing consumer)"
 has "$IMPTXT" '{{DOCS_LIB}} probe-record' "…records the agent's own probe result"
 has "$IMPTXT" '{{DOCS_LIB}} verdict'      "…and adjudicates it fail-closed"
+# AN UNSTATED DISPOSITION IS TERMINAL AT THE PR STEP (PR #429): as a no-op arm, rc 11 let the
+# fenced path walk on to `gh pr create` without the block.
+has "$IMPTXT" 'STOP: no documentation disposition was recorded' \
+   "/implement-issue stops on rc 11 rather than opening the PR without the block"
 has "$IMPTXT" '{{DOCS_LIB}} consulted'    "…records each surface it resolved"
 has "$IMPTXT" '{{DOCS_LIB}} none-needed'  "…and can state that nothing needed resolving"
 # BOTH render sites, asserted PER SECTION rather than by counting. The two are different audiences

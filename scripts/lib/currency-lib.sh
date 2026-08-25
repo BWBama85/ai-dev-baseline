@@ -126,7 +126,18 @@ cmd_mode() {
   [ "$#" -eq 0 ] || die "mode: takes no arguments"
   local m="${ADB_SESSION_UPDATE:-}"
   if [ -z "$m" ]; then
-    m="$(adb_toml_unquote "$(adb_toml_get "$(adb_global_manifest)" updates session_start 2>/dev/null)")"
+    local raw rc
+    raw="$(adb_toml_get "$(adb_global_manifest)" updates session_start 2>/dev/null)"; rc=$?
+    # A GLOBAL MANIFEST THAT CANNOT BE READ IS NOT "UNSET". 2 and 3 used to fall to the built-in
+    # `auto`, which is the worst direction this key has: an operator's `off` silently becoming an
+    # updater that runs. `notify` is the fail-closed answer — it never mutates a clone — and the
+    # line below says why it applies. Reported by the declared reviewer on PR #429.
+    if [ "$rc" -ge 2 ]; then
+      adb_toml_read_error "$(adb_global_manifest)" "$rc"
+      printf 'currency: treating the session updater as notify until that manifest is readable\n' >&2
+      printf 'notify\n'; return 0
+    fi
+    [ "$rc" -eq 0 ] && m="$(adb_toml_unquote "$raw")"
   fi
   case "$m" in
     off|notify|auto) printf '%s\n' "$m" ;;
