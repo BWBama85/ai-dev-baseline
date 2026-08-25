@@ -556,6 +556,14 @@ thread you just resolved as a real code change is a labeled example — a findin
 site, and the commit that closed it — and you know all four right now, at their cheapest, because
 you just read the finding and wrote the fix. Nothing recovers that later.
 
+**Snapshot the ledger FIRST**, because a round is a delta and `--pr` is not a round — every round
+of one pull request records under the same PR number, so the cumulative figures cannot answer "what
+did *this* round find". Step 6 subtracts these.
+
+```bash
+STATS_BEFORE="$({{PATTERN_LEDGER_LIB}} stats --pr "$PR_NUM")"
+```
+
 **Record one hit per thread you fixed**, before you resolve the thread in step 5:
 
 ```bash
@@ -615,12 +623,24 @@ you just read the finding and wrote the fix. Nothing recovers that later.
 - **rc 10 is a no-op, not an error** — this thread is already in the ledger, which is exactly what a
   re-run over the same pull request should find. rc 19 means a field was refused; fix the value,
   do not work around it.
-- **rc 18 STOPS THE ROUND — do not continue to step 5.** A ledger that does not parse means every
-  `record` above stored nothing, and resolving the threads anyway means the next run does not
-  enumerate them: their history is then gone for good, which is the record-before-resolve guarantee
-  failing in the one case it exists for. Repair the ledger — `{{PATTERN_LEDGER_LIB}} verify` names
-  the offending record — confirm the hits are recorded, and only then resolve.
-  Reported by the declared reviewer on PR #429.
+- **EVERY result except `0` and `10` STOPS THE ROUND — do not continue to step 5.** A hit that was
+  not stored and a thread that gets resolved anyway is a finding erased: the next run does not
+  enumerate that thread, so nothing will ever record it. That is the record-before-resolve
+  guarantee failing in the one case it exists for, and it does not matter *why* the write failed.
+  Naming only rc 18 left `20` — a lock that timed out, a state directory that became unwritable, a
+  rename that failed — continuing silently into the resolve flow.
+
+  | rc | Meaning | Round |
+  | --- | --- | --- |
+  | `0` | recorded | continue |
+  | `10` | already recorded — the idempotent re-run case | continue |
+  | `18` | the ledger does not parse | **stop**; `{{PATTERN_LEDGER_LIB}} verify` names the record |
+  | `19` | a field was refused | **stop**; fix the value, do not work around it |
+  | `20` | the ledger could not be written — lock timeout, unwritable directory, failed rename | **stop**; nothing was stored |
+  | any other | unknown | **stop** |
+
+  Confirm every hit is stored before resolving anything. Reported by the declared reviewer on
+  PR #429.
 
 #### 4c. Promote what has become a pattern
 
@@ -744,7 +764,8 @@ Emit a concise summary to the user:
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
 >
-> Findings this round: <count> · recurring-class hits this PR: <pr-recurring> · new classes: <n> · promoted: <n>
+> This round: <ROUND_FINDINGS> findings · <ROUND_RECURRING> recurring · <ROUND_NEW> new classes · <ROUND_PROMOTED> promoted
+> This PR so far: <pr-hits> findings · <pr-recurring> recurring · <pr-new-classes> classes
 > Ledger: <hits> hits across <classes> classes, <promoted> promoted (threshold <t>).
 
 **The last two lines are the point of the whole mechanism, not decoration (#421).** Its honest
@@ -772,11 +793,26 @@ because a caller should not have to stat the file to answer something the comman
 LEDGER_STATE="$(printf '%s\n' "$STATS" | awk -F'\t' '$1=="ledger"{print $2}')"
 ```
 
-**`stats --pr` supplies three of the four round figures — `pr-hits`, `pr-recurring` and
-`pr-new-classes`. The fourth, `promoted`, comes from YOUR OWN step-4c calls**, because nothing
-timestamps a promotion and the ledger cannot tell this round's from last month's. Count the
-`promote` invocations that returned 0. Substituting the lifetime `promoted` field there would print
-a number that grows whatever the round did.
+**A ROUND IS A DELTA, and `--pr` is not a round.** Every round of one pull request records under
+the same PR number, so `stats --pr` accumulates all of them: on PR #429 it reported 36 hits and 28
+recurring on *every* run after round 7, and labelling those as "this round" made the
+finding-per-round trend — the one number #421 says makes the mechanism falsifiable — plainly wrong.
+The ledger has no round identifier and should not grow one: **snapshot before, snapshot after,
+report the difference.**
+
+```bash
+# `$STATS_BEFORE` was captured at the top of step 4b, before this round recorded anything.
+STATS_AFTER="$({{PATTERN_LEDGER_LIB}} stats --pr "$PR_NUM")"
+_field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
+ROUND_FINDINGS="$(( $(_field "$STATS_AFTER" pr-hits)        - $(_field "$STATS_BEFORE" pr-hits) ))"
+ROUND_RECURRING="$(( $(_field "$STATS_AFTER" pr-recurring)  - $(_field "$STATS_BEFORE" pr-recurring) ))"
+ROUND_NEW="$(( $(_field "$STATS_AFTER" pr-new-classes)      - $(_field "$STATS_BEFORE" pr-new-classes) ))"
+ROUND_PROMOTED="$(( $(_field "$STATS_AFTER" promoted)       - $(_field "$STATS_BEFORE" promoted) ))"
+```
+
+**The cumulative figures are still worth reporting — just labelled as what they are.** "4 findings
+this round; 36 across this PR" is the trend; "36 findings this round" is a false statement that
+gets truer every round.
 
 **Report `pr-recurring`, not `recurring`, as the round figure.** `recurring` is a LIFETIME count
 over an append-only file, so it can only ever rise — and it jumps by every prior hit the moment a

@@ -242,6 +242,12 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     "the ledger lost its mode to mktemp"
 
+  # THE OWNER TOKEN ON RELEASE (PR #429).
+  check_mut unlock-ignores-owner \
+    '  [ "$(cat "$dir/owner" 2>/dev/null)" = "${_ADB_PL_LOCK_TOKEN:-}" ] || return 0' \
+    '  :' \
+    "a stale writer deleted a SUCCESSOR's lock"
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -678,6 +684,25 @@ case "$(ls -l "$L7f" | awk '{print substr($1,1,10)}')" in
   *) bad "a deliberately restricted ledger mode was not preserved: $(ls -l "$L7f" | awk '{print $1}')" ;;
 esac
 
+# THE LOCK IS RELEASED ONLY BY ITS OWNER (PR #429). A writer paused past the stale interval whose
+# lock was reclaimed could resume and unlock its SUCCESSOR'"'"'s lock, letting a third process into
+# the critical section. Reclamation was made ownership-safe last round; release was not.
+L7g="$work/owner.md"
+bash "$PL" record --ledger "$L7g" --class ownc --site s.sh --fix abc1231 --pr 1 --thread O1 >/dev/null 2>&1
+mkdir -p "$L7g.lock"; printf 'SOMEONE-ELSE\n' > "$L7g.lock/owner"
+(
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
+  eval "$(sed -n '/^_adb_pl_unlock()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
+  _ADB_PL_LOCK_TOKEN="MINE-AND-STALE"
+  _adb_pl_unlock "$L7g"
+)
+if [ -d "$L7g.lock" ]; then ok; else bad "a stale writer deleted a SUCCESSOR's lock — release carries no owner token"; fi
+rm -rf "$L7g.lock"
+# …and the owning writer still releases its own, or every run would leave a lock behind.
+bash "$PL" record --ledger "$L7g" --class ownc --site s2.sh --fix abc1232 --pr 1 --thread O2 >/dev/null 2>&1
+[ -d "$L7g.lock" ] && bad "the owning writer failed to release its own lock" || ok
+
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
 mkdir "$L7c.lock"
@@ -807,11 +832,27 @@ has "$RESTXT" 'every hit was already recorded' "…and says why nothing to commi
 # THE ROUND FIGURE IS THE PR-SCOPED ONE. `recurring` is a lifetime count over an append-only file,
 # so a summary quoting it prints a number that grows whatever the round did.
 has "$RESTXT" 'pr-recurring' "the summary reports pr-recurring, the figure a trend can be read from"
+# A ROUND IS A DELTA, AND `--pr` IS NOT A ROUND (PR #429). Every round of one pull request records
+# under the same PR number, so the cumulative figures grow monotonically — on #429 `stats --pr`
+# reported 36 hits on every run after round 7, and labelling that "this round" made the
+# finding-per-round trend false in the direction that always looks busier.
+has "$RESTXT" 'STATS_BEFORE' "the resolver snapshots the ledger before recording the round"
+has "$RESTXT" 'STATS_AFTER'  "…and again afterwards"
+has "$RESTXT" 'ROUND_FINDINGS' "…and reports the DIFFERENCE as the round figure"
+has "$RESTXT" 'This PR so far' "…while still reporting the cumulative figure, labelled as cumulative"
+
+# EVERY FAILED RECORD STOPS THE ROUND (PR #429). Naming only rc 18 left rc 20 — a lock timeout, an
+# unwritable state directory, a failed rename — continuing into step 5, where resolving the thread
+# erases a finding nothing recorded.
+has "$RESTXT" 'EVERY result except' "every non-idempotent record failure stops the round"
+has "$RESTXT" 'lock timeout'        "…naming rc 20 explicitly, not just the malformed-ledger case"
 has "$RESTXT" 'pr-new-classes' "…and pr-new-classes, which stats now supplies"
 # `promoted this round` is NOT derivable from an append-only file with no promotion timestamps, so
 # the workflow must say where it comes from instead of implying `stats` supplies it.
-has "$RESTXT" 'comes from YOUR OWN step-4c calls' \
-   "…and says the fourth figure comes from the resolver's own promote calls, not from stats"
+# `promoted` USED to be the one round figure the resolver had to count itself, because nothing
+# timestamps a promotion. The before/after snapshot supersedes that: a delta answers it without a
+# timestamp, so the workflow no longer asks anyone to count by hand.
+has "$RESTXT" 'ROUND_PROMOTED' "…including the promotions, which the delta derives without a timestamp"
 
 # THE RECOVERY HINT MUST NAME A COMMAND THAT EXISTS. The first draft pointed at
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown

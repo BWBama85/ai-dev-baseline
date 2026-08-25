@@ -485,8 +485,15 @@ _ADB_PL_LOCK_WAIT_SECS=30
 _ADB_PL_LOCK_STALE_SECS=300
 
 # _adb_pl_lock <ledger> — take the ledger's write lock, or fail. Prints nothing on success.
+#
+# THE LOCK CARRIES AN OWNER TOKEN, and `_adb_pl_unlock` removes the directory only while that token
+# is still the one inside it. Without it a writer paused past the stale interval — suspended,
+# swapped out, stopped at a breakpoint — could resume after another writer had reclaimed its lock
+# and then unlock its SUCCESSOR's, letting a third process into the critical section.
+# Reported by the declared reviewer on PR #429.
 _adb_pl_lock() {
   local dir="$1.lock" waited=0 age tomb
+  _ADB_PL_LOCK_TOKEN="$$.$RANDOM.$RANDOM"
   while ! mkdir "$dir" 2>/dev/null; do
     # A LOCK OLDER THAN THE STALE AGE IS BROKEN, so a writer killed mid-insert cannot wedge the
     # ledger permanently. `adb_age_secs` is the shared primitive for this question; if it cannot
@@ -515,10 +522,22 @@ _adb_pl_lock() {
     sleep 1
     waited=$((waited + 1))
   done
+  # WRITTEN AFTER the mkdir won, which is what makes it this writer's: the directory creation is
+  # the atomic claim, and the token merely records who holds it.
+  printf '%s\n' "$_ADB_PL_LOCK_TOKEN" > "$dir/owner" 2>/dev/null || true
   return 0
 }
 
-_adb_pl_unlock() { rmdir "$1.lock" 2>/dev/null || rm -rf "$1.lock" 2>/dev/null; }
+# Remove the lock ONLY while it is still ours. A token that no longer matches means our lock was
+# reclaimed as stale and somebody else holds this directory now — deleting it would hand a third
+# process into the critical section alongside them. An unreadable token is treated as not-ours for
+# the same reason: fail toward leaving a lock that expires on its own.
+_adb_pl_unlock() {
+  local dir="$1.lock"
+  [ -d "$dir" ] || return 0
+  [ "$(cat "$dir/owner" 2>/dev/null)" = "${_ADB_PL_LOCK_TOKEN:-}" ] || return 0
+  rm -rf "$dir" 2>/dev/null
+}
 
 _adb_pl_insert() {
   local file="$1" end="$2" line="$3" tmp rc=0 held_here=0
