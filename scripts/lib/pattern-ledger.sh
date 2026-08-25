@@ -479,8 +479,11 @@ _adb_pl_threshold() {
             intbl && $0 ~ /^[[:space:]]*threshold[[:space:]]*=/ {
               if (++seen > 1) { bad = 1; exit }
               # A complete scalar: a bare integer, or a fully quoted one. Trailing comment allowed.
-              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/) next
-              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*(#.*)?$/) next
+              # NO LEADING ZEROS: TOML integers may not carry them, so `02` and `08` are invalid
+              # even though the domain check would accept the value they parse to. Exactly `0` or
+              # a nonzero first digit; the positive-domain check then rejects `0` itself.
+              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*(0|[1-9][0-9]*)[[:space:]]*(#.*)?$/) next
+              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*"(0|[1-9][0-9]*)"[[:space:]]*(#.*)?$/) next
               bad = 1; exit
             }
             END { exit (bad ? 1 : 0) }
@@ -906,6 +909,13 @@ cmd_checklist() {
 # forever, while repeat hits in a known class are exactly the avoidable ones.
 cmd_stats() {
   local ledger t tsrc hits total=0 recurring=0 classes=0 promoted=0 thispr=0 prrecur=0 prnew=0
+  # THE FILTER IS VALIDATED, or a mistyped one is indistinguishable from a real pull request with
+  # no findings: `--pr not-a-pr` and `--pr 0` both returned success with every PR-scoped metric at
+  # zero, which is a falsely clean summary for any caller outside the workflow's own numeric
+  # parser. Same predicate `record` uses. Reported by the declared reviewer on PR #429.
+  if [ -n "$OPT_PR" ] && ! _adb_pl_ok_pr "$OPT_PR"; then
+    die "stats: --pr must be a positive whole number, got $(adb_display_value "$OPT_PR")"
+  fi
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
   if [ ! -f "$ledger" ]; then

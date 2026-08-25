@@ -825,6 +825,16 @@ The ledger has no round identifier and should not grow one: **snapshot before, s
 report the difference.**
 
 ```bash
+# GUARDED ON BOTH SNAPSHOTS. The `case` above promises to report NO counts on a non-zero read, and
+# then fell through to this arithmetic anyway: a ledger that became malformed after the before-
+# snapshot returns 18 with no TSV, `_field` yields empty strings, and the round is reported with
+# negative numbers — or the comparison against an empty threshold fails outright. If either
+# snapshot is missing, print the diagnostic and report no figures at all.
+# Reported by the declared reviewer on PR #429.
+if [ "$SRC" -ne 0 ] || [ -z "${STATS_BEFORE:-}" ] || [ -z "${STATS_AFTER:-}" ]; then
+  echo "NOTE: the ledger could not be read for this round — reporting no counts rather than wrong ones"
+else
+
 # `$STATS_BEFORE` and `$ROUND_CLASSES` were captured in step 4b; `$STATS_AFTER` just above.
 _field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
 ROUND_FINDINGS="$(( $(_field "$STATS_AFTER" pr-hits)   - $(_field "$STATS_BEFORE" pr-hits) ))"
@@ -846,6 +856,7 @@ while IFS= read -r c; do
 done <<ROUNDCLS
 $ROUND_CLASSES
 ROUNDCLS
+fi
 ```
 
 **The cumulative figures are still worth reporting — just labelled as what they are.** "4 findings

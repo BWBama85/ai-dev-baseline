@@ -249,7 +249,7 @@ _adb_dl_records() {
 # plausible typo, and reading it as an undeclared key would report a project that asked for a
 # preflight as a project that declined one.
 _adb_dl_mcp_key() {
-  local key="$1" raw layer layered parsed one _dupfile _dupes
+  local key="$1" raw layer layered parsed one _dupfile _dupes _dupkeys _duptbls
   # THE PRECEDENCE RULE IS `adb_toml_layered_get`'s (common.sh), not a third copy of it. The loop
   # this replaced also fell THROUGH an empty repo-level declaration to the global manifest, so a
   # project that wrote `required =` silently inherited the machine's list.
@@ -280,14 +280,24 @@ _adb_dl_mcp_key() {
     *)      _dupfile="" ;;
   esac
   if [ -n "$_dupfile" ] && [ -f "$_dupfile" ]; then
+    # COUNTS BOTH: repeated KEYS inside the table, and repeated TABLE HEADERS. Counting keys alone
+    # missed a manifest with two `[mcp]` headers and one assignment — also invalid TOML, also
+    # accepted, and a probe against it could then certify configuration no parser would load.
+    # Reported by the declared reviewer on PR #429.
     _dupes="$(awk -v k="$key" '
       /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*$/, "", hdr)
-                          intbl = (hdr == "mcp"); next }
+                          intbl = (hdr == "mcp"); if (intbl) t++; next }
       intbl && $0 ~ ("^[[:space:]]*" k "[[:space:]]*=") { n++ }
-      END { print n + 0 }' "$_dupfile")"
-    if [ "${_dupes:-0}" -gt 1 ]; then
+      END { printf "%d %d\n", n + 0, t + 0 }' "$_dupfile")"
+    _dupkeys="${_dupes%% *}"; _duptbls="${_dupes##* }"
+    if [ "${_dupkeys:-0}" -gt 1 ]; then
       printf 'docs-lib: [mcp] %s is declared %s times in the %s manifest — that is not valid TOML, and only the first would ever be read.\n' \
-        "$key" "$_dupes" "$layer" >&2
+        "$key" "$_dupkeys" "$layer" >&2
+      return 18
+    fi
+    if [ "${_duptbls:-0}" -gt 1 ]; then
+      printf 'docs-lib: the [mcp] table is declared %s times in the %s manifest — that is not valid TOML.\n' \
+        "$_duptbls" "$layer" >&2
       return 18
     fi
   fi

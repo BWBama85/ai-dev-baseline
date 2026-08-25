@@ -195,7 +195,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE DUPLICATE-KEY SCAN (PR #429).
   check_mut duplicate-key-unchecked \
-    '    if [ "${_dupes:-0}" -gt 1 ]; then' \
+    '    if [ "${_dupkeys:-0}" -gt 1 ]; then' \
     '    if false; then' \
     'a key declared twice in [mcp] is refused'
 
@@ -216,6 +216,12 @@ if [ "$MODE" = mutation ]; then
     '  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     '  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     'a field of 512 MULTIBYTE characters is refused'
+
+  # THE REPEATED-TABLE COUNT (PR #429). Restores the key-only count that shipped.
+  check_mut repeated-table-unchecked \
+    '    if [ "${_duptbls:-0}" -gt 1 ]; then' \
+    '    if false; then' \
+    'a repeated [mcp] table header is refused'
 
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
@@ -687,6 +693,20 @@ dl mcp-required --manifest "$D21/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "a key declared twice in [mcp] is refused"
 dl verdict --state "$D21/state" --manifest "$D21/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "…and the verdict refuses too, rather than probing the first array"
+# A REPEATED TABLE HEADER IS INVALID TOML TOO (PR #429). The scan counted matching KEYS, so two
+# `[mcp]` headers with one assignment between them passed — and a probe could then certify
+# configuration no TOML consumer would load.
+D24="$(fixture duptable '[mcp]
+required = ["context7"]
+
+[mcp]
+optional = []
+')"
+dl mcp-required --manifest "$D24/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a repeated [mcp] table header is refused"
+dl verdict --state "$D24/state" --manifest "$D24/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and the verdict refuses it rather than probing the first table"
+
 # The counter must be scoped to the TABLE, or an unrelated key of the same name elsewhere would
 # be blamed — the over-reach direction for this kind of scan.
 D22="$(fixture dupkeyscope '[mcp]

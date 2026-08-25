@@ -152,10 +152,13 @@ if [ "$MODE" = mutation ]; then
   # operator a threshold they did not choose, from a file they thought they had configured.
   # RETARGETED for the same reason: `return 2` is now shared with the complete-scalar guard, and
   # the first occurrence is that one. The DOMAIN test is what this row is about.
+  # WITNESS UPDATED: `"six"` is now caught by the complete-scalar grammar before the domain check
+  # ever sees it, so the old witness no longer belongs to this row. What the DOMAIN check uniquely
+  # owns is a syntactically perfect value outside the domain — thirteen digits.
   check_mut bad-threshold-silent \
     '    if ! _adb_pl_ok_pr "$v"; then' \
     '    if false; then' \
-    'a malformed [patterns] threshold is a hard error'
+    'a syntactically valid but out-of-domain threshold is still a hard error'
 
   # <copy-dir> -> PRINT the path to mutate, nothing else (check_mutation_pool's contract).
   # `base` rides along because the call-site assertions below read the workflow sources; without
@@ -273,6 +276,18 @@ if [ "$MODE" = mutation ]; then
     '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then' \
     '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then' \
     "a stale-but-LIVE owner's lock was reclaimed"
+
+  # THE LEADING-ZERO RULE (PR #429).
+  check_mut leading-zero-threshold \
+    '              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*(0|[1-9][0-9]*)[[:space:]]*(#.*)?$/) next' \
+    '              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/) next' \
+    'a leading-zero threshold (02) is refused'
+
+  # THE `--pr` FILTER VALIDATION (PR #429).
+  check_mut stats-filter-unchecked \
+    '  if [ -n "$OPT_PR" ] && ! _adb_pl_ok_pr "$OPT_PR"; then' \
+    '  if false; then' \
+    'stats refuses --pr 0 rather than reporting a falsely clean zero'
 
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
@@ -568,6 +583,24 @@ eq "$?" 2 "an unterminated quoted threshold is refused, not silently reconstruct
 printf '[patterns]\nthreshold = 2\nthreshold = 99\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
 HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
 eq "$?" 2 "a threshold declared twice is refused, not silently resolved to the first"
+# TOML INTEGERS CARRY NO LEADING ZEROS (PR #429). `02` and `08` parse to values the domain check
+# would accept, over a manifest a TOML consumer rejects.
+for bad in '02' '08' '"03"'; do
+  printf '[patterns]\nthreshold = %s\n' "$bad" > "$MHOME/.config/ai-dev-baseline/agents.toml"
+  HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
+  eq "$?" 2 "a leading-zero threshold ($bad) is refused"
+done
+rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
+
+# `stats --pr` MUST VALIDATE ITS FILTER, or a mistyped one reads as a real PR with no findings.
+for bad in 0 not-a-pr 00; do
+  bash "$PL" stats --ledger "$L1" --pr "$bad" >/dev/null 2>&1
+  eq "$?" 2 "stats refuses --pr $bad rather than reporting a falsely clean zero"
+done
+# RE-ESTABLISHED, because the blocks above end by removing the manifest — without this the two
+# readers below fall back to the built-in and return 0, and the assertions pass for the wrong
+# reason. Fixture ordering, caught by the suite going red rather than by reading it.
+printf '[patterns]\nthreshold = "2\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
 for sub in due stats; do
   HOME="$MHOME" bash "$PL" "$sub" --ledger "$L1" >/dev/null 2>&1
   eq "$?" 2 "…and \`$sub\` refuses it too, rather than running on a value nobody wrote"
@@ -579,7 +612,15 @@ for good in 'threshold = 3' 'threshold = "3"' 'threshold = 3 # a comment'; do
      "a complete scalar ($good) is still accepted"
 done
 rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
-has "$OUT" "positive whole number" "…and it names the domain rather than silently using the built-in"
+has "$OUT" "not a single, complete TOML scalar" \
+   "…and a non-numeric quoted value is named as a grammar error, which is what it is"
+# THE DOMAIN CHECK STILL OWNS SOMETHING: a value that is syntactically perfect TOML and still
+# outside the domain. Thirteen digits passes the scalar grammar and fails `_adb_pl_ok_pr`.
+printf '[patterns]\nthreshold = 1234567890123\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
+DOUT="$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" 2>&1)"; DRC2=$?
+no "$DRC2" "a syntactically valid but out-of-domain threshold is still a hard error"
+has "$DOUT" "positive whole number" "…and THAT is where the domain message belongs"
+rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
 
 # =============================== 7. promote's own preconditions ==================================
 L7="$work/l7.md"
@@ -979,6 +1020,11 @@ hasnt "$RESTXT" 'printf '"'"'%s\n'"'"' "$STATS" |' "…and nothing reads a varia
 # `due` failing must stop the round; a wildcard that shrugged let it commit and resolve without
 # ever learning which classes were owed a rule.
 has "$RESTXT" 'STOP: [patterns] threshold is unusable' "a due failure stops the round"
+# THE METRIC BLOCK IS GUARDED ON BOTH SNAPSHOTS (PR #429). The `case` promised to report no counts
+# on a non-zero read and then fell through to the arithmetic anyway — empty fields yield negative
+# round counts, or the threshold comparison fails outright.
+has "$RESTXT" 'reporting no counts rather than wrong ones' \
+   "a failed stats read reports no figures rather than computing over empty fields"
 has "$RESTXT" 'This PR so far' "…while still reporting the cumulative figure, labelled as cumulative"
 
 # EVERY FAILED RECORD STOPS THE ROUND (PR #429). Naming only rc 18 left rc 20 — a lock timeout, an
