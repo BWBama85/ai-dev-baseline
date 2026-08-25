@@ -212,7 +212,12 @@ _adb_pl_ok_text() {
   adb_tsv_field_safe "$1" || return 1
   # A value containing a region marker could close the region it lives in and silently truncate
   # every record after it — the count-too-low direction this module must never take.
-  case "$1" in *'<!-- adb:'*) return 1 ;; esac
+  # STRUCTURAL MARKUP IS REFUSED, not escaped. `<!-- adb:` was banned because it can close a
+  # REGION; any `<!--` can open an HTML comment that GitHub honours, hiding every hit and rule
+  # after it in the review view — and a summary routinely quotes hostile reviewer text. Refusing
+  # keeps the tracked file readable, which escaping into entities would not.
+  # Reported by the declared reviewer on PR #429.
+  case "$1" in *'<!--'*|*'-->'*) return 1 ;; esac
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
 }
 
@@ -548,12 +553,18 @@ _adb_pl_threshold() {
 # quietly falls back.
 _ADB_PL_LOCK_WAIT_SECS="${ADB_PATTERN_LOCK_WAIT_SECS:-30}"
 _ADB_PL_LOCK_STALE_SECS="${ADB_PATTERN_LOCK_STALE_SECS:-300}"
+# AND BOUNDED IN WIDTH, the same discipline `pr-watch.sh` applies to `--max-rounds`. An all-digit
+# value wider than a shell integer makes `[ "$waited" -ge "$bound" ]` error and evaluate FALSE on
+# every iteration — so the advertised timeout is not merely wrong, it is gone, and the writer waits
+# forever. Reported by the declared reviewer on PR #429.
 case "$_ADB_PL_LOCK_WAIT_SECS" in
   ''|*[!0-9]*|0) printf 'pattern-ledger: ADB_PATTERN_LOCK_WAIT_SECS="%s" is not a positive whole number of seconds\n' "$_ADB_PL_LOCK_WAIT_SECS" >&2; exit 2 ;;
 esac
+[ "${#_ADB_PL_LOCK_WAIT_SECS}" -le 18 ] || { printf 'pattern-ledger: ADB_PATTERN_LOCK_WAIT_SECS is too large to compare as an integer\n' >&2; exit 2; }
 case "$_ADB_PL_LOCK_STALE_SECS" in
   ''|*[!0-9]*|0) printf 'pattern-ledger: ADB_PATTERN_LOCK_STALE_SECS="%s" is not a positive whole number of seconds\n' "$_ADB_PL_LOCK_STALE_SECS" >&2; exit 2 ;;
 esac
+[ "${#_ADB_PL_LOCK_STALE_SECS}" -le 18 ] || { printf 'pattern-ledger: ADB_PATTERN_LOCK_STALE_SECS is too large to compare as an integer\n' >&2; exit 2; }
 
 # _adb_pl_owner_gone <lock-dir> — can we PROVE the lock's owner is no longer running?
 #

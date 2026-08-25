@@ -139,7 +139,7 @@ if [ "$MODE" = mutation ]; then
   # Region-marker injection accepted: a summary could close the hits region and truncate every
   # record after it.
   check_mut marker-injection-allowed \
-    "  case \"\$1\" in *'<!-- adb:'*) return 1 ;; esac" \
+    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
     "  case \"\$1\" in *'ZZQQ-never-appears'*) return 1 ;; esac" \
     'a region marker in a summary is refused'
 
@@ -330,8 +330,14 @@ if [ "$MODE" = mutation ]; then
     '                                  if (0) { hdr = substr(hdr, 1, i - 1); break }' \
     'a repeated [patterns] table header is refused'
 
+  # THE STRUCTURAL-MARKUP REFUSAL (PR #429). Restores the narrower `<!-- adb:` ban that shipped.
+  check_mut markup-in-summary \
+    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
+    "  case \"\$1\" in *'<!-- adb:'*) return 1 ;; esac" \
+    'a summary opening an HTML comment is refused'
+
   prep() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
+    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
   }
   runner() { ( cd "$1/tree" && bash scripts/check-pattern-ledger.sh 2>&1 ); }
@@ -595,6 +601,13 @@ refused "--pr 00 is refused too"                 19 --class guard-class --site a
 # make every record after it invisible — the count-too-low direction, caused by a reviewer's text.
 refused "a region marker in a summary is refused" 19 --class guard-class --site a.sh --fix abc1234 \
         --pr 1 --thread T-g8 --summary 'x <!-- adb:hits:end --> y'
+# ANY HTML COMMENT, not just the region marker (PR #429). The ledger is a tracked Markdown file
+# read in the GitHub review view; an unterminated `<!--` hides every hit and rule after it, and a
+# summary routinely quotes hostile reviewer text.
+refused "a summary opening an HTML comment is refused" 19 --class guard-class --site a.sh \
+        --fix abc1234 --pr 1 --thread T-g10 --summary 'quoted: <!-- hide the rest'
+refused "…and one closing one"                        19 --class guard-class --site a.sh \
+        --fix abc1234 --pr 1 --thread T-g11 --summary 'quoted: --> stray close'
 
 # A backtick IS legal in a summary, and that is not an oversight: it sits after every parsed field,
 # so it cannot move one, and review findings routinely quote identifiers. Asserted so a future
@@ -1169,6 +1182,16 @@ hasnt "$RESTXT" 'if {{PATTERN_LEDGER_LIB}} record --class <slug> … ; then' \
 # hit; after both merge the ledger holds two, but a clean run exits at step 0b before 4c ever asks.
 has "$RESTXT" 'A clean pass still reconciles promotions' \
    "the clean-pass arm reconciles promotions merged history earned"
+# …ON THE PR HEAD, not on whatever branch the checkout happens to be on (PR #429). Code 0 never
+# reaches step 1, so nothing has moved the tree — and this arm READS and may COMMIT a ledger, which
+# on `main` would be a push to the default branch the rules forbid outright.
+has "$RESTXT" 'SWITCH TO THE PR HEAD FIRST' "…after switching to the PR head, since it may commit"
+has "$RESTXT" 'push to the default branch' "…and says what running it in place would actually do"
+# …and its own failure arm is terminal, like 4c's.
+has   "$RESTXT" 'STOP: could not determine due promotions' \
+   "a due failure on the clean pass stops rather than reporting the run clean"
+hasnt "$RESTXT" 'NOTE: could not determine due promotions' \
+   "…so the warning-only form is gone rather than merely discouraged"
 has "$(cat "$ROOT/scripts/lib/pattern-ledger.sh")" 'What makes that converge is a check on the CLEAN-PASS path' \
    "…and the ledger template no longer claims the ordinary path converges on its own"
 has "$RESTXT" 'never revisit'    "…and says why: nothing would come back to it"

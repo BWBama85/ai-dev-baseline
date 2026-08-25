@@ -237,21 +237,31 @@ if [ "$MODE" = mutation ]; then
     '      function md(v) { return v }' \
     'the rendered report contains no raw HTML comment opener'
 
+  # THE NUL SCAN (PR #429).
+  check_mut nul-normalized \
+    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$f\" | wc -c | tr -d ' ')\" -eq \"\$(wc -c < \"\$f\" | tr -d ' ')\" ] || return 1" \
+    "  :" \
+    'a NUL in the FINAL field is refused — awk truncation cannot see it'
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
     '            if (0) { bad = 1; exit }' \
     'an unquoted array element ([context7]) is refused as malformed TOML'
 
+  # `templates` IS COPIED because three assertions read `templates/agents.toml`. Without it those
+  # three failed in EVERY mutation child — so every row "went red" whatever it changed, and the
+  # witness check was the only thing separating a real detection from that noise. A row whose own
+  # witness never fires then reports honestly, which is how this was found.
   prep() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
+    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/docs-lib.sh"
   }
   # A SECOND TARGET NEEDS A SECOND POOL. `check_mutation_pool` builds ONE path for every row it
   # runs, which is why `check_mut_reset` exists — the header-comment rule lives in the SHARED
   # reader, and a row aimed at the wrong file applies to nothing and reports so.
   prep_common() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
+    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/common.sh"
   }
   runner() { ( cd "$1/tree" && bash scripts/check-docs-lib.sh 2>&1 ); }
@@ -260,6 +270,10 @@ if [ "$MODE" = mutation ]; then
 
   # THE SHARED READER'"'"'S HALF, in its own pool against its own file.
   check_mut_reset
+  check_mut missing-bracket-accepted \
+    '      if (hdr !~ /\]$/) { intbl = 0; next }' \
+    '      if (0) { intbl = 0; next }' \
+    "a table header with no closing bracket is not the table"
   check_mut header-comment-literal \
     '        if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
     '        if (0) { hdr = substr(hdr, 1, i - 1); break }' \
@@ -472,6 +486,28 @@ hostile "a none-needed record with extra fields" "$(printf 'none-needed\tjust\ts
 hostile "a record with a trailing empty column" "$(printf 'probe\tcontext7\tusable\tev\t')"
 hostile "a record with adjacent tabs"           "$(printf 'probe\tcontext7\t\tusable\tev')"
 hostile "a none-needed record with a trailing tab" "$(printf 'none-needed\tjust\t')"
+# A NUL BYTE IS DISCARDED by `read` and by command substitution, so a stored `contex<NUL>t7`
+# NORMALIZES to `context7` — a record the writer could never produce, silently becoming a usable
+# probe for a different name. Nothing downstream can see the difference, so it is caught on the raw
+# bytes before any shell parsing. Reported by the declared reviewer on PR #429.
+printf 'probe\tcontex\000t7\tusable\tev\n' > "$D10/state/docs-consulted.tsv"
+dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a NUL byte inside a stored field is refused, not normalized away"
+dl report --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…by the report too"
+# ...AND AGAIN WITH THE NUL IN THE FINAL FIELD, which is the case only the byte scan can catch.
+# The record above is refused even with the scan deleted, because macOS awk is a C-string awk and
+# TRUNCATES the record at the first NUL — `probe<TAB>contex` is NF=2, so the arity rule fires by
+# accident. That made the mutation row below unable to fail while testing nothing, which is the
+# shape `self-review.md` calls a guard that cannot answer wrong. A NUL at the END of the last
+# field survives the truncation (the fields before it are intact and the count is right) and
+# survives the control-char predicate too (`read` has already dropped it by then), so this is the
+# witness the scan owns alone. With the scan present: 18. With it deleted: 10.
+printf 'none-needed\tjust a reason\000\n' > "$D10/state/docs-consulted.tsv"
+dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a NUL in the FINAL field is refused — awk truncation cannot see it"
+dl report --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…by the report too, on the final-field NUL"
 
 # THE UNTERMINATED FINAL RECORD (P1, PR #429). `read` DROPS a last line with no newline, so the
 # validator never saw it — while `cmd_verdict`'s awk reads it perfectly well. One complete record
@@ -722,6 +758,17 @@ required = [\"context7\"]
 ")"
   eq "$(dl mcp-required --manifest "$D25/agents.toml")" "context7" \
      "a table header written as '$hdr' is still the [mcp] table"
+done
+# …AND A HEADER WITH NO CLOSING BRACKET IS NOT THE TABLE. Adding comment support removed the
+# accident that used to reject it — `sub()` does not assert, so `[mcp # missing bracket` reduced to
+# exactly `mcp` and the reader entered a table no TOML parser accepts. A regression introduced by
+# the fix one round earlier. Reported by the declared reviewer on PR #429.
+for bad in '[mcp # missing bracket' '[mcp'; do
+  D29="$(fixture "nobracket$(printf '%s' "$bad" | tr -dc 'a-z')" "$bad
+required = [\"context7\"]
+")"
+  dl mcp-required --manifest "$D29/agents.toml" >/dev/null 2>&1
+  eq "$?" 1 "a table header with no closing bracket is not the table ('$bad')"
 done
 
 # THE DUPLICATE SCANNER NORMALIZES HEADERS TOO (PR #429). Fixing trailing-comment support in the

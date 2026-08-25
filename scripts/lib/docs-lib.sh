@@ -208,6 +208,12 @@ _adb_dl_append() {
 _adb_dl_records() {
   local f="$1" kind a b c
   [ -f "$f" ] || return 0
+  # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
+  # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
+  # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
+  # can see the difference, so it has to be caught on the raw bytes.
+  # Reported by the declared reviewer on PR #429.
+  [ "$(LC_ALL=C tr -d '\000' < "$f" | wc -c | tr -d ' ')" -eq "$(wc -c < "$f" | tr -d ' ')" ] || return 1
   # ARITY IS CHECKED IN awk, BEFORE the shell loop, because `read` cannot check it. Tab is IFS
   # WHITESPACE, so `IFS=<tab> read` collapses adjacent tabs and strips trailing ones — which means
   # `probe<TAB>server<TAB>usable<TAB>evidence<TAB>` (an extra empty column) arrived at the loop
@@ -459,7 +465,16 @@ cmd_none_needed() {
 # required server has a recorded `usable`", or "nothing is declared".
 cmd_verdict() {
   local required rc f probes="" bad="" s res
-  required="$(_adb_dl_mcp_key required)"; rc=$?
+  # THE DECLARATION MAY BE SUPPLIED, for the same reason the record snapshot may be: `report`
+  # renders a verdict AND the evidence behind it, and re-reading `agents.toml` between them let the
+  # verdict be computed for one server list while the block displayed evidence for another.
+  # Reported by the declared reviewer on PR #429.
+  if [ -n "${_ADB_DL_REQUIRED+x}" ]; then
+    required="$_ADB_DL_REQUIRED"; rc=0
+    [ -n "$required" ] || rc=1
+  else
+    required="$(_adb_dl_mcp_key required)"; rc=$?
+  fi
   case "$rc" in
     0) ;;
     1) printf 'docs-lib: no [mcp] required declared — nothing to preflight\n'; return 0 ;;
@@ -564,6 +579,8 @@ cmd_report() {
   # are worth: "resolved via vendor web docs" reads differently when the reason is that context7
   # was unreachable.
   required="$(_adb_dl_mcp_key required)"; rc=$?
+  # ONE PARSE, handed to the verdict below so both halves describe the same manifest.
+  _ADB_DL_REQUIRED="$required"; export _ADB_DL_REQUIRED
   if [ "$rc" -eq 0 ] && [ -n "$required" ]; then
     printf '\n'
     cmd_verdict >/dev/null 2>&1; vrc=$?

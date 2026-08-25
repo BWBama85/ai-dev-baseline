@@ -290,17 +290,31 @@ the ledger holds two — but no resolver run ever revisits it, because a clean p
 step 4c ever runs. The class then stays unpromoted until some unrelated finding happens to reach 4c
 again, and the first implementation after the threshold misses the sweep the class earned.
 
+**SWITCH TO THE PR HEAD FIRST — this reads and may COMMIT a ledger.** Code `0` never reaches step
+1, so nothing has resolved the PR's metadata or moved the tree: run as written, this would read
+whatever branch the checkout happens to be on and commit the promotion there. On `main` that is a
+push to the default branch, which `## Important rules` forbids outright. Do step 1's preflight —
+the `gh pr view`, the dirty-tree guard, the `ORIG_BRANCH` capture and the `git switch` — and only
+then reconcile. Step 8 restores the branch on the way out, exactly as it does for the ordinary
+path. Reported by the declared reviewer on PR #429.
+
 ```bash
+# …step 1's preflight has run and the tree is on "$PR_BRANCH"…
 bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" due; DRC=$?
 case "$DRC" in
   0)  : ;;   # classes are owed a rule — promote them (step 4c's form), commit the ledger, then exit
   11) : ;;   # nothing due. The ordinary case on a clean pass.
-  *)  echo "NOTE: could not determine due promotions (rc $DRC)" ;;
+  # EVERY OTHER CODE IS TERMINAL, exactly as it is in 4c. A wildcard that only warned reported the
+  # run clean while leaving an already-earned rule unwritten — the same swallowing this workflow
+  # has now been corrected for three times, reintroduced in the arm added to fix the second.
+  *)  echo "STOP: could not determine due promotions (rc $DRC) — the ledger or [patterns] threshold"
+      echo "      needs repair before this run can be called clean."
+      exit 1 ;;
 esac
 ```
 
 This is the one thing a clean pass still does: it resolves nothing and pushes no fix, but it writes
-the checklist rule that merged history already earned. Reported by the declared reviewer on PR #429.
+the checklist rule that merged history already earned.
 
 ### ⚠ `10` does not guarantee there are threads to resolve
 

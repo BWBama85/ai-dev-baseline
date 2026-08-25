@@ -2980,8 +2980,16 @@ adb_toml_get() {
         if (c == "\"") { inq = !inq; continue }
         if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }
       }
-      sub(/\][[:space:]]*$/, "", hdr)   # drop the closing "]" + trailing whitespace
-      sub(/[[:space:]]+$/, "", hdr)      # …and any space the comment left behind
+      sub(/[[:space:]]+$/, "", hdr)      # trailing space, before requiring the bracket
+      # THE CLOSING BRACKET IS REQUIRED, not optionally stripped. `sub()` does not assert, so
+      # `[mcp # missing bracket` — which has none — reduced to exactly `mcp` and entered the table,
+      # letting a reader consume keys out of a header no TOML parser accepts. The pre-comment
+      # implementation happened to reject it because the raw line never equalled the table name;
+      # adding comment support removed that accident, so the rule is now explicit.
+      # Reported by the declared reviewer on PR #429.
+      if (hdr !~ /\]$/) { intbl = 0; next }
+      sub(/\]$/, "", hdr)               # drop the closing "]"
+      sub(/[[:space:]]+$/, "", hdr)      # …and any space before it
       intbl = (hdr == tbl)
       next
     }
