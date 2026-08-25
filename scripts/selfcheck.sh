@@ -520,22 +520,32 @@ add pattern-ledger      bash scripts/check-pattern-ledger.sh
 
 # The negative half of the step above. The ledger's dangerous direction is reporting a class as
 # RARER than it is — a count too low leaves a recurring defect unpromoted and looks exactly like a
-# class nobody hit twice. Eight mutations (the threshold comparison inverted, dedupe disabled, the
-# region-completeness proof disabled, the record grammar skipped instead of refused, `checklist`
-# reading half the file, the summary leaking into the prompt surface, region-marker injection
-# accepted, a malformed threshold falling back silently), each required back RED on its OWN witness.
+# class nobody hit twice. Every row is required back RED on its OWN witness, covering the counting
+# rules (the threshold comparison, dedupe, the record and checklist grammars, the region-
+# completeness proof), the containment of reviewer text at the prompt surface, and the write lock
+# (its ordering, its ownership on release, and its refusal to reclaim from a live owner).
+#
+# NO TOTAL IS QUOTED HERE, deliberately. This comment named eight while the suite registered
+# twenty-nine — a number that drifts every time a witness is added, and which understates the
+# coverage it claims to describe. `--mutation` prints the live count on every run; that output is
+# current where a number written here is only as current as its last edit.
 add pattern-ledger-mutation bash scripts/check-pattern-ledger.sh --mutation
 
 # Unit tests for the vendor-documentation duty (scripts/lib/docs-lib.sh, #422): `[mcp] required`
 # finally has a consumer, and its dangerous direction is a CLEAN verdict nobody earned. Drives the
 # degraded-server case from three directions and asserts the fail-closed rule that silence
 # adjudicates exactly as failure. What it deliberately does NOT claim to test is that the agent
-# really issued the query — MCP is in-harness and no shell can reach it (D90).
+# really issued the query. A shell CAN reach MCP indirectly — `claude -p` takes `--mcp-config`, so a
+# headless agent can be launched to test a server's PRESENT usability — and D90 says so explicitly.
+# What no gate can do is authenticate the HISTORICAL action another agent recorded, which is the
+# boundary this suite tests up to. The retired stronger claim is not restated here, because reading
+# it as current would misdirect the next attempt at a preflight.
 add docs-lib            bash scripts/check-docs-lib.sh
 
-# The negative half. Six mutations, each required back RED on its own witness — the first two are
-# the ones that matter: silence adjudicating as clean, and a degraded probe ignored. Both would
-# restore the silent fall-back to training-data recall that the declaration exists to end.
+# The negative half. Every row required back RED on its own witness; the two that matter most are
+# silence adjudicating as clean, and a degraded probe ignored — both would restore the silent
+# fall-back to training-data recall that the declaration exists to end. The live count is printed by
+# `--mutation` itself rather than written here, for the reason the step above gives.
 add docs-lib-mutation   bash scripts/check-docs-lib.sh --mutation
 
 # Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge

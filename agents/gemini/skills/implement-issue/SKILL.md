@@ -402,7 +402,12 @@ tree as an untracked file, one `git add -A` from being committed. Check, do not 
 # a trailing slash and git cannot match a directory rule against a path it cannot see is a
 # directory. Naming the two file shapes this step writes is both robust and the precise
 # question: will THESE be ignored?
-for _probe in issue-0.json issue-0.assoc; do
+# EVERY NAME THIS RUN WILL WRITE, not just step 2's two. An adopting repo may carry narrow rules
+# (`issue-*.json`, `issue-*.assoc`) rather than ignoring the whole state directory — and step 5b
+# then drops `docs-consulted.tsv`, which records what documentation this run consulted, into the
+# working tree unignored, one `git add -A` from being committed.
+# Reported by the declared reviewer on PR #429.
+for _probe in issue-0.json issue-0.assoc docs-consulted.tsv; do
   git check-ignore -q ".gemini/state/$_probe" && continue
   bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state
   echo "ERROR: .gemini/state/$_probe would NOT be gitignored, and step 2 is about to write the"

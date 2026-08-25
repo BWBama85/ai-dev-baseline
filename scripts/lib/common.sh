@@ -2968,7 +2968,20 @@ adb_toml_get() {
     /^[[:space:]]*\[/ {
       hdr = $0
       sub(/^[[:space:]]*\[/, "", hdr)   # drop leading whitespace + the opening "["
+      # A TRAILING COMMENT ON THE HEADER IS LEGAL TOML, and comparing the whole suffix-bearing line
+      # literally meant `[roles] # who does what` matched no table at all — so every key in it read
+      # as ABSENT and the caller silently fell through to the next layer or to a built-in. That is
+      # every consumer of this reader, not one: roles, gates, reviewers, repo, mcp, patterns.
+      # Cut at the first `#` that is OUTSIDE quotes, because a quoted table name may legally
+      # contain one. Reported by the declared reviewer on PR #429.
+      inq = 0
+      for (i = 1; i <= length(hdr); i++) {
+        c = substr(hdr, i, 1)
+        if (c == "\"") { inq = !inq; continue }
+        if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }
+      }
       sub(/\][[:space:]]*$/, "", hdr)   # drop the closing "]" + trailing whitespace
+      sub(/[[:space:]]+$/, "", hdr)      # …and any space the comment left behind
       intbl = (hdr == tbl)
       next
     }

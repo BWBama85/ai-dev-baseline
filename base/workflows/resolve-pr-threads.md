@@ -562,7 +562,9 @@ did *this* round find". Step 6 subtracts these.
 
 ```bash
 STATS_BEFORE="$({{PATTERN_LEDGER_LIB}} stats --pr "$PR_NUM")"
-ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring from it
+CLASSES_BEFORE="$({{PATTERN_LEDGER_LIB}} classes)"   # step 6 asks which classes are NEW against this
+ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring and new from it
+ROUND_PROMOTED=0   # incremented in 4c by promotions that actually landed
 ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))
 # ACCUMULATED ACROSS ROUNDS, so initialise it ONLY on the first. `STATS_BEFORE` and
 # `ROUND_CLASSES` are per-round and must be cleared here; `ROUND_ROWS` is the run's record and must
@@ -684,7 +686,19 @@ case "$DRC" in
   *)  echo "STOP: could not determine which classes are due (rc $DRC) — nothing was promoted."; exit 1 ;;
 esac
 
-{{PATTERN_LEDGER_LIB}} promote --class <slug> --rule '<the sweep to run before the next PR>'
+{{PATTERN_LEDGER_LIB}} promote --class <slug> --rule '<the sweep to run before the next PR>'; PRC=$?
+case "$PRC" in
+  0)  ROUND_PROMOTED=$(( ${ROUND_PROMOTED:-0} + 1 )) ;;   # counted from what actually landed
+  13) : ;;   # already promoted — the idempotent re-run, not a failure
+  12) : ;;   # below the threshold; `due` and this disagree only if the ledger moved underneath
+  # ANY HARD FAILURE STOPS THE ROUND. Without a branch, a promotion that failed with 18 (a
+  # malformed ledger) or 20 (a lock timeout, a failed replacement) fell through to committing and
+  # resolving — and a later run sees no unresolved threads, never revisits promotion, and the rule
+  # the class earned is permanently absent. Reported by the declared reviewer on PR #429.
+  *)  echo "STOP: promoting <slug> failed (rc $PRC) and the rule was not written."
+      echo "      Resolving now would close the threads that earned it, and nothing would revisit it."
+      exit 1 ;;
+esac
 ```
 
 **Write the rule as an instruction, not a description.** "Grep every site that compares a
@@ -848,9 +862,23 @@ else
 
 # `$STATS_BEFORE` and `$ROUND_CLASSES` were captured in step 4b; `$STATS_AFTER` just above.
 _field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
-ROUND_FINDINGS="$(( $(_field "$STATS_AFTER" pr-hits)   - $(_field "$STATS_BEFORE" pr-hits) ))"
-ROUND_NEW="$((      $(_field "$STATS_AFTER" pr-new-classes) - $(_field "$STATS_BEFORE" pr-new-classes) ))"
-ROUND_PROMOTED="$(( $(_field "$STATS_AFTER" promoted)  - $(_field "$STATS_BEFORE" promoted) ))"
+
+# DERIVED FROM WHAT THIS INVOCATION APPENDED, not from PR-wide subtraction. `--pr` is shared: two
+# resolver runs overlapping on one pull request each see the other's rows, so a run whose own
+# `record` calls all returned 10 could still report the other's findings and promotions as its
+# round. `ROUND_CLASSES` is appended only on a SUCCESSFUL record and `ROUND_PROMOTED` only on a
+# promotion that landed — both are this invocation's own receipts.
+# Reported by the declared reviewer on PR #429.
+ROUND_FINDINGS="$(printf '%s' "$ROUND_CLASSES" | awk 'NF' | wc -l | tr -d ' ')"
+ROUND_PROMOTED="${ROUND_PROMOTED:-0}"
+# A class is NEW to this run when the before-snapshot carried no hits for it at all.
+ROUND_NEW=0
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  printf '%s\n' "$CLASSES_BEFORE" | awk -F'\t' -v k="$c" '$2==k{f=1} END{exit !f}' || ROUND_NEW=$((ROUND_NEW + 1))
+done <<ROUNDNEW
+$(printf '%s' "$ROUND_CLASSES" | awk 'NF' | LC_ALL=C sort -u)
+ROUNDNEW
 
 # RECURRING IS COUNTED FROM THE ROWS THIS ROUND APPENDED — NOT as a difference of the cumulative
 # figure. Subtracting `pr-recurring` is wrong in a way that only shows up at the threshold: when a

@@ -233,9 +233,25 @@ if [ "$MODE" = mutation ]; then
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/docs-lib.sh"
   }
+  # A SECOND TARGET NEEDS A SECOND POOL. `check_mutation_pool` builds ONE path for every row it
+  # runs, which is why `check_mut_reset` exists — the header-comment rule lives in the SHARED
+  # reader, and a row aimed at the wrong file applies to nothing and reports so.
+  prep_common() {
+    check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1/tree/scripts/lib/common.sh"
+  }
   runner() { ( cd "$1/tree" && bash scripts/check-docs-lib.sh 2>&1 ); }
 
   check_mutation_pool check-docs-lib "$work" prep runner 6
+
+  # THE SHARED READER'"'"'S HALF, in its own pool against its own file.
+  check_mut_reset
+  check_mut header-comment-literal \
+    '        if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
+    '        if (0) { hdr = substr(hdr, 1, i - 1); break }' \
+    "a table header written as '[mcp] # documentation servers' is still the [mcp] table"
+  check_mutation_pool check-docs-lib-common "$work/common" prep_common runner 6
+
   check_summary check-docs-lib
   exit 0
 fi
@@ -682,6 +698,18 @@ eq "$?" 18 "report refuses to return success over a malformed manifest"
 has "$(dl report --state "$D20/state" --manifest "$D20/agents.toml" 2>/dev/null)" "UNREADABLE" \
    "…while still saying what is wrong"
 
+# A TRAILING COMMENT ON A TABLE HEADER IS LEGAL TOML (PR #429), and the shared reader compared the
+# whole suffix-bearing header literally — so `[mcp] # documentation servers` matched no table, every
+# key in it read as ABSENT, and the repo declaration silently lost to the global one. Fixed in
+# `adb_toml_get`, so this covers every consumer of that reader, not just this module.
+for hdr in '[mcp]' '[mcp] # documentation servers' '[mcp]#c'; do
+  D25="$(fixture "hdrcomment$(printf '%s' "$hdr" | tr -dc 'a-z')" "$hdr
+required = [\"context7\"]
+")"
+  eq "$(dl mcp-required --manifest "$D25/agents.toml")" "context7" \
+     "a table header written as '$hdr' is still the [mcp] table"
+done
+
 # A KEY DECLARED TWICE IS INVALID TOML (PR #429). `adb_toml_get` stops at the first match, so the
 # first array was accepted and a probe for only those servers could earn a clean verdict on a file
 # no TOML parser would load.
@@ -744,6 +772,13 @@ has   "$TPL" 'DRIVES A REAL PREFLIGHT' "the shipped template says the key now dr
 has   "$TPL" 'FAIL-CLOSED'             "…and that the adjudication is fail-closed"
 has   "$TPL" 'DEGRADED'                "…and what a failing server does to the run"
 hasnt "$TPL" 'DECLARATION ONLY'        "…and no longer describes the key as inert"
+
+# THE GITIGNORE PROBE NAMES EVERY FILE THE RUN WRITES (PR #429). Step 2 probed only its own two
+# names, so an adopting repo with narrow rules (`issue-*.json`, `issue-*.assoc`) rather than an
+# ignored state directory would pass preflight and then have step 5b drop `docs-consulted.tsv` into
+# the working tree unignored — one `git add -A` from being committed.
+has "$IMPTXT" 'for _probe in issue-0.json issue-0.assoc docs-consulted.tsv' \
+   "the gitignore preflight probes the docs record too, not just the issue snapshot"
 
 # The state file owes /cleanup a classification and `admit` a clear — a name one can sweep and the
 # other cannot is a stale file a fresh run's marker makes read as live.

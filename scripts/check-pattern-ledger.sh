@@ -1104,6 +1104,17 @@ has "$RESTXT" 'STOP: [patterns] threshold is unusable' "a due failure stops the 
 # round counts, or the threshold comparison fails outright.
 has "$RESTXT" 'reporting no counts rather than wrong ones' \
    "a failed stats read reports no figures rather than computing over empty fields"
+# A FAILED PROMOTION STOPS THE ROUND (PR #429). Without a branch, a promotion that failed on a
+# malformed ledger or a lock timeout fell through to committing and resolving — and a later run
+# sees no unresolved threads, never revisits promotion, and the earned rule is permanently absent.
+has "$RESTXT" 'STOP: promoting'  "a failed promotion stops the round before step 5"
+has "$RESTXT" 'never revisit'    "…and says why: nothing would come back to it"
+# THE ROUND FIGURES COME FROM THIS INVOCATION'"'"'S OWN RECEIPTS, not from PR-wide subtraction —
+# `--pr` is shared, so two overlapping resolver runs would each report the other's work as theirs.
+has   "$RESTXT" 'ROUND_FINDINGS="$(printf' "round findings are counted from the rows this run appended"
+hasnt "$RESTXT" 'ROUND_FINDINGS="$(( $(_field "$STATS_AFTER" pr-hits)' \
+   "…not subtracted from a PR-wide figure another run also writes to"
+has   "$RESTXT" 'CLASSES_BEFORE' "…and new classes are decided against a before-snapshot of the classes"
 has "$RESTXT" 'This PR so far' "…while still reporting the cumulative figure, labelled as cumulative"
 
 # EVERY FAILED RECORD STOPS THE ROUND (PR #429). Naming only rc 18 left rc 20 — a lock timeout, an

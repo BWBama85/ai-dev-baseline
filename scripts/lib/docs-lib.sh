@@ -445,10 +445,19 @@ cmd_verdict() {
     printf 'docs-lib: [mcp] required is empty — nothing to preflight\n'; return 0
   fi
   f="$(_adb_dl_file)" || exit 20
-  _adb_dl_records "$f" >/dev/null || {
-    printf 'docs-lib: %s holds a record that is not in the grammar — refusing to adjudicate over a file this module would not have written\n' "$f" >&2
-    return 18; }
-  [ -f "$f" ] && probes="$(awk -F'\t' '$1 == "probe" { print $2 "\t" $3 }' "$f")"
+  # ONE SNAPSHOT, and the caller may supply it. `report` renders a verdict AND the evidence behind
+  # it; reading the file separately for each let a probe appended in between produce a block that
+  # says every server answered while displaying the new failure's evidence. `_ADB_DL_SNAPSHOT` is
+  # how a caller says "adjudicate over exactly the bytes I already read".
+  # Reported by the declared reviewer on PR #429.
+  if [ -n "${_ADB_DL_SNAPSHOT+x}" ]; then
+    probes="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "probe" { print $2 "\t" $3 }')"
+  else
+    _adb_dl_records "$f" >/dev/null || {
+      printf 'docs-lib: %s holds a record that is not in the grammar — refusing to adjudicate over a file this module would not have written\n' "$f" >&2
+      return 18; }
+    [ -f "$f" ] && probes="$(awk -F'\t' '$1 == "probe" { print $2 "\t" $3 }' "$f")"
+  fi
 
   # THE LAST RECORD FOR A SERVER WINS, which is why the awk keeps assigning instead of exiting on
   # the first match. The duty allows a retry — a server that answered an auth error and then, once
@@ -488,10 +497,16 @@ cmd_report() {
   _adb_dl_records "$f" >/dev/null || {
     printf 'docs-lib: %s holds a record that is not in the grammar — refusing to render a report from it\n' "$f" >&2
     return 18; }
-  if [ -f "$f" ]; then
-    n_consulted="$(awk -F'\t' '$1 == "consulted"'   "$f" | wc -l | tr -d ' ')"
-    n_none="$(awk -F'\t'      '$1 == "none-needed"' "$f" | wc -l | tr -d ' ')"
-    n_probe="$(awk -F'\t'     '$1 == "probe"'       "$f" | wc -l | tr -d ' ')"
+  # READ ONCE, then derive the counts, the verdict AND the evidence from the same bytes. Another
+  # writer may legitimately append while this renders, and separate reads produced a block whose
+  # verdict and evidence disagreed. Reported by the declared reviewer on PR #429.
+  _ADB_DL_SNAPSHOT=""
+  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"
+  export _ADB_DL_SNAPSHOT
+  if [ -n "$_ADB_DL_SNAPSHOT" ]; then
+    n_consulted="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "consulted"'   | wc -l | tr -d ' ')"
+    n_none="$(printf '%s\n'      "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "none-needed"' | wc -l | tr -d ' ')"
+    n_probe="$(printf '%s\n'     "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "probe"'       | wc -l | tr -d ' ')"
   fi
   if [ "$n_consulted" -eq 0 ] && [ "$n_none" -eq 0 ]; then
     printf 'docs-lib: nothing recorded — this run has stated NO documentation disposition.\n' >&2
@@ -502,10 +517,10 @@ cmd_report() {
 
   printf '**Docs consulted**\n\n'
   if [ "$n_consulted" -gt 0 ]; then
-    awk -F'\t' '$1 == "consulted" { printf "- %s — rung %s: %s\n", $2, $3, $4 }' "$f"
+    printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "consulted" { printf "- %s — rung %s: %s\n", $2, $3, $4 }' 
   fi
   if [ "$n_none" -gt 0 ]; then
-    awk -F'\t' '$1 == "none-needed" { printf "- none needed: %s\n", $2 }' "$f"
+    printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "none-needed" { printf "- none needed: %s\n", $2 }' 
   fi
   # BOTH KINDS IN ONE RUN IS NOT AN ERROR, BUT IT IS WORTH SAYING. A run can legitimately declare
   # its surfaces trivial and then discover one that is not — the record is append-only and there is
@@ -535,7 +550,7 @@ cmd_report() {
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
         printf -- '  - `%s` — %s\n' "$_srv" \
-          "$(awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }' "$f")"
+          "$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')"
       done <<SERVERS
 $required
 SERVERS
@@ -549,7 +564,7 @@ SERVERS
       # Reported by the declared reviewer on PR #429.
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
-        _ev="$(awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }' "$f")"
+        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')"
         [ -n "$_ev" ] || _ev='(no probe was recorded for this server)'
         printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
       done <<SERVERS
