@@ -96,4 +96,9 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/pattern-ledger.sh:940` `631b8db` `PRRT_kwDOTfywrM6b8wn2` PR #429 2026-08-25 — a filter argument was never validated, so a typo read as a real PR with no findings
 - `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:804` `631b8db` `PRRT_kwDOTfywrM6b8wn3` PR #429 2026-08-25 — a failure arm promised no counts and then fell through to the arithmetic
 - `partial-validation` `scripts/lib/pattern-ledger.sh:482` `631b8db` `PRRT_kwDOTfywrM6b8wn6` PR #429 2026-08-25 — a scalar grammar accepted literals the spec forbids
+- `partial-validation` `scripts/lib/pattern-ledger.sh:317` `c0f39e4` `PRRT_kwDOTfywrM6b9jGx` PR #429 2026-08-25 — the record grammar checked the span count and tail but never the prefix
+- `partial-validation` `scripts/lib/pattern-ledger.sh:480` `c0f39e4` `PRRT_kwDOTfywrM6b9jG5` PR #429 2026-08-25 — the repeated-table rule was fixed in one reader and not its sibling
+- `toctou` `scripts/lib/pattern-ledger.sh:538` `c0f39e4` `PRRT_kwDOTfywrM6b9jG7` PR #429 2026-08-25 — liveness was read from a signal permission, so EPERM was mistaken for death
+- `partial-validation` `scripts/lib/pattern-ledger.sh:740` `c0f39e4` `PRRT_kwDOTfywrM6b9jG-` PR #429 2026-08-25 — the one write that had no prior file was the one not published by rename
+- `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:565` `c0f39e4` `PRRT_kwDOTfywrM6b9jHC` PR #429 2026-08-25 — per-round figures were overwritten each round, so only the last survived to the summary
 <!-- adb:hits:end -->
