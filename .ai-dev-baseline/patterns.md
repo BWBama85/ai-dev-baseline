@@ -82,4 +82,9 @@ One line per resolved review thread, newest last.
 - `metric-scope-mismatch` `scripts/lib/pattern-ledger.sh:824` `d2b2a2d` `PRRT_kwDOTfywrM6b6l6S` PR #429 2026-08-25 — PR scope was used as round scope, so every cumulative figure was reported as this rounds
 - `toctou` `scripts/lib/pattern-ledger.sh:521` `d2b2a2d` `PRRT_kwDOTfywrM6b6l6W` PR #429 2026-08-25 — reclamation gained an ownership check and release did not, so a stale writer could unlock a successor
 - `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:618` `d2b2a2d` `PRRT_kwDOTfywrM6b6l6c` PR #429 2026-08-25 — only one failure code was terminal, so other write failures still let the round resolve
+- `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:808` `d0d2042` `PRRT_kwDOTfywrM6b695y` PR #429 2026-08-25 — a delta of a cumulative figure counted retroactive reclassification as this rounds work
+- `partial-validation` `base/workflows/resolve-pr-threads.md:793` `d0d2042` `PRRT_kwDOTfywrM6b6950` PR #429 2026-08-25 — a variable was read that nothing assigned, so every figure was empty or the block aborted
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:658` `d0d2042` `PRRT_kwDOTfywrM6b6952` PR #429 2026-08-25 — a wildcard treated a hard configuration error as success and let the round continue
+- `partial-validation` `scripts/lib/docs-lib.sh:181` `d0d2042` `PRRT_kwDOTfywrM6b6955` PR #429 2026-08-25 — IFS folding meant the field-count test could not enforce the arity it claimed to
+- `partial-validation` `scripts/lib/pattern-ledger.sh:461` `d0d2042` `PRRT_kwDOTfywrM6b6956` PR #429 2026-08-25 — a reconstructed scalar was validated instead of the incomplete one the operator wrote
 <!-- adb:hits:end -->
