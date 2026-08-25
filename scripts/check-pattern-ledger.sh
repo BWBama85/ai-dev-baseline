@@ -313,6 +313,23 @@ if [ "$MODE" = mutation ]; then
     "    :" \
     "a NEWLY CREATED ledger did not get the umask's mode"
 
+  # THE BOUNDED RECLAMATION RETRY (PR #429). Restores the unconditional `continue`, which neither
+  # slept nor incremented `waited`, so a rename that can never succeed busy-spun past the bound.
+  # A SINGLE-LINE literal: `check_mutate_literal` matches with `index()` on ONE record, so a
+  # two-line literal applies to nothing and the harness reports the row as testing NOTHING —
+  # which is what it did here. Replacing the explanatory line with a bare `continue` restores
+  # exactly the unconditional retry that shipped.
+  check_mut reclaim-busy-spin \
+    '      # A FAILED RECLAMATION FALLS THROUGH TO THE WAIT, it does not retry immediately. An' \
+    '      continue' \
+    'a reclamation that cannot rename busy-spun past the wait bound'
+
+  # THE HEADER NORMALIZATION IN THE LEDGER'"'"'S OWN SCANNER (PR #429).
+  check_mut patterns-header-comment \
+    '                                  if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
+    '                                  if (0) { hdr = substr(hdr, 1, i - 1); break }' \
+    'a repeated [patterns] table header is refused'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -623,9 +640,15 @@ for bad in '02' '08' '"03"'; do
   eq "$?" 2 "a leading-zero threshold ($bad) is refused"
 done
 # A REPEATED [patterns] TABLE is invalid TOML even with one assignment — the `[mcp]` sibling again.
-printf '[patterns]\nthreshold = 3\n\n[patterns]\nfoo = 1\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
-HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
-eq "$?" 2 "a repeated [patterns] table header is refused"
+for hdr in '[patterns]' '[patterns] # tuning'; do
+  printf '%s\nthreshold = 3\n\n%s\nfoo = 1\n' "$hdr" "$hdr" > "$MHOME/.config/ai-dev-baseline/agents.toml"
+  HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
+  eq "$?" 2 "a repeated [patterns] table header is refused (spelled '$hdr')"
+done
+# …and a single COMMENTED header is still the table, or the fix would have narrowed the domain.
+printf '[patterns] # tuning\nthreshold = 3\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
+eq "$(HOME="$MHOME" bash "$PL" threshold --ledger "$L1" | awk '{print $1}')" 3 \
+   "a commented [patterns] header is still read as the table"
 rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
 
 # `stats --pr` MUST VALIDATE ITS FILTER, or a mistyped one reads as a real PR with no findings.
@@ -948,6 +971,32 @@ case "$(ls -l "$L7m" | awk '{print substr($1,1,10)}')" in
   *) bad "a NEWLY CREATED ledger did not get the umask's mode: $(ls -l "$L7m" | awk '{print $1}')" ;;
 esac
 
+# A FAILED RECLAMATION FALLS THROUGH TO THE WAIT (PR #429). When a stale lock's owner is provably
+# gone but the RENAME cannot succeed — an unwritable parent — an unconditional `continue` neither
+# slept nor incremented the counter, so the advertised bound was bypassed and the writer busy-spun
+# forever. The observable is termination: fixed, it refuses within its bound; unfixed, it never
+# returns. Skipped as root, where permissions do not apply.
+if [ "$(id -u)" -ne 0 ]; then
+  L7n="$work/spin"; mkdir -p "$L7n"
+  bash "$PL" record --ledger "$L7n/p.md" --class spinc --site s.sh --fix abc1231 --pr 1 --thread SP1 >/dev/null 2>&1
+  mkdir -p "$L7n/p.md.lock/DEADTOKEN"
+  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$L7n/p.md.lock/meta"   # provably gone
+  touch -t 200001010000 "$L7n/p.md.lock" 2>/dev/null                              # …and stale
+  chmod 500 "$L7n"                                                                # …and unrenamable
+  ( ADB_PATTERN_LOCK_WAIT_SECS=2 timeout 25 bash "$PL" record --ledger "$L7n/p.md" --class spinc \
+      --site s2.sh --fix abc1232 --pr 1 --thread SP2 ) >/dev/null 2>&1
+  SPRC=$?
+  chmod 700 "$L7n"
+  if [ "$SPRC" -eq 124 ]; then
+    bad "a reclamation that cannot rename busy-spun past the wait bound instead of falling through to it"
+  else
+    ok
+  fi
+  rm -rf "$L7n"
+else
+  ok   # running as root: the permission the case depends on does not exist
+fi
+
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
 mkdir "$L7c.lock"
@@ -1108,6 +1157,20 @@ has "$RESTXT" 'reporting no counts rather than wrong ones' \
 # malformed ledger or a lock timeout fell through to committing and resolving — and a later run
 # sees no unresolved threads, never revisits promotion, and the earned rule is permanently absent.
 has "$RESTXT" 'STOP: promoting'  "a failed promotion stops the round before step 5"
+# THE ACCUMULATOR MUST NOT SWALLOW `record`'"'"'S STATUS (PR #429). Written as
+# `if record …; then ROUND_CLASSES=…; fi` the branch skips the append on a failure and then
+# COMPLETES SUCCESSFULLY, so the round walks on and resolves a thread nothing recorded — the
+# stop-on-failure rule undone by the accumulator added for a different one.
+has   "$RESTXT" 'RRC=$?'             "record's status is captured, not consumed by an if"
+has   "$RESTXT" 'STOP: recording this thread failed' "…and a hard failure stops the round"
+hasnt "$RESTXT" 'if {{PATTERN_LEDGER_LIB}} record --class <slug> … ; then' \
+   "…so the swallowing form is gone rather than merely discouraged"
+# A CLEAN PASS RECONCILES DUE PROMOTIONS (PR #429). Two branches can each record a class's first
+# hit; after both merge the ledger holds two, but a clean run exits at step 0b before 4c ever asks.
+has "$RESTXT" 'A clean pass still reconciles promotions' \
+   "the clean-pass arm reconciles promotions merged history earned"
+has "$(cat "$ROOT/scripts/lib/pattern-ledger.sh")" 'What makes that converge is a check on the CLEAN-PASS path' \
+   "…and the ledger template no longer claims the ordinary path converges on its own"
 has "$RESTXT" 'never revisit'    "…and says why: nothing would come back to it"
 # THE ROUND FIGURES COME FROM THIS INVOCATION'"'"'S OWN RECEIPTS, not from PR-wide subtraction —
 # `--pr` is shared, so two overlapping resolver runs would each report the other's work as theirs.

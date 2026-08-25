@@ -223,6 +223,20 @@ if [ "$MODE" = mutation ]; then
     '    if false; then' \
     'a repeated [mcp] table header is refused'
 
+  # THE SCANNER'"'"'S OWN HEADER NORMALIZATION (PR #429) — distinct from the shared reader's.
+  check_mut scanner-header-comment \
+    '                            if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
+    '                            if (0) { hdr = substr(hdr, 1, i - 1); break }' \
+    'a repeated COMMENTED [mcp] header is refused'
+
+  # THE MARKDOWN ESCAPING (PR #429).
+  # SINGLE-LINE, for the reason the sibling suite records: a two-line literal matches nothing.
+  # Turning the escaper into a pass-through is the whole defect in one line.
+  check_mut evidence-not-escaped \
+    '      function md(v) { gsub(/&/, "\\&amp;", v); gsub(/</, "\\&lt;", v); gsub(/>/, "\\&gt;", v); return v }' \
+    '      function md(v) { return v }' \
+    'the rendered report contains no raw HTML comment opener'
+
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
   check_mut unquoted-array-accepted \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
@@ -709,6 +723,39 @@ required = [\"context7\"]
   eq "$(dl mcp-required --manifest "$D25/agents.toml")" "context7" \
      "a table header written as '$hdr' is still the [mcp] table"
 done
+
+# THE DUPLICATE SCANNER NORMALIZES HEADERS TOO (PR #429). Fixing trailing-comment support in the
+# SHARED reader alone left this scanner comparing the raw header, so under `[mcp] # servers`
+# neither duplicate rule could fire — the fix one reader learned and its sibling did not.
+D26="$(fixture duptablecomment '[mcp] # documentation servers
+required = ["a"]
+
+[mcp] # more
+optional = []
+')"
+dl mcp-required --manifest "$D26/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a repeated COMMENTED [mcp] header is refused"
+D27="$(fixture dupkeycomment '[mcp] # documentation servers
+required = ["a"]
+required = ["b"]
+')"
+dl mcp-required --manifest "$D27/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and a duplicate key under a commented header is refused"
+
+# EVERY RENDERED FIELD IS MARKDOWN-ESCAPED (PR #429). Fields are validated as one printable line,
+# which stops them forging a RECORD and not MARKUP: a source of `<!-- vendor result` opens an HTML
+# comment GitHub honours, hiding the evidence and everything after it in the PR body — and this
+# report is the only surviving copy once run state is swept.
+D28="$(fixture mdescape '[mcp]
+required = ["context7"]
+')"
+dl consulted --state "$D28/state" --surface 'a<b' --rung 2 --source '<!-- vendor result' >/dev/null 2>&1
+dl probe-record --state "$D28/state" --server context7 --result usable --evidence '<script>x</script>' >/dev/null 2>&1
+R28="$(dl report --state "$D28/state" --manifest "$D28/agents.toml" 2>/dev/null)"
+hasnt "$R28" '<!--'      "the rendered report contains no raw HTML comment opener"
+hasnt "$R28" '<script>'  "…and no raw tag"
+has   "$R28" '&lt;!--'   "…the evidence is escaped rather than dropped, so it stays readable"
+has   "$R28" '&lt;script&gt;' "…including in the probe evidence"
 
 # A KEY DECLARED TWICE IS INVALID TOML (PR #429). `adb_toml_get` stops at the first match, so the
 # first array was accepted and a probe for only those servers could earn a clean verdict on a file

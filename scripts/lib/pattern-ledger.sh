@@ -265,8 +265,13 @@ git fetch origin "refs/pull/<pr>/head" && git show <fix>
 conflict when two pull requests add hits at the same point — take both sides; the entries are
 independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
 is decided by *reading this file*, never by a counter carried in a branch: two branches that each
-recorded a class's first hit merge into a file holding two, and the next run promotes it. The
-mechanism converges rather than missing the class permanently.
+recorded a class's first hit merge into a file holding two, and the class is then due.
+
+**What makes that converge is a check on the CLEAN-PASS path**, not the ordinary one. A resolver run
+that finds nothing to fix exits before it would ever ask which classes are due, so "the next run
+promotes it" was only true of a run that happened to have other findings. `/resolve-pr-threads`
+therefore reconciles due promotions before exiting on a clean pass — the one thing a clean run still
+does.
 
 ## Promoted checklist
 
@@ -482,7 +487,18 @@ _adb_pl_threshold() {
             # THE TABLE HEADER IS COUNTED TOO. A manifest declaring `[patterns]` twice is invalid
             # TOML even when `threshold` appears once — the same case already fixed for `[mcp]`,
             # in the scan this one is modelled on. Reported by the declared reviewer on PR #429.
-            /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*$/, "", hdr)
+            # SAME NORMALIZATION AS THE SHARED READER, for the same reason its sibling in
+            # docs-lib needed it: a legal `[patterns] # …` header left `intbl` unset, so neither
+            # the repeated-table rule nor the duplicate-key rule could fire.
+            # Reported by the declared reviewer on PR #429.
+            /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr)
+                                inq = 0
+                                for (i = 1; i <= length(hdr); i++) {
+                                  c = substr(hdr, i, 1)
+                                  if (c == "\"") { inq = !inq; continue }
+                                  if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }
+                                }
+                                sub(/\][[:space:]]*$/, "", hdr); sub(/[[:space:]]+$/, "", hdr)
                                 intbl = (hdr == "patterns"); if (intbl && ++tbl > 1) { bad = 1; exit }
                                 next }
             intbl && $0 ~ /^[[:space:]]*threshold[[:space:]]*=/ {
@@ -524,8 +540,20 @@ _adb_pl_threshold() {
 # How long to wait for the write lock, and when to declare an existing one abandoned. The wait is
 # short because every holder does one read-modify-write of a small file; the stale age is generous
 # because breaking a LIVE lock is the failure that loses data, and waiting a little longer is not.
-_ADB_PL_LOCK_WAIT_SECS=30
-_ADB_PL_LOCK_STALE_SECS=300
+# OVERRIDABLE FROM THE ENVIRONMENT, following `ADB_DISPATCH_TIMEOUT_SECS`'s precedent, because a
+# bound nothing can vary is a bound nothing can test: the fall-through-to-the-wait behaviour is
+# only observable by watching the writer actually give up. A stock clone needs no environment.
+# Non-numeric or zero values are refused loudly rather than silently taking the default — a wait
+# the operator thinks they shortened but did not is the same class of lie as a threshold that
+# quietly falls back.
+_ADB_PL_LOCK_WAIT_SECS="${ADB_PATTERN_LOCK_WAIT_SECS:-30}"
+_ADB_PL_LOCK_STALE_SECS="${ADB_PATTERN_LOCK_STALE_SECS:-300}"
+case "$_ADB_PL_LOCK_WAIT_SECS" in
+  ''|*[!0-9]*|0) printf 'pattern-ledger: ADB_PATTERN_LOCK_WAIT_SECS="%s" is not a positive whole number of seconds\n' "$_ADB_PL_LOCK_WAIT_SECS" >&2; exit 2 ;;
+esac
+case "$_ADB_PL_LOCK_STALE_SECS" in
+  ''|*[!0-9]*|0) printf 'pattern-ledger: ADB_PATTERN_LOCK_STALE_SECS="%s" is not a positive whole number of seconds\n' "$_ADB_PL_LOCK_STALE_SECS" >&2; exit 2 ;;
+esac
 
 # _adb_pl_owner_gone <lock-dir> — can we PROVE the lock's owner is no longer running?
 #
@@ -584,8 +612,12 @@ _adb_pl_lock() {
       if mv "$dir" "$tomb" 2>/dev/null; then
         printf 'pattern-ledger: broke a stale write lock (%ss old): %s\n' "$age" "$dir" >&2
         rm -rf "$tomb" 2>/dev/null
+        continue
       fi
-      continue
+      # A FAILED RECLAMATION FALLS THROUGH TO THE WAIT, it does not retry immediately. An
+      # unconditional `continue` here neither slept nor incremented `waited`, so a rename that can
+      # never succeed — an unwritable parent, a lock owned by another user — busy-spun forever and
+      # the advertised 30-second bound never applied. Reported by the declared reviewer on PR #429.
     fi
     if [ "$waited" -ge "$_ADB_PL_LOCK_WAIT_SECS" ]; then
       printf 'pattern-ledger: could not take the write lock after %ss: %s\n' "$waited" "$dir" >&2

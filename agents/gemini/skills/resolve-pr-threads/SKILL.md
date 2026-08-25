@@ -254,7 +254,7 @@ answer this skill reports and exits on, because there is nothing to resolve:
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
 | `10` | a declared reviewer reviewed **this head** and is **not satisfied** — a `CHANGES_REQUESTED` or `COMMENTED` review, or a fresh issue comment | **continue to step 1** (but note there may be **no threads**: a task-mode comment creates none, so read the comment) |
-| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA — **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
+| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA — **or** the repo declares `bots = []` | **reconcile due promotions first** (below), then report "reviewed clean — nothing to resolve" and **exit 0** |
 | `11` | the bound expired with **at least one** declared reviewer still silent — see the note below on a second way to reach it | report that the wait timed out and hand back to the operator; **exit** |
 | `12` | the PR is no longer OPEN (merged or closed) | report it and **exit** |
 | `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
@@ -281,6 +281,26 @@ review object at all** — only a `+1` reaction. Running the ordinary flow again
 fetch zero threads and report "nothing to do", which is the right action for the wrong reason and
 is indistinguishable from *the reviewer has not started yet*. The wait tells those two apart, which
 is one reason it is now the default rather than a flag.
+
+#### A clean pass still reconciles promotions (#421)
+
+**Before exiting on code `0`, ask whether any class became due while nobody was looking.** Two
+branches can each record a class's FIRST hit; neither crosses the threshold, and after both merge
+the ledger holds two — but no resolver run ever revisits it, because a clean pass exits here, before
+step 4c ever runs. The class then stays unpromoted until some unrelated finding happens to reach 4c
+again, and the first implementation after the threshold misses the sweep the class earned.
+
+```bash
+bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" due; DRC=$?
+case "$DRC" in
+  0)  : ;;   # classes are owed a rule — promote them (step 4c's form), commit the ledger, then exit
+  11) : ;;   # nothing due. The ordinary case on a clean pass.
+  *)  echo "NOTE: could not determine due promotions (rc $DRC)" ;;
+esac
+```
+
+This is the one thing a clean pass still does: it resolves nothing and pushes no fix, but it writes
+the checklist rule that merged history already earned. Reported by the declared reviewer on PR #429.
 
 ### ⚠ `10` does not guarantee there are threads to resolve
 
@@ -588,9 +608,19 @@ round actually added rather than from a cumulative figure that reclassifies the 
 # rerun this workflow deliberately supports — so no row was appended and step 6 must not count it
 # as a finding this round. Appending unconditionally made this accumulator disagree with the
 # before/after snapshots it sits beside. Reported by the declared reviewer on PR #429.
-if bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> … ; then
-  ROUND_CLASSES="${ROUND_CLASSES}<slug>"$'\n'
-fi
+bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> … ; RRC=$?
+case "$RRC" in
+  0)  ROUND_CLASSES="${ROUND_CLASSES}<slug>"$'\n' ;;   # a row was appended: it counts this round
+  10) : ;;                                             # already recorded — nothing was appended
+  # THE STATUS IS BRANCHED ON, NOT CONSUMED BY AN `if`. Written as `if record …; then …; fi` the
+  # branch skips the append on 18/19/20 and then COMPLETES SUCCESSFULLY, so the round walks on to
+  # promotion and resolves the thread — losing the finding permanently. That is the rule below
+  # being silently undone by the accumulator added to satisfy a different one.
+  # Reported by the declared reviewer on PR #429.
+  *)  echo "STOP: recording this thread failed (rc $RRC) — nothing was stored."
+      echo "      Resolving now would erase the finding; see the table below."
+      exit 1 ;;
+esac
 ```
 
 **Record one hit per thread you fixed**, before you resolve the thread in step 5:
