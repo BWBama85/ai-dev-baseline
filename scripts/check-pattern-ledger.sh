@@ -131,9 +131,11 @@ if [ "$MODE" = mutation ]; then
     'checklist refuses a half-readable ledger'
 
   # The summary's containment broken: a reviewer's free text would ride into the prompt surface.
+  # RETARGETED when `checklist` gained the prompt-budget check (PR #429): the emission moved to a
+  # guarded line, and the harness reported the old literal as applying to nothing.
   check_mut checklist-leaks-summary \
-    "  printf '%s\\n' \"\$region\" | awk 'NF { print }'" \
-    "  printf '%s\\n' \"\$region\" | awk 'NF { print }'; _adb_pl_hits \"\$ledger\" | cut -f2" \
+    '  if [ -n "$emitted" ]; then printf '"'"'%s\n'"'"' "$emitted"; fi' \
+    '  if [ -n "$emitted" ]; then printf '"'"'%s\n'"'"' "$emitted"; fi; _adb_pl_hits "$ledger" | cut -f2' \
     'checklist emits no site'
 
   # Region-marker injection accepted: a summary could close the hits region and truncate every
