@@ -146,10 +146,21 @@ if [ "$MODE" = mutation ]; then
 
   # THE READ-SIDE VALIDATION, added after the review reproduced a clean verdict from a record the
   # writer would never have produced. Without a row here, deleting it again is invisible.
+  # RETARGETED when the read gained a distinct unreadable status (PR #429): the `|| {` form no
+  # longer exists in `verdict`, and the first remaining occurrence would have been `report`'s.
   check_mut readers-skip-validation \
-    '  _adb_dl_records "$f" >/dev/null || {' \
-    '  false && {' \
+    '    _adb_dl_records "$f" >/dev/null; _rrc=$?' \
+    '    _rrc=0' \
     'verdict refuses a probe record with no evidence'
+
+  # THE SIBLING-KEY DUPLICATE SCAN (PR #429).
+  check_mut sibling-key-unchecked \
+    '    if [ "${_dupother:-0}" -gt 1 ]; then' \
+    '    if false; then' \
+    'a duplicated SIBLING key ([mcp] optional, twice) refuses mcp-required as malformed TOML'
+
+  # THE UNREADABLE-STATE ARM HAS NO ROW, for the reason the unreadable-manifest arm has none: its
+  # witness needs a file or directory the suite cannot read, which root can always read.
 
   # THE PER-ELEMENT `_adb_dl_ok_server` CHECK HAS NO ROW, deliberately. Since the raw grammar
   # validates `^"[A-Za-z0-9_.-]+"$` on the literal, every value that reaches that check has already
@@ -692,6 +703,50 @@ required = ["context7"]
   R21="$(dl report --state "$D21/state" --manifest "$D21/agents.toml" 2>/dev/null)"
   has "$R21" "UNREADABLE" "…and says UNREADABLE in the block a reviewer reads"
   chmod 644 "$D21/agents.toml"
+else
+  ok; ok; ok; ok
+fi
+
+# BOTH KEYS ARE SCANNED FOR DUPLICATES (PR #429). One valid `required` beside two `optional`
+# assignments is invalid TOML whichever key is read, and `mcp-required` — the only call the
+# implementation workflow makes — served the required list from it.
+D22="$(fixture dupsibling '[mcp]
+required = ["context7"]
+optional = ["a"]
+optional = ["b"]
+')"
+dl mcp-required --manifest "$D22/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "a duplicated SIBLING key ([mcp] optional, twice) refuses mcp-required as malformed TOML"
+dl mcp-optional --manifest "$D22/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and mcp-optional, which is the duplicated key itself"
+D23="$(fixture dupsibling2 '[mcp]
+optional = ["a"]
+required = ["context7"]
+required = ["x"]
+')"
+dl mcp-optional --manifest "$D23/agents.toml" >/dev/null 2>&1
+eq "$?" 18 "…and the other way round"
+
+# AN UNREADABLE STATE FILE OR DIRECTORY IS 20 — NOT "NO RECORDS" AND NOT 18 (PR #429). `-f` was
+# false inside an unsearchable directory, so `report` said 11 and `verdict` degraded every server;
+# an unreadable file failed the byte scan and was reported as a grammar error. Skipped as root.
+if [ "$(id -u)" -ne 0 ]; then
+  D24="$(fixture unreadstate '[mcp]
+required = ["context7"]
+')"
+  dl probe-record --state "$D24/state" --server context7 --result usable --evidence 'one query, one answer' >/dev/null 2>&1
+  chmod 000 "$D24/state/docs-consulted.tsv"
+  dl verdict --state "$D24/state" --manifest "$D24/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "an unreadable record file is 20 — not a grammar error (18)"
+  dl report --state "$D24/state" --manifest "$D24/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "…and the report returns 20 rather than 11 or 18"
+  chmod 644 "$D24/state/docs-consulted.tsv"
+  chmod 000 "$D24/state"
+  dl verdict --state "$D24/state" --manifest "$D24/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "an unsearchable state directory is 20 — not 'no records', which would degrade every server"
+  dl report --state "$D24/state" --manifest "$D24/agents.toml" >/dev/null 2>&1
+  eq "$?" 20 "…and the report returns 20 rather than the unstated 11"
+  chmod 755 "$D24/state"
 else
   ok; ok; ok; ok
 fi

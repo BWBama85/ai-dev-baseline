@@ -37,6 +37,9 @@
 #                   record that is not in the record grammar. NEVER a partial count.
 #   19 refused    — a field this module will not store. See "What may be stored" below.
 #   20 unknown    — the ledger could not be read, created, or replaced.
+#   21 oversized  — `checklist` / `verify`: the promoted checklist exceeds the prompt budget (see
+#                   "What may be stored"). NOTHING is emitted: a truncated checklist would drop the
+#                   sweep a class earned, silently, which is the count-too-low direction.
 #   2  usage      — bad or missing arguments.
 #
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is reporting a class as *rarer than it is*. A count
@@ -61,6 +64,12 @@
 # human reading the ledger can see what the class means in practice, and it is the one field this
 # module treats as untrusted — it is never counted, never compared, and NEVER emitted by
 # `checklist`, which is the only subcommand whose output reaches another agent's prompt.
+#
+# Both stored texts — a rule and a summary — are BOUNDED in bytes (`_ADB_PL_TEXT_MAX_BYTES`), and
+# so is the checklist `checklist` emits (`_ADB_PL_CHECKLIST_MAX_BYTES`); the constants below carry
+# the numbers and the reason. A rule outside its bound is refused (19) and never stored; a region
+# outside its bound is refused at `promote` (19) and, if a hand edit or a merge produced one
+# anyway, at `checklist` (21) rather than emitted into a prompt in part.
 #
 # That split is what makes the ledger safe to feed forward. Review-thread text is third-party
 # (base/practices/untrusted-content.md): a body on a public repo is written by anyone with an
@@ -145,6 +154,14 @@ _ADB_PL_CK_BEGIN='<!-- adb:checklist:begin -->'
 _ADB_PL_CK_END='<!-- adb:checklist:end -->'
 _ADB_PL_HIT_BEGIN='<!-- adb:hits:begin -->'
 _ADB_PL_HIT_END='<!-- adb:hits:end -->'
+# THE PROMPT BUDGET. `checklist` is the one subcommand whose output enters an agent's prompt, and
+# both consumers inject it whole — so an unbounded region could crowd out the issue and review
+# instructions it exists to sharpen. Two bounds, both in BYTES: one per stored text (a rule or a
+# summary), enforced at write time and on every read; one on the whole emitted checklist, enforced
+# by `promote` before it appends (19) and by `checklist` before it emits (21).
+# Reported by the declared reviewer on PR #429.
+_ADB_PL_TEXT_MAX_BYTES=1024
+_ADB_PL_CHECKLIST_MAX_BYTES=16384
 
 # --- validation ---------------------------------------------------------------------------------
 # Each predicate answers ONE field. They are separate functions rather than one `case` with four
@@ -179,13 +196,26 @@ _adb_pl_ok_pr() {
 }
 
 _adb_pl_ok_date() {
-  # YYYY-MM-DD, digits and dashes only. Not a calendar check — a wrong-but-well-formed date is a
-  # display defect, while a date carrying a backtick or a newline is a FORMAT defect and would
-  # move a field. Only the second kind can corrupt a count, so only the second kind is refused.
+  # A REAL CALENDAR DATE, YYYY-MM-DD — not only the shape. This used to be a shape check on the
+  # argument that a wrong-but-well-formed date is display, and that held while the date was only
+  # displayed. It is not any more: `stats --pr` orders a class's history by it to decide which pull
+  # request first recorded the class, so `0000-00-00` — accepted by the shape check and sorting
+  # before every real date — moved `pr-new-classes` credit to whichever record carried it. A
+  # validator has to match the field's OPERATIONAL use, and the use is now ordering.
+  # Reported by the declared reviewer on PR #429.
   case "$1" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 0 ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
     *) return 1 ;;
   esac
+  local y m d dim
+  y=$((10#${1%%-*})); m="${1#*-}"; d=$((10#${m#*-})); m=$((10#${m%-*}))
+  [ "$y" -ge 1 ] && [ "$m" -ge 1 ] && [ "$m" -le 12 ] && [ "$d" -ge 1 ] || return 1
+  case "$m" in
+    1|3|5|7|8|10|12) dim=31 ;;
+    4|6|9|11)        dim=30 ;;
+    *) if [ $((y % 4)) -eq 0 ] && { [ $((y % 100)) -ne 0 ] || [ $((y % 400)) -eq 0 ]; }; then dim=29; else dim=28; fi ;;
+  esac
+  [ "$d" -le "$dim" ]
 }
 
 # A value that may not move a parsed field: no backtick (the field separator), no tab, no newline
@@ -218,6 +248,7 @@ _adb_pl_ok_text() {
   # keeps the tracked file readable, which escaping into entities would not.
   # Reported by the declared reviewer on PR #429.
   case "$1" in *'<!--'*|*'-->'*) return 1 ;; esac
+  [ "$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')" -le "$_ADB_PL_TEXT_MAX_BYTES" ] || return 1
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
 }
 
@@ -807,7 +838,7 @@ cmd_record() {
 
   local date="${OPT_DATE:-$(date -u +%Y-%m-%d)}"
   _adb_pl_ok_date "$date" || {
-    printf 'pattern-ledger: refusing date %s — YYYY-MM-DD.\n' "$(adb_display_value "$date")" >&2; exit 19; }
+    printf 'pattern-ledger: refusing date %s — a real calendar date, YYYY-MM-DD.\n' "$(adb_display_value "$date")" >&2; exit 19; }
 
   local summary="${OPT_SUMMARY:-}"
   if [ -n "$summary" ]; then
@@ -948,8 +979,7 @@ cmd_promote() {
   [ -n "$OPT_RULE" ]  || die "promote: --rule is required"
   _adb_pl_ok_class "$OPT_CLASS" || { printf 'pattern-ledger: refusing class %s\n' "$(adb_display_value "$OPT_CLASS")" >&2; exit 19; }
   _adb_pl_ok_text "$OPT_RULE"   || {
-    printf 'pattern-ledger: refusing rule — one printable line, no tab, no newline, and it may not
-  contain "<!-- adb:".\n' >&2; exit 19; }
+    printf 'pattern-ledger: refusing rule — one printable line of at most %s bytes, no tab, no newline, and no HTML comment marker.\n' "$_ADB_PL_TEXT_MAX_BYTES" >&2; exit 19; }
 
   local ledger t tsrc
   read -r t tsrc < <(_adb_pl_threshold) || exit 2
@@ -996,6 +1026,19 @@ cmd_promote() {
     exit 12
   fi
 
+  # THE AGGREGATE BUDGET, AT THE WRITE. A rule that fits its own bound can still be the one that
+  # pushes the emitted checklist past the prompt budget; refusing it here, naming the number, is
+  # what keeps `checklist`'s 21 an event only a hand edit or a merge can cause.
+  local ckregion newsize
+  ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" \
+    || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
+  newsize=$(( $(printf '%s\n' "$ckregion" | awk 'NF { print }' | LC_ALL=C wc -c | tr -d ' ') \
+            + $(printf -- '- `%s` — %s\n' "$OPT_CLASS" "$OPT_RULE" | LC_ALL=C wc -c | tr -d ' ') ))
+  if [ "$newsize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
+    printf 'pattern-ledger: refusing to promote %s — the checklist would be %s bytes, over the %s-byte prompt budget. Retire or tighten a rule first.\n' \
+      "$OPT_CLASS" "$newsize" "$_ADB_PL_CHECKLIST_MAX_BYTES" >&2
+    exit 19
+  fi
   _adb_pl_insert "$ledger" "$_ADB_PL_CK_END" "$(printf -- '- `%s` — %s' "$OPT_CLASS" "$OPT_RULE")" \
     || { printf 'pattern-ledger: could not write %s\n' "$ledger" >&2; exit 20; }
   printf 'promoted %s (%s hits, threshold %s from %s)\n' "$OPT_CLASS" "$count" "$t" "$tsrc"
@@ -1021,7 +1064,20 @@ cmd_checklist() {
     || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
   _adb_pl_promoted "$ledger" >/dev/null \
     || { printf 'pattern-ledger: %s does not parse (a checklist rule is not in the grammar)\n' "$ledger" >&2; exit 18; }
-  printf '%s\n' "$region" | awk 'NF { print }'
+  # THE PROMPT BUDGET, BEFORE ANYTHING IS EMITTED. Both consumers inject this output whole into an
+  # agent's context, so an oversized region would crowd out the instructions it is meant to
+  # sharpen. `promote` keeps the file under the bound; this catches what a hand edit or a merge
+  # put there, and refuses loudly (21) rather than emitting a truncated or crowding payload.
+  # Reported by the declared reviewer on PR #429.
+  local emitted size
+  emitted="$(printf '%s\n' "$region" | awk 'NF { print }')"
+  size="$(printf '%s\n' "$emitted" | LC_ALL=C wc -c | tr -d ' ')"
+  if [ "$size" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
+    printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — refusing to emit it into a prompt. Retire or tighten rules in %s.\n' \
+      "$size" "$_ADB_PL_CHECKLIST_MAX_BYTES" "$ledger" >&2
+    exit 21
+  fi
+  if [ -n "$emitted" ]; then printf '%s\n' "$emitted"; fi
 }
 
 # `stats` — the numbers /resolve-pr-threads' summary reports. #421's own honest boundary says the
@@ -1165,8 +1221,18 @@ cmd_verify() {
     ckdupes="$(printf '%s\n' "$promoted" | awk -F'\t' 'NF { print $1 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
     [ -z "$ckdupes" ] || { printf 'pattern-ledger: duplicate checklist class(es): %s\n' "$(printf '%s' "$ckdupes" | tr '\n' ' ')" >&2; bad=1; }
   fi
+  # THE PROMPT BUDGET, so `verify` and `checklist` agree: a region every rule of which is in the
+  # grammar can still be one `checklist` refuses to emit, and the diagnostic command has to say so.
+  local ckregion cksize over=0
+  ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || ckregion=""
+  cksize="$(printf '%s\n' "$ckregion" | awk 'NF { print }' | LC_ALL=C wc -c | tr -d ' ')"
+  if [ "$cksize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
+    printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — `checklist` will refuse to emit it (21)\n' \
+      "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES" >&2; over=1
+  fi
   [ "$bad" -eq 0 ] || exit 18
-  printf 'ok %s hit(s), %s checklist rule(s) checked in %s\n' "$nh" "$np" "$ledger"
+  [ "$over" -eq 0 ] || exit 21
+  printf 'ok %s hit(s), %s checklist rule(s) checked in %s (checklist %s of %s bytes)\n' "$nh" "$np" "$ledger" "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES"
 }
 
 cmd_threshold() {

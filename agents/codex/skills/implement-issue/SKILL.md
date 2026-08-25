@@ -539,6 +539,11 @@ case "$CRC" in
   18) echo "NOTE: .ai-dev-baseline/patterns.md does not parse; gap analysis will run WITHOUT this
              project's learned classes. It names the offending record:"
       bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" verify ;;
+  # 21 IS "TOO BIG TO INJECT", and the library emits NOTHING for it rather than a truncated list
+  # that silently drops the sweep a class earned. The dispatch runs without the checklist and says
+  # so; the fix is in the ledger, not here. Reported by the declared reviewer on PR #429.
+  21) echo "NOTE: the promoted checklist in .ai-dev-baseline/patterns.md exceeds the prompt budget (rc 21);
+             gap analysis will run WITHOUT it — retire or tighten rules there" ;;
   *)  echo "NOTE: could not read the pattern ledger (rc $CRC); proceeding without it" ;;
 esac
 if [ -n "$CHECKLIST" ]; then
@@ -869,6 +874,7 @@ case "$CRC" in
   0)  : ;;   # a checklist to sweep, or none yet — an ABSENT ledger is 0 with empty output, which
              # is the ordinary first run and is not a problem
   18) echo "NOTE: the pattern ledger does not parse — fix .ai-dev-baseline/patterns.md"; ;;
+  21) echo "NOTE: the promoted checklist exceeds the prompt budget — nothing was emitted; retire or tighten rules in .ai-dev-baseline/patterns.md"; ;;
   *)  : ;;   # 20: not in a git repository, or the ledger path is unreadable
 esac
 ```

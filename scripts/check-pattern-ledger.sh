@@ -372,6 +372,31 @@ if [ "$MODE" = mutation ]; then
     '    *) ;;' \
     'a global manifest carrying a NUL byte is a hard error, never the built-in threshold'
 
+  # THE CALENDAR CHECK (PR #429). Restores the shape-only predicate: with the day bound gone,
+  # `2026-02-30` is accepted and sorts wherever it likes.
+  check_mut date-shape-only \
+    '  [ "$d" -le "$dim" ]' \
+    '  :' \
+    'an impossible date (2026-02-30) is refused, not accepted on shape'
+
+  # THE PER-TEXT BOUND (PR #429).
+  check_mut rule-bound-removed \
+    "  [ \"\$(printf '%s' \"\$1\" | LC_ALL=C wc -c | tr -d ' ')\" -le \"\$_ADB_PL_TEXT_MAX_BYTES\" ] || return 1" \
+    "  :" \
+    'a 1025-byte rule is refused by the per-text bound'
+
+  # THE AGGREGATE BOUND AT THE WRITE (PR #429).
+  check_mut promote-aggregate-unchecked \
+    '  if [ "$newsize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
+    '  if false; then' \
+    'promote refuses the rule that would push the checklist over the prompt budget'
+
+  # THE AGGREGATE BOUND AT THE READ (PR #429).
+  check_mut checklist-unbounded \
+    '  if [ "$size" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
+    '  if false; then' \
+    'an over-budget checklist is refused with 21, not emitted into a prompt'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -709,6 +734,61 @@ seed "$L5f" nulk 2 || bad "fixture: could not seed"
 perl -pe 's/`nulk`/`nu\x00lk`/' "$L5f" > "$L5f.tmp" && mv "$L5f.tmp" "$L5f"
 bash "$PL" due --ledger "$L5f" >/dev/null 2>&1
 eq "$?" 18 "a NUL inside a stored CLASS is refused rather than counted toward a promotion"
+
+# =============================== 5c. the date is operative now (PR #429) =========================
+# `stats --pr` orders a class's history by the record date to decide which PR first recorded it,
+# so a shape-matching impossible date — `0000-00-00` sorts before every real one — moved credit to
+# whichever record carried it. The validator has to match the field's operational use.
+L5g="$work/l5g.md"
+for badd in 0000-00-00 2026-02-30 2023-02-29 2026-13-01 2026-04-31 2026-00-10 2026-08-00; do
+  bash "$PL" record --ledger "$L5g" --class datec --site s.sh --fix abc1234 --pr 1 --thread "D-$badd" --date "$badd" >/dev/null 2>&1
+  eq "$?" 19 "an impossible date ($badd) is refused, not accepted on shape"
+done
+bash "$PL" record --ledger "$L5g" --class datec --site s.sh --fix abc1234 --pr 1 --thread D-leap --date 2024-02-29 >/dev/null 2>&1
+eq "$?" 0 "…while a real leap day (2024-02-29) is accepted"
+bash "$PL" record --ledger "$L5g" --class datec --site s.sh --fix abc1234 --pr 1 --thread D-cent --date 2000-02-29 >/dev/null 2>&1
+eq "$?" 0 "…and the century leap day (2000-02-29), while 1900-02-29 is not"
+bash "$PL" record --ledger "$L5g" --class datec --site s.sh --fix abc1234 --pr 1 --thread D-1900 --date 1900-02-29 >/dev/null 2>&1
+eq "$?" 19 "…(1900 was not a leap year)"
+sed 's/2024-02-29/0000-00-00/' "$L5g" > "$L5g.tmp" && mv "$L5g.tmp" "$L5g"
+bash "$PL" classes --ledger "$L5g" >/dev/null 2>&1
+eq "$?" 18 "a hand-edited 0000-00-00 is refused by the readers rather than sorting first"
+has "$(bash "$PL" verify --ledger "$L5g" 2>&1 >/dev/null)" "invalid date" "…and verify names it"
+
+# =============================== 5d. the prompt budget (PR #429) =================================
+# `checklist` is injected whole into two agent prompts, so both the text and the region are
+# bounded — the text at the write and on every read, the region at `promote` (19, naming the
+# number) and at `checklist` (21, emitting nothing rather than a truncated list).
+L5h="$work/l5h.md"
+seed "$L5h" bigc 2 || bad "fixture: could not seed"
+BIG="$(printf 'x%.0s' $(seq 1 1025))"
+bash "$PL" promote --ledger "$L5h" --class bigc --rule "$BIG" >/dev/null 2>&1
+eq "$?" 19 "a 1025-byte rule is refused by the per-text bound"
+OKR="$(printf 'y%.0s' $(seq 1 1024))"
+bash "$PL" promote --ledger "$L5h" --class bigc --rule "$OKR" >/dev/null 2>&1
+eq "$?" 0 "…while a 1024-byte rule is accepted"
+bash "$PL" record --ledger "$L5h" --class bigc --site s.sh --fix abc1234 --pr 1 --thread BIGSUM --summary "$BIG" >/dev/null 2>&1
+eq "$?" 19 "…and a 1025-byte SUMMARY is refused by the same bound"
+L5i="$work/l5i.md"
+i=0; last=0
+while [ "$i" -lt 20 ]; do
+  i=$((i + 1)); seed "$L5i" "agg-$i" 2 || bad "fixture: could not seed agg-$i"
+  bash "$PL" promote --ledger "$L5i" --class "agg-$i" --rule "$OKR" >/dev/null 2>&1; last=$?
+  [ "$last" -eq 0 ] || break
+done
+eq "$last" 19 "promote refuses the rule that would push the checklist over the prompt budget"
+has "$(bash "$PL" promote --ledger "$L5i" --class "agg-$i" --rule "$OKR" 2>&1 >/dev/null)" "prompt budget" "…and names the budget"
+bash "$PL" checklist --ledger "$L5i" >/dev/null 2>&1
+eq "$?" 0 "…so what promote wrote still fits, and checklist emits it"
+# A hand-appended region past the budget is refused at the read — 21, distinct from malformed.
+L5j="$work/l5j.md"
+awk -v r="- \`hand-1\` — $OKR" '{ print } /<!-- adb:checklist:begin -->/ { print r }' "$L5i" > "$L5j"
+bash "$PL" checklist --ledger "$L5j" >/dev/null 2>&1
+eq "$?" 21 "an over-budget checklist is refused with 21, not emitted into a prompt"
+eq "$(bash "$PL" checklist --ledger "$L5j" 2>/dev/null | wc -c | tr -d ' ')" 0 "…and NOTHING is emitted, not a truncated list"
+bash "$PL" verify --ledger "$L5j" >/dev/null 2>&1
+eq "$?" 21 "…and verify says 21 too, so the diagnostic agrees with the reader"
+has "$(bash "$PL" verify --ledger "$L5j" 2>&1 >/dev/null)" "prompt budget" "…naming the budget"
 
 # =============================== 6. the threshold declaration fails loud =========================
 # A malformed configured value is a hard error, never a silent fall-back. Falling back hands the
@@ -1334,6 +1414,16 @@ hasnt "$RESTXT" 'NOTE: could not determine due promotions' \
 has "$(cat "$ROOT/scripts/lib/pattern-ledger.sh")" 'What makes that converge is a check on the CLEAN-PASS path' \
    "…and the ledger template no longer claims the ordinary path converges on its own"
 has "$RESTXT" 'never revisit'    "…and says why: nothing would come back to it"
+# THE CLEAN-PASS PREFLIGHT IS A SUBSET (PR #429): step 1's `bots = []` exit is one of the two ways
+# code 0 is reached, so running step 1 whole meant a bot-less repo never reconciled anything.
+has "$RESTXT" "Not step 1's bots-disabled exit" \
+   "the clean-pass preflight skips the bots-disabled exit, or bots = [] repos never reconcile"
+# …ITS ABORT GOES THROUGH STEP 8 (PR #429): the preflight switched the tree, so a bare exit strands it.
+has "$RESTXT" 'run step 8 (restore the starting branch) FIRST' \
+   "…and a due failure there restores the branch before exiting"
+# …AND A PROMOTION IT PUSHES MOVES THE HEAD (PR #429): the clean signal was for the previous SHA.
+has "$RESTXT" 'A promotion pushed here moves the head' \
+   "…and a promotion pushed on a clean pass is re-reviewed rather than reported clean"
 # THE ROUND FIGURES COME FROM THIS INVOCATION'"'"'S OWN RECEIPTS, not from PR-wide subtraction —
 # `--pr` is shared, so two overlapping resolver runs would each report the other's work as theirs.
 has   "$RESTXT" 'ROUND_FINDINGS="$(printf' "round findings are counted from the rows this run appended"
@@ -1361,6 +1451,10 @@ has "$RESTXT" 'ROUND_PROMOTED' "…including the promotions, which the delta der
 IMPTXT2="$(cat "$IMP")"
 has   "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} verify' "the malformed-ledger path invokes the real verifier"
 hasnt "$IMPTXT2" 'baseline patterns verify'      "…and not a CLI subcommand nothing implements"
+# THE OVER-BUDGET CODE IS HANDLED (PR #429): the library emits nothing for 21, and a consumer that
+# treated it as the wildcard would proceed without saying why the checklist is absent.
+has "$IMPTXT2" 'exceeds the prompt budget (rc 21)' "/implement-issue handles an over-budget checklist (21) at the gap dispatch"
+eq "$(grep -c 'prompt budget' "$IMP")" 2 "…at BOTH read sites"
 has "$(cat "$IMP")" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side)"
 # BOTH read sites, separately. One `checklist` call would satisfy a single `has`, and the two ends
 # are different claims: the gap dispatch acts before the code exists, the self-review after.

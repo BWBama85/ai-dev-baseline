@@ -35,9 +35,10 @@
 #                    an agent that never considered the question.
 #   18 config      — `[mcp] required` / `optional` is present but malformed.
 #   19 refused     — a field this module will not store (a tab, a newline, a control character).
-#   20 unknown     — the state directory could not be read or written, or an agents.toml EXISTS
-#                    but could not be read. Never folded into 1: an unreadable declaration is not
-#                    an absent one.
+#   20 unknown     — the state directory or record file could not be read or written (an
+#                    unreadable one is never reported as empty, nor as malformed), or an
+#                    agents.toml EXISTS but could not be read. Never folded into 1: an unreadable
+#                    declaration is not an absent one.
 #   2  usage
 #
 # ------------------------------------------------------------------------------------------------
@@ -208,8 +209,18 @@ _adb_dl_append() {
 # VALIDATED THROUGH THE WRITER'S OWN PREDICATES, so the grammar keeps one home and a reader cannot
 # drift from what `probe-record` and `consulted` will actually produce.
 _adb_dl_records() {
-  local f="$1" kind a b c
-  [ -f "$f" ] || return 0
+  local f="$1" kind a b c d
+  # ABSENT IS 0; UNREADABLE IS 2, and the two must not be confused. `-f` is false for a file inside
+  # a directory this process cannot search, and true for a file it cannot read — so an unsearchable
+  # state directory read as "no records" (`report` said 11 and `verdict` degraded every server),
+  # while an unreadable file failed the byte scan below and was reported as a GRAMMAR error (18).
+  # Both hand the operator the wrong repair. Reported by the declared reviewer on PR #429.
+  if [ ! -e "$f" ]; then
+    d="$(dirname "$f")"
+    if [ -d "$d" ] && [ ! -x "$d" ]; then return 2; fi
+    return 0
+  fi
+  [ -r "$f" ] || return 2
   # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
   # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
@@ -279,7 +290,7 @@ _adb_dl_manifest_read_failed() {
 }
 
 _adb_dl_mcp_key() {
-  local key="$1" raw layer layered parsed one _dupfile _dupes _dupkeys _duptbls _lrc
+  local key="$1" raw layer layered parsed one _dupfile _dupes _dupkeys _dupother _duptbls _lrc _other
   # THE PRECEDENCE RULE IS `adb_toml_layered_get`'s (common.sh), not a third copy of it. The loop
   # this replaced also fell THROUGH an empty repo-level declaration to the global manifest, so a
   # project that wrote `required =` silently inherited the machine's list.
@@ -333,7 +344,8 @@ _adb_dl_mcp_key() {
     # set `intbl` and NEITHER duplicate rule fired — a repeated commented table and two `required`
     # assignments under one both passed. A fix one reader learns and its sibling does not is the
     # same partial-validation shape one level up. Reported by the declared reviewer on PR #429.
-    _dupes="$(awk -v k="$key" '
+    case "$key" in required) _other=optional ;; *) _other=required ;; esac
+    _dupes="$(awk -v k="$key" -v o="$_other" '
       /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr)
                           inq = 0
                           for (i = 1; i <= length(hdr); i++) {
@@ -344,11 +356,21 @@ _adb_dl_mcp_key() {
                           sub(/\][[:space:]]*$/, "", hdr); sub(/[[:space:]]+$/, "", hdr)
                           intbl = (hdr == "mcp"); if (intbl) t++; next }
       intbl && $0 ~ ("^[[:space:]]*" k "[[:space:]]*=") { n++ }
-      END { printf "%d %d\n", n + 0, t + 0 }' "$_dupfile")"
-    _dupkeys="${_dupes%% *}"; _duptbls="${_dupes##* }"
+      # THE SIBLING KEY TOO. A manifest with one `required` and two `optional` assignments is
+      # invalid TOML whichever key is being read, and `mcp-required` — the only call the
+      # implementation workflow makes — accepted it and served the required list from a document
+      # no parser would load. Reported by the declared reviewer on PR #429.
+      intbl && $0 ~ ("^[[:space:]]*" o "[[:space:]]*=") { m++ }
+      END { printf "%d %d %d\n", n + 0, m + 0, t + 0 }' "$_dupfile")"
+    read -r _dupkeys _dupother _duptbls <<< "$_dupes"
     if [ "${_dupkeys:-0}" -gt 1 ]; then
       printf 'docs-lib: [mcp] %s is declared %s times in the %s manifest — that is not valid TOML, and only the first would ever be read.\n' \
         "$key" "$_dupkeys" "$layer" >&2
+      return 18
+    fi
+    if [ "${_dupother:-0}" -gt 1 ]; then
+      printf 'docs-lib: [mcp] %s is declared %s times in the %s manifest — that is not valid TOML, so [mcp] %s cannot be read from it either.\n' \
+        "$_other" "$_dupother" "$layer" "$key" >&2
       return 18
     fi
     if [ "${_duptbls:-0}" -gt 1 ]; then
@@ -490,7 +512,7 @@ cmd_none_needed() {
 # malformed declaration is 18 rather than "none declared". The only rc 0 is "every declared
 # required server has a recorded `usable`", or "nothing is declared".
 cmd_verdict() {
-  local required rc f probes="" bad="" s res
+  local required rc f probes="" bad="" s res _rrc
   # THE DECLARATION MAY BE SUPPLIED, for the same reason the record snapshot may be: `report`
   # renders a verdict AND the evidence behind it, and re-reading `agents.toml` between them let the
   # verdict be computed for one server list while the block displayed evidence for another.
@@ -518,9 +540,12 @@ cmd_verdict() {
   if [ -n "${_ADB_DL_SNAPSHOT+x}" ]; then
     probes="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "probe" { print $2 "\t" $3 }')"
   else
-    _adb_dl_records "$f" >/dev/null || {
-      printf 'docs-lib: %s holds a record that is not in the grammar — refusing to adjudicate over a file this module would not have written\n' "$f" >&2
-      return 18; }
+    _adb_dl_records "$f" >/dev/null; _rrc=$?
+    case "$_rrc" in
+      0) ;;
+      2) printf 'docs-lib: %s exists but could not be read (the file or its directory is not readable) — refusing to adjudicate as if nothing were recorded\n' "$f" >&2; return 20 ;;
+      *) printf 'docs-lib: %s holds a record that is not in the grammar — refusing to adjudicate over a file this module would not have written\n' "$f" >&2; return 18 ;;
+    esac
     [ -f "$f" ] && probes="$(awk -F'\t' '$1 == "probe" { print $2 "\t" $3 }' "$f")"
   fi
 
@@ -557,11 +582,14 @@ cmd_verdict() {
 # is a distinct code the workflow step must handle, never an empty string it can print and move on
 # from.
 cmd_report() {
-  local f n_consulted=0 n_none=0 n_probe=0 required rc vrc _srv _ev _report_rc=0
+  local f n_consulted=0 n_none=0 n_probe=0 required rc vrc _srv _ev _report_rc=0 _rrc
   f="$(_adb_dl_file)" || exit 20
-  _adb_dl_records "$f" >/dev/null || {
-    printf 'docs-lib: %s holds a record that is not in the grammar — refusing to render a report from it\n' "$f" >&2
-    return 18; }
+  _adb_dl_records "$f" >/dev/null; _rrc=$?
+  case "$_rrc" in
+    0) ;;
+    2) printf 'docs-lib: %s exists but could not be read (the file or its directory is not readable) — refusing to render a report as if nothing were recorded\n' "$f" >&2; return 20 ;;
+    *) printf 'docs-lib: %s holds a record that is not in the grammar — refusing to render a report from it\n' "$f" >&2; return 18 ;;
+  esac
   # READ ONCE, then derive the counts, the verdict AND the evidence from the same bytes. Another
   # writer may legitimately append while this renders, and separate reads produced a block whose
   # verdict and evidence disagreed. Reported by the declared reviewer on PR #429.

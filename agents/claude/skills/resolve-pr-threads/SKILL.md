@@ -291,28 +291,53 @@ again, and the first implementation after the threshold misses the sweep the cla
 **SWITCH TO THE PR HEAD FIRST — this reads and may COMMIT a ledger.** Code `0` never reaches step
 1, so nothing has resolved the PR's metadata or moved the tree: run as written, this would read
 whatever branch the checkout happens to be on and commit the promotion there. On `main` that is a
-push to the default branch, which `## Important rules` forbids outright. Do step 1's preflight —
-the `gh pr view`, the dirty-tree guard, the `ORIG_BRANCH` capture and the `git switch` — and only
-then reconcile. Step 8 restores the branch on the way out, exactly as it does for the ordinary
-path. Reported by the declared reviewer on PR #429.
+push to the default branch, which `## Important rules` forbids outright. Do step 1's preflight
+SUBSET — the `gh pr view`, the OPEN check, the dirty-tree guard, the `ORIG_BRANCH` capture and the
+`git switch` — and only then reconcile. Step 8 restores the branch on the way out, exactly as it
+does for the ordinary path. Reported by the declared reviewer on PR #429.
+
+**Not step 1's bots-disabled exit.** Step 1 also reads `[reviewers] bots` and exits at `bots = []`
+with "nothing to do" — right for thread resolution, which that setting disables, and wrong here:
+`bots = []` is one of the two ways code `0` is reached at all, so a repository that deliberately
+runs without a bot reviewer took that exit before `due` ever ran and never reconciled a class its
+merged history had earned. Reconciliation resolves no thread, so the setting does not govern it.
+Run the metadata, dirty-tree and switch commands from step 1 and skip its allowlist read entirely.
+Reported by the declared reviewer on PR #429.
 
 ```bash
-# …step 1's preflight has run and the tree is on "$PR_BRANCH"…
+# …step 1's preflight SUBSET has run (no allowlist read) and the tree is on "$PR_BRANCH"…
 bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" due; DRC=$?
 case "$DRC" in
-  0)  : ;;   # classes are owed a rule — promote them (step 4c's form), commit the ledger, then exit
-  11) : ;;   # nothing due. The ordinary case on a clean pass.
+  0)  : ;;   # classes are owed a rule — promote them (step 4c's form) and commit the ledger. That
+             # commit MOVES THE HEAD, so this is NOT an exit: see below.
+  11) : ;;   # nothing due. The ordinary case on a clean pass: step 8, then exit 0.
   # EVERY OTHER CODE IS TERMINAL, exactly as it is in 4c. A wildcard that only warned reported the
   # run clean while leaving an already-earned rule unwritten — the same swallowing this workflow
   # has now been corrected for three times, reintroduced in the arm added to fix the second.
+  # …AND TERMINAL MEANS THROUGH STEP 8. The preflight above switched the tree, so a bare `exit 1`
+  # here stranded the caller on the PR head — issue #17's own defect, reached by the one abort
+  # this section added. Reported by the declared reviewer on PR #429.
   *)  echo "STOP: could not determine due promotions (rc $DRC) — the ledger or [patterns] threshold"
       echo "      needs repair before this run can be called clean."
+      # run step 8 (restore the starting branch) FIRST, then:
       exit 1 ;;
 esac
 ```
 
-This is the one thing a clean pass still does: it resolves nothing and pushes no fix, but it writes
-the checklist rule that merged history already earned.
+**A promotion pushed here moves the head, and the clean pass was for the head BEFORE it.** Step
+4c's form commits the rule and pushes it, so after a `0` from `due` the pull request's head is a
+SHA no reviewer has looked at — and the rule it carries is an operative instruction that
+`/implement-issue` injects into agent prompts, which is exactly the content review exists for.
+Reporting "reviewed clean" over that head would state a status nobody observed
+(`base/practices/verify-before-asserting.md`). So a promotion here is a pushed change like any
+other: set `LAST_SHA` to the ledger commit, run step 7's re-review request, and return to the wait
+in 0b; under `--once`, request and exit, saying that the clean pass was for the previous head. Only
+a round in which `due` returned `11` — nothing written, nothing pushed — exits on the clean
+verdict. Reported by the declared reviewer on PR #429.
+
+This is the one thing a clean pass still does: it resolves nothing, but it writes the checklist
+rule that merged history already earned — and then has that rule reviewed like any other change to
+the head.
 
 ### ⚠ `10` does not guarantee there are threads to resolve
 
