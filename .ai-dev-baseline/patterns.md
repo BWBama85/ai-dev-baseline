@@ -101,4 +101,11 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/pattern-ledger.sh:538` `c0f39e4` `PRRT_kwDOTfywrM6b9jG7` PR #429 2026-08-25 — liveness was read from a signal permission, so EPERM was mistaken for death
 - `partial-validation` `scripts/lib/pattern-ledger.sh:740` `c0f39e4` `PRRT_kwDOTfywrM6b9jG-` PR #429 2026-08-25 — the one write that had no prior file was the one not published by rename
 - `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:565` `c0f39e4` `PRRT_kwDOTfywrM6b9jHC` PR #429 2026-08-25 — per-round figures were overwritten each round, so only the last survived to the summary
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:687` `55d200e` `PRRT_kwDOTfywrM6b-wZB` PR #429 2026-08-25 — a library call with a documented failure code was invoked with no status branch
+- `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:853` `55d200e` `PRRT_kwDOTfywrM6b-wZE` PR #429 2026-08-25 — round figures were subtracted from a scope another invocation also writes to
+- `partial-validation` `scripts/lib/common.sh:2970` `55d200e` `PRRT_kwDOTfywrM6b-wZF` PR #429 2026-08-25 — a table header was compared literally, so a legal trailing comment hid every key in it
+- `toctou` `scripts/lib/docs-lib.sh:527` `55d200e` `PRRT_kwDOTfywrM6b-wZI` PR #429 2026-08-25 — a verdict and the evidence behind it were read from two different file versions
+- `ledger-coverage-gap` `base/workflows/implement-issue.md:745` `55d200e` `PRRT_kwDOTfywrM6b-wZP` PR #429 2026-08-25 — a preflight probed the names one step writes and not the names another does
+- `stale-doc-claim` `scripts/selfcheck.sh:526` `55d200e` `PRRT_kwDOTfywrM6b-wZR` PR #429 2026-08-25 — comments quoted mutation totals that the suites had long since outgrown
+- `stale-doc-claim` `scripts/selfcheck.sh:533` `55d200e` `PRRT_kwDOTfywrM6b-wZT` PR #429 2026-08-25 — a comment restated a claim the decision log had explicitly retired
 <!-- adb:hits:end -->
