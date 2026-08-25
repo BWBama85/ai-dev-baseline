@@ -79,4 +79,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/docs-lib.sh:218` `e8c112c` `PRRT_kwDOTfywrM6b5N3v` PR #429 2026-08-25 — accepted the first of a duplicated key because the reader stops at the first match
 - `false-guarantee` `scripts/lib/docs-lib.sh:152` `e8c112c` `PRRT_kwDOTfywrM6b5N31` PR #429 2026-08-25 — a header asserted append safety for short lines while nothing enforced shortness
 - `silent-permission-change` `scripts/lib/pattern-ledger.sh:536` `e8c112c` `PRRT_kwDOTfywrM6b5N3y` PR #429 2026-08-25 — a temp file mode was installed over a tracked file, invisible to git
+- `metric-scope-mismatch` `scripts/lib/pattern-ledger.sh:824` `d2b2a2d` `PRRT_kwDOTfywrM6b6l6S` PR #429 2026-08-25 — PR scope was used as round scope, so every cumulative figure was reported as this rounds
+- `toctou` `scripts/lib/pattern-ledger.sh:521` `d2b2a2d` `PRRT_kwDOTfywrM6b6l6W` PR #429 2026-08-25 — reclamation gained an ownership check and release did not, so a stale writer could unlock a successor
+- `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:618` `d2b2a2d` `PRRT_kwDOTfywrM6b6l6c` PR #429 2026-08-25 — only one failure code was terminal, so other write failures still let the round resolve
 <!-- adb:hits:end -->
