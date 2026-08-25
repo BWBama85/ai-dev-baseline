@@ -314,6 +314,11 @@ _adb_pl_hits_raw() {
     line == "" { next }
     {
       if (NF < 9)             { bad = 1; exit }
+      # THE PREFIX, not just the span count and the suffix. `FORGED `class` …` carries nine fields
+      # and a well-formed tail, so a hand edit or a merge could put anything before the first code
+      # span and still be counted toward a promotion. The writer emits exactly `- ` there.
+      # Reported by the declared reviewer on PR #429.
+      if ($1 != "- ")         { bad = 1; exit }
       if ($2 == "" || $4 == "" || $6 == "" || $8 == "") { bad = 1; exit }
       # THE WHOLE SUFFIX, not a substring search. `match($9, /PR #[0-9]+/)` found its pattern
       # ANYWHERE, so a hand-edited `garbage PR #999xyz no-date` parsed cleanly and was attributed
@@ -474,8 +479,12 @@ _adb_pl_threshold() {
       # defect already fixed for `[mcp]`, in the sibling this scan is modelled on and which I did
       # not sweep. Reported by the declared reviewer on PR #429.
       if ! awk '
+            # THE TABLE HEADER IS COUNTED TOO. A manifest declaring `[patterns]` twice is invalid
+            # TOML even when `threshold` appears once — the same case already fixed for `[mcp]`,
+            # in the scan this one is modelled on. Reported by the declared reviewer on PR #429.
             /^[[:space:]]*\[/ { hdr = $0; sub(/^[[:space:]]*\[/, "", hdr); sub(/\][[:space:]]*$/, "", hdr)
-                                intbl = (hdr == "patterns"); next }
+                                intbl = (hdr == "patterns"); if (intbl && ++tbl > 1) { bad = 1; exit }
+                                next }
             intbl && $0 ~ /^[[:space:]]*threshold[[:space:]]*=/ {
               if (++seen > 1) { bad = 1; exit }
               # A complete scalar: a bare integer, or a fully quoted one. Trailing comment allowed.
@@ -532,9 +541,13 @@ _adb_pl_owner_gone() {
   [ -n "$host" ] && [ -n "$pid" ] || return 1
   [ "$host" = "$(uname -n 2>/dev/null)" ] || return 1
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  # `kill -0` asks whether the pid exists. A pid we do not own answers EPERM rather than ESRCH,
-  # which is still "alive", so this errs toward not reclaiming.
-  kill -0 "$pid" 2>/dev/null && return 1
+  # `ps -p`, NOT `kill -0`. `kill -0` fails for BOTH "no such process" (ESRCH) and "not yours"
+  # (EPERM), and treating every failure as death means a contender running as another user reclaims
+  # a LIVE lock in a shared checkout — verified by the reviewer, running the predicate as `nobody`
+  # against a root-owned live pid. `ps -p` answers about existence regardless of ownership.
+  # If `ps` is unavailable at all we cannot prove anything, which reads as alive.
+  command -v ps >/dev/null 2>&1 || return 1
+  ps -p "$pid" >/dev/null 2>&1 && return 1
   return 0
 }
 
@@ -737,11 +750,25 @@ cmd_record() {
   # that hit before either locked insert finished. The existence test has to happen where the
   # decision is protected. Reported by the declared reviewer on PR #429.
   if [ ! -f "$ledger" ]; then
-    _adb_pl_template > "$ledger" || { printf 'pattern-ledger: cannot write %s\n' "$ledger" >&2; exit 20; }
+    # STAGED AND RENAMED, like every other write. A direct redirection that is killed part-way — or
+    # hits a full filesystem — leaves a HALF-WRITTEN ledger: the call returns 20, and every retry
+    # then finds the file present and returns 18, so a first-run failure needs manual repair.
+    # Reported by the declared reviewer on PR #429.
+    _tpl="$(mktemp "${ledger}.XXXXXX")" || { printf 'pattern-ledger: cannot stage %s\n' "$ledger" >&2; exit 20; }
+    # AND THE NEW LEDGER GETS THE MODE A NEW FILE WOULD HAVE. `mktemp` creates 0600 and the rename
+    # installs it, so staging the template silently made the FIRST ledger unreadable to everyone
+    # else in a shared checkout — the same defect the update path already fixes by copying the
+    # existing mode, reappearing on the one path that has no existing file to copy from. Derived
+    # from the umask, which is what an ordinary `>` redirection would have honoured.
+    chmod "$(printf '%o' "$(( 0666 & ~0$(umask) ))")" "$_tpl" 2>/dev/null || true
+    if ! _adb_pl_template > "$_tpl" || ! mv "$_tpl" "$ledger"; then
+      rm -f "$_tpl"
+      printf 'pattern-ledger: cannot write %s\n' "$ledger" >&2; exit 20
+    fi
   fi
   [ -r "$ledger" ] && [ -w "$ledger" ] || { printf 'pattern-ledger: %s is not readable and writable\n' "$ledger" >&2; exit 20; }
 
-  local hits
+  local hits _tpl
   # BOTH REGIONS, before appending anything. Validating only the hits half let `record` report a
   # hit written successfully into a file from which no reader can then read a count or a checklist
   # — the refuse-whole contract holding for reads and not for writes. Same partial-validation shape

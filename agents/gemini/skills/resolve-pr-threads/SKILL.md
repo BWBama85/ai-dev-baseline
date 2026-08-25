@@ -568,6 +568,14 @@ did *this* round find". Step 6 subtracts these.
 ```bash
 STATS_BEFORE="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
 ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring from it
+ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))
+# ACCUMULATED ACROSS ROUNDS, so initialise it ONLY on the first. `STATS_BEFORE` and
+# `ROUND_CLASSES` are per-round and must be cleared here; `ROUND_ROWS` is the run's record and must
+# not be. Step 7 sends the loop back through step 1, so clearing this unconditionally would leave
+# the terminal summary reporting only the LAST round — and the finding-per-round trend, which is
+# the whole observable, unobservable for exactly the multi-round loop it exists to measure.
+# Reported by the declared reviewer on PR #429.
+ROUND_ROWS="${ROUND_ROWS:-}"
 ```
 
 …and append to it as each hit is recorded, so step 6 can count recurring hits from the rows this
@@ -787,8 +795,14 @@ Emit a concise summary to the user:
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
 >
-> This round: <ROUND_FINDINGS> findings · <ROUND_RECURRING> recurring · <ROUND_NEW> new classes · <ROUND_PROMOTED> promoted
+> Per round (every round this run processed, oldest first):
+> <ROUND_ROWS>
+>
 > This PR so far: <pr-hits> findings · <pr-recurring> recurring · <pr-new-classes> classes
+
+**Every round's row, not just the last.** The summary is emitted once at the terminal exit, and a
+run that processed six rounds has six measurements to report — printing only the final one is how
+the trend stays invisible for exactly the multi-round loop it is meant to measure.
 > Ledger: <hits> hits across <classes> classes, <promoted> promoted (threshold <t>).
 
 **The last two lines are the point of the whole mechanism, not decoration (#421).** Its honest
@@ -858,6 +872,9 @@ while IFS= read -r c; do
 done <<ROUNDCLS
 $ROUND_CLASSES
 ROUNDCLS
+
+# ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
+ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
 fi
 ```
 

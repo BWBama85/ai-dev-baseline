@@ -289,6 +289,30 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'stats refuses --pr 0 rather than reporting a falsely clean zero'
 
+  # THE RECORD PREFIX (PR #429).
+  check_mut record-prefix-unchecked \
+    '      if ($1 != "- ")         { bad = 1; exit }' \
+    '      if (0)                  { bad = 1; exit }' \
+    'a forged record prefix is refused by `verify`'
+
+  # THE ps-BASED LIVENESS PROBE (PR #429). Restores `kill -0`, which conflates EPERM with ESRCH.
+  check_mut liveness-via-kill \
+    '  ps -p "$pid" >/dev/null 2>&1 && return 1' \
+    '  kill -0 "$pid" 2>/dev/null && return 1' \
+    'pid 1 was judged GONE'
+
+  # THE REPEATED-[patterns]-TABLE COUNT (PR #429).
+  check_mut repeated-patterns-table \
+    '                                intbl = (hdr == "patterns"); if (intbl && ++tbl > 1) { bad = 1; exit }' \
+    '                                intbl = (hdr == "patterns");' \
+    'a repeated [patterns] table header is refused'
+
+  # THE NEW-LEDGER MODE (PR #429).
+  check_mut new-ledger-mode \
+    "    chmod \"\$(printf '%o' \"\$(( 0666 & ~0\$(umask) ))\")\" \"\$_tpl\" 2>/dev/null || true" \
+    "    :" \
+    "a NEWLY CREATED ledger did not get the umask's mode"
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -355,6 +379,14 @@ done
 # The same argument for a hand-edited field OUTSIDE the writer's grammar. `record` cannot produce
 # any of these, so each one means the file was edited or merged badly — and each must stop every
 # reader rather than being counted.
+# THE RECORD PREFIX (PR #429). `FORGED `class` …` carries nine backtick fields and a well-formed
+# suffix, so validating only the span count and the tail let anything sit before the first span.
+sed 's/^- `dupe-class`/FORGED `dupe-class`/' "$L2" > "$work/l2-prefix.md"
+for sub in verify classes stats; do
+  bash "$PL" "$sub" --ledger "$work/l2-prefix.md" >/dev/null 2>&1
+  eq "$?" 18 "a forged record prefix is refused by \`$sub\`"
+done
+
 for bad in 'BadClass' '9leading' '-leading'; do
   sed "s/^- \`dupe-class\`/- \`$bad\`/" "$L2" > "$work/l2-badclass.md"
   bash "$PL" classes --ledger "$work/l2-badclass.md" >/dev/null 2>&1
@@ -590,6 +622,10 @@ for bad in '02' '08' '"03"'; do
   HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
   eq "$?" 2 "a leading-zero threshold ($bad) is refused"
 done
+# A REPEATED [patterns] TABLE is invalid TOML even with one assignment — the `[mcp]` sibling again.
+printf '[patterns]\nthreshold = 3\n\n[patterns]\nfoo = 1\n' > "$MHOME/.config/ai-dev-baseline/agents.toml"
+HOME="$MHOME" bash "$PL" threshold --ledger "$L1" >/dev/null 2>&1
+eq "$?" 2 "a repeated [patterns] table header is refused"
 rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
 
 # `stats --pr` MUST VALIDATE ITS FILTER, or a mistyped one reads as a real PR with no findings.
@@ -868,6 +904,49 @@ mkdir -p "$L7j.lock/ORPHAN"; touch -t 200001010000 "$L7j.lock" 2>/dev/null
     --site s2.sh --fix abc1232 --pr 1 --thread NM2 ) >/dev/null 2>&1
 [ -d "$L7j.lock/ORPHAN" ] && ok || bad "a lock with no owner metadata was reclaimed — unprovable must mean alive"
 rm -rf "$L7i.lock" "$L7j.lock"
+
+# LIVENESS IS ASKED OF `ps`, NOT `kill -0` (PR #429). `kill -0` fails for BOTH "no such process"
+# and "not yours", so a contender running as a different user in a shared checkout would reclaim a
+# LIVE lock. The reviewer verified it as `nobody` against a root-owned pid. `ps -p` answers about
+# existence regardless of ownership — pid 1 is the standing witness: alive, and not ours to signal.
+(
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
+  # shellcheck disable=SC2034  # read by the EVAL'd `_adb_pl_owner_gone` below (`IFS="$TAB"`),
+  # which shellcheck cannot follow through `eval`.
+  TAB="$(printf '\t')"
+  eval "$(sed -n '/^_adb_pl_owner_gone()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
+  D="$work/liveprobe.lock"; mkdir -p "$D"
+  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "1" > "$D/meta"
+  _adb_pl_owner_gone "$D" && exit 1 || exit 0
+) && ok || bad "pid 1 was judged GONE — liveness is being read from a signal permission, not from existence"
+(
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
+  # shellcheck disable=SC2034  # read by the EVAL'd `_adb_pl_owner_gone` below (`IFS="$TAB"`),
+  # which shellcheck cannot follow through `eval`.
+  TAB="$(printf '\t')"
+  eval "$(sed -n '/^_adb_pl_owner_gone()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
+  D="$work/deadprobe.lock"; mkdir -p "$D"
+  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$D/meta"
+  _adb_pl_owner_gone "$D" && exit 0 || exit 1
+) && ok || bad "a plainly dead pid was judged alive — a killed writer would wedge the ledger forever"
+
+# THE FIRST LEDGER IS PUBLISHED BY RENAME (PR #429), like every other write. A direct redirection
+# killed part-way leaves a half-written file that every retry then reads as present and refuses,
+# turning a first-run failure into one needing manual repair.
+has "$(cat "$ROOT/scripts/lib/pattern-ledger.sh")" 'mktemp "${ledger}.XXXXXX"' \
+   "the initial template is staged and renamed, not written in place"
+# …AND THE NEW LEDGER STILL GETS A NEW FILE'"'"'S MODE. Staging through `mktemp` reintroduced the
+# 0600 problem on the one path with no existing file to copy a mode from — caught by the mode
+# assertion above going red on the very next run.
+L7m="$work/newmode.md"
+( umask 022
+  bash "$PL" record --ledger "$L7m" --class nmc --site s.sh --fix abc1231 --pr 1 --thread NMM1 >/dev/null 2>&1 )
+case "$(ls -l "$L7m" | awk '{print substr($1,1,10)}')" in
+  -rw-r--r--) ok ;;
+  *) bad "a NEWLY CREATED ledger did not get the umask's mode: $(ls -l "$L7m" | awk '{print $1}')" ;;
+esac
 
 # A HELD LOCK IS REPORTED, NEVER WRITTEN THROUGH. The dangerous failure is a writer that cannot
 # take the lock and proceeds anyway.
