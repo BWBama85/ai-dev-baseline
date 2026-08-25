@@ -35,6 +35,7 @@ Sweep each of these before opening a pull request.
 - `evidence-discarded` — When a field is mandatory because a reader needs it, find every place that reader is served and check each one renders it. Run-state files are swept, so a report is often the only surviving copy — and a fix applied to the success path leaves the failure path, where the evidence matters most.
 - `toctou` — When a command checks a precondition and then acts on it, the lock must span BOTH — locking only the write leaves the decision racing. And never reclaim a lock by deleting the directory you observed: rename it to a unique name first, so exactly one recoverer wins and nobody deletes a lock somebody else just took.
 - `ledger-coverage-gap` — A signal this loop captures must reach the consumer that needs it: record every legitimate finding including one an earlier commit already fixed, and treat a failed record as terminal rather than resolving threads whose history was never stored.
+- `false-guarantee` — A comment asserting a safety property is a claim, not a mechanism. Name what enforces it in the same breath — a lock, a bound, a validator — and if the answer is "the caller is sequential" or "the lines are short", check that something makes it so. Both instances of this class were headers arguing a guarantee the code did not provide.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -74,4 +75,8 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/pattern-ledger.sh:394` `75572cd` `PRRT_kwDOTfywrM6b4xnC` PR #429 2026-08-25 — the parser checked the rule was non-empty but not that it obeyed the writer grammar
 - `shell-injection` `scripts/lib/pattern-ledger.sh:587` `75572cd` `PRRT_kwDOTfywrM6b4xnF` PR #429 2026-08-25 — a path was interpolated into trap text, which is shell source evaluated later
 - `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:629` `75572cd` `PRRT_kwDOTfywrM6b4xnJ` PR #429 2026-08-25 — a failed record only warned, so the round resolved the threads and lost the findings
+- `status-swallowed` `scripts/lib/docs-lib.sh:485` `e8c112c` `PRRT_kwDOTfywrM6b5N3t` PR #429 2026-08-25 — a diagnostic was printed and the failing status was not returned with it
+- `partial-validation` `scripts/lib/docs-lib.sh:218` `e8c112c` `PRRT_kwDOTfywrM6b5N3v` PR #429 2026-08-25 — accepted the first of a duplicated key because the reader stops at the first match
+- `false-guarantee` `scripts/lib/docs-lib.sh:152` `e8c112c` `PRRT_kwDOTfywrM6b5N31` PR #429 2026-08-25 — a header asserted append safety for short lines while nothing enforced shortness
+- `silent-permission-change` `scripts/lib/pattern-ledger.sh:536` `e8c112c` `PRRT_kwDOTfywrM6b5N3y` PR #429 2026-08-25 — a temp file mode was installed over a tracked file, invisible to git
 <!-- adb:hits:end -->
