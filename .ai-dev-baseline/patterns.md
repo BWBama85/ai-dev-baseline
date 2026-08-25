@@ -87,4 +87,8 @@ One line per resolved review thread, newest last.
 - `ledger-coverage-gap` `base/workflows/resolve-pr-threads.md:658` `d0d2042` `PRRT_kwDOTfywrM6b6952` PR #429 2026-08-25 — a wildcard treated a hard configuration error as success and let the round continue
 - `partial-validation` `scripts/lib/docs-lib.sh:181` `d0d2042` `PRRT_kwDOTfywrM6b6955` PR #429 2026-08-25 — IFS folding meant the field-count test could not enforce the arity it claimed to
 - `partial-validation` `scripts/lib/pattern-ledger.sh:461` `d0d2042` `PRRT_kwDOTfywrM6b6956` PR #429 2026-08-25 — a reconstructed scalar was validated instead of the incomplete one the operator wrote
+- `toctou` `scripts/lib/pattern-ledger.sh:566` `630ac96` `PRRT_kwDOTfywrM6b7dvJ` PR #429 2026-08-25 — verification and deletion were separate filesystem operations with a window between them
+- `metric-scope-mismatch` `base/workflows/resolve-pr-threads.md:572` `630ac96` `PRRT_kwDOTfywrM6b7dvK` PR #429 2026-08-25 — a side accumulator counted the idempotent no-op that the snapshots correctly ignored
+- `false-guarantee` `scripts/lib/docs-lib.sh:125` `630ac96` `PRRT_kwDOTfywrM6b7dvN` PR #429 2026-08-25 — a byte bound was measured in characters, so the guarantee it named did not hold
+- `partial-validation` `scripts/lib/pattern-ledger.sh:480` `630ac96` `PRRT_kwDOTfywrM6b7dvQ` PR #429 2026-08-25 — the duplicate-key rule was applied to one manifest table and not its sibling
 <!-- adb:hits:end -->
