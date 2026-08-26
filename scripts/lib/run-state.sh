@@ -21,7 +21,7 @@
 # Output — declarative `key: value` lines, in this order, each omitted when it has nothing to say:
 #   run-state: /implement-issue run in progress — source <dir>/implement-issue-active.json
 #   phase: <phase>
-#   phase-history: <phase>@<at>, …                       (when the marker carries one, #243)
+#   phase-history: [(N earlier omitted) ]<phase>@<at>, …   (when the marker carries one, #243; last 64)
 #   branch: <branch>
 #   issues: #<n>, #<n>
 #   pr: <url>                                            (when prUrl is present)
@@ -39,9 +39,11 @@
 #   - branch, owner: non-empty strings with no whitespace and no character of Unicode category
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars — `owner` may be ABSENT (unowned), never present and
 #     empty or null; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
-#     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: 1..64 entries of
+#     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: >=1 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase` and in which no
-#     two ADJACENT entries share a phase (every writer suppresses that append). Append order is
+#     two ADJACENT entries share a phase (every writer suppresses that append); the LAST 64 are
+#     rendered, with a count of earlier ones, so the line stays bounded while the workflow's
+#     append-only record does not have to be. Append order is
 #     the record; the timestamps are NOT required to be monotonic, because a wall clock that moved
 #     backwards mid-run does not make the marker the workflow wrote malformed. `prUrl`, like
 #     `owner`, may be absent, never present and empty. A claim's `expiresAt` is a non-negative
@@ -127,12 +129,12 @@ _RS_MARKER_JQ='
   | if (has("phaseHistory") | not) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
     elif ((.h|length) == 0) then error("phaseHistory")
-    elif ((.h|length) > 64) then error("phaseHistory")
     elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))
                    and str(.at; 20) and (.at | iso)] | all | not) then error("phaseHistory")
     elif ((.h|length) > 0 and (.h[-1].phase != .phase)) then error("phaseHistory")
     elif ([.h[].phase] as $p | any(range(1; $p|length); $p[.] == $p[. - 1])) then error("phaseHistory")
-    else .hs = ([.h[] | "\(.phase)@\(.at)"] | join(", ")) end
+    else .hs = ((if (.h|length) > 64 then "(\((.h|length) - 64) earlier omitted) " else "" end)
+                + ([.h[-64:][] | "\(.phase)@\(.at)"] | join(", "))) end
   | [ .branch, .issue, .phase, .prUrl, .owner, .hs ] | .[]'
 
 _RS_CLAIM_JQ='

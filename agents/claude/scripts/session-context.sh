@@ -66,7 +66,9 @@ fi
 # SLURPED AND COUNTED: two objects on stdin would otherwise be evaluated both, and `-j` would
 # concatenate their fields — `"com"` + `"pact"` is a source this hook acts on, and two half paths
 # are a checkout nobody named. Exactly one object, or no field at all.
-hook_field() { printf '%s' "$HOOK_INPUT" | jq -js --arg k "$1" 'if length == 1 and (.[0]|type) == "object" then (.[0][$k] // empty | tostring) else empty end' 2>/dev/null; }
+# STRINGS ONLY: `tostring` would turn `"cwd": false` into the relative path `false`, which can name
+# a nested repository nobody supplied. A field of any other type is absent.
+hook_field() { printf '%s' "$HOOK_INPUT" | jq -js --arg k "$1" 'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" then .[0][$k] else empty end' 2>/dev/null; }
 field() { local v; v="$(hook_field "$1"; printf x)"; printf '%s' "${v%x}"; }
 
 SOURCE="$(field source; printf x)"; SOURCE="${SOURCE%x}"
@@ -122,18 +124,19 @@ case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
 # "capped" output came out longer than the cap it named (315-char path, 256 cap: 1,315 chars).
 # The state directory is on the summary's own first line (the `run-state:` line right below the
 # header) and on stderr; the cap line points there.
-# THE BUDGET IS MEASURED ON THE ENCODED TEXT — `enc` is the JSON string length minus its quotes —
-# because the harness's limit applies to what is written, and a path full of backslashes or
-# quotes doubles under escaping (measured: 8,692 decoded characters, 16,779 on the wire).
+# THE BUDGET IS MEASURED ON THE ENCODED BYTES — `enc` is the JSON string's UTF-8 byte length
+# minus its quotes — because the harness's limit applies to what is written: a path full of
+# backslashes or quotes doubles under escaping (measured: 8,692 decoded characters, 16,779 on the
+# wire), and a multibyte character is one code point and up to four bytes.
 jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
-  def enc: (tojson | length) - 2;
+  def enc: (tojson | utf8bytelength) - 2;   # BYTES, not code points: an emoji is 1 to length, 4 on the wire
   ($h + "\n" + $s) as $ctx
   | "\n(capped at \($max) characters — the state directory is named on the run-state line below the header, and on stderr)" as $cap
   # The wrapper around additionalContext is MEASURED, not a constant (a constant of 73 was 5 short
   # of the real 78 and let a 9,505-character line through a 9,500 cap), so the whole stdout line
   # fits in $max.
   # ...and ONE MORE for the newline jq writes after the object, which is on the wire too.
-  | ($max - 1 - ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | length)) as $budget
+  | ($max - 1 - ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | utf8bytelength)) as $budget
   | ($budget - ($cap | enc)) as $keep
   # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that
   # fits is kept; the header or the source line (0 and 1), when too long, is TRUNCATED to a third
@@ -154,7 +157,7 @@ jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
   | ($folded | split("\n")) as $ls
   | (if ($ls | length) > 0 and ($ls[-1] | startswith("(capped at")) then $ls[-1] else "" end) as $notice
   | (if $notice == "" then $ls else $ls[:-1] end) as $body
-  | ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | length) as $wrap
+  | ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | utf8bytelength) as $wrap
   | ($body | until((length == 0) or ((((. + (if $notice == "" then [] else [$notice] end)) | join("\n")) | enc) + $wrap + 1 <= $max); .[:-1])) as $kept
   | (($kept + (if $notice == "" then [] else [$notice] end)) | join("\n")) as $out
   | {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $out}}'

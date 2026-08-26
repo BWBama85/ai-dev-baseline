@@ -182,10 +182,10 @@ if [ "$MODE" = mutation ]; then
     '    elif ((.h|length) > 0 and (.h[-1].phase != .phase)) then error("phaseHistory")' \
     '    elif false then error("phaseHistory")' \
     'a history whose last phase is not .phase is refused whole'
-  check_mut history-bound-dropped \
-    '    elif ((.h|length) > 64) then error("phaseHistory")' \
-    '    elif false then error("phaseHistory")' \
-    'a history of 65 entries is refused whole'
+  check_mut history-render-unbounded \
+    '                + ([.h[-64:][] | "\(.phase)@\(.at)"] | join(", "))) end' \
+    '                + ([.h[] | "\(.phase)@\(.at)"] | join(", "))) end' \
+    'exactly 64 rendered'
   check_mut url-scheme-unchecked \
     '((.prUrl | test("^https://")) and (.prUrl | unsafe | not))' \
     '(.prUrl | unsafe | not)' \
@@ -255,9 +255,17 @@ if [ "$MODE" = mutation ]; then
   # (every byte the wire carries, a two-byte newline included); the 30-cap wc -c sweep, the
   # backslash fixture and the ceiling/floor rows are what observe the bound.
   check_mut payload-multi-value-accepted \
-    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" then (.[0][$k] // empty | tostring) else empty end'"'"'' \
-    'jq -j --arg k "$1" '"'"'if type == "object" then (.[$k] // empty | tostring) else empty end'"'"'' \
+    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" then .[0][$k] else empty end'"'"'' \
+    'jq -j --arg k "$1" '"'"'if type == "object" and (.[$k]|type) == "string" then .[$k] else empty end'"'"'' \
     'two payload objects'
+  check_mut payload-field-coerced \
+    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" then .[0][$k] else empty end'"'"'' \
+    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" then (.[0][$k] // empty | tostring) else empty end'"'"'' \
+    'cwd of 0'
+  check_mut bytes-not-codepoints \
+    '  def enc: (tojson | utf8bytelength) - 2;' \
+    '  def enc: (tojson | length) - 2;' \
+    'multibyte'
   check_mut trailing-newline-stripped \
     'SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"' \
     'SESSION_CWD="$(hook_field cwd)"' \
@@ -438,8 +446,10 @@ marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"branc
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"branched", at:"2026-08-26T08:00:00Z"}, {phase:"pushed", at:"2026-08-26T07:00:00Z"}]}'; summary "$d" "$SID_A"
 eq "$RC" 0 "1e a history whose timestamps run backwards is ACCEPTED — append order is the record; a wall clock that moved is not a malformed marker"
 has "$OUT" "phase-history: branched@2026-08-26T08:00:00Z, pushed@2026-08-26T07:00:00Z" "1e ...and rendered in append order"
-marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 65)}"; refused "a history of 65 entries is refused whole"
-marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 64)}"; summary "$d" "$SID_A"; eq "$RC" 0 "1e a history of 64 entries is accepted"
+marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 64)}"; summary "$d" "$SID_A"; eq "$RC" 0 "1e a history of 64 entries is accepted"; hasnt "$OUT" "earlier omitted" "1e ...and rendered whole"
+marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 65)}"; summary "$d" "$SID_A"; eq "$RC" 0 "1e a history of 65 entries is ACCEPTED (the workflow's record is unbounded)"
+has "$OUT" "phase-history: (1 earlier omitted) " "1e ...and the reader renders only the last 64, saying how many it left out"
+eq "$(printf '%s\n' "$OUT" | grep '^phase-history:' | tr ',' '\n' | wc -l | tr -d ' ')" 64 "1e ...exactly 64 rendered"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[]}'; refused "an explicitly empty phaseHistory is refused whole (only an ABSENT key is the legacy shape)"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"pushed", at:"2026-08-26T07:00:00Z"}, {phase:"pushed", at:"2026-08-26T07:05:00Z"}]}'; refused "a history with two ADJACENT entries of one phase is refused whole (every writer suppresses that append)"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"pushed", at:"2026-08-26T07:00:00Z"}, {phase:"branched", at:"2026-08-26T07:01:00Z"}, {phase:"pushed", at:"2026-08-26T07:05:00Z"}]}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e a phase that recurs NON-adjacently is accepted (a legitimate return to an earlier phase)"
@@ -589,6 +599,12 @@ done
 hook 'not json'; eq "$RC" 0 "2d garbage payload: exit 0"; eq "$OUT" "" "2d garbage payload: silent"
 hook ''; eq "$RC" 0 "2d empty payload: exit 0"; eq "$OUT" "" "2d empty payload: silent"
 hook '[1,2]'; eq "$RC" 0 "2d non-object payload: exit 0"; eq "$OUT" "" "2d non-object payload: silent"
+# A non-string `cwd` must not be coerced into a path: `0` would become the relative path `0`, and
+# a nested repository of that name here would be read. Run from a parent that has one. (`false`
+# and `null` never reached the coercion — jq's `//` drops them — so a number is the reachable case.)
+PF="$work/parent/0"; mkdir -p "$PF/.claude/state"; check_git "$PF" init -q; marker "$PF/.claude/state" "$LIVE"
+OUT="$( cd "$work/parent" && printf '%s' '{"source":"compact","cwd":0}' | env -u CLAUDE_CODE_SESSION_ID bash "$H/session-context.sh" 2>/dev/null )"; RC=$?
+eq "$RC" 0 "2d a cwd of 0: exit 0"; eq "$OUT" "" "2d a cwd of 0 is not coerced into a path — the nested repository named 0 is NOT read"
 # Two objects whose halves would concatenate into an accepted source and a real checkout path.
 half1="${R:0:10}"; half2="${R:10}"
 hook "$(jq -cn --arg a "$half1" --arg b "$half2" '{source:"com",cwd:$a},{source:"pact",cwd:$b}' | tr -d '\n')"
@@ -706,6 +722,14 @@ for cap in $(seq 1024 7 1230); do
   raw="$(printf '%s' "$(payload compact "$SID_A" "$BSP")" | env -u CLAUDE_CODE_SESSION_ID ADB_SESSION_CONTEXT_MAX_CHARS="$cap" bash "$H/session-context.sh" 2>/dev/null | wc -c | tr -d ' ')"
   [ "$raw" -le "$cap" ] || { bad "2j every cap in the sweep bounds the written line, newline included: cap $cap wrote $raw bytes"; break; }
 done; ok
+# MULTIBYTE paths: `length` counts code points, the wire carries bytes. A path of three-byte
+# characters repeated across the artifacts: well under 9500 code points, well over 9500 bytes.
+MBP="$work/$(printf '\xe2\x82\xac%.0s' $(seq 1 120))/$(printf '\xe2\x82\xac%.0s' $(seq 1 120))"
+mkdir -p "$MBP/.claude/state"; check_git "$MBP" init -q; marker "$MBP/.claude/state" "$LIVE"
+for f in gap-prompt.txt gaps.md gaps.err review-prompt.txt review.md review.err docs-consulted.tsv gaps-1.md gaps-2.md gaps-3.md gaps-4.md gaps-5.md gaps-6.md gaps-7.md gaps-8.md; do printf 'x\n' > "$MBP/.claude/state/$f"; done
+raw="$(printf '%s' "$(payload compact "$SID_A" "$MBP")" | env -u CLAUDE_CODE_SESSION_ID bash "$H/session-context.sh" 2>/dev/null | wc -c | tr -d ' ')"
+[ "$raw" -gt 0 ] && ok || bad "2j the multibyte fixture was summarised at all"
+[ "$raw" -le 9500 ] && ok || bad "2j a multibyte path: the line written is within the cap in BYTES: $raw bytes"
 # A cwd whose directory name ends in a NEWLINE names a different directory than its newline-free
 # sibling; the sibling here is a live repository, and the hook must NOT inject its run.
 NLR="$work/nlrepo"; mkdir -p "$NLR/.claude/state"; check_git "$NLR" init -q; marker "$NLR/.claude/state" "$LIVE"
