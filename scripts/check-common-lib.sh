@@ -1039,9 +1039,10 @@ adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file
 # --- adb_claude_hook_scripts / adb_claude_hook_regex (#36) -------------------
 # One enumeration feeds the manifest AND both settings filters. If they drift, a hook is either
 # linked-but-never-wired or wired-but-never-removed on uninstall.
-eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "4" "hook scripts: four wired hooks"
+eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "5" "hook scripts: five wired hooks"
 has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
 has "$(adb_claude_hook_scripts)" "state-claim-gate.sh" "hook scripts: includes the state-claim gate"
+has "$(adb_claude_hook_scripts)" "session-context.sh" "hook scripts: includes the run-state context hook (#431)"
 # A RETIRED script must not still be named here: the manifest would demand a source that no longer
 # exists, and the settings filters would go on matching a command nothing installs. Derived from
 # the register (#378) rather than naming one, so it holds for the next retirement too.
@@ -1052,7 +1053,7 @@ done <<EOF
 $(adb_agent_manifest_retired claude /r /h | cut -f2)
 EOF
 eq "$(adb_claude_hook_regex /home/u)" \
-  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency|state-claim-gate)\.sh$' \
+  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency|state-claim-gate|session-context)\.sh$' \
   "hook regex: anchored to the EXACT installed paths, not a basename"
 # The ownership test must not claim a user's own script that merely shares a filename. A
 # basename-anchored pattern would, and because the filters walk EVERY hook event, uninstall
@@ -1113,12 +1114,12 @@ eq "$(adb_claude_hooks_state "$hs_dir/missing.json" "$hs_home")" "none" "hooks-s
 printf '{"hooks":{"Stop":[{"command":"/custom/precommit-gate.sh"}]}}\n' > "$hs_dir/foreign.json"
 eq "$(adb_claude_hooks_state "$hs_dir/foreign.json" "$hs_home")" "none" \
   "hooks-state: a FOREIGN command sharing the basename is not ours → none, not partial"
-eq "$(adb_claude_hooks_missing "$hs_dir/foreign.json" "$hs_home" | wc -l | tr -d ' ')" "4" \
+eq "$(adb_claude_hooks_missing "$hs_dir/foreign.json" "$hs_home" | wc -l | tr -d ' ')" "5" \
   "hooks-missing: a foreign command satisfies nothing"
 
 eq "$(adb_claude_hooks_missing "$hs_all"  "$hs_home" | wc -l | tr -d ' ')" "0" "hooks-missing: fully wired names nothing"
 eq "$(adb_claude_hooks_missing "$hs_part" "$hs_home" | tr -d ' \n')" "precommit-gate.sh" "hooks-missing: names the removed hook"
-eq "$(adb_claude_hooks_missing "$hs_none" "$hs_home" | wc -l | tr -d ' ')" "4" "hooks-missing: none → every shipped hook"
+eq "$(adb_claude_hooks_missing "$hs_none" "$hs_home" | wc -l | tr -d ' ')" "5" "hooks-missing: none → every shipped hook"
 
 # Each shipped hook must independently produce `partial` when it alone is removed. Without this,
 # the predicate could key on one filename again and still pass the cases above.

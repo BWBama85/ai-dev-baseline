@@ -34,6 +34,17 @@
           "statusMessage": "ai-dev-baseline: install currency"
         }
       ]
+    },
+    {
+      "matcher": "compact|resume",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "__ADB_HOME__/.claude/scripts/session-context.sh",
+          "timeout": 30,
+          "statusMessage": "ai-dev-baseline: run-state context"
+        }
+      ]
     }
   ]
 }

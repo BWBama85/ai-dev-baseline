@@ -1230,6 +1230,11 @@ fact session-start-config "fixed:session_start" -- \
 # a `compact` swap tooling mid-session.
 fact session-start-source "fixed:startup" -- \
   agents/claude/settings.hooks.json agents/claude/scripts/session-currency.sh docs/installation.md
+# The run-state hook's trigger set (#431), pinned the same way: the settings matcher, the script's
+# own source gate and the doc must name the SAME two sources, or a `compact` the matcher dispatches
+# is one the script ignores — and the whole feature is then a hook that fires and says nothing.
+fact session-context-source "fixed:compact|resume" -- \
+  agents/claude/settings.hooks.json agents/claude/scripts/session-context.sh docs/installation.md
 
 # --- FACT: the currency outcome vocabulary (#139) -----------------------------
 # currency-lib.sh's `check` returns `<outcome><TAB><message>` and leaves PRESENTATION to the caller,

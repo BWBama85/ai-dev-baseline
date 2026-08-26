@@ -203,11 +203,11 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
   - Every entry point gates its own interpreter as its first statement, in one of **three**
     classifications that `check-bash-floor.sh --entrypoints` enforces (it fails the build on a
     file that is unclassified or uses the wrong form):
-    - **gate** (65 files) — `adb_require_bash`: re-exec, else exit non-zero with your
-      platform's install command.
-    - **advisory** (2) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
-      file takes its own documented no-op and exits **0**. For `session-currency.sh` and
-      `state-claim-gate.sh`, whose contracts forbid a non-zero exit.
+    - **gate** (the overwhelming majority; `--entrypoints` prints the live count) —
+      `adb_require_bash`: re-exec, else exit non-zero with your platform's install command.
+    - **advisory** (3) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
+      file takes its own documented no-op and exits **0**. For `session-currency.sh`,
+      `session-context.sh` and `state-claim-gate.sh`, whose contracts forbid a non-zero exit.
       It never runs its body under a sub-floor interpreter (D31).
     - **exempt** (1) — `check-bash-floor.sh` calls neither: it is the observer, and an observer
       that upgrades its own interpreter has destroyed the observation (D31).

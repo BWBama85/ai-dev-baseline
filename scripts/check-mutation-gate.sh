@@ -73,7 +73,7 @@ check_exit_guard "check-mutation-gate" "rm -rf \"$work\""
 if [ "$MODE" = mutation ]; then
   mut_prepare() {
     local d="$1"
-    check_copy_subtrees "$ROOT" "$d" scripts .github bin agents .claude >/dev/null 2>&1 || return 1
+    check_copy_subtrees "$ROOT" "$d" scripts .github bin agents .claude base >/dev/null 2>&1 || return 1
     cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$d/" 2>/dev/null || return 1
     printf '%s' "$d/scripts/mutation-gate.sh"
   }

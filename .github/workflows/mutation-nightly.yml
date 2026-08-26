@@ -57,6 +57,7 @@ jobs:
           - fact-mutation
           - selfcheck-guard-mutation
           - mutation-gate-mutation
+          - session-context-mutation
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

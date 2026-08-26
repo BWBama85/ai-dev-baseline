@@ -216,7 +216,7 @@ wire_hooks() {
   mv "$tmp" "$settings" || {
     rm -f "$tmp"
     adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
-  adb_info "  hooks  wired global Stop gates + SessionStart currency check into ~/.claude/settings.json (backed up)"
+  adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
 }
 
 run_adapter() {

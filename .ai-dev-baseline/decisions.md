@@ -7447,3 +7447,60 @@ survive is the part a later reader needs.
              unconditional run rather than by hope. The gate is a guard whose failure mode is a
              green step, so it is observed failing eight ways before it is trusted with a skip.
 - baseline-issue: n/a
+
+## D92 — a run survives compaction: its state directory is read back, by a hook that owns no decision
+- date:      2026-08-26
+- category:  project-delta
+- unknown:   A long `/implement-issue` run outlives its context window, and after the harness
+             compacts mid-step the summary may or may not carry which step it was on, which
+             REQUIRED findings are still open, or where the prompt files live (#431). The state
+             directory already held those facts — the marker's phase, branch, issue and owner;
+             the gap, review and docs artifacts — and nothing read any of it back:
+             `base/workflows/` had zero mentions of `compact`, and the one `SessionStart` hook the
+             baseline shipped was deliberately `startup`-only, for currency.
+- decision:  A reader library plus a Claude adapter, split exactly as currency is (D11's shape).
+             `scripts/lib/run-state.sh summary --state <dir> [--session <id>]` prints declarative
+             `key: value` lines drawn from a CLOSED grammar the run itself wrote — phase, the
+             append-only `phaseHistory` (#243, absorbed here), branch, issue numbers, PR, blocked
+             reason, artifact PATHS, a count of `REQUIRED` marks — and refuses a marker WHOLE when
+             any field falls outside it. `agents/claude/scripts/session-context.sh` runs on
+             `SessionStart` `compact|resume`, exits 0 on every path, and injects the answer as
+             `hookSpecificOutput.additionalContext` with a provenance header as its first line.
+             The root docs gain `# Compact instructions` (`base/practices/compact-instructions.md`)
+             telling the compactor what only the conversation held. Six gap-analysis findings were
+             settled from the repo rather than escalated, and each is a rule here:
+             (1) the pre-marker window is covered by the RUN CLAIM — `gap-analysis.lock` carries an
+             `owner` and a lease, and the `issue-<n>.json` snapshots name the issues — so no new
+             state file joins `state-scan`; (2) "open REQUIRED findings" is not a number the files
+             hold, so the field is `review-required-marks`, a count of RECORDED marks, named for
+             what it is; (3) the summary covers `/implement-issue` state only — `/roadmap` and
+             `/resolve-pr-threads` write no marker, and a schema invented for them here would be a
+             second home; (4) both prompt files are named, by path; (5) the modified-file list and
+             the gate result exist only in the conversation, so the compact block asks the
+             summarizer for them and says it is guidance, not a mechanism; (6) stderr from an
+             exit-0 hook reaches only the debug log (vendor docs, read this run), so the audit line
+             rides INSIDE the injection. The `implemented` phase gains a dedicated write, before
+             the first gate run, so the history records the gate span (#243's open question).
+             A separate library rather than a `summary` on `implement-lib.sh`: that module's
+             charter is run ADMISSION and `docs-lib-mutation` already names it as an input, so
+             growing it would re-trigger an unrelated harness on every reader change.
+- placement: `scripts/lib/run-state.sh`, `agents/claude/scripts/session-context.sh`,
+             `agents/claude/settings.hooks.json` (a second `SessionStart` group, matcher
+             `compact|resume`), `adb_claude_hook_scripts` (five hooks), `base/practices/compact-instructions.md`
+             + the index row, `base/workflows/implement-issue.md` (the `# ADB-SNIPPET: phase-update`
+             template, creation and step-10 sites, the `implemented` write), `scripts/check-session-context.sh`
+             (+ `--mutation`, three pools, registered with its input set; rides the `implement-gate`
+             CI job through `mutation-gate.sh`; in the nightly matrix), `check-fact-drift.sh`
+             (`compact|resume` pinned across settings, script and doc), `docs/installation.md`
+             ("A run survives compaction"), CLAUDE.md's table, CONTRIBUTING.md (three advisory
+             entry points).
+- reason:    The facts a run wrote are the cheapest memory it has and the only one compaction
+             cannot lose; reading them back is a reader's job, and a reader that carries text it
+             collected from strangers into a model's context is an injection channel — so the
+             grammar is closed and refusal is whole. The hook owns no decision because Codex and
+             Gemini will need the same answer after their own compaction (#14), and a decision in
+             a Claude hook is unreachable from anywhere else — the lesson #139 taught about
+             currency. Guidance to the summarizer is kept and labelled as guidance, because the
+             vendor documents the block and the practice forbids claiming a mechanism that is not
+             wired.
+- baseline-issue: n/a

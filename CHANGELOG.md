@@ -10,6 +10,32 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **A run survives compaction: its state directory is read back (#431, absorbing #243).** A long
+  `/implement-issue` run outlives its context window, and after the harness compacted mid-step
+  the summary might or might not carry which step it was on, which REQUIRED findings were still
+  open, or where its prompt files lived — the run's state directory held all of it, and nothing
+  read it back.
+
+  `scripts/lib/run-state.sh summary` is the reader: declarative `key: value` lines from a **closed
+  grammar the run itself wrote** — phase, the new append-only `phaseHistory`, branch, issue
+  numbers, PR, blocked reason, artifact **paths**, a count of `REQUIRED` marks in `review.md` —
+  and never an issue's or a finding's text, because the output lands in a model's context. A
+  marker that fails validation is refused whole; before the branch exists the run claim is the
+  liveness signal. Owner-scoped by `adb_owners_compatible`, exactly as the Stop gate is.
+
+  `agents/claude/scripts/session-context.sh` is the Claude adapter — a `SessionStart` hook on
+  `compact|resume` that injects the summary as `additionalContext`, with a provenance header as
+  its first line, and exits 0 on every path (`ADB_SESSION_CONTEXT=off` disables it). Every root
+  doc now carries a `# Compact instructions` block asking the compactor to preserve what only the
+  conversation held: the modified files, the gate result, each REQUIRED finding's disposition.
+
+  **Every marker phase write now appends `{phase, at}` to `phaseHistory` (#243)** — the
+  `# ADB-SNIPPET: phase-update` template, marker creation and the step-10 write — and the
+  `implemented` phase gains a dedicated write before the first gate run, so the history records
+  the gate span. `.phase` still reads as the latest phase and a pre-change marker reads without
+  error; `scripts/check-session-context.sh` executes the workflow's real snippet against a fixture
+  and proves the Stop gate's verdict is identical with and without the field. Decision D92.
+
 - **The loop keeps what its review threads taught it (#421).** Every resolved review thread was a
   labeled example — a finding, its class, the site, and the commit that closed it — and the loop
   discarded all of it at the moment of resolution. Nothing carried a finding *class* forward, so

@@ -301,7 +301,7 @@ _adb_manifest_fields_safe() {
 # claude branch ALONE: adding it here would make the settings filters match it, and those filters
 # delete the whole hook group they match, so a non-hook basename here strips an unrelated key.
 adb_claude_hook_scripts() {
-  printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\nstate-claim-gate.sh\n'
+  printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\nstate-claim-gate.sh\nsession-context.sh\n'
 }
 
 # The jq regex matching a hook command that is EXACTLY one of the commands this install writes,

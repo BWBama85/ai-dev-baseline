@@ -968,7 +968,11 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441) — see
+        # the `common-lib` job for why a one-commit checkout would make the gate fail closed.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -979,6 +983,16 @@ jobs:
 
       - name: implement-issue Stop hook re-verifies PR state live + fails closed (#44)
         run: bash scripts/check-implement-gate.sh
+
+      # The SessionStart run-state hook reads the SAME marker back after a compaction (#431). It
+      # rides this job rather than adding one: a second job is a second required status context
+      # for branch protection to grow, and the two readers of one marker do not earn that.
+      - name: SessionStart run-state hook — source gate, ownership, containment, phaseHistory (#431)
+        run: bash scripts/check-session-context.sh
+
+      # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
+      - name: ...and its guards must be able to fail — each mutation observed RED (#431)
+        run: bash scripts/mutation-gate.sh run session-context-mutation -- bash scripts/check-session-context.sh --mutation
 
   install-migration:
     name: install-migration

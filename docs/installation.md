@@ -77,6 +77,7 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
 | `agents/claude/scripts/state-claim-gate.sh` | `~/.claude/scripts/state-claim-gate.sh` |
 | `agents/claude/scripts/session-currency.sh` | `~/.claude/scripts/session-currency.sh` |
+| `agents/claude/scripts/session-context.sh` | `~/.claude/scripts/session-context.sh` |
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
 
 The shared shell library (`scripts/lib/common.sh` + `project-gates.sh`) installs as
@@ -129,6 +130,7 @@ real `$HOME`) into `~/.claude/settings.json`:
 | `Stop` | `implement-issue-gate.sh` | Keeps an `/implement-issue` run going until its PR is open — for **that session's own** run; see [Run markers are session-owned](#run-markers-are-session-owned). |
 | `Stop` | `state-claim-gate.sh` | Blocks ending a turn that states a PR/issue/CI status the turn did not read. |
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
+| `SessionStart` (matcher `compact\|resume`) | `session-context.sh` | Reads an in-flight `/implement-issue` run's state back into context after compaction or resume — see [A run survives compaction](#a-run-survives-compaction). |
 
 ### Run markers are session-owned
 
@@ -154,6 +156,41 @@ Two properties are worth knowing because they are deliberate choices, not accide
   new run's preflight clears them unconditionally, so a second `/implement-issue` in the same
   clone can still delete the first one's marker. Ownership makes the *reader* safe, not the
   *path* exclusive — see issue #202.
+
+### A run survives compaction
+
+A long `/implement-issue` run outlives its context window: the harness compacts mid-step, and the
+summary may or may not carry which step it was on or where its findings live. The state directory
+already holds those facts, so `session-context.sh` reads them back. On `SessionStart` with `source`
+`compact` or `resume` (the matcher is `compact|resume`; `startup` belongs to the currency hook and a
+`clear` starts a conversation whose run is over by construction) it asks
+`scripts/lib/run-state.sh summary` for the run live in `<repo>/.claude/state` and injects the answer
+as `hookSpecificOutput.additionalContext`: the phase and its append-only history (#243), the
+branch, the issue **numbers**, the PR, a blocked reason if one was written, the **paths** of the
+gap/review/docs artifacts, and a count of `REQUIRED` marks in `review.md`. Before the branch
+exists — the long gap-analysis pass — the run claim is the liveness signal and the issue snapshots
+name the issues.
+
+Three properties are deliberate:
+
+- **Owner-scoped, like the Stop gate.** A marker whose `owner` is another session earns one line
+  naming the path and no facts; the owner id is never printed. A harness that exposes no session id
+  is compatible with any marker, exactly as `implement-issue-gate.sh` treats it.
+- **Facts the run wrote, never text it collected.** Only closed-grammar values are injected — a
+  phase word, a branch, numbers, timestamps, paths, a count. `gap-prompt.txt`, `gaps.md` and
+  `review.md` carry third-party issue and reviewer text, and what this hook emits lands in a
+  model's context, so they are named by path and never quoted. A marker that fails validation is
+  refused whole.
+- **It never blocks, and its audit rides in the injection.** Exit 0 on every path; nothing is
+  printed when no run is live. stderr from an exit-0 hook goes to the debug log, not the transcript,
+  so the first injected line names the state directory that was read. `ADB_SESSION_CONTEXT=off`
+  disables it with one stderr line.
+
+The root docs carry a `# Compact instructions` section (rendered from
+`base/practices/compact-instructions.md`) telling the compactor what to preserve — the run phase,
+the state-directory path, the modified files, the gate command, every open `REQUIRED` finding.
+That is guidance to the summarizer; the hook is the mechanism that restores the marker's facts
+regardless of what the summary kept.
 
 ### The state-claim gate
 
@@ -613,7 +650,7 @@ Four of those choices are decisions rather than layout, and each is load-bearing
   instead, so two projects pinned to different versions cannot reach into each other, and no
   absolute path is committed.
 - **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a
-  pinned project has none.
+  pinned project has none. `session-context.sh` **is**: it reads the project's own `.claude/state`.
 
 Everything else the repository ships — `base/`, `bin/`, `docs/`, `templates/`, the `scripts/check-*`
 suites, the build — stays out. It is the framework's own development surface, not a runtime.

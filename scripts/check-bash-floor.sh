@@ -1211,6 +1211,7 @@ EOF
 ADVISORY_ENTRYPOINTS="
 agents/claude/scripts/session-currency.sh
 agents/claude/scripts/state-claim-gate.sh
+agents/claude/scripts/session-context.sh
 "
 # check-bash-floor.sh is the OBSERVER, and an observer that upgrades its own interpreter has
 # destroyed the observation. Its whole --runtime job is to report which bash this job actually

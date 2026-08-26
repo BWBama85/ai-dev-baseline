@@ -132,6 +132,7 @@ has "$man" "/proj/.claude/skills/implement-issue/SKILL.md" "payload: skills land
 has "$man" "/proj/.claude/adb/lib/common.sh" "payload: the shared library is vendored"
 has "$man" "/proj/.claude/adb/precommit-gate.sh" "payload: the Stop gates are vendored"
 hasnt "$man" "session-currency.sh" "payload: the clone-currency hook is NOT vendored (a pinned project has no clone)"
+has "$man" "/proj/.claude/adb/session-context.sh" "payload: the run-state hook IS vendored — it reads the project's own .claude/state (#431)"
 # `.claude/scripts/` is handling-the-unknown.md's one prescribed home for a project's OWN gate
 # policy. An install that wrote there would occupy it.
 hasnt "$man" "/proj/.claude/scripts/" "payload: never occupies the project's own gate-policy home"
@@ -727,8 +728,9 @@ eq "$(find "$PL" -path "$PL/.git" -prune -o -type f -print | wc -l | tr -d ' ')"
 if command -v jq >/dev/null 2>&1; then
   wired="$(jq -r '[.hooks[]?[]?.hooks[]?.command] | map(split("/") | last) | sort | join(",")' "$PM/.claude/settings.json")"
   shipped="$(jq -r '[.[][].hooks[].command] | map(split("/") | last) | map(select(. != "session-currency.sh")) | sort | join(",")' "$ROOT/agents/claude/settings.hooks.json")"
-  eq "$wired" "$shipped" "hooks: every shipped Stop hook except the excluded one is wired"
+  eq "$wired" "$shipped" "hooks: every shipped hook except the excluded one is wired"
   hasnt "$wired" "session-currency.sh" "hooks: the clone-currency hook is excluded"
+  has "$wired" "session-context.sh" "hooks: the SessionStart run-state hook is wired (#431)"
   # THE WHOLE COMMAND, not its basename. Dropping the ${CLAUDE_PROJECT_DIR} substitution leaves
   # every basename identical while the installed hooks still point at __ADB_HOME__ — a machine-local
   # path committed into somebody's repository, and a guard that could not see it.

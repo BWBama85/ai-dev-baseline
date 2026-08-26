@@ -1,0 +1,406 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — behavior tests for the run-state summary and its SessionStart hook (#431).
+#
+# The decision under test: **what does a compacted or resumed session get read back about the
+# /implement-issue run in flight, and what must it never get?** `scripts/lib/run-state.sh summary`
+# owns the answer; `agents/claude/scripts/session-context.sh` renders it into the harness's
+# `additionalContext` channel. Every property here is a safety property of text that lands in a
+# model's context:
+#
+#   - only THIS session's run is summarised (the marker's `owner`, via adb_owners_compatible);
+#   - only closed-grammar values the run itself wrote are emitted — a phase word, a branch, issue
+#     NUMBERS, timestamps, paths, a count — never an issue's or a finding's text;
+#   - a marker that fails validation is refused WHOLE, and a pre-#243 marker is not a failure;
+#   - the hook acts on `compact` and `resume` only, exits 0 on every path, and prints exactly one
+#     JSON object or nothing.
+#
+# Also executes the workflow's REAL phase-update snippet (`# ADB-SNIPPET: phase-update` in
+# base/workflows/implement-issue.md) against a fixture marker: #243's append-only `phaseHistory`
+# is a jq idiom in prose, and a paraphrase of it would test the paraphrase.
+#
+# `--mutation` injects one defect per row into a COPY of the tree and requires this suite to come
+# back RED on the row's own witness. Never mutates the tracked tree.
+#
+# Usage: bash scripts/check-session-context.sh [--mutation]   (exit 0 = all pass, 1 = a failure)
+
+# bash 5.3 runtime floor (#256) — FIRST, before `set -u` and the cd.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" >/dev/null 2>&1 || {
+  echo "check-session-context: FATAL — scripts/lib/common.sh is unavailable" >&2; exit 1; }
+command -v adb_require_bash >/dev/null 2>&1 || {
+  echo "check-session-context: FATAL — common.sh loaded but adb_require_bash is missing" >&2; exit 1; }
+adb_require_bash "$@"
+
+set -u
+cd "$(dirname "$0")/.." || exit 1
+ROOT="$PWD"
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+
+[ "$#" -gt 1 ] && { echo "usage: check-session-context.sh [--mutation]" >&2; exit 2; }
+MODE=full
+case "${1:-}" in
+  "")         ;;
+  --mutation) MODE=mutation ;;
+  *)          echo "usage: check-session-context.sh [--mutation]" >&2; exit 2 ;;
+esac
+
+command -v jq >/dev/null 2>&1 || { echo "check-session-context: jq required" >&2; exit 1; }
+
+work="$(mktemp -d)"
+check_exit_guard "check-session-context" "rm -rf \"$work\""
+check_init check-session-context
+
+RS="$ROOT/scripts/lib/run-state.sh"
+HOOK="$ROOT/agents/claude/scripts/session-context.sh"
+WF="$ROOT/base/workflows/implement-issue.md"
+
+# ============================= --mutation: the guards must be seen RED ===========================
+if [ "$MODE" = mutation ]; then
+  # --- the library ---
+  check_mut owner-check-dropped \
+    '      if ! adb_owners_compatible "$m_owner" "$sid"; then' \
+    '      if false; then' \
+    'a foreign marker earns one line and NO facts'
+  check_mut foreign-reveals-owner \
+    "        printf 'run-state: a run marker at %s belongs to another session; not summarised\\n' \"\$marker\"" \
+    "        printf 'run-state: a run marker at %s belongs to %s; not summarised\\n' \"\$marker\" \"\$m_owner\"" \
+    'the owner id is never printed'
+  check_mut phase-charset-dropped \
+    '  | if (.p | test("^[a-z_]{1,32}$") | not) then error("phase") else . end' \
+    '  | .' \
+    'a phase outside [a-z_] is refused whole'
+  check_mut control-bytes-allowed \
+    '  def clean: test("[\u0000-\u001f\u007f]") | not;' \
+    '  def clean: true;' \
+    'a newline in branch is refused whole'
+  check_mut history-shape-unchecked \
+    '    elif ((.h|type) != "array") then error("phaseHistory")' \
+    '    elif ((.h|type) != "array") then .hs = ""' \
+    'a phaseHistory that is not a list is refused whole'
+  check_mut url-scheme-unchecked \
+    '  | .u = (if (.u | test("^https://[^\u0000-\u0020\u007f]+$")) then .u else "" end)' \
+    '  | .u = .u' \
+    'a prUrl that is not a clean https URL is omitted'
+  check_mut required-count-wrong \
+    '        req="$(grep -c '"'"'REQUIRED'"'"' "$dir/review.md" 2>/dev/null || true)"' \
+    '        req=0' \
+    'review-required-marks counts the REQUIRED lines'
+  check_mut artifacts-open-set \
+    '  for f in gap-prompt.txt gaps.md gaps.err review-prompt.txt review.md review.err docs-consulted.tsv; do' \
+    '  for f in $(ls "$d"); do' \
+    'only the fixed artifact set is named'
+  check_mut claim-expiry-ignored \
+    '  [ "$c_exp" -gt "$now" ] || return 0            # an expired claim is a dead run: nothing to say' \
+    '  :' \
+    'an expired claim is nothing to say'
+  prep_lib() {
+    check_copy_subtrees "$ROOT" "$1/tree" scripts agents base >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1/tree/scripts/lib/run-state.sh"
+  }
+  runner() { ( cd "$1/tree" && bash scripts/check-session-context.sh 2>&1 ); }
+  check_mutation_pool check-session-context "$work/lib" prep_lib runner 6
+
+  # --- the hook ---
+  check_mut_reset
+  check_mut source-gate-dropped \
+    '  *) exit 0 ;;' \
+    '  *) : ;;' \
+    'startup: nothing is injected'
+  check_mut off-switch-ignored \
+    '  off|0|false) printf' \
+    '  never-match-zz) printf' \
+    'ADB_SESSION_CONTEXT=off injects nothing'
+  check_mut provenance-header-dropped \
+    "  '{hookSpecificOutput: {hookEventName: \"SessionStart\", additionalContext: (\$h + \"\\n\" + \$s)}}'" \
+    "  '{hookSpecificOutput: {hookEventName: \"SessionStart\", additionalContext: \$s}}'" \
+    'the provenance header names the state directory'
+  prep_hook() {
+    check_copy_subtrees "$ROOT" "$1/tree" scripts agents base >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1/tree/agents/claude/scripts/session-context.sh"
+  }
+  check_mutation_pool check-session-context-hook "$work/hook" prep_hook runner 4
+
+  # --- the workflow snippet (#243) ---
+  check_mut_reset
+  check_mut history-append-dropped \
+    '    | .phaseHistory = ((.phaseHistory // []) + [{phase: $phase, at: $at}])' \
+    '    | .' \
+    'history length'
+  prep_wf() {
+    check_copy_subtrees "$ROOT" "$1/tree" scripts agents base >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1/tree/base/workflows/implement-issue.md"
+  }
+  check_mutation_pool check-session-context-wf "$work/wf" prep_wf runner 2
+
+  check_summary check-session-context
+  exit 0
+fi
+
+# ================================ fixtures =======================================================
+SID_A="11111111-aaaa-4aaa-8aaa-111111111111"
+SID_B="22222222-bbbb-4bbb-8bbb-222222222222"
+
+# state <name> — a fresh state dir; prints its path.
+state() { local d="$work/$1"; rm -rf "$d"; mkdir -p "$d"; printf '%s' "$d"; }
+# marker <dir> <jq-object-literal> — write the marker from a jq expression.
+marker() { jq -n "$2" > "$1/implement-issue-active.json"; }
+LIVE='{branch:"issue-431-x", issue:"431", phase:"pushed", startedAt:"2026-08-26T06:00:00Z",
+       owner:"'"$SID_A"'",
+       phaseHistory:[{phase:"branched", at:"2026-08-26T06:00:00Z"}, {phase:"pushed", at:"2026-08-26T07:00:00Z"}]}'
+# summary <dir> [session] — sets RC and OUT.
+summary() { OUT="$(bash "$RS" summary --state "$1" ${2:+--session "$2"} 2>/dev/null)"; RC=$?; }
+lines_ok() {  # every line of $1 is `key: value`
+  printf '%s\n' "$1" | grep -qvE '^[a-z-]+: ' && return 1; return 0
+}
+
+# ================================ 1. the library =================================================
+
+# 1a. nothing to say: absent, empty.
+summary "$work/does-not-exist"; eq "$RC" 0 "1a absent state dir: exit 0"; eq "$OUT" "" "1a absent: empty stdout"
+d="$(state empty)"; summary "$d"; eq "$RC" 0 "1a empty state dir: exit 0"; eq "$OUT" "" "1a empty: nothing to say"
+
+# 1b. a live, owned marker with artifacts.
+d="$(state live)"; marker "$d" "$LIVE"
+printf 'INJECT-ME prompt\n' > "$d/gap-prompt.txt"
+printf 'INJECT-ME finding\n' > "$d/gaps.md"
+printf -- '- [REQUIRED] one INJECT-ME\n- [OPTIONAL] two\n- REQUIRED three\n' > "$d/review.md"
+printf 'x\n' > "$d/evil.md"
+summary "$d" "$SID_A"
+eq "$RC" 0 "1b live marker: exit 0"
+has "$OUT" "run-state: /implement-issue run in progress — source $d/implement-issue-active.json" "1b header names the marker"
+has "$OUT" $'\nphase: pushed' "1b phase is the latest"
+has "$OUT" $'\nphase-history: branched@2026-08-26T06:00:00Z, pushed@2026-08-26T07:00:00Z' "1b phase history is rendered in order"
+has "$OUT" $'\nbranch: issue-431-x' "1b branch"
+has "$OUT" $'\nissues: #431' "1b issue number"
+has "$OUT" "artifacts: $d/gap-prompt.txt, $d/gaps.md, $d/review.md" "1b artifacts are named by path, in the fixed order"
+hasnt "$OUT" "evil.md" "1b only the fixed artifact set is named"
+has "$OUT" $'\nreview-required-marks: 2' "1b review-required-marks counts the REQUIRED lines"
+hasnt "$OUT" "INJECT-ME" "1b no artifact TEXT reaches the output"
+hasnt "$OUT" "$SID_A" "1b the owner id is not printed for the owner either"
+hasnt "$OUT" "pr: " "1b no pr line without a prUrl"
+lines_ok "$OUT" && ok || bad "1b every line is key: value (no imperative sentence)"
+
+# 1b'. prUrl, and multi-issue.
+d="$(state pr)"; marker "$d" '{branch:"b", issue:"431,243", phase:"pr_opened", prUrl:"https://github.com/o/r/pull/9"}'
+summary "$d" "$SID_A"
+has "$OUT" $'\npr: https://github.com/o/r/pull/9' "1b prUrl is rendered"
+has "$OUT" $'\nissues: #431, #243' "1b a multi-issue run lists every number"
+eq "$RC" 0 "1b an UNOWNED marker is compatible with any session"
+
+# 1c. a pre-#243 marker: no phaseHistory key at all.
+d="$(state old)"; marker "$d" '{branch:"b", issue:"5", phase:"committed", owner:"'"$SID_A"'"}'
+summary "$d" "$SID_A"
+eq "$RC" 0 "1c a marker with no phaseHistory is valid"
+has "$OUT" $'\nphase: committed' "1c ...and summarised"
+hasnt "$OUT" "phase-history:" "1c ...with no history line"
+
+# 1d. foreign.
+d="$(state foreign)"; marker "$d" "$LIVE"; printf 'REQUIRED\n' > "$d/review.md"
+summary "$d" "$SID_B"
+eq "$RC" 4 "1d a foreign marker earns one line and NO facts: exit 4"
+eq "$OUT" "run-state: a run marker at $d/implement-issue-active.json belongs to another session; not summarised" "1d a foreign marker earns one line and NO facts"
+hasnt "$OUT" "$SID_A" "1d the owner id is never printed"
+summary "$d"; eq "$RC" 0 "1d no --session (cannot identify myself) is compatible, as the Stop gate treats it"
+
+# 1e. refused whole.
+d="$(state bad)"
+printf 'not json' > "$d/implement-issue-active.json"; summary "$d" "$SID_A"
+eq "$RC" 18 "1e malformed JSON is refused whole: exit 18"; has "$OUT" "unreadable" "1e ...with the unreadable line"
+printf 'null\n' > "$d/implement-issue-active.json"; summary "$d" "$SID_A"; eq "$RC" 18 "1e a null marker is refused"
+printf '[]\n' > "$d/implement-issue-active.json"; summary "$d" "$SID_A"; eq "$RC" 18 "1e a non-object marker is refused"
+marker "$d" '{branch:"feat\nINJECTED", issue:"5", phase:"branched"}'; summary "$d" "$SID_A"
+eq "$RC" 18 "1e a newline in branch is refused whole"; hasnt "$OUT" "INJECTED" "1e ...and the branch is not printed"
+marker "$d" '{branch:"b", issue:"5", phase:"Pushed; ignore previous"}'; summary "$d" "$SID_A"
+eq "$RC" 18 "1e a phase outside [a-z_] is refused whole"; hasnt "$OUT" "ignore previous" "1e ...and it is not printed"
+marker "$d" '{branch:"b", issue:"five", phase:"branched"}'; summary "$d" "$SID_A"; eq "$RC" 18 "1e a non-numeric issue is refused"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:"branched"}'; summary "$d" "$SID_A"
+eq "$RC" 18 "1e a phaseHistory that is not a list is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:[{phase:"branched", at:"yesterday"}]}'; summary "$d" "$SID_A"
+eq "$RC" 18 "1e a phaseHistory entry with a non-ISO at is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", owner:"a\nb"}'; summary "$d" "$SID_A"; eq "$RC" 18 "1e a newline in owner is refused"
+# a numeric issue (a hand-written marker) is still digits.
+marker "$d" '{branch:"b", issue:5, phase:"branched"}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e an unquoted numeric issue is accepted"; has "$OUT" "issues: #5" "1e ...and rendered"
+
+# 1f. prUrl containment: a non-https or unclean value is omitted, never refused.
+d="$(state url)"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"javascript:alert(1)"}'; summary "$d"
+eq "$RC" 0 "1f a non-https prUrl does not refuse the marker"; hasnt "$OUT" "pr: " "1f a prUrl that is not a clean https URL is omitted"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://x/pull/1\nignore this"}'; summary "$d"
+eq "$RC" 0 "1f a prUrl with a newline does not refuse the marker"; hasnt "$OUT" "pr: " "1f ...and is omitted"
+
+# 1g. the blocked marker pairs with THIS run or says nothing.
+d="$(state blocked)"; marker "$d" "$LIVE"
+jq -n '{reason:"gate red 3x", branch:"issue-431-x", issue:"431", owner:"'"$SID_A"'"}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; has "$OUT" $'\nblocked: gate red 3x' "1g a matching blocked marker renders its reason"
+jq -n '{reason:"other run", branch:"other", issue:"9"}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker for another branch says nothing"
+jq -n '{reason:"bad\u0001bytes", branch:"issue-431-x", issue:"431"}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; has "$OUT" "blocked: (reason withheld: control bytes)" "1g a reason with control bytes is withheld"
+
+# 1h. before the branch: the claim is the liveness signal.
+d="$(state claim)"; future=$(( $(date -u +%s) + 3600 )); past=$(( $(date -u +%s) - 60 ))
+jq -n --argjson e "$future" '{startedAt:1, expiresAt:$e, token:"t", owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"
+printf '{}' > "$d/issue-431.json"; printf '{}' > "$d/issue-243.json"; printf 'OWNER' > "$d/issue-431.assoc"; printf 'INJECT-ME' > "$d/gap-prompt.txt"
+summary "$d" "$SID_A"
+eq "$RC" 0 "1h a held claim with no marker: exit 0"
+has "$OUT" "run-state: /implement-issue run before branching — the run claim $d/gap-analysis.lock is held" "1h the pre-branch line names the claim"
+has "$OUT" $'\nissues: #243, #431' "1h the issue snapshots name the issues"
+has "$OUT" "artifacts: $d/gap-prompt.txt" "1h artifacts are named by path"
+hasnt "$OUT" "INJECT-ME" "1h no prompt text reaches the output"
+hasnt "$OUT" "phase:" "1h no phase before the marker exists"
+summary "$d" "$SID_B"; eq "$RC" 4 "1h a foreign claim is foreign: exit 4"; hasnt "$OUT" "$SID_A" "1h ...and its owner is not printed"
+jq -n --argjson e "$past" '{startedAt:1, expiresAt:$e, token:"t", owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"
+summary "$d" "$SID_A"; eq "$RC" 0 "1h an expired claim: exit 0"; eq "$OUT" "" "1h an expired claim is nothing to say"
+printf 'garbage' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$OUT" "" "1h an unreadable claim is nothing to say"
+
+# 1i. usage and refusals.
+bash "$RS" >/dev/null 2>&1; eq "$?" 2 "1i no subcommand is usage (2)"
+bash "$RS" summary >/dev/null 2>&1; eq "$?" 2 "1i summary without --state is usage (2)"
+bash "$RS" bogus --state "$d" >/dev/null 2>&1; eq "$?" 2 "1i an unknown subcommand is usage (2)"
+bash "$RS" -h | grep -q 'usage: run-state.sh summary' && ok || bad "1i -h prints usage"
+
+# 1j. no jq: a distinct code, never a benign absence.
+nojq="$work/nojq"; mkdir -p "$nojq"
+for t in bash sh date grep sed cat dirname mv mkdir uname tr sort head awk env; do
+  p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$nojq/$t"
+done
+d="$(state nojq-state)"; marker "$d" "$LIVE"
+OUT="$(PATH="$nojq" bash "$RS" summary --state "$d" 2>/dev/null)"; RC=$?
+eq "$RC" 12 "1j no jq is exit 12, not a benign absence"
+
+# ================================ 2. the hook ====================================================
+# The hook resolves its library beside itself (`$(dirname "$0")/lib/`), so a fixture install is
+# the hook plus a `lib/` holding common.sh and run-state.sh — exactly what install.sh links.
+H="$work/hook"; mkdir -p "$H/lib"
+cp "$HOOK" "$H/session-context.sh"; cp "$ROOT/scripts/lib/common.sh" "$H/lib/common.sh"; cp "$RS" "$H/lib/run-state.sh"
+chmod +x "$H/session-context.sh"
+# A throwaway REPOSITORY: the hook resolves `.claude/state` from the cwd's git root.
+R="$work/repo"; mkdir -p "$R/.claude/state" "$R/sub"; check_git "$R" init -q
+RP="$(canon "$R")"   # the hook reports the PHYSICAL root (git rev-parse), /private/var on macOS
+marker "$R/.claude/state" "$LIVE"; printf 'REQUIRED\n' > "$R/.claude/state/review.md"
+# payload <source> [session_id] [cwd]
+payload() { jq -cn --arg s "$1" --arg i "${2:-}" --arg c "${3:-$R}" '{hook_event_name:"SessionStart", source:$s, cwd:$c} + (if $i == "" then {} else {session_id:$i} end)'; }
+# hook <payload> — sets RC, OUT, ERR. The env session id is UNSET unless a case sets HOOK_SID.
+HOOK_SID=""; HOOK_ENV=()
+hook() {
+  OUT="$( { printf '%s' "$1" | env -u CLAUDE_CODE_SESSION_ID ${HOOK_SID:+CLAUDE_CODE_SESSION_ID="$HOOK_SID"} "${HOOK_ENV[@]}" bash "$H/session-context.sh" 2>"$work/hook.err"; } )"; RC=$?
+  ERR="$(cat "$work/hook.err")"
+}
+ctx() { printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext'; }
+
+# 2a. compact: exactly one JSON object, the summary inside it, the provenance header first.
+hook "$(payload compact "$SID_A")"
+eq "$RC" 0 "2a compact: exit 0"
+eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" 1 "2a compact: exactly one line of stdout"
+printf '%s' "$OUT" | jq -e 'type == "object" and .hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null && ok || bad "2a compact: stdout is one SessionStart hookSpecificOutput object"
+C="$(ctx)"
+has "$(printf '%s' "$C" | head -n1)" "ai-dev-baseline run-state (source: $RP/.claude/state; read after SessionStart compact)" "2a the provenance header names the state directory, first"
+has "$C" $'\nphase: pushed' "2a the summary is injected"
+has "$C" $'\nreview-required-marks: 1' "2a ...with the REQUIRED count"
+printf '%s\n' "$C" | tail -n +2 | grep -qvE '^[a-z-]+: ' && bad "2a every injected line after the header is key: value" || ok
+eq "$ERR" "" "2a nothing on stderr"
+
+# 2b. resume: the same.
+hook "$(payload resume "$SID_A")"; eq "$RC" 0 "2b resume: exit 0"; has "$(ctx)" "read after SessionStart resume" "2b resume injects, and says which source"
+
+# 2c. every other source is silent — startup belongs to the currency hook.
+for s in startup clear fork; do
+  hook "$(payload "$s" "$SID_A")"; eq "$RC" 0 "2c $s: exit 0"; eq "$OUT" "" "2c $s: nothing is injected"
+done
+
+# 2d. a malformed or empty payload is silent, never an error notice.
+hook 'not json'; eq "$RC" 0 "2d garbage payload: exit 0"; eq "$OUT" "" "2d garbage payload: silent"
+hook ''; eq "$RC" 0 "2d empty payload: exit 0"; eq "$OUT" "" "2d empty payload: silent"
+hook '[1,2]'; eq "$RC" 0 "2d non-object payload: exit 0"; eq "$OUT" "" "2d non-object payload: silent"
+
+# 2e. identity: the payload's session_id when the env var is absent; the env var first when present.
+hook "$(payload compact "$SID_B")"
+eq "$RC" 0 "2e foreign (payload id): exit 0"
+has "$(ctx)" "belongs to another session; not summarised" "2e a foreign marker injects the one-line notice"
+hasnt "$(ctx)" "phase:" "2e ...and no facts"
+hasnt "$OUT" "$SID_A" "2e ...and never the owner id"
+HOOK_SID="$SID_A"; hook "$(payload compact "$SID_B")"; HOOK_SID=""
+has "$(ctx)" $'\nphase: pushed' "2e CLAUDE_CODE_SESSION_ID outranks the payload, as in the Stop gate"
+hook "$(payload compact)"; has "$(ctx)" $'\nphase: pushed' "2e no id at all is compatible (cannot identify myself)"
+
+# 2f. the escape hatch.
+HOOK_ENV=(ADB_SESSION_CONTEXT=off); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
+eq "$RC" 0 "2f ADB_SESSION_CONTEXT=off: exit 0"; eq "$OUT" "" "2f ADB_SESSION_CONTEXT=off injects nothing"
+has "$ERR" "disabled" "2f ...and says so on stderr"
+
+# 2g. no run in flight, and a cwd that is not a repository.
+E="$work/repo-empty"; mkdir -p "$E"; check_git "$E" init -q
+hook "$(payload compact "$SID_A" "$E")"; eq "$RC" 0 "2g no run: exit 0"; eq "$OUT" "" "2g no run: nothing injected"
+N="$work/norepo"; mkdir -p "$N"
+hook "$(payload compact "$SID_A" "$N")"; eq "$RC" 0 "2g outside a repo: exit 0"; eq "$OUT" "" "2g outside a repo: nothing injected"
+hook "$(payload compact "$SID_A" "$R/sub")"; has "$(ctx)" $'\nphase: pushed' "2g a subdirectory cwd resolves to the repo root's state"
+
+# 2h. degraded installs: a corrupt library, a missing library, no jq — always exit 0, never noise.
+cp "$H/lib/common.sh" "$work/common.bak"; printf 'this is not valid shell ((((\n' > "$H/lib/common.sh"
+hook "$(payload compact "$SID_A")"; eq "$RC" 0 "2h a CORRUPT common.sh still exits 0"; eq "$OUT" "" "2h ...and emits nothing rather than leaking errors"
+cp "$work/common.bak" "$H/lib/common.sh"
+mv "$H/lib/run-state.sh" "$work/rs.bak"
+hook "$(payload compact "$SID_A")"; eq "$RC" 0 "2h a missing run-state.sh still exits 0"; eq "$OUT" "" "2h ...and injects nothing"; has "$ERR" "run-state.sh not found" "2h ...but says why on stderr"
+mv "$work/rs.bak" "$H/lib/run-state.sh"
+HOOK_ENV=(PATH="$nojq"); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
+eq "$RC" 0 "2h no jq still exits 0"; eq "$OUT" "" "2h no jq injects nothing"
+
+# 2i. the settings wiring and the hook enumeration agree.
+SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"
+has "$SET" '"matcher": "compact|resume"' "2i the settings matcher is compact|resume"
+has "$SET" 'session-context.sh' "2i the settings wire the hook"
+printf '%s' "$SET" | jq -e '[.SessionStart[] | select(.matcher == "compact|resume") | .hooks[].command] | any(endswith("/session-context.sh"))' >/dev/null && ok || bad "2i the compact|resume group runs session-context.sh"
+has "$(bash -c '. scripts/lib/common.sh; adb_claude_hook_scripts')" "session-context.sh" "2i the hook is registered in adb_claude_hook_scripts"
+has "$(bash -c '. scripts/lib/common.sh; adb_agent_manifest claude /r /h')" "/h/.claude/scripts/session-context.sh" "2i ...so the manifest links it"
+
+# ================================ 3. the workflow snippet (#243) =================================
+SNIP="${ check_wf_snippet "$WF" phase-update; }"
+[ -n "$SNIP" ] && ok || bad "3 snippet 'phase-update' not found in base/workflows/implement-issue.md (marker removed or renamed?)"
+d="$(state snippet)"
+# run_phase <phase> — execute the REAL snippet with its placeholders resolved to the fixture.
+run_phase() {
+  local s; s="$(printf '%s\n' "$SNIP" | sed "s|{{STATE_DIR}}|$d|g; s|<next phase>|$1|")"
+  ( cd "$d" && CLAUDE_CODE_SESSION_ID="$SID_B" bash -c "$s" )
+}
+marker "$d" '{branch:"b", issue:"5", phase:"branched", startedAt:"2026-08-26T06:00:00Z", owner:"'"$SID_A"'"}'
+run_phase implemented; run_phase gates_green; run_phase committed
+M="$d/implement-issue-active.json"
+eq "$(jq -r '.phaseHistory | length' "$M")" 3 "3 after 3 writes on a pre-change marker the history length is 3"
+eq "$(jq -r '[.phaseHistory[].phase] | join(",")' "$M")" "implemented,gates_green,committed" "3 the history is append-only and in order"
+eq "$(jq -r .phase "$M")" committed "3 .phase still reads as the latest phase"
+eq "$(jq -r .owner "$M")" "$SID_B" "3 the owner is re-stamped by the same write"
+jq -e '[.phaseHistory[].at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")] | all' "$M" >/dev/null && ok || bad "3 every history entry carries an ISO-8601 UTC at"
+jq -e '.branch == "b" and .issue == "5" and .startedAt == "2026-08-26T06:00:00Z"' "$M" >/dev/null && ok || bad "3 the other fields are untouched"
+# ...and the summary reads it back.
+summary "$d" "$SID_B"; has "$OUT" "phase-history: implemented@" "3 the summary renders the history the snippet wrote"
+# The blocked-file copy still round-trips a marker that carries a history.
+BLK="$(jq --arg reason r '{reason:$reason, phase:.phase, branch:.branch, issue:.issue} + (if .owner then {owner:.owner} else {} end)' "$M")"
+eq "$(printf '%s' "$BLK" | jq -r '.phase + "/" + .branch + "/" + .issue')" "committed/b/5" "3 the blocked-marker copy round-trips"
+
+# 3b. the other readers are unchanged by the new field: cleanup-lib and the Stop gate give the
+#     same answer for a marker with and without phaseHistory.
+CL="$ROOT/scripts/lib/cleanup-lib.sh"
+jq 'del(.phaseHistory)' "$M" > "$d/old.json"
+eq "$(bash "$CL" marker-branch "$M")" "$(bash "$CL" marker-branch "$d/old.json")" "3b cleanup-lib marker-branch is identical with and without phaseHistory"
+G="$ROOT/agents/claude/scripts/implement-issue-gate.sh"
+# The gate's own fixture shape: an ignored state dir, a seed commit, the marker's branch checked out.
+GR="$work/gate-repo"; mkdir -p "$GR/.claude/state" "$work/shim"; check_git "$GR" init -q
+printf '.claude/state/\n' > "$GR/.gitignore"; printf 'seed\n' > "$GR/README.md"
+check_git "$GR" add .gitignore README.md; check_git "$GR" commit -q -m seed; check_git "$GR" checkout -q -b b
+printf '#!/usr/bin/env bash\nexit 1\n' > "$work/shim/gh"; chmod +x "$work/shim/gh"
+gate_out() {  # <marker-json-file>
+  cp "$1" "$GR/.claude/state/implement-issue-active.json"
+  ( cd "$GR" && unset CLAUDE_CODE_EXECPATH && CLAUDE_CODE_SESSION_ID="$SID_B" PATH="$work/shim:$PATH" bash "$G" </dev/null 2>&1; echo "rc=$?" )
+}
+G1="$(gate_out "$M")"; G2="$(gate_out "$d/old.json")"
+eq "$G1" "$G2" "3b the Stop gate's verdict is identical with and without phaseHistory"
+has "$G1" "Current phase: committed" "3b ...and it is the keep-going verdict, so the comparison is not vacuous"
+
+# 3c. the creation site and step 10 carry the history too (prose pins; the snippet above is executed).
+WFTXT="$(cat "$WF")"
+has "$WFTXT" 'phaseHistory:[{phase:"branched", at:$startedAt}]' "3c marker creation seeds the history"
+eq "$(grep -c '\.phaseHistory = ((\.phaseHistory // \[\]) + \[{phase: ' "$WF")" 2 "3c both phase-write sites (template + step 10) append to the history"
+has "$WFTXT" 'Write `phase=implemented` once the code and tests are in place' "3c the implemented phase has a dedicated write"
+
+check_summary check-session-context
