@@ -752,8 +752,8 @@ cd ~/Code/ai-dev-baseline
 `uninstall.sh` only removes a destination if it is **currently a symlink
 pointing somewhere inside this repo** (`adb_unlink_if_ours`) — a real file, or a
 symlink pointing elsewhere, is left alone and reported as `skip ... (not
-ours)`. It also strips the baseline's own hook entries — the two `Stop` gates
-and the `SessionStart` currency check — out of `~/.claude/settings.json` (again
+ours)`. It also strips the baseline's own hook entries — the three `Stop` gates
+and both `SessionStart` hooks (currency and run-state) — out of `~/.claude/settings.json` (again
 via `jq`, matched by filename) and removes a hook-event key entirely once that
 leaves it empty. Hooks you added yourself under the same events are left alone.
 Removing the SessionStart entry matters as much as unlinking the script: a

@@ -7466,8 +7466,13 @@ survive is the part a later reader needs.
              `cleanup-lib.sh state-scan` classifies them, a count of `REQUIRED` marks — and refuses
              a marker WHOLE when any field falls outside it: a non-string where a string is
              required, whitespace or a C0/C1/Unicode format or separator character, a `prUrl` that
-             is not `https://…`, a history longer than 64 entries, out of order, or disagreeing
-             with `.phase`. `agents/claude/scripts/session-context.sh` runs on `SessionStart`
+             is not `https://…`, a history that is present but empty or null, one with two
+             adjacent entries of a phase, or one disagreeing with `.phase` (a history LONGER than
+             64 entries is accepted — the workflow appends without bound — and the reader renders
+             its last 64 with a count of the earlier ones; a backwards wall clock is accepted too,
+             append order being the record). The branch is rendered with its slug ELIDED when it
+             has the workflow's `issue-<n>-<slug>` shape, because that slug is cut from the issue
+             title. `agents/claude/scripts/session-context.sh` runs on `SessionStart`
              `compact|resume`, reads stdin with a five-second bound, exits 0 on every path it
              reaches, caps the injection below the harness's 10,000-character hook-output limit,
              and injects the answer as `hookSpecificOutput.additionalContext` with a provenance

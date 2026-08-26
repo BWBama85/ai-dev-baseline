@@ -22,7 +22,7 @@
 #   run-state: /implement-issue run in progress — source <dir>/implement-issue-active.json
 #   phase: <phase>
 #   phase-history: [(N earlier omitted) ]<phase>@<at>, …   (when the marker carries one, #243; last 64)
-#   branch: <branch>
+#   branch: <branch>                                     (an issue-<n>-<slug> branch: slug elided)
 #   issues: #<n>, #<n>
 #   pr: <url>                                            (when prUrl is present)
 #   blocked: yes — reason recorded in <dir>/implement-issue-blocked.json
@@ -38,7 +38,9 @@
 # in a model's context (base/practices/untrusted-content.md):
 #   - branch, owner: non-empty strings with no whitespace and no character of Unicode category
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars — `owner` may be ABSENT (unowned), never present and
-#     empty or null; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
+#     empty or null; a branch of the workflow's own shape `issue-<n>[-<n>…]-<slug>` is RENDERED
+#     with the slug elided, because the slug is cut from the issue title (third-party text);
+#     issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: >=1 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase` and in which no
 #     two ADJACENT entries share a phase (every writer suppresses that append); the LAST 64 are
@@ -135,7 +137,15 @@ _RS_MARKER_JQ='
     elif ([.h[].phase] as $p | any(range(1; $p|length); $p[.] == $p[. - 1])) then error("phaseHistory")
     else .hs = ((if (.h|length) > 64 then "(\((.h|length) - 64) earlier omitted) " else "" end)
                 + ([.h[-64:][] | "\(.phase)@\(.at)"] | join(", "))) end
-  | [ .branch, .issue, .phase, .prUrl, .owner, .hs ] | .[]'
+  # THE SLUG IS ISSUE TEXT. The workflow names its branch `issue-<n>[-<n>…]-<slug>` with the slug
+  # cut from the FIRST ISSUE TITLE — third-party text on a public repository — so a branch shaped
+  # that way is rendered with its slug ELIDED (the numbers stay; `git branch --show-current` has
+  # the rest). A branch of any other shape was named by whoever holds write access to the checkout
+  # and is rendered whole.
+  | .bshow = (.branch | if test("^issue-[0-9]+(-[0-9]+)*-.+$") then
+                (capture("^(?<head>issue-[0-9]+(-[0-9]+)*)-(?<slug>.+)$") | "\(.head)-<slug elided, \(.slug|length) chars>")
+              else . end)
+  | [ .bshow, .issue, .phase, .prUrl, .owner, .hs, .branch ] | .[]'
 
 _RS_CLAIM_JQ='
   one
@@ -225,7 +235,7 @@ cmd_summary() {
     fi
   done
   local snap="" again="" fields="" attempt req="" blk="" grc
-  local m_branch m_issue m_phase m_pr m_owner m_hist
+  local m_branch m_issue m_phase m_pr m_owner m_hist m_branch_raw
 
   if [ -f "$marker" ]; then
     for attempt in 1 2; do
@@ -233,9 +243,11 @@ cmd_summary() {
       snap="$RS_SNAP"
       fields="$(printf '%s' "$snap" | jq -rs "$_RS_UNSAFE_JQ $_RS_MARKER_JQ" 2>/dev/null)" || fields=""
       [ -n "$fields" ] || { printf 'run-state: the run marker at %s is unreadable (not a usable record)\n' "$marker"; return 18; }
-      m_branch=""; m_issue=""; m_phase=""; m_pr=""; m_owner=""; m_hist=""
+      # `m_branch` is the DISPLAY form (slug elided); `m_branch_raw` is what the blocked marker
+      # is paired against, since that file carries the real branch name.
+      m_branch=""; m_issue=""; m_phase=""; m_pr=""; m_owner=""; m_hist=""; m_branch_raw=""
       { IFS= read -r m_branch; IFS= read -r m_issue; IFS= read -r m_phase
-        IFS= read -r m_pr; IFS= read -r m_owner; IFS= read -r m_hist; } <<EOF
+        IFS= read -r m_pr; IFS= read -r m_owner; IFS= read -r m_hist; IFS= read -r m_branch_raw; } <<EOF
 $fields
 EOF
       if ! adb_owners_compatible "$m_owner" "$sid"; then
@@ -259,7 +271,7 @@ EOF
         # is another run's stop. Its `reason` is free text and stays in the file; the path is named.
         # TYPED, like the marker: `branch` a string, `issue` a string or a number, `owner` absent,
         # null or a string. Anything else is not a usable record and says nothing — never "yes".
-        blk="$(jq -r --arg b "$m_branch" --arg i "$m_issue" --arg o "$m_owner" '
+        blk="$(jq -r --arg b "$m_branch_raw" --arg i "$m_issue" --arg o "$m_owner" '
           if type != "object" then "no"
           elif ((.branch|type) != "string") or (.branch != $b) then "no"
           elif ((.issue|type) == "number") then (if (.issue|tostring) != $i then "no" else . end)
