@@ -166,8 +166,9 @@ already holds those facts, so `session-context.sh` reads them back. On `SessionS
 `clear` starts a conversation whose run is over by construction) it asks
 `scripts/lib/run-state.sh summary` for the run live in `<repo>/.claude/state` and injects the answer
 as `hookSpecificOutput.additionalContext`: the phase and its append-only history (#243), the
-branch, the issue **numbers**, the PR, a blocked reason if one was written, the **paths** of the
-gap/review/docs artifacts, and a count of `REQUIRED` marks in `review.md`. Before the branch
+branch, the issue **numbers**, the PR, whether a blocked marker was written (its path, never its
+reason), the **paths** of the gap/review/docs artifacts, and a count of `REQUIRED` marks in
+`review.md`. Before the branch
 exists — the long gap-analysis pass — the run claim is the liveness signal and the issue snapshots
 name the issues.
 
@@ -177,14 +178,18 @@ Three properties are deliberate:
   naming the path and no facts; the owner id is never printed. A harness that exposes no session id
   is compatible with any marker, exactly as `implement-issue-gate.sh` treats it.
 - **Facts the run wrote, never text it collected.** Only closed-grammar values are injected — a
-  phase word, a branch, numbers, timestamps, paths, a count. `gap-prompt.txt`, `gaps.md` and
-  `review.md` carry third-party issue and reviewer text, and what this hook emits lands in a
-  model's context, so they are named by path and never quoted. A marker that fails validation is
-  refused whole.
-- **It never blocks, and its audit rides in the injection.** Exit 0 on every path; nothing is
-  printed when no run is live. stderr from an exit-0 hook goes to the debug log, not the transcript,
-  so the first injected line names the state directory that was read. `ADB_SESSION_CONTEXT=off`
-  disables it with one stderr line.
+  phase word, a branch with no whitespace or control characters, numbers, timestamps, paths, a
+  count. `gap-prompt.txt`, `gaps.md`, `review.md` and the blocked marker's `reason` carry free
+  text, and what this hook emits lands in a model's context, so they are named by path and never
+  quoted. A marker with any field outside the grammar — a non-string, a whitespace or Unicode
+  format character, a `prUrl` that is not `https://…`, a history that disagrees with `.phase` —
+  is refused whole. The injected text is capped below the harness's 10,000-character hook-output
+  limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500) and says so when it was cut.
+- **It never blocks, and its audit is written twice.** Exit 0 on every path the script reaches;
+  stdin is read with a five-second bound so an open pipe cannot spend the hook's timeout; nothing
+  is injected when no run is live. One stderr line names what was summarised (the debug log), and
+  the first injected line names the state directory that was read (the transcript).
+  `ADB_SESSION_CONTEXT=off` disables it with one stderr line.
 
 The root docs carry a `# Compact instructions` section (rendered from
 `base/practices/compact-instructions.md`) telling the compactor what to preserve — the run phase,

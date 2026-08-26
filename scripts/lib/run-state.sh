@@ -1,95 +1,71 @@
 #!/usr/bin/env bash
-# ai-dev-baseline — the RUN-STATE SUMMARY: what a compacted session needs read back (#431).
+# ai-dev-baseline — the RUN-STATE SUMMARY (#431): what a compacted or resumed session reads back
+# about the /implement-issue run live in a state directory. Design and rationale: decision D92.
 #
-# THE QUESTION THIS MODULE ANSWERS: is there an /implement-issue run live in this state directory
-# that belongs to the asking session, and what are its facts? The state directory was always
-# structured note-taking — the marker carries phase, branch, issue and owner; `gaps.md`,
-# `review.md` and `docs-consulted.tsv` carry the run's findings — but nothing read any of it back
-# after the harness compacted the context. This is the reader. The Claude adapter
-# (`agents/claude/scripts/session-context.sh`) injects its output on `compact` and `resume`; a
-# Codex or Gemini workflow step can call it after their own compaction (#14).
-#
-# ------------------------------------------------------------------------------------------------
 # Usage:
 #   run-state.sh summary --state <dir> [--session <id>]
 #   run-state.sh -h | --help
 #
 # Exit codes:
 #   0   summarised (stdout holds the summary), or NOTHING TO SAY (stdout empty): the directory is
-#       absent, or holds neither a live run marker nor an unexpired run claim.
-#   4   foreign — the marker (or the claim) belongs to another session. ONE line on stdout naming
-#       the path; the owner id is never printed.
+#       absent, or holds neither a run marker nor an unexpired run claim.
+#   4   foreign — the marker (or the claim) belongs to another session. One line naming the path;
+#       the owner id is never printed.
 #   12  jq is not on PATH.
-#   18  unreadable — a marker exists but is not a usable record. ONE factual line on stdout.
-#   20  the state directory exists but cannot be read.
-#   2   usage.
+#   18  unreadable — a marker or claim exists but is not a usable record. One factual line.
+#   20  the state directory exists but cannot be read or scanned.
+#   2   usage, or a <dir> / <id> carrying whitespace-class or control characters (they are printed
+#       into a line-structured document, so they are refused rather than rendered).
 #
-# OUTPUT CONTRACT — declarative `key: value` lines, one per line, in this order, each omitted when
-# it has nothing to say. Every value is drawn from a CLOSED grammar the run itself wrote (a phase
-# word, a branch name, issue numbers, ISO-8601 timestamps, paths under the state directory, a
-# count). No issue text and no finding prose ever enters this output: the summary is injected into
-# a model's context, and the prompts and findings under the state directory carry third-party text
-# (base/practices/untrusted-content.md).
-#
+# Output — declarative `key: value` lines, in this order, each omitted when it has nothing to say:
 #   run-state: /implement-issue run in progress — source <dir>/implement-issue-active.json
 #   phase: <phase>
-#   phase-history: <phase>@<at>, <phase>@<at>, …        (only when the marker carries one, #243)
+#   phase-history: <phase>@<at>, …                       (when the marker carries one, #243)
 #   branch: <branch>
 #   issues: #<n>, #<n>
-#   pr: <url>                                            (only when prUrl is present and clean)
-#   blocked: <reason>                                    (only when a matching blocked marker exists)
-#   artifacts: <dir>/gap-prompt.txt, <dir>/gaps.md, …    (the run-state files that exist)
-#   review-required-marks: <n>                           (only when review.md exists)
-#
-# Before the branch exists — steps 2-4 of the workflow, where the long gap-analysis pass runs —
-# there is no marker yet; the run CLAIM (`gap-analysis.lock`) is the liveness signal and the issue
-# snapshots name the issues:
-#
+#   pr: <url>                                            (when prUrl is present)
+#   blocked: yes — reason recorded in <dir>/implement-issue-blocked.json
+#   artifacts: <path>, …                                 (every gaps/review/docs record present)
+#   unsafe-names: <n>                                    (records `state-scan` refused to name)
+#   review-required-marks: <n> | unreadable              (when review.md exists)
+# Before the branch exists the run CLAIM is the liveness signal:
 #   run-state: /implement-issue run before branching — the run claim <dir>/gap-analysis.lock is held
-#   issues: #<n>
+#   issues: #<n>, …                                      (from the issue-<n>.json snapshots)
 #   artifacts: …
 #
-# `review-required-marks` is the number of LINES in `review.md` carrying the word REQUIRED. It is a
-# count of findings the reviewer RECORDED, not of findings still open: the workflow persists no
-# per-finding disposition, so "open" is not a number this file can support, and a field named for
-# it would be a metric-scope mismatch. The compaction guidance in the root doc is what asks the
-# compactor to carry each finding's disposition forward.
+# CONTRACT — every value is a closed-grammar scalar the run itself wrote, because this output lands
+# in a model's context (base/practices/untrusted-content.md):
+#   - branch, owner: non-empty strings with no whitespace, control (C0, C1, DEL) or Unicode
+#     format/separator characters, <=255 / <=128 chars; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
+#     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: <=64 entries of
+#     {phase, at} with a plausible ISO-8601 UTC `at`, non-decreasing, whose last phase is `.phase`.
+#     A pre-#243 marker (no `phaseHistory` key) is valid. Any other value — including a non-string
+#     where a string is required — refuses the marker WHOLE (18). Nothing is coerced.
+#   - the blocked marker's `reason` is free text and is never printed; its PATH is.
+#   - artifact paths come from `cleanup-lib.sh state-scan`, the one home for what a state file IS;
+#     a name it refuses to serialize is counted, never printed.
+#   - `review-required-marks` counts LINES of review.md carrying the word REQUIRED — recorded
+#     marks, not open findings (the workflow persists no per-finding disposition).
+#   - ownership is `adb_owners_compatible` (either side empty = compatible, as the Stop gate).
+#   - the marker is read once, the artifacts are inspected, then the marker is re-read; a changed
+#     marker restarts the read once and is otherwise reported as changed, never mixed. The claim
+#     is read once. `review.md` may be mid-write; only its line count is read.
 #
-# OWNERSHIP. `--session` is the asking session's id; the marker's `owner` (and the claim's) is
-# compared to it by `adb_owners_compatible` — the ONE home for that rule (#180, #241): either side
-# empty is compatible, so a harness that exposes no id, or a marker written by one, is summarised;
-# two ids that differ are foreign. A foreign marker earns one line and NO facts, the same posture
-# the Stop gate takes: injecting another session's run into this one's context is the defect.
-#
-# VALIDATION IS WHOLE, and it is the same shape the Stop gate's marker read uses: a non-object,
-# a newline or control byte in a decision field, a phase outside `[a-z_]`, an `issue` that is not
-# a comma-separated list of numbers, or a `phaseHistory` that is not a list of `{phase, at}` with
-# an ISO-8601 UTC `at` refuses the marker as UNREADABLE. It is refused whole rather than rendered
-# in part because every field here reaches a prompt. A marker written before #243 — no
-# `phaseHistory` key at all — is valid and simply carries no history line.
-#
-# READ ONCE, THEN RE-VERIFY. The marker is snapshotted once and the artifacts are inspected
-# afterwards; the marker is then re-read and, if its bytes changed, the whole read starts over,
-# twice at most. A marker that keeps changing is reported as such rather than summarised from a
-# mix of two states. The marker is published by rename, so a torn read of the marker itself is
-# impossible; the artifacts beside it are not, which is why only their PATHS are reported.
-#
-# Requires: jq. Sources scripts/lib/common.sh (beside this file) for adb_owners_compatible.
+# Requires: jq; scripts/lib/common.sh and scripts/lib/cleanup-lib.sh beside this file.
 
 set -u
 
-_adb_rs_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
-if [ ! -f "$_adb_rs_common" ]; then
-  printf 'run-state: FATAL — required library not found: %s (broken/incomplete install)\n' "$_adb_rs_common" >&2
+_adb_rs_lib="$(dirname "${BASH_SOURCE[0]:-$0}")"
+if [ ! -f "$_adb_rs_lib/common.sh" ] || [ ! -f "$_adb_rs_lib/cleanup-lib.sh" ]; then
+  printf 'run-state: FATAL — required library not found beside %s (common.sh, cleanup-lib.sh) — broken/incomplete install\n' "$_adb_rs_lib" >&2
   exit 2
 fi
 # shellcheck source=/dev/null
-. "$_adb_rs_common"
+. "$_adb_rs_lib/common.sh" >/dev/null 2>&1
 command -v adb_owners_compatible >/dev/null 2>&1 || {
   printf 'run-state: FATAL — common.sh loaded but adb_owners_compatible is missing\n' >&2
   exit 2
 }
-# bash 5.3 runtime floor (#256), gated only when executed — a sourcing caller has already gated.
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 
 usage() {
@@ -98,110 +74,126 @@ usage: run-state.sh summary --state <dir> [--session <id>]
        run-state.sh -h | --help
 
 Print the facts of the /implement-issue run live in <dir> — phase, phase history, branch,
-issue numbers, PR, blocked reason, artifact paths, REQUIRED-mark count — when that run belongs to
+issue numbers, PR, blocked state, artifact paths, REQUIRED-mark count — when that run belongs to
 <id> (or to nobody). Exit 0 with empty stdout when there is nothing to say.
 EOF
 }
 
 die() { printf 'run-state: %s\n' "$*" >&2; exit 2; }
 
-# The phase vocabulary is `[a-z_]` rather than the workflow's nine-word enum on purpose: the
-# property that matters for a value bound for a prompt is that it is a bare word, and a tenth
-# phase added to the workflow must not make the summary refuse a healthy marker.
+# The one character class every printed scalar must be free of: whitespace, C0/C1/DEL controls,
+# and the Unicode format and separator characters that can end a line, hide text or reorder it
+# (U+0085, U+2028/9, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF). Built
+# from code points so this source stays ASCII; one jq definition, prepended to every program.
+_RS_UNSAFE_JQ='
+  def unsafe_re: "[\\s" + ([[0,31],[127,159],[133,133],[8232,8233],[8203,8207],[8234,8238],[8288,8292],[8294,8297],[65279,65279]]
+                          | map(([.[0]]|implode) + "-" + ([.[1]]|implode)) | add) + "]";
+  def unsafe: test(unsafe_re);'
+
 _RS_MARKER_JQ='
-  def s: if . == null then "" elif type == "string" then . else tostring end;
-  def clean: test("[\u0000-\u001f\u007f]") | not;
+  def str(f; max): (f|type) == "string" and ((f|length) <= max);
+  def iso: test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
   if type != "object" then error("not an object") else . end
-  | { b: (.branch|s), i: (.issue|s), p: (.phase|s), u: (.prUrl|s), o: (.owner|s), h: .phaseHistory }
-  | if (.b == "" or (.b|clean|not)) then error("branch") else . end
-  | if (.i | test("^[0-9]+(,[0-9]+)*$") | not) then error("issue") else . end
-  | if (.p | test("^[a-z_]{1,32}$") | not) then error("phase") else . end
-  | if (.o | clean | not) then error("owner") else . end
+  | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end
+  | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
+  | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end
+  | if (str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))) then . else error("phase") end
+  | .owner = (.owner // "")
+  | if (str(.owner; 128) and (.owner|unsafe|not)) then . else error("owner") end
+  | .prUrl = (.prUrl // "")
+  | if (str(.prUrl; 512) and (.prUrl == "" or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
+  | .h = .phaseHistory
   | if (.h == null) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
-    elif ([.h[] | (type == "object")
-            and ((.phase|type) == "string") and (.phase | test("^[a-z_]{1,32}$"))
-            and ((.at|type) == "string")
-            and (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))]
-          | all | not) then error("phaseHistory")
+    elif ((.h|length) > 64) then error("phaseHistory")
+    elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))
+                   and str(.at; 20) and (.at | iso)] | all | not) then error("phaseHistory")
+    elif ((.h|length) > 0 and (.h[-1].phase != .phase)) then error("phaseHistory")
+    elif ([.h[].at] | . == sort | not) then error("phaseHistory")
     else .hs = ([.h[] | "\(.phase)@\(.at)"] | join(", ")) end
-  | .u = (if (.u | test("^https://[^\u0000-\u0020\u007f]+$")) then .u else "" end)
-  | [ .b, .i, .p, .u, .o, .hs ] | .[]'
+  | [ .branch, .issue, .phase, .prUrl, .owner, .hs ] | .[]'
 
-# _rs_artifacts <dir> — the run-state files that exist, as a comma-joined path list. A FIXED set:
-# these are the names the workflow writes and `cleanup-lib.sh state-scan` classifies, so a file
-# somebody else dropped into the directory is never named into a prompt.
-_rs_artifacts() {
-  local d="$1" f out=""
-  for f in gap-prompt.txt gaps.md gaps.err review-prompt.txt review.md review.err docs-consulted.tsv; do
-    [ -f "$d/$f" ] || continue
-    out="${out:+$out, }$d/$f"
-  done
-  printf '%s' "$out"
-}
+_RS_CLAIM_JQ='
+  if type != "object" then error("not an object") else . end
+  | .owner = ((.owner // "") | if type == "string" then . else error("owner") end)
+  | if (.owner | unsafe) then error("owner") else . end
+  | .expiresAt = (.expiresAt // 0 | if type == "number" then floor else error("expiresAt") end)
+  | [ .owner, (.expiresAt|tostring) ] | .[]'
 
-# _rs_issues_from_snapshots <dir> — `#n, #n` from the issue-<n>.json snapshots step 2 writes.
-_rs_issues_from_snapshots() {
-  local d="$1" f n out=""
-  for f in "$d"/issue-*.json; do
-    [ -f "$f" ] || continue
-    n="${f##*/issue-}"; n="${n%.json}"
-    case "$n" in ''|*[!0-9]*) continue ;; esac
-    out="${out:+$out, }#$n"
-  done
-  printf '%s' "$out"
-}
-
-# _rs_issue_list "1,2" -> "#1, #2"
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }
+
+# _rs_scan <dir> — `state-scan` once; sets RS_ARTS (gaps/review/docs paths, sorted, comma-joined),
+# RS_ISSUES (`#n, …` from the issue snapshots) and RS_UNSAFE (count of refused names).
+_rs_scan() {
+  local scan kind sfile key n
+  RS_ARTS=""; RS_ISSUES=""; RS_UNSAFE=0
+  scan="$(bash "$_adb_rs_lib/cleanup-lib.sh" state-scan "$1" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r kind sfile key; do
+    [ -n "$kind" ] || continue
+    case "$kind" in
+      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$sfile" ;;
+      issue)  case "$sfile" in *.json) ;; *) continue ;; esac
+              n="${sfile##*/issue-}"; n="${n%.json}"
+              case "$n" in ''|*[!0-9]*) continue ;; esac
+              RS_ISSUES="${RS_ISSUES:+$RS_ISSUES, }#$n" ;;
+      unsafe) RS_UNSAFE=$((RS_UNSAFE + 1)) ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$scan" | LC_ALL=C sort -t "$(printf '\t')" -k2,2)
+EOF
+  : "$key"   # read so a fourth field can never spill into `sfile`; not otherwise used
+  return 0
+}
 
 cmd_summary() {
   local dir="$OPT_STATE" sid="$OPT_SESSION"
   [ -n "$dir" ] || die "summary: --state is required"
   command -v jq >/dev/null 2>&1 || { printf 'run-state: jq is required\n' >&2; return 12; }
+  # Both are printed into a line-structured document: a whitespace-class or control character in
+  # either would forge a line, so they are refused before anything is read.
+  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"' if (($d|unsafe) or ($s|unsafe)) then "bad" else "ok" end')" in
+    ok) : ;;
+    *) die "summary: --state / --session carries whitespace or control characters — refused" ;;
+  esac
   [ -e "$dir" ] || return 0
   [ -d "$dir" ] && [ -r "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }
 
   local marker="$dir/implement-issue-active.json" blocked="$dir/implement-issue-blocked.json"
   local claim="$dir/gap-analysis.lock"
-  local snap="" again="" fields="" attempt
-  local m_branch m_issue m_phase m_pr m_owner m_hist arts req blk_reason=""
+  local snap="" again="" fields="" attempt req="" blk="" grc
+  local m_branch m_issue m_phase m_pr m_owner m_hist
 
   if [ -f "$marker" ]; then
     for attempt in 1 2; do
       { snap="$(<"$marker")"; } 2>/dev/null
       [ -n "$snap" ] || { printf 'run-state: the run marker at %s is unreadable\n' "$marker"; return 18; }
-      fields="$(printf '%s' "$snap" | jq -r "$_RS_MARKER_JQ" 2>/dev/null)" || fields=""
+      fields="$(printf '%s' "$snap" | jq -r "$_RS_UNSAFE_JQ $_RS_MARKER_JQ" 2>/dev/null)" || fields=""
       [ -n "$fields" ] || { printf 'run-state: the run marker at %s is unreadable (not a usable record)\n' "$marker"; return 18; }
       m_branch=""; m_issue=""; m_phase=""; m_pr=""; m_owner=""; m_hist=""
       { IFS= read -r m_branch; IFS= read -r m_issue; IFS= read -r m_phase
         IFS= read -r m_pr; IFS= read -r m_owner; IFS= read -r m_hist; } <<EOF
 $fields
 EOF
-      # Whose marker is this? Decided before any artifact is looked at, so a foreign run costs
-      # one comparison and leaks nothing but the path.
       if ! adb_owners_compatible "$m_owner" "$sid"; then
         printf 'run-state: a run marker at %s belongs to another session; not summarised\n' "$marker"
         return 4
       fi
-      arts="$(_rs_artifacts "$dir")"
+      _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$dir"; return 20; }
       req=""
       if [ -f "$dir/review.md" ]; then
-        req="$(grep -c 'REQUIRED' "$dir/review.md" 2>/dev/null || true)"
-        case "$req" in ''|*[!0-9]*) req=0 ;; esac
+        req="$(grep -cw 'REQUIRED' "$dir/review.md" 2>/dev/null)"; grc=$?
+        case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)
+        case "$req" in ''|*[!0-9a-z]*) req="unreadable" ;; esac
       fi
-      blk_reason=""
+      blk=""
       if [ -f "$blocked" ]; then
-        # The blocked file pairs with THIS marker (same branch and issue, compatible owner) or it is
-        # somebody else's stop and says nothing about this run. Its reason is the run's own text;
-        # a control byte in it is refused rather than injected.
-        blk_reason="$(jq -r --arg b "$m_branch" --arg i "$m_issue" --arg o "$m_owner" '
-          if type != "object" then empty
-          elif ((.branch // "") != $b) or (((.issue // "") | tostring) != $i) then empty
-          elif ((.owner // "") != "" and $o != "" and (.owner // "") != $o) then empty
-          else (.reason // "" | tostring
-                | if test("[\u0000-\u001f\u007f]") then "(reason withheld: control bytes)" else . end)
-          end' "$blocked" 2>/dev/null)" || blk_reason=""
+        # The blocked file pairs with THIS marker (same branch and issue, compatible owner) or it
+        # is another run's stop. Its `reason` is free text and stays in the file; the path is named.
+        blk="$(jq -r --arg b "$m_branch" --arg i "$m_issue" --arg o "$m_owner" '
+          if type != "object" then "no"
+          elif ((.branch // "") != $b) or (((.issue // "") | tostring) != $i) then "no"
+          elif (((.owner // "") | tostring) != "" and $o != "" and ((.owner // "") | tostring) != $o) then "no"
+          else "yes" end' "$blocked" 2>/dev/null)" || blk="no"
       fi
       { again="$(<"$marker")"; } 2>/dev/null
       [ "$again" = "$snap" ] && break
@@ -216,30 +208,34 @@ EOF
     printf 'branch: %s\n' "$m_branch"
     printf 'issues: %s\n' "$(_rs_issue_list "$m_issue")"
     [ -n "$m_pr" ] && printf 'pr: %s\n' "$m_pr"
-    [ -n "$blk_reason" ] && printf 'blocked: %s\n' "$blk_reason"
-    [ -n "$arts" ] && printf 'artifacts: %s\n' "$arts"
+    [ "$blk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$blocked"
+    [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
+    [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
     [ -n "$req" ] && printf 'review-required-marks: %s\n' "$req"
     return 0
   fi
 
   # No marker: before the branch exists the CLAIM is the liveness signal (workflow steps 2-4).
+  # Read ONCE; owner and lease come from the same bytes.
   [ -f "$claim" ] || return 0
-  local c_owner c_exp now
-  c_owner="$(jq -r 'if type != "object" then "" else (.owner // "" | tostring) end' "$claim" 2>/dev/null)" || return 0
-  c_exp="$(jq -r 'if type != "object" then "" else (.expiresAt // "" | tostring) end' "$claim" 2>/dev/null)" || return 0
-  case "$c_exp" in ''|*[!0-9]*) return 0 ;; esac
+  { snap="$(<"$claim")"; } 2>/dev/null
+  fields="$(printf '%s' "$snap" | jq -r "$_RS_UNSAFE_JQ $_RS_CLAIM_JQ" 2>/dev/null)" || fields=""
+  [ -n "$fields" ] || { printf 'run-state: the run claim at %s is unreadable (not a usable record)\n' "$claim"; return 18; }
+  local c_owner="" c_exp="" now
+  { IFS= read -r c_owner; IFS= read -r c_exp; } <<EOF
+$fields
+EOF
   now="$(date -u +%s)"
-  [ "$c_exp" -gt "$now" ] || return 0            # an expired claim is a dead run: nothing to say
-  case "$c_owner" in *[[:cntrl:]]*) return 0 ;; esac
+  [ "$c_exp" -gt "$now" ] 2>/dev/null || return 0   # an expired claim is a dead run: nothing to say
   if ! adb_owners_compatible "$c_owner" "$sid"; then
     printf 'run-state: a run claim at %s belongs to another session; not summarised\n' "$claim"
     return 4
   fi
+  _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$dir"; return 20; }
   printf 'run-state: /implement-issue run before branching — the run claim %s is held\n' "$claim"
-  local iss; iss="$(_rs_issues_from_snapshots "$dir")"
-  [ -n "$iss" ] && printf 'issues: %s\n' "$iss"
-  arts="$(_rs_artifacts "$dir")"
-  [ -n "$arts" ] && printf 'artifacts: %s\n' "$arts"
+  [ -n "$RS_ISSUES" ] && printf 'issues: %s\n' "$RS_ISSUES"
+  [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
+  [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
   return 0
 }
 

@@ -7461,11 +7461,21 @@ survive is the part a later reader needs.
 - decision:  A reader library plus a Claude adapter, split exactly as currency is (D11's shape).
              `scripts/lib/run-state.sh summary --state <dir> [--session <id>]` prints declarative
              `key: value` lines drawn from a CLOSED grammar the run itself wrote — phase, the
-             append-only `phaseHistory` (#243, absorbed here), branch, issue numbers, PR, blocked
-             reason, artifact PATHS, a count of `REQUIRED` marks — and refuses a marker WHOLE when
-             any field falls outside it. `agents/claude/scripts/session-context.sh` runs on
-             `SessionStart` `compact|resume`, exits 0 on every path, and injects the answer as
-             `hookSpecificOutput.additionalContext` with a provenance header as its first line.
+             append-only `phaseHistory` (#243, absorbed here), branch, issue numbers, PR, whether a
+             blocked marker exists (its path, never its free-text reason), artifact PATHS as
+             `cleanup-lib.sh state-scan` classifies them, a count of `REQUIRED` marks — and refuses
+             a marker WHOLE when any field falls outside it: a non-string where a string is
+             required, whitespace or a C0/C1/Unicode format or separator character, a `prUrl` that
+             is not `https://…`, a history longer than 64 entries, out of order, or disagreeing
+             with `.phase`. `agents/claude/scripts/session-context.sh` runs on `SessionStart`
+             `compact|resume`, reads stdin with a five-second bound, exits 0 on every path it
+             reaches, caps the injection below the harness's 10,000-character hook-output limit,
+             and injects the answer as `hookSpecificOutput.additionalContext` with a provenance
+             header as its first line. The phase-update snippet is idempotent — a repeated write of
+             the same phase appends nothing — because a resumed session re-runs the step it was on.
+             The independent review of this PR (codex) is what turned the first cut's C0-only
+             filter, `tostring` coercion, printed blocked reason, unbounded output and twice-read
+             claim into these rules.
              The root docs gain `# Compact instructions` (`base/practices/compact-instructions.md`)
              telling the compactor what only the conversation held. Six gap-analysis findings were
              settled from the repo rather than escalated, and each is a rule here:

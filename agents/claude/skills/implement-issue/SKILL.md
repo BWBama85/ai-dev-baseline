@@ -100,13 +100,17 @@ Every phase update re-stamps `owner` and **appends** to `phaseHistory` (#243), i
 what lets a later reader — the compaction summary (#431), or a human asking where a slow run's
 time went — say what has happened rather than only where it is. A marker written before this
 field existed has no `phaseHistory` key and reads without error; its first update creates one.
+The append is **idempotent**: re-running the same phase write — a retry, a resumed session
+repeating the step it was on — appends nothing when the last entry already carries that phase,
+so the history records transitions, never repetitions.
 
 ```bash
 # ADB-SNIPPET: phase-update
 jq --arg phase "<next phase>" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
    '.phase = $phase
-    | .phaseHistory = ((.phaseHistory // []) + [{phase: $phase, at: $at}])
+    | .phaseHistory = ((.phaseHistory // []) as $h
+        | if ($h | length) > 0 and $h[-1].phase == $phase then $h else $h + [{phase: $phase, at: $at}] end)
     | (if $owner == "" then . else .owner = $owner end)' \
    .claude/state/implement-issue-active.json > .claude/state/.marker.tmp \
   && mv .claude/state/.marker.tmp .claude/state/implement-issue-active.json
@@ -369,7 +373,8 @@ issue-scope failures, step 4's stops, and step 5's hand-off to the marker.
 `review.err`, `review-*.{md,err}`), the issue snapshot family step 2 writes (`issue-*.json`,
 `issue-*.assoc`) and the documentation-duty record step 5b writes (`docs-consulted.tsv`,
 `docs-consulted-*.tsv`). They are per-run data with one later reader — the compaction summary
-(`run-state.sh summary`, #431), which names their PATHS and never their contents — and the most
+(`run-state.sh summary`, #431), which names the PATH of every `gaps`/`review`/`docs` record
+`state-scan` classifies and never their contents — and the most
 sensitive files this workflow writes: the prompts and the snapshot carry issue and private-repo context,
 and `gaps.err`/`review.err` are an agent's whole exploration stream. Left in place they outlive
 their run — a later pass whose `gap_analysis` is unassigned, or whose only review slot is
@@ -1184,7 +1189,8 @@ BRANCH="$(jq -r .branch .claude/state/implement-issue-active.json)"
 git push -u origin "$BRANCH"
 jq --arg owner "${CLAUDE_CODE_SESSION_ID:-}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
    '.phase = "pushed"
-    | .phaseHistory = ((.phaseHistory // []) + [{phase: "pushed", at: $at}])
+    | .phaseHistory = ((.phaseHistory // []) as $h
+        | if ($h | length) > 0 and $h[-1].phase == "pushed" then $h else $h + [{phase: "pushed", at: $at}] end)
     | (if $owner == "" then . else .owner = $owner end)' \
    .claude/state/implement-issue-active.json > .claude/state/.marker.tmp \
   && mv .claude/state/.marker.tmp .claude/state/implement-issue-active.json
