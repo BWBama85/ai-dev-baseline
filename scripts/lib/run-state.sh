@@ -45,7 +45,8 @@
 #     the record; the timestamps are NOT required to be monotonic, because a wall clock that moved
 #     backwards mid-run does not make the marker the workflow wrote malformed. `prUrl`, like
 #     `owner`, may be absent, never present and empty. A claim's `expiresAt` is a non-negative
-#     integer below 10^15 (a shell integer), never a float or an exponent.
+#     integer below 10^15 (a shell integer) that RENDERS as decimal digits — jq 1.7 keeps a
+#     literal's form, so `1e14` comes back as `1E+14` and is refused, never a float or an exponent.
 #     A pre-#243 marker (no `phaseHistory` key) is valid; a present `null` or EMPTY history is not
 #     (every writer seeds one entry). `at` is a real calendar date (no Feb 31, no Apr 31). Any other value — including a non-string where a string is required,
 #     `false` for an absent field included — refuses the marker WHOLE (18). So does a file that is
@@ -141,7 +142,9 @@ _RS_CLAIM_JQ='
   | .owner = ((if $had_owner then .owner else "" end) | if type == "string" then . else error("owner") end)
   | if (.owner | unsafe) or ($had_owner and (.owner == "")) then error("owner") else . end
   | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)
-  | [ .owner, (.expiresAt|tostring) ] | .[]'
+  | .expiresAt = (.expiresAt | tostring)
+  | if (.expiresAt | test("^[0-9]{1,15}$")) then . else error("expiresAt") end
+  | [ .owner, .expiresAt ] | .[]'
 
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }
 

@@ -109,7 +109,11 @@ if [ "$MODE" = mutation ]; then
   check_mut claim-expiry-unbounded \
     '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
     '  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)' \
-    'beyond the shell integer range'
+    'a non-integer expiresAt'
+  check_mut exponent-expiry-accepted \
+    '  | if (.expiresAt | test("^[0-9]{1,15}$")) then . else error("expiresAt") end' \
+    '  | .' \
+    'exponent form'
   check_mut null-history-as-legacy \
     '  | if (has("phaseHistory") | not) then .hs = ""' \
     '  | if (.h == null) then .hs = ""' \
@@ -500,6 +504,7 @@ jq -n '{owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq
 printf '{"expiresAt":%s,"owner":"%s"}{"expiresAt":%s,"owner":"%s"}' "$future" "$SID_A" "$future" "$SID_B" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim holding two JSON values is unreadable"
 printf '{"expiresAt":999999999999999999999,"owner":"%s"}' "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an expiresAt beyond the shell integer range is unreadable (18), never silently expired"
 printf '{"expiresAt":%s.5,"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a non-integer expiresAt is unreadable"
+printf '{"expiresAt":1e14,"owner":"%s"}' "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an expiresAt in exponent form (jq renders 1e14 as 1E+14) is unreadable, never silently expired"
 printf '{"expiresAt":%s,\x00"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a NUL byte in the claim is unreadable"
 
 # 1i'. a directory that is readable but not searchable is UNREADABLE (20), never "no run".
