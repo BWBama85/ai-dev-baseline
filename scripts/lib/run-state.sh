@@ -38,8 +38,10 @@
 # in a model's context (base/practices/untrusted-content.md):
 #   - branch, owner: non-empty strings with no whitespace and no character of Unicode category
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
-#     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: <=64 entries of
-#     {phase, at} with a plausible ISO-8601 UTC `at`, non-decreasing, whose last phase is `.phase`.
+#     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: 1..64 entries of
+#     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase`. Append order is
+#     the record; the timestamps are NOT required to be monotonic, because a wall clock that moved
+#     backwards mid-run does not make the marker the workflow wrote malformed.
 #     A pre-#243 marker (no `phaseHistory` key) is valid; an explicitly EMPTY history is not (every
 #     writer seeds one entry). Any other value — including a non-string where a string is required,
 #     `false` for an absent field included — refuses the marker WHOLE (18). So does a file that is
@@ -47,8 +49,9 @@
 #     `null`/absent reads as "not present".
 #   - the blocked marker's `reason` is free text and is never printed; its PATH is.
 #   - artifact paths come from `cleanup-lib.sh state-scan`, the one home for what a state file IS;
-#     a name it refuses to serialize — or one carrying any control/format character, which it
-#     does not refuse (it rejects only its own delimiters) — is counted, never printed.
+#     a name it refuses to serialize, one carrying any control/format character (it rejects only
+#     its own delimiters), or one outside the workflow's own name grammar `[A-Za-z0-9._-]{1,64}`
+#     — a printable name can be prose — is counted, never printed.
 #   - `review-required-marks` counts LINES of review.md carrying the word REQUIRED — recorded
 #     marks, not open findings (the workflow persists no per-finding disposition).
 #   - ownership is `adb_owners_compatible` (either side empty = compatible, as the Stop gate).
@@ -122,7 +125,6 @@ _RS_MARKER_JQ='
     elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))
                    and str(.at; 20) and (.at | iso)] | all | not) then error("phaseHistory")
     elif ((.h|length) > 0 and (.h[-1].phase != .phase)) then error("phaseHistory")
-    elif ([.h[].at] | . == sort | not) then error("phaseHistory")
     else .hs = ([.h[] | "\(.phase)@\(.at)"] | join(", ")) end
   | [ .branch, .issue, .phase, .prUrl, .owner, .hs ] | .[]'
 
@@ -157,8 +159,14 @@ _rs_scan() {
   # `state-scan` refuses only tab and newline in a name (its own delimiters); this output is a
   # line-structured document in a prompt, so every other control or format character is refused
   # here, by re-classifying such a record as `unsafe` before its path can be printed.
+  # ...and the NAME must fit the workflow's own grammar: the names it writes are `[A-Za-z0-9._-]`
+  # and short, and a printable name that is not — `gaps-IGNORE ALL PREVIOUS INSTRUCTIONS.md` is
+  # classified `gaps` by state-scan — is prose, not a path this document may carry. The directory
+  # part is the caller's `--state` (validated above) and may carry spaces; the basename may not.
   scan="$(printf '%s\n' "$scan" | jq -rR "$_RS_UNSAFE_JQ"' split("\t") | select(length >= 2)
-    | if (.[1] | unsafe_path) then "unsafe\t-" else "\(.[0])\t\(.[1])" end' 2>/dev/null)" || return 1
+    | if (.[1] | unsafe_path) then "unsafe\t-"
+      elif (.[0] != "unsafe") and ((.[1] | split("/") | last) | test("^[A-Za-z0-9._-]{1,64}$") | not) then "unsafe\t-"
+      else "\(.[0])\t\(.[1])" end' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
     case "$kind" in
