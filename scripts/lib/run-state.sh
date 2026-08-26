@@ -36,12 +36,13 @@
 #
 # CONTRACT — every value is a closed-grammar scalar the run itself wrote, because this output lands
 # in a model's context (base/practices/untrusted-content.md):
-#   - branch, owner: non-empty strings with no whitespace, control (C0, C1, DEL) or Unicode
-#     format/separator characters, <=255 / <=128 chars; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
+#   - branch, owner: non-empty strings with no whitespace and no character of Unicode category
+#     Cc, Cf, Zl or Zp, <=255 / <=128 chars; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: <=64 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, non-decreasing, whose last phase is `.phase`.
 #     A pre-#243 marker (no `phaseHistory` key) is valid. Any other value — including a non-string
-#     where a string is required — refuses the marker WHOLE (18). Nothing is coerced.
+#     where a string is required, `false` for an absent field included — refuses the marker WHOLE
+#     (18). Nothing is coerced, and only `null`/absent reads as "not present".
 #   - the blocked marker's `reason` is free text and is never printed; its PATH is.
 #   - artifact paths come from `cleanup-lib.sh state-scan`, the one home for what a state file IS;
 #     a name it refuses to serialize — or one carrying any control/format character, which it
@@ -83,17 +84,16 @@ EOF
 
 die() { printf 'run-state: %s\n' "$*" >&2; exit 2; }
 
-# The character class every printed scalar must be free of: C0/C1/DEL controls and the Unicode
-# format and separator characters that can end a line, hide text or reorder it (U+0085,
-# U+2028/9, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF). `unsafe` adds
-# whitespace on top, for the values that are words (branch, owner, session, URL); `unsafe_path`
-# does not, because a checkout path legitimately carries spaces and a space cannot forge a line.
-# Built from code points so this source stays ASCII; one jq definition, prepended to every program.
+# The character class every printed scalar must be free of: the Unicode CATEGORIES Cc (controls,
+# C0/C1/DEL), Cf (format: bidi controls, zero-width joiners, soft hyphen, U+061C, U+180E, BOM, …),
+# Zl and Zp (line and paragraph separators) — categories, not an enumerated list, so a code point
+# the list forgot cannot slip through. `unsafe` adds whitespace on top, for the values that are
+# words (branch, owner, session, URL); `unsafe_path` does not, because a checkout path
+# legitimately carries spaces and a space cannot forge a line. One jq definition, prepended to
+# every program that needs it.
 _RS_UNSAFE_JQ='
-  def controls: [[0,31],[127,159],[133,133],[8232,8233],[8203,8207],[8234,8238],[8288,8292],[8294,8297],[65279,65279]]
-                | map(([.[0]]|implode) + "-" + ([.[1]]|implode)) | add;
-  def unsafe: test("[\\s" + controls + "]");
-  def unsafe_path: test("[" + controls + "]");'
+  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
+  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");'
 
 _RS_MARKER_JQ='
   def str(f; max): (f|type) == "string" and ((f|length) <= max);
@@ -103,9 +103,9 @@ _RS_MARKER_JQ='
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
   | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end
   | if (str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))) then . else error("phase") end
-  | .owner = (.owner // "")
+  | .owner = (if .owner == null then "" else .owner end)
   | if (str(.owner; 128) and (.owner|unsafe|not)) then . else error("owner") end
-  | .prUrl = (.prUrl // "")
+  | .prUrl = (if .prUrl == null then "" else .prUrl end)
   | if (str(.prUrl; 512) and (.prUrl == "" or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
   | .h = .phaseHistory
   | if (.h == null) then .hs = ""
@@ -120,7 +120,7 @@ _RS_MARKER_JQ='
 
 _RS_CLAIM_JQ='
   if type != "object" then error("not an object") else . end
-  | .owner = ((.owner // "") | if type == "string" then . else error("owner") end)
+  | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)
   | if (.owner | unsafe) then error("owner") else . end
   | .expiresAt = (.expiresAt // 0 | if type == "number" then floor else error("expiresAt") end)
   | [ .owner, (.expiresAt|tostring) ] | .[]'

@@ -19,9 +19,9 @@
 #     same precedence as implement-issue-gate.sh. The library decides ownership.
 #   - Only closed-grammar values the run wrote reach `additionalContext` (the library's contract);
 #     the state-directory path comes from `adb_repo_shape`, which refuses tab/newline roots.
-#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500) — the harness
-#     replaces hook output over 10,000 characters with a preview and a file path (vendor docs,
-#     read 2026-08-26). A capped summary ends with a line saying so.
+#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500, floor 256) —
+#     the harness replaces hook output over 10,000 characters with a preview and a file path
+#     (vendor docs, read 2026-08-26). A capped summary ends with a line saying so.
 #   - stderr carries one audit line — the marker summarised, or "no live run" — for the debug log;
 #     the transcript sees the provenance header. ADB_SESSION_CONTEXT=off: one stderr line, exit 0.
 #   - jq, common.sh and run-state.sh are required beside this file; any of them missing means one
@@ -96,6 +96,10 @@ printf 'session-context: injected the run-state summary from %s (run-state.sh rc
 HEADER="ai-dev-baseline run-state (source: $STATE_DIR; read after SessionStart $SOURCE). The lines below are the run's own marker data — phase, branch, issue numbers, paths, counts — never issue or finding text."
 MAX="${ADB_SESSION_CONTEXT_MAX_CHARS:-9500}"
 case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
+# A FLOOR, because the cap line itself is ~100 characters: below it the arithmetic goes negative
+# and the "capped" output would exceed the cap it names. 256 is the smallest value at which the
+# header and the cap line both fit.
+[ "$MAX" -ge 256 ] 2>/dev/null || MAX=256
 jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --arg d "$STATE_DIR" --argjson max "$MAX" '
   ($h + "\n" + $s) as $ctx
   | ("\n(capped at " + ($max|tostring) + " characters — read " + $d + " directly)") as $cap

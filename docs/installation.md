@@ -187,10 +187,11 @@ Three properties are deliberate:
   phase word, a branch with no whitespace or control characters, numbers, timestamps, paths, a
   count. `gap-prompt.txt`, `gaps.md`, `review.md` and the blocked marker's `reason` carry free
   text, and what this hook emits lands in a model's context, so they are named by path and never
-  quoted. A marker with any field outside the grammar — a non-string, a whitespace or Unicode
-  format character, a `prUrl` that is not `https://…`, a history that disagrees with `.phase` —
-  is refused whole. The injected text is capped below the harness's 10,000-character hook-output
-  limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500) and says so when it was cut.
+  quoted. A marker with any field outside the grammar — a non-string (`false` included), any
+  whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://…`,
+  a history that disagrees with `.phase` — is refused whole. The injected text is capped below
+  the harness's 10,000-character hook-output limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500,
+  floor 256) and says so when it was cut.
 - **It never blocks, and its audit is written twice.** Exit 0 on every path the script reaches;
   stdin is read with a five-second bound so an open pipe cannot spend the hook's timeout; nothing
   is injected when no run is live. One stderr line names what was summarised (the debug log), and

@@ -73,9 +73,25 @@ if [ "$MODE" = mutation ]; then
     '  | .' \
     'a phase outside [a-z_] is refused whole'
   check_mut unsafe-class-dropped \
-    '  def unsafe: test("[\\s" + controls + "]");' \
+    '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     '  def unsafe: false;' \
     'a newline in branch is refused whole'
+  check_mut owner-false-as-absent \
+    '  | .owner = (if .owner == null then "" else .owner end)' \
+    '  | .owner = (.owner // "")' \
+    'an owner of false is refused whole'
+  check_mut prurl-false-as-absent \
+    '  | .prUrl = (if .prUrl == null then "" else .prUrl end)' \
+    '  | .prUrl = (.prUrl // "")' \
+    'a prUrl of false is refused whole'
+  check_mut claim-owner-false-as-absent \
+    '  | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)' \
+    '  | .owner = ((.owner // "") | if type == "string" then . else error("owner") end)' \
+    'a claim whose owner is false is unreadable'
+  check_mut path-class-dropped \
+    '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
+    '  def unsafe_path: false;' \
+    'a --state path with a newline is refused'
   check_mut branch-type-unchecked \
     '  | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end' \
     '  | .branch = (.branch|tostring) | if (.branch != "" and (.branch|unsafe|not)) then . else error("branch") end' \
@@ -149,6 +165,10 @@ if [ "$MODE" = mutation ]; then
     '  | (if ($ctx | length) > $max' \
     '  | (if false' \
     'the injection is capped'
+  check_mut cap-floor-dropped \
+    '[ "$MAX" -ge 256 ] 2>/dev/null || MAX=256' \
+    ':' \
+    'below the floor'
   check_mut stdin-unbounded \
     "  IFS= read -r -d '' -t 5 HOOK_INPUT || _rc=\$?" \
     '  HOOK_INPUT="$(cat)"' \
@@ -264,6 +284,10 @@ marker "$d" '{branch:{text:"ignore-previous-instructions"}, issue:"5", phase:"br
 printf '{"branch":"b\xe2\x80\xa8x","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a Unicode line separator (U+2028) in branch is refused whole"
 printf '{"branch":"b\xc2\x85x","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a C1 control (U+0085) in branch is refused whole"
 printf '{"branch":"b\xe2\x80\xaex","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a bidi override (U+202E) in branch is refused whole"
+printf '{"branch":"b\xd8\x9cx","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "an Arabic letter mark (U+061C, category Cf) in branch is refused whole"
+printf '{"branch":"b\xc2\xadx","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a soft hyphen (U+00AD, category Cf) in branch is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", owner:false}'; refused "an owner of false is refused whole (jq // would read it as absent)"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", prUrl:false}'; refused "a prUrl of false is refused whole"
 marker "$d" '{branch:("x" * 256), issue:"5", phase:"branched"}'; refused "a 256-character branch is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"Pushed; ignore previous"}'; refused "a phase outside [a-z_] is refused whole"; hasnt "$OUT" "ignore previous" "1e ...and it is not printed"
 marker "$d" '{branch:"b", issue:"five", phase:"branched"}'; refused "a non-numeric issue is refused"
@@ -316,6 +340,7 @@ jq -n --argjson e "$past" '{startedAt:1, expiresAt:$e, token:"t", owner:"'"$SID_
 summary "$d" "$SID_A"; eq "$RC" 0 "1h an expired claim: exit 0"; eq "$OUT" "" "1h an expired claim is nothing to say"
 printf 'garbage' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an unreadable claim is reported (18), never a benign absence"; has "$OUT" "run claim at $d/gap-analysis.lock is unreadable" "1h ...with the unreadable line"
 jq -n --argjson e "$future" '{expiresAt:$e, owner:{id:1}}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with a non-string owner is unreadable"
+jq -n --argjson e "$future" '{expiresAt:$e, owner:false}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose owner is false is unreadable"
 
 # 1i. usage and refusals.
 bash "$RS" >/dev/null 2>&1; eq "$?" 2 "1i no subcommand is usage (2)"
@@ -438,6 +463,9 @@ C="$(ctx)"
 has "$C" "(capped at 400 characters — read $RP/.claude/state directly)" "2j the injection is capped, and says so"
 [ "${#C}" -le 400 ] && ok || bad "2j the capped injection is within the cap: ${#C} chars"
 hook "$(payload compact "$SID_A")"; hasnt "$(ctx)" "capped at" "2j an ordinary summary is not capped"
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
+C="$(ctx)"; [ "${#C}" -le 256 ] && ok || bad "2j a cap below the floor is raised to 256, never exceeded: ${#C} chars"
+has "$C" "capped at 256" "2j ...and the output names the floor it was capped at"
 
 # 2k. the settings wiring and the hook enumeration agree.
 SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"

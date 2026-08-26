@@ -30,7 +30,9 @@ only by a published release, which is what these entries are the notes for.
   its first line, capped below the harness's 10,000-character hook-output limit, reading stdin
   with a bound, and exiting 0 on every path it reaches (`ADB_SESSION_CONTEXT=off` disables it).
   A checkout whose path carries a space is summarised like any other; a name `state-scan` accepts
-  but a prompt line cannot carry (a control or format character) is counted, never printed.
+  but a prompt line cannot carry (a control or format character) is counted, never printed. The
+  refused characters are the Unicode categories Cc, Cf, Zl and Zp — not an enumerated list — and
+  `false` in a field that must be a string is refused rather than read as absent.
 
   **An upgrade wires a newly shipped hook.** `baseline update` used to read a hook set missing
   only the new hook as a per-hook opt-out and pass `--no-hooks` to the repair — linking the
