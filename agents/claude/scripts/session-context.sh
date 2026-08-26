@@ -54,10 +54,14 @@ command -v adb_repo_shape >/dev/null 2>&1 || { printf 'session-context: common.s
 # --- 1. the event, read with a bound -----------------------------------------------------------
 # `-d ''` reads to EOF; `-t 5` bounds an open pipe. bash >= 4.2 KEEPS a partial read on timeout
 # (status > 128), so the discard is ours — the same rule the Stop gate documents.
+# ONLY AN EOF-TERMINATED READ IS A PAYLOAD. `-d ''` makes NUL the delimiter, so `read` returns 0
+# when it finds one — with the bytes BEFORE it and the rest unread — and 1 at EOF with everything.
+# A JSON event never carries a NUL, so status 0 is a split payload and is discarded, as is a
+# timeout (> 128).
 HOOK_INPUT=""; _rc=0
 if [ ! -t 0 ]; then
   IFS= read -r -d '' -t 5 HOOK_INPUT || _rc=$?
-  [ "$_rc" -gt 128 ] && HOOK_INPUT=""
+  case "$_rc" in 1) : ;; *) HOOK_INPUT="" ;; esac
 fi
 # `-j` (no trailing newline) plus a SENTINEL, because `$(…)` strips every trailing newline: a
 # `cwd` naming `repo<NL>` would arrive as `repo` — a different directory, and often an existing

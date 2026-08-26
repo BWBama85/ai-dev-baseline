@@ -268,7 +268,8 @@ EOF
       blk=""
       if [ -f "$blocked" ]; then
         # The blocked file pairs with THIS marker (same branch and issue, compatible owner) or it
-        # is another run's stop. Its `reason` is free text and stays in the file; the path is named.
+        # is another run's stop. Its `reason` must EXIST as a non-empty string for the line to say
+        # one was recorded; the text stays in the file and the path is named.
         # TYPED, like the marker: `branch` a string, `issue` a string or a number, `owner` absent,
         # null or a string. Anything else is not a usable record and says nothing — never "yes".
         blk="$(jq -r --arg b "$m_branch_raw" --arg i "$m_issue" --arg o "$m_owner" '
@@ -277,6 +278,7 @@ EOF
           elif ((.issue|type) == "number") then (if (.issue|tostring) != $i then "no" else . end)
           elif ((.issue|type) != "string") or (.issue != $i) then "no" else . end
           | if . == "no" then "no"
+            elif ((.reason|type) != "string") or (.reason == "") then "no"
             elif (.owner == null) then "yes"
             elif ((.owner|type) != "string") or (.owner == "") then "no"
             elif (.owner != "" and $o != "" and .owner != $o) then "no"

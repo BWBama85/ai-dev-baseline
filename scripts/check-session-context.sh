@@ -166,6 +166,10 @@ if [ "$MODE" = mutation ]; then
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     'U+FFFD'
+  check_mut blocked-reason-unchecked \
+    '            elif ((.reason|type) != "string") or (.reason == "") then "no"' \
+    '            elif false then "no"' \
+    'a blocked marker with NO reason'
   check_mut blocked-empty-owner-accepted \
     '            elif ((.owner|type) != "string") or (.owner == "") then "no"' \
     '            elif ((.owner|type) != "string") then "no"' \
@@ -290,6 +294,10 @@ if [ "$MODE" = mutation ]; then
   # suffix's length, so putting the path back into the cap line no longer reproduces the defect
   # the assertion guards — that assertion is belt-and-braces over an arm the cap-dropped row above
   # already drives red, and a row that cannot fire would report coverage it does not have.
+  check_mut nul-split-payload-accepted \
+    '  case "$_rc" in 1) : ;; *) HOOK_INPUT="" ;; esac' \
+    '  case "$_rc" in 1|0) : ;; *) HOOK_INPUT="" ;; esac' \
+    'a NUL in the payload'
   check_mut stdin-unbounded \
     "  IFS= read -r -d '' -t 5 HOOK_INPUT || _rc=\$?" \
     '  HOOK_INPUT="$(cat)"' \
@@ -500,6 +508,10 @@ jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:false}' > "$d/imple
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose owner is false is not a usable record — says nothing"
 jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:""}' > "$d/implement-issue-blocked.json"
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose owner is EMPTY is not a usable record — says nothing"
+jq -n '{branch:"issue-431-x", issue:"431", owner:"'"$SID_A"'"}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker with NO reason is not a usable record — says nothing (never 'reason recorded')"
+jq -n '{reason:null, branch:"issue-431-x", issue:"431"}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker with a null reason says nothing"
 jq -n '{reason:"r", branch:{x:1}, issue:"431"}' > "$d/implement-issue-blocked.json"
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose branch is not a string says nothing"
 jq -n '{reason:"r", branch:"issue-431-x", issue:431}' > "$d/implement-issue-blocked.json"
@@ -662,6 +674,11 @@ hook "$(payload compact "$SID_A")"; eq "$RC" 0 "2h a missing run-state.sh still 
 mv "$work/rs.bak" "$H/lib/run-state.sh"
 HOOK_ENV=(PATH="$nojq"); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
 eq "$RC" 0 "2h no jq still exits 0"; eq "$OUT" "" "2h no jq injects nothing"
+
+# 2i'. a NUL-split payload: a valid event, a NUL, then more. `read -d ''` would return the prefix
+#      as if it were the whole stream; only an EOF-terminated read is a payload.
+OUT="$( { printf '%s' "$(payload compact "$SID_A")"; printf '\000'; printf '{"source":"compact"}'; } | env -u CLAUDE_CODE_SESSION_ID bash "$H/session-context.sh" 2>/dev/null )"; RC=$?
+eq "$RC" 0 "2i a NUL in the payload: exit 0"; eq "$OUT" "" "2i a NUL in the payload injects NOTHING — the prefix before it is not the payload"
 
 # 2i. an open stdin pipe is bounded: the hook returns before the WRITER closes it. The writer
 #     holds the pipe for 60 s and the bound is 5 s, so a 55 s margin separates "bounded" from

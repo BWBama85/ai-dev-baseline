@@ -136,7 +136,11 @@ Removing a hook's entry from `~/.claude/settings.json` is the per-hook opt-out, 
 update` preserves it: a hook whose script link is installed but whose entry is gone is left alone
 (the set is reported as PARTIAL). A hook shipped **after** your last install has neither an entry
 nor a script link, and that is not a choice anybody made — the next `baseline update` links and
-wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart).
+wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart). **Unless the set
+also carries a deliberate opt-out:** `install.sh --no-hooks` is all-or-nothing, so a mixed set —
+one entry you removed plus one hook that just shipped — keeps the opt-out and leaves the new hook
+linked but unwired; the update says so, and `./install.sh` wires the full set (which re-adds the
+one you removed). The per-hook form that resolves this is #444.
 
 ### Run markers are session-owned
 
