@@ -191,7 +191,7 @@ Three properties are deliberate:
   whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://…`,
   a history that disagrees with `.phase` — is refused whole. The injected text is capped below
   the harness's 10,000-character hook-output limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500,
-  floor 256) and says so when it was cut.
+  floor 1024 so the facts survive the cap) and says so when it was cut.
 - **It never blocks, and its audit is written twice.** Exit 0 on every path the script reaches;
   stdin is read with a five-second bound so an open pipe cannot spend the hook's timeout; nothing
   is injected when no run is live. One stderr line names what was summarised (the debug log), and

@@ -89,11 +89,14 @@ die() { printf 'run-state: %s\n' "$*" >&2; exit 2; }
 # Zl and Zp (line and paragraph separators) — categories, not an enumerated list, so a code point
 # the list forgot cannot slip through. `unsafe` adds whitespace on top, for the values that are
 # words (branch, owner, session, URL); `unsafe_path` does not, because a checkout path
-# legitimately carries spaces and a space cannot forge a line. One jq definition, prepended to
-# every program that needs it.
+# legitimately carries spaces and a space cannot forge a line — but it adds U+FFFD: jq replaces
+# every byte that is not valid UTF-8 with that character on input, so a name carrying one is
+# either a Linux filename this reader cannot render as the path that exists, or a name that
+# already carries the replacement character; both are counted, never printed. One jq
+# definition, prepended to every program that needs it.
 _RS_UNSAFE_JQ='
   def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
-  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");'
+  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");'
 
 _RS_MARKER_JQ='
   def str(f; max): (f|type) == "string" and ((f|length) <= max);
@@ -200,11 +203,18 @@ EOF
       if [ -f "$blocked" ]; then
         # The blocked file pairs with THIS marker (same branch and issue, compatible owner) or it
         # is another run's stop. Its `reason` is free text and stays in the file; the path is named.
+        # TYPED, like the marker: `branch` a string, `issue` a string or a number, `owner` absent,
+        # null or a string. Anything else is not a usable record and says nothing — never "yes".
         blk="$(jq -r --arg b "$m_branch" --arg i "$m_issue" --arg o "$m_owner" '
           if type != "object" then "no"
-          elif ((.branch // "") != $b) or (((.issue // "") | tostring) != $i) then "no"
-          elif (((.owner // "") | tostring) != "" and $o != "" and ((.owner // "") | tostring) != $o) then "no"
-          else "yes" end' "$blocked" 2>/dev/null)" || blk="no"
+          elif ((.branch|type) != "string") or (.branch != $b) then "no"
+          elif ((.issue|type) == "number") then (if (.issue|tostring) != $i then "no" else . end)
+          elif ((.issue|type) != "string") or (.issue != $i) then "no" else . end
+          | if . == "no" then "no"
+            elif (.owner == null) then "yes"
+            elif ((.owner|type) != "string") then "no"
+            elif (.owner != "" and $o != "" and .owner != $o) then "no"
+            else "yes" end' "$blocked" 2>/dev/null)" || blk="no"
       fi
       { again="$(<"$marker")"; } 2>/dev/null
       [ "$again" = "$snap" ] && break

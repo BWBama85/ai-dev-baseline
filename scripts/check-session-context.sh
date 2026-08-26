@@ -93,9 +93,17 @@ if [ "$MODE" = mutation ]; then
     '  | .expiresAt = (.expiresAt // 0 | if type == "number" then floor else error("expiresAt") end)' \
     'a claim whose expiresAt is false is unreadable'
   check_mut path-class-dropped \
-    '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
+    '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
     '  def unsafe_path: false;' \
     'a --state path with a newline is refused'
+  check_mut replacement-char-allowed \
+    '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
+    '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
+    'U+FFFD'
+  check_mut blocked-owner-false-as-absent \
+    '            elif (.owner == null) then "yes"' \
+    '            elif (.owner == null or .owner == false) then "yes"' \
+    'a blocked marker whose owner is false'
   check_mut branch-type-unchecked \
     '  | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end' \
     '  | .branch = (.branch|tostring) | if (.branch != "" and (.branch|unsafe|not)) then . else error("branch") end' \
@@ -160,7 +168,7 @@ if [ "$MODE" = mutation ]; then
   check_mut provenance-header-dropped \
     '  ($h + "\n" + $s) as $ctx' \
     '  ($s) as $ctx' \
-    'the provenance header names the state directory'
+    'the provenance header comes first'
   check_mut stdout-contamination-allowed \
     '  . "$(dirname "$0")/lib/common.sh" >/dev/null 2>&1' \
     '  . "$(dirname "$0")/lib/common.sh" 2>/dev/null' \
@@ -170,7 +178,7 @@ if [ "$MODE" = mutation ]; then
     '  | (if true then $ctx' \
     'the injection is capped'
   check_mut cap-floor-dropped \
-    '[ "$MAX" -ge 256 ] 2>/dev/null || MAX=256' \
+    '[ "$MAX" -ge 1024 ] 2>/dev/null || MAX=1024' \
     ':' \
     'names the floor it was capped at'
   # NO ROW for the long-path case on purpose: the `$keep <= 0` arm bounds the output whatever the
@@ -253,6 +261,14 @@ summary "$d" "$SID_A"
 has "$OUT" $'\nunsafe-names: 1' "1b a control character in an artifact name is counted, never printed"
 hasnt "$OUT" $'\x1b' "1b ...and the byte does not reach the output"
 rm -f "$d"/gaps-a*b.md
+# U+FFFD is what jq turns an invalid UTF-8 byte into on input (a Linux filename can carry one), so
+# a name that reaches the class carrying it is a path this reader cannot render as the file that
+# exists — counted, never printed. A literal U+FFFD in a name is the portable way to drive it.
+printf 'z' > "$d/gaps-$(printf '\xef\xbf\xbd').md"
+summary "$d" "$SID_A"
+has "$OUT" $'\nunsafe-names: 1' "1b a name carrying U+FFFD (what jq makes of a non-UTF-8 byte) is counted, never printed"
+hasnt "$OUT" "$(printf '\xef\xbf\xbd')" "1b ...and the replacement character does not reach the output"
+rm -f "$d"/gaps-*.md; printf 'INJECT-ME finding\n' > "$d/gaps.md"
 has "$OUT" $'\nreview-required-marks: 2' "1b review-required-marks counts the REQUIRED lines (word-bounded)"
 hasnt "$OUT" "INJECT-ME" "1b no artifact TEXT reaches the output"
 hasnt "$OUT" "$SID_A" "1b the owner id is not printed for the owner either"
@@ -331,6 +347,12 @@ jq -n '{reason:"other run", branch:"other", issue:"9"}' > "$d/implement-issue-bl
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker for another branch says nothing"
 jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:"'"$SID_B"'"}' > "$d/implement-issue-blocked.json"
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker owned by another session says nothing"
+jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:false}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose owner is false is not a usable record — says nothing"
+jq -n '{reason:"r", branch:{x:1}, issue:"431"}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose branch is not a string says nothing"
+jq -n '{reason:"r", branch:"issue-431-x", issue:431}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; has "$OUT" $'\nblocked: yes' "1g a blocked marker with a numeric issue (hand-written) still pairs"
 
 # 1h. before the branch: the claim is the liveness signal, read once.
 d="$(state claim)"; future=$(( $(date -u +%s) + 3600 )); past=$(( $(date -u +%s) - 60 ))
@@ -403,7 +425,8 @@ eq "$RC" 0 "2a compact: exit 0"
 eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" 1 "2a compact: exactly one line of stdout"
 printf '%s' "$OUT" | jq -e 'type == "object" and .hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null && ok || bad "2a compact: stdout is one SessionStart hookSpecificOutput object"
 C="$(ctx)"
-has "$(printf '%s' "$C" | head -n1)" "ai-dev-baseline run-state (source: $RP/.claude/state; read after SessionStart compact)" "2a the provenance header names the state directory, first"
+has "$(printf '%s' "$C" | head -n1)" "ai-dev-baseline run-state, read after SessionStart compact" "2a the provenance header comes first and names the source event"
+has "$(printf '%s' "$C" | sed -n 2p)" "run-state: /implement-issue run in progress — source $RP/.claude/state/implement-issue-active.json" "2a ...and the summary's own first line names the state path"
 has "$C" $'\nphase: pushed' "2a the summary is injected"
 has "$C" $'\nreview-required-marks: 1' "2a ...with the REQUIRED count"
 printf '%s\n' "$C" | tail -n +2 | grep -qvE '^[a-z-]+: ' && bad "2a every injected line after the header is key: value" || ok
@@ -467,21 +490,29 @@ took=$((SECONDS - start))
 eq "$RC" 0 "2i an open stdin pipe: exit 0"; eq "$OUT" "" "2i an open stdin pipe injects nothing"
 [ "$took" -lt 10 ] && ok || bad "2i an open stdin pipe is bounded: took ${took}s, want < 10s"
 
-# 2j. the output cap.
-HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=400); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
-C="$(ctx)"
-has "$C" "(capped at 400 characters — the state directory is named in the first line and on stderr)" "2j the injection is capped, and says so"
-[ "${#C}" -le 400 ] && ok || bad "2j the capped injection is within the cap: ${#C} chars"
-hook "$(payload compact "$SID_A")"; hasnt "$(ctx)" "capped at" "2j an ordinary summary is not capped"
-HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
-C="$(ctx)"; [ "${#C}" -le 256 ] && ok || bad "2j a cap below the floor is raised to 256, never exceeded: ${#C} chars"
-has "$C" "capped at 256" "2j ...and the output names the floor it was capped at"
-# A LONG PATH must not defeat the cap: the cap line names no path, so it cannot outgrow the cap.
+# 2j. the output cap. The ordinary fixture is well under the 1024 floor, so the capped cases use
+#     the LONG-PATH repository with every artifact present (~2 KB of summary).
+hook "$(payload compact "$SID_A")"; C="$(ctx)"
+hasnt "$C" "capped at" "2j an ordinary summary is not capped"
+[ "${#C}" -le 1024 ] && ok || bad "2j ...and is within the default budget: ${#C} chars"
 LP="$work/$(printf 'l%.0s' $(seq 1 60))/$(printf 'o%.0s' $(seq 1 60))/$(printf 'n%.0s' $(seq 1 60))/$(printf 'g%.0s' $(seq 1 60))/$(printf 'p%.0s' $(seq 1 60))"
 mkdir -p "$LP/.claude/state"; check_git "$LP" init -q; marker "$LP/.claude/state" "$LIVE"
-HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=256); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
-C="$(ctx)"; [ "${#C}" -le 256 ] && ok || bad "2j a long state path (${#LP} chars) does not defeat the cap: ${#C} chars > 256"
-has "$C" "capped at 256" "2j ...and it still says it was capped"
+for f in gap-prompt.txt gaps.md gaps.err review-prompt.txt review.md review.err docs-consulted.tsv; do printf 'x\n' > "$LP/.claude/state/$f"; done
+LPP="$(canon "$LP")"
+hook "$(payload compact "$SID_A" "$LP")"; C="$(ctx)"
+[ "${#C}" -gt 1024 ] && ok || bad "2j the long-path fixture exceeds the floor uncapped (${#C} chars) — else the cases below test nothing"
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=1024); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
+C="$(ctx)"
+has "$C" "(capped at 1024 characters — the state directory is named in the first line and on stderr)" "2j the injection is capped, and says so"
+[ "${#C}" -le 1024 ] && ok || bad "2j the capped injection is within the cap: ${#C} chars"
+has "$C" "source $LPP/.claude/state/implement-issue-active.json" "2j ...the source line survives under a 300-character path"
+has "$C" $'\nphase: pushed' "2j ...and the phase survives even under a 300-character path"
+has "$C" $'\nbranch: issue-431-x' "2j ...(branch)"
+printf '%s' "$C" | jq -R . >/dev/null && ok || bad "2j the capped text is still one clean string"
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
+C="$(ctx)"; [ "${#C}" -le 1024 ] && ok || bad "2j a cap below the floor is raised to 1024, never exceeded: ${#C} chars"
+has "$C" "capped at 1024" "2j ...and the output names the floor it was capped at"
+has "$C" $'\nphase: pushed' "2j ...and the FACTS survive at the floor"
 
 # 2k. the settings wiring and the hook enumeration agree.
 SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"

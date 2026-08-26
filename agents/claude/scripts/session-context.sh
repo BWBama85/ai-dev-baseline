@@ -19,7 +19,7 @@
 #     same precedence as implement-issue-gate.sh. The library decides ownership.
 #   - Only closed-grammar values the run wrote reach `additionalContext` (the library's contract);
 #     the state-directory path comes from `adb_repo_shape`, which refuses tab/newline roots.
-#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500, floor 256) —
+#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500, floor 1024) —
 #     the harness replaces hook output over 10,000 characters with a preview and a file path
 #     (vendor docs, read 2026-08-26). A capped summary ends with a line saying so.
 #   - stderr carries one audit line — the marker summarised, or "no live run" — for the debug log;
@@ -93,13 +93,17 @@ fi
 printf 'session-context: injected the run-state summary from %s (run-state.sh rc %s)\n' "$STATE_DIR" "$RC" >&2
 
 # --- 4. presentation -------------------------------------------------------------------------------
-HEADER="ai-dev-baseline run-state (source: $STATE_DIR; read after SessionStart $SOURCE). The lines below are the run's own marker data — phase, branch, issue numbers, paths, counts — never issue or finding text."
+# SHORT, and it names no path: the summary's own first line carries the source, and every
+# character here is budget the facts below do not get under a small cap.
+HEADER="ai-dev-baseline run-state, read after SessionStart $SOURCE — marker data only (phase, branch, issue numbers, paths, counts), never issue or finding text."
 MAX="${ADB_SESSION_CONTEXT_MAX_CHARS:-9500}"
 case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
-# A FLOOR, because the cap line itself is ~100 characters: below it the arithmetic goes negative
-# and the "capped" output would exceed the cap it names. 256 is the smallest value at which the
-# header and the cap line both fit.
-[ "$MAX" -ge 256 ] 2>/dev/null || MAX=256
+# A FLOOR, so that a cap always leaves room for FACTS, not only for the header and the cap line:
+# with the header at ~150 characters and the cap line at ~90, 1024 leaves ~780 for the summary,
+# enough for the source line (which carries the state path), the phase, the branch and the
+# issue numbers under any ordinary checkout path. Below the floor the arithmetic went negative
+# and, once that was bounded, the output was the cap notice alone.
+[ "$MAX" -ge 1024 ] 2>/dev/null || MAX=1024
 # THE CAP LINE IS FIXED-LENGTH: it names no path, because a path is unbounded and a suffix longer
 # than the cap made the slice below negative — jq counts a negative end from the END, and the
 # "capped" output came out longer than the cap it named (315-char path, 256 cap: 1,315 chars).
