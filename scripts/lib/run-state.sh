@@ -197,7 +197,9 @@ cmd_summary() {
     ok) : ;;
     *) die "summary: --state carries a control character, or --session whitespace or a control character — refused" ;;
   esac
-  [ -e "$dir" ] || return 0
+  # `-L` as well as `-e`: a DANGLING symlink at the state path is a damaged path, not an absent
+  # one, and must reach the unreadable verdict below rather than "nothing to say".
+  [ -e "$dir" ] || [ -L "$dir" ] || return 0
   # Readable AND searchable: a directory without `x` lists its names but refuses every `-f` below,
   # which would read as "no run" rather than as the unreadable directory it is.
   [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }

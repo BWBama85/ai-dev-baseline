@@ -114,6 +114,10 @@ if [ "$MODE" = mutation ]; then
     '          req="unreadable"   # a directory, a FIFO, a dangling symlink: present, not readable' \
     '          :' \
     'a review.md that is a DIRECTORY'
+  check_mut dangling-state-dir-as-absent \
+    '  [ -e "$dir" ] || [ -L "$dir" ] || return 0' \
+    '  [ -e "$dir" ] || return 0' \
+    'a dangling symlink at the state directory'
   check_mut odd-record-as-absent \
     '      [ -f "$p" ] && [ -r "$p" ] || { printf '"'"'run-state: %s exists but is not a readable regular file\n'"'"' "$p"; return 18; }' \
     '      :' \
@@ -423,6 +427,8 @@ if [ "$(id -u)" != 0 ]; then
 else
   echo "check-session-context: SKIP 1f (running as root, permissions cannot refuse a read)" >&2
 fi
+d="$work/dangling-state"; rm -f "$d"; ln -s "$work/does-not-exist-adb" "$d"
+summary "$d" "$SID_A"; eq "$RC" 20 "1f a dangling symlink at the state directory is unreadable (20), never nothing-to-say"; rm -f "$d"
 d="$(state odd-review)"; marker "$d" "$LIVE"; mkdir "$d/review.md"
 summary "$d" "$SID_A"; has "$OUT" $'\nreview-required-marks: unreadable' "1f a review.md that is a DIRECTORY is reported unreadable, never silently absent"; rmdir "$d/review.md"
 
