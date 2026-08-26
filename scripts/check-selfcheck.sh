@@ -761,6 +761,18 @@ eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "gate: …and did not execu
 has "$OUT" "selfcheck: 0 step(s)," "gate: …and the header says 0 step(s) ran"
 has "$OUT" "gated (inputs unchanged): gatedstep" "gate: …and the result block names it"
 
+# A PRESENT gate that returns a status outside its contract is neither a skip nor a clean run:
+# the step runs and a WARN names the code. This is the "error folded into skip" direction, and a
+# regression mapping an unknown code to a skip would pass every case above (reviewer finding).
+printf '#!/usr/bin/env bash\necho "gate-broken"; exit 9\n' > "$FXG/scripts/mutation-gate.sh"
+reset_ctl "$FXG"
+scg --only "$ONLY,gatedstep" --jobs 4
+yes "$RC_" "gate: a gate returning an unknown status still lets the run pass"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: …and the gated step RUNS (an undecidable gate never skips)"
+has "$OUT" "WARN — the mutation gate failed for gatedstep (rc 9); running it: gate-broken" \
+  "gate: …and the run says the gate broke, with its code and output"
+hasnt "$OUT" "GATED" "gate: …and announces no gating"
+
 # The gate script MISSING from the tree is a loud degradation, never a silent one: every gated
 # step runs and a WARN says why.
 rm -f "$FXG/scripts/mutation-gate.sh"

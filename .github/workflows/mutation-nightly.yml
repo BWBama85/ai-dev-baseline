@@ -1,41 +1,25 @@
 name: Mutation nightly
 
-# THE UNCONDITIONAL LEG of the mutation harnesses (#441).
+# THE UNCONDITIONAL LEG of the mutation harnesses (#441, D91). Per pull request every `--mutation`
+# harness is gated on its declared inputs (`scripts/mutation-gate.sh`); this file sets the override
+# so the gate answers RUN for everything, and runs every `*-mutation` step in the registry against
+# the default branch on a daily schedule. A daily ATTEMPT: GitHub documents that a `schedule` may be
+# delayed or dropped under load.
 #
-# On a pull request every `--mutation` harness is GATED: `scripts/mutation-gate.sh` runs it only when
-# the PR's diff touches that harness's declared inputs (`scripts/selfcheck.sh --list`, field 5) and
-# prints a stated SKIP otherwise. The gate's input sets are a claim about what each verdict depends
-# on, and a claim can be wrong — a shared helper renamed, a fixture path moved, a harness that
-# started reading a file nobody declared. This workflow is what bounds the cost of that mistake to
-# ONE DAY rather than to "until somebody edits the right file": it sets `ADB_MUTATION_RUN_ALL=1`, so
-# the gate answers RUN for everything, and runs every `*-mutation` step in the registry against the
-# default branch.
-#
-# ITS OWN FILE, for the two reasons `wsl-smoke.yml` states: a `schedule:` fires a whole workflow
-# file, so putting it in `ci.yml` would run all of that file's jobs daily to gain these; and
-# `scripts/lib/repo-settings.sh` discovery skips any workflow with no `pull_request` trigger, so
-# nothing here can ever be discovered or required — right, because a required context that never
-# reports on a PR is the phantom deadlock `automerge-ok` code 13 names.
-#
-# ONE JOB PER HARNESS, as a matrix: the harnesses are independent and the slowest alone is ~37
-# minutes, so serialising them would make a ~40-minute leg into an ~80-minute one for no coverage.
-# A matrix is FINE here and NOT in `ci.yml` (docs/ci-runners.md, "Why not a strategy.matrix") for
-# the same reason as above — discovery never sees this file, so a matrix suffix on the check-run
-# name deadlocks nothing.
-#
-# THE MATRIX IS PINNED TO THE REGISTRY by `scripts/check-mutation-gate.sh`: every `*-mutation` step
-# `selfcheck.sh --list` reports must appear below, and nothing may appear below that the registry
-# does not know. A harness gated per-PR and absent here would be one that never runs anywhere.
+# ITS OWN FILE, for the two reasons `wsl-smoke.yml` states (a `schedule:` fires a whole file;
+# discovery skips a workflow with no `pull_request` trigger, so nothing here can become a required
+# context). ONE JOB PER HARNESS as a matrix, which is fine here and not in `ci.yml` for the same
+# reason. THE MATRIX IS PINNED TO THE REGISTRY by `scripts/check-mutation-gate.sh`: every
+# `*-mutation` step `selfcheck.sh --list` reports must appear below, once, and nothing else may.
 #
 # WHO SEES A RED RUN: GitHub sends scheduled-workflow failure notifications to the user who last
-# modified the cron line in this file (docs.github.com, "Notifications for workflow runs" —
-# fetched 2026-08-26). The `if: failure()` step below additionally names the failed harness in the
-# job summary, so the notification links to a page that says what went red rather than only that
-# something did.
+# modified the cron line below, PROVIDED that user has Actions notifications enabled — a setting
+# this repository cannot read. The `if: failure()` step names the failed harness in the job
+# summary, which is the artifact the notification links to.
 on:
   schedule:
-    # Daily, at a minute that is not :00 (GitHub's own guidance: the top of the hour is the
-    # contended slot, and a delayed schedule is silently dropped rather than queued).
+    # Daily, at a minute that is not :00 — GitHub's own guidance: the top of the hour is the
+    # contended slot, where a schedule is delayed or dropped.
     - cron: '23 5 * * *'
   workflow_dispatch:
 

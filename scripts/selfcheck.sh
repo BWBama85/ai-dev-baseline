@@ -834,10 +834,12 @@ inputs selfcheck-guard-mutation scripts/check-selfcheck.sh scripts/check-lib.sh 
 # every one of them. POOLED and cheap: seconds, in `mktemp -d` fixtures.
 add mutation-gate       bash scripts/check-mutation-gate.sh
 
-# ...and the gate's own suite is a guard whose failure mode is SILENCE, so each rule of the gate is
-# broken in ONE way in a COPY and the suite must come back red on that row's own witness: a gate
-# that always skips, one that always runs, one that folds an unresolvable base into a skip, one that
-# ignores the override, and one whose SKIP no longer says what it compared.
+# ...and the gate's own suite is a guard whose failure mode is SILENCE, so every rule of the gate
+# whose failure is a WRONG SKIP is broken in ONE way in a COPY — always skip, always run, an
+# unresolvable base folded into a skip, the override ignored, a SKIP that no longer says what it
+# compared, untracked files ignored, renames folded away, quoting hiding a name, the directory
+# boundary blurred, a foreign command accepted, a harness status swallowed — and each workflow
+# file is un-gated in a copy too; the suite must come back red on each row's own witness.
 add mutation-gate-mutation bash scripts/check-mutation-gate.sh --mutation
 inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh
 

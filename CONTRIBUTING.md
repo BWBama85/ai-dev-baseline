@@ -118,7 +118,8 @@ and has not been re-measured; the `result` block is the current answer, as it sa
 In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
 a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),
 and `.github/workflows/mutation-nightly.yml` runs every `*-mutation` step unconditionally against
-`main` once a day — the bound on what a wrong input set can hide. `check-mutation-gate.sh` pins
+`main` on a daily schedule — a daily attempt (GitHub documents that a `schedule` may be delayed or
+dropped) at catching what a wrong input set hides. `check-mutation-gate.sh` pins
 both: every `--mutation` line in `ci.yml` is gated, and the nightly matrix equals the registry.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,

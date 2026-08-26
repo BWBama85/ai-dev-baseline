@@ -7374,7 +7374,7 @@ survive is the part a later reader needs.
                  recorded evidence and the report line; review is what reads them, and the
                  practice's "What this does NOT enforce" section says so in the same words.
 
-## D91 — a mutation harness runs when its inputs changed, and unconditionally once a day
+## D91 — a mutation harness runs when its inputs changed, and unconditionally on a daily schedule
 - date:      2026-08-26
 - category:  project-delta
 - unknown:   Every pull request ran all of CI's `--mutation` harnesses — ~40 minutes of critical
@@ -7385,7 +7385,7 @@ survive is the part a later reader needs.
              rounds had grown one harness from 26 rows to 42 and cancelled two runs on the macOS
              job's 45-minute ceiling.
 - decision:  A harness runs per PR only when the change touches its DECLARED INPUT SET, and every
-             harness runs unconditionally against `main` once a day. Five shapes were fixed on the
+             harness runs unconditionally against `main` on a daily schedule. Five shapes were fixed on the
              way, each answering a gap-analysis BLOCKING finding from the repo's own rules rather
              than from the owner:
 
@@ -7398,7 +7398,10 @@ survive is the part a later reader needs.
              suite breaks its PLAIN step, which is never gated. What the harness adds is "can the
              guard fail?", decided by the code it mutates and the code that judges the mutation:
              the harness script, `check-lib.sh`, `common.sh`, every `scripts/lib/*.sh` the suite
-             exercises, and for `bootstrap-mutation` the entry-point sites it reverts. Declared
+             exercises, and for `bootstrap-mutation` the entry-point sites it reverts — a strict
+             SUPERSET of the issue's literal four, so it never skips where the literal set would
+             run; the reviewer flagged the divergence and it is recorded here as the
+             implementer's reading, for the owner to accept or narrow. Declared
              beside each `add` as `inputs <step> <path>…`, rendered as `--list` field 5, and pinned
              by `check-mutation-gate.sh` (own harness + the two shared files present; every path
              exists) and by `check-selfcheck.sh` (every `*-mutation` step has one; nothing else
@@ -7444,4 +7447,3 @@ survive is the part a later reader needs.
              unconditional run rather than by hope. The gate is a guard whose failure mode is a
              green step, so it is observed failing eight ways before it is trusted with a skip.
 - baseline-issue: n/a
-

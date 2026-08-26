@@ -64,7 +64,12 @@ adb_require_bash "$@"
 set -uo pipefail
 
 ME="${0##*/}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 2
+# The sibling entry points' shape — cd first, then read pwd — never a single self-locating capture
+# that ends in pwd: that form strips a trailing newline from the clone's path and resolves a
+# differently-named tree (D82), and `check-bootstrap.sh`'s open-world scan refuses it in any
+# undeclared file (including in a comment, which is why this one does not spell it).
+cd "$(dirname "$0")/.." || exit 2
+ROOT="$(pwd)"
 
 usage() {
   cat >&2 <<EOF
@@ -101,26 +106,46 @@ gate_mb() {
   printf '%s\n' "$mb"
 }
 
-# gate_changed <merge-base> — the changed-path set: working tree vs <merge-base>, plus untracked
-# (not ignored) files. One path per line, sorted, deduplicated. Non-zero with a reason on stderr
-# when either read fails, which the callers read as RUN.
+# gate_changed <merge-base> — fill GATE_CHANGED with the changed-path set: working tree vs
+# <merge-base>, plus untracked (not ignored) files, deduplicated. Runs in the CALLER's shell (it
+# assigns an array), so a failure is a non-zero return with the reason in GATE_ERR — never a
+# subshell capture, which is how the first cut of this file lost its merge-base.
+#
+# THREE GIT DEFAULTS EACH TURNED A TOUCHED INPUT INTO A FALSE SKIP, and each is switched off here:
+#   -z                      paths are NUL-delimited, so a name git would otherwise QUOTE (any
+#                           non-ASCII byte under core.quotePath's default) arrives as itself and
+#                           still compares equal to the declared input;
+#   --no-renames            a declared file renamed away is reported as a DELETION of that path,
+#                           not folded into its destination — its removal counts as touching it;
+#   -c core.quotePath=false belt and braces for the same quoting rule on the untracked read.
+# Found by the declared reviewer with a probe on `scripts/lib/café.sh` and a `git mv`.
+declare -a GATE_CHANGED=()
+GATE_ERR=""
 gate_changed() {
-  local mb="$1" tracked untracked
-  # CAPTURE, then test: `git diff … | sort` would report sort's status, and a failed diff would
-  # arrive as an empty set — which is a SKIP for every harness. Two reads, each checked.
-  tracked="$(git -C "$ROOT" diff --name-only "$mb" -- 2>/dev/null)" \
-    || { printf 'git diff against %s failed\n' "$mb" >&2; return 1; }
-  untracked="$(git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null)" \
-    || { printf 'git ls-files --others failed\n' >&2; return 1; }
-  printf '%s\n%s\n' "$tracked" "$untracked" | sed '/^$/d' | LC_ALL=C sort -u
+  local mb="$1" f
+  local -a tracked=() untracked=()
+  local -A seen=()
+  GATE_CHANGED=(); GATE_ERR=""
+  # `wait "$!"` is the process substitution's status: a `mapfile < <(git …)` reports nothing about
+  # git on its own, and a failed diff read as an empty set is a SKIP for every harness.
+  mapfile -d '' -t tracked < <(git -C "$ROOT" -c core.quotePath=false diff --name-only -z --no-renames "$mb" -- 2>/dev/null)
+  wait "$!" || { GATE_ERR="git diff against $mb failed"; return 1; }
+  mapfile -d '' -t untracked < <(git -C "$ROOT" -c core.quotePath=false ls-files --others --exclude-standard -z 2>/dev/null)
+  wait "$!" || { GATE_ERR="git ls-files --others failed"; return 1; }
+  for f in "${tracked[@]}" "${untracked[@]}"; do
+    [ -n "$f" ] || continue
+    [ -n "${seen[$f]+x}" ] && continue
+    seen["$f"]=1
+    GATE_CHANGED+=("$f")
+  done
+  return 0
 }
 
-# gate_match <changed-list> <input>… — the changed paths that lie on any input, one per line.
+# gate_match <input>… — the members of GATE_CHANGED that lie on any input, one per line. An input
+# names a file, or a directory whose subtree counts; `stub.sh.bak` does not lie on `stub.sh`.
 gate_match() {
-  local changed="$1" f p
-  shift
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
+  local f p
+  for f in "${GATE_CHANGED[@]}"; do
     for p in "$@"; do
       p="${p%/}"
       [ -n "$p" ] || continue
@@ -128,15 +153,13 @@ gate_match() {
         "$p"|"$p"/*) printf '%s\n' "$f"; break ;;
       esac
     done
-  done <<EOF
-$changed
-EOF
+  done
 }
 
 # gate_decide <step> <base-arg> <input>… — the whole decision. Prints the one line; returns
 # 0 (run: inputs changed), 10 (skip), 11 (run: fail-closed, no diff), 12 (run: override).
 gate_decide() {
-  local step="$1" basearg="$2" base mb changed hits nhits nchanged inputs
+  local step="$1" basearg="$2" base mb hits nhits nchanged inputs
   shift 2
   inputs="$(printf '%s, ' "$@")"; inputs="${inputs%, }"
   if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then
@@ -144,20 +167,20 @@ gate_decide() {
     return 12
   fi
   base="$(gate_base "$basearg")"
-  # stderr is MERGED into each capture on purpose: on success neither function writes there (every
-  # git call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
+  # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
+  # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
   if ! mb="$(gate_mb "$base" 2>&1)"; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the harness runs)\n' \
       "$step" "${mb:-merge-base unavailable}"
     return 11
   fi
-  if ! changed="$(gate_changed "$mb" 2>&1)"; then
+  if ! gate_changed "$mb"; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the harness runs)\n' \
-      "$step" "${changed:-diff unavailable}"
+      "$step" "${GATE_ERR:-diff unavailable}"
     return 11
   fi
-  hits="$(gate_match "$changed" "$@")"
-  nchanged="$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d ' ')"
+  hits="$(gate_match "$@")"
+  nchanged="${#GATE_CHANGED[@]}"
   nhits="$(printf '%s\n' "$hits" | sed '/^$/d' | wc -l | tr -d ' ')"
   if [ "$nhits" -gt 0 ]; then
     printf 'RUN: %s — %s changed file(s) touch its inputs: %s\n' \

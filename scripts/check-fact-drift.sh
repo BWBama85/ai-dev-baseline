@@ -1546,9 +1546,13 @@ fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutat
 # the nightly matrix names every step) is `scripts/check-mutation-gate.sh`'s.
 fact mutation-gate-wired 'regex:^[^#]*mutation-gate\.sh run [a-z-]*-mutation -- bash scripts/check-[a-z-]*\.sh --mutation' -- \
   .github/workflows/ci.yml
-fact mutation-direct-invocation-retired 'absent:^[^#]*run: *bash scripts/check-[a-z-]*\.sh --mutation' \
+# BOTH YAML SHAPES: the inline `run: bash …` and the bare, indented command line a `run: |` block
+# body is made of. The gated line matches neither — its harness command sits after `-- `, not
+# after `run: ` and not at the start of the line.
+fact mutation-direct-invocation-retired 'absent:^([^#]*run: *|[[:space:]]*)bash scripts/check-[a-z-]*\.sh --mutation' \
   'fires:        run: bash scripts/check-common-lib.sh --mutation' \
-  'fires:        run: bash scripts/check-pattern-ledger.sh --mutation' -- \
+  'fires:        run: bash scripts/check-pattern-ledger.sh --mutation' \
+  'fires:          bash scripts/check-common-lib.sh --mutation' -- \
   .github/workflows/ci.yml
 # The unconditional leg: the scheduled workflow sets the override the gate honours, and the three
 # files that spell that variable agree on its name.

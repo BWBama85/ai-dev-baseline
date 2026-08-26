@@ -297,8 +297,10 @@ at ~40 minutes of critical path per PR before #441 (`pattern-ledger-mutation` al
 run 32923514377). So each ubuntu `--mutation` step now goes through
 `scripts/mutation-gate.sh run <step> -- <command>`, and `selfcheck-macos` inherits the same gate
 through the runner: the harness runs when the diff against the merge-base with the base branch
-touches an input, and otherwise the step prints a stated SKIP — base, merge-base, count compared,
-inputs — to the log and the job summary, and exits 0.
+touches an input, and otherwise it is held back with a stated SKIP — base, merge-base, count
+compared, inputs. On ubuntu that line is the gated step's output and is appended to the job
+summary; on macOS it is the runner's `GATED` header line and `gated (inputs unchanged):` result
+line in the captured log (that job's summary step renders failures only).
 
 Three properties are load-bearing. **It is step-level, not job-level.** A job-level `if:` would
 skip the plain suite that shares the job, could not print the SKIP (the runner never starts), and
@@ -312,11 +314,13 @@ harness-carrying jobs check out with `fetch-depth: 0` so that is the exception, 
 `ADB_MUTATION_RUN_ALL=1` and runs every `*-mutation` step against `main` on a daily schedule, one
 matrix job per harness (a matrix is fine there and not here — discovery never reads a workflow
 with no `pull_request` trigger); a red one is reported in that job's summary and in the failure
-notification GitHub sends to whoever last edited the cron line. GitHub documents that a `schedule`
-may be delayed or dropped under load, so this is a daily *attempt*, not a guarantee.
+notification GitHub sends to whoever last edited the cron line — provided that account has Actions
+notifications enabled, a user setting this repository cannot read. GitHub documents that a
+`schedule` may be delayed or dropped under load, so this is a daily *attempt*, not a guarantee.
 `scripts/check-mutation-gate.sh` pins the wiring — every `--mutation` line in `ci.yml` gated, the
 nightly matrix equal to the registry, every declared input a path that exists — and its
-`--mutation` mode breaks the gate eight ways in a copy and requires the suite red on each.
+`--mutation` mode breaks every gate rule whose failure is a wrong SKIP in a copy — and un-gates a
+copy of each workflow file — requiring the suite red on each row's own witness.
 
 **Less exactly two named steps — one since #339, one since PR #429.** The job invokes
 `--skip adopt-readiness-mutation,pattern-ledger-mutation`. Each re-runs a whole suite once per

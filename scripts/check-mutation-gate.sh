@@ -11,7 +11,8 @@
 # What is asserted:
 #   1. the decision: untouched inputs SKIP; a committed, an uncommitted, and an untracked change on
 #      an input each RUN; a change elsewhere SKIPs; a directory input covers its subtree; a file
-#      input does not match a sibling that merely shares its prefix;
+#      input does not match a sibling that merely shares its prefix; a path git would QUOTE and a
+#      declared file RENAMED away both count as touched;
 #   2. every SKIP names the base, the merge-base, the count compared and the inputs — a skip that
 #      says nothing is the failure this gate exists to prevent;
 #   3. fail-closed: not a repository, a base that does not resolve, no merge-base → RUN, with the
@@ -76,6 +77,7 @@ if [ "$MODE" = mutation ]; then
     cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$d/" 2>/dev/null || return 1
     printf '%s' "$d/scripts/mutation-gate.sh"
   }
+  mkdir -p "$work/gate" "$work/ci" "$work/nightly"
   mut_run() {
     local d="$1"
     bash -n "$d/scripts/mutation-gate.sh" 2>/dev/null \
@@ -117,8 +119,8 @@ if [ "$MODE" = mutation ]; then
     '"$step" "(unstated)" "${mb:0:12}" "$nchanged" "$inputs"' \
     'and names the base it compared against'
   check_mut untracked-ignored \
-    'printf '"'"'%s\n%s\n'"'"' "$tracked" "$untracked"' \
-    'printf '"'"'%s\n%s\n'"'"' "$tracked" ""' \
+    'for f in "${tracked[@]}" "${untracked[@]}"; do' \
+    'for f in "${tracked[@]}"; do' \
     'an UNTRACKED file under a directory input: run'
   check_mut run-accepts-foreign-command \
     '[ "$regcmd" = "$want" ] || {' \
@@ -129,7 +131,63 @@ if [ "$MODE" = mutation ]; then
     '    $regcmd; exit 0 ;;' \
     'passes its OWN exit status through (7)'
 
-  check_mutation_pool "check-mutation-gate" "$work" mut_prepare mut_run 4
+  check_mut rename-collapsed \
+    'diff --name-only -z --no-renames' \
+    'diff --name-only -z' \
+    'a RENAMED file input counts as touched'
+  check_mut quoted-path \
+    'diff --name-only -z --no-renames' \
+    'diff --name-only --no-renames' \
+    'a tracked NON-ASCII file input, modified: run'
+  check_mut directory-boundary \
+    '"$p"|"$p"/*) printf' \
+    '"$p"|"$p"*) printf' \
+    'a sibling that merely shares a FILE input'"'"'s prefix'
+  check_mutation_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
+
+  # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
+  # the same suite, a different target per pool. A pin that cannot go red on the exact edit it
+  # exists to refuse is the silent guard `self-review.md` warns about.
+  mut_prepare_ci() { mut_prepare "$1" >/dev/null || return 1; printf '%s' "$1/.github/workflows/ci.yml"; }
+  check_mut_reset
+  check_mut ci-ungated-inline \
+    'run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation' \
+    'run: bash scripts/check-common-lib.sh --mutation' \
+    'ci.yml still invokes a mutation harness directly'
+  # A `run: |` block's body line is an indented bare command with no `run:` on it — the shape a
+  # `run: bash` grep misses. Rendered as one line here because the literal edit is single-line;
+  # the scan does not care what precedes the line, which is the point.
+  check_mut ci-ungated-block-body \
+    '        run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation' \
+    '          bash scripts/check-pr-watch.sh --mutation' \
+    'ci.yml still invokes a mutation harness directly'
+  check_mut ci-foreign-command \
+    'run adopt-mutation -- bash scripts/check-adopt.sh --mutation' \
+    'run adopt-mutation -- bash scripts/check-adopt-readiness.sh --mutation' \
+    'runs the registry'"'"'s own command'
+  check_mutation_pool "check-mutation-gate (ci.yml)" "$work/ci" mut_prepare_ci mut_run 4
+
+  mut_prepare_nightly() { mut_prepare "$1" >/dev/null || return 1; printf '%s' "$1/.github/workflows/mutation-nightly.yml"; }
+  check_mut_reset
+  check_mut nightly-drops-a-step \
+    '          - fact-mutation' \
+    '          - fact-mutation-retired' \
+    'matrix is exactly the registry'
+  check_mut nightly-duplicates-a-step \
+    '          - docs-lib-mutation' \
+    '          - fact-mutation' \
+    'matrix is exactly the registry'
+  check_mut nightly-override-off \
+    "ADB_MUTATION_RUN_ALL: '1'" \
+    "ADB_MUTATION_RUN_ALL: '0'" \
+    'forces every harness'
+  # Two leading spaces: the header comment mentions `schedule:` too, and the FIRST hit is the one
+  # that is edited — the trigger line is the only one indented exactly so.
+  check_mut nightly-unscheduled \
+    '  schedule:' \
+    '  schedul3:' \
+    'has no schedule'
+  check_mutation_pool "check-mutation-gate (nightly)" "$work/nightly" mut_prepare_nightly mut_run 4
   check_summary "check-mutation-gate-mutation"
 fi
 
@@ -224,6 +282,31 @@ gate "$R" should-run stub-mutation -- "${INPUTS[@]}"
 eq "$RC_" "10" "a sibling that merely shares a FILE input's prefix (stub.sh.bak vs stub.sh) is not a match"
 rm -f "$R/scripts/lib/stub.sh.bak"
 
+# A path git would QUOTE. With core.quotePath at its default, `git diff --name-only` prints a
+# non-ASCII name as "scripts/lib/caf\303\251.sh" — a string that equals no declared input and lies
+# under no declared directory as far as a byte comparison can tell. Reported by the declared
+# reviewer with exactly this probe; both reads are NUL-delimited now.
+printf 'q\n' > "$R/scripts/lib/café.sh"
+gate "$R" should-run stub-mutation -- scripts/check-stub.sh scripts/lib
+eq "$RC_" "0" "an UNTRACKED non-ASCII path under a directory input: run (git quoting must not hide it)"
+has "$OUT" "scripts/lib/café.sh" "…naming the file as itself, unquoted"
+check_git "$R" add -A >/dev/null 2>&1 && check_git "$R" commit -q -m "add café" >/dev/null 2>&1
+check_git "$R" update-ref refs/remotes/origin/main HEAD >/dev/null 2>&1
+printf 'changed\n' >> "$R/scripts/lib/café.sh"
+gate "$R" should-run stub-mutation -- scripts/lib/café.sh
+eq "$RC_" "0" "a tracked NON-ASCII file input, modified: run"
+has "$OUT" "1 changed file(s) touch its inputs: scripts/lib/café.sh" "…and the line names it"
+check_git "$R" checkout -q -- scripts/lib/café.sh
+
+# A RENAMED file input. Git's default rename detection folds `stub.sh -> renamed.sh` into one
+# record naming only the destination, so the declared path `scripts/lib/stub.sh` would not appear
+# in the diff at all — a declared file's removal must count as touching it. Same reviewer probe.
+check_git "$R" mv scripts/lib/stub.sh scripts/lib/renamed.sh >/dev/null 2>&1
+gate "$R" should-run stub-mutation -- "${INPUTS[@]}"
+eq "$RC_" "0" "a RENAMED file input counts as touched: run (rename detection must not fold it away)"
+has "$OUT" "scripts/lib/stub.sh" "…naming the declared path that went away"
+check_git "$R" reset -q --hard HEAD >/dev/null 2>&1
+
 # --base outranks ADB_MUTATION_BASE, which outranks the default.
 gate "$R" should-run stub-mutation --base HEAD -- "${INPUTS[@]}"
 eq "$RC_" "10" "--base HEAD: nothing past HEAD, skip"
@@ -259,6 +342,9 @@ gate "$N" should-run stub-mutation -- scripts/x.sh
 eq "$RC_" "11" "not a git repository at all: RUN on the fail-closed code (11)"
 has "$OUT" "not a git repository" "…and says so"
 
+# The fixture's history moved (the café commit above advanced origin/main), so the merge-base is
+# re-read here rather than carried from the first section.
+mb="$(git -C "$R" rev-parse origin/main)"
 gate "$R" base
 eq "$RC_" "0" "base: resolves on the fixture"
 has "$OUT" "origin/main (merge-base $mb)" "…printing the ref and the merge-base"
@@ -371,9 +457,13 @@ EOF
 printf 'check-mutation-gate: %s *-mutation step(s) in the shipped registry checked\n' "$n_mut"
 
 # ============================== 6. the wiring ===================================================
-# Every `--mutation` invocation in ci.yml goes through the gate. A `run:` line invoking a harness's
-# --mutation mode directly is the pre-#441 shape: unconditional, ~40 minutes of critical path.
-direct="$(grep -nE '^[^#]*run: *bash scripts/check-[a-z-]+\.sh --mutation' "$ROOT/.github/workflows/ci.yml" || true)"
+# Every `--mutation` invocation in ci.yml goes through the gate. The rule is about the INVOCATION,
+# whatever YAML shape carries it: `run: bash …`, a `run: |` block's own line, a folded scalar — any
+# non-comment line that invokes a harness's --mutation mode must be a gate line. A scan keyed on
+# `run: bash` alone would pass a block scalar restoring one harness to unconditional execution
+# (reviewer finding).
+direct="$(grep -nE 'bash scripts/check-[a-z-]+\.sh --mutation' "$ROOT/.github/workflows/ci.yml" \
+           | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'mutation-gate\.sh run ' || true)"
 [ -z "$direct" ] && ok || bad "ci.yml still invokes a mutation harness directly, outside the gate:$direct"
 wired="$(grep -cE '^[^#]*mutation-gate\.sh run [a-z-]+-mutation -- bash scripts/check-[a-z-]+\.sh --mutation' "$ROOT/.github/workflows/ci.yml" || true)"
 [ "${wired:-0}" -gt 0 ] && ok || bad "ci.yml carries no gated mutation invocation at all (the scan matched nothing)"
@@ -400,20 +490,28 @@ if [ -f "$NIGHTLY" ]; then
   has "$(cat "$NIGHTLY")" "ADB_MUTATION_RUN_ALL: '1'" "the scheduled workflow forces every harness (ADB_MUTATION_RUN_ALL)"
   grep -qE '^[[:space:]]*schedule:' "$NIGHTLY" && ok || bad "the scheduled workflow has no schedule: trigger"
   grep -qE '^[[:space:]]*pull_request' "$NIGHTLY" && bad "the scheduled workflow must not carry a pull_request trigger (it would become a discoverable required context)" || ok
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    grep -qE "^[[:space:]]*- $s\$" "$NIGHTLY" && ok || bad "the scheduled workflow's matrix does not name $s"
-  done <<EOF
-$MUT_STEPS
-EOF
-  # …and nothing in the matrix that the registry does not know, or the schedule fails on a name
-  # `--only` refuses.
-  while IFS= read -r m; do
-    [ -n "$m" ] || continue
-    printf '%s\n' "$MUT_STEPS" | grep -qx "$m" && ok || bad "the scheduled workflow's matrix names '$m', which is not a *-mutation step in the registry"
-  done <<EOF
-$(sed -n 's/^[[:space:]]*- \([a-z-]*-mutation\)$/\1/p' "$NIGHTLY")
-EOF
+  # THE MATRIX ITSELF — `strategy.matrix.step` by indentation — not every `- name` in the file: a
+  # step listed anywhere else would satisfy a whole-file grep while the matrix had lost it
+  # (reviewer finding). Equality, both directions, and no duplicates: a name the registry does not
+  # know fails the schedule on a name `--only` refuses, and a duplicate runs one harness twice.
+  matrix_items() {
+    awk '
+      function ind(s) { match(s, /^ */); return RLENGTH }
+      /^[[:space:]]*(#.*)?$/ { next }
+      !inm && /^[[:space:]]*matrix:[[:space:]]*$/ { inm = 1; mi = ind($0); next }
+      inm && !ins && ind($0) <= mi { inm = 0 }
+      inm && !ins && /^[[:space:]]*step:[[:space:]]*$/ { ins = 1; si = ind($0); next }
+      ins {
+        if (ind($0) <= si) { ins = 0; inm = 0; next }
+        if (match($0, /^[[:space:]]*- /)) { v = substr($0, RLENGTH + 1); sub(/[[:space:]]+(#.*)?$/, "", v); print v }
+      }
+    ' "$1"
+  }
+  items="$(matrix_items "$NIGHTLY")"
+  [ -n "$items" ] && ok || bad "the scheduled workflow's strategy.matrix.step is empty or unparsed (the scan matched nothing)"
+  eq "$(printf '%s\n' "$items" | LC_ALL=C sort | tr '\n' ' ')" "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
+    "the scheduled workflow's matrix is exactly the registry's *-mutation steps"
+  eq "$(printf '%s\n' "$items" | LC_ALL=C sort | uniq -d | tr '\n' ' ')" "" "…with no duplicates"
 fi
 
 check_summary "check-mutation-gate"
