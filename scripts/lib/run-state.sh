@@ -37,13 +37,14 @@
 # CONTRACT — every value is a closed-grammar scalar the run itself wrote, because this output lands
 # in a model's context (base/practices/untrusted-content.md):
 #   - branch, owner: non-empty strings with no whitespace and no character of Unicode category
-#     Cc, Cf, Zl or Zp, <=255 / <=128 chars; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
+#     Cc, Cf, Zl or Zp, <=255 / <=128 chars — `owner` may be ABSENT (unowned), never present and
+#     empty or null; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: 1..64 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase`. Append order is
 #     the record; the timestamps are NOT required to be monotonic, because a wall clock that moved
 #     backwards mid-run does not make the marker the workflow wrote malformed.
-#     A pre-#243 marker (no `phaseHistory` key) is valid; an explicitly EMPTY history is not (every
-#     writer seeds one entry). Any other value — including a non-string where a string is required,
+#     A pre-#243 marker (no `phaseHistory` key) is valid; a present `null` or EMPTY history is not
+#     (every writer seeds one entry). `at` is a real calendar date (no Feb 31, no Apr 31). Any other value — including a non-string where a string is required,
 #     `false` for an absent field included — refuses the marker WHOLE (18). So does a file that is
 #     not exactly one JSON value, or that carries a NUL byte. Nothing is coerced, and only
 #     `null`/absent reads as "not present".
@@ -106,18 +107,19 @@ _RS_UNSAFE_JQ='
 _RS_MARKER_JQ='
   one
   | def str(f; max): (f|type) == "string" and ((f|length) <= max);
-  def iso: test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
+  def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
   if type != "object" then error("not an object") else . end
   | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
   | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end
   | if (str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))) then . else error("phase") end
-  | .owner = (if .owner == null then "" else .owner end)
-  | if (str(.owner; 128) and (.owner|unsafe|not)) then . else error("owner") end
+  | (has("owner")) as $had_owner
+  | .owner = (if $had_owner then .owner else "" end)
+  | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end
   | .prUrl = (if .prUrl == null then "" else .prUrl end)
   | if (str(.prUrl; 512) and (.prUrl == "" or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
   | .h = .phaseHistory
-  | if (.h == null) then .hs = ""
+  | if (has("phaseHistory") | not) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
     elif ((.h|length) == 0) then error("phaseHistory")
     elif ((.h|length) > 64) then error("phaseHistory")
@@ -130,8 +132,9 @@ _RS_MARKER_JQ='
 _RS_CLAIM_JQ='
   one
   | if type != "object" then error("not an object") else . end
-  | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)
-  | if (.owner | unsafe) then error("owner") else . end
+  | (has("owner")) as $had_owner   # claim
+  | .owner = ((if $had_owner then .owner else "" end) | if type == "string" then . else error("owner") end)
+  | if (.owner | unsafe) or ($had_owner and (.owner == "")) then error("owner") else . end
   | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)
   | [ .owner, (.expiresAt|tostring) ] | .[]'
 
@@ -229,10 +232,14 @@ EOF
       fi
       _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$dir"; return 20; }
       req=""
-      if [ -f "$dir/review.md" ]; then
-        req="$(grep -cw 'REQUIRED' "$dir/review.md" 2>/dev/null)"; grc=$?
-        case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)
-        case "$req" in ''|*[!0-9a-z]*) req="unreadable" ;; esac
+      if [ -e "$dir/review.md" ] || [ -L "$dir/review.md" ]; then
+        if [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then
+          req="$(grep -cw 'REQUIRED' "$dir/review.md" 2>/dev/null)"; grc=$?
+          case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)
+          case "$req" in ''|*[!0-9a-z]*) req="unreadable" ;; esac
+        else
+          req="unreadable"   # a directory, a FIFO, a dangling symlink: present, not readable
+        fi
       fi
       blk=""
       if [ -f "$blocked" ]; then

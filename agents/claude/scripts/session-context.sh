@@ -126,8 +126,10 @@ jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
   def enc: (tojson | length) - 2;
   ($h + "\n" + $s) as $ctx
   | "\n(capped at \($max) characters — the state directory is named on the run-state line below the header, and on stderr)" as $cap
-  # 73 = the wrapper object around additionalContext, so the whole stdout line fits in $max.
-  | ($max - 73) as $budget
+  # The wrapper around additionalContext is MEASURED, not a constant (a constant of 73 was 5 short
+  # of the real 78 and let a 9,505-character line through a 9,500 cap), so the whole stdout line
+  # fits in $max.
+  | ($max - ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | length)) as $budget
   | ($budget - ($cap | enc)) as $keep
   # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that
   # fits is kept; the header or the source line (0 and 1), when too long, is TRUNCATED to a third

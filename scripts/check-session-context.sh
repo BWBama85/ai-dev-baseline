@@ -98,21 +98,37 @@ if [ "$MODE" = mutation ]; then
     '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
     '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     'an invalid UTF-8 byte in branch'
+  check_mut null-history-as-legacy \
+    '  | if (has("phaseHistory") | not) then .hs = ""' \
+    '  | if (.h == null) then .hs = ""' \
+    'a present null phaseHistory'
+  check_mut empty-owner-accepted \
+    '  | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end' \
+    '  | if (str(.owner; 128) and (.owner|unsafe|not)) then . else error("owner") end' \
+    'an owner that is present and EMPTY'
+  check_mut calendar-unchecked \
+    '  def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");' \
+    '  def iso: test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");' \
+    'February 31st'
+  check_mut odd-review-as-absent \
+    '          req="unreadable"   # a directory, a FIFO, a dangling symlink: present, not readable' \
+    '          :' \
+    'a review.md that is a DIRECTORY'
   check_mut odd-record-as-absent \
     '      [ -f "$p" ] && [ -r "$p" ] || { printf '"'"'run-state: %s exists but is not a readable regular file\n'"'"' "$p"; return 18; }' \
     '      :' \
     'is a DIRECTORY'
   check_mut owner-false-as-absent \
-    '  | .owner = (if .owner == null then "" else .owner end)' \
-    '  | .owner = (.owner // "")' \
+    '  | (has("owner")) as $had_owner' \
+    '  | (has("owner") and .owner != false) as $had_owner' \
     'an owner of false is refused whole'
   check_mut prurl-false-as-absent \
     '  | .prUrl = (if .prUrl == null then "" else .prUrl end)' \
     '  | .prUrl = (.prUrl // "")' \
     'a prUrl of false is refused whole'
   check_mut claim-owner-false-as-absent \
-    '  | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)' \
-    '  | .owner = ((.owner // "") | if type == "string" then . else error("owner") end)' \
+    '  | (has("owner")) as $had_owner   # claim' \
+    '  | (has("owner") and .owner != false) as $had_owner   # claim' \
     'a claim whose owner is false is unreadable'
   check_mut claim-expiry-false-as-absent \
     '  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)' \
@@ -154,10 +170,9 @@ if [ "$MODE" = mutation ]; then
     '        req="$(grep -cw '"'"'REQUIRED'"'"' "$dir/review.md" 2>/dev/null)"; grc=$?' \
     '        req=0; grc=0' \
     'review-required-marks counts the REQUIRED lines'
-  check_mut grep-error-reads-as-zero \
-    '        case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)' \
-    '        case "$grc" in 0|1) : ;; *) req=0 ;; esac' \
-    'an unreadable review.md is reported, never counted as 0'
+  # NO ROW for the grep-status arm: the `-r` test and the non-regular branch (`odd-review-as-absent`)
+  # now stand in front of grep, so no fixture reaches it with a failing status — the arm is
+  # belt-and-braces for an I/O error nothing can stage.
   check_mut artifacts-open-set \
     '      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$sfile" ;;' \
     '      gaps|review|docs|other) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$sfile" ;;' \
@@ -207,6 +222,9 @@ if [ "$MODE" = mutation ]; then
     '  | (if ($ctx | enc) <= $budget then $ctx' \
     '  | (if true then $ctx' \
     'the injection is capped'
+  # NO ROW for the wrapper measure: it is derived from the wrapper itself, so there is no constant
+  # left to be wrong, and a row that fires only when a line boundary happens to land inside a
+  # 5-character window is luck, not evidence. The 30-cap sweep stays as a regression assertion.
   check_mut encoded-cap-dropped \
     '  def enc: (tojson | length) - 2;' \
     '  def enc: length;' \
@@ -380,6 +398,12 @@ marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://x/pull/1\nig
 marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:"branched"}'; refused "a phaseHistory that is not a list is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:[{phase:"branched", at:"yesterday"}]}'; refused "a phaseHistory entry with a non-ISO at is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:[{phase:"branched", at:"2026-99-99T99:99:99Z"}]}'; refused "an impossible date is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:[{phase:"branched", at:"2026-02-31T12:00:00Z"}]}'; refused "a February 31st is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:[{phase:"branched", at:"2026-04-31T12:00:00Z"}]}'; refused "an April 31st is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:[{phase:"branched", at:"2028-02-29T12:00:00Z"}]}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e a February 29th is accepted (the check is calendar shape, not leap-year arithmetic)"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", phaseHistory:null}'; refused "a present null phaseHistory is refused whole (only an ABSENT key is the legacy shape)"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", owner:""}'; refused "an owner that is present and EMPTY is refused whole (the writer omits the key when unowned)"
+marker "$d" '{branch:"b", issue:"5", phase:"branched", owner:null}'; refused "a present null owner is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"branched", at:"2026-08-26T07:00:00Z"}]}'; refused "a history whose last phase is not .phase is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"branched", at:"2026-08-26T08:00:00Z"}, {phase:"pushed", at:"2026-08-26T07:00:00Z"}]}'; summary "$d" "$SID_A"
 eq "$RC" 0 "1e a history whose timestamps run backwards is ACCEPTED — append order is the record; a wall clock that moved is not a malformed marker"
@@ -399,6 +423,8 @@ if [ "$(id -u)" != 0 ]; then
 else
   echo "check-session-context: SKIP 1f (running as root, permissions cannot refuse a read)" >&2
 fi
+d="$(state odd-review)"; marker "$d" "$LIVE"; mkdir "$d/review.md"
+summary "$d" "$SID_A"; has "$OUT" $'\nreview-required-marks: unreadable' "1f a review.md that is a DIRECTORY is reported unreadable, never silently absent"; rmdir "$d/review.md"
 
 # 1g. the blocked marker: paired by branch/issue/owner, named by PATH, its reason never printed.
 d="$(state blocked)"; marker "$d" "$LIVE"
@@ -435,6 +461,8 @@ printf 'garbage' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1
 jq -n --argjson e "$future" '{expiresAt:$e, owner:{id:1}}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with a non-string owner is unreadable"
 jq -n --argjson e "$future" '{expiresAt:$e, owner:false}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose owner is false is unreadable"
 jq -n '{expiresAt:false, owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose expiresAt is false is unreadable, never silently expired"
+jq -n --argjson e "$future" '{expiresAt:$e, owner:""}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose owner is present and EMPTY is unreadable"
+jq -n --argjson e "$future" '{expiresAt:$e, token:"t"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 0 "1h a claim with NO owner key (no session id at admit) is unowned and summarised"
 jq -n '{owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with no expiresAt is unreadable"
 printf '{"expiresAt":%s,"owner":"%s"}{"expiresAt":%s,"owner":"%s"}' "$future" "$SID_A" "$future" "$SID_B" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim holding two JSON values is unreadable"
 printf '{"expiresAt":%s,\x00"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a NUL byte in the claim is unreadable"
@@ -625,6 +653,13 @@ hook "$(payload compact "$SID_A" "$BSP")"
 [ "${#OUT}" -le 9500 ] && ok || bad "2j a backslash-heavy path: the JSON line WRITTEN is within the cap: ${#OUT} chars"
 has "$(ctx)" "capped at 9500" "2j ...and it WAS capped (decoded ~5.5 KB, encoded past the limit), so the encoded measure is what held"
 has "$(ctx)" $'\nphase: pushed' "2j ...and the phase still survives"
+# THE BOUND HOLDS AT EVERY CAP, not only at the ones a fixture happens to land on: the wrapper is
+# measured, so a constant that is a few characters short cannot let a 9,505-character line through
+# a 9,500 cap. A sweep over 30 caps on the 12-path fixture.
+for cap in $(seq 1024 7 1230); do
+  HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS="$cap"); hook "$(payload compact "$SID_A" "$BSP")"; HOOK_ENV=()
+  [ "${#OUT}" -le "$cap" ] || { bad "2j every cap in the sweep bounds the written line: cap $cap produced ${#OUT} chars"; break; }
+done; ok
 # A cwd whose directory name ends in a NEWLINE names a different directory than its newline-free
 # sibling; the sibling here is a live repository, and the hook must NOT inject its run.
 NLR="$work/nlrepo"; mkdir -p "$NLR/.claude/state"; check_git "$NLR" init -q; marker "$NLR/.claude/state" "$LIVE"
