@@ -249,7 +249,7 @@ answer this skill reports and exits on, because there is nothing to resolve:
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
 | `10` | a declared reviewer reviewed **this head** and is **not satisfied** — a `CHANGES_REQUESTED` or `COMMENTED` review, or a fresh issue comment | **continue to step 1** (but note there may be **no threads**: a task-mode comment creates none, so read the comment) |
-| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA — **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
+| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA — **or** the repo declares `bots = []` | **reconcile due promotions first** (below), then report "reviewed clean — nothing to resolve" and **exit 0** |
 | `11` | the bound expired with **at least one** declared reviewer still silent — see the note below on a second way to reach it | report that the wait timed out and hand back to the operator; **exit** |
 | `12` | the PR is no longer OPEN (merged or closed) | report it and **exit** |
 | `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
@@ -276,6 +276,65 @@ review object at all** — only a `+1` reaction. Running the ordinary flow again
 fetch zero threads and report "nothing to do", which is the right action for the wrong reason and
 is indistinguishable from *the reviewer has not started yet*. The wait tells those two apart, which
 is one reason it is now the default rather than a flag.
+
+#### A clean pass still reconciles promotions (#421)
+
+**Before exiting on code `0`, ask whether any class became due while nobody was looking.** Two
+branches can each record a class's FIRST hit; neither crosses the threshold, and after both merge
+the ledger holds two — but no resolver run ever revisits it, because a clean pass exits here, before
+step 4c ever runs. The class then stays unpromoted until some unrelated finding happens to reach 4c
+again, and the first implementation after the threshold misses the sweep the class earned.
+
+**SWITCH TO THE PR HEAD FIRST — this reads and may COMMIT a ledger.** Code `0` never reaches step
+1, so nothing has resolved the PR's metadata or moved the tree: run as written, this would read
+whatever branch the checkout happens to be on and commit the promotion there. On `main` that is a
+push to the default branch, which `## Important rules` forbids outright. Do step 1's preflight
+SUBSET — the `gh pr view`, the OPEN check, the lock reclaim, the dirty-tree guard, the
+`ORIG_BRANCH` capture and the `git switch` — and only then reconcile. Step 8 restores the branch on the way out, exactly as it
+does for the ordinary path. Reported by the declared reviewer on PR #429.
+
+**Not step 1's bots-disabled exit.** Step 1 also reads `[reviewers] bots` and exits at `bots = []`
+with "nothing to do" — right for thread resolution, which that setting disables, and wrong here:
+`bots = []` is one of the two ways code `0` is reached at all, so a repository that deliberately
+runs without a bot reviewer took that exit before `due` ever ran and never reconciled a class its
+merged history had earned. Reconciliation resolves no thread, so the setting does not govern it.
+Run the metadata, dirty-tree and switch commands from step 1 and skip its allowlist read entirely.
+Reported by the declared reviewer on PR #429.
+
+```bash
+# …step 1's preflight SUBSET has run (no allowlist read) and the tree is on "$PR_BRANCH"…
+{{PATTERN_LEDGER_LIB}} due; DRC=$?
+case "$DRC" in
+  0)  : ;;   # classes are owed a rule — promote them (step 4c's form) and commit the ledger. That
+             # commit MOVES THE HEAD, so this is NOT an exit: see below.
+  11) : ;;   # nothing due. The ordinary case on a clean pass: step 8, then exit 0.
+  # EVERY OTHER CODE IS TERMINAL, exactly as it is in 4c. A wildcard that only warned reported the
+  # run clean while leaving an already-earned rule unwritten — the same swallowing this workflow
+  # has now been corrected for three times, reintroduced in the arm added to fix the second.
+  # …AND TERMINAL MEANS THROUGH STEP 8. The preflight above switched the tree, so a bare `exit 1`
+  # here stranded the caller on the PR head — issue #17's own defect, reached by the one abort
+  # this section added. Reported by the declared reviewer on PR #429.
+  *)  echo "STOP: could not determine due promotions (rc $DRC) — the ledger or [patterns] threshold"
+      echo "      needs repair before this run can be called clean."
+      # run step 8 (restore the starting branch) FIRST, then:
+      exit 1 ;;
+esac
+```
+
+**A promotion pushed here moves the head, and the clean pass was for the head BEFORE it.** Step
+4c's form commits the rule and pushes it, so after a `0` from `due` the pull request's head is a
+SHA no reviewer has looked at — and the rule it carries is an operative instruction that
+`/implement-issue` injects into agent prompts, which is exactly the content review exists for.
+Reporting "reviewed clean" over that head would state a status nobody observed
+(`base/practices/verify-before-asserting.md`). So a promotion here is a pushed change like any
+other: set `LAST_SHA` to the ledger commit, run step 7's re-review request, and return to the wait
+in 0b; under `--once`, request and exit, saying that the clean pass was for the previous head. Only
+a round in which `due` returned `11` — nothing written, nothing pushed — exits on the clean
+verdict. Reported by the declared reviewer on PR #429.
+
+This is the one thing a clean pass still does: it resolves nothing, but it writes the checklist
+rule that merged history already earned — and then has that rule reviewed like any other change to
+the head.
 
 ### ⚠ `10` does not guarantee there are threads to resolve
 
@@ -413,6 +472,21 @@ PR_BRANCH=$(echo "$PR_META" | jq -r .headRefName)
 PR_BASE=$(echo "$PR_META" | jq -r .baseRefName)   # restore fallback if the start branch is gone
 [ "$PR_STATE" = "OPEN" ] || { echo "ERROR: PR #$PR_NUM is $PR_STATE"; exit 1; }
 
+# AN ABANDONED LEDGER LOCK IS RECONCILED BEFORE THE DIRTY-TREE GUARD, or it never can be. A
+# resolver killed while holding `.ai-dev-baseline/patterns.md.lock/` leaves that untracked
+# directory beside the tracked ledger; the guard below then refuses the tree, and the stale-lock
+# reclamation `record` and `promote` carry is never reached — the advertised recovery sat behind
+# the one check that made it unreachable. `reclaim` applies the SAME death proof the writers do: a
+# lock whose owner is provably gone and past the stale age is removed; a live or unprovable one is
+# left alone and reported, which is a reason to stop, not to bypass the guard.
+# Reported by the declared reviewer on PR #429.
+{{PATTERN_LEDGER_LIB}} reclaim; LRC=$?
+case "$LRC" in
+  0)  : ;;
+  22) echo "ERROR: another writer holds the pattern-ledger lock (see above) — wait for it, or remove the lock by hand once you are sure its owner is gone"; exit 1 ;;
+  *)  echo "ERROR: could not reconcile the pattern-ledger lock (rc $LRC) — see above"; exit 1 ;;
+esac
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "ERROR: working tree dirty; commit or stash before invoking"
   exit 1
@@ -549,6 +623,216 @@ git push origin "$PR_BRANCH"
 LAST_SHA=$(git rev-parse --short HEAD)
 ```
 
+#### 4b. Record what each fix taught this project (#421)
+
+**This is where the loop's richest signal is created, and where it used to be thrown away.** A
+thread you just resolved as a real code change is a labeled example — a finding, its class, the
+site, and the commit that closed it — and you know all four right now, at their cheapest, because
+you just read the finding and wrote the fix. Nothing recovers that later.
+
+**Snapshot the ledger FIRST**, because a round is a delta and `--pr` is not a round — every round
+of one pull request records under the same PR number, so the cumulative figures cannot answer "what
+did *this* round find". Step 6 subtracts these.
+
+```bash
+STATS_BEFORE="$({{PATTERN_LEDGER_LIB}} stats --pr "$PR_NUM")"
+CLASSES_BEFORE="$({{PATTERN_LEDGER_LIB}} classes)"   # step 6 asks which classes are NEW against this
+ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring and new from it
+ROUND_PROMOTED=0   # incremented in 4c by promotions that actually landed
+ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))
+# ACCUMULATED ACROSS ROUNDS, so initialise it ONLY on the first. `STATS_BEFORE` and
+# `ROUND_CLASSES` are per-round and must be cleared here; `ROUND_ROWS` is the run's record and must
+# not be. Step 7 sends the loop back through step 1, so clearing this unconditionally would leave
+# the terminal summary reporting only the LAST round — and the finding-per-round trend, which is
+# the whole observable, unobservable for exactly the multi-round loop it exists to measure.
+# Reported by the declared reviewer on PR #429.
+ROUND_ROWS="${ROUND_ROWS:-}"
+```
+
+…and append to it as each hit is recorded, so step 6 can count recurring hits from the rows this
+round actually added rather than from a cumulative figure that reclassifies the past:
+
+```bash
+# ONLY WHEN `record` RETURNED 0. rc 10 means the hit was ALREADY in the ledger — the crash-recovery
+# rerun this workflow deliberately supports — so no row was appended and step 6 must not count it
+# as a finding this round. Appending unconditionally made this accumulator disagree with the
+# before/after snapshots it sits beside. Reported by the declared reviewer on PR #429.
+{{PATTERN_LEDGER_LIB}} record --class <slug> … ; RRC=$?
+case "$RRC" in
+  0)  ROUND_CLASSES="${ROUND_CLASSES}<slug>"$'\n' ;;   # a row was appended: it counts this round
+  10) : ;;                                             # already recorded — nothing was appended
+  # THE STATUS IS BRANCHED ON, NOT CONSUMED BY AN `if`. Written as `if record …; then …; fi` the
+  # branch skips the append on 18/19/20 and then COMPLETES SUCCESSFULLY, so the round walks on to
+  # promotion and resolves the thread — losing the finding permanently. That is the rule below
+  # being silently undone by the accumulator added to satisfy a different one.
+  # Reported by the declared reviewer on PR #429.
+  *)  echo "STOP: recording this thread failed (rc $RRC) — nothing was stored."
+      echo "      Resolving now would erase the finding; see the table below."
+      exit 1 ;;
+esac
+```
+
+**Record one hit per thread you fixed**, before you resolve the thread in step 5:
+
+```bash
+{{PATTERN_LEDGER_LIB}} record --class <slug> --site <path[:line]> --fix "$FIX_SHA" \
+  --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>'
+```
+
+- **The class is your judgement, and it must be the SAME STRING next time.** It is the unit
+  recurrence is counted in, so `collection-identity` and `identity-comparison` are two classes and
+  neither ever reaches a threshold. Read the promoted checklist and the existing classes
+  (`{{PATTERN_LEDGER_LIB}} classes`) before inventing a new slug — reusing an existing one is
+  almost always right, and is what makes the mechanism work at all.
+- **The sha resolves through the PULL REQUEST, not necessarily through the default branch.** On a
+  repo that squash-merges — which this baseline prefers — the per-thread commits never become
+  ancestors of the default branch, so after the branch is deleted `git show <fix>` fails in a fresh
+  clone and the audit link would be broken by design. It is not: GitHub keeps a merged pull
+  request's own commits, so `refs/pull/<n>/head` and `gh api repos/{owner}/{repo}/pulls/<n>/commits`
+  resolve them for as long as the PR exists. **That is why every hit stores `--pr` as well**, and
+  why the PR number is the durable half of the reference. Read a fix with:
+
+  ```bash
+  git fetch origin "refs/pull/$PR_NUM/head" && git show <fix>
+  ```
+
+  Reported by the declared reviewer on PR #429.
+- **`--fix` is the commit that carried THAT thread's correction — not the round's head.** Step 4
+  explicitly permits several commits in one round, so `$LAST_SHA` (captured once, after the push)
+  names the *last* of them. Recording every thread against it breaks the audit link the ledger
+  exists for: `git show <fix>` would not contain the correction the entry points at. Capture each
+  commit's own sha as you make it, and record each thread against the one that fixed it:
+
+  ```bash
+  git commit -m "address bot review on PR #$PR_NUM: <summary>"
+  # `--short=7`, NOT a bare `--short`. Git's `--short[=<length>]` defaults to the effective
+  # `core.abbrev`, whose documented minimum is 4 — and the ledger's record grammar requires 7 to 40
+  # hex digits, so a repo configured with `core.abbrev = 4` refuses EVERY hit with rc 19 and step
+  # 4b silently records nothing. Probed: with core.abbrev=4 a bare `--short` returned 4 characters
+  # and `--short=7` returned 7. Reported by the declared reviewer on PR #429.
+  FIX_SHA="$(git rev-parse --short=7 HEAD)"   # THIS thread's fix, not the round's head
+  ```
+
+  A commit that genuinely bundles several threads shares its sha across them — accurate, because
+  one commit really did fix them all. The defect is the reverse: one sha across threads that were
+  fixed in *different* commits. Reported by the declared reviewer on PR #429.
+- The ledger entry itself is committed separately, in 4c: a commit cannot name its own hash, so the
+  fixes land first and the ledger records them second.
+- **Record an ALREADY-ADDRESSED finding too, against the commit that actually fixed it.** Step 3
+  classifies a legitimate finding an earlier commit already fixed as *Already addressed* — it is
+  still a real finding of a real class, and skipping it makes the recurrence count understate
+  exactly the history the ledger exists to keep. Verify the earlier sha first (`git cat-file -t`),
+  then record against it. What is NOT recorded is a **declined** finding: nothing was wrong, so
+  there is no class to carry forward. Reported by the declared reviewer on PR #429.
+- **Record BEFORE you resolve.** The two are not atomic, and the orders fail differently: recording
+  first can duplicate after a crash, which `record` absorbs (it is keyed on the thread id and
+  returns 10 for a repeat), while resolving first can lose the only copy of the signal. Prefer the
+  recoverable failure.
+- **rc 10 is a no-op, not an error** — this thread is already in the ledger, which is exactly what a
+  re-run over the same pull request should find. rc 19 means a field was refused; fix the value,
+  do not work around it.
+- **EVERY result except `0` and `10` STOPS THE ROUND — do not continue to step 5.** A hit that was
+  not stored and a thread that gets resolved anyway is a finding erased: the next run does not
+  enumerate that thread, so nothing will ever record it. That is the record-before-resolve
+  guarantee failing in the one case it exists for, and it does not matter *why* the write failed.
+  Naming only rc 18 left `20` — a lock that timed out, a state directory that became unwritable, a
+  rename that failed — continuing silently into the resolve flow.
+
+  | rc | Meaning | Round |
+  | --- | --- | --- |
+  | `0` | recorded | continue |
+  | `10` | already recorded — the idempotent re-run case | continue |
+  | `18` | the ledger does not parse | **stop**; `{{PATTERN_LEDGER_LIB}} verify` names the record |
+  | `19` | a field was refused | **stop**; fix the value, do not work around it |
+  | `20` | the ledger could not be written — lock timeout, unwritable directory, failed rename | **stop**; nothing was stored |
+  | any other | unknown | **stop** |
+
+  Confirm every hit is stored before resolving anything. Reported by the declared reviewer on
+  PR #429.
+
+#### 4c. Promote what has become a pattern
+
+A class this project has now hit twice is a pattern rather than an incident, and is owed a rule:
+
+```bash
+{{PATTERN_LEDGER_LIB}} due; DRC=$?
+case "$DRC" in
+  0)  : ;;   # each line is `<class>TAB<count>` — write a rule for each, below
+  11) : ;;   # nothing is due. THE ORDINARY CASE.
+  # EVERY OTHER CODE STOPS. `due` returns 2 before reading a single class when
+  # `[patterns] threshold` is malformed, and a `*)` that shrugged at it let the round go on to
+  # commit and resolve without ever learning which classes were owed a rule.
+  2)  echo "STOP: [patterns] threshold is unusable — fix agents.toml before resolving."; exit 1 ;;
+  18) echo "STOP: the pattern ledger does not parse, so nothing was recorded this round."
+      echo "      Resolving now would lose these findings permanently — repair it first:"
+      {{PATTERN_LEDGER_LIB}} verify
+      exit 1 ;;
+  *)  echo "STOP: could not determine which classes are due (rc $DRC) — nothing was promoted."; exit 1 ;;
+esac
+
+{{PATTERN_LEDGER_LIB}} promote --class <slug> --rule '<the sweep to run before the next PR>'; PRC=$?
+case "$PRC" in
+  0)  ROUND_PROMOTED=$(( ${ROUND_PROMOTED:-0} + 1 )) ;;   # counted from what actually landed
+  13) : ;;   # already promoted — the idempotent re-run, not a failure
+  12) : ;;   # below the threshold; `due` and this disagree only if the ledger moved underneath
+  # ANY HARD FAILURE STOPS THE ROUND. Without a branch, a promotion that failed with 18 (a
+  # malformed ledger) or 20 (a lock timeout, a failed replacement) fell through to committing and
+  # resolving — and a later run sees no unresolved threads, never revisits promotion, and the rule
+  # the class earned is permanently absent. Reported by the declared reviewer on PR #429.
+  *)  echo "STOP: promoting <slug> failed (rc $PRC) and the rule was not written."
+      echo "      Resolving now would close the threads that earned it, and nothing would revisit it."
+      exit 1 ;;
+esac
+```
+
+**Write the rule as an instruction, not a description.** "Grep every site that compares a
+collection by identity, not just the one reported" is a sweep somebody can run; "collection
+identity bugs" is a label. The rule is what a future self-review pass and gap-analysis dispatch
+receive, so it has to say what to *do*.
+
+**Then commit the ledger — a SECOND commit, and a tracked one.** Promotion is a change to an
+operative instruction, so it goes through the normal pull-request path and a human sees it in the
+diff. That is the whole reason the checklist is safe to feed into a prompt: a rule's authority
+comes from the review that landed it, never from the review comment that inspired it.
+
+```bash
+git add .ai-dev-baseline/patterns.md
+# GUARDED, because a re-run must be able to reach step 5. `record` is keyed on the thread id and
+# returns 10 for a hit already stored, so a resolver that crashed AFTER committing the ledger but
+# BEFORE resolving the threads leaves the worktree unchanged on its next run — and an unconditional
+# `git commit` then exits non-zero with "nothing to commit", aborting the round before it resolves
+# anything. That defeats the record-before-resolve recovery this workflow deliberately chose.
+# Reported by the declared reviewer on PR #429.
+if git diff --cached --quiet -- .ai-dev-baseline/patterns.md; then
+  echo "ledger unchanged this round (every hit was already recorded) — nothing to commit"
+else
+  git commit -m "chore: record review-finding classes from PR #$PR_NUM"
+  # THE PUSH IS REQUIRED, NOT ATTEMPTED. Unguarded, a push that failed — a network error, a
+  # permission, a non-fast-forward — fell through to step 5, which resolved the threads while
+  # their records existed only in this checkout's local commit; a later resolver never enumerates
+  # a resolved thread, so a discarded or reset checkout then lost the history, and any promotion
+  # it earned, for good. The local commit is still here: push it by hand and re-run — `record` is
+  # idempotent and the commit above is guarded, so the re-run reaches step 5 cleanly.
+  # Reported by the declared reviewer on PR #429.
+  git push origin "$PR_BRANCH" || {
+    echo "STOP: could not push the ledger commit — its records exist only locally."
+    echo "      Resolving now would erase them from every future run; push by hand, then re-run."
+    # run step 8 (restore the starting branch) FIRST, then:
+    exit 1
+  }
+  # A LEDGER PUSH MOVES THE HEAD, so it is a pushed change like a fix. A round whose legitimate
+  # findings were all already addressed by earlier commits makes NO fix commit, so step 4 never
+  # set `LAST_SHA` — and step 7 then took its empty-`LAST_SHA` exit and requested no re-review,
+  # leaving the new head unreviewed. Set it here from the ledger commit, so step 7 asks.
+  # Reported by the declared reviewer on PR #429.
+  LAST_SHA="$(git rev-parse --short=7 HEAD)"
+fi
+```
+
+**Do NOT fold this into the fix commit.** `--fix` names that commit's hash, so the ledger entry
+must land after it — and keeping them separate also keeps a reviewer's `git show` of the fix free
+of bookkeeping.
+
 ### 5. Reply + resolve each thread
 
 **Re-check the PR state first.** Addressing findings (step 4) can take substantial
@@ -621,6 +905,124 @@ Emit a concise summary to the user:
 > - Skipped (human-authored): <count>
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
+>
+> Per round (every round this run processed, oldest first):
+> <ROUND_ROWS>
+>
+> This PR so far: <pr-hits> findings · <pr-recurring> recurring · <pr-new-classes> classes
+
+**Every round's row, not just the last.** The summary is emitted once at the terminal exit, and a
+run that processed six rounds has six measurements to report — printing only the final one is how
+the trend stays invisible for exactly the multi-round loop it is meant to measure.
+> Ledger: <hits> hits across <classes> classes, <promoted> promoted (threshold <t>).
+
+**The last two lines are the point of the whole mechanism, not decoration (#421).** Its honest
+boundary is that this is context-level learning whose ceiling is prompt adherence — so the claim
+that it works is only ever the trend in these numbers, and a summary that stops printing them makes
+the claim unfalsifiable. Read them from the ledger rather than counting by hand:
+
+```bash
+# CAPTURED ONCE, status kept, and every figure below read out of THIS value. An earlier draft ran
+# `stats` without assigning it and then read a `$STATS` nothing had ever set — which under `set -u`
+# aborts the block and otherwise leaves every number empty.
+STATS_AFTER="$({{PATTERN_LEDGER_LIB}} stats --pr "$PR_NUM")"; SRC=$?
+case "$SRC" in
+  0)  : ;;   # TSV: ledger, hits, classes, recurring, promoted, threshold, threshold-source,
+             # and — with --pr — pr-hits, pr-recurring, pr-new-classes
+  18) echo "NOTE: the pattern ledger does not parse — report no counts rather than wrong ones"; ;;
+  *)  : ;;   # 20: the ledger path could not be resolved at all
+esac
+```
+
+**ABSENT AND ZERO ARE DIFFERENT FACTS, and the `ledger` field is how you tell them apart.** A
+project on its first resolver run has no `.ai-dev-baseline/patterns.md` at all, which is not a
+problem and not an empty ledger — say "no ledger yet (this is the first run)" rather than reporting
+a history of zero. `stats` emits `ledger<TAB>absent` or `ledger<TAB>present` as its first line,
+because a caller should not have to stat the file to answer something the command already knows.
+
+```bash
+LEDGER_STATE="$(printf '%s\n' "$STATS_AFTER" | awk -F'\t' '$1=="ledger"{print $2}')"
+```
+
+**A ROUND IS A DELTA, and `--pr` is not a round.** Every round of one pull request records under
+the same PR number, so `stats --pr` accumulates all of them: on PR #429 it reported 36 hits and 28
+recurring on *every* run after round 7, and labelling those as "this round" made the
+finding-per-round trend — the one number #421 says makes the mechanism falsifiable — plainly wrong.
+The ledger has no round identifier and should not grow one: **snapshot before, snapshot after,
+report the difference.**
+
+```bash
+# GUARDED ON BOTH SNAPSHOTS. The `case` above promises to report NO counts on a non-zero read, and
+# then fell through to this arithmetic anyway: a ledger that became malformed after the before-
+# snapshot returns 18 with no TSV, `_field` yields empty strings, and the round is reported with
+# negative numbers — or the comparison against an empty threshold fails outright. If either
+# snapshot is missing, print the diagnostic and report no figures at all.
+# Reported by the declared reviewer on PR #429.
+if [ "$SRC" -ne 0 ] || [ -z "${STATS_BEFORE:-}" ] || [ -z "${STATS_AFTER:-}" ]; then
+  echo "NOTE: the ledger could not be read for this round — reporting no counts rather than wrong ones"
+else
+
+# `$STATS_BEFORE` and `$ROUND_CLASSES` were captured in step 4b; `$STATS_AFTER` just above.
+_field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
+
+# DERIVED FROM WHAT THIS INVOCATION APPENDED, not from PR-wide subtraction. `--pr` is shared: two
+# resolver runs overlapping on one pull request each see the other's rows, so a run whose own
+# `record` calls all returned 10 could still report the other's findings and promotions as its
+# round. `ROUND_CLASSES` is appended only on a SUCCESSFUL record and `ROUND_PROMOTED` only on a
+# promotion that landed — both are this invocation's own receipts.
+# Reported by the declared reviewer on PR #429.
+ROUND_FINDINGS="$(printf '%s' "$ROUND_CLASSES" | awk 'NF' | wc -l | tr -d ' ')"
+ROUND_PROMOTED="${ROUND_PROMOTED:-0}"
+# A class is NEW to this run when the before-snapshot carried no hits for it at all.
+ROUND_NEW=0
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  printf '%s\n' "$CLASSES_BEFORE" | awk -F'\t' -v k="$c" '$2==k{f=1} END{exit !f}' || ROUND_NEW=$((ROUND_NEW + 1))
+done <<ROUNDNEW
+$(printf '%s' "$ROUND_CLASSES" | awk 'NF' | LC_ALL=C sort -u)
+ROUNDNEW
+
+# RECURRING IS COUNTED FROM THE ROWS THIS ROUND APPENDED — NOT as a difference of the cumulative
+# figure. Subtracting `pr-recurring` is wrong in a way that only shows up at the threshold: when a
+# class crosses it, every EARLIER hit becomes recurring too, so a round that added the second hit of
+# a class sees the scalar go 0 -> 2 and would report two recurring findings for one. Reclassifying
+# the past is correct for the cumulative number and wrong for a round.
+CLASSES_AFTER="$({{PATTERN_LEDGER_LIB}} classes)"
+THRESH="$(_field "$STATS_AFTER" threshold)"
+ROUND_RECURRING=0
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  n="$(printf '%s\n' "$CLASSES_AFTER" | awk -F'\t' -v k="$c" '$2==k{print $1}')"
+  [ -n "$n" ] && [ "$n" -ge "$THRESH" ] && ROUND_RECURRING=$((ROUND_RECURRING + 1))
+done <<ROUNDCLS
+$ROUND_CLASSES
+ROUNDCLS
+
+# ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
+ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
+fi
+```
+
+**The cumulative figures are still worth reporting — just labelled as what they are.** "4 findings
+this round; 36 across this PR" is the trend; "36 findings this round" is a false statement that
+gets truer every round.
+
+**Report `pr-recurring`, not `recurring`, as the round figure.** `recurring` is a LIFETIME count
+over an append-only file, so it can only ever rise — and it jumps by every prior hit the moment a
+class crosses the threshold. A summary quoting it would print a number that grows whatever the
+round did, which is the opposite of a trend. `pr-recurring` is the same quantity filtered to this
+pull request; lifetime counts still decide *which* classes are recurring.
+
+**Both count HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes.**
+That is the quantity that should fall as the checklist starts working: classes accumulate forever,
+while a repeat hit in a class this project already promoted a rule for is exactly the avoidable
+one. A round where `recurring` is a large share of the findings is the loop telling you the
+checklist is not being swept — which is a finding about the *process*, and belongs in the summary
+where somebody will see it.
+
+**A count you could not read is not zero.** On 18 or a missing ledger, say which; never print `0`
+for a read that failed, for the same reason step 6 refuses to print `0 remaining` over a
+truncated enumeration.
 
 **One summary per RUN, not per round.** Steps 0–7 may go round several times; a per-round report is
 the narration #417 is about. Keep the counts and emit them once, when the loop reaches a terminal

@@ -45,6 +45,23 @@ release      = "claude"     # Names WHO cuts a release. Declared explicitly (not
 [reviewers]
 bots = ["chatgpt-codex-connector"]
 
+# UNCAPPED RE-REVIEW ROUNDS (#420, D88). `0` is the sentinel meaning "no round ceiling" — the
+# resolve loop runs until the reviewer passes or another terminal guard fires, and exit 15 never
+# happens. This repo takes that deviation deliberately, on the evidence of PR #429: the loop was
+# stopped at the built-in 6 while round 7 was still finding real defects, including a command
+# injection introduced by round 5's own fix. A bound that cuts off a productive loop is worse than
+# no bound, and picking a bigger number would just be a guess about where to cut it off next time.
+#
+# WHAT STILL BOUNDS IT, because "no round ceiling" is not "no limits":
+#   - one re-review request per (reviewer, head), so a round always costs a head-moving push;
+#   - each round's own wait keeps its `--max-secs`;
+#   - a round that pushed nothing exits 30 rather than re-finding the same findings;
+#   - the receipt read refuses past 100 comments, fail-closed.
+#
+# WHAT THIS DOES NOT CHANGE: auto-merge is still withheld until a declared reviewer signals a clean
+# pass at the current head. An uncapped loop makes that gate MORE important, not less — see #430.
+max_rounds = 0
+
 # Repair required-check drift automatically, instead of only detecting it (#333).
 #
 # THIS REPO IS THE ONE THAT PROVED THE GAP. `6499dfe` added the `adopt` job; `required-drift` fired
@@ -105,3 +122,17 @@ test = "full"
 typecheck = "na"
 lint      = "na"
 format    = "na"
+
+# MCP servers this project's agents should expect (#422 gave this key its first consumer).
+#
+# DECLARATION ONLY — nothing here installs or starts a server. `/implement-issue` step 5b asks the
+# agent to put one real read-only query to each entry and adjudicates the result fail-closed: a
+# server with no recorded result is reported DEGRADED exactly as a failing one is, so skipping the
+# probe cannot buy a clean verdict. A degraded server degrades the run and is named; it does not
+# stop it (D90).
+#
+# context7 is here because this repo writes shell against gh, git and GitHub's GraphQL API, and
+# `third-party-claims.md` makes it the required first documentation source for all three.
+[mcp]
+required = ["context7"]
+optional = []

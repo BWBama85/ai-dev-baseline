@@ -189,6 +189,20 @@ no  "$rc" "open-set: failing custom gate → run fails (blocks)"
 has "$err" 'gate "a_fail" failed' "open-set: failure names the failing gate"
 if [ -f "$d/ran-b" ]; then ok; else bad "open-set: later gate still runs after an earlier failure"; fi
 
+# A MANIFEST THAT CANNOT BE READ AS TOML IS A FATAL, NOT AUTO-DETECTION (PR #429). `adb_toml_get`
+# returns 3 for a NUL byte (2 for an unreadable file), and every read here treated both as "key
+# absent" — so a `""`-disabled gate ran, a declared command became a default, a custom gate vanished.
+d="$work/nul-manifest"; mkdir -p "$d"
+printf '[gates]\ntest = ""\nbuild = "exit 1"\000\n' > "$d/agents.toml"
+err="$(adb_run_gates "$d" 2>&1)"; rc=$?
+eq "$rc" 2 "nul-manifest: run refuses (2) rather than auto-detecting over a manifest it cannot read"
+has "$err" "cannot be read as TOML" "nul-manifest: …and says why"
+err="$(_adb_gate_records "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 2 "nul-manifest: the records function refuses too"
+eq "$(_adb_gate_records "$d" 2>/dev/null | wc -l | tr -d ' ')" 0 "nul-manifest: …and emits no record"
+adb_detect_gates "$d" >/dev/null 2>&1; eq "$?" 2 "nul-manifest: detect refuses"
+adb_status_gates "$d" >/dev/null 2>&1; eq "$?" 2 "nul-manifest: status refuses"
+
 # --- N/A: declared not-applicable, reported, never a failure -----------------
 d="$work/na"; mkdir -p "$d"
 cat > "$d/agents.toml" <<'EOF'

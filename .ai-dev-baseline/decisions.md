@@ -7170,6 +7170,17 @@ survive is the part a later reader needs.
   rather than pinned, because an exact number would need re-bumping by every future PR and would
   become the next stale figure.
 
+- **AMENDED 2026-08-25 (PR #429): a SECOND step leaves the macOS leg, by the same rule.** The
+  ledger mutation harness (`pattern-ledger-mutation`) re-runs its whole suite once per row, and the
+  rows grew with #429's review rounds: on run 32889697083 it was 1932s of a 39.5-minute
+  `selfcheck-macos` job, and the two pushes after it (runs 32896004653, 32904106492) were cancelled
+  by that job's 45-minute ceiling with the step still running — the job's own annotation, not a
+  guess. Disposition identical to the first: a logic question runs ONCE, on a new ubuntu
+  `pattern-ledger` job with a ceiling sized for the harness, and `selfcheck-macos` passes
+  `--skip adopt-readiness-mutation,pattern-ledger-mutation`; `check-fact-drift.sh` pins the ubuntu
+  invocation (`pattern-ledger-mutation-wired`) so the skip cannot silently become no coverage. The
+  new job is a new required context; the `reconcile-required-checks` preflight adds it on `main`.
+
 ## D88 — DEVIATION: `max_rounds = 0` removes the resolve loop's only overall bound, by owner decision
 - date:          2026-08-21
 - category:      deviation
@@ -7260,3 +7271,105 @@ survive is the part a later reader needs.
                  not the only line of defence" is likewise retired: nothing prevents an old value and
                  the new one from coexisting, so that pin can be green while a stale sentence sits
                  three lines away — which is the reason this `absent:` rule exists beside it.
+
+## D89 — the pattern ledger's home is `.ai-dev-baseline/patterns.md`, tracked
+- date:      2026-08-24
+- category:  project-delta
+- unknown:   #421 asks for a per-project ledger of recurring review-finding classes and the
+             checklist they earn. `handling-the-unknown.md`'s table had no home for "a recurring
+             finding class this project keeps hitting", and the issue explicitly left the placement
+             to the implementer while requiring that it be recorded either way. The baseline's
+             existing memory surfaces are each the wrong grain or the wrong scope: `decisions.md`
+             is incident-grained and hand-written, `base/practices/*.md` is framework-level and
+             owner-curated, and Claude Code's auto memory is per-repo but Claude-only and fed by
+             nobody deliberately.
+- decision:  One tracked, agent-neutral Markdown file at `.ai-dev-baseline/patterns.md`, beside
+             `decisions.md`, with two marker-delimited machine-read regions and free prose around
+             them. TRACKED rather than gitignored, and that is the load-bearing half: promotion
+             changes an operative instruction, so it must arrive as a diff a human approves. The
+             row was added to `handling-the-unknown.md`'s prescribed-home table, which is what
+             makes it a home rather than a path somebody picked.
+- placement: `base/practices/handling-the-unknown.md` (the table) · `.ai-dev-baseline/patterns.md`
+             (the artifact) · `scripts/lib/pattern-ledger.sh` (the reader/writer) ·
+             `scripts/lib/adopt-lib.sh` (`patterns` kind, scan arm and prescribed-home row)
+- reason:    Markdown because a promotion IS a reviewed diff and somebody has to read it;
+             `.ai-dev-baseline/` because `decisions.md` already established that directory as the
+             cross-agent, non-`.claude/` home for project memory, and the one-home rule then makes
+             any per-agent copy a derived cache rather than a second source. Outside the state
+             directory because /cleanup sweeps run-state whose PR has resolved, and a ledger swept
+             on merge would forget precisely what it exists to remember.
+
+             ADOPTION HAD TO BE TAUGHT THE NAME, not merely allowed to fall through. `/adopt`'s
+             scan descends into `.ai-dev-baseline/` by explicit filename, so an unnamed file there
+             is not classified `other` — it is INVISIBLE, which satisfies neither reading of the
+             acceptance criterion. The classifier returns `keep`, so a migration plan can never
+             propose deleting an adopting project's accumulated classes.
+- baseline-issue: n/a (this repo IS the baseline; #421 is the tracked work)
+
+## D90 — a declared MCP server that cannot answer DEGRADES the run; it does not fail it
+- date:          2026-08-24
+- category:      deviation
+- baseline-rule: `docs/design-principles.md` §5 — *"A missing OPTIONAL dependency degrades to a
+                 safe no-op; it never crashes or corrupts. A missing REQUIRED dependency — one the
+                 mechanism cannot function without — FAILS LOUD, never silently no-ops."*
+- conflict:      #422 gives `[mcp] required` its first consumer, and the key is spelled
+                 *required*. Read literally, §5 says an unreachable `context7` must fail the run.
+                 That is the wrong outcome and `templates/agents.toml` already said so at the point
+                 the key was introduced: *"a run that cannot reach one is DEGRADED; say so instead
+                 of proceeding quietly."*
+- scope:         `scripts/lib/docs-lib.sh verdict` (exit 10) and `/implement-issue` step 5b, which
+                 reports the degradation and carries on at rung 3. Nothing else; a missing
+                 `common.sh` still fails loud everywhere it did before.
+- reason:        §5's distinction is between "this repo has nothing for me to do" and "my own
+                 install is broken", and a documentation server is neither. It is a preferred
+                 SOURCE with a lower rung underneath it, and `third-party-claims.md`'s ladder
+                 already prescribes descending: an unavailable rung 2 becomes rung 3, current
+                 vendor documentation via web search. Failing the run would make declaring
+                 `required` strictly worse than leaving it out, so every project would leave it
+                 out and the declaration would mean nothing.
+
+                 SO THE LOUD PART IS THE SAYING, and that is where the enforcement went. The
+                 adjudication is fail-closed in the direction that actually protects the rule: a
+                 declared server with NO recorded probe scores identically to one that failed, so
+                 an agent cannot buy a clean verdict by skipping the preflight. Silence is the
+                 failure mode being defended against, and silence is what is refused.
+
+                 WHAT IS NOT CLAIMED, and how the CLI facts were established. Probed this run
+                 (rung 1, 2026-08-24): `codex mcp --help` lists list/get/add/remove/login/logout;
+                 `claude mcp --help` lists add/add-from-claude-desktop/add-json/get/list/login/
+                 logout/remove/reset-project-choices/serve. Every one manages CONFIGURATION, and
+                 `serve` runs the agent AS an MCP server rather than calling another one's tools —
+                 so no agent CLI offers a generic MCP tool call as a subcommand.
+
+                 BUT "NO SHELL CAN REACH MCP" WOULD BE TOO STRONG, and the independent review was
+                 right to say so: `claude -p` accepts `--mcp-config`, `--strict-mcp-config` and
+                 `--allowed-tools`, so a shell CAN launch a headless agent that calls an MCP tool
+                 and thereby establish PRESENT usability independently. What no gate can do is
+                 authenticate the HISTORICAL action — that the agent which wrote a record actually
+                 issued the query it claims. That is the honest boundary, and it is narrower than
+                 the one first written here. An independent live preflight built on `claude -p`
+                 is a real future option for a Claude-driven run; it is not implemented, and it
+                 would not generalize to the other two harnesses. `agy` IS installed here
+                 (`/Users/brentwilson/.local/bin/agy`, also on PATH via Zentty) and `agy --help`
+                 lists no `mcp` subcommand and no `--mcp-config` flag at all.
+
+                 THE FIRST DRAFT OF THIS ENTRY SAID `agy` WAS NOT INSTALLED, AND THAT WAS FALSE.
+                 The probe behind it was `command -v agy … | grep -i mcp | head -5 || echo "NOT
+                 INSTALLED"`, whose `||` can never fire — `head` succeeds whatever `grep` does — so
+                 the branch printed nothing and the silence was read as absence. A machine-state
+                 fact was then written into a decision log from a check that could not answer
+                 wrong, which is precisely the guard failure `self-review.md` describes, committed
+                 in the same run as a feature about resolving claims properly. The independent
+                 review caught it. Recorded rather than quietly corrected, because the shape is the
+                 lesson: a probe is a guard, and a guard is not done until it has been observed
+                 answering.
+
+                 THE AVAILABLE CHECK IS THE INSUFFICIENT ONE, which is the sharper reason. The
+                 probe also showed `claude mcp list`/`get` HEALTH-CHECK approved servers, so a
+                 preflight could cheaply learn a server is Connected — and that is exactly the
+                 signal `third-party-claims.md`'s connected-is-not-usable paragraph rejects: a bad
+                 credential still reports Connected, still answers `tools/list`, and returns the
+                 auth failure inside an HTTP 200 tool result. A preflight built on it would be
+                 worse than none, carrying an assurance nobody earned. The mechanism is the
+                 recorded evidence and the report line; review is what reads them, and the
+                 practice's "What this does NOT enforce" section says so in the same words.

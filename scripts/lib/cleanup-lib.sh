@@ -35,6 +35,7 @@
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
+#   cleanup-lib.sh state-verdict  docs    <run keep|stale|none>
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh marker-shape    <path-or-name>
@@ -314,6 +315,7 @@ EOF
 #   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
 #   review   -               a code-review artifact (prompt, findings, captured stream)
 #   issue    -               an /implement-issue issue SNAPSHOT, `issue-<n>.json` / `issue-<n>.assoc`
+#   docs     -               an /implement-issue DOCS-DUTY record, `docs-consulted.tsv` (#422)
 #   unsafe   -               a file whose NAME cannot be serialized (see #273 below); the path
 #                            field is a `%q`-ENCODED rendering, never a usable path
 #   other    -               ANYTHING ELSE
@@ -402,6 +404,19 @@ cmd_state_scan() {
       # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
       review-prompt.txt|review.md|review.err|review-*.md|review-*.err)
         _adb_cl_emit "$want_ident" review "$f" '-'
+        ;;
+      # /implement-issue step 5b's documentation-duty record (#422): which third-party surfaces
+      # this run resolved, at which rung, and whether each declared-required MCP server answered.
+      # Run evidence, not project history — the pattern ledger under .ai-dev-baseline/ is the
+      # durable artifact and is deliberately NOT under this directory at all.
+      #
+      # A FAMILY, like the two above, for the same reason: the workflow writes one fixed name
+      # today, and a per-slot or per-round `docs-consulted-<n>.tsv` is the obvious next shape.
+      # Kept identical to the PREFLIGHT set in base/workflows/implement-issue.md — a name this arm
+      # can sweep but `admit` cannot clear is a stale file a fresh run's marker makes read as live,
+      # and here that file is the one asserting which documentation this run consulted.
+      docs-consulted.tsv|docs-consulted-*.tsv)
+        _adb_cl_emit "$want_ident" docs "$f" '-'
         ;;
       # /implement-issue step 2's issue snapshot (#250) — the untrusted issue text and the
       # `author_association` provenance label that decides whether a dispatched agent is told the
@@ -687,7 +702,7 @@ cmd_file_identity() {
 # it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
 # fast one's. Every fact below is a live PR state or a freshly-fetched ref.
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs)"
   local kind="$1"; shift
   case "$kind" in
     threads)
@@ -792,7 +807,21 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review)" ;;
+    docs)
+      [ "$#" -eq 1 ] || die "state-verdict docs: needs exactly 1 arg: <run keep|stale|none>"
+      case "$1" in keep|stale|none) : ;;
+        *) die "state-verdict docs: <run> must be keep|stale|none (got '$1')" ;; esac
+      # SAME SHAPE AS `review`, and for the same reason: /implement-issue step 5b writes this
+      # record AFTER step 5's marker exists, so the marker is the in-flight signal for every
+      # reachable write and a second one could only leak or disagree. Written as its own arm
+      # rather than folded into `review` because the two answer about different files and a
+      # shared arm would make a future divergence in either invisible.
+      case "$1" in
+        keep) printf 'keep\n' ;;
+        *)    printf 'stale\n' ;;
+      esac
+      ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs)" ;;
   esac
 }
 

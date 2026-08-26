@@ -79,6 +79,42 @@ eq "$(adb_toml_unquote "$v")" 'printf \"hi\"' "escaped quote does not truncate"
 
 adb_toml_get "$work/nope.toml" gates test >/dev/null; no $? "missing file returns nonzero"
 
+# A FILE THAT EXISTS BUT CANNOT BE READ IS 2, NOT 1 (PR #429) — and the layered reader must not
+# fall through it to the next layer. Both used to come back as "absent", so an unreadable repo
+# manifest handed every consumer the global value or a built-in in place of the operator's own.
+# Skipped as root, which can read a mode-000 file.
+if [ "$(id -u)" -ne 0 ]; then
+  u="$work/unreadable.toml"; printf '[mcp]\nrequired = ["context7"]\n' > "$u"; chmod 000 "$u"
+  adb_toml_get "$u" mcp required >/dev/null 2>&1
+  eq "$?" 2 "an unreadable file returns 2, never 'absent'"
+  adb_toml_layered_get "$u" "$f" roles primary >/dev/null 2>&1
+  eq "$?" 2 "…and the layered reader returns it rather than consulting the next layer"
+  adb_toml_layered_get "$f" "$u" mcp required >/dev/null 2>&1
+  eq "$?" 2 "…from the global layer too, when the repo one lacks the key"
+  chmod 600 "$u"
+else
+  ok; ok; ok
+fi
+# A NUL BYTE IS 3: command substitution DISCARDS it, so `contex<NUL>t7` would otherwise parse as a
+# clean `context7` the operator never wrote.
+z="$work/nul.toml"; printf '[mcp]\nrequired = ["contex\000t7"]\n' > "$z"
+adb_toml_get "$z" mcp required >/dev/null 2>&1
+eq "$?" 3 "a file carrying a NUL byte returns 3 — not TOML, not absent"
+adb_toml_layered_get "$z" "$f" roles primary >/dev/null 2>&1
+eq "$?" 3 "…and the layered reader does not fall through it"
+# …while the ordinary answers are unchanged: an absent repo manifest still reaches the global one.
+eq "$(adb_toml_layered_get "$work/nope.toml" "$f" roles primary)" '"claude"' \
+   "an absent repo manifest still falls through to the global layer"
+adb_toml_layered_get "$work/nope.toml" "$work/nope2.toml" roles primary >/dev/null
+eq "$?" 1 "…and neither layer defining the key is still 1"
+eq "$(adb_toml_layered_get "$f" "$work/nope.toml" roles primary --with-layer)" 'repo "claude"' \
+   "…and --with-layer still names the layer that answered"
+# THE SHARED DIAGNOSTIC — one home for the two sentences every consumer prints (PR #429).
+adb_toml_read_error "$z" 3 2>/dev/null; yes $? "adb_toml_read_error accepts status 3"
+has "$(adb_toml_read_error "$z" 3 2>&1)" "NUL byte"          "…and names the NUL byte for 3"
+has "$(adb_toml_read_error "$z" 2 2>&1)" "could not be read" "…and the read failure for 2"
+adb_toml_read_error "$z" 1 2>/dev/null; no $? "…and returns 1 for a status that is not a read failure"
+
 # key present in a DIFFERENT table must not match
 eq "$(adb_toml_get "$f" roles typecheck 2>/dev/null)" "" "key scoped to its table"
 

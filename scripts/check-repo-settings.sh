@@ -1875,6 +1875,7 @@ rc_repo() {
     no)    printf '[repo]\nreconcile-required-checks = false\n' > "$RC_REPO/agents.toml" ;;
     none)  : ;;
     raw:*) printf '[repo]\nreconcile-required-checks = %s\n' "${decl#raw:}" > "$RC_REPO/agents.toml" ;;
+    nul)   printf '[repo]\nreconcile-required-checks = true\000\n' > "$RC_REPO/agents.toml" ;;
     *)     bad "rc_repo: unknown declaration '$decl'" ;;
   esac
   [ "$noci" = "--no-ci" ] || printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' \
@@ -1932,6 +1933,12 @@ rc_reset; rc_repo no; repo_fx true true; prot_checks "one"; branch_sha "$(rc_hea
 rsx_reconcile
 eq "$RC_" "17" "an undeclared repo is 17 (skipped), never 0 — it has NOT checked the required set"
 has "$OUT" "reconcile-required-checks" "...and names the declaration that would enable it"
+# A MANIFEST THAT CANNOT BE READ IS NOT "UNDECLARED" (PR #429): a NUL-carrying agents.toml that DID
+# declare the reconcile used to be skipped (17) as if the operator had never asked.
+rc_reset; rc_repo nul; repo_fx true true; prot_checks "one"; branch_sha "$(rc_head)"
+rsx_reconcile
+eq "$RC_" "20" "a manifest carrying a NUL byte is 20 (fail closed), never 17"
+has "$OUT" "could not be read as TOML" "...and the diagnostic says why"
 eq "$(cat "$STUB_READS")" "" "...and issues NO api request at all: the declaration is read first, offline"
 eq "$(cat "$STUB_CALLS")" "" "...and mutates nothing"
 
@@ -2255,7 +2262,9 @@ if wrote_patch; then ok; else bad "M1: with the tip gate deleted, the wrong-tree
 rc_unmutate
 
 # M2 — ignore the opt-in declaration. An undeclared repo must now reach the API.
-rc_mutate 's@if ! _adb_rs_reconcile_declared; then@if false; then@' 'if false; then'
+# RETARGETED when the check gained a distinct read-failure status (PR #429): the `if !` form became
+# a `case` on the captured status, so "ignore the declaration" is now "pretend it returned 0".
+rc_mutate 's@local _drc; _adb_rs_reconcile_declared; _drc=\$?@local _drc; _drc=0@' 'local _drc; _drc=0'
 rc_reset; rc_repo no; repo_fx true true; prot_checks "one"; branch_sha "$(rc_head)" "one"
 rsx_reconcile
 if [ -s "$STUB_READS" ]; then ok; else bad "M2: with the declaration check deleted, an undeclared repo must issue API reads (guard observed failing)"; fi

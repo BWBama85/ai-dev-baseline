@@ -47,6 +47,7 @@ yet is itself an escalation (bucket 4) — say so and ask, don't invent a home.
 | Custom gate *policy* (order, conditional) | the repo's own `.claude/scripts/precommit-gate.sh` |
 | Workflow that genuinely diverges | a project-scoped skill shadowing the global one |
 | Deviation from a baseline rule | a `DEVIATION` entry in the decision log |
+| A recurring review-finding class this project keeps hitting | `.ai-dev-baseline/patterns.md` — the pattern ledger and its promoted checklist |
 | General gap (would help many projects) | the supported stopgap surface; a baseline issue **only if it clears the bar** |
 
 See `docs/per-project-overrides.md` for the override surfaces and

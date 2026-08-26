@@ -1078,6 +1078,35 @@ set_repo '[roles]' 'primary = "notanagent"' 'review = ["codex"]'
 rung "$RB:$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: an unresolvable primary is unknown, not independent"
 clr_repo
 
+# ============================ a manifest that cannot be read is never "unset" (PR #429) =========
+# `adb_toml_layered_get` returns 2 for a manifest that exists but cannot be read and 3 for one
+# carrying a NUL byte; every reader here used to take any non-zero as undeclared and fall through
+# to the global manifest or the built-in — an operator's configuration replaced by a value from a
+# file they never chose. A NUL is the case with no permissions in it: command substitution drops
+# the byte, so `["a<NUL>b"]` would otherwise read as a clean `["ab"]`.
+clr_global
+printf '[reviewers]\nbots = ["a\000b"]\nmax_rounds = 4\n[roles]\nprimary = "claude"\nreview = ["codex"]\n' > "$REPO/agents.toml"
+rd bots --declared >/dev/null 2>&1;  eq "$?" 2 "bots: a repo manifest carrying a NUL byte is a hard error, not 'undeclared' (3)"
+rd max-rounds >/dev/null 2>&1;       eq "$?" 2 "max-rounds: …and not the built-in cap"
+rd resolve primary >/dev/null 2>&1;  eq "$?" 2 "resolve primary: …and not the built-in agent"
+rd resolve review >/dev/null 2>&1;   eq "$?" 2 "resolve review: …and not the primary's own pass"
+rd effort review >/dev/null 2>&1;    eq "$?" 2 "effort: …and not 'inherit'"
+OUTN="$(rd bots --declared 2>&1 >/dev/null)"
+has "$OUTN" "NUL byte" "…and the diagnostic names the byte, not a typo"
+# An UNREADABLE manifest is the same class by another route. Skipped as root, which can read it.
+if [ "$(id -u)" -ne 0 ]; then
+  set_repo '[reviewers]' 'bots = ["x"]' 'max_rounds = 4'
+  chmod 000 "$REPO/agents.toml"
+  rd bots --declared >/dev/null 2>&1; eq "$?" 2 "bots: an UNREADABLE repo manifest is a hard error, never 'undeclared'"
+  rd max-rounds >/dev/null 2>&1;      eq "$?" 2 "max-rounds: …and never the built-in cap"
+  OUTU="$(rd bots --declared 2>&1 >/dev/null)"
+  has "$OUTU" "could not be read" "…and the diagnostic says the file exists and could not be read"
+  chmod 644 "$REPO/agents.toml"
+else
+  ok; ok; ok
+fi
+clr_repo
+
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).
 # shellcheck source=/dev/null

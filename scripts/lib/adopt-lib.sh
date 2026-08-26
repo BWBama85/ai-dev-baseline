@@ -435,7 +435,7 @@ cmd_prescribed() {
   [ "$#" -eq 2 ] || die "prescribed: needs <kind> <name>"
   local kind="$1" name="$2"
   case "$kind" in
-    skill|script|rootdoc|manifest|settings|override|decisions|pin|foreign-pin|lib|pinned|other) ;;
+    skill|script|rootdoc|manifest|settings|override|decisions|patterns|pin|foreign-pin|lib|pinned|other) ;;
     *) die "prescribed: unknown kind: $kind" ;;
   esac
   case "$kind$TAB$name" in
@@ -450,6 +450,12 @@ cmd_prescribed() {
     "override${TAB}overrides.md") return 0 ;;
     # The decision log itself.
     "decisions${TAB}decisions.md") return 0 ;;
+    # The pattern ledger (#421) — this project's own learned finding classes and the checklist
+    # they earned. Like the decision log it is the project's content in a baseline-shaped file,
+    # so a collision with the shipped tree is `keep`: nothing in the install writes it, and an
+    # adopting project's accumulated classes are the last thing a migration plan should propose
+    # deleting.
+    "patterns${TAB}patterns.md") return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -517,7 +523,7 @@ cmd_classify() {
   case "$delta"      in same|differs|unknown) ;; *) die "classify: <delta> must be same|differs|unknown: $delta" ;; esac
   case "$prescribed" in yes|no) ;;              *) die "classify: <prescribed> must be yes|no: $prescribed" ;; esac
   case "$kind" in
-    skill|script|rootdoc|manifest|settings|override|decisions|pin|foreign-pin|lib|pinned|other) ;;
+    skill|script|rootdoc|manifest|settings|override|decisions|patterns|pin|foreign-pin|lib|pinned|other) ;;
     *) printf 'escalate%sunmodelled artifact kind "%s" — classify it by hand (handling-the-unknown.md bucket 4)\n' "$TAB" "$kind"; return 0 ;;
   esac
 
@@ -629,6 +635,12 @@ cmd_scan() {
   done
   [ -f "$root/agents.toml" ] && _ad_emit manifest agents.toml agents.toml -
   [ -f "$root/.ai-dev-baseline/decisions.md" ] && _ad_emit decisions .ai-dev-baseline/decisions.md decisions.md -
+  # The pattern ledger (#421). Emitted as its OWN kind rather than left unenumerated: this scan
+  # descends into `.ai-dev-baseline/` by explicit filename, so a file nobody names here is not
+  # classified `other` — it is INVISIBLE, which is worse. #421's acceptance criterion asks that
+  # adoption see it as a baseline artifact rather than an unknown file, and being absent from the
+  # inventory is the one outcome that satisfies neither reading.
+  [ -f "$root/.ai-dev-baseline/patterns.md" ] && _ad_emit patterns .ai-dev-baseline/patterns.md patterns.md -
   [ -f "$root/.ai-dev-baseline/upstream.toml" ] && _ad_emit pin .ai-dev-baseline/upstream.toml upstream.toml -
 
   # Prior-framework artifacts (ai-dev-workflow). Reported as their own kind so the plan can carry
@@ -1213,13 +1225,18 @@ TOML
 
 cmd_pin_read() {
   [ "$#" -eq 2 ] || die "pin-read: needs <pin-file> <key>"
-  local file="$1" key="$2" v
+  local file="$1" key="$2" v rc
   [ -f "$file" ] || die "pin-read: no such pin file: $file"
   case "$key" in
     version|commit|adopted|stack|agents) ;;
     *) die "pin-read: unknown pin key: $key" ;;
   esac
-  v="$(adb_toml_get "$file" upstream "$key")" || return 1
+  v="$(adb_toml_get "$file" upstream "$key")"; rc=$?
+  # 2 AND 3 ARE NOT 1: a pin that exists but cannot be read, or carries a NUL byte, must not read as
+  # "key absent" — `pin-drift` would then report no drift at all. 20, with the shared diagnostic.
+  # Reported by the declared reviewer on PR #429.
+  [ "$rc" -le 1 ] || { adb_toml_read_error "$file" "$rc"; return 20; }
+  [ "$rc" -eq 0 ] || return 1
   if [ "$key" = agents ]; then adb_toml_array "$v"; else adb_toml_unquote "$v"; fi
 }
 

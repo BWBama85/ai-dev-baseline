@@ -163,17 +163,32 @@ debug        = "claude"     # owns root-cause investigations.
 # [repo]
 # reconcile-required-checks = true
 
-# Optional: MCP servers this project's agents should expect (#356).
+# Optional: MCP servers this project's agents should expect (#356), and since #422 this key
+# DRIVES A REAL PREFLIGHT rather than only documenting an expectation.
 #
-# DECLARATION ONLY. Nothing here installs, starts, or health-checks a server — wiring is per-agent.
-# It states what a run should have, so an absent server is a stated gap rather than a silent
-# fall-back to training-data recall (base/practices/third-party-claims.md).
-#   required — a run that cannot reach one is DEGRADED; say so instead of proceeding quietly.
+# Nothing here installs or starts a server — wiring is still per-agent. What changed is the
+# consumer: `/implement-issue` step 5b asks the driving agent to put ONE REAL READ-ONLY QUERY to
+# each declared required server, records the result, and adjudicates it FAIL-CLOSED.
+#   required — every one must answer. A server with no recorded result, and a stored record outside
+#              the grammar, are each reported DEGRADED exactly as a failing one is, so neither
+#              skipping the probe nor hand-writing a result buys a clean verdict. A DEGRADED run
+#              proceeds on the next rung (current vendor docs via web search) and SAYS SO in the
+#              PR body and the close-out — it is a preferred source with a lower rung underneath,
+#              not a broken install, so it degrades rather than failing loud (D90).
 #              `context7` belongs here wherever agents write code against third-party APIs.
-#   optional — absence is not worth reporting.
+#   optional — absence is not worth reporting, and nothing probes it.
 #
-# CONNECTED IS NOT USABLE. A server with a bad credential still reports Connected, still answers
-# `tools/list`, and returns the auth failure INSIDE a 200 tool result. Judge the tool RESULT.
+# QUOTED-STRING ARRAYS ONLY, and every name must be one a probe result could match
+# ([A-Za-z0-9_.-]). A declared `"bad name"` is refused at read time rather than silently degrading
+# every future run and blaming a server that was never the problem.
+#
+# WHAT IS NOT PROVED: that the agent really issued the query it recorded. MCP is an in-harness
+# protocol and no shell gate authenticates a past action, so the mechanism is the recorded evidence
+# and the report line, and review is what reads them.
+#
+# CONNECTED IS NOT USABLE, which is why the preflight is a real query and not a health check. A
+# server with a bad credential still reports Connected, still answers `tools/list`, and returns the
+# auth failure INSIDE a 200 tool result. Judge the tool RESULT.
 #
 # NEVER TRACK THE CREDENTIAL. A keyed server declared in a committed `.mcp.json` ships that key to
 # every clone and fork. Declare the NAME here; keep keys in the agent's own user-level config.

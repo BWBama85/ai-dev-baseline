@@ -365,6 +365,8 @@ render_agent_skill() {
   pr_threads="bash \"\$HOME/.$agent/scripts/lib/pr-threads.sh\""
   cleanup_lib="bash \"\$HOME/.$agent/scripts/lib/cleanup-lib.sh\""
   implement_lib="bash \"\$HOME/.$agent/scripts/lib/implement-lib.sh\""
+  pattern_ledger="bash \"\$HOME/.$agent/scripts/lib/pattern-ledger.sh\""
+  docs_lib="bash \"\$HOME/.$agent/scripts/lib/docs-lib.sh\""
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   ci_health="bash \"\$HOME/.$agent/scripts/lib/ci-health.sh\""
@@ -529,6 +531,7 @@ render_agent_skill() {
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
       -v implement_lib="$implement_lib" \
+      -v pattern_ledger="$pattern_ledger" -v docs_lib="$docs_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v ci_health="$ci_health" \
       -v adopt_lib="$adopt_lib" -v adopt_readiness="$adopt_readiness" \
@@ -593,6 +596,8 @@ render_agent_skill() {
       line = lreplace(line, "{{PR_THREADS_LIB}}",   pr_threads)
       line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
       line = lreplace(line, "{{IMPLEMENT_LIB}}",    implement_lib)
+      line = lreplace(line, "{{PATTERN_LEDGER_LIB}}", pattern_ledger)
+      line = lreplace(line, "{{DOCS_LIB}}",         docs_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{CI_HEALTH_LIB}}",    ci_health)

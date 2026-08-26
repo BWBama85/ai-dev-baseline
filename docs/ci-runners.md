@@ -14,7 +14,7 @@ proves — so no job's own shell is ever the bootstrap case `adb_require_bash` e
 sub-floor half goes looking for an older interpreter **on the machine** instead, and `macos-latest`
 is the only per-PR environment that has one: `/bin/bash`, permanently 3.2.57. It reaches the check
 through `selfcheck-macos`, which runs the offline suite there, so the parse and evaluation probes
-really do run under 3.2 on that job. (That job skips one named step since #339 — see below. It is
+really do run under 3.2 on that job. (That job skips two named steps, one since #339 — see below. It is
 not this one: `bash-floor` still runs, and it is what carries `--sub-floor`.)
 
 On the Ubuntu runner there is no bash below the floor at all, so the half states a **SKIP** and
@@ -285,18 +285,20 @@ token.
 So the Linux jobs stay statically named, and macOS is **one aggregate job** —
 `selfcheck-macos`, running `scripts/selfcheck.sh`, which *is* the full offline suite by
 construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). Mirroring the jobs
-individually would need a 31st hand-added job every time a `check-*.sh` lands, and the forgotten
+individually would need another hand-added job every time a `check-*.sh` lands, and the forgotten
 one would be invisible.
 
-**Less exactly one named step, since #339.** The job invokes `--skip adopt-readiness-mutation`.
-That step re-runs the whole adoption-readiness suite once per injected defect, 38 times, to answer
-a question about *logic* — can the verifier's guards fail closed? — and the ubuntu `adopt` job
-already answers it on every PR. On run 32451790033 it was 680s of a 1086s job that was the run's
-critical path. The registry is not smaller and the local suite is unchanged: this is a
-per-invocation `--skip`, the log names it twice, an unknown name is an error rather than a quiet
-no-op, and `check-fact-drift.sh` pins the ubuntu invocation because that job is now the step's
-only per-PR execution. The non-mutation `adopt-readiness` half still runs here, so the readiness
-contract keeps macOS coverage.
+**Less exactly two named steps — one since #339, one since PR #429.** The job invokes
+`--skip adopt-readiness-mutation,pattern-ledger-mutation`. Each re-runs a whole suite once per
+injected defect to answer a question about *logic* — can the guards fail closed? — and an ubuntu
+job already answers it on every PR: `adopt` for the first (on run 32451790033 it was 680s of a
+1086s job that was the run's critical path), `pattern-ledger` for the second (on run 32889697083
+it was 1932s of a 39.5-minute job, and the two pushes after it were cancelled by the job's
+45-minute ceiling with that step still running). The registry is not smaller and the local suite
+is unchanged: these are per-invocation `--skip`s, the log names each twice, an unknown name is an
+error rather than a quiet no-op, and `check-fact-drift.sh` pins both ubuntu invocations because
+those jobs are now each step's only per-PR execution. The non-mutation `adopt-readiness` and
+`pattern-ledger` halves still run here, so both keep macOS coverage.
 
 **And the load-sensitive suites run in the serial prologue here, as everywhere** (#423).
 `session-currency`, `selfcheck-guard` and `selfcheck-guard-mutation` are the ones that flapped on

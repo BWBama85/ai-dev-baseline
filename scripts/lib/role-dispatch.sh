@@ -211,18 +211,28 @@ _adb_rd_valid_token() {
 # every caller invokes this function inside `$( … )`, which is a subshell, so an assignment to a
 # global here is discarded before the caller can read it. That was the first attempt, and it
 # returned an empty layer for every case. Callers that omit the flag are byte-for-byte unaffected.
+# NOW A THIN WRAPPER over `adb_toml_layered_get` in common.sh, which owns the precedence rule
+# itself. It stays as a named function because this module's two callers want the paths bound —
+# the shared primitive takes them as arguments precisely so it can serve modules with different
+# manifests (#421's ledger, #422's `[mcp]`), and re-typing them at each call site here would be
+# the same duplication one level down.
 _adb_rd_layered_get() {
-  local section="$1" key="$2" with_layer=0 raw
-  [ "${3:-}" = "--with-layer" ] && with_layer=1
-  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then
-    [ "$with_layer" -eq 1 ] && printf 'repo '
-    printf '%s' "$raw"; return 0
-  fi
-  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then
-    [ "$with_layer" -eq 1 ] && printf 'global '
-    printf '%s' "$raw"; return 0
-  fi
-  return 1
+  adb_toml_layered_get "$_ADB_RD_REPO_TOML" "$_ADB_RD_GLOBAL_TOML" "$@"
+}
+
+# _adb_rd_read_failed <rc> — the diagnostic for a layered read that answered neither 0 nor 1.
+#
+# A MANIFEST THAT EXISTS BUT CANNOT BE READ IS A HARD ERROR, NEVER "UNSET". `adb_toml_layered_get`
+# returns 2 (unreadable) or 3 (contains a NUL byte) without consulting the next layer; every reader
+# in this file used to treat any non-zero status as undeclared and fall through to the global
+# manifest or the built-in — the silent fall-through this file's own header forbids, reached by
+# permissions rather than by a typo. Each caller returns 2 after printing this, the same code its
+# malformed-value arm already uses. Reported by the declared reviewer on PR #429.
+_adb_rd_read_failed() {
+  case "$1" in
+    2) printf 'role-dispatch: an agents.toml exists but could not be read — refusing to fall back to a lower layer or a built-in. Check %s and %s.\n' "$_ADB_RD_REPO_TOML" "$_ADB_RD_GLOBAL_TOML" >&2 ;;
+    *) printf 'role-dispatch: an agents.toml contains a NUL byte and is not TOML — refusing to read it. Check %s and %s.\n' "$_ADB_RD_REPO_TOML" "$_ADB_RD_GLOBAL_TOML" >&2 ;;
+  esac
 }
 
 # The built-in default for a role that is UNSET or set to "": gap_analysis skips (no output, 0
@@ -260,9 +270,11 @@ _adb_rd_effort_default() {
 # same shape `[gates]` already uses for "disabled", so the manifest reads consistently.
 # Usage: adb_role_effort <role>
 adb_role_effort() {
-  local role="$1" raw val
+  local role="$1" raw val _rc
   [ -n "$role" ] || return 1
-  if raw="$(_adb_rd_layered_get roles.effort "$role")"; then
+  raw="$(_adb_rd_layered_get roles.effort "$role")"; _rc=$?
+  [ "$_rc" -le 1 ] || { _adb_rd_read_failed "$_rc"; return 2; }
+  if [ "$_rc" -eq 0 ]; then
     val="$(adb_toml_unquote "$raw")"
     [ -n "$val" ] || return 1
     case " $_ADB_RD_KNOWN_EFFORT " in
@@ -278,8 +290,10 @@ adb_role_effort() {
 # `claude`. Resolved on its own (never via the @primary fallback recursion) so the other roles'
 # "default to primary" can reuse it without a resolution loop.
 adb_resolve_primary() {
-  local raw val
-  if raw="$(_adb_rd_layered_get roles primary)"; then
+  local raw val _rc
+  raw="$(_adb_rd_layered_get roles primary)"; _rc=$?
+  [ "$_rc" -le 1 ] || { _adb_rd_read_failed "$_rc"; return 2; }
+  if [ "$_rc" -eq 0 ]; then
     # primary is a single-owner role: an array or an empty value is malformed and must SURFACE,
     # not silently reroute (taking the first of a list, or defaulting to claude) — because every
     # other role can inherit from primary, so a bad primary quietly rewires the whole workflow.
@@ -305,7 +319,7 @@ adb_resolve_primary() {
 # (only `gap_analysis` resolves that way). A 2 status means an invalid manifest value (unknown
 # agent token, or an explicit empty `review = []`) — surfaced, never silently degraded.
 adb_resolve_role() {
-  local role="$1" raw val elems tok bad=0
+  local role="$1" raw val elems tok bad=0 _rc
 
   case "$role" in
     primary) adb_resolve_primary; return $? ;;
@@ -313,7 +327,9 @@ adb_resolve_role() {
     *) printf 'role-dispatch: unknown role "%s"\n' "$role" >&2; return 2 ;;
   esac
 
-  if ! raw="$(_adb_rd_layered_get roles "$role")"; then
+  raw="$(_adb_rd_layered_get roles "$role")"; _rc=$?
+  [ "$_rc" -le 1 ] || { _adb_rd_read_failed "$_rc"; return 2; }
+  if [ "$_rc" -eq 1 ]; then
     _adb_rd_role_default "$role"; return $?     # unset in every manifest → built-in default
   fi
 
@@ -423,8 +439,9 @@ adb_dispatch_bots() {
 # The `[]` case is what keeps the guard from being a permanent tax on repos with no bot reviewer:
 # one line in agents.toml restores unattended arming.
 adb_dispatch_bots_declared() {
-  local raw inner out
-  raw="$(_adb_rd_layered_get reviewers bots)" || return 3
+  local raw inner out _rc
+  raw="$(_adb_rd_layered_get reviewers bots)"; _rc=$?
+  case "$_rc" in 0) ;; 1) return 3 ;; *) _adb_rd_read_failed "$_rc"; return 2 ;; esac
   case "$raw" in
     \[*) ;;
     *)   printf 'role-dispatch: [reviewers].bots must be an array (e.g. ["a[bot]","b"]) — use [] to disable\n' >&2; return 2 ;;
@@ -608,13 +625,15 @@ adb_dispatch_bots_comparable() {
 # `~/.config/ai-dev-baseline/agents.toml`. The bare form is unchanged, so existing callers are
 # untouched. Reported by the declared reviewer on PR #419.
 adb_dispatch_max_rounds() {
-  local raw layer="" with_source=0
+  local raw layer="" with_source=0 _rc
   [ "${1:-}" = "--with-source" ] && with_source=1
   if [ "$with_source" -eq 1 ]; then
-    raw="$(_adb_rd_layered_get reviewers max_rounds --with-layer)" || return 3
+    raw="$(_adb_rd_layered_get reviewers max_rounds --with-layer)"; _rc=$?
+    case "$_rc" in 0) ;; 1) return 3 ;; *) _adb_rd_read_failed "$_rc"; return 2 ;; esac
     layer="${raw%% *}"; raw="${raw#* }"
   else
-    raw="$(_adb_rd_layered_get reviewers max_rounds)" || return 3
+    raw="$(_adb_rd_layered_get reviewers max_rounds)"; _rc=$?
+    case "$_rc" in 0) ;; 1) return 3 ;; *) _adb_rd_read_failed "$_rc"; return 2 ;; esac
   fi
   case "$raw" in
     ''|*[!0-9]*)

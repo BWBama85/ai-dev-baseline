@@ -938,6 +938,10 @@ GV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK"
 # stale one would sweep a live run's issue text out from under its own review dispatch.
 IV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict issue "$LOCK" "$RUN_NOW")" || IV=keep
 RV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN_NOW")" || RV=keep
+# The documentation-duty record (#422). Same shape and same freshness argument as `review`:
+# /implement-issue step 5b writes it after the marker exists, and step 10 and step 11 both read it
+# back, so `$RUN_NOW` is what governs the delete.
+DV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict docs "$RUN_NOW")" || DV=keep
 
 # sweep_file <path> <identity-as-judged> <proof> — delete ONE file, but only if it is still the
 # file the verdict was about (#305), and record WHY it was removed (#332).
@@ -995,6 +999,10 @@ while IFS="$TABC" read -r kind sfile key ident; do
       ;;
     review)
       [ "$RV" = stale ] || continue
+      sweep_file "$sfile" "$ident" "no run in flight"
+      ;;
+    docs)
+      [ "$DV" = stale ] || continue
       sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     threads)

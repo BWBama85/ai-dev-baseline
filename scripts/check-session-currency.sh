@@ -372,6 +372,19 @@ run_hook startup
 has "$OUT" 'updated' "global agents.toml session_start=auto → updates"
 rm -f "$fh/.config/ai-dev-baseline/agents.toml"
 
+# A GLOBAL MANIFEST THAT CANNOT BE READ IS NOT "UNSET" (PR #429). A NUL byte in it used to fall to
+# the built-in `auto` — an operator's `off` silently becoming an updater that runs. The fail-closed
+# answer is `notify`: nothing is pulled, and the hook says why.
+reset_src
+advance_origin "toml-nul"
+printf '[updates]\nsession_start = "off"\000\n' > "$fh/.config/ai-dev-baseline/agents.toml"
+before="${ head_of; }"
+rm -rf "${work:?}/cache"
+run_hook startup
+has "$OUT" 'behind' "a NUL-carrying global agents.toml degrades to notify — it reports, never pulls"
+eq "${ head_of; }" "$before" "…and the clone is untouched, though the file said nothing usable"
+rm -f "$fh/.config/ai-dev-baseline/agents.toml"
+
 # The hook must read the file install.sh WRITES. install.sh (and role-dispatch.sh) spell that
 # path as $HOME/.config/... with no XDG involvement; a reader that honored XDG_CONFIG_HOME would
 # consult a file nobody writes, so `[updates] session_start` would silently do nothing on any box

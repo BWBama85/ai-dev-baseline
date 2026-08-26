@@ -769,6 +769,7 @@ _il_clear() {   # <state-dir>
     "$dir/$_IL_BLOCKED"
     "$dir/gap-prompt.txt"     "$dir/gaps.md"    "$dir/gaps.err"
     "$dir/review-prompt.txt"  "$dir/review.md"  "$dir/review.err"
+    "$dir/docs-consulted.tsv"
   )
   # The family globs, expanded with `nullglob` so an unmatched pattern contributes NOTHING rather
   # than arriving as a literal path that the loop below would then try to `rm`. The option is saved
@@ -792,6 +793,12 @@ _il_clear() {   # <state-dir>
   shopt -q nullglob && had_nullglob=1
   shopt -s nullglob
   targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err )
+  # The DOCS-DUTY family (#422). Same containment rule as the two above: `state-scan` classifies
+  # `docs-consulted.tsv` and `docs-consulted-*.tsv` as `docs`, so a name /cleanup can sweep that
+  # this cannot clear would leave a previous run's documentation record in place — and a fresh
+  # run's marker then makes it read as THIS run's stated disposition, which is the one claim in
+  # the report that nothing else can contradict.
+  targets+=( "$dir"/docs-consulted-*.tsv )
   local cand base num
   for cand in "$dir"/issue-*.json "$dir"/issue-*.assoc; do
     base="${cand##*/}"

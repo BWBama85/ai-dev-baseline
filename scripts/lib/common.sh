@@ -2956,10 +2956,21 @@ adb_install_source() {
 # backslashes and all (escape *decoding* like `\"`→`"` is intentionally out of scope;
 # the value is returned as written). Inline tables and multi-line values are out of
 # scope (see docs/design-principles.md).
+# Returns 0 with the value on stdout; 1 when the file is missing or the key is absent; 2 when the
+# file EXISTS but cannot be read; 3 when it contains a NUL byte and so is not TOML at all.
+#
+# 2 AND 3 ARE NOT 1, and every layered caller depends on the difference. A read that cannot
+# happen used to come back as "key absent", so an unreadable repo manifest fell through to the
+# global one or to a built-in — the operator's configuration silently replaced by a value from a
+# file they never chose. And a NUL is checked on the raw bytes because command substitution and
+# `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
+# a value the operator never wrote. Reported by the declared reviewer on PR #429.
 # Usage: adb_toml_get <file> <table> <key>
 adb_toml_get() {
   local file="$1" table="$2" key="$3"
   [ -f "$file" ] || return 1
+  [ -r "$file" ] || return 2
+  [ "$(LC_ALL=C tr -d '\000' < "$file" | wc -c | tr -d ' ')" -eq "$(wc -c < "$file" | tr -d ' ')" ] || return 3
   awk -v tbl="$table" -v key="$key" '
     # A table header toggles whether we are inside the target table. The header name is
     # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
@@ -2968,7 +2979,28 @@ adb_toml_get() {
     /^[[:space:]]*\[/ {
       hdr = $0
       sub(/^[[:space:]]*\[/, "", hdr)   # drop leading whitespace + the opening "["
-      sub(/\][[:space:]]*$/, "", hdr)   # drop the closing "]" + trailing whitespace
+      # A TRAILING COMMENT ON THE HEADER IS LEGAL TOML, and comparing the whole suffix-bearing line
+      # literally meant `[roles] # who does what` matched no table at all — so every key in it read
+      # as ABSENT and the caller silently fell through to the next layer or to a built-in. That is
+      # every consumer of this reader, not one: roles, gates, reviewers, repo, mcp, patterns.
+      # Cut at the first `#` that is OUTSIDE quotes, because a quoted table name may legally
+      # contain one. Reported by the declared reviewer on PR #429.
+      inq = 0
+      for (i = 1; i <= length(hdr); i++) {
+        c = substr(hdr, i, 1)
+        if (c == "\"") { inq = !inq; continue }
+        if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }
+      }
+      sub(/[[:space:]]+$/, "", hdr)      # trailing space, before requiring the bracket
+      # THE CLOSING BRACKET IS REQUIRED, not optionally stripped. `sub()` does not assert, so
+      # `[mcp # missing bracket` — which has none — reduced to exactly `mcp` and entered the table,
+      # letting a reader consume keys out of a header no TOML parser accepts. The pre-comment
+      # implementation happened to reject it because the raw line never equalled the table name;
+      # adding comment support removed that accident, so the rule is now explicit.
+      # Reported by the declared reviewer on PR #429.
+      if (hdr !~ /\]$/) { intbl = 0; next }
+      sub(/\]$/, "", hdr)               # drop the closing "]"
+      sub(/[[:space:]]+$/, "", hdr)      # …and any space before it
       intbl = (hdr == tbl)
       next
     }
@@ -2997,6 +3029,71 @@ adb_toml_get() {
     }
     END { if (!found) exit 1 }
   ' "$file"
+  # THE AWK STATUS IS MAPPED, not passed through. 1 is "not found"; anything else is awk failing
+  # to read the file part-way, which is a read error and must not be reported as absence.
+  case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+# adb_toml_layered_get <repo-toml> <global-toml> <section> <key> [--with-layer] — the raw
+# `[<section>].<key>` value from the repo manifest, else the global one.
+#
+# Returns 0 if the key is defined in EITHER, 1 when neither defines it. THE REPO LAYER WINS EVEN
+# WHEN ITS VALUE IS INVALID, and that is the load-bearing part rather than an implementation
+# detail: falling through a bad higher-precedence value to the next layer hands the operator a
+# setting they did not choose, from a file they thought they had configured, with nothing said.
+# Every caller must therefore validate what comes back and fail loud, never re-read the next layer.
+#
+# A LAYER THAT CANNOT BE READ IS NOT A LAYER THAT DEFINES NOTHING. `adb_toml_get`'s 2 (exists but
+# unreadable) and 3 (contains a NUL byte) are returned as-is, from whichever layer produced them,
+# and the next layer is NOT consulted — for exactly the reason above: an unreadable repo manifest
+# that declares `[mcp] required` used to read as "not declared", and the consumer then skipped the
+# preflight the operator had configured. Callers must treat any status above 1 as a hard error.
+# Reported by the declared reviewer on PR #429.
+#
+# `--with-layer` prefixes the answer with WHICH layer supplied it (`repo ` / `global `), because a
+# caller reporting a value to an operator has to be able to say which file to edit. It is an
+# OUTPUT and not a global: every caller invokes this inside `$( … )`, which is a subshell, so an
+# assignment to a global here would be discarded before the caller could read it.
+#
+# THE PATHS ARE ARGUMENTS, not file-scope constants, which is what makes this shareable. It was
+# private to `role-dispatch.sh` as `_adb_rd_layered_get` with the paths baked in, and two later
+# modules (#421's threshold, #422's `[mcp]`) then re-implemented the same precedence — three
+# spellings of one rule, which is exactly the drift `docs/design-principles.md` forbids. Promoted
+# here so the order cannot differ between the roles reader, the ledger and the docs duty.
+#
+# bash 3.2-safe: plain positionals and `case`, no 5.3 construct, because this file must parse and
+# run below the floor (D30/D35).
+adb_toml_layered_get() {
+  local repo_toml="$1" global_toml="$2" section="$3" key="$4" with_layer=0 raw rc
+  [ "${5:-}" = "--with-layer" ] && with_layer=1
+  raw="$(adb_toml_get "$repo_toml" "$section" "$key")"; rc=$?
+  case "$rc" in
+    0) [ "$with_layer" -eq 1 ] && printf 'repo '
+       printf '%s' "$raw"; return 0 ;;
+    1) ;;
+    *) return "$rc" ;;
+  esac
+  raw="$(adb_toml_get "$global_toml" "$section" "$key")"; rc=$?
+  case "$rc" in
+    0) [ "$with_layer" -eq 1 ] && printf 'global '
+       printf '%s' "$raw"; return 0 ;;
+    1) ;;
+    *) return "$rc" ;;
+  esac
+  return 1
+}
+
+# adb_toml_read_error <file> <rc> — the diagnostic for an `adb_toml_get` status above 1, on stderr.
+#
+# One home for the two sentences, so a consumer that has to refuse a manifest it cannot read says
+# the same thing whichever module it lives in. Returns 1 for any other status, so a caller can use
+# it as the test as well as the message. bash 3.2-safe (D30).
+adb_toml_read_error() {
+  case "${2:-}" in
+    2) printf 'toml: %s exists but could not be read — refusing to treat it as absent\n' "$1" >&2 ;;
+    3) printf 'toml: %s contains a NUL byte and is not TOML — refusing to read it\n' "$1" >&2 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Strip one layer of surrounding double quotes from a scalar TOML value.

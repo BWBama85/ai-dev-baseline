@@ -470,6 +470,7 @@ yet is itself an escalation (bucket 4) — say so and ask, don't invent a home.
 | Custom gate *policy* (order, conditional) | the repo's own `.claude/scripts/precommit-gate.sh` |
 | Workflow that genuinely diverges | a project-scoped skill shadowing the global one |
 | Deviation from a baseline rule | a `DEVIATION` entry in the decision log |
+| A recurring review-finding class this project keeps hitting | `.ai-dev-baseline/patterns.md` — the pattern ledger and its promoted checklist |
 | General gap (would help many projects) | the supported stopgap surface; a baseline issue **only if it clears the bar** |
 
 See `docs/per-project-overrides.md` for the override surfaces and
@@ -755,6 +756,25 @@ List each finding explicitly and either fix it or consciously disposition it wit
 a reason — before proceeding to push. "I read it over and it looks fine" is not a
 self-review; naming what you checked is.
 
+## Sweep what this project has already learned
+
+**Start from the classes this project has hit before.** A project that keeps a pattern ledger
+(`.ai-dev-baseline/patterns.md`, #421) has a promoted checklist: finding classes seen more than
+once, each carrying a rule somebody wrote after fixing one. Read it and sweep the diff for every
+rule on it, then do the open-ended pass above.
+
+That ordering is the point. The open-ended pass finds what is novel; the checklist finds what this
+project already paid a review round for and would otherwise pay for again. `debugging.md` states
+the underlying rule — grep for the *class*, not the instance — and the checklist is what carries a
+class forward from the pull request that discovered it to the one that would repeat it.
+
+**Name what you swept, and what the sweep found**, including "nothing" — a checklist rule that has
+never fired since promotion is a fact worth seeing, because it is either a class that stopped
+recurring or a rule that no longer matches anything.
+
+A project without a ledger simply does the open-ended pass; there is nothing to skip and no gate
+here.
+
 ## A new guard is not done until it has been observed failing
 
 This is not "test your code." It is the narrower claim that a **check** — a lint,
@@ -942,6 +962,42 @@ do not control, wherever it sits: a vendored or generated dependency inside the
 checkout is still third-party; your own code in a sibling repository is not.
 Neither file covers the other's ground; cite whichever one applies.
 
+## When the duty fires
+
+**The trigger is not "a claim you doubt" — it is "a surface you are about to use."** An agent
+confident in stale recall has no claim in doubt, consults nothing, and ships the anti-pattern;
+confidence is what stale recall feels like from the inside. So the question to ask before writing
+code is not *am I unsure?* but *is this nontrivial usage of somebody else's technology?*
+
+**Consult vendor documentation — through the ladder below — when the code you are about to write:**
+
+- uses an API surface (package, framework, service) for the **first time in this project**;
+- depends on **vendor-defined behavior for correctness or safety** — configuration, lifecycle,
+  auth, limits, error contracts;
+- **integrates an external service** (the Cloudflare class);
+- **chooses between implementation patterns the vendor documents** — not just *does this exist*
+  but *is this how they say to use it*.
+
+**Skip it when** the code is language-core idiom, or when its shape already exists in this project
+and survived review. A hello-world function consults nothing. That boundary is the rule's whole
+credibility: a duty that fires on everything is one nobody performs.
+
+**This decides WHETHER to resolve, never HOW.** Once you are resolving, the ladder below is
+unchanged and context7 is still the required first documentation source — including for surfaces
+you know well. The skip list is not a licence to close a claim from recall; it is permission not
+to open one.
+
+**Two of these the ladder's top rung cannot answer.** An executed probe proves what software
+*does*; it cannot establish what the vendor *recommends*. For the fourth trigger — and for the
+"recommended practice" half of the second — rung 1 is not sufficient on its own, and the answer
+comes from rung 2 or 3.
+
+**State the disposition either way.** A run that resolved nothing because everything it touched was
+trivial says exactly that, with the justification; a run that resolved something records what
+answered. An **unstated** disposition is the defect — it is indistinguishable from an agent that
+never considered the question. `/implement-issue` carries this as a report contract ("Docs
+consulted"); see *Where this binds*.
+
 ## Resolution order
 
 Descend until a rung answers, then **name the rung that answered** when you state
@@ -992,10 +1048,18 @@ bare "probed" becomes indistinguishable from it one reader downstream.
   rank-1 recommendation built on unchecked claims is confident, cheap, and wrong.
 - **Implementing** (`/implement-issue`) — every signature, flag, limit, default and
   error shape the code depends on, resolved *before* the code is written. A failing
-  test is a slow and expensive way to learn a documentation fact.
+  test is a slow and expensive way to learn a documentation fact. Since #422 the
+  workflow also names the surfaces it is about to touch, resolves each nontrivial one
+  through the ladder, and carries a **"Docs consulted"** line in its run report and PR
+  body — source and rung per *Record what answered* — or an explicit "none needed"
+  with the justification.
 - **Reviewing** (the self-review pass and `/resolve-pr-threads`) — an unresolved
   third-party claim in the diff, or in a comment inside it, is a finding. "The
   header is optional" stays a claim until someone names the rung that answered it.
+  The self-review pass also names the doc-backed decisions it checked, and where a
+  reviewer raises **conformance with a cited practice** — not merely whether an API
+  exists, but whether this is the way its vendor says to use it — that is a finding of
+  the same kind and is resolved the same way.
 
 Worked example: three third-party claims carried a rank-1 recommendation and each
 was false against vendor docs or a live probe — the GitHub events timeline caps at
@@ -1031,9 +1095,24 @@ credential to every clone, every fork, and every CI log that prints the file
   classifier over arbitrary English is theatre.
 - **A resolved claim is not a correct one.** The rungs establish that a source was
   consulted. That the source covers *your* case is judgment, and stays review's job.
-- **Nothing checks that a declared MCP server is present, current, or working.**
-  `[mcp]` is a declaration a human reads; the verification is the
-  connected-is-not-usable paragraph above, performed per use.
+- **Nothing proves a declared MCP server was actually queried.** `[mcp] required` does
+  now have a consumer (#422): `/implement-issue` asks the agent to put one real
+  read-only query to each declared required server and adjudicates the result
+  **fail-closed** — a server with no recorded result, or a stored record outside the
+  grammar, is reported DEGRADED exactly as a failing one is, so neither skipping the
+  probe nor hand-writing a result can buy a clean verdict. What that does not establish
+  is that the query was really issued. A shell *can* reach MCP indirectly — `claude -p`
+  takes `--mcp-config` and `--allowed-tools`, so a headless agent could be launched to
+  test a server's PRESENT usability — but no gate can authenticate the HISTORICAL action
+  another agent recorded. The mechanism is the recorded evidence and the report line, and
+  review is what reads them.
+- **Nothing decides whether a surface was "complex enough" to need docs.** The trigger
+  list above is judgment, like the comment classes.
+- **The empty-disposition check reports; it does not gate.** `/implement-issue`'s report
+  step returns a distinct code when a run recorded nothing, and the step says to go back
+  and state the disposition — but nothing *stops* the run, and no hook enforces it. It is
+  a loud, reviewable omission rather than a blocked one, which is the same posture as the
+  comment classes: enforcement is review-side, or it is nowhere.
 - **`debugging.md` still owns the diagnosis.** A resolved documentation fact is
   evidence toward a root cause, never the root cause: "the docs say X" does not
   close an investigation that has not reproduced the failure.

@@ -28,6 +28,25 @@ List each finding explicitly and either fix it or consciously disposition it wit
 a reason — before proceeding to push. "I read it over and it looks fine" is not a
 self-review; naming what you checked is.
 
+## Sweep what this project has already learned
+
+**Start from the classes this project has hit before.** A project that keeps a pattern ledger
+(`.ai-dev-baseline/patterns.md`, #421) has a promoted checklist: finding classes seen more than
+once, each carrying a rule somebody wrote after fixing one. Read it and sweep the diff for every
+rule on it, then do the open-ended pass above.
+
+That ordering is the point. The open-ended pass finds what is novel; the checklist finds what this
+project already paid a review round for and would otherwise pay for again. `debugging.md` states
+the underlying rule — grep for the *class*, not the instance — and the checklist is what carries a
+class forward from the pull request that discovered it to the one that would repeat it.
+
+**Name what you swept, and what the sweep found**, including "nothing" — a checklist rule that has
+never fired since promotion is a fact worth seeing, because it is either a class that stopped
+recurring or a rule that no longer matches anything.
+
+A project without a ledger simply does the open-ended pass; there is nothing to skip and no gate
+here.
+
 ## A new guard is not done until it has been observed failing
 
 This is not "test your code." It is the narrower claim that a **check** — a lint,
