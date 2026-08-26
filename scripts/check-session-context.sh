@@ -158,6 +158,10 @@ if [ "$MODE" = mutation ]; then
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     'U+FFFD'
+  check_mut blocked-empty-owner-accepted \
+    '            elif ((.owner|type) != "string") or (.owner == "") then "no"' \
+    '            elif ((.owner|type) != "string") then "no"' \
+    'a blocked marker whose owner is EMPTY'
   check_mut blocked-owner-false-as-absent \
     '            elif (.owner == null) then "yes"' \
     '            elif (.owner == null or .owner == false) then "yes"' \
@@ -241,10 +245,15 @@ if [ "$MODE" = mutation ]; then
   # NO ROW for the wrapper measure: it is derived from the wrapper itself, so there is no constant
   # left to be wrong, and a row that fires only when a line boundary happens to land inside a
   # 5-character window is luck, not evidence. The 30-cap sweep stays as a regression assertion.
-  check_mut encoded-cap-dropped \
-    '  def enc: (tojson | length) - 2;' \
-    '  def enc: length;' \
-    'backslash'
+  # NO ROW for the fold's measure, and none for the final guard either: the fold is correct, so
+  # the guard that drops lines until the serialized object fits has nothing left to catch, and a
+  # row that removes it stays green in every fixture. It is kept as insurance over the arithmetic
+  # (every byte the wire carries, a two-byte newline included); the 30-cap wc -c sweep, the
+  # backslash fixture and the ceiling/floor rows are what observe the bound.
+  check_mut payload-multi-value-accepted \
+    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" then (.[0][$k] // empty | tostring) else empty end'"'"'' \
+    'jq -j --arg k "$1" '"'"'if type == "object" then (.[$k] // empty | tostring) else empty end'"'"'' \
+    'two payload objects'
   check_mut trailing-newline-stripped \
     'SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"' \
     'SESSION_CWD="$(hook_field cwd)"' \
@@ -460,6 +469,8 @@ jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:"'"$SID_B"'"}' > "$
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker owned by another session says nothing"
 jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:false}' > "$d/implement-issue-blocked.json"
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose owner is false is not a usable record — says nothing"
+jq -n '{reason:"r", branch:"issue-431-x", issue:"431", owner:""}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose owner is EMPTY is not a usable record — says nothing"
 jq -n '{reason:"r", branch:{x:1}, issue:"431"}' > "$d/implement-issue-blocked.json"
 summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1g a blocked marker whose branch is not a string says nothing"
 jq -n '{reason:"r", branch:"issue-431-x", issue:431}' > "$d/implement-issue-blocked.json"
@@ -573,6 +584,10 @@ done
 hook 'not json'; eq "$RC" 0 "2d garbage payload: exit 0"; eq "$OUT" "" "2d garbage payload: silent"
 hook ''; eq "$RC" 0 "2d empty payload: exit 0"; eq "$OUT" "" "2d empty payload: silent"
 hook '[1,2]'; eq "$RC" 0 "2d non-object payload: exit 0"; eq "$OUT" "" "2d non-object payload: silent"
+# Two objects whose halves would concatenate into an accepted source and a real checkout path.
+half1="${R:0:10}"; half2="${R:10}"
+hook "$(jq -cn --arg a "$half1" --arg b "$half2" '{source:"com",cwd:$a},{source:"pact",cwd:$b}' | tr -d '\n')"
+eq "$RC" 0 "2d two payload objects: exit 0"; eq "$OUT" "" "2d two payload objects inject NOTHING (fields are never concatenated across values)"
 
 # 2e. identity: the payload's session_id when the env var is absent; the env var first when present.
 hook "$(payload compact "$SID_B")"

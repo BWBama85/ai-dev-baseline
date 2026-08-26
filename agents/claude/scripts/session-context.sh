@@ -63,7 +63,10 @@ fi
 # `cwd` naming `repo<NL>` would arrive as `repo` — a different directory, and often an existing
 # sibling — before `adb_repo_shape` could refuse it (D82's shape). A field that really ends in a
 # newline then reaches the validators intact and is refused by them.
-hook_field() { printf '%s' "$HOOK_INPUT" | jq -j --arg k "$1" 'if type == "object" then (.[$k] // empty | tostring) else empty end' 2>/dev/null; }
+# SLURPED AND COUNTED: two objects on stdin would otherwise be evaluated both, and `-j` would
+# concatenate their fields — `"com"` + `"pact"` is a source this hook acts on, and two half paths
+# are a checkout nobody named. Exactly one object, or no field at all.
+hook_field() { printf '%s' "$HOOK_INPUT" | jq -js --arg k "$1" 'if length == 1 and (.[0]|type) == "object" then (.[0][$k] // empty | tostring) else empty end' 2>/dev/null; }
 field() { local v; v="$(hook_field "$1"; printf x)"; printf '%s' "${v%x}"; }
 
 SOURCE="$(field source; printf x)"; SOURCE="${SOURCE%x}"
@@ -140,11 +143,19 @@ jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
      elif $keep <= 0 then ($cap[1:] | .[:($budget - 2)])
      else (reduce ($ctx | split("\n") | to_entries[]) as $e ("";
              ($e.value) as $l
-             | (if . == "" then 0 else (. | enc) + 1 end) as $used
+             | (if . == "" then 0 else (. | enc) + 2 end) as $used   # +2: a newline is `\n` on the wire
              | if $used + ($l | enc) <= $keep then (if . == "" then $l else . + "\n" + $l end)
                elif $e.key <= 1 and ($keep / 3 | floor) > 8 and $used + ($keep / 3 | floor) <= $keep
                  then (if . == "" then "" else . + "\n" end)
                       + ($l | [range(length)] | map(. + 1) | map(select(($l[:.] | enc) <= ($keep / 3 | floor) - 3)) | last // 0 | $l[:.]) + "…"
-               else . end)) + $cap end) as $out
+               else . end)) + $cap end) as $folded
+  # BY CONSTRUCTION, whatever the fold arithmetic did: the serialized object plus the newline that
+  # jq writes is measured, and trailing lines (above the cap notice) are dropped until it fits.
+  | ($folded | split("\n")) as $ls
+  | (if ($ls | length) > 0 and ($ls[-1] | startswith("(capped at")) then $ls[-1] else "" end) as $notice
+  | (if $notice == "" then $ls else $ls[:-1] end) as $body
+  | ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | length) as $wrap
+  | ($body | until((length == 0) or ((((. + (if $notice == "" then [] else [$notice] end)) | join("\n")) | enc) + $wrap + 1 <= $max); .[:-1])) as $kept
+  | (($kept + (if $notice == "" then [] else [$notice] end)) | join("\n")) as $out
   | {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $out}}'
 exit 0

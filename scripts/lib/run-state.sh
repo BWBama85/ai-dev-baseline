@@ -261,7 +261,7 @@ EOF
           elif ((.issue|type) != "string") or (.issue != $i) then "no" else . end
           | if . == "no" then "no"
             elif (.owner == null) then "yes"
-            elif ((.owner|type) != "string") then "no"
+            elif ((.owner|type) != "string") or (.owner == "") then "no"
             elif (.owner != "" and $o != "" and .owner != $o) then "no"
             else "yes" end' "$blocked" 2>/dev/null)" || blk="no"
       fi
