@@ -178,4 +178,6 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/run-state.sh:116` `15a6765` `PRRT_kwDOTfywrM6cidKE` PR #443 2026-08-26 — a present empty owner was accepted as unowned and compared compatible with every session; the writer omits the key, so present-and-empty (or null) is refused
 - `partial-validation` `scripts/lib/run-state.sh:109` `15a6765` `PRRT_kwDOTfywrM6cidKG` PR #443 2026-08-26 — the date regex accepted Feb 31 and Apr 31 (independent numeric ranges); month/day combinations are now validated
 - `partial-validation` `scripts/lib/run-state.sh:232` `15a6765` `PRRT_kwDOTfywrM6cidKK` PR #443 2026-08-26 — a review.md that was a directory, FIFO or dangling symlink failed -f and read as absent; it is now reported review-required-marks: unreadable
+- `partial-validation` `scripts/lib/run-state.sh:200` `7888d46` `PRRT_kwDOTfywrM6ci-D2` PR #443 2026-08-26 — a dangling symlink at the state directory failed -e and read as nothing-to-say; -L joins the existence test so it reaches the unreadable verdict
+- `stale-doc-claim` `CLAUDE.md:241` `7888d46` `PRRT_kwDOTfywrM6ci-D8` PR #443 2026-08-26 — the root table row said the summary reads back the blocked reason while the library deliberately emits only blocked status and the marker path
 <!-- adb:hits:end -->
