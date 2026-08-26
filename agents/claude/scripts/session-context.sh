@@ -19,8 +19,8 @@
 #     same precedence as implement-issue-gate.sh. The library decides ownership.
 #   - Only closed-grammar values the run wrote reach `additionalContext` (the library's contract);
 #     the state-directory path comes from `adb_repo_shape`, which refuses tab/newline roots.
-#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500; floor 1024,
-#     ceiling 9500) —
+#   - the JSON line written to stdout is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500;
+#     floor 1024, ceiling 9500), measured ENCODED —
 #     the harness replaces hook output over 10,000 characters with a preview and a file path
 #     (vendor docs, read 2026-08-26). A capped summary ends with a line saying so.
 #   - stderr carries one audit line — the marker summarised, or "no live run" — for the debug log;
@@ -59,16 +59,21 @@ if [ ! -t 0 ]; then
   IFS= read -r -d '' -t 5 HOOK_INPUT || _rc=$?
   [ "$_rc" -gt 128 ] && HOOK_INPUT=""
 fi
-hook_field() { printf '%s' "$HOOK_INPUT" | jq -r --arg k "$1" 'if type == "object" then (.[$k] // empty | tostring) else empty end' 2>/dev/null; }
+# `-j` (no trailing newline) plus a SENTINEL, because `$(…)` strips every trailing newline: a
+# `cwd` naming `repo<NL>` would arrive as `repo` — a different directory, and often an existing
+# sibling — before `adb_repo_shape` could refuse it (D82's shape). A field that really ends in a
+# newline then reaches the validators intact and is refused by them.
+hook_field() { printf '%s' "$HOOK_INPUT" | jq -j --arg k "$1" 'if type == "object" then (.[$k] // empty | tostring) else empty end' 2>/dev/null; }
+field() { local v; v="$(hook_field "$1"; printf x)"; printf '%s' "${v%x}"; }
 
-SOURCE="$(hook_field source)"
+SOURCE="$(field source; printf x)"; SOURCE="${SOURCE%x}"
 case "$SOURCE" in
   compact|resume) : ;;
   *) exit 0 ;;
 esac
 
 # --- 2. where, and who -----------------------------------------------------------------------------
-SESSION_CWD="$(hook_field cwd)"
+SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"
 [ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"
 [ -d "$SESSION_CWD" ] || exit 0
 SHAPE="$(adb_repo_shape "$SESSION_CWD" 2>/dev/null)" || exit 0
@@ -78,7 +83,7 @@ REPO_ROOT="$(adb_shape_val "$SHAPE" root)"
 STATE_DIR="$REPO_ROOT/.claude/state"
 
 SID="${CLAUDE_CODE_SESSION_ID:-}"
-[ -n "$SID" ] || SID="$(hook_field session_id)"
+[ -n "$SID" ] || { SID="$(field session_id; printf x)"; SID="${SID%x}"; }
 
 # --- 3. the library --------------------------------------------------------------------------------
 _adb_rs="$(dirname "$0")/lib/run-state.sh"
@@ -114,22 +119,29 @@ case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
 # "capped" output came out longer than the cap it named (315-char path, 256 cap: 1,315 chars).
 # The state directory is on the summary's own first line (the `run-state:` line right below the
 # header) and on stderr; the cap line points there.
+# THE BUDGET IS MEASURED ON THE ENCODED TEXT — `enc` is the JSON string length minus its quotes —
+# because the harness's limit applies to what is written, and a path full of backslashes or
+# quotes doubles under escaping (measured: 8,692 decoded characters, 16,779 on the wire).
 jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
+  def enc: (tojson | length) - 2;
   ($h + "\n" + $s) as $ctx
   | "\n(capped at \($max) characters — the state directory is named on the run-state line below the header, and on stderr)" as $cap
-  | ($max - ($cap | length)) as $keep
+  # 73 = the wrapper object around additionalContext, so the whole stdout line fits in $max.
+  | ($max - 73) as $budget
+  | ($budget - ($cap | enc)) as $keep
   # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that
   # fits is kept; the header or the source line (0 and 1), when too long, is TRUNCATED to a third
   # of the budget rather than dropped, since the path in it is the one unbounded value; any other
-  # line that does not fit is skipped and the next one is tried.
-  | (if ($ctx | length) <= $max then $ctx
-     elif $keep <= 0 then $cap[1:($max + 1)]
+  # line that does not fit is skipped and the next one is tried. Every measure is `enc`.
+  | (if ($ctx | enc) <= $budget then $ctx
+     elif $keep <= 0 then ($cap[1:] | .[:($budget - 2)])
      else (reduce ($ctx | split("\n") | to_entries[]) as $e ("";
              ($e.value) as $l
-             | (if . == "" then 0 else (. | length) + 1 end) as $used
-             | if $used + ($l | length) <= $keep then (if . == "" then $l else . + "\n" + $l end)
+             | (if . == "" then 0 else (. | enc) + 1 end) as $used
+             | if $used + ($l | enc) <= $keep then (if . == "" then $l else . + "\n" + $l end)
                elif $e.key <= 1 and ($keep / 3 | floor) > 8 and $used + ($keep / 3 | floor) <= $keep
-                 then (if . == "" then "" else . + "\n" end) + $l[:($keep / 3 | floor) - 1] + "…"
+                 then (if . == "" then "" else . + "\n" end)
+                      + ($l | [range(length)] | map(. + 1) | map(select(($l[:.] | enc) <= ($keep / 3 | floor) - 3)) | last // 0 | $l[:.]) + "…"
                else . end)) + $cap end) as $out
   | {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $out}}'
 exit 0

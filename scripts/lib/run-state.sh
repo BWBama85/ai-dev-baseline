@@ -94,14 +94,13 @@ die() { printf 'run-state: %s\n' "$*" >&2; exit 2; }
 # Zl and Zp (line and paragraph separators) — categories, not an enumerated list, so a code point
 # the list forgot cannot slip through. `unsafe` adds whitespace on top, for the values that are
 # words (branch, owner, session, URL); `unsafe_path` does not, because a checkout path
-# legitimately carries spaces and a space cannot forge a line — but it adds U+FFFD: jq replaces
-# every byte that is not valid UTF-8 with that character on input, so a name carrying one is
-# either a Linux filename this reader cannot render as the path that exists, or a name that
-# already carries the replacement character; both are counted, never printed. One jq
-# definition, prepended to every program that needs it.
+# legitimately carries spaces and a space cannot forge a line. BOTH refuse U+FFFD: jq replaces
+# every byte that is not valid UTF-8 with that character on input, so a value carrying one is
+# not the value that was stored — a marker field is refused whole, a name is counted and never
+# printed. One jq definition, prepended to every program that needs it.
 _RS_UNSAFE_JQ='
   def one: if length != 1 then error("not one value") else .[0] end;
-  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
+  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");
   def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");'
 
 _RS_MARKER_JQ='
@@ -201,7 +200,15 @@ cmd_summary() {
   [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }
 
   local marker="$dir/implement-issue-active.json" blocked="$dir/implement-issue-blocked.json"
-  local claim="$dir/gap-analysis.lock"
+  local claim="$dir/gap-analysis.lock" p
+  # A record path that EXISTS but is not a readable regular file — a directory, a FIFO, a dangling
+  # symlink — is refused before anything opens it (a FIFO would block the open), never read as
+  # "absent": a damaged state path is an unreadable record, not a run that is over.
+  for p in "$marker" "$claim"; do
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$p"; return 18; }
+    fi
+  done
   local snap="" again="" fields="" attempt req="" blk="" grc
   local m_branch m_issue m_phase m_pr m_owner m_hist
 

@@ -91,9 +91,17 @@ if [ "$MODE" = mutation ]; then
     '    elif false then error("phaseHistory")' \
     'an explicitly empty phaseHistory'
   check_mut unsafe-class-dropped \
-    '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
+    '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
     '  def unsafe: false;' \
     'a newline in branch is refused whole'
+  check_mut replacement-char-in-field-allowed \
+    '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
+    '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
+    'an invalid UTF-8 byte in branch'
+  check_mut odd-record-as-absent \
+    '      [ -f "$p" ] && [ -r "$p" ] || { printf '"'"'run-state: %s exists but is not a readable regular file\n'"'"' "$p"; return 18; }' \
+    '      :' \
+    'is a DIRECTORY'
   check_mut owner-false-as-absent \
     '  | .owner = (if .owner == null then "" else .owner end)' \
     '  | .owner = (.owner // "")' \
@@ -196,9 +204,17 @@ if [ "$MODE" = mutation ]; then
     '  . "$(dirname "$0")/lib/common.sh" 2>/dev/null' \
     'a library that prints to stdout cannot contaminate'
   check_mut output-cap-dropped \
-    '  | (if ($ctx | length) <= $max then $ctx' \
+    '  | (if ($ctx | enc) <= $budget then $ctx' \
     '  | (if true then $ctx' \
     'the injection is capped'
+  check_mut encoded-cap-dropped \
+    '  def enc: (tojson | length) - 2;' \
+    '  def enc: length;' \
+    'backslash'
+  check_mut trailing-newline-stripped \
+    'SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"' \
+    'SESSION_CWD="$(hook_field cwd)"' \
+    'trailing newline'
   check_mut cap-ceiling-dropped \
     '[ "$MAX" -le 9500 ] 2>/dev/null || MAX=9500' \
     ':' \
@@ -347,6 +363,11 @@ printf '{"branch":"b\xc2\x85x","issue":"5","phase":"branched"}' > "$d/implement-
 printf '{"branch":"b\xe2\x80\xaex","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a bidi override (U+202E) in branch is refused whole"
 printf '{"branch":"b\xd8\x9cx","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "an Arabic letter mark (U+061C, category Cf) in branch is refused whole"
 printf '{"branch":"b\xc2\xadx","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a soft hyphen (U+00AD, category Cf) in branch is refused whole"
+printf '{"branch":"b\xffx","issue":"5","phase":"branched"}' > "$d/implement-issue-active.json"; refused "an invalid UTF-8 byte in branch is refused whole (jq would have rendered it as U+FFFD)"
+rm -f "$d/implement-issue-active.json"; mkdir "$d/implement-issue-active.json"; summary "$d" "$SID_A"; eq "$RC" 18 "1e a marker that is a DIRECTORY is refused (18), never read as absent"; has "$OUT" "not a readable regular file" "1e ...with the line"; rmdir "$d/implement-issue-active.json"
+mkfifo "$d/implement-issue-active.json"; summary "$d" "$SID_A"; eq "$RC" 18 "1e a marker that is a FIFO is refused without opening it"; rm -f "$d/implement-issue-active.json"
+ln -s /nonexistent-adb-probe "$d/implement-issue-active.json"; summary "$d" "$SID_A"; eq "$RC" 18 "1e a marker that is a dangling symlink is refused"; rm -f "$d/implement-issue-active.json"
+mkdir "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1e a claim that is a DIRECTORY is refused (18)"; rmdir "$d/gap-analysis.lock"
 marker "$d" '{branch:"b", issue:"5", phase:"branched", owner:false}'; refused "an owner of false is refused whole (jq // would read it as absent)"
 marker "$d" '{branch:"b", issue:"5", phase:"branched", prUrl:false}'; refused "a prUrl of false is refused whole"
 marker "$d" '{branch:("x" * 256), issue:"5", phase:"branched"}'; refused "a 256-character branch is refused whole"
@@ -590,6 +611,26 @@ C="$(ctx)"; [ "${#C}" -le 1024 ] && ok || bad "2j a 700-character path stays wit
 has "$C" $'\nphase: pushed' "2j a 700-character path does not evict the facts after the source line (phase)"
 has "$C" $'\nissues: #431' "2j ...(issues)"
 has "$C" "…" "2j ...and the source line was truncated, not dropped"
+# THE WIRE, not the decoded text: a path full of backslashes doubles under JSON escaping, and the
+# harness limit applies to what is written. Four 240-byte backslash segments plus the seven
+# artifacts: decoded well under 9500, encoded well over it, unless the cap measures encoded.
+# Three 200-byte segments (four 240-byte ones exceed macOS's 1024-byte PATH_MAX with the state suffix).
+BSP="$work/$(printf 'a\\%.0s' $(seq 1 100))/$(printf 'b\\%.0s' $(seq 1 100))/$(printf 'c\\%.0s' $(seq 1 100))"
+mkdir -p "$BSP/.claude/state"; check_git "$BSP" init -q; marker "$BSP/.claude/state" "$LIVE"
+# 11 artifact paths + the source line: decoded ~8.4 KB (under the budget), encoded ~12 KB (over
+# it) — only a cap that measures the encoded text bites here.
+for f in gap-prompt.txt gaps.md gaps.err review-prompt.txt review.md review.err docs-consulted.tsv gaps-1.md gaps-2.md gaps-3.md gaps-4.md; do printf 'x\n' > "$BSP/.claude/state/$f"; done
+hook "$(payload compact "$SID_A" "$BSP")"
+[ -n "$OUT" ] && ok || bad "2j the backslash-heavy fixture was summarised at all (else the cap case below tests nothing)"
+[ "${#OUT}" -le 9500 ] && ok || bad "2j a backslash-heavy path: the JSON line WRITTEN is within the cap: ${#OUT} chars"
+has "$(ctx)" "capped at 9500" "2j ...and it WAS capped (decoded ~5.5 KB, encoded past the limit), so the encoded measure is what held"
+has "$(ctx)" $'\nphase: pushed' "2j ...and the phase still survives"
+# A cwd whose directory name ends in a NEWLINE names a different directory than its newline-free
+# sibling; the sibling here is a live repository, and the hook must NOT inject its run.
+NLR="$work/nlrepo"; mkdir -p "$NLR/.claude/state"; check_git "$NLR" init -q; marker "$NLR/.claude/state" "$LIVE"
+mkdir -p "$NLR"$'\n'
+hook "$(payload compact "$SID_A" "$NLR")"; has "$(ctx)" $'\nphase: pushed' "2j control: the newline-free sibling repository is summarised"
+hook "$(payload compact "$SID_A" "$NLR"$'\n')"; eq "$OUT" "" "2j a cwd with a trailing newline injects NOTHING — never the sibling's run (the trailing newline reaches the validator)"
 
 # 2k. the settings wiring and the hook enumeration agree.
 SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"
