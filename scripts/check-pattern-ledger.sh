@@ -209,10 +209,14 @@ if [ "$MODE" = mutation ]; then
 
   # THE MULTI-LINE PROMOTED LIST (PR #429, found by dogfooding). Restores the `-v` spelling, which
   # is what shipped and what a later edit would reach for again.
+  # THE WITNESS IS THE SECOND CLASS'"'"'S PROMOTED FLAG, not `classes` exiting 0: that exit-status
+  # witness is BWK-awk-specific (fatal "newline in string"), and on gawk — the ubuntu leg, run
+  # 32923514377 — the mutation is accepted and goes red on a different assertion, which the
+  # harness correctly reported as caught by accident. The flag assertion fails on both.
   check_mut promoted-list-via-v \
     'ADB_PL_PROM="$promoted" awk -F'"'"'\t'"'"' -v TAB="$TAB"' \
     'awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
-    'classes survives a SECOND promoted class'
+    '…and marks the SECOND promoted class as promoted — the whole list reached awk'
 
   # THE ABSENT/PRESENT DISTINCTION (PR #429).
   check_mut absent-indistinguishable \
@@ -909,7 +913,12 @@ CLS2="$(bash "$PL" classes --ledger "$L7" 2>&1)"; CRC2=$?
 eq "$CRC2" 0 "classes survives a SECOND promoted class"
 hasnt "$CLS2" "newline in string" "…without awk choking on the multi-line list"
 eq "$(printf '%s' "$CLS2" | awk -F'\t' '$2=="promo-class"{print $3}')"   1 "…and still marks the first as promoted"
-eq "$(printf '%s' "$CLS2" | awk -F'\t' '$2=="second-class"{print $3}')"  1 "…and the second"
+# THE FLAG, NOT ONLY THE EXIT STATUS, is the witness the `-v` mutation row is pinned to. On BWK awk
+# (macOS) a multi-line `-v` value is fatal — "newline in string" — so the exit-status assertion above
+# fires; on gawk (the ubuntu leg, run 32923514377) the same value is ACCEPTED, `classes` exits 0,
+# and the list simply never arrives, because the program reads ENVIRON — so only this assertion,
+# reading the second class's promoted flag, goes red on both interpreters.
+eq "$(printf '%s' "$CLS2" | awk -F'\t' '$2=="second-class"{print $3}')"  1 "…and marks the SECOND promoted class as promoted — the whole list reached awk"
 bash "$PL" due --ledger "$L7" >/dev/null 2>&1
 eq "$?" 11 "…and due is clean with both promoted"
 eq "$(bash "$PL" stats --ledger "$L7" | awk -F'\t' '$1=="promoted"{print $2}')" 2 "…and stats counts both"
