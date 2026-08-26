@@ -98,6 +98,18 @@ if [ "$MODE" = mutation ]; then
     '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
     '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     'an invalid UTF-8 byte in branch'
+  check_mut adjacent-duplicate-phase-accepted \
+    '    elif ([.h[].phase] as $p | any(range(1; $p|length); $p[.] == $p[. - 1])) then error("phaseHistory")' \
+    '    elif false then error("phaseHistory")' \
+    'two ADJACENT entries'
+  check_mut empty-prurl-accepted \
+    '  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
+    '  | if (str(.prUrl; 512) and (($had_pr | not) or .prUrl == "" or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
+    'a prUrl that is present and EMPTY'
+  check_mut claim-expiry-unbounded \
+    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
+    '  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)' \
+    'beyond the shell integer range'
   check_mut null-history-as-legacy \
     '  | if (has("phaseHistory") | not) then .hs = ""' \
     '  | if (.h == null) then .hs = ""' \
@@ -127,16 +139,16 @@ if [ "$MODE" = mutation ]; then
     '  | (has("owner") and .owner != false) as $had_owner' \
     'an owner of false is refused whole'
   check_mut prurl-false-as-absent \
-    '  | .prUrl = (if .prUrl == null then "" else .prUrl end)' \
-    '  | .prUrl = (.prUrl // "")' \
+    '  | (has("prUrl")) as $had_pr' \
+    '  | (has("prUrl") and .prUrl != false) as $had_pr' \
     'a prUrl of false is refused whole'
   check_mut claim-owner-false-as-absent \
     '  | (has("owner")) as $had_owner   # claim' \
     '  | (has("owner") and .owner != false) as $had_owner   # claim' \
     'a claim whose owner is false is unreadable'
   check_mut claim-expiry-false-as-absent \
-    '  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)' \
-    '  | .expiresAt = (.expiresAt // 0 | if type == "number" then floor else error("expiresAt") end)' \
+    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
+    '  | .expiresAt = ((.expiresAt // 0) | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
     'a claim whose expiresAt is false is unreadable'
   check_mut path-class-dropped \
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
@@ -167,8 +179,8 @@ if [ "$MODE" = mutation ]; then
     '    elif false then error("phaseHistory")' \
     'a history of 65 entries is refused whole'
   check_mut url-scheme-unchecked \
-    '  | if (str(.prUrl; 512) and (.prUrl == "" or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
-    '  | .prUrl = (.prUrl|tostring)' \
+    '((.prUrl | test("^https://")) and (.prUrl | unsafe | not))' \
+    '(.prUrl | unsafe | not)' \
     'a prUrl that is not a clean https URL is refused whole'
   check_mut required-count-wrong \
     '        req="$(grep -cw '"'"'REQUIRED'"'"' "$dir/review.md" 2>/dev/null)"; grc=$?' \
@@ -298,7 +310,8 @@ LIVE='{branch:"issue-431-x", issue:"431", phase:"pushed", startedAt:"2026-08-26T
 summary() { OUT="$(bash "$RS" summary --state "$1" ${2:+--session "$2"} 2>/dev/null)"; RC=$?; }
 lines_ok() { printf '%s\n' "$1" | grep -qvE '^[a-z-]+: ' && return 1; return 0; }
 # hist <n> — a valid, ordered history of n entries ending in "pushed".
-hist() { jq -n --argjson n "$1" '[range(0; $n) | {phase: (if . == $n - 1 then "pushed" else "committed" end), at: ("2026-08-26T07:" + (. / 60 | floor | tostring | if length < 2 then "0" + . else . end) + ":" + (. % 60 | tostring | if length < 2 then "0" + . else . end) + "Z")}]'; }
+# Phases ALTERNATE, because two adjacent entries of one phase are a shape no writer produces.
+hist() { jq -n --argjson n "$1" '[range(0; $n) | {phase: (if . == $n - 1 then "pushed" elif . % 2 == 0 then "committed" else "gates_green" end), at: ("2026-08-26T07:" + (. / 60 | floor | tostring | if length < 2 then "0" + . else . end) + ":" + (. % 60 | tostring | if length < 2 then "0" + . else . end) + "Z")}]'; }
 
 # ================================ 1. the library =================================================
 
@@ -415,6 +428,9 @@ has "$OUT" "phase-history: branched@2026-08-26T08:00:00Z, pushed@2026-08-26T07:0
 marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 65)}"; refused "a history of 65 entries is refused whole"
 marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 64)}"; summary "$d" "$SID_A"; eq "$RC" 0 "1e a history of 64 entries is accepted"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[]}'; refused "an explicitly empty phaseHistory is refused whole (only an ABSENT key is the legacy shape)"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"pushed", at:"2026-08-26T07:00:00Z"}, {phase:"pushed", at:"2026-08-26T07:05:00Z"}]}'; refused "a history with two ADJACENT entries of one phase is refused whole (every writer suppresses that append)"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"pushed", at:"2026-08-26T07:00:00Z"}, {phase:"branched", at:"2026-08-26T07:01:00Z"}, {phase:"pushed", at:"2026-08-26T07:05:00Z"}]}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e a phase that recurs NON-adjacently is accepted (a legitimate return to an earlier phase)"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:""}'; refused "a prUrl that is present and EMPTY is refused whole (the writer omits the key before a PR exists)"
 printf '{"branch":"b","issue":"5","phase":"pushed"}{"branch":"stale","issue":"9","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a file holding two JSON values is refused whole"; hasnt "$OUT" "stale" "1e ...and neither value is rendered"
 printf '{"branch":"b","issue":"5",\x00"phase":"pushed"}' > "$d/implement-issue-active.json"; refused "a NUL byte in the marker is refused whole, not stripped into a valid object"
 marker "$d" '{branch:"b", issue:5, phase:"branched"}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e an unquoted numeric issue is accepted"; has "$OUT" "issues: #5" "1e ...and rendered"
@@ -471,6 +487,8 @@ jq -n --argjson e "$future" '{expiresAt:$e, owner:""}' > "$d/gap-analysis.lock";
 jq -n --argjson e "$future" '{expiresAt:$e, token:"t"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 0 "1h a claim with NO owner key (no session id at admit) is unowned and summarised"
 jq -n '{owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with no expiresAt is unreadable"
 printf '{"expiresAt":%s,"owner":"%s"}{"expiresAt":%s,"owner":"%s"}' "$future" "$SID_A" "$future" "$SID_B" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim holding two JSON values is unreadable"
+printf '{"expiresAt":999999999999999999999,"owner":"%s"}' "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an expiresAt beyond the shell integer range is unreadable (18), never silently expired"
+printf '{"expiresAt":%s.5,"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a non-integer expiresAt is unreadable"
 printf '{"expiresAt":%s,\x00"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a NUL byte in the claim is unreadable"
 
 # 1i'. a directory that is readable but not searchable is UNREADABLE (20), never "no run".
@@ -662,9 +680,11 @@ has "$(ctx)" $'\nphase: pushed' "2j ...and the phase still survives"
 # THE BOUND HOLDS AT EVERY CAP, not only at the ones a fixture happens to land on: the wrapper is
 # measured, so a constant that is a few characters short cannot let a 9,505-character line through
 # a 9,500 cap. A sweep over 30 caps on the 12-path fixture.
+# Measured in RAW BYTES (`wc -c`), newline included: command substitution strips the newline jq
+# writes after the object, and that newline is on the wire too.
 for cap in $(seq 1024 7 1230); do
-  HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS="$cap"); hook "$(payload compact "$SID_A" "$BSP")"; HOOK_ENV=()
-  [ "${#OUT}" -le "$cap" ] || { bad "2j every cap in the sweep bounds the written line: cap $cap produced ${#OUT} chars"; break; }
+  raw="$(printf '%s' "$(payload compact "$SID_A" "$BSP")" | env -u CLAUDE_CODE_SESSION_ID ADB_SESSION_CONTEXT_MAX_CHARS="$cap" bash "$H/session-context.sh" 2>/dev/null | wc -c | tr -d ' ')"
+  [ "$raw" -le "$cap" ] || { bad "2j every cap in the sweep bounds the written line, newline included: cap $cap wrote $raw bytes"; break; }
 done; ok
 # A cwd whose directory name ends in a NEWLINE names a different directory than its newline-free
 # sibling; the sibling here is a live repository, and the hook must NOT inject its run.

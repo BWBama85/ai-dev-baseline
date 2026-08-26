@@ -40,9 +40,12 @@
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars — `owner` may be ABSENT (unowned), never present and
 #     empty or null; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: 1..64 entries of
-#     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase`. Append order is
+#     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase` and in which no
+#     two ADJACENT entries share a phase (every writer suppresses that append). Append order is
 #     the record; the timestamps are NOT required to be monotonic, because a wall clock that moved
-#     backwards mid-run does not make the marker the workflow wrote malformed.
+#     backwards mid-run does not make the marker the workflow wrote malformed. `prUrl`, like
+#     `owner`, may be absent, never present and empty. A claim's `expiresAt` is a non-negative
+#     integer below 10^15 (a shell integer), never a float or an exponent.
 #     A pre-#243 marker (no `phaseHistory` key) is valid; a present `null` or EMPTY history is not
 #     (every writer seeds one entry). `at` is a real calendar date (no Feb 31, no Apr 31). Any other value — including a non-string where a string is required,
 #     `false` for an absent field included — refuses the marker WHOLE (18). So does a file that is
@@ -116,8 +119,9 @@ _RS_MARKER_JQ='
   | (has("owner")) as $had_owner
   | .owner = (if $had_owner then .owner else "" end)
   | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end
-  | .prUrl = (if .prUrl == null then "" else .prUrl end)
-  | if (str(.prUrl; 512) and (.prUrl == "" or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
+  | (has("prUrl")) as $had_pr
+  | .prUrl = (if $had_pr then .prUrl else "" end)
+  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
   | .h = .phaseHistory
   | if (has("phaseHistory") | not) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
@@ -126,6 +130,7 @@ _RS_MARKER_JQ='
     elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))
                    and str(.at; 20) and (.at | iso)] | all | not) then error("phaseHistory")
     elif ((.h|length) > 0 and (.h[-1].phase != .phase)) then error("phaseHistory")
+    elif ([.h[].phase] as $p | any(range(1; $p|length); $p[.] == $p[. - 1])) then error("phaseHistory")
     else .hs = ([.h[] | "\(.phase)@\(.at)"] | join(", ")) end
   | [ .branch, .issue, .phase, .prUrl, .owner, .hs ] | .[]'
 
@@ -135,7 +140,7 @@ _RS_CLAIM_JQ='
   | (has("owner")) as $had_owner   # claim
   | .owner = ((if $had_owner then .owner else "" end) | if type == "string" then . else error("owner") end)
   | if (.owner | unsafe) or ($had_owner and (.owner == "")) then error("owner") else . end
-  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)
+  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)
   | [ .owner, (.expiresAt|tostring) ] | .[]'
 
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }
