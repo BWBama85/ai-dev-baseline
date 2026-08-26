@@ -40,9 +40,11 @@
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars; issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: <=64 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, non-decreasing, whose last phase is `.phase`.
-#     A pre-#243 marker (no `phaseHistory` key) is valid. Any other value — including a non-string
-#     where a string is required, `false` for an absent field included — refuses the marker WHOLE
-#     (18). Nothing is coerced, and only `null`/absent reads as "not present".
+#     A pre-#243 marker (no `phaseHistory` key) is valid; an explicitly EMPTY history is not (every
+#     writer seeds one entry). Any other value — including a non-string where a string is required,
+#     `false` for an absent field included — refuses the marker WHOLE (18). So does a file that is
+#     not exactly one JSON value, or that carries a NUL byte. Nothing is coerced, and only
+#     `null`/absent reads as "not present".
 #   - the blocked marker's `reason` is free text and is never printed; its PATH is.
 #   - artifact paths come from `cleanup-lib.sh state-scan`, the one home for what a state file IS;
 #     a name it refuses to serialize — or one carrying any control/format character, which it
@@ -95,11 +97,13 @@ die() { printf 'run-state: %s\n' "$*" >&2; exit 2; }
 # already carries the replacement character; both are counted, never printed. One jq
 # definition, prepended to every program that needs it.
 _RS_UNSAFE_JQ='
+  def one: if length != 1 then error("not one value") else .[0] end;
   def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
   def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");'
 
 _RS_MARKER_JQ='
-  def str(f; max): (f|type) == "string" and ((f|length) <= max);
+  one
+  | def str(f; max): (f|type) == "string" and ((f|length) <= max);
   def iso: test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
   if type != "object" then error("not an object") else . end
   | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end
@@ -113,6 +117,7 @@ _RS_MARKER_JQ='
   | .h = .phaseHistory
   | if (.h == null) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
+    elif ((.h|length) == 0) then error("phaseHistory")
     elif ((.h|length) > 64) then error("phaseHistory")
     elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))
                    and str(.at; 20) and (.at | iso)] | all | not) then error("phaseHistory")
@@ -122,13 +127,26 @@ _RS_MARKER_JQ='
   | [ .branch, .issue, .phase, .prUrl, .owner, .hs ] | .[]'
 
 _RS_CLAIM_JQ='
-  if type != "object" then error("not an object") else . end
+  one
+  | if type != "object" then error("not an object") else . end
   | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)
   | if (.owner | unsafe) then error("owner") else . end
   | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)
   | [ .owner, (.expiresAt|tostring) ] | .[]'
 
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }
+
+# _rs_snap <file> — the file's bytes into RS_SNAP, or return 1 when they cannot be a record. A
+# `$(<file)` strips every NUL silently, so bytes jq would refuse could arrive as a valid object;
+# the byte count is compared with the NUL-stripped count first, and a difference is a refusal.
+_rs_snap() {
+  local raw stripped
+  raw="$(wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 1
+  stripped="$(LC_ALL=C tr -d '\000' < "$1" 2>/dev/null | wc -c | tr -d ' ')" || return 1
+  [ "$raw" = "$stripped" ] || return 1
+  { RS_SNAP="$(<"$1")"; } 2>/dev/null || return 1
+  [ -n "$RS_SNAP" ]
+}
 
 # _rs_scan <dir> — `state-scan` once; sets RS_ARTS (gaps/review/docs paths, sorted, comma-joined),
 # RS_ISSUES (`#n, …` from the issue snapshots) and RS_UNSAFE (count of refused names).
@@ -170,7 +188,9 @@ cmd_summary() {
     *) die "summary: --state carries a control character, or --session whitespace or a control character — refused" ;;
   esac
   [ -e "$dir" ] || return 0
-  [ -d "$dir" ] && [ -r "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }
+  # Readable AND searchable: a directory without `x` lists its names but refuses every `-f` below,
+  # which would read as "no run" rather than as the unreadable directory it is.
+  [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }
 
   local marker="$dir/implement-issue-active.json" blocked="$dir/implement-issue-blocked.json"
   local claim="$dir/gap-analysis.lock"
@@ -179,9 +199,9 @@ cmd_summary() {
 
   if [ -f "$marker" ]; then
     for attempt in 1 2; do
-      { snap="$(<"$marker")"; } 2>/dev/null
-      [ -n "$snap" ] || { printf 'run-state: the run marker at %s is unreadable\n' "$marker"; return 18; }
-      fields="$(printf '%s' "$snap" | jq -r "$_RS_UNSAFE_JQ $_RS_MARKER_JQ" 2>/dev/null)" || fields=""
+      _rs_snap "$marker" || { printf 'run-state: the run marker at %s is unreadable\n' "$marker"; return 18; }
+      snap="$RS_SNAP"
+      fields="$(printf '%s' "$snap" | jq -rs "$_RS_UNSAFE_JQ $_RS_MARKER_JQ" 2>/dev/null)" || fields=""
       [ -n "$fields" ] || { printf 'run-state: the run marker at %s is unreadable (not a usable record)\n' "$marker"; return 18; }
       m_branch=""; m_issue=""; m_phase=""; m_pr=""; m_owner=""; m_hist=""
       { IFS= read -r m_branch; IFS= read -r m_issue; IFS= read -r m_phase
@@ -216,7 +236,7 @@ EOF
             elif (.owner != "" and $o != "" and .owner != $o) then "no"
             else "yes" end' "$blocked" 2>/dev/null)" || blk="no"
       fi
-      { again="$(<"$marker")"; } 2>/dev/null
+      _rs_snap "$marker" && again="$RS_SNAP" || again=""
       [ "$again" = "$snap" ] && break
       if [ "$attempt" = 2 ]; then
         printf 'run-state: the run marker at %s changed while it was being read; not summarised\n' "$marker"
@@ -239,8 +259,9 @@ EOF
   # No marker: before the branch exists the CLAIM is the liveness signal (workflow steps 2-4).
   # Read ONCE; owner and lease come from the same bytes.
   [ -f "$claim" ] || return 0
-  { snap="$(<"$claim")"; } 2>/dev/null
-  fields="$(printf '%s' "$snap" | jq -r "$_RS_UNSAFE_JQ $_RS_CLAIM_JQ" 2>/dev/null)" || fields=""
+  _rs_snap "$claim" || { printf 'run-state: the run claim at %s is unreadable\n' "$claim"; return 18; }
+  snap="$RS_SNAP"
+  fields="$(printf '%s' "$snap" | jq -rs "$_RS_UNSAFE_JQ $_RS_CLAIM_JQ" 2>/dev/null)" || fields=""
   [ -n "$fields" ] || { printf 'run-state: the run claim at %s is unreadable (not a usable record)\n' "$claim"; return 18; }
   local c_owner="" c_exp="" now
   { IFS= read -r c_owner; IFS= read -r c_exp; } <<EOF

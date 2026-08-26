@@ -72,6 +72,24 @@ if [ "$MODE" = mutation ]; then
     '  | if (str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))) then . else error("phase") end' \
     '  | .' \
     'a phase outside [a-z_] is refused whole'
+  check_mut multi-value-accepted \
+    '  def one: if length != 1 then error("not one value") else .[0] end;' \
+    '  def one: .[0];' \
+    'two JSON values'
+  check_mut nul-stripped-silently \
+    '  [ "$raw" = "$stripped" ] || return 1' \
+    '  :' \
+    'a NUL byte'
+  # Skipped as root (permissions cannot refuse root), so this row can only fire where the suite runs
+  # unprivileged — which is every CI leg and the WSL smoke.
+  check_mut search-permission-unchecked \
+    '  [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf '"'"'run-state: the state directory %s cannot be read\n'"'"' "$dir"; return 20; }' \
+    '  [ -d "$dir" ] && [ -r "$dir" ] || { printf '"'"'run-state: the state directory %s cannot be read\n'"'"' "$dir"; return 20; }' \
+    'not searchable'
+  check_mut empty-history-accepted \
+    '    elif ((.h|length) == 0) then error("phaseHistory")' \
+    '    elif false then error("phaseHistory")' \
+    'an explicitly empty phaseHistory'
   check_mut unsafe-class-dropped \
     '  def unsafe: test("[\\s\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     '  def unsafe: false;' \
@@ -177,6 +195,14 @@ if [ "$MODE" = mutation ]; then
     '  | (if ($ctx | length) <= $max then $ctx' \
     '  | (if true then $ctx' \
     'the injection is capped'
+  check_mut cap-ceiling-dropped \
+    '[ "$MAX" -le 9500 ] 2>/dev/null || MAX=9500' \
+    ':' \
+    'names the ceiling'
+  check_mut long-line-dropped \
+    '               elif $e.key <= 1 and ($keep / 3 | floor) > 8 and $used + ($keep / 3 | floor) <= $keep' \
+    '               elif false' \
+    'truncated, not dropped'
   check_mut cap-floor-dropped \
     '[ "$MAX" -ge 1024 ] 2>/dev/null || MAX=1024' \
     ':' \
@@ -326,6 +352,9 @@ marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"branc
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[{phase:"branched", at:"2026-08-26T08:00:00Z"}, {phase:"pushed", at:"2026-08-26T07:00:00Z"}]}'; refused "an out-of-order history is refused whole"
 marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 65)}"; refused "a history of 65 entries is refused whole"
 marker "$d" "{branch:\"b\", issue:\"5\", phase:\"pushed\", phaseHistory:$(hist 64)}"; summary "$d" "$SID_A"; eq "$RC" 0 "1e a history of 64 entries is accepted"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", phaseHistory:[]}'; refused "an explicitly empty phaseHistory is refused whole (only an ABSENT key is the legacy shape)"
+printf '{"branch":"b","issue":"5","phase":"pushed"}{"branch":"stale","issue":"9","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a file holding two JSON values is refused whole"; hasnt "$OUT" "stale" "1e ...and neither value is rendered"
+printf '{"branch":"b","issue":"5",\x00"phase":"pushed"}' > "$d/implement-issue-active.json"; refused "a NUL byte in the marker is refused whole, not stripped into a valid object"
 marker "$d" '{branch:"b", issue:5, phase:"branched"}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e an unquoted numeric issue is accepted"; has "$OUT" "issues: #5" "1e ...and rendered"
 
 # 1f. an unreadable review.md is reported, never counted as 0.
@@ -373,6 +402,17 @@ jq -n --argjson e "$future" '{expiresAt:$e, owner:{id:1}}' > "$d/gap-analysis.lo
 jq -n --argjson e "$future" '{expiresAt:$e, owner:false}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose owner is false is unreadable"
 jq -n '{expiresAt:false, owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose expiresAt is false is unreadable, never silently expired"
 jq -n '{owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with no expiresAt is unreadable"
+printf '{"expiresAt":%s,"owner":"%s"}{"expiresAt":%s,"owner":"%s"}' "$future" "$SID_A" "$future" "$SID_B" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim holding two JSON values is unreadable"
+printf '{"expiresAt":%s,\x00"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a NUL byte in the claim is unreadable"
+
+# 1i'. a directory that is readable but not searchable is UNREADABLE (20), never "no run".
+if [ "$(id -u)" != 0 ]; then
+  d="$(state nosearch)"; marker "$d" "$LIVE"; chmod 0400 "$d"
+  summary "$d" "$SID_A"; eq "$RC" 20 "1i a state directory that is not searchable is reported unreadable (20)"; has "$OUT" "cannot be read" "1i ...with the line"
+  chmod 0700 "$d"
+else
+  echo "check-session-context: SKIP 1i not-searchable (running as root)" >&2
+fi
 
 # 1i. usage and refusals.
 bash "$RS" >/dev/null 2>&1; eq "$?" 2 "1i no subcommand is usage (2)"
@@ -513,6 +553,22 @@ HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A" "$
 C="$(ctx)"; [ "${#C}" -le 1024 ] && ok || bad "2j a cap below the floor is raised to 1024, never exceeded: ${#C} chars"
 has "$C" "capped at 1024" "2j ...and the output names the floor it was capped at"
 has "$C" $'\nphase: pushed' "2j ...and the FACTS survive at the floor"
+# The CEILING: a summary past the harness's limit under a cap set above it. 60 gaps-*.md records
+# under the long path is ~19 KB uncapped.
+for n in $(seq 1 60); do printf 'x\n' > "$LP/.claude/state/gaps-$n.md"; done
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=20000); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
+C="$(ctx)"; [ "${#C}" -le 9500 ] && ok || bad "2j a cap above the ceiling is clamped to 9500 (the harness limit is 10,000): ${#C} chars"
+has "$C" "capped at 9500" "2j ...and the output names the ceiling"
+rm -f "$LP"/.claude/state/gaps-[0-9]*.md
+# A PATH THAT FILLS THE CAP: ~700 characters at the 1024 floor. The source line no longer fits, so
+# it is truncated rather than dropped — and the short facts after it survive.
+VLP="$work/$(printf 'v%.0s' $(seq 1 100))/$(printf 'w%.0s' $(seq 1 100))/$(printf 'x%.0s' $(seq 1 100))/$(printf 'y%.0s' $(seq 1 100))/$(printf 'z%.0s' $(seq 1 100))/$(printf 'q%.0s' $(seq 1 100))/$(printf 'r%.0s' $(seq 1 100))"
+mkdir -p "$VLP/.claude/state"; check_git "$VLP" init -q; marker "$VLP/.claude/state" "$LIVE"
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=1024); hook "$(payload compact "$SID_A" "$VLP")"; HOOK_ENV=()
+C="$(ctx)"; [ "${#C}" -le 1024 ] && ok || bad "2j a 700-character path stays within the cap: ${#C} chars"
+has "$C" $'\nphase: pushed' "2j a 700-character path does not evict the facts after the source line (phase)"
+has "$C" $'\nissues: #431' "2j ...(issues)"
+has "$C" "…" "2j ...and the source line was truncated, not dropped"
 
 # 2k. the settings wiring and the hook enumeration agree.
 SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"

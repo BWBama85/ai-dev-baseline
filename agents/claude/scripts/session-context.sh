@@ -19,7 +19,8 @@
 #     same precedence as implement-issue-gate.sh. The library decides ownership.
 #   - Only closed-grammar values the run wrote reach `additionalContext` (the library's contract);
 #     the state-directory path comes from `adb_repo_shape`, which refuses tab/newline roots.
-#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500, floor 1024) —
+#   - `additionalContext` is capped at ADB_SESSION_CONTEXT_MAX_CHARS (default 9500; floor 1024,
+#     ceiling 9500) —
 #     the harness replaces hook output over 10,000 characters with a preview and a file path
 #     (vendor docs, read 2026-08-26). A capped summary ends with a line saying so.
 #   - stderr carries one audit line — the marker summarised, or "no live run" — for the debug log;
@@ -104,6 +105,9 @@ case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
 # issue numbers under any ordinary checkout path. Below the floor the arithmetic went negative
 # and, once that was bounded, the output was the cap notice alone.
 [ "$MAX" -ge 1024 ] 2>/dev/null || MAX=1024
+# ...AND A CEILING: the harness's limit is 10,000, so a larger value would only buy the preview-
+# and-file-path substitute for the whole injection.
+[ "$MAX" -le 9500 ] 2>/dev/null || MAX=9500
 # THE CAP LINE IS FIXED-LENGTH: it names no path, because a path is unbounded and a suffix longer
 # than the cap made the slice below negative — jq counts a negative end from the END, and the
 # "capped" output came out longer than the cap it named (315-char path, 256 cap: 1,315 chars).
@@ -112,8 +116,18 @@ jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
   ($h + "\n" + $s) as $ctx
   | "\n(capped at \($max) characters — the state directory is named in the first line and on stderr)" as $cap
   | ($max - ($cap | length)) as $keep
+  # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that
+  # fits is kept; the header or the source line (0 and 1), when too long, is TRUNCATED to a third
+  # of the budget rather than dropped, since the path in it is the one unbounded value; any other
+  # line that does not fit is skipped and the next one is tried.
   | (if ($ctx | length) <= $max then $ctx
      elif $keep <= 0 then $cap[1:($max + 1)]
-     else ($ctx[:$keep] | split("\n") | .[:-1] | join("\n")) + $cap end) as $out
+     else (reduce ($ctx | split("\n") | to_entries[]) as $e ("";
+             ($e.value) as $l
+             | (if . == "" then 0 else (. | length) + 1 end) as $used
+             | if $used + ($l | length) <= $keep then (if . == "" then $l else . + "\n" + $l end)
+               elif $e.key <= 1 and ($keep / 3 | floor) > 8 and $used + ($keep / 3 | floor) <= $keep
+                 then (if . == "" then "" else . + "\n" end) + $l[:($keep / 3 | floor) - 1] + "…"
+               else . end)) + $cap end) as $out
   | {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $out}}'
 exit 0
