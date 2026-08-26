@@ -288,6 +288,36 @@ construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). Mirro
 individually would need another hand-added job every time a `check-*.sh` lands, and the forgotten
 one would be invisible.
 
+**Every mutation harness is gated on its inputs, on both legs (#441, D91).** A `--mutation`
+harness re-runs a whole suite once per injected defect to prove that suite can go red, and its
+verdict depends on a small declared input set — the library it mutates, its suite,
+`scripts/check-lib.sh`, `scripts/lib/common.sh` — recorded in `scripts/selfcheck.sh --list` (field
+5). On a change touching none of it, the harness re-derives the answer it already gave on `main`,
+at ~40 minutes of critical path per PR before #441 (`pattern-ledger-mutation` alone was 37m25s on
+run 32923514377). So each ubuntu `--mutation` step now goes through
+`scripts/mutation-gate.sh run <step> -- <command>`, and `selfcheck-macos` inherits the same gate
+through the runner: the harness runs when the diff against the merge-base with the base branch
+touches an input, and otherwise the step prints a stated SKIP — base, merge-base, count compared,
+inputs — to the log and the job summary, and exits 0.
+
+Three properties are load-bearing. **It is step-level, not job-level.** A job-level `if:` would
+skip the plain suite that shares the job, could not print the SKIP (the runner never starts), and
+is a shape `repo-settings.sh` discovery deliberately excludes — so the job's check context reports
+exactly as it did, and branch protection sees no new or missing context; verified against the live
+required set when #441 landed (`baseline repo status`). **It fails closed.** No repository, an
+unresolvable base (a push whose `github.event.before` is forty zeros), no merge-base (a shallow
+checkout): the harness runs, on the gate's own exit code, and the line says why. The
+harness-carrying jobs check out with `fetch-depth: 0` so that is the exception, not the rule.
+**The gate can be wrong, and the bound on that is a day.** `mutation-nightly.yml` sets
+`ADB_MUTATION_RUN_ALL=1` and runs every `*-mutation` step against `main` on a daily schedule, one
+matrix job per harness (a matrix is fine there and not here — discovery never reads a workflow
+with no `pull_request` trigger); a red one is reported in that job's summary and in the failure
+notification GitHub sends to whoever last edited the cron line. GitHub documents that a `schedule`
+may be delayed or dropped under load, so this is a daily *attempt*, not a guarantee.
+`scripts/check-mutation-gate.sh` pins the wiring — every `--mutation` line in `ci.yml` gated, the
+nightly matrix equal to the registry, every declared input a path that exists — and its
+`--mutation` mode breaks the gate eight ways in a copy and requires the suite red on each.
+
 **Less exactly two named steps — one since #339, one since PR #429.** The job invokes
 `--skip adopt-readiness-mutation,pattern-ledger-mutation`. Each re-runs a whole suite once per
 injected defect to answer a question about *logic* — can the guards fail closed? — and an ubuntu

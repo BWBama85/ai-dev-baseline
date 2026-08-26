@@ -1,0 +1,115 @@
+name: Mutation nightly
+
+# THE UNCONDITIONAL LEG of the mutation harnesses (#441).
+#
+# On a pull request every `--mutation` harness is GATED: `scripts/mutation-gate.sh` runs it only when
+# the PR's diff touches that harness's declared inputs (`scripts/selfcheck.sh --list`, field 5) and
+# prints a stated SKIP otherwise. The gate's input sets are a claim about what each verdict depends
+# on, and a claim can be wrong — a shared helper renamed, a fixture path moved, a harness that
+# started reading a file nobody declared. This workflow is what bounds the cost of that mistake to
+# ONE DAY rather than to "until somebody edits the right file": it sets `ADB_MUTATION_RUN_ALL=1`, so
+# the gate answers RUN for everything, and runs every `*-mutation` step in the registry against the
+# default branch.
+#
+# ITS OWN FILE, for the two reasons `wsl-smoke.yml` states: a `schedule:` fires a whole workflow
+# file, so putting it in `ci.yml` would run all of that file's jobs daily to gain these; and
+# `scripts/lib/repo-settings.sh` discovery skips any workflow with no `pull_request` trigger, so
+# nothing here can ever be discovered or required — right, because a required context that never
+# reports on a PR is the phantom deadlock `automerge-ok` code 13 names.
+#
+# ONE JOB PER HARNESS, as a matrix: the harnesses are independent and the slowest alone is ~37
+# minutes, so serialising them would make a ~40-minute leg into an ~80-minute one for no coverage.
+# A matrix is FINE here and NOT in `ci.yml` (docs/ci-runners.md, "Why not a strategy.matrix") for
+# the same reason as above — discovery never sees this file, so a matrix suffix on the check-run
+# name deadlocks nothing.
+#
+# THE MATRIX IS PINNED TO THE REGISTRY by `scripts/check-mutation-gate.sh`: every `*-mutation` step
+# `selfcheck.sh --list` reports must appear below, and nothing may appear below that the registry
+# does not know. A harness gated per-PR and absent here would be one that never runs anywhere.
+#
+# WHO SEES A RED RUN: GitHub sends scheduled-workflow failure notifications to the user who last
+# modified the cron line in this file (docs.github.com, "Notifications for workflow runs" —
+# fetched 2026-08-26). The `if: failure()` step below additionally names the failed harness in the
+# job summary, so the notification links to a page that says what went red rather than only that
+# something did.
+on:
+  schedule:
+    # Daily, at a minute that is not :00 (GitHub's own guidance: the top of the hour is the
+    # contended slot, and a delayed schedule is silently dropped rather than queued).
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The whole point of this file: the gate is overridden and every harness runs.
+  ADB_MUTATION_RUN_ALL: '1'
+
+jobs:
+  mutation-nightly:
+    name: mutation-nightly (${{ matrix.step }})
+    runs-on: ubuntu-26.04
+    # UPSTREAM ONLY, as `wsl-smoke.yml`: a fork that enables Actions would otherwise run this daily.
+    if: github.repository == 'BWBama85/ai-dev-baseline'
+    # Sized for the largest harness on a hosted runner (`pattern-ledger-mutation`: 37m25s on run
+    # 32923514377), not for the median. A job that times out is a red that says nothing about the
+    # harness, which is the class of defect #394 is about.
+    timeout-minutes: 60
+    strategy:
+      # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
+      # the others were about to give.
+      fail-fast: false
+      matrix:
+        step:
+          - common-lib-mutation
+          - pr-watch-mutation
+          - pr-threads-mutation
+          - pattern-ledger-mutation
+          - docs-lib-mutation
+          - adopt-mutation
+          - adopt-readiness-mutation
+          - bootstrap-mutation
+          - fact-mutation
+          - selfcheck-guard-mutation
+          - mutation-gate-mutation
+    steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      # Through the RUNNER, not by invoking the harness directly: `--only` is how the registry's
+      # command for a step is resolved, so this file never carries a second copy of it, and an
+      # unknown name is an error rather than a quiet no-op. The override in `env:` is what makes
+      # the runner's gate answer RUN; its header line says so.
+      - name: Run the harness unconditionally
+        run: |
+          set -uo pipefail
+          bash scripts/selfcheck.sh --only "${{ matrix.step }}" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+
+      # A SEPARATE STEP, as in ci.yml's `selfcheck-macos`: a step that is killed never reaches its
+      # own trailing code. It never fails the job — it is a reporter.
+      - name: Explain a red harness in the job summary
+        if: failure()
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/selfcheck.log"
+          {
+            printf '## %s went RED on the scheduled unconditional run\n\n' "${{ matrix.step }}"
+            printf 'Its per-PR gate skips it unless its declared inputs change, so this red may be a shared-helper regression the gate could not see. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$log" ]; then
+            bash scripts/selfcheck.sh --summarize "$log" >> "$GITHUB_STEP_SUMMARY" \
+              || echo "the digest could not be produced — open the job log." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "This job failed before the runner produced a captured log — the failure is in an earlier step." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0

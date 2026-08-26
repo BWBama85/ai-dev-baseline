@@ -1536,6 +1536,24 @@ fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mut
 # execution, and dropping it there would end that coverage silently.
 fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
+# `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
+# touches the step's declared inputs and prints a stated SKIP otherwise. The positive pin says at
+# least one is wired that way; the `absent:` pin is the one that matters — a bare
+# `run: bash scripts/check-<x>.sh --mutation` is the pre-#441 shape, unconditional and ~40 minutes
+# of critical path, and it is exactly what a copy-paste of an older step would reintroduce. The
+# per-step closure (every gated line names a registered step with the registry's own command, and
+# the nightly matrix names every step) is `scripts/check-mutation-gate.sh`'s.
+fact mutation-gate-wired 'regex:^[^#]*mutation-gate\.sh run [a-z-]*-mutation -- bash scripts/check-[a-z-]*\.sh --mutation' -- \
+  .github/workflows/ci.yml
+fact mutation-direct-invocation-retired 'absent:^[^#]*run: *bash scripts/check-[a-z-]*\.sh --mutation' \
+  'fires:        run: bash scripts/check-common-lib.sh --mutation' \
+  'fires:        run: bash scripts/check-pattern-ledger.sh --mutation' -- \
+  .github/workflows/ci.yml
+# The unconditional leg: the scheduled workflow sets the override the gate honours, and the three
+# files that spell that variable agree on its name.
+fact mutation-nightly-forces 'fixed:ADB_MUTATION_RUN_ALL' -- \
+  .github/workflows/mutation-nightly.yml scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # --- what selfcheck COSTS, and the figure that replaced (#335) ----------------
 #

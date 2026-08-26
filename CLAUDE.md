@@ -51,6 +51,9 @@ those. The rules below are specific to this repo's code.
    the honest answer: it is what the machine actually did, and it is wider than most changes
    anyone will make to the suite. One step, `adopt-readiness-mutation`, is consistently 85-95% of
    it — it runs the whole `check-adopt-readiness.sh` suite once per injected defect, 38 times.
+   That range is a **forced** full run (`ADB_MUTATION_RUN_ALL=1`): since #441 a plain run pays for
+   a mutation harness only when the change touches its inputs — see the gate, below — so an
+   untouched tree finishes in a fraction of it, and says which steps it held back.
 
    **Read the run, not this line.** The `result` block prints its own elapsed time and three
    slowest steps every time, and that output is always current where this sentence is only as
@@ -67,11 +70,20 @@ those. The rules below are specific to this repo's code.
    - **`--serial`** runs the registry in declaration order with output streaming live. Reach for it
      when a parallel failure is hard to attribute — it is the debugging mode, and it is what the
      acceptance criterion means by "reproduces today's behaviour".
+   - **The mutation gate** (#441, D91) — a `*-mutation` step declares the paths its verdict depends
+     on (the library it mutates, its suite, `check-lib.sh`, `common.sh`), and the runner dispatches
+     it only when the change under test — working tree plus untracked files, against the merge-base
+     with `origin/<default>` — touches one of them. Held-back steps are named, with the base and
+     the inputs compared, before the run and in the `result` block (`gated (inputs unchanged): …`).
+     The decision is `scripts/mutation-gate.sh`'s, the same one CI's per-job steps ask, and it
+     **fails closed**: no repository, an unresolvable base or no merge-base means the step runs and
+     the line says why. `ADB_MUTATION_RUN_ALL=1` runs everything; `ADB_MUTATION_BASE=<ref>` moves
+     the base. `--list`'s **fifth** field is the input set (`-` for a step that always runs).
    - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),
      **`--skip a,b`** runs everything except them (same unknown-name contract, and the skipped
      names are printed — twice, since #339 — because a step dropped in silence is indistinguishable
      from one that passed), **`--jobs N`** caps concurrency, **`--list`** prints the registry as
-     `name<TAB>command<TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive`, and
+     `name<TAB>command<TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive<TAB>inputs`, and
      **`--summarize <log>`** turns a captured run into the Markdown digest CI puts in its job
      summary.
 
@@ -99,6 +111,17 @@ those. The rules below are specific to this repo's code.
    deliberately *not* serialized, is in `scripts/selfcheck.sh`'s "concurrency contract" header. Two
    concurrent selfcheck runs in one checkout are still unsupported (#250).
 
+   **In CI every mutation harness is gated the same way** (#441): each ubuntu `--mutation` step
+   goes through `mutation-gate.sh run <step> -- <command>` — a step-level wrapper, deliberately
+   not a job-level `if:`, so every job's check context reports exactly as before and branch
+   protection sees no new or missing context — and `selfcheck-macos` inherits the gate through the
+   runner. The base is `origin/<base branch>` on a pull request and the previous tip on a push to
+   `main` (`ADB_MUTATION_BASE`, set at the workflow level; the harness-carrying jobs check out with
+   `fetch-depth: 0` so the merge-base exists). What the gate cannot see — a shared helper the
+   input sets do not name — is bounded to a day by `.github/workflows/mutation-nightly.yml`, which
+   runs every `*-mutation` step unconditionally against `main` on a schedule, one matrix job per
+   harness; `check-mutation-gate.sh` pins its matrix to the registry.
+
    **CI runs two steps fewer on the macOS leg** (#339; the second since PR #429). `selfcheck-macos`
    passes `--skip adopt-readiness-mutation,pattern-ledger-mutation`: each answers a logic question,
    not a platform one, and an ubuntu job runs it on every PR — `adopt` for the first, `pattern-ledger`
@@ -107,8 +130,8 @@ those. The rules below are specific to this repo's code.
    2026-08-21): the `adopt` step was 680s of a 1086s job that was the run's critical path; on run
    32889697083 (2026-08-25) the ledger harness was 1932s of a 39.5-minute macOS job, and the two
    pushes after it were cancelled by that job's 45-minute ceiling with the step still running. A
-   plain local `bash scripts/selfcheck.sh` still runs the whole registry — the skips are a
-   CI-invocation choice, never a new default.
+   plain local `bash scripts/selfcheck.sh` still *selects* the whole registry — the `--skip`s are a
+   CI-invocation choice, never a new default — and then applies the gate above to it.
 
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
@@ -225,6 +248,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) *signalled a clean pass* for the PR's **current head commit**? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Reads the same three surfaces and the same shared classifier as `pr-watch.sh`, so the two can no longer disagree about what a signal means; `COMMENTED` is **21** ("review complete, attention required"), not a satisfied review (#167). Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-skill). Since #260 the mirror is a step **registry** dispatched through a bounded `wait -n` pool — see golden rule 3 for the flags and the serial prologue |
+| `scripts/mutation-gate.sh` · `scripts/check-mutation-gate.sh` | The **mutation-harness gate** (#441, D91) — *does this change give a `--mutation` harness anything new to say?* A harness's verdict depends on a small declared input set (`selfcheck.sh --list`, field 5 — the ONE home; the gate carries no table of its own), so on a change touching none of it the gate prints a stated SKIP naming the base, the merge-base, the count compared and the inputs, and exits 0; otherwise it runs the harness and the harness's status is the step's. `run <step> -- <command>` is CI's form and **refuses** (2) an unregistered step, a step with no inputs, or a command that is not the registry's own for it. Fails **closed**: no repository, an unresolvable base, no merge-base → RUN, on its own exit code (11), never a skip. The suite drives every rule to both answers in throwaway repositories and pins the wiring (every ci.yml `--mutation` line gated; the nightly matrix equal to the registry); `--mutation` breaks the gate eight ways in a copy and requires the suite red on each row's witness. Never mutates the tracked tree |
 | `scripts/check-selfcheck.sh` | The runner above is a guard too, so it gets what guards get here (#260). A job pool's failure mode is silence — a dispatcher that drops a worker's status, or reaps a job and blames the wrong step, prints what a clean run prints — so this drives the **real** `selfcheck.sh` over a throwaway fixture of stub steps and requires a deliberately failing step to still fail the run, attributed by name and exit code. Also pins collect-all, output atomicity, the concurrency bound (both that it is respected *and* that the pool is genuinely concurrent), `--serial` ordering, the prologue running alone, cancellation reaping workers instead of orphaning them, and — since #339/#423 — `--skip`'s fail-closed contract plus the proof that a skipped step **never executed** (asked of the event log, not of the printed output), the exact membership of both prologue lanes, and every `--summarize` case including the two that must SAY they found nothing. Never mutates the tracked tree |
 | `scripts/check-build-atomic.sh` | `build.sh` must publish a generated file by **rename**, never by truncating it in place (#268). `build-drift` proves the artifacts MATCH; it cannot prove anything about the write, because a *successful* build is exactly where the two shapes are indistinguishable — and it runs against the tracked tree, so it cannot inject a failure without damaging the checkout it is checking. This faults a copied `build.sh` mid-render inside a `mktemp -d` fixture and requires the destination to survive byte-exact (compared with `cmp`, since `[ "$(cat f)" = … ]` strips trailing newlines and cannot see a dropped final one). Observed failing: three mutations of the publish mechanism (naive publish · fixed temp name · EXIT trap dropped), each required to make the assertion above it go red, and each verifying its own edit applied. Never mutates the tracked tree |
 | `scripts/render-size.sh` · `scripts/check-render-size.sh` | What the rendered artifacts COST to load (#359, D71) — `name<TAB>lines<TAB>words<TAB>approx_tokens` for every root doc and every agent's every skill, plus a `TOTAL` row, on stdout. A **report, not a gate**: it fails only on mechanics (an expected artifact missing, unreadable or zero-byte) and **never** on size, because the owner rejected caps. `approx_tokens` is `ceil(bytes/4)` — a heuristic, comparable to itself across commits of this corpus and to nothing else. The expected set is derived from `base/workflows/` and the agent table, never globbed from `agents/`, or a skill that failed to render would simply be absent from the report. The guard drives every mechanical rule red under a `mktemp -d`, and pins the no-ceiling direction too. Never mutates the tracked tree |
