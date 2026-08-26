@@ -59,6 +59,13 @@ case "${1:-}" in
 esac
 [ "$#" -gt 1 ] && { echo "usage: check-selfcheck.sh [--mutation]" >&2; exit 2; }
 
+# THE GATE'S ENVIRONMENT IS THIS SUITE'S TO SET, never inherited. The scheduled workflow runs the
+# registry with ADB_MUTATION_RUN_ALL=1, and this suite is a registered step there — so the override
+# reached the fixture cases that expect a SKIP and turned every row red for the wrong reason, on
+# the very run that exists to catch a wrong input set (#441). Each case below sets exactly the
+# variables it means to test.
+unset ADB_MUTATION_RUN_ALL ADB_MUTATION_BASE
+
 work="$(mktemp -d)" || { echo "check-selfcheck: cannot create a scratch dir" >&2; exit 1; }
 
 # cancel_sweep — ask every fixture's stubs to leave, and wait briefly for them to. Runs from the
@@ -204,6 +211,9 @@ mkfx() {
   mkdir -p "$fx/scripts/lib" "$fx/ctl" || return 1
   cp "$ROOT/scripts/selfcheck.sh" "$fx/scripts/selfcheck.sh" || return 1
   cp "$ROOT/scripts/lib/common.sh" "$fx/scripts/lib/common.sh" || return 1
+  # The gate (#441): the runner asks it before dispatching any step that declares inputs. None of
+  # the stubs do, so it decides nothing in the ordinary cases; section 8d registers one that does.
+  cp "$ROOT/scripts/mutation-gate.sh" "$fx/scripts/mutation-gate.sh" || return 1
   for s in "${STUBS[@]}"; do
     printf '%s' "$STUB_SRC" > "$fx/scripts/check-$s.sh" || return 1
     chmod +x "$fx/scripts/check-$s.sh" || return 1
@@ -588,15 +598,22 @@ eq "$RC_" "2" "--jobs with no value is rejected"
 sc --nonsense
 eq "$RC_" "2" "an unknown flag is rejected rather than ignored"
 
-# --list is the registry contract other guards read; it must stay FOUR TAB-separated fields (#423
-# added the fourth). Field 3 keeps its original meaning — does this run in the serial prologue —
-# so a consumer asking `$3 == "serial"` still gets the right answer across both lanes; the reason
-# went into a new field rather than widening field 3 into three values, which would have made
-# every existing correct query silently wrong instead of erroring.
+# --list is the registry contract other guards read; it must stay FIVE TAB-separated fields (#423
+# added the fourth, #441 the fifth). Field 3 keeps its original meaning — does this run in the
+# serial prologue — so a consumer asking `$3 == "serial"` still gets the right answer across both
+# lanes; the reason went into a new field rather than widening field 3 into three values, which
+# would have made every existing correct query silently wrong instead of erroring. The fifth is
+# the step's declared input set, comma-joined, or `-`; appended for the same reason.
 sc --list
 yes "$RC_" "--list exits 0"
-eq "$(printf '%s\n' "$OUT" | awk -F'\t' 'NF != 4 {n++} END {print n + 0}')" "0" \
-  "--list emits exactly four TAB-separated fields on every row"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' 'NF != 5 {n++} END {print n + 0}')" "0" \
+  "--list emits exactly five TAB-separated fields on every row"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$5 != "-" && $5 !~ /^[A-Za-z0-9_.\/-]+(,[A-Za-z0-9_.\/-]+)*$/ {n++} END {print n + 0}')" "0" \
+  "--list's fifth field is '-' or a comma-joined list of [A-Za-z0-9_./-] paths on every row"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 ~ /-mutation$/ && $5 == "-" {n++} END {print n + 0}')" "0" \
+  "every *-mutation step in the shipped registry declares inputs (none shows '-')"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 !~ /-mutation$/ && $5 != "-" {n++} END {print n + 0}')" "0" \
+  "…and no other step does (the gate is scoped to the mutation harnesses, #441)"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$3 != "pool" && $3 != "serial" {n++} END {print n + 0}')" "0" \
   "--list's third field is always pool or serial"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' \
@@ -655,6 +672,115 @@ reset_ctl
 sc --only "$ONLY" --jobs 4
 eq "$(grep -c '^+gates$' "$FX/ctl/events")" "1" "with no --skip, every selected step runs"
 hasnt "$OUT" "SKIPPED" "...and nothing is announced as skipped"
+
+# ============================== 8d. the mutation gate (#441) ====================================
+# A step that declares inputs is dispatched only when the change under test touches one of them.
+# The proof is the one section 8b makes for --skip, with the same three parts: the gated step must
+# NOT EXECUTE (asked of the event log), the run must still pass, and the skip must be VISIBLE BY
+# NAME with what it compared. Then the three ways it must run: a touched input, the override, and a
+# base the gate cannot resolve (fail-closed — a gate that cannot decide costs minutes, never
+# coverage).
+#
+# Its own fixture, because it needs a git repository: the gate diffs the working tree against a
+# merge-base, and every other case here runs in a tree that is deliberately not one.
+FXG="$work/fxg"
+mkfx "$FXG" || bad "fixture setup: could not build the gated fixture"
+printf '%s' "$STUB_SRC" > "$FXG/scripts/check-gatedstep.sh" && chmod +x "$FXG/scripts/check-gatedstep.sh"
+printf 'input v1\n' > "$FXG/scripts/gated-input.txt"
+{ printf '\n'
+  printf 'add gatedstep           bash scripts/check-gatedstep.sh\n'
+  printf 'inputs gatedstep        scripts/gated-input.txt\n'; } > "$work/gated.frag"
+awk -v frag="$work/gated.frag" '
+  /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
+  { print }
+  ' "$FXG/scripts/selfcheck.sh" > "$work/gated.tmp" && mv "$work/gated.tmp" "$FXG/scripts/selfcheck.sh"
+grep -q '^inputs gatedstep ' "$FXG/scripts/selfcheck.sh" && ok \
+  || bad "fixture setup: could not register the gated step in the copied runner"
+printf 'ctl/\n' > "$FXG/.gitignore"
+check_git "$FXG" init -q -b main >/dev/null 2>&1 && check_git "$FXG" add -A >/dev/null 2>&1 \
+  && check_git "$FXG" commit -q -m base >/dev/null 2>&1 \
+  && check_git "$FXG" update-ref refs/remotes/origin/main HEAD >/dev/null 2>&1 \
+  || bad "fixture setup: could not initialise the gated fixture's repository"
+eq "$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' '$1 == "gatedstep" {print $5}')" "scripts/gated-input.txt" \
+  "--list carries the fixture step's declared input in field 5"
+
+# scg <args...> — the gated fixture's selfcheck, same capture contract as sc.
+scg() {
+  OUT="$(ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" "$@" 2>&1)"; RC_=$?
+  return 0
+}
+reset_ctl "$FXG"
+scg --only "$ONLY,gatedstep" --jobs 4
+yes "$RC_" "gate: a run whose gated step has untouched inputs still passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "gate: the gated step never EXECUTED (not merely unprinted)"
+eq "$(grep -c '^+claims$' "$FXG/ctl/events")" "1" "gate: …while the ungated steps around it did"
+has "$OUT" "GATED 1 step(s) — inputs unchanged (ADB_MUTATION_RUN_ALL=1 runs them): gatedstep" \
+  "gate: the skip is announced by name before the run, with the override that lifts it"
+has "$OUT" "SKIP: gatedstep — inputs unchanged against origin/main (merge-base " \
+  "gate: …and the gate's own line says what it compared against"
+has "$OUT" "inputs: scripts/gated-input.txt)" "gate: …and which inputs it checked"
+has "$OUT" "gated (inputs unchanged): gatedstep" "gate: …and again in the result block, where a CI reader looks"
+hasnt "$OUT" "=== gatedstep ===" "gate: the gated step emits no block"
+has "$OUT" "selfcheck: 8 step(s)," "gate: the dispatch header counts what actually runs (8, not 9)"
+
+# A touched input — UNCOMMITTED, which is the local case that matters — and the step runs.
+reset_ctl "$FXG"
+printf 'input v2\n' > "$FXG/scripts/gated-input.txt"
+scg --only "$ONLY,gatedstep" --jobs 4
+yes "$RC_" "gate: with its input touched the run passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: a step whose input changed (uncommitted) EXECUTES"
+hasnt "$OUT" "GATED" "gate: …and nothing is announced as gated"
+has "$OUT" "=== gatedstep ===" "gate: …and its block is emitted"
+check_git "$FXG" checkout -q -- scripts/gated-input.txt
+
+# The override: every step runs, untouched or not.
+reset_ctl "$FXG"
+OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY,gatedstep" --jobs 4 2>&1)"; RC_=$?
+yes "$RC_" "gate: ADB_MUTATION_RUN_ALL=1 passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: ADB_MUTATION_RUN_ALL=1 runs the gated step on an untouched tree"
+hasnt "$OUT" "GATED" "gate: …and announces no gating"
+has "$OUT" "ADB_MUTATION_RUN_ALL is set — the mutation gate is overridden; 1 gated step(s) run regardless" \
+  "gate: …but says, once, that the override fired"
+
+# Fail-closed: a base the gate cannot resolve means the step RUNS, and the run says nothing about
+# gating — a skip is only ever issued on a diff that was actually computed.
+reset_ctl "$FXG"
+OUT="$(ADB_MUTATION_BASE=no-such-ref ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY,gatedstep" --jobs 4 2>&1)"; RC_=$?
+yes "$RC_" "gate: an unresolvable base still passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: an unresolvable base RUNS the gated step (fail-closed)"
+hasnt "$OUT" "GATED" "gate: …and announces no gating"
+has "$OUT" "selfcheck: NOTE — RUN: gatedstep — base no-such-ref does not resolve to a commit (fail-closed" \
+  "gate: …and relays the gate's fail-closed line, so a run-because-undecidable is never mistaken for a run-because-changed"
+
+# `--only` naming ONLY a gated step on an untouched tree: nothing runs, and the run says so rather
+# than reporting a clean pass over silence.
+reset_ctl "$FXG"
+scg --only gatedstep --jobs 4
+yes "$RC_" "gate: --only <gated step> on an untouched tree exits 0"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "gate: …and did not execute it"
+has "$OUT" "selfcheck: 0 step(s)," "gate: …and the header says 0 step(s) ran"
+has "$OUT" "gated (inputs unchanged): gatedstep" "gate: …and the result block names it"
+
+# A PRESENT gate that returns a status outside its contract is neither a skip nor a clean run:
+# the step runs and a WARN names the code. This is the "error folded into skip" direction, and a
+# regression mapping an unknown code to a skip would pass every case above (reviewer finding).
+printf '#!/usr/bin/env bash\necho "gate-broken"; exit 9\n' > "$FXG/scripts/mutation-gate.sh"
+reset_ctl "$FXG"
+scg --only "$ONLY,gatedstep" --jobs 4
+yes "$RC_" "gate: a gate returning an unknown status still lets the run pass"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: …and the gated step RUNS (an undecidable gate never skips)"
+has "$OUT" "WARN — the mutation gate failed for gatedstep (rc 9); running it: gate-broken" \
+  "gate: …and the run says the gate broke, with its code and output"
+hasnt "$OUT" "GATED" "gate: …and announces no gating"
+
+# The gate script MISSING from the tree is a loud degradation, never a silent one: every gated
+# step runs and a WARN says why.
+rm -f "$FXG/scripts/mutation-gate.sh"
+reset_ctl "$FXG"
+scg --only "$ONLY,gatedstep" --jobs 4
+yes "$RC_" "gate: with mutation-gate.sh absent the run still passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: …and the gated step runs"
+has "$OUT" "WARN — scripts/mutation-gate.sh is missing; every gated step runs" "gate: …and the run says the gate was missing"
 
 # ============================== 8c. --summarize ===============================================
 # The CI job-summary digest (#423 item 5). A digest's failure mode is silence — one that extracted

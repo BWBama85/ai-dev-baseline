@@ -6,7 +6,8 @@
 # gate-detector/gates, common-lib, agent-init, cleanup, repo-settings, bash-floor,
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
 # install-guard, fact-drift, fact-mutation, fact-self-test, practice-index, release-skill,
-# selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
+# selfcheck-guard, mutation-gate, and an install→uninstall dry-run into a throwaway HOME.
+# Every `*-mutation` step is GATED on its declared inputs (#441) — see "the gate" below.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 #
@@ -200,6 +201,46 @@ add() {
   }
   STEP_ORDER+=("$name")
   STEP_CMD["$name"]="$_cmd"
+}
+
+# THE INPUT SET OF A STEP (#441) — the paths its VERDICT is a function of. Declared for every
+# `*-mutation` step and for nothing else today: a mutation harness re-runs a whole suite once per
+# injected defect to prove that suite can go red, and the answer depends on the library it mutates,
+# that library's suite, the shared harness (`scripts/check-lib.sh`) and `scripts/lib/common.sh` —
+# not on the rest of the tree. A step WITH inputs is dispatched only when the change under test
+# touches one of them (see "the gate" below); a step without inputs always runs.
+#
+# WHAT COUNTS AS AN INPUT is the mutation-specific closure, not everything the suite reads. Several
+# suites read `base/` or `agents/` files as fixtures; a change there that breaks the suite breaks
+# its PLAIN step, which is never gated. What the mutation harness adds is "can the guard fail?",
+# and that is decided by the code it mutates and the code that judges the mutation. So: the harness
+# script, the two shared files, every `scripts/lib/*.sh` the suite exercises, and — for
+# `bootstrap-mutation` — the entry-point site set it reverts one at a time. Wrong in the direction
+# of listing too much costs minutes; wrong in the other direction costs a day, because the
+# scheduled workflow (`.github/workflows/mutation-nightly.yml`) runs every harness unconditionally.
+#
+# ONE HOME. `scripts/mutation-gate.sh` reads this through `--list` (field 5); `scripts/check-mutation-gate.sh`
+# pins that every `*-mutation` step declares inputs naming its own harness plus the two shared
+# files, that every declared path exists, and that the nightly matrix names every step here.
+declare -A STEP_INPUTS=()
+
+inputs() {
+  local name="$1" p
+  shift
+  [ -n "${STEP_CMD[$name]+x}" ] || { printf 'selfcheck: FATAL — inputs for unregistered step %s\n' "$name" >&2; exit 2; }
+  [ "$#" -ge 1 ] || { printf 'selfcheck: FATAL — step %s declares an empty input set\n' "$name" >&2; exit 2; }
+  [ -z "${STEP_INPUTS[$name]+x}" ] || { printf 'selfcheck: FATAL — inputs for %s declared twice\n' "$name" >&2; exit 2; }
+  # Paths only, in the same allowlist the commands use MINUS the space, because `--list` joins
+  # them with commas and the gate splits on exactly that: a path carrying a comma, a tab or a
+  # space would forge a field boundary or split into two paths that match nothing.
+  for p in "$@"; do
+    case "$p" in
+      ''|*[!A-Za-z0-9_./-]*)
+        printf 'selfcheck: FATAL — step %s: input %s is not a [A-Za-z0-9_./-] path\n' "$name" "${p:-<empty>}" >&2
+        exit 2 ;;
+    esac
+  done
+  STEP_INPUTS["$name"]="$(IFS=,; printf '%s' "$*")"
 }
 
 # ================================ multi-statement steps ========================================
@@ -461,6 +502,7 @@ add common-lib          bash scripts/check-common-lib.sh
 # red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is not evidence, and a mutation whose
 # edit silently fails to apply reports itself observed while checking nothing.
 add common-lib-mutation bash scripts/check-common-lib.sh --mutation
+inputs common-lib-mutation      scripts/check-common-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/role-dispatch.sh install.sh uninstall.sh bin/agent-init bin/baseline
 
 # Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
 # untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
@@ -487,6 +529,7 @@ add pr-watch            bash scripts/check-pr-watch.sh
 # row required back RED on ITS OWN named witness, so "these cases can fire" is re-runnable rather
 # than a claim in a PR body.
 add pr-watch-mutation   bash scripts/check-pr-watch.sh --mutation
+inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-watch.sh
 
 # Unit tests for the /resolve-pr-threads decision predicates (scripts/lib/pr-threads.sh, #416/#418):
 # argument-less PR inference refusing rather than guessing, the COMPLETE thread enumeration across a
@@ -501,6 +544,7 @@ add pr-threads          bash scripts/check-pr-threads.sh
 # OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, and the per-node type
 # check disabled — plus an unmutated control, each required back RED on ITS OWN named witness.
 add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
+inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-threads.sh
 
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
 # mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,
@@ -530,6 +574,7 @@ add pattern-ledger      bash scripts/check-pattern-ledger.sh
 # coverage it claims to describe. `--mutation` prints the live count on every run; that output is
 # current where a number written here is only as current as its last edit.
 add pattern-ledger-mutation bash scripts/check-pattern-ledger.sh --mutation
+inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh
 
 # Unit tests for the vendor-documentation duty (scripts/lib/docs-lib.sh, #422): `[mcp] required`
 # finally has a consumer, and its dangerous direction is a CLEAN verdict nobody earned. Drives the
@@ -547,6 +592,7 @@ add docs-lib            bash scripts/check-docs-lib.sh
 # fall-back to training-data recall that the declaration exists to end. The live count is printed by
 # `--mutation` itself rather than written here, for the reason the step above gives.
 add docs-lib-mutation   bash scripts/check-docs-lib.sh --mutation
+inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh
 
 # Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge
 # detection against a real fixture (#106 — `--merged` alone is blind to it, so the sweep was a
@@ -570,6 +616,7 @@ add adopt               bash scripts/check-adopt.sh
 # witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
 # message's claim that mutations "were observed" with something the repo can re-run.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
+inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh install.sh uninstall.sh
 
 # The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
 # question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's
@@ -587,6 +634,7 @@ add adopt-readiness     bash scripts/check-adopt-readiness.sh
 # count that grepped a display string, and a jq filter whose failure was swallowed into "every
 # milestone is dispositioned").
 add adopt-readiness-mutation bash scripts/check-adopt-readiness.sh --mutation
+inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/project-gates.sh bin/baseline
 
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
@@ -698,6 +746,7 @@ add bootstrap           bash scripts/check-bootstrap.sh
 # SKIPPED with a printed reason rather than counted as passing (D64's correction, which #343's
 # evidence list did not carry over).
 add bootstrap-mutation  bash scripts/check-bootstrap.sh --mutation
+inputs bootstrap-mutation       scripts/check-bootstrap.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh install.sh uninstall.sh bin/baseline bin/agent-init agents/codex/adapter.sh agents/gemini/adapter.sh scripts/build.sh .claude/skills/release/release.sh .claude/skills/release/release-lib.sh
 
 # The SECOND install model writes into somebody else's repository (#285), so its refusals are the
 # load-bearing part: an unverified or escaping archive, a re-anchor that silently did nothing, an
@@ -715,6 +764,7 @@ add fact-drift          bash scripts/check-fact-drift.sh
 # into a COPY of every file it pins and the real lint must come back red. Runs ~22 sub-lints
 # against a throwaway tree; the working tree is never touched.
 add fact-mutation       bash scripts/check-fact-drift.sh --mutation
+inputs fact-mutation            scripts/check-fact-drift.sh scripts/check-lib.sh scripts/lib/common.sh
 
 # ...and the guard rails above are themselves guards, so they get the same treatment (#213): the
 # witness contract and the mutation harness are each driven against deliberately broken rules in a
@@ -774,6 +824,26 @@ add selfcheck-guard     bash scripts/check-selfcheck.sh
 # mutated copy and reads its exit status and its FAIL line, so a case whose assertion was deleted
 # fails here instead of quietly covering nothing (#387).
 add selfcheck-guard-mutation bash scripts/check-selfcheck.sh --mutation
+inputs selfcheck-guard-mutation scripts/check-selfcheck.sh scripts/check-lib.sh scripts/lib/common.sh scripts/selfcheck.sh scripts/mutation-gate.sh
+
+# THE MUTATION-HARNESS GATE is a guard (#441): a gate that answers SKIP wrongly is invisible, since
+# the step it skipped is green either way. Its suite drives every rule to both answers against
+# throwaway repositories, requires the fail-closed shapes (no repository, unresolvable base, no
+# merge-base) to answer RUN and say why, and pins the wiring — every `--mutation` line in ci.yml
+# goes through the gate, every `*-mutation` step here declares inputs, and the nightly matrix names
+# every one of them. POOLED and cheap: seconds, in `mktemp -d` fixtures.
+add mutation-gate       bash scripts/check-mutation-gate.sh
+
+# ...and the gate's own suite is a guard whose failure mode is SILENCE, so every rule of the gate
+# whose failure is a WRONG SKIP is broken in ONE way in a COPY — always skip, always run, an
+# unresolvable base folded into a skip, the override ignored, a SKIP that no longer says what it
+# compared, untracked files ignored, renames folded away, quoting hiding a name, the directory
+# boundary blurred, a foreign command accepted, a harness status swallowed — and each workflow
+# file is un-gated in a copy too; the suite must come back red on each row's own witness.
+# BOTH WORKFLOW FILES ARE INPUTS: the rows that un-gate them are literal edits to copies of those
+# files, so a workflow refactor can stop a row applying — a red only this harness would show.
+add mutation-gate-mutation bash scripts/check-mutation-gate.sh --mutation
+inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh .github/workflows/ci.yml .github/workflows/mutation-nightly.yml
 
 add install-dry-run     step_install_dry_run
 
@@ -803,12 +873,20 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
                 and the skipped names are printed — a step dropped silently is indistinguishable
                 from one that passed. Composes with --only: --only selects, --skip subtracts.
                 This is a per-invocation choice for a caller that runs the suite twice on two
-                platforms; a plain run always executes the whole registry.
+                platforms; a plain run selects the whole registry (and then applies the gate).
   --list        Print the registry as
-                "<name><TAB><command><TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive"
+                "<name><TAB><command><TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive<TAB><inputs>"
                 and exit. This is the runner's own answer to "what does it run", so a guard can
                 ask instead of grepping. The third field says whether the step runs in the serial
-                prologue; the fourth says why.
+                prologue; the fourth says why; the fifth is the comma-joined input set the step's
+                verdict depends on (#441), or "-" for a step that always runs.
+
+  The mutation gate (#441): a step that declares inputs is dispatched only when the change under
+  test — the working tree plus untracked files, against the merge-base with origin/<default> —
+  touches one of them; otherwise it is SKIPPED, by name, with the base it was compared against.
+  ADB_MUTATION_RUN_ALL=1 runs every step regardless; ADB_MUTATION_BASE=<ref> changes the base.
+  The decision is scripts/mutation-gate.sh's, and a gate that cannot decide fails CLOSED: the
+  step runs, and the line says why.
   --summarize F Read a captured run of this suite from F and print a Markdown digest of what
                 failed — the step names and their FAIL: witness lines — then exit 0. For a CI job
                 summary, so a recurring red is readable without opening the log. A reporter, never
@@ -992,7 +1070,8 @@ if [ "$SUMMARIZE_GIVEN" -eq 1 ]; then
 fi
 
 if [ "$LIST" -eq 1 ]; then
-  # FOUR TAB-separated fields: name, command, whether it runs in the serial prologue, and WHY.
+  # FIVE TAB-separated fields: name, command, whether it runs in the serial prologue, WHY, and the
+  # step's input set.
   #
   # The third is here so a guard can ask the runner which steps are pinned instead of grepping the
   # arrays out of this file — and, unlike a grep, asking cannot pass while the array it read has
@@ -1004,8 +1083,13 @@ if [ "$LIST" -eq 1 ]; then
   # three-valued lane name would have made every existing correct query wrong without erroring,
   # which is the silent-wrong-answer shape this suite exists to prevent. The REASON goes in a new
   # field instead: `concurrent` | `mutates-tree` | `load-sensitive`.
+  #
+  # The FIFTH is the step's declared input set (#441), comma-joined, or `-` when the step declares
+  # none. Appended rather than folded into an existing field for the reason the fourth was: every
+  # consumer asking `$3`/`$4` keeps its answer, and a consumer that wants the inputs asks `$5`.
   for _s in "${STEP_ORDER[@]}"; do
-    printf '%s\t%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$(lane_of "$_s")" "$(lane_reason "$_s")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$(lane_of "$_s")" "$(lane_reason "$_s")" \
+      "${STEP_INPUTS[$_s]:--}"
   done
   exit 0
 fi
@@ -1214,6 +1298,63 @@ done
 [ "${#SKIPPED[@]}" -gt 0 ] && printf 'selfcheck: SKIPPED %s step(s) by request: %s\n' \
   "${#SKIPPED[@]}" "${SKIPPED[*]}"
 
+# ======================================= the gate (#441) =======================================
+# A step that declares inputs runs only when the change under test touches one of them. The
+# DECISION is `scripts/mutation-gate.sh`'s — one home, the same one CI's per-job steps ask — and
+# this runner only relays it: the gate's own line is printed for every step it skips, so a reader
+# sees what was compared and against what, never a bare name.
+#
+# THE STATUS IS READ, NOT FOLDED. 10 is the only skip. 0/11/12 are the three stated reasons to run
+# (inputs changed · fail-closed, no diff · ADB_MUTATION_RUN_ALL). Anything else is the gate itself
+# failing, and that is neither a skip nor a clean run: the step runs, the line says the gate broke,
+# and the run's exit status is NOT affected — a broken gate must cost minutes, never coverage, and
+# must never hide behind a red it did not earn.
+#
+# Applied to the SELECTION, after --only and --skip, so `--only x-mutation` on an untouched tree
+# says "gated (inputs unchanged): x-mutation" and runs nothing — honest, and the override is one
+# environment variable away. Runs BEFORE the dispatch header so the counts below describe what
+# actually ran.
+#
+# EVERY DECISION THAT IS NOT "inputs changed" IS RELAYED, not only the skips. A fail-closed RUN
+# (11) is a gate that could not decide — no merge-base, an unresolvable base — and a reader who
+# sees the harness run without that line cannot tell "the inputs changed" from "the gate gave up",
+# which is the difference between a filter that works and one that silently never does. The
+# override (12) is said once, not once per step.
+declare -a GATED=() GATE_LINES=()
+if [ ! -f scripts/mutation-gate.sh ]; then
+  _any_inputs=0
+  for _s in "${SELECTED[@]}"; do [ -n "${STEP_INPUTS[$_s]+x}" ] && _any_inputs=1; done
+  [ "$_any_inputs" -eq 0 ] || printf 'selfcheck: WARN — scripts/mutation-gate.sh is missing; every gated step runs\n'
+else
+  declare -a _ungated=()
+  _overridden=0
+  for _s in "${SELECTED[@]}"; do
+    if [ -z "${STEP_INPUTS[$_s]+x}" ]; then _ungated+=("$_s"); continue; fi
+    IFS=',' read -r -a _in <<< "${STEP_INPUTS[$_s]}"
+    _line="$(bash scripts/mutation-gate.sh should-run "$_s" -- "${_in[@]}" 2>&1)"; _grc=$?
+    case "$_grc" in
+      10) GATED+=("$_s"); GATE_LINES+=("$_line") ;;
+      0)  _ungated+=("$_s") ;;
+      11) printf 'selfcheck: NOTE — %s\n' "$_line"; _ungated+=("$_s") ;;
+      12) _overridden=$((_overridden + 1)); _ungated+=("$_s") ;;
+      *) printf 'selfcheck: WARN — the mutation gate failed for %s (rc %s); running it: %s\n' "$_s" "$_grc" "$_line"
+         _ungated+=("$_s") ;;
+    esac
+  done
+  [ "$_overridden" -eq 0 ] || printf 'selfcheck: ADB_MUTATION_RUN_ALL is set — the mutation gate is overridden; %s gated step(s) run regardless\n' "$_overridden"
+  SELECTED=("${_ungated[@]}")
+  if [ "${#GATED[@]}" -gt 0 ]; then
+    printf 'selfcheck: GATED %s step(s) — inputs unchanged (ADB_MUTATION_RUN_ALL=1 runs them): %s\n' \
+      "${#GATED[@]}" "${GATED[*]}"
+    printf '  %s\n' "${GATE_LINES[@]}"
+  fi
+  # The prologue split was computed from the pre-gate selection; recompute from what survived.
+  PROLOGUE=(); POOLED=()
+  for _s in "${SELECTED[@]}"; do
+    if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
+  done
+fi
+
 RUN_T0="$EPOCHSECONDS"
 if [ "$SERIAL" -eq 1 ]; then
   printf 'selfcheck: %s step(s), serial (--serial)\n' "${#SELECTED[@]}"
@@ -1237,6 +1378,9 @@ printf '%s step(s) in %sm%02ds — %s passed, %s failed\n' \
 # filtered one. Naming the skipped steps here is what keeps `57 step(s)` and `56 step(s)` from
 # being the same sentence to a reader.
 [ "${#SKIPPED[@]}" -gt 0 ] && printf 'skipped: %s\n' "${SKIPPED[*]}"
+# …and the gated ones, for the same reason: a step the gate held back produced exactly what a
+# step that passed produced, and the header of a long log is not where a reader looks.
+[ "${#GATED[@]}" -gt 0 ] && printf 'gated (inputs unchanged): %s\n' "${GATED[*]}"
 # The slowest few, because under a pool the wall clock is the longest single step and knowing
 # which one that is turns "make it faster" into a specific question.
 if [ "${#SLOW[@]}" -gt 0 ]; then

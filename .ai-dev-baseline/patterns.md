@@ -143,4 +143,5 @@ One line per resolved review thread, newest last.
 - `toctou` `base/workflows/resolve-pr-threads.md:795` `31e777f` `PRRT_kwDOTfywrM6cPVf3` PR #429 2026-08-25 — a ledger-only round moved the head without setting LAST_SHA, so step 7 never asked for the re-review the new head needed
 - `status-swallowed` `scripts/lib/pattern-ledger.sh:1055` `31e777f` `PRRT_kwDOTfywrM6cPVgD` PR #429 2026-08-25 — an -f shortcut read an unsearchable directory as an absent ledger, so checklist returned 0 and nothing over a promoted rule
 - `precondition-ordering` `scripts/lib/pattern-ledger.sh:676` `31e777f` `PRRT_kwDOTfywrM6cPVgJ` PR #429 2026-08-25 — the dirty-tree guard ran before the reclamation that would satisfy it, so an abandoned lock stranded every later run
+- `partial-validation` `scripts/selfcheck.sh:844` `33dd504` `PRRT_kwDOTfywrM6cWfhX` PR #442 2026-08-26 — mutation-gate-mutation declared inputs without the two workflow files its rows mutate copies of; a workflow refactor could invalidate rows while the gate skipped the harness
 <!-- adb:hits:end -->

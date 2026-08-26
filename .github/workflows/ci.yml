@@ -33,6 +33,21 @@ on:
 permissions:
   contents: read
 
+env:
+  # THE BASE THE MUTATION GATE DIFFS AGAINST (#441). `scripts/mutation-gate.sh` decides, per
+  # `--mutation` harness, whether the change under test touched that harness's declared inputs
+  # (`scripts/selfcheck.sh --list`, field 5), and it needs to know what "the change" is relative to:
+  #   pull_request → the PR's base branch, as `origin/<base>` — present because every job that
+  #                  runs a harness checks out with `fetch-depth: 0`;
+  #   push (main)  → the previous tip, `github.event.before`. Forty zeros on a branch's first push
+  #                  and a vanished sha after a force-push, and BOTH are fine here, unlike for the
+  #                  claim lint below: the gate fails CLOSED, so an unresolvable base means every
+  #                  harness RUNS and the line says why. The failure direction is minutes, never
+  #                  coverage.
+  # The scheduled unconditional leg is `mutation-nightly.yml`, which sets ADB_MUTATION_RUN_ALL
+  # instead of a base.
+  ADB_MUTATION_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+
 jobs:
   shellcheck:
     name: shellcheck
@@ -350,7 +365,13 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
+        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
+        # neither the base nor a merge-base, so the gate would fail closed and run everything on
+        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -366,8 +387,18 @@ jobs:
       # THIS STEP RIDES THE EXISTING JOB rather than adding one, for the reason the `adopt` job
       # states: a second job is a second required status context for branch protection to grow, and
       # this split does not earn one.
+      #
+      # THROUGH THE GATE (#441). `mutation-gate.sh run <step> -- <command>` looks the step up in
+      # `scripts/selfcheck.sh --list`, refuses a step it does not know or a command that is not the
+      # registry's own for it, and then runs the harness ONLY when this change touches the step's
+      # declared inputs — printing a stated SKIP (base, merge-base, count compared, inputs) to the
+      # log and the job summary otherwise. A skip is a green step of THIS job, so the job's check
+      # context reports exactly as before; nothing here is a job-level `if:`, and branch protection
+      # sees no new or missing context. The harness still runs unconditionally once a day:
+      # `.github/workflows/mutation-nightly.yml`. Every other `--mutation` step in this file is the
+      # same shape and says so by pointing here.
       - name: ...and the manifest guards must be able to fail — 8 mutations, each observed RED (#324)
-        run: bash scripts/check-common-lib.sh --mutation
+        run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation
 
   agent-init:
     name: agent-init
@@ -454,7 +485,13 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
+        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
+        # neither the base nor a merge-base, so the gate would fail closed and run everything on
+        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -469,8 +506,9 @@ jobs:
       # a second job is a second required status context for branch protection to grow, and this
       # split does not earn one. It runs HERE and not only inside `selfcheck-macos`, because that
       # aggregate job is macOS: without this step every witness could regress on Linux unseen.
+      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: ...and those cases must be able to fail — 7 mutations, each observed RED (#394)
-        run: bash scripts/check-pr-watch.sh --mutation
+        run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation
 
       # Rides this job rather than adding one: a second job is a second required status context for
       # branch protection to grow. One job, two libraries of the same PR-review loop.
@@ -479,8 +517,9 @@ jobs:
 
       # ...and the completeness proof must be able to fail (#418). Its failure mode is SILENCE: the
       # shipped defect printed exactly what a clean run prints.
+      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: ...and that proof must be able to fail — 6 mutations, each observed RED (#418)
-        run: bash scripts/check-pr-threads.sh --mutation
+        run: bash scripts/mutation-gate.sh run pr-threads-mutation -- bash scripts/check-pr-threads.sh --mutation
 
   state-assert:
     name: state-assert
@@ -1082,8 +1121,9 @@ jobs:
       # protection would not require, which `repo-settings.sh required-drift` exists to flag.
       # NOTE the quoting on both names: an unquoted YAML scalar containing `: ` is a parse error,
       # and a workflow that does not parse runs NO jobs at all.
+      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: "Every absent: pin must be observed FAILING under its own superseded spellings (#213)"
-        run: bash scripts/check-fact-drift.sh --mutation
+        run: bash scripts/mutation-gate.sh run fact-mutation -- bash scripts/check-fact-drift.sh --mutation
 
       - name: "...and the witness/mutation guard rails must themselves be observed failing (#213)"
         run: bash scripts/check-fact-drift.sh --self-test
@@ -1121,7 +1161,13 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
+        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
+        # neither the base nor a merge-base, so the gate would fail closed and run everything on
+        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -1138,8 +1184,9 @@ jobs:
 
       # ...and the suite is a guard, so every load-bearing decision is injected with its own defect
       # and must make it go red ON ITS OWN NAMED WITNESS. Red for the wrong reason is not evidence.
+      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: /adopt guards must be able to fail — every decision mutated, each observed RED (#20)
-        run: bash scripts/check-adopt.sh --mutation
+        run: bash scripts/mutation-gate.sh run adopt-mutation -- bash scripts/check-adopt.sh --mutation
 
       # The completion contract rides THIS job rather than a new one, for the reason stated above:
       # a second job is a second required status context for branch protection to grow, and this
@@ -1152,8 +1199,9 @@ jobs:
       - name: adoption completion contract — the twelve rungs and the fail-closed verdict (#81)
         run: bash scripts/check-adopt-readiness.sh
 
+      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: ...and its guards must be able to fail — 38 mutations, each observed RED (#81)
-        run: bash scripts/check-adopt-readiness.sh --mutation
+        run: bash scripts/mutation-gate.sh run adopt-readiness-mutation -- bash scripts/check-adopt-readiness.sh --mutation
 
   pattern-ledger:
     name: pattern-ledger
@@ -1177,7 +1225,13 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
+        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
+        # neither the base nor a merge-base, so the gate would fail closed and run everything on
+        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -1187,8 +1241,9 @@ jobs:
 
       # ...and the suite is a guard, so every load-bearing decision is injected with its own defect
       # and must make it go red ON ITS OWN NAMED WITNESS. Red for the wrong reason is not evidence.
+      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: Pattern-ledger guards must be able to fail — every row mutated, each observed RED (#421)
-        run: bash scripts/check-pattern-ledger.sh --mutation
+        run: bash scripts/mutation-gate.sh run pattern-ledger-mutation -- bash scripts/check-pattern-ledger.sh --mutation
 
   practice-index:
     name: practice-index
@@ -1410,6 +1465,12 @@ jobs:
       # 32896004653 and 32904106492, both cancelled with it still running). The non-mutation
       # `adopt-readiness` and `pattern-ledger` halves still run here. Measurements and rationale:
       # D87.
+      #
+      # AND THE MUTATION GATE APPLIES HERE TOO (#441): the runner asks `scripts/mutation-gate.sh`
+      # before dispatching any `*-mutation` step, against ADB_MUTATION_BASE (workflow `env:`), so an
+      # untouched harness is held back by name — the log's GATED line and the result block's
+      # `gated (inputs unchanged):` say which, and why. The fetch-depth above is what makes the
+      # merge-base resolvable; without it the gate fails closed and runs them all.
       #
       # `pipefail` is load-bearing: without it this step reports tee's cheerful 0 and gates nothing.
       - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs

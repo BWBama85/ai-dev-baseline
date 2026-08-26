@@ -78,7 +78,14 @@ full runs on the maintainer's 10-core macOS machine (2026-08-14) spanned **8m46s
 is the honest figure, and it is wider than most changes you will make to the suite. One step,
 `adopt-readiness-mutation`, is consistently most of it. The `result` block prints the elapsed time
 and the three slowest steps every run, which is why the number lives there and only a dated
-snapshot lives here.
+snapshot lives here. That range is a **forced** full run: since #441 the mutation harnesses are
+**gated** — each `*-mutation` step declares the paths its verdict depends on (`--list`, fifth
+field), and the runner dispatches it only when your change, working tree and untracked files
+included, touches one of them against the merge-base with `origin/main`. Held-back steps are named
+before the run and in the `result` block (`gated (inputs unchanged): …`), with the base and inputs
+each was compared on. `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the whole registry,
+every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
+the step. The decision is `scripts/mutation-gate.sh`'s — the same one CI asks per job.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for
@@ -100,12 +107,20 @@ same installer writes and cost seconds, so isolating them is nearly free. Everyt
 temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
 declared places, and `--only` / `--skip` can leave any of them out.
 
-CI's macOS leg runs one step fewer: it passes `--skip adopt-readiness-mutation`, which the ubuntu
-`adopt` job already runs on every PR (#339). Your local run is unaffected in *coverage* — a plain
-`bash scripts/selfcheck.sh` is still the whole registry — but it does get **longer**, because the
-six isolated steps no longer overlap with anything: about 90 seconds' worth, measured serially on a
-10-core machine. The dated range above was taken before that lane existed and has not been
-re-measured; the `result` block is the current answer, as it says.
+CI's macOS leg runs two steps fewer: it passes `--skip adopt-readiness-mutation,pattern-ledger-mutation`,
+which the ubuntu `adopt` and `pattern-ledger` jobs already run on every PR (#339, PR #429). Your
+local run is unaffected in *coverage* — a plain `bash scripts/selfcheck.sh` still selects the whole
+registry, then applies the gate above — but it does get **longer** when the gate lets everything
+through, because the six isolated steps no longer overlap with anything: about 90 seconds' worth,
+measured serially on a 10-core machine. The dated range above was taken before that lane existed
+and has not been re-measured; the `result` block is the current answer, as it says.
+
+In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
+a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),
+and `.github/workflows/mutation-nightly.yml` runs every `*-mutation` step unconditionally against
+`main` on a daily schedule — a daily attempt (GitHub documents that a `schedule` may be delayed or
+dropped) at catching what a wrong input set hides. `check-mutation-gate.sh` pins
+both: every `--mutation` line in `ci.yml` is gated, and the nightly matrix equals the registry.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335

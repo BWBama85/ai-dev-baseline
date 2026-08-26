@@ -7373,3 +7373,77 @@ survive is the part a later reader needs.
                  worse than none, carrying an assurance nobody earned. The mechanism is the
                  recorded evidence and the report line; review is what reads them, and the
                  practice's "What this does NOT enforce" section says so in the same words.
+
+## D91 — a mutation harness runs when its inputs changed, and unconditionally on a daily schedule
+- date:      2026-08-26
+- category:  project-delta
+- unknown:   Every pull request ran all of CI's `--mutation` harnesses — ~40 minutes of critical
+             path (#441: `pattern-ledger-mutation` 37m25s on run 32923514377, `adopt-readiness`
+             680s, and five more) — to re-prove a fact the diff could not have changed. Nothing in
+             the baseline says when a guard's own guard has to run; the owner's mandate on PR
+             #429 was "41 minutes for every PR is not sustainable", and the same PR's review
+             rounds had grown one harness from 26 rows to 42 and cancelled two runs on the macOS
+             job's 45-minute ceiling.
+- decision:  A harness runs per PR only when the change touches its DECLARED INPUT SET, and every
+             harness runs unconditionally against `main` on a daily schedule. Five shapes were fixed on the
+             way, each answering a gap-analysis BLOCKING finding from the repo's own rules rather
+             than from the owner:
+
+             **1. Scope is the registry, not the issue's table.** "Every mutation harness" is the
+             eleven `*-mutation` steps `selfcheck.sh --list` reports (the issue's seven were the
+             measured ones), including the gate's own new suite. The registry is the one home.
+
+             **2. Inputs are the mutation-specific closure, not everything a suite reads.** Several
+             suites read `base/` or `agents/` files as fixtures; a change there that breaks the
+             suite breaks its PLAIN step, which is never gated. What the harness adds is "can the
+             guard fail?", decided by the code it mutates and the code that judges the mutation:
+             the harness script, `check-lib.sh`, `common.sh`, every `scripts/lib/*.sh` the suite
+             exercises, and for `bootstrap-mutation` the entry-point sites it reverts — a strict
+             SUPERSET of the issue's literal four, so it never skips where the literal set would
+             run; the reviewer flagged the divergence and it is recorded here as the
+             implementer's reading, for the owner to accept or narrow. Declared
+             beside each `add` as `inputs <step> <path>…`, rendered as `--list` field 5, and pinned
+             by `check-mutation-gate.sh` (own harness + the two shared files present; every path
+             exists) and by `check-selfcheck.sh` (every `*-mutation` step has one; nothing else
+             does).
+
+             **3. Step-level, never job-level.** A job-level `if:` skips the plain suite sharing
+             the job, cannot print the SKIP, and is a shape `repo-settings.sh` discovery excludes;
+             splitting jobs adds required contexts, which every harness-carrying job's own comment
+             refuses. So `mutation-gate.sh run <step> -- <command>` wraps each ubuntu step and
+             `selfcheck-macos` inherits the gate through the runner. Check contexts unchanged —
+             verified live against branch protection when this landed.
+
+             **4. Base and event semantics, and fail-closed = RUN.** Working tree plus untracked
+             files against the merge-base with the base: `origin/<base_ref>` on a pull request,
+             `github.event.before` on a push to `main`, `origin/<default>` locally, `--base` and
+             `ADB_MUTATION_BASE` outranking the default. The harness-carrying jobs check out with
+             `fetch-depth: 0`. No repository, no merge-base, an unresolvable base (forty zeros on
+             a first push): the harness RUNS, on exit 11, and the line says why — the direction
+             that costs minutes, never coverage. `ci.yml`'s claim lint rejects `event.before` as a
+             fallback because it must fail closed by REFUSING; the gate fails closed by RUNNING,
+             so the same value is safe here.
+
+             **5. Its own entry point, not a library.** `check-lib.sh` is source-only and sub-floor
+             constrained; `scripts/lib/` ships to adopters. `scripts/mutation-gate.sh` is neither,
+             carries no table (it reads `--list`), and refuses (2) an unknown step, a step with no
+             inputs, or a command that is not the registry's own — so a workflow line cannot name
+             one harness and run another. The nightly is its own workflow file for the two reasons
+             `wsl-smoke.yml` states, one matrix job per harness, `ADB_MUTATION_RUN_ALL=1`, daily
+             at a non-top-of-hour minute; GitHub documents that a `schedule` may be delayed or
+             dropped, so "caught within a day" is an attempt, not a guarantee, and the doc says so.
+- placement: `scripts/mutation-gate.sh`, `scripts/check-mutation-gate.sh` (registered as
+             `mutation-gate` and `mutation-gate-mutation`), `scripts/selfcheck.sh` (`inputs`, field
+             5, the gate before dispatch, `gated (inputs unchanged):`), `.github/workflows/ci.yml`
+             (workflow `env: ADB_MUTATION_BASE`, four `fetch-depth: 0`, seven wrapped steps),
+             `.github/workflows/mutation-nightly.yml`, three `check-fact-drift.sh` pins (a gated
+             invocation present; a bare `run: … --mutation` absent, proven firable; the override
+             spelled the same in all three files), `docs/ci-runners.md`, CLAUDE.md golden rule 3,
+             CONTRIBUTING.md.
+- reason:    The value of a mutation harness is real and recent — on 2026-08-25/26 the class
+             caught three rows that tested nothing or were pinned to the wrong witness — and the
+             value of running it on every PR is not: it is the value of running it when its inputs
+             change, paid on every change. What a filter cannot see is bounded by the daily
+             unconditional run rather than by hope. The gate is a guard whose failure mode is a
+             green step, so it is observed failing eight ways before it is trusted with a skip.
+- baseline-issue: n/a
