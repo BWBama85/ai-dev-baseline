@@ -122,7 +122,7 @@ _RS_CLAIM_JQ='
   if type != "object" then error("not an object") else . end
   | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)
   | if (.owner | unsafe) then error("owner") else . end
-  | .expiresAt = (.expiresAt // 0 | if type == "number" then floor else error("expiresAt") end)
+  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)
   | [ .owner, (.expiresAt|tostring) ] | .[]'
 
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }

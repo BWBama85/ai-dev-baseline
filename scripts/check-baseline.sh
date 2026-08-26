@@ -350,6 +350,16 @@ hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks newly shipped → ...WITH
 mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 
+# ...and a FOREIGN file at the new hook's pathname is a collision, not an opt-out: the repair still
+# runs without --no-hooks (PR #443 review — the first cut tested existence, not ownership).
+reset_src; : > "$work/install.log"; hook_settings shipped
+mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"; printf 'not ours\n' > "$fh/.claude/scripts/session-context.sh"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$out" "newly shipped hook(s) not yet wired" "hooks newly shipped over a foreign file → still reported as shipped"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks newly shipped over a foreign file → the installer runs WITHOUT --no-hooks"
+rm -f "$fh/.claude/scripts/session-context.sh"; mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
+rm -f "$fh/.claude/settings.json"
+
 
 # update with a renamed-away ORPHAN (a dangling link into src, no manifest entry) must be
 # PRUNED, not fatal: baseline removes the ownership-scoped dead link and completes (exit 0),

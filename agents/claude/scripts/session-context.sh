@@ -100,11 +100,16 @@ case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
 # and the "capped" output would exceed the cap it names. 256 is the smallest value at which the
 # header and the cap line both fit.
 [ "$MAX" -ge 256 ] 2>/dev/null || MAX=256
-jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --arg d "$STATE_DIR" --argjson max "$MAX" '
+# THE CAP LINE IS FIXED-LENGTH: it names no path, because a path is unbounded and a suffix longer
+# than the cap made the slice below negative — jq counts a negative end from the END, and the
+# "capped" output came out longer than the cap it named (315-char path, 256 cap: 1,315 chars).
+# The state directory is in the header (first line) and on stderr; the cap line points there.
+jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
   ($h + "\n" + $s) as $ctx
-  | ("\n(capped at " + ($max|tostring) + " characters — read " + $d + " directly)") as $cap
-  | (if ($ctx | length) > $max
-     then ($ctx[:($max - ($cap | length))] | split("\n") | .[:-1] | join("\n")) + $cap
-     else $ctx end) as $out
+  | "\n(capped at \($max) characters — the state directory is named in the first line and on stderr)" as $cap
+  | ($max - ($cap | length)) as $keep
+  | (if ($ctx | length) <= $max then $ctx
+     elif $keep <= 0 then $cap[1:($max + 1)]
+     else ($ctx[:$keep] | split("\n") | .[:-1] | join("\n")) + $cap end) as $out
   | {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $out}}'
 exit 0

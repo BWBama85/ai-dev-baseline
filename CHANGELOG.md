@@ -37,8 +37,9 @@ only by a published release, which is what these entries are the notes for.
   **An upgrade wires a newly shipped hook.** `baseline update` used to read a hook set missing
   only the new hook as a per-hook opt-out and pass `--no-hooks` to the repair — linking the
   script and never wiring it. `adb_claude_hooks_missing_deliberate` now separates an entry the
-  operator removed (its script link is still there) from a hook that was never installed, and
-  only the first is preserved.
+  operator removed (its script link — **ours**, pointing into the install source — is still
+  there) from a hook that was never installed, and only the first is preserved; an unrelated
+  file at the hook's pathname is a collision the repair backs up, not a choice.
   Every root
   doc now carries a `# Compact instructions` block asking the compactor to preserve what only the
   conversation held: the modified files, the gate result, each REQUIRED finding's disposition.

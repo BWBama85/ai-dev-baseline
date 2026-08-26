@@ -203,7 +203,7 @@ adb_report_partial_hooks() {
   # TWO SHAPES OF PARTIAL (PR #443 review). A hook whose script link exists but whose entry is
   # gone was REMOVED by the operator; a hook with neither was SHIPPED after the last install and
   # has simply not arrived yet. Only the first is an opt-out to preserve.
-  if [ -z "$(adb_claude_hooks_missing_deliberate "$settings")" ]; then
+  if [ -z "$(adb_claude_hooks_missing_deliberate "$settings" "$src")" ]; then
     printf 'baseline: NOTE — newly shipped hook(s) not yet wired: %s\n' \
       "$(adb_claude_hooks_missing "$settings" | tr '\n' ' ')" >&2
     printf 'baseline:        No entry was removed by hand, so the next self-heal wires them.\n' >&2
@@ -355,7 +355,7 @@ EOF
         # shape every upgrade produces the moment a new hook ships — is wired, not preserved:
         # `--no-hooks` here left the new hook's link in place and its entry unwritten for good,
         # since nothing later distinguishes that from a choice (PR #443 review).
-        [ -z "$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json")" ] || args+=(--no-hooks) ;;
+        [ -z "$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$SRC")" ] || args+=(--no-hooks) ;;
       *) : ;;   # wired — nothing to preserve, nothing to say
     esac
   fi

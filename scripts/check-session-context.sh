@@ -88,6 +88,10 @@ if [ "$MODE" = mutation ]; then
     '  | .owner = ((if .owner == null then "" else .owner end) | if type == "string" then . else error("owner") end)' \
     '  | .owner = ((.owner // "") | if type == "string" then . else error("owner") end)' \
     'a claim whose owner is false is unreadable'
+  check_mut claim-expiry-false-as-absent \
+    '  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)' \
+    '  | .expiresAt = (.expiresAt // 0 | if type == "number" then floor else error("expiresAt") end)' \
+    'a claim whose expiresAt is false is unreadable'
   check_mut path-class-dropped \
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");' \
     '  def unsafe_path: false;' \
@@ -162,13 +166,17 @@ if [ "$MODE" = mutation ]; then
     '  . "$(dirname "$0")/lib/common.sh" 2>/dev/null' \
     'a library that prints to stdout cannot contaminate'
   check_mut output-cap-dropped \
-    '  | (if ($ctx | length) > $max' \
-    '  | (if false' \
+    '  | (if ($ctx | length) <= $max then $ctx' \
+    '  | (if true then $ctx' \
     'the injection is capped'
   check_mut cap-floor-dropped \
     '[ "$MAX" -ge 256 ] 2>/dev/null || MAX=256' \
     ':' \
-    'below the floor'
+    'names the floor it was capped at'
+  # NO ROW for the long-path case on purpose: the `$keep <= 0` arm bounds the output whatever the
+  # suffix's length, so putting the path back into the cap line no longer reproduces the defect
+  # the assertion guards — that assertion is belt-and-braces over an arm the cap-dropped row above
+  # already drives red, and a row that cannot fire would report coverage it does not have.
   check_mut stdin-unbounded \
     "  IFS= read -r -d '' -t 5 HOOK_INPUT || _rc=\$?" \
     '  HOOK_INPUT="$(cat)"' \
@@ -341,6 +349,8 @@ summary "$d" "$SID_A"; eq "$RC" 0 "1h an expired claim: exit 0"; eq "$OUT" "" "1
 printf 'garbage' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an unreadable claim is reported (18), never a benign absence"; has "$OUT" "run claim at $d/gap-analysis.lock is unreadable" "1h ...with the unreadable line"
 jq -n --argjson e "$future" '{expiresAt:$e, owner:{id:1}}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with a non-string owner is unreadable"
 jq -n --argjson e "$future" '{expiresAt:$e, owner:false}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose owner is false is unreadable"
+jq -n '{expiresAt:false, owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim whose expiresAt is false is unreadable, never silently expired"
+jq -n '{owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with no expiresAt is unreadable"
 
 # 1i. usage and refusals.
 bash "$RS" >/dev/null 2>&1; eq "$?" 2 "1i no subcommand is usage (2)"
@@ -460,12 +470,18 @@ eq "$RC" 0 "2i an open stdin pipe: exit 0"; eq "$OUT" "" "2i an open stdin pipe 
 # 2j. the output cap.
 HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=400); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
 C="$(ctx)"
-has "$C" "(capped at 400 characters — read $RP/.claude/state directly)" "2j the injection is capped, and says so"
+has "$C" "(capped at 400 characters — the state directory is named in the first line and on stderr)" "2j the injection is capped, and says so"
 [ "${#C}" -le 400 ] && ok || bad "2j the capped injection is within the cap: ${#C} chars"
 hook "$(payload compact "$SID_A")"; hasnt "$(ctx)" "capped at" "2j an ordinary summary is not capped"
 HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A")"; HOOK_ENV=()
 C="$(ctx)"; [ "${#C}" -le 256 ] && ok || bad "2j a cap below the floor is raised to 256, never exceeded: ${#C} chars"
 has "$C" "capped at 256" "2j ...and the output names the floor it was capped at"
+# A LONG PATH must not defeat the cap: the cap line names no path, so it cannot outgrow the cap.
+LP="$work/$(printf 'l%.0s' $(seq 1 60))/$(printf 'o%.0s' $(seq 1 60))/$(printf 'n%.0s' $(seq 1 60))/$(printf 'g%.0s' $(seq 1 60))/$(printf 'p%.0s' $(seq 1 60))"
+mkdir -p "$LP/.claude/state"; check_git "$LP" init -q; marker "$LP/.claude/state" "$LIVE"
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=256); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
+C="$(ctx)"; [ "${#C}" -le 256 ] && ok || bad "2j a long state path (${#LP} chars) does not defeat the cap: ${#C} chars > 256"
+has "$C" "capped at 256" "2j ...and it still says it was capped"
 
 # 2k. the settings wiring and the hook enumeration agree.
 SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"

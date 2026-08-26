@@ -1112,14 +1112,23 @@ eq "$(adb_claude_hooks_state "$hs_dir/missing.json" "$hs_home")" "none" "hooks-s
 # `partial` has two shapes and only one is an opt-out: a hook whose entry was REMOVED (its script
 # link is still there) versus a hook that was SHIPPED after the last install (no link, no entry).
 # Reading the second as the first left every newly shipped hook unwired for good.
-mkdir -p "$hs_home/.claude/scripts"
-eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_home" | tr -d '\n')" "" \
+mkdir -p "$hs_home/.claude/scripts"; hs_src="$hs_dir/src"; mkdir -p "$hs_src/agents/claude/scripts"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
   "hooks-deliberate: a missing hook with NO script link was never installed — not an opt-out"
-: > "$hs_home/.claude/scripts/precommit-gate.sh"
-eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
-  "hooks-deliberate: a missing hook whose script link exists was removed by hand — an opt-out"
-eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_home" | wc -l | tr -d ' ')" "0" \
+ln -s "$hs_src/agents/claude/scripts/precommit-gate.sh" "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
+  "hooks-deliberate: a missing hook whose OUR link exists was removed by hand — an opt-out"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"
+rm -f "$hs_home/.claude/scripts/precommit-gate.sh"
+# OWNERSHIP, not existence: a foreign file or a symlink into somebody else's tree at the hook's
+# pathname is a collision the repair backs up, not a choice about OUR hook (PR #443 review).
+: > "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: an unrelated REGULAR FILE at the hook path is not an opt-out"
+rm -f "$hs_home/.claude/scripts/precommit-gate.sh"; ln -s /elsewhere/precommit-gate.sh "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: a FOREIGN symlink at the hook path is not an opt-out"
 rm -f "$hs_home/.claude/scripts/precommit-gate.sh"
 
 # REGRESSION (PR #246 review): a basename search also matched a command the OPERATOR wrote. A
