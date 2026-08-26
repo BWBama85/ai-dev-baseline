@@ -543,7 +543,7 @@ hook "$(payload compact "$SID_A" "$LP")"; C="$(ctx)"
 [ "${#C}" -gt 1024 ] && ok || bad "2j the long-path fixture exceeds the floor uncapped (${#C} chars) — else the cases below test nothing"
 HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=1024); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
 C="$(ctx)"
-has "$C" "(capped at 1024 characters — the state directory is named in the first line and on stderr)" "2j the injection is capped, and says so"
+has "$C" "(capped at 1024 characters — the state directory is named on the run-state line below the header, and on stderr)" "2j the injection is capped, and says so"
 [ "${#C}" -le 1024 ] && ok || bad "2j the capped injection is within the cap: ${#C} chars"
 has "$C" "source $LPP/.claude/state/implement-issue-active.json" "2j ...the source line survives under a 300-character path"
 has "$C" $'\nphase: pushed' "2j ...and the phase survives even under a 300-character path"

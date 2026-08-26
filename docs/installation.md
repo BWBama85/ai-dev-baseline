@@ -196,7 +196,8 @@ Three properties are deliberate:
 - **It never blocks, and its audit is written twice.** Exit 0 on every path the script reaches;
   stdin is read with a five-second bound so an open pipe cannot spend the hook's timeout; nothing
   is injected when no run is live. One stderr line names what was summarised (the debug log), and
-  the first injected line names the state directory that was read (the transcript).
+  the summary's own `run-state:` line — right below the provenance header — names the state
+  directory that was read (the transcript).
   `ADB_SESSION_CONTEXT=off` disables it with one stderr line.
 
 The root docs carry a `# Compact instructions` section (rendered from

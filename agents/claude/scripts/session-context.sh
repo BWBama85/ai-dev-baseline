@@ -24,7 +24,8 @@
 #     the harness replaces hook output over 10,000 characters with a preview and a file path
 #     (vendor docs, read 2026-08-26). A capped summary ends with a line saying so.
 #   - stderr carries one audit line — the marker summarised, or "no live run" — for the debug log;
-#     the transcript sees the provenance header. ADB_SESSION_CONTEXT=off: one stderr line, exit 0.
+#     the transcript sees the provenance header and, on the `run-state:` line right below it, the
+#     state directory that was read. ADB_SESSION_CONTEXT=off: one stderr line, exit 0.
 #   - jq, common.sh and run-state.sh are required beside this file; any of them missing means one
 #     stderr line and nothing injected.
 
@@ -111,10 +112,11 @@ case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
 # THE CAP LINE IS FIXED-LENGTH: it names no path, because a path is unbounded and a suffix longer
 # than the cap made the slice below negative — jq counts a negative end from the END, and the
 # "capped" output came out longer than the cap it named (315-char path, 256 cap: 1,315 chars).
-# The state directory is in the header (first line) and on stderr; the cap line points there.
+# The state directory is on the summary's own first line (the `run-state:` line right below the
+# header) and on stderr; the cap line points there.
 jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
   ($h + "\n" + $s) as $ctx
-  | "\n(capped at \($max) characters — the state directory is named in the first line and on stderr)" as $cap
+  | "\n(capped at \($max) characters — the state directory is named on the run-state line below the header, and on stderr)" as $cap
   | ($max - ($cap | length)) as $keep
   # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that
   # fits is kept; the header or the source line (0 and 1), when too long, is TRUNCATED to a third
