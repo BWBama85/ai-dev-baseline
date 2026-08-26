@@ -1531,6 +1531,11 @@ fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
 # would leave contributors' pre-push gate quietly one guard short.
 fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# The second step `selfcheck-macos` skips by name (PR #429), for the same reason and with the
+# same consequence: the ubuntu `pattern-ledger` job is now the ledger harness's only per-PR
+# execution, and dropping it there would end that coverage silently.
+fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
 
 # --- what selfcheck COSTS, and the figure that replaced (#335) ----------------
 #

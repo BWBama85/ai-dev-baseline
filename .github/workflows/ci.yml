@@ -1155,6 +1155,41 @@ jobs:
       - name: ...and its guards must be able to fail — 38 mutations, each observed RED (#81)
         run: bash scripts/check-adopt-readiness.sh --mutation
 
+  pattern-ledger:
+    name: pattern-ledger
+    runs-on: ubuntu-26.04
+    # THIS JOB EXISTS BECAUSE THE MACOS AGGREGATE COULD NO LONGER AFFORD ITS SLOWEST STEP. The
+    # ledger's mutation harness re-runs the whole `check-pattern-ledger.sh` suite once per injected
+    # row, and the rows grew with PR #429's review rounds: on run 32889697083 that one step was
+    # 1932s of the `selfcheck-macos` job, and the two pushes after it were cancelled by that job's
+    # 45-minute ceiling with the step still running. Same disposition as `adopt-readiness-mutation`
+    # (#339, D87): a mutation harness answers a LOGIC question, not a platform one, so it runs
+    # ONCE, here, and `selfcheck-macos` skips it by name — which makes the step below the harness's
+    # ONLY per-PR execution, and is why check-fact-drift.sh pins the invocation. The ceiling is
+    # sized for the harness on a hosted runner's core count, not inherited from a job that runs
+    # no harness.
+    timeout-minutes: 60
+    steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      - name: Pattern-ledger predicates — grammar, readers, promotion, lock, prompt budget (#421)
+        run: bash scripts/check-pattern-ledger.sh
+
+      # ...and the suite is a guard, so every load-bearing decision is injected with its own defect
+      # and must make it go red ON ITS OWN NAMED WITNESS. Red for the wrong reason is not evidence.
+      - name: Pattern-ledger guards must be able to fail — every row mutated, each observed RED (#421)
+        run: bash scripts/check-pattern-ledger.sh --mutation
+
   practice-index:
     name: practice-index
     runs-on: ubuntu-26.04
@@ -1363,20 +1398,24 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less ONE step. shellcheck is installed above for a reason: selfcheck
+      # The offline suite, less TWO steps. shellcheck is installed above for a reason: selfcheck
       # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
       # false in precisely the silent way this repo keeps writing guards against.
       #
-      # `--skip adopt-readiness-mutation` (#339): that step answers a LOGIC question, not a platform
-      # one, and the ubuntu `adopt` job below already runs it on every PR — where check-fact-drift.sh
-      # pins the invocation, because after this skip that job is its ONLY per-PR execution. The
-      # non-mutation `adopt-readiness` half still runs here. Measurements and rationale: D87.
+      # `--skip adopt-readiness-mutation` (#339) and `--skip pattern-ledger-mutation` (PR #429):
+      # each answers a LOGIC question, not a platform one, and an ubuntu job runs it on every PR —
+      # `adopt` for the first, `pattern-ledger` for the second — where check-fact-drift.sh pins both
+      # invocations, because after this skip those jobs are each step's ONLY per-PR execution. The
+      # second joined when the ledger harness alone pushed this job past its 45-minute ceiling (runs
+      # 32896004653 and 32904106492, both cancelled with it still running). The non-mutation
+      # `adopt-readiness` and `pattern-ledger` halves still run here. Measurements and rationale:
+      # D87.
       #
       # `pipefail` is load-bearing: without it this step reports tee's cheerful 0 and gates nothing.
-      - name: The offline suite on Homebrew bash, less the step the ubuntu leg already runs
+      - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent

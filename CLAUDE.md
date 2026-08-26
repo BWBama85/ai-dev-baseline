@@ -99,13 +99,16 @@ those. The rules below are specific to this repo's code.
    deliberately *not* serialized, is in `scripts/selfcheck.sh`'s "concurrency contract" header. Two
    concurrent selfcheck runs in one checkout are still unsupported (#250).
 
-   **CI runs one step fewer on the macOS leg** (#339). `selfcheck-macos` passes
-   `--skip adopt-readiness-mutation`: that step answers a logic question, not a platform one, and
-   the ubuntu `adopt` job already runs it on every PR — where `check-fact-drift.sh` now pins the
-   invocation, because after the skip that job is its **only** per-PR execution. Measured on run
-   32451790033 (green, `main`, 2026-08-21): the job was 1086s and the run's critical path, of which
-   that one step was 680s. A plain local `bash scripts/selfcheck.sh` still runs the whole registry —
-   the skip is a CI-invocation choice, never a new default.
+   **CI runs two steps fewer on the macOS leg** (#339; the second since PR #429). `selfcheck-macos`
+   passes `--skip adopt-readiness-mutation,pattern-ledger-mutation`: each answers a logic question,
+   not a platform one, and an ubuntu job runs it on every PR — `adopt` for the first, `pattern-ledger`
+   for the second — where `check-fact-drift.sh` pins both invocations, because after the skip those
+   jobs are each step's **only** per-PR execution. Measured on run 32451790033 (green, `main`,
+   2026-08-21): the `adopt` step was 680s of a 1086s job that was the run's critical path; on run
+   32889697083 (2026-08-25) the ledger harness was 1932s of a 39.5-minute macOS job, and the two
+   pushes after it were cancelled by that job's 45-minute ceiling with the step still running. A
+   plain local `bash scripts/selfcheck.sh` still runs the whole registry — the skips are a
+   CI-invocation choice, never a new default.
 
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
@@ -130,7 +133,7 @@ those. The rules below are specific to this repo's code.
      `ubuntu-26.04` and `macos-latest` (`selfcheck-macos`) — and a workstation is one of them. A
      local green speaks for the OS you are sitting at, not for the other runner's image or its
      Homebrew bootstrap;
-   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 31 CI jobs — the 30
+   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 32 CI jobs — the 31
      per-PR jobs plus the scheduled WSL smoke (#2), which reaches it through `wsl -d …` — but is
      omitted from `selfcheck` deliberately: what it adds beyond the entry gate is an assertion
      about the **machine** and about `command -v bash`, which is a CI-image question. (Before

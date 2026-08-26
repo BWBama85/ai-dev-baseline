@@ -7170,6 +7170,17 @@ survive is the part a later reader needs.
   rather than pinned, because an exact number would need re-bumping by every future PR and would
   become the next stale figure.
 
+- **AMENDED 2026-08-25 (PR #429): a SECOND step leaves the macOS leg, by the same rule.** The
+  ledger mutation harness (`pattern-ledger-mutation`) re-runs its whole suite once per row, and the
+  rows grew with #429's review rounds: on run 32889697083 it was 1932s of a 39.5-minute
+  `selfcheck-macos` job, and the two pushes after it (runs 32896004653, 32904106492) were cancelled
+  by that job's 45-minute ceiling with the step still running — the job's own annotation, not a
+  guess. Disposition identical to the first: a logic question runs ONCE, on a new ubuntu
+  `pattern-ledger` job with a ceiling sized for the harness, and `selfcheck-macos` passes
+  `--skip adopt-readiness-mutation,pattern-ledger-mutation`; `check-fact-drift.sh` pins the ubuntu
+  invocation (`pattern-ledger-mutation-wired`) so the skip cannot silently become no coverage. The
+  new job is a new required context; the `reconcile-required-checks` preflight adds it on `main`.
+
 ## D88 — DEVIATION: `max_rounds = 0` removes the resolve loop's only overall bound, by owner decision
 - date:          2026-08-21
 - category:      deviation
