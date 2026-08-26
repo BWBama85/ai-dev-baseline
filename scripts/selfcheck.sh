@@ -840,8 +840,10 @@ add mutation-gate       bash scripts/check-mutation-gate.sh
 # compared, untracked files ignored, renames folded away, quoting hiding a name, the directory
 # boundary blurred, a foreign command accepted, a harness status swallowed — and each workflow
 # file is un-gated in a copy too; the suite must come back red on each row's own witness.
+# BOTH WORKFLOW FILES ARE INPUTS: the rows that un-gate them are literal edits to copies of those
+# files, so a workflow refactor can stop a row applying — a red only this harness would show.
 add mutation-gate-mutation bash scripts/check-mutation-gate.sh --mutation
-inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh
+inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh .github/workflows/ci.yml .github/workflows/mutation-nightly.yml
 
 add install-dry-run     step_install_dry_run
 
