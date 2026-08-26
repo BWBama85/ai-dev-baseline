@@ -14,8 +14,9 @@
 #   12  jq is not on PATH.
 #   18  unreadable — a marker or claim exists but is not a usable record. One factual line.
 #   20  the state directory exists but cannot be read or scanned.
-#   2   usage, or a <dir> / <id> carrying whitespace-class or control characters (they are printed
-#       into a line-structured document, so they are refused rather than rendered).
+#   2   usage, or a <dir> carrying a control/format character, or an <id> carrying whitespace or a
+#       control/format character (both are printed into a line-structured document, so they are
+#       refused rather than rendered; a space in <dir> is ordinary and allowed).
 #
 # Output — declarative `key: value` lines, in this order, each omitted when it has nothing to say:
 #   run-state: /implement-issue run in progress — source <dir>/implement-issue-active.json
@@ -43,7 +44,8 @@
 #     where a string is required — refuses the marker WHOLE (18). Nothing is coerced.
 #   - the blocked marker's `reason` is free text and is never printed; its PATH is.
 #   - artifact paths come from `cleanup-lib.sh state-scan`, the one home for what a state file IS;
-#     a name it refuses to serialize is counted, never printed.
+#     a name it refuses to serialize — or one carrying any control/format character, which it
+#     does not refuse (it rejects only its own delimiters) — is counted, never printed.
 #   - `review-required-marks` counts LINES of review.md carrying the word REQUIRED — recorded
 #     marks, not open findings (the workflow persists no per-finding disposition).
 #   - ownership is `adb_owners_compatible` (either side empty = compatible, as the Stop gate).
@@ -81,14 +83,17 @@ EOF
 
 die() { printf 'run-state: %s\n' "$*" >&2; exit 2; }
 
-# The one character class every printed scalar must be free of: whitespace, C0/C1/DEL controls,
-# and the Unicode format and separator characters that can end a line, hide text or reorder it
-# (U+0085, U+2028/9, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF). Built
-# from code points so this source stays ASCII; one jq definition, prepended to every program.
+# The character class every printed scalar must be free of: C0/C1/DEL controls and the Unicode
+# format and separator characters that can end a line, hide text or reorder it (U+0085,
+# U+2028/9, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF). `unsafe` adds
+# whitespace on top, for the values that are words (branch, owner, session, URL); `unsafe_path`
+# does not, because a checkout path legitimately carries spaces and a space cannot forge a line.
+# Built from code points so this source stays ASCII; one jq definition, prepended to every program.
 _RS_UNSAFE_JQ='
-  def unsafe_re: "[\\s" + ([[0,31],[127,159],[133,133],[8232,8233],[8203,8207],[8234,8238],[8288,8292],[8294,8297],[65279,65279]]
-                          | map(([.[0]]|implode) + "-" + ([.[1]]|implode)) | add) + "]";
-  def unsafe: test(unsafe_re);'
+  def controls: [[0,31],[127,159],[133,133],[8232,8233],[8203,8207],[8234,8238],[8288,8292],[8294,8297],[65279,65279]]
+                | map(([.[0]]|implode) + "-" + ([.[1]]|implode)) | add;
+  def unsafe: test("[\\s" + controls + "]");
+  def unsafe_path: test("[" + controls + "]");'
 
 _RS_MARKER_JQ='
   def str(f; max): (f|type) == "string" and ((f|length) <= max);
@@ -128,6 +133,11 @@ _rs_scan() {
   local scan kind sfile key n
   RS_ARTS=""; RS_ISSUES=""; RS_UNSAFE=0
   scan="$(bash "$_adb_rs_lib/cleanup-lib.sh" state-scan "$1" 2>/dev/null)" || return 1
+  # `state-scan` refuses only tab and newline in a name (its own delimiters); this output is a
+  # line-structured document in a prompt, so every other control or format character is refused
+  # here, by re-classifying such a record as `unsafe` before its path can be printed.
+  scan="$(printf '%s\n' "$scan" | jq -rR "$_RS_UNSAFE_JQ"' split("\t") | select(length >= 2)
+    | if (.[1] | unsafe_path) then "unsafe\t-" else "\(.[0])\t\(.[1])" end' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
     case "$kind" in
@@ -149,11 +159,12 @@ cmd_summary() {
   local dir="$OPT_STATE" sid="$OPT_SESSION"
   [ -n "$dir" ] || die "summary: --state is required"
   command -v jq >/dev/null 2>&1 || { printf 'run-state: jq is required\n' >&2; return 12; }
-  # Both are printed into a line-structured document: a whitespace-class or control character in
-  # either would forge a line, so they are refused before anything is read.
-  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"' if (($d|unsafe) or ($s|unsafe)) then "bad" else "ok" end')" in
+  # Both are printed into a line-structured document: a control or format character in the path,
+  # or any whitespace in the session id, would forge a line — refused before anything is read.
+  # A SPACE in the path is ordinary (`~/My Projects/repo`) and is allowed.
+  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"' if (($d|unsafe_path) or ($s|unsafe)) then "bad" else "ok" end')" in
     ok) : ;;
-    *) die "summary: --state / --session carries whitespace or control characters — refused" ;;
+    *) die "summary: --state carries a control character, or --session whitespace or a control character — refused" ;;
   esac
   [ -e "$dir" ] || return 0
   [ -d "$dir" ] && [ -r "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }

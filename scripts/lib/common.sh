@@ -370,6 +370,24 @@ $(adb_claude_hook_scripts)
 EOF
 }
 
+# The shipped hooks NOT wired whose SCRIPT LINK IS present, one per line — the ones an operator
+# REMOVED from settings.json rather than never had. install.sh links every hook script and wires
+# every entry in one run, so a hook with a link and no entry is a per-hook opt-out (the documented
+# way to disable one), while a hook with neither was shipped after the last install and is simply
+# not there yet. `bin/baseline` asks this before it reads `partial` as an opt-out: a newly shipped
+# hook must be wired by the next self-heal, not preserved as a choice nobody made (PR #443 review).
+# Usage: adb_claude_hooks_missing_deliberate <settings.json> [home]
+adb_claude_hooks_missing_deliberate() {
+  local settings="$1" home="${2:-${HOME:-/root}}" s
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    [ -e "$home/.claude/scripts/$s" ] || [ -L "$home/.claude/scripts/$s" ] || continue
+    printf '%s\n' "$s"
+  done <<EOF
+$(adb_claude_hooks_missing "$settings" "$home")
+EOF
+}
+
 adb_claude_hook_regex() {
   local home="$1" s alt="" esc
   while IFS= read -r s; do

@@ -200,6 +200,15 @@ adb_report_partial_hooks() {
   local src="$1" settings="$HOME/.claude/settings.json"
   adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 0
   [ "$(adb_claude_hooks_state "$settings")" = partial ] || return 0
+  # TWO SHAPES OF PARTIAL (PR #443 review). A hook whose script link exists but whose entry is
+  # gone was REMOVED by the operator; a hook with neither was SHIPPED after the last install and
+  # has simply not arrived yet. Only the first is an opt-out to preserve.
+  if [ -z "$(adb_claude_hooks_missing_deliberate "$settings")" ]; then
+    printf 'baseline: NOTE — newly shipped hook(s) not yet wired: %s\n' \
+      "$(adb_claude_hooks_missing "$settings" | tr '\n' ' ')" >&2
+    printf 'baseline:        No entry was removed by hand, so the next self-heal wires them.\n' >&2
+    return 0
+  fi
   printf 'baseline: NOTE — the hook set is PARTIAL; not wired: %s\n' \
     "$(adb_claude_hooks_missing "$settings" | tr '\n' ' ')" >&2
   printf 'baseline:        Treating that as a deliberate per-hook opt-out and leaving it alone.\n' >&2
@@ -339,7 +348,14 @@ EOF
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
       none)    args+=(--no-hooks) ;;
-      partial) adb_report_partial_hooks "$SRC"; args+=(--no-hooks) ;;
+      partial)
+        adb_report_partial_hooks "$SRC"
+        # `partial` is an opt-out ONLY when some missing hook's entry was removed by hand (its
+        # script link is still there). A set missing only hooks that were never installed — the
+        # shape every upgrade produces the moment a new hook ships — is wired, not preserved:
+        # `--no-hooks` here left the new hook's link in place and its entry unwritten for good,
+        # since nothing later distinguishes that from a choice (PR #443 review).
+        [ -z "$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json")" ] || args+=(--no-hooks) ;;
       *) : ;;   # wired — nothing to preserve, nothing to say
     esac
   fi

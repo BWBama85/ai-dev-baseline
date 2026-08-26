@@ -1108,6 +1108,20 @@ eq "$(adb_claude_hooks_state "$hs_none" "$hs_home")" "none"    "hooks-state: no 
 eq "$(adb_claude_hooks_state "$hs_part" "$hs_home")" "partial" "hooks-state: one hook removed → partial, NOT none (#242)"
 eq "$(adb_claude_hooks_state "$hs_dir/missing.json" "$hs_home")" "none" "hooks-state: absent settings.json → none"
 
+# --- adb_claude_hooks_missing_deliberate (PR #443 review) ------------------------------------
+# `partial` has two shapes and only one is an opt-out: a hook whose entry was REMOVED (its script
+# link is still there) versus a hook that was SHIPPED after the last install (no link, no entry).
+# Reading the second as the first left every newly shipped hook unwired for good.
+mkdir -p "$hs_home/.claude/scripts"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: a missing hook with NO script link was never installed — not an opt-out"
+: > "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
+  "hooks-deliberate: a missing hook whose script link exists was removed by hand — an opt-out"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_home" | wc -l | tr -d ' ')" "0" \
+  "hooks-deliberate: a fully wired set names nothing"
+rm -f "$hs_home/.claude/scripts/precommit-gate.sh"
+
 # REGRESSION (PR #246 review): a basename search also matched a command the OPERATOR wrote. A
 # deliberately --no-hooks install carrying its own /custom/precommit-gate.sh would read as
 # `partial`, and the next self-heal would wire the whole baseline set they opted out of.

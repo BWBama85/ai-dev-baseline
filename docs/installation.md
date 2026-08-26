@@ -132,6 +132,12 @@ real `$HOME`) into `~/.claude/settings.json`:
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
 | `SessionStart` (matcher `compact\|resume`) | `session-context.sh` | Reads an in-flight `/implement-issue` run's state back into context after compaction or resume — see [A run survives compaction](#a-run-survives-compaction). |
 
+Removing a hook's entry from `~/.claude/settings.json` is the per-hook opt-out, and `baseline
+update` preserves it: a hook whose script link is installed but whose entry is gone is left alone
+(the set is reported as PARTIAL). A hook shipped **after** your last install has neither an entry
+nor a script link, and that is not a choice anybody made — the next `baseline update` links and
+wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart).
+
 ### Run markers are session-owned
 
 `/implement-issue` records its in-flight run in `.claude/state/implement-issue-active.json`, and

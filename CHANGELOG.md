@@ -29,6 +29,14 @@ only by a published release, which is what these entries are the notes for.
   `compact|resume` that injects the summary as `additionalContext`, with a provenance header as
   its first line, capped below the harness's 10,000-character hook-output limit, reading stdin
   with a bound, and exiting 0 on every path it reaches (`ADB_SESSION_CONTEXT=off` disables it).
+  A checkout whose path carries a space is summarised like any other; a name `state-scan` accepts
+  but a prompt line cannot carry (a control or format character) is counted, never printed.
+
+  **An upgrade wires a newly shipped hook.** `baseline update` used to read a hook set missing
+  only the new hook as a per-hook opt-out and pass `--no-hooks` to the repair — linking the
+  script and never wiring it. `adb_claude_hooks_missing_deliberate` now separates an entry the
+  operator removed (its script link is still there) from a hook that was never installed, and
+  only the first is preserved.
   Every root
   doc now carries a `# Compact instructions` block asking the compactor to preserve what only the
   conversation held: the modified files, the gate result, each REQUIRED finding's disposition.

@@ -73,7 +73,7 @@ if [ "$MODE" = mutation ]; then
     '  | .' \
     'a phase outside [a-z_] is refused whole'
   check_mut unsafe-class-dropped \
-    '  def unsafe: test(unsafe_re);' \
+    '  def unsafe: test("[\\s" + controls + "]");' \
     '  def unsafe: false;' \
     'a newline in branch is refused whole'
   check_mut branch-type-unchecked \
@@ -113,9 +113,13 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     'an expired claim is nothing to say'
   check_mut unsafe-path-accepted \
-    '    *) die "summary: --state / --session carries whitespace or control characters — refused" ;;' \
+    '    *) die "summary: --state carries a control character, or --session whitespace or a control character — refused" ;;' \
     '    *) : ;;' \
     'a --state path with a newline is refused'
+  check_mut control-name-printed \
+    '    | if (.[1] | unsafe_path) then "unsafe\t-" else' \
+    '    | if false then "unsafe\t-" else' \
+    'a control character in an artifact name is counted, never printed'
   prep_lib() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts agents base >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/run-state.sh"
@@ -215,6 +219,12 @@ has "$OUT" $'\nissues: #431' "1b issue number"
 has "$OUT" $'\npr: https://github.com/o/r/pull/9' "1b prUrl is rendered"
 has "$OUT" "artifacts: $d/gap-prompt.txt, $d/gaps-retry.md, $d/gaps.md, $d/review.md" "1b artifacts are named by path, every family member, sorted"
 hasnt "$OUT" "evil.md" "1b only the records state-scan classifies are named"
+# A name state-scan accepts (it refuses only its own delimiters) but this document cannot carry.
+printf 'z' > "$d/gaps-$(printf 'a\x1bb').md"
+summary "$d" "$SID_A"
+has "$OUT" $'\nunsafe-names: 1' "1b a control character in an artifact name is counted, never printed"
+hasnt "$OUT" $'\x1b' "1b ...and the byte does not reach the output"
+rm -f "$d"/gaps-a*b.md
 has "$OUT" $'\nreview-required-marks: 2' "1b review-required-marks counts the REQUIRED lines (word-bounded)"
 hasnt "$OUT" "INJECT-ME" "1b no artifact TEXT reaches the output"
 hasnt "$OUT" "$SID_A" "1b the owner id is not printed for the owner either"
@@ -317,6 +327,11 @@ OUT="$(bash "$RS" summary --state "$(printf '%s\nforged: attacker' "$d")" 2>/dev
 eq "$RC" 2 "1i a --state path with a newline is refused (2)"; eq "$OUT" "" "1i ...and nothing is printed"
 OUT="$(bash "$RS" summary --state "$d" --session "a b" 2>/dev/null)"; RC=$?
 eq "$RC" 2 "1i a --session with whitespace is refused (2)"
+OUT="$(bash "$RS" summary --state "$(printf '%s\rx' "$d")" 2>/dev/null)"; RC=$?
+eq "$RC" 2 "1i a --state path with a carriage return is refused (2)"
+sp="$work/with space/state"; mkdir -p "$sp"; marker "$sp" "$LIVE"
+summary "$sp" "$SID_A"; eq "$RC" 0 "1i a --state path with an ordinary SPACE is accepted (a checkout under ~/My Projects)"
+has "$OUT" "source $sp/implement-issue-active.json" "1i ...and rendered as given"
 
 # 1j. no jq: a distinct code, never a benign absence.
 nojq="$work/nojq"; mkdir -p "$nojq"
@@ -393,6 +408,8 @@ hook "$(payload compact "$SID_A" "$E")"; eq "$RC" 0 "2g no run: exit 0"; eq "$OU
 N="$work/norepo"; mkdir -p "$N"
 hook "$(payload compact "$SID_A" "$N")"; eq "$RC" 0 "2g outside a repo: exit 0"; eq "$OUT" "" "2g outside a repo: nothing injected"
 hook "$(payload compact "$SID_A" "$R/sub")"; has "$(ctx)" $'\nphase: pushed' "2g a subdirectory cwd resolves to the repo root's state"
+RS2="$work/repo with space"; mkdir -p "$RS2/.claude/state"; check_git "$RS2" init -q; marker "$RS2/.claude/state" "$LIVE"
+hook "$(payload compact "$SID_A" "$RS2")"; has "$(ctx)" $'\nphase: pushed' "2g a checkout whose path carries a space is summarised"
 
 # 2h. degraded installs — always exit 0, never noise on stdout.
 cp "$H/lib/common.sh" "$work/common.bak"; printf 'this is not valid shell ((((\n' > "$H/lib/common.sh"

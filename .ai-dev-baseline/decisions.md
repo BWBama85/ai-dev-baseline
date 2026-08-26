@@ -7475,7 +7475,11 @@ survive is the part a later reader needs.
              the same phase appends nothing — because a resumed session re-runs the step it was on.
              The independent review of this PR (codex) is what turned the first cut's C0-only
              filter, `tostring` coercion, printed blocked reason, unbounded output and twice-read
-             claim into these rules.
+             claim into these rules; its second round added three more: a path may carry a space
+             (only controls forge a line), a name `state-scan` accepts can still carry a control
+             character and is counted rather than printed, and `baseline update` must not read a
+             NEWLY SHIPPED hook as a per-hook opt-out — `adb_claude_hooks_missing_deliberate` tells
+             an entry the operator removed (script link present) from one that never existed.
              The root docs gain `# Compact instructions` (`base/practices/compact-instructions.md`)
              telling the compactor what only the conversation held. Six gap-analysis findings were
              settled from the repo rather than escalated, and each is a rule here:

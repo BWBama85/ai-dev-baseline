@@ -297,6 +297,9 @@ hook_settings() {   # hook_settings <state>: write a settings.json in the fixtur
   for s in "${hooks[@]}"; do
     # `partial` omits precommit-gate.sh — the exact edit that motivated #242.
     [ "$state" = partial ] && [ "$s" = "precommit-gate.sh" ] && continue
+    # `shipped` omits session-context.sh — the shape an upgrade produces when a NEW hook lands
+    # (PR #443 review): no entry yet, and (the case below removes it) no script link yet either.
+    [ "$state" = shipped ] && [ "$s" = "session-context.sh" ] && continue
     out="${out}$fh/.claude/scripts/$s
 "
   done
@@ -330,6 +333,21 @@ out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
 has "$out" "PARTIAL" "hooks partial → the run says so out loud"
 has "$out" "precommit-gate.sh" "hooks partial → the run names the hook that is not wired"
 has "$out" "newly shipped hook is not wired" "hooks partial → the run states the residue, not just the state"
+rm -f "$fh/.claude/settings.json"
+
+# NEWLY SHIPPED IS NOT AN OPT-OUT (PR #443 review). A hook with neither an entry nor a script link
+# was shipped after the last install; reading that `partial` as a per-hook removal passed
+# `--no-hooks` to the repair, which linked the script and never wired it — for good, since
+# nothing afterwards distinguishes the result from a choice. The missing link is a broken install,
+# so the repair runs, and it must run WITHOUT --no-hooks so the hook is wired.
+reset_src; : > "$work/install.log"; hook_settings shipped
+mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$out" "newly shipped hook(s) not yet wired" "hooks newly shipped → reported as shipped, not as an opt-out"
+hasnt "$out" "deliberate per-hook opt-out" "hooks newly shipped → ...and not as the opt-out residue"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "1" "hooks newly shipped → the installer IS re-run (the missing link is a broken install)"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks newly shipped → ...WITHOUT --no-hooks, so the new hook gets wired"
+mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 
 
