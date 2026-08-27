@@ -203,4 +203,6 @@ One line per resolved review thread, newest last.
 - `markup-injection` `scripts/lib/run-state.sh:190` `14fbec4` `PRRT_kwDOTfywrM6cp7bn` PR #443 2026-08-27 — a filename inside the character grammar can still be prose; only opaque artifact names are rendered, the rest counted
 - `partial-validation` `scripts/lib/run-state.sh:130` `5d536eb` `PRRT_kwDOTfywrM6cqbIC` PR #443 2026-08-27 — the prUrl host class admitted a host of dots; hostname labels and a real port range are now required
 - `third-party-default` `agents/claude/scripts/session-context.sh:91` `5d536eb` `PRRT_kwDOTfywrM6cqbIE` PR #443 2026-08-27 — Claude merges hooks across settings scopes, so a pinned project ran the global and vendored hook both; the global one now defers
+- `partial-validation` `scripts/lib/run-state.sh:122` `8ce1bda` `PRRT_kwDOTfywrM6cqswO` PR #443 2026-08-27 — prUrl accepted any https path; the workflow-written /owner/repo/pull/n route is now required
+- `third-party-default` `agents/claude/scripts/session-context.sh:107` `8ce1bda` `PRRT_kwDOTfywrM6cqswT` PR #443 2026-08-27 — the deferral ignored the vendored group matcher; Claude dispatches a group only when its matcher covers the source, so deferring to an excluded group was zero injections
 <!-- adb:hits:end -->
