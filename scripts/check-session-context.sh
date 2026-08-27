@@ -338,8 +338,8 @@ if [ "$MODE" = mutation ]; then
   # (every byte the wire carries, a two-byte newline included); the 30-cap wc -c sweep, the
   # backslash fixture and the ceiling/floor rows are what observe the bound.
   check_mut payload-multi-value-accepted \
-    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" then .[0][$k] else empty end'"'"'' \
-    'jq -j --arg k "$1" '"'"'if type == "object" and (.[$k]|type) == "string" then .[$k] else empty end'"'"'' \
+    'jq -js --arg k "$1" '"'"'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" and ((.[0][$k] | contains("\u0000")) | not) then .[0][$k] else empty end'"'"'' \
+    'jq -j --arg k "$1" '"'"'if type == "object" and (.[$k]|type) == "string" and ((.[$k] | contains("\u0000")) | not) then .[$k] else empty end'"'"'' \
     'two payload objects'
   # NO ROW for field coercion any more: a coerced `cwd` (`0` -> "0") is relative and the absolute-
   # path check refuses it first, and a coerced `source` never spells a source this hook acts on —
