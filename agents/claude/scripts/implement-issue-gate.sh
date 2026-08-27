@@ -238,6 +238,17 @@ fi
 # `$(<file)` not `$(cat file)`: a builtin read costs no fork, and this runs at EVERY turn-end.
 # The braces carry the redirection because bash reports a missing file itself; the result is
 # empty either way, which is the case the line below wants.
+# BOUNDED BEFORE IT IS READ (PR #443 review, the run-state reader's sibling): this runs at every
+# turn-end in whatever checkout the session is in, and `$(<file)` would load a committed or
+# leftover multi-megabyte "marker" into a variable. A marker the workflow writes is a few hundred
+# bytes; a file over 65536 is not one, and is reported and left unread — passing, exactly as a
+# malformed marker is, because a file that is not a marker is not a run to push along.
+_marker_bytes="$(wc -c < "$marker" 2>/dev/null | tr -d ' ')" || _marker_bytes=""
+case "$_marker_bytes" in ''|*[!0-9]*) _marker_bytes=0 ;; esac
+if [ "$_marker_bytes" -gt 65536 ]; then
+  printf 'implement-issue-gate: %s is %s bytes — larger than any marker the workflow writes; not read — passing; delete it if stale\n' "$marker" "$_marker_bytes" >&2
+  exit 0
+fi
 { marker_snap="$(<"$marker")"; } 2>/dev/null
 [ -n "$marker_snap" ] || exit 0
 

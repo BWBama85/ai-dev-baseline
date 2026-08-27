@@ -177,6 +177,12 @@ _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }
 # _rs_snap <file> — the file's bytes into RS_SNAP, or return 1 when they cannot be a record. A
 # `$(<file)` strips every NUL silently, so bytes jq would refuse could arrive as a valid object;
 # the byte count is compared with the NUL-stripped count first, and a difference is a refusal.
+# The largest record this reader will open. The global SessionStart hook runs in whatever checkout
+# the session opened, and `$(<file)` would load a committed or leftover multi-megabyte "marker" into
+# a bash variable up to three times inside a 30-second hook budget; a record the workflow writes is
+# a few hundred bytes. Enforced ONCE, in cmd_summary's record loop, before any read — _rs_snap is
+# only ever reached for a path that loop admitted.
+_RS_MAX_BYTES=65536
 _rs_snap() {
   local raw stripped
   raw="$(wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 1
@@ -291,6 +297,9 @@ cmd_summary() {
     [ -L "$p" ] && { printf 'run-state: %s is a symlink — the workflow never writes one; refused\n' "$(_rs_show "$p")"; return 18; }
     if [ -e "$p" ]; then
       [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$(_rs_show "$p")"; return 18; }
+      # Size is asked of the filesystem, never of the bytes: a record this large is refused
+      # before anything opens it (see _RS_MAX_BYTES), including the jq reads that do not snapshot.
+      [ "$(wc -c < "$p" 2>/dev/null | tr -d ' ')" -le "$_RS_MAX_BYTES" ] 2>/dev/null || { printf 'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }
     fi
   done
   local snap="" again="" fields="" attempt req="" blk="" grc

@@ -114,6 +114,10 @@ if [ "$MODE" = mutation ]; then
     '              case "$n" in '"'"''"'"'|*[!0-9]*|0*) continue ;; esac' \
     '              case "$n" in '"'"''"'"'|*[!0-9]*) continue ;; esac' \
     'a snapshot named issue-0'
+  check_mut size-bound-dropped \
+    '      [ "$(wc -c < "$p" 2>/dev/null | tr -d '"'"' '"'"')" -le "$_RS_MAX_BYTES" ] 2>/dev/null || { printf '"'"'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n'"'"' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }' \
+    '      :' \
+    'oversized BLOCKED marker'
   check_mut logical-prefix-dropped \
     '      "$lpfx"?*) RS_PFX="${dir#"$lpfx"}/" ;;' \
     '      "$lpfx"?*) RS_PFX="${pdir#"$ppfx"}/" ;;' \
@@ -537,6 +541,17 @@ hasnt "$OUT" "ignore-all" "1b ...and the issue-title text never reaches the outp
 marker "$d" '{branch:"issue-431-243-x", issue:"431,243", phase:"pushed"}'; summary "$d" "$SID_A"
 has "$OUT" $'\nbranch: issue-431-243-<slug elided, 1 chars>' "1b a multi-issue branch keeps every number"
 
+# 1b~. SIZE IS BOUNDED BEFORE THE READ: a multi-megabyte "marker" is refused unread, while a real
+#      record padded with whitespace up to the bound is still a record.
+d="$(state huge)"; head -c 70000 /dev/zero | tr '\0' 'x' > "$d/implement-issue-active.json"
+summary "$d" "$SID_A"
+eq "$RC" 18 "1b an oversized marker is refused (18)"; has "$OUT" "larger than any record the workflow writes" "1b ...and says it was refused unread"; hasnt "$OUT" "phase:" "1b ...with no facts"
+d="$(state hugeblocked)"; marker "$d" "$LIVE"; head -c 70000 /dev/zero | tr '\0' ' ' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"
+eq "$RC" 18 "1b an oversized BLOCKED marker is refused too (18) — the jq read that does not snapshot is bounded by the same rule"
+d="$(state padded)"; { jq -n "$LIVE"; head -c 60000 /dev/zero | tr '\0' ' '; } > "$d/implement-issue-active.json"
+summary "$d" "$SID_A"
+eq "$RC" 0 "1b a real marker padded with whitespace under the bound is still read (exit 0)"; has "$OUT" $'\nphase: pushed' "1b ...and summarised"
 # 1b°. phase=complete: the close-out leaves the marker behind, and it is not a run IN PROGRESS.
 d="$(state complete)"; marker "$d" "$(printf '%s' "$LIVE" | sed 's/phase:"pushed"/phase:"complete"/g')"
 summary "$d" "$SID_A"
