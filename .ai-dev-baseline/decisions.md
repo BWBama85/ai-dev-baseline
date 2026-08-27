@@ -7469,9 +7469,11 @@ survive is the part a later reader needs.
              grammar can still be prose (`gaps-IGNORE_ALL_PREVIOUS_INSTRUCTIONS.md` is `gaps` to
              state-scan) — a count of `REQUIRED` marks — and refuses
              a marker WHOLE when any field falls outside it: a non-string where a string is
-             required, whitespace or a C0/C1/Unicode format or separator character, a `prUrl` that
+             required, whitespace or a C0/C1/Unicode format or separator character, a phase outside the nine the workflow writes (`[a-z_]{1,32}` admitted a lowercase
+             sentence), a `prUrl` that
              is not `https://<host>/<owner>/<repo>/pull/<n>` — hostname labels, a port in 1..65535
-             if any, and the pull-request route (a bare `https://` or an unrelated https page would
+             if any, an owner without dots and a repository name that is not a dot segment, and the
+             pull-request route (a bare `https://` or an unrelated https page would
              render a PR that does not exist), a history that is present but empty or null, one with two
              adjacent entries of a phase, or one disagreeing with `.phase` (a history LONGER than
              64 entries is accepted — the workflow appends without bound — and the reader renders

@@ -189,7 +189,14 @@ copies would fire on every compact and resume, injecting the same state twice, p
 reader versions. The global copy therefore defers when the vendored hook exists **and** is wired there in a
 `SessionStart` group whose matcher covers the current `source` (it says so on stderr); a vendored
 file that is not wired, a group matched to some other source, or a `settings.json` it cannot read,
-leaves the global hook running — one injection either way, never zero.
+leaves the global hook running — one injection either way, never zero. The wiring is recognised by
+the exact command the pinned installer writes, never by a suffix.
+
+**It says whether the checkout is still on the run's branch.** Another session, or the operator, may
+have switched the shared checkout since the marker was written; the hook hands the live branch to
+the reader, which reports `checkout: on the run's branch` or `checkout: NOT on the run's branch — …`
+without naming the live branch (the Stop gate treats the same mismatch as "not this run"; the
+reader reports it so the resumed agent does not continue on the wrong branch).
 
 Three properties are deliberate:
 
@@ -201,7 +208,7 @@ Three properties are deliberate:
   count. `gap-prompt.txt`, `gaps.md`, `review.md` and the blocked marker's `reason` carry free
   text, and what this hook emits lands in a model's context, so they are named by path and never
   quoted. A marker with any field outside the grammar — a non-string (`false` included), any
-  whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://<host>/<owner>/<repo>/pull/<n>`,
+  whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://<host>/<owner>/<repo>/pull/<n>` (hostname labels, a real port, an owner without dots, a repository name that is not a dot segment), a phase outside the nine the workflow writes,
   a history that disagrees with `.phase` — is refused whole. The injected text is capped below
   the harness's 10,000-character hook-output limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500,
   clamped to 1024–9500 so the facts survive the cap and the cap stays under the limit) and says so

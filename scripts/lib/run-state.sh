@@ -3,7 +3,7 @@
 # about the /implement-issue run live in a state directory. Design and rationale: decision D92.
 #
 # Usage:
-#   run-state.sh summary --state <dir> [--session <id>]
+#   run-state.sh summary --state <dir> [--session <id>] [--branch <name>]
 #   run-state.sh -h | --help
 #
 # Exit codes:
@@ -23,6 +23,7 @@
 #   phase: <phase>
 #   phase-history: [(N earlier omitted) ]<phase>@<at>, …   (when the marker carries one, #243; last 64)
 #   branch: <branch>                                     (an issue-<n>-<slug> branch: slug elided)
+#   checkout: on the run's branch | NOT on the run's branch — …   (when --branch names the live checkout)
 #   issues: #<n>, #<n>
 #   pr: <url>                                            (when prUrl is present)
 #   blocked: yes — reason recorded in <dir>/implement-issue-blocked.json
@@ -41,7 +42,7 @@
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars — `owner` may be ABSENT (unowned), never present and
 #     empty or null; a branch of the workflow's own shape `issue-<n>[-<n>…]-<slug>` is RENDERED
 #     with the slug elided, because the slug is cut from the issue title (third-party text);
-#     issue: `n(,n)*`; phase: `[a-z_]{1,32}`;
+#     issue: `n(,n)*`; phase: one of the nine the workflow writes;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: >=1 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase` and in which no
 #     two ADJACENT entries share a phase (every writer suppresses that append); the LAST 64 are
@@ -88,7 +89,7 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 
 usage() {
   cat <<'EOF'
-usage: run-state.sh summary --state <dir> [--session <id>]
+usage: run-state.sh summary --state <dir> [--session <id>] [--branch <name>]
        run-state.sh -h | --help
 
 Print the facts of the /implement-issue run live in <dir> — phase, phase history, branch,
@@ -117,14 +118,17 @@ _RS_MARKER_JQ='
   one
   | def str(f; max): (f|type) == "string" and ((f|length) <= max);
   def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
+  # The phases /implement-issue writes (base/workflows/implement-issue.md, the marker shape). A phase
+  # outside this list is refused whole: `[a-z_]{1,32}` admitted a lowercase sentence.
+  def phase_ok: IN("branched", "implemented", "gates_green", "committed", "code_reviewed", "triaged", "pushed", "pr_opened", "complete");
   # A PR URL: hostname LABELS (a letter or digit at each end, no empty label — `https://./x` is not a
   # host), an optional port in 1..65535, then a non-empty path in closed classes.
-  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*$");
+  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*/pull/[1-9][0-9]*$");
   if type != "object" then error("not an object") else . end
   | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
   | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end
-  | if (str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))) then . else error("phase") end
+  | if (str(.phase; 32) and (.phase | phase_ok)) then . else error("phase") end
   | (has("owner")) as $had_owner
   | .owner = (if $had_owner then .owner else "" end)
   | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end
@@ -135,7 +139,7 @@ _RS_MARKER_JQ='
   | if (has("phaseHistory") | not) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
     elif ((.h|length) == 0) then error("phaseHistory")
-    elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | test("^[a-z_]{1,32}$"))
+    elif ([.h[] | (type == "object") and str(.phase; 32) and (.phase | phase_ok)
                    and str(.at; 20) and (.at | iso)] | all | not) then error("phaseHistory")
     elif ((.h|length) > 0 and (.h[-1].phase != .phase)) then error("phaseHistory")
     elif ([.h[].phase] as $p | any(range(1; $p|length); $p[.] == $p[. - 1])) then error("phaseHistory")
@@ -223,9 +227,9 @@ cmd_summary() {
   # Both are printed into a line-structured document: a control or format character in the path,
   # or any whitespace in the session id, would forge a line — refused before anything is read.
   # A SPACE in the path is ordinary (`~/My Projects/repo`) and is allowed.
-  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"' if (($d|unsafe_path) or ($s|unsafe)) then "bad" else "ok" end')" in
+  case "$(jq -rn --arg d "$dir" --arg s "$sid" --arg b "$OPT_BRANCH" "$_RS_UNSAFE_JQ"' if (($d|unsafe_path) or ($s|unsafe) or ($b|unsafe)) then "bad" else "ok" end')" in
     ok) : ;;
-    *) die "summary: --state carries a control character, or --session whitespace or a control character — refused" ;;
+    *) die "summary: --state carries a control character, or --session/--branch whitespace or a control character — refused" ;;
   esac
   # `-L` as well as `-e`: a DANGLING symlink at the state path is a damaged path, not an absent
   # one, and must reach the unreadable verdict below rather than "nothing to say".
@@ -305,6 +309,19 @@ EOF
     printf 'phase: %s\n' "$m_phase"
     [ -n "$m_hist" ] && printf 'phase-history: %s\n' "$m_hist"
     printf 'branch: %s\n' "$m_branch"
+    # THE CHECKOUT MAY HAVE LEFT THE RUN'S BRANCH — another session switched it, or the operator did —
+    # and a marker restored without saying so is how a resumed agent continues on the wrong branch.
+    # The Stop gate treats the same mismatch as "not this run"; here it is REPORTED, and the live
+    # branch is never named: it is text nothing validated.
+    if [ "$OPT_BRANCH_SET" = 1 ]; then
+      if [ -z "$OPT_BRANCH" ]; then
+        printf 'checkout: NOT on the run'"'"'s branch — HEAD is detached or unreadable; check out the branch above before acting on this state\n'
+      elif [ "$OPT_BRANCH" = "$m_branch_raw" ]; then
+        printf 'checkout: on the run'"'"'s branch\n'
+      else
+        printf 'checkout: NOT on the run'"'"'s branch — the checkout is on another branch (not named here); switch back before acting on this state\n'
+      fi
+    fi
     printf 'issues: %s\n' "$(_rs_issue_list "$m_issue")"
     [ -n "$m_pr" ] && printf 'pr: %s\n' "$m_pr"
     [ "$blk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$blocked"
@@ -342,7 +359,7 @@ EOF
 }
 
 # --- dispatch -------------------------------------------------------------------------------------
-OPT_STATE=""; OPT_SESSION=""
+OPT_STATE=""; OPT_SESSION=""; OPT_BRANCH=""; OPT_BRANCH_SET=0
 [ "$#" -ge 1 ] || { usage; exit 2; }
 SUB="$1"; shift
 case "$SUB" in -h|--help) usage; exit 0 ;; esac
@@ -350,6 +367,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --state)   [ "$#" -ge 2 ] || die "$SUB: --state needs a value";   OPT_STATE="$2";   shift 2 ;;
     --session) [ "$#" -ge 2 ] || die "$SUB: --session needs a value"; OPT_SESSION="$2"; shift 2 ;;
+    --branch)  [ "$#" -ge 2 ] || die "$SUB: --branch needs a value";  OPT_BRANCH="$2"; OPT_BRANCH_SET=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)         die "$SUB: unknown option '$1'" ;;
   esac

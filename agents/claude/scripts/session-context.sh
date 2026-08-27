@@ -107,8 +107,10 @@ if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
   # ...and only when the group that wires it would FIRE for this source. A matcher made of letters,
   # digits, `_ - space , |` is an exact alternative list; anything else is an UNANCHORED regex;
   # absent, empty or `*` covers every source (the vendor's rule, read this run). A group matched
-  # `startup` does not run on `compact`, and deferring to it would be zero injections, not one.
-  if jq -e --arg src "$SOURCE" '[.hooks.SessionStart[]? | select((.matcher // "") as $m | $m == "" or $m == "*" or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null) else ($src | test($m)) end)) | .hooks[]? | select(.type == "command" and (.command|type) == "string" and (.command | test("/\\.claude/adb/session-context\\.sh$")))] | length > 0' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then
+  # `startup` does not run on `compact`, and deferring to it would be zero injections, not one. The
+  # command is compared for EQUALITY with the one string the pinned installer writes: a command that
+  # merely ends in the vendored path (`echo …/session-context.sh`) never runs the hook.
+  if jq -e --arg src "$SOURCE" '[.hooks.SessionStart[]? | select((.matcher // "") as $m | $m == "" or $m == "*" or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null) else ($src | test($m)) end)) | .hooks[]? | select(.type == "command" and .command == "${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh")] | length > 0' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then
     printf 'session-context: deferring to the pinned hook wired in %s/.claude/settings.json — nothing injected here\n' "$REPO_ROOT" >&2
     exit 0
   fi
@@ -120,7 +122,10 @@ SID="${CLAUDE_CODE_SESSION_ID:-}"
 # --- 3. the library --------------------------------------------------------------------------------
 _adb_rs="$(dirname "$0")/lib/run-state.sh"
 [ -f "$_adb_rs" ] || { printf 'session-context: run-state.sh not found beside this hook — nothing injected\n' >&2; exit 0; }
-SUMMARY="$(bash "$_adb_rs" summary --state "$STATE_DIR" --session "$SID" 2>/dev/null)"; RC=$?
+# THE CHECKOUT MAY HAVE LEFT THE RUN'S BRANCH since the marker was written (another session, or
+# the operator). The reader compares and reports; it never names the live branch.
+CUR_BRANCH="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')"
+SUMMARY="$(bash "$_adb_rs" summary --state "$STATE_DIR" --session "$SID" --branch "$CUR_BRANCH" 2>/dev/null)"; RC=$?
 case "$RC" in
   0|4|18|20) : ;;
   *) printf 'session-context: run-state.sh exited %s — nothing injected\n' "$RC" >&2; exit 0 ;;
