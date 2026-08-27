@@ -217,4 +217,8 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/run-state.sh:130` `0709ca9` `PRRT_kwDOTfywrM6cr5X0` PR #443 2026-08-27 — branch and issue list were validated independently though the workflow writes both from one list; a prefix cross-check ties them
 - `partial-validation` `scripts/lib/run-state.sh:215` `0709ca9` `PRRT_kwDOTfywrM6cr5X4` PR #443 2026-08-27 — the pre-branch issue snapshots skipped the positive-canonical rule the marker predicate applies; issue-0.json rendered #0
 - `false-guarantee` `agents/claude/scripts/session-context.sh:106` `0709ca9` `PRRT_kwDOTfywrM6cr5X6` PR #443 2026-08-27 — the deferral promised one injection never zero but never checked the vendored hook could run; executable and libraries now required
+- `third-party-default` `agents/claude/scripts/session-context.sh:166` `f7b2fbe` `PRRT_kwDOTfywrM6csRj5` PR #443 2026-08-27 — the summary was handed to jq as one argv string; the platform argument limit was assumed away; stdin now
+- `partial-validation` `agents/claude/scripts/session-context.sh:91` `f7b2fbe` `PRRT_kwDOTfywrM6csRj7` PR #443 2026-08-27 — cwd was checked for presence and type but not for being absolute; the process cwd chose the checkout
+- `markup-injection` `scripts/lib/run-state.sh:314` `f7b2fbe` `PRRT_kwDOTfywrM6csRj8` PR #443 2026-08-27 — the checkout directory name reached the injection through every absolute path; paths are relative now
+- `partial-validation` `scripts/lib/run-state.sh:245` `f7b2fbe` `PRRT_kwDOTfywrM6csRj-` PR #443 2026-08-27 — the state directory was checked for readability but not for being inside the repository; a symlink read another checkout
 <!-- adb:hits:end -->
