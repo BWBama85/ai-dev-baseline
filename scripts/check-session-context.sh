@@ -392,6 +392,10 @@ if [ "$MODE" = mutation ]; then
     '[ -f "$_adb_vdir/lib/run-state.sh" ] && [ -r "$_adb_vdir/lib/run-state.sh" ]' \
     '[ -f "$_adb_vdir/lib/run-state.sh" ]' \
     'not readable'
+  check_mut artifacts-line-unchunked \
+    '  | def chunk_artifacts: if startswith("artifacts: ")' \
+    '  | def chunk_artifacts: if false' \
+    'artifact paths survive the fold'
   check_mut pinned-matcher-ignored \
     '  if jq -e --arg src "$SOURCE" '"'"'[.hooks.SessionStart[]? | select((.matcher // "") as $m | $m == "" or $m == "*" or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null) else ($src | test($m)) end)) | .hooks[]? | select(.type == "command" and .command == "${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh")] | length > 0'"'"' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then' \
     '  if jq -e --arg src "$SOURCE" '"'"'[.hooks.SessionStart[]? | select(true) | .hooks[]? | select(.type == "command" and .command == "${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh")] | length > 0'"'"' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then' \
@@ -1016,6 +1020,10 @@ has "$C" "(capped at 1024 characters — the state directory is named on the run
 has "$C" "source .claude/state/implement-issue-active.json" "2j ...the source line survives"
 has "$C" $'\nphase: pushed' "2j ...and the phase survives"
 has "$C" $'\nbranch: issue-431-<slug elided' "2j ...(branch)"
+# THE ARTIFACT PATHS SURVIVE THE FOLD: the comma-joined line is longer than the whole budget here,
+# and dropping it whole left a capped context with the notice and not one finding to locate.
+has "$C" $'\nartifacts: .claude/state/' "2j ...and artifact paths survive the fold: the artifacts line is chunked, never dropped whole"
+[ "$(printf '%s\n' "$C" | grep -c '^artifacts: ')" -ge 2 ] && ok || bad "2j ...as more than one bounded artifacts line ($(printf '%s\n' "$C" | grep -c '^artifacts: ') found)"
 printf '%s' "$C" | jq -R . >/dev/null && ok || bad "2j the capped text is still one clean string"
 HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
 C="$(ctx)"; [ "${#C}" -le 1024 ] && ok || bad "2j a cap below the floor is raised to 1024, never exceeded: ${#C} chars"

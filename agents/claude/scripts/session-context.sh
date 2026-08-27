@@ -186,9 +186,21 @@ printf '%s' "$SUMMARY" | jq -cRs --arg h "$HEADER" --argjson max "$MAX" '. as $s
   # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that fits
   # is kept, one that does not is skipped and the next one tried. No line is truncated: every path
   # is relative now, so no single line is unbounded — only the COUNT of artifact lines is.
-  | (if ($ctx | enc) <= $budget then $ctx
+  # THE ARTIFACTS LINE IS CHUNKED FIRST. It is the one line whose length is a COUNT (every path is
+  # relative, so each is bounded, but there may be hundreds), and the per-line test below is
+  # atomic — an artifacts line longer than $keep was dropped whole, and the capped context kept
+  # the cap notice and not one path, though locating the findings is what the hook is for. Each
+  # chunk re-carries the `artifacts: ` key, so every kept line reads on its own. 120 bytes a
+  # chunk: small against the 1024 floor, so what is left after the facts holds several chunks
+  # rather than wasting most of it on one that does not fit.
+  | def chunk_artifacts: if startswith("artifacts: ")
+      then (.[11:] | split(", ") | reduce .[] as $it ([];
+              if length > 0 and (((.[-1] + ", " + $it) | enc) <= 120) then .[:-1] + [.[-1] + ", " + $it]
+              else . + ["artifacts: " + $it] end))
+      else [.] end;
+    (if ($ctx | enc) <= $budget then $ctx
      elif $keep <= 0 then ($cap[1:] | .[:($budget - 2)])
-     else (reduce ($ctx | split("\n") | to_entries[]) as $e ("";
+     else (reduce ($ctx | split("\n") | map(chunk_artifacts) | add | to_entries[]) as $e ("";
              ($e.value) as $l
              | (if . == "" then 0 else (. | enc) + 2 end) as $used   # +2: a newline is `\n` on the wire
              | if $used + ($l | enc) <= $keep then (if . == "" then $l else . + "\n" + $l end)
