@@ -600,6 +600,9 @@ ln -s "$ROOT/agents/claude/scripts/precommit-gate.sh" "$bh/.claude/scripts/preco
 # adb_link displaces both (backup; outright replacement) — a rollback must put both back.
 printf 'my own hook\n' > "$bh/.claude/scripts/session-context.sh"
 ln -s /elsewhere/my-gate.sh "$bh/.claude/scripts/state-claim-gate.sh"
+# ...and a foreign symlink whose TARGET ENDS IN A NEWLINE — valid on every supported filesystem, and
+# exactly what a bare `$(readlink …)` would strip before recording it (PR #443 review).
+ln -s $'/elsewhere/newline-target.sh\n' "$bh/.claude/scripts/implement-issue-gate.sh"
 # The one call that already asserted its status — and still discarded the WARN that says WHICH of
 # wire_hooks' five branches refused. `no "$rc"` passes identically for "not valid JSON", "could not
 # read settings.hooks.json" and "could not write", so a regression that swapped one refusal for
@@ -614,8 +617,8 @@ eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.j
 # so links this run created would make every later `baseline update` pass --no-hooks and the new
 # hook would stay unwired for good. The links this run ADDED are taken back; the pre-existing one
 # is not this run's to judge.
-if [ -e "$bh/.claude/scripts/implement-issue-gate.sh" ] || [ -L "$bh/.claude/scripts/implement-issue-gate.sh" ]; then
-  bad "a failed wiring must take back the hook links this run added (implement-issue-gate.sh is still linked)"
+if [ -e "$bh/.claude/scripts/session-currency.sh" ] || [ -L "$bh/.claude/scripts/session-currency.sh" ]; then
+  bad "a failed wiring must take back the hook links this run added (session-currency.sh is still linked)"
 else ok; fi
 # ...AND RESTORE WHAT EACH ONE DISPLACED (PR #443 review): deleting only the new link leaves the
 # operator's own hook sitting in the backup directory after an install that reported failure.
@@ -624,6 +627,11 @@ if [ -f "$bh/.claude/scripts/session-context.sh" ] && [ ! -L "$bh/.claude/script
 else bad "a failed wiring must restore the operator's real file that the fresh link displaced"; fi
 eq "$(readlink "$bh/.claude/scripts/state-claim-gate.sh" 2>/dev/null)" "/elsewhere/my-gate.sh" \
   "a failed wiring must restore the operator's foreign symlink that the fresh link replaced"
+# `-n` on the read too: without it BSD/GNU readlink's own newline handling masks the difference
+# between the exact target and the stripped one (observed: a bare readlink passed on the mutant).
+_nl="$(readlink -n "$bh/.claude/scripts/implement-issue-gate.sh" 2>/dev/null; printf x)"
+eq "$_nl" $'/elsewhere/newline-target.sh\nx' \
+  "a failed wiring restores a foreign symlink target BYTE-EXACT, trailing newline included"
 if [ -L "$bh/.claude/scripts/precommit-gate.sh" ]; then ok
 else bad "a failed wiring must leave a hook link that existed BEFORE this run alone"; fi
 has "$INSTALLER_OUT" "taken back" "...and SAYS the fresh links were taken back"

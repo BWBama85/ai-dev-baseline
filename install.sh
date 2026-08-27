@@ -109,7 +109,9 @@ for _adb_arg in "$@"; do
   fi
 done
 
-BACKUP_DIR="$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)"
+# ADB_BACKUP_DIR: a caller that must find what this run displaced (bin/baseline, after it unlinks
+# a hook this run added) names the directory instead of guessing a timestamp.
+BACKUP_DIR="${ADB_BACKUP_DIR:-$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)}"
 WIRE_HOOKS=1
 AGENTS=()
 
@@ -153,15 +155,19 @@ install_claude() {
   # ...taken back to what stood there: adb_link moves a real file into $BACKUP_DIR and REPLACES a
   # foreign symlink outright, so each fresh destination's prior shape is noted here (its symlink
   # target, or nothing) and put back on rollback — a failed install must not leave the operator's
-  # own hook displaced.
-  local fresh="" s dest prior tab
-  tab="$(printf '\t')"
+  # own hook displaced. ARRAYS, and a sentinel on the readlink: a target may end in a newline,
+  # which `$(…)` alone would strip and a line-structured record could not carry.
+  local -a fresh_name=() fresh_prior=()
+  local s dest prior
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     dest="$HOME/.claude/scripts/$s"
     adb_link_into "$dest" "$REPO" && continue
-    prior=""; [ -L "$dest" ] && prior="$(readlink "$dest")"
-    fresh="$fresh$s$tab$prior"$'\n'
+    prior=""
+    # `readlink -n`: GNU readlink appends a newline of its own and BSD does not, so only `-n` plus
+    # the sentinel yields the target's exact bytes on both.
+    if [ -L "$dest" ]; then prior="$(readlink -n "$dest"; printf x)"; prior="${prior%x}"; fi
+    fresh_name+=("$s"); fresh_prior+=("$prior")
   done <<EOF
 $(adb_claude_hook_scripts)
 EOF
@@ -174,23 +180,28 @@ EOF
   # adb_self_heal — which gates only on that status — would report "update complete" while the
   # gates sat silently unwired. (A missing jq deliberately returns 0; see wire_hooks.)
   if [ "$WIRE_HOOKS" -eq 1 ]; then
-    wire_hooks || {
-      rc=1
-      while IFS="$tab" read -r s prior; do
-        [ -n "$s" ] || continue
-        dest="$HOME/.claude/scripts/$s"
+    local wrc=0 i
+    wire_hooks || wrc=$?
+    # NOT WIRED — failed (rc 1, the install fails too) or SKIPPED for want of jq (rc 3, a documented
+    # degradation that does not fail the install). Either way the links this run added would be an
+    # owned link with no entry, the per-hook opt-out's exact shape, so both take them back.
+    if [ "$wrc" -ne 0 ]; then
+      [ "$wrc" -eq 3 ] || rc=1
+      for (( i = 0; i < ${#fresh_name[@]}; i++ )); do
+        dest="$HOME/.claude/scripts/${fresh_name[$i]}"
         adb_link_into "$dest" "$REPO" || continue
         rm -f "$dest" || { adb_info "  WARN   could not take back $dest — remove it by hand, or the next self-heal reads it as a per-hook opt-out"; continue; }
-        if [ -e "$BACKUP_DIR$dest" ] || [ -L "$BACKUP_DIR$dest" ]; then
-          mv "$BACKUP_DIR$dest" "$dest" || adb_info "  WARN   could not restore $dest from $BACKUP_DIR$dest — restore it by hand"
-        elif [ -n "$prior" ]; then
-          ln -s "$prior" "$dest" || adb_info "  WARN   could not restore the symlink $dest → $prior — restore it by hand"
+        adb_displaced_restore "$dest" "$BACKUP_DIR" "${fresh_prior[$i]}" \
+          || adb_info "  WARN   could not restore what $dest displaced (backup under $BACKUP_DIR) — restore it by hand"
+      done
+      if [ "${#fresh_name[@]}" -gt 0 ]; then
+        if [ "$wrc" -eq 3 ]; then
+          adb_info "  (hook links added by this run were taken back: hooks were not wired without jq, and an owned link with no entry would read as a per-hook opt-out; install jq and re-run to get them)"
+        else
+          adb_info "  (hook links added by this run were taken back: wiring failed, and an owned link with no entry would read as a per-hook opt-out on the next self-heal)"
         fi
-      done <<EOF
-$fresh
-EOF
-      [ -z "$fresh" ] || adb_info "  (hook links added by this run were taken back: wiring failed, and an owned link with no entry would read as a per-hook opt-out on the next self-heal)"
-    }
+      fi
+    fi
   else
     adb_info "  (gates not wired — --no-hooks)"
   fi
@@ -206,7 +217,8 @@ EOF
 # common.sh), then append ours. A user's own groups under the same event never match the regex,
 # so they survive; a re-run replaces our previous entry instead of double-adding it.
 #
-# Returns non-zero on failure. That matters: the previous version ended with an unconditional
+# Returns 0 wired, 3 skipped (no jq — tolerated, but the caller must not leave this run's hook links
+# behind), 1 on any other failure. The status matters: the previous version ended with an unconditional
 # "wired" line even when jq or mv had failed, so a broken settings.json was reported as success
 # and enforcement was silently off.
 wire_hooks() {
@@ -214,7 +226,7 @@ wire_hooks() {
     # The ONE tolerated degradation, and a documented one (docs/installation.md): warn, but do
     # not fail the install. Every other failure below is a genuinely broken state and returns 1.
     adb_info "  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually"
-    return 0
+    return 3   # skipped, not failed: the caller takes back this run's hook links and keeps rc 0
   fi
   local settings="$HOME/.claude/settings.json"
   local tmp groups re

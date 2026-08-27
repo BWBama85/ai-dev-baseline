@@ -434,7 +434,9 @@ Two things to get right:
 | `jq` | Wiring/unwiring the lifecycle hooks in `install.sh`/`uninstall.sh`; parsing state JSON in both gate scripts; the SessionStart hook's structured output. |
 
 Without `jq`, hook wiring is skipped (with a warning) but the rest of the
-install still completes. Without `gh`, the install itself still works — only
+install still completes — and the hook script links that run would have added are taken
+back, so the set reads as "not yet installed" rather than as a per-hook opt-out; install
+`jq` and re-run to get them. Without `gh`, the install itself still works — only
 the `gh`-dependent skills and the gate's fallback PR check are affected at
 use time.
 

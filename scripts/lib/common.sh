@@ -171,6 +171,22 @@ adb_link() {
   adb_info "  link   ${dest/#$HOME/~} → ${src/#$HOME/~}"
 }
 
+# Put back what adb_link displaced at <dest>: the real file it moved under <backup_dir>, or the
+# foreign symlink it replaced (whose target the caller recorded before linking — adb_link keeps no
+# copy of one). Called after the baseline link at <dest> has been removed. A <prior_target> is a
+# single argument and may carry any byte, a trailing newline included.
+# Returns non-zero when a restore was needed and failed; 0 when nothing was displaced.
+# Usage: adb_displaced_restore <dest> <backup_dir> <prior_target>
+adb_displaced_restore() {
+  local dest="$1" backup_dir="$2" prior="$3"
+  if [ -e "$backup_dir$dest" ] || [ -L "$backup_dir$dest" ]; then
+    mv "$backup_dir$dest" "$dest" || return 1
+  elif [ -n "$prior" ]; then
+    ln -s "$prior" "$dest" || return 1
+  fi
+  return 0
+}
+
 # Remove dest ONLY if it is a symlink pointing back inside repo. Never deletes a real
 # file or a symlink to somewhere else.
 # Usage: adb_unlink_if_ours <dest> <repo>
@@ -375,8 +391,8 @@ EOF
 # every entry in one run, so a hook whose link points into <src> and has no entry is a per-hook
 # opt-out (the documented way to disable one), while a hook with no such link was shipped after
 # the last install and is simply not there yet. That reading holds only because install.sh takes
-# back the links it added when wiring FAILS — an interrupted install has the opt-out's exact shape
-# otherwise (PR #443 review). OWNERSHIP, not existence (`adb_link_into`, the
+# back the links it added when wiring FAILS or is SKIPPED (no jq) — an interrupted or incomplete
+# install has the opt-out's exact shape otherwise (PR #443 review). OWNERSHIP, not existence (`adb_link_into`, the
 # same test every install-scoped scan uses): an unrelated file or a foreign symlink sitting at the
 # pathname is a collision the repair will back up, not a choice the operator made about our hook.
 # `bin/baseline` asks this before it reads `partial` as an opt-out: a newly shipped hook must be
