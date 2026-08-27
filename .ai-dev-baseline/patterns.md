@@ -210,4 +210,8 @@ One line per resolved review thread, newest last.
 - `markup-injection` `scripts/lib/run-state.sh:127` `f30e767` `PRRT_kwDOTfywrM6cq-Ec` PR #443 2026-08-27 — phase [a-z_]{1,32} admitted a lowercase sentence into the prompt; the nine workflow phases are whitelisted
 - `markup-injection` `base/practices/compact-instructions.md:5` `f30e767` `PRRT_kwDOTfywrM6cq-Ef` PR #443 2026-08-27 — the practice told the summariser to keep REQUIRED findings verbatim, carrying untrusted review text into the next context; by identity and disposition now
 - `stale-state-trusted` `agents/claude/scripts/session-context.sh:123` `f30e767` `PRRT_kwDOTfywrM6cq-Ej` PR #443 2026-08-27 — the marker was restored without checking the live checkout was still on its branch; --branch reports the mismatch
+- `markup-injection` `scripts/lib/run-state.sh:155` `7263662` `PRRT_kwDOTfywrM6crc1v` PR #443 2026-08-27 — a branch outside the workflow shape was rendered whole into the prompt; the shape is now required
+- `partial-validation` `scripts/lib/run-state.sh:120` `7263662` `PRRT_kwDOTfywrM6crc1x` PR #443 2026-08-27 — the ISO regex accepted February 29 in any year; leap years are checked
+- `partial-validation` `scripts/lib/run-state.sh:130` `7263662` `PRRT_kwDOTfywrM6crc10` PR #443 2026-08-27 — issue numbers admitted 0 and leading zeros; positive canonical numbers required
+- `markup-injection` `base/practices/compact-instructions.md:7` `7263662` `PRRT_kwDOTfywrM6crc12` PR #443 2026-08-27 — the practice kept commands and gate output verbatim across compaction; names and outcomes now, output by summary, secrets redacted
 <!-- adb:hits:end -->
