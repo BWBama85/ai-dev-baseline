@@ -300,6 +300,8 @@ hook_settings() {   # hook_settings <state>: write a settings.json in the fixtur
     # `shipped` omits session-context.sh — the shape an upgrade produces when a NEW hook lands
     # (PR #443 review): no entry yet, and (the case below removes it) no script link yet either.
     [ "$state" = shipped ] && [ "$s" = "session-context.sh" ] && continue
+    # `mixed` omits BOTH: one deliberate removal plus one newly shipped hook (#444's shape).
+    [ "$state" = mixed ] && { [ "$s" = "precommit-gate.sh" ] || [ "$s" = "session-context.sh" ]; } && continue
     out="${out}$fh/.claude/scripts/$s
 "
   done
@@ -347,6 +349,23 @@ has "$out" "newly shipped hook(s) not yet wired" "hooks newly shipped → report
 hasnt "$out" "deliberate per-hook opt-out" "hooks newly shipped → ...and not as the opt-out residue"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "1" "hooks newly shipped → the installer IS re-run (the missing link is a broken install)"
 hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks newly shipped → ...WITHOUT --no-hooks, so the new hook gets wired"
+mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
+rm -f "$fh/.claude/settings.json"
+
+# THE MIXED SET (#444, PR #443 review): a deliberate removal AND a newly shipped hook. The opt-out
+# is preserved (--no-hooks), so the new hook cannot be wired — and it must then not be LINKED
+# either, or the next self-heal reads the owned-but-unwired link as a second deliberate removal.
+# The stub installer creates no links, so what is asserted is the decision and the report; the
+# unlink primitive it calls is adb_unlink_if_ours, covered by check-common-lib.
+reset_src; : > "$work/install.log"; hook_settings mixed
+mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$(cat "$work/install.log")" "--no-hooks" "hooks mixed → the per-hook opt-out is preserved (--no-hooks)"
+has "$out" "left UNLINKED and unwired: session-context.sh" "hooks mixed → the newly shipped hook is named as left unlinked, not silently linked into an opt-out's shape"
+has "$out" "#444" "hooks mixed → ...and the run points at the per-hook form that resolves it"
+if [ -e "$fh/.claude/scripts/session-context.sh" ] || [ -L "$fh/.claude/scripts/session-context.sh" ]; then
+  bad "hooks mixed → the new hook's script must not be left linked without its entry"
+else ok; fi
 mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 

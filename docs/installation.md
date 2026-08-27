@@ -141,8 +141,9 @@ an install whose hook wiring **fails** takes back the links it added — restori
 displaced — so an interrupted install never leaves the opt-out's shape behind). **Unless the set
 also carries a deliberate opt-out:** `install.sh --no-hooks` is all-or-nothing, so a mixed set —
 one entry you removed plus one hook that just shipped — keeps the opt-out and leaves the new hook
-linked but unwired; the update says so, and `./install.sh` wires the full set (which re-adds the
-one you removed). The per-hook form that resolves this is #444.
+**unlinked** as well as unwired (a linked-but-unwired hook would read as a second opt-out on the
+next update); the update says so every run, and `./install.sh` wires the full set (which re-adds
+the one you removed). The per-hook form that resolves this is #444.
 
 ### Run markers are session-owned
 
