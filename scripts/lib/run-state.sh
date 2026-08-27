@@ -22,7 +22,7 @@
 #   run-state: /implement-issue run in progress — source <dir>/implement-issue-active.json
 #   phase: <phase>
 #   phase-history: [(N earlier omitted) ]<phase>@<at>, …   (when the marker carries one, #243; last 64)
-#   branch: <branch>                                     (an issue-<n>-<slug> branch: slug elided)
+#   branch: issue-<n>[-<n>…]-<slug elided, N chars>   (the workflow shape; any other is refused)
 #   checkout: on the run's branch | NOT on the run's branch — …   (when --branch names the live checkout)
 #   issues: #<n>, #<n>
 #   pr: <url>                                            (when prUrl is present)
@@ -42,7 +42,7 @@
 #     Cc, Cf, Zl or Zp, <=255 / <=128 chars — `owner` may be ABSENT (unowned), never present and
 #     empty or null; a branch of the workflow's own shape `issue-<n>[-<n>…]-<slug>` is RENDERED
 #     with the slug elided, because the slug is cut from the issue title (third-party text);
-#     issue: `n(,n)*`; phase: one of the nine the workflow writes;
+#     issue: `n(,n)*` with n positive and canonical (no leading zero); phase: one of the nine the workflow writes;
 #     prUrl: `https://` + <=512 non-whitespace/non-control chars; phaseHistory: >=1 entries of
 #     {phase, at} with a plausible ISO-8601 UTC `at`, whose last phase is `.phase` and in which no
 #     two ADJACENT entries share a phase (every writer suppresses that append); the LAST 64 are
@@ -117,7 +117,7 @@ _RS_UNSAFE_JQ='
 _RS_MARKER_JQ='
   one
   | def str(f; max): (f|type) == "string" and ((f|length) <= max);
-  def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
+  def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$") and ((.[5:10] != "02-29") or ((.[0:4]|tonumber) as $y | ($y % 4 == 0 and $y % 100 != 0) or $y % 400 == 0));
   # The phases /implement-issue writes (base/workflows/implement-issue.md, the marker shape). A phase
   # outside this list is refused whole: `[a-z_]{1,32}` admitted a lowercase sentence.
   def phase_ok: IN("branched", "implemented", "gates_green", "committed", "code_reviewed", "triaged", "pushed", "pr_opened", "complete");
@@ -125,9 +125,9 @@ _RS_MARKER_JQ='
   # host), an optional port in 1..65535, then a non-empty path in closed classes.
   def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*/pull/[1-9][0-9]*$");
   if type != "object" then error("not an object") else . end
-  | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end
+  | if (str(.branch; 255) and (.branch|unsafe|not) and (.branch | test("^issue-[0-9]+(-[0-9]+)*-.+$"))) then . else error("branch") end
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
-  | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end
+  | if (str(.issue; 64) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end
   | if (str(.phase; 32) and (.phase | phase_ok)) then . else error("phase") end
   | (has("owner")) as $had_owner
   | .owner = (if $had_owner then .owner else "" end)
@@ -148,8 +148,11 @@ _RS_MARKER_JQ='
   # THE SLUG IS ISSUE TEXT. The workflow names its branch `issue-<n>[-<n>…]-<slug>` with the slug
   # cut from the FIRST ISSUE TITLE — third-party text on a public repository — so a branch shaped
   # that way is rendered with its slug ELIDED (the numbers stay; `git branch --show-current` has
-  # the rest). A branch of any other shape was named by whoever holds write access to the checkout
-  # and is rendered whole.
+  # the rest). A branch of any other shape is REFUSED WHOLE: the workflow writes no other shape,
+  # and a name outside it is prose that would be rendered into a prompt.
+  # The `else` arm is unreachable past the shape check above. It is kept so that a DROPPED check is
+  # observable: without it, `capture` on a non-matching branch emits nothing and the record is refused
+  # by coincidence, which would hide the missing guard from the harness (`branch-shape-dropped`).
   | .bshow = (.branch | if test("^issue-[0-9]+(-[0-9]+)*-.+$") then
                 (capture("^(?<head>issue-[0-9]+(-[0-9]+)*)-(?<slug>.+)$") | "\(.head)-<slug elided, \(.slug|length) chars>")
               else . end)
