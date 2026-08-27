@@ -585,9 +585,14 @@ OUT="$(bash "$RS" summary --state "$SYMR/.claude/state" --root "$SYMR" --session
 eq "$RC" 0 "1b an in-repository symlinked state directory is inside the root (exit 0)"
 has "$OUT" "source .claude/state/implement-issue-active.json" "1b ...and renders the logical .claude/state prefix"
 hasnt "$OUT" "PROSE-TARGET-NAME" "1b ...never the symlink target's name"
-OUT="$(bash "$RS" summary --state "$(cd "$SYMR/.claude/state" && pwd -P)" --root "$SYMR" --session "$SID_A" 2>/dev/null)"; RC=$?
+# ...and the LOGICAL path is what must sit below --root. Reached through an alias of the repository
+# directory the state directory is physically inside the root but not below it BY PATH — refused,
+# never rendered from the physical name. (An alias, not `pwd -P`: on macOS /var is itself a
+# symlink so the physical path left the root, on Linux it did not, and the assertion was OS-bound.)
+ln -s "$SYMR" "$work/symrepo-alias"
+OUT="$(bash "$RS" summary --state "$work/symrepo-alias/.claude/state" --root "$SYMR" --session "$SID_A" 2>/dev/null)"; RC=$?
 eq "$RC" 20 "1b a --state not given below --root by path is refused (20) rather than rendered physically"
-rm -rf "$SYMR"
+rm -f "$work/symrepo-alias"; rm -rf "$SYMR"
 # A .claude/state that is a SYMLINK to another checkout would summarise that run as this one.
 OTH="$work/other-checkout"; mkdir -p "$OTH/.claude"; check_git "$OTH" init -q; ln -s "$PR_/.claude/state" "$OTH/.claude/state"
 OUT="$(bash "$RS" summary --state "$OTH/.claude/state" --root "$OTH" --session "$SID_A" 2>/dev/null)"; RC=$?
