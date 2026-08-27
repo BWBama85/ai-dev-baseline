@@ -214,4 +214,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/run-state.sh:120` `7263662` `PRRT_kwDOTfywrM6crc1x` PR #443 2026-08-27 — the ISO regex accepted February 29 in any year; leap years are checked
 - `partial-validation` `scripts/lib/run-state.sh:130` `7263662` `PRRT_kwDOTfywrM6crc10` PR #443 2026-08-27 — issue numbers admitted 0 and leading zeros; positive canonical numbers required
 - `markup-injection` `base/practices/compact-instructions.md:7` `7263662` `PRRT_kwDOTfywrM6crc12` PR #443 2026-08-27 — the practice kept commands and gate output verbatim across compaction; names and outcomes now, output by summary, secrets redacted
+- `partial-validation` `scripts/lib/run-state.sh:130` `0709ca9` `PRRT_kwDOTfywrM6cr5X0` PR #443 2026-08-27 — branch and issue list were validated independently though the workflow writes both from one list; a prefix cross-check ties them
+- `partial-validation` `scripts/lib/run-state.sh:215` `0709ca9` `PRRT_kwDOTfywrM6cr5X4` PR #443 2026-08-27 — the pre-branch issue snapshots skipped the positive-canonical rule the marker predicate applies; issue-0.json rendered #0
+- `false-guarantee` `agents/claude/scripts/session-context.sh:106` `0709ca9` `PRRT_kwDOTfywrM6cr5X6` PR #443 2026-08-27 — the deferral promised one injection never zero but never checked the vendored hook could run; executable and libraries now required
 <!-- adb:hits:end -->
