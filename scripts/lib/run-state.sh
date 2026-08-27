@@ -117,6 +117,9 @@ _RS_MARKER_JQ='
   one
   | def str(f; max): (f|type) == "string" and ((f|length) <= max);
   def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$");
+  # A PR URL: hostname LABELS (a letter or digit at each end, no empty label — `https://./x` is not a
+  # host), an optional port in 1..65535, then a non-empty path in closed classes.
+  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._~/-]+$");
   if type != "object" then error("not an object") else . end
   | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
@@ -127,7 +130,7 @@ _RS_MARKER_JQ='
   | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end
   | (has("prUrl")) as $had_pr
   | .prUrl = (if $had_pr then .prUrl else "" end)
-  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
+  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | prurl) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
   | .h = .phaseHistory
   | if (has("phaseHistory") | not) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")

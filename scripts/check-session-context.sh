@@ -107,8 +107,8 @@ if [ "$MODE" = mutation ]; then
     '    elif false then error("phaseHistory")' \
     'two ADJACENT entries'
   check_mut empty-prurl-accepted \
-    '  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
-    '  | if (str(.prUrl; 512) and (($had_pr | not) or .prUrl == "" or ((.prUrl | test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
+    '  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | prurl) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
+    '  | if (str(.prUrl; 512) and (($had_pr | not) or .prUrl == "" or ((.prUrl | prurl) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
     'a prUrl that is present and EMPTY'
   check_mut claim-expiry-unbounded \
     '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
@@ -195,7 +195,7 @@ if [ "$MODE" = mutation ]; then
     '                + ([.h[] | "\(.phase)@\(.at)"] | join(", "))) end' \
     'exactly 64 rendered'
   check_mut url-scheme-unchecked \
-    '((.prUrl | test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$")) and (.prUrl | unsafe | not))' \
+    '((.prUrl | prurl) and (.prUrl | unsafe | not))' \
     '(.prUrl | unsafe | not)' \
     'a prUrl that is not a clean https URL is refused whole'
   check_mut required-count-wrong \
@@ -226,9 +226,13 @@ if [ "$MODE" = mutation ]; then
     '      elif false then "unnamed\t-"' \
     'a prose-bearing family name'
   check_mut scheme-only-url-accepted \
-    'test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$")' \
-    'test("^https://")' \
+    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._~/-]+$");' \
+    '  def prurl: test("^https://");' \
     'bare https://'
+  check_mut host-labels-dropped \
+    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._~/-]+$");' \
+    '  def prurl: test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$");' \
+    'a host of dots'
   # NO ROW for the character check on artifact NAMES: the name grammar (`name-grammar-dropped`)
   # already refuses every character that check would, so dropping it changes no verdict — the
   # check is belt-and-braces there. `unsafe_path` itself is observed failing on the --state path
@@ -290,6 +294,10 @@ if [ "$MODE" = mutation ]; then
     '[ -n "$SESSION_CWD" ] || exit 0' \
     '[ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"' \
     'a payload without cwd'
+  check_mut pinned-deferral-dropped \
+    'if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
+    'if false; then' \
+    'defers to the pinned hook'
   check_mut cap-ceiling-dropped \
     '[ "$MAX" -le 9500 ] 2>/dev/null || MAX=9500' \
     ':' \
@@ -511,6 +519,13 @@ marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:""}'; refused "a prUr
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://"}'; refused "a prUrl of bare https:// (scheme, no host, no path) is refused whole — it would render as a PR that does not exist"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://github.com"}'; refused "a prUrl with a host but no path is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://github.com/"}'; refused "a prUrl with an empty path is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://./x"}'; refused "a prUrl whose authority is a host of dots is refused whole — it cannot identify a PR"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://-a.b/x"}'; refused "a prUrl whose host label starts with a hyphen is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://a..b/x"}'; refused "a prUrl with an empty host label is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://a.b:0/x"}'; refused "a prUrl with port 0 is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://a.b:65536/x"}'; refused "a prUrl with a port above 65535 is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://ghe.example.com:8443/o/r/pull/1"}'; summary "$d" "$SID_A"
+eq "$RC" 0 "1c a GHES-shaped prUrl with a port is accepted"; has "$OUT" $'\npr: https://ghe.example.com:8443/o/r/pull/1' "1c ...and rendered"
 printf '{"branch":"b","issue":"5","phase":"pushed"}{"branch":"stale","issue":"9","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a file holding two JSON values is refused whole"; hasnt "$OUT" "stale" "1e ...and neither value is rendered"
 printf '{"branch":"b","issue":"5",\x00"phase":"pushed"}' > "$d/implement-issue-active.json"; refused "a NUL byte in the marker is refused whole, not stripped into a valid object"
 marker "$d" '{branch:"b", issue:5, phase:"branched"}'; summary "$d" "$SID_A"; eq "$RC" 0 "1e an unquoted numeric issue is accepted"; has "$OUT" "issues: #5" "1e ...and rendered"
@@ -813,6 +828,23 @@ NLR="$work/nlrepo"; mkdir -p "$NLR/.claude/state"; check_git "$NLR" init -q; mar
 mkdir -p "$NLR"$'\n'
 hook "$(payload compact "$SID_A" "$NLR")"; has "$(ctx)" $'\nphase: pushed' "2j control: the newline-free sibling repository is summarised"
 hook "$(payload compact "$SID_A" "$NLR"$'\n')"; eq "$OUT" "" "2j a cwd with a trailing newline injects NOTHING — never the sibling's run (the trailing newline reaches the validator)"
+
+# 2k. one hook per checkout: a release-pinned project vendors this hook under .claude/adb/ and wires
+#     it in the project settings; Claude merges hooks across scopes, so the GLOBAL copy must defer.
+R2="$work/pinned"; mkdir -p "$R2/.claude/state" "$R2/.claude/adb"; check_git "$R2" init -q; marker "$R2/.claude/state" "$LIVE"
+cp -R "$H/." "$R2/.claude/adb/"
+printf '%s\n' '{"hooks":{"SessionStart":[{"matcher":"compact|resume","hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh","timeout":30}]}]}}' > "$R2/.claude/settings.json"
+hook "$(payload compact "$SID_A" "$R2")"
+eq "$RC" 0 "2k the global hook in a pinned project: exit 0"
+eq "$OUT" "" "2k the global hook defers to the pinned hook wired in the project — it injects NOTHING"
+has "$ERR" "deferring to the pinned hook" "2k ...and says so on stderr"
+OUT="$( printf '%s' "$(payload compact "$SID_A" "$R2")" | env -u CLAUDE_CODE_SESSION_ID bash "$R2/.claude/adb/session-context.sh" 2>/dev/null )"
+has "$(ctx)" $'\nphase: pushed' "2k the VENDORED hook does not defer to itself: it injects the run"
+printf '%s\n' '{"hooks":{}}' > "$R2/.claude/settings.json"
+hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a vendored file that is NOT wired leaves the global hook injecting (one injection, never zero)"
+printf 'not json' > "$R2/.claude/settings.json"
+hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a settings.json this cannot read leaves the global hook injecting"
+rm -rf "$R2"
 
 # 2k. the settings wiring and the hook enumeration agree.
 SET="$(cat "$ROOT/agents/claude/settings.hooks.json")"

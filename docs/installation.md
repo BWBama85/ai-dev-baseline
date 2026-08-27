@@ -182,6 +182,14 @@ reason), the **paths** of the gap/review/docs artifacts, and a count of `REQUIRE
 exists — the long gap-analysis pass — the run claim is the liveness signal and the issue snapshots
 name the issues.
 
+**It runs once per checkout.** A release-pinned project vendors this hook under `.claude/adb/` and
+wires it in the project's `.claude/settings.json`, and Claude Code merges hooks across settings
+scopes rather than overriding them — so on a machine that also carries the global install both
+copies would fire on every compact and resume, injecting the same state twice, possibly through two
+reader versions. The global copy therefore defers when the vendored hook exists **and** is wired
+there (it says so on stderr); a vendored file that is not wired, or a `settings.json` it cannot
+read, leaves the global hook running — one injection either way, never zero.
+
 Three properties are deliberate:
 
 - **Owner-scoped, like the Stop gate.** A marker whose `owner` is another session earns one line

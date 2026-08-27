@@ -94,6 +94,22 @@ REPO_ROOT="$(adb_shape_val "$SHAPE" root)"
 [ -n "$REPO_ROOT" ] || exit 0
 STATE_DIR="$REPO_ROOT/.claude/state"
 
+# --- 2b. one hook per checkout ------------------------------------------------------------------
+# A release-pinned project vendors this hook under .claude/adb/ and wires it in the project's
+# .claude/settings.json; Claude merges hooks across settings scopes rather than overriding them,
+# so a machine that also carries the global install would run BOTH copies on every compact and
+# resume — the same state injected twice, possibly by two reader versions. The project-scoped
+# copy is the pin's: this one defers to it when it exists AND is wired. A vendored file that is
+# not wired, or a settings.json this cannot read, leaves the global hook running — one injection
+# either way, never zero.
+_adb_vendored="$REPO_ROOT/.claude/adb/session-context.sh"
+if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
+  if jq -e '[.hooks.SessionStart[]?.hooks[]? | select(.type == "command" and (.command|type) == "string" and (.command | test("/\\.claude/adb/session-context\\.sh$")))] | length > 0' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then
+    printf 'session-context: deferring to the pinned hook wired in %s/.claude/settings.json — nothing injected here\n' "$REPO_ROOT" >&2
+    exit 0
+  fi
+fi
+
 SID="${CLAUDE_CODE_SESSION_ID:-}"
 [ -n "$SID" ] || { SID="$(field session_id; printf x)"; SID="${SID%x}"; }
 
