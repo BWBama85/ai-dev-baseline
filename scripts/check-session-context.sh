@@ -756,7 +756,10 @@ for cap in $(seq 1024 7 1230); do
 done; ok
 # MULTIBYTE paths: `length` counts code points, the wire carries bytes. A path of three-byte
 # characters repeated across the artifacts: well under 9500 code points, well over 9500 bytes.
-MBP="$work/$(printf '\xe2\x82\xac%.0s' $(seq 1 120))/$(printf '\xe2\x82\xac%.0s' $(seq 1 120))"
+# THREE components of 80, not two of 120: a component is bounded by NAME_MAX, which Linux counts in
+# BYTES (255) and macOS in characters — 120 three-byte characters is 360 bytes, and the ubuntu leg
+# refused the mkdir while the macOS leg and a workstation passed it. Same 720 path bytes either way.
+MBP="$work/$(printf '\xe2\x82\xac%.0s' $(seq 1 80))/$(printf '\xe2\x82\xac%.0s' $(seq 1 80))/$(printf '\xe2\x82\xac%.0s' $(seq 1 80))"
 mkdir -p "$MBP/.claude/state"; check_git "$MBP" init -q; marker "$MBP/.claude/state" "$LIVE"
 for f in gap-prompt.txt gaps.md gaps.err review-prompt.txt review.md review.err docs-consulted.tsv gaps-1.md gaps-2.md gaps-3.md gaps-4.md gaps-5.md gaps-6.md gaps-7.md gaps-8.md; do printf 'x\n' > "$MBP/.claude/state/$f"; done
 raw="$(printf '%s' "$(payload compact "$SID_A" "$MBP")" | env -u CLAUDE_CODE_SESSION_ID bash "$H/session-context.sh" 2>/dev/null | wc -c | tr -d ' ')"
