@@ -324,8 +324,8 @@ EOF
 # Re-run the idempotent installer for the ALREADY-installed agent set, preserving the
 # hook preference. Never widens the install (no bare-default claude, no surprise hooks).
 adb_self_heal() {
-  local a s _adb_deliberate _adb_fresh_hooks=""
-  local -a args=()
+  local a s _adb_deliberate _adb_dest _adb_prior i
+  local -a args=() _adb_fresh_hooks=() _adb_fresh_prior=()
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     args+=(--agent "$a")
@@ -365,12 +365,23 @@ EOF
           # BEFORE this repair are noted here and unlinked again after it: they stay "shipped, not
           # yet arrived" — reported every run — until #444 lands per-hook wiring or the operator
           # runs ./install.sh. (PR #443 review)
+          # ...and whatever stands at each such destination is noted too (a foreign symlink's
+          # target; a real file the installer will move under ADB_BACKUP_DIR, which is named here
+          # so it can be found again), because the unlink below must put it back.
           while IFS= read -r s; do
             [ -n "$s" ] || continue
-            adb_link_into "$HOME/.claude/scripts/$s" "$SRC" || _adb_fresh_hooks="$_adb_fresh_hooks$s"$'\n'
+            _adb_dest="$HOME/.claude/scripts/$s"
+            adb_link_into "$_adb_dest" "$SRC" && continue
+            _adb_prior=""
+            if [ -L "$_adb_dest" ]; then _adb_prior="$(readlink -n "$_adb_dest"; printf x)"; _adb_prior="${_adb_prior%x}"; fi
+            _adb_fresh_hooks+=("$s"); _adb_fresh_prior+=("$_adb_prior")
           done <<EOF
 $(adb_claude_hooks_missing "$HOME/.claude/settings.json")
 EOF
+          if [ "${#_adb_fresh_hooks[@]}" -gt 0 ]; then
+            ADB_BACKUP_DIR="${ADB_BACKUP_DIR:-$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)}"
+            export ADB_BACKUP_DIR
+          fi
         fi ;;
       *) : ;;   # wired — nothing to preserve, nothing to say
     esac
@@ -380,14 +391,17 @@ EOF
     echo "baseline: install.sh exited non-zero — inspect its output above (path move? see issue #35)." >&2
     return 1
   }
-  if [ -n "$_adb_fresh_hooks" ]; then
-    while IFS= read -r s; do
-      [ -n "$s" ] || continue
-      adb_unlink_if_ours "$HOME/.claude/scripts/$s" "$SRC"
-    done <<EOF
-$_adb_fresh_hooks
-EOF
-    echo "baseline: NOTE — newly shipped hook(s) left UNLINKED and unwired: $(printf '%s' "$_adb_fresh_hooks" | tr '\n' ' ')" >&2
+  if [ "${#_adb_fresh_hooks[@]}" -gt 0 ]; then
+    for (( i = 0; i < ${#_adb_fresh_hooks[@]}; i++ )); do
+      _adb_dest="$HOME/.claude/scripts/${_adb_fresh_hooks[$i]}"
+      adb_unlink_if_ours "$_adb_dest" "$SRC"
+      # ...and the collision the installer displaced goes back, exactly as install.sh's own
+      # wiring-failure rollback does: a successful update must not leave the operator's hook in
+      # the backup directory with its path empty.
+      adb_displaced_restore "$_adb_dest" "$ADB_BACKUP_DIR" "${_adb_fresh_prior[$i]}" \
+        || echo "baseline: WARN — could not restore what $_adb_dest displaced (backup under $ADB_BACKUP_DIR); restore it by hand" >&2
+    done
+    echo "baseline: NOTE — newly shipped hook(s) left UNLINKED and unwired: ${_adb_fresh_hooks[*]}" >&2
     echo "baseline:        --no-hooks preserved your per-hook opt-out and is all-or-nothing (#444); a linked-but-unwired hook would read as a second opt-out next time. Run ./install.sh to wire the full set." >&2
   fi
   return 0
