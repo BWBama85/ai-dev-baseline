@@ -346,8 +346,8 @@ if [ "$MODE" = mutation ]; then
     '  . "$(dirname "$0")/lib/common.sh" 2>/dev/null' \
     'a library that prints to stdout cannot contaminate'
   check_mut output-cap-dropped \
-    '  | (if ($ctx | enc) <= $budget then $ctx' \
-    '  | (if true then $ctx' \
+    '    (if ($ctx | enc) <= $budget then $ctx' \
+    '    (if true then $ctx' \
     'the injection is capped'
   # NO ROW for the wrapper measure: it is derived from the wrapper itself, so there is no constant
   # left to be wrong, and a row that fires only when a line boundary happens to land inside a
