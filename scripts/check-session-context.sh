@@ -276,6 +276,14 @@ if [ "$MODE" = mutation ]; then
     '      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;' \
     '      gaps|review|docs|other) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;' \
     'only the records state-scan classifies are named'
+  check_mut claim-phase-asserted \
+    '  printf '"'"'run-state: /implement-issue run claim %s is held and no run marker exists — the branch may or may not have been created; check the checkout before acting\n'"'"' "$(_rs_show "$claim")"' \
+    '  printf '"'"'run-state: /implement-issue run before branching — the run claim %s is held\n'"'"' "$(_rs_show "$claim")"' \
+    'asserts NO phase'
+  check_mut claim-blocked-unpaired \
+    '  [ "$cblk" = yes ] && printf '"'"'blocked: yes — reason recorded in %s\n'"'"' "$(_rs_show "$blocked")"' \
+    '  :' \
+    'reported beside the held claim'
   check_mut claim-expiry-ignored \
     '  [ "$c_exp" -gt "$now" ] 2>/dev/null || return 0   # an expired claim is a dead run: nothing to say' \
     '  :' \
@@ -794,7 +802,16 @@ jq -n --argjson e "$future" '{startedAt:1, expiresAt:$e, token:"t", owner:"'"$SI
 printf '{}' > "$d/issue-0.json"; printf '{}' > "$d/issue-001.json"; printf '{}' > "$d/issue-431.json"; printf '{}' > "$d/issue-243.json"; printf 'OWNER' > "$d/issue-431.assoc"; printf 'INJECT-ME' > "$d/gap-prompt.txt"
 summary "$d" "$SID_A"
 eq "$RC" 0 "1h a held claim with no marker: exit 0"
-has "$OUT" "run-state: /implement-issue run before branching — the run claim <state>/gap-analysis.lock is held" "1h the pre-branch line names the claim"
+has "$OUT" "run-state: /implement-issue run claim <state>/gap-analysis.lock is held and no run marker exists" "1h the claim-only line names the claim"
+hasnt "$OUT" "before branching" "1h ...and asserts NO phase: the claim is also held after a created branch whose marker write failed, and at the branch-already-exists stop"
+hasnt "$OUT" "blocked:" "1h ...no blocked line without a blocked record"
+# A blocked record that pairs by owner is surfaced beside the claim (the branch-already-exists stop
+# writes one and keeps the claim); another session's is not.
+jq -n --arg o "$SID_A" '{branch:"issue-431-x", issue:"431", reason:"branch already exists", owner:$o}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; has "$OUT" $'\nblocked: yes — reason recorded in <state>/implement-issue-blocked.json' "1h a blocked record owned by this session is reported beside the held claim"; hasnt "$OUT" "branch already exists" "1h ...its reason text never reaches the context"
+jq -n --arg o "$SID_B" '{branch:"issue-431-x", issue:"431", reason:"branch already exists", owner:$o}' > "$d/implement-issue-blocked.json"
+summary "$d" "$SID_A"; hasnt "$OUT" "blocked:" "1h a blocked record owned by ANOTHER session does not pair with this claim"
+rm -f "$d/implement-issue-blocked.json"
 has "$OUT" $'\nissues: #243, #431' "1h the issue snapshots name the issues"
 hasnt "$OUT" "#0" "1h a snapshot named issue-0.json or issue-001.json is debris, not an identity (not canonical)"
 has "$OUT" "artifacts: <state>/gap-prompt.txt" "1h artifacts are named by path"

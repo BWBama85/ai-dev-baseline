@@ -33,8 +33,10 @@
 #   unsafe-names: <n>                                    (records `state-scan` refused to name)
 #   unnamed-artifacts: <n>                               (family members outside the opaque name grammar)
 #   review-required-marks: <n> | unreadable              (when review.md exists)
-# Before the branch exists the run CLAIM is the liveness signal:
-#   run-state: /implement-issue run before branching — the run claim <state>/gap-analysis.lock is held
+# With no marker the run CLAIM is the liveness signal (before the branch exists — or after a
+# branch was created and its marker was never written, which the claim alone cannot tell apart):
+#   run-state: /implement-issue run claim <state>/gap-analysis.lock is held and no run marker exists — …
+#   blocked: yes — reason recorded in <state>/implement-issue-blocked.json   (when one pairs by owner)
 #   issues: #<n>, …                                      (from the issue-<n>.json snapshots)
 #   artifacts: …
 #
@@ -434,7 +436,25 @@ EOF
     return 4
   fi
   _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$(_rs_show "$dir")"; return 20; }
-  printf 'run-state: /implement-issue run before branching — the run claim %s is held\n' "$(_rs_show "$claim")"
+  # NO PHASE IS ASSERTED. A held claim with no marker is the state before the branch exists — and
+  # also the state after `git switch -c` succeeded and the marker write failed, and the
+  # "branch already exists" stop, both of which keep the claim (implement-issue.md step 5). A
+  # heading that said "before branching" sent a resumed agent to recreate a branch that exists.
+  # What the claim proves is said; a blocked record that pairs with it is reported beside it.
+  printf 'run-state: /implement-issue run claim %s is held and no run marker exists — the branch may or may not have been created; check the checkout before acting\n' "$(_rs_show "$claim")"
+  local cblk="no"
+  if [ -f "$blocked" ]; then
+    # Paired by OWNER only: with no marker there is no branch or issue to match. Typed as in the
+    # marker path; anything that is not a usable record says nothing — never "yes".
+    cblk="$(jq -r --arg o "$c_owner" '
+      if type != "object" then "no"
+      elif ((.reason|type) != "string") or (.reason == "") then "no"
+      elif (.owner == null) then "yes"
+      elif ((.owner|type) != "string") or (.owner == "") then "no"
+      elif (.owner != "" and $o != "" and .owner != $o) then "no"
+      else "yes" end' "$blocked" 2>/dev/null)" || cblk="no"
+  fi
+  [ "$cblk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$(_rs_show "$blocked")"
   [ -n "$RS_ISSUES" ] && printf 'issues: %s\n' "$RS_ISSUES"
   [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
   [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
