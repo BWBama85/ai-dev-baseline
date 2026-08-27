@@ -221,4 +221,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `agents/claude/scripts/session-context.sh:91` `f7b2fbe` `PRRT_kwDOTfywrM6csRj7` PR #443 2026-08-27 — cwd was checked for presence and type but not for being absolute; the process cwd chose the checkout
 - `markup-injection` `scripts/lib/run-state.sh:314` `f7b2fbe` `PRRT_kwDOTfywrM6csRj8` PR #443 2026-08-27 — the checkout directory name reached the injection through every absolute path; paths are relative now
 - `partial-validation` `scripts/lib/run-state.sh:245` `f7b2fbe` `PRRT_kwDOTfywrM6csRj-` PR #443 2026-08-27 — the state directory was checked for readability but not for being inside the repository; a symlink read another checkout
+- `partial-validation` `scripts/lib/run-state.sh:311` `d74e6e5` `PRRT_kwDOTfywrM6cs6aS` PR #443 2026-08-27 — the record symlink rule stopped short of review.md, the one artifact the reader opens; a linked one is now unreadable, unopened
+- `partial-validation` `scripts/lib/pinned-install.sh:904` `d74e6e5` `PRRT_kwDOTfywrM6cs6aW` PR #443 2026-08-27 — pinned status checked hook presence anywhere under .hooks; Claude dispatches by event and matcher, so both are checked now
+- `stale-doc-claim` `docs/installation.md:693` `d74e6e5` `PRRT_kwDOTfywrM6cs6aZ` PR #443 2026-08-27 — the payload inventory omitted the vendored SessionStart hook the prose beneath it named
 <!-- adb:hits:end -->
