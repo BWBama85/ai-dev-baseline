@@ -174,9 +174,14 @@ _RS_CLAIM_JQ='
   | (has("owner")) as $had_owner   # claim
   | .owner = ((if $had_owner then .owner else "" end) | if type == "string" then . else error("owner") end)
   | if (.owner | unsafe) or ($had_owner and (.owner == "")) then error("owner") else . end
-  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)
+  # TEN DIGITS, the bound the admission path applies (implement-lib.sh _il_claim_expiry): an
+  # 11-digit value is not an epoch second, and admission reads such a claim as unreadable and breaks
+  # it — so this reader must not report it as held while a new run starts over it.
+  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 10000000000 then . else error("expiresAt") end)
+  # `tostring` of an integer below 1e10 is plain digits — the bound above is what keeps exponent
+  # form out, so no second (regex) check follows it: two guards for one meaning is a guard nobody
+  # can observe failing.
   | .expiresAt = (.expiresAt | tostring)
-  | if (.expiresAt | test("^[0-9]{1,15}$")) then . else error("expiresAt") end
   | [ .owner, .expiresAt ] | .[]'
 
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }

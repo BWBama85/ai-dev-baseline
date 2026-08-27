@@ -179,13 +179,13 @@ if [ "$MODE" = mutation ]; then
     '  | if (str(.prUrl; 512) and (($had_pr | not) or .prUrl == "" or ((.prUrl | prurl) and (.prUrl | unsafe | not)))) then . else error("prUrl") end' \
     'a prUrl that is present and EMPTY'
   check_mut claim-expiry-unbounded \
-    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
+    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 10000000000 then . else error("expiresAt") end)' \
     '  | .expiresAt = (.expiresAt | if type == "number" then floor else error("expiresAt") end)' \
     'a non-integer expiresAt'
-  check_mut exponent-expiry-accepted \
-    '  | if (.expiresAt | test("^[0-9]{1,15}$")) then . else error("expiresAt") end' \
-    '  | .' \
-    'exponent form'
+  check_mut expiry-bound-wider-than-admission \
+    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 10000000000 then . else error("expiresAt") end)' \
+    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
+    '11-digit'
   check_mut null-history-as-legacy \
     '  | if (has("phaseHistory") | not) then .hs = ""' \
     '  | if (.h == null) then .hs = ""' \
@@ -223,8 +223,8 @@ if [ "$MODE" = mutation ]; then
     '  | (has("owner") and .owner != false) as $had_owner   # claim' \
     'a claim whose owner is false is unreadable'
   check_mut claim-expiry-false-as-absent \
-    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
-    '  | .expiresAt = ((.expiresAt // 0) | if type == "number" and . == floor and . >= 0 and . < 1000000000000000 then . else error("expiresAt") end)' \
+    '  | .expiresAt = (.expiresAt | if type == "number" and . == floor and . >= 0 and . < 10000000000 then . else error("expiresAt") end)' \
+    '  | .expiresAt = ((.expiresAt // 0) | if type == "number" and . == floor and . >= 0 and . < 10000000000 then . else error("expiresAt") end)' \
     'a claim whose expiresAt is false is unreadable'
   check_mut path-class-dropped \
     '  def unsafe_path: test("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}" + ([65533]|implode) + "]");' \
@@ -811,6 +811,7 @@ jq -n --argjson e "$future" '{expiresAt:$e, owner:""}' > "$d/gap-analysis.lock";
 jq -n --argjson e "$future" '{expiresAt:$e, token:"t"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 0 "1h a claim with NO owner key (no session id at admit) is unowned and summarised"
 jq -n '{owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim with no expiresAt is unreadable"
 printf '{"expiresAt":%s,"owner":"%s"}{"expiresAt":%s,"owner":"%s"}' "$future" "$SID_A" "$future" "$SID_B" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a claim holding two JSON values is unreadable"
+printf '{"expiresAt":99999999999,"owner":"%s"}' "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an 11-digit expiresAt is unreadable (18): admission (implement-lib) refuses more than 10 digits and would break the claim this reader called held"
 printf '{"expiresAt":999999999999999999999,"owner":"%s"}' "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an expiresAt beyond the shell integer range is unreadable (18), never silently expired"
 printf '{"expiresAt":%s.5,"owner":"%s"}' "$future" "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h a non-integer expiresAt is unreadable"
 printf '{"expiresAt":1e14,"owner":"%s"}' "$SID_A" > "$d/gap-analysis.lock"; summary "$d" "$SID_A"; eq "$RC" 18 "1h an expiresAt in exponent form (jq renders 1e14 as 1E+14) is unreadable, never silently expired"
