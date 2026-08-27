@@ -965,11 +965,18 @@ eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just 
 # fixture "lost" nine writers that had never been valid, and read as a broken lock.
 L7c="$work/l7c.md"
 bash "$PL" record --ledger "$L7c" --class seed-c --site s.sh --fix abc1231 --pr 1 --thread T0 >/dev/null 2>&1
+# EVERY WRITER'S STATUS IS KEPT, because a writer that lost is one of two things and the count
+# alone cannot say which: silently discarded (the defect this case exists for) or REFUSED at the
+# lock's wait bound (told, rc 20). Both flapped this assertion on a slow runner; only the second
+# was ever the cause, and a count of 19 hid it.
+rm -rf "$work/l7c-rc"; mkdir -p "$work/l7c-rc"
 for i in $(seq 1 20); do
-  bash "$PL" record --ledger "$L7c" --class conc --site "s$i.sh" \
-    --fix "$(printf 'abcd%03d' "$i")" --pr 2 --thread "C$i" >/dev/null 2>&1 &
+  { bash "$PL" record --ledger "$L7c" --class conc --site "s$i.sh" \
+      --fix "$(printf 'abcd%03d' "$i")" --pr 2 --thread "C$i" >/dev/null 2>"$work/l7c-rc/err.$i"; echo "$?" > "$work/l7c-rc/rc.$i"; } &
 done
 wait
+eq "$(cat "$work"/l7c-rc/rc.* | grep -vc '^0$')" 0 \
+   "twenty concurrent writers: none was REFUSED at the lock's wait bound (a refusal is told with rc 20 — this is the queue draining too slowly, not a lost write: $(cat "$work"/l7c-rc/err.* 2>/dev/null | grep -m1 'could not take the write lock' || printf 'no refusal')"
 eq "$(bash "$PL" classes --ledger "$L7c" | awk -F'\t' '$2=="conc"{print $1}')" 20 \
    "twenty concurrent writers all land — none is silently discarded by a racing rename"
 bash "$PL" verify --ledger "$L7c" >/dev/null 2>&1
@@ -1005,11 +1012,14 @@ eq "$?" 0 "…and the ledger still parses, rather than being destroyed by its ow
 # faster had already created and inserted into, erasing that hit. The existence test has to happen
 # where the decision is protected.
 L7e="$work/deep/first.md"
+rm -rf "$work/l7e-rc"; mkdir -p "$work/l7e-rc"
 for i in $(seq 1 25); do
-  bash "$PL" record --ledger "$L7e" --class firstc --site "s$i.sh" \
-    --fix "$(printf 'abcd%03d' "$i")" --pr 1 --thread "F$i" >/dev/null 2>&1 &
+  { bash "$PL" record --ledger "$L7e" --class firstc --site "s$i.sh" \
+      --fix "$(printf 'abcd%03d' "$i")" --pr 1 --thread "F$i" >/dev/null 2>"$work/l7e-rc/err.$i"; echo "$?" > "$work/l7e-rc/rc.$i"; } &
 done
 wait
+eq "$(cat "$work"/l7e-rc/rc.* | grep -vc '^0$')" 0 \
+   "25 first-time writers: none was REFUSED at the lock's wait bound ($(cat "$work"/l7e-rc/err.* 2>/dev/null | grep -m1 'could not take the write lock' || printf 'no refusal'))"
 eq "$(bash "$PL" classes --ledger "$L7e" 2>/dev/null | awk -F'\t' '$2=="firstc"{print $1}')" 25 \
    "25 concurrent writers creating the ledger for the FIRST time all land"
 

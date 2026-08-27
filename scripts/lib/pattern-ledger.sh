@@ -738,16 +738,21 @@ _adb_pl_lock() {
       # never succeed — an unwritable parent, a lock owned by another user — busy-spun forever and
       # the advertised 30-second bound never applied. Reported by the declared reviewer on PR #429.
     fi
-    if [ "$waited" -ge "$_ADB_PL_LOCK_WAIT_SECS" ]; then
-      printf 'pattern-ledger: could not take the write lock after %ss: %s\n' "$waited" "$dir" >&2
+    # `waited` COUNTS TENTHS, the bound is seconds. A loser used to sleep a full second before
+    # retrying, so contention drained at ONE WRITER PER SECOND whatever the hold time (0.17s here):
+    # 25 contenders on a slow two-core runner sat at the 30s bound and were refused — told, with
+    # rc 20, but refused (check-pattern-ledger 7c/7e flapped on main and on PR #443). Polling at
+    # 0.2s drains the same queue in a fraction of the bound; the bound itself is unchanged.
+    if [ "$((waited / 10))" -ge "$_ADB_PL_LOCK_WAIT_SECS" ]; then
+      printf 'pattern-ledger: could not take the write lock after %ss: %s\n' "$((waited / 10))" "$dir" >&2
       printf 'pattern-ledger: another writer holds it. Nothing was written.\n' >&2
       printf 'pattern-ledger: a lock is only reclaimed when its owner is PROVEN gone (same host, pid\n' >&2
       printf 'pattern-ledger: no longer running). A live-but-stuck writer, or one on another host, is\n' >&2
       printf 'pattern-ledger: never reclaimed automatically — remove %s by hand once you are sure.\n' "$dir" >&2
       return 1
     fi
-    sleep 1
-    waited=$((waited + 1))
+    sleep 0.2
+    waited=$((waited + 2))
   done
   # THE TOKEN IS A SUBDIRECTORY, not a file, and that is what makes release atomic. Reading an
   # `owner` file and then deleting the directory is check-then-act: a successor can reclaim the
