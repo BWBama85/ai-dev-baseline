@@ -374,7 +374,9 @@ EOF
 # REMOVED from settings.json rather than never had. install.sh links every hook script and wires
 # every entry in one run, so a hook whose link points into <src> and has no entry is a per-hook
 # opt-out (the documented way to disable one), while a hook with no such link was shipped after
-# the last install and is simply not there yet. OWNERSHIP, not existence (`adb_link_into`, the
+# the last install and is simply not there yet. That reading holds only because install.sh takes
+# back the links it added when wiring FAILS — an interrupted install has the opt-out's exact shape
+# otherwise (PR #443 review). OWNERSHIP, not existence (`adb_link_into`, the
 # same test every install-scoped scan uses): an unrelated file or a foreign symlink sitting at the
 # pathname is a collision the repair will back up, not a choice the operator made about our hook.
 # `bin/baseline` asks this before it reads `partial` as an opt-out: a newly shipped hook must be

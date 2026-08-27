@@ -144,6 +144,19 @@ install_claude() {
   }
   # Capture the accumulated status so a missing source (adb_link's guard) makes the installer
   # exit non-zero rather than silently leaving a dangling link.
+  # A hook link this run is about to CREATE, whose settings entry then never gets written, is an
+  # interrupted install — and nothing downstream can tell that shape (our link, no entry) from a
+  # per-hook opt-out, which is the documented removal and is preserved by every later self-heal
+  # (adb_claude_hooks_missing_deliberate). So the links this run adds are noted before linking
+  # and taken back if wiring fails; a link that already existed is an earlier run's state and is
+  # left alone. (PR #443 review)
+  local fresh="" s
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    adb_link_into "$HOME/.claude/scripts/$s" "$REPO" || fresh="$fresh$s"$'\n'
+  done <<EOF
+$(adb_claude_hook_scripts)
+EOF
   adb_link_manifest "$BACKUP_DIR" <<EOF || rc=1
 $manifest
 EOF
@@ -153,7 +166,17 @@ EOF
   # adb_self_heal — which gates only on that status — would report "update complete" while the
   # gates sat silently unwired. (A missing jq deliberately returns 0; see wire_hooks.)
   if [ "$WIRE_HOOKS" -eq 1 ]; then
-    wire_hooks || rc=1
+    wire_hooks || {
+      rc=1
+      while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        adb_link_into "$HOME/.claude/scripts/$s" "$REPO" || continue
+        rm -f "$HOME/.claude/scripts/$s" || adb_info "  WARN   could not take back $HOME/.claude/scripts/$s — remove it by hand, or the next self-heal reads it as a per-hook opt-out"
+      done <<EOF
+$fresh
+EOF
+      [ -z "$fresh" ] || adb_info "  (hook links added by this run were taken back: wiring failed, and an owned link with no entry would read as a per-hook opt-out on the next self-heal)"
+    }
   else
     adb_info "  (gates not wired — --no-hooks)"
   fi
