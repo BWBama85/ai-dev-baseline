@@ -262,11 +262,13 @@ cmd_summary() {
   # that is a symlink to another checkout would have this reader summarise THAT run as this one.
   # The physical relative path is then the rendering prefix (`.claude/state/`, ordinarily).
   if [ -n "$OPT_ROOT" ]; then
-    local pdir proot
+    local pdir proot ppfx
     pdir="$(cd "$dir" 2>/dev/null && pwd -P)" || pdir=""
     proot="$(cd "$OPT_ROOT" 2>/dev/null && pwd -P)" || proot=""
+    # The filesystem root is its own prefix: `/` + `/` is `//`, which no physical path starts with.
+    case "$proot" in /) ppfx="/" ;; *) ppfx="$proot/" ;; esac
     case "$pdir" in
-      "$proot"/?*) [ -n "$proot" ] || { printf 'run-state: --root cannot be resolved; not summarised\n'; return 20; }; RS_PFX="${pdir#"$proot"/}/" ;;
+      "$ppfx"?*) [ -n "$proot" ] || { printf 'run-state: --root cannot be resolved; not summarised\n'; return 20; }; RS_PFX="${pdir#"$ppfx"}/" ;;
       *) printf 'run-state: the state directory is not inside the repository root — not summarised\n'; return 20 ;;
     esac
   fi

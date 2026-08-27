@@ -114,6 +114,10 @@ if [ "$MODE" = mutation ]; then
     '              case "$n" in '"'"''"'"'|*[!0-9]*|0*) continue ;; esac' \
     '              case "$n" in '"'"''"'"'|*[!0-9]*) continue ;; esac' \
     'a snapshot named issue-0'
+  check_mut root-slash-unhandled \
+    '    case "$proot" in /) ppfx="/" ;; *) ppfx="$proot/" ;; esac' \
+    '    ppfx="$proot/"' \
+    'rooted at /'
   check_mut containment-dropped \
     '      *) printf '"'"'run-state: the state directory is not inside the repository root — not summarised\n'"'"'; return 20 ;;' \
     '      *) : ;;' \
@@ -535,6 +539,10 @@ OUT="$(bash "$RS" summary --state "$PR_/.claude/state" --root "$PR_" --session "
 eq "$RC" 0 "1b under --root: exit 0"; hasnt "$OUT" "IGNORE-ALL" "1b the checkout name never reaches the output under --root"
 has "$OUT" "source .claude/state/implement-issue-active.json" "1b ...the source is relative to the root"; has "$OUT" "artifacts: .claude/state/gaps.md" "1b ...and so are the artifacts"
 summary "$PR_/.claude/state" "$SID_A"; hasnt "$OUT" "IGNORE-ALL" "1b the checkout name never reaches the output without --root either"; has "$OUT" "source <state>/implement-issue-active.json" "1b ...where the state directory is the token <state>"
+# A repository rooted at `/` is its own prefix: `"$proot"/?*` would be `//?*`, matching nothing.
+OUT="$(bash "$RS" summary --state "$PR_/.claude/state" --root / --session "$SID_A" 2>/dev/null)"; RC=$?
+eq "$RC" 0 "1b a repository rooted at / is not read as containing nothing (exit 0)"
+has "$OUT" "source $(cd "$PR_/.claude/state" && pwd -P | sed 's@^/@@')/implement-issue-active.json" "1b ...and the prefix is the path below /"
 # A .claude/state that is a SYMLINK to another checkout would summarise that run as this one.
 OTH="$work/other-checkout"; mkdir -p "$OTH/.claude"; check_git "$OTH" init -q; ln -s "$PR_/.claude/state" "$OTH/.claude/state"
 OUT="$(bash "$RS" summary --state "$OTH/.claude/state" --root "$OTH" --session "$SID_A" 2>/dev/null)"; RC=$?
