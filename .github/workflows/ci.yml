@@ -959,7 +959,12 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # 45, not 10: the job carries check-session-context.sh --mutation since #431 — one full suite
+    # run per row, ~19 s each locally, and adb_pool_size caps the pool at the runner's 4 cores —
+    # and the 10-minute bound sized for the Stop-gate suite alone cancelled it at 58 rows. The
+    # mutation gate keeps the harness off a PR that does not touch its inputs, so the ordinary
+    # job stays under a minute; the bound is for the runs that do.
+    timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
