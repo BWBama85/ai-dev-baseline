@@ -27,7 +27,7 @@
 #   branch: issue-<n>[-<n>…]-<slug elided, N chars>   (the workflow shape; any other is refused)
 #   checkout: on the run's branch | NOT on the run's branch — …   (when --branch names the live checkout)
 #   issues: #<n>, #<n>
-#   pr: <url>                                            (when prUrl is present)
+#   pr: #<number>                                        (when prUrl is present — the number only)
 #   blocked: yes — reason recorded in <state>/implement-issue-blocked.json
 #   artifacts: <path>, …                                 (every gaps/review/docs record present)
 #   unsafe-names: <n>                                    (records `state-scan` refused to name)
@@ -159,7 +159,11 @@ _RS_MARKER_JQ='
   # Elided from the VALIDATED issue list, not parsed out of the branch: everything after
   # `issue-<numbers>-` is the slug, so a slug that begins with digits is never mistaken for a number.
   | .bshow = ($pfx + "<slug elided, \((.branch|length) - ($pfx|length)) chars>")
-  | [ .bshow, .issue, .phase, .prUrl, .owner, .hs, .branch ] | .[]'
+  # THE NUMBER, NEVER THE URL. A valid workflow-written prUrl carries the host, owner and repository
+  # names verbatim, and a repository can be NAMED with prose; the checkout name and branch slug are
+  # elided for exactly that reason, and this is the same channel.
+  | .prnum = (if .prUrl == "" then "" else ("#" + (.prUrl | capture("/pull/(?<n>[0-9]+)$").n)) end)
+  | [ .bshow, .issue, .phase, .prnum, .owner, .hs, .branch ] | .[]'
 
 _RS_CLAIM_JQ='
   one
@@ -331,9 +335,15 @@ EOF
         # NEVER THROUGH A SYMLINK: `-f` and grep both follow one, and a link here would have this reader
         # count — and spend the hook's timeout on — a file outside the checkout. Unreadable, unopened.
         if [ ! -L "$dir/review.md" ] && [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then
-          req="$(grep -cw 'REQUIRED' "$dir/review.md" 2>/dev/null)"; grc=$?
-          case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)
-          case "$req" in ''|*[!0-9a-z]*) req="unreadable" ;; esac
+          # BOUNDED BEFORE IT IS OPENED, like the three records: a regular file has no size limit and
+          # grep reads all of it inside the hook's budget. `find -size` stats, opens nothing.
+          if [ -n "$(find "$dir/review.md" -prune -size +"${_RS_MAX_BYTES}c" -print 2>/dev/null)" ]; then
+            req="oversized"
+          else
+            req="$(grep -cw 'REQUIRED' "$dir/review.md" 2>/dev/null)"; grc=$?
+            case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)
+            case "$req" in ''|*[!0-9a-z]*) req="unreadable" ;; esac
+          fi
         else
           req="unreadable"   # a directory, a FIFO, a dangling symlink: present, not readable
         fi
