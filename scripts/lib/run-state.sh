@@ -297,9 +297,12 @@ cmd_summary() {
     [ -L "$p" ] && { printf 'run-state: %s is a symlink — the workflow never writes one; refused\n' "$(_rs_show "$p")"; return 18; }
     if [ -e "$p" ]; then
       [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$(_rs_show "$p")"; return 18; }
-      # Size is asked of the filesystem, never of the bytes: a record this large is refused
-      # before anything opens it (see _RS_MAX_BYTES), including the jq reads that do not snapshot.
-      [ "$(wc -c < "$p" 2>/dev/null | tr -d ' ')" -le "$_RS_MAX_BYTES" ] 2>/dev/null || { printf 'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }
+      # Size is asked of the inode, never of the bytes: `find -size` stats the path and OPENS
+      # NOTHING, where `wc -c <` opens it — and an open on a FIFO with no writer blocks forever
+      # (observed: a mutant that dropped the -f test above hung a whole harness on the FIFO
+      # case). A record this large is refused before anything opens it (_RS_MAX_BYTES), the jq
+      # reads that do not snapshot included.
+      [ -z "$(find "$p" -prune -size +"${_RS_MAX_BYTES}c" -print 2>/dev/null)" ] || { printf 'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }
     fi
   done
   local snap="" again="" fields="" attempt req="" blk="" grc

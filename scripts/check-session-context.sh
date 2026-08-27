@@ -115,7 +115,7 @@ if [ "$MODE" = mutation ]; then
     '              case "$n" in '"'"''"'"'|*[!0-9]*) continue ;; esac' \
     'a snapshot named issue-0'
   check_mut size-bound-dropped \
-    '      [ "$(wc -c < "$p" 2>/dev/null | tr -d '"'"' '"'"')" -le "$_RS_MAX_BYTES" ] 2>/dev/null || { printf '"'"'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n'"'"' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }' \
+    '      [ -z "$(find "$p" -prune -size +"${_RS_MAX_BYTES}c" -print 2>/dev/null)" ] || { printf '"'"'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n'"'"' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }' \
     '      :' \
     'oversized BLOCKED marker'
   check_mut logical-prefix-dropped \

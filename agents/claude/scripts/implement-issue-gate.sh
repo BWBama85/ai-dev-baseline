@@ -243,10 +243,11 @@ fi
 # leftover multi-megabyte "marker" into a variable. A marker the workflow writes is a few hundred
 # bytes; a file over 65536 is not one, and is reported and left unread — passing, exactly as a
 # malformed marker is, because a file that is not a marker is not a run to push along.
-_marker_bytes="$(wc -c < "$marker" 2>/dev/null | tr -d ' ')" || _marker_bytes=""
-case "$_marker_bytes" in ''|*[!0-9]*) _marker_bytes=0 ;; esac
-if [ "$_marker_bytes" -gt 65536 ]; then
-  printf 'implement-issue-gate: %s is %s bytes — larger than any marker the workflow writes; not read — passing; delete it if stale\n' "$marker" "$_marker_bytes" >&2
+# `find -size` stats the path and opens nothing (the `-f` above already excludes a FIFO here; the
+# run-state reader learned the hard way that `wc -c <` on one blocks forever, so both use the
+# same non-opening probe).
+if [ -n "$(find "$marker" -prune -size +65536c -print 2>/dev/null)" ]; then
+  printf 'implement-issue-gate: %s is larger than any marker the workflow writes (over 65536 bytes); not read — passing; delete it if stale\n' "$marker" >&2
   exit 0
 fi
 { marker_snap="$(<"$marker")"; } 2>/dev/null
