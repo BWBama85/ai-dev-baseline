@@ -197,4 +197,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `agents/claude/scripts/session-context.sh:59` `3dce623` `PRRT_kwDOTfywrM6cmbRB` PR #443 2026-08-26 — read -d "" stops at a NUL and returns 0 with the prefix, so a NUL-split payload passed the one-object check; only an EOF-terminated read (status 1) is a payload
 - `partial-validation` `scripts/lib/run-state.sh:298` `3dce623` `PRRT_kwDOTfywrM6cmbRF` PR #443 2026-08-26 — the blocked line claimed a reason was recorded without checking the field; reason must be a non-empty string or the record says nothing
 - `stale-doc-claim` `docs/installation.md:139` `3dce623` `PRRT_kwDOTfywrM6cmbRJ` PR #443 2026-08-26 — the doc promised the next update wires a newly shipped hook unconditionally; the mixed set with a deliberate opt-out keeps --no-hooks (#444) and is now named
+- `partial-validation` `agents/claude/scripts/session-context.sh:86` `14fbec4` `PRRT_kwDOTfywrM6cp7bj` PR #443 2026-08-27 — the hook typed cwd as a string but fell back to $PWD when it was absent or invalid — the process cwd is not the payload checkout
+- `partial-validation` `scripts/lib/run-state.sh:129` `14fbec4` `PRRT_kwDOTfywrM6cp7bl` PR #443 2026-08-27 — prUrl was checked for the https:// prefix only, so a bare scheme rendered as a PR that does not exist
+- `markup-injection` `scripts/lib/run-state.sh:190` `14fbec4` `PRRT_kwDOTfywrM6cp7bn` PR #443 2026-08-27 — a filename inside the character grammar can still be prose; only opaque artifact names are rendered, the rest counted
 <!-- adb:hits:end -->
