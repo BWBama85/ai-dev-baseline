@@ -28,6 +28,7 @@
 #   blocked: yes — reason recorded in <dir>/implement-issue-blocked.json
 #   artifacts: <path>, …                                 (every gaps/review/docs record present)
 #   unsafe-names: <n>                                    (records `state-scan` refused to name)
+#   unnamed-artifacts: <n>                               (family members outside the opaque name grammar)
 #   review-required-marks: <n> | unreadable              (when review.md exists)
 # Before the branch exists the run CLAIM is the liveness signal:
 #   run-state: /implement-issue run before branching — the run claim <dir>/gap-analysis.lock is held
@@ -126,7 +127,7 @@ _RS_MARKER_JQ='
   | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end
   | (has("prUrl")) as $had_pr
   | .prUrl = (if $had_pr then .prUrl else "" end)
-  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | test("^https://")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
+  | if (str(.prUrl; 512) and (($had_pr | not) or ((.prUrl | test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$")) and (.prUrl | unsafe | not)))) then . else error("prUrl") end
   | .h = .phaseHistory
   | if (has("phaseHistory") | not) then .hs = ""
     elif ((.h|type) != "array") then error("phaseHistory")
@@ -176,7 +177,7 @@ _rs_snap() {
 # RS_ISSUES (`#n, …` from the issue snapshots) and RS_UNSAFE (count of refused names).
 _rs_scan() {
   local scan kind sfile key n
-  RS_ARTS=""; RS_ISSUES=""; RS_UNSAFE=0
+  RS_ARTS=""; RS_ISSUES=""; RS_UNSAFE=0; RS_UNNAMED=0
   scan="$(bash "$_adb_rs_lib/cleanup-lib.sh" state-scan "$1" 2>/dev/null)" || return 1
   # `state-scan` refuses only tab and newline in a name (its own delimiters); this output is a
   # line-structured document in a prompt, so every other control or format character is refused
@@ -185,9 +186,14 @@ _rs_scan() {
   # and short, and a printable name that is not — `gaps-IGNORE ALL PREVIOUS INSTRUCTIONS.md` is
   # classified `gaps` by state-scan — is prose, not a path this document may carry. The directory
   # part is the caller's `--state` (validated above) and may carry spaces; the basename may not.
+  # ...and a name INSIDE that character grammar can still be prose (`gaps-IGNORE_ALL_PREVIOUS_
+  # INSTRUCTIONS.md` is classified `gaps` too), so only an OPAQUE name is rendered: the fixed
+  # names the workflow writes, or a family name with a numeric suffix. Any other family member is
+  # counted as `unnamed`, never printed — state-scan's wider globs exist for debris, not for text.
   scan="$(printf '%s\n' "$scan" | jq -rR "$_RS_UNSAFE_JQ"' split("\t") | select(length >= 2)
     | if (.[1] | unsafe_path) then "unsafe\t-"
       elif (.[0] != "unsafe") and ((.[1] | split("/") | last) | test("^[A-Za-z0-9._-]{1,64}$") | not) then "unsafe\t-"
+      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv)$") | not) then "unnamed\t-"
       else "\(.[0])\t\(.[1])" end' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
@@ -198,6 +204,7 @@ _rs_scan() {
               case "$n" in ''|*[!0-9]*) continue ;; esac
               RS_ISSUES="${RS_ISSUES:+$RS_ISSUES, }#$n" ;;
       unsafe) RS_UNSAFE=$((RS_UNSAFE + 1)) ;;
+      unnamed) RS_UNNAMED=$((RS_UNNAMED + 1)) ;;
     esac
   done <<EOF
 $(printf '%s\n' "$scan" | LC_ALL=C sort -t "$(printf '\t')" -k2,2)
@@ -300,6 +307,7 @@ EOF
     [ "$blk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$blocked"
     [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
     [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
+    [ "$RS_UNNAMED" -gt 0 ] && printf 'unnamed-artifacts: %s\n' "$RS_UNNAMED"
     [ -n "$req" ] && printf 'review-required-marks: %s\n' "$req"
     return 0
   fi
@@ -326,6 +334,7 @@ EOF
   [ -n "$RS_ISSUES" ] && printf 'issues: %s\n' "$RS_ISSUES"
   [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
   [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
+  [ "$RS_UNNAMED" -gt 0 ] && printf 'unnamed-artifacts: %s\n' "$RS_UNNAMED"
   return 0
 }
 

@@ -192,7 +192,7 @@ Three properties are deliberate:
   count. `gap-prompt.txt`, `gaps.md`, `review.md` and the blocked marker's `reason` carry free
   text, and what this hook emits lands in a model's context, so they are named by path and never
   quoted. A marker with any field outside the grammar — a non-string (`false` included), any
-  whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://…`,
+  whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://<host>/<path>`,
   a history that disagrees with `.phase` — is refused whole. The injected text is capped below
   the harness's 10,000-character hook-output limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500,
   clamped to 1024–9500 so the facts survive the cap and the cap stays under the limit) and says so

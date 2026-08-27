@@ -83,7 +83,10 @@ esac
 
 # --- 2. where, and who -----------------------------------------------------------------------------
 SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"
-[ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"
+# NO $PWD FALLBACK. Every hook payload carries `cwd` (the common-fields contract), so a payload
+# without a valid one is not a SessionStart this hook may act on — and $PWD is where the hook
+# PROCESS runs, which would inject whichever checkout the process happened to start in.
+[ -n "$SESSION_CWD" ] || exit 0
 [ -d "$SESSION_CWD" ] || exit 0
 SHAPE="$(adb_repo_shape "$SESSION_CWD" 2>/dev/null)" || exit 0
 [ "$(adb_shape_val "$SHAPE" in_git)" = 1 ] || exit 0

@@ -7463,10 +7463,15 @@ survive is the part a later reader needs.
              `key: value` lines drawn from a CLOSED grammar the run itself wrote — phase, the
              append-only `phaseHistory` (#243, absorbed here), branch, issue numbers, PR, whether a
              blocked marker exists (its path, never its free-text reason), artifact PATHS as
-             `cleanup-lib.sh state-scan` classifies them, a count of `REQUIRED` marks — and refuses
+             `cleanup-lib.sh state-scan` classifies them — but only OPAQUE names (the fixed names the
+             workflow writes, or a family name with a numeric suffix); any other family member is
+             COUNTED as `unnamed-artifacts`, never printed, because a filename inside the character
+             grammar can still be prose (`gaps-IGNORE_ALL_PREVIOUS_INSTRUCTIONS.md` is `gaps` to
+             state-scan) — a count of `REQUIRED` marks — and refuses
              a marker WHOLE when any field falls outside it: a non-string where a string is
              required, whitespace or a C0/C1/Unicode format or separator character, a `prUrl` that
-             is not `https://…`, a history that is present but empty or null, one with two
+             is not `https://<host>/<path>` (a bare `https://` included — it would render a PR that
+             does not exist), a history that is present but empty or null, one with two
              adjacent entries of a phase, or one disagreeing with `.phase` (a history LONGER than
              64 entries is accepted — the workflow appends without bound — and the reader renders
              its last 64 with a count of the earlier ones; a backwards wall clock is accepted too,
