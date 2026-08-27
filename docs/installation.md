@@ -136,7 +136,9 @@ Removing a hook's entry from `~/.claude/settings.json` is the per-hook opt-out, 
 update` preserves it: a hook whose script link is installed but whose entry is gone is left alone
 (the set is reported as PARTIAL). A hook shipped **after** your last install has neither an entry
 nor a script link, and that is not a choice anybody made — the next `baseline update` links and
-wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart). **Unless the set
+wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart — which holds because
+an install whose hook wiring **fails** takes back the links it added, so an interrupted install
+never leaves the opt-out's shape behind). **Unless the set
 also carries a deliberate opt-out:** `install.sh --no-hooks` is all-or-nothing, so a mixed set —
 one entry you removed plus one hook that just shipped — keeps the opt-out and leaves the new hook
 linked but unwired; the update says so, and `./install.sh` wires the full set (which re-adds the
@@ -188,7 +190,8 @@ name the issues.
 wires it in the project's `.claude/settings.json`, and Claude Code merges hooks across settings
 scopes rather than overriding them — so on a machine that also carries the global install both
 copies would fire on every compact and resume, injecting the same state twice, possibly through two
-reader versions. The global copy therefore defers when the vendored hook exists, is executable beside its libraries,
+reader versions. The global copy therefore defers when the vendored hook exists, is executable and readable beside
+its (readable) libraries,
 **and** is wired there in a `SessionStart` group whose matcher covers the current `source` (it says
 so on stderr); a vendored file that is not wired, not runnable, a group matched to some other
 source, or a `settings.json` it cannot read, leaves the global hook running — one injection either

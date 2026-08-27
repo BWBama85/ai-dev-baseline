@@ -106,10 +106,12 @@ STATE_DIR="$REPO_ROOT/.claude/state"
 # not wired, or a settings.json this cannot read, leaves the global hook running — one injection
 # either way, never zero.
 _adb_vdir="$REPO_ROOT/.claude/adb"; _adb_vendored="$_adb_vdir/session-context.sh"
-# ...and only to a copy that can RUN: executable, with the libraries it resolves beside itself
-# (common.sh sourced at the top, run-state.sh and the cleanup-lib.sh it calls). A damaged or
-# half-restored pin would otherwise turn one injection into zero.
-if [ -x "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
+# ...and only to a copy that can RUN: executable AND readable, with the libraries it resolves
+# beside itself (common.sh sourced at the top, run-state.sh and the cleanup-lib.sh it calls) each
+# readable too — `-x`/`-f` pass a file the shell cannot open, and a script that cannot source its
+# library injects nothing. A damaged or half-restored pin would otherwise turn one injection into
+# zero.
+if [ -x "$_adb_vendored" ] && [ -r "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -r "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -r "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && [ -r "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
   # ...and only when the group that wires it would FIRE for this source. A matcher made of letters,
   # digits, `_ - space , |` is an exact alternative list; anything else is an UNANCHORED regex;
   # absent, empty or `*` covers every source (the vendor's rule, read this run). A group matched

@@ -345,13 +345,17 @@ if [ "$MODE" = mutation ]; then
     '[ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"' \
     'a payload without cwd'
   check_mut pinned-deferral-dropped \
-    'if [ -x "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
+    'if [ -x "$_adb_vendored" ] && [ -r "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -r "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -r "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && [ -r "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
     'if false; then' \
     'defers to the pinned hook'
   check_mut runnable-unchecked \
-    'if [ -x "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
+    'if [ -x "$_adb_vendored" ] && [ -r "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -r "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -r "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && [ -r "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
     'if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
     'not executable'
+  check_mut readable-unchecked \
+    '[ -f "$_adb_vdir/lib/run-state.sh" ] && [ -r "$_adb_vdir/lib/run-state.sh" ]' \
+    '[ -f "$_adb_vdir/lib/run-state.sh" ]' \
+    'not readable'
   check_mut pinned-matcher-ignored \
     '  if jq -e --arg src "$SOURCE" '"'"'[.hooks.SessionStart[]? | select((.matcher // "") as $m | $m == "" or $m == "*" or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null) else ($src | test($m)) end)) | .hooks[]? | select(.type == "command" and .command == "${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh")] | length > 0'"'"' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then' \
     '  if jq -e --arg src "$SOURCE" '"'"'[.hooks.SessionStart[]? | select(true) | .hooks[]? | select(.type == "command" and .command == "${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh")] | length > 0'"'"' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then' \
@@ -992,6 +996,11 @@ chmod -x "$R2/.claude/adb/session-context.sh"; hook "$(payload compact "$SID_A" 
 chmod +x "$R2/.claude/adb/session-context.sh"
 mv "$R2/.claude/adb/lib/run-state.sh" "$R2/run-state.sh.aside"; hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a vendored hook missing its reader library cannot inject, so the global hook does not defer to it"
 mv "$R2/run-state.sh.aside" "$R2/.claude/adb/lib/run-state.sh"
+# PRESENT BUT NOT READABLE is the same zero: `-x`/`-f` pass a file the shell cannot open.
+chmod 000 "$R2/.claude/adb/lib/run-state.sh"; hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a vendored hook whose reader library is not readable cannot inject, so the global hook does not defer to it"
+chmod 644 "$R2/.claude/adb/lib/run-state.sh"
+chmod 100 "$R2/.claude/adb/session-context.sh"; hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a vendored hook that is executable but not readable cannot run, so the global hook does not defer to it"
+chmod 755 "$R2/.claude/adb/session-context.sh"
 hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k ...and restored, it takes the injection again"
 # THE COMMAND IS COMPARED FOR EQUALITY with the one string the pinned installer writes.
 printf '%s\n' '{"hooks":{"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"echo ${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh"}]}]}}' > "$R2/.claude/settings.json"
