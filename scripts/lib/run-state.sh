@@ -260,16 +260,23 @@ cmd_summary() {
   [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$(_rs_show "$dir")"; return 20; }
   # UNDER --root THE STATE DIRECTORY MUST BE INSIDE THE REPOSITORY, physically: a `.claude/state`
   # that is a symlink to another checkout would have this reader summarise THAT run as this one.
-  # The physical relative path is then the rendering prefix (`.claude/state/`, ordinarily).
+  # The rendering prefix is then the LOGICAL path below --root (`.claude/state/`, ordinarily) —
+  # never the physical one: a committed symlink at `.claude/state` can point at an in-repository
+  # directory whose NAME is prose, and the physical name would carry that prose into the context.
   if [ -n "$OPT_ROOT" ]; then
-    local pdir proot ppfx
+    local pdir proot ppfx lpfx
     pdir="$(cd "$dir" 2>/dev/null && pwd -P)" || pdir=""
     proot="$(cd "$OPT_ROOT" 2>/dev/null && pwd -P)" || proot=""
     # The filesystem root is its own prefix: `/` + `/` is `//`, which no physical path starts with.
     case "$proot" in /) ppfx="/" ;; *) ppfx="$proot/" ;; esac
     case "$pdir" in
-      "$ppfx"?*) [ -n "$proot" ] || { printf 'run-state: --root cannot be resolved; not summarised\n'; return 20; }; RS_PFX="${pdir#"$ppfx"}/" ;;
+      "$ppfx"?*) [ -n "$proot" ] || { printf 'run-state: --root cannot be resolved; not summarised\n'; return 20; } ;;
       *) printf 'run-state: the state directory is not inside the repository root — not summarised\n'; return 20 ;;
+    esac
+    case "$OPT_ROOT" in /) lpfx="/" ;; *) lpfx="${OPT_ROOT%/}/" ;; esac
+    case "$dir" in
+      "$lpfx"?*) RS_PFX="${dir#"$lpfx"}/" ;;
+      *) printf 'run-state: --state is not given below --root by path — not summarised\n'; return 20 ;;
     esac
   fi
 

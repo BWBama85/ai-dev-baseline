@@ -114,6 +114,14 @@ if [ "$MODE" = mutation ]; then
     '              case "$n" in '"'"''"'"'|*[!0-9]*|0*) continue ;; esac' \
     '              case "$n" in '"'"''"'"'|*[!0-9]*) continue ;; esac' \
     'a snapshot named issue-0'
+  check_mut logical-prefix-dropped \
+    '      "$lpfx"?*) RS_PFX="${dir#"$lpfx"}/" ;;' \
+    '      "$lpfx"?*) RS_PFX="${pdir#"$ppfx"}/" ;;' \
+    'never the symlink target'
+  check_mut complete-heading-dropped \
+    '    if [ "$m_phase" = complete ]; then' \
+    '    if false; then' \
+    'says COMPLETE'
   check_mut root-slash-unhandled \
     '    case "$proot" in /) ppfx="/" ;; *) ppfx="$proot/" ;; esac' \
     '    ppfx="$proot/"' \
@@ -542,7 +550,18 @@ summary "$PR_/.claude/state" "$SID_A"; hasnt "$OUT" "IGNORE-ALL" "1b the checkou
 # A repository rooted at `/` is its own prefix: `"$proot"/?*` would be `//?*`, matching nothing.
 OUT="$(bash "$RS" summary --state "$PR_/.claude/state" --root / --session "$SID_A" 2>/dev/null)"; RC=$?
 eq "$RC" 0 "1b a repository rooted at / is not read as containing nothing (exit 0)"
-has "$OUT" "source $(cd "$PR_/.claude/state" && pwd -P | sed 's@^/@@')/implement-issue-active.json" "1b ...and the prefix is the path below /"
+has "$OUT" "source ${PR_#/}/.claude/state/implement-issue-active.json" "1b ...and the prefix is the path below /"
+# AN IN-REPOSITORY SYMLINK passes containment and must still render the LOGICAL prefix: the target
+# directory's name is repository-controlled text, and the physical path would carry it in.
+SYMR="$work/symrepo"; mkdir -p "$SYMR/.claude" "$SYMR/PROSE-TARGET-NAME"; check_git "$SYMR" init -q; marker "$SYMR/PROSE-TARGET-NAME" "$LIVE"
+ln -s ../PROSE-TARGET-NAME "$SYMR/.claude/state"
+OUT="$(bash "$RS" summary --state "$SYMR/.claude/state" --root "$SYMR" --session "$SID_A" 2>/dev/null)"; RC=$?
+eq "$RC" 0 "1b an in-repository symlinked state directory is inside the root (exit 0)"
+has "$OUT" "source .claude/state/implement-issue-active.json" "1b ...and renders the logical .claude/state prefix"
+hasnt "$OUT" "PROSE-TARGET-NAME" "1b ...never the symlink target's name"
+OUT="$(bash "$RS" summary --state "$(cd "$SYMR/.claude/state" && pwd -P)" --root "$SYMR" --session "$SID_A" 2>/dev/null)"; RC=$?
+eq "$RC" 20 "1b a --state not given below --root by path is refused (20) rather than rendered physically"
+rm -rf "$SYMR"
 # A .claude/state that is a SYMLINK to another checkout would summarise that run as this one.
 OTH="$work/other-checkout"; mkdir -p "$OTH/.claude"; check_git "$OTH" init -q; ln -s "$PR_/.claude/state" "$OTH/.claude/state"
 OUT="$(bash "$RS" summary --state "$OTH/.claude/state" --root "$OTH" --session "$SID_A" 2>/dev/null)"; RC=$?
