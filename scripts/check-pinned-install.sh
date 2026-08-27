@@ -795,6 +795,14 @@ if command -v jq >/dev/null 2>&1; then
   jq '.hooks.SessionStart |= map(if ([.hooks[]?.command // empty] | any(endswith("session-context.sh"))) then .matcher = "startup" else . end)' "$PH3/.claude/settings.json" > "$PH3/.t" && mv "$PH3/.t" "$PH3/.claude/settings.json"
   out="$(bash "$PI" status --project "$PH3" --offline 2>&1)"; rc=$?
   eq "$rc" 20 "surfaces: the run-state hook matched to startup is NOT intact (it would never fire on compact or resume)"
+  # 22c. THE HANDLER TYPE: a `command` field on a handler whose type is not "command" is text Claude
+  #      never runs; the global deferral predicate requires the type, and so must this one.
+  PH4="$(new_project retyped)"
+  bash "$PI" install --project "$PH4" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+  jq '.hooks.SessionStart |= map(.hooks |= map(if (.command // "" | endswith("session-context.sh")) then .type = "prompt" else . end))' "$PH4/.claude/settings.json" > "$PH4/.t" && mv "$PH4/.t" "$PH4/.claude/settings.json"
+  out="$(bash "$PI" status --project "$PH4" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "surfaces: the run-state hook on a non-command handler is NOT intact (Claude dispatches .command only for type command)"
+  has "$out" "not a command handler" "surfaces: … and the line names the handler type"
   # THE TABLE IS PINNED to the shipped wiring, asserted on the file itself (the library is an entry
   # point and is not sourced): session-context.sh is the one SessionStart hook, matched
   # `compact|resume`; every other shipped hook is a Stop hook.

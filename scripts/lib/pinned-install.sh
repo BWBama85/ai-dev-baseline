@@ -911,18 +911,20 @@ _pi_check_surfaces() {
         # surviving entry made a settings.json missing two of the three gates report as complete.
         while IFS= read -r cmd; do
           [ -n "$cmd" ] || continue
-          # UNDER ITS OWN EVENT, with a matcher that covers what the shipped wiring covers. A command
-          # found anywhere under .hooks satisfied a presence test while sitting under the wrong event
-          # or behind a `startup` matcher — and Claude then never dispatched it (#431).
+          # UNDER ITS OWN EVENT, AS A COMMAND HANDLER, with a matcher that covers what the shipped
+          # wiring covers. A command found anywhere under .hooks satisfied a presence test while
+          # sitting under the wrong event, behind a `startup` matcher, or on a handler whose `type`
+          # is not "command" (Claude dispatches the `command` field only for that type) — and Claude
+          # then never dispatched it (#431).
           ev="$(_pi_hook_event "$cmd")"; case "$ev" in Stop) lbl="Stop-gate" ;; *) lbl="$ev" ;; esac
           jq -e --arg c "\${CLAUDE_PROJECT_DIR}/.claude/$PI_NS/$cmd" --arg ev "$ev" --argjson need "$(_pi_hook_sources "$cmd")" '
-            [ .hooks[$ev][]? | select([.hooks[]?.command // empty] | index($c) != null)
+            [ .hooks[$ev][]? | select([.hooks[]? | select(.type == "command") | .command // empty] | index($c) != null)
               | (.matcher // "") as $m
               | ($need | all(. as $src | $m == "" or $m == "*"
                   or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null)
                       else ($src | test($m)) end))) ] | any' \
              "$p/.claude/settings.json" >/dev/null 2>&1 && continue
-          _pi_say "  missing  $lbl entry for $cmd in .claude/settings.json (absent, under another event, or matched away from its sources)"; rc=1
+          _pi_say "  missing  $lbl entry for $cmd in .claude/settings.json (absent, not a command handler, under another event, or matched away from its sources)"; rc=1
         done <<EOF
 $(_pi_hook_scripts)
 EOF
