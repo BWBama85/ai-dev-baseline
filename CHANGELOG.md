@@ -19,7 +19,8 @@ only by a published release, which is what these entries are the notes for.
   `scripts/lib/run-state.sh summary` is the reader: declarative `key: value` lines from a **closed
   grammar the run itself wrote** — phase, the new append-only `phaseHistory`, branch, issue
   numbers, PR, whether a blocked marker exists (by path), artifact **paths** as
-  `cleanup-lib.sh state-scan` classifies them, a count of `REQUIRED` marks in `review.md` — and
+  `cleanup-lib.sh state-scan` classifies them — every path relative to the repository root, never
+  the checkout directory itself, whose name is whatever the cloner chose — a count of `REQUIRED` marks in `review.md` — and
   never an issue's, a finding's or a blocked reason's text, because the output lands in a
   model's context. A marker with any field outside the grammar is refused whole; before the
   branch exists the run claim is the liveness signal. Owner-scoped by `adb_owners_compatible`,

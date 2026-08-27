@@ -3,7 +3,7 @@
 # about the /implement-issue run live in a state directory. Design and rationale: decision D92.
 #
 # Usage:
-#   run-state.sh summary --state <dir> [--session <id>] [--branch <name>]
+#   run-state.sh summary --state <dir> [--session <id>] [--branch <name>] [--root <dir>]
 #   run-state.sh -h | --help
 #
 # Exit codes:
@@ -19,20 +19,22 @@
 #       refused rather than rendered; a space in <dir> is ordinary and allowed).
 #
 # Output — declarative `key: value` lines, in this order, each omitted when it has nothing to say:
-#   run-state: /implement-issue run in progress — source <dir>/implement-issue-active.json
+#   run-state: /implement-issue run in progress — source <state>/implement-issue-active.json
+#     (every path is RELATIVE: `.claude/state/…` under --root <repo>, else the token `<state>` —
+#      a checkout directory is named by whoever cloned it, and a name is prose)
 #   phase: <phase>
 #   phase-history: [(N earlier omitted) ]<phase>@<at>, …   (when the marker carries one, #243; last 64)
 #   branch: issue-<n>[-<n>…]-<slug elided, N chars>   (the workflow shape; any other is refused)
 #   checkout: on the run's branch | NOT on the run's branch — …   (when --branch names the live checkout)
 #   issues: #<n>, #<n>
 #   pr: <url>                                            (when prUrl is present)
-#   blocked: yes — reason recorded in <dir>/implement-issue-blocked.json
+#   blocked: yes — reason recorded in <state>/implement-issue-blocked.json
 #   artifacts: <path>, …                                 (every gaps/review/docs record present)
 #   unsafe-names: <n>                                    (records `state-scan` refused to name)
 #   unnamed-artifacts: <n>                               (family members outside the opaque name grammar)
 #   review-required-marks: <n> | unreadable              (when review.md exists)
 # Before the branch exists the run CLAIM is the liveness signal:
-#   run-state: /implement-issue run before branching — the run claim <dir>/gap-analysis.lock is held
+#   run-state: /implement-issue run before branching — the run claim <state>/gap-analysis.lock is held
 #   issues: #<n>, …                                      (from the issue-<n>.json snapshots)
 #   artifacts: …
 #
@@ -89,7 +91,7 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 
 usage() {
   cat <<'EOF'
-usage: run-state.sh summary --state <dir> [--session <id>] [--branch <name>]
+usage: run-state.sh summary --state <dir> [--session <id>] [--branch <name>] [--root <dir>]
        run-state.sh -h | --help
 
 Print the facts of the /implement-issue run live in <dir> — phase, phase history, branch,
@@ -184,6 +186,18 @@ _rs_snap() {
   [ -n "$RS_SNAP" ]
 }
 
+# _rs_show <path> — the ONE way a path is rendered into the document. A checkout directory is named
+# by whoever cloned it, and `IGNORE-ALL-PREVIOUS-INSTRUCTIONS` is a valid name: no absolute path
+# reaches the output. Under --root, paths are relative to the repository root (`.claude/state/…`);
+# otherwise the state directory is the literal token `<state>`. RS_PFX is set by cmd_summary.
+_rs_show() {
+  case "$1" in
+    "$RS_DIR"/*) printf '%s%s' "$RS_PFX" "${1#"$RS_DIR"/}" ;;
+    "$RS_DIR")   printf '%s' "${RS_PFX%/}" ;;
+    *)           printf '%s' "<outside-state>" ;;
+  esac
+}
+
 # _rs_scan <dir> — `state-scan` once; sets RS_ARTS (gaps/review/docs paths, sorted, comma-joined),
 # RS_ISSUES (`#n, …` from the issue snapshots) and RS_UNSAFE (count of refused names).
 _rs_scan() {
@@ -209,7 +223,7 @@ _rs_scan() {
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
     case "$kind" in
-      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$sfile" ;;
+      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;
       issue)  case "$sfile" in *.json) ;; *) continue ;; esac
               n="${sfile##*/issue-}"; n="${n%.json}"
               # POSITIVE AND CANONICAL, as the marker predicate requires: issue-0.json and issue-001.json
@@ -228,6 +242,7 @@ EOF
 
 cmd_summary() {
   local dir="$OPT_STATE" sid="$OPT_SESSION"
+  RS_DIR="$dir"; RS_PFX="<state>/"
   [ -n "$dir" ] || die "summary: --state is required"
   command -v jq >/dev/null 2>&1 || { printf 'run-state: jq is required\n' >&2; return 12; }
   # Both are printed into a line-structured document: a control or format character in the path,
@@ -242,16 +257,31 @@ cmd_summary() {
   [ -e "$dir" ] || [ -L "$dir" ] || return 0
   # Readable AND searchable: a directory without `x` lists its names but refuses every `-f` below,
   # which would read as "no run" rather than as the unreadable directory it is.
-  [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$dir"; return 20; }
+  [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || { printf 'run-state: the state directory %s cannot be read\n' "$(_rs_show "$dir")"; return 20; }
+  # UNDER --root THE STATE DIRECTORY MUST BE INSIDE THE REPOSITORY, physically: a `.claude/state`
+  # that is a symlink to another checkout would have this reader summarise THAT run as this one.
+  # The physical relative path is then the rendering prefix (`.claude/state/`, ordinarily).
+  if [ -n "$OPT_ROOT" ]; then
+    local pdir proot
+    pdir="$(cd "$dir" 2>/dev/null && pwd -P)" || pdir=""
+    proot="$(cd "$OPT_ROOT" 2>/dev/null && pwd -P)" || proot=""
+    case "$pdir" in
+      "$proot"/?*) [ -n "$proot" ] || { printf 'run-state: --root cannot be resolved; not summarised\n'; return 20; }; RS_PFX="${pdir#"$proot"/}/" ;;
+      *) printf 'run-state: the state directory is not inside the repository root — not summarised\n'; return 20 ;;
+    esac
+  fi
 
   local marker="$dir/implement-issue-active.json" blocked="$dir/implement-issue-blocked.json"
   local claim="$dir/gap-analysis.lock" p
   # A record path that EXISTS but is not a readable regular file — a directory, a FIFO, a dangling
   # symlink — is refused before anything opens it (a FIFO would block the open), never read as
   # "absent": a damaged state path is an unreadable record, not a run that is over.
-  for p in "$marker" "$claim"; do
-    if [ -e "$p" ] || [ -L "$p" ]; then
-      [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$p"; return 18; }
+  for p in "$marker" "$claim" "$blocked"; do
+    # ...and never a SYMLINK: the workflow writes its records by rename into this directory, so a
+    # link here points at a record somebody else placed — another checkout's, or a forged one.
+    [ -L "$p" ] && { printf 'run-state: %s is a symlink — the workflow never writes one; refused\n' "$(_rs_show "$p")"; return 18; }
+    if [ -e "$p" ]; then
+      [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$(_rs_show "$p")"; return 18; }
     fi
   done
   local snap="" again="" fields="" attempt req="" blk="" grc
@@ -259,10 +289,10 @@ cmd_summary() {
 
   if [ -f "$marker" ]; then
     for attempt in 1 2; do
-      _rs_snap "$marker" || { printf 'run-state: the run marker at %s is unreadable\n' "$marker"; return 18; }
+      _rs_snap "$marker" || { printf 'run-state: the run marker at %s is unreadable\n' "$(_rs_show "$marker")"; return 18; }
       snap="$RS_SNAP"
       fields="$(printf '%s' "$snap" | jq -rs "$_RS_UNSAFE_JQ $_RS_MARKER_JQ" 2>/dev/null)" || fields=""
-      [ -n "$fields" ] || { printf 'run-state: the run marker at %s is unreadable (not a usable record)\n' "$marker"; return 18; }
+      [ -n "$fields" ] || { printf 'run-state: the run marker at %s is unreadable (not a usable record)\n' "$(_rs_show "$marker")"; return 18; }
       # `m_branch` is the DISPLAY form (slug elided); `m_branch_raw` is what the blocked marker
       # is paired against, since that file carries the real branch name.
       m_branch=""; m_issue=""; m_phase=""; m_pr=""; m_owner=""; m_hist=""; m_branch_raw=""
@@ -271,10 +301,10 @@ cmd_summary() {
 $fields
 EOF
       if ! adb_owners_compatible "$m_owner" "$sid"; then
-        printf 'run-state: a run marker at %s belongs to another session; not summarised\n' "$marker"
+        printf 'run-state: a run marker at %s belongs to another session; not summarised\n' "$(_rs_show "$marker")"
         return 4
       fi
-      _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$dir"; return 20; }
+      _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$(_rs_show "$dir")"; return 20; }
       req=""
       if [ -e "$dir/review.md" ] || [ -L "$dir/review.md" ]; then
         if [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then
@@ -307,11 +337,11 @@ EOF
       _rs_snap "$marker" && again="$RS_SNAP" || again=""
       [ "$again" = "$snap" ] && break
       if [ "$attempt" = 2 ]; then
-        printf 'run-state: the run marker at %s changed while it was being read; not summarised\n' "$marker"
+        printf 'run-state: the run marker at %s changed while it was being read; not summarised\n' "$(_rs_show "$marker")"
         return 0
       fi
     done
-    printf 'run-state: /implement-issue run in progress — source %s\n' "$marker"
+    printf 'run-state: /implement-issue run in progress — source %s\n' "$(_rs_show "$marker")"
     printf 'phase: %s\n' "$m_phase"
     [ -n "$m_hist" ] && printf 'phase-history: %s\n' "$m_hist"
     printf 'branch: %s\n' "$m_branch"
@@ -330,7 +360,7 @@ EOF
     fi
     printf 'issues: %s\n' "$(_rs_issue_list "$m_issue")"
     [ -n "$m_pr" ] && printf 'pr: %s\n' "$m_pr"
-    [ "$blk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$blocked"
+    [ "$blk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$(_rs_show "$blocked")"
     [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
     [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
     [ "$RS_UNNAMED" -gt 0 ] && printf 'unnamed-artifacts: %s\n' "$RS_UNNAMED"
@@ -341,10 +371,10 @@ EOF
   # No marker: before the branch exists the CLAIM is the liveness signal (workflow steps 2-4).
   # Read ONCE; owner and lease come from the same bytes.
   [ -f "$claim" ] || return 0
-  _rs_snap "$claim" || { printf 'run-state: the run claim at %s is unreadable\n' "$claim"; return 18; }
+  _rs_snap "$claim" || { printf 'run-state: the run claim at %s is unreadable\n' "$(_rs_show "$claim")"; return 18; }
   snap="$RS_SNAP"
   fields="$(printf '%s' "$snap" | jq -rs "$_RS_UNSAFE_JQ $_RS_CLAIM_JQ" 2>/dev/null)" || fields=""
-  [ -n "$fields" ] || { printf 'run-state: the run claim at %s is unreadable (not a usable record)\n' "$claim"; return 18; }
+  [ -n "$fields" ] || { printf 'run-state: the run claim at %s is unreadable (not a usable record)\n' "$(_rs_show "$claim")"; return 18; }
   local c_owner="" c_exp="" now
   { IFS= read -r c_owner; IFS= read -r c_exp; } <<EOF
 $fields
@@ -352,11 +382,11 @@ EOF
   now="$(date -u +%s)"
   [ "$c_exp" -gt "$now" ] 2>/dev/null || return 0   # an expired claim is a dead run: nothing to say
   if ! adb_owners_compatible "$c_owner" "$sid"; then
-    printf 'run-state: a run claim at %s belongs to another session; not summarised\n' "$claim"
+    printf 'run-state: a run claim at %s belongs to another session; not summarised\n' "$(_rs_show "$claim")"
     return 4
   fi
-  _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$dir"; return 20; }
-  printf 'run-state: /implement-issue run before branching — the run claim %s is held\n' "$claim"
+  _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$(_rs_show "$dir")"; return 20; }
+  printf 'run-state: /implement-issue run before branching — the run claim %s is held\n' "$(_rs_show "$claim")"
   [ -n "$RS_ISSUES" ] && printf 'issues: %s\n' "$RS_ISSUES"
   [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
   [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
@@ -365,7 +395,7 @@ EOF
 }
 
 # --- dispatch -------------------------------------------------------------------------------------
-OPT_STATE=""; OPT_SESSION=""; OPT_BRANCH=""; OPT_BRANCH_SET=0
+OPT_STATE=""; OPT_SESSION=""; OPT_BRANCH=""; OPT_BRANCH_SET=0; OPT_ROOT=""
 [ "$#" -ge 1 ] || { usage; exit 2; }
 SUB="$1"; shift
 case "$SUB" in -h|--help) usage; exit 0 ;; esac
@@ -374,6 +404,7 @@ while [ "$#" -gt 0 ]; do
     --state)   [ "$#" -ge 2 ] || die "$SUB: --state needs a value";   OPT_STATE="$2";   shift 2 ;;
     --session) [ "$#" -ge 2 ] || die "$SUB: --session needs a value"; OPT_SESSION="$2"; shift 2 ;;
     --branch)  [ "$#" -ge 2 ] || die "$SUB: --branch needs a value";  OPT_BRANCH="$2"; OPT_BRANCH_SET=1; shift 2 ;;
+    --root)    [ "$#" -ge 2 ] || die "$SUB: --root needs a value";    OPT_ROOT="$2";   shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)         die "$SUB: unknown option '$1'" ;;
   esac

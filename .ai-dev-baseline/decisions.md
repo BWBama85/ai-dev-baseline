@@ -12,6 +12,10 @@ didn't already model, so any residual divergence stays visible and auditable.
 - decision:  Wire `scripts/selfcheck.sh` as the `test` gate in the repo-root `agents.toml`
              `[gates]`, and declare the three toolchain-less axes (typecheck/lint/format)
              N/A via `[gates.state]`.
+- rendering: every path in the summary is RELATIVE — `.claude/state/…` under `--root <repo>`,
+             else the literal token `<state>` — because a checkout directory is named by whoever
+             cloned it and a name is prose; the absolute directory goes to stderr only. The summary
+             reaches the hook's jq on stdin, never argv (Linux bounds one argument at 128 KiB).
 - placement: `agents.toml [gates]` / `[gates.state]` — the prescribed home for a
              project-specific gate command (handling-the-unknown table).
 - reason:    selfcheck IS this repo's real quality gate; the gate model's whole point is to
@@ -7473,7 +7477,7 @@ survive is the part a later reader needs.
              sentence), a branch outside the workflow's `issue-<n>[-<n>…]-<slug>` shape (every other
              shape used to be rendered whole, and a name is prose), an issue number that is 0 or
              carries a leading zero (in the marker and in the pre-branch issue-<n>.json snapshots),
-             a branch whose issue prefix disagrees with the issue list it was named from, a February 29 outside a leap year, a `prUrl` that
+             a branch whose issue prefix disagrees with the issue list it was named from, a February 29 outside a leap year, a symlinked record (the workflow writes by rename, never a link), a state directory not physically inside the `--root` it is read for, a `prUrl` that
              is not `https://<host>/<owner>/<repo>/pull/<n>` — hostname labels, a port in 1..65535
              if any, an owner without dots and a repository name that is not a dot segment, and the
              pull-request route (a bare `https://` or an unrelated https page would
@@ -7514,6 +7518,10 @@ survive is the part a later reader needs.
              A separate library rather than a `summary` on `implement-lib.sh`: that module's
              charter is run ADMISSION and `docs-lib-mutation` already names it as an input, so
              growing it would re-trigger an unrelated harness on every reader change.
+- rendering: every path in the summary is RELATIVE — `.claude/state/…` under `--root <repo>`,
+             else the literal token `<state>` — because a checkout directory is named by whoever
+             cloned it and a name is prose; the absolute directory goes to stderr only. The summary
+             reaches the hook's jq on stdin, never argv (Linux bounds one argument at 128 KiB).
 - placement: `scripts/lib/run-state.sh`, `agents/claude/scripts/session-context.sh`,
              `agents/claude/settings.hooks.json` (a second `SessionStart` group, matcher
              `compact|resume`), `adb_claude_hook_scripts` (five hooks), `base/practices/compact-instructions.md`

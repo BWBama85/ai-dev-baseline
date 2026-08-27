@@ -177,7 +177,9 @@ already holds those facts, so `session-context.sh` reads them back. On `SessionS
 `scripts/lib/run-state.sh summary` for the run live in `<repo>/.claude/state` and injects the answer
 as `hookSpecificOutput.additionalContext`: the phase and its append-only history (#243), the
 branch, the issue **numbers**, the PR, whether a blocked marker was written (its path, never its
-reason), the **paths** of the gap/review/docs artifacts, and a count of `REQUIRED` marks in
+reason), the **paths** of the gap/review/docs artifacts — every path relative to the repository
+root (`.claude/state/…`), because a checkout directory is named by whoever cloned it and a name is
+prose — and a count of `REQUIRED` marks in
 `review.md`. Before the branch
 exists — the long gap-analysis pass — the run claim is the liveness signal and the issue snapshots
 name the issues.
@@ -191,7 +193,10 @@ reader versions. The global copy therefore defers when the vendored hook exists,
 so on stderr); a vendored file that is not wired, not runnable, a group matched to some other
 source, or a `settings.json` it cannot read, leaves the global hook running — one injection either
 way, never zero. The wiring is recognised by
-the exact command the pinned installer writes, never by a suffix.
+the exact command the pinned installer writes, never by a suffix. The hook acts only on a payload
+whose `cwd` is an absolute path, hands the reader the repository root, and the reader refuses a
+`.claude/state` that is not physically inside it (a symlink to another checkout would summarise that
+run as this one) and any symlinked record.
 
 **It says whether the checkout is still on the run's branch.** Another session, or the operator, may
 have switched the shared checkout since the marker was written; the hook hands the live branch to

@@ -87,6 +87,9 @@ SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"
 # without a valid one is not a SessionStart this hook may act on — and $PWD is where the hook
 # PROCESS runs, which would inject whichever checkout the process happened to start in.
 [ -n "$SESSION_CWD" ] || exit 0
+# ...AND ABSOLUTE. A relative cwd would be resolved against this PROCESS's working directory,
+# letting the environment, not the event, choose the checkout.
+case "$SESSION_CWD" in /*) : ;; *) exit 0 ;; esac
 [ -d "$SESSION_CWD" ] || exit 0
 SHAPE="$(adb_repo_shape "$SESSION_CWD" 2>/dev/null)" || exit 0
 [ "$(adb_shape_val "$SHAPE" in_git)" = 1 ] || exit 0
@@ -128,7 +131,7 @@ _adb_rs="$(dirname "$0")/lib/run-state.sh"
 # THE CHECKOUT MAY HAVE LEFT THE RUN'S BRANCH since the marker was written (another session, or
 # the operator). The reader compares and reports; it never names the live branch.
 CUR_BRANCH="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')"
-SUMMARY="$(bash "$_adb_rs" summary --state "$STATE_DIR" --session "$SID" --branch "$CUR_BRANCH" 2>/dev/null)"; RC=$?
+SUMMARY="$(bash "$_adb_rs" summary --state "$STATE_DIR" --root "$REPO_ROOT" --session "$SID" --branch "$CUR_BRANCH" 2>/dev/null)"; RC=$?
 case "$RC" in
   0|4|18|20) : ;;
   *) printf 'session-context: run-state.sh exited %s — nothing injected\n' "$RC" >&2; exit 0 ;;
@@ -163,8 +166,10 @@ case "$MAX" in ''|*[!0-9]*) MAX=9500 ;; esac
 # minus its quotes — because the harness's limit applies to what is written: a path full of
 # backslashes or quotes doubles under escaping (measured: 8,692 decoded characters, 16,779 on the
 # wire), and a multibyte character is one code point and up to four bytes.
-jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
-  def enc: (tojson | utf8bytelength) - 2;   # BYTES, not code points: an emoji is 1 to length, 4 on the wire
+# ON STDIN, never argv: Linux bounds one argument at 128 KiB and macOS the vector at 1 MiB, and
+# the summary is unbounded until the cap below applies — which needs jq to START.
+printf '%s' "$SUMMARY" | jq -cRs --arg h "$HEADER" --argjson max "$MAX" '. as $s
+  | def enc: (tojson | utf8bytelength) - 2;   # BYTES, not code points: an emoji is 1 to length, 4 on the wire
   ($h + "\n" + $s) as $ctx
   | "\n(capped at \($max) characters — the state directory is named on the run-state line below the header, and on stderr)" as $cap
   # The wrapper around additionalContext is MEASURED, not a constant (a constant of 73 was 5 short
@@ -173,19 +178,15 @@ jq -cn --arg h "$HEADER" --arg s "$SUMMARY" --argjson max "$MAX" '
   # ...and ONE MORE for the newline jq writes after the object, which is on the wire too.
   | ($max - 1 - ({hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: ""}} | tojson | utf8bytelength)) as $budget
   | ($budget - ($cap | enc)) as $keep
-  # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that
-  # fits is kept; the header or the source line (0 and 1), when too long, is TRUNCATED to a third
-  # of the budget rather than dropped, since the path in it is the one unbounded value; any other
-  # line that does not fit is skipped and the next one is tried. Every measure is `enc`.
+  # LINE BY LINE, IN ORDER, so the short facts survive whatever a long line does: a line that fits
+  # is kept, one that does not is skipped and the next one tried. No line is truncated: every path
+  # is relative now, so no single line is unbounded — only the COUNT of artifact lines is.
   | (if ($ctx | enc) <= $budget then $ctx
      elif $keep <= 0 then ($cap[1:] | .[:($budget - 2)])
      else (reduce ($ctx | split("\n") | to_entries[]) as $e ("";
              ($e.value) as $l
              | (if . == "" then 0 else (. | enc) + 2 end) as $used   # +2: a newline is `\n` on the wire
              | if $used + ($l | enc) <= $keep then (if . == "" then $l else . + "\n" + $l end)
-               elif $e.key <= 1 and ($keep / 3 | floor) > 8 and $used + ($keep / 3 | floor) <= $keep
-                 then (if . == "" then "" else . + "\n" end)
-                      + ($l | [range(length)] | map(. + 1) | map(select(($l[:.] | enc) <= ($keep / 3 | floor) - 3)) | last // 0 | $l[:.]) + "…"
                else . end)) + $cap end) as $folded
   # BY CONSTRUCTION, whatever the fold arithmetic did: the serialized object plus the newline that
   # jq writes is measured, and trailing lines (above the cap notice) are dropped until it fits.
