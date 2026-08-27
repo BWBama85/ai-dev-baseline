@@ -102,8 +102,11 @@ STATE_DIR="$REPO_ROOT/.claude/state"
 # copy is the pin's: this one defers to it when it exists AND is wired. A vendored file that is
 # not wired, or a settings.json this cannot read, leaves the global hook running — one injection
 # either way, never zero.
-_adb_vendored="$REPO_ROOT/.claude/adb/session-context.sh"
-if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
+_adb_vdir="$REPO_ROOT/.claude/adb"; _adb_vendored="$_adb_vdir/session-context.sh"
+# ...and only to a copy that can RUN: executable, with the libraries it resolves beside itself
+# (common.sh sourced at the top, run-state.sh and the cleanup-lib.sh it calls). A damaged or
+# half-restored pin would otherwise turn one injection into zero.
+if [ -x "$_adb_vendored" ] && [ -f "$_adb_vdir/lib/common.sh" ] && [ -f "$_adb_vdir/lib/run-state.sh" ] && [ -f "$_adb_vdir/lib/cleanup-lib.sh" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
   # ...and only when the group that wires it would FIRE for this source. A matcher made of letters,
   # digits, `_ - space , |` is an exact alternative list; anything else is an UNANCHORED regex;
   # absent, empty or `*` covers every source (the vendor's rule, read this run). A group matched

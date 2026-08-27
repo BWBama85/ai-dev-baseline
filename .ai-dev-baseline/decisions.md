@@ -7472,7 +7472,8 @@ survive is the part a later reader needs.
              required, whitespace or a C0/C1/Unicode format or separator character, a phase outside the nine the workflow writes (`[a-z_]{1,32}` admitted a lowercase
              sentence), a branch outside the workflow's `issue-<n>[-<n>…]-<slug>` shape (every other
              shape used to be rendered whole, and a name is prose), an issue number that is 0 or
-             carries a leading zero, a February 29 outside a leap year, a `prUrl` that
+             carries a leading zero (in the marker and in the pre-branch issue-<n>.json snapshots),
+             a branch whose issue prefix disagrees with the issue list it was named from, a February 29 outside a leap year, a `prUrl` that
              is not `https://<host>/<owner>/<repo>/pull/<n>` — hostname labels, a port in 1..65535
              if any, an owner without dots and a repository name that is not a dot segment, and the
              pull-request route (a bare `https://` or an unrelated https page would

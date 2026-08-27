@@ -128,6 +128,10 @@ _RS_MARKER_JQ='
   | if (str(.branch; 255) and (.branch|unsafe|not) and (.branch | test("^issue-[0-9]+(-[0-9]+)*-.+$"))) then . else error("branch") end
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
   | if (str(.issue; 64) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end
+  # THE TWO ARE ONE FACT: the workflow names the branch issue-<n>[-<n>…]-<slug> from the SAME list it
+  # writes to .issue, so a marker whose branch numbers and issue list disagree is not one it wrote.
+  # A prefix test, not a parse: a slug may itself begin with digits (issue-431-2-factor-auth).
+  | ("issue-" + (.issue | gsub(","; "-")) + "-") as $pfx | if (.branch | startswith($pfx)) then . else error("branch-issue") end
   | if (str(.phase; 32) and (.phase | phase_ok)) then . else error("phase") end
   | (has("owner")) as $had_owner
   | .owner = (if $had_owner then .owner else "" end)
@@ -150,12 +154,9 @@ _RS_MARKER_JQ='
   # that way is rendered with its slug ELIDED (the numbers stay; `git branch --show-current` has
   # the rest). A branch of any other shape is REFUSED WHOLE: the workflow writes no other shape,
   # and a name outside it is prose that would be rendered into a prompt.
-  # The `else` arm is unreachable past the shape check above. It is kept so that a DROPPED check is
-  # observable: without it, `capture` on a non-matching branch emits nothing and the record is refused
-  # by coincidence, which would hide the missing guard from the harness (`branch-shape-dropped`).
-  | .bshow = (.branch | if test("^issue-[0-9]+(-[0-9]+)*-.+$") then
-                (capture("^(?<head>issue-[0-9]+(-[0-9]+)*)-(?<slug>.+)$") | "\(.head)-<slug elided, \(.slug|length) chars>")
-              else . end)
+  # Elided from the VALIDATED issue list, not parsed out of the branch: everything after
+  # `issue-<numbers>-` is the slug, so a slug that begins with digits is never mistaken for a number.
+  | .bshow = ($pfx + "<slug elided, \((.branch|length) - ($pfx|length)) chars>")
   | [ .bshow, .issue, .phase, .prUrl, .owner, .hs, .branch ] | .[]'
 
 _RS_CLAIM_JQ='
@@ -211,7 +212,9 @@ _rs_scan() {
       gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$sfile" ;;
       issue)  case "$sfile" in *.json) ;; *) continue ;; esac
               n="${sfile##*/issue-}"; n="${n%.json}"
-              case "$n" in ''|*[!0-9]*) continue ;; esac
+              # POSITIVE AND CANONICAL, as the marker predicate requires: issue-0.json and issue-001.json
+              # are debris, not identities the workflow wrote.
+              case "$n" in ''|*[!0-9]*|0*) continue ;; esac
               RS_ISSUES="${RS_ISSUES:+$RS_ISSUES, }#$n" ;;
       unsafe) RS_UNSAFE=$((RS_UNSAFE + 1)) ;;
       unnamed) RS_UNNAMED=$((RS_UNNAMED + 1)) ;;
