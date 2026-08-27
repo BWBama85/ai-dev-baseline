@@ -150,10 +150,18 @@ install_claude() {
   # (adb_claude_hooks_missing_deliberate). So the links this run adds are noted before linking
   # and taken back if wiring fails; a link that already existed is an earlier run's state and is
   # left alone. (PR #443 review)
-  local fresh="" s
+  # ...taken back to what stood there: adb_link moves a real file into $BACKUP_DIR and REPLACES a
+  # foreign symlink outright, so each fresh destination's prior shape is noted here (its symlink
+  # target, or nothing) and put back on rollback — a failed install must not leave the operator's
+  # own hook displaced.
+  local fresh="" s dest prior tab
+  tab="$(printf '\t')"
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    adb_link_into "$HOME/.claude/scripts/$s" "$REPO" || fresh="$fresh$s"$'\n'
+    dest="$HOME/.claude/scripts/$s"
+    adb_link_into "$dest" "$REPO" && continue
+    prior=""; [ -L "$dest" ] && prior="$(readlink "$dest")"
+    fresh="$fresh$s$tab$prior"$'\n'
   done <<EOF
 $(adb_claude_hook_scripts)
 EOF
@@ -168,10 +176,16 @@ EOF
   if [ "$WIRE_HOOKS" -eq 1 ]; then
     wire_hooks || {
       rc=1
-      while IFS= read -r s; do
+      while IFS="$tab" read -r s prior; do
         [ -n "$s" ] || continue
-        adb_link_into "$HOME/.claude/scripts/$s" "$REPO" || continue
-        rm -f "$HOME/.claude/scripts/$s" || adb_info "  WARN   could not take back $HOME/.claude/scripts/$s — remove it by hand, or the next self-heal reads it as a per-hook opt-out"
+        dest="$HOME/.claude/scripts/$s"
+        adb_link_into "$dest" "$REPO" || continue
+        rm -f "$dest" || { adb_info "  WARN   could not take back $dest — remove it by hand, or the next self-heal reads it as a per-hook opt-out"; continue; }
+        if [ -e "$BACKUP_DIR$dest" ] || [ -L "$BACKUP_DIR$dest" ]; then
+          mv "$BACKUP_DIR$dest" "$dest" || adb_info "  WARN   could not restore $dest from $BACKUP_DIR$dest — restore it by hand"
+        elif [ -n "$prior" ]; then
+          ln -s "$prior" "$dest" || adb_info "  WARN   could not restore the symlink $dest → $prior — restore it by hand"
+        fi
       done <<EOF
 $fresh
 EOF

@@ -596,6 +596,10 @@ printf 'this is not json\n' > "$bh/.claude/settings.json"
 # One hook link ALREADY OURS before this run (an earlier install, or a per-hook opt-out) — it is
 # not this run's to take back. The other four do not exist yet and are created by this run.
 ln -s "$ROOT/agents/claude/scripts/precommit-gate.sh" "$bh/.claude/scripts/precommit-gate.sh"
+# ...and two destinations the operator OWNS: a real file, and a symlink into a tree of their own.
+# adb_link displaces both (backup; outright replacement) — a rollback must put both back.
+printf 'my own hook\n' > "$bh/.claude/scripts/session-context.sh"
+ln -s /elsewhere/my-gate.sh "$bh/.claude/scripts/state-claim-gate.sh"
 # The one call that already asserted its status — and still discarded the WARN that says WHICH of
 # wire_hooks' five branches refused. `no "$rc"` passes identically for "not valid JSON", "could not
 # read settings.hooks.json" and "could not write", so a regression that swapped one refusal for
@@ -610,9 +614,16 @@ eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.j
 # so links this run created would make every later `baseline update` pass --no-hooks and the new
 # hook would stay unwired for good. The links this run ADDED are taken back; the pre-existing one
 # is not this run's to judge.
-if [ -e "$bh/.claude/scripts/session-context.sh" ] || [ -L "$bh/.claude/scripts/session-context.sh" ]; then
-  bad "a failed wiring must take back the hook links this run added (session-context.sh is still linked)"
+if [ -e "$bh/.claude/scripts/implement-issue-gate.sh" ] || [ -L "$bh/.claude/scripts/implement-issue-gate.sh" ]; then
+  bad "a failed wiring must take back the hook links this run added (implement-issue-gate.sh is still linked)"
 else ok; fi
+# ...AND RESTORE WHAT EACH ONE DISPLACED (PR #443 review): deleting only the new link leaves the
+# operator's own hook sitting in the backup directory after an install that reported failure.
+if [ -f "$bh/.claude/scripts/session-context.sh" ] && [ ! -L "$bh/.claude/scripts/session-context.sh" ] \
+   && [ "$(cat "$bh/.claude/scripts/session-context.sh")" = "my own hook" ]; then ok
+else bad "a failed wiring must restore the operator's real file that the fresh link displaced"; fi
+eq "$(readlink "$bh/.claude/scripts/state-claim-gate.sh" 2>/dev/null)" "/elsewhere/my-gate.sh" \
+  "a failed wiring must restore the operator's foreign symlink that the fresh link replaced"
 if [ -L "$bh/.claude/scripts/precommit-gate.sh" ]; then ok
 else bad "a failed wiring must leave a hook link that existed BEFORE this run alone"; fi
 has "$INSTALLER_OUT" "taken back" "...and SAYS the fresh links were taken back"

@@ -137,8 +137,8 @@ update` preserves it: a hook whose script link is installed but whose entry is g
 (the set is reported as PARTIAL). A hook shipped **after** your last install has neither an entry
 nor a script link, and that is not a choice anybody made — the next `baseline update` links and
 wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart — which holds because
-an install whose hook wiring **fails** takes back the links it added, so an interrupted install
-never leaves the opt-out's shape behind). **Unless the set
+an install whose hook wiring **fails** takes back the links it added — restoring whatever each one
+displaced — so an interrupted install never leaves the opt-out's shape behind). **Unless the set
 also carries a deliberate opt-out:** `install.sh --no-hooks` is all-or-nothing, so a mixed set —
 one entry you removed plus one hook that just shipped — keeps the opt-out and leaves the new hook
 linked but unwired; the update says so, and `./install.sh` wires the full set (which re-adds the
