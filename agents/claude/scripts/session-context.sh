@@ -72,7 +72,10 @@ fi
 # are a checkout nobody named. Exactly one object, or no field at all.
 # STRINGS ONLY: `tostring` would turn `"cwd": false` into the relative path `false`, which can name
 # a nested repository nobody supplied. A field of any other type is absent.
-hook_field() { printf '%s' "$HOOK_INPUT" | jq -js --arg k "$1" 'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" then .[0][$k] else empty end' 2>/dev/null; }
+# ...AND NO U+0000. jq decodes an escaped `\u0000` to a literal NUL byte, and `$(…)` drops that
+# byte silently — `"com\u0000pact"` arrives as `compact` and `/tmp/a\u0000b` as a directory the
+# payload never named. Refused inside jq, before any byte reaches the shell.
+hook_field() { printf '%s' "$HOOK_INPUT" | jq -js --arg k "$1" 'if length == 1 and (.[0]|type) == "object" and (.[0][$k]|type) == "string" and ((.[0][$k] | contains("\u0000")) | not) then .[0][$k] else empty end' 2>/dev/null; }
 field() { local v; v="$(hook_field "$1"; printf x)"; printf '%s' "${v%x}"; }
 
 SOURCE="$(field source; printf x)"; SOURCE="${SOURCE%x}"

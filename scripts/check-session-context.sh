@@ -352,6 +352,10 @@ if [ "$MODE" = mutation ]; then
     'SESSION_CWD="$(field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"' \
     'SESSION_CWD="$(hook_field cwd)"' \
     'trailing newline'
+  check_mut nul-field-accepted \
+    ' and ((.[0][$k] | contains("\u0000")) | not) then' \
+    ' then' \
+    'U+0000'
   check_mut cwd-fallback-restored \
     '[ -n "$SESSION_CWD" ] || exit 0' \
     '[ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"' \
@@ -825,6 +829,12 @@ hook() {
 }
 ctx() { printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext'; }
 
+# A U+0000 INSIDE A FIELD: jq decodes `\u0000` to a NUL byte and `$(…)` drops it, so the shell
+# would see `compact` for `com\u0000pact` and a DIFFERENT directory for `…/re\u0000po`.
+hook "$(printf '{"hook_event_name":"SessionStart","source":"com\\u0000pact","cwd":"%s","session_id":"%s"}' "$R" "$SID_A")"
+eq "$RC" 0 "2- a source carrying U+0000 exits 0"; eq "$OUT" "" "2- ...and injects nothing: U+0000 in a field is refused, never stripped into a source"
+hook "$(printf '{"hook_event_name":"SessionStart","source":"compact","cwd":"%s\\u0000%s","session_id":"%s"}' "${R%?}" "${R: -1}" "$SID_A")"
+eq "$RC" 0 "2- a cwd carrying U+0000 exits 0"; eq "$OUT" "" "2- ...and injects nothing: U+0000 in a field is refused, never stripped into a checkout"
 # 2a. compact: exactly one JSON object, the summary inside it, the provenance header first.
 hook "$(payload compact "$SID_A")"
 eq "$RC" 0 "2a compact: exit 0"
