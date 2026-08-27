@@ -107,13 +107,15 @@ same installer writes and cost seconds, so isolating them is nearly free. Everyt
 temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
 declared places, and `--only` / `--skip` can leave any of them out.
 
-CI's macOS leg runs two steps fewer: it passes `--skip adopt-readiness-mutation,pattern-ledger-mutation`,
-which the ubuntu `adopt` and `pattern-ledger` jobs already run on every PR (#339, PR #429). Your
-local run is unaffected in *coverage* — a plain `bash scripts/selfcheck.sh` still selects the whole
-registry, then applies the gate above — but it does get **longer** when the gate lets everything
-through, because the six isolated steps no longer overlap with anything: about 90 seconds' worth,
-measured serially on a 10-core machine. The dated range above was taken before that lane existed
-and has not been re-measured; the `result` block is the current answer, as it says.
+CI's macOS leg runs three steps fewer: it passes
+`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation`, which the
+ubuntu `adopt`, `pattern-ledger`, and `implement-gate` jobs already run on every relevant PR
+(#339, PR #429, PR #443). Your local run is unaffected in *coverage* — a plain
+`bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
+it does get **longer** when the gate lets everything through, because the six isolated steps no
+longer overlap with anything: about 90 seconds' worth, measured serially on a 10-core machine. The
+dated range above was taken before that lane existed and has not been re-measured; the `result`
+block is the current answer, as it says.
 
 In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
 a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),

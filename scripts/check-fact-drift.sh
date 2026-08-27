@@ -1541,6 +1541,15 @@ fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mut
 # execution, and dropping it there would end that coverage silently.
 fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# The third step `selfcheck-macos` skips by name, for the same reason: the ubuntu
+# `implement-gate` job is the session-context harness's only per-PR execution after the skip.
+fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
+# Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
+# copy of a whole-suite-per-mutation harness to the 45-minute job.
+fact macos-logic-mutations-skipped \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation' -- \
+  .github/workflows/ci.yml
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
 # touches the step's declared inputs and prints a stated SKIP otherwise. The positive pin says at

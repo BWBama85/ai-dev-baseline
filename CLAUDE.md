@@ -123,14 +123,18 @@ those. The rules below are specific to this repo's code.
    guarantee — GitHub documents that a `schedule` may be delayed or dropped), one matrix job per
    harness; `check-mutation-gate.sh` pins its matrix to the registry.
 
-   **CI runs two steps fewer on the macOS leg** (#339; the second since PR #429). `selfcheck-macos`
-   passes `--skip adopt-readiness-mutation,pattern-ledger-mutation`: each answers a logic question,
-   not a platform one, and an ubuntu job runs it on every PR — `adopt` for the first, `pattern-ledger`
-   for the second — where `check-fact-drift.sh` pins both invocations, because after the skip those
-   jobs are each step's **only** per-PR execution. Measured on run 32451790033 (green, `main`,
+   **CI runs three steps fewer on the macOS leg** (#339; the second since PR #429, the third since
+   PR #443). `selfcheck-macos` passes
+   `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation`: each answers
+   a logic question, not a platform one, and an ubuntu job runs it on every relevant PR — `adopt`
+   for the first, `pattern-ledger` for the second, `implement-gate` for the third — where
+   `check-fact-drift.sh` pins all three invocations, because after the skip those jobs are each
+   step's **only** per-PR execution. Measured on run 32451790033 (green, `main`,
    2026-08-21): the `adopt` step was 680s of a 1086s job that was the run's critical path; on run
    32889697083 (2026-08-25) the ledger harness was 1932s of a 39.5-minute macOS job, and the two
-   pushes after it were cancelled by that job's 45-minute ceiling with the step still running. A
+   pushes after it were cancelled by that job's 45-minute ceiling with the step still running. On
+   run 33043334817 (2026-08-27), the session-context harness took 1370s in `implement-gate`, while
+   its duplicate remained the sole unfinished macOS step when that job reached the same ceiling. A
    plain local `bash scripts/selfcheck.sh` still *selects* the whole registry — the `--skip`s are a
    CI-invocation choice, never a new default — and then applies the gate above to it.
 

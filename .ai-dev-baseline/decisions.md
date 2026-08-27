@@ -7185,6 +7185,16 @@ survive is the part a later reader needs.
   invocation (`pattern-ledger-mutation-wired`) so the skip cannot silently become no coverage. The
   new job is a new required context; the `reconcile-required-checks` preflight adds it on `main`.
 
+- **AMENDED 2026-08-27 (PR #443): a THIRD step leaves the macOS leg, by the same rule.** The
+  `session-context-mutation` harness runs a full 491-assertion suite for each of 76 injected
+  defects. On run 33043334817 it completed once in the dedicated ubuntu `implement-gate` job in
+  1370s, while its duplicate in `selfcheck-macos` was the only selected step not to report a
+  result before that job's 45-minute ceiling. The non-mutation `session-context` suite did report
+  PASS on macOS, so the platform question was answered. Disposition identical to the first two:
+  `selfcheck-macos` also skips `session-context-mutation`; `implement-gate` remains its only
+  per-PR execution; and `check-fact-drift.sh` pins both the ubuntu invocation and the exact macOS
+  skip set so neither half can silently disappear.
+
 ## D88 — DEVIATION: `max_rounds = 0` removes the resolve loop's only overall bound, by owner decision
 - date:          2026-08-21
 - category:      deviation
