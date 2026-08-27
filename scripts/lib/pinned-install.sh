@@ -149,6 +149,12 @@ _pi_owns() {
 
 # --- the payload map -------------------------------------------------------------------------
 
+# _pi_hook_event <hook.sh> / _pi_hook_sources <hook.sh> — the event a shipped hook is wired under and
+# the SessionStart sources it must cover (a JSON list; empty for a Stop hook). ONE table, pinned by
+# check-pinned-install.sh against agents/claude/settings.hooks.json so the two cannot drift.
+_pi_hook_event()   { case "$1" in session-context.sh) printf 'SessionStart' ;; *) printf 'Stop' ;; esac; }
+_pi_hook_sources() { case "$1" in session-context.sh) printf '["compact","resume"]' ;; *) printf '[]' ;; esac; }
+
 # _pi_hook_scripts — the Claude hooks a pinned project gets: the shared enumeration minus this
 # file's one documented exclusion. One producer for the payload AND the wiring below.
 _pi_hook_scripts() {
@@ -905,10 +911,18 @@ _pi_check_surfaces() {
         # surviving entry made a settings.json missing two of the three gates report as complete.
         while IFS= read -r cmd; do
           [ -n "$cmd" ] || continue
-          jq -e --arg c "\${CLAUDE_PROJECT_DIR}/.claude/$PI_NS/$cmd" \
-             '[.hooks[]?[]?.hooks[]?.command // empty] | index($c) != null' \
+          # UNDER ITS OWN EVENT, with a matcher that covers what the shipped wiring covers. A command
+          # found anywhere under .hooks satisfied a presence test while sitting under the wrong event
+          # or behind a `startup` matcher — and Claude then never dispatched it (#431).
+          ev="$(_pi_hook_event "$cmd")"; case "$ev" in Stop) lbl="Stop-gate" ;; *) lbl="$ev" ;; esac
+          jq -e --arg c "\${CLAUDE_PROJECT_DIR}/.claude/$PI_NS/$cmd" --arg ev "$ev" --argjson need "$(_pi_hook_sources "$cmd")" '
+            [ .hooks[$ev][]? | select([.hooks[]?.command // empty] | index($c) != null)
+              | (.matcher // "") as $m
+              | ($need | all(. as $src | $m == "" or $m == "*"
+                  or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null)
+                      else ($src | test($m)) end))) ] | any' \
              "$p/.claude/settings.json" >/dev/null 2>&1 && continue
-          _pi_say "  missing  Stop-gate entry for $cmd in .claude/settings.json"; rc=1
+          _pi_say "  missing  $lbl entry for $cmd in .claude/settings.json (absent, under another event, or matched away from its sources)"; rc=1
         done <<EOF
 $(_pi_hook_scripts)
 EOF

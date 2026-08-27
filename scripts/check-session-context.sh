@@ -126,6 +126,10 @@ if [ "$MODE" = mutation ]; then
     '    "$RS_DIR"/*) printf '"'"'%s%s'"'"' "$RS_PFX" "${1#"$RS_DIR"/}" ;;' \
     '    "$RS_DIR"/*) printf '"'"'%s'"'"' "$1" ;;' \
     'checkout name never reaches'
+  check_mut review-symlink-followed \
+    '        if [ ! -L "$dir/review.md" ] && [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then' \
+    '        if [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then' \
+    'a symlinked review.md'
   check_mut issue-zero-accepted \
     '  | if (str(.issue; 64) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end' \
     '  | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end' \
@@ -678,6 +682,9 @@ d="$work/dangling-state"; rm -f "$d"; ln -s "$work/does-not-exist-adb" "$d"
 summary "$d" "$SID_A"; eq "$RC" 20 "1f a dangling symlink at the state directory is unreadable (20), never nothing-to-say"; rm -f "$d"
 d="$(state odd-review)"; marker "$d" "$LIVE"; mkdir "$d/review.md"
 summary "$d" "$SID_A"; has "$OUT" $'\nreview-required-marks: unreadable' "1f a review.md that is a DIRECTORY is reported unreadable, never silently absent"; rmdir "$d/review.md"
+rm -rf "$d/review.md"; printf 'REQUIRED\nREQUIRED\nREQUIRED\n' > "$work/outside-review.md"; ln -s "$work/outside-review.md" "$d/review.md"
+summary "$d" "$SID_A"; has "$OUT" $'\nreview-required-marks: unreadable' "1f a symlinked review.md is reported unreadable and never opened — a link would count a file outside the checkout"; hasnt "$OUT" "review-required-marks: 3" "1f ...so the target's count never appears"
+rm -f "$d/review.md" "$work/outside-review.md"
 
 # 1g. the blocked marker: paired by branch/issue/owner, named by PATH, its reason never printed.
 d="$(state blocked)"; marker "$d" "$LIVE"

@@ -307,7 +307,9 @@ EOF
       _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$(_rs_show "$dir")"; return 20; }
       req=""
       if [ -e "$dir/review.md" ] || [ -L "$dir/review.md" ]; then
-        if [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then
+        # NEVER THROUGH A SYMLINK: `-f` and grep both follow one, and a link here would have this reader
+        # count — and spend the hook's timeout on — a file outside the checkout. Unreadable, unopened.
+        if [ ! -L "$dir/review.md" ] && [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then
           req="$(grep -cw 'REQUIRED' "$dir/review.md" 2>/dev/null)"; grc=$?
           case "$grc" in 0|1) : ;; *) req="unreadable" ;; esac   # 1 = no match (grep prints 0)
           case "$req" in ''|*[!0-9a-z]*) req="unreadable" ;; esac

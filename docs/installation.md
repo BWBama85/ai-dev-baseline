@@ -667,7 +667,8 @@ truncation**, not authenticity — an attacker who can replace one can replace b
 | `.claude/skills/<name>/SKILL.md` | the workflows, shadowing any same-named global skill |
 | `.claude/adb/lib/*.sh` | the shared shell libraries the skills and gates call |
 | `.claude/adb/{precommit,implement-issue,state-claim}-gate.sh` | the Stop gates |
-| `.claude/settings.json` | the gates wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) |
+| `.claude/adb/session-context.sh` | the `SessionStart` run-state hook (#431): on `compact\|resume` it reads the project's own `.claude/state` back into context |
+| `.claude/settings.json` | the Stop gates and the `SessionStart` hook wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) — each under its own event, the hook with the `compact\|resume` matcher |
 | `.codex/skills/<name>/SKILL.md`, `.codex/adb/…` | the same, for Codex |
 | `AGENTS.md` | Codex's practices, inside a delimited managed region |
 | `.ai-dev-baseline/upstream.toml` | the pin — `mode`, `version`, `source`, `artifact` (the release archive's SHA-256), `adopted`, `agents`, and `stack` when a previous pin recorded one |
