@@ -115,7 +115,7 @@ if [ "$MODE" = mutation ]; then
     '              case "$n" in '"'"''"'"'|*[!0-9]*) continue ;; esac' \
     'a snapshot named issue-0'
   check_mut pr-url-rendered \
-    '  | .prnum = (if .prUrl == "" then "" else ("#" + (.prUrl | capture("/pull/(?<n>[0-9]+)$").n)) end)' \
+    '  | .prnum = (if .prUrl == "" then "" else ("#" + (.prUrl | sub("^.*/pull/"; ""))) end)' \
     '  | .prnum = .prUrl' \
     'never the host'
   check_mut review-bound-dropped \

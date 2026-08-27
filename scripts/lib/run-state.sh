@@ -161,8 +161,11 @@ _RS_MARKER_JQ='
   | .bshow = ($pfx + "<slug elided, \((.branch|length) - ($pfx|length)) chars>")
   # THE NUMBER, NEVER THE URL. A valid workflow-written prUrl carries the host, owner and repository
   # names verbatim, and a repository can be NAMED with prose; the checkout name and branch slug are
-  # elided for exactly that reason, and this is the same channel.
-  | .prnum = (if .prUrl == "" then "" else ("#" + (.prUrl | capture("/pull/(?<n>[0-9]+)$").n)) end)
+  # elided for exactly that reason, and this is the same channel. A `sub`, not a `capture`: the
+  # grammar above is the ONE validator, and an extraction that can itself fail would refuse a URL
+  # the grammar let through — which is exactly what a mutation harness saw (a grammar row went red
+  # on the extraction, not on its own assertion).
+  | .prnum = (if .prUrl == "" then "" else ("#" + (.prUrl | sub("^.*/pull/"; ""))) end)
   | [ .bshow, .issue, .phase, .prnum, .owner, .hs, .branch ] | .[]'
 
 _RS_CLAIM_JQ='
