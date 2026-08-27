@@ -286,8 +286,20 @@ adb_verify_links() {
       "$src" >&2
     return 1
   }
+  # A hook the MIXED hook set defers is ABSENT by design (adb_self_heal unlinks it, #444), and
+  # reporting that absence broken made every later `update` repair it and fail — the self-heal
+  # left exactly the state the verifier refused. Tolerated only when the path holds NOTHING: a
+  # real file or a foreign link there is still a collision to surface.
+  local deferred
+  deferred="$(adb_claude_hooks_deferred "$HOME/.claude/settings.json" "$src")"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    if [ -n "$deferred" ] && [ ! -e "$p" ] && [ ! -L "$p" ] \
+       && [ "$(dirname "$p")" = "$HOME/.claude/scripts" ] \
+       && printf '%s\n' "$deferred" | grep -qxF -- "$(basename "$p")"; then
+      printf 'baseline: deferred (mixed hook set, not wired until #444 or ./install.sh): %s\n' "$p" >&2
+      continue
+    fi
     # Healthy == our symlink into src (adb_link_into) AND it resolves (-e). Anything else — a
     # dangling link, a real file, or a link pointing outside src — is BROKEN.
     if ! adb_link_into "$p" "$src" || [ ! -e "$p" ]; then

@@ -357,15 +357,33 @@ rm -f "$fh/.claude/settings.json"
 # either, or the next self-heal reads the owned-but-unwired link as a second deliberate removal.
 # The stub installer creates no links, so what is asserted is the decision and the report; the
 # unlink primitive it calls is adb_unlink_if_ours, covered by check-common-lib.
-reset_src; : > "$work/install.log"; hook_settings mixed
+# THE BEHIND PATH, because that is where the mixed state is first produced (an upgrade pulls the
+# new hook) and where the self-heal runs unconditionally; and THE EXIT CODE, because the state the
+# self-heal leaves — the new hook's link absent — is one adb_verify_links used to call BROKEN, so
+# every update ended "repair failed" (exit 1) and every currency run repeated it (PR #443 review).
+reset_src; advance_origin "ships-a-hook"; : > "$work/install.log"; hook_settings mixed
 mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"
-out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
+eq "$rc" 0 "hooks mixed (behind) → the update completes (exit 0): a deferred hook is not a broken link"
+has "$out" "update complete" "hooks mixed (behind) → ...and says so"
 has "$(cat "$work/install.log")" "--no-hooks" "hooks mixed → the per-hook opt-out is preserved (--no-hooks)"
 has "$out" "left UNLINKED and unwired: session-context.sh" "hooks mixed → the newly shipped hook is named as left unlinked, not silently linked into an opt-out's shape"
 has "$out" "#444" "hooks mixed → ...and the run points at the per-hook form that resolves it"
+has "$out" "deferred (mixed hook set" "hooks mixed → ...and the verifier names the deferred hook rather than calling it broken"
 if [ -e "$fh/.claude/scripts/session-context.sh" ] || [ -L "$fh/.claude/scripts/session-context.sh" ]; then
   bad "hooks mixed → the new hook's script must not be left linked without its entry"
 else ok; fi
+# ...and the NEXT run, now current, is "nothing to do" — not a repair that fails again.
+: > "$work/install.log"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
+eq "$rc" 0 "hooks mixed (current) → a later update is nothing to do (exit 0), not a repeated failed repair"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks mixed (current) → ...and the installer is not re-run"
+has "$out" "PARTIAL" "hooks mixed (current) → ...while the partial set is still reported"
+# A FOREIGN occupant at the deferred hook's path is still a collision, never tolerated as deferred.
+printf 'not ours\n' > "$fh/.claude/scripts/session-context.sh"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
+has "$out" "BROKEN link" "hooks mixed → a foreign file at the deferred hook's path is still reported BROKEN"
+rm -f "$fh/.claude/scripts/session-context.sh"
 mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 

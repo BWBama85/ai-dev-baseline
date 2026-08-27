@@ -409,6 +409,26 @@ $(adb_claude_hooks_missing "$settings" "$home")
 EOF
 }
 
+# The shipped hooks a MIXED set defers, one per line: hooks with no settings entry AND no owned
+# script link, reported ONLY while some other hook was removed by hand (adb_claude_hooks_missing_
+# deliberate). That is the state bin/baseline leaves on purpose — `--no-hooks` preserves the
+# opt-out and is all-or-nothing (#444), so the new hook is left unlinked rather than linked into
+# the opt-out's own shape — and a verifier that then reported the absent link BROKEN would repair
+# it every run and fail every time. Without a deliberate removal the set is not mixed and nothing
+# is deferred: a missing link is then a broken install, exactly as before.
+# Usage: adb_claude_hooks_deferred <settings.json> <src> [home]
+adb_claude_hooks_deferred() {
+  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s
+  [ -n "$(adb_claude_hooks_missing_deliberate "$settings" "$src" "$home")" ] || return 0
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    adb_link_into "$home/.claude/scripts/$s" "$src" && continue
+    printf '%s\n' "$s"
+  done <<EOF
+$(adb_claude_hooks_missing "$settings" "$home")
+EOF
+}
+
 adb_claude_hook_regex() {
   local home="$1" s alt="" esc
   while IFS= read -r s; do
