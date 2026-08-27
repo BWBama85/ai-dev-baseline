@@ -352,7 +352,14 @@ EOF
         return 0
       fi
     done
-    printf 'run-state: /implement-issue run in progress — source %s\n' "$(_rs_show "$marker")"
+    # A marker the workflow's close-out left behind at `phase=complete` is not a run in progress,
+    # and a heading that said so over `phase: complete` had a resumed session treating finished
+    # work as active. The Stop gate verifies the PR live for the same marker; this only reports.
+    if [ "$m_phase" = complete ]; then
+      printf 'run-state: /implement-issue run recorded COMPLETE (its marker is still present) — source %s\n' "$(_rs_show "$marker")"
+    else
+      printf 'run-state: /implement-issue run in progress — source %s\n' "$(_rs_show "$marker")"
+    fi
     printf 'phase: %s\n' "$m_phase"
     [ -n "$m_hist" ] && printf 'phase-history: %s\n' "$m_hist"
     printf 'branch: %s\n' "$m_branch"

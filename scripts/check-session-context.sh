@@ -537,6 +537,13 @@ hasnt "$OUT" "ignore-all" "1b ...and the issue-title text never reaches the outp
 marker "$d" '{branch:"issue-431-243-x", issue:"431,243", phase:"pushed"}'; summary "$d" "$SID_A"
 has "$OUT" $'\nbranch: issue-431-243-<slug elided, 1 chars>' "1b a multi-issue branch keeps every number"
 
+# 1b°. phase=complete: the close-out leaves the marker behind, and it is not a run IN PROGRESS.
+d="$(state complete)"; marker "$d" "$(printf '%s' "$LIVE" | sed 's/phase:"pushed"/phase:"complete"/g')"
+summary "$d" "$SID_A"
+eq "$RC" 0 "1b a complete marker is still summarised (exit 0)"
+has "$OUT" "run-state: /implement-issue run recorded COMPLETE" "1b ...under a heading that says COMPLETE"
+hasnt "$OUT" "run in progress" "1b ...and never as a run in progress"
+has "$OUT" $'\nphase: complete' "1b ...with the phase itself still rendered"
 # 1b'. multi-issue, unowned, no prUrl.
 d="$(state multi)"; marker "$d" '{branch:"issue-431-243-b", issue:"431,243", phase:"pr_opened"}'
 summary "$d" "$SID_A"
