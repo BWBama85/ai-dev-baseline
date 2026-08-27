@@ -7,18 +7,17 @@
 # Agent tokens: claude | codex | gemini
 
 [roles]
-primary      = "claude"     # drives /implement-issue. Exactly one agent.
-gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
-review       = ["codex"]    # code review before merge. 1+ agents; more = better.
-                            # CODEX, NOT CLAUDE, AND NOT BY TASTE (#211). `primary` is claude, so
-                            # `["claude"]` here was Claude reviewing Claude — five subagent passes
-                            # of the model that wrote the diff. Both vendors' published guidance
-                            # points the same way: Opus 5's asks that Claude NOT be given explicit
-                            # verification scaffolding (it self-corrects natively), and Codex's
-                            # asks to be handed exactly the named-checklist, required-vs-optional
-                            # pass step 8 now sends it. Measured on the #173 run: the codex pass
-                            # found two real defects the driving agent had not; the 22-minute
-                            # Claude bug review returned three LOW findings and nothing higher.
+primary      = "codex"      # drives /implement-issue. Exactly one agent.
+gap_analysis = "claude"     # pre-implementation adversarial pass. "" to skip.
+review       = ["claude"]   # code review before merge. 1+ agents; more = better.
+                            # CROSS-MODEL, NOT BY TASTE (#211): the reviewer must not be the model
+                            # that wrote the diff. With `primary` = codex, the pass that reads the
+                            # diff is Claude's; when `primary` was claude this was `["codex"]` for
+                            # the same reason (`["claude"]` was Claude reviewing Claude — five
+                            # subagent passes of the model that wrote it). Flip these three
+                            # together: a primary that also reviews is the one shape #211 forbids.
+                            # The GitHub-side PR reviewer is `[reviewers] bots` below and is
+                            # unchanged: the Codex connector still reviews every PR.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
 release      = "claude"     # Names WHO cuts a release. Declared explicitly (not left to default)
