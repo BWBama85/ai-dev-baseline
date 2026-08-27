@@ -226,13 +226,17 @@ if [ "$MODE" = mutation ]; then
     '      elif false then "unnamed\t-"' \
     'a prose-bearing family name'
   check_mut scheme-only-url-accepted \
-    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._~/-]+$");' \
+    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*$");' \
     '  def prurl: test("^https://");' \
     'bare https://'
   check_mut host-labels-dropped \
-    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._~/-]+$");' \
+    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*$");' \
     '  def prurl: test("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+$");' \
     'a host of dots'
+  check_mut pull-route-dropped \
+    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*$");' \
+    '  def prurl: test("^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?/[A-Za-z0-9._~/-]+$");' \
+    'not a pull-request route'
   # NO ROW for the character check on artifact NAMES: the name grammar (`name-grammar-dropped`)
   # already refuses every character that check would, so dropping it changes no verdict — the
   # check is belt-and-braces there. `unsafe_path` itself is observed failing on the --state path
@@ -298,6 +302,10 @@ if [ "$MODE" = mutation ]; then
     'if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then' \
     'if false; then' \
     'defers to the pinned hook'
+  check_mut pinned-matcher-ignored \
+    '  if jq -e --arg src "$SOURCE" '"'"'[.hooks.SessionStart[]? | select((.matcher // "") as $m | $m == "" or $m == "*" or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null) else ($src | test($m)) end)) | .hooks[]? | select(.type == "command" and (.command|type) == "string" and (.command | test("/\\.claude/adb/session-context\\.sh$")))] | length > 0'"'"' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then' \
+    '  if jq -e --arg src "$SOURCE" '"'"'[.hooks.SessionStart[]? | select(true) | .hooks[]? | select(.type == "command" and (.command|type) == "string" and (.command | test("/\\.claude/adb/session-context\\.sh$")))] | length > 0'"'"' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then' \
+    'a matcher that excludes'
   check_mut cap-ceiling-dropped \
     '[ "$MAX" -le 9500 ] 2>/dev/null || MAX=9500' \
     ':' \
@@ -524,6 +532,10 @@ marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://-a.b/x"}'; r
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://a..b/x"}'; refused "a prUrl with an empty host label is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://a.b:0/x"}'; refused "a prUrl with port 0 is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://a.b:65536/x"}'; refused "a prUrl with a port above 65535 is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://example.com/not-a-pr"}'; refused "a prUrl that is a valid https page but not a pull-request route is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://github.com/o/r/pull/0"}'; refused "a prUrl whose pull number is 0 is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://github.com/o/r/pull/9x"}'; refused "a prUrl whose pull number carries a suffix is refused whole"
+marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://github.com/o/r/pulls/9"}'; refused "a prUrl on a route that is not /pull/ is refused whole"
 marker "$d" '{branch:"b", issue:"5", phase:"pushed", prUrl:"https://ghe.example.com:8443/o/r/pull/1"}'; summary "$d" "$SID_A"
 eq "$RC" 0 "1c a GHES-shaped prUrl with a port is accepted"; has "$OUT" $'\npr: https://ghe.example.com:8443/o/r/pull/1' "1c ...and rendered"
 printf '{"branch":"b","issue":"5","phase":"pushed"}{"branch":"stale","issue":"9","phase":"branched"}' > "$d/implement-issue-active.json"; refused "a file holding two JSON values is refused whole"; hasnt "$OUT" "stale" "1e ...and neither value is rendered"
@@ -844,6 +856,19 @@ printf '%s\n' '{"hooks":{}}' > "$R2/.claude/settings.json"
 hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a vendored file that is NOT wired leaves the global hook injecting (one injection, never zero)"
 printf 'not json' > "$R2/.claude/settings.json"
 hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a settings.json this cannot read leaves the global hook injecting"
+# THE MATCHER DECIDES WHETHER THE VENDORED GROUP FIRES AT ALL. Deferring to a group Claude will not
+# dispatch for this source is zero injections, not one.
+wire() { printf '{"hooks":{"SessionStart":[{%s"hooks":[{"type":"command","command":"${CLAUDE_PROJECT_DIR}/.claude/adb/session-context.sh"}]}]}}\n' "$1" > "$R2/.claude/settings.json"; }
+wire '"matcher":"startup",';         hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a vendored group with a matcher that excludes the source (startup, on compact) does not take the injection: the global hook runs"
+wire '"matcher":"resume",';          hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k ...nor resume, on compact"
+wire '"matcher":"compact",';         hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k an exact matcher covering the source: the global hook defers"
+wire '';                             hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k an ABSENT matcher covers every source: defers"
+wire '"matcher":"",';                hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k an EMPTY matcher covers every source: defers"
+wire '"matcher":"*",';               hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k a * matcher covers every source: defers"
+wire '"matcher":"startup, compact",'; hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k a comma-separated alternative list naming the source: defers"
+wire '"matcher":"comp.*",';          hook "$(payload compact "$SID_A" "$R2")"; eq "$OUT" "" "2k a regex matcher (unanchored, as the vendor evaluates it) covering the source: defers"
+wire '"matcher":"omp",';             hook "$(payload compact "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k a bare word that is not the source is an EXACT alternative, not a substring: the global hook runs"
+wire '"matcher":"compact",';         hook "$(payload resume "$SID_A" "$R2")"; has "$(ctx)" $'\nphase: pushed' "2k ...and the check is per source: the same compact-only group does not take a resume"
 rm -rf "$R2"
 
 # 2k. the settings wiring and the hook enumeration agree.
@@ -862,7 +887,7 @@ run_phase() {
   local s; s="$(printf '%s\n' "$SNIP" | sed "s|{{STATE_DIR}}|$d|g; s|<next phase>|$1|")"
   ( cd "$d" && CLAUDE_CODE_SESSION_ID="$SID_B" bash -c "$s" )
 }
-marker "$d" '{branch:"b", issue:"5", phase:"branched", startedAt:"2026-08-26T06:00:00Z", owner:"'"$SID_A"'", prUrl:"https://x/pull/1"}'
+marker "$d" '{branch:"b", issue:"5", phase:"branched", startedAt:"2026-08-26T06:00:00Z", owner:"'"$SID_A"'", prUrl:"https://github.com/o/r/pull/1"}'
 run_phase implemented; run_phase gates_green; run_phase committed
 M="$d/implement-issue-active.json"
 eq "$(jq -r '.phaseHistory | length' "$M")" 3 "3 after 3 writes on a pre-change marker the history length is 3"
@@ -870,7 +895,7 @@ eq "$(jq -r '[.phaseHistory[].phase] | join(",")' "$M")" "implemented,gates_gree
 eq "$(jq -r .phase "$M")" committed "3 .phase still reads as the latest phase"
 eq "$(jq -r .owner "$M")" "$SID_B" "3 the owner is re-stamped by the same write"
 jq -e '[.phaseHistory[].at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")] | all' "$M" >/dev/null && ok || bad "3 every history entry carries an ISO-8601 UTC at"
-jq -e '.branch == "b" and .issue == "5" and .startedAt == "2026-08-26T06:00:00Z" and .prUrl == "https://x/pull/1"' "$M" >/dev/null && ok || bad "3 the other fields (branch, issue, startedAt, prUrl) are untouched"
+jq -e '.branch == "b" and .issue == "5" and .startedAt == "2026-08-26T06:00:00Z" and .prUrl == "https://github.com/o/r/pull/1"' "$M" >/dev/null && ok || bad "3 the other fields (branch, issue, startedAt, prUrl) are untouched"
 run_phase committed
 eq "$(jq -r '.phaseHistory | length' "$M")" 3 "3 a repeated write of the same phase is idempotent: history length stays 3"
 # ...and the summary reads it back.

@@ -104,7 +104,11 @@ STATE_DIR="$REPO_ROOT/.claude/state"
 # either way, never zero.
 _adb_vendored="$REPO_ROOT/.claude/adb/session-context.sh"
 if [ -f "$_adb_vendored" ] && ! [ "$0" -ef "$_adb_vendored" ]; then
-  if jq -e '[.hooks.SessionStart[]?.hooks[]? | select(.type == "command" and (.command|type) == "string" and (.command | test("/\\.claude/adb/session-context\\.sh$")))] | length > 0' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then
+  # ...and only when the group that wires it would FIRE for this source. A matcher made of letters,
+  # digits, `_ - space , |` is an exact alternative list; anything else is an UNANCHORED regex;
+  # absent, empty or `*` covers every source (the vendor's rule, read this run). A group matched
+  # `startup` does not run on `compact`, and deferring to it would be zero injections, not one.
+  if jq -e --arg src "$SOURCE" '[.hooks.SessionStart[]? | select((.matcher // "") as $m | $m == "" or $m == "*" or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null) else ($src | test($m)) end)) | .hooks[]? | select(.type == "command" and (.command|type) == "string" and (.command | test("/\\.claude/adb/session-context\\.sh$")))] | length > 0' "$REPO_ROOT/.claude/settings.json" >/dev/null 2>&1; then
     printf 'session-context: deferring to the pinned hook wired in %s/.claude/settings.json — nothing injected here\n' "$REPO_ROOT" >&2
     exit 0
   fi
