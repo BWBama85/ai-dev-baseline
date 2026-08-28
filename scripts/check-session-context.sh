@@ -400,6 +400,10 @@ if [ "$MODE" = mutation ]; then
     '[ -f "$_adb_vdir/lib/run-state.sh" ] && [ -r "$_adb_vdir/lib/run-state.sh" ]' \
     '[ -f "$_adb_vdir/lib/run-state.sh" ]' \
     'not readable'
+  check_mut artifacts-folded-first \
+    '                   | ($ls | map(select(startswith("artifacts: ") | not))) + ($ls | map(select(startswith("artifacts: "))))' \
+    '                   | $ls' \
+    'REQUIRED count survives the fold'
   check_mut artifacts-line-unchunked \
     '  | def chunk_artifacts: if startswith("artifacts: ")' \
     '  | def chunk_artifacts: if false' \
@@ -1052,6 +1056,19 @@ has "$C" $'\nbranch: issue-431-<slug elided' "2j ...(branch)"
 has "$C" $'\nartifacts: .claude/state/' "2j ...and artifact paths survive the fold: the artifacts line is chunked, never dropped whole"
 [ "$(printf '%s\n' "$C" | grep -c '^artifacts: ')" -ge 2 ] && ok || bad "2j ...as more than one bounded artifacts line ($(printf '%s\n' "$C" | grep -c '^artifacts: ') found)"
 printf '%s' "$C" | jq -R . >/dev/null && ok || bad "2j the capped text is still one clean string"
+# THE CHUNKS FOLD LAST: a fact that follows the artifacts in summary order (the REQUIRED count)
+# must not be crowded out by optional paths that happen to come first.
+printf 'REQUIRED\n' > "$LP/.claude/state/review.md"
+HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=1024); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
+C="$(ctx)"
+has "$C" $'\nreview-required-marks: 1' "2j the REQUIRED count survives the fold ahead of the optional artifact chunks"
+has "$C" $'\nartifacts: .claude/state/' "2j ...and artifact paths still follow it"
+# THE ORDER IS THE MECHANISM: the count is kept because every non-artifact line is folded before
+# the first chunk, so in a capped context it PRECEDES them. (Whether the count would have fitted
+# after the chunks depends on how the budget happens to divide — this is the property that does not.)
+_req_at="$(printf '%s\n' "$C" | grep -n '^review-required-marks:' | head -1 | cut -d: -f1)"; _art_at="$(printf '%s\n' "$C" | grep -n '^artifacts:' | head -1 | cut -d: -f1)"
+[ -n "$_req_at" ] && [ -n "$_art_at" ] && [ "$_req_at" -lt "$_art_at" ] && ok || bad "2j the REQUIRED count survives the fold ahead of the optional artifact chunks: it must PRECEDE the first artifacts line in a capped context (count at line ${_req_at:-none}, artifacts at ${_art_at:-none})"
+printf 'x\n' > "$LP/.claude/state/review.md"
 HOOK_ENV=(ADB_SESSION_CONTEXT_MAX_CHARS=10); hook "$(payload compact "$SID_A" "$LP")"; HOOK_ENV=()
 C="$(ctx)"; [ "${#C}" -le 1024 ] && ok || bad "2j a cap below the floor is raised to 1024, never exceeded: ${#C} chars"
 has "$C" "capped at 1024" "2j ...and the output names the floor it was capped at"

@@ -200,7 +200,13 @@ printf '%s' "$SUMMARY" | jq -cRs --arg h "$HEADER" --argjson max "$MAX" '. as $s
       else [.] end;
     (if ($ctx | enc) <= $budget then $ctx
      elif $keep <= 0 then ($cap[1:] | .[:($budget - 2)])
-     else (reduce ($ctx | split("\n") | map(chunk_artifacts) | add | to_entries[]) as $e ("";
+     # ...AND FOLDED LAST: chunks are optional and the lines after them in summary order
+     # (`review-required-marks`, the blocked line) are not, so the greedy keep below sees every
+     # other line before the first chunk — a capped context never spends its budget on paths and
+     # then drops the REQUIRED count.
+     else (reduce (($ctx | split("\n") | map(chunk_artifacts) | add) as $ls
+                   | ($ls | map(select(startswith("artifacts: ") | not))) + ($ls | map(select(startswith("artifacts: "))))
+                   | to_entries[]) as $e ("";
              ($e.value) as $l
              | (if . == "" then 0 else (. | enc) + 2 end) as $used   # +2: a newline is `\n` on the wire
              | if $used + ($l | enc) <= $keep then (if . == "" then $l else . + "\n" + $l end)
