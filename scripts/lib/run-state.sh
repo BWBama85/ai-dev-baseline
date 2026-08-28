@@ -191,6 +191,28 @@ _RS_CLAIM_JQ='
 
 _rs_issue_list() { printf '%s' "$1" | sed 's/,/, #/g; s/^/#/'; }
 
+# _rs_record_ok <path> — 0 when <path> may be opened as a record; otherwise the reason is printed
+# and the status is 1 (the caller returns 18). A record path that EXISTS but is not a readable
+# regular file — a directory, a FIFO, a dangling symlink — is refused before anything opens it (a
+# FIFO would block the open), never read as "absent": a damaged state path is an unreadable
+# record, not a run that is over.
+_rs_record_ok() {
+  local p="$1"
+  # NEVER A SYMLINK: the workflow writes its records by rename into this directory, so a link
+  # here points at a record somebody else placed — another checkout's, or a forged one.
+  [ -L "$p" ] && { printf 'run-state: %s is a symlink — the workflow never writes one; refused\n' "$(_rs_show "$p")"; return 1; }
+  if [ -e "$p" ]; then
+    [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$(_rs_show "$p")"; return 1; }
+    # Size is asked of the inode, never of the bytes: `find -size` stats the path and OPENS
+    # NOTHING, where `wc -c <` opens it — and an open on a FIFO with no writer blocks forever
+    # (observed: a mutant that dropped the -f test above hung a whole harness on the FIFO
+    # case). A record this large is refused before anything opens it (_RS_MAX_BYTES), the jq
+    # reads that do not snapshot included.
+    [ -z "$(find "$p" -prune -size +"${_RS_MAX_BYTES}c" -print 2>/dev/null)" ] || { printf 'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 1; }
+  fi
+  return 0
+}
+
 # _rs_snap <file> — the file's bytes into RS_SNAP, or return 1 when they cannot be a record. A
 # `$(<file)` strips every NUL silently, so bytes jq would refuse could arrive as a valid object;
 # the byte count is compared with the NUL-stripped count first, and a difference is a refusal.
@@ -304,24 +326,17 @@ cmd_summary() {
   fi
 
   local marker="$dir/implement-issue-active.json" blocked="$dir/implement-issue-blocked.json"
-  local claim="$dir/gap-analysis.lock" p
-  # A record path that EXISTS but is not a readable regular file — a directory, a FIFO, a dangling
-  # symlink — is refused before anything opens it (a FIFO would block the open), never read as
-  # "absent": a damaged state path is an unreadable record, not a run that is over.
-  for p in "$marker" "$claim" "$blocked"; do
-    # ...and never a SYMLINK: the workflow writes its records by rename into this directory, so a
-    # link here points at a record somebody else placed — another checkout's, or a forged one.
-    [ -L "$p" ] && { printf 'run-state: %s is a symlink — the workflow never writes one; refused\n' "$(_rs_show "$p")"; return 18; }
-    if [ -e "$p" ]; then
-      [ -f "$p" ] && [ -r "$p" ] || { printf 'run-state: %s exists but is not a readable regular file\n' "$(_rs_show "$p")"; return 18; }
-      # Size is asked of the inode, never of the bytes: `find -size` stats the path and OPENS
-      # NOTHING, where `wc -c <` opens it — and an open on a FIFO with no writer blocks forever
-      # (observed: a mutant that dropped the -f test above hung a whole harness on the FIFO
-      # case). A record this large is refused before anything opens it (_RS_MAX_BYTES), the jq
-      # reads that do not snapshot included.
-      [ -z "$(find "$p" -prune -size +"${_RS_MAX_BYTES}c" -print 2>/dev/null)" ] || { printf 'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 18; }
-    fi
-  done
+  local claim="$dir/gap-analysis.lock"
+  # ONLY THE RECORD THAT SUPPLIES LIVENESS IS VALIDATED, and only when it is reached: the marker
+  # when one exists, else the claim; the blocked record only once a live, compatible run is
+  # established. Validating all three up front returned 18 for a damaged record that decided
+  # nothing — a lingering claim the workflow permits beside a healthy marker, or a stray blocked
+  # file with no run at all — and the healthy marker was never restored.
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    _rs_record_ok "$marker" || return 18
+  elif [ -e "$claim" ] || [ -L "$claim" ]; then
+    _rs_record_ok "$claim" || return 18
+  fi
   local snap="" again="" fields="" attempt req="" blk="" grc
   local m_branch m_issue m_phase m_pr m_owner m_hist m_branch_raw
 
@@ -362,6 +377,8 @@ EOF
         fi
       fi
       blk=""
+      # The blocked record is validated HERE, once this marker is live and ours — not up front.
+      if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi
       if [ -f "$blocked" ]; then
         # The blocked file pairs with THIS marker (same branch and issue, compatible owner) or it
         # is another run's stop. Its `reason` must EXIST as a non-empty string for the line to say
@@ -446,6 +463,7 @@ EOF
   # What the claim proves is said; a blocked record that pairs with it is reported beside it.
   printf 'run-state: /implement-issue run claim %s is held and no run marker exists — the branch may or may not have been created; check the checkout before acting\n' "$(_rs_show "$claim")"
   local cblk="no"
+  if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi
   if [ -f "$blocked" ]; then
     # Paired by OWNER only: with no marker there is no branch or issue to match. Typed as in the
     # marker path; anything that is not a usable record says nothing — never "yes".
