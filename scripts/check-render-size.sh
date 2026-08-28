@@ -11,7 +11,10 @@
 #
 # The two measurements #432 added are guarded the same way, and each is OBSERVED FAILING on a
 # mutated copy of the command: a fenced-comment count that ignores fences, and a `--since` half
-# that measures the working tree instead of the ref, must each turn a named assertion below red.
+# that measures the working tree instead of the ref, must each turn a named assertion below red —
+# the SAME assertion function the green run uses, re-run against the mutant in a subshell, with
+# its own `FAIL:` line as the witness. Inline rather than a `--mutation` pool row (the
+# check-build-atomic.sh shape): two rows, seconds each, and no new registry, gate or nightly entry.
 #
 # Never touches the tracked tree — every case builds its own fixture under one `mktemp -d`,
 # including the git repositories the `--since` cases need.
@@ -121,6 +124,14 @@ rows_not_fields() { printf '%s\n' "$RS_OUT" | awk -F'\t' -v n="$1" 'NF != n' | w
 
 ALPHA=agents/claude/skills/alpha/SKILL.md
 
+# The two assertions the mutations must turn red. ONE function each, so the green run and the
+# mutant run the identical witness — a mutation that only compares the mutant's value to a number
+# of its own would stay green if the assertion it claims to protect were weakened or deleted.
+FENCED_WITNESS="fenced: 3 # lines inside the fence and 2 outside count 3"
+assert_fenced_three() { eq "$(col "$ALPHA" 5)" "3" "$FENCED_WITNESS"; }
+GROWN_WITNESS="since: the skill that grew by 10 lines reports delta_lines 10"
+assert_grown_ten() { eq "$(col "$ALPHA" 6)" "10" "$GROWN_WITNESS"; }
+
 # --- the green run ------------------------------------------------------------------------------
 
 fx="$(mk_fixture green)" || bad "fixture: could not build the green tree"
@@ -154,7 +165,7 @@ fx="$(mk_fixture fenced)" || bad "fixture: could not build the fenced tree"
 write_fenced "$fx/$ALPHA"
 run_rs "$fx"
 yes "$RS_RC" "fenced: a fixture with fences exits 0"
-eq "$(col "$ALPHA" 5)" "3" "fenced: 3 # lines inside the fence and 2 outside count 3"
+assert_fenced_three
 eq "$(col TOTAL 5)" "3" "fenced: TOTAL sums the fenced-comment column"
 
 # Every fence shape the shared rule models, and every `#` shape the header's lexical rule names.
@@ -181,6 +192,20 @@ EOF
   printf '\t# four, tab-indented\n'
   cat <<'EOF'
 ```
+   - an item whose content column is five
+     ```bash
+     # five, in a fence indented to the item's content column (roadmap.md:308's shape)
+     ```
+  3. an ordered item whose content column is five
+     ```bash
+     # six, the same shape under an ordered marker (roadmap.md:995's shape)
+     ```
+- an item whose fence never closes
+  ```bash
+  # seven, inside the unterminated nested fence
+```bash
+# eight: the dedent ended the item and its fence, and this line OPENS a new fence
+```
 ```text
 # sample output, not a comment
 ```
@@ -193,16 +218,19 @@ EOF
 ```json
 {"#": 1}
 ```
+    ```bash
+    # not a comment: four spaces at top level is an indented code block, not a fence
+    ```
 ```bash
-# five: this fence never closes, so it runs to the end of the file
-# six
+# nine: this fence never closes, so it runs to the end of the file
+# ten
 EOF
 } > "$fx/$ALPHA"
 # CRLF endings on another artifact: the closer must still close and the count must still be right.
 printf -- '---\r\nname: alpha\r\n---\r\n```bash\r\n# one\r\n# two\r\n```\r\n# outside\r\n' > "$fx/agents/codex/skills/alpha/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "fence-shapes: exits 0"
-eq "$(col "$ALPHA" 5)" "7" "fence-shapes: sh/zsh/shell/bash, list-nested, tilde with an inner backtick run, shebang, tab-indented, unclosed at EOF; text/markdown/bare/json fences, quoted and \${#x} hashes excluded"
+eq "$(col "$ALPHA" 5)" "11" "fence-shapes: sh/zsh/shell/bash, list-nested at 2 and at 5 (bullet and ordered), an unterminated nested fence ended by a dedent that opens the next, tilde with an inner backtick run, shebang, tab-indented, unclosed at EOF; text/markdown/bare/json fences, a 4-space indented code block, quoted and \${#x} hashes excluded"
 eq "$(col agents/codex/skills/alpha/SKILL.md 5)" "2" "fence-shapes: CRLF line endings do not defeat the closer or the count"
 
 # ------- MUTATION: a count that ignores fences must turn the assertion above RED ----------------
@@ -212,12 +240,14 @@ fx="$(mk_fixture mut-fence)" || bad "fixture: could not build the fence-mutation
 write_fenced "$fx/$ALPHA"
 check_mutate_literal "$fx/scripts/render-size.sh" 'md_fence_len && shell && ' ''; mrc=$?
 case "$mrc" in
-  0) run_rs "$fx"
-     yes "$RS_RC" "mut-fence: the mutated command still runs — the mutation changed the rule, not the script"
-     got="$(col "$ALPHA" 5)"
-     if [ "$got" = "5" ]; then ok; else
-       bad "MUTATION 1 DID NOT FIRE: with the fence gate removed the fenced fixture should count all 5 # lines, got [$got] — the 'inside the fence' assertion proves nothing"
-     fi ;;
+  0) # The assertion runs in a SUBSHELL: its FAIL is the evidence, not a failure of this suite.
+     out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC mutant-count=$(col "$ALPHA" 5)"; assert_fenced_three 2>&1 )"
+     has "$out" "mutant-rc=0" "mut-fence: the mutated command still runs — the mutation changed the rule, not the script"
+     has "$out" "mutant-count=5" "mut-fence: the mutant counts every # line in the file (5), which is the defect"
+     case "$out" in
+       *"FAIL: $FENCED_WITNESS"*) ok ;;
+       *) bad "MUTATION 1 DID NOT FIRE: the assertion [$FENCED_WITNESS] stayed green on a counter that ignores fences, so it proves nothing (subshell output: $out)" ;;
+     esac ;;
   2) bad "mut-fence: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
   *) bad "mut-fence: the mutation could not be applied (rc $mrc)" ;;
 esac
@@ -231,7 +261,7 @@ eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "13" "since: 12 artifact row
 eq "$(rows_not_fields 7)" "0" "since: every row has 7 TAB fields"
 eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '{ for (i = 2; i <= 5; i++) if ($i !~ /^[0-9]+$/) n++; for (i = 6; i <= 7; i++) if ($i !~ /^(-?[0-9]+|new)$/) n++ } END { print n + 0 }')" "0" \
    "since: every measurement cell is a digit string and every delta cell a signed integer or new"
-eq "$(col "$ALPHA" 6)" "10" "since: the skill that grew by 10 lines reports delta_lines 10"
+assert_grown_ten
 # delta_tokens is the difference of the two ceil(bytes/4) figures the command prints, computed
 # here independently from the bytes — never a rounded byte delta, which differs at a boundary.
 now_bytes="$(wc -c < "$fx/$ALPHA" | tr -d ' ')"
@@ -293,12 +323,13 @@ eq "$(printf '%s\n' "$RS_OUT" | grep -c '| new | new |')" "3" "markdown: new row
 fx="$(mk_since_repo mut-since)" || bad "fixture: could not build the since-mutation repository"
 check_mutate_literal "$fx/scripts/render-size.sh" 'measure "$REF_DIR/$f" ' 'measure "$f" '; mrc=$?
 case "$mrc" in
-  0) run_rs "$fx" --since HEAD~1
-     yes "$RS_RC" "mut-since: the mutated command still runs"
-     got="$(col "$ALPHA" 6)"
-     if [ "$got" = "0" ]; then ok; else
-       bad "MUTATION 2 DID NOT FIRE: with the ref half measuring the working tree the grown skill should report delta_lines 0, got [$got] — the 'delta_lines 10' assertion proves nothing"
-     fi ;;
+  0) out="$( run_rs "$fx" --since HEAD~1; echo "mutant-rc=$RS_RC mutant-delta=$(col "$ALPHA" 6)"; assert_grown_ten 2>&1 )"
+     has "$out" "mutant-rc=0" "mut-since: the mutated command still runs"
+     has "$out" "mutant-delta=0" "mut-since: the mutant reports no growth for the grown skill, which is the defect"
+     case "$out" in
+       *"FAIL: $GROWN_WITNESS"*) ok ;;
+       *) bad "MUTATION 2 DID NOT FIRE: the assertion [$GROWN_WITNESS] stayed green on a --since that measures the working tree, so it proves nothing (subshell output: $out)" ;;
+     esac ;;
   2) bad "mut-since: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
   *) bad "mut-since: the mutation could not be applied (rc $mrc)" ;;
 esac
@@ -317,7 +348,13 @@ eq "$RS_RC" "2" "refusal: --since without a ref exits 2"
 run_rs "$fx" --since ''
 eq "$RS_RC" "2" "refusal: --since with an empty ref exits 2"
 run_rs "$fx" --since -x
-eq "$RS_RC" "2" "refusal: --since with an option-shaped ref exits 2"
+eq "$RS_RC" "2" "refusal: --since followed by an option-shaped ref exits 2 (it cannot be told from an option)"
+has "$RS_ERR" "--since=<ref>" "refusal: and names the form that can carry such a ref"
+# A ref that BEGINS WITH A DASH is legal to git; the `=` form carries it, behind --end-of-options.
+check_git "$fx" update-ref refs/tags/-x HEAD~1 >/dev/null 2>&1 || bad "fixture: could not create the tag named -x"
+run_rs "$fx" --since=-x
+yes "$RS_RC" "dash-ref: --since=-x resolves a tag named -x"
+assert_grown_ten
 run_rs "$fx" --since HEAD --since HEAD~1
 eq "$RS_RC" "2" "refusal: --since twice exits 2"
 fx="$(mk_fixture norepo)" || bad "fixture: could not build the no-repository tree"

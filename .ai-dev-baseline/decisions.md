@@ -7594,9 +7594,13 @@ survive is the part a later reader needs.
              samples and templates where `#` is a heading. A comment line is one whose first
              non-blank character is `#`, the whole-line rule D75/D76 already record, so a shebang or
              a `#`-led heredoc line counts and a trailing comment does not — stated as a heuristic,
-             like `approx_tokens`. Fences are decided by `adb_md_fence_delim` from `common.sh`
-             (openers, closers, run length, `~~~`, list nesting, CRLF), called at container column
-             0 as its other direct consumers do; a third fence detector is the drift #136 removed.
+             like `approx_tokens`. Fences are decided by `common.sh`'s block pass `adb_md_block`
+             (openers, closers, run length, `~~~`, CRLF, and list nesting at any indentation). The
+             first cut called `adb_md_fence_delim` at container column 0, as the two other direct
+             consumers do, and the independent review caught what that misses: a fence indented to
+             a list item's content column reads as indented code, so roadmap's two five-space fences
+             were invisible — 303 for 305 on every roadmap row. A third fence detector is the drift
+             #136 removed, so the fix is to drive the container-aware pass, not to add one.
              **The delta lives in the `render-size` job's summary, not `selfcheck`'s.** The issue
              named the `selfcheck` summary; that step is the failure digest (#423), with a contract
              `check-selfcheck.sh` pins, in the job that is the run's critical path. The

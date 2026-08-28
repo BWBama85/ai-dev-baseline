@@ -20,11 +20,14 @@
 # (text, markdown, json, or no info string) hold samples and templates, where `#` is a heading,
 # and are not scanned. The rule is lexical — the whole-line rule D75/D76 record for this repo's
 # fences — so a shebang or a `#`-led heredoc line counts as one and a trailing comment does not.
-# Fences are decided by the shared CommonMark rule (adb_md_fence_delim, scripts/lib/common.sh),
-# called at container column 0 like its other direct consumers.
+# Fences are decided by the shared CommonMark block pass (adb_md_block, scripts/lib/common.sh):
+# openers, closers, run length, `~~~`, CRLF, and list nesting at any indentation — a fence indented
+# to a list item's content column is a fence, one indented four past it is code, and an
+# unterminated list-nested fence ends with its item.
 #
 # --since <ref>: `delta_lines` and `delta_tokens` are `lines` and `approx_tokens` now minus the
-# same measurement of the artifact TRACKED at <ref> (any commit-ish), so a delta is always the
+# same measurement of the artifact TRACKED at <ref> (any commit-ish; one that begins with `-` is
+# accepted only as `--since=<ref>`, and every ref reaches git behind --end-of-options), so a delta is always the
 # difference of two figures this command prints. Each artifact's blob is read out of git into a
 # `mktemp -d` and measured by the same code; the working tree and the repository are never
 # written. An artifact that exists now but not at <ref> reads `new` in both delta columns and
@@ -79,12 +82,12 @@ while [ "$#" -gt 0 ]; do
     --since)
       [ "$#" -ge 2 ] || usage_error '--since needs a ref'
       [ -n "$2" ] || usage_error '--since needs a ref'
-      case "$2" in -*) usage_error "--since needs a ref, got $(adb_display_value "$2")" ;; esac
+      # `--since -x` cannot be told from an option that follows it; the `=` form can name such a ref.
+      case "$2" in -*) usage_error "--since needs a ref, got $(adb_display_value "$2") — write --since=<ref> for a ref that begins with -" ;; esac
       [ -z "$SINCE" ] || usage_error '--since given twice'
       SINCE="$2"; shift 2 ;;
     --since=*)
       [ -n "${1#--since=}" ] || usage_error '--since needs a ref'
-      case "${1#--since=}" in -*) usage_error "--since needs a ref, got $(adb_display_value "${1#--since=}")" ;; esac
       [ -z "$SINCE" ] || usage_error '--since given twice'
       SINCE="${1#--since=}"; shift ;;
     --markdown) MARKDOWN=1; shift ;;
@@ -108,7 +111,7 @@ declare -A AT_REF=()
 if [ -n "$SINCE" ]; then
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { printf 'render-size: --since needs a git repository, and none contains this checkout\n' >&2; exit 2; }
-  SINCE_SHA="$(git rev-parse --verify --quiet "$SINCE^{commit}")" \
+  SINCE_SHA="$(git rev-parse --verify --quiet --end-of-options "$SINCE^{commit}")" \
     || { printf 'render-size: cannot resolve %s\n' "$(adb_display_value "$SINCE")" >&2; exit 2; }
   SINCE_SHORT="${SINCE_SHA:0:12}"
   REF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/render-size.XXXXXX")" \
@@ -153,24 +156,26 @@ measure() {
   M_LINES=$lines; M_WORDS=$words; M_TOKENS=$(( (bytes + 3) / 4 ))
 }
 
-# fenced_comments <file> — print the count defined in the header. `adb_md_fence_delim` decides
-# every fence (opener, closer, run length, indentation, `~~~`); this reads only the info string of
-# an opener the rule just accepted, and only its first word.
+# fenced_comments <file> — print the count defined in the header. `adb_md_block` classifies every
+# line with the container column it tracks, so a fence indented to a list item's content is seen
+# (calling adb_md_fence_delim at column 0, as the two other direct consumers do, reads it as
+# indented code — measured: roadmap's two five-space fences, 303 for 305). An OPENER is a change
+# of fence state across the call — from none, or from a list-nested fence the same line ended —
+# and this reads only its info string's first word.
 fenced_comments() {
   LC_ALL=C awk "$_ADB_MD_AWK"'
     {
-      if (adb_md_fence_delim($0, 0)) {
-        if (md_fence_len) {                    # an OPENER: is this a shell fence?
-          info = $0
-          sub(/^[[:space:]]*([-*+]|[0-9]+[.)])?[[:space:]]*[`~]+[[:space:]]*/, "", info)
-          sub(/[[:space:]].*$/, "", info)
-          shell = (info == "bash" || info == "sh" || info == "shell" || info == "zsh")
-        } else {
-          shell = 0                            # its CLOSER
-        }
+      was_len = md_fence_len; was_ch = md_fence_ch; was_base = md_fence_base
+      adb_md_block($0)
+      line = MD_LINE
+      if (md_fence_len && (!was_len || md_fence_ch != was_ch || md_fence_len != was_len || md_fence_base != was_base)) {
+        info = line                            # an OPENER: is this a shell fence?
+        sub(/^[[:space:]]*([-*+]|[0-9]+[.)])?[[:space:]]*[`~]+[[:space:]]*/, "", info)
+        sub(/[[:space:]].*$/, "", info)
+        shell = (info == "bash" || info == "sh" || info == "shell" || info == "zsh")
         next
       }
-      if (md_fence_len && shell && $0 ~ /^[[:space:]]*#/) n++
+      if (md_fence_len && shell && line ~ /^[[:space:]]*#/) n++
     }
     END { print n + 0 }
   ' "$1"
