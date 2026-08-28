@@ -154,6 +154,10 @@ if [ "$MODE" = mutation ]; then
     '      *) printf '"'"'run-state: the state directory is not inside the repository root — not summarised\n'"'"'; return 20 ;;' \
     '      *) : ;;' \
     'not inside the repository'
+  check_mut blocked-checked-after-scan \
+    '      if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi' \
+    '      :' \
+    'BEFORE the state directory is scanned'
   check_mut claim-validated-beside-marker \
     '  if [ -f "$marker" ]; then' \
     '  if [ -f "$marker" ] && { _rs_record_ok "$claim" || return 18; }; then' \
@@ -619,6 +623,18 @@ summary "$d" "$SID_A"
 eq "$RC" 0 "1b 450 artifacts: summarised (exit 0)"
 eq "$(printf '%s\n' "$OUT" | grep '^artifacts: ' | tr ',' '\n' | wc -l | tr -d ' ')" 400 "1b ...naming the first 400 by path"
 has "$OUT" $'\nartifacts-omitted: 50' "1b ...and counting the 50 past the cap, never naming them"
+# 1b~. THE BLOCKED RECORD IS REFUSED BEFORE THE SCAN OPENS IT. `state-scan` runs jq over the blocked
+#      file in its marker arm; a damaged one must be refused (18) before that. Observed through a
+#      reader whose cleanup-lib cannot run: reached first, the scan fails (20); refused first, 18.
+_ord="$(mktemp -d)"; mkdir -p "$_ord/lib"; cp "$RS" "$_ord/run-state.sh"; cp "$ROOT/scripts/lib/common.sh" "$_ord/common.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$_ord/cleanup-lib.sh"; chmod +x "$_ord/cleanup-lib.sh"
+d="$(state blocked-order)"; marker "$d" "$LIVE"; ln -s /nonexistent-adb-blocked "$d/implement-issue-blocked.json"
+OUT="$(bash "$_ord/run-state.sh" summary --state "$d" --session "$SID_A" 2>/dev/null)"; RC=$?
+eq "$RC" 18 "1b a damaged blocked record beside a live marker is refused BEFORE the state directory is scanned (18, not the scan's 20)"
+rm -f "$d/implement-issue-blocked.json"; jq -n '{expiresAt:'"$(( $(date -u +%s) + 3600 ))"', owner:"'"$SID_A"'"}' > "$d/gap-analysis.lock"; rm -f "$d/implement-issue-active.json"; ln -s /nonexistent-adb-blocked "$d/implement-issue-blocked.json"
+OUT="$(bash "$_ord/run-state.sh" summary --state "$d" --session "$SID_A" 2>/dev/null)"; RC=$?
+eq "$RC" 18 "1b ...and beside a live claim as well: refused before the scan (18)"
+rm -rf "$_ord"
 # 1b~. A review.md over the bound is never opened either: the count reads `oversized`.
 d="$(state bigreview)"; marker "$d" "$LIVE"; head -c 70000 /dev/zero | tr '\0' 'x' > "$d/review.md"
 summary "$d" "$SID_A"

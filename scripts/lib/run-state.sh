@@ -388,6 +388,10 @@ EOF
         printf 'run-state: a run marker at %s belongs to another session; not summarised\n' "$(_rs_show "$marker")"
         return 4
       fi
+      # The blocked record is validated HERE — after this marker is live and ours, BEFORE the scan:
+      # `state-scan` runs jq over that file in its marker arm, so an oversized one, or a symlink to
+      # one, was opened before it could be refused (a 2 GiB target spent the hook's budget).
+      if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi
       _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$(_rs_show "$dir")"; return 20; }
       req=""
       if [ -e "$dir/review.md" ] || [ -L "$dir/review.md" ]; then
@@ -408,8 +412,6 @@ EOF
         fi
       fi
       blk=""
-      # The blocked record is validated HERE, once this marker is live and ours — not up front.
-      if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi
       if [ -f "$blocked" ]; then
         # The blocked file pairs with THIS marker (same branch and issue, compatible owner) or it
         # is another run's stop. Its `reason` must EXIST as a non-empty string for the line to say
@@ -487,6 +489,8 @@ EOF
     printf 'run-state: a run claim at %s belongs to another session; not summarised\n' "$(_rs_show "$claim")"
     return 4
   fi
+  # The blocked record, validated before the scan opens it (as in the marker path).
+  if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi
   _rs_scan "$dir" || { printf 'run-state: the state directory %s could not be scanned\n' "$(_rs_show "$dir")"; return 20; }
   # NO PHASE IS ASSERTED. A held claim with no marker is the state before the branch exists — and
   # also the state after `git switch -c` succeeded and the marker write failed, and the
@@ -495,7 +499,6 @@ EOF
   # What the claim proves is said; a blocked record that pairs with it is reported beside it.
   printf 'run-state: /implement-issue run claim %s is held and no run marker exists — the branch may or may not have been created; check the checkout before acting\n' "$(_rs_show "$claim")"
   local cblk="no"
-  if [ -e "$blocked" ] || [ -L "$blocked" ]; then _rs_record_ok "$blocked" || return 18; fi
   if [ -f "$blocked" ]; then
     # Paired by OWNER only: with no marker there is no branch or issue to match. Typed as in the
     # marker path; anything that is not a usable record says nothing — never "yes".
