@@ -131,7 +131,10 @@ _RS_MARKER_JQ='
   if type != "object" then error("not an object") else . end
   | if (str(.branch; 255) and (.branch|unsafe|not) and (.branch | test("^issue-[0-9]+(-[0-9]+)*-.+$"))) then . else error("branch") end
   | .issue = (if (.issue|type) == "number" then (.issue|tostring) else .issue end)
-  | if (str(.issue; 64) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end
+  # 255, THE BRANCH BOUND: the workflow accepts an uncapped issue list and the branch it names is
+  # `issue-<csv with dashes>-<slug>`, so every list it can write is shorter than a branch it can
+  # write. A 64 here refused a thirty-issue marker the workflow had produced.
+  | if (str(.issue; 255) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end
   # THE TWO ARE ONE FACT: the workflow names the branch issue-<n>[-<n>…]-<slug> from the SAME list it
   # writes to .issue, so a marker whose branch numbers and issue list disagree is not one it wrote.
   # A prefix test, not a parse: a slug may itself begin with digits (issue-431-2-factor-auth).

@@ -102,6 +102,10 @@ if [ "$MODE" = mutation ]; then
     '  | .bshow = ($pfx + "<slug elided, \((.branch|length) - ($pfx|length)) chars>")' \
     '  | .bshow = .branch' \
     'issue-title text never reaches the output'
+  check_mut issue-bound-below-producer \
+    '  | if (str(.issue; 255) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end' \
+    '  | if (str(.issue; 64) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end' \
+    'thirty issues'
   check_mut branch-shape-dropped \
     '  | if (str(.branch; 255) and (.branch|unsafe|not) and (.branch | test("^issue-[0-9]+(-[0-9]+)*-.+$"))) then . else error("branch") end' \
     '  | if (str(.branch; 255) and .branch != "" and (.branch|unsafe|not)) then . else error("branch") end' \
@@ -155,8 +159,8 @@ if [ "$MODE" = mutation ]; then
     '        if [ -f "$dir/review.md" ] && [ -r "$dir/review.md" ]; then' \
     'a symlinked review.md'
   check_mut issue-zero-accepted \
-    '  | if (str(.issue; 64) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end' \
-    '  | if (str(.issue; 64) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end' \
+    '  | if (str(.issue; 255) and (.issue | test("^[1-9][0-9]*(,[1-9][0-9]*)*$"))) then . else error("issue") end' \
+    '  | if (str(.issue; 255) and (.issue | test("^[0-9]+(,[0-9]+)*$"))) then . else error("issue") end' \
     'issue number 0'
   check_mut leap-year-unchecked \
     '  def iso: test("^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-9]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$") and ((.[5:10] != "02-29") or ((.[0:4]|tonumber) as $y | ($y % 4 == 0 and $y % 100 != 0) or $y % 400 == 0));' \
@@ -588,6 +592,14 @@ eq "$RC" 0 "1b a complete marker is still summarised (exit 0)"
 has "$OUT" "run-state: /implement-issue run recorded COMPLETE" "1b ...under a heading that says COMPLETE"
 hasnt "$OUT" "run in progress" "1b ...and never as a run in progress"
 has "$OUT" $'\nphase: complete' "1b ...with the phase itself still rendered"
+# 1b'. a list as long as the workflow can write: thirty issues is an 80-character CSV and a valid
+#      branch, and a validator sized below the producer refused the marker the workflow wrote.
+# `paste`, not `seq -s`: BSD seq appends the separator after the LAST number too (`1,2,3,`), GNU
+# seq does not, and a fixture that differs by platform proves nothing on one of them.
+_csv="$(seq 1 30 | paste -sd, -)"; _dash="$(seq 1 30 | paste -sd- -)"
+d="$(state thirty)"; marker "$d" "{branch:\"issue-${_dash}-x\", issue:\"${_csv}\", phase:\"pushed\"}"
+summary "$d" "$SID_A"
+eq "$RC" 0 "1b a marker naming thirty issues — a list the workflow can write — is read (exit 0)"; has "$OUT" "issues: #1, #2, #3," "1b ...and its issues are rendered"
 # 1b'. multi-issue, unowned, no prUrl.
 d="$(state multi)"; marker "$d" '{branch:"issue-431-243-b", issue:"431,243", phase:"pr_opened"}'
 summary "$d" "$SID_A"
