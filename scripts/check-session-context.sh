@@ -134,6 +134,10 @@ if [ "$MODE" = mutation ]; then
     '    [ -z "$(find "$p" -prune -size +"${_RS_MAX_BYTES}c" -print 2>/dev/null)" ] || { printf '"'"'run-state: %s is larger than any record the workflow writes (over %s bytes) — refused unread\n'"'"' "$(_rs_show "$p")" "$_RS_MAX_BYTES"; return 1; }' \
     '    :' \
     'oversized BLOCKED marker'
+  check_mut artifact-cap-dropped \
+    '        if [ "$arts_n" -lt "$_RS_MAX_ARTS" ]; then' \
+    '        if true; then' \
+    'counting the 50 past the cap'
   check_mut logical-prefix-dropped \
     '      "$lpfx"?*) RS_PFX="${dir#"$lpfx"}/" ;;' \
     '      "$lpfx"?*) RS_PFX="${pdir#"$ppfx"}/" ;;' \
@@ -607,6 +611,14 @@ summary "$d" "$SID_A"
 eq "$RC" 0 "1b a damaged blocked record with NO run (no marker, no claim) is nothing to say (exit 0), not an unreadable run"; eq "$OUT" "" "1b ...and injects nothing"
 d="$(state blockedafter)"; marker "$d" "$LIVE"; ln -s /nonexistent-adb-blocked "$d/implement-issue-blocked.json"
 summary "$d" "$SID_A"; eq "$RC" 18 "1b ...while beside a LIVE marker a damaged blocked record is refused (18): it is consulted once the run is established"
+# 1b~. THE ARTIFACT LIST IS BOUNDED: past 400 members the rest are counted, and nothing is forked
+#      per member, so a family of thousands cannot spend the hook's budget on names the output cap
+#      would drop anyway.
+d="$(state manyarts)"; marker "$d" "$LIVE"; for n in $(seq 1 450); do : > "$d/gaps-$n.md"; done
+summary "$d" "$SID_A"
+eq "$RC" 0 "1b 450 artifacts: summarised (exit 0)"
+eq "$(printf '%s\n' "$OUT" | grep '^artifacts: ' | tr ',' '\n' | wc -l | tr -d ' ')" 400 "1b ...naming the first 400 by path"
+has "$OUT" $'\nartifacts-omitted: 50' "1b ...and counting the 50 past the cap, never naming them"
 # 1b~. A review.md over the bound is never opened either: the count reads `oversized`.
 d="$(state bigreview)"; marker "$d" "$LIVE"; head -c 70000 /dev/zero | tr '\0' 'x' > "$d/review.md"
 summary "$d" "$SID_A"

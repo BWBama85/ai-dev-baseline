@@ -29,7 +29,8 @@
 #   issues: #<n>, #<n>
 #   pr: #<number>                                        (when prUrl is present — the number only)
 #   blocked: yes — reason recorded in <state>/implement-issue-blocked.json
-#   artifacts: <path>, …                                 (every gaps/review/docs record present)
+#   artifacts: <path>, …                                 (gaps/review/docs records, the first 400 by path)
+#   artifacts-omitted: <n>                               (members past that cap — counted, never named)
 #   unsafe-names: <n>                                    (records `state-scan` refused to name)
 #   unnamed-artifacts: <n>                               (family members outside the opaque name grammar)
 #   review-required-marks: <n> | unreadable              (when review.md exists)
@@ -250,9 +251,15 @@ _rs_show() {
 
 # _rs_scan <dir> — `state-scan` once; sets RS_ARTS (gaps/review/docs paths, sorted, comma-joined),
 # RS_ISSUES (`#n, …` from the issue snapshots) and RS_UNSAFE (count of refused names).
+# The most artifact paths a summary renders (400). Every path is short, but a family may hold thousands
+# of members (the name grammar allows 10,000 per family), and a run-state read that forked once
+# per member spent the hook's 30-second budget enumerating them (measured: 2,000 members, 31s on
+# a slow machine) — and the output cap would have dropped nearly all of them anyway. Past the cap
+# the rest are COUNTED (`artifacts-omitted`), never named, and nothing is forked per member.
+_RS_MAX_ARTS=400
 _rs_scan() {
-  local scan kind sfile key n
-  RS_ARTS=""; RS_ISSUES=""; RS_UNSAFE=0; RS_UNNAMED=0
+  local scan kind sfile key n arts_n=0
+  RS_ARTS=""; RS_ISSUES=""; RS_UNSAFE=0; RS_UNNAMED=0; RS_ARTS_OMITTED=0
   scan="$(bash "$_adb_rs_lib/cleanup-lib.sh" state-scan "$1" 2>/dev/null)" || return 1
   # `state-scan` refuses only tab and newline in a name (its own delimiters); this output is a
   # line-structured document in a prompt, so every other control or format character is refused
@@ -273,7 +280,17 @@ _rs_scan() {
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
     case "$kind" in
-      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;
+      gaps|review|docs)
+        if [ "$arts_n" -lt "$_RS_MAX_ARTS" ]; then
+          # _rs_show's rendering, inline: a `$(…)` here is one fork per member.
+          case "$sfile" in
+            "$RS_DIR"/*) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$RS_PFX${sfile#"$RS_DIR"/}" ;;
+            *)           RS_ARTS="${RS_ARTS:+$RS_ARTS, }<outside-state>" ;;
+          esac
+          arts_n=$((arts_n + 1))
+        else
+          RS_ARTS_OMITTED=$((RS_ARTS_OMITTED + 1))
+        fi ;;
       issue)  case "$sfile" in *.json) ;; *) continue ;; esac
               n="${sfile##*/issue-}"; n="${n%.json}"
               # POSITIVE AND CANONICAL, as the marker predicate requires: issue-0.json and issue-001.json
@@ -446,6 +463,7 @@ EOF
     [ -n "$m_pr" ] && printf 'pr: %s\n' "$m_pr"
     [ "$blk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$(_rs_show "$blocked")"
     [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
+    [ "$RS_ARTS_OMITTED" -gt 0 ] && printf 'artifacts-omitted: %s\n' "$RS_ARTS_OMITTED"
     [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
     [ "$RS_UNNAMED" -gt 0 ] && printf 'unnamed-artifacts: %s\n' "$RS_UNNAMED"
     [ -n "$req" ] && printf 'review-required-marks: %s\n' "$req"
@@ -492,6 +510,7 @@ EOF
   [ "$cblk" = yes ] && printf 'blocked: yes — reason recorded in %s\n' "$(_rs_show "$blocked")"
   [ -n "$RS_ISSUES" ] && printf 'issues: %s\n' "$RS_ISSUES"
   [ -n "$RS_ARTS" ] && printf 'artifacts: %s\n' "$RS_ARTS"
+  [ "$RS_ARTS_OMITTED" -gt 0 ] && printf 'artifacts-omitted: %s\n' "$RS_ARTS_OMITTED"
   [ "$RS_UNSAFE" -gt 0 ] && printf 'unsafe-names: %s\n' "$RS_UNSAFE"
   [ "$RS_UNNAMED" -gt 0 ] && printf 'unnamed-artifacts: %s\n' "$RS_UNNAMED"
   return 0
