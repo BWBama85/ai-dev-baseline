@@ -23,9 +23,10 @@ only by a published release, which is what these entries are the notes for.
   same code (never a rebuild, never a write to the tree; `new` where the ref lacks the artifact;
   `TOTAL` still the sum of its rows; a ref that does not resolve is usage, exit 2) — a
   **`fenced_comment_lines`** column (the `#`-led lines inside shell fences — ```bash, ```sh,
-  ```shell, ```zsh, backtick or tilde, nested lists at any indentation; a blockquoted fence is
-  quotation and is not scanned — decided by `common.sh`'s shared CommonMark block pass rather
-  than a third parser) and **`--markdown`**. The
+  ```shell, ```zsh, backtick or tilde, nested lists at any indentation written one marker per
+  line; a fence on a line carrying two list markers, or inside a blockquote, is not scanned —
+  decided by `common.sh`'s shared CommonMark block pass rather than a third parser) and
+  **`--markdown`**. The
   `render-size` CI job checks out full history and puts the delta against the merge-base in every
   pull request's job summary. Measured on the day this landed, against the rewrite commit:
   **+3,717 lines / +65,173 approx_tokens** across the 27 rendered artifacts, +251 lines in each
