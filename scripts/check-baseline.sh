@@ -317,6 +317,17 @@ reset_src; : > "$work/install.log"; hook_settings none
 eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "hooks none (opt-out) → nothing to do (exit 0)"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks none → the opt-out is not overruled"
 
+# `none` WITH NO OWNED LINKS AT ALL is not an opt-out but an install that never wired (a first
+# install without jq takes its links back) — the repair runs WITHOUT --no-hooks so the hooks
+# arrive once jq does (PR #443 review). Driven through the behind path, where the self-heal runs.
+reset_src; advance_origin "never-wired"; : > "$work/install.log"; hook_settings none
+mkdir -p "$work/saved-hooks"; for s in $(adb_claude_hook_scripts); do mv "$fh/.claude/scripts/$s" "$work/saved-hooks/$s"; done
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "1" "hooks none + no owned links → the installer runs (never wired is a broken install)"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks none + no owned links → ...WITHOUT --no-hooks: nothing was ever removed by hand"
+for s in $(adb_claude_hook_scripts); do mv "$work/saved-hooks/$s" "$fh/.claude/scripts/$s"; done
+rm -f "$fh/.claude/settings.json"
+
 # PARTIAL is REPORTED, never repaired. Removing one hook's entry is the DOCUMENTED way to disable
 # that hook (docs/installation.md), so re-wiring would destroy a supported configuration — and the
 # SessionStart currency hook survives a per-hook removal, so it would be destroyed again next

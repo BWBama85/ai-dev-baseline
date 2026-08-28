@@ -359,7 +359,12 @@ EOF
   # `none` and reported nothing — not that it went unrepaired.
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
-      none)    args+=(--no-hooks) ;;
+      none)
+        # `none` is the honoured opt-out only when the operator REMOVED the entries — their
+        # script links are still ours. No entries AND no owned links is an install that never
+        # wired at all (a first install without jq takes its fresh links back), and `--no-hooks`
+        # here kept it unwired through every self-heal after jq arrived. (PR #443 review)
+        [ -z "$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$SRC")" ] || args+=(--no-hooks) ;;
       partial)
         adb_report_partial_hooks "$SRC"
         # `partial` is an opt-out ONLY when some missing hook's entry was removed by hand (its
