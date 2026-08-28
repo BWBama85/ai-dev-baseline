@@ -399,10 +399,13 @@ EOF
     esac
   fi
   echo "baseline: self-healing installed links → ./install.sh ${args[*]}"
-  ( cd "$SRC" && ./install.sh "${args[@]}" ) || {
-    echo "baseline: install.sh exited non-zero — inspect its output above (path move? see issue #35)." >&2
-    return 1
-  }
+  # THE STATUS IS KEPT, NOT RETURNED HERE: the deferred-hook cleanup below must run whether the
+  # installer succeeded or not. A later agent failing after Claude's links landed used to return
+  # before it, leaving the new hook owned-but-unwired (the next self-heal's "deliberate opt-out")
+  # and a displaced operator file stranded in the backup.
+  local irc=0
+  ( cd "$SRC" && ./install.sh "${args[@]}" ) || irc=$?
+  [ "$irc" -eq 0 ] || echo "baseline: install.sh exited non-zero — inspect its output above (path move? see issue #35)." >&2
   if [ "${#_adb_fresh_hooks[@]}" -gt 0 ]; then
     for (( i = 0; i < ${#_adb_fresh_hooks[@]}; i++ )); do
       _adb_dest="$HOME/.claude/scripts/${_adb_fresh_hooks[$i]}"
@@ -416,6 +419,7 @@ EOF
     echo "baseline: NOTE — newly shipped hook(s) left UNLINKED and unwired: ${_adb_fresh_hooks[*]}" >&2
     echo "baseline:        --no-hooks preserved your per-hook opt-out and is all-or-nothing (#444); a linked-but-unwired hook would read as a second opt-out next time. Run ./install.sh to wire the full set." >&2
   fi
+  [ "$irc" -eq 0 ] || return 1
   return 0
 }
 

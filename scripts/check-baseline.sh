@@ -387,6 +387,27 @@ rm -f "$fh/.claude/scripts/session-context.sh"
 mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 
+# ...AND THE CLEANUP RUNS WHEN THE INSTALLER FAILS (PR #443 review). The stub is replaced through
+# origin with one that logs and exits 1 (the behind path pulls it), so the self-heal fails after
+# the fresh link would have landed; the deferred hook must still be cleaned up and reported, and
+# the failure must still be the exit status. The stub is restored through origin afterwards, since
+# every later case resets src to origin/main.
+_stub_ok="$(cat "$seed/install.sh")"
+_push_stub() {   # _push_stub <script-body> <commit-message>
+  check_git "$c2" fetch -q origin; check_git "$c2" reset -q --hard origin/main
+  printf '%s' "$1" > "$c2/install.sh"; chmod +x "$c2/install.sh"
+  check_git "$c2" add install.sh; check_git "$c2" commit -q -m "$2"; check_git "$c2" push -q origin main
+}
+reset_src; _push_stub "$(printf '%s\nexit 1\n' "$_stub_ok")" "installer-fails"; : > "$work/install.log"; hook_settings mixed
+mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
+eq "$rc" 1 "hooks mixed + failing installer → the failure is still the exit status (1)"
+has "$out" "install.sh exited non-zero" "hooks mixed + failing installer → ...and is reported"
+has "$out" "left UNLINKED and unwired: session-context.sh" "hooks mixed + failing installer → the deferred-hook cleanup still runs and reports"
+mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
+rm -f "$fh/.claude/settings.json"
+_push_stub "$_stub_ok" "installer-restored"; reset_src
+
 # ...and a FOREIGN file at the new hook's pathname is a collision, not an opt-out: the repair still
 # runs without --no-hooks (PR #443 review — the first cut tested existence, not ownership).
 reset_src; : > "$work/install.log"; hook_settings shipped
