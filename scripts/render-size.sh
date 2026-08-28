@@ -21,9 +21,12 @@
 # and are not scanned. The rule is lexical — the whole-line rule D75/D76 record for this repo's
 # fences — so a shebang or a `#`-led heredoc line counts as one and a trailing comment does not.
 # Fences are decided by the shared CommonMark block pass (adb_md_block, scripts/lib/common.sh):
-# openers, closers, run length, `~~~`, CRLF, and list nesting at any indentation — a fence indented
-# to a list item's content column is a fence, one indented four past it is code, and an
-# unterminated list-nested fence ends with its item.
+# openers, closers, run length, `~~~`, CRLF, and nested lists at any indentation, one marker per
+# line — a fence indented to a list item's content column is a fence, one indented four past it is
+# code, and an unterminated list-nested fence ends with its item. Two shapes the pass does not
+# model are not scanned, and the corpus carries neither: a fence on a line that itself carries more
+# than one list marker (`- - ```bash`), and a fence inside a blockquote, which is quotation rather
+# than a block an agent executes.
 #
 # --since <ref>: `delta_lines` and `delta_tokens` are `lines` and `approx_tokens` now minus the
 # same measurement of the artifact TRACKED at <ref> (any commit-ish; one that begins with `-` is

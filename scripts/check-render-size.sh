@@ -218,6 +218,9 @@ EOF
 ```json
 {"#": 1}
 ```
+> ```bash
+> # not a comment: a blockquoted fence is quotation, and the header says it is not scanned
+> ```
     ```bash
     # not a comment: four spaces at top level is an indented code block, not a fence
     ```
@@ -230,7 +233,7 @@ EOF
 printf -- '---\r\nname: alpha\r\n---\r\n```bash\r\n# one\r\n# two\r\n```\r\n# outside\r\n' > "$fx/agents/codex/skills/alpha/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "fence-shapes: exits 0"
-eq "$(col "$ALPHA" 5)" "11" "fence-shapes: sh/zsh/shell/bash, list-nested at 2 and at 5 (bullet and ordered), an unterminated nested fence ended by a dedent that opens the next, tilde with an inner backtick run, shebang, tab-indented, unclosed at EOF; text/markdown/bare/json fences, a 4-space indented code block, quoted and \${#x} hashes excluded"
+eq "$(col "$ALPHA" 5)" "11" "fence-shapes: sh/zsh/shell/bash, list-nested at 2 and at 5 (bullet and ordered), an unterminated nested fence ended by a dedent that opens the next, tilde with an inner backtick run, shebang, tab-indented, unclosed at EOF; text/markdown/bare/json fences, a blockquoted fence, a 4-space indented code block, quoted and \${#x} hashes excluded"
 eq "$(col agents/codex/skills/alpha/SKILL.md 5)" "2" "fence-shapes: CRLF line endings do not defeat the closer or the count"
 
 # ------- MUTATION: a count that ignores fences must turn the assertion above RED ----------------
