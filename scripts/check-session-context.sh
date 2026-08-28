@@ -288,6 +288,10 @@ if [ "$MODE" = mutation ]; then
     '      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;' \
     '      gaps|review|docs|other) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;' \
     'only the records state-scan classifies are named'
+  check_mut live-branch-held-to-output-grammar \
+    '  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"'"'"' if (($d|unsafe_path) or ($s|unsafe)) then "bad" else "ok" end'"'"')" in' \
+    '  case "$(jq -rn --arg d "$dir" --arg s "$sid" --arg b "$OPT_BRANCH" "$_RS_UNSAFE_JQ"'"'"' if (($d|unsafe_path) or ($s|unsafe) or ($b|unsafe)) then "bad" else "ok" end'"'"')" in' \
+    'format character (U+200B)'
   check_mut claim-phase-asserted \
     '  printf '"'"'run-state: /implement-issue run claim %s is held and no run marker exists — the branch may or may not have been created; check the checkout before acting\n'"'"' "$(_rs_show "$claim")"' \
     '  printf '"'"'run-state: /implement-issue run before branching — the run claim %s is held\n'"'"' "$(_rs_show "$claim")"' \

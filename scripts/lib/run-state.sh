@@ -298,7 +298,16 @@ cmd_summary() {
   # Both are printed into a line-structured document: a control or format character in the path,
   # or any whitespace in the session id, would forge a line — refused before anything is read.
   # A SPACE in the path is ordinary (`~/My Projects/repo`) and is allowed.
-  case "$(jq -rn --arg d "$dir" --arg s "$sid" --arg b "$OPT_BRANCH" "$_RS_UNSAFE_JQ"' if (($d|unsafe_path) or ($s|unsafe) or ($b|unsafe)) then "bad" else "ok" end')" in
+  # THE LIVE BRANCH IS NEVER RENDERED, so it is not held to the output grammar: a valid git ref
+  # may carry a Unicode format character or a non-UTF-8 byte (which `jq --arg` rewrites to U+FFFD
+  # before any test runs), and refusing it discarded a healthy summary for the checkout that had
+  # merely moved. It is compared byte-for-byte in the shell below; only what git itself forbids
+  # in a ref — whitespace and control bytes — is refused, in the C locale so a multibyte character
+  # is never mistaken for one.
+  if [ "$OPT_BRANCH_SET" = 1 ] && ! ( LC_ALL=C; case "$OPT_BRANCH" in *[[:space:][:cntrl:]]*) exit 1 ;; esac ); then
+    die "summary: --state carries a control character, or --session/--branch whitespace or a control character — refused"
+  fi
+  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"' if (($d|unsafe_path) or ($s|unsafe)) then "bad" else "ok" end')" in
     ok) : ;;
     *) die "summary: --state carries a control character, or --session/--branch whitespace or a control character — refused" ;;
   esac
