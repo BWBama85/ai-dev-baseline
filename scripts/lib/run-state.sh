@@ -223,11 +223,16 @@ _rs_record_ok() {
 # only ever reached for a path that loop admitted.
 _RS_MAX_BYTES=65536
 _rs_snap() {
-  local raw stripped
-  raw="$(wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 1
-  stripped="$(LC_ALL=C tr -d '\000' < "$1" 2>/dev/null | wc -c | tr -d ' ')" || return 1
-  [ "$raw" = "$stripped" ] || return 1
-  { RS_SNAP="$(<"$1")"; } 2>/dev/null || return 1
+  local rrc=0
+  RS_SNAP=""
+  # ONE OPEN, ONE READ. `read -d ''` returns 0 when it meets a NUL — with the bytes before it and
+  # the rest unread — and 1 at EOF with everything, so status 1 is the whole record with no NUL
+  # and 0 is a record that carried one, refused (`$(<file)` would have dropped the byte silently).
+  # Three opens — a byte count, a NUL-stripped count, then the read — could each see a DIFFERENT
+  # inode while the workflow renamed a phase update into place, and a healthy marker then read as
+  # unreadable with no retry, since the first failure returns before the change check.
+  IFS= read -r -d '' RS_SNAP < "$1" 2>/dev/null; rrc=$?
+  [ "$rrc" -eq 1 ] || return 1
   [ -n "$RS_SNAP" ]
 }
 
