@@ -4077,7 +4077,10 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     function adb_md_after_close(line, n,   sp) { sp = adb_md_lead(line); return substr(line, sp + n + 1) }
     # THE fence rule, and the only one: does this line OPEN or CLOSE a fenced block? Returns 1 for
     # a delimiter (either kind) and updates md_fence_*; `md_fence_len` IS the in-a-fence flag, so a
-    # separate boolean can never drift out of step with it.
+    # separate boolean can never drift out of step with it. `md_fence_gen` counts OPENERS: a
+    # consumer that needs to know a fence opened on the line it just passed to adb_md_block reads
+    # this before and after the call, because the delimiter tuple (char, length, base) can come
+    # back unchanged when a list-nested fence is ended by the item that opens the next one.
     #
     # This is the function #131 exists for (adb-claim-ok: closed NOT_PLANNED, folded into #136).
     # `skill-compose.sh` carried a second detector — a
@@ -4113,10 +4116,10 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # other delimiter never closes the current fence — that is what makes ``` inside ~~~ content.
       fn = adb_md_runlen(line, at + 1, "`")
       if (fn >= 3 && index(substr(line, at + fn + 1), "`") == 0) {
-        md_fence_ch = "`"; md_fence_len = fn; md_fence_base = cb; return 1
+        md_fence_ch = "`"; md_fence_len = fn; md_fence_base = cb; md_fence_gen++; return 1
       }
       fn = adb_md_runlen(line, at + 1, "~")
-      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_base = cb; return 1 }
+      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_base = cb; md_fence_gen++; return 1 }
       return 0
     }
     # A line that is PROSE but is its own block: an ATX heading, or a thematic break. It still
@@ -4419,7 +4422,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     BEGIN {
       MD_CR = sprintf("%c", 13)
       MD_MASKC = sprintf("%c", 1)   # a byte no body carries; never printed, only matched against
-      md_fence_ch = ""; md_fence_len = 0; md_fence_base = 0
+      md_fence_ch = ""; md_fence_len = 0; md_fence_base = 0; md_fence_gen = 0
       md_incomment = 0; md_icode = 0; md_para = 0; md_list_at = 0; md_html = 0
       MDN = 0; MD_ALONE = 0; MD_NEWPARA = 0
     }

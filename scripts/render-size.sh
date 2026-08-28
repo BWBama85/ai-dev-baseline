@@ -23,7 +23,8 @@
 # Fences are decided by the shared CommonMark block pass (adb_md_block, scripts/lib/common.sh):
 # openers, closers, run length, `~~~`, CRLF, and nested lists at any indentation, one marker per
 # line — a fence indented to a list item's content column is a fence, one indented four past it is
-# code, and an unterminated list-nested fence ends with its item. Two shapes the pass does not
+# code, and an unterminated list-nested fence ends with its item — and a fence the ending item
+# opens on that same line is a new fence, with its own info string. Two shapes the pass does not
 # model are not scanned, and the corpus carries neither: a fence on a line that itself carries more
 # than one list marker (`- - ```bash`), and a fence inside a blockquote, which is quotation rather
 # than a block an agent executes.
@@ -162,16 +163,17 @@ measure() {
 # fenced_comments <file> — print the count defined in the header. `adb_md_block` classifies every
 # line with the container column it tracks, so a fence indented to a list item's content is seen
 # (calling adb_md_fence_delim at column 0, as the two other direct consumers do, reads it as
-# indented code — measured: roadmap's two five-space fences, 303 for 305). An OPENER is a change
-# of fence state across the call — from none, or from a list-nested fence the same line ended —
-# and this reads only its info string's first word.
+# indented code — measured: roadmap's two five-space fences, 303 for 305). An OPENER is a line on
+# which the pass opened a fence — `md_fence_gen` moved — never a comparison of the delimiter
+# before and after, which comes back equal when a list-nested fence is ended by the item that
+# opens the next one at the same column. This reads only the opener's info string, first word.
 fenced_comments() {
   LC_ALL=C awk "$_ADB_MD_AWK"'
     {
-      was_len = md_fence_len; was_ch = md_fence_ch; was_base = md_fence_base
+      was_gen = md_fence_gen
       adb_md_block($0)
       line = MD_LINE
-      if (md_fence_len && (!was_len || md_fence_ch != was_ch || md_fence_len != was_len || md_fence_base != was_base)) {
+      if (md_fence_len && md_fence_gen != was_gen) {
         info = line                            # an OPENER: is this a shell fence?
         sub(/^[[:space:]]*([-*+]|[0-9]+[.)])?[[:space:]]*[`~]+[[:space:]]*/, "", info)
         sub(/[[:space:]].*$/, "", info)

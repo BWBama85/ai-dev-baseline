@@ -231,8 +231,16 @@ EOF
 } > "$fx/$ALPHA"
 # CRLF endings on another artifact: the closer must still close and the count must still be right.
 printf -- '---\r\nname: alpha\r\n---\r\n```bash\r\n# one\r\n# two\r\n```\r\n# outside\r\n' > "$fx/agents/codex/skills/alpha/SKILL.md"
+# ADJACENT LIST FENCES (review of PR #446): an unterminated nested fence ended by the next item,
+# which opens a fence of the SAME delimiter, length and column on its own marker line. The two
+# directions live in two artifacts, because a counter that infers an opener from the delimiter
+# tuple gets them wrong in opposite ways (0 and 1) and a single total would cancel to the right sum.
+printf -- '---\nname: alpha\n---\n- old\n  ```text\n- ```bash\n  # one, in the bash fence the ending item opened\n  ```\n' > "$fx/agents/gemini/skills/alpha/SKILL.md"
+printf -- '---\nname: beta\n---\n- old\n  ```bash\n- ```text\n  # not a comment: the ending item opened a TEXT fence\n  ```\n' > "$fx/agents/gemini/skills/beta/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "fence-shapes: exits 0"
+eq "$(col agents/gemini/skills/alpha/SKILL.md 5)" "1" "adjacent: a bash fence opened by the item that ended an unterminated text fence counts its comment"
+eq "$(col agents/gemini/skills/beta/SKILL.md 5)" "0" "adjacent: a text fence opened by the item that ended an unterminated bash fence counts nothing"
 eq "$(col "$ALPHA" 5)" "11" "fence-shapes: sh/zsh/shell/bash, list-nested at 2 and at 5 (bullet and ordered), an unterminated nested fence ended by a dedent that opens the next, tilde with an inner backtick run, shebang, tab-indented, unclosed at EOF; text/markdown/bare/json fences, a blockquoted fence, a 4-space indented code block, quoted and \${#x} hashes excluded"
 eq "$(col agents/codex/skills/alpha/SKILL.md 5)" "2" "fence-shapes: CRLF line endings do not defeat the closer or the count"
 
