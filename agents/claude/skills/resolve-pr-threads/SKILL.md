@@ -617,6 +617,13 @@ For each legitimate finding:
    git commit -m "address bot review on PR #$PR_NUM: <one-line summary>"
    ```
 
+**A finding's residue has three homes, and the line you fixed is none of them:** the fix goes in
+the code, the class goes in the ledger (4b, `record`), and the story — what broke, and why — goes in
+`.ai-dev-baseline/decisions.md` when it matters at all. Never annotate the fix with a comment naming
+the reviewer, the PR or the round (*"reported by the declared reviewer on PR #N"*): inside a
+workflow's fenced block that line is rendered into every agent's skill and loaded as prompt on every
+invocation from then on (`code-comments.md`, #432).
+
 Bundle multiple fixes from the same review into one commit if they're tightly related; otherwise keep them separate so the audit trail per-thread is clean.
 
 After all fixes are committed, push once:

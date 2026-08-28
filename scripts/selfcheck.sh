@@ -462,13 +462,15 @@ add agent-blocks        bash scripts/check-agent-blocks.sh
 
 # What the rendered artifacts COST to load (#359). A report, not a gate: it fails only on
 # mechanics — an expected artifact missing, unreadable or zero-byte — and never on size, because
-# the owner rejected caps (2026-08-15). Registered so the numbers land in every run's log, which is
-# what gives the AI-optimization epic (#358) a before/after per PR.
+# the owner rejected caps (2026-08-15). Registered so the numbers land in every run's log; the
+# per-PR DELTA (#432, `--since` the merge-base) is the `render-size` CI job's summary step, and this
+# row stays ref-free so it never depends on history a checkout may lack.
 add render-size         bash scripts/render-size.sh
 
 # ...and its one failing arm is a guard, so it gets what guards get here: the mechanical rules
 # driven RED against fixture trees under a `mktemp -d`, plus the direction it must never fail in —
-# an arbitrarily large artifact still exits 0.
+# an arbitrarily large artifact still exits 0 — and, since #432, both new measurements observed
+# failing on a mutated copy, in throwaway git repositories of its own.
 add render-size-guard   bash scripts/check-render-size.sh
 
 # A fenced ```bash block in base/workflows/*.md is executed for real, but the linter above only

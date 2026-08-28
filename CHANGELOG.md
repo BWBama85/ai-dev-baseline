@@ -10,6 +10,37 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **Instruction regrowth is visible per pull request, and the in-fence channel that fed it is
+  closed (#432).** The #361 rewrite cut `implement-issue.md` from 16,237 to 13,457 words on
+  2026-08-18; ten days later it stood at 16,266 — past where it started — and its fenced comment
+  lines had gone from 124 to 165, because the review loop fixed each finding by editing a fenced
+  block *and* annotating it ("reported by the declared reviewer on PR #N"). Every such line is
+  rendered into three agents' skills and loaded as prompt on every invocation after it, and
+  nothing showed the growth to any reviewer: `render-size.sh` printed absolute sizes into a log.
+
+  `scripts/render-size.sh` gains **`--since <ref>`** — `delta_lines` and `delta_tokens` against
+  the artifacts **tracked** at that ref, read out of git into a `mktemp -d` and measured by the
+  same code (never a rebuild, never a write to the tree; `new` where the ref lacks the artifact;
+  `TOTAL` still the sum of its rows; a ref that does not resolve is usage, exit 2) — a
+  **`fenced_comment_lines`** column (the `#`-led lines inside shell fences — ```bash, ```sh,
+  ```shell, ```zsh, backtick or tilde, nested lists at any indentation written one marker per
+  line; a fence on a line carrying two list markers, or inside a blockquote, is not scanned —
+  decided by `common.sh`'s shared CommonMark block pass rather than a third parser) and
+  **`--markdown`**. The
+  `render-size` CI job checks out full history and puts the delta against the merge-base in every
+  pull request's job summary. Measured on the day this landed, against the rewrite commit:
+  **+3,717 lines / +65,173 approx_tokens** across the 27 rendered artifacts, +251 lines in each
+  `implement-issue` skill. A report, never a gate (#355): size still cannot fail anything.
+  `check-render-size.sh` builds throwaway git repositories for `--since` and observes both new
+  measurements failing on a mutated copy (a count that ignores fences; a `--since` that measures
+  the working tree). D93 records the three readings the issue left open — tracked artifacts
+  rather than a rebuild, one count per artifact, shell fences and whole-line `#` only.
+
+  `code-comments.md` extends the four classes to the fenced blocks inside `base/workflows/` and
+  names the multiplier, and `/resolve-pr-threads` step 4 says where a finding's residue goes —
+  the fix in the code, the class in the ledger, the story in `decisions.md` — and never into the
+  fence.
+
 - **A run survives compaction: its state directory is read back (#431, absorbing #243).** A long
   `/implement-issue` run outlives its context window, and after the harness compacted mid-step
   the summary might or might not carry which step it was on, which REQUIRED findings were still
