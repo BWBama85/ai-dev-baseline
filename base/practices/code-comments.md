@@ -8,6 +8,19 @@ it here charges every future reader — human or model — the tokens to skip it
 The rule covers **CI and workflow YAML** exactly as it covers `*.sh`, `*.ts`,
 `*.py`. A pipeline definition is code.
 
+It covers the **fenced code blocks inside `base/workflows/*.md`** too, and there a
+comment costs more than a reader's time: a workflow body is rendered into each agent's
+skill and loaded whole on every invocation, so a comment inside one of its fences is
+prompt text paid for by every run of that skill, once per agent that renders it, for
+as long as it stays. A review-round annotation beside a fix — *"reported by the
+declared reviewer on PR #N"* — is class 2 there exactly as it is in a script: the
+class goes to the pattern ledger, the story to the decision log, and the line does
+not survive. Measured on this framework's own repo: the #361 rewrite took
+`implement-issue.md` from 16,237 to 13,457 words on 2026-08-18; ten days later it
+stood at 16,266, past where it started, and no pull request in between had shown any
+reviewer the growth (#432). The prose around the fences is instruction, not comment,
+and is not governed here.
+
 ## The four classes
 
 Every comment you write, and every comment you touch while editing, is one of
@@ -77,12 +90,14 @@ A 197-line run is not a contract.
 
 ## What this does NOT enforce
 
-- **Prose, no lint.** Nothing counts comment lines, classifies one, or blocks a
-  commit on this. The classes are not decidable from the text by a matcher, and a
+- **Prose, no gate.** Nothing classifies a comment or blocks a commit on this. The
+  one count that exists is a report — this framework's `render-size.sh` prints the
+  fenced comment lines per rendered artifact, and the delta per pull request — never
+  a threshold: the classes are not decidable from the text by a matcher, and a
   density check would fire hardest on the class worth keeping.
 - **Enforcement is review-side.** The self-review pass and the reviewer name the
   class and the disposition, or nobody does. "Comment density" is not a finding;
   "this is class 3, move it to the decision log or drop it" is.
-- **It stops at the comment character.** Instruction prose — practices, workflows,
-  root docs — is out of scope here, and no claim is made that anything else governs
-  it.
+- **It stops at the comment character.** Instruction prose — practices, the workflow
+  text around a fence, root docs — is out of scope here, and no claim is made that
+  anything else governs it.

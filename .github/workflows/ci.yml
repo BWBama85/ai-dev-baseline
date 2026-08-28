@@ -553,7 +553,11 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because the delta step below measures against the merge-base with the
+        # PR's base (the previous tip on a push), and a one-commit checkout has neither.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -563,6 +567,31 @@ jobs:
 
       - name: Guard the report fails closed (#359)
         run: bash scripts/check-render-size.sh
+
+      # HOW MUCH THIS CHANGE ADDED TO WHAT EVERY INVOCATION LOADS (#432): the same report against
+      # the merge-base with ADB_MUTATION_BASE (workflow `env:` — the base the mutation gate diffs
+      # against), as a table in the job summary, so regrowth is visible on every pull request.
+      # A REPORT: it never fails the job (the step above already fails on mechanics); it runs under
+      # `!cancelled()` rather than `always()` so a cancelled run does not keep it alive; and only a
+      # hex sha reaches the summary page — the configured base is a branch NAME, which goes to the
+      # log, where nothing renders it.
+      - name: Rendered-size delta vs the merge-base, in the job summary (#432)
+        if: ${{ !cancelled() }}
+        run: |
+          set -uo pipefail
+          echo "base: $ADB_MUTATION_BASE"
+          if ! base="$(git merge-base "$ADB_MUTATION_BASE" HEAD)"; then
+            printf '### Rendered instruction size\n\n%s\n' "No delta: the configured base has no merge-base with this commit (a first push, or a force-push) — see this step's log." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          case "$base" in ''|*[!0-9a-f]*) echo "merge-base printed something that is not a sha; no delta"; exit 0 ;; esac
+          {
+            printf '### Rendered instruction size vs merge-base %s (#432)\n\n' "${base:0:12}"
+            bash scripts/render-size.sh --since "$base" --markdown \
+              || printf '\n%s\n' "The delta could not be produced — open this step's log."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
   skill-compose:
     name: skill-compose

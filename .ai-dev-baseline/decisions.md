@@ -7552,3 +7552,64 @@ survive is the part a later reader needs.
              vendor documents the block and the practice forbids claiming a mechanism that is not
              wired.
 - baseline-issue: n/a
+
+## D93 — `--since` measures the artifacts TRACKED at the ref; the fenced-comment count is per artifact, lexical, and shell fences only
+- date:      2026-08-28
+- category:  project-delta
+- unknown:   #432 asks `render-size.sh --since <ref>` to compare "against that ref's rendered
+             artifacts (render the ref into a `mktemp -d`)", adds a `fenced_comment_lines` column
+             "for workflow sources", and shows `new` for an artifact the ref lacks. Gap analysis
+             found three things the issue leaves open and D71 does not settle: whether "render the
+             ref" means executing that commit's `build.sh` or reading what it committed; how the
+             new column maps onto a report whose rows are rendered ARTIFACTS (three per source),
+             what a root doc and `TOTAL` carry, and how a non-numeric `new` cell, a removal and a
+             rename aggregate; and which fences and which `#` lines count, given that
+             `check-workflow-shell.sh` sees only ```` ```bash ```` and D75/D76 define a comment line
+             for this repo's fences lexically.
+- decision:  **Tracked, not rebuilt.** The ref's artifacts are the blobs git holds at
+             `<ref>:agents/…`, read with `ls-tree` + `cat-file blob` into a scratch directory and
+             measured by the same function as the working tree. `build-drift` fails any commit
+             whose generated files are stale, so on the default branch — the only ref CI ever
+             passes — tracked and rendered are the same bytes; a measurement command executing
+             another commit's build would add a build's time, a `tar` prerequisite and a
+             code-execution surface to a report, and would measure a stale WIP commit as something
+             it never shipped. A ref that predates `agents/` reads as all-`new`; a ref that does not
+             resolve to a commit is usage (2); a blob git cannot list or read is a fault (1) —
+             never `new`.
+             **Per artifact, every column.** `fenced_comment_lines` measures the row's own file,
+             exactly as `lines` and `approx_tokens` do: a skill row carries the count of its
+             rendered fences (the source's, after `adb:except` filtering), a root doc its own,
+             `TOTAL` the sum. Three rows per source is the report's existing shape and the
+             truthful load figure — each agent loads its own copy.
+             **`TOTAL` stays the sum of its rows in every column** (D71's contract, pinned by the
+             guard). A `new` row contributes its whole size to the delta — it cost nothing to load
+             at the ref; a removal has no row and no delta, because the expected set is derived
+             from the CURRENT sources (D71), so a rename is one `new` row. `delta_tokens` is the
+             difference of the two `approx_tokens` figures, never a re-rounded byte delta, so a
+             reader can reproduce it from two runs. Deltas are plain integers; the column count is
+             5, or 7 under `--since`, and the first four columns are unchanged.
+             **Shell fences, lexical lines, the shared rule.** Counted fences are ```` ```bash ````,
+             ```` ```sh ````, ```` ```shell ```` and ```` ```zsh ```` — the blocks an agent
+             executes; every other info string in this corpus (text, markdown, json, none) holds
+             samples and templates where `#` is a heading. A comment line is one whose first
+             non-blank character is `#`, the whole-line rule D75/D76 already record, so a shebang or
+             a `#`-led heredoc line counts and a trailing comment does not — stated as a heuristic,
+             like `approx_tokens`. Fences are decided by `adb_md_fence_delim` from `common.sh`
+             (openers, closers, run length, `~~~`, list nesting, CRLF), called at container column
+             0 as its other direct consumers do; a third fence detector is the drift #136 removed.
+             **The delta lives in the `render-size` job's summary, not `selfcheck`'s.** The issue
+             named the `selfcheck` summary; that step is the failure digest (#423), with a contract
+             `check-selfcheck.sh` pins, in the job that is the run's critical path. The
+             `render-size` job is the one whose charter is this report, so it checks out full
+             history and renders the table against the merge-base with `ADB_MUTATION_BASE`, under
+             `!cancelled()`, printing only a hex sha to the summary page. The observation is the
+             same — one table per run, on every pull request.
+- placement: `scripts/render-size.sh` · `scripts/check-render-size.sh` · the `render-size` job in
+             `.github/workflows/ci.yml` · `base/practices/code-comments.md` ·
+             `base/workflows/resolve-pr-threads.md` step 4 · the row in this repo's `CLAUDE.md`.
+- reason:    Each choice takes the reading that keeps an existing contract whole (D71's derived set
+             and summed `TOTAL`, D75/D76's comment line, #136's one fence rule) over the reading
+             that adds a mechanism, and says so where the number is printed. The owner rejected
+             caps (#355): everything here reports, and the guard drives both new measurements red
+             on a mutated copy so the report cannot quietly stop measuring.
+- baseline-issue: n/a — this repo IS the baseline; #432 is the tracking issue.
