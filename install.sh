@@ -266,6 +266,14 @@ wire_hooks() {
     rm -f "$tmp"
     adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
   adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
+  # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed
+  # entry from one that never landed (adb_claude_hooks_receipt). Written by rename, like the
+  # settings; a receipt that cannot be written is said, and the wiring above still stands.
+  local receipt; receipt="$(adb_claude_hooks_receipt "$HOME")"
+  if adb_claude_hook_scripts > "$receipt.adb.$$.tmp" 2>/dev/null && mv "$receipt.adb.$$.tmp" "$receipt" 2>/dev/null; then :; else
+    rm -f "$receipt.adb.$$.tmp"
+    adb_info "  WARN   could not write the wiring receipt $receipt — a hook entry you later remove will be re-wired by the next self-heal until it exists"
+  fi
 }
 
 run_adapter() {

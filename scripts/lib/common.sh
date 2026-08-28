@@ -353,13 +353,63 @@ adb_claude_hook_scripts() {
 # grep -F on that full path, never a pattern: it comes from a manifest plus $HOME, and neither is
 # a regex. Absent/unreadable settings is `none` — the ordinary state of a machine that never ran
 # install.sh, which is exactly what --no-hooks would produce anyway.
+# The event a shipped hook is wired under, and the SessionStart sources its matcher must cover (a
+# JSON list; `[]` for a Stop hook). ONE table for every reader — the global predicates below,
+# bin/baseline through them, and pinned-install.sh — pinned against agents/claude/settings.hooks.json
+# by check-pinned-install.sh so it cannot drift from what install.sh writes.
+# Usage: adb_claude_hook_event <hook.sh>   /   adb_claude_hook_sources <hook.sh>
+adb_claude_hook_event()   { case "$1" in session-currency.sh|session-context.sh) printf 'SessionStart' ;; *) printf 'Stop' ;; esac; }
+adb_claude_hook_sources() { case "$1" in session-currency.sh) printf '["startup"]' ;; session-context.sh) printf '["compact","resume"]' ;; *) printf '[]' ;; esac; }
+
+# Is <hook.sh> WIRED in <settings.json> for <home>: a `type: "command"` handler whose command is
+# exactly the installed path, under the hook's own event, in a group whose matcher covers every
+# source the hook must fire on — absent, empty or `*` covers all; letters, digits, `_ - space , |`
+# is an exact alternative list; anything else is a regex (the vendor's rule, as session-context.sh
+# and pinned-install.sh already apply it). A path grep used to say "wired" for an entry moved under
+# Stop, behind a `startup` matcher, or on a `prompt` handler — none of which Claude ever fires.
+# Returns 0 wired; 1 not wired, no file, or not decidable here (no jq).
+# Usage: adb_claude_hook_wired <settings.json> <hook.sh> [home]
+adb_claude_hook_wired() {
+  local settings="$1" s="$2" home="${3:-${HOME:-/root}}"
+  [ -f "$settings" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -e --arg c "$home/.claude/scripts/$s" --arg ev "$(adb_claude_hook_event "$s")" --argjson need "$(adb_claude_hook_sources "$s")" '
+    [ .hooks[$ev][]? | select([.hooks[]? | select(.type == "command") | .command // empty] | index($c) != null)
+      | (.matcher // "") as $m
+      | ($need | all(. as $src | $m == "" or $m == "*"
+          or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null)
+              else ($src | test($m)) end))) ] | any' "$settings" >/dev/null 2>&1
+}
+
+# _adb_claude_hook_present <settings.json> <hook.sh> <home> — the ONE presence test the state and
+# missing predicates share: the validated form where jq can parse the file; the path grep where
+# there is no jq or the file is not JSON, so a machine without jq and a corrupt settings.json
+# classify exactly as before (the installer refuses the latter loudly on its own).
+_adb_claude_hook_present() {
+  if command -v jq >/dev/null 2>&1 && jq -e 'type' "$1" >/dev/null 2>&1; then
+    adb_claude_hook_wired "$1" "$2" "$3"
+  else
+    grep -qF "$3/.claude/scripts/$2" "$1" 2>/dev/null
+  fi
+}
+
+# The wiring RECEIPT: the hooks a SUCCESSFUL wire_hooks last wrote, one name per line. install.sh
+# writes it after the settings rename lands; uninstall.sh removes it. It is what turns "our link,
+# no entry" into a known state: listed here, the entry was wired once and is gone now — the
+# operator removed it; not listed, it was never wired — an installer killed between the link and
+# the entry, or one that skipped wiring — and the next self-heal wires it. An install that predates
+# the receipt has none, and the link inference stands for it until its first successful wiring
+# (docs/installation.md says so).
+# Usage: adb_claude_hooks_receipt [home]
+adb_claude_hooks_receipt() { printf '%s/.claude/.adb-hooks-wired' "${1:-${HOME:-/root}}"; }
+
 # Usage: adb_claude_hooks_state <settings.json> [home]      (home defaults to $HOME)
 adb_claude_hooks_state() {
   local settings="$1" home="${2:-${HOME:-/root}}" s present=0 absent=0
   [ -f "$settings" ] || { printf 'none'; return 0; }
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    if grep -qF "$home/.claude/scripts/$s" "$settings" 2>/dev/null
+    if _adb_claude_hook_present "$settings" "$s" "$home"
     then present=$(( present + 1 )); else absent=$(( absent + 1 )); fi
   done <<EOF
 $(adb_claude_hook_scripts)
@@ -380,7 +430,7 @@ adb_claude_hooks_missing() {
   [ -f "$settings" ] || { adb_claude_hook_scripts; return 0; }
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    grep -qF "$home/.claude/scripts/$s" "$settings" 2>/dev/null || printf '%s\n' "$s"
+    _adb_claude_hook_present "$settings" "$s" "$home" || printf '%s\n' "$s"
   done <<EOF
 $(adb_claude_hook_scripts)
 EOF
@@ -399,10 +449,16 @@ EOF
 # wired by the next self-heal, not preserved as a choice nobody made (PR #443 review).
 # Usage: adb_claude_hooks_missing_deliberate <settings.json> <src> [home]
 adb_claude_hooks_missing_deliberate() {
-  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s
+  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt
+  receipt="$(adb_claude_hooks_receipt "$home")"
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     adb_link_into "$home/.claude/scripts/$s" "$src" || continue
+    # WITH A RECEIPT, THE LINK IS NOT ENOUGH: only a hook the receipt says was wired can have been
+    # removed by hand. A link with no entry and no receipt line is an install killed between the
+    # link and the entry (bin/baseline's own SessionStart budget can do that) — repaired, never
+    # preserved. (PR #443 review)
+    if [ -f "$receipt" ]; then grep -qxF "$s" "$receipt" 2>/dev/null || continue; fi
     printf '%s\n' "$s"
   done <<EOF
 $(adb_claude_hooks_missing "$settings" "$home")

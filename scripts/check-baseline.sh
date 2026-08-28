@@ -285,27 +285,40 @@ eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "update current + healthy li
 hook_settings() {   # hook_settings <state>: write a settings.json in the fixture HOME
   local state="$1" s out=""
   local -a hooks=()
-  case "$state" in
-    none) printf '{"hooks":{}}\n' > "$fh/.claude/settings.json"; return ;;
-  esac
   mapfile -t hooks < <(adb_claude_hook_scripts)
+  case "$state" in
+    # `none`: every entry removed by the operator — the receipt still lists them all.
+    none) printf '{"hooks":{}}\n' > "$fh/.claude/settings.json"; adb_claude_hook_scripts > "$(adb_claude_hooks_receipt "$fh")"; return ;;
+  esac
   # Guarded like the other three enumerations (#259, review finding). Without this, an
   # enumerator that returned nothing would write an EMPTY settings.json and iterate zero hooks —
   # so the `wired` fixture would silently become the `none` fixture, and the cases below would
   # still pass while testing the opposite state.
   check_enumerated "adb_claude_hook_scripts (hook_settings $state)" "${hooks[@]}" || return 1
-  for s in "${hooks[@]}"; do
+  # THE REAL SHAPE (PR #443 review): the predicates validate event, matcher and handler type, so
+  # the fixture is the shipped table with the omitted hooks' handlers deleted — and a RECEIPT of
+  # what an earlier wiring wrote, which is what makes a removal deliberate and a new hook new.
+  local drop='[]' receipt
+  case "$state" in
     # `partial` omits precommit-gate.sh — the exact edit that motivated #242.
-    [ "$state" = partial ] && [ "$s" = "precommit-gate.sh" ] && continue
+    partial) drop='["precommit-gate.sh"]' ;;
     # `shipped` omits session-context.sh — the shape an upgrade produces when a NEW hook lands
     # (PR #443 review): no entry yet, and (the case below removes it) no script link yet either.
-    [ "$state" = shipped ] && [ "$s" = "session-context.sh" ] && continue
+    shipped) drop='["session-context.sh"]' ;;
     # `mixed` omits BOTH: one deliberate removal plus one newly shipped hook (#444's shape).
-    [ "$state" = mixed ] && { [ "$s" = "precommit-gate.sh" ] || [ "$s" = "session-context.sh" ]; } && continue
-    out="${out}$fh/.claude/scripts/$s
-"
+    mixed)   drop='["precommit-gate.sh","session-context.sh"]' ;;
+  esac
+  printf '{"hooks":%s}\n' "$(sed "s@__ADB_HOME__@$fh@g" "$ROOT/agents/claude/settings.hooks.json")" \
+    | jq --argjson drop "$drop" '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command as $c | ($drop | any(. as $d | $c | endswith("/" + $d))) | not))) | map(select(.hooks | length > 0))))' \
+    > "$fh/.claude/settings.json"
+  # The receipt: every hook the last successful wiring wrote. For `shipped`/`mixed` that wiring
+  # predates session-context.sh, so it is absent from the receipt (never wired); for `partial` it
+  # lists precommit-gate.sh (wired once, removed since).
+  receipt="$(adb_claude_hooks_receipt "$fh")"; : > "$receipt"
+  for s in "${hooks[@]}"; do
+    case "$state" in shipped|mixed) [ "$s" = "session-context.sh" ] && continue ;; esac
+    printf '%s\n' "$s" >> "$receipt"
   done
-  printf '%s' "$out" > "$fh/.claude/settings.json"
 }
 
 reset_src; : > "$work/install.log"; hook_settings wired
@@ -320,12 +333,21 @@ eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks none → the opt-out 
 # `none` WITH NO OWNED LINKS AT ALL is not an opt-out but an install that never wired (a first
 # install without jq takes its links back) — the repair runs WITHOUT --no-hooks so the hooks
 # arrive once jq does (PR #443 review). Driven through the behind path, where the self-heal runs.
-reset_src; advance_origin "never-wired"; : > "$work/install.log"; hook_settings none
+reset_src; advance_origin "never-wired"; : > "$work/install.log"; hook_settings none; rm -f "$(adb_claude_hooks_receipt "$fh")"
 mkdir -p "$work/saved-hooks"; for s in $(adb_claude_hook_scripts); do mv "$fh/.claude/scripts/$s" "$work/saved-hooks/$s"; done
 HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "1" "hooks none + no owned links → the installer runs (never wired is a broken install)"
 hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks none + no owned links → ...WITHOUT --no-hooks: nothing was ever removed by hand"
 for s in $(adb_claude_hook_scripts); do mv "$work/saved-hooks/$s" "$fh/.claude/scripts/$s"; done
+rm -f "$fh/.claude/settings.json"
+
+# AN INSTALLER KILLED BETWEEN THE LINK AND THE ENTRY leaves an owned link with no entry — the
+# opt-out's shape — and only the receipt can say it was never wired (PR #443 review): the receipt
+# does not list session-context.sh, its link exists, its entry does not → repaired, not preserved.
+reset_src; advance_origin "killed-mid-wire"; : > "$work/install.log"; hook_settings shipped
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$out" "newly shipped hook(s) not yet wired" "hooks linked-but-unwired with no receipt line → read as not yet wired, not as an opt-out"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks linked-but-unwired with no receipt line → the installer runs WITHOUT --no-hooks"
 rm -f "$fh/.claude/settings.json"
 
 # PARTIAL is REPORTED, never repaired. Removing one hook's entry is the DOCUMENTED way to disable

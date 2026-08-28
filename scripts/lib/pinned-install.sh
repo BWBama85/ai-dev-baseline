@@ -150,10 +150,11 @@ _pi_owns() {
 # --- the payload map -------------------------------------------------------------------------
 
 # _pi_hook_event <hook.sh> / _pi_hook_sources <hook.sh> — the event a shipped hook is wired under and
-# the SessionStart sources it must cover (a JSON list; empty for a Stop hook). ONE table, pinned by
-# check-pinned-install.sh against agents/claude/settings.hooks.json so the two cannot drift.
-_pi_hook_event()   { case "$1" in session-context.sh) printf 'SessionStart' ;; *) printf 'Stop' ;; esac; }
-_pi_hook_sources() { case "$1" in session-context.sh) printf '["compact","resume"]' ;; *) printf '[]' ;; esac; }
+# the SessionStart sources it must cover (a JSON list; empty for a Stop hook). The table lives in
+# common.sh (adb_claude_hook_event / adb_claude_hook_sources) so the global predicates and this
+# status read the SAME one; check-pinned-install.sh pins it against agents/claude/settings.hooks.json.
+_pi_hook_event()   { adb_claude_hook_event "$1"; }
+_pi_hook_sources() { adb_claude_hook_sources "$1"; }
 
 # _pi_hook_scripts — the Claude hooks a pinned project gets: the shared enumeration minus this
 # file's one documented exclusion. One producer for the payload AND the wiring below.

@@ -564,6 +564,9 @@ jq -n '{hooks:{SessionStart:[{hooks:[{type:"command",command:"/usr/local/bin/my-
 installer_clean "install into a populated settings.json" "$ih" "$ROOT/install.sh"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command | test("session-currency\\.sh$"))] | length' \
       "$ih/.claude/settings.json")" "1" "install wires exactly one SessionStart currency hook"
+# THE WIRING RECEIPT (PR #443 review): written after the entries land, listing every shipped hook.
+eq "$(sort "$(adb_claude_hooks_receipt "$ih")" 2>/dev/null | tr '\n' ' ')" "$(adb_claude_hook_scripts | sort | tr '\n' ' ')" \
+  "install writes the wiring receipt naming every shipped hook"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "install preserves a user's own SessionStart hook"
 eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' \
@@ -576,6 +579,7 @@ eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-cur
       "$ih/.claude/settings.json")" "0" "uninstall removes the SessionStart hook (no dangling command)"
 eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "uninstall preserves the user's own SessionStart hook"
+if [ -e "$(adb_claude_hooks_receipt "$ih")" ]; then bad "uninstall must remove the wiring receipt"; else ok; fi
 
 # An EMPTY settings.json is not valid JSON, but jq reads empty input as an empty STREAM: it exits
 # 0 and prints nothing. A guard that only checks jq's status would then install a 0-byte file and
@@ -612,6 +616,7 @@ no "$INSTALLER_RC" "install exits non-zero when settings.json is not valid JSON"
 has "$INSTALLER_OUT" "is not valid JSON" \
   "...and SAYS which of wire_hooks' five refusals it was"
 eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.json is left byte-identical"
+if [ -e "$(adb_claude_hooks_receipt "$bh")" ]; then bad "a failed wiring must not write a receipt"; else ok; fi
 # A FAILED WIRING MUST NOT LEAVE THE OPT-OUT'S SHAPE BEHIND (PR #443 review). An owned hook link
 # with no settings entry is what adb_claude_hooks_missing_deliberate reads as "removed by hand",
 # so links this run created would make every later `baseline update` pass --no-hooks and the new

@@ -102,6 +102,7 @@ EOF
           ' "$settings" > "$settings.adb.$$.tmp" && [ -s "$settings.adb.$$.tmp" ] \
              && mv "$settings.adb.$$.tmp" "$settings"; then
         adb_info "  hooks  removed global Stop gates + SessionStart currency and run-state hooks from ~/.claude/settings.json"
+        rm -f "$(adb_claude_hooks_receipt "$HOME")"
       else
         rm -f "$settings.adb.$$.tmp"
         adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
