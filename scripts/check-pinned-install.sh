@@ -132,6 +132,7 @@ has "$man" "/proj/.claude/skills/implement-issue/SKILL.md" "payload: skills land
 has "$man" "/proj/.claude/adb/lib/common.sh" "payload: the shared library is vendored"
 has "$man" "/proj/.claude/adb/precommit-gate.sh" "payload: the Stop gates are vendored"
 hasnt "$man" "session-currency.sh" "payload: the clone-currency hook is NOT vendored (a pinned project has no clone)"
+has "$man" "/proj/.claude/adb/session-context.sh" "payload: the run-state hook IS vendored — it reads the project's own .claude/state (#431)"
 # `.claude/scripts/` is handling-the-unknown.md's one prescribed home for a project's OWN gate
 # policy. An install that wrote there would occupy it.
 hasnt "$man" "/proj/.claude/scripts/" "payload: never occupies the project's own gate-policy home"
@@ -727,8 +728,9 @@ eq "$(find "$PL" -path "$PL/.git" -prune -o -type f -print | wc -l | tr -d ' ')"
 if command -v jq >/dev/null 2>&1; then
   wired="$(jq -r '[.hooks[]?[]?.hooks[]?.command] | map(split("/") | last) | sort | join(",")' "$PM/.claude/settings.json")"
   shipped="$(jq -r '[.[][].hooks[].command] | map(split("/") | last) | map(select(. != "session-currency.sh")) | sort | join(",")' "$ROOT/agents/claude/settings.hooks.json")"
-  eq "$wired" "$shipped" "hooks: every shipped Stop hook except the excluded one is wired"
+  eq "$wired" "$shipped" "hooks: every shipped hook except the excluded one is wired"
   hasnt "$wired" "session-currency.sh" "hooks: the clone-currency hook is excluded"
+  has "$wired" "session-context.sh" "hooks: the SessionStart run-state hook is wired (#431)"
   # THE WHOLE COMMAND, not its basename. Dropping the ${CLAUDE_PROJECT_DIR} substitution leaves
   # every basename identical while the installed hooks still point at __ADB_HOME__ — a machine-local
   # path committed into somebody's repository, and a guard that could not see it.
@@ -776,6 +778,40 @@ if command -v jq >/dev/null 2>&1; then
   out="$(bash "$PI" status --project "$PH" --offline 2>&1)"; rc=$?
   eq "$rc" 20 "surfaces: a settings.json missing two of three gates is NOT intact"
   has "$out" "Stop-gate entry for" "surfaces: … and names the missing gate"
+fi
+
+# 22b. THE EVENT AND THE MATCHER, not presence: a SessionStart hook moved under Stop, or matched to
+#      `startup`, is one Claude never dispatches — and a status that called it intact would leave a
+#      pinned-only project with no context on compact/resume (#431).
+if command -v jq >/dev/null 2>&1; then
+  PH2="$(new_project movedhook)"
+  bash "$PI" install --project "$PH2" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+  jq '(.hooks.SessionStart // []) as $ss | .hooks.Stop += ($ss | map(.hooks |= map(select(.command | endswith("session-context.sh"))))) | del(.hooks.SessionStart)' "$PH2/.claude/settings.json" > "$PH2/.t" && mv "$PH2/.t" "$PH2/.claude/settings.json"
+  out="$(bash "$PI" status --project "$PH2" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "surfaces: the run-state hook moved under Stop is NOT intact"
+  has "$out" "SessionStart entry for session-context.sh" "surfaces: … and names the event it must be under"
+  PH3="$(new_project rematched)"
+  bash "$PI" install --project "$PH3" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+  jq '.hooks.SessionStart |= map(if ([.hooks[]?.command // empty] | any(endswith("session-context.sh"))) then .matcher = "startup" else . end)' "$PH3/.claude/settings.json" > "$PH3/.t" && mv "$PH3/.t" "$PH3/.claude/settings.json"
+  out="$(bash "$PI" status --project "$PH3" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "surfaces: the run-state hook matched to startup is NOT intact (it would never fire on compact or resume)"
+  # 22c. THE HANDLER TYPE: a `command` field on a handler whose type is not "command" is text Claude
+  #      never runs; the global deferral predicate requires the type, and so must this one.
+  PH4="$(new_project retyped)"
+  bash "$PI" install --project "$PH4" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+  jq '.hooks.SessionStart |= map(.hooks |= map(if (.command // "" | endswith("session-context.sh")) then .type = "prompt" else . end))' "$PH4/.claude/settings.json" > "$PH4/.t" && mv "$PH4/.t" "$PH4/.claude/settings.json"
+  out="$(bash "$PI" status --project "$PH4" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "surfaces: the run-state hook on a non-command handler is NOT intact (Claude dispatches .command only for type command)"
+  has "$out" "not a command handler" "surfaces: … and the line names the handler type"
+  # THE TABLE IS PINNED to the shipped wiring, asserted on the file itself (the library is an entry
+  # point and is not sourced): session-context.sh is the one SessionStart hook, matched
+  # `compact|resume`; every other shipped hook is a Stop hook.
+  jq -e '(.SessionStart // []) as $ss
+         | ([$ss[] | select([.hooks[]?.command // empty] | any(endswith("/session-context.sh")))] | length) == 1
+         and ([$ss[] | select([.hooks[]?.command // empty] | any(endswith("/session-context.sh"))) | .matcher] == ["compact|resume"])
+         and ([to_entries[] | select(.key != "SessionStart") | .value[] | .hooks[]?.command // empty | select(endswith("/session-context.sh"))] | length) == 0
+         and ([to_entries[] | select(.key != "Stop" and .key != "SessionStart") | .value[] | .hooks[]?.command // empty] | length) == 0' \
+    "$ROOT/agents/claude/settings.hooks.json" >/dev/null && ok || bad "table: agents/claude/settings.hooks.json no longer matches _pi_hook_event/_pi_hook_sources (session-context.sh under SessionStart matched compact|resume; everything else under Stop)"
 fi
 
 # 23. A FAILURE AFTER PUBLISHING MUST STILL BE UNINSTALLABLE. `uninstall` requires the pin, so the

@@ -77,6 +77,7 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
 | `agents/claude/scripts/state-claim-gate.sh` | `~/.claude/scripts/state-claim-gate.sh` |
 | `agents/claude/scripts/session-currency.sh` | `~/.claude/scripts/session-currency.sh` |
+| `agents/claude/scripts/session-context.sh` | `~/.claude/scripts/session-context.sh` |
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
 
 The shared shell library (`scripts/lib/common.sh` + `project-gates.sh`) installs as
@@ -129,6 +130,25 @@ real `$HOME`) into `~/.claude/settings.json`:
 | `Stop` | `implement-issue-gate.sh` | Keeps an `/implement-issue` run going until its PR is open — for **that session's own** run; see [Run markers are session-owned](#run-markers-are-session-owned). |
 | `Stop` | `state-claim-gate.sh` | Blocks ending a turn that states a PR/issue/CI status the turn did not read. |
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
+| `SessionStart` (matcher `compact\|resume`) | `session-context.sh` | Reads an in-flight `/implement-issue` run's state back into context after compaction or resume — see [A run survives compaction](#a-run-survives-compaction). |
+
+Removing a hook's entry from `~/.claude/settings.json` is the per-hook opt-out, and `baseline
+update` preserves it: a hook whose script link is installed but whose entry is gone is left alone
+(the set is reported as PARTIAL). A hook shipped **after** your last install has neither an entry
+nor a script link, and that is not a choice anybody made — the next `baseline update` links and
+wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart, reading the **wiring
+receipt** `~/.claude/.adb-hooks-wired` that a successful `install.sh` writes and `uninstall.sh`
+removes: an entry the receipt says was wired and is now gone was removed by you; a link the
+receipt never saw wired was an install interrupted between the link and the entry, and is
+repaired. An install that predates the receipt has none until its next successful wiring, and
+until then the link alone is read as the choice — which holds because
+an install whose hook wiring **fails** takes back the links it added — restoring whatever each one
+displaced — so an interrupted install never leaves the opt-out's shape behind). **Unless the set
+also carries a deliberate opt-out:** `install.sh --no-hooks` is all-or-nothing, so a mixed set —
+one entry you removed plus one hook that just shipped — keeps the opt-out and leaves the new hook
+**unlinked** as well as unwired (a linked-but-unwired hook would read as a second opt-out on the
+next update), restoring anything the install displaced at that path; the update says so every run, and `./install.sh` wires the full set (which re-adds
+the one you removed). The per-hook form that resolves this is #444.
 
 ### Run markers are session-owned
 
@@ -154,6 +174,72 @@ Two properties are worth knowing because they are deliberate choices, not accide
   new run's preflight clears them unconditionally, so a second `/implement-issue` in the same
   clone can still delete the first one's marker. Ownership makes the *reader* safe, not the
   *path* exclusive — see issue #202.
+
+### A run survives compaction
+
+A long `/implement-issue` run outlives its context window: the harness compacts mid-step, and the
+summary may or may not carry which step it was on or where its findings live. The state directory
+already holds those facts, so `session-context.sh` reads them back. On `SessionStart` with `source`
+`compact` or `resume` (the matcher is `compact|resume`; `startup` belongs to the currency hook and a
+`clear` starts a conversation whose run is over by construction) it asks
+`scripts/lib/run-state.sh summary` for the run live in `<repo>/.claude/state` and injects the answer
+as `hookSpecificOutput.additionalContext`: the phase and its append-only history (#243), the
+branch, the issue **numbers**, the PR, whether a blocked marker was written (its path, never its
+reason), the **paths** of the gap/review/docs artifacts — every path relative to the repository
+root (`.claude/state/…`), because a checkout directory is named by whoever cloned it and a name is
+prose — and a count of `REQUIRED` marks in
+`review.md`. Before the branch
+exists — the long gap-analysis pass — the run claim is the liveness signal and the issue snapshots
+name the issues.
+
+**It runs once per checkout.** A release-pinned project vendors this hook under `.claude/adb/` and
+wires it in the project's `.claude/settings.json`, and Claude Code merges hooks across settings
+scopes rather than overriding them — so on a machine that also carries the global install both
+copies would fire on every compact and resume, injecting the same state twice, possibly through two
+reader versions. The global copy therefore defers when the vendored hook exists, is executable and readable beside
+its (readable) libraries,
+**and** is wired there in a `SessionStart` group whose matcher covers the current `source` (it says
+so on stderr); a vendored file that is not wired, not runnable, a group matched to some other
+source, or a `settings.json` it cannot read, leaves the global hook running — one injection either
+way, never zero. The wiring is recognised by
+the exact command the pinned installer writes, never by a suffix. The hook acts only on a payload
+whose `cwd` is an absolute path, hands the reader the repository root, and the reader refuses a
+`.claude/state` that is not physically inside it (a symlink to another checkout would summarise that
+run as this one) and any symlinked record.
+
+**It says whether the checkout is still on the run's branch.** Another session, or the operator, may
+have switched the shared checkout since the marker was written; the hook hands the live branch to
+the reader, which reports `checkout: on the run's branch` or `checkout: NOT on the run's branch — …`
+without naming the live branch (the Stop gate treats the same mismatch as "not this run"; the
+reader reports it so the resumed agent does not continue on the wrong branch).
+
+Three properties are deliberate:
+
+- **Owner-scoped, like the Stop gate.** A marker whose `owner` is another session earns one line
+  naming the path and no facts; the owner id is never printed. A harness that exposes no session id
+  is compatible with any marker, exactly as `implement-issue-gate.sh` treats it.
+- **Facts the run wrote, never text it collected.** Only closed-grammar values are injected — a
+  phase word, a branch with no whitespace or control characters, numbers, timestamps, paths, a
+  count. `gap-prompt.txt`, `gaps.md`, `review.md` and the blocked marker's `reason` carry free
+  text, and what this hook emits lands in a model's context, so they are named by path and never
+  quoted. A marker with any field outside the grammar — a non-string (`false` included), any
+  whitespace or any character of Unicode category Cc/Cf/Zl/Zp, a `prUrl` that is not `https://<host>/<owner>/<repo>/pull/<n>` (hostname labels, a real port, an owner without dots, a repository name that is not a dot segment), a phase outside the nine the workflow writes, a branch that is not the workflow's `issue-<n>[-<n>…]-<slug>` shape, an issue number that is not positive and canonical, a branch whose issue prefix disagrees with the issue list, a February 29 outside a leap year,
+  a history that disagrees with `.phase` — is refused whole. The injected text is capped below
+  the harness's 10,000-character hook-output limit (`ADB_SESSION_CONTEXT_MAX_CHARS`, default 9500,
+  clamped to 1024–9500 so the facts survive the cap and the cap stays under the limit) and says so
+  when it was cut.
+- **It never blocks, and its audit is written twice.** Exit 0 on every path the script reaches;
+  stdin is read with a five-second bound so an open pipe cannot spend the hook's timeout; nothing
+  is injected when no run is live. One stderr line names what was summarised (the debug log), and
+  the summary's own `run-state:` line — right below the provenance header — names the state
+  directory that was read (the transcript).
+  `ADB_SESSION_CONTEXT=off` disables it with one stderr line.
+
+The root docs carry a `# Compact instructions` section (rendered from
+`base/practices/compact-instructions.md`) telling the compactor what to preserve — the run phase,
+the state-directory path, the modified files, the gate command, every open `REQUIRED` finding.
+That is guidance to the summarizer; the hook is the mechanism that restores the marker's facts
+regardless of what the summary kept.
 
 ### The state-claim gate
 
@@ -353,7 +439,9 @@ Two things to get right:
 | `jq` | Wiring/unwiring the lifecycle hooks in `install.sh`/`uninstall.sh`; parsing state JSON in both gate scripts; the SessionStart hook's structured output. |
 
 Without `jq`, hook wiring is skipped (with a warning) but the rest of the
-install still completes. Without `gh`, the install itself still works — only
+install still completes — and the hook script links that run would have added are taken
+back, so the set reads as "not yet installed" rather than as a per-hook opt-out; install
+`jq` and re-run to get them. Without `gh`, the install itself still works — only
 the `gh`-dependent skills and the gate's fallback PR check are affected at
 use time.
 
@@ -590,7 +678,8 @@ truncation**, not authenticity — an attacker who can replace one can replace b
 | `.claude/skills/<name>/SKILL.md` | the workflows, shadowing any same-named global skill |
 | `.claude/adb/lib/*.sh` | the shared shell libraries the skills and gates call |
 | `.claude/adb/{precommit,implement-issue,state-claim}-gate.sh` | the Stop gates |
-| `.claude/settings.json` | the gates wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) |
+| `.claude/adb/session-context.sh` | the `SessionStart` run-state hook (#431): on `compact\|resume` it reads the project's own `.claude/state` back into context |
+| `.claude/settings.json` | the Stop gates and the `SessionStart` hook wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) — each under its own event, the hook with the `compact\|resume` matcher |
 | `.codex/skills/<name>/SKILL.md`, `.codex/adb/…` | the same, for Codex |
 | `AGENTS.md` | Codex's practices, inside a delimited managed region |
 | `.ai-dev-baseline/upstream.toml` | the pin — `mode`, `version`, `source`, `artifact` (the release archive's SHA-256), `adopted`, `agents`, and `stack` when a previous pin recorded one |
@@ -613,7 +702,7 @@ Four of those choices are decisions rather than layout, and each is load-bearing
   instead, so two projects pinned to different versions cannot reach into each other, and no
   absolute path is committed.
 - **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a
-  pinned project has none.
+  pinned project has none. `session-context.sh` **is**: it reads the project's own `.claude/state`.
 
 Everything else the repository ships — `base/`, `bin/`, `docs/`, `templates/`, the `scripts/check-*`
 suites, the build — stays out. It is the framework's own development surface, not a runtime.
@@ -701,8 +790,8 @@ cd ~/Code/ai-dev-baseline
 `uninstall.sh` only removes a destination if it is **currently a symlink
 pointing somewhere inside this repo** (`adb_unlink_if_ours`) — a real file, or a
 symlink pointing elsewhere, is left alone and reported as `skip ... (not
-ours)`. It also strips the baseline's own hook entries — the two `Stop` gates
-and the `SessionStart` currency check — out of `~/.claude/settings.json` (again
+ours)`. It also strips the baseline's own hook entries — the three `Stop` gates
+and both `SessionStart` hooks (currency and run-state) — out of `~/.claude/settings.json` (again
 via `jq`, matched by filename) and removes a hook-event key entirely once that
 leaves it empty. Hooks you added yourself under the same events are left alone.
 Removing the SessionStart entry matters as much as unlinking the script: a

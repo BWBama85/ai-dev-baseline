@@ -407,11 +407,17 @@ step_install_dry_run() {
   # settings entry (or the reverse) would leave the feature silently inert.
   [ -L "$FAKE/.claude/scripts/session-currency.sh" ] || ok=0
   grep -q 'session-currency.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
+  # ...and so is the SessionStart run-state hook (#431), plus the library it reads through.
+  [ -L "$FAKE/.claude/scripts/session-context.sh" ] || ok=0
+  grep -q 'session-context.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
+  [ -e "$FAKE/.claude/scripts/lib/run-state.sh" ] || ok=0
   HOME="$FAKE" bash uninstall.sh --agent claude --agent codex --agent gemini >>"$log" 2>&1 || ok=0
   [ ! -L "$FAKE/.claude/CLAUDE.md" ] || ok=0
   [ ! -L "$FAKE/.claude/scripts/session-currency.sh" ] || ok=0
   # A leftover SessionStart entry pointing at a removed script would error on EVERY future session.
   grep -q 'session-currency.sh' "$FAKE/.claude/settings.json" 2>/dev/null && ok=0
+  [ ! -L "$FAKE/.claude/scripts/session-context.sh" ] || ok=0
+  grep -q 'session-context.sh' "$FAKE/.claude/settings.json" 2>/dev/null && ok=0
   [ ! -L "$FAKE/.codex/AGENTS.md" ] || ok=0
   [ ! -L "$FAKE/.codex/skills/implement-issue" ] || ok=0
   [ ! -L "$FAKE/.gemini/GEMINI.md" ] || ok=0
@@ -720,6 +726,19 @@ add implement-gate      bash scripts/check-implement-gate.sh
 # deleting. The failure mode is a wrongly-successful start, so every case asserts what survived,
 # not just the exit code.
 add implement-lib       bash scripts/check-implement-lib.sh
+
+# The SessionStart run-state hook and its library (#431): a compacted or resumed session gets the
+# in-flight run's facts read back — phase, phase history, branch, issue numbers, artifact paths,
+# REQUIRED-mark count — and NEVER an issue's or a finding's text. Owner-scoped exactly as the Stop
+# gate is; acts on `compact` and `resume` only; exits 0 on every path. Also executes the workflow's
+# real phase-update snippet against a fixture marker (#243's append-only phaseHistory).
+add session-context     bash scripts/check-session-context.sh
+
+# ...and the guards in it are guards, so each is injected with its own defect and required RED on
+# its own witness: the owner check, the source gate, the whole-record refusal, the containment of
+# the injected fields, the REQUIRED count, and the workflow snippet's history append.
+add session-context-mutation bash scripts/check-session-context.sh --mutation
+inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).

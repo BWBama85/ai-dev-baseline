@@ -1230,6 +1230,11 @@ fact session-start-config "fixed:session_start" -- \
 # a `compact` swap tooling mid-session.
 fact session-start-source "fixed:startup" -- \
   agents/claude/settings.hooks.json agents/claude/scripts/session-currency.sh docs/installation.md
+# The run-state hook's trigger set (#431), pinned the same way: the settings matcher, the script's
+# own source gate and the doc must name the SAME two sources, or a `compact` the matcher dispatches
+# is one the script ignores — and the whole feature is then a hook that fires and says nothing.
+fact session-context-source "fixed:compact|resume" -- \
+  agents/claude/settings.hooks.json agents/claude/scripts/session-context.sh docs/installation.md
 
 # --- FACT: the currency outcome vocabulary (#139) -----------------------------
 # currency-lib.sh's `check` returns `<outcome><TAB><message>` and leaves PRESENTATION to the caller,
@@ -1536,6 +1541,15 @@ fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mut
 # execution, and dropping it there would end that coverage silently.
 fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# The third step `selfcheck-macos` skips by name, for the same reason: the ubuntu
+# `implement-gate` job is the session-context harness's only per-PR execution after the skip.
+fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
+# Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
+# copy of a whole-suite-per-mutation harness to the 45-minute job.
+fact macos-logic-mutations-skipped \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation' -- \
+  .github/workflows/ci.yml
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
 # touches the step's declared inputs and prints a stated SKIP otherwise. The positive pin says at

@@ -1927,7 +1927,7 @@ eq "$EPRC" "0" "entrypoints: the gate BEFORE the definitions is the compliant sh
 if git rev-parse --show-toplevel >/dev/null 2>&1; then
   EPOUT="$(bash "$LINT" --entrypoints agents/claude 2>&1)"; EPRC=$?
   eq "$EPRC" "0" "entrypoints: scanning a SUBDIRECTORY does not misclassify the advisory hooks"
-  has "$EPOUT" "2 advisory" "entrypoints: and it still sees them as advisory, not as gates"
+  has "$EPOUT" "3 advisory" "entrypoints: and it still sees them as advisory, not as gates"
   EPOUT="$(bash "$LINT" --entrypoints scripts 2>&1)"; EPRC=$?
   eq "$EPRC" "0" "entrypoints: scanning scripts/ keeps the observer exemption"
   has "$EPOUT" "1 exempt" "entrypoints: and still counts it as exempt"

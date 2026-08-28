@@ -959,7 +959,12 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # 45, not 10: the job carries check-session-context.sh --mutation since #431 — one full suite
+    # run per row, ~19 s each locally, and adb_pool_size caps the pool at the runner's 4 cores —
+    # and the 10-minute bound sized for the Stop-gate suite alone cancelled it at 58 rows. The
+    # mutation gate keeps the harness off a PR that does not touch its inputs, so the ordinary
+    # job stays under a minute; the bound is for the runs that do.
+    timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -968,7 +973,11 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441) — see
+        # the `common-lib` job for why a one-commit checkout would make the gate fail closed.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -979,6 +988,16 @@ jobs:
 
       - name: implement-issue Stop hook re-verifies PR state live + fails closed (#44)
         run: bash scripts/check-implement-gate.sh
+
+      # The SessionStart run-state hook reads the SAME marker back after a compaction (#431). It
+      # rides this job rather than adding one: a second job is a second required status context
+      # for branch protection to grow, and the two readers of one marker do not earn that.
+      - name: SessionStart run-state hook — source gate, ownership, containment, phaseHistory (#431)
+        run: bash scripts/check-session-context.sh
+
+      # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
+      - name: ...and its guards must be able to fail — each mutation observed RED (#431)
+        run: bash scripts/mutation-gate.sh run session-context-mutation -- bash scripts/check-session-context.sh --mutation
 
   install-migration:
     name: install-migration
@@ -1453,18 +1472,14 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less TWO steps. shellcheck is installed above for a reason: selfcheck
+      # The offline suite, less THREE steps. shellcheck is installed above for a reason: selfcheck
       # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
       # false in precisely the silent way this repo keeps writing guards against.
       #
-      # `--skip adopt-readiness-mutation` (#339) and `--skip pattern-ledger-mutation` (PR #429):
-      # each answers a LOGIC question, not a platform one, and an ubuntu job runs it on every PR —
-      # `adopt` for the first, `pattern-ledger` for the second — where check-fact-drift.sh pins both
-      # invocations, because after this skip those jobs are each step's ONLY per-PR execution. The
-      # second joined when the ledger harness alone pushed this job past its 45-minute ceiling (runs
-      # 32896004653 and 32904106492, both cancelled with it still running). The non-mutation
-      # `adopt-readiness` and `pattern-ledger` halves still run here. Measurements and rationale:
-      # D87.
+      # These three mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
+      # jobs run each on every relevant PR, and check-fact-drift.sh pins those invocations because
+      # they are each harness's ONLY per-PR execution after this skip. Their non-mutation halves
+      # still run here. Measurements and rationale: D87.
       #
       # AND THE MUTATION GATE APPLIES HERE TOO (#441): the runner asks `scripts/mutation-gate.sh`
       # before dispatching any `*-mutation` step, against ADB_MUTATION_BASE (workflow `env:`), so an
@@ -1476,7 +1491,7 @@ jobs:
       - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent

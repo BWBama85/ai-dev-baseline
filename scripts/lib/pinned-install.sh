@@ -149,6 +149,13 @@ _pi_owns() {
 
 # --- the payload map -------------------------------------------------------------------------
 
+# _pi_hook_event <hook.sh> / _pi_hook_sources <hook.sh> — the event a shipped hook is wired under and
+# the SessionStart sources it must cover (a JSON list; empty for a Stop hook). The table lives in
+# common.sh (adb_claude_hook_event / adb_claude_hook_sources) so the global predicates and this
+# status read the SAME one; check-pinned-install.sh pins it against agents/claude/settings.hooks.json.
+_pi_hook_event()   { adb_claude_hook_event "$1"; }
+_pi_hook_sources() { adb_claude_hook_sources "$1"; }
+
 # _pi_hook_scripts — the Claude hooks a pinned project gets: the shared enumeration minus this
 # file's one documented exclusion. One producer for the payload AND the wiring below.
 _pi_hook_scripts() {
@@ -905,10 +912,20 @@ _pi_check_surfaces() {
         # surviving entry made a settings.json missing two of the three gates report as complete.
         while IFS= read -r cmd; do
           [ -n "$cmd" ] || continue
-          jq -e --arg c "\${CLAUDE_PROJECT_DIR}/.claude/$PI_NS/$cmd" \
-             '[.hooks[]?[]?.hooks[]?.command // empty] | index($c) != null' \
+          # UNDER ITS OWN EVENT, AS A COMMAND HANDLER, with a matcher that covers what the shipped
+          # wiring covers. A command found anywhere under .hooks satisfied a presence test while
+          # sitting under the wrong event, behind a `startup` matcher, or on a handler whose `type`
+          # is not "command" (Claude dispatches the `command` field only for that type) — and Claude
+          # then never dispatched it (#431).
+          ev="$(_pi_hook_event "$cmd")"; case "$ev" in Stop) lbl="Stop-gate" ;; *) lbl="$ev" ;; esac
+          jq -e --arg c "\${CLAUDE_PROJECT_DIR}/.claude/$PI_NS/$cmd" --arg ev "$ev" --argjson need "$(_pi_hook_sources "$cmd")" '
+            [ .hooks[$ev][]? | select([.hooks[]? | select(.type == "command") | .command // empty] | index($c) != null)
+              | (.matcher // "") as $m
+              | ($need | all(. as $src | $m == "" or $m == "*"
+                  or (if ($m | test("^[A-Za-z0-9_ ,|-]+$")) then ([$m | split("|")[] | split(",")[] | gsub("^ +| +$"; "")] | index($src) != null)
+                      else ($src | test($m)) end))) ] | any' \
              "$p/.claude/settings.json" >/dev/null 2>&1 && continue
-          _pi_say "  missing  Stop-gate entry for $cmd in .claude/settings.json"; rc=1
+          _pi_say "  missing  $lbl entry for $cmd in .claude/settings.json (absent, not a command handler, under another event, or matched away from its sources)"; rc=1
         done <<EOF
 $(_pi_hook_scripts)
 EOF

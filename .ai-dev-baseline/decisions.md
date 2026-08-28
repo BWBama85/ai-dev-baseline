@@ -12,6 +12,10 @@ didn't already model, so any residual divergence stays visible and auditable.
 - decision:  Wire `scripts/selfcheck.sh` as the `test` gate in the repo-root `agents.toml`
              `[gates]`, and declare the three toolchain-less axes (typecheck/lint/format)
              N/A via `[gates.state]`.
+- rendering: every path in the summary is RELATIVE — `.claude/state/…` under `--root <repo>`,
+             else the literal token `<state>` — because a checkout directory is named by whoever
+             cloned it and a name is prose; the absolute directory goes to stderr only. The summary
+             reaches the hook's jq on stdin, never argv (Linux bounds one argument at 128 KiB).
 - placement: `agents.toml [gates]` / `[gates.state]` — the prescribed home for a
              project-specific gate command (handling-the-unknown table).
 - reason:    selfcheck IS this repo's real quality gate; the gate model's whole point is to
@@ -7181,6 +7185,16 @@ survive is the part a later reader needs.
   invocation (`pattern-ledger-mutation-wired`) so the skip cannot silently become no coverage. The
   new job is a new required context; the `reconcile-required-checks` preflight adds it on `main`.
 
+- **AMENDED 2026-08-27 (PR #443): a THIRD step leaves the macOS leg, by the same rule.** The
+  `session-context-mutation` harness runs a full 491-assertion suite for each of 76 injected
+  defects. On run 33043334817 it completed once in the dedicated ubuntu `implement-gate` job in
+  1370s, while its duplicate in `selfcheck-macos` was the only selected step not to report a
+  result before that job's 45-minute ceiling. The non-mutation `session-context` suite did report
+  PASS on macOS, so the platform question was answered. Disposition identical to the first two:
+  `selfcheck-macos` also skips `session-context-mutation`; `implement-gate` remains its only
+  per-PR execution; and `check-fact-drift.sh` pins both the ubuntu invocation and the exact macOS
+  skip set so neither half can silently disappear.
+
 ## D88 — DEVIATION: `max_rounds = 0` removes the resolve loop's only overall bound, by owner decision
 - date:          2026-08-21
 - category:      deviation
@@ -7446,4 +7460,95 @@ survive is the part a later reader needs.
              change, paid on every change. What a filter cannot see is bounded by the daily
              unconditional run rather than by hope. The gate is a guard whose failure mode is a
              green step, so it is observed failing eight ways before it is trusted with a skip.
+- baseline-issue: n/a
+
+## D92 — a run survives compaction: its state directory is read back, by a hook that owns no decision
+- date:      2026-08-26
+- category:  project-delta
+- unknown:   A long `/implement-issue` run outlives its context window, and after the harness
+             compacts mid-step the summary may or may not carry which step it was on, which
+             REQUIRED findings are still open, or where the prompt files live (#431). The state
+             directory already held those facts — the marker's phase, branch, issue and owner;
+             the gap, review and docs artifacts — and nothing read any of it back:
+             `base/workflows/` had zero mentions of `compact`, and the one `SessionStart` hook the
+             baseline shipped was deliberately `startup`-only, for currency.
+- decision:  A reader library plus a Claude adapter, split exactly as currency is (D11's shape).
+             `scripts/lib/run-state.sh summary --state <dir> [--session <id>]` prints declarative
+             `key: value` lines drawn from a CLOSED grammar the run itself wrote — phase, the
+             append-only `phaseHistory` (#243, absorbed here), branch, issue numbers, PR, whether a
+             blocked marker exists (its path, never its free-text reason), artifact PATHS as
+             `cleanup-lib.sh state-scan` classifies them — but only OPAQUE names (the fixed names the
+             workflow writes, or a family name with a numeric suffix); any other family member is
+             COUNTED as `unnamed-artifacts`, never printed, because a filename inside the character
+             grammar can still be prose (`gaps-IGNORE_ALL_PREVIOUS_INSTRUCTIONS.md` is `gaps` to
+             state-scan) — a count of `REQUIRED` marks — and refuses
+             a marker WHOLE when any field falls outside it: a non-string where a string is
+             required, whitespace or a C0/C1/Unicode format or separator character, a phase outside the nine the workflow writes (`[a-z_]{1,32}` admitted a lowercase
+             sentence), a branch outside the workflow's `issue-<n>[-<n>…]-<slug>` shape (every other
+             shape used to be rendered whole, and a name is prose), an issue number that is 0 or
+             carries a leading zero (in the marker and in the pre-branch issue-<n>.json snapshots),
+             a branch whose issue prefix disagrees with the issue list it was named from, a February 29 outside a leap year, a symlinked record (the workflow writes by rename, never a link — and a symlinked `review.md` is reported unreadable, never opened), a state directory not physically inside the `--root` it is read for, a `prUrl` that
+             is not `https://<host>/<owner>/<repo>/pull/<n>` — hostname labels, a port in 1..65535
+             if any, an owner without dots and a repository name that is not a dot segment, and the
+             pull-request route (a bare `https://` or an unrelated https page would
+             render a PR that does not exist), a history that is present but empty or null, one with two
+             adjacent entries of a phase, or one disagreeing with `.phase` (a history LONGER than
+             64 entries is accepted — the workflow appends without bound — and the reader renders
+             its last 64 with a count of the earlier ones; a backwards wall clock is accepted too,
+             append order being the record). The branch is rendered with its slug ELIDED when it
+             has the workflow's `issue-<n>-<slug>` shape, because that slug is cut from the issue
+             title. `agents/claude/scripts/session-context.sh` runs on `SessionStart`
+             `compact|resume`, reads stdin with a five-second bound, exits 0 on every path it
+             reaches, caps the injection below the harness's 10,000-character hook-output limit,
+             and injects the answer as `hookSpecificOutput.additionalContext` with a provenance
+             header as its first line. The phase-update snippet is idempotent — a repeated write of
+             the same phase appends nothing — because a resumed session re-runs the step it was on.
+             The independent review of this PR (codex) is what turned the first cut's C0-only
+             filter, `tostring` coercion, printed blocked reason, unbounded output and twice-read
+             claim into these rules; its second round added three more: a path may carry a space
+             (only controls forge a line), a name `state-scan` accepts can still carry a control
+             character and is counted rather than printed, and `baseline update` must not read a
+             NEWLY SHIPPED hook as a per-hook opt-out — `adb_claude_hooks_missing_deliberate` tells
+             an entry the operator removed (script link present) from one that never existed.
+             The root docs gain `# Compact instructions` (`base/practices/compact-instructions.md`)
+             telling the compactor what only the conversation held. Six gap-analysis findings were
+             settled from the repo rather than escalated, and each is a rule here:
+             (1) the pre-marker window is covered by the RUN CLAIM — `gap-analysis.lock` carries an
+             `owner` and a lease, and the `issue-<n>.json` snapshots name the issues — so no new
+             state file joins `state-scan`; (2) "open REQUIRED findings" is not a number the files
+             hold, so the field is `review-required-marks`, a count of RECORDED marks, named for
+             what it is; (3) the summary covers `/implement-issue` state only — `/roadmap` and
+             `/resolve-pr-threads` write no marker, and a schema invented for them here would be a
+             second home; (4) both prompt files are named, by path; (5) the modified-file list and
+             the gate result exist only in the conversation, so the compact block asks the
+             summarizer for them and says it is guidance, not a mechanism; (6) stderr from an
+             exit-0 hook reaches only the debug log (vendor docs, read this run), so the audit line
+             rides INSIDE the injection. The `implemented` phase gains a dedicated write, before
+             the first gate run, so the history records the gate span (#243's open question).
+             A separate library rather than a `summary` on `implement-lib.sh`: that module's
+             charter is run ADMISSION and `docs-lib-mutation` already names it as an input, so
+             growing it would re-trigger an unrelated harness on every reader change.
+- rendering: every path in the summary is RELATIVE — `.claude/state/…` under `--root <repo>`,
+             else the literal token `<state>` — because a checkout directory is named by whoever
+             cloned it and a name is prose; the absolute directory goes to stderr only. The summary
+             reaches the hook's jq on stdin, never argv (Linux bounds one argument at 128 KiB).
+- placement: `scripts/lib/run-state.sh`, `agents/claude/scripts/session-context.sh`,
+             `agents/claude/settings.hooks.json` (a second `SessionStart` group, matcher
+             `compact|resume`), `adb_claude_hook_scripts` (five hooks), `base/practices/compact-instructions.md`
+             + the index row, `base/workflows/implement-issue.md` (the `# ADB-SNIPPET: phase-update`
+             template, creation and step-10 sites, the `implemented` write), `scripts/check-session-context.sh`
+             (+ `--mutation`, three pools, registered with its input set; rides the `implement-gate`
+             CI job through `mutation-gate.sh`; in the nightly matrix), `check-fact-drift.sh`
+             (`compact|resume` pinned across settings, script and doc), `docs/installation.md`
+             ("A run survives compaction"), CLAUDE.md's table, CONTRIBUTING.md (three advisory
+             entry points).
+- reason:    The facts a run wrote are the cheapest memory it has and the only one compaction
+             cannot lose; reading them back is a reader's job, and a reader that carries text it
+             collected from strangers into a model's context is an injection channel — so the
+             grammar is closed and refusal is whole. The hook owns no decision because Codex and
+             Gemini will need the same answer after their own compaction (#14), and a decision in
+             a Claude hook is unreachable from anywhere else — the lesson #139 taught about
+             currency. Guidance to the summarizer is kept and labelled as guidance, because the
+             vendor documents the block and the practice forbids claiming a mechanism that is not
+             wired.
 - baseline-issue: n/a

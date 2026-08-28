@@ -107,13 +107,15 @@ same installer writes and cost seconds, so isolating them is nearly free. Everyt
 temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
 declared places, and `--only` / `--skip` can leave any of them out.
 
-CI's macOS leg runs two steps fewer: it passes `--skip adopt-readiness-mutation,pattern-ledger-mutation`,
-which the ubuntu `adopt` and `pattern-ledger` jobs already run on every PR (#339, PR #429). Your
-local run is unaffected in *coverage* — a plain `bash scripts/selfcheck.sh` still selects the whole
-registry, then applies the gate above — but it does get **longer** when the gate lets everything
-through, because the six isolated steps no longer overlap with anything: about 90 seconds' worth,
-measured serially on a 10-core machine. The dated range above was taken before that lane existed
-and has not been re-measured; the `result` block is the current answer, as it says.
+CI's macOS leg runs three steps fewer: it passes
+`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation`, which the
+ubuntu `adopt`, `pattern-ledger`, and `implement-gate` jobs already run on every relevant PR
+(#339, PR #429, PR #443). Your local run is unaffected in *coverage* — a plain
+`bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
+it does get **longer** when the gate lets everything through, because the six isolated steps no
+longer overlap with anything: about 90 seconds' worth, measured serially on a 10-core machine. The
+dated range above was taken before that lane existed and has not been re-measured; the `result`
+block is the current answer, as it says.
 
 In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
 a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),
@@ -203,11 +205,11 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
   - Every entry point gates its own interpreter as its first statement, in one of **three**
     classifications that `check-bash-floor.sh --entrypoints` enforces (it fails the build on a
     file that is unclassified or uses the wrong form):
-    - **gate** (65 files) — `adb_require_bash`: re-exec, else exit non-zero with your
-      platform's install command.
-    - **advisory** (2) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
-      file takes its own documented no-op and exits **0**. For `session-currency.sh` and
-      `state-claim-gate.sh`, whose contracts forbid a non-zero exit.
+    - **gate** (the overwhelming majority; `--entrypoints` prints the live count) —
+      `adb_require_bash`: re-exec, else exit non-zero with your platform's install command.
+    - **advisory** (3) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
+      file takes its own documented no-op and exits **0**. For `session-currency.sh`,
+      `session-context.sh` and `state-claim-gate.sh`, whose contracts forbid a non-zero exit.
       It never runs its body under a sub-floor interpreter (D31).
     - **exempt** (1) — `check-bash-floor.sh` calls neither: it is the observer, and an observer
       that upgrades its own interpreter has destroyed the observation (D31).

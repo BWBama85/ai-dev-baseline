@@ -461,6 +461,17 @@ for bad_marker in 'null' '   ' '[]' '"a string"' '123' '{'; do
   hasnt "$OUT" "has not opened a PR" "V: non-object marker [$bad_marker] emits no resume hint"
 done
 
+# --- an oversized marker is refused UNREAD (PR #443 review) ------------------
+# A well-formed, owned marker that WOULD nag, padded past the bound: the gate must not load it —
+# it says so, and passes, exactly as it does for a malformed one.
+reset_case
+{ jq -n --arg o "$SID_A" '{branch:"feat", issue:"35", phase:"pushed", owner:$o}'; head -c 70000 /dev/zero | tr '\0' ' '; } > "$marker_file"
+GATE_SESSION="$SID_A"; SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
+run_gate
+eq "$RC" 0 "V2: an oversized marker → exit 0"
+has "$OUT" "larger than any marker the workflow writes" "V2: ...and the gate says it was not read"
+hasnt "$OUT" "has not opened a PR" "V2: ...and emits no resume hint from bytes it never loaded"
+
 # --- a newline in a field must not shift the ownership decode -----------------
 # The five fields are decoded BY POSITION from newline-separated jq output, and `owner` is last, so
 # one embedded newline silently re-aims the ownership test. Both directions were live bugs.

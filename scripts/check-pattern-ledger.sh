@@ -236,6 +236,10 @@ if [ "$MODE" = mutation ]; then
   # proves the first-writer assertion is able to fire at all; the ordering itself is covered by
   # that behavioural assertion and not by an injection, and saying so is better than shipping a
   # row that silently applies to nothing.
+  check_mut write-unverified \
+    '  if ! _adb_pl_hits "$ledger" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
+    '  if false; then' \
+    'a lost row is told'
   check_mut record-unlocked \
     '  _adb_pl_lock "$ledger" || exit 20' \
     '  :' \
@@ -965,12 +969,32 @@ eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just 
 # fixture "lost" nine writers that had never been valid, and read as a broken lock.
 L7c="$work/l7c.md"
 bash "$PL" record --ledger "$L7c" --class seed-c --site s.sh --fix abc1231 --pr 1 --thread T0 >/dev/null 2>&1
+# EVERY WRITER'S STATUS IS KEPT, because a writer that lost is one of two things and the count
+# alone cannot say which: silently discarded (the defect this case exists for) or REFUSED at the
+# lock's wait bound (told, rc 20). Both flapped this assertion on a slow runner; only the second
+# was ever the cause, and a count of 19 hid it.
+rm -rf "$work/l7c-rc"; mkdir -p "$work/l7c-rc"
 for i in $(seq 1 20); do
-  bash "$PL" record --ledger "$L7c" --class conc --site "s$i.sh" \
-    --fix "$(printf 'abcd%03d' "$i")" --pr 2 --thread "C$i" >/dev/null 2>&1 &
+  { bash "$PL" record --ledger "$L7c" --class conc --site "s$i.sh" \
+      --fix "$(printf 'abcd%03d' "$i")" --pr 2 --thread "C$i" >/dev/null 2>"$work/l7c-rc/err.$i"; echo "$?" > "$work/l7c-rc/rc.$i"; } &
 done
 wait
-eq "$(bash "$PL" classes --ledger "$L7c" | awk -F'\t' '$2=="conc"{print $1}')" 20 \
+eq "$(cat "$work"/l7c-rc/rc.* | grep -vc '^0$')" 0 \
+   "twenty concurrent writers: none was REFUSED at the lock's wait bound (a refusal is told with rc 20 — this is the queue draining too slowly, not a lost write: $(cat "$work"/l7c-rc/err.* 2>/dev/null | grep -m1 'could not take the write lock' || printf 'no refusal')"
+_landed="$(bash "$PL" classes --ledger "$L7c" | awk -F'\t' '$2=="conc"{print $1}')"
+if [ "$_landed" != 20 ]; then
+  # EVIDENCE, NOT A COUNT. A shortfall here has flapped on the ubuntu runner and never locally, so
+  # what the failure prints is what the diagnosis has to be made from: which threads are missing,
+  # every writer's exit status and stderr, and what sits beside the ledger.
+  printf '  --- 7c shortfall: landed %s of 20 ---\n' "$_landed" >&2
+  for i in $(seq 1 20); do
+    bash "$PL" classes --ledger "$L7c" >/dev/null 2>&1
+    grep -q "\`C$i\`" "$L7c" || printf '  missing thread C%s (rc %s): %s\n' "$i" "$(cat "$work/l7c-rc/rc.$i" 2>/dev/null)" "$(tr '\n' ' ' < "$work/l7c-rc/err.$i" 2>/dev/null)" >&2
+  done
+  cat "$work"/l7c-rc/err.* 2>/dev/null | grep -v '^$' | sort | uniq -c >&2
+  ls -la "$(dirname "$L7c")" >&2
+fi
+eq "$_landed" 20 \
    "twenty concurrent writers all land — none is silently discarded by a racing rename"
 bash "$PL" verify --ledger "$L7c" >/dev/null 2>&1
 eq "$?" 0 "…and the ledger still parses afterwards"
@@ -1000,17 +1024,44 @@ eq "$(bash "$PL" checklist --ledger "$L7d" 2>/dev/null | grep -c '`pp-c`')" 1 \
 bash "$PL" verify --ledger "$L7d" >/dev/null 2>&1
 eq "$?" 0 "…and the ledger still parses, rather than being destroyed by its own writers"
 
+# A LOST ROW IS TOLD, NEVER REPORTED AS RECORDED. The insert is made to lose the row (its awk is
+# handed a line that the end-marker search never matches, so the file is rewritten without it) and
+# the writer must then exit 21 naming the thread — not print `recorded`.
+L7f="$work/l7f.md"
+bash "$PL" record --ledger "$L7f" --class seed-f --site s.sh --fix abc1231 --pr 1 --thread T0 >/dev/null 2>&1
+_lost="$(mktemp -d)"; cp "$PL" "$_lost/pl.sh"; cp "$ROOT/scripts/lib/common.sh" "$_lost/common.sh"; mkdir -p "$_lost/lib"; cp "$ROOT/scripts/lib/common.sh" "$_lost/lib/common.sh"
+# the copy's insert prints the file back WITHOUT the new line
+sed 's/l == e \&\& !done { print ENVIRON\["ADB_PL_LINE"\]; done = 1 }/l == e \&\& !done { done = 1 }/' "$_lost/pl.sh" > "$_lost/pl2.sh"
+if cmp -s "$_lost/pl.sh" "$_lost/pl2.sh"; then bad "fixture: the lost-row injection did not apply"; fi
+out="$(bash "$_lost/pl2.sh" record --ledger "$L7f" --class lostc --site s.sh --fix abc1232 --pr 1 --thread LOST1 2>&1)"; rc=$?
+eq "$rc" 21 "a lost row is told: a writer whose row is not in the ledger after its insert exits 21"
+has "$out" "the row for thread LOST1 is NOT in" "…and names the thread it lost"
+hasnt "$out" "recorded lostc" "…and never reports it as recorded"
+rm -rf "$_lost"
+
 # THE FIRST LEDGER IS CREATED INSIDE THE LOCK (PR #429). Two processes recording the first hits
 # concurrently could both see the file absent; the slower then wrote the TEMPLATE over a ledger the
 # faster had already created and inserted into, erasing that hit. The existence test has to happen
 # where the decision is protected.
 L7e="$work/deep/first.md"
+rm -rf "$work/l7e-rc"; mkdir -p "$work/l7e-rc"
 for i in $(seq 1 25); do
-  bash "$PL" record --ledger "$L7e" --class firstc --site "s$i.sh" \
-    --fix "$(printf 'abcd%03d' "$i")" --pr 1 --thread "F$i" >/dev/null 2>&1 &
+  { bash "$PL" record --ledger "$L7e" --class firstc --site "s$i.sh" \
+      --fix "$(printf 'abcd%03d' "$i")" --pr 1 --thread "F$i" >/dev/null 2>"$work/l7e-rc/err.$i"; echo "$?" > "$work/l7e-rc/rc.$i"; } &
 done
 wait
-eq "$(bash "$PL" classes --ledger "$L7e" 2>/dev/null | awk -F'\t' '$2=="firstc"{print $1}')" 25 \
+eq "$(cat "$work"/l7e-rc/rc.* | grep -vc '^0$')" 0 \
+   "25 first-time writers: none was REFUSED at the lock's wait bound ($(cat "$work"/l7e-rc/err.* 2>/dev/null | grep -m1 'could not take the write lock' || printf 'no refusal'))"
+_landed="$(bash "$PL" classes --ledger "$L7e" 2>/dev/null | awk -F'\t' '$2=="firstc"{print $1}')"
+if [ "$_landed" != 25 ]; then
+  printf '  --- 7e shortfall: landed %s of 25 ---\n' "$_landed" >&2
+  for i in $(seq 1 25); do
+    grep -q "\`F$i\`" "$L7e" || printf '  missing thread F%s (rc %s): %s\n' "$i" "$(cat "$work/l7e-rc/rc.$i" 2>/dev/null)" "$(tr '\n' ' ' < "$work/l7e-rc/err.$i" 2>/dev/null)" >&2
+  done
+  cat "$work"/l7e-rc/err.* 2>/dev/null | grep -v '^$' | sort | uniq -c >&2
+  ls -la "$(dirname "$L7e")" >&2
+fi
+eq "$_landed" 25 \
    "25 concurrent writers creating the ledger for the FIRST time all land"
 
 # THE LOCK PATH IS NOT SHELL SOURCE (PR #429). The EXIT trap interpolated the ledger path into text

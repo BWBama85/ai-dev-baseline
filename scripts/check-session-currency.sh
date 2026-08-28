@@ -564,6 +564,9 @@ jq -n '{hooks:{SessionStart:[{hooks:[{type:"command",command:"/usr/local/bin/my-
 installer_clean "install into a populated settings.json" "$ih" "$ROOT/install.sh"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command | test("session-currency\\.sh$"))] | length' \
       "$ih/.claude/settings.json")" "1" "install wires exactly one SessionStart currency hook"
+# THE WIRING RECEIPT (PR #443 review): written after the entries land, listing every shipped hook.
+eq "$(sort "$(adb_claude_hooks_receipt "$ih")" 2>/dev/null | tr '\n' ' ')" "$(adb_claude_hook_scripts | sort | tr '\n' ' ')" \
+  "install writes the wiring receipt naming every shipped hook"
 eq "$(jq '[.hooks.SessionStart[].hooks[] | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "install preserves a user's own SessionStart hook"
 eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' \
@@ -576,6 +579,7 @@ eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-cur
       "$ih/.claude/settings.json")" "0" "uninstall removes the SessionStart hook (no dangling command)"
 eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "uninstall preserves the user's own SessionStart hook"
+if [ -e "$(adb_claude_hooks_receipt "$ih")" ]; then bad "uninstall must remove the wiring receipt"; else ok; fi
 
 # An EMPTY settings.json is not valid JSON, but jq reads empty input as an empty STREAM: it exits
 # 0 and prints nothing. A guard that only checks jq's status would then install a 0-byte file and
@@ -591,8 +595,18 @@ eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-cur
 
 # A settings.json that is not valid JSON must be left ALONE and must fail the install — reporting
 # success there is enforcement silently off (bin/baseline's self-heal gates only on this status).
-bh="$work/badsettings"; mkdir -p "$bh/.claude"
+bh="$work/badsettings"; mkdir -p "$bh/.claude/scripts"
 printf 'this is not json\n' > "$bh/.claude/settings.json"
+# One hook link ALREADY OURS before this run (an earlier install, or a per-hook opt-out) — it is
+# not this run's to take back. The other four do not exist yet and are created by this run.
+ln -s "$ROOT/agents/claude/scripts/precommit-gate.sh" "$bh/.claude/scripts/precommit-gate.sh"
+# ...and two destinations the operator OWNS: a real file, and a symlink into a tree of their own.
+# adb_link displaces both (backup; outright replacement) — a rollback must put both back.
+printf 'my own hook\n' > "$bh/.claude/scripts/session-context.sh"
+ln -s /elsewhere/my-gate.sh "$bh/.claude/scripts/state-claim-gate.sh"
+# ...and a foreign symlink whose TARGET ENDS IN A NEWLINE — valid on every supported filesystem, and
+# exactly what a bare `$(readlink …)` would strip before recording it (PR #443 review).
+ln -s $'/elsewhere/newline-target.sh\n' "$bh/.claude/scripts/implement-issue-gate.sh"
 # The one call that already asserted its status — and still discarded the WARN that says WHICH of
 # wire_hooks' five branches refused. `no "$rc"` passes identically for "not valid JSON", "could not
 # read settings.hooks.json" and "could not write", so a regression that swapped one refusal for
@@ -602,6 +616,32 @@ no "$INSTALLER_RC" "install exits non-zero when settings.json is not valid JSON"
 has "$INSTALLER_OUT" "is not valid JSON" \
   "...and SAYS which of wire_hooks' five refusals it was"
 eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.json is left byte-identical"
+if [ -e "$(adb_claude_hooks_receipt "$bh")" ]; then bad "a failed wiring must not write a receipt"; else ok; fi
+# A FAILED WIRING MUST NOT LEAVE THE OPT-OUT'S SHAPE BEHIND (PR #443 review). An owned hook link
+# with no settings entry is what adb_claude_hooks_missing_deliberate reads as "removed by hand",
+# so links this run created would make every later `baseline update` pass --no-hooks and the new
+# hook would stay unwired for good. The links this run ADDED are taken back; the pre-existing one
+# is not this run's to judge.
+if [ -e "$bh/.claude/scripts/session-currency.sh" ] || [ -L "$bh/.claude/scripts/session-currency.sh" ]; then
+  bad "a failed wiring must take back the hook links this run added (session-currency.sh is still linked)"
+else ok; fi
+# ...AND RESTORE WHAT EACH ONE DISPLACED (PR #443 review): deleting only the new link leaves the
+# operator's own hook sitting in the backup directory after an install that reported failure.
+if [ -f "$bh/.claude/scripts/session-context.sh" ] && [ ! -L "$bh/.claude/scripts/session-context.sh" ] \
+   && [ "$(cat "$bh/.claude/scripts/session-context.sh")" = "my own hook" ]; then ok
+else bad "a failed wiring must restore the operator's real file that the fresh link displaced"; fi
+eq "$(readlink "$bh/.claude/scripts/state-claim-gate.sh" 2>/dev/null)" "/elsewhere/my-gate.sh" \
+  "a failed wiring must restore the operator's foreign symlink that the fresh link replaced"
+# `-n` on the read too: without it BSD/GNU readlink's own newline handling masks the difference
+# between the exact target and the stripped one (observed: a bare readlink passed on the mutant).
+_nl="$(readlink -n "$bh/.claude/scripts/implement-issue-gate.sh" 2>/dev/null; printf x)"
+eq "$_nl" $'/elsewhere/newline-target.sh\nx' \
+  "a failed wiring restores a foreign symlink target BYTE-EXACT, trailing newline included"
+if [ -L "$bh/.claude/scripts/precommit-gate.sh" ]; then ok
+else bad "a failed wiring must leave a hook link that existed BEFORE this run alone"; fi
+has "$INSTALLER_OUT" "taken back" "...and SAYS the fresh links were taken back"
+eq "$(adb_claude_hooks_missing_deliberate "$bh/.claude/settings.json" "$ROOT" "$bh" | tr -d '\n')" "precommit-gate.sh" \
+  "after a failed wiring only the pre-existing link reads as deliberate — the new hooks read as not yet arrived"
 
 # OWNERSHIP IS BY FULL PATH. A user's own hook that merely SHARES A FILENAME with one of ours
 # must survive install and uninstall — including under an unrelated event, since the filters walk

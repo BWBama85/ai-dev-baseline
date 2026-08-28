@@ -45,7 +45,8 @@ Two gitignored files under `{{STATE_DIR}}/`:
   ```json
   { "branch": "issue-NN-slug", "issue": "NN",
     "phase": "branched|implemented|gates_green|committed|code_reviewed|triaged|pushed|pr_opened|complete",
-    "startedAt": "ISO-8601 UTC", "owner": "<session id>", "prUrl": "https://…/pull/N" }
+    "startedAt": "ISO-8601 UTC", "owner": "<session id>", "prUrl": "https://…/pull/N",
+    "phaseHistory": [ { "phase": "branched", "at": "ISO-8601 UTC" }, … ] }
   ```
   Written in step 5, after the real branch exists — never before, or the gate's
   branch-mismatch guard silently disables the invariant. Each step updates `phase`; step 10
@@ -61,7 +62,10 @@ Two gitignored files under `{{STATE_DIR}}/`:
   writing this file.
 
 Stage every marker write inside `{{STATE_DIR}}/` (`.marker.tmp` → `mv`) so the rename is
-atomic. Preflight clears stale state **only after `admit` has proved no run is live and has
+atomic. The marker has a reader beyond the Stop gate since #431: after the harness compacts or
+resumes a session, the `SessionStart` run-state hook reads it — and the artifact PATHS beside
+it — back into context, so a run that lost its summary still knows its phase, branch, issues and
+where its findings live. Preflight clears stale state **only after `admit` has proved no run is live and has
 taken this run's claim** — never unconditionally.
 
 ### `owner` — which SESSION this run belongs to
@@ -88,11 +92,23 @@ that clone (D46).
   legitimately invoke this workflow twice, and an absent `owner` reads as compatible — right
   for a hook deciding whether to speak, wrong for a starter deciding whether to delete (D46).
 
-Every phase update re-stamps `owner`, in one command:
+Every phase update re-stamps `owner` and **appends** to `phaseHistory` (#243), in one command.
+`.phase` stays the latest phase, so every existing reader behaves identically; the history is
+what lets a later reader — the compaction summary (#431), or a human asking where a slow run's
+time went — say what has happened rather than only where it is. A marker written before this
+field existed has no `phaseHistory` key and reads without error; its first update creates one.
+The append is **idempotent**: re-running the same phase write — a retry, a resumed session
+repeating the step it was on — appends nothing when the last entry already carries that phase,
+so the history records transitions, never repetitions.
 
 ```bash
+# ADB-SNIPPET: phase-update
 jq --arg phase "<next phase>" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
-   '.phase = $phase | (if $owner == "" then . else .owner = $owner end)' \
+   --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+   '.phase = $phase
+    | .phaseHistory = ((.phaseHistory // []) as $h
+        | if ($h | length) > 0 and $h[-1].phase == $phase then $h else $h + [{phase: $phase, at: $at}] end)
+    | (if $owner == "" then . else .owner = $owner end)' \
    {{STATE_DIR}}/implement-issue-active.json > {{STATE_DIR}}/.marker.tmp \
   && mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json
 ```
@@ -353,8 +369,10 @@ issue-scope failures, step 4's stops, and step 5's hand-off to the marker.
 (`gap-prompt.txt`, `gaps.md`, `gaps.err`, `gaps-*.{md,err}`, `review-prompt.txt`, `review.md`,
 `review.err`, `review-*.{md,err}`), the issue snapshot family step 2 writes (`issue-*.json`,
 `issue-*.assoc`) and the documentation-duty record step 5b writes (`docs-consulted.tsv`,
-`docs-consulted-*.tsv`). They are per-run data nothing consumes afterwards, and the most sensitive
-files this workflow writes: the prompts and the snapshot carry issue and private-repo context,
+`docs-consulted-*.tsv`). They are per-run data with one later reader — the compaction summary
+(`run-state.sh summary`, #431), which names the PATH of every `gaps`/`review`/`docs` record
+`state-scan` classifies and never their contents — and the most
+sensitive files this workflow writes: the prompts and the snapshot carry issue and private-repo context,
 and `gaps.err`/`review.err` are an agent's whole exploration stream. Left in place they outlive
 their run — a later pass whose `gap_analysis` is unassigned, or whose only review slot is
 deferred or absent, never overwrites them, so the previous run's findings read as this run's.
@@ -681,7 +699,8 @@ git switch -c "$BRANCH" || {
 jq -n --arg branch "$BRANCH" --arg issue "$ISSUE_CSV" \
       --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
       --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt}
+      '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt,
+        phaseHistory:[{phase:"branched", at:$startedAt}]}
        + (if $owner == "" then {} else {owner:$owner} end)' \
    > {{STATE_DIR}}/.marker.tmp \
   && mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json \
@@ -818,7 +837,10 @@ render that report, so an empty record surfaces there rather than passing unnoti
   {{GATE_RUNNER}} run   # typecheck/lint/test/format
   ```
   (or the repo's own commands / `agents.toml [gates]`). The Stop hook enforces this again at
-  turn-end. Update `phase`: `implemented` → `gates_green`.
+  turn-end. Write `phase=implemented` once the code and tests are in place, **before** the first
+  gate run, and `phase=gates_green` when the runner is green — each through the phase-update
+  command above, so the history records the gate span rather than folding it into the write
+  that follows.
 
 **Post-commit / pre-push mirror gates.** When a project's gate rebuilds generated artifacts and
 diffs them against `HEAD`, correctly-rebuilt-but-uncommitted output reads as stale until it is
@@ -1168,8 +1190,11 @@ dead reference in a tracked file outlives the PR that introduced it.
 ```bash
 BRANCH="$(jq -r .branch {{STATE_DIR}}/implement-issue-active.json)"
 git push -u origin "$BRANCH"
-jq --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
-   '.phase = "pushed" | (if $owner == "" then . else .owner = $owner end)' \
+jq --arg owner "${CLAUDE_CODE_SESSION_ID:-}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+   '.phase = "pushed"
+    | .phaseHistory = ((.phaseHistory // []) as $h
+        | if ($h | length) > 0 and $h[-1].phase == "pushed" then $h else $h + [{phase: "pushed", at: $at}] end)
+    | (if $owner == "" then . else .owner = $owner end)' \
    {{STATE_DIR}}/implement-issue-active.json > {{STATE_DIR}}/.marker.tmp \
   && mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json
 ```

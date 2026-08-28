@@ -10,6 +10,49 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **A run survives compaction: its state directory is read back (#431, absorbing #243).** A long
+  `/implement-issue` run outlives its context window, and after the harness compacted mid-step
+  the summary might or might not carry which step it was on, which REQUIRED findings were still
+  open, or where its prompt files lived — the run's state directory held all of it, and nothing
+  read it back.
+
+  `scripts/lib/run-state.sh summary` is the reader: declarative `key: value` lines from a **closed
+  grammar the run itself wrote** — phase, the new append-only `phaseHistory`, branch, issue
+  numbers, PR, whether a blocked marker exists (by path), artifact **paths** as
+  `cleanup-lib.sh state-scan` classifies them — every path relative to the repository root, never
+  the checkout directory itself, whose name is whatever the cloner chose — a count of `REQUIRED` marks in `review.md` — and
+  never an issue's, a finding's or a blocked reason's text, because the output lands in a
+  model's context. A marker with any field outside the grammar is refused whole; before the
+  branch exists the run claim is the liveness signal. Owner-scoped by `adb_owners_compatible`,
+  exactly as the Stop gate is.
+
+  `agents/claude/scripts/session-context.sh` is the Claude adapter — a `SessionStart` hook on
+  `compact|resume` that injects the summary as `additionalContext`, with a provenance header as
+  its first line, capped below the harness's 10,000-character hook-output limit, reading stdin
+  with a bound, and exiting 0 on every path it reaches (`ADB_SESSION_CONTEXT=off` disables it).
+  A checkout whose path carries a space is summarised like any other; a name `state-scan` accepts
+  but a prompt line cannot carry (a control or format character) is counted, never printed. The
+  refused characters are the Unicode categories Cc, Cf, Zl and Zp — not an enumerated list — and
+  `false` in a field that must be a string is refused rather than read as absent.
+
+  **An upgrade wires a newly shipped hook.** `baseline update` used to read a hook set missing
+  only the new hook as a per-hook opt-out and pass `--no-hooks` to the repair — linking the
+  script and never wiring it. `adb_claude_hooks_missing_deliberate` now separates an entry the
+  operator removed (its script link — **ours**, pointing into the install source — is still
+  there) from a hook that was never installed, and only the first is preserved; an unrelated
+  file at the hook's pathname is a collision the repair backs up, not a choice.
+  Every root
+  doc now carries a `# Compact instructions` block asking the compactor to preserve what only the
+  conversation held: the modified files, the gate result, each REQUIRED finding's disposition.
+
+  **Every marker phase write now appends `{phase, at}` to `phaseHistory` (#243)** — the
+  `# ADB-SNIPPET: phase-update` template, marker creation and the step-10 write — and the
+  `implemented` phase gains a dedicated write before the first gate run, so the history records
+  the gate span; the append is idempotent, so a retried write records no repetition. `.phase`
+  still reads as the latest phase and a pre-change marker reads without
+  error; `scripts/check-session-context.sh` executes the workflow's real snippet against a fixture
+  and proves the Stop gate's verdict is identical with and without the field. Decision D92.
+
 - **The loop keeps what its review threads taught it (#421).** Every resolved review thread was a
   labeled example — a finding, its class, the site, and the commit that closed it — and the loop
   discarded all of it at the moment of resolution. Nothing carried a finding *class* forward, so

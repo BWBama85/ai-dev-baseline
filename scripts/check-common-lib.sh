@@ -1039,9 +1039,10 @@ adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file
 # --- adb_claude_hook_scripts / adb_claude_hook_regex (#36) -------------------
 # One enumeration feeds the manifest AND both settings filters. If they drift, a hook is either
 # linked-but-never-wired or wired-but-never-removed on uninstall.
-eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "4" "hook scripts: four wired hooks"
+eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "5" "hook scripts: five wired hooks"
 has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
 has "$(adb_claude_hook_scripts)" "state-claim-gate.sh" "hook scripts: includes the state-claim gate"
+has "$(adb_claude_hook_scripts)" "session-context.sh" "hook scripts: includes the run-state context hook (#431)"
 # A RETIRED script must not still be named here: the manifest would demand a source that no longer
 # exists, and the settings filters would go on matching a command nothing installs. Derived from
 # the register (#378) rather than naming one, so it holds for the next retirement too.
@@ -1052,7 +1053,7 @@ done <<EOF
 $(adb_agent_manifest_retired claude /r /h | cut -f2)
 EOF
 eq "$(adb_claude_hook_regex /home/u)" \
-  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency|state-claim-gate)\.sh$' \
+  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency|state-claim-gate|session-context)\.sh$' \
   "hook regex: anchored to the EXACT installed paths, not a basename"
 # The ownership test must not claim a user's own script that merely shares a filename. A
 # basename-anchored pattern would, and because the filters walk EVERY hook event, uninstall
@@ -1098,14 +1099,61 @@ done
 hs_dir="$work/hookstate"; mkdir -p "$hs_dir"
 hs_home="$hs_dir/home"
 hs_all="$hs_dir/all.json"; hs_none="$hs_dir/none.json"; hs_part="$hs_dir/partial.json"
-: > "$hs_all"; for hs in "${HOOK_SCRIPTS[@]}"; do printf '%s/.claude/scripts/%s\n' "$hs_home" "$hs" >> "$hs_all"; done
+# THE REAL SHAPE, from the shipped table: the predicates now validate event, matcher and handler
+# type (PR #443 review), so a fixture of bare paths — which the old grep accepted — is not a
+# settings.json any more.
+printf '{"hooks":%s}\n' "$(sed "s@__ADB_HOME__@$hs_home@g" agents/claude/settings.hooks.json)" > "$hs_all"
 printf '{"hooks":{}}\n' > "$hs_none"
-grep -v 'precommit-gate\.sh' "$hs_all" > "$hs_part"
+jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | endswith("/precommit-gate.sh") | not))) | map(select(.hooks | length > 0))))' "$hs_all" > "$hs_part"
 
 eq "$(adb_claude_hooks_state "$hs_all"  "$hs_home")" "wired"   "hooks-state: all shipped hooks present → wired"
 eq "$(adb_claude_hooks_state "$hs_none" "$hs_home")" "none"    "hooks-state: no shipped hooks present → none (the opt-out)"
 eq "$(adb_claude_hooks_state "$hs_part" "$hs_home")" "partial" "hooks-state: one hook removed → partial, NOT none (#242)"
 eq "$(adb_claude_hooks_state "$hs_dir/missing.json" "$hs_home")" "none" "hooks-state: absent settings.json → none"
+# WIRED MEANS FIRES (PR #443 review): the same command string under the wrong event, behind a
+# matcher that excludes the hook's sources, or on a handler Claude does not dispatch as a command
+# is NOT wired, and the missing list names it.
+hs_moved="$hs_dir/moved.json"; jq '(.hooks.SessionStart // []) as $ss | .hooks.Stop += ($ss | map(.hooks |= map(select(.command | endswith("/session-context.sh"))) | del(.matcher)) | map(select(.hooks | length > 0))) | .hooks.SessionStart |= map(.hooks |= map(select(.command | endswith("/session-context.sh") | not))) | .hooks.SessionStart |= map(select(.hooks | length > 0))' "$hs_all" > "$hs_moved"
+eq "$(adb_claude_hooks_state "$hs_moved" "$hs_home")" "partial" "hooks-state: the run-state hook moved under Stop is NOT wired → partial"
+eq "$(adb_claude_hooks_missing "$hs_moved" "$hs_home" | tr -d '\n')" "session-context.sh" "hooks-missing: …and it is the one named"
+hs_rematched="$hs_dir/rematched.json"; jq '.hooks.SessionStart |= map(if ([.hooks[]?.command // empty] | any(endswith("/session-context.sh"))) then .matcher = "startup" else . end)' "$hs_all" > "$hs_rematched"
+eq "$(adb_claude_hooks_missing "$hs_rematched" "$hs_home" | tr -d '\n')" "session-context.sh" "hooks-missing: a matcher that excludes compact and resume is not wired"
+hs_retyped="$hs_dir/retyped.json"; jq '.hooks.Stop |= map(.hooks |= map(if (.command | endswith("/precommit-gate.sh")) then .type = "prompt" else . end))' "$hs_all" > "$hs_retyped"
+eq "$(adb_claude_hooks_missing "$hs_retyped" "$hs_home" | tr -d '\n')" "precommit-gate.sh" "hooks-missing: a non-command handler carrying the path is not wired"
+hs_star="$hs_dir/star.json"; jq '.hooks.SessionStart |= map(.matcher = "*")' "$hs_all" > "$hs_star"
+eq "$(adb_claude_hooks_state "$hs_star" "$hs_home")" "wired" "hooks-state: a * matcher covers every source → wired"
+
+# --- adb_claude_hooks_missing_deliberate (PR #443 review) ------------------------------------
+# `partial` has two shapes and only one is an opt-out: a hook whose entry was REMOVED (its script
+# link is still there) versus a hook that was SHIPPED after the last install (no link, no entry).
+# Reading the second as the first left every newly shipped hook unwired for good.
+mkdir -p "$hs_home/.claude/scripts"; hs_src="$hs_dir/src"; mkdir -p "$hs_src/agents/claude/scripts"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: a missing hook with NO script link was never installed — not an opt-out"
+ln -s "$hs_src/agents/claude/scripts/precommit-gate.sh" "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
+  "hooks-deliberate: a missing hook whose OUR link exists was removed by hand — an opt-out (no receipt: the legacy inference)"
+# THE RECEIPT DECIDES WHEN IT EXISTS (PR #443 review): a link the receipt never saw wired is an
+# install killed between the link and the entry, not a choice.
+printf 'implement-issue-gate.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: with a receipt that does not list it, an owned-but-unwired link is NOT an opt-out"
+printf 'precommit-gate.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
+  "hooks-deliberate: with a receipt that lists it, the removed entry IS an opt-out"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
+  "hooks-deliberate: a fully wired set names nothing"
+rm -f "$hs_home/.claude/scripts/precommit-gate.sh"
+# OWNERSHIP, not existence: a foreign file or a symlink into somebody else's tree at the hook's
+# pathname is a collision the repair backs up, not a choice about OUR hook (PR #443 review).
+: > "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: an unrelated REGULAR FILE at the hook path is not an opt-out"
+rm -f "$hs_home/.claude/scripts/precommit-gate.sh"; ln -s /elsewhere/precommit-gate.sh "$hs_home/.claude/scripts/precommit-gate.sh"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "" \
+  "hooks-deliberate: a FOREIGN symlink at the hook path is not an opt-out"
+rm -f "$hs_home/.claude/scripts/precommit-gate.sh"
 
 # REGRESSION (PR #246 review): a basename search also matched a command the OPERATOR wrote. A
 # deliberately --no-hooks install carrying its own /custom/precommit-gate.sh would read as
@@ -1113,12 +1161,12 @@ eq "$(adb_claude_hooks_state "$hs_dir/missing.json" "$hs_home")" "none" "hooks-s
 printf '{"hooks":{"Stop":[{"command":"/custom/precommit-gate.sh"}]}}\n' > "$hs_dir/foreign.json"
 eq "$(adb_claude_hooks_state "$hs_dir/foreign.json" "$hs_home")" "none" \
   "hooks-state: a FOREIGN command sharing the basename is not ours → none, not partial"
-eq "$(adb_claude_hooks_missing "$hs_dir/foreign.json" "$hs_home" | wc -l | tr -d ' ')" "4" \
+eq "$(adb_claude_hooks_missing "$hs_dir/foreign.json" "$hs_home" | wc -l | tr -d ' ')" "5" \
   "hooks-missing: a foreign command satisfies nothing"
 
 eq "$(adb_claude_hooks_missing "$hs_all"  "$hs_home" | wc -l | tr -d ' ')" "0" "hooks-missing: fully wired names nothing"
 eq "$(adb_claude_hooks_missing "$hs_part" "$hs_home" | tr -d ' \n')" "precommit-gate.sh" "hooks-missing: names the removed hook"
-eq "$(adb_claude_hooks_missing "$hs_none" "$hs_home" | wc -l | tr -d ' ')" "4" "hooks-missing: none → every shipped hook"
+eq "$(adb_claude_hooks_missing "$hs_none" "$hs_home" | wc -l | tr -d ' ')" "5" "hooks-missing: none → every shipped hook"
 
 # Each shipped hook must independently produce `partial` when it alone is removed. Without this,
 # the predicate could key on one filename again and still pass the cases above.
