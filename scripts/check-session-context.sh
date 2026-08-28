@@ -289,8 +289,8 @@ if [ "$MODE" = mutation ]; then
   # now stand in front of grep, so no fixture reaches it with a failing status — the arm is
   # belt-and-braces for an I/O error nothing can stage.
   check_mut artifacts-open-set \
-    '      gaps|review|docs) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;' \
-    '      gaps|review|docs|other) RS_ARTS="${RS_ARTS:+$RS_ARTS, }$(_rs_show "$sfile")" ;;' \
+    '      gaps|review|docs)' \
+    '      gaps|review|docs|other)' \
     'only the records state-scan classifies are named'
   check_mut live-branch-held-to-output-grammar \
     '  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"'"'"' if (($d|unsafe_path) or ($s|unsafe)) then "bad" else "ok" end'"'"')" in' \
