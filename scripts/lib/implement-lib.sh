@@ -1162,6 +1162,21 @@ cmd_dispatch_survey() {
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
+  # CONFIG FAULTS ARE 18, NEVER "an agent error": role-dispatch refuses a malformed declaration
+  # with rc 2, but a dispatched CLI can also exit 2, so the two are indistinguishable after
+  # invoke. Resolving the role (and its effort) FIRST pins any 2 seen here to configuration —
+  # role-dispatch's own stderr line names the fault — and a later 2 from invoke passes through
+  # as the agent's own status, per the rc table.
+  bash "$_IL_ROLE_DISPATCH" resolve survey >/dev/null
+  case $? in
+    0) : ;;
+    *) _il_bail "" "$dir" 18 "[roles] survey is invalid — fix agents.toml (the line above names it)"; return $? ;;
+  esac
+  bash "$_IL_ROLE_DISPATCH" effort survey >/dev/null
+  case $? in
+    0|1) : ;;
+    *) _il_bail "" "$dir" 18 "[roles.effort] survey is invalid — fix agents.toml (the line above names it)"; return $? ;;
+  esac
   # STAGED, published by rename on rc 0 ONLY. For a passthrough agent (claude/gemini) stdout IS
   # the final message, so a surveyor that times out or dies after partial output would otherwise
   # leave truncated conclusions in survey.md — and dispatch-gaps includes every nonempty
@@ -1297,6 +1312,18 @@ cmd_dispatch_gaps() {
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
+  # Same translation as dispatch-survey: a config refusal is 18 before the invoke, so a 2 from
+  # the invoke itself is the agent's own status.
+  bash "$_IL_ROLE_DISPATCH" resolve gap_analysis >/dev/null
+  case $? in
+    0) : ;;
+    *) _il_bail "" "$dir" 18 "[roles] gap_analysis is invalid — fix agents.toml (the line above names it)"; return $? ;;
+  esac
+  bash "$_IL_ROLE_DISPATCH" effort gap_analysis >/dev/null
+  case $? in
+    0|1) : ;;
+    *) _il_bail "" "$dir" 18 "[roles.effort] gap_analysis is invalid — fix agents.toml (the line above names it)"; return $? ;;
+  esac
   bash "$_IL_ROLE_DISPATCH" invoke gap_analysis < "$pf" > "$dir/gaps.md" 2> "$dir/gaps.err"
   rc=$?
   case "$rc" in

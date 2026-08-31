@@ -948,6 +948,20 @@ eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "surveyed fine" "19c …and
 has "$OUT" "survey ok 2 words" "19c …reporting the word count"
 if exists "$d/.claude/state/survey-stage.md"; then bad "19c …with no staging residue"; else ok; fi
 
+# ================= 19f. a malformed role declaration is 18, not an agent error (#435) ===========
+# role-dispatch refuses bad config with rc 2 — but the dispatched CLI can also exit 2, so the
+# subcommand resolves the role FIRST and translates that refusal to the contract's 18. Left at 2,
+# the workflow retries a manifest typo as an "agent error" and then applies the failure policy —
+# for survey, continuing as though the optional accelerator merely failed.
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "bogus-agent"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "18" "19f an unknown [roles].survey agent is 18 (fix agents.toml), not a retryable 2"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "bogus-agent"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "18" "19f …and the same for [roles].gap_analysis"
+
 # ================= 19e. the survey bound ignores the GENERIC timeout override (#435) ============
 # The pre-marker lease arithmetic (2x1200 survey + 2x2700 gap < the 9000 s claim lease) holds only
 # if ADB_DISPATCH_TIMEOUT_SECS cannot widen the survey's bound; the shim echoes what it was handed.
