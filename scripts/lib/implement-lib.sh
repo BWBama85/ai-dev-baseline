@@ -493,7 +493,8 @@ _il_admit_decide() {
   local lease
   if ! lease="$(_il_lease_secs)"; then
     echo "implement-lib: REFUSED — ADB_RUN_CLAIM_LEASE_SECS is invalid: '${ADB_RUN_CLAIM_LEASE_SECS:-}'" >&2
-    echo "               Expected a decimal integer between 60 and 999999999 seconds." >&2
+    echo "               Expected a decimal integer between $_IL_LEASE_DEFAULT and 999999999 seconds" >&2
+    echo "               ($_IL_LEASE_DEFAULT is the pre-marker retry budget — a shorter lease provably expires under a live run)." >&2
     return 12
   fi
 

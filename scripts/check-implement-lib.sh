@@ -612,6 +612,7 @@ for badlease in 0 30 90 8999 abc -5 08x 12345678901234567890; do
   d="$(new_repo)"
   admit "$d" "ADB_RUN_CLAIM_LEASE_SECS=$badlease"
   eq "$AD_RC" "12" "14 an invalid lease '$badlease' is refused, not silently defaulted"
+  has "$AD_OUT" "between 9000" "14 …and the message names the real floor ('$badlease')"
   if exists "$d/.claude/state/gap-analysis.lock"; then
     bad "14 …and no claim is taken on that path ('$badlease')"
   else ok; fi
