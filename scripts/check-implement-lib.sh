@@ -1060,6 +1060,26 @@ TR_BYTES="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
 if [ -n "$TR_BYTES" ] && [ "$TR_BYTES" -le 1300 ]; then ok; else
   bad "19h …but the trace is capped at the log bound (got ${TR_BYTES:-none} bytes)"; fi
 has "$(cat "$d/.claude/state/survey-trace.md" 2>/dev/null)" 'HEAD cap' "19h …and says the END is the part missing"
+# The override mirrors role-dispatch's reading: an all-digit value too wide for shell arithmetic
+# falls back to the 262144 default (a bare -gt on it errors and evaluates FALSE — uncapped), and
+# 0 disables the cap entirely.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1024 count=300 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md
+printf 'traced fine\n'
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_LOG_MAX_BYTES=999999999999999999999999 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+TR_BYTES="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$TR_BYTES" ] && [ "$TR_BYTES" -le 262500 ]; then ok; else
+  bad "19h an over-wide override falls back to the default cap (got ${TR_BYTES:-none} bytes)"; fi
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_LOG_MAX_BYTES=0 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')" "307200" \
+  "19h …and 0 disables the trace cap, as it does role-dispatch's"
 rm -f "$shimbin/claude"
 
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================

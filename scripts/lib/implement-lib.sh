@@ -1229,9 +1229,13 @@ cmd_dispatch_survey() {
   # it here to the same log bound, in the same HEAD-cap shape, or a verbose agent grows it
   # without limit. Best-effort: the trace is diagnostics, and a cap that failed must not change
   # the dispatch's own verdict.
+  # Mirrors role-dispatch's own reading of the same variable: digits only, WIDTH-bounded — an
+  # all-digit value past shell-integer range would make the -gt below an arithmetic error that
+  # evaluates FALSE, i.e. uncapped — and 0 disables the cap.
   local _tb _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
   case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
-  if [ -f "$dir/survey-trace.md" ]; then
+  [ "${#_tmax}" -le 9 ] || _tmax=262144
+  if [ "$_tmax" -gt 0 ] && [ -f "$dir/survey-trace.md" ]; then
     _tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
     case "$_tb" in ''|*[!0-9]*) _tb=0 ;; esac
     if [ "$_tb" -gt "$_tmax" ]; then
