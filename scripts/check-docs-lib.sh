@@ -976,8 +976,8 @@ hasnt "$TPL" 'DECLARATION ONLY'        "…and no longer describes the key as in
 # names, so an adopting repo with narrow rules (`issue-*.json`, `issue-*.assoc`) rather than an
 # ignored state directory would pass preflight and then have step 5b drop `docs-consulted.tsv` into
 # the working tree unignored — one `git add -A` from being committed.
-has "$(cat scripts/lib/implement-lib.sh)" 'for _probe in issue-0.json issue-0.assoc docs-consulted.tsv survey.md' \
-   "the gitignore preflight probes the docs record too, not just the issue snapshot (snapshot-issues since #433, survey record included)"
+has "$(cat scripts/lib/implement-lib.sh)" 'for _probe in issue-0.json issue-0.assoc docs-consulted.tsv' \
+   "the gitignore preflight probes the docs record too, not just the issue snapshot (snapshot-issues since #433; the probe list has since widened to every fixed name the run writes)"
 
 # The state file owes /cleanup a classification and `admit` a clear — a name one can sweep and the
 # other cannot is a stale file a fresh run's marker makes read as live.
