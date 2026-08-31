@@ -750,7 +750,12 @@ eq "$RC" "0" "19 dispatch-survey --prompt-only builds"
 has "$OUT" "prompt-ready" "19 …and says where"
 P="$d/.claude/state/survey-prompt.txt"
 has "$(cat "$P")" 'github-issue #7' "19 the survey prompt carries the contained issue envelope"
-has "$(cat "$P")" 'survey-trace.md' "19 …and the trace-file instruction"
+# --prompt-only feeds a NATIVE READ-ONLY subagent (implement-issue.md: the harness transcript is
+# the trace, no file is fabricated) — so the trace-file command must be absent on this path only.
+if grep -q 'survey-trace.md' "$P"; then
+  bad "19 a --prompt-only prompt must NOT command a trace file the read-only subagent cannot write"
+else ok; fi
+has "$(cat "$P")" 'ONLY the bounded summary' "19 …while the reply is still bound to the summary alone"
 has "$(cat "$P")" '1500 words' "19 …and the size bound"
 d="$(new_repo)"; seed_snap "$d"; rm "$d/.claude/state/issue-7.assoc"
 jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
@@ -848,6 +853,7 @@ d="$(new_repo)"; seed_snap "$d"
 printf '[roles]\nsurvey = "codex"\n' > "$d/agents.toml"
 ( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "124" "19b a wedged surveyor returns the classified backstop code"
+has "$(cat "$d/.claude/state/survey-prompt.txt")" 'survey-trace.md' "19b …and the CLI-path prompt DOES command the trace file"
 ( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "124" "19b …and the retry returns it again (no silent agent swap)"
 if [ -s "$d/.claude/state/survey.md" ]; then bad "19b …and no phantom summary was written"; else ok; fi
