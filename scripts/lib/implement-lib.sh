@@ -136,6 +136,8 @@
 #                                           # issue/provenance snapshots + the OPEN check
 #   implement-lib.sh dispatch-survey [--token T] [--prompt-only] <state-dir> <n>...  # #435: the
 #                                           # bounded pre-implementation repo survey (role: survey)
+#   implement-lib.sh publish-survey  <state-dir>   # #435, native path: publish the subagent's
+#                                           # reply (stdin) through the same bounded publisher
 #   implement-lib.sh dispatch-gaps   [--token T] [--prompt-only] <state-dir> <n>...  # step 3: the
 #                                           # adversarial pass (role: gap_analysis), prompt contained
 #   implement-lib.sh resolve-surfaces <state-dir>   # step 5b-i: the declared [mcp] server set
@@ -1113,6 +1115,43 @@ cmd_snapshot_issues() {
   return 0
 }
 
+# Publish $dir/survey-stage.md as $dir/survey.md, BOUNDED — the ONE publisher both survey paths
+# use (the CLI dispatch below, and the native subagent path via publish-survey). The workflow
+# tells the primary to READ survey.md, so a reply that ignores the word ask — or one enormous
+# newline-free record — must not land whole in that reader's context and defeat the out-of-window
+# purpose. The head is the same whole-line UTF-8-safe 16 KiB bound the gap-prompt copy uses; the
+# full reply is kept beside it as survey-overflow.md, inside the swept survey-*.md family.
+_il_publish_survey() {   # <state-dir>
+  local dir="$1" _svb
+  _svb="$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')"
+  case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
+  if [ "$_svb" -gt 16384 ]; then
+    mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" || return 1
+    _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" || return 1
+    printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
+  fi
+  mv -f "$dir/survey-stage.md" "$dir/survey.md" || return 1
+}
+
+# --- publish-survey (#435) -----------------------------------------------------------------------
+# The NATIVE subagent path's publisher: the driving agent pipes the subagent's reply here instead
+# of writing survey.md itself, so the bounded publication is structural on both paths rather than
+# a step an agent could skip.
+cmd_publish_survey() {
+  [ "$#" -eq 1 ] || { echo "implement-lib: publish-survey needs exactly 1 arg: <state-dir> (the reply on stdin)" >&2; exit 2; }
+  local dir="$1" _svw
+  [ -d "$dir" ] || { printf 'implement-lib: no state dir at %s\n' "$dir" >&2; return 20; }
+  cat > "$dir/survey-stage.md" \
+    || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
+  _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
+  _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
+  printf 'survey ok %s words\n' "${_svw:-0}"
+  case "$_svw" in ''|*[!0-9]*) : ;; *)
+    [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask\n' "$_svw" >&2 ;;
+  esac
+  return 0
+}
+
 # --- dispatch-survey (#435) ----------------------------------------------------------------------
 # The pre-implementation repo survey: what the issues touch, which primitives exist, which
 # conventions apply — explored OUT of the primary's context window, returned as a bounded summary.
@@ -1205,23 +1244,7 @@ cmd_dispatch_survey() {
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"
   rc=$?
   if [ "$rc" -eq 0 ]; then
-    # PUBLISHED BOUNDED: the workflow tells the primary to READ survey.md, so a reply that
-    # ignores the word ask — or one enormous newline-free record — must not land whole in that
-    # reader's context and defeat the out-of-window purpose. The head is the same whole-line
-    # UTF-8-safe 16 KiB bound the gap-prompt copy uses; the full reply is kept beside it as
-    # survey-overflow.md, inside the swept survey-*.md family.
-    local _svb
-    _svb="$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')"
-    case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
-    if [ "$_svb" -gt 16384 ]; then
-      mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" \
-        || { _il_bail "" "$dir" 20 "could not set aside the oversized survey reply"; return $?; }
-      _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" \
-        || { _il_bail "" "$dir" 20 "could not bound the survey reply"; return $?; }
-      printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
-    fi
-    mv -f "$dir/survey-stage.md" "$dir/survey.md" \
-      || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
+    _il_publish_survey "$dir" || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
   else
     rm -f "$dir/survey-stage.md"
   fi
@@ -1626,6 +1649,7 @@ case "$SUB" in
   release)          cmd_release "$@" ;;
   snapshot-issues)  cmd_snapshot_issues "$@" ;;
   dispatch-survey)  cmd_dispatch_survey "$@" ;;
+  publish-survey)   cmd_publish_survey "$@" ;;
   dispatch-gaps)    cmd_dispatch_gaps "$@" ;;
   resolve-surfaces) cmd_resolve_surfaces "$@" ;;
   dispatch-review)  cmd_dispatch_review "$@" ;;

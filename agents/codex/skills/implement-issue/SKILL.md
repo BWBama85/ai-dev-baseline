@@ -199,8 +199,10 @@ context window**, returned as a bounded ≤1500-word `survey.md` (trace: `survey
 the PR, go to step 3). **When the resolved token is your own agent and your harness has a native
 read-only subagent facility** (Claude: the Agent tool, `Explore` type): build the contained
 prompt with `bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_CLAIM_TOKEN" --prompt-only
-.codex/state <n>…`, dispatch the subagent over it, and write its returned summary to
-`.codex/state/survey.md` yourself. **Otherwise**, one bounded background call:
+.codex/state <n>…`, dispatch the subagent over it, and publish its returned summary through
+`bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-survey .codex/state` (the reply on stdin) — never write
+`survey.md` yourself: the publisher is what bounds an oversized reply. **Otherwise**, one
+bounded background call:
 
 ```bash
 bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_CLAIM_TOKEN" .codex/state <issue numbers…>
@@ -208,9 +210,9 @@ bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_C
 
 Its bound defaults tighter than the gap/review backstop (`ADB_SURVEY_TIMEOUT_SECS`, 1200 s): a
 survey that needs 45 minutes has defeated its purpose. Codes: `0` ran (a summary past the
-1500-word ask is NOTEd; on this CLI path `survey.md` itself is published bounded — a reply past
-16 KiB is cut at whole lines and kept in full at `survey-overflow.md` — and the gap-prompt copy
-is byte-bounded the same way) · `3` skipped (unassigned) · else
+1500-word ask is NOTEd; `survey.md` is published bounded on both paths — a reply past 16 KiB is
+cut at whole lines and kept in full at `survey-overflow.md` — and the gap-prompt copy is
+byte-bounded the same way) · `3` skipped (unassigned) · else
 retry **once**, then **continue without it** and record the rc — an accelerator, never a gate.
 `survey-trace.md` exists on the CLI path; on the native subagent path the harness's own task
 transcript is the trace — no file is fabricated.

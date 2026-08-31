@@ -1092,6 +1092,24 @@ eq "$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')" "3072
   "19h …and 0 disables the trace cap, as it does role-dispatch's"
 rm -f "$shimbin/claude"
 
+# ================= 19i. the NATIVE path publishes through the same bounded publisher (#435) =====
+# The driving agent pipes the subagent's reply to publish-survey instead of writing survey.md
+# itself — otherwise the 16 KiB publication bound was CLI-only, and a native reply landed whole
+# in the primary's context when step 6 read it back.
+d="$(new_repo)"
+printf 'native survey reply\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ); RC=$?
+eq "$RC" "0" "19i a small native reply publishes rc 0"
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "native survey reply" "19i …verbatim"
+dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ); RC=$?
+eq "$RC" "0" "19i an oversized native reply still publishes rc 0"
+SV_BYTES="$(wc -c < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$SV_BYTES" ] && [ "$SV_BYTES" -le 16385 ]; then ok; else
+  bad "19i …but bounded (got ${SV_BYTES:-none} bytes)"; fi
+eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "32768" \
+  "19i …with the full reply kept at survey-overflow.md"
+( bash "$IL" publish-survey ) >/dev/null 2>&1
+eq "$?" "2" "19i publish-survey without its state-dir is a usage error"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
