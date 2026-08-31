@@ -770,6 +770,18 @@ has "$(cat "$d/.claude/state/gap-prompt.txt")" 'BLOCKING' "19 …and the three-h
 dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'x' > "$d/.claude/state/survey.md"
 ( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
 has "$(cat "$d/.claude/state/gap-prompt.txt")" 'only the first 16384' "19 an oversize survey is truncated AND says so"
+# That fixture is a single NEWLINE-FREE 32 KiB line: the cap must bind on the first record too,
+# not only from line 2 on — unbounded, the whole line rode into the prompt past the stated bound.
+GP_BYTES="$(wc -c < "$d/.claude/state/gap-prompt.txt" | tr -d ' ')"
+if [ "$GP_BYTES" -lt 24576 ]; then ok; else
+  bad "19 a newline-free oversize survey must still be capped (gap-prompt.txt is $GP_BYTES bytes)"; fi
+# …and a first line crossing the cap MID-CHARACTER is trimmed to a UTF-8 boundary: the JSON
+# containment refuses an invalid sequence, so an unlucky cut would fail the whole prompt build.
+{ printf '%16383s' '' | tr ' ' 'x'; printf '\303\251\n'; } > "$d/.claude/state/survey.md"
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19 a survey crossing the cap mid-character still builds"
+if LC_ALL=C grep -q "$(printf '\303')" "$d/.claude/state/gap-prompt.txt"; then
+  bad "19 …with the dangling UTF-8 lead byte trimmed, not emitted"; else ok; fi
 # survey = "" is the documented skip (rc 3), decided before any CLI is needed
 d="$(new_repo)"; seed_snap "$d"
 printf '[roles]\nsurvey = ""\n' > "$d/agents.toml"
