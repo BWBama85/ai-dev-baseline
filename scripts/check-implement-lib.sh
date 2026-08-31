@@ -732,6 +732,17 @@ eq "$SN_RC" "0" "18 an OPEN issue snapshots cleanly"
 has "$SN_OUT" "snapshot #7 OPEN OWNER" "18 …reporting number, state and provenance"
 eq "$(jq -r .state "$d/.claude/state/issue-7.json")" "OPEN" "18 …the body landed"
 eq "$(cat "$d/.claude/state/issue-7.assoc")" "OWNER" "18 …and the label landed"
+# A NARROW ignore set covering only some of the run's write-set must still refuse: the CLI path
+# later writes prompts, error streams and stages carrying the untrusted issue text and the
+# agent's exploration, and a probe that samples too few name shapes blesses exactly that tree.
+d="$(new_repo)"
+printf '%s\n' '.claude/state/issue-*' '.claude/state/docs-consulted.tsv' '.claude/state/survey.md' \
+  > "$d/.gitignore"
+git -C "$d" add .gitignore >/dev/null 2>&1
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+eq "$SN_RC" "22" "18 an ignore set missing the prompt/err/stage shapes refuses (22)"
+if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released"; else ok; fi
 d="$(new_repo)"; gid "$d"
 jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 snap "$d" SHIM_ISSUE_JSON="$(printf '%s' "$ISSUE_JSON" | jq -c '.state = "CLOSED"')"

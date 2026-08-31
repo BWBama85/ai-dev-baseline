@@ -1080,9 +1080,15 @@ cmd_snapshot_issues() {
   command -v jq >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "jq is required"; return $?; }
   command -v gh >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "gh is required"; return $?; }
   # THE FILES, not the directory: a `.../state/` gitignore rule cannot match a directory git cannot
-  # see, so probe every name shape this run will write (issue text, provenance, docs record, survey).
+  # see, so probe every name shape this run will write — the snapshots and provenance, the docs
+  # record, and EACH fixed prompt/output/err/stage name of the gap, review and survey families: a
+  # narrow ignore rule can cover `survey.md` alone while the prompts (untrusted issue text) and
+  # the err/trace streams (the agent's whole exploration) land untracked and committable.
   local _probe
-  for _probe in issue-0.json issue-0.assoc docs-consulted.tsv survey.md; do
+  for _probe in issue-0.json issue-0.assoc docs-consulted.tsv \
+                gap-prompt.txt gaps.md gaps.err \
+                review-prompt.txt review-prompt-stage.probe review-0.md review-0.err \
+                survey-prompt.txt survey.md survey-stage.md survey-trace.md survey.err; do
     git check-ignore -q "$dir/$_probe" 2>/dev/null && continue
     _il_bail "$tok" "$dir" 22 "$dir/$_probe would NOT be gitignored, and this step is about to write the untrusted issue body and its provenance label to exactly that path. Add '$dir/' to .gitignore (or re-run 'bin/agent-init') and start again."
     return $?
