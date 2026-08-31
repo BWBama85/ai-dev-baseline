@@ -1039,6 +1039,25 @@ eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "3
   "19g …with the full reply kept at survey-overflow.md"
 rm -f "$shimbin/claude"
 
+# ================= 19h. the agent-written trace is CAPPED after dispatch (#435) =================
+# The CLI surveyor writes survey-trace.md itself, outside role-dispatch's capped streams — so a
+# verbose agent could grow it without limit while state-protocol promises bounded run growth.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1024 count=8 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md
+printf 'traced fine\n'
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_LOG_MAX_BYTES=1024 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19h the dispatch still completes rc 0"
+TR_BYTES="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$TR_BYTES" ] && [ "$TR_BYTES" -le 1300 ]; then ok; else
+  bad "19h …but the trace is capped at the log bound (got ${TR_BYTES:-none} bytes)"; fi
+has "$(cat "$d/.claude/state/survey-trace.md" 2>/dev/null)" 'HEAD cap' "19h …and says the END is the part missing"
+rm -f "$shimbin/claude"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it

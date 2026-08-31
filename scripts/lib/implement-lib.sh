@@ -1221,6 +1221,26 @@ cmd_dispatch_survey() {
   else
     rm -f "$dir/survey-stage.md"
   fi
+  # The CLI surveyor writes survey-trace.md ITSELF, outside role-dispatch's capped streams — cap
+  # it here to the same log bound, in the same HEAD-cap shape, or a verbose agent grows it
+  # without limit. Best-effort: the trace is diagnostics, and a cap that failed must not change
+  # the dispatch's own verdict.
+  local _tb _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
+  case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
+  if [ -f "$dir/survey-trace.md" ]; then
+    _tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
+    case "$_tb" in ''|*[!0-9]*) _tb=0 ;; esac
+    if [ "$_tb" -gt "$_tmax" ]; then
+      if head -c "$_tmax" "$dir/survey-trace.md" > "$dir/survey-stage.md" 2>/dev/null; then
+        printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
+          "$_tmax" "$((_tb - _tmax))" >> "$dir/survey-stage.md"
+        mv -f "$dir/survey-stage.md" "$dir/survey-trace.md" || rm -f "$dir/survey-stage.md"
+      else
+        rm -f "$dir/survey-stage.md"
+      fi
+      printf 'implement-lib: NOTE — survey-trace.md was %s bytes; capped at %s\n' "$_tb" "$_tmax" >&2
+    fi
+  fi
   case "$rc" in
     0) local _svw
        _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
