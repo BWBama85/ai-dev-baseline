@@ -321,7 +321,7 @@ if [ "$MODE" = mutation ]; then
     '      elif false then "unsafe\t-"' \
     'outside the workflow'"'"'s name grammar'
   check_mut opaque-grammar-dropped \
-    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-trace\\.md)$") | not) then "unnamed\t-"' \
+    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-overflow\\.md|survey-trace\\.md)$") | not) then "unnamed\t-"' \
     '      elif false then "unnamed\t-"' \
     'a prose-bearing family name'
   check_mut scheme-only-url-accepted \
@@ -573,6 +573,12 @@ summary "$d" "$SID_A"
 has "$OUT" "<state>/docs-consulted-2.tsv, <state>/gap-prompt.txt, <state>/gaps-3.md, <state>/gaps.md, <state>/review-1.err, <state>/review.md" "1b numeric-suffixed family members are opaque and are named"
 hasnt "$OUT" "unnamed-artifacts" "1b ...and nothing is left uncounted"
 rm -f "$d/gaps-3.md" "$d/review-1.err" "$d/docs-consulted-2.tsv"
+# survey-overflow.md is a FIXED name dispatch-survey itself writes (an oversized reply's full
+# copy), so a resumed session is shown it by name, never as an unnamed count.
+printf 'z' > "$d/survey-overflow.md"; summary "$d" "$SID_A"
+has "$OUT" "survey-overflow.md" "1b the survey overflow artifact is a fixed workflow name and is named"
+hasnt "$OUT" "unnamed-artifacts" "1b ...not an unnamed count"
+rm -f "$d/survey-overflow.md"
 printf 'z' > "$d/gaps-retry_2.md"; summary "$d" "$SID_A"
 hasnt "$OUT" "gaps-retry_2" "1b a name inside the CHARACTER grammar but outside the opaque one is not named..."
 has "$OUT" $'\nunnamed-artifacts: 1' "1b ...it is counted"; hasnt "$OUT" "unsafe-names" "1b ...and not as unsafe"
