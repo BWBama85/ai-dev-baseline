@@ -774,7 +774,11 @@ d="$(new_repo)"; seed_snap "$d"; rm "$d/.claude/state/issue-7.assoc"
 jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "20" "19 a missing provenance label refuses (20) — an unattributed body is never dispatched"
-if exists "$d/.claude/state/gap-analysis.lock"; then bad "19 …and the claim was released"; else ok; fi
+# THE CLAIM IS KEPT: a dispatch fault is "fix and re-run the subcommand" (dispatch-failures.md),
+# and the re-run happens under the SAME admission — a release here left the retry unprotected
+# against a concurrent admit or /cleanup. Release belongs to step 2, step 4 and the marker
+# takeover (state-protocol.md: "released at exactly three places").
+if exists "$d/.claude/state/gap-analysis.lock"; then ok; else bad "19 …and the claim is KEPT for the re-run"; fi
 d="$(new_repo)"; seed_snap "$d"
 printf 'survey says X' > "$d/.claude/state/survey.md"
 ( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
