@@ -651,7 +651,7 @@ render_agent_skill() {
   # stage-and-rename publish — a second write path that skipped any of those would be the
   # asymmetry #268 ended. The banner is an HTML comment: these files carry no frontmatter, and
   # the YAML `#` marker only means "comment" inside one.
-  local sdir sfile sbase sout ssub
+  local sdir sfile sbase sbase_lc sseen="" sout ssub
   sdir="$workflows/$name"
   if [ -d "$sdir" ]; then
     # A supporting dir is FLAT: a subdirectory (hidden or not) is enumerated by nothing — its
@@ -679,10 +679,19 @@ render_agent_skill() {
         echo "build.sh: base/workflows/$name/$sbase — supporting-file names must stay in [A-Za-z0-9._-]" >&2
         exit 3 ;;
       esac
-      if [ "$sbase" = "SKILL.md" ]; then
-        echo "build.sh: base/workflows/$name/SKILL.md would collide with the rendered skill entry — rename it" >&2
+      # CASE-INSENSITIVELY, both checks: a macOS checkout's filesystem folds case, so `Skill.md`
+      # beside the rendered SKILL.md — or two supporting names differing only in case — alias or
+      # overwrite each other on one CI platform while rendering fine on the other.
+      sbase_lc="$(printf '%s' "$sbase" | tr '[:upper:]' '[:lower:]')"
+      if [ "$sbase_lc" = "skill.md" ]; then
+        echo "build.sh: base/workflows/$name/$sbase would collide with the rendered skill entry (case-insensitively) — rename it" >&2
         exit 3
       fi
+      case " $sseen " in *" $sbase_lc "*)
+        echo "build.sh: base/workflows/$name/$sbase collides case-insensitively with another supporting file — rename one" >&2
+        exit 3 ;;
+      esac
+      sseen="$sseen $sbase_lc"
       # A supporting file has NO frontmatter — a leading --- reads as a mis-homed workflow
       # source, and rendering it would ship a document whose head only a skill loader wants.
       if [ "$(head -n1 "$sfile")" = "---" ]; then

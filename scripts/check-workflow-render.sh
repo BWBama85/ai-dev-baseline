@@ -300,6 +300,42 @@ bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a dot-named supporting source FAILS the build"
 has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming the dot rule"
 
+# --- 3d: reserved-name and duplicate checks fold case (#433) -----------------------------------
+# macOS checkouts sit on a case-insensitive filesystem, so `Skill.md` beside a rendered SKILL.md
+# aliases or overwrites the skill entry there while rendering fine on Linux — the tree becomes
+# unrepresentable on the repository's other CI platform.
+d="$WORK/casefold"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# case variant\n' > "$d/base/workflows/fixture/Skill.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a case variant of SKILL.md FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'collide with the rendered skill entry' "...naming the collision"
+# Case-folded duplicates among supporting files — buildable only on a case-sensitive filesystem,
+# so the fixture is probed for and the case runs where it can exist (Linux CI).
+: > "$WORK/CaseProbe"
+if [ ! -e "$WORK/caseprobe" ]; then
+  rm -f "$WORK/CaseProbe"
+  d="$WORK/casedup"
+  mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+  cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+  printf '# index\n' > "$d/base/practices/00-index.md"
+  printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+  cp "$pos" "$d/base/workflows/fixture.md"
+  printf '# lower\n' > "$d/base/workflows/fixture/notes.md"
+  printf '# upper\n' > "$d/base/workflows/fixture/Notes.md"
+  bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+  no "$rc" "case-folded duplicate supporting files FAIL the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" 'collides case-insensitively' "...naming the duplicate rule"
+else
+  rm -f "$WORK/CaseProbe"
+fi
+
 # --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
 # `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,
 # rendered to no agent, and passed every 1:1 check. Same shape one level down: a subdirectory
