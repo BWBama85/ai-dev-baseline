@@ -20,8 +20,10 @@ PR `Closes` each issue it fully resolves and `Refs` any it only slices.
 
 **This skill is a navigator.** Each step is one library invocation plus its exit-code meanings;
 the mechanism lives in `bash "$HOME/.gemini/scripts/lib/implement-lib.sh"` and its siblings, tested offline. Four reference
-files sit **beside this SKILL.md** and load only when their step needs them (standard install:
-"$HOME/.gemini/config/skills"/implement-issue/): `state-protocol.md` — marker/claim/owner contracts in
+files sit **beside this SKILL.md** — resolve them relative to the SKILL.md your harness actually
+loaded, never a fixed skills root: a pinned install vendors this directory into the project, and
+the user-global copy may be absent or a different baseline version — and they load only when
+their step needs them: `state-protocol.md` — marker/claim/owner contracts in
 full (read on any admission refusal, ownership doubt, or resumed run); `dispatch-failures.md` —
 every exit code, the completion contract, per-role failure policy, and ALL documented stops,
 Stop-hook interplay and "expected" non-failures included (read on ANY non-zero rc, before
