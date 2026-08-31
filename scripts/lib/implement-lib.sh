@@ -1088,7 +1088,7 @@ cmd_snapshot_issues() {
   for _probe in issue-0.json issue-0.assoc docs-consulted.tsv \
                 gap-prompt.txt gaps.md gaps.err \
                 review-prompt.txt review-prompt-stage.probe review-0.md review-0.err \
-                survey-prompt.txt survey.md survey-stage.md survey-trace.md survey.err; do
+                survey-prompt.txt survey.md survey-stage.md survey-overflow.md survey-trace.md survey.err; do
     git check-ignore -q "$dir/$_probe" 2>/dev/null && continue
     _il_bail "$tok" "$dir" 22 "$dir/$_probe would NOT be gitignored, and this step is about to write the untrusted issue body and its provenance label to exactly that path. Add '$dir/' to .gitignore (or re-run 'bin/agent-init') and start again."
     return $?
@@ -1204,6 +1204,21 @@ cmd_dispatch_survey() {
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"
   rc=$?
   if [ "$rc" -eq 0 ]; then
+    # PUBLISHED BOUNDED: the workflow tells the primary to READ survey.md, so a reply that
+    # ignores the word ask — or one enormous newline-free record — must not land whole in that
+    # reader's context and defeat the out-of-window purpose. The head is the same whole-line
+    # UTF-8-safe 16 KiB bound the gap-prompt copy uses; the full reply is kept beside it as
+    # survey-overflow.md, inside the swept survey-*.md family.
+    local _svb
+    _svb="$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')"
+    case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
+    if [ "$_svb" -gt 16384 ]; then
+      mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" \
+        || { _il_bail "" "$dir" 20 "could not set aside the oversized survey reply"; return $?; }
+      _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" \
+        || { _il_bail "" "$dir" 20 "could not bound the survey reply"; return $?; }
+      printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
+    fi
     mv -f "$dir/survey-stage.md" "$dir/survey.md" \
       || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
   else

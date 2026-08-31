@@ -208,8 +208,9 @@ bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_C
 
 Its bound defaults tighter than the gap/review backstop (`ADB_SURVEY_TIMEOUT_SECS`, 1200 s): a
 survey that needs 45 minutes has defeated its purpose. Codes: `0` ran (a summary past the
-1500-word ask is NOTEd, and its gap-prompt copy is truncated at a stated byte bound — read only
-the first ~200 lines yourself and treat the rest as trace) · `3` skipped (unassigned) · else
+1500-word ask is NOTEd; on this CLI path `survey.md` itself is published bounded — a reply past
+16 KiB is cut at whole lines and kept in full at `survey-overflow.md` — and the gap-prompt copy
+is byte-bounded the same way) · `3` skipped (unassigned) · else
 retry **once**, then **continue without it** and record the rc — an accelerator, never a gate.
 `survey-trace.md` exists on the CLI path; on the native subagent path the harness's own task
 transcript is the trace — no file is fabricated.

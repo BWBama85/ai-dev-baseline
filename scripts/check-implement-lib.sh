@@ -987,6 +987,25 @@ eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1500" "19e …including on
 eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1200" "19e …and a non-numeric value falls to the survey's own 1200, never role-dispatch's 2700"
 rm -f "$shimbin/claude"
 
+# ================= 19g. an oversized reply publishes BOUNDED, full copy set aside (#435) ========
+# The workflow tells the primary to READ survey.md, so an agent that ignores the word ask — or
+# emits one enormous newline-free record — must not land whole in that reader's context.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'y'
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19g an oversized reply still completes rc 0"
+SV_BYTES="$(wc -c < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$SV_BYTES" ] && [ "$SV_BYTES" -le 16385 ]; then ok; else
+  bad "19g …but survey.md is published BOUNDED (got ${SV_BYTES:-none} bytes)"; fi
+eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "32768" \
+  "19g …with the full reply kept at survey-overflow.md"
+rm -f "$shimbin/claude"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
