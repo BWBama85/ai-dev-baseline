@@ -743,6 +743,21 @@ jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/ga
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 eq "$SN_RC" "22" "18 an ignore set missing the prompt/err/stage shapes refuses (22)"
 if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released"; else ok; fi
+# …and NO literal-name rule set passes, however complete: the run also writes GENERATED names —
+# `review-<slot>.{md,err}`, mktemp's random `review-prompt-stage.*` — that no literal list can
+# cover, so the probe requires the state DIRECTORY itself to be ignored (the rule agent-init
+# writes), not a name sample a rule set can be tailored to.
+d="$(new_repo)"
+printf '%s\n' '.claude/state/issue-*' '.claude/state/docs-consulted.tsv' \
+  '.claude/state/gap-prompt.txt' '.claude/state/gaps.md' '.claude/state/gaps.err' \
+  '.claude/state/review-prompt.txt' '.claude/state/review-prompt-stage.probe' \
+  '.claude/state/review-0.md' '.claude/state/review-0.err' \
+  '.claude/state/survey-prompt.txt' '.claude/state/survey.md' '.claude/state/survey-stage.md' \
+  '.claude/state/survey-overflow.md' '.claude/state/survey-trace.md' '.claude/state/survey.err' \
+  > "$d/.gitignore"
+git -C "$d" add .gitignore >/dev/null 2>&1
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+eq "$SN_RC" "22" "18 a literal-name rule set (generated names uncoverable) still refuses (22)"
 d="$(new_repo)"; gid "$d"
 jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 snap "$d" SHIM_ISSUE_JSON="$(printf '%s' "$ISSUE_JSON" | jq -c '.state = "CLOSED"')"
