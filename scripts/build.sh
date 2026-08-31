@@ -651,9 +651,17 @@ render_agent_skill() {
   # stage-and-rename publish — a second write path that skipped any of those would be the
   # asymmetry #268 ended. The banner is an HTML comment: these files carry no frontmatter, and
   # the YAML `#` marker only means "comment" inside one.
-  local sdir sfile sbase sout
+  local sdir sfile sbase sout ssub
   sdir="$workflows/$name"
   if [ -d "$sdir" ]; then
+    # A supporting dir is FLAT: a subdirectory (hidden or not) is enumerated by nothing — its
+    # files would commit while rendering to no agent — so it is refused where it is born.
+    for ssub in "$sdir"/*/ "$sdir"/.*/; do
+      [ -d "$ssub" ] || continue
+      case "$(basename "$ssub")" in .|..) continue ;; esac
+      echo "build.sh: base/workflows/$name/$(basename "$ssub")/ — supporting files are a flat directory; a subdirectory renders to nobody" >&2
+      exit 3
+    done
     # Dotfiles are enumerated too, or the leading-dot refusal below can never fire: `*.md` alone
     # skips them, so a hidden supporting source committed cleanly while rendering to no agent and
     # passing every 1:1 check.
@@ -714,10 +722,17 @@ for wf in "$workflows"/*.md; do
 done
 
 # A supporting directory with no workflow source is an orphan: nothing renders it, so its files
-# silently ship to nobody. Refuse it rather than let it read as "supported".
-for wfd in "$workflows"/*/; do
+# silently ship to nobody. Refuse it rather than let it read as "supported". Dot-directories are
+# enumerated too — `*/` skips them everywhere, so a hidden one would commit while rendering to
+# no agent and passing every 1:1 check — and refused by name, like the dot-files above.
+for wfd in "$workflows"/*/ "$workflows"/.*/; do
   [ -d "$wfd" ] || continue
   wfn="$(basename "$wfd")"
+  case "$wfn" in .|..) continue ;; esac
+  case "$wfn" in .*)
+    echo "build.sh: base/workflows/$wfn/ — hidden directories are refused: nothing enumerates them, so their files ship to nobody" >&2
+    exit 3 ;;
+  esac
   if [ ! -f "$workflows/$wfn.md" ]; then
     echo "build.sh: base/workflows/$wfn/ exists but base/workflows/$wfn.md does not — supporting files belong to a workflow source" >&2
     exit 3

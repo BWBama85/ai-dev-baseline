@@ -300,6 +300,33 @@ bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a dot-named supporting source FAILS the build"
 has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming the dot rule"
 
+# --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
+# `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,
+# rendered to no agent, and passed every 1:1 check. Same shape one level down: a subdirectory
+# inside a supporting dir is enumerated by nothing and must be refused where it is born.
+d="$WORK/dotdir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/.notes"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# hidden reference\n' > "$d/base/workflows/.notes/reference.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a hidden directory under base/workflows FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'hidden director' "...naming the hidden-directory rule"
+d="$WORK/nestdir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture/extra"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# nested\n' > "$d/base/workflows/fixture/extra/y.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a subdirectory inside a supporting dir FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'flat' "...naming the flat-directory rule"
+
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
 for a in claude codex gemini; do
   for sk in "$ROOT"/agents/"$a"/skills/*/SKILL.md; do
