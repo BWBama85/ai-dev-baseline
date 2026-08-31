@@ -1153,7 +1153,10 @@ cmd_dispatch_survey() {
   # leave truncated conclusions in survey.md — and dispatch-gaps includes every nonempty
   # survey.md as a completed summary. survey-stage.md sits inside the survey-*.md family, so
   # admit's clear and /cleanup's scan both already cover a copy orphaned by a killed run.
-  ADB_DISPATCH_TIMEOUT_SECS="${ADB_SURVEY_TIMEOUT_SECS:-${ADB_DISPATCH_TIMEOUT_SECS:-1200}}" \
+  # ADB_SURVEY_TIMEOUT_SECS or the survey's OWN 1200 — never the generic
+  # ADB_DISPATCH_TIMEOUT_SECS, which would widen the survey bound past the lease arithmetic in
+  # the header (2x1200 + 2x2700 inside the 9000 s claim lease).
+  ADB_DISPATCH_TIMEOUT_SECS="${ADB_SURVEY_TIMEOUT_SECS:-1200}" \
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"
   rc=$?
   if [ "$rc" -eq 0 ]; then

@@ -921,6 +921,22 @@ eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "surveyed fine" "19c …and
 has "$OUT" "survey ok 2 words" "19c …reporting the word count"
 if exists "$d/.claude/state/survey-stage.md"; then bad "19c …with no staging residue"; else ok; fi
 
+# ================= 19e. the survey bound ignores the GENERIC timeout override (#435) ============
+# The pre-marker lease arithmetic (2x1200 survey + 2x2700 gap < the 9000 s claim lease) holds only
+# if ADB_DISPATCH_TIMEOUT_SECS cannot widen the survey's bound; the shim echoes what it was handed.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${ADB_DISPATCH_TIMEOUT_SECS:-unset}"
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=2700 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1200" "19e the generic override does not widen the survey bound"
+( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=2700 ADB_SURVEY_TIMEOUT_SECS=900 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "900" "19e …while the survey's own variable still governs"
+rm -f "$shimbin/claude"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
