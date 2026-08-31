@@ -101,8 +101,8 @@ the artifacts as a finished run's leftovers, and deletes the findings this run i
 leaves the claim behind — fail-safe in the direction that matters (a stray claim only ever
 *preserves* artifacts) and bounded: the next run breaks an expired claim with a NOTE. The
 pre-marker window it covers is the survey dispatch (bounded at `ADB_SURVEY_TIMEOUT_SECS`, default
-1200s, one retry) plus the gap dispatch (2700s, one retry) plus reading the findings — sized to
-fit inside the lease with room. A **retry** of a dispatch re-runs only the dispatch subcommand;
+1200s and clamped at 1800s, one retry) plus the gap dispatch (2700s, one retry) plus reading the
+findings — sized to fit inside the lease with room. A **retry** of a dispatch re-runs only the dispatch subcommand;
 it never re-takes the claim (the acquire is create-or-fail, and a second take is how `admit`
 detects a concurrent run).
 

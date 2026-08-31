@@ -25,7 +25,8 @@ exactly this reason.
 `bash "$HOME/.claude/scripts/lib/role-dispatch.sh" invoke` runs the resolved agent's CLI under a **45-minute (2700 s) hang
 backstop** — it stops a wedged process and otherwise stays out of the way, escalating TERM →
 grace → KILL so it always terminates. `ADB_DISPATCH_TIMEOUT_SECS` overrides it; the survey
-dispatch tightens its own default to `ADB_SURVEY_TIMEOUT_SECS` (1200 s) because a survey that
+dispatch tightens its own default to `ADB_SURVEY_TIMEOUT_SECS` (1200 s, clamped at 1800 s — its
+share of the claim lease) because a survey that
 needs 45 minutes has defeated its purpose. Do not re-derive a millisecond ceiling for the
 surrounding call — capping the *foreground* call is the bug the background rule exists to
 prevent.

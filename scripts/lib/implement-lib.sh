@@ -1121,8 +1121,8 @@ cmd_snapshot_issues() {
 #
 # The dispatch bound defaults TIGHTER than the 45-minute backstop (ADB_SURVEY_TIMEOUT_SECS, 1200s):
 # a survey is an accelerator, and 2x1200 + 2x2700 keeps the worst pre-marker window inside the
-# claim's 9000s lease. role-dispatch validates the value; an invalid one falls back to ITS default,
-# so the operator-visible failure is role-dispatch's own stderr line.
+# claim's 9000s lease. The value is validated and clamped at the dispatch site below — never left
+# to role-dispatch, whose fallback is 2700 and whose validator knows nothing of the lease.
 cmd_dispatch_survey() {
   local tok="" prompt_only=0 dir pf rc
   while [ "$#" -gt 0 ]; do
@@ -1164,8 +1164,22 @@ cmd_dispatch_survey() {
   # admit's clear and /cleanup's scan both already cover a copy orphaned by a killed run.
   # ADB_SURVEY_TIMEOUT_SECS or the survey's OWN 1200 — never the generic
   # ADB_DISPATCH_TIMEOUT_SECS, which would widen the survey bound past the lease arithmetic in
-  # the header (2x1200 + 2x2700 inside the 9000 s claim lease).
-  ADB_DISPATCH_TIMEOUT_SECS="${ADB_SURVEY_TIMEOUT_SECS:-1200}" \
+  # the header. Validated and CLAMPED here, not left to role-dispatch: its fallback is 2700 and
+  # its validator knows nothing of the lease, so both an invalid and an oversized value would
+  # otherwise widen the bound silently. 1800 is the survey's share of the fixed 9000 s claim
+  # (2 x survey + 2 x 2700 gap attempts); the width test first, because a value too wide for
+  # shell arithmetic is certainly past it.
+  local _svt="${ADB_SURVEY_TIMEOUT_SECS:-1200}"
+  case "$_svt" in
+    ''|*[!0-9]*|0*)
+      printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS="%s" is not a positive whole number of seconds — using the 1200s survey default\n' "$_svt" >&2
+      _svt=1200 ;;
+  esac
+  if [ "${#_svt}" -gt 4 ] || [ "$_svt" -gt 1800 ]; then
+    printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1800s share of the 9000s claim lease — clamping to 1800\n' "$_svt" >&2
+    _svt=1800
+  fi
+  ADB_DISPATCH_TIMEOUT_SECS="$_svt" \
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"
   rc=$?
   if [ "$rc" -eq 0 ]; then
