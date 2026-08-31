@@ -1148,9 +1148,20 @@ cmd_dispatch_survey() {
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
+  # STAGED, published by rename on rc 0 ONLY. For a passthrough agent (claude/gemini) stdout IS
+  # the final message, so a surveyor that times out or dies after partial output would otherwise
+  # leave truncated conclusions in survey.md — and dispatch-gaps includes every nonempty
+  # survey.md as a completed summary. survey-stage.md sits inside the survey-*.md family, so
+  # admit's clear and /cleanup's scan both already cover a copy orphaned by a killed run.
   ADB_DISPATCH_TIMEOUT_SECS="${ADB_SURVEY_TIMEOUT_SECS:-${ADB_DISPATCH_TIMEOUT_SECS:-1200}}" \
-    bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey.md" 2> "$dir/survey.err"
+    bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"
   rc=$?
+  if [ "$rc" -eq 0 ]; then
+    mv -f "$dir/survey-stage.md" "$dir/survey.md" \
+      || { _il_bail "$tok" "$dir" 20 "could not publish survey.md"; return $?; }
+  else
+    rm -f "$dir/survey-stage.md"
+  fi
   case "$rc" in
     0) local _svw
        _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"

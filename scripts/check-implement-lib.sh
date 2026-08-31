@@ -857,11 +857,51 @@ has "$(cat "$d/.claude/state/survey-prompt.txt")" 'survey-trace.md' "19b …and 
 ( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "124" "19b …and the retry returns it again (no silent agent swap)"
 if [ -s "$d/.claude/state/survey.md" ]; then bad "19b …and no phantom summary was written"; else ok; fi
+if exists "$d/.claude/state/survey-stage.md"; then bad "19b …and no staging residue was left behind"; else ok; fi
 ( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "0" "19b …and the gap prompt still builds — the run continues without the survey"
 if grep -q 'survey summary' "$d/.claude/state/gap-prompt.txt"; then
   bad "19b …with no survey section fabricated"; else ok; fi
 rm -f "$shimbin/codex"
+
+# ================= 19c. a clean CLI dispatch PUBLISHES the summary (#435) =======================
+# claude, because for that agent stdout IS the final message and passes straight through — the
+# publish path under test is the redirect itself, with no last-message protocol in the way.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'surveyed fine\n'
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+OUT="$( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 2>&1 )"; RC=$?
+eq "$RC" "0" "19c a successful CLI dispatch exits 0"
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "surveyed fine" "19c …and publishes the surveyor's stdout as survey.md"
+has "$OUT" "survey ok 2 words" "19c …reporting the word count"
+if exists "$d/.claude/state/survey-stage.md"; then bad "19c …with no staging residue"; else ok; fi
+
+# ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
+# Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
+# stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
+# were a completed summary, so truncated conclusions reached gap analysis wearing the survey's
+# authority.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'partial conclusions that must never be published\n'
+exit 1
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "1" "19d a failing passthrough surveyor returns its own rc"
+if [ -s "$d/.claude/state/survey.md" ]; then bad "19d …and its partial stdout was NOT published as survey.md"; else ok; fi
+if exists "$d/.claude/state/survey-stage.md"; then bad "19d …and no staging residue was left behind"; else ok; fi
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19d …and the gap prompt still builds"
+if grep -q 'survey summary' "$d/.claude/state/gap-prompt.txt"; then
+  bad "19d …with no survey section built from the discarded partial output"; else ok; fi
+rm -f "$shimbin/claude"
 
 # ================= 22. the survey family is CLEARED by admit (#435) =============================
 d="$(new_repo)"
