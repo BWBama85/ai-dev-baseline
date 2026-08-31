@@ -1409,10 +1409,19 @@ cmd_open_pr() {
   if create_out="$(gh pr create --title "$title" --body-file "$bodyf" 2>&1)"; then
     pr="$(printf '%s\n' "$create_out" | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
   else
-    pr="$(gh pr view "$branch" --json url --jq .url 2>/dev/null | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
-    if [ -n "$pr" ]; then
+    # ADOPT ONLY AN OPEN PR. `gh pr view <branch>` resolves the branch's most recent PR including
+    # a closed or merged historical one, and adopting that would record its URL in the marker and
+    # aim the closing-link proof and both merge guards at the wrong pull request.
+    local adopt_json adopt_state=""
+    adopt_json="$(gh pr view "$branch" --json url,state 2>/dev/null)" || adopt_json=""
+    if [ -n "$adopt_json" ]; then
+      adopt_state="$(printf '%s' "$adopt_json" | jq -r '.state // ""' 2>/dev/null)" || adopt_state=""
+      pr="$(printf '%s' "$adopt_json" | jq -r '.url // ""' 2>/dev/null | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
+    fi
+    if [ -n "$pr" ] && [ "$adopt_state" = "OPEN" ]; then
       printf 'implement-lib: NOTE — an open PR already exists for %s; adopting it\n' "$branch" >&2
     else
+      [ -n "$pr" ] && printf 'implement-lib: the PR found for %s is %s — not OPEN, not adopted\n' "$branch" "${adopt_state:-unreadable}" >&2
       printf 'implement-lib: gh pr create failed: %s\n' "$create_out" >&2; return 25
     fi
   fi
