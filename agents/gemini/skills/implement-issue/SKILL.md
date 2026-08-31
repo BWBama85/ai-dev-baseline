@@ -22,8 +22,10 @@ PR `Closes` each issue it fully resolves and `Refs` any it only slices.
 the mechanism lives in `bash "$HOME/.gemini/scripts/lib/implement-lib.sh"` and its siblings, tested offline. Four reference
 files sit **beside this SKILL.md** — resolve them relative to the SKILL.md your harness actually
 loaded, never a fixed skills root: a pinned install vendors this directory into the project, and
-the user-global copy may be absent or a different baseline version — and they load only when
-their step needs them: `state-protocol.md` — marker/claim/owner contracts in
+the user-global copy may be absent or a different baseline version. One exception: a composed
+project override (`skill-compose.sh` output — its generated header says so) carries only the
+SKILL.md, so there read the references beside the `base:` skill that header names. They load
+only when their step needs them: `state-protocol.md` — marker/claim/owner contracts in
 full (read on any admission refusal, ownership doubt, or resumed run); `dispatch-failures.md` —
 every exit code, the completion contract, per-role failure policy, and ALL documented stops,
 Stop-hook interplay and "expected" non-failures included (read on ANY non-zero rc, before
