@@ -198,7 +198,10 @@ _IL_CLAIM=gap-analysis.lock
 # convention for an override and is what `VAR=` in a wrapper script means; the docs say so rather
 # than claiming every non-conforming value errors. Bounded to 9 digits so the epoch arithmetic below cannot wrap: bash integers
 # are signed 64-bit, and a 19-digit override produced a NEGATIVE expiry (i.e. instantly expired).
-# Minimum 60, because a sub-minute lease disables the exclusion this module exists to provide.
+# Minimum: the DEFAULT ITSELF. 9000 is not a round guess — it is the pre-marker retry budget
+# (2x1500 survey + 2x2700 gap attempts + 600s of margin), so a shorter lease provably expires
+# under a live run and a concurrent admission then clears its state. The override may only
+# lengthen the lease, never undercut the budget.
 _IL_LEASE_DEFAULT=9000
 _il_lease_secs() {
   local o="${ADB_RUN_CLAIM_LEASE_SECS:-}"
@@ -210,7 +213,7 @@ _il_lease_secs() {
   [ "${#o}" -le 9 ] || return 1
   # `10#` so a zero-padded value is decimal, not octal: `08` is an arithmetic ERROR otherwise, and
   # the error surfaced as a bogus lease rather than as a rejected input.
-  [ "$(( 10#$o ))" -ge 60 ] || return 1
+  [ "$(( 10#$o ))" -ge "$_IL_LEASE_DEFAULT" ] || return 1
   printf '%s' "$(( 10#$o ))"
 }
 

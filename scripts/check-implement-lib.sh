@@ -605,7 +605,10 @@ fi
 # ================= 14. lease validation is an ERROR, never a silent default ====================
 # A lease the operator believes they set and did not is the quiet disagreement this validation
 # exists to remove — and one of these values used to be an arithmetic ERROR that still admitted.
-for badlease in 0 30 abc -5 08x 12345678901234567890; do
+# Below-default values (8999, 90) are refused too: the default IS the pre-marker retry budget
+# (2x1500 survey + 2x2700 gap + 600 margin), so a shorter lease provably expires under a live
+# run and a concurrent admission then clears its state. The override may only lengthen.
+for badlease in 0 30 90 8999 abc -5 08x 12345678901234567890; do
   d="$(new_repo)"
   admit "$d" "ADB_RUN_CLAIM_LEASE_SECS=$badlease"
   eq "$AD_RC" "12" "14 an invalid lease '$badlease' is refused, not silently defaulted"
@@ -622,7 +625,7 @@ eq "$(jq -r 'if (.expiresAt - .startedAt) == 9000 then "9000" else "other" end' 
       "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "9000" \
    "14 …and the default really is 9000s, which is what every doc says"
 # A zero-PADDED value is decimal, not octal: `08` used to be an arithmetic error.
-d="$(new_repo)"; admit "$d" ADB_RUN_CLAIM_LEASE_SECS=0090
+d="$(new_repo)"; admit "$d" ADB_RUN_CLAIM_LEASE_SECS=0009000
 eq "$AD_RC" "0" "14 a zero-padded lease is read as decimal, not octal"
 # An expiry too large to compare safely reads as NO readable lease, so it is broken with a note
 # rather than trusted into the far future (or wrapped into the past).
