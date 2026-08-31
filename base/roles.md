@@ -84,8 +84,8 @@ example are in `docs/roles-and-agents.md`; the decision record is `.ai-dev-basel
 ### Completion contract for delegated steps
 
 A role delegated to another agent (or to a subagent) is a **step that must
-complete**, not an optional extra. This binds `gap_analysis`, `review`, and any
-cross-agent dispatch:
+complete**, not an optional extra. This binds `gap_analysis`, `survey`, `review`, and
+any cross-agent dispatch:
 
 - **One bounded call; wait for it to return.** Give each dispatch a real timeout
   (the 45-min hang backstop `role-dispatch.sh` applies) and **wait for the process to
@@ -114,6 +114,11 @@ cross-agent dispatch:
   **empty** slot, and a slot that *broke* is not a weaker case for it. When no cross-model
   stand-in is usable the step has **failed**; block or surface, and never fill it with a
   pass that reads as coverage in the close-out while supplying none.
+- **`survey` completes or is dropped — it never blocks and never substitutes (#435).**
+  The same bounded call and wait apply; on failure retry the assigned agent exactly once,
+  then **continue without the survey** and say so. It is an accelerator, and blocking on
+  it would make the loop slower than before it existed — the asymmetry with
+  `gap_analysis` below is deliberate and stated in the workflow's failure policy.
 - **`gap_analysis` never falls back to another agent.** Retry the assigned agent
   **exactly once**; if the second attempt also fails, **report the classified
   incompleteness and stop** (pre-branch, so no blocked marker — see the workflow's
@@ -178,7 +183,8 @@ the invocation table above — installed beside `project-gates.sh` under every a
 by hand in each skill:
 
 - `role-dispatch.sh resolve <role>` prints the resolved agent token(s), one per line (empty
-  output = a legitimate skip — only `gap_analysis` resolves that way). It **validates** the
+  output = a legitimate skip — `gap_analysis` unset or `""`, and `survey = ""`; an UNSET
+  `survey` resolves to the primary, #435). It **validates** the
   manifest as it resolves: an unknown agent token, or an explicit empty `review = []`, is a hard
   error — never a silent fall-through to the next resolution layer or a degraded default.
 - `role-dispatch.sh invoke <role|agent>` (prompt on stdin) runs one agent's CLI with the
