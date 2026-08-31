@@ -1432,6 +1432,14 @@ cmd_open_pr() {
     shift
   done
   [ -n "$title" ] && [ -n "$bodyf" ] && [ -f "$bodyf" ] || { echo "implement-lib: open-pr needs --title and a readable --body-file" >&2; exit 2; }
+  # --closes carries issue NUMBERS, refused otherwise: the closing-link proof below compares
+  # against GitHub's closingIssuesReferences, a deduplicated numeric set, so a token that can
+  # never appear there (a word, 0) would fail the proof forever with the links fine.
+  local _c
+  for _c in ${closes//,/ }; do
+    case "$_c" in *[!0-9]*) echo "implement-lib: --closes entries must be issue numbers (got '$_c')" >&2; exit 2 ;; esac
+    case "$_c" in *[1-9]*) : ;; *) echo "implement-lib: --closes entry '$_c' is not an issue number" >&2; exit 2 ;; esac
+  done
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "implement-lib: open-pr needs gh and jq" >&2; return 20; }
   branch="$(jq -r '.branch // empty' "$dir/$_IL_MARKER" 2>/dev/null)"
   [ -n "$branch" ] || { printf 'implement-lib: the run marker at %s/%s is unreadable or has no branch\n' "$dir" "$_IL_MARKER" >&2; return 26; }
@@ -1471,7 +1479,9 @@ cmd_open_pr() {
   printf 'pr %s\n' "$pr"
 
   # --- the closing-link PROOF (git-and-prs.md): the body is a claim; GitHub publishes the answer.
-  want="$(printf '%s' "$closes" | tr ',' '\n' | sed '/^$/d' | sort -n | paste -sd, -)"
+  # CANONICALIZED to match GitHub's set: leading zeros stripped (the tokens are validated
+  # non-zero above, so the strip never empties one), duplicates folded by `sort -nu`.
+  want="$(printf '%s' "$closes" | tr ',' '\n' | sed '/^$/d; s/^0*//' | sort -nu | paste -sd, -)"
   slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
     || { printf 'implement-lib: cannot resolve this repo slug — verify the closing links by hand BEFORE merging\n' >&2; return 20; }
   linked=""

@@ -874,6 +874,18 @@ has "$OP_OUT" "not OPEN" "21 …and names the state it found"
 openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_VIEW_FAIL=1 SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "25" "21 create-failure with NO resolvable PR refuses (25), not an unbound abort"
 has "$OP_OUT" "gh pr create failed" "21 …reporting the captured create failure"
+# GitHub's closingIssuesReferences is a CANONICAL numeric set, so the comparison side must be
+# too: a duplicate or leading-zero spelling otherwise mismatches forever (23) with the links
+# correctly registered.
+openpr2() { local cl="$1"; shift; OP_OUT="$( cd "$PCLONE" && env "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes "$cl" 2>&1 )"; OP_RC=$?; }
+openpr2 "9,9" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 a duplicated --closes entry canonicalizes and verifies"
+openpr2 "009" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 …and a leading-zero spelling compares as its number"
+openpr2 "9,x" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "2" "21 a non-numeric --closes entry is a usage error"
+openpr2 "0" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "2" "21 …and 0 is not an issue number"
 
 # the closing-link mismatch is a REFUSAL with the fix named, not a note
 ( cd "$PCLONE" && git commit -q --allow-empty -m more ) >/dev/null 2>&1
