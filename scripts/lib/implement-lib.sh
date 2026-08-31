@@ -1387,7 +1387,9 @@ cmd_dispatch_review() {
 # fail-closed guards before arming auto-merge. Guard refusals are REPORTED dispositions, not
 # failures — the exit is 0 with the codes on stdout; only push/create/verify failures are non-zero.
 cmd_open_pr() {
-  local dir="" title="" bodyf="" closes="" branch pr slug linked want am rv head_sha flag rc
+  # `pr=""`, not bare: under `set -u` the adopt path may test it without ever assigning it (a
+  # create failure with no resolvable PR), and a declared-unset local still aborts the expansion.
+  local dir="" title="" bodyf="" closes="" branch pr="" slug linked want am rv head_sha flag rc
   [ "$#" -ge 1 ] || { echo "implement-lib: open-pr needs <state-dir> --title <t> --body-file <f> [--closes n,m]" >&2; exit 2; }
   dir="$1"; shift
   while [ "$#" -gt 0 ]; do

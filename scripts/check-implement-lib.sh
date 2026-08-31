@@ -57,7 +57,9 @@ case "$1 $2" in
     # and the adopt-on-rerun read asks for the url by branch.
     case "$*" in
       *closingIssuesReferences*) printf '%s\n' "${SHIM_CLOSING_JSON:-}"; exit 0 ;;
-      *--json\ url,state*) printf '{"url":"%s","state":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" "${SHIM_ADOPT_STATE:-OPEN}"; exit 0 ;;
+      *--json\ url,state*)
+        if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
+        printf '{"url":"%s","state":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" "${SHIM_ADOPT_STATE:-OPEN}"; exit 0 ;;
     esac
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
@@ -856,6 +858,11 @@ has "$OP_OUT" "closing-refs ok [9]" "21 …and still re-proves the closing links
 openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_ADOPT_STATE=MERGED SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "25" "21 create-failure with only a MERGED PR for the branch refuses (25), never adopts"
 has "$OP_OUT" "not OPEN" "21 …and names the state it found"
+# create fails AND nothing resolves for the branch: the documented rc 25 with the captured create
+# failure — never an unbound-variable abort (set -u; `pr` is only assigned when a PR resolves)
+openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_VIEW_FAIL=1 SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "25" "21 create-failure with NO resolvable PR refuses (25), not an unbound abort"
+has "$OP_OUT" "gh pr create failed" "21 …reporting the captured create failure"
 
 # the closing-link mismatch is a REFUSAL with the fix named, not a note
 ( cd "$PCLONE" && git commit -q --allow-empty -m more ) >/dev/null 2>&1
