@@ -1166,18 +1166,19 @@ cmd_dispatch_survey() {
   # ADB_DISPATCH_TIMEOUT_SECS, which would widen the survey bound past the lease arithmetic in
   # the header. Validated and CLAMPED here, not left to role-dispatch: its fallback is 2700 and
   # its validator knows nothing of the lease, so both an invalid and an oversized value would
-  # otherwise widen the bound silently. 1800 is the survey's share of the fixed 9000 s claim
-  # (2 x survey + 2 x 2700 gap attempts); the width test first, because a value too wide for
-  # shell arithmetic is certainly past it.
+  # otherwise widen the bound silently. The cap is 1500, UNDER the zero-margin 1800: the 9000 s
+  # claim must also cover prompt builds, findings reads and each timeout's kill grace, so
+  # 2 x 1500 + 2 x 2700 leaves 600 s for them. The width test first, because a value too wide
+  # for shell arithmetic is certainly past the cap.
   local _svt="${ADB_SURVEY_TIMEOUT_SECS:-1200}"
   case "$_svt" in
     ''|*[!0-9]*|0*)
       printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS="%s" is not a positive whole number of seconds — using the 1200s survey default\n' "$_svt" >&2
       _svt=1200 ;;
   esac
-  if [ "${#_svt}" -gt 4 ] || [ "$_svt" -gt 1800 ]; then
-    printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1800s share of the 9000s claim lease — clamping to 1800\n' "$_svt" >&2
-    _svt=1800
+  if [ "${#_svt}" -gt 4 ] || [ "$_svt" -gt 1500 ]; then
+    printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1500s share of the 9000s claim lease — clamping to 1500\n' "$_svt" >&2
+    _svt=1500
   fi
   ADB_DISPATCH_TIMEOUT_SECS="$_svt" \
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"

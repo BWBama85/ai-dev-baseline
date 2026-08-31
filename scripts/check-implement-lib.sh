@@ -946,12 +946,13 @@ printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
 eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1200" "19e the generic override does not widen the survey bound"
 ( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=2700 ADB_SURVEY_TIMEOUT_SECS=900 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
 eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "900" "19e …while the survey's own variable still governs"
-# …and that variable is CLAMPED to the lease share: 2 surveys + 2 gap dispatches (2700 s each)
-# must fit the fixed 9000 s claim, so an override past 1800 would let another run reap a live one.
+# …and that variable is CLAMPED under the lease share WITH margin: 2 surveys + 2 gap dispatches
+# (2700 s each) plus prompt builds, findings reads and kill grace must fit the fixed 9000 s claim,
+# so the cap is 1500 (600 s of margin), not the zero-margin 1800.
 ( cd "$d" && env ADB_SURVEY_TIMEOUT_SECS=5000 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
-eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1800" "19e an override past the lease share is clamped to 1800"
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1500" "19e an override past the lease share is clamped to 1500"
 ( cd "$d" && env ADB_SURVEY_TIMEOUT_SECS=99999999999999999999 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
-eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1800" "19e …including one too wide for shell arithmetic"
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1500" "19e …including one too wide for shell arithmetic"
 ( cd "$d" && env ADB_SURVEY_TIMEOUT_SECS=abc bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
 eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1200" "19e …and a non-numeric value falls to the survey's own 1200, never role-dispatch's 2700"
 rm -f "$shimbin/claude"
