@@ -654,7 +654,10 @@ render_agent_skill() {
   local sdir sfile sbase sout
   sdir="$workflows/$name"
   if [ -d "$sdir" ]; then
-    for sfile in "$sdir"/*.md; do
+    # Dotfiles are enumerated too, or the leading-dot refusal below can never fire: `*.md` alone
+    # skips them, so a hidden supporting source committed cleanly while rendering to no agent and
+    # passing every 1:1 check.
+    for sfile in "$sdir"/*.md "$sdir"/.*.md; do
       [ -f "$sfile" ] || continue
       sbase="$(basename "$sfile")"
       # The name grammar render-size.sh promises for its TSV, enforced where the file is born.

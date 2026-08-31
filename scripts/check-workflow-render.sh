@@ -285,6 +285,21 @@ for broken in 'adb_actions_app_slug() { printf ""; }' 'adb_actions_app_slug() { 
   fi
 done
 
+# --- 3b: a dot-named supporting source FAILS the build, never silently renders nowhere (#433) --
+# `*.md` skips dotfiles, so before the enumeration included them the leading-dot refusal was
+# unreachable: `.notes.md` committed cleanly, rendered to no agent, and passed every 1:1 check.
+d="$WORK/dotsupport"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# hidden notes\n' > "$d/base/workflows/fixture/.notes.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a dot-named supporting source FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming the dot rule"
+
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
 for a in claude codex gemini; do
   for sk in "$ROOT"/agents/"$a"/skills/*/SKILL.md; do
