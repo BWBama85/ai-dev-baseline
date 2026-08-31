@@ -138,7 +138,8 @@ they decide whether a dispatched agent is told the task came from a maintainer o
 shared host path (`/tmp`) is guessable from a public issue number and shared by every checkout on
 the host. **Flat**, because `state-scan` enumerates regular files directly under the state
 directory — a tidy-looking subdirectory is invisible to `/cleanup` and `admit` alike. And the
-gitignore probe asks about the **files**, not the directory: a `…/state/` rule cannot match a
-directory git cannot yet see, and `snapshot-issues` probes every name shape the run will write
-(`issue-0.json`, `issue-0.assoc`, `docs-consulted.tsv`, `survey.md`) so none of them can land in
-the working tree one `git add -A` from being committed.
+gitignore probe requires the **directory itself** to be ignored (the `…/state/` rule
+`bin/agent-init` writes): the run's write-set includes generated names — `review-<slot>.{md,err}`,
+a random `review-prompt-stage.*` — that no per-file rule set can cover, and a directory rule
+covers every one of them by construction, so nothing this run writes can land in the working
+tree one `git add -A` from being committed. Per-file rules, however complete, are refused (22).
