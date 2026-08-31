@@ -1446,15 +1446,22 @@ cmd_dispatch_review() {
   } > "$pft" 2>/dev/null || { rm -f "$pft"; printf 'implement-lib: could not write %s\n' "$pf" >&2; return 20; }
   git diff "origin/$db...HEAD" >> "$pft" 2>/dev/null || { rm -f "$pft"; printf 'implement-lib: git diff origin/%s...HEAD failed\n' "$db" >&2; return 20; }
   # The issue set is the MARKER's own comma list when a marker exists (a stray numeric snapshot
-  # must not widen the review scope — reviewer find); the snapshot glob is the pre-marker
-  # fallback, which is what the --prompt-only fixtures exercise.
+  # must not widen the review scope); the snapshot glob is the PRE-MARKER fallback only. Once a
+  # marker exists it is authoritative, so its whole list must parse: skipping a bad entry would
+  # silently review "7,x" as #7 alone, and falling back would widen the scope — both worse than
+  # a refusal naming the corruption.
   local -a nums=()
   local cand base n had_nullglob=0 mlist=""
-  mlist="$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" || mlist=""
-  if [ -n "$mlist" ]; then
+  if [ -f "$dir/$_IL_MARKER" ]; then
+    mlist="$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" || mlist=""
+    [ -n "$mlist" ] || { rm -f "$pft"; printf 'implement-lib: the run marker at %s/%s has no readable .issue — fix the marker; the review scope is never guessed\n' "$dir" "$_IL_MARKER" >&2; return 20; }
     for n in ${mlist//,/ }; do
-      case "$n" in ''|*[!0-9]*) continue ;; *) nums+=( "$n" ) ;; esac
+      case "$n" in
+        ''|*[!0-9]*) rm -f "$pft"; printf 'implement-lib: the run marker .issue entry "%s" is not an issue number — fix the marker; the review scope is never guessed\n' "$n" >&2; return 20 ;;
+        *) nums+=( "$n" ) ;;
+      esac
     done
+    [ "${#nums[@]}" -gt 0 ] || { rm -f "$pft"; printf 'implement-lib: the run marker .issue "%s" parses to no issue numbers — fix the marker\n' "$mlist" >&2; return 20; }
   fi
   if [ "${#nums[@]}" -eq 0 ]; then
     shopt -q nullglob && had_nullglob=1

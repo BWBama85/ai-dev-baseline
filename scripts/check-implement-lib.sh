@@ -841,6 +841,16 @@ has "$(cat "$RP")" 'github-issue #7 — acceptance criteria' "20 …and the cont
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
 if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then
   bad "20 a successful build leaves no prompt temp behind"; else ok; fi
+# THE MARKER IS AUTHORITATIVE ONCE IT EXISTS: a malformed .issue must refuse, never silently
+# narrow the scope to its parseable half ("7,x" reviewing only #7) or widen it to every stray
+# numeric snapshot. The glob fallback is for the PRE-marker window only.
+jq -n '{branch:"issue-7-t", issue:"7,x", phase:"committed"}' > "$RCLONE/.claude/state/implement-issue-active.json"
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "20" "20 a marker .issue with a non-numeric entry refuses (20), never half-reviews"
+jq -n '{branch:"issue-7-t", issue:"", phase:"committed"}' > "$RCLONE/.claude/state/implement-issue-active.json"
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "20" "20 …and an empty marker .issue refuses too, never falls back past the marker"
+rm -f "$RCLONE/.claude/state/implement-issue-active.json"
 d="$(new_repo)"
 ( cd "$d" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 eq "$?" "20" "20 no snapshots -> 20 (run snapshot-issues first), never an empty prompt"
