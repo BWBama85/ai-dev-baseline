@@ -805,7 +805,7 @@ has "$(cat "$RP")" 'diff --git a/seed' "20 …the real diff against origin/<defa
 has "$(cat "$RP")" 'github-issue #7 — acceptance criteria' "20 …and the contained criteria"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
-if compgen -G "$RCLONE/.claude/state/.review-prompt.*" >/dev/null; then
+if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then
   bad "20 a successful build leaves no prompt temp behind"; else ok; fi
 d="$(new_repo)"
 ( cd "$d" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
@@ -823,7 +823,7 @@ printf '%s' "$ISSUE_JSON" > "$R2/.claude/state/issue-7.json"   # no .assoc: the 
 eq "$?" "20" "20 a build failing at the envelope refuses (20)"
 if exists "$R2/.claude/state/review-prompt.txt"; then
   bad "20 …and publishes NO torn review-prompt.txt from the failed build"; else ok; fi
-if compgen -G "$R2/.claude/state/.review-prompt.*" >/dev/null; then
+if compgen -G "$R2/.claude/state/review-prompt-stage.*" >/dev/null; then
   bad "20 …and leaves no prompt temp behind on the failure path"; else ok; fi
 
 # ================= 21. open-pr: push, prove, guard (#433) =======================================
@@ -965,9 +965,10 @@ d="$(new_repo)"
 for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md; do
   : > "$d/.claude/state/$f"
 done
+: > "$d/.claude/state/review-prompt-stage.aB3xYz"   # a stage orphaned by a killed dispatch-review
 admit "$d"
 eq "$AD_RC" "0" "22 admit succeeds over a finished run's survey artifacts"
-for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md; do
+for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md review-prompt-stage.aB3xYz; do
   if exists "$d/.claude/state/$f"; then bad "22 …but left $f behind (the containment rule broken toward /cleanup)"; else ok; fi
 done
 

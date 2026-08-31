@@ -402,7 +402,9 @@ cmd_state_scan() {
       # obvious next shape and would otherwise fall straight back into `other`. The PREFLIGHT set
       # in base/workflows/implement-issue.md is kept identical to this glob: a name this arm can
       # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
-      review-prompt.txt|review.md|review.err|review-*.md|review-*.err)
+      # `review-prompt-stage.*` is dispatch-review's mktemp before the rename publish — orphaned
+      # by a kill it holds the diff and contained criteria, so it is swept with its family.
+      review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err)
         _adb_cl_emit "$want_ident" review "$f" '-'
         ;;
       # /implement-issue step 5b's documentation-duty record (#422): which third-party surfaces

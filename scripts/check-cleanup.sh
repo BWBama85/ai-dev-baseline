@@ -379,6 +379,7 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/gaps-retry.err"
 : > "$S/gap-analysis.lock"
 : > "$S/review-prompt.txt"
+: > "$S/review-prompt-stage.k2Xb9Q"
 : > "$S/review.md"
 : > "$S/review.err"
 : > "$S/review-codex.md"
@@ -415,6 +416,7 @@ eq "${ kindof gap-prompt.txt; }"               "gaps"    "3 …and the prompt, w
 # #264: the three names /implement-issue step 8 actually writes, all of which used to fall through
 # to `other` and therefore lived forever.
 eq "${ kindof review-prompt.txt; }"            "review"  "3 the review prompt is classified (#264)"
+eq "${ kindof review-prompt-stage.k2Xb9Q; }"   "review"  "3 …and its mktemp stage, which holds the diff before publication"
 eq "${ kindof review.md; }"                    "review"  "3 …the reviewer's findings"
 eq "${ kindof review.err; }"                   "review"  "3 …and the captured exploration stream"
 eq "${ kindof review-codex.md; }"              "review"  "3 …plus the per-slot family the glob anticipates"

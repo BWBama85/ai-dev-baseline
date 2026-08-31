@@ -807,6 +807,9 @@ _il_clear() {   # <state-dir>
   shopt -q nullglob && had_nullglob=1
   shopt -s nullglob
   targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err )
+  # The review-prompt STAGE (dispatch-review's mktemp before the rename): orphaned by a kill, it
+  # holds the diff and the contained criteria, so it gets the same lifecycle as its family.
+  targets+=( "$dir"/review-prompt-stage.* )
   # The SURVEY family (#435) — same containment rule: state-scan classifies these `survey`, so a
   # name /cleanup can sweep that this cannot clear would read as a fresh run's survey.
   targets+=( "$dir"/survey-*.md "$dir"/survey-*.err )
@@ -1330,7 +1333,10 @@ cmd_dispatch_review() {
   # path, and a truncate-then-append build lets one slot's dispatch read another's half-written
   # file — or a failed build publish a torn one. The slots' prompts are byte-identical (same
   # diff, same criteria), so a reader holding the previous inode still reads a complete prompt.
-  pft="$(mktemp "$dir/.review-prompt.XXXXXX")" \
+  # The stage name sits inside the review family (`review-prompt-stage.*` in _il_clear and
+  # cleanup-lib's scan), so a copy orphaned by a kill is cleared like any other run artifact — a
+  # dot-prefixed temp was invisible to both and kept the diff and criteria forever.
+  pft="$(mktemp "$dir/review-prompt-stage.XXXXXX")" \
     || { printf 'implement-lib: could not create a temp file under %s\n' "$dir" >&2; return 20; }
   {
     printf '%s\n\n' 'You are the independent code reviewer for the diff below. Work through this ordered checklist and report EVERYTHING you find — filter nothing, and do not withhold low-confidence findings (triage is the next step'\''s job, not yours). Every finding carries a `file:line` and an explicit REQUIRED or OPTIONAL mark.'
