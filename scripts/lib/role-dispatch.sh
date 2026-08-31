@@ -235,9 +235,12 @@ _adb_rd_read_failed() {
   esac
 }
 
-# The built-in default for a role that is UNSET or set to "": gap_analysis skips (no output, 0
-# status); every other role falls back to the primary. (primary itself is resolved directly by
-# adb_resolve_primary, so it never reaches here.) One home, so the two callers can't diverge.
+# The built-in default for a role that is UNSET: gap_analysis skips (no output, 0 status); every
+# other role — survey included (#435: it is exploration, so same-model is fine and stated) — falls
+# back to the primary. A DECLARED empty ("") is resolved by the caller before this is asked:
+# gap_analysis and survey read it as the documented skip; every other role lands here. (primary
+# itself is resolved directly by adb_resolve_primary, so it never reaches here.) One home, so the
+# two callers can't diverge.
 _adb_rd_role_default() {
   case "$1" in
     gap_analysis) return 0 ;;
@@ -316,14 +319,15 @@ adb_resolve_primary() {
 }
 
 # Resolve a role to its agent token(s), one per line. Empty output with a 0 status means "skip"
-# (only `gap_analysis` resolves that way). A 2 status means an invalid manifest value (unknown
+# (`gap_analysis` unset or "", and `survey = ""` — #435's documented opt-out; an UNSET survey
+# defaults to the primary). A 2 status means an invalid manifest value (unknown
 # agent token, or an explicit empty `review = []`) — surfaced, never silently degraded.
 adb_resolve_role() {
   local role="$1" raw val elems tok bad=0 _rc
 
   case "$role" in
     primary) adb_resolve_primary; return $? ;;
-    gap_analysis|review|debug|issue_author|release) ;;
+    gap_analysis|review|debug|issue_author|release|survey) ;;
     *) printf 'role-dispatch: unknown role "%s"\n' "$role" >&2; return 2 ;;
   esac
 
@@ -366,7 +370,12 @@ EOF
   # scalar value
   val="$(adb_toml_unquote "$raw")"
   if [ -z "$val" ]; then
-    _adb_rd_role_default "$role"; return $?     # "" → skip (gap_analysis) or the primary's own pass
+    # A DECLARED empty is not the same word as an unset key for every role: `survey` defaults to
+    # the primary when nothing declares it, and `""` is its documented skip (#435) — whereas
+    # `review = ""` stays the primary's own pass and `gap_analysis = ""` stays the skip it already
+    # was. Only the two skippable roles short-circuit here; everything else takes the unset default.
+    case "$role" in gap_analysis|survey) return 0 ;; esac
+    _adb_rd_role_default "$role"; return $?     # "" → the primary's own pass (review/debug/…)
   fi
   if ! _adb_rd_valid_token "$val"; then
     printf 'role-dispatch: [roles].%s = "%s" is not a known agent (known: %s)\n' "$role" "$val" "$_ADB_RD_KNOWN" >&2
@@ -1034,6 +1043,7 @@ _adb_rd_report() {
   [ "$1" = "$2" ] || who="$1 ($2)"
   printf 'role-dispatch: %s — %s\n' "$who" "$(adb_dispatch_classify_rc "$3")" >&2
   [ "$1" = gap_analysis ] && printf 'role-dispatch: gap_analysis does NOT fall back — surface this as a %s incompleteness; do not substitute another agent.\n' "$2" >&2
+  [ "$1" = survey ] && printf 'role-dispatch: survey is an accelerator, not a gate — retry once, then continue WITHOUT it and say so (#435).\n' >&2
   return 0
 }
 

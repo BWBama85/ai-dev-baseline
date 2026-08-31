@@ -755,7 +755,8 @@ fi
 IMP=base/workflows/implement-issue.md
 [ -f "$IMP" ] || bad "missing workflow source $IMP"
 IMPTXT="$(cat "$IMP")"
-has "$IMPTXT" '{{DOCS_LIB}} mcp-required' "/implement-issue reads the [mcp] declaration (#422's missing consumer)"
+has "$IMPTXT" '{{IMPLEMENT_LIB}} resolve-surfaces' "/implement-issue reads the [mcp] declaration (#422's missing consumer, via resolve-surfaces since #433)"
+has "$(cat scripts/lib/implement-lib.sh)" 'docs-lib.sh" mcp-required' "…and resolve-surfaces asks docs-lib for it"
 has "$IMPTXT" '{{DOCS_LIB}} probe-record' "…records the agent's own probe result"
 has "$IMPTXT" '{{DOCS_LIB}} verdict'      "…and adjudicates it fail-closed"
 # AN UNSTATED DISPOSITION IS TERMINAL AT THE PR STEP (PR #429): as a no-op arm, rc 11 let the
@@ -975,8 +976,8 @@ hasnt "$TPL" 'DECLARATION ONLY'        "…and no longer describes the key as in
 # names, so an adopting repo with narrow rules (`issue-*.json`, `issue-*.assoc`) rather than an
 # ignored state directory would pass preflight and then have step 5b drop `docs-consulted.tsv` into
 # the working tree unignored — one `git add -A` from being committed.
-has "$IMPTXT" 'for _probe in issue-0.json issue-0.assoc docs-consulted.tsv' \
-   "the gitignore preflight probes the docs record too, not just the issue snapshot"
+has "$(cat scripts/lib/implement-lib.sh)" 'for _probe in issue-0.json issue-0.assoc docs-consulted.tsv survey.md' \
+   "the gitignore preflight probes the docs record too, not just the issue snapshot (snapshot-issues since #433, survey record included)"
 
 # The state file owes /cleanup a classification and `admit` a clear — a name one can sweep and the
 # other cannot is a stale file a fresh run's marker makes read as live.

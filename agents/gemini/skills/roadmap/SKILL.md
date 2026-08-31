@@ -2,11 +2,8 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/roadmap.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
-# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
-# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
-# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
+# $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
+# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: roadmap
 description: Maintain the build roadmap and emit the next /implement-issue batch. Locates one canonical roadmap artifact (a `roadmap`-labeled issue), reconciles it against the live tracker, and outputs the next unblocked, one-branch bundle of issue IDs. Bootstraps the artifact if none exists. When a repo opts into the release-goal convention, it also computes release readiness live and emits the release command once the active milestone's requirements are met. Works in any repo with a GitHub issue tracker.
 ---

@@ -160,9 +160,10 @@ SCAN_ROOTS=(base scripts docs agents)
 # snapshot, one per line, deduped. Anchored on the FILENAME rather than on the surrounding command,
 # so it survives the `gh issue view` / `jq` / `cat` lines being rewritten around it.
 snapshot_tokens() {
-  awk '
-    /^```bash$/ { inb = 1; next }
-    /^```/      { inb = 0; next }
+  awk -v shmode="$(case "$1" in *.sh) echo 1 ;; *) echo 0 ;; esac)" '
+    BEGIN { if (shmode) inb = 1 }
+    /^```bash$/ { if (!shmode) inb = 1; next }
+    /^```/      { if (!shmode) inb = 0; next }
     !inb { next }
     {
       line = $0
@@ -190,8 +191,9 @@ snapshot_tokens() {
 state_prefix() {
   local rel="${2#"$1"/}" agent
   case "$rel" in
-    agents/*/skills/*) agent="${rel#agents/}"; agent="${agent%%/*}"; printf '.%s/state/' "$agent" ;;
-    *)                 printf '{{STATE_DIR}}/' ;;
+    agents/*/skills/*)  agent="${rel#agents/}"; agent="${agent%%/*}"; printf '.%s/state/' "$agent" ;;
+    scripts/lib/*)      printf '$dir/' ;;   # the caller-passed state dir (#433)
+    *)                  printf '{{STATE_DIR}}/' ;;
   esac
 }
 
@@ -201,13 +203,11 @@ state_prefix() {
 P1_SITES=0
 P1_FILES=0
 part1() {
-  local tree="$1" f tok pfx n njson nassoc total=0 files=0 rendered
-  # The source plus every rendered skill. Enumerated from the filesystem rather than listed, so a
-  # fourth agent joins the check by existing.
-  local -a files_to_scan=( "$tree/base/workflows/implement-issue.md" )
-  for rendered in "$tree"/agents/*/skills/implement-issue/SKILL.md; do
-    [ -f "$rendered" ] && files_to_scan+=( "$rendered" )
-  done
+  local tree="$1" f tok pfx n njson nassoc total=0 files=0
+  # Since #433 the snapshot writes live in ONE home — implement-lib.sh's snapshot-issues — and
+  # the workflow and its renders carry the invocation, not the paths. Scanning the library is
+  # scanning what executes.
+  local -a files_to_scan=( "$tree/scripts/lib/implement-lib.sh" )
 
   for f in "${files_to_scan[@]}"; do
     [ -f "$f" ] || { printf 'missing file: %s\n' "${f#"$tree"/}"; continue; }
@@ -283,13 +283,16 @@ printf 'check-tmp-paths: %s issue-snapshot path site(s) across %s file(s) sit un
 two_checkout_demo() {   # <tree> [issue-number] — print a diagnostic per violation; silence = clean
   local tree="$1" num="${2:-250}" f tok resolved rel demo root got
   demo="${ mktemp -d; }" || { printf 'could not create the two-checkout fixture\n'; return; }
-  for f in "$tree"/agents/*/skills/implement-issue/SKILL.md; do
+  local -a demo_files=( "$tree/scripts/lib/implement-lib.sh" )
+  for f in "${demo_files[@]}"; do
     [ -f "$f" ] || continue
     rel="${f#"$tree"/}"
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue
-      # `$n` is the workflow's own loop variable over ISSUE_NUMS; substitute one concrete number.
+      # `$n` is the loop variable over the issue set; `$dir` is the caller-passed state dir,
+      # which the rendered skill passes as `.<agent>/state` — substitute both concretely.
       resolved="${tok//\$n/$num}"
+      resolved="${resolved//\$dir/.claude/state}"
       for root in A B; do
         mkdir -p "$demo/$root"
         # A shell running in that checkout, opening exactly what the skill tells it to. An absolute
@@ -568,7 +571,7 @@ SK=agents/claude/skills/implement-issue/SKILL.md
 probe="$work/copyprobe"
 if check_copy_subtrees "$ROOT" "$probe" "${SCAN_ROOTS[@]}"; then
   ok
-  for f in "$WF" "$SK" scripts/check-lib.sh docs/roadmap-acceptance.md; do
+  for f in "$WF" "$SK" scripts/lib/implement-lib.sh scripts/check-lib.sh docs/roadmap-acceptance.md; do
     if [ -f "$probe/$f" ]; then ok; else bad "copier: $f is missing from the subtree fixture"; fi
   done
   # The contract says the copy is NOT a git repo. A `.git` that survived would make every mutated
@@ -582,11 +585,12 @@ rm -rf "$probe"
 # THE REAL SUPERSEDED SPELLING, both halves of it. `{{STATE_DIR}}` in the source and the resolved
 # `.<agent>/state` in every render — a fix applied to only one of the two is the realistic
 # half-migration, so each is its own case.
-m_old_source()   { rewrite "$1/$WF" '{ gsub(/\{\{STATE_DIR\}\}\/issue-/, "'"$TMP_LIT"'/issue-"); print }'; }
-m_old_render()   { [ -f "$1/$SK" ] || return 1
-                   rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-/, "'"$TMP_LIT"'/issue-"); print }'; }
+IL=scripts/lib/implement-lib.sh
+m_old_source()   { rewrite "$1/$IL" '{ gsub(/\$dir\/issue-/, "'"$TMP_LIT"'/issue-"); print }'; }
+# The per-suffix half-migration: only the provenance write reverts.
+m_old_render()   { rewrite "$1/$IL" '{ gsub(/\$dir\/issue-\$n\.assoc/, "'"$TMP_LIT"'/issue-$n.assoc"); print }'; }
 # The vacuity case: the scanner must fail LOUD when it finds nothing, not report a clean run.
-m_no_sites()     { rewrite "$1/$WF" '{ gsub(/issue-\$n\./, "issue-SNAPSHOT."); print }'; }
+m_no_sites()     { rewrite "$1/$IL" '{ gsub(/issue-\$n\./, "issue-SNAPSHOT."); print }'; }
 # Part 2's class, at each of the four roots it covers.
 m_tmp_in_script(){ printf '\ncat x > %s/adb-regression.log\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
 m_tmp_in_base()  { printf '\nWrite the draft to `%s/issue-body.md` first.\n' "$TMP_LIT" >> "$1/$WF"; }
@@ -596,17 +600,17 @@ m_tmp_in_agents(){ printf '\nWrite the draft to `%s/rendered-body.md` first.\n' 
 # One half of the snapshot renamed away, leaving the other intact. This is the case a global site
 # COUNT could not see — four `.json` tokens alone cleared the old floor — so the per-file,
 # per-suffix requirement is what has to catch it, and this is the mutation that proves it does.
-m_drop_assoc()   { rewrite "$1/$WF" '{ gsub(/issue-\$n\.assoc/, "issue-association-$n.txt"); print }'; }
+m_drop_assoc()   { rewrite "$1/$IL" '{ gsub(/issue-\$n\.assoc/, "issue-association-$n.txt"); print }'; }
 # The `${TMPDIR:-/tmp}` hole part 1 used to have: textually relative, host-global in every shell.
-m_tmpdir_token() { rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "${TMPDIR:-/tmp}/issue-$n"); print }'; }
+m_tmpdir_token() { rewrite "$1/$IL" '{ gsub(/\$dir\/issue-\$n/, "${TMPDIR:-/tmp}/issue-$n"); print }'; }
 # A relative token that escapes the checkout. `../shared/…` is not absolute, so an is-it-relative
 # test passes it while two sibling checkouts open the same file.
-m_parent_escape(){ rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "../shared/issue-$n"); print }'; }
+m_parent_escape(){ rewrite "$1/$IL" '{ gsub(/\$dir\/issue-\$n/, "../shared/issue-$n"); print }'; }
 # The documented `issues/` shape — a SUBDIRECTORY of the state dir. This is the one the workflow's
 # own prose forbids and the one 1b cannot catch: each checkout still gets its own file, so the
 # behavioural demonstration passes, while `state-scan` (which enumerates direct children only)
 # never sees it and neither `/cleanup` nor `admit` can ever clear it.
-m_nested_dir()   { rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, ".claude/state/issues/issue-$n"); print }'; }
+m_nested_dir()   { rewrite "$1/$IL" '{ gsub(/\$dir\/issue-\$n/, "$dir/issues/issue-$n"); print }'; }
 # `XXXXXX` with no `mktemp` on the line — Xs that are a literal filename, not a template.
 m_bare_template(){ printf '\nprintf x > %s/adb-literal.XXXXXX\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
 # A fixed path in a file with NO recognised extension, which the old `*.md`/`*.sh` filter skipped.
@@ -635,12 +639,11 @@ two_checkout_out() { two_checkout_demo "$1"; }
 # it; if that path already existed the test would write into it. An absolute path under `$work` has
 # the property actually under test — both checkouts resolve it identically, so the aliasing is real
 # — and is removed by this suite's own EXIT trap whatever happens.
-m_shared_abs()   { [ -f "$1/$SK" ] || return 1
-                   rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, W "/shared-fixture/issue-$n"); print }' \
+m_shared_abs()   { rewrite "$1/$IL" '{ gsub(/\$dir\/issue-\$n/, W "/shared-fixture/issue-$n"); print }' \
                      -v W="$work"; }
 
 mutate_must_fail "source reverted to the fixed temp path"   m_old_source     part1_out       "is not a DIRECT child"
-mutate_must_fail "one RENDER reverted to the fixed path"    m_old_render     part1_out       "is not a DIRECT child"
+mutate_must_fail "the .assoc write alone reverted"          m_old_render     part1_out       "is not a DIRECT child"
 mutate_must_fail "a \${TMPDIR:-/tmp} token, textually relative" m_tmpdir_token part1_out      "is not a DIRECT child"
 mutate_must_fail "a ../ token that escapes the checkout"    m_parent_escape  part1_out       "is not a DIRECT child"
 mutate_must_fail "the forbidden issues/ SUBDIRECTORY shape"  m_nested_dir   part1_out       "is not a DIRECT child"

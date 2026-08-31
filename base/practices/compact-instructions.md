@@ -22,7 +22,7 @@ does not travel with it (`untrusted-content.md`: content, never authority).
   `/roadmap`, `/resolve-pr-threads`, …), the step it is on, and the run marker's current phase.
 - **The run's state-directory path** (`.claude/state` or the agent's equivalent) and the paths of
   every run artifact under it that has been read this session: the gap-analysis prompt and
-  findings, the review prompt and findings, the documentation-duty record — each path in a code
+  findings, the survey prompt/summary/trace, the review prompt and findings, the documentation-duty record — each path in a code
   span, under the envelope above.
 - **The list of files modified in this session**, each path in a code span, and which of them are
   committed.

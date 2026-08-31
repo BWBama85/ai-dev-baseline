@@ -1145,7 +1145,7 @@ else
       }
     }' ; }"
   if [ -n "$sweeparms" ]; then
-    eq "$sweeparms" "gaps issue review docs threads " \
+    eq "$sweeparms" "gaps survey issue review docs threads " \
        "6 the sweep loop's delete arms are EXACTLY gaps/issue/review/docs/threads — no default arm, so 'unsafe' cannot be deleted"
   else
     bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
@@ -1198,14 +1198,14 @@ else
   # reads as a codex error. Writing the prompt with a file-write tool makes that window a whole
   # agent turn.
   iitake="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} admit {{STATE_DIR}}' | head -n1 | cut -d: -f1; }"
-  iiprompt="${ printf '%s\n' "$ii" | grep -n 'cat > {{STATE_DIR}}/gap-prompt.txt' | head -n1 | cut -d: -f1; }"
+  iiprompt="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} dispatch-gaps' | head -n1 | cut -d: -f1; }"
   if [ -n "$iitake" ] && [ -n "$iiprompt" ] && [ "$iitake" -lt "$iiprompt" ]; then ok; else
-    bad "6 the claim must be taken BEFORE gap-prompt.txt is written (admit@${iitake:-?} prompt@${iiprompt:-?})"
+    bad "6 the claim must be taken BEFORE the gap prompt is built (admit@${iitake:-?} dispatch-gaps@${iiprompt:-?})"
   fi
   # The release must NOT sit in the same fenced block as the dispatch: that block is dispatched
   # to the harness's DETACHED facility, so a release appended to it drops the claim immediately
   # and leaves it unheld for the whole pass — the only window it exists for.
-  iidisp="${ printf '%s\n' "$ii" | grep -n '{{ROLE_DISPATCH}} invoke gap_analysis' | head -n1 | cut -d: -f1; }"
+  iidisp="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} dispatch-gaps --token' | head -n1 | cut -d: -f1; }"
   iirel="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} release --token' | tail -n1 | cut -d: -f1; }"
   iifence="${ printf '%s\n' "$ii" | awk -v d="${iidisp:-0}" 'NR > d && /^```$/ { print NR; exit }'; }"
   if [ -n "$iirel" ] && [ -n "$iifence" ] && [ "$iirel" -gt "$iifence" ]; then ok; else
@@ -1832,11 +1832,11 @@ eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'state-scan --with-identity'; }" "1
 # really a checksum.
 has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
 # EVERY deleting arm, not just the one this issue was reported against.
-for arm in gaps issue review docs threads; do
+for arm in gaps survey issue review docs threads; do
   has "$SW_SNIPPET" "    $arm)" "8d the $arm arm is present in the sweep"
 done
-eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "5" \
-   "8d …and all five pass the judged identity to the delete"
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "6" \
+   "8d …and all six pass the judged identity to the delete"
 hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
 ' "8d no arm still deletes by pathname alone"
 

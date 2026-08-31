@@ -114,7 +114,9 @@ scan_one() {
 }
 
 found=0
-for wf in "$WFDIR"/*.md; do
+# Workflow sources AND their supporting files (#433): a fenced block in a reference file is
+# pasted into the same shells, so it gets the same lint.
+for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
   [ -f "$wf" ] || continue
   case "$(basename "$wf")" in README.md) continue ;; esac
   hits="${ scan_one "$wf"; }"

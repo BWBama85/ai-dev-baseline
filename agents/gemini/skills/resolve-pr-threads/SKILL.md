@@ -2,11 +2,8 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/resolve-pr-threads.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
-# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
-# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
-# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
+# $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
+# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: resolve-pr-threads
 description: Wait for the async reviewer, then address and resolve its review threads on an open PR — by default, and with no arguments. Infers the PR when exactly one is open, switches the working tree to its head branch, addresses findings (commit + push if needed), replies, marks each thread Resolved via GraphQL so branch protection unblocks merge, then asks for a re-review and goes round again until the reviewer passes, a guard refuses, or the round cap is reached. --once does a single pass instead.
 ---

@@ -956,7 +956,7 @@ check_mut roles-default-instead-of-none \
     '_ad_emit "$role" codex "no signal' \
     'a project with no signal proposes NOTHING'
 check_mut propose-renders-any-key \
-    'gap_analysis|review|debug|primary|release|issue_author) ;;' \
+    'gap_analysis|review|debug|primary|release|issue_author|survey) ;;' \
     '*) ;;' \
     'propose must never render a non-role record as a TOML key'
 check_mut plan-order-remove-before-move \

@@ -1578,17 +1578,17 @@ has "$RESTXT" 'ROUND_PROMOTED' "…including the promotions, which the delta der
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown
 # command at exactly the moment they need a working diagnostic.
 IMPTXT2="$(cat "$IMP")"
-has   "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} verify' "the malformed-ledger path invokes the real verifier"
+has   "$(cat scripts/lib/implement-lib.sh)" 'pattern-ledger.sh" verify' "the malformed-ledger path invokes the real verifier (implement-lib's checklist helper since #433)"
 hasnt "$IMPTXT2" 'baseline patterns verify'      "…and not a CLI subcommand nothing implements"
 # THE OVER-BUDGET CODE IS HANDLED (PR #429): the library emits nothing for 21, and a consumer that
 # treated it as the wildcard would proceed without saying why the checklist is absent.
-has "$IMPTXT2" 'exceeds the prompt budget (rc 21)' "/implement-issue handles an over-budget checklist (21) at the gap dispatch"
-eq "$(grep -c 'prompt budget' "$IMP")" 2 "…at BOTH read sites"
-has "$(cat "$IMP")" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side)"
-# BOTH read sites, separately. One `checklist` call would satisfy a single `has`, and the two ends
-# are different claims: the gap dispatch acts before the code exists, the self-review after.
-eq "$(grep -c '{{PATTERN_LEDGER_LIB}} checklist' "$IMP")" 2 \
-   "…at BOTH ends — the gap-analysis dispatch and the self-review sweep"
+# Since #433 the dispatch-end read lives in implement-lib's ONE checklist helper, which both the
+# survey and the gap prompt route through; the self-review end stays in the workflow.
+has "$(cat scripts/lib/implement-lib.sh)" 'exceeds the prompt budget (rc 21)' "/implement-issue handles an over-budget checklist (21) at the dispatch end (implement-lib's helper)"
+eq "$(grep -c '_il_append_checklist "\$pf"' scripts/lib/implement-lib.sh)" 2 \
+   "…and BOTH dispatch prompts (survey + gaps) route through that one helper"
+has "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side, the self-review sweep)"
+has "$IMPTXT2" 'over budget' "…and step 8 still says what rc 21 means"
 
 # The ledger must NOT be swept as run debris: it is durable project history, and /cleanup only
 # enumerates files under the state directory.

@@ -7617,3 +7617,37 @@ survive is the part a later reader needs.
              caps (#355): everything here reports, and the guard drives both new measurements red
              on a mutated copy so the report cannot quietly stop measuring.
 - baseline-issue: n/a — this repo IS the baseline; #432 is the tracking issue.
+
+## D94 — skills load what the step needs: golden rule 5 revised, supporting files render beside SKILL.md
+- date:      2026-08-30
+- category:  project-delta
+- unknown:   whether a rendered skill may keep reference material OUTSIDE the always-loaded
+             SKILL.md, and where such files live in the source tree, the render, the installs and
+             the checks. Golden rule 5 said "loads whole — keep it complete", which priced every
+             rc table and failure essay into every invocation: implement-issue's SKILL.md was
+             1,509 lines / ~25.3k approx tokens, and ~53k tokens of instructions loaded before a
+             run read its first issue (#433's measurements, 2026-08-25).
+- decision:  the owner revised golden rule 5 (2026-08-25, recorded in #433; implemented here) to
+             "self-contained: everything the skill needs is in its directory or in a library it
+             names; load what the step needs." Supporting files live at base/workflows/<name>/*.md
+             and render beside every agent's SKILL.md through the same block filter and token map,
+             flat (the pinned installer refuses skill subdirectories, so the vendor-style
+             references/ subtree is deliberately NOT used), banner-marked, frontmatter-free.
+             Executed steps moved from fenced prose into implement-lib.sh subcommands
+             (snapshot-issues, dispatch-survey, dispatch-gaps, resolve-surfaces, dispatch-review,
+             open-pr, sync-default), which also made the untrusted-text envelope structural.
+             #359's out-of-scope line ("changing the loads-whole property") lapses with the rule.
+- placement: CLAUDE.md golden rule 5; base/workflows/README.md (source contract); scripts/build.sh
+             (the directory render); base/workflows/implement-issue/ (first instance)
+- reason:    the vendor's own skill layout (SKILL.md as navigation under ~500 lines, references
+             loaded when needed, scripts executed not loaded) is the opposite shape from
+             loads-whole. Evidence, fetched 2026-08-30: context7 /websites/code_claude
+             (slash-commands + claude-directory pages — "loaded into context only when needed",
+             skill dir path prepended); /openai/codex codex-rs/ext/skills/src/catalog_prompt.rs
+             (the harness prompt: "the main agent must read each required instruction or
+             reference file itself"); Antigravity 1.1.13's installed
+             agy-customizations/docs/skills.md ("the agent will only read those reference files
+             if it needs them"). And the
+             measured cost fell on every run whether or not the paths were taken. roadmap, cleanup
+             and resolve-pr-threads follow as siblings once this instance's check pins prove out.
+- baseline-issue: n/a — this repo IS the baseline; #433/#435 are the tracking issues.

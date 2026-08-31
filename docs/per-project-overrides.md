@@ -66,6 +66,11 @@ fork never meant to change. A fork that carried ~25 novel lines on top of a
 
 Carry *only* your deltas in a tiny `.claude/skills/<name>/overrides.md`, and
 let `skill-compose` **merge them onto the current installed baseline skill**.
+(A composed project-local `SKILL.md` shadows the installed one but carries no
+sibling supporting files (#433). The base skill's navigator therefore states the
+files' installed location once, up front — a composed copy's reader follows that
+stated path; bare mentions of a file elsewhere in the skill mean the file the
+navigator located.)
 Every step you don't touch keeps inheriting upstream. This is the fix for the
 "frozen fork" problem (issue #22).
 

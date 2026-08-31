@@ -156,7 +156,7 @@ eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { l += $2; w += $3; t 
    "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 == "TOTAL" { print $2, $3, $4, $5 }')" \
    "green: TOTAL equals the sum of the artifact rows in all four measurements"
 eq "$(col "$ALPHA" 5)" "0" "green: an artifact with no fence has 0 fenced comment lines"
-has "$RS_ERR" "measured 3 root doc(s) and 6 skill(s)" "green: it says what it checked"
+has "$RS_ERR" "measured 3 root doc(s), 6 skill(s) and 0 on-demand supporting file(s)" "green: it says what it checked"
 has "$RS_ERR" "not a tokenizer" "green: the approximation is stated, not implied"
 
 # --- fenced_comment_lines (#432) ----------------------------------------------------------------

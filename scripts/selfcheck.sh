@@ -315,6 +315,26 @@ step_workflow_map() {
       n="$(basename "$(dirname "$sk")")"
       [ -f "base/workflows/$n.md" ] || { echo "  $agent skill '$n' → no base/workflows/$n.md source (orphan)"; wm=1; }
     done
+    # Supporting files (#433): base/workflows/<n>/<f>.md ↔ agents/<agent>/skills/<n>/<f>, both
+    # directions, tracked — the same 1:1 the SKILL.md halves above get, or a reference file can
+    # silently stop rendering (forward) or orphan when its source is removed (reverse).
+    for wf in base/workflows/*/*.md; do
+      [ -f "$wf" ] || continue
+      n="$(basename "$(dirname "$wf")")"
+      sk="agents/$agent/skills/$n/$(basename "$wf")"
+      if [ ! -f "$sk" ]; then
+        echo "  $wf → no rendered $agent supporting file"; wm=1
+      elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
+        echo "  $sk is not git-tracked (untracked or gitignored) — run scripts/build.sh and 'git add' it"; wm=1
+      fi
+    done
+    for sk in agents/"$agent"/skills/*/*.md; do
+      [ -f "$sk" ] || continue
+      case "$(basename "$sk")" in SKILL.md) continue ;; esac
+      n="$(basename "$(dirname "$sk")")"
+      [ -f "base/workflows/$n/$(basename "$sk")" ] \
+        || { echo "  $agent supporting file '$n/$(basename "$sk")' → no base/workflows source (orphan)"; wm=1; }
+    done
   done
   return "$wm"
 }
@@ -582,7 +602,7 @@ add pattern-ledger      bash scripts/check-pattern-ledger.sh
 # coverage it claims to describe. `--mutation` prints the live count on every run; that output is
 # current where a number written here is only as current as its last edit.
 add pattern-ledger-mutation bash scripts/check-pattern-ledger.sh --mutation
-inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh
+inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh
 
 # Unit tests for the vendor-documentation duty (scripts/lib/docs-lib.sh, #422): `[mcp] required`
 # finally has a consumer, and its dangerous direction is a CLEAN verdict nobody earned. Drives the

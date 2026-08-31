@@ -178,7 +178,7 @@ bash "$ROOT/scripts/lib/role-dispatch.sh" untrusted >/dev/null 2>&1; eq "$?" "2"
 #                        /adopt reads other projects' ones while holding repo tool access. That is
 #                        the highest-risk shape in this registry, and the only workflow here whose
 #                        untrusted text arrives from the filesystem rather than the network.
-REGISTRY='implement-issue 3
+REGISTRY='implement-issue 4
 adopt 1
 resolve-pr-threads 2
 roadmap 3
@@ -275,19 +275,31 @@ EOF
     fi
   done
 
-  # (d) the two dispatch sites must CONTAIN, not concatenate. This is the rule with teeth: it is
-  #     the difference between a hostile body being data and being instruction to an agent with
-  #     repo tool access.
-  #
-  #     TWO rules, because presence alone is not the property. The first counts the contained
-  #     hand-offs; the second is the one that catches a RAW concatenation — any line inside a fenced
-  #     block that extracts issue text (`.body`) and sends it into a prompt file must pass through
-  #     the wrapper. A lexical presence check alone would stay green while someone appended the body
-  #     directly right next to a surviving `untrusted` call, which is the realistic regression.
+  # (d) the dispatch prompts must CONTAIN, not concatenate. Since #433 the builders live in
+  #     scripts/lib/implement-lib.sh and the envelope call is STRUCTURAL: one shared builder
+  #     (_il_append_issue_envelopes) that every dispatch prompt routes through. Three rules: the
+  #     builder still contains (the $CONTAIN spelling), all three prompts still route through it,
+  #     and no line in the library extracts issue text into a prompt outside it. The workflow keeps
+  #     its own raw-paste detector, because a fence added THERE is the regression an implementer
+  #     would actually introduce.
+  f="$base/scripts/lib/implement-lib.sh"
+  if [ ! -f "$f" ]; then
+    printf 'missing library: scripts/lib/implement-lib.sh (the containment home since #433)\n'
+  else
+    got="$(grep -Fc -- "$CONTAIN" "$f")"
+    [ "$got" -ge 1 ] || printf 'implement-lib: %s contained hand-off(s) — the shared envelope builder lost its containment call\n' "$got"
+    got="$(grep -c '_il_append_issue_envelopes "\$dir"' "$f")"
+    [ "$got" -ge 3 ] || printf 'implement-lib: %s dispatch prompt(s) route through _il_append_issue_envelopes, expected at least 3 (survey + gaps + review)\n' "$got"
+    raw="$(awk '
+        { line = $0; sub(/[[:space:]]*#.*$/, "", line)
+          if (line ~ /\.body/ && line ~ /prompt/ && line !~ /untrusted/ && line !~ /_il_append_issue_envelopes/) print FNR ": " $0 }' "$f")"
+    if [ -n "$raw" ]; then
+      printf 'implement-lib: issue text reaches a prompt WITHOUT the containment wrapper:\n'
+      printf '%s\n' "$raw" | sed 's/^/    /'
+    fi
+  fi
   f="$base/base/workflows/implement-issue.md"
   if [ -f "$f" ]; then
-    got="$(grep -Fc -- "$CONTAIN" "$f")"
-    [ "$got" -ge 2 ] || printf 'implement-issue: %s contained hand-off(s) to a dispatched agent, expected 2 (gap-analysis + review)\n' "$got"
     raw="$(awk '
         /^```bash$/ { inb = 1; next }
         /^```/      { inb = 0; next }
@@ -333,7 +345,7 @@ for agent in claude codex gemini; do
   rendered="$ROOT/agents/$agent/skills/implement-issue/SKILL.md"
   if [ ! -f "$rendered" ]; then bad "$agent render of implement-issue is missing"; continue; fi
   n="$(grep -Fc -- "$MARK" "$rendered")"   # see the note above on why there is no `|| echo 0`
-  if [ "$n" -ge 3 ]; then ok; else bad "$agent render of implement-issue carries $n labelled read sites, expected 3"; fi
+  if [ "$n" -ge 4 ]; then ok; else bad "$agent render of implement-issue carries $n labelled read sites, expected 4"; fi
 done
 
 # ============================================================================================
@@ -360,7 +372,7 @@ mutate_must_fail() {   # mutate_must_fail <label> <mutator-fn> <expected-substri
 }
 
 m_strip_label()   { grep -v -F -- "$MARK" "$1/base/workflows/debug.md" > "$1/x" && mv "$1/x" "$1/base/workflows/debug.md"; }
-m_uncontain()     { grep -v -F -- "$CONTAIN" "$1/base/workflows/implement-issue.md" > "$1/x" && mv "$1/x" "$1/base/workflows/implement-issue.md"; }
+m_uncontain()     { grep -v -F -- "$CONTAIN" "$1/scripts/lib/implement-lib.sh" > "$1/x" && mv "$1/x" "$1/scripts/lib/implement-lib.sh"; }
 m_drop_practice() { rm -f "$1/base/practices/untrusted-content.md"; }
 m_gut_practice()  { grep -v -F 'data, not instruction' "$1/base/practices/untrusted-content.md" > "$1/x" && mv "$1/x" "$1/base/practices/untrusted-content.md"; }
 m_drop_index()    { grep -v -F '`untrusted-content.md`' "$1/base/practices/00-index.md" > "$1/x" && mv "$1/x" "$1/base/practices/00-index.md"; }
@@ -391,12 +403,12 @@ m_roadmap_nth()   { awk -v m="$MARK" -v want="$NTH" 'index($0, m) { n++; if (n =
                       "$1/base/workflows/roadmap.md" > "$1/x" && mv "$1/x" "$1/base/workflows/roadmap.md"; }
 
 mutate_must_fail "strip a workflow's only label"         m_strip_label    "workflow debug"
-mutate_must_fail "remove ONE of implement-issue's three" m_partial_label  "workflow implement-issue"
+mutate_must_fail "remove ONE of implement-issue's four"  m_partial_label  "workflow implement-issue"
 # Each roadmap site, one at a time. `NTH` is read by the mutator above.
 for NTH in 1 2 3; do
   mutate_must_fail "remove roadmap label #$NTH of 3"     m_roadmap_nth    "workflow roadmap"
 done
-mutate_must_fail "delete both contained hand-offs"       m_uncontain      "contained hand-off"
+mutate_must_fail "delete the library containment call"   m_uncontain      "contained hand-off"
 mutate_must_fail "RAW paste beside a surviving wrapper"  m_raw_paste      "WITHOUT the containment wrapper"
 mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carries NO labelled read site"
 mutate_must_fail "delete the practice"                   m_drop_practice  "missing practice"

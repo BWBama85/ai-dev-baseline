@@ -2,11 +2,8 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/cleanup.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
-# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
-# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
-# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
+# $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
+# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: cleanup
 description: Sweep ALL merged branches (local and, on confirmation, remote) plus resolved run-state, not just the current task's branch. Detects squash/rebase merges, which `--merged` alone can never see. Names each branch explicitly so command-safety gating never blocks the delete. Never touches unmerged or protected branches, or state for a live run.
 ---
@@ -926,6 +923,12 @@ RUN_NOW=none
 if printf '%s\n' "$SCAN" | grep -q "^marker${TABC}"; then RUN_NOW=keep; fi
 
 GV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK" "$RUN")" || GV=keep
+# The survey artifacts (#435) are written between steps 2 and 3 — BEFORE any marker exists,
+# under the claim `admit` took in preflight — and READ AGAIN at step 6 ("Read survey.md first"),
+# after the marker has taken over. So the lock is their pre-marker signal and the DELETE takes
+# `$RUN_NOW`, the fresh re-scan's answer, exactly as the issue snapshots do: a run that reached
+# step 5 mid-sweep must show up as live at the moment of the delete (reviewer find).
+SV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict survey "$LOCK" "$RUN_NOW")" || SV=keep
 # The issue snapshot (#250) takes the SAME two facts as the gap artifacts, and the library answers
 # both from one predicate — /implement-issue step 2 writes it before any marker exists, under the
 # claim, and step 8 still reads it after the marker has taken over. Asked under its own kind name
@@ -993,6 +996,10 @@ while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
+      sweep_file "$sfile" "$ident" "no run in flight"
+      ;;
+    survey)
+      [ "$SV" = stale ] || continue
       sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     issue)
@@ -1116,6 +1123,7 @@ liveness would name the wrong file as belonging to a live run.
 while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)   [ "$GV" = keep ] || continue ;;
+    survey) [ "$SV" = keep ] || continue ;;
     review) [ "$RV" = keep ] || continue ;;
     *)      continue ;;
   esac

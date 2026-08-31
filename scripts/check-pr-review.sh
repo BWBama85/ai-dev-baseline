@@ -1001,24 +1001,26 @@ pr_fx
 # ============================ workflow drift pins ============================
 # The library can be perfectly correct while the workflow never calls it — which is exactly the
 # state #134 describes. These pin the wiring, in the SOURCE (the agent skills are generated).
-WFSRC="$ROOT/base/workflows/implement-issue.md"
-if grep -q '{{PR_REVIEW_LIB}} gate --pr' "$WFSRC"; then ok; else
-  bad "base/workflows/implement-issue.md no longer calls {{PR_REVIEW_LIB}} gate before arming auto-merge"
+# Since #433 the arming chain is CODE — implement-lib.sh's open-pr — so the wiring pins point
+# there; the workflow's prose still NAMES the gate (fact-drift pins that separately).
+ARMSRC="$ROOT/scripts/lib/implement-lib.sh"
+if grep -q 'pr-review.sh" gate --pr' "$ARMSRC"; then ok; else
+  bad "implement-lib.sh open-pr no longer calls pr-review.sh gate before arming auto-merge"
 fi
-if grep -q -- '--match-head-commit "\$HEAD_SHA"' "$WFSRC"; then ok; else
-  bad "base/workflows/implement-issue.md arms auto-merge without --match-head-commit (head-SHA race)"
+if grep -q -- '--match-head-commit "\$head_sha"' "$ARMSRC"; then ok; else
+  bad "implement-lib.sh open-pr arms auto-merge without --match-head-commit (head-SHA race)"
 fi
-# The review gate must sit INSIDE automerge-ok's 0 arm: reachable only when the checks guard has
-# already passed, and never bypassed by an early `gh pr merge`.
-if awk '/^\{\{REPO_SETTINGS_LIB\}\} automerge-ok/,/^esac/' "$WFSRC" | grep -q 'PR_REVIEW_LIB'; then ok; else
-  bad "the review gate is not inside the automerge-ok decision block in implement-issue.md"
+# The review gate must sit INSIDE the automerge-ok 0 arm: reachable only when the checks guard
+# has already passed, and never bypassed by an early `gh pr merge`.
+if awk '/if \[ "\$am" -eq 0 \]/,/^  fi$/' "$ARMSRC" | grep -q 'pr-review.sh" gate'; then ok; else
+  bad "the review gate is not inside the automerge-ok decision block in implement-lib.sh open-pr"
 fi
-if grep -q 'gh pr merge "\$PR" --auto' "$WFSRC"; then
-  if [ "$(grep -c 'gh pr merge "\$PR" --auto' "$WFSRC")" = "1" ]; then ok; else
-    bad "implement-issue.md has more than one arming call — one of them may bypass the review gate"
+if grep -q 'gh pr merge "\$pr" --auto' "$ARMSRC"; then
+  if [ "$(grep -c 'gh pr merge "\$pr" --auto' "$ARMSRC")" = "1" ]; then ok; else
+    bad "implement-lib.sh has more than one arming call — one of them may bypass the review gate"
   fi
 else
-  bad "implement-issue.md no longer arms auto-merge at all"
+  bad "implement-lib.sh no longer arms auto-merge at all"
 fi
 
 check_summary "pr-review"

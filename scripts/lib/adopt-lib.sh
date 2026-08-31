@@ -854,7 +854,7 @@ HDR
     # while dropping the role it replaced. A malformed TOML key, and the real role silently gone.
     # Review reproduced it. Anything that is not a role key is surfaced as a comment instead.
     case "$role" in
-      gap_analysis|review|debug|primary|release|issue_author) ;;
+      gap_analysis|review|debug|primary|release|issue_author|survey) ;;
       *) printf '# NOTE: /adopt could not produce a proposal for one role — %s\n' \
                 "$(adb_display_value "$rec")"; continue ;;
     esac

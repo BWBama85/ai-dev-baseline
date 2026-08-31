@@ -924,6 +924,12 @@ RUN_NOW=none
 if printf '%s\n' "$SCAN" | grep -q "^marker${TABC}"; then RUN_NOW=keep; fi
 
 GV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK" "$RUN")" || GV=keep
+# The survey artifacts (#435) are written between steps 2 and 3 — BEFORE any marker exists,
+# under the claim `admit` took in preflight — and READ AGAIN at step 6 ("Read survey.md first"),
+# after the marker has taken over. So the lock is their pre-marker signal and the DELETE takes
+# `$RUN_NOW`, the fresh re-scan's answer, exactly as the issue snapshots do: a run that reached
+# step 5 mid-sweep must show up as live at the moment of the delete (reviewer find).
+SV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict survey "$LOCK" "$RUN_NOW")" || SV=keep
 # The issue snapshot (#250) takes the SAME two facts as the gap artifacts, and the library answers
 # both from one predicate — /implement-issue step 2 writes it before any marker exists, under the
 # claim, and step 8 still reads it after the marker has taken over. Asked under its own kind name
@@ -991,6 +997,10 @@ while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
+      sweep_file "$sfile" "$ident" "no run in flight"
+      ;;
+    survey)
+      [ "$SV" = stale ] || continue
       sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     issue)
@@ -1114,6 +1124,7 @@ liveness would name the wrong file as belonging to a live run.
 while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)   [ "$GV" = keep ] || continue ;;
+    survey) [ "$SV" = keep ] || continue ;;
     review) [ "$RV" = keep ] || continue ;;
     *)      continue ;;
   esac

@@ -1375,20 +1375,25 @@ else bad "repo_json must validate the slug BEFORE committing REPO_JSON/REPO_SLUG
 # ============================ drift guard: the workflow still calls the guard ============
 # The same species of guard check-roadmap.sh applies to /roadmap: if step 10 stops consulting
 # automerge-ok, the library is still green while the workflow arms auto-merge blind.
-WFSRC="$ROOT/base/workflows/implement-issue.md"
-if grep -q '{{REPO_SETTINGS_LIB}} automerge-ok' "$WFSRC"; then ok; else
-  bad "base/workflows/implement-issue.md no longer calls {{REPO_SETTINGS_LIB}} automerge-ok before arming auto-merge"
+# Since #433 step 10 is implement-lib.sh's open-pr, so the guard chain is pinned THERE — a
+# workflow-side grep would pass on prose while the executed path armed blind.
+ARMSRC="$ROOT/scripts/lib/implement-lib.sh"
+if grep -q 'repo-settings.sh" automerge-ok' "$ARMSRC"; then ok; else
+  bad "implement-lib.sh open-pr no longer calls repo-settings.sh automerge-ok before arming auto-merge"
 fi
-if grep -q 'gh pr merge .*--auto' "$WFSRC"; then ok; else
-  bad "base/workflows/implement-issue.md no longer arms auto-merge at all"
+if grep -q 'gh pr merge .*--auto' "$ARMSRC"; then ok; else
+  bad "implement-lib.sh open-pr no longer arms auto-merge at all"
 fi
-# The workflow must ASK which merge flag the repo allows, never hardcode one.
-if grep -q '{{REPO_SETTINGS_LIB}} merge-flag' "$WFSRC"; then ok; else
-  bad "base/workflows/implement-issue.md no longer asks merge-flag — a hardcoded flag breaks any repo with that method disabled"
+# The arm must ASK which merge flag the repo allows, never hardcode one.
+if grep -q 'repo-settings.sh" merge-flag' "$ARMSRC"; then ok; else
+  bad "implement-lib.sh open-pr no longer asks merge-flag — a hardcoded flag breaks any repo with that method disabled"
 fi
-if grep -q 'gh pr merge .*--auto --squash' "$WFSRC"; then
-  bad "base/workflows/implement-issue.md hardcodes --squash again"
+if grep -q 'gh pr merge .*--auto --squash' "$ARMSRC"; then
+  bad "implement-lib.sh open-pr hardcodes --squash again"
 else ok; fi
+# ...and the workflow still DESCRIBES the chain it delegates (the operator reads this).
+WFSRC="$ROOT/base/workflows/implement-issue.md"
+grep -q 'automerge-ok' "$WFSRC" && ok || bad "base/workflows/implement-issue.md no longer names the automerge-ok guard"
 
 # ============ #102: a blind parse must not reach a WRITE, or a fail-OPEN guard code ============
 # The parse-failure mapping, driven through the recording stub. These are the four consumers of

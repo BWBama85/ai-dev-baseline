@@ -55,6 +55,7 @@ A repo drops an [`agents.toml`](templates/agents.toml) at its root:
 [roles]
 primary      = "claude"             # drives /implement-issue
 gap_analysis = "codex"              # adversarial pre-implementation pass
+survey       = "claude"             # bounded pre-implementation repo survey (#435)
 review       = ["codex", "gemini"]  # independent code review before merge
 debug        = "claude"
 ```

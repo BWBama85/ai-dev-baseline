@@ -220,8 +220,11 @@ those. The rules below are specific to this repo's code.
    **Source the shared primitives, never copy them** — link/unlink/backup,
    default-branch, TOML-read, version-compare, pool sizing (`adb_pool_size`) and the bash floor
    itself live once in `scripts/lib/common.sh` (see `docs/design-principles.md`).
-5. **Skills are self-contained.** A Claude `SKILL.md` loads whole — keep it complete.
-   Keep shared content agent-neutral so adapters can render it.
+5. **Skills are self-contained: everything a skill needs is in its directory or in a library it
+   names; load what the step needs** (owner decision 2026-08-25, D94, #433 — this revises the old
+   "loads whole — keep it complete"). A skill may bundle supporting files beside `SKILL.md`,
+   rendered from `base/workflows/<name>/*.md`, that agents read on demand; `SKILL.md` stays the
+   navigator. Keep shared content agent-neutral so adapters can render it.
 6. **Feature branch + PR + green CI.** No direct pushes to `main`. Deferred work earns a
    tracked issue **only when it clears the bar** in `base/practices/issues-and-scope.md` —
    name who does it and what breaks if nobody ever does; either unanswerable, file nothing.
@@ -233,7 +236,7 @@ those. The rules below are specific to this repo's code.
 | Path | What |
 |---|---|
 | `base/practices/*.md` | The shared law — **edit here** |
-| `base/workflows/*.md` | Single source for each workflow (procedure + metadata) — **edit here** |
+| `base/workflows/*.md` (+ `<name>/*.md` supporting files, #433) | Single source for each workflow (procedure + metadata + on-demand reference) — **edit here** |
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has **hand-written** hook `scripts/` — `build.sh` does not render them, so edit those in place |
 | `.claude/skills/release/SKILL.md` | **This project's own `/release`** — hand-written, **not** generated, and deliberately outside `base/`+`agents/` so decision #3/D7's "no baseline `/release`" lint stays green. Cuts the tag: re-verifies readiness + branch health live, stamps `CHANGELOG.md` through a normal PR, tags the verified-green merge commit, then `baseline release roll`. Every adopting repo owes itself one of these (D14) |

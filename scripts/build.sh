@@ -261,6 +261,83 @@ block_marker_residue() {
   return 1
 }
 
+# The ONE skill-body substitution program, shared by the SKILL.md render and the
+# supporting-file render below (#433) — two call sites, one map, so a token added for one
+# cannot be silently missing from the other. `fmmode=support` skips the frontmatter arms
+# entirely: a supporting file has no frontmatter, only a body to substitute.
+build_skill_awk='
+    function lreplace(s, from, to,   out, p) {
+      out = ""
+      while ((p = index(s, from)) > 0) {
+        out = out substr(s, 1, p - 1) to
+        s = substr(s, p + length(from))
+      }
+      return out s
+    }
+    # marker() prints the shared generated-file banner (identical across agents).
+    function marker() {
+      print "# GENERATED FILE — do not edit by hand."
+      print "# Source: base/workflows/" name ".md · Regenerate: scripts/build.sh"
+      print "# Edits here are overwritten on the next build."
+    }
+    # NR==1 is the opening --- delimiter (SKILL.md modes only; `support` has no frontmatter).
+    #   verbatim: emit ---+marker, then stream the rest of the frontmatter unchanged
+    #             (no substitution) until the closing --- so passthrough keys survive.
+    #   synth:    consume the source frontmatter silently (capturing only description),
+    #             then at the closing --- emit a fresh minimal name+description block.
+    NR==1 && fmmode != "support" {
+      infm = 1
+      if (fmmode == "verbatim") { print "---"; marker() }
+      next
+    }
+    infm == 1 {
+      if (fmmode == "verbatim") { print; if ($0 == "---") infm = 0; next }
+      # synth: capture the (single-line) description; emit synthesized block at close.
+      if ($0 ~ /^description:/) { desc = $0; sub(/^description:[[:space:]]*/, "", desc) }
+      if ($0 == "---") {
+        print "---"
+        marker()
+        print "# $ARGUMENTS marks where THIS skill'\''s invocation arguments go — a placeholder you fill"
+        print "# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent."
+        print "name: " name
+        print "description: " desc
+        print "---"
+        infm = 0
+      }
+      next
+    }
+    {
+      line = $0
+      line = lreplace(line, "{{ARGS}}",             args_to)
+      line = lreplace(line, "{{STATE_DIR}}",        state_dir)
+      line = lreplace(line, "{{GATE_RUNNER}}",      gate_run)
+      line = lreplace(line, "{{ROLE_DISPATCH}}",    role_dispatch)
+      line = lreplace(line, "{{ROADMAP_LIB}}",      roadmap_lib)
+      line = lreplace(line, "{{REPO_SETTINGS_LIB}}", repo_settings)
+      line = lreplace(line, "{{PR_REVIEW_LIB}}",    pr_review)
+      line = lreplace(line, "{{PR_WATCH_LIB}}",     pr_watch)
+      line = lreplace(line, "{{PR_THREADS_LIB}}",   pr_threads)
+      line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
+      line = lreplace(line, "{{IMPLEMENT_LIB}}",    implement_lib)
+      line = lreplace(line, "{{PATTERN_LEDGER_LIB}}", pattern_ledger)
+      line = lreplace(line, "{{DOCS_LIB}}",         docs_lib)
+      line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
+      line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
+      line = lreplace(line, "{{CI_HEALTH_LIB}}",    ci_health)
+      line = lreplace(line, "{{ADOPT_LIB}}",        adopt_lib)
+      line = lreplace(line, "{{ADOPT_READINESS}}",  adopt_readiness)
+      line = lreplace(line, "{{ACTIONS_APP_SLUG}}", actions_app_slug)
+      line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
+      line = lreplace(line, "{{SKILLS_SUBDIRS}}",   skills_subdirs)
+      line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
+      line = lreplace(line, "{{SKILL_PREFIX}}",     skill_prefix)
+      line = lreplace(line, "{{SKILL_EXTRA_KEY}}",  skill_extra_key)
+      line = lreplace(line, "{{SKILL_REGISTRY_PROBE}}", skill_registry_probe)
+      line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
+      print line
+    }
+  '
+
 render() {
   local agent="$1" outfile="$2" title="$3"
   mkdir -p "$(dirname "$outfile")"
@@ -525,95 +602,25 @@ render_agent_skill() {
   # literal (index/substr in awk, no regex) so tokens with $, ", and / substitute
   # cleanly. -v does no escape processing on these values (none contain backslashes),
   # so e.g. Claude's gate command emits its real quotes byte-for-byte.
-  block_filter "$agent" "$src" | awk -v name="$name" -v fmmode="$fmmode" \
-      -v args_to="$args_to" -v state_dir="$state_dir" \
-      -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
-      -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
-      -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
-      -v implement_lib="$implement_lib" \
-      -v pattern_ledger="$pattern_ledger" -v docs_lib="$docs_lib" \
-      -v pr_review="$pr_review" -v state_assert="$state_assert" \
-      -v ci_health="$ci_health" \
-      -v adopt_lib="$adopt_lib" -v adopt_readiness="$adopt_readiness" \
-      -v pr_watch="$pr_watch" -v pr_threads="$pr_threads" -v actions_app_slug="$actions_app_slug" \
-      -v current_agent="$current_agent" -v subtask="$subtask" \
-      -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root" \
-      -v skill_prefix="$skill_prefix" -v skill_extra_key="$skill_extra_key" \
-      -v skill_registry_probe="$skill_registry_probe" '
-    function lreplace(s, from, to,   out, p) {
-      out = ""
-      while ((p = index(s, from)) > 0) {
-        out = out substr(s, 1, p - 1) to
-        s = substr(s, p + length(from))
-      }
-      return out s
-    }
-    # marker() prints the shared generated-file banner (identical across agents).
-    function marker() {
-      print "# GENERATED FILE — do not edit by hand."
-      print "# Source: base/workflows/" name ".md · Regenerate: scripts/build.sh"
-      print "# Edits here are overwritten on the next build."
-    }
-    # NR==1 is the opening --- delimiter.
-    #   verbatim: emit ---+marker, then stream the rest of the frontmatter unchanged
-    #             (no substitution) until the closing --- so passthrough keys survive.
-    #   synth:    consume the source frontmatter silently (capturing only description),
-    #             then at the closing --- emit a fresh minimal name+description block.
-    NR==1 {
-      infm = 1
-      if (fmmode == "verbatim") { print "---"; marker() }
-      next
-    }
-    infm == 1 {
-      if (fmmode == "verbatim") { print; if ($0 == "---") infm = 0; next }
-      # synth: capture the (single-line) description; emit synthesized block at close.
-      if ($0 ~ /^description:/) { desc = $0; sub(/^description:[[:space:]]*/, "", desc) }
-      if ($0 == "---") {
-        print "---"
-        marker()
-        print "# $ARGUMENTS below marks where THIS skill'\''s invocation arguments go (e.g. the issue/PR"
-        print "# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,"
-        print "# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell"
-        print "# variable — fill it in when you run a step. Some other refs (Stop-hook gating,"
-        print "# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25."
-        print "name: " name
-        print "description: " desc
-        print "---"
-        infm = 0
-      }
-      next
-    }
-    {
-      line = $0
-      line = lreplace(line, "{{ARGS}}",             args_to)
-      line = lreplace(line, "{{STATE_DIR}}",        state_dir)
-      line = lreplace(line, "{{GATE_RUNNER}}",      gate_run)
-      line = lreplace(line, "{{ROLE_DISPATCH}}",    role_dispatch)
-      line = lreplace(line, "{{ROADMAP_LIB}}",      roadmap_lib)
-      line = lreplace(line, "{{REPO_SETTINGS_LIB}}", repo_settings)
-      line = lreplace(line, "{{PR_REVIEW_LIB}}",    pr_review)
-      line = lreplace(line, "{{PR_WATCH_LIB}}",     pr_watch)
-      line = lreplace(line, "{{PR_THREADS_LIB}}",   pr_threads)
-      line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
-      line = lreplace(line, "{{IMPLEMENT_LIB}}",    implement_lib)
-      line = lreplace(line, "{{PATTERN_LEDGER_LIB}}", pattern_ledger)
-      line = lreplace(line, "{{DOCS_LIB}}",         docs_lib)
-      line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
-      line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
-      line = lreplace(line, "{{CI_HEALTH_LIB}}",    ci_health)
-      line = lreplace(line, "{{ADOPT_LIB}}",        adopt_lib)
-      line = lreplace(line, "{{ADOPT_READINESS}}",  adopt_readiness)
-      line = lreplace(line, "{{ACTIONS_APP_SLUG}}", actions_app_slug)
-      line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
-      line = lreplace(line, "{{SKILLS_SUBDIRS}}",   skills_subdirs)
-      line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
-      line = lreplace(line, "{{SKILL_PREFIX}}",     skill_prefix)
-      line = lreplace(line, "{{SKILL_EXTRA_KEY}}",  skill_extra_key)
-      line = lreplace(line, "{{SKILL_REGISTRY_PROBE}}", skill_registry_probe)
-      line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
-      print line
-    }
-  ' > "$tmp"
+  # The -v map, built ONCE per agent invocation and used by BOTH awk call sites.
+  local -a av=(
+    -v name="$name" -v fmmode="$fmmode"
+    -v args_to="$args_to" -v state_dir="$state_dir"
+    -v gate_run="$gate_run" -v role_dispatch="$role_dispatch"
+    -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings"
+    -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib"
+    -v implement_lib="$implement_lib"
+    -v pattern_ledger="$pattern_ledger" -v docs_lib="$docs_lib"
+    -v pr_review="$pr_review" -v state_assert="$state_assert"
+    -v ci_health="$ci_health"
+    -v adopt_lib="$adopt_lib" -v adopt_readiness="$adopt_readiness"
+    -v pr_watch="$pr_watch" -v pr_threads="$pr_threads" -v actions_app_slug="$actions_app_slug"
+    -v current_agent="$current_agent" -v subtask="$subtask"
+    -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root"
+    -v skill_prefix="$skill_prefix" -v skill_extra_key="$skill_extra_key"
+    -v skill_registry_probe="$skill_registry_probe"
+  )
+  block_filter "$agent" "$src" | awk "${av[@]}" "$build_skill_awk" > "$tmp"
 
   # Fail loud on any unresolved placeholder: {{…}} is reserved for the neutral vocabulary,
   # so a survivor means a body used a token the MAP does not define (a typo, or a new
@@ -638,6 +645,62 @@ render_agent_skill() {
 
   build_publish "$out"
   echo "wrote ${out#"$root"/}"
+
+  # --- supporting files (#433): base/workflows/<name>/*.md render BESIDE the SKILL.md ---------
+  # Same block filter, same token map (the shared program above, fmmode=support), same
+  # stage-and-rename publish — a second write path that skipped any of those would be the
+  # asymmetry #268 ended. The banner is an HTML comment: these files carry no frontmatter, and
+  # the YAML `#` marker only means "comment" inside one.
+  local sdir sfile sbase sout
+  sdir="$workflows/$name"
+  if [ -d "$sdir" ]; then
+    for sfile in "$sdir"/*.md; do
+      [ -f "$sfile" ] || continue
+      sbase="$(basename "$sfile")"
+      # The name grammar render-size.sh promises for its TSV, enforced where the file is born.
+      # A LEADING DOT is refused too: every consumer enumerates `*.md`, which skips dotfiles, so
+      # a hidden supporting file would neither render everywhere nor orphan loudly (reviewer find).
+      case "$sbase" in .*)
+        echo "build.sh: base/workflows/$name/$sbase — supporting-file names must not begin with a dot" >&2
+        exit 3 ;;
+      esac
+      case "$sbase" in *[!A-Za-z0-9._-]*)
+        echo "build.sh: base/workflows/$name/$sbase — supporting-file names must stay in [A-Za-z0-9._-]" >&2
+        exit 3 ;;
+      esac
+      if [ "$sbase" = "SKILL.md" ]; then
+        echo "build.sh: base/workflows/$name/SKILL.md would collide with the rendered skill entry — rename it" >&2
+        exit 3
+      fi
+      # A supporting file has NO frontmatter — a leading --- reads as a mis-homed workflow
+      # source, and rendering it would ship a document whose head only a skill loader wants.
+      if [ "$(head -n1 "$sfile")" = "---" ]; then
+        echo "build.sh: base/workflows/$name/$sbase starts with '---' — supporting files carry no frontmatter (see base/workflows/README.md)" >&2
+        exit 3
+      fi
+      sout="$root/agents/$agent/skills/$name/$sbase"
+      build_stage "$sout"
+      tmp="$build_tmp"
+      {
+        printf '<!-- GENERATED FILE — do not edit by hand.\n'
+        printf '     Source: base/workflows/%s/%s · Regenerate: scripts/build.sh\n' "$name" "$sbase"
+        printf '     Edits here are overwritten on the next build. -->\n'
+      } > "$tmp"
+      block_filter "$agent" "$sfile" | awk "${av[@]}" -v fmmode=support "$build_skill_awk" >> "$tmp"
+      if LC_ALL=C grep -Fq '{{' "$tmp"; then
+        echo "build.sh: unresolved placeholder(s) in the rendered '$agent' '$name/$sbase' supporting file:" >&2
+        LC_ALL=C grep -Fn '{{' "$tmp" | sed 's/^/  /' >&2
+        rm -f "$tmp"; build_tmp=''
+        exit 3
+      fi
+      if ! block_marker_residue "$tmp" "the rendered '$agent' '$name/$sbase' supporting file"; then
+        rm -f "$tmp"; build_tmp=''
+        exit 3
+      fi
+      build_publish "$sout"
+      echo "wrote ${sout#"$root"/}"
+    done
+  fi
 }
 
 for wf in "$workflows"/*.md; do
@@ -645,4 +708,15 @@ for wf in "$workflows"/*.md; do
   render_agent_skill claude "$wf"
   render_agent_skill codex  "$wf"
   render_agent_skill gemini "$wf"
+done
+
+# A supporting directory with no workflow source is an orphan: nothing renders it, so its files
+# silently ship to nobody. Refuse it rather than let it read as "supported".
+for wfd in "$workflows"/*/; do
+  [ -d "$wfd" ] || continue
+  wfn="$(basename "$wfd")"
+  if [ ! -f "$workflows/$wfn.md" ]; then
+    echo "build.sh: base/workflows/$wfn/ exists but base/workflows/$wfn.md does not — supporting files belong to a workflow source" >&2
+    exit 3
+  fi
 done

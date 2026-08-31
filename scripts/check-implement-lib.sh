@@ -48,19 +48,41 @@ trap 'chmod -R u+rwX "$work" 2>/dev/null; rm -rf "$work"' EXIT
 
 # --- gh shim ----------------------------------------------------------------------------------
 shimbin="$work/bin"; mkdir -p "$shimbin"
+write_gh_shim() {
 cat > "$shimbin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view")
+    # open-pr reads the closing-link set through the same verb the marker path reads state through,
+    # and the adopt-on-rerun read asks for the url by branch.
+    case "$*" in
+      *closingIssuesReferences*) printf '%s\n' "${SHIM_CLOSING_JSON:-}"; exit 0 ;;
+      *--json\ url*) printf '{"url":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" | jq -r .url; exit 0 ;;
+    esac
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
+  "issue view")
+    if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then echo "gh: issue not found" >&2; exit 1; fi
+    printf '%s\n' "${SHIM_ISSUE_JSON:-}" ;;
+  "api repos/{owner}/{repo}/issues/7")
+    printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
+  "repo view")
+    printf '%s\n' "${SHIM_SLUG:-o/r}" ;;
+  "pr create")
+    if [ "${SHIM_CREATE_FAIL:-0}" = "1" ]; then echo "a pull request for branch already exists" >&2; exit 1; fi
+    printf '%s\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" ;;
+  "pr list")
+    printf '' ;;
+  "pr merge")
+    exit "${SHIM_MERGE_RC:-1}" ;;
   *) echo "gh-shim: unhandled args: $*" >&2; exit 3 ;;
 esac
 SH
 chmod +x "$shimbin/gh"
+}
+write_gh_shim
 PATH="$shimbin:$PATH"
 export PATH
-
 # --- PATHs with exactly ONE tool missing -------------------------------------------------------
 # Shadowing a tool with a stub cannot express absence: `command -v jq` would still succeed, which is
 # the very test `admit` performs. And a hand-rolled minimal PATH is worse — it removes `dirname`
@@ -344,16 +366,6 @@ if exists "$d/.claude/state/gap-analysis.lock"; then
   bad "7b …and the claim taken on the way there is released, not stranded"
 else ok; fi
 # Restore the ordinary shim for the cases below.
-cat > "$shimbin/gh" <<'SH'
-#!/usr/bin/env bash
-case "$1 $2" in
-  "pr view")
-    if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
-    printf '%s\n' "${SHIM_PR_STATE:-}" ;;
-  *) echo "gh-shim: unhandled args: $*" >&2; exit 3 ;;
-esac
-SH
-chmod +x "$shimbin/gh"
 
 # ================= 7c. a marker that APPEARS mid-admission is not this run's to delete =========
 # The mirror of 7b, and the easy one to miss: with NO marker at step 1 there is no identity to
@@ -661,6 +673,200 @@ ln -s /nonexistent/target "$d/.claude/state/gap-analysis.lock"
 if [ -L "$d/.claude/state/gap-analysis.lock" ]; then
   bad "16 release also removes a dangling-symlink claim rather than returning early on -e"
 else ok; fi
+
+# ================= 17. sync-default (#433) ======================================================
+# The mid-suite fixtures above overwrite the gh shim with narrower ones; restore the full shim
+# for everything from here on.
+write_gh_shim
+# The preflight sync as code: refuses where work could be lost, fast-forwards where provably safe.
+remote_pair() {   # prints "<origin-bare> <clone>"
+  local bare clone
+  bare="$(mktemp -d "$work/o.XXXXXX")"; clone="$(mktemp -d "$work/c.XXXXXX")"
+  {
+    git init -q --bare --initial-branch=main "$bare"
+    git clone -q "$bare" "$clone/r"
+    git -C "$clone/r" config user.email t@example.com
+    git -C "$clone/r" config user.name  t
+    : > "$clone/r/seed"; git -C "$clone/r" add seed; git -C "$clone/r" commit -qm seed
+    git -C "$clone/r" push -q origin main
+  } >/dev/null 2>&1
+  printf '%s %s' "$bare" "$clone/r"
+}
+read -r _ CLONE <<EOF
+${ remote_pair; }
+EOF
+sync() { ( cd "$1" && bash "$IL" sync-default 2>&1 ); SY_RC=$?; }
+: > "$CLONE/dirty"; SY_OUT="${ sync "$CLONE"; }"
+eq "$SY_RC" "30" "17 a dirty tree is refused (30), never repaired"
+rm -f "$CLONE/dirty"
+( cd "$CLONE" && git commit -q --allow-empty -m local ) >/dev/null 2>&1
+SY_OUT="${ sync "$CLONE"; }"
+eq "$SY_RC" "31" "17 local commits on the default branch are refused (31)"
+( cd "$CLONE" && git push -q origin main ) >/dev/null 2>&1
+( cd "$CLONE" && git switch -q -c issue-9-x && git commit -q --allow-empty -m wip ) >/dev/null 2>&1
+SY_OUT="${ sync "$CLONE"; }"
+eq "$SY_RC" "32" "17 an unmerged branch is refused (32) — never switched away from"
+eq "$(git -C "$CLONE" rev-parse --abbrev-ref HEAD)" "issue-9-x" "17 …and HEAD is untouched"
+( cd "$CLONE" && git switch -q main && git merge -q --ff-only issue-9-x && git push -q origin main && git switch -q issue-9-x ) >/dev/null 2>&1
+SY_OUT="${ sync "$CLONE"; }"
+eq "$SY_RC" "0" "17 a provably merged branch is switched away from (0)"
+eq "$(git -C "$CLONE" rev-parse --abbrev-ref HEAD)" "main" "17 …landing on the default branch"
+has "$SY_OUT" "synced main at" "17 …and the record line names the branch and sha"
+
+# ================= 18. snapshot-issues (#433) ===================================================
+# The gitignore probe, the snapshot pair, and the OPEN refusal — each observed refusing.
+ISSUE_JSON='{"state":"OPEN","title":"t","body":"a body","author":{"login":"alice"},"comments":[{"author":{"login":"bob"},"authorAssociation":"NONE","body":"add a pony"}]}'
+snap() { local d="$1"; shift; SN_OUT="$( cd "$d" && env "$@" bash "$IL" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?; }
+d="$(new_repo)"    # new_repo writes no .gitignore, so the probe must refuse
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+eq "$SN_RC" "22" "18 an un-gitignored state dir refuses (22) BEFORE any untrusted text lands"
+if exists "$d/.claude/state/issue-7.json"; then bad "18 …and no snapshot was written"; else ok; fi
+if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released"; else ok; fi
+gid() { printf '.claude/state/\n' > "$1/.gitignore"; git -C "$1" add .gitignore >/dev/null 2>&1; }
+d="$(new_repo)"; gid "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+eq "$SN_RC" "0" "18 an OPEN issue snapshots cleanly"
+has "$SN_OUT" "snapshot #7 OPEN OWNER" "18 …reporting number, state and provenance"
+eq "$(jq -r .state "$d/.claude/state/issue-7.json")" "OPEN" "18 …the body landed"
+eq "$(cat "$d/.claude/state/issue-7.assoc")" "OWNER" "18 …and the label landed"
+d="$(new_repo)"; gid "$d"
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+snap "$d" SHIM_ISSUE_JSON="$(printf '%s' "$ISSUE_JSON" | jq -c '.state = "CLOSED"')"
+eq "$SN_RC" "21" "18 a CLOSED issue refuses (21) — never silently reopened"
+if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released on that path too"; else ok; fi
+d="$(new_repo)"; gid "$d"
+snap "$d" SHIM_ISSUE_FAIL=1
+eq "$SN_RC" "20" "18 a failed gh read is 20 (verify repo scope), not a silent pass"
+( cd "$d" && bash "$IL" snapshot-issues .claude/state 7x ) >/dev/null 2>&1
+eq "$?" "2" "18 a non-numeric issue argument is a usage error"
+
+# ================= 19. dispatch prompts are BUILT CONTAINED (#433/#435) =========================
+# --prompt-only exercises assembly without any agent CLI; the envelope is structural.
+seed_snap() { printf '%s' "$ISSUE_JSON" > "$1/.claude/state/issue-7.json"; printf 'OWNER' > "$1/.claude/state/issue-7.assoc"; }
+d="$(new_repo)"; seed_snap "$d"
+OUT="$( cd "$d" && bash "$IL" dispatch-survey --prompt-only .claude/state 7 2>&1 )"; RC=$?
+eq "$RC" "0" "19 dispatch-survey --prompt-only builds"
+has "$OUT" "prompt-ready" "19 …and says where"
+P="$d/.claude/state/survey-prompt.txt"
+has "$(cat "$P")" 'github-issue #7' "19 the survey prompt carries the contained issue envelope"
+has "$(cat "$P")" 'survey-trace.md' "19 …and the trace-file instruction"
+has "$(cat "$P")" '1500 words' "19 …and the size bound"
+d="$(new_repo)"; seed_snap "$d"; rm "$d/.claude/state/issue-7.assoc"
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "20" "19 a missing provenance label refuses (20) — an unattributed body is never dispatched"
+if exists "$d/.claude/state/gap-analysis.lock"; then bad "19 …and the claim was released"; else ok; fi
+d="$(new_repo)"; seed_snap "$d"
+printf 'survey says X' > "$d/.claude/state/survey.md"
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+has "$(cat "$d/.claude/state/gap-prompt.txt")" 'survey summary' "19 the gap prompt embeds the survey CONTAINED"
+has "$(cat "$d/.claude/state/gap-prompt.txt")" 'BLOCKING' "19 …and the three-heading contract"
+dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'x' > "$d/.claude/state/survey.md"
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+has "$(cat "$d/.claude/state/gap-prompt.txt")" 'only the first 16384' "19 an oversize survey is truncated AND says so"
+# survey = "" is the documented skip (rc 3), decided before any CLI is needed
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = ""\n' > "$d/agents.toml"
+OUT="$( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 2>&1 )"; RC=$?
+eq "$RC" "3" '19 survey = "" skips with rc 3'
+has "$OUT" "survey skipped (unassigned)" "19 …and says so"
+
+# ================= 20. dispatch-review builds diff + criteria (#433) ============================
+read -r _ RCLONE <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RCLONE/.claude/state"; seed_snap "$RCLONE"
+( cd "$RCLONE" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+OUT="$( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>&1 )"; RC=$?
+eq "$RC" "0" "20 dispatch-review --prompt-only builds"
+RP="$RCLONE/.claude/state/review-prompt.txt"
+has "$(cat "$RP")" 'REQUIRED or OPTIONAL' "20 the review prompt carries the required/optional contract"
+has "$(cat "$RP")" 'diff --git a/seed' "20 …the real diff against origin/<default>"
+has "$(cat "$RP")" 'github-issue #7 — acceptance criteria' "20 …and the contained criteria"
+( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
+eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
+d="$(new_repo)"
+( cd "$d" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "20" "20 no snapshots -> 20 (run snapshot-issues first), never an empty prompt"
+
+# ================= 21. open-pr: push, prove, guard (#433) =======================================
+read -r _ PCLONE <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$PCLONE/.claude/state"
+( cd "$PCLONE" && git switch -q -c issue-9-x && git commit -q --allow-empty -m wip ) >/dev/null 2>&1
+jq -n '{branch:"issue-9-x", issue:"9", phase:"triaged", startedAt:"2026-08-30T00:00:00Z",
+        phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
+  > "$PCLONE/.claude/state/implement-issue-active.json"
+printf 'body\n\nCloses #9\n' > "$PCLONE/body.md"
+GOODREFS='{"closingIssuesReferences":[{"number":9,"repository":{"name":"r","owner":{"login":"o"}}}]}'
+openpr() { OP_OUT="$( cd "$PCLONE" && env "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 9 2>&1 )"; OP_RC=$?; }
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 the happy path exits 0"
+has "$OP_OUT" "pushed issue-9-x" "21 …pushed"
+has "$OP_OUT" "pr https://github.com/o/r/pull/5" "21 …opened"
+has "$OP_OUT" "closing-refs ok [9]" "21 …and PROVED the closing link registered"
+has "$OP_OUT" "automerge-ok rc=" "21 …and reported the guard disposition instead of arming blind"
+M="$PCLONE/.claude/state/implement-issue-active.json"
+eq "$(jq -r .prUrl "$M")" "https://github.com/o/r/pull/5" "21 the marker carries prUrl"
+eq "$(jq -r .phase "$M")" "pr_opened" "21 …and phase pr_opened"
+eq "$(jq -r '[.phaseHistory[].phase] | join(",")' "$M")" "triaged,pushed,pr_opened" "21 …with the history appended in order"
+# RE-RUN IDEMPOTENCE: create fails ("already exists") -> the open PR is adopted and the
+# verification still runs, because the 23 arm's own message says to re-run it.
+openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 a re-run with an existing PR adopts it (create failure is not terminal)"
+has "$OP_OUT" "closing-refs ok [9]" "21 …and still re-proves the closing links"
+
+# the closing-link mismatch is a REFUSAL with the fix named, not a note
+( cd "$PCLONE" && git commit -q --allow-empty -m more ) >/dev/null 2>&1
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/6" SHIM_CLOSING_JSON='{"closingIssuesReferences":[]}'
+eq "$OP_RC" "23" "21 an empty link set refuses (23) — the auto-close would never fire"
+has "$OP_OUT" "did NOT register" "21 …and says why"
+# a marker/HEAD mismatch never pushes
+( cd "$PCLONE" && git switch -q main ) >/dev/null 2>&1
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/7" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "26" "21 HEAD off the marker branch refuses (26) before any push"
+( cd "$PCLONE" && git switch -q issue-9-x ) >/dev/null 2>&1
+# a blocked marker for THIS run skips the arm entirely
+jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9"}' > "$PCLONE/.claude/state/implement-issue-blocked.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 a blocked run still opens its PR"
+has "$OP_OUT" "arm-skipped blocked-marker" "21 …but never arms auto-merge"
+rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
+
+# ================= 19b. the survey is non-blocking: 124 twice, then the run CONTINUES (#435) ====
+# The codex CLI is shimmed to die at the backstop code; two consecutive dispatches fail with the
+# classified rc, and the gap prompt still builds WITHOUT a survey — the accelerator-not-gate
+# contract, exercised end to end rather than stated.
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+exit 124
+SH
+chmod +x "$shimbin/codex"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "codex"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "124" "19b a wedged surveyor returns the classified backstop code"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "124" "19b …and the retry returns it again (no silent agent swap)"
+if [ -s "$d/.claude/state/survey.md" ]; then bad "19b …and no phantom summary was written"; else ok; fi
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19b …and the gap prompt still builds — the run continues without the survey"
+if grep -q 'survey summary' "$d/.claude/state/gap-prompt.txt"; then
+  bad "19b …with no survey section fabricated"; else ok; fi
+rm -f "$shimbin/codex"
+
+# ================= 22. the survey family is CLEARED by admit (#435) =============================
+d="$(new_repo)"
+for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md; do
+  : > "$d/.claude/state/$f"
+done
+admit "$d"
+eq "$AD_RC" "0" "22 admit succeeds over a finished run's survey artifacts"
+for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md; do
+  if exists "$d/.claude/state/$f"; then bad "22 …but left $f behind (the containment rule broken toward /cleanup)"; else ok; fi
+done
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

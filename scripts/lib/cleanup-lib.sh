@@ -418,6 +418,16 @@ cmd_state_scan() {
       docs-consulted.tsv|docs-consulted-*.tsv)
         _adb_cl_emit "$want_ident" docs "$f" '-'
         ;;
+      # /implement-issue's survey artifacts (#435): the survey prompt, the bounded summary the
+      # dispatched surveyor returns (`survey.md`), its trace (`survey-trace.md`) and the dispatch
+      # stream (`survey.err`). Written between steps 2 and 3 — BEFORE the branch and the run
+      # marker exist — under the same claim `admit` took in preflight, and read again when the
+      # gap prompt is built AND at step 6, so the caller passes the FRESH run verdict to the
+      # delete (see `state-verdict`'s issue-snapshot note). Same family shape as the gaps arm;
+      # the PREFLIGHT clear in implement-lib.sh `_il_clear` is kept identical to this glob.
+      survey-prompt.txt|survey.md|survey.err|survey-*.md|survey-*.err)
+        _adb_cl_emit "$want_ident" survey "$f" '-'
+        ;;
       # /implement-issue step 2's issue snapshot (#250) — the untrusted issue text and the
       # `author_association` provenance label that decides whether a dispatched agent is told the
       # task came from a maintainer or a stranger. They used to live at a fixed `/tmp` path, which
@@ -702,7 +712,7 @@ cmd_file_identity() {
 # it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
 # fast one's. Every fact below is a live PR state or a freshly-fetched ref.
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs|survey)"
   local kind="$1"; shift
   case "$kind" in
     threads)
@@ -740,7 +750,8 @@ cmd_state_verdict() {
       case "$1" in unknown) printf 'keep\n'; return 0 ;; esac
       printf 'stale\n'
       ;;
-    # ONE PREDICATE, TWO NAMES — never a second copy of it. The issue snapshot (#250) has exactly
+    # ONE PREDICATE, THREE NAMES — never a second copy of it. The issue snapshot (#250) and the
+    # survey artifacts (#435) have exactly
     # the gap artifacts' lifetime: /implement-issue step 2 writes it BEFORE the branch and the run
     # marker exist, under the same claim `admit` took in preflight, and step 8 is still reading it
     # long after the marker took over. So the same two facts decide both — is a pre-marker run
@@ -755,7 +766,7 @@ cmd_state_verdict() {
     # earlier in the sweep cannot be wrong about them in a way that matters; the snapshot is read
     # again in step 8, so a run that reached step 5 mid-sweep must show up as live. cleanup.md
     # passes `$RUN_NOW` here and `$RUN` to `gaps` for exactly that reason.
-    gaps|issue)
+    gaps|issue|survey)
       [ "$#" -eq 2 ] || die "state-verdict $kind: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
       # Both up front, for the reason given under `marker`: the lock short-circuits below, so
       # validating <run> only where it is read would let `gaps 1 <typo>` print a confident `keep`.
@@ -821,7 +832,7 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs)" ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs|survey)" ;;
   esac
 }
 

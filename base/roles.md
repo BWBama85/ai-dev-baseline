@@ -15,6 +15,7 @@ manifest changes.
 |---|---|---|---|
 | `primary` | Drives implementation end-to-end (`implement-issue`) | exactly 1 | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | 0 or 1 | skip the pass |
+| `survey` | Bounded pre-implementation repo survey (`implement-issue` step 2b, #435) | 0 or 1 | primary (`""` skips) |
 | `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |

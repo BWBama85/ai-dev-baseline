@@ -25,6 +25,9 @@ review       = ["codex"]    # code review before merge. 1+ agents; more = better
                             # declaration, so a manual merge is still a manual merge.
 debug        = "claude"     # owns root-cause investigations.
 
+# survey       = "claude"   # bounded pre-implementation repo survey (#435). Defaults to
+#                           # `primary` (it is exploration, so same-model is fine and stated);
+#                           # "" skips it. Its dispatch bound is ADB_SURVEY_TIMEOUT_SECS (1200s).
 # issue_author = "claude"   # defaults to `primary` if unset
 # release      = "claude"   # defaults to `primary` if unset. Names WHO cuts a release — it
 #                           # installs no release skill; write your own project-scoped
