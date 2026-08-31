@@ -803,9 +803,26 @@ has "$(cat "$RP")" 'diff --git a/seed' "20 …the real diff against origin/<defa
 has "$(cat "$RP")" 'github-issue #7 — acceptance criteria' "20 …and the contained criteria"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
+if compgen -G "$RCLONE/.claude/state/.review-prompt.*" >/dev/null; then
+  bad "20 a successful build leaves no prompt temp behind"; else ok; fi
 d="$(new_repo)"
 ( cd "$d" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 eq "$?" "20" "20 no snapshots -> 20 (run snapshot-issues first), never an empty prompt"
+# The prompt is PUBLISHED BY RENAME, never truncated in place: concurrent review slots each
+# rebuild this one path, so a truncate-then-append build hands another slot's dispatch a
+# half-written prompt — and a build that fails partway used to leave that torn file published.
+read -r _ R2 <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$R2/.claude/state"
+printf '%s' "$ISSUE_JSON" > "$R2/.claude/state/issue-7.json"   # no .assoc: the envelope step fails
+( cd "$R2" && git switch -q -c issue-7-t && printf 'y\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+( cd "$R2" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "20" "20 a build failing at the envelope refuses (20)"
+if exists "$R2/.claude/state/review-prompt.txt"; then
+  bad "20 …and publishes NO torn review-prompt.txt from the failed build"; else ok; fi
+if compgen -G "$R2/.claude/state/.review-prompt.*" >/dev/null; then
+  bad "20 …and leaves no prompt temp behind on the failure path"; else ok; fi
 
 # ================= 21. open-pr: push, prove, guard (#433) =======================================
 read -r _ PCLONE <<EOF
