@@ -948,6 +948,25 @@ for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md;
   if exists "$d/.claude/state/$f"; then bad "22 …but left $f behind (the containment rule broken toward /cleanup)"; else ok; fi
 done
 
+# ================= 23. resolve-surfaces keeps the record grammar (#422) =========================
+# One `mcp-required <name>` record PER declared server: docs-lib returns one name per line, and
+# interpolating the whole list into a single printf left every server after the first as a bare
+# unprefixed line no record consumer would select. HOME is pinned so a workstation's global
+# manifest cannot leak into the layered read.
+d="$(new_repo)"
+printf '[mcp]\nrequired = ["ctx7", "grafana"]\n' > "$d/agents.toml"
+OUT="$( cd "$d" && env HOME="$work" bash "$IL" resolve-surfaces .claude/state 2>/dev/null )"; RC=$?
+eq "$RC" "0" "23 two declared servers resolve rc 0"
+eq "$(printf '%s\n' "$OUT" | grep -c '^mcp-required ')" "2" "23 …as one prefixed record per server"
+has "$OUT" "mcp-required ctx7" "23 …naming the first"
+has "$OUT" "mcp-required grafana" "23 …and the second"
+if printf '%s\n' "$OUT" | grep -qv '^mcp-required '; then
+  bad "23 …with no bare unprefixed line in the output"; else ok; fi
+d="$(new_repo)"
+OUT="$( cd "$d" && env HOME="$work" bash "$IL" resolve-surfaces .claude/state 2>/dev/null )"; RC=$?
+eq "$RC" "1" "23 no [mcp] declared is rc 1"
+eq "$OUT" "mcp-required none" "23 …spelled mcp-required none"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"

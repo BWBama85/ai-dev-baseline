@@ -1278,10 +1278,16 @@ cmd_dispatch_gaps() {
 # is the agent's (MCP is in-harness); this names the set and keeps the rc grammar in one place.
 cmd_resolve_surfaces() {
   [ "$#" -eq 1 ] || { echo "implement-lib: resolve-surfaces needs exactly 1 arg: <state-dir>" >&2; exit 2; }
-  local out rc
+  local out rc srv
   out="$(bash "$_adb_il_libdir/docs-lib.sh" mcp-required)"; rc=$?
   case "$rc" in
-    0)  printf 'mcp-required %s\n' "$out"
+    0)  # ONE `mcp-required <name>` RECORD PER SERVER: docs-lib returns one name per line, and a
+        # single printf over the whole list left every server after the first as a bare
+        # unprefixed line no record consumer would select.
+        while IFS= read -r srv; do
+          [ -n "$srv" ] || continue
+          printf 'mcp-required %s\n' "$srv"
+        done <<< "$out"
         printf 'implement-lib: probe each server above with ONE real read-only query, then record it: docs-lib.sh probe-record --state %s --server <name> --result usable|degraded|absent --evidence ...\n' "$1" >&2 ;;
     1)  printf 'mcp-required none\n' ;;   # `[mcp]` undeclared — the ordinary case
     18) printf 'implement-lib: [mcp] required is malformed — fix agents.toml\n' >&2 ;;
