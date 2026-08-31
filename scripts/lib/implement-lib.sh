@@ -1491,7 +1491,9 @@ cmd_open_pr() {
   [ -n "$branch" ] || { printf 'implement-lib: the run marker at %s/%s is unreadable or has no branch\n' "$dir" "$_IL_MARKER" >&2; return 26; }
   [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$branch" ] \
     || { printf 'implement-lib: HEAD is not on the marker branch %s — refusing to push\n' "$branch" >&2; return 26; }
-  git push -u origin "$branch" || { printf 'implement-lib: push failed\n' >&2; return 24; }
+  # `>&2`: on a first push `git push -u` writes its upstream-registration message to STDOUT,
+  # which is this subcommand's closed record stream; the status is unaffected.
+  git push -u origin "$branch" >&2 || { printf 'implement-lib: push failed\n' >&2; return 24; }
   _il_phase "$dir" pushed || { printf 'implement-lib: could not write phase=pushed\n' >&2; return 20; }
   printf 'pushed %s\n' "$branch"
   # IDEMPOTENT ON RE-RUN: a 23 refusal below says "fix the body and re-run", and the re-run must

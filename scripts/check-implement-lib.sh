@@ -905,6 +905,24 @@ openpr2 "9,x" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_C
 eq "$OP_RC" "2" "21 a non-numeric --closes entry is a usage error"
 openpr2 "0" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "2" "21 …and 0 is not an issue number"
+# STDOUT IS THE RECORD STREAM: on a branch's FIRST push, `git push -u` writes its
+# upstream-registration message to stdout, which would ride between the closed one-fact-per-line
+# records and break any consumer that parses them.
+read -r _ P3CLONE <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$P3CLONE/.claude/state"
+( cd "$P3CLONE" && git switch -q -c issue-3-y && git commit -q --allow-empty -m wip ) >/dev/null 2>&1
+jq -n '{branch:"issue-3-y", issue:"3", phase:"triaged", startedAt:"2026-08-30T00:00:00Z",
+        phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
+  > "$P3CLONE/.claude/state/implement-issue-active.json"
+printf 'body\n\nCloses #3\n' > "$P3CLONE/body.md"
+OP_STDOUT="$( cd "$P3CLONE" && env SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/3" \
+  SHIM_CLOSING_JSON='{"closingIssuesReferences":[{"number":3,"repository":{"name":"r","owner":{"login":"o"}}}]}' \
+  bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 3 2>/dev/null )"
+if printf '%s\n' "$OP_STDOUT" | grep -q 'set up to track'; then
+  bad "21 a first push must keep git's upstream message off the record stream"; else ok; fi
+has "$OP_STDOUT" "pushed issue-3-y" "21 …while the pushed record itself still lands on stdout"
 
 # the closing-link mismatch is a REFUSAL with the fix named, not a note
 ( cd "$PCLONE" && git commit -q --allow-empty -m more ) >/dev/null 2>&1
