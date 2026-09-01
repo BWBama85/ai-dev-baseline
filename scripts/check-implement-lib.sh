@@ -1390,6 +1390,22 @@ case "$SEEN" in
        bad "19m the trace must be capped DURING the dispatch (agent still saw $SEEN bytes)"; fi ;;
 esac
 rm -f "$shimbin/claude"
+# A zero-padded cap is its number: "08" used to start the watcher and then abort the final cap
+# with bash's octal "value too great for base".
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1024 count=2 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md
+printf 'ok\n'
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_LOG_MAX_BYTES=08 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19m a zero-padded cap is decimal — the dispatch completes"
+TR_B="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$TR_B" ] && [ "$TR_B" -le 400 ]; then ok; else
+  bad "19m …and the 8-byte cap was applied (got ${TR_B:-none} bytes)"; fi
+rm -f "$shimbin/claude"
 
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial

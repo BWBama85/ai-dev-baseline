@@ -1416,7 +1416,9 @@ cmd_dispatch_survey() {
   # never the whole invocation.
   local _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}" _twp=""
   case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
-  [ "${#_tmax}" -le 9 ] || _tmax=262144
+  # Base-10 normalized after the width check, like every other knob: a zero-padded "08" would
+  # otherwise reach $(( tb - max )) and die on bash's octal reading.
+  if [ "${#_tmax}" -le 9 ]; then _tmax=$(( 10#$_tmax )); else _tmax=262144; fi
   if [ "$_tmax" -gt 0 ]; then
     ( while :; do sleep 5; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
   fi
