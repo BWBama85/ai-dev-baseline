@@ -1324,6 +1324,17 @@ touch -t 202001010000 "$d/.claude/state/.claim-mutex" 2>/dev/null
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "0" "19l a stale mutex is broken under a GNU-flavored stat too"
 rm -f "$shimbin/stat"
+# A FRESH mutex is honored, and honored WITHOUT being reaped: the stale-reaper renames the
+# instance it judged and re-verifies its age before deleting — a pathname-only rmdir let two
+# contenders both judge one stale mutex and the slower one delete the winner's FRESH mutex.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+mkdir "$d/.claude/state/.claim-mutex"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "19l a FRESH foreign mutex refuses after the bounded wait (13)"
+if [ -d "$d/.claude/state/.claim-mutex" ]; then ok; else
+  bad "19l …and the fresh mutex survives — it was never reaped"; fi
+rmdir "$d/.claude/state/.claim-mutex" 2>/dev/null
 # A renewal that could NOT be published refuses (20): silently proceeding leaves the caller on a
 # near-expiry lease a concurrent admission can reap mid-work.
 d="$(new_repo)"; seed_snap "$d"

@@ -252,7 +252,7 @@ _IL_CLAIM_MUTEX=".claim-mutex"
 # residual, stated: a holder suspended >60s inside its microseconds-long critical section can
 # still interleave; no userspace file protocol closes that without kernel fencing.
 _il_claim_mutex_take() {   # <state-dir>
-  local dir="$1" m now
+  local dir="$1" m now grave gm
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     mkdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null && return 0
     # adb_mtime, never an inline stat chain: GNU stat treats `-f %m` as a filesystem report and
@@ -261,7 +261,21 @@ _il_claim_mutex_take() {   # <state-dir>
     m="$(adb_mtime "$dir/$_IL_CLAIM_MUTEX")"
     now="$(date +%s 2>/dev/null)" || now=""
     if [ -n "$m" ] && [ -n "$now" ] && [ "$(( now - m ))" -gt 60 ]; then
-      rmdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null
+      # THE INSTANCE IS VERIFIED, never the pathname (_il_break's rule): a bare rmdir let two
+      # contenders both judge one stale mutex and the slower one delete the winner's FRESH
+      # replacement. The rename is a contest exactly one reaper wins; the age is then re-read
+      # from the renamed instance itself (mv preserves mtime), and a fresh one grabbed by
+      # mistake is put back — or dropped if the path has already been re-taken, since that
+      # occupant supersedes it.
+      grave="$dir/.claim-mutex-reaped.$$"
+      if mv "$dir/$_IL_CLAIM_MUTEX" "$grave" 2>/dev/null; then
+        gm="$(adb_mtime "$grave")"
+        if [ -n "$gm" ] && [ "$(( now - gm ))" -gt 60 ]; then
+          rmdir "$grave" 2>/dev/null || :
+        else
+          mv "$grave" "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null || rmdir "$grave" 2>/dev/null || :
+        fi
+      fi
       continue
     fi
     sleep 0.1
