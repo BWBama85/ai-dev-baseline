@@ -863,6 +863,13 @@ eq "$?" "20" "20 a marker .issue with a non-numeric entry refuses (20), never ha
 jq -n '{branch:"issue-7-t", issue:"", phase:"committed"}' > "$RCLONE/.claude/state/implement-issue-active.json"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 eq "$?" "20" "20 …and an empty marker .issue refuses too, never falls back past the marker"
+# …and EMPTY FIELDS refuse: word splitting silently discarded them, so "7," — a marker whose
+# second issue was lost to corruption — reviewed only #7 while the contract promises a refusal.
+for badissue in '7,' ',7' '7,,8'; do
+  jq -n --arg i "$badissue" '{branch:"issue-7-t", issue:$i, phase:"committed"}' > "$RCLONE/.claude/state/implement-issue-active.json"
+  ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+  eq "$?" "20" "20 a marker .issue with an empty field ('$badissue') refuses (20)"
+done
 rm -f "$RCLONE/.claude/state/implement-issue-active.json"
 d="$(new_repo)"
 ( cd "$d" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
