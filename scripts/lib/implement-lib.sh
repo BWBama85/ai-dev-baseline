@@ -1506,24 +1506,16 @@ cmd_dispatch_survey() {
         fi
       fi ;;
   esac
-  # The trace cap (validated here, watched below): the agent writes survey-trace.md DIRECTLY,
-  # outside role-dispatch's bounded streams, so a watcher re-caps it every ~5s during the
-  # dispatch — a runaway writer is bounded to the cap plus a few seconds of its write rate,
-  # never the whole invocation.
-  local _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}" _twp="" _pp=$$
+  # The trace cap is POST-DISPATCH ONLY, by design and after evidence: an in-flight watcher was
+  # tried and five review rounds each found the next hole in a shell process fighting a live
+  # adversarial writer over an agent-owned pathname (symlink swaps, held-name discovery, vacancy
+  # windows) — no bash primitive reopens without following. The in-flight bound is the dispatch
+  # timeout itself; the cap below runs with the writer dead, where nothing can race it.
+  local _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
   case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
   # Base-10 normalized after the width check, like every other knob: a zero-padded "08" would
   # otherwise reach $(( tb - max )) and die on bash's octal reading.
   if [ "${#_tmax}" -le 9 ]; then _tmax=$(( 10#$_tmax )); else _tmax=262144; fi
-  if [ "$_tmax" -gt 0 ]; then
-    # The watcher's lifetime is TIED to this process: a parent-only SIGKILL cannot run the
-    # kill/wait below, and an unconditional loop then orphans a 5s ticker that caps a LATER
-    # run's trace under this run's settings. `kill -0` on the parent ends it within one tick.
-    # The liveness check runs AFTER each sleep, immediately before the cap: checked before it,
-    # a parent killed mid-sleep still got one stale cap — against a successor's trace, under
-    # this run's limit.
-    ( while sleep 5; do kill -0 "$_pp" 2>/dev/null || exit 0; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
-  fi
   # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
   # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem
   # during the dispatch, before any post-exit publisher runs. `head -c` closes the pipe at the
@@ -1536,7 +1528,6 @@ cmd_dispatch_survey() {
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" 2> "$dir/survey.err" \
     | head -c 8388608 > "$dir/survey-stage.md"
   rc=$?
-  if [ -n "$_twp" ]; then kill "$_twp" 2>/dev/null; wait "$_twp" 2>/dev/null || :; fi
   if [ "$rc" -eq 0 ]; then
     _il_publish_survey "$dir" || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
   else

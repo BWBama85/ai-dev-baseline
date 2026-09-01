@@ -1455,27 +1455,24 @@ eq "$?" "0" "19k a shorter republication publishes"
 if exists "$d/.claude/state/survey-overflow.md"; then
   bad "19k …and removes the previous attempt's overflow"; else ok; fi
 
-# ================= 19m. the trace is bounded WHILE the agent writes it (#435) ===================
-# The post-dispatch cap left the whole 1200-1500s invocation free to fill the disk. A watcher
-# now caps the file every ~5s during the dispatch; the shim sleeps past two ticks and then
-# reports the size IT sees — pre-fix that is the full 300 KiB, post-fix a capped file.
+# ================= 19m. the trace is bounded AFTER the dispatch — race-free by design (#435) ====
+# An in-flight watcher was tried and retired: five review rounds each found the next hole in a
+# shell process fighting a live adversarial writer over an agent-owned pathname (symlink swaps,
+# held-name discovery, vacancy windows). The in-flight bound is therefore the dispatch timeout
+# itself; the post-exit cap runs with the adversary dead, where the pathname dance cannot race.
 cat > "$shimbin/claude" <<'SH'
 #!/usr/bin/env bash
 dd if=/dev/zero bs=1024 count=300 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md
-sleep 12
-wc -c < .claude/state/survey-trace.md | tr -d ' '
+printf 'ok\n'
 SH
 chmod +x "$shimbin/claude"
 d="$(new_repo)"; seed_snap "$d"
 printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
 ( cd "$d" && env ADB_DISPATCH_LOG_MAX_BYTES=1024 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
-eq "$?" "0" "19m the watched dispatch still completes rc 0"
-SEEN="$(cat "$d/.claude/state/survey.md" 2>/dev/null)"
-case "$SEEN" in
-  ''|*[!0-9]*) bad "19m …but the shim reported no readable size ('$SEEN')" ;;
-  *) if [ "$SEEN" -lt 300000 ]; then ok; else
-       bad "19m the trace must be capped DURING the dispatch (agent still saw $SEEN bytes)"; fi ;;
-esac
+eq "$?" "0" "19m the dispatch completes rc 0"
+TR_FINAL="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$TR_FINAL" ] && [ "$TR_FINAL" -le 1400 ]; then ok; else
+  bad "19m …and the final trace is capped post-dispatch (got ${TR_FINAL:-none} bytes)"; fi
 rm -f "$shimbin/claude"
 # A zero-padded cap is its number: "08" used to start the watcher and then abort the final cap
 # with bash's octal "value too great for base".
@@ -1580,9 +1577,9 @@ eq "$(cat "$PCLONE/target6.txt" 2>/dev/null)" "precious repo content" \
   "19n a planted phase stage never writes through to its target"
 rm -f "$PCLONE/target6.txt"
 
-# ================= 19p. the trace watcher dies with its dispatch (#435) =========================
-# A parent-only SIGKILL used to orphan the 5s watcher forever — it would keep capping a LATER
-# run's trace under the old settings and accumulate across interruptions.
+# ================= 19p. no background capper survives the dispatch (#435) =======================
+# The in-flight watcher is retired (see 19m); this pins that nothing background remains to cap a
+# later run's trace after the dispatch dies, however it dies.
 cat > "$shimbin/claude" <<'SH'
 #!/usr/bin/env bash
 sleep 30
