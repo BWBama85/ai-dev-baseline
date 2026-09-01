@@ -292,7 +292,9 @@ EOF
     [ "$got" -ge 3 ] || printf 'implement-lib: %s dispatch prompt(s) route through _il_append_issue_envelopes, expected at least 3 (survey + gaps + review)\n' "$got"
     raw="$(awk '
         { line = $0; sub(/[[:space:]]*#.*$/, "", line)
-          if (line ~ /\.body/ && line ~ /prompt/ && line !~ /untrusted/ && line !~ /_il_append_issue_envelopes/) print FNR ": " $0 }' "$f")"
+          # The prompt sink in this library is a VARIABLE ("$pf"/"$pft"), so the word `prompt`
+          # alone misses the natural regression `jq -r .body … >> "$pf"` — match both spellings.
+          if (line ~ /\.body/ && (line ~ /prompt/ || line ~ /"\$pft?"/) && line !~ /untrusted/ && line !~ /_il_append_issue_envelopes/) print FNR ": " $0 }' "$f")"
     if [ -n "$raw" ]; then
       printf 'implement-lib: issue text reaches a prompt WITHOUT the containment wrapper:\n'
       printf '%s\n' "$raw" | sed 's/^/    /'
@@ -391,6 +393,13 @@ m_raw_paste()     { awk '
                       /^```bash$/ { print; print "jq -r .body {{STATE_DIR}}/issue-1.json >> {{STATE_DIR}}/gap-prompt.txt"; next }
                       { print }' "$1/base/workflows/implement-issue.md" > "$1/x" \
                     && mv "$1/x" "$1/base/workflows/implement-issue.md"; }
+# The LIBRARY-side twin of m_raw_paste: the natural regression appends `jq -r .body … >> "$pf"`
+# beside the surviving envelope call inside a dispatch builder — `.body` present, the literal
+# word `prompt` absent, the sink a variable. A predicate keyed on `prompt` alone stays silent.
+m_raw_paste_lib() { awk '
+                      { print }
+                      /_il_append_checklist "\$pf" "gap analysis"/ { print "  jq -r .body \"$dir/issue-7.json\" >> \"$pf\"" }' \
+                      "$1/scripts/lib/implement-lib.sh" > "$1/x" && mv "$1/x" "$1/scripts/lib/implement-lib.sh"; }
 # A third-party read added to a workflow registered as ZERO. Without the discovery rule this passes.
 m_cleanup_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' >> "$1/base/workflows/cleanup.md"; }
 m_partial_label() { awk -v m="$MARK" 'index($0, m) && !done { done = 1; next } { print }' \
@@ -410,6 +419,7 @@ for NTH in 1 2 3; do
 done
 mutate_must_fail "delete the library containment call"   m_uncontain      "contained hand-off"
 mutate_must_fail "RAW paste beside a surviving wrapper"  m_raw_paste      "WITHOUT the containment wrapper"
+mutate_must_fail "RAW paste into \$pf inside the library" m_raw_paste_lib  "WITHOUT the containment wrapper"
 mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carries NO labelled read site"
 mutate_must_fail "delete the practice"                   m_drop_practice  "missing practice"
 mutate_must_fail "gut the practice's core rule"          m_gut_practice   "data-not-instruction"
