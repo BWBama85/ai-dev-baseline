@@ -1352,41 +1352,25 @@ _il_publish_survey() {   # <state-dir>
 # the post-dispatch call reports once. Scratch is .trace-cap.tmp, never survey-stage.md — the
 # dispatch is writing that concurrently.
 _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
-  local dir="$1" max="$2" quiet="${3:-}" tb held cap
-  # EVERYTHING RUNS ON AN UNPREDICTABLE PRIVATE NAME. The surveyor owns the public pathname and
-  # can swap any FIXED name it can learn, so the held file is mktemp-random: the mv takes
-  # whatever is at the public name (link or file) atomically and without following, replacing
-  # our fresh temp; the verdicts and the truncate then run on a name the agent would have to
-  # readdir-poll and race within microseconds to find — and an immediate -L recheck guards the
-  # one reopen that writes. The same inode returns to the path, so a writer's open descriptor
-  # stays attached throughout; survey-held.* is in the sweep families for the interrupted case.
-  held="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 0
-  if ! mv -f "$dir/survey-trace.md" "$held" 2>/dev/null; then rm -f "$held"; return 0; fi
-  if [ -L "$held" ]; then
-    rm -f "$held"
-    printf 'implement-lib: WARN — survey-trace.md was a symlink; removed without following it\n' >&2
-    return 0
-  fi
-  tb="$(wc -c < "$held" 2>/dev/null | tr -d ' ')"
-  case "$tb" in ''|*[!0-9]*) mv -f "$held" "$dir/survey-trace.md" 2>/dev/null; return 0 ;; esac
-  if [ "$tb" -le "$max" ]; then
-    mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
-    return 0
-  fi
-  cap="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || { mv -f "$held" "$dir/survey-trace.md" 2>/dev/null; return 0; }
-  if ! { head -c "$max" "$held" 2>/dev/null
-         printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
-           "$max" "$(( tb - max ))"; } > "$cap" 2>/dev/null; then
-    rm -f "$cap"
-    mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
-    return 0
-  fi
-  if [ -L "$held" ]; then rm -f "$held" "$cap"; return 0; fi
-  : > "$held"
-  cat "$cap" >> "$held" 2>/dev/null
-  rm -f "$cap"
-  mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
-  [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md exceeded %s bytes; capped\n' "$max" >&2
+  local dir="$1" max="$2" quiet="${3:-}" tb note
+  # NOTHING HERE EVER TRUNCATES OR WRITES THROUGH A NAME. role-dispatch's own bounded-runner
+  # contract admits a descendant can survive the CLI with descriptors open, so even a
+  # post-dispatch truncate can race a live hostile writer — and five review rounds showed no
+  # shell sequence survives that. Both moves are rename(2), name-level and never following, so a
+  # planted or swapped symlink can only move ITSELF; the oversize trace is preserved WHOLE at
+  # survey-trace-full.md (a surviving writer's disk growth is bounded only by its own death —
+  # safety, not disk, is the guarantee here) and the trace name gets a small note built in an
+  # O_EXCL mktemp (the one name-open left, random and immediate).
+  [ -e "$dir/survey-trace.md" ] || [ -L "$dir/survey-trace.md" ] || return 0
+  tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
+  case "$tb" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$tb" -gt "$max" ] || return 0
+  mv -f "$dir/survey-trace.md" "$dir/survey-trace-full.md" 2>/dev/null || return 0
+  note="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 0
+  printf '[implement-lib: the trace reached %s bytes, past the %s-byte bound (ADB_DISPATCH_LOG_MAX_BYTES); the full trace is at survey-trace-full.md]\n' \
+    "$tb" "$max" > "$note" 2>/dev/null
+  mv -f "$note" "$dir/survey-trace.md" 2>/dev/null || rm -f "$note"
+  [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md was %s bytes; moved whole to survey-trace-full.md with a note in its place\n' "$tb" >&2
   return 0
 }
 

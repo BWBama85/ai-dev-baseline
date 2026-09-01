@@ -1217,7 +1217,7 @@ eq "$?" "0" "19h the dispatch still completes rc 0"
 TR_BYTES="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
 if [ -n "$TR_BYTES" ] && [ "$TR_BYTES" -le 1300 ]; then ok; else
   bad "19h …but the trace is capped at the log bound (got ${TR_BYTES:-none} bytes)"; fi
-has "$(cat "$d/.claude/state/survey-trace.md" 2>/dev/null)" 'HEAD cap' "19h …and says the END is the part missing"
+has "$(cat "$d/.claude/state/survey-trace.md" 2>/dev/null)" 'survey-trace-full.md' "19h …and the note names where the whole trace went"
 # The override mirrors role-dispatch's reading: an all-digit value too wide for shell arithmetic
 # falls back to the 262144 default (a bare -gt on it errors and evaluates FALSE — uncapped), and
 # 0 disables the cap entirely.
@@ -1481,7 +1481,9 @@ printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
 eq "$?" "0" "19m the dispatch completes rc 0"
 TR_FINAL="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
 if [ -n "$TR_FINAL" ] && [ "$TR_FINAL" -le 1400 ]; then ok; else
-  bad "19m …and the final trace is capped post-dispatch (got ${TR_FINAL:-none} bytes)"; fi
+  bad "19m …and the trace name holds a small note post-dispatch (got ${TR_FINAL:-none} bytes)"; fi
+eq "$(wc -c < "$d/.claude/state/survey-trace-full.md" 2>/dev/null | tr -d ' ')" "307200" \
+  "19m …with the full trace preserved WHOLE — nothing was ever truncated"
 rm -f "$shimbin/claude"
 # A zero-padded cap is its number: "08" used to start the watcher and then abort the final cap
 # with bash's octal "value too great for base".
@@ -1497,7 +1499,7 @@ printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
 eq "$?" "0" "19m a zero-padded cap is decimal — the dispatch completes"
 TR_B="$(wc -c < "$d/.claude/state/survey-trace.md" 2>/dev/null | tr -d ' ')"
 if [ -n "$TR_B" ] && [ "$TR_B" -le 400 ]; then ok; else
-  bad "19m …and the 8-byte cap was applied (got ${TR_B:-none} bytes)"; fi
+  bad "19m …and the 8-byte cap moved the trace aside (got ${TR_B:-none} bytes at the name)"; fi
 rm -f "$shimbin/claude"
 
 # ================= 19n. the cap constrains the inode the writer HOLDS (#435) ====================
@@ -1510,9 +1512,11 @@ CAP_D="$(new_repo)"
   && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md \
   && exec 3>> .claude/state/survey-trace.md \
   && _il_cap_trace .claude/state 1024 quiet \
-  && printf 'POST-CAP-WRITE' >&3 ) || bad "19n the in-place cap probe did not run"
-if grep -aq 'POST-CAP-WRITE' "$CAP_D/.claude/state/survey-trace.md"; then ok; else
-  bad "19n a post-cap write through the held fd must land on the visible path (the writer was detached onto a hidden inode)"; fi
+  && printf 'POST-CAP-WRITE' >&3 ) || bad "19n the cap probe did not run"
+# The no-truncate design preserves the writer's inode WHOLE at survey-trace-full.md — a post-cap
+# write through the held fd lands there, never lost and never on a hidden unlinked inode.
+if grep -aq 'POST-CAP-WRITE' "$CAP_D/.claude/state/survey-trace-full.md"; then ok; else
+  bad "19n a post-cap write through the held fd lands in the preserved full trace, never a hidden inode"; fi
 # The trace path is AGENT-WRITABLE and the issue text is third-party: a surveyor can plant it
 # as a symlink at any writable repo file, and a following truncate would erase that target.
 CAP_D="$(new_repo)"
@@ -1605,25 +1609,12 @@ eq "$(cat "$PCLONE/target6.txt" 2>/dev/null)" "precious repo content" \
   "19n a planted phase stage never writes through to its target"
 rm -f "$PCLONE/target6.txt"
 
-# ================= 19p. no background capper survives the dispatch (#435) =======================
-# The in-flight watcher is retired (see 19m); this pins that nothing background remains to cap a
-# later run's trace after the dispatch dies, however it dies.
-cat > "$shimbin/claude" <<'SH'
-#!/usr/bin/env bash
-sleep 30
-SH
-chmod +x "$shimbin/claude"
-d="$(new_repo)"; seed_snap "$d"
-printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
-( cd "$d" && exec bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1 & WP_DP=$!
-sleep 3
-kill -9 "$WP_DP" 2>/dev/null
-sleep 8
-if pgrep -f "_il_cap_trace .claude/state" >/dev/null 2>&1; then
-  bad "19p the watcher outlived its killed dispatch"; else ok; fi
-pkill -9 -f "$shimbin/claude" 2>/dev/null
-wait "$WP_DP" 2>/dev/null
-rm -f "$shimbin/claude"
+# ================= 19p. no background capper exists at all (#435) ===============================
+# The in-flight watcher is retired (see 19m); this pins that the lib carries no background
+# capper call site to orphan — process archaeology via pgrep matched the test harness's own
+# wrapper cmdline and is not a usable witness.
+if grep -q '_il_cap_trace "\$dir" "\$_tmax" quiet' "$IL"; then
+  bad "19p a background (quiet) capper call site reappeared in the lib"; else ok; fi
 
 # ================= 19o. an oversized CODEX reply is a failed dispatch too (#435) ================
 # The codex arm emits its result with `cat` after the bounded call; the stage's 8 MiB head cap
