@@ -1740,8 +1740,15 @@ cmd_open_pr() {
   [ -n "$title" ] && [ -n "$bodyf" ] && [ -f "$bodyf" ] || { echo "implement-lib: open-pr needs --title and a readable --body-file" >&2; exit 2; }
   # --closes carries issue NUMBERS, refused otherwise: the closing-link proof below compares
   # against GitHub's closingIssuesReferences, a deduplicated numeric set, so a token that can
-  # never appear there (a word, 0) would fail the proof forever with the links fine.
+  # never appear there (a word, 0) would fail the proof forever with the links fine. The comma
+  # GRAMMAR is validated before any split — word splitting discards empty fields, and "9," may
+  # be a lost second issue whose closing link would then go unproven.
   local _c
+  if [ -n "$closes" ]; then
+    case "$closes" in
+      ,*|*,|*,,*) echo "implement-lib: --closes has an empty entry ('$closes') — a lost issue number? Spell the full comma-joined list" >&2; exit 2 ;;
+    esac
+  fi
   for _c in ${closes//,/ }; do
     case "$_c" in *[!0-9]*) echo "implement-lib: --closes entries must be issue numbers (got '$_c')" >&2; exit 2 ;; esac
     case "$_c" in *[1-9]*) : ;; *) echo "implement-lib: --closes entry '$_c' is not an issue number" >&2; exit 2 ;; esac

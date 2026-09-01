@@ -999,6 +999,12 @@ openpr2 "9,x" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_C
 eq "$OP_RC" "2" "21 a non-numeric --closes entry is a usage error"
 openpr2 "0" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "2" "21 …and 0 is not an issue number"
+# EMPTY FIELDS refuse before splitting can discard them: "9," may be a lost second issue, and
+# certifying only the survivors would prove closing links for a narrowed set.
+for badcl in "9," ",9" "9,,7"; do
+  openpr2 "$badcl" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+  eq "$OP_RC" "2" "21 a --closes with an empty field ('$badcl') is a usage error"
+done
 # STDOUT IS THE RECORD STREAM: on a branch's FIRST push, `git push -u` writes its
 # upstream-registration message to stdout, which would ride between the closed one-fact-per-line
 # records and break any consumer that parses them.
