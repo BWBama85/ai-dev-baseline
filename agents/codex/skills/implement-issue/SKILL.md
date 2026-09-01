@@ -335,7 +335,9 @@ An unstated disposition is the defect — rc 11 at the report step, which 10/11 
 
 ### 6. Implement
 
-- `update_plan` 3–8 tracked sub-tasks. Read `survey.md` first; read code before
+- `update_plan` 3–8 tracked sub-tasks. Read `.codex/state/survey.md` first **if it
+  exists** — a skipped (`survey = ""`) or twice-failed survey publishes none, and that is the
+  recorded disposition, not broken state; read code before
   editing; honor the project's conventions and module boundaries. Update documentation in the
   same PR for any user- or operator-facing change; add or extend tests in the same package.
 - Run the gates until green — **fix-and-rerun, not a wait** (#417):
