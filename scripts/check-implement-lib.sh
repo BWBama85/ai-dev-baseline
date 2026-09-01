@@ -827,6 +827,14 @@ has "$(cat "$d/.claude/state/gap-prompt.txt")" 'BLOCKING' "19 …and the three-h
 dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'x' > "$d/.claude/state/survey.md"
 ( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
 has "$(cat "$d/.claude/state/gap-prompt.txt")" 'only the first 16384' "19 an oversize survey is truncated AND says so"
+# Since the publisher bounds survey.md itself, the on-disk file can never exceed the size test —
+# the notice must key on the OVERFLOW artifact, or the gap agent reads a partial survey
+# presented as complete.
+printf 'bounded head\n' > "$d/.claude/state/survey.md"
+printf 'the whole reply\n' > "$d/.claude/state/survey-overflow.md"
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+has "$(cat "$d/.claude/state/gap-prompt.txt")" 'survey-overflow.md' "19 a bounded-published survey still tells the gap agent about its overflow"
+rm -f "$d/.claude/state/survey-overflow.md"
 # That fixture is a single NEWLINE-FREE 32 KiB line: the cap must bind on the first record too,
 # not only from line 2 on — unbounded, the whole line rode into the prompt past the stated bound.
 GP_BYTES="$(wc -c < "$d/.claude/state/gap-prompt.txt" | tr -d ' ')"

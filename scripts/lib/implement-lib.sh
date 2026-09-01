@@ -1635,6 +1635,11 @@ cmd_dispatch_gaps() {
     printf '\n' >> "$pf"
     if [ -n "$sv_bytes" ] && [ "$sv_bytes" -gt 16384 ]; then
       printf '%s\n' "(survey.md is $sv_bytes bytes; only the first 16384 are included above — the rest is on disk.)" >> "$pf"
+    elif [ -f "$dir/survey-overflow.md" ]; then
+      # The publisher bounds survey.md itself, so the size test above can no longer fire for a
+      # CLI-published survey — the OVERFLOW artifact is what says the reply was truncated, and
+      # without this notice the gap agent reads a partial survey presented as complete.
+      printf '%s\n' "(the survey reply exceeded the byte bound; the summary above is its bounded head — the full reply is on disk at survey-overflow.md.)" >> "$pf"
     fi
   fi
   _il_append_issue_envelopes "$dir" "$pf" "" "$@" || { _il_bail "" "$dir" 20 "gap prompt assembly failed"; return $?; }
