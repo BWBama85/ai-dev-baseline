@@ -303,4 +303,7 @@ One line per resolved review thread, newest last.
 - `false-guarantee` `scripts/render-size.sh:308` `28c8614` `PRRT_kwDOTfywrM6d7dW7` PR #452 2026-09-01 — the header promised one final TOTAL summing every row above while supporting rows were excluded and a second total rode after it
 - `consumer-contract-mismatch` `base/workflows/implement-issue.md:201` `f41f5bd` `PRRT_kwDOTfywrM6d8Jzc` PR #452 2026-09-01 — the survey's time bound existed on the CLI path only — the native subagent dispatch carried no deadline while the lease is sized for two bounded attempts
 - `partial-validation` `scripts/lib/implement-lib.sh:1488` `8e9cc24` `PRRT_kwDOTfywrM6d8Jzd` PR #452 2026-09-01 — the worktree diff still covered tracked paths only — a new untracked helper reached no reviewer
+- `false-guarantee` `scripts/lib/implement-lib.sh:1244` `469c567` `PRRT_kwDOTfywrM6d8wkV` PR #452 2026-09-01 — the post-exit publisher bounded the artifact while the stream that wrote it was uncapped — a malfunctioning CLI could fill the filesystem before truncation ran
+- `status-swallowed` `scripts/lib/implement-lib.sh:1498` `d25c369` `PRRT_kwDOTfywrM6d8wka` PR #452 2026-09-01 — no-index exits 1 for both an ordinary differ and an undiffable directory, so an embedded repo was silently skipped from the review prompt
+- `partial-validation` `scripts/check-injection.sh:295` `a542727` `PRRT_kwDOTfywrM6d8wkd` PR #452 2026-09-01 — the raw-paste predicate keyed on the word prompt while the library's sinks are variables, and its only mutation exercised the workflow side
 <!-- adb:hits:end -->
