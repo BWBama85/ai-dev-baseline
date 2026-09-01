@@ -1506,7 +1506,10 @@ cmd_dispatch_survey() {
     # The watcher's lifetime is TIED to this process: a parent-only SIGKILL cannot run the
     # kill/wait below, and an unconditional loop then orphans a 5s ticker that caps a LATER
     # run's trace under this run's settings. `kill -0` on the parent ends it within one tick.
-    ( while kill -0 "$_pp" 2>/dev/null; do sleep 5; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
+    # The liveness check runs AFTER each sleep, immediately before the cap: checked before it,
+    # a parent killed mid-sleep still got one stale cap — against a successor's trace, under
+    # this run's limit.
+    ( while sleep 5; do kill -0 "$_pp" 2>/dev/null || exit 0; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
   fi
   # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
   # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem
