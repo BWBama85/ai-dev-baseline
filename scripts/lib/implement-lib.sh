@@ -1412,11 +1412,20 @@ cmd_dispatch_gaps() {
   # 2 x gap ≤ 2700 + 600 margin) — for the same reason the survey's is: an unclamped generic
   # override let the pre-marker window provably outlive the claim. Tightening below the share
   # still governs; invalid values fall to the share itself.
+  # Same normalize-then-compare shape as the survey clamp: zero-padding is a spelling, not an
+  # invalid value, and refusing it silently LENGTHENED a short ask to 2700.
   local _gt="${ADB_DISPATCH_TIMEOUT_SECS:-2700}"
-  case "$_gt" in ''|*[!0-9]*|0*) _gt=2700 ;; esac
-  if [ "${#_gt}" -gt 4 ] || [ "$_gt" -gt 2700 ]; then
+  case "$_gt" in ''|*[!0-9]*) _gt=2700 ;; esac
+  if [ "${#_gt}" -gt 9 ]; then
     printf 'implement-lib: ADB_DISPATCH_TIMEOUT_SECS=%s exceeds the gap dispatch'"'"'s 2700s share of the 9000s claim lease — clamping to 2700\n' "$_gt" >&2
     _gt=2700
+  else
+    _gt=$(( 10#$_gt ))
+    [ "$_gt" -gt 0 ] || _gt=2700
+    if [ "$_gt" -gt 2700 ]; then
+      printf 'implement-lib: ADB_DISPATCH_TIMEOUT_SECS=%s exceeds the gap dispatch'"'"'s 2700s share of the 9000s claim lease — clamping to 2700\n' "$_gt" >&2
+      _gt=2700
+    fi
   fi
   ADB_DISPATCH_TIMEOUT_SECS="$_gt" \
     bash "$_IL_ROLE_DISPATCH" invoke gap_analysis < "$pf" > "$dir/gaps.md" 2> "$dir/gaps.err"
