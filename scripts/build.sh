@@ -742,6 +742,12 @@ for wfd in "$workflows"/*/ "$workflows"/.*/; do
     echo "build.sh: base/workflows/$wfn/ — hidden directories are refused: nothing enumerates them, so their files ship to nobody" >&2
     exit 3 ;;
   esac
+  # README is RESERVED, not a workflow source: the render loop skips README.md, so a supporting
+  # directory for it would pass the mere-existence check below while rendering to nobody.
+  if [ "$wfn" = "README" ]; then
+    echo "build.sh: base/workflows/README/ — README.md is not a workflow source, so its supporting files render to nobody; remove the directory" >&2
+    exit 3
+  fi
   if [ ! -f "$workflows/$wfn.md" ]; then
     echo "build.sh: base/workflows/$wfn/ exists but base/workflows/$wfn.md does not — supporting files belong to a workflow source" >&2
     exit 3

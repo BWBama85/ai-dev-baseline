@@ -336,6 +336,20 @@ else
   rm -f "$WORK/CaseProbe"
 fi
 
+# --- 3e: README/ is reserved — its source is skipped, so its supporting files render to nobody --
+d="$WORK/readmedir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/README"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf 'readme\n' > "$d/base/workflows/README.md"
+printf '# notes\n' > "$d/base/workflows/README/notes.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a supporting directory for the reserved README source FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'README' "...naming the reserved source"
+
 # --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
 # `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,
 # rendered to no agent, and passed every 1:1 check. Same shape one level down: a subdirectory
