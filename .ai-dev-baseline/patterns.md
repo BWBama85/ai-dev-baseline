@@ -301,4 +301,6 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/implement-lib.sh:1470` `771cfc8` `PRRT_kwDOTfywrM6d7dW5` PR #452 2026-09-01 — the review diff covered committed changes only, so uncommitted simplify edits shipped unreviewed on the documented Claude path
 - `false-guarantee` `scripts/lib/implement-lib.sh:1390` `692a124` `PRRT_kwDOTfywrM6d7dWr` PR #452 2026-09-01 — the lease floor assumed 2700s gap attempts while the generic override could lengthen them past the claim
 - `false-guarantee` `scripts/render-size.sh:308` `28c8614` `PRRT_kwDOTfywrM6d7dW7` PR #452 2026-09-01 — the header promised one final TOTAL summing every row above while supporting rows were excluded and a second total rode after it
+- `consumer-contract-mismatch` `base/workflows/implement-issue.md:201` `f41f5bd` `PRRT_kwDOTfywrM6d8Jzc` PR #452 2026-09-01 — the survey's time bound existed on the CLI path only — the native subagent dispatch carried no deadline while the lease is sized for two bounded attempts
+- `partial-validation` `scripts/lib/implement-lib.sh:1488` `8e9cc24` `PRRT_kwDOTfywrM6d8Jzd` PR #452 2026-09-01 — the worktree diff still covered tracked paths only — a new untracked helper reached no reviewer
 <!-- adb:hits:end -->
