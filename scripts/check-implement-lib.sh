@@ -1529,6 +1529,34 @@ eq "$(head -n1 "$d/target4.txt" 2>/dev/null)" "precious repo content" \
   "19n …and the prompt build never writes through it"
 if [ -L "$d/.claude/state/gap-prompt.txt" ]; then
   bad "19n …and the built prompt is a regular file, not the planted link"; else ok; fi
+# Review OUTPUTS are plantable the same way — the reviewer's redirect must not write through.
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+[ -n "$last" ] && printf 'review says fine\n' > "$last"
+exit 0
+SH
+chmod +x "$shimbin/codex"
+read -r _ RVC <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVC/.claude/state"; seed_snap "$RVC"
+( cd "$RVC" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+printf 'precious repo content\n' > "$RVC/target5.txt"
+( cd "$RVC" && ln -s ../../target5.txt .claude/state/review.md ) >/dev/null 2>&1
+( cd "$RVC" && bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1
+eq "$(cat "$RVC/target5.txt" 2>/dev/null)" "precious repo content" \
+  "19n a planted review output never writes through to its target"
+rm -f "$shimbin/codex"
+# …and the shared phase writer's .marker.tmp stage: the FIRST post-push phase write follows a
+# planted link unless the stage is unlinked every time, not only at the prUrl write.
+printf 'precious repo content\n' > "$PCLONE/target6.txt"
+( cd "$PCLONE" && ln -s ../../target6.txt .claude/state/.marker.tmp ) >/dev/null 2>&1
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$(cat "$PCLONE/target6.txt" 2>/dev/null)" "precious repo content" \
+  "19n a planted phase stage never writes through to its target"
+rm -f "$PCLONE/target6.txt"
 
 # ================= 19p. the trace watcher dies with its dispatch (#435) =========================
 # A parent-only SIGKILL used to orphan the 5s watcher forever — it would keep capping a LATER

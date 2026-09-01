@@ -1156,6 +1156,9 @@ _il_append_checklist() {   # <prompt-file> <consumer-word>
 # carries (#243). Used by open-pr for the transitions it owns.
 _il_phase() {   # <state-dir> <phase>
   local dir="$1" phase="$2"
+  # The stage name is plantable by any dispatched agent — unlinked on EVERY write (rm never
+  # follows), not only at the prUrl site, or the first post-push phase write goes through it.
+  rm -f "$dir/.marker.tmp"
   jq --arg phase "$phase" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      '.phase = $phase
@@ -1840,6 +1843,7 @@ cmd_dispatch_review() {
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
+  rm -f "$out" "$errf"   # plantable output names, unlinked before the redirects
   if [ -n "$effort" ]; then
     bash "$_IL_ROLE_DISPATCH" invoke "$token" --effort "$effort" < "$pf" > "$out" 2> "$errf"
   else

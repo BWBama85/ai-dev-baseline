@@ -55,6 +55,7 @@ idempotent, append-only history (#243):
 
 ```bash
 # ADB-SNIPPET: phase-update
+rm -f .gemini/state/.marker.tmp   # a dispatched agent can plant this name; rm never follows
 jq --arg phase "<next phase>" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
    '.phase = $phase
