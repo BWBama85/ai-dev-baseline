@@ -760,7 +760,7 @@ add session-context     bash scripts/check-session-context.sh
 # its own witness: the owner check, the source gate, the whole-record refusal, the containment of
 # the injected fields, the REQUIRED count, and the workflow snippet's history append.
 add session-context-mutation bash scripts/check-session-context.sh --mutation
-inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md
+inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
