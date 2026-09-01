@@ -356,4 +356,7 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/implement-lib.sh:1506` `27b4c69` `PRRT_kwDOTfywrM6eK8Os` PR #452 2026-09-01 — the watcher checked liveness before sleeping, so a parent killed mid-sleep still landed one stale cap on a successor's trace
 - `consumer-contract-mismatch` `scripts/lib/implement-lib.sh:1631` `6d5dfd4` `PRRT_kwDOTfywrM6eK8O3` PR #452 2026-09-01 — the truncation notice keyed on a size the bounded publisher made unreachable, so the gap agent read a partial survey presented as complete
 - `declared-inputs-incomplete` `scripts/check-session-context.sh:1301` `380f7da` `PRRT_kwDOTfywrM6eK8O8` PR #452 2026-09-01 — the suite grew a grep over implement-lib while the mutation step's input set did not name it — a lib-only change would have held the harness back
+- `toctou` `scripts/lib/implement-lib.sh:1348` `ca3a1bc` `PRRT_kwDOTfywrM6eMZWL` PR #452 2026-09-01 — the held name was fixed and agent-learnable, so the swap race moved one file over — it is mktemp-random now, with an -L recheck before the single writing reopen
+- `status-swallowed` `scripts/lib/implement-lib.sh:1382` `83597a1` `PRRT_kwDOTfywrM6eMZWS` PR #452 2026-09-01 — head exits 0 at its cap and no pipefail upstream exists on the native path, so a truncated prefix published as a complete survey
+- `stale-doc-claim` `README.md:58` `1cec463` `PRRT_kwDOTfywrM6eMZWY` PR #452 2026-09-01 — the README role table omitted survey while the example above it configured one
 <!-- adb:hits:end -->
