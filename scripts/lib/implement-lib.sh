@@ -268,12 +268,21 @@ _il_claim_mutex_take() {   # <state-dir>
       # mistake is put back — or dropped if the path has already been re-taken, since that
       # occupant supersedes it.
       grave="$dir/.claim-mutex-reaped.$$"
+      # RE-VERIFIED immediately before the move: between the judgement above and this mv, the
+      # stale instance can be reaped and a FRESH one created by a faster contender — moving
+      # that one displaces a live holder. The re-read shrinks that window to microseconds
+      # (the same floor _il_break documents for the claim itself).
+      m="$(adb_mtime "$dir/$_IL_CLAIM_MUTEX")"
+      if [ -z "$m" ] || [ "$(( now - m ))" -le 60 ]; then continue; fi
       if mv "$dir/$_IL_CLAIM_MUTEX" "$grave" 2>/dev/null; then
         gm="$(adb_mtime "$grave")"
         if [ -n "$gm" ] && [ "$(( now - gm ))" -gt 60 ]; then
           rmdir "$grave" 2>/dev/null || :
-        else
-          mv "$grave" "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null || rmdir "$grave" 2>/dev/null || :
+        elif ! mv "$grave" "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null; then
+          # A FRESH instance was grabbed and the path has already been re-taken by a third: the
+          # displaced holder is live, so its instance is NEVER deleted — the grave stays as an
+          # inert orphan, and THIS contender stands down rather than adding a third entrant.
+          return 1
         fi
       fi
       continue
