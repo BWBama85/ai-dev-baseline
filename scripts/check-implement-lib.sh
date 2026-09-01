@@ -856,6 +856,12 @@ printf 'uncommitted-simplify-edit\n' >> "$RCLONE/seed"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 has "$(cat "$RP")" 'uncommitted-simplify-edit' "20 …and uncommitted working-tree edits reach the reviewer"
 ( cd "$RCLONE" && git checkout -q -- seed ) >/dev/null 2>&1   # a fixture file this test appended to; no untracked work at risk
+# …UNTRACKED files too: a tree-ish diff shows nothing for a brand-new helper, so a file
+# /simplify created before this dispatch would be committed without independent review.
+printf 'brand-new-untracked-helper\n' > "$RCLONE/newhelper.txt"
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+has "$(cat "$RP")" 'brand-new-untracked-helper' "20 …and a new untracked file reaches the reviewer"
+rm -f "$RCLONE/newhelper.txt"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
 if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then

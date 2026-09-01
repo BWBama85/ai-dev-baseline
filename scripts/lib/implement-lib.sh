@@ -1486,6 +1486,19 @@ cmd_dispatch_review() {
   mb="$(git merge-base "origin/$db" HEAD 2>/dev/null)" \
     || { rm -f "$pft"; printf 'implement-lib: git merge-base origin/%s HEAD failed\n' "$db" >&2; return 20; }
   git diff "$mb" >> "$pft" 2>/dev/null || { rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20; }
+  # UNTRACKED non-ignored files produce NO diff from a tree-ish, so a brand-new helper created
+  # before this dispatch would be committed without independent review — append each as a
+  # /dev/null diff. `--no-index` exits 1 whenever the files differ, which is every time here;
+  # only a real error (2+) aborts.
+  local uf
+  while IFS= read -r -d '' uf; do
+    [ -n "$uf" ] || continue
+    git diff --no-index -- /dev/null "$uf" >> "$pft" 2>/dev/null
+    case "$?" in
+      0|1) : ;;
+      *)   rm -f "$pft"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
+    esac
+  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
   # The issue set is the MARKER's own comma list when a marker exists (a stray numeric snapshot
   # must not widen the review scope); the snapshot glob is the PRE-MARKER fallback only. Once a
   # marker exists it is authoritative, so its whole list must parse: skipping a bad entry would
