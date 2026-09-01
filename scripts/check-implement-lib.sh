@@ -862,6 +862,12 @@ printf 'brand-new-untracked-helper\n' > "$RCLONE/newhelper.txt"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 has "$(cat "$RP")" 'brand-new-untracked-helper' "20 …and a new untracked file reaches the reviewer"
 rm -f "$RCLONE/newhelper.txt"
+# An untracked EMBEDDED REPO surfaces as a directory entry `sub/` that --no-index cannot diff
+# (exit 1, same as an ordinary differ) — it would land as an unreviewed gitlink, so it refuses.
+( cd "$RCLONE" && mkdir -p subrepo && git -C subrepo init -q && printf 'x\n' > subrepo/f ) >/dev/null 2>&1
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "20" "20 an untracked embedded repo refuses (20), never a silent skip"
+rm -rf "$RCLONE/subrepo"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
 if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then
