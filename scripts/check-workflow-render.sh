@@ -368,6 +368,13 @@ rm -f "$d/base/workflows/fixture/notes.txt"
 printf '# caps\n' > "$d/base/workflows/fixture/Notes.MD"
 bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a case-variant extension FAILS the build too"
+rm -f "$d/base/workflows/fixture/Notes.MD"
+# A dangling .md symlink passes the extension check but the render loop's -f skips it — the
+# build stayed green while the referenced sibling rendered to nobody.
+ln -s /nonexistent-ref "$d/base/workflows/fixture/ref.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a dangling .md supporting symlink FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'not a readable regular file' "...naming the shape"
 
 # --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
 # `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,

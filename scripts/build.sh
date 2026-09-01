@@ -670,6 +670,13 @@ render_agent_skill() {
         echo "build.sh: base/workflows/$name/$sbase — unsupported supporting file (only *.md renders); it would ship to nobody" >&2
         exit 3 ;;
       esac
+      # …and a *.md child must be a READABLE REGULAR FILE: a dangling symlink passes the
+      # extension check while the render loop's -f silently skips it — green build, absent
+      # sibling.
+      if [ ! -f "$ssub" ] || [ ! -r "$ssub" ]; then
+        echo "build.sh: base/workflows/$name/$sbase — not a readable regular file (a dangling symlink?); it would ship to nobody" >&2
+        exit 3
+      fi
     done
     # Dotfiles are enumerated too, or the leading-dot refusal below can never fire: `*.md` alone
     # skips them, so a hidden supporting source committed cleanly while rendering to no agent and
