@@ -1791,14 +1791,20 @@ cmd_dispatch_review() {
   # beneath — committable later, unreviewed. Probe the stderr first; any diagnostic refuses.
   # FROM THE GIT TOP-LEVEL, never the cwd: invoked from a subdirectory, a cwd-relative ls-files
   # silently omits root-level and sibling untracked files — the same partial-listing hole.
-  local uf _uerr _utop
+  local uf _uerr _utop _usnap
   _utop="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || { rm -f "$pft"; printf 'implement-lib: could not resolve the git top-level\n' >&2; return 20; }
-  if ! _uerr="$(git -C "$_utop" ls-files --others --exclude-standard -z 2>&1 >/dev/null)"; then
-    rm -f "$pft"; printf 'implement-lib: could not enumerate untracked files\n' >&2; return 20
+  # ONE capture, validated, then iterated EXACTLY — never a probe of one invocation and a loop
+  # over another: a directory turning unreadable between the two published a prompt missing
+  # whatever a second, unchecked enumeration dropped. NUL-delimited on disk because a shell
+  # variable cannot carry NULs; the snapshot lives in the review family's stage prefix.
+  _usnap="$(mktemp "$dir/review-prompt-stage.XXXXXX")" \
+    || { rm -f "$pft"; printf 'implement-lib: could not stage the untracked snapshot\n' >&2; return 20; }
+  if ! _uerr="$(git -C "$_utop" ls-files --others --exclude-standard -z 2>&1 > "$_usnap")"; then
+    rm -f "$pft" "$_usnap"; printf 'implement-lib: could not enumerate untracked files\n' >&2; return 20
   fi
   if [ -n "$_uerr" ]; then
-    rm -f "$pft"
+    rm -f "$pft" "$_usnap"
     printf 'implement-lib: the untracked enumeration warned ("%.160s") — a partial listing would publish an unreviewed file; fix it and re-run\n' "$_uerr" >&2
     return 20
   fi
@@ -1815,16 +1821,17 @@ cmd_dispatch_review() {
     # whatever its target (the mode-120000 patch carries the target), so `-L` passes even where
     # `-f` follows the link to a directory or to nothing.
     if [ ! -f "$ufa" ] && [ ! -L "$ufa" ]; then
-      rm -f "$pft"
+      rm -f "$pft" "$_usnap"
       printf 'implement-lib: untracked entry %s is not a diffable file (an embedded repository or directory?) — resolve it before dispatching review\n' "$uf" >&2
       return 20
     fi
     git -C "$_utop" diff --no-index -- /dev/null "$uf" >> "$pft" 2>/dev/null
     case "$?" in
       0|1) : ;;
-      *)   rm -f "$pft"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
+      *)   rm -f "$pft" "$_usnap"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
     esac
-  done < <(git -C "$_utop" ls-files --others --exclude-standard -z 2>/dev/null)
+  done < "$_usnap"
+  rm -f "$_usnap"
   # The issue set is the MARKER's own comma list when a marker exists (a stray numeric snapshot
   # must not widen the review scope); the snapshot glob is the PRE-MARKER fallback only. Once a
   # marker exists it is authoritative, so its whole list must parse: skipping a bad entry would
