@@ -427,7 +427,7 @@ cmd_state_scan() {
       # gap prompt is built AND at step 6, so the caller passes the FRESH run verdict to the
       # delete (see `state-verdict`'s issue-snapshot note). Same family shape as the gaps arm;
       # the PREFLIGHT clear in implement-lib.sh `_il_clear` is kept identical to this glob.
-      survey-prompt.txt|survey.md|survey.err|survey-*.md|survey-*.err)
+      survey-prompt.txt|survey.md|survey.err|survey-*.md|survey-*.err|survey-held.*)
         _adb_cl_emit "$want_ident" survey "$f" '-'
         ;;
       # /implement-issue step 2's issue snapshot (#250) — the untrusted issue text and the

@@ -880,7 +880,7 @@ _il_clear() {   # <state-dir>
   targets+=( "$dir"/review-prompt-stage.* )
   # The SURVEY family (#435) — same containment rule: state-scan classifies these `survey`, so a
   # name /cleanup can sweep that this cannot clear would read as a fresh run's survey.
-  targets+=( "$dir"/survey-*.md "$dir"/survey-*.err )
+  targets+=( "$dir"/survey-*.md "$dir"/survey-*.err "$dir"/survey-held.* )
   # The DOCS-DUTY family (#422). Same containment rule as the two above: `state-scan` classifies
   # `docs-consulted.tsv` and `docs-consulted-*.tsv` as `docs`, so a name /cleanup can sweep that
   # this cannot clear would leave a previous run's documentation record in place — and a fresh
@@ -1318,14 +1318,16 @@ _il_publish_survey() {   # <state-dir>
 # the post-dispatch call reports once. Scratch is .trace-cap.tmp, never survey-stage.md — the
 # dispatch is writing that concurrently.
 _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
-  local dir="$1" max="$2" quiet="${3:-}" tb held="$1/survey-held.md"
-  # EVERYTHING RUNS ON A PRIVATE NAME. The surveyor owns the public pathname and can swap it for
-  # a symlink at any instant, so every check-then-act on it races — the mv takes WHATEVER is at
-  # the name (link or file) atomically and without following, replacing any pre-planted dest
-  # (rename(2) clobbers a link as a name, never through it). The verdicts and the truncate then
-  # run on survey-held.md, which only this process writes and the survey-*.md family sweeps; the
-  # same inode returns to the path, so a writer's open descriptor stays attached throughout.
-  mv -f "$dir/survey-trace.md" "$held" 2>/dev/null || return 0
+  local dir="$1" max="$2" quiet="${3:-}" tb held cap
+  # EVERYTHING RUNS ON AN UNPREDICTABLE PRIVATE NAME. The surveyor owns the public pathname and
+  # can swap any FIXED name it can learn, so the held file is mktemp-random: the mv takes
+  # whatever is at the public name (link or file) atomically and without following, replacing
+  # our fresh temp; the verdicts and the truncate then run on a name the agent would have to
+  # readdir-poll and race within microseconds to find — and an immediate -L recheck guards the
+  # one reopen that writes. The same inode returns to the path, so a writer's open descriptor
+  # stays attached throughout; survey-held.* is in the sweep families for the interrupted case.
+  held="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 0
+  if ! mv -f "$dir/survey-trace.md" "$held" 2>/dev/null; then rm -f "$held"; return 0; fi
   if [ -L "$held" ]; then
     rm -f "$held"
     printf 'implement-lib: WARN — survey-trace.md was a symlink; removed without following it\n' >&2
@@ -1337,17 +1339,18 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
     mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
     return 0
   fi
-  rm -f "$dir/survey-trace-cap.md"   # the scratch name is plantable too; rm never follows
-  if ! head -c "$max" "$held" > "$dir/survey-trace-cap.md" 2>/dev/null; then
-    rm -f "$dir/survey-trace-cap.md"
+  cap="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || { mv -f "$held" "$dir/survey-trace.md" 2>/dev/null; return 0; }
+  if ! { head -c "$max" "$held" 2>/dev/null
+         printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
+           "$max" "$(( tb - max ))"; } > "$cap" 2>/dev/null; then
+    rm -f "$cap"
     mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
     return 0
   fi
-  printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
-    "$max" "$(( tb - max ))" >> "$dir/survey-trace-cap.md"
+  if [ -L "$held" ]; then rm -f "$held" "$cap"; return 0; fi
   : > "$held"
-  cat "$dir/survey-trace-cap.md" >> "$held" 2>/dev/null
-  rm -f "$dir/survey-trace-cap.md"
+  cat "$cap" >> "$held" 2>/dev/null
+  rm -f "$cap"
   mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
   [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md exceeded %s bytes; capped\n' "$max" >&2
   return 0
