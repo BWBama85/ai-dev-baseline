@@ -868,6 +868,14 @@ rm -f "$RCLONE/newhelper.txt"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 eq "$?" "20" "20 an untracked embedded repo refuses (20), never a silent skip"
 rm -rf "$RCLONE/subrepo"
+# A SYMLINK is diffable even when its target is a directory or missing — --no-index emits the
+# mode-120000 patch with the link target — so it passes review rather than being refused as a
+# directory.
+( cd "$RCLONE" && ln -s /nonexistent-target danglink ) >/dev/null 2>&1
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "0" "20 an untracked symlink (dangling included) is diffable and accepted"
+has "$(cat "$RP")" 'nonexistent-target' "20 …and its target reaches the reviewer"
+rm -f "$RCLONE/danglink"
 # An UNREADABLE directory makes ls-files warn and exit 0 over a partial listing — accepting it
 # publishes a review prompt missing whatever sat beneath, which is then committable unreviewed.
 ( cd "$RCLONE" && mkdir -p noperm && printf 'hidden\n' > noperm/f && chmod 000 noperm ) >/dev/null 2>&1

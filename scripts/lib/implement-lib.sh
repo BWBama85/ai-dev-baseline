@@ -1571,10 +1571,12 @@ cmd_dispatch_review() {
   fi
   while IFS= read -r -d '' uf; do
     [ -n "$uf" ] || continue
-    # A NON-FILE entry refuses: an embedded repository surfaces here as `sub/`, which --no-index
-    # cannot diff — it exits 1 exactly like an ordinary differ, so accepting 1 would silently
-    # skip it and let an unreviewed gitlink be committed.
-    if [ ! -f "$uf" ]; then
+    # A NON-DIFFABLE entry refuses: an embedded repository surfaces here as `sub/`, which
+    # --no-index cannot diff — it exits 1 exactly like an ordinary differ, so accepting 1 would
+    # silently skip it and let an unreviewed gitlink be committed. A SYMLINK is diffable
+    # whatever its target (the mode-120000 patch carries the target), so `-L` passes even where
+    # `-f` follows the link to a directory or to nothing.
+    if [ ! -f "$uf" ] && [ ! -L "$uf" ]; then
       rm -f "$pft"
       printf 'implement-lib: untracked entry %s is not a diffable file (an embedded repository or directory?) — resolve it before dispatching review\n' "$uf" >&2
       return 20
