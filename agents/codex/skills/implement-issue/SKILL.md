@@ -200,7 +200,8 @@ the PR, go to step 3). **When the resolved token is your own agent and your harn
 read-only subagent facility** (Claude: the Agent tool, `Explore` type): build the contained
 prompt with `bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_CLAIM_TOKEN" --prompt-only
 .codex/state <n>…`, dispatch the subagent over it, and publish its returned summary through
-`bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-survey .codex/state` (the reply on stdin) — never write
+`bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-survey --token "$RUN_CLAIM_TOKEN" .codex/state` (the reply on
+stdin) — never write
 `survey.md` yourself: the publisher is what bounds an oversized reply. **The survey's time
 bound applies on this path too**: the 9000 s claim lease is sized for two ≤1500 s survey
 attempts, so a subagent still running past ~1500 s is abandoned (its error or timeout return

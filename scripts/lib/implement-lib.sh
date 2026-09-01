@@ -1312,9 +1312,22 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
 # of writing survey.md itself, so the bounded publication is structural on both paths rather than
 # a step an agent could skip.
 cmd_publish_survey() {
-  [ "$#" -eq 1 ] || { echo "implement-lib: publish-survey needs exactly 1 arg: <state-dir> (the reply on stdin)" >&2; exit 2; }
-  local dir="$1" _svw
+  # A pre-marker WRITER like the dispatchers, so it takes the same fail-closed renewal check: a
+  # stale native run resumed after a successor admitted must not replace the live run's survey.
+  local tok="" dir _svw
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --token) [ "$#" -ge 2 ] || { echo "implement-lib: --token needs a value" >&2; exit 2; }
+               tok="$2"; shift ;;
+      -*)      echo "implement-lib: publish-survey: unknown option '$1'" >&2; exit 2 ;;
+      *)       break ;;
+    esac
+    shift
+  done
+  [ "$#" -eq 1 ] || { echo "implement-lib: publish-survey needs exactly 1 arg: <state-dir> (the reply on stdin; --token <T> for the claim check)" >&2; exit 2; }
+  dir="$1"
   [ -d "$dir" ] || { printf 'implement-lib: no state dir at %s\n' "$dir" >&2; return 20; }
+  _il_claim_renew "$dir" "$tok" || return $?
   # The same 8 MiB runaway bound as the CLI dispatch's stage write; the ordinary 16 KiB
   # publication bound still applies on top, so past the bound the overflow copy is capped too.
   head -c 8388608 > "$dir/survey-stage.md" \

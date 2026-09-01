@@ -1225,6 +1225,19 @@ eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "3
   "19i …with the full reply kept at survey-overflow.md"
 ( bash "$IL" publish-survey ) >/dev/null 2>&1
 eq "$?" "2" "19i publish-survey without its state-dir is a usage error"
+# The native publisher is a pre-marker WRITER like the dispatchers, so it takes the same
+# fail-closed renewal check: a stale run resumed after a successor admitted must not replace
+# the live run's survey.md.
+d="$(new_repo)"
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tokB"}' > "$d/.claude/state/gap-analysis.lock"
+printf 'stale native reply\n' | ( cd "$d" && bash "$IL" publish-survey --token tokA .claude/state ); RC=$?
+eq "$RC" "13" "19i a successor's claim refuses the native publisher (13)"
+if exists "$d/.claude/state/survey.md"; then bad "19i …and nothing was published over the live run's"; else ok; fi
+d="$(new_repo)"
+jq -n --argjson e "$(($(date +%s) + 9000))" '{startedAt:1, expiresAt:$e, token:"tokA"}' > "$d/.claude/state/gap-analysis.lock"
+printf 'live native reply\n' | ( cd "$d" && bash "$IL" publish-survey --token tokA .claude/state ); RC=$?
+eq "$RC" "0" "19i …while the claim holder publishes and renews"
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "live native reply" "19i …verbatim"
 
 # ================= 19l. every pre-marker subcommand RENEWS the claim lease (#435) ===============
 # The lease used to run from admit alone, so snapshot's unbounded gh reads and the agent's triage
