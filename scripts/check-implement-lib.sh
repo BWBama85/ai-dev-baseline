@@ -1507,6 +1507,29 @@ eq "$(cat "$d/target3.txt" 2>/dev/null)" "precious repo content" \
 if [ -L "$d/.claude/state/gap-analysis.lock" ]; then
   bad "19n …and the canonical claim never becomes the planted symlink"; else ok; fi
 
+# ================= 19o. an oversized CODEX reply is a failed dispatch too (#435) ================
+# The codex arm emits its result with `cat` after the bounded call; the stage's 8 MiB head cap
+# closes the pipe, and a masked SIGPIPE published the truncated result as a clean survey.
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--output-last-message" ] && last="$a"
+  prev="$a"
+done
+[ -n "$last" ] && dd if=/dev/zero bs=1024 count=9216 2>/dev/null | tr '\0' 'c' > "$last"
+exit 0
+SH
+chmod +x "$shimbin/codex"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "codex"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+OC_RC=$?
+if [ "$OC_RC" -ne 0 ]; then ok; else bad "19o a 9 MiB codex reply is a FAILED dispatch (got rc 0)"; fi
+if [ -s "$d/.claude/state/survey.md" ]; then bad "19o …and publishes no truncated survey.md"; else ok; fi
+rm -f "$shimbin/codex"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it

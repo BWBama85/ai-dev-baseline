@@ -1019,7 +1019,16 @@ _adb_rd_invoke_agent() {
         printf 'role-dispatch: codex exited 0 but wrote no final message — treating as incomplete\n' >&2
         rm -f "$last"; return 1
       fi
-      cat "$last"; rm -f "$last"; return 0
+      # `cat`'s own status is the emission's: a downstream cap (the survey stage's 8 MiB head
+      # bound) closes the pipe mid-result, and masking that SIGPIPE published a TRUNCATED final
+      # message as a clean pass.
+      cat "$last"; rc=$?
+      rm -f "$last"
+      if [ "$rc" -ne 0 ]; then
+        printf 'role-dispatch: the final message could not be emitted whole (a downstream cap closed the pipe?) — treating as failed\n' >&2
+        return "$rc"
+      fi
+      return 0
       ;;
     *)
       printf 'role-dispatch: cannot invoke unknown agent "%s"\n' "$token" >&2; return 2
