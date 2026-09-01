@@ -654,13 +654,22 @@ render_agent_skill() {
   local sdir sfile sbase sbase_lc sseen="" sout ssub
   sdir="$workflows/$name"
   if [ -d "$sdir" ]; then
-    # A supporting dir is FLAT: a subdirectory (hidden or not) is enumerated by nothing — its
-    # files would commit while rendering to no agent — so it is refused where it is born.
-    for ssub in "$sdir"/*/ "$sdir"/.*/; do
-      [ -d "$ssub" ] || continue
-      case "$(basename "$ssub")" in .|..) continue ;; esac
-      echo "build.sh: base/workflows/$name/$(basename "$ssub")/ — supporting files are a flat directory; a subdirectory renders to nobody" >&2
-      exit 3
+    # EVERY direct child is validated, not only the ones the render glob yields: a subdirectory
+    # (hidden or not) and a non-.md file (`notes.txt`, `Notes.MD`) all commit cleanly while
+    # rendering to no agent — a navigator referencing such a sibling breaks only when an agent
+    # tries to load it from a tree every 1:1 check called complete.
+    for ssub in "$sdir"/* "$sdir"/.*; do
+      [ -e "$ssub" ] || [ -L "$ssub" ] || continue
+      sbase="$(basename "$ssub")"
+      case "$sbase" in .|..) continue ;; esac
+      if [ -d "$ssub" ]; then
+        echo "build.sh: base/workflows/$name/$sbase/ — supporting files are a flat directory; a subdirectory renders to nobody" >&2
+        exit 3
+      fi
+      case "$sbase" in *.md) : ;; *)
+        echo "build.sh: base/workflows/$name/$sbase — unsupported supporting file (only *.md renders); it would ship to nobody" >&2
+        exit 3 ;;
+      esac
     done
     # Dotfiles are enumerated too, or the leading-dot refusal below can never fire: `*.md` alone
     # skips them, so a hidden supporting source committed cleanly while rendering to no agent and

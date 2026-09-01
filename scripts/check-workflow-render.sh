@@ -350,6 +350,25 @@ bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a supporting directory for the reserved README source FAILS the build"
 has "$(cat "$d/build.log" 2>/dev/null)" 'README' "...naming the reserved source"
 
+# --- 3f: a supporting file OUTSIDE the *.md contract is refused, never silently skipped --------
+# `notes.txt` (or `Notes.MD`) commits cleanly while every renderer and 1:1 check ignores it — a
+# navigator referencing it then breaks only when an agent tries to load the absent sibling.
+d="$WORK/nonmd"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf 'plain text\n' > "$d/base/workflows/fixture/notes.txt"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a non-.md supporting file FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'only \*.md renders' "...naming the contract"
+rm -f "$d/base/workflows/fixture/notes.txt"
+printf '# caps\n' > "$d/base/workflows/fixture/Notes.MD"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a case-variant extension FAILS the build too"
+
 # --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
 # `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,
 # rendered to no agent, and passed every 1:1 check. Same shape one level down: a subdirectory
