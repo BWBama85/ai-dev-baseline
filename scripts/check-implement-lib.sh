@@ -1305,6 +1305,25 @@ touch -t 202001010000 "$d/.claude/state/.claim-mutex" 2>/dev/null
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "0" "19l a stale claim mutex is broken through, not honored forever"
 if [ -d "$d/.claude/state/.claim-mutex" ]; then bad "19l …and no mutex is left behind"; else ok; fi
+# …ON GNU TOO: GNU stat reads -f as a filesystem report and can print before failing, so an
+# inline `stat -f || stat -c` chain concatenated garbage and honored a stale mutex forever on
+# Ubuntu. A GNU-flavored stat shim proves the portable helper survives it.
+cat > "$shimbin/stat" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  -f) echo "  File: \"$3\" ID: 100 Namelen: 255"; exit 1 ;;
+  -c) perl -e 'print((stat($ARGV[0]))[9])' "$3" ;;
+  *)  exit 1 ;;
+esac
+SH
+chmod +x "$shimbin/stat"
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+mkdir "$d/.claude/state/.claim-mutex"
+touch -t 202001010000 "$d/.claude/state/.claim-mutex" 2>/dev/null
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19l a stale mutex is broken under a GNU-flavored stat too"
+rm -f "$shimbin/stat"
 # A renewal that could NOT be published refuses (20): silently proceeding leaves the caller on a
 # near-expiry lease a concurrent admission can reap mid-work.
 d="$(new_repo)"; seed_snap "$d"
@@ -1475,6 +1494,18 @@ printf 'precious repo content\n' > "$d/target2.txt"
 printf 'native reply\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
 eq "$(cat "$d/target2.txt" 2>/dev/null)" "precious repo content" \
   "19n a symlinked stage never writes through to its target"
+# The renewal stage is plantable the same way: a planted .claim.tmp must neither be written
+# through nor become the canonical claim.
+d="$(new_repo)"; seed_snap "$d"
+printf 'precious repo content\n' > "$d/target3.txt"
+jq -n --argjson e "$(($(date +%s) + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && ln -s ../../target3.txt .claude/state/.claim.tmp ) >/dev/null 2>&1
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19n a planted renewal stage does not break the renewal"
+eq "$(cat "$d/target3.txt" 2>/dev/null)" "precious repo content" \
+  "19n …and never writes claim JSON through to its target"
+if [ -L "$d/.claude/state/gap-analysis.lock" ]; then
+  bad "19n …and the canonical claim never becomes the planted symlink"; else ok; fi
 
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial

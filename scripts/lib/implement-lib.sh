@@ -255,9 +255,11 @@ _il_claim_mutex_take() {   # <state-dir>
   local dir="$1" m now
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     mkdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null && return 0
-    m="$(stat -f %m "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null || stat -c %Y "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null)" || m=""
+    # adb_mtime, never an inline stat chain: GNU stat treats `-f %m` as a filesystem report and
+    # can print it BEFORE failing, so `stat -f || stat -c` concatenated garbage on Ubuntu and a
+    # stale mutex was honored forever there.
+    m="$(adb_mtime "$dir/$_IL_CLAIM_MUTEX")"
     now="$(date +%s 2>/dev/null)" || now=""
-    case "$m" in ''|*[!0-9]*) m="" ;; esac
     if [ -n "$m" ] && [ -n "$now" ] && [ "$(( now - m ))" -gt 60 ]; then
       rmdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null
       continue
@@ -1059,6 +1061,10 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   # A renewal that cannot be PUBLISHED refuses: proceeding on the old lease is exactly the
   # near-expiry exposure renewal exists to remove, and a filesystem that refused this write is
   # about to refuse the artifacts too.
+  # The stage name is agent-adjacent and plantable as a symlink — unlinked first (rm does not
+  # follow), or the redirect would write claim JSON through it and the mv would install the
+  # link itself as the canonical claim.
+  rm -f "$dir/.claim.tmp"
   if { jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
         > "$dir/.claim.tmp" 2>/dev/null \
       && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" 2>/dev/null; }; then
@@ -1891,6 +1897,7 @@ cmd_open_pr() {
     fi
   fi
   [ -n "$pr" ] || { printf 'implement-lib: gh pr create returned no PR URL\n' >&2; return 25; }
+  rm -f "$dir/.marker.tmp"
   jq --arg url "$pr" '.prUrl = $url' "$dir/$_IL_MARKER" > "$dir/.marker.tmp" \
     && mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" \
     && _il_phase "$dir" pr_opened \
