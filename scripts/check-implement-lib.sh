@@ -64,6 +64,7 @@ case "$1 $2" in
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
   "issue view")
+    [ -n "${SHIM_ISSUE_SLEEP:-}" ] && sleep "$SHIM_ISSUE_SLEEP"
     if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then echo "gh: issue not found" >&2; exit 1; fi
     if [ -n "${SHIM_LOCK_SWAP:-}" ] && [ -f "$SHIM_LOCK_SWAP" ]; then
       jq '.token = "tokB"' "$SHIM_LOCK_SWAP" > "$SHIM_LOCK_SWAP.t" && mv "$SHIM_LOCK_SWAP.t" "$SHIM_LOCK_SWAP"
@@ -1314,6 +1315,12 @@ d="$(new_repo)"; seed_snap "$d"
 jq -n '{startedAt:1, expiresAt:"soon", token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "13" "19l …and a wrongly typed lease refuses the same way"
+# Each fetch is BOUNDED under the lease: one stalled gh call used to hold the loop past 9000s
+# with the claim expiring under it. The bound is adb_run_bounded's; the knob exists for tests.
+d="$(new_repo)"; gid "$d"; clm "$d"
+SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ISSUE_SLEEP=5 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1 \
+  bash "$IL" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
+eq "$SN_RC" "20" "19l a stalled issue fetch is killed at the bound (20), never held past the lease"
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the

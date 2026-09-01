@@ -1224,10 +1224,16 @@ cmd_snapshot_issues() {
     # outlive a single lease, and a successor arriving mid-set must refuse the remainder rather
     # than have its state overwritten by the tail of this loop.
     _il_claim_renew "$dir" "$tok" || return $?
-    gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "$dir/issue-$n.json" \
-      || { _il_bail "$tok" "$dir" 20 "issue #$n not found in this repo — verify repo scope (repo-scope.md)"; return $?; }
-    gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' > "$dir/issue-$n.assoc" \
-      || { _il_bail "$tok" "$dir" 20 "could not read #$n's author association"; return $?; }
+    # EACH fetch is bounded (600s default, well under the lease): one stalled gh call used to
+    # hold this loop indefinitely with the claim expiring under it. Validated like the other
+    # timeout knobs — base-10, width-bounded, zero refused to the default.
+    local _ft="${ADB_SNAPSHOT_FETCH_TIMEOUT_SECS:-600}"
+    case "$_ft" in ''|*[!0-9]*) _ft=600 ;; esac
+    if [ "${#_ft}" -gt 9 ]; then _ft=600; else _ft=$(( 10#$_ft )); [ "$_ft" -gt 0 ] || _ft=600; fi
+    adb_run_bounded "$_ft" 10 gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "$dir/issue-$n.json" \
+      || { _il_bail "$tok" "$dir" 20 "could not fetch issue #$n (not found, or the read outran its ${_ft}s bound) — verify repo scope (repo-scope.md)"; return $?; }
+    adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' > "$dir/issue-$n.assoc" \
+      || { _il_bail "$tok" "$dir" 20 "could not read #$n's author association (or the read outran its ${_ft}s bound)"; return $?; }
   done
   for n in "$@"; do
     st="$(jq -r .state "$dir/issue-$n.json" 2>/dev/null)" || st=""
