@@ -17,7 +17,7 @@ who executes each step moves.
 "Role-aware" is a property of the *consumer*, not something the manifest
 imposes. A role only takes effect where some workflow explicitly resolves it
 (via `role-dispatch.sh`, below). Today `/implement-issue` consumes
-`gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
+`survey` + `gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
 `[reviewers]` bot allowlist. `debug`, `issue_author`, and `release` are
 **declared but not yet consumed** by any shipped workflow — they resolve
 correctly and are there for your own skills to honor. This matters most for
