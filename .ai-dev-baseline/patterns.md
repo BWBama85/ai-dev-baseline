@@ -321,4 +321,7 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/implement-lib.sh:975` `8ae373f` `PRRT_kwDOTfywrM6eA_kt` PR #452 2026-09-01 — the expiry-margin argument assumed continuous execution; a suspension between check and rename let a reaped run publish over its successor — renewal and reap now share a mutex and re-read under it
 - `partial-validation` `scripts/lib/implement-lib.sh:1603` `aadb31e` `PRRT_kwDOTfywrM6eA_kx` PR #452 2026-09-01 — the untracked enumeration ran from the cwd, so a below-root invocation silently omitted root-level and sibling files from the review prompt
 - `stale-doc-claim` `docs/roles-and-agents.md:34` `51c354a` `PRRT_kwDOTfywrM6eA_kz` PR #452 2026-09-01 — the roles overview still said implement-issue consumes only gap_analysis and review after the survey role shipped
+- `false-guarantee` `scripts/lib/implement-lib.sh:1211` `cf18c67` `PRRT_kwDOTfywrM6eCIJP` PR #452 2026-09-01 — renewal at subcommand start still left the unbounded per-issue gh loop able to outlive one lease — renewal now runs per iteration
+- `status-swallowed` `scripts/lib/implement-lib.sh:1035` `895afd2` `PRRT_kwDOTfywrM6eCIJb` PR #452 2026-09-01 — a renewal whose publish failed returned success, leaving the caller on the near-expiry lease the renewal existed to extend
+- `partial-validation` `scripts/lib/implement-lib.sh:1747` `0501fd8` `PRRT_kwDOTfywrM6eCIJj` PR #452 2026-09-01 — the closes list was split before its grammar was checked, so an empty field — a lost issue — narrowed the certified closing set
 <!-- adb:hits:end -->
