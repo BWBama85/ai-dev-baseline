@@ -1480,13 +1480,16 @@ cmd_dispatch_survey() {
   # outside role-dispatch's bounded streams, so a watcher re-caps it every ~5s during the
   # dispatch — a runaway writer is bounded to the cap plus a few seconds of its write rate,
   # never the whole invocation.
-  local _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}" _twp=""
+  local _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}" _twp="" _pp=$$
   case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
   # Base-10 normalized after the width check, like every other knob: a zero-padded "08" would
   # otherwise reach $(( tb - max )) and die on bash's octal reading.
   if [ "${#_tmax}" -le 9 ]; then _tmax=$(( 10#$_tmax )); else _tmax=262144; fi
   if [ "$_tmax" -gt 0 ]; then
-    ( while :; do sleep 5; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
+    # The watcher's lifetime is TIED to this process: a parent-only SIGKILL cannot run the
+    # kill/wait below, and an unconditional loop then orphans a 5s ticker that caps a LATER
+    # run's trace under this run's settings. `kill -0` on the parent ends it within one tick.
+    ( while kill -0 "$_pp" 2>/dev/null; do sleep 5; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
   fi
   # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
   # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem

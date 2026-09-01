@@ -1519,6 +1519,26 @@ eq "$(head -n1 "$d/target4.txt" 2>/dev/null)" "precious repo content" \
 if [ -L "$d/.claude/state/gap-prompt.txt" ]; then
   bad "19n …and the built prompt is a regular file, not the planted link"; else ok; fi
 
+# ================= 19p. the trace watcher dies with its dispatch (#435) =========================
+# A parent-only SIGKILL used to orphan the 5s watcher forever — it would keep capping a LATER
+# run's trace under the old settings and accumulate across interruptions.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && exec bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1 & WP_DP=$!
+sleep 3
+kill -9 "$WP_DP" 2>/dev/null
+sleep 8
+if pgrep -f "_il_cap_trace .claude/state" >/dev/null 2>&1; then
+  bad "19p the watcher outlived its killed dispatch"; else ok; fi
+pkill -9 -f "$shimbin/claude" 2>/dev/null
+wait "$WP_DP" 2>/dev/null
+rm -f "$shimbin/claude"
+
 # ================= 19o. an oversized CODEX reply is a failed dispatch too (#435) ================
 # The codex arm emits its result with `cat` after the bounded call; the stage's 8 MiB head cap
 # closes the pipe, and a masked SIGPIPE published the truncated result as a clean survey.
