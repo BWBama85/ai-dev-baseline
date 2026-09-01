@@ -999,6 +999,12 @@ jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9", owner:"sessi
 openpr CLAUDE_CODE_SESSION_ID=session-here SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "21 a blocked run resumed by another session still opens its PR"
 has "$OP_OUT" "arm-skipped blocked-marker" "21 …and the transferred run's block still withholds the arm"
+# A blocked marker that EXISTS but cannot be validated fails CLOSED: a truncated or wrongly
+# typed record used to read as "unrelated" and fall through to arming a run its own block marks.
+printf '{"bra' > "$PCLONE/.claude/state/implement-issue-blocked.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 an unreadable blocked marker still opens the PR"
+has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …but withholds the arm rather than proving the marker unrelated"
 rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
 
 # ================= 19b. the survey is non-blocking: 124 twice, then the run CONTINUES (#435) ====

@@ -1689,10 +1689,18 @@ cmd_open_pr() {
     # (state-protocol.md): a resumed session re-stamps the ACTIVE marker's owner while the
     # blocked file keeps the owner it copied at write time, so an owner comparison read this
     # run's own block as unrelated and armed past it. The safe failure direction is withholding
-    # the arm, never arming.
+    # the arm, never arming — which is also why a marker that EXISTS but cannot be validated
+    # (truncated, unparseable, wrongly typed identity fields) withholds too: "unrelated" is a
+    # verdict only a validated record can support.
     local bb bi
-    bb="$(jq -r '.branch // ""' "$dir/$_IL_BLOCKED" 2>/dev/null)"
-    bi="$(jq -r '.issue // ""'  "$dir/$_IL_BLOCKED" 2>/dev/null)"
+    if ! jq -e '(.branch | type == "string") and (.branch != "")
+                and (.issue | type == "string") and (.issue != "")' \
+         "$dir/$_IL_BLOCKED" >/dev/null 2>&1; then
+      printf 'arm-skipped blocked-marker-unreadable\n'
+      return 0
+    fi
+    bb="$(jq -r '.branch' "$dir/$_IL_BLOCKED" 2>/dev/null)"
+    bi="$(jq -r '.issue'  "$dir/$_IL_BLOCKED" 2>/dev/null)"
     if [ "$bb" = "$branch" ] && [ "$bi" = "$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" ]; then
       printf 'arm-skipped blocked-marker\n'
       return 0
