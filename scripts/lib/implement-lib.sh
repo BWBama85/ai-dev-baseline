@@ -1732,20 +1732,24 @@ cmd_dispatch_review() {
     printf 'implement-lib: the untracked enumeration warned ("%.160s") — a partial listing would publish an unreviewed file; fix it and re-run\n' "$_uerr" >&2
     return 20
   fi
+  local ufa
   while IFS= read -r -d '' uf; do
     [ -n "$uf" ] || continue
-    uf="$_utop/$uf"
+    # The ABSOLUTE path serves the filesystem checks; the diff runs from the top-level with the
+    # REPOSITORY-RELATIVE name, so its headers read `b/<path>` — a location a finding can cite —
+    # rather than exposing the checkout's host path.
+    ufa="$_utop/$uf"
     # A NON-DIFFABLE entry refuses: an embedded repository surfaces here as `sub/`, which
     # --no-index cannot diff — it exits 1 exactly like an ordinary differ, so accepting 1 would
     # silently skip it and let an unreviewed gitlink be committed. A SYMLINK is diffable
     # whatever its target (the mode-120000 patch carries the target), so `-L` passes even where
     # `-f` follows the link to a directory or to nothing.
-    if [ ! -f "$uf" ] && [ ! -L "$uf" ]; then
+    if [ ! -f "$ufa" ] && [ ! -L "$ufa" ]; then
       rm -f "$pft"
       printf 'implement-lib: untracked entry %s is not a diffable file (an embedded repository or directory?) — resolve it before dispatching review\n' "$uf" >&2
       return 20
     fi
-    git diff --no-index -- /dev/null "$uf" >> "$pft" 2>/dev/null
+    git -C "$_utop" diff --no-index -- /dev/null "$uf" >> "$pft" 2>/dev/null
     case "$?" in
       0|1) : ;;
       *)   rm -f "$pft"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;

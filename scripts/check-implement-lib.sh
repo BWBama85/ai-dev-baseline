@@ -869,6 +869,9 @@ has "$(cat "$RP")" 'uncommitted-simplify-edit' "20 …and uncommitted working-tr
 printf 'brand-new-untracked-helper\n' > "$RCLONE/newhelper.txt"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 has "$(cat "$RP")" 'brand-new-untracked-helper' "20 …and a new untracked file reaches the reviewer"
+has "$(cat "$RP")" 'b/newhelper.txt' "20 …with a repository-relative header a finding can cite"
+if grep -q "b$RCLONE/newhelper.txt" "$RP"; then
+  bad "20 …never the checkout's absolute host path"; else ok; fi
 rm -f "$RCLONE/newhelper.txt"
 # An untracked EMBEDDED REPO surfaces as a directory entry `sub/` that --no-index cannot diff
 # (exit 1, same as an ordinary differ) — it would land as an unreviewed gitlink, so it refuses.
