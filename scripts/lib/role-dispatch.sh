@@ -976,7 +976,7 @@ EOF
 # (124 on timeout); for codex, a 0 exit that produced no final message is treated as incomplete
 # (return 1) rather than a clean empty pass.
 _adb_rd_invoke_agent() {
-  local token="$1" pf="$2" effort="${3:-}" repo rc last
+  local token="$1" pf="$2" effort="${3:-}" repo rc last lb
   case "$token" in
     # `$(<"$pf")` rather than `$(cat "$pf")` (#258): a builtin file read, no `cat` process. Both
     # strip trailing newlines identically, and the prompt is passed as one argv element either way.
@@ -1017,6 +1017,16 @@ _adb_rd_invoke_agent() {
       if [ "$rc" -ne 0 ]; then rm -f "$last"; return "$rc"; fi
       if [ ! -s "$last" ]; then
         printf 'role-dispatch: codex exited 0 but wrote no final message — treating as incomplete\n' >&2
+        rm -f "$last"; return 1
+      fi
+      # The materialized message is SIZED and refused BEFORE emission: 8388608 matches the
+      # tightest downstream stage cap, and a stated refusal beats a downstream pipe collapse.
+      # What this does NOT bound is the materialization itself — --output-last-message is
+      # codex's own write, and the disk a runaway costs is spent before this line runs.
+      lb="$(wc -c < "$last" 2>/dev/null | tr -d ' ')"
+      case "$lb" in ''|*[!0-9]*) lb=0 ;; esac
+      if [ "$lb" -gt 8388608 ]; then
+        printf 'role-dispatch: the final message is %s bytes — past the 8388608-byte result bound; refusing to emit it\n' "$lb" >&2
         rm -f "$last"; return 1
       fi
       # `cat`'s own status is the emission's: a downstream cap (the survey stage's 8 MiB head

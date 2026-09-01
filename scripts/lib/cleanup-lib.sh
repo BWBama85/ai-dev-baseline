@@ -36,6 +36,7 @@
 #   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  docs    <run keep|stale|none>
+#   cleanup-lib.sh run-live       <state-dir>                  # 0 claim/marker present NOW, 10 none
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh marker-shape    <path-or-name>
@@ -713,6 +714,23 @@ cmd_file_identity() {
 # LIVENESS IS NEVER mtime. #84 is explicit: a file's age says nothing about whether the PR or run
 # it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
 # fast one's. Every fact below is a live PR state or a freshly-fetched ref.
+
+# Is a run's claim or marker present NOW? The sweep's verdicts rest on liveness as ONE scan
+# captured it, and that scan fingerprints artifacts as it walks — so an admission landing
+# mid-walk yields "no run" verdicts beside a live run's identities, and the delete-time identity
+# check then matches the live file. The workflow asks this AFTER the identity snapshot,
+# immediately before the delete loop. Presence is -e/-L: an unreadable or planted object at a
+# liveness name reads LIVE — fail closed toward keeping.
+#   0  a claim or marker exists    10  neither    2  usage
+cmd_run_live() {
+  [ "$#" -eq 1 ] || die "run-live: needs exactly 1 arg: <state-dir>"
+  local dir="$1" n
+  for n in gap-analysis.lock implement-issue-active.json implement-issue-blocked.json; do
+    if [ -e "$dir/$n" ] || [ -L "$dir/$n" ]; then return 0; fi
+  done
+  return 10
+}
+
 cmd_state_verdict() {
   [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs|survey)"
   local kind="$1"; shift
@@ -1081,6 +1099,7 @@ main() {
     branch-verdict) cmd_branch_verdict "$@" ;;
     state-scan)     cmd_state_scan "$@" ;;
     state-verdict)  cmd_state_verdict "$@" ;;
+    run-live)       cmd_run_live "$@" ;;
     marker-branch)   cmd_marker_branch "$@" ;;
     marker-identity) cmd_marker_identity "$@" ;;
     marker-shape)    cmd_marker_shape "$@" ;;

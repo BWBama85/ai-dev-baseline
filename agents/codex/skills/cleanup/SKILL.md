@@ -948,6 +948,19 @@ RV="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN_
 # back, so `$RUN_NOW` is what governs the delete.
 DV="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict docs "$RUN_NOW")" || DV=keep
 
+# The five verdicts above rest on LOCK and RUN_NOW as ONE scan captured them, and the scan
+# fingerprints artifacts as it walks — the claim's row can be probed BEFORE a survey row is
+# fingerprinted, so an admission landing mid-walk yields "no run" verdicts beside a LIVE run's
+# identities, and the delete-time identity check then MATCHES the live file (reviewer find,
+# PR #452). Re-ask liveness NOW, after every identity is captured: presence at this instant
+# keeps every run artifact, and the remaining tail — an admission after this probe — is covered
+# by the identity check, because its clear-and-recreate gives the file a new identity.
+if bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" run-live "$STATE"; then
+  GV=keep; SV=keep; IV=keep; RV=keep; DV=keep
+  NOTES="${NOTES}KEPT the run artifacts — a run claim or marker was present after the identity snapshot; none were judged this pass
+"
+fi
+
 # sweep_file <path> <identity-as-judged> <proof> — delete ONE file, but only if it is still the
 # file the verdict was about (#305), and record WHY it was removed (#332).
 #

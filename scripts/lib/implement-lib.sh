@@ -1321,8 +1321,7 @@ cmd_snapshot_issues() {
 # purpose. The head is the same whole-line UTF-8-safe 16 KiB bound the gap-prompt copy uses; the
 # full reply is kept beside it as survey-overflow.md, inside the swept survey-*.md family.
 _il_publish_survey() {   # <state-dir>
-  local dir="$1" _svb _pub _hd
-  _pub="$dir/survey-stage.md"
+  local dir="$1" _svb _pub _priv
   # The stage must be a nonempty REGULAR file. A surveyor can unlink it mid-pipe (its stdout
   # stays on the old inode) and leave a symlink at the name — publishing would hand an arbitrary
   # repository or host file to the primary and the gap agent as "the survey". rm removes a
@@ -1332,31 +1331,46 @@ _il_publish_survey() {   # <state-dir>
     printf 'implement-lib: the survey stage was not a regular file (a planted symlink?) — refusing to publish it\n' >&2
     return 1
   fi
-  _svb="$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')"
+  # That check is point-in-time, and role-dispatch's bounded-runner contract admits descendants
+  # can survive the CLI — so every LATER open of the public stage name is a race a survivor can
+  # win (a FIFO swapped in blocks a redirect open forever, outside every dispatch bound). So the
+  # public name is read ONCE, by FILENAME inside a bounded child, into a private mktemp copy no
+  # descendant can name; every byte published below comes from private names, and the public
+  # ones are only ever rename TARGETS. One byte past the dispatch cap, so a grown or swapped
+  # larger object is DETECTED, never truncated-and-published.
+  _priv="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 1
+  if ! adb_run_bounded 60 5 head -c 8388609 "$dir/survey-stage.md" > "$_priv" 2>/dev/null; then
+    rm -f "$_priv"
+    rm -rf "$dir/survey-stage.md"
+    printf 'implement-lib: the survey stage could not be read whole within its bound (a planted pipe?) — refusing to publish it\n' >&2
+    return 1
+  fi
+  rm -rf "$dir/survey-stage.md"   # consumed — a plant swapped in mid-read goes with it, unfollowed
+  _svb="$(wc -c < "$_priv" 2>/dev/null | tr -d ' ')"
   case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
   if [ "$_svb" -eq 0 ]; then
-    rm -f "$dir/survey-stage.md"
+    rm -f "$_priv"
     printf 'implement-lib: the survey reply was EMPTY — a failed survey, never "ok 0 words"\n' >&2
     return 1
   fi
+  if [ "$_svb" -gt 8388608 ]; then
+    rm -f "$_priv"
+    printf 'implement-lib: the survey stage grew past the 8388608-byte dispatch cap after validation (a surviving writer?) — refusing to publish it\n' >&2
+    return 1
+  fi
   if [ "$_svb" -gt 16384 ]; then
-    # rm -rf, not a bare mv: onto a planted DIRECTORY, mv -f moves the stage INSIDE it — the
-    # validated reply vanishes, and the head below then reads the directory. Never follows.
+    _pub="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || { rm -f "$_priv"; return 1; }
+    if ! _il_survey_head "$_priv" > "$_pub"; then rm -f "$_pub" "$_priv"; return 1; fi
+    # rm -rf, not a bare mv: onto a planted DIRECTORY, mv -f moves the source INSIDE it.
     rm -rf "$dir/survey-overflow.md"
-    mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" || return 1
-    # That mv VACATED the public stage name, and role-dispatch's bounded-runner contract admits
-    # descendants can survive the CLI — so the head is never created by REOPENING that name (a
-    # link planted in the gap would receive the write). mktemp is bash's one create-or-fail
-    # open; the random name cannot be pre-planted, and the publish below is a rename.
-    _hd="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 1
-    if ! _il_survey_head "$dir/survey-overflow.md" > "$_hd"; then rm -f "$_hd"; return 1; fi
-    _pub="$_hd"
+    mv -f "$_priv" "$dir/survey-overflow.md" || { rm -f "$_pub" "$_priv"; return 1; }
     printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
   else
     # A shorter republication REMOVES a previous attempt's overflow: that file is documented as
     # the full reply behind the bounded summary, and a stale copy must not wear the label —
     # including a planted directory, which rm -f cannot remove.
     rm -rf "$dir/survey-overflow.md"
+    _pub="$_priv"
   fi
   rm -rf "$dir/survey.md"   # a planted directory here would swallow the publish the same way
   mv -f "$_pub" "$dir/survey.md" || return 1
@@ -1385,7 +1399,11 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
     [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md was not a regular file (planted?) — removed unread\n' >&2
     return 0
   fi
-  tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
+  # By FILENAME inside a bounded child, never a `<` redirect: the type check above is
+  # point-in-time, and a survivor swapping in a FIFO would block a redirect open forever,
+  # outside every dispatch bound — the child's open is what the bound covers. An expired or
+  # unparseable read falls to return 0: no hang, and the sweeps handle whatever sits there.
+  tb="$(adb_run_bounded 30 5 wc -c "$dir/survey-trace.md" 2>/dev/null | awk '{print $1; exit}')" || tb=""
   case "$tb" in ''|*[!0-9]*) return 0 ;; esac
   [ "$tb" -gt "$max" ] || return 0
   # A planted DIRECTORY at the destination turns mv -f into a move-INSIDE: the note would then
@@ -1424,15 +1442,12 @@ cmd_publish_survey() {
   # The same 8 MiB runaway treatment as the CLI dispatch: one byte PAST the bound is read, so a
   # reply that exceeds it is detected — head exits 0 either way and pipefail has no upstream
   # here, which is how a truncated prefix used to publish labelled full and report "survey ok".
-  # The stage name is plantable as a symlink — unlinked first, never written through.
+  # The stage name is plantable as a symlink — unlinked first, never written through. The
+  # runaway REFUSAL itself lives in _il_publish_survey, on its private copy: sizing the public
+  # stage name here would be one more reopen a surviving descendant can race.
   rm -f "$dir/survey-stage.md"
   head -c 8388609 > "$dir/survey-stage.md" \
     || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
-  if [ "$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')" -gt 8388608 ] 2>/dev/null; then
-    rm -f "$dir/survey-stage.md"
-    printf 'implement-lib: the survey reply exceeded the 8 MiB runaway bound — treated as a failed publication, not truncated silently\n' >&2
-    return 20
-  fi
   _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
   _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
   printf 'survey ok %s words\n' "${_svw:-0}"

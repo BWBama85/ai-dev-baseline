@@ -3209,4 +3209,37 @@ mr_run "$MR" "$CL" "$MRJ_BROKEN"
 has "${ mr_line; }" 'artifacts kept for a run in flight' \
    "13k the control (the key test blinded) reports unknown liveness as a run in flight — the overclaim the review names"
 
+# ================= 14. run-live: the post-scan liveness re-probe (#435) =========================
+# The sweep's verdicts rest on LOCK/RUN_NOW as ONE scan captured them, and the scan fingerprints
+# artifacts as it walks — so an admission landing mid-walk yields "no run" verdicts beside a live
+# run's identities. The workflow re-asks THIS question after every identity is captured, so the
+# answer must be a live read of the directory, fail-closed toward "live".
+RL_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-runlive.XXXXXX")"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "10" "14 an empty state dir is not a live run (10)"
+: > "$RL_D/gap-analysis.lock"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 a claim present NOW is a live run (0)"
+rm -f "$RL_D/gap-analysis.lock"
+: > "$RL_D/implement-issue-active.json"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 an active marker present NOW is a live run (0)"
+rm -f "$RL_D/implement-issue-active.json"
+: > "$RL_D/implement-issue-blocked.json"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 a blocked marker keeps its run's artifacts too (0)"
+rm -f "$RL_D/implement-issue-blocked.json"
+ln -s /nonexistent "$RL_D/gap-analysis.lock"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 even a planted link at the claim name reads live — fail closed toward keeping"
+rm -f "$RL_D/gap-analysis.lock"
+bash "$CL" run-live "$RL_D/absent" >/dev/null 2>&1
+eq "$?" "10" "14 a missing state dir is no run (10)"
+bash "$CL" run-live >/dev/null 2>&1
+eq "$?" "2" "14 no argument is a usage error"
+rm -rf "$RL_D"
+# …and the workflow consults it between the identity snapshot and the delete loop.
+if grep -q 'run-live "\$STATE"' "$ROOT/base/workflows/cleanup.md"; then ok; else
+  bad "14 cleanup.md never re-asks liveness after the identity snapshot"; fi
+
 check_summary "check-cleanup"

@@ -1931,6 +1931,65 @@ eq "$HB_N" "16384" "25 a >16384-byte first line emits exactly 16384 bytes, newli
 HB_N="$( set -u; eval "$headfn"; _il_survey_head "$HB_D/big2.txt" | wc -c | tr -d ' ' )"
 eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt gate let it through whole)"
 
+# ================= 26. the publish and the cap never reopen an agent-writable name (#435) =======
+# role-dispatch's contract admits descendants can survive the CLI, so every check-then-reopen on
+# survey-stage.md / survey-trace.md is a race a survivor can win: swap in a symlink and the reopen
+# reads (or the publish rename ships) the plant; swap in a FIFO and the reopen blocks forever,
+# outside every dispatch bound. The design answer is ONE bounded filename-open into a private
+# mktemp copy, with every later byte coming from the copy.
+#
+# The race is made deterministic by shimming `wc`: the publisher's first post-validation tool call
+# swaps the stage for a symlink, exactly as a surviving descendant would.
+pubfn2="$(sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+SW_D="$(new_repo)"
+printf 'precious repo content\n' > "$SW_D/swap-target.txt"
+printf 'a modest survey\n' > "$SW_D/.claude/state/survey-stage.md"
+SW_OUT="$(
+  eval "$pubfn2"
+  wc() {
+    command wc "$@"
+    rm -f "$SW_D/.claude/state/survey-stage.md" 2>/dev/null
+    ln -s ../../swap-target.txt "$SW_D/.claude/state/survey-stage.md" 2>/dev/null
+  }
+  cd "$SW_D" && _il_publish_survey .claude/state 2>/dev/null; printf 'RC=%s\n' "$?"
+)"
+has "$SW_OUT" "RC=0" "26 the publish still succeeds when a descendant races it"
+if [ -L "$SW_D/.claude/state/survey.md" ]; then
+  bad "26 …but a link swapped in mid-publish shipped AS survey.md (a by-reference read for every later step)"; else ok; fi
+eq "$(cat "$SW_D/swap-target.txt" 2>/dev/null)" "precious repo content" \
+  "26 …and nothing wrote through the swapped link"
+
+# The structural halves: after validation, the publisher's only stage-name operations are the one
+# bounded filename-open and rm — never a shell redirect that reopens the public name — and the
+# cap sizes the trace inside a bounded child by filename, never via a blocking `<` open.
+if grep -q '< "\$dir/survey-stage.md"' "$IL"; then
+  bad "26 a shell-redirect reopen of the public stage name is back in the lib"; else ok; fi
+if grep -q 'wc -c < "\$dir/survey-trace.md"' "$IL"; then
+  bad "26 the cap still sizes the trace through a blocking redirect open"; else ok; fi
+
+# An oversized codex FINAL MESSAGE is refused BEFORE emission: the materialized result is sized
+# and declined with a stated bound, not merely SIGPIPE'd into a downstream cap.
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--output-last-message" ] && last="$a"
+  prev="$a"
+done
+[ -n "$last" ] && dd if=/dev/zero bs=1024 count=9216 2>/dev/null | tr '\0' 'c' > "$last"
+exit 0
+SH
+chmod +x "$shimbin/codex"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "codex"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+OC2_RC=$?
+if [ "$OC2_RC" -ne 0 ]; then ok; else bad "26 a 9 MiB codex final message is a FAILED dispatch (got rc 0)"; fi
+if grep -q 'result bound' "$d/.claude/state/survey.err" 2>/dev/null; then ok; else
+  bad "26 …refused by the stated result bound before emission, not by downstream pipe collapse"; fi
+rm -f "$shimbin/codex"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
