@@ -1574,8 +1574,12 @@ cmd_dispatch_review() {
   # The enumeration must be COMPLETE before it is used: ls-files warns and exits 0 over an
   # unreadable directory, and a partial listing publishes a review prompt missing whatever sat
   # beneath — committable later, unreviewed. Probe the stderr first; any diagnostic refuses.
-  local uf _uerr
-  if ! _uerr="$(git ls-files --others --exclude-standard -z 2>&1 >/dev/null)"; then
+  # FROM THE GIT TOP-LEVEL, never the cwd: invoked from a subdirectory, a cwd-relative ls-files
+  # silently omits root-level and sibling untracked files — the same partial-listing hole.
+  local uf _uerr _utop
+  _utop="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { rm -f "$pft"; printf 'implement-lib: could not resolve the git top-level\n' >&2; return 20; }
+  if ! _uerr="$(git -C "$_utop" ls-files --others --exclude-standard -z 2>&1 >/dev/null)"; then
     rm -f "$pft"; printf 'implement-lib: could not enumerate untracked files\n' >&2; return 20
   fi
   if [ -n "$_uerr" ]; then
@@ -1585,6 +1589,7 @@ cmd_dispatch_review() {
   fi
   while IFS= read -r -d '' uf; do
     [ -n "$uf" ] || continue
+    uf="$_utop/$uf"
     # A NON-DIFFABLE entry refuses: an embedded repository surfaces here as `sub/`, which
     # --no-index cannot diff — it exits 1 exactly like an ordinary differ, so accepting 1 would
     # silently skip it and let an unreviewed gitlink be committed. A SYMLINK is diffable
@@ -1600,7 +1605,7 @@ cmd_dispatch_review() {
       0|1) : ;;
       *)   rm -f "$pft"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
     esac
-  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
+  done < <(git -C "$_utop" ls-files --others --exclude-standard -z 2>/dev/null)
   # The issue set is the MARKER's own comma list when a marker exists (a stray numeric snapshot
   # must not widen the review scope); the snapshot glob is the PRE-MARKER fallback only. Once a
   # marker exists it is authoritative, so its whole list must parse: skipping a bad entry would

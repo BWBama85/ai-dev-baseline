@@ -876,6 +876,14 @@ rm -rf "$RCLONE/subrepo"
 eq "$?" "0" "20 an untracked symlink (dangling included) is diffable and accepted"
 has "$(cat "$RP")" 'nonexistent-target' "20 …and its target reaches the reviewer"
 rm -f "$RCLONE/danglink"
+# The enumeration runs from the GIT TOP-LEVEL: invoked from a subdirectory, a cwd-relative
+# ls-files silently omits root-level and sibling untracked files from the review prompt.
+mkdir -p "$RCLONE/subdir"
+printf 'root-level-untracked-content\n' > "$RCLONE/rootfile.txt"
+( cd "$RCLONE/subdir" && bash "$IL" dispatch-review --prompt-only ../.claude/state codex ) >/dev/null 2>&1
+eq "$?" "0" "20 a below-root invocation still builds"
+has "$(cat "$RP")" 'root-level-untracked-content' "20 …and root-level untracked files still reach the reviewer"
+rm -rf "$RCLONE/subdir" "$RCLONE/rootfile.txt"
 # An UNREADABLE directory makes ls-files warn and exit 0 over a partial listing — accepting it
 # publishes a review prompt missing whatever sat beneath, which is then committable unreviewed.
 ( cd "$RCLONE" && mkdir -p noperm && printf 'hidden\n' > noperm/f && chmod 000 noperm ) >/dev/null 2>&1
