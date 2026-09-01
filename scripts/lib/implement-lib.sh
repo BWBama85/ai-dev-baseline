@@ -1022,7 +1022,15 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     return 13
   fi
   exp="$(jq -r 'if (.expiresAt | type) == "number" then (.expiresAt | floor | tostring) else "" end' "$dir/$_IL_CLAIM" 2>/dev/null)" || exp=""
-  case "$exp" in ''|*[!0-9-]*) _il_claim_mutex_drop "$dir"; return 0 ;; esac
+  case "$exp" in
+    ''|*[!0-9-]*)
+      # OUR token with an UNREADABLE lease fails CLOSED: admit reads exactly this shape as
+      # "no readable lease — immediately breakable", so proceeding would let a concurrent
+      # admission reap the claim and clear the state mid-work.
+      _il_claim_mutex_drop "$dir"
+      printf 'implement-lib: this run'"'"'s claim at %s/%s carries no readable lease — admit treats that as breakable, so continuing risks a concurrent reap. Stop: re-run admission.\n' "$dir" "$_IL_CLAIM" >&2
+      return 13 ;;
+  esac
   if [ "$(( exp - now ))" -lt 5 ]; then
     _il_claim_mutex_drop "$dir"
     printf 'implement-lib: this run'"'"'s claim lease at %s/%s has lapsed (or is about to) — the run overran its lease and is reaped-eligible, and a successor may already hold the path. Stop: re-run admission if you are resuming.\n' "$dir" "$_IL_CLAIM" >&2

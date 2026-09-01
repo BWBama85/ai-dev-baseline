@@ -1294,6 +1294,16 @@ d="$(new_repo)"; gid "$d"; clm "$d"
 SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_LOCK_SWAP="$d/.claude/state/gap-analysis.lock" \
   bash "$IL" snapshot-issues --token tokT .claude/state 7 8 2>&1 )"; SN_RC=$?
 eq "$SN_RC" "13" "19l a successor arriving mid-set refuses the remaining issues (13)"
+# OUR token + an UNREADABLE lease fails closed: admit reads that same shape as immediately
+# breakable, so proceeding lets a concurrent admission reap the claim mid-work.
+d="$(new_repo)"; seed_snap "$d"
+jq -n '{startedAt:1, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "19l our token over an unreadable lease refuses (13) — admit would break that claim"
+d="$(new_repo)"; seed_snap "$d"
+jq -n '{startedAt:1, expiresAt:"soon", token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "19l …and a wrongly typed lease refuses the same way"
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
