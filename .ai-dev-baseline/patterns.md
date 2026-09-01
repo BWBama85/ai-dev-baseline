@@ -367,4 +367,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/implement-lib.sh:1834` `f97cc28` `PRRT_kwDOTfywrM6eNh2S` PR #452 2026-09-01 — jq -r stringified a number-typed marker issue that open-pr's guard would have refused — the review side now requires a nonempty string
 - `toctou` `scripts/lib/implement-lib.sh:1825` `05905d1` `PRRT_kwDOTfywrM6eNh2X` PR #452 2026-09-01 — the completeness probe and the consumed listing were two invocations — one captured, validated snapshot is now iterated exactly
 - `partial-validation` `scripts/check-workflow-shell.sh:121` `83c122a` `PRRT_kwDOTfywrM6eNh2b` PR #452 2026-09-01 — a basename-only README exclusion skipped linting a renderable supporting README — only the reserved root path is excluded now
+- `markup-injection` `scripts/lib/implement-lib.sh:1541` `e4a2c38` `PRRT_kwDOTfywrM6eO3kn` PR #452 2026-09-01 — a surveyor could swap the stage for a symlink mid-pipe and have an arbitrary host file published — and forwarded to models — as the survey
+- `status-swallowed` `scripts/lib/implement-lib.sh:1315` `e4a2c38` `PRRT_kwDOTfywrM6eO3kr` PR #452 2026-09-01 — an empty reply published as survey ok 0 words, so the workflow skipped the retry and the continued-without note the failure policy promises
+- `consumer-contract-mismatch` `base/workflows/implement-issue.md:337` `ec5055e` `PRRT_kwDOTfywrM6eO3kw` PR #452 2026-09-01 — the implement step read survey.md unconditionally while skip and double-failure legitimately publish none
 <!-- adb:hits:end -->
