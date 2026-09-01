@@ -1069,6 +1069,8 @@ printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
 eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1200" "19e the generic override does not widen the survey bound"
 ( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=2700 ADB_SURVEY_TIMEOUT_SECS=900 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
 eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "900" "19e …while the survey's own variable still governs"
+( cd "$d" && env ADB_SURVEY_TIMEOUT_SECS=0900 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "900" "19e …and a zero-padded value is its number, not the default"
 # …and that variable is CLAMPED under the lease share WITH margin: 2 surveys + 2 gap dispatches
 # (2700 s each) plus prompt builds, findings reads and kill grace must fit the fixed 9000 s claim,
 # so the cap is 1500 (600 s of margin), not the zero-margin 1800.
@@ -1170,6 +1172,8 @@ printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
 eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "2700" "19j a generic override past the gap share is clamped to 2700"
 ( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=1000 bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
 eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "1000" "19j …while tightening below it still governs"
+( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=060 bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "60" "19j …and a zero-padded value is its number, never silently LENGTHENED to the default"
 rm -f "$shimbin/claude"
 
 # ================= 19k. a RUNAWAY stream is capped WHILE it is written (#435) ===================

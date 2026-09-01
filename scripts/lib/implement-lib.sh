@@ -1232,16 +1232,29 @@ cmd_dispatch_survey() {
   # claim must also cover prompt builds, findings reads and each timeout's kill grace, so
   # 2 x 1500 + 2 x 2700 leaves 600 s for them. The width test first, because a value too wide
   # for shell arithmetic is certainly past the cap.
+  # Normalized base-10 BEFORE any comparison: a zero-padded value ("0900") is its number, not an
+  # invalid spelling — refusing it silently replaced a SHORTER ask with the longer default, the
+  # wrong direction for a bound. Only non-digits and zero itself are invalid.
   local _svt="${ADB_SURVEY_TIMEOUT_SECS:-1200}"
   case "$_svt" in
-    ''|*[!0-9]*|0*)
+    ''|*[!0-9]*)
       printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS="%s" is not a positive whole number of seconds — using the 1200s survey default\n' "$_svt" >&2
       _svt=1200 ;;
+    *)
+      if [ "${#_svt}" -gt 9 ]; then
+        printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1500s share of the 9000s claim lease — clamping to 1500\n' "$_svt" >&2
+        _svt=1500
+      else
+        _svt=$(( 10#$_svt ))
+        if [ "$_svt" -eq 0 ]; then
+          printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=0 is not a positive whole number of seconds — using the 1200s survey default\n' >&2
+          _svt=1200
+        elif [ "$_svt" -gt 1500 ]; then
+          printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1500s share of the 9000s claim lease — clamping to 1500\n' "$_svt" >&2
+          _svt=1500
+        fi
+      fi ;;
   esac
-  if [ "${#_svt}" -gt 4 ] || [ "$_svt" -gt 1500 ]; then
-    printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1500s share of the 9000s claim lease — clamping to 1500\n' "$_svt" >&2
-    _svt=1500
-  fi
   # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
   # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem
   # during the dispatch, before any post-exit publisher runs. `head -c` closes the pipe at the
