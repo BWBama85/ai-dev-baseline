@@ -275,7 +275,7 @@ _rs_scan() {
   scan="$(printf '%s\n' "$scan" | jq -rR "$_RS_UNSAFE_JQ"' split("\t") | select(length >= 2)
     | if (.[1] | unsafe_path) then "unsafe\t-"
       elif (.[0] != "unsafe") and ((.[1] | split("/") | last) | test("^[A-Za-z0-9._-]{1,64}$") | not) then "unsafe\t-"
-      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace\\.md)$") | not) then "unnamed\t-"
+      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace\\.md)$") | not) then "unnamed\t-"
       else "\(.[0])\t\(.[1])" end' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
