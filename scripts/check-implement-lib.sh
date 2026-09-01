@@ -1056,6 +1056,15 @@ has "$OP_STDOUT" "pushed issue-3-y" "21 …while the pushed record itself still 
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/6" SHIM_CLOSING_JSON='{"closingIssuesReferences":[]}'
 eq "$OP_RC" "23" "21 an empty link set refuses (23) — the auto-close would never fire"
 has "$OP_OUT" "did NOT register" "21 …and says why"
+# a NUMBER-typed marker branch must refuse even when a branch of that name exists: jq -r would
+# stringify it and the equality would pass, pushing from malformed run state.
+cp "$PCLONE/.claude/state/implement-issue-active.json" "$PCLONE/.claude/state/active-sv.json"
+( cd "$PCLONE" && git switch -q -c 7 ) >/dev/null 2>&1
+jq '.branch = 7' "$PCLONE/.claude/state/active-sv.json" > "$PCLONE/.claude/state/implement-issue-active.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "26" "21 a number-typed marker branch refuses (26) even when a branch of that name is checked out"
+( cd "$PCLONE" && git switch -q issue-9-x && git branch -D 7 ) >/dev/null 2>&1
+mv "$PCLONE/.claude/state/active-sv.json" "$PCLONE/.claude/state/implement-issue-active.json"
 # a marker/HEAD mismatch never pushes
 ( cd "$PCLONE" && git switch -q main ) >/dev/null 2>&1
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/7" SHIM_CLOSING_JSON="$GOODREFS"

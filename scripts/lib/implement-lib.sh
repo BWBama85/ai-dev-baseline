@@ -1937,8 +1937,10 @@ cmd_open_pr() {
     case "$_c" in *[1-9]*) : ;; *) echo "implement-lib: --closes entry '$_c' is not an issue number" >&2; exit 2 ;; esac
   done
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "implement-lib: open-pr needs gh and jq" >&2; return 20; }
-  branch="$(jq -r '.branch // empty' "$dir/$_IL_MARKER" 2>/dev/null)"
-  [ -n "$branch" ] || { printf 'implement-lib: the run marker at %s/%s is unreadable or has no branch\n' "$dir" "$_IL_MARKER" >&2; return 26; }
+  # STRING-TYPED, like the review side's .issue read: jq -r would stringify a number, and a
+  # checkout on a branch of that name would then push from malformed run state.
+  branch="$(jq -er 'if (.branch | type) == "string" and .branch != "" then .branch else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)" \
+    || { printf 'implement-lib: the run marker at %s/%s is unreadable or has no string branch\n' "$dir" "$_IL_MARKER" >&2; return 26; }
   [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$branch" ] \
     || { printf 'implement-lib: HEAD is not on the marker branch %s — refusing to push\n' "$branch" >&2; return 26; }
   # `>&2`: on a first push `git push -u` writes its upstream-registration message to STDOUT,
