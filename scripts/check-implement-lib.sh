@@ -1425,18 +1425,20 @@ if [ "$RK_RC" -ne 0 ]; then ok; else bad "19k a 9 MiB runaway reply is a FAILED 
 if [ -s "$d/.claude/state/survey.md" ]; then bad "19k …and publishes no survey.md"; else ok; fi
 if exists "$d/.claude/state/survey-stage.md"; then bad "19k …and leaves no stage behind"; else ok; fi
 rm -f "$shimbin/claude"
-# publish-survey's stdin gets the same runaway bound: the stage never exceeds 8 MiB, and the
-# ordinary 16 KiB publication bound still applies on top.
+# publish-survey's stdin gets the same runaway treatment as the CLI path: a reply past 8 MiB is
+# a FAILED publication, never a truncated prefix labelled full and reported "survey ok".
 d="$(new_repo)"
-dd if=/dev/zero bs=1024 count=9216 2>/dev/null | tr '\0' 'n' | ( cd "$d" && bash "$IL" publish-survey .claude/state )
-SV_BYTES="$(wc -c < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
-if [ -n "$SV_BYTES" ] && [ "$SV_BYTES" -le 16385 ]; then ok; else
-  bad "19k a runaway native reply still publishes bounded (got ${SV_BYTES:-none} bytes)"; fi
-eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "8388608" \
-  "19k …with the overflow capped at the 8 MiB runaway bound"
+dd if=/dev/zero bs=1024 count=9216 2>/dev/null | tr '\0' 'n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+NK_RC=$?
+if [ "$NK_RC" -ne 0 ]; then ok; else bad "19k a 9 MiB native reply is a FAILED publication (got rc 0)"; fi
+if [ -s "$d/.claude/state/survey.md" ]; then bad "19k …and publishes no truncated survey.md"; else ok; fi
+if exists "$d/.claude/state/survey-overflow.md"; then bad "19k …and labels nothing as the full reply"; else ok; fi
 # A shorter REPUBLICATION removes the stale overflow: the navigator describes that file as the
 # full reply behind the bounded summary, and a previous attempt's copy must not wear that label.
-printf 'short retry\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state )
+dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+eq "$?" "0" "19k a 32 KiB native reply publishes with its overflow"
+if exists "$d/.claude/state/survey-overflow.md"; then ok; else bad "19k …which exists"; fi
+printf 'short retry\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
 eq "$?" "0" "19k a shorter republication publishes"
 if exists "$d/.claude/state/survey-overflow.md"; then
   bad "19k …and removes the previous attempt's overflow"; else ok; fi

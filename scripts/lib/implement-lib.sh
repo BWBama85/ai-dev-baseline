@@ -1374,12 +1374,18 @@ cmd_publish_survey() {
   dir="$1"
   [ -d "$dir" ] || { printf 'implement-lib: no state dir at %s\n' "$dir" >&2; return 20; }
   _il_claim_renew "$dir" "$tok" || return $?
-  # The same 8 MiB runaway bound as the CLI dispatch's stage write; the ordinary 16 KiB
-  # publication bound still applies on top, so past the bound the overflow copy is capped too.
+  # The same 8 MiB runaway treatment as the CLI dispatch: one byte PAST the bound is read, so a
+  # reply that exceeds it is detected — head exits 0 either way and pipefail has no upstream
+  # here, which is how a truncated prefix used to publish labelled full and report "survey ok".
   # The stage name is plantable as a symlink — unlinked first, never written through.
   rm -f "$dir/survey-stage.md"
-  head -c 8388608 > "$dir/survey-stage.md" \
+  head -c 8388609 > "$dir/survey-stage.md" \
     || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
+  if [ "$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')" -gt 8388608 ] 2>/dev/null; then
+    rm -f "$dir/survey-stage.md"
+    printf 'implement-lib: the survey reply exceeded the 8 MiB runaway bound — treated as a failed publication, not truncated silently\n' >&2
+    return 20
+  fi
   _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
   _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
   printf 'survey ok %s words\n' "${_svw:-0}"
