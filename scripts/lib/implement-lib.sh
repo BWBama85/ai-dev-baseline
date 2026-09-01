@@ -1318,35 +1318,37 @@ _il_publish_survey() {   # <state-dir>
 # the post-dispatch call reports once. Scratch is .trace-cap.tmp, never survey-stage.md — the
 # dispatch is writing that concurrently.
 _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
-  local dir="$1" max="$2" quiet="${3:-}" tb
-  # NON-FOLLOWING first: the trace path is agent-writable and the issue text is third-party, so
-  # a surveyor can plant it — or the scratch — as a symlink at any writable repo file, and a
-  # following truncate would erase that target. A planted link is removed (rm does not follow)
-  # and the pass ends; the agent's own next write recreates a regular file.
-  if [ -L "$dir/survey-trace.md" ]; then
-    rm -f "$dir/survey-trace.md"
+  local dir="$1" max="$2" quiet="${3:-}" tb held="$1/survey-held.md"
+  # EVERYTHING RUNS ON A PRIVATE NAME. The surveyor owns the public pathname and can swap it for
+  # a symlink at any instant, so every check-then-act on it races — the mv takes WHATEVER is at
+  # the name (link or file) atomically and without following, replacing any pre-planted dest
+  # (rename(2) clobbers a link as a name, never through it). The verdicts and the truncate then
+  # run on survey-held.md, which only this process writes and the survey-*.md family sweeps; the
+  # same inode returns to the path, so a writer's open descriptor stays attached throughout.
+  mv -f "$dir/survey-trace.md" "$held" 2>/dev/null || return 0
+  if [ -L "$held" ]; then
+    rm -f "$held"
     printf 'implement-lib: WARN — survey-trace.md was a symlink; removed without following it\n' >&2
     return 0
   fi
-  [ -L "$dir/survey-trace-cap.md" ] && rm -f "$dir/survey-trace-cap.md"
-  [ -f "$dir/survey-trace.md" ] || return 0
-  tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
-  case "$tb" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$tb" -gt "$max" ] || return 0
-  # IN PLACE, never by rename: the surveyor holds an open descriptor, and replacing the pathname
-  # would detach it onto a hidden unlinked inode that keeps consuming disk unseen. The head is
-  # captured to a survey-family scratch (swept and cleared if an interruption strands it), the
-  # SAME inode is truncated, and head + marker are written back; the writer's later appends land
-  # past a sparse hole and are re-capped on the next pass.
-  if ! head -c "$max" "$dir/survey-trace.md" > "$dir/survey-trace-cap.md" 2>/dev/null; then
+  tb="$(wc -c < "$held" 2>/dev/null | tr -d ' ')"
+  case "$tb" in ''|*[!0-9]*) mv -f "$held" "$dir/survey-trace.md" 2>/dev/null; return 0 ;; esac
+  if [ "$tb" -le "$max" ]; then
+    mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
+    return 0
+  fi
+  rm -f "$dir/survey-trace-cap.md"   # the scratch name is plantable too; rm never follows
+  if ! head -c "$max" "$held" > "$dir/survey-trace-cap.md" 2>/dev/null; then
     rm -f "$dir/survey-trace-cap.md"
+    mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
     return 0
   fi
   printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
     "$max" "$(( tb - max ))" >> "$dir/survey-trace-cap.md"
-  : > "$dir/survey-trace.md"
-  cat "$dir/survey-trace-cap.md" >> "$dir/survey-trace.md" 2>/dev/null
+  : > "$held"
+  cat "$dir/survey-trace-cap.md" >> "$held" 2>/dev/null
   rm -f "$dir/survey-trace-cap.md"
+  mv -f "$held" "$dir/survey-trace.md" 2>/dev/null
   [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md exceeded %s bytes; capped\n' "$max" >&2
   return 0
 }
