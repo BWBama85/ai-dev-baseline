@@ -103,9 +103,10 @@ leaves the claim behind — fail-safe in the direction that matters (a stray cla
 pre-marker window it covers is the survey dispatch (bounded at `ADB_SURVEY_TIMEOUT_SECS`, default
 1200s and clamped at 1500s, one retry) plus the gap dispatch (2700s, one retry) plus reading the
 findings — and every pre-marker subcommand (`snapshot-issues`, `dispatch-survey`,
-`dispatch-gaps`) **renews the lease from its own start** — token-verified: a claim whose token
-is not this run's refuses the subcommand (13), because after a reap-and-readmit it belongs to a
-successor — so the 9000s bounds each step and the
+`dispatch-gaps`) **renews the lease from its own start** — by compare-and-replace, never
+check-then-replace: the rename is the atomic claim of the claim, the publish back is a link
+that fails if a successor admitted meanwhile, and both a foreign token and a lost publish
+refuse the subcommand (13) rather than overwrite the live run — so the 9000s bounds each step and the
 gap to the next rather than the whole window: snapshot's `gh` reads and the triage between
 dispatches are unbounded, and a fixed lease from `admit` let a live run outlive its claim. A **retry** of a dispatch re-runs only the dispatch subcommand;
 it never re-takes the claim (the acquire is create-or-fail, and a second take is how `admit`

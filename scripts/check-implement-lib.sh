@@ -1223,6 +1223,16 @@ jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokB"}'
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 eq "$SN_RC" "13" "19l snapshot-issues refuses a successor's claim too (13)"
 if exists "$d/.claude/state/issue-7.json"; then bad "19l …and wrote no snapshot over the live run's"; else ok; fi
+# A TOKENLESS claim proves nothing either way: no renewal, no refusal, and the file is restored
+# BYTE-IDENTICAL — the compare-and-replace holds the only copy while it decides, so the restore
+# path is load-bearing, not a formality.
+d="$(new_repo)"; seed_snap "$d"
+jq -n '{startedAt:1, expiresAt:9999999999}' > "$d/.claude/state/gap-analysis.lock"
+cp "$d/.claude/state/gap-analysis.lock" "$d/lock-before"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokA --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19l a tokenless claim is no verdict — the subcommand proceeds"
+if cmp -s "$d/.claude/state/gap-analysis.lock" "$d/lock-before"; then ok; else
+  bad "19l …and the claim is restored byte-identical"; fi
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
