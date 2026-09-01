@@ -1605,12 +1605,14 @@ _il_survey_head() {   # <file>
       if [ "$b" -ge 192 ] && [ "$k" -ne "$need" ]; then
         line="${line:0:$((${#line} - k - 1))}"
       fi
-      printf '%s\n' "$line"
+      printf '%s\n' "$line" || return 1
       return 0
     fi
     t=$((t + ${#line} + 1))
     if [ "$t" -gt "$cap" ] && [ "$n" -gt 1 ]; then return 0; fi
-    printf '%s\n' "$line"
+    # A failed emit (a full destination, a closed pipe) must reach the caller: swallowed, the
+    # publisher moved a PARTIAL summary into place and reported a successful survey.
+    printf '%s\n' "$line" || return 1
   done < "$1"
   return 0
 }
