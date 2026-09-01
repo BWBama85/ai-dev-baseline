@@ -1212,6 +1212,10 @@ cmd_snapshot_issues() {
     return $?
   fi
   for n in "$@"; do
+    # RENEWED PER ISSUE, not only at the subcommand's start: a large set or slow gh reads can
+    # outlive a single lease, and a successor arriving mid-set must refuse the remainder rather
+    # than have its state overwritten by the tail of this loop.
+    _il_claim_renew "$dir" "$tok" || return $?
     gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "$dir/issue-$n.json" \
       || { _il_bail "$tok" "$dir" 20 "issue #$n not found in this repo — verify repo scope (repo-scope.md)"; return $?; }
     gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' > "$dir/issue-$n.assoc" \

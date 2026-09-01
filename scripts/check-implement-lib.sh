@@ -65,6 +65,9 @@ case "$1 $2" in
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
   "issue view")
     if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then echo "gh: issue not found" >&2; exit 1; fi
+    if [ -n "${SHIM_LOCK_SWAP:-}" ] && [ -f "$SHIM_LOCK_SWAP" ]; then
+      jq '.token = "tokB"' "$SHIM_LOCK_SWAP" > "$SHIM_LOCK_SWAP.t" && mv "$SHIM_LOCK_SWAP.t" "$SHIM_LOCK_SWAP"
+    fi
     printf '%s\n' "${SHIM_ISSUE_JSON:-}" ;;
   "api repos/{owner}/{repo}/issues/7")
     printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
@@ -1284,6 +1287,13 @@ SN_OUT="$( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claud
 rmdir "$d/.claude/state/.claim.tmp" 2>/dev/null
 eq "$RN_RC" "20" "19l an unpublishable renewal refuses (20), never proceeds on the old lease"
 has "$SN_OUT" "could not publish the renewed claim" "19l …named as the renewal itself"
+# The lease is renewed BETWEEN issues, not only at the subcommand's start: a large set or slow
+# gh reads outlive a single lease, and a successor arriving mid-set must refuse the remainder.
+# The shim swaps the claim's token on the first gh call, so iteration two's renewal sees it.
+d="$(new_repo)"; gid "$d"; clm "$d"
+SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_LOCK_SWAP="$d/.claude/state/gap-analysis.lock" \
+  bash "$IL" snapshot-issues --token tokT .claude/state 7 8 2>&1 )"; SN_RC=$?
+eq "$SN_RC" "13" "19l a successor arriving mid-set refuses the remaining issues (13)"
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
