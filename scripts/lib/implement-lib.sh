@@ -1013,8 +1013,14 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   rc=0
   now="$(date +%s 2>/dev/null)" || now=""
   cur="$(jq -r '.token // ""' "$dir/$_IL_CLAIM" 2>/dev/null)" || cur=""
-  if [ -z "$now" ] || [ -z "$cur" ]; then
-    _il_claim_mutex_drop "$dir"; return 0
+  if [ -z "$now" ]; then _il_claim_mutex_drop "$dir"; return 0; fi
+  if [ -z "$cur" ]; then
+    # A tokenless or unreadable claim fails CLOSED for a token-bearing caller: the same damage
+    # that loses .token loses the lease, which admit reads as immediately breakable — so
+    # continuing risks a concurrent reap exactly as the unreadable-lease arm below does.
+    _il_claim_mutex_drop "$dir"
+    printf 'implement-lib: the run claim at %s/%s carries no readable token — admit treats such a claim as breakable, so continuing risks a concurrent reap. Stop: re-run admission.\n' "$dir" "$_IL_CLAIM" >&2
+    return 13
   fi
   if [ "$cur" != "$tok" ]; then
     _il_claim_mutex_drop "$dir"

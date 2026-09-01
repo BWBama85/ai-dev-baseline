@@ -1255,16 +1255,16 @@ jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokB"}'
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 eq "$SN_RC" "13" "19l snapshot-issues refuses a successor's claim too (13)"
 if exists "$d/.claude/state/issue-7.json"; then bad "19l …and wrote no snapshot over the live run's"; else ok; fi
-# A TOKENLESS claim proves nothing either way: no renewal, no refusal, and the file is restored
-# BYTE-IDENTICAL — the compare-and-replace holds the only copy while it decides, so the restore
-# path is load-bearing, not a formality.
+# A TOKENLESS (or unreadable) claim fails CLOSED for a token-bearing caller: the same damage
+# that loses .token loses the lease, which admit reads as immediately breakable — proceeding
+# would let a concurrent admission reap the claim mid-work. The file is left byte-identical.
 d="$(new_repo)"; seed_snap "$d"
 jq -n '{startedAt:1, expiresAt:9999999999}' > "$d/.claude/state/gap-analysis.lock"
 cp "$d/.claude/state/gap-analysis.lock" "$d/lock-before"
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokA --prompt-only .claude/state 7 ) >/dev/null 2>&1
-eq "$?" "0" "19l a tokenless claim is no verdict — the subcommand proceeds"
+eq "$?" "13" "19l a tokenless claim refuses a token-bearing caller (13) — admit would break that claim"
 if cmp -s "$d/.claude/state/gap-analysis.lock" "$d/lock-before"; then ok; else
-  bad "19l …and the claim is restored byte-identical"; fi
+  bad "19l …and the claim is left byte-identical"; fi
 # A run whose OWN lease has lapsed is reaped-eligible: it refuses (13) rather than self-reviving —
 # a successor may already hold or be taking the path — and the claim file is left untouched. This
 # is also what makes the non-vacating publish safe: only an EXPIRED claim can be broken by admit,
