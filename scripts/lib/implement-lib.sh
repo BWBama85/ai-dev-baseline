@@ -923,8 +923,11 @@ _il_clear() {   # <state-dir>
   [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
   for f in "${targets[@]}"; do
     [ -e "$f" ] || [ -L "$f" ] || continue
-    rm -f "$f" 2>/dev/null
-    # Verified, never assumed: `rm -f` on an unlinkable path in a read-only directory returns
+    # rm -rf, not -f: a dispatched agent can leave a DIRECTORY at any of these names, and rm -f
+    # cannot remove one — the clear would then fail forever and strand every later admission.
+    # -rf never follows: a symlink is removed as itself, its target untouched.
+    rm -rf "$f" 2>/dev/null
+    # Verified, never assumed: `rm` on an unlinkable path in a read-only directory returns
     # non-zero on some platforms and 0 on others, so the observable is whether the file is gone.
     if [ -e "$f" ] || [ -L "$f" ]; then rc=1; fi
   done
@@ -1336,14 +1339,19 @@ _il_publish_survey() {   # <state-dir>
     return 1
   fi
   if [ "$_svb" -gt 16384 ]; then
+    # rm -rf, not a bare mv: onto a planted DIRECTORY, mv -f moves the stage INSIDE it — the
+    # validated reply vanishes, and the head below then reads the directory. Never follows.
+    rm -rf "$dir/survey-overflow.md"
     mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" || return 1
     _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" || return 1
     printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
   else
     # A shorter republication REMOVES a previous attempt's overflow: that file is documented as
-    # the full reply behind the bounded summary, and a stale copy must not wear the label.
-    rm -f "$dir/survey-overflow.md"
+    # the full reply behind the bounded summary, and a stale copy must not wear the label —
+    # including a planted directory, which rm -f cannot remove.
+    rm -rf "$dir/survey-overflow.md"
   fi
+  rm -rf "$dir/survey.md"   # a planted directory here would swallow the publish the same way
   mv -f "$dir/survey-stage.md" "$dir/survey.md" || return 1
 }
 
@@ -1362,9 +1370,20 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
   # safety, not disk, is the guarantee here) and the trace name gets a small note built in an
   # O_EXCL mktemp (the one name-open left, random and immediate).
   [ -e "$dir/survey-trace.md" ] || [ -L "$dir/survey-trace.md" ] || return 0
+  # Refuse a non-regular trace UNREAD: this runs post-dispatch, outside every bounded-runner
+  # timeout, and `wc -c <` on a planted FIFO blocks forever; a planted directory would survive
+  # rm -f and strand the clear. rm -rf removes a link itself, never its target.
+  if [ -L "$dir/survey-trace.md" ] || [ ! -f "$dir/survey-trace.md" ]; then
+    rm -rf "$dir/survey-trace.md"
+    [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md was not a regular file (planted?) — removed unread\n' >&2
+    return 0
+  fi
   tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
   case "$tb" in ''|*[!0-9]*) return 0 ;; esac
   [ "$tb" -gt "$max" ] || return 0
+  # A planted DIRECTORY at the destination turns mv -f into a move-INSIDE: the note would then
+  # name an artifact that is not at the name, and the family clear cannot remove a directory.
+  rm -rf "$dir/survey-trace-full.md"
   mv -f "$dir/survey-trace.md" "$dir/survey-trace-full.md" 2>/dev/null || return 0
   note="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 0
   printf '[implement-lib: the trace reached %s bytes, past the %s-byte bound (ADB_DISPATCH_LOG_MAX_BYTES); the full trace is at survey-trace-full.md]\n' \
@@ -1575,7 +1594,12 @@ cmd_dispatch_survey() {
 # and never mid-sequence, because the JSON containment downstream refuses invalid UTF-8 and a
 # legitimate survey would then fail the whole prompt build.
 _il_survey_head() {   # <file>
-  local LC_ALL=C cap=16384 t=0 n=0 line ch b=0 k=0 need=0
+  # line is INITIALIZED because a read(2) error — unlike EOF — skips the assignment, and the
+  # unbound expansion in the loop condition under set -u is a fatal exit that takes the caller
+  # (and every cleanup after the call site) with it. The -f refusal keeps an unopenable or
+  # blocking input (a directory, a FIFO) from ever reaching the open.
+  local LC_ALL=C cap=16384 t=0 n=0 line="" ch b=0 k=0 need=0
+  [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     if [ "$n" -eq 1 ] && [ "${#line}" -gt "$cap" ]; then
@@ -1606,7 +1630,7 @@ _il_survey_head() {   # <file>
     # A failed emit (a full destination, a closed pipe) must reach the caller: swallowed, the
     # publisher moved a PARTIAL summary into place and reported a successful survey.
     printf '%s\n' "$line" || return 1
-  done < "$1"
+  done < "$1" || return 1
   return 0
 }
 
@@ -1704,6 +1728,18 @@ cmd_dispatch_gaps() {
   ADB_DISPATCH_TIMEOUT_SECS="$_gt" \
     bash "$_IL_ROLE_DISPATCH" invoke gap_analysis < "$pf" > "$dir/gaps.md" 2> "$dir/gaps.err"
   rc=$?
+  # The result path must STILL be a regular file when the dispatch returns — the same contract
+  # the review slots enforce: the gap agent runs with repo tools on third-party issue text, its
+  # stdout stays on the opened inode, and step 4 reads this NAME. A swapped link would hand an
+  # arbitrary file over as findings; a vanished one is a discarded analysis wearing "gaps ok".
+  if [ -L "$dir/gaps.md" ] || { [ -e "$dir/gaps.md" ] && [ ! -f "$dir/gaps.md" ]; }; then
+    rm -f "$dir/gaps.md"
+    printf 'implement-lib: the gap output at %s was not a regular file after dispatch (a planted symlink?) — treating the dispatch as failed\n' "$dir/gaps.md" >&2
+    [ "$rc" -eq 0 ] && rc=20
+  elif [ "$rc" -eq 0 ] && [ ! -f "$dir/gaps.md" ]; then
+    printf 'implement-lib: the gap output at %s is missing after a rc-0 dispatch — treating the dispatch as failed\n' "$dir/gaps.md" >&2
+    rc=20
+  fi
   case "$rc" in
     0) printf 'gaps ok\n' ;;
     3) printf 'gaps skipped (unassigned)\n' ;;
@@ -1877,6 +1913,7 @@ cmd_dispatch_review() {
   [ "${#nums[@]}" -gt 0 ] || { rm -f "$pft"; printf 'implement-lib: no issue snapshots under %s — run snapshot-issues first\n' "$dir" >&2; return 20; }
   _il_append_issue_envelopes "$dir" "$pft" " — acceptance criteria" "${nums[@]}" \
     || { rm -f "$pft"; printf 'implement-lib: review prompt assembly failed\n' >&2; return 20; }
+  rm -rf "$pf"   # a planted directory turns the publish rename into a move-INSIDE
   mv -f "$pft" "$pf" || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
   if [ "$prompt_only" -eq 1 ]; then
     printf 'prompt-ready %s\n' "$pf"
@@ -1898,6 +1935,11 @@ cmd_dispatch_review() {
     rm -f "$out"
     printf 'implement-lib: the review output at %s was not a regular file after dispatch (a planted symlink?) — treating the slot as failed\n' "$out" >&2
     [ "$rc" -eq 0 ] && rc=20
+  elif [ "$rc" -eq 0 ] && [ ! -f "$out" ]; then
+    # Absence is the third shape: a reviewer that unlinks its output and exits 0 has discarded
+    # its review, and "completed" with nothing for step 9 to read is the same false success.
+    printf 'implement-lib: the review output at %s is missing after a rc-0 dispatch — treating the slot as failed\n' "$out" >&2
+    rc=20
   fi
   case "$rc" in
     0) printf 'review %s ok -> %s\n' "$token" "$out" ;;

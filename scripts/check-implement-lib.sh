@@ -1730,6 +1730,163 @@ OUT="$( cd "$d" && env HOME="$work" bash "$IL" resolve-surfaces .claude/state 2>
 eq "$RC" "1" "23 no [mcp] declared is rc 1"
 eq "$OUT" "mcp-required none" "23 …spelled mcp-required none"
 
+# ================= 24. planted non-regular files at fixed state names (#435) ====================
+# The surveyor/gap/review agents run with repo tools on third-party text, so every fixed name a
+# later step opens or moves onto is plantable — not only as a symlink (19n) but as a FIFO (an
+# open that blocks forever) or a DIRECTORY (an mv that moves INSIDE instead of replacing, and an
+# rm -f that cannot remove it, stranding the next admission).
+
+# A FIFO at the trace name must be refused UNREAD: the cap runs post-dispatch, outside every
+# bounded-runner timeout, and `wc -c <` on a pipe with no writer blocks indefinitely.
+CAP_D="$(new_repo)"
+mkfifo "$CAP_D/.claude/state/survey-trace.md"
+( cd "$CAP_D" && eval "$capfn" && _il_cap_trace .claude/state 1024 quiet ) &
+CAP_PID=$!
+i=0; while kill -0 "$CAP_PID" 2>/dev/null && [ "$i" -lt 40 ]; do sleep 0.25; i=$((i+1)); done
+if kill -0 "$CAP_PID" 2>/dev/null; then
+  bad "24 a FIFO at the trace name hangs the cap"
+  # Pair the blocked open so the orphan exits before the suite moves on.
+  : > "$CAP_D/.claude/state/survey-trace.md" 2>/dev/null
+  wait "$CAP_PID" 2>/dev/null
+else
+  wait "$CAP_PID" 2>/dev/null; ok
+fi
+if [ -e "$CAP_D/.claude/state/survey-trace.md" ] || [ -L "$CAP_D/.claude/state/survey-trace.md" ]; then
+  bad "24 …and the FIFO is removed, not left as a trap for the next reader"; else ok; fi
+
+# A DIRECTORY at the trace name: `wc -c <` fails, the old code returned 0 and left it standing.
+CAP_D="$(new_repo)"
+mkdir "$CAP_D/.claude/state/survey-trace.md"
+( cd "$CAP_D" && eval "$capfn" && _il_cap_trace .claude/state 1024 quiet )
+if [ -e "$CAP_D/.claude/state/survey-trace.md" ]; then
+  bad "24 a directory at the trace name is removed, not left to strand the clear"; else ok; fi
+
+# A directory planted at survey-trace-full.md swallows the oversize trace: `mv -f` onto a
+# directory moves the source INSIDE it, and the note then names an artifact that is not there.
+CAP_D="$(new_repo)"
+mkdir "$CAP_D/.claude/state/survey-trace-full.md"
+( cd "$CAP_D" && eval "$capfn" \
+  && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md \
+  && _il_cap_trace .claude/state 1024 quiet )
+if [ -f "$CAP_D/.claude/state/survey-trace-full.md" ] && [ ! -L "$CAP_D/.claude/state/survey-trace-full.md" ]; then
+  ok; else bad "24 a planted directory at survey-trace-full.md swallows the preserved trace (mv-inside)"; fi
+
+# The same mv-inside at survey-overflow.md, and it is WORSE: the validated stage vanishes into
+# the directory, _il_survey_head cannot read a directory, and the old unconditional return 0
+# published the resulting EMPTY head as a successful survey.
+d="$(new_repo)"
+mkdir "$d/.claude/state/survey-overflow.md"
+awk 'BEGIN{for(i=0;i<2000;i++)print "survey line " i}' \
+  | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+OV_RC=$?
+SV_B="$(wc -c < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
+if [ "$OV_RC" -eq 0 ] && [ -f "$d/.claude/state/survey.md" ] && [ "${SV_B:-0}" -gt 0 ]; then
+  ok; else bad "24 a planted overflow directory must not turn an oversize survey into an empty one (rc=$OV_RC, ${SV_B:-0} bytes)"; fi
+if [ -f "$d/.claude/state/survey-overflow.md" ] && [ ! -L "$d/.claude/state/survey-overflow.md" ]; then
+  ok; else bad "24 …and the full reply lands at survey-overflow.md as a regular file"; fi
+
+# The small-reply branch removes a stale overflow so it cannot wear the "full reply" label — a
+# planted DIRECTORY there survived the old `rm -f`.
+d="$(new_repo)"
+mkdir "$d/.claude/state/survey-overflow.md"
+printf 'short survey\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+eq "$?" "0" "24 a short reply still publishes over a planted overflow directory"
+if [ -e "$d/.claude/state/survey-overflow.md" ]; then
+  bad "24 …and the planted directory does not survive wearing the full-reply label"; else ok; fi
+
+# And at survey.md itself: mv-inside would report "survey ok" while the published name is a
+# directory no reader can open.
+d="$(new_repo)"
+mkdir "$d/.claude/state/survey.md"
+printf 'short survey\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+eq "$?" "0" "24 a planted directory at survey.md does not fail the publish"
+if [ -f "$d/.claude/state/survey.md" ] && [ ! -L "$d/.claude/state/survey.md" ]; then
+  ok; else bad "24 …and survey.md is the published regular file, not the planted directory"; fi
+
+# _il_survey_head must REFUSE an unreadable input, not die on it: its `local … line` is declared
+# unset, a read error (EISDIR) skips the assignment, and `[ -n "$line" ]` under the lib's set -u
+# is then a FATAL unbound-variable exit that takes the calling process with it — skipping every
+# cleanup after the call site. The witness is caller survival, not the rc alone.
+headfn="$(sed -n '/^_il_survey_head()/,/^}/p' "$IL")"
+HD_D="$(new_repo)"
+HD_OUT="$( set -u; eval "$headfn"; _il_survey_head "$HD_D/.claude/state" >/dev/null 2>/dev/null
+           printf 'SURVIVED=%s\n' "$?" )"
+eq "$HD_OUT" "SURVIVED=1" "24 _il_survey_head refuses an unopenable input and its caller survives"
+
+# The gap RESULT path after dispatch: a gap agent can swap gaps.md for a symlink (its stdout
+# stays on the opened inode), and step 4 then reads the replacement pathname as findings.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'gap findings\n'
+rm -f .claude/state/gaps.md
+ln -s ../../gsecret.txt .claude/state/gaps.md
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
+printf 'GAP-SECRET\n' > "$d/gsecret.txt"
+( cd "$d" && bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+GS_RC=$?
+if [ "$GS_RC" -ne 0 ]; then ok; else bad "24 a swapped gap output is a FAILED dispatch (got rc 0)"; fi
+if [ -L "$d/.claude/state/gaps.md" ]; then
+  bad "24 …and the planted link does not survive as the result path"; else ok; fi
+
+# …and a gap agent that UNLINKS its output and exits 0: rc 0 with nothing to read is a discarded
+# analysis reported as a success.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'gap findings\n'
+rm -f .claude/state/gaps.md
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+GA_RC=$?
+if [ "$GA_RC" -ne 0 ]; then ok; else bad "24 a MISSING gap output after dispatch is a failed dispatch (got rc 0)"; fi
+rm -f "$shimbin/claude"
+
+# The review slot has the same absence hole: the post-dispatch predicate rejected links and
+# existing non-files but permitted a reviewer that unlinked its output and exited 0.
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+[ -n "$last" ] && printf 'benign findings\n' > "$last"
+rm -f .claude/state/review.md
+exit 0
+SH
+chmod +x "$shimbin/codex"
+read -r _ RVA <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVA/.claude/state"; seed_snap "$RVA"
+( cd "$RVA" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+( cd "$RVA" && bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1
+RA_RC=$?
+if [ "$RA_RC" -ne 0 ]; then ok; else bad "24 a review output MISSING after dispatch is a failed slot (got rc 0)"; fi
+rm -f "$shimbin/codex"
+
+# The review PROMPT destination: a directory planted at review-prompt.txt makes the stage mv
+# land INSIDE it while the subcommand prints prompt-ready for a path that is a directory.
+( cd "$RVA" && rm -rf .claude/state/review-prompt.txt && mkdir .claude/state/review-prompt.txt ) >/dev/null 2>&1
+( cd "$RVA" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "0" "24 a planted directory at the review prompt name does not fail the build"
+if [ -f "$RVA/.claude/state/review-prompt.txt" ] && [ ! -L "$RVA/.claude/state/review-prompt.txt" ]; then
+  ok; else bad "24 …and the built prompt is a regular file, not the planted directory"; fi
+
+# A planted directory at ANY swept family name must not strand the next admission: `rm -f`
+# cannot remove a directory, so the old clear reported failure forever.
+d="$(new_repo)"
+mkdir "$d/.claude/state/survey-overflow.md"
+: > "$d/.claude/state/survey.md"
+admit "$d"
+eq "$AD_RC" "0" "24 admit clears a planted directory at a swept name instead of stranding"
+if [ -e "$d/.claude/state/survey-overflow.md" ]; then
+  bad "24 …and the planted directory is gone"; else ok; fi
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
