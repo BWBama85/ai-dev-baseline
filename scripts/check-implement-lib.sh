@@ -868,6 +868,13 @@ rm -f "$RCLONE/newhelper.txt"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 eq "$?" "20" "20 an untracked embedded repo refuses (20), never a silent skip"
 rm -rf "$RCLONE/subrepo"
+# An UNREADABLE directory makes ls-files warn and exit 0 over a partial listing — accepting it
+# publishes a review prompt missing whatever sat beneath, which is then committable unreviewed.
+( cd "$RCLONE" && mkdir -p noperm && printf 'hidden\n' > noperm/f && chmod 000 noperm ) >/dev/null 2>&1
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+RK=$?
+chmod 755 "$RCLONE/noperm" 2>/dev/null; rm -rf "$RCLONE/noperm"
+eq "$RK" "20" "20 an unreadable directory refuses (20) — a partial untracked listing is never accepted"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
 if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then

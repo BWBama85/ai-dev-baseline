@@ -1520,7 +1520,18 @@ cmd_dispatch_review() {
   # before this dispatch would be committed without independent review — append each as a
   # /dev/null diff. `--no-index` exits 1 whenever the files differ, which is every time here;
   # only a real error (2+) aborts.
-  local uf
+  # The enumeration must be COMPLETE before it is used: ls-files warns and exits 0 over an
+  # unreadable directory, and a partial listing publishes a review prompt missing whatever sat
+  # beneath — committable later, unreviewed. Probe the stderr first; any diagnostic refuses.
+  local uf _uerr
+  if ! _uerr="$(git ls-files --others --exclude-standard -z 2>&1 >/dev/null)"; then
+    rm -f "$pft"; printf 'implement-lib: could not enumerate untracked files\n' >&2; return 20
+  fi
+  if [ -n "$_uerr" ]; then
+    rm -f "$pft"
+    printf 'implement-lib: the untracked enumeration warned ("%.160s") — a partial listing would publish an unreviewed file; fix it and re-run\n' "$_uerr" >&2
+    return 20
+  fi
   while IFS= read -r -d '' uf; do
     [ -n "$uf" ] || continue
     # A NON-FILE entry refuses: an embedded repository surfaces here as `sub/`, which --no-index
