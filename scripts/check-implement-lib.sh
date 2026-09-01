@@ -1887,6 +1887,50 @@ eq "$AD_RC" "0" "24 admit clears a planted directory at a swept name instead of 
 if [ -e "$d/.claude/state/survey-overflow.md" ]; then
   bad "24 …and the planted directory is gone"; else ok; fi
 
+# ================= 25. the oversize head never reopens the vacated stage name (#435) ============
+# role-dispatch's bounded-runner contract admits descendants can survive the CLI, so the moment
+# the oversize mv vacates survey-stage.md a survivor can plant a symlink there — and the old
+# `> "$dir/survey-stage.md"` reopened that public fixed name, writing the head THROUGH the plant.
+# The probe rides the head call itself: at that moment the public stage name must not exist (the
+# head is created under a private mktemp name and published by rename), and a plant dropped at
+# the vacated name during the head must neither receive the output nor survive as survey.md.
+pubfn="$(sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+PB_D="$(new_repo)"
+printf 'precious repo content\n' > "$PB_D/planted-target.txt"
+awk 'BEGIN{for(i=0;i<2000;i++)print "survey line " i}' > "$PB_D/.claude/state/survey-stage.md"
+PB_OUT="$(
+  eval "$pubfn"
+  _il_survey_head() {
+    local dir="${1%/*}"
+    if [ -e "$dir/survey-stage.md" ] || [ -L "$dir/survey-stage.md" ]; then
+      printf 'REOPENED-PUBLIC-NAME\n'
+    else
+      printf 'HEAD-VIA-PRIVATE-NAME\n'
+    fi
+    rm -f "$dir/survey-stage.md" 2>/dev/null
+    ln -s ../../planted-target.txt "$dir/survey-stage.md" 2>/dev/null
+    return 0
+  }
+  cd "$PB_D" && _il_publish_survey .claude/state 2>/dev/null; printf 'RC=%s\n' "$?"
+)"
+has "$PB_OUT" "RC=0" "25 the oversize publish still succeeds"
+if [ -L "$PB_D/.claude/state/survey.md" ]; then
+  bad "25 …but a plant at the vacated stage name became survey.md"; else ok; fi
+eq "$(cat "$PB_D/.claude/state/survey.md" 2>/dev/null)" "HEAD-VIA-PRIVATE-NAME" \
+  "25 …and the head was built under a private name, never by reopening the public stage"
+eq "$(cat "$PB_D/planted-target.txt" 2>/dev/null)" "precious repo content" \
+  "25 …and nothing wrote through the planted link"
+
+# The head's 16 KiB bound counts the emitted newline: a first line of 16384+ bytes used to emit
+# 16385 — one byte past the stated total, in survey.md and in the gap-prompt copy alike.
+HB_D="$(new_repo)"
+awk 'BEGIN{for(i=0;i<20000;i++)printf "a"; print ""}' > "$HB_D/big1.txt"
+awk 'BEGIN{for(i=0;i<16384;i++)printf "a"; print ""}' > "$HB_D/big2.txt"
+HB_N="$( set -u; eval "$headfn"; _il_survey_head "$HB_D/big1.txt" | wc -c | tr -d ' ' )"
+eq "$HB_N" "16384" "25 a >16384-byte first line emits exactly 16384 bytes, newline included"
+HB_N="$( set -u; eval "$headfn"; _il_survey_head "$HB_D/big2.txt" | wc -c | tr -d ' ' )"
+eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt gate let it through whole)"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"

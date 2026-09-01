@@ -1321,7 +1321,8 @@ cmd_snapshot_issues() {
 # purpose. The head is the same whole-line UTF-8-safe 16 KiB bound the gap-prompt copy uses; the
 # full reply is kept beside it as survey-overflow.md, inside the swept survey-*.md family.
 _il_publish_survey() {   # <state-dir>
-  local dir="$1" _svb
+  local dir="$1" _svb _pub _hd
+  _pub="$dir/survey-stage.md"
   # The stage must be a nonempty REGULAR file. A surveyor can unlink it mid-pipe (its stdout
   # stays on the old inode) and leave a symlink at the name — publishing would hand an arbitrary
   # repository or host file to the primary and the gap agent as "the survey". rm removes a
@@ -1343,7 +1344,13 @@ _il_publish_survey() {   # <state-dir>
     # validated reply vanishes, and the head below then reads the directory. Never follows.
     rm -rf "$dir/survey-overflow.md"
     mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" || return 1
-    _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" || return 1
+    # That mv VACATED the public stage name, and role-dispatch's bounded-runner contract admits
+    # descendants can survive the CLI — so the head is never created by REOPENING that name (a
+    # link planted in the gap would receive the write). mktemp is bash's one create-or-fail
+    # open; the random name cannot be pre-planted, and the publish below is a rename.
+    _hd="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 1
+    if ! _il_survey_head "$dir/survey-overflow.md" > "$_hd"; then rm -f "$_hd"; return 1; fi
+    _pub="$_hd"
     printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
   else
     # A shorter republication REMOVES a previous attempt's overflow: that file is documented as
@@ -1352,7 +1359,7 @@ _il_publish_survey() {   # <state-dir>
     rm -rf "$dir/survey-overflow.md"
   fi
   rm -rf "$dir/survey.md"   # a planted directory here would swallow the publish the same way
-  mv -f "$dir/survey-stage.md" "$dir/survey.md" || return 1
+  mv -f "$_pub" "$dir/survey.md" || return 1
 }
 
 # Cap survey-trace.md at <max> bytes — role-dispatch's HEAD-cap shape, marker included. `quiet`
@@ -1602,8 +1609,11 @@ _il_survey_head() {   # <file>
   [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
-    if [ "$n" -eq 1 ] && [ "${#line}" -gt "$cap" ]; then
-      line="${line:0:cap}"
+    # -ge and cap-1, not -gt and cap: the emitted newline is INSIDE the 16 KiB bound, so a first
+    # line of cap-or-more bytes keeps cap-1 — the old gate let exactly-cap through whole and the
+    # old slice kept cap, both emitting one byte past the stated total.
+    if [ "$n" -eq 1 ] && [ "${#line}" -ge "$cap" ]; then
+      line="${line:0:cap-1}"
       # Count the trailing continuation bytes, read the byte before them, and drop the run ONLY
       # when it is a genuinely partial sequence — a cut landing exactly after a complete character
       # keeps it. Valid input is assumed (model output); malformed bytes pass through as before.
