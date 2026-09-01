@@ -138,8 +138,10 @@ supports=0
 news=0
 t_lines=0; t_words=0; t_tokens=0; t_fenced=0; t_dlines=0; t_dtokens=0
 # On-demand supporting files (#433) are measured and rowed like everything else but accumulated
-# APART: TOTAL keeps meaning "what loads on invocation", which is the claim the report exists to
-# support, and a second TOTAL row carries what is available on demand.
+# APART, so the loaded-on-invocation figure — the claim the report exists to support — survives
+# as its own number. It is carried in the STDERR summary, never as a second total row: the TSV
+# contract is one final TOTAL summing every row above it, and a subtotal row would break any
+# consumer that sums the rows or reads the last row as the total.
 od_lines=0; od_words=0; od_tokens=0; od_fenced=0; od_dlines=0; od_dtokens=0
 EMIT_BUCKET=loaded
 M_LINES=0; M_WORDS=0; M_TOKENS=0
@@ -300,19 +302,18 @@ if [ "$sources" -eq 0 ]; then
   rc=1
 fi
 
-# TOTAL is the LOADED-ON-INVOCATION sum — root docs + SKILL.md — because "the invocation context
-# got smaller" is the claim this report exists to support, and folding on-demand rows in would
-# unsupport it (#433). The on-demand sum gets its own row, present only when such files exist.
+# TOTAL is the ONE final row and sums EVERY row above it — the header's own contract, kept even
+# with supporting files present. The loaded-on-invocation figure ("the invocation context got
+# smaller", #433's claim) is carried in the stderr summary as loaded/on-demand approx_tokens; a
+# subtotal ROW would break any consumer that sums the rows or reads the last row as the total.
 if [ -z "$SINCE_SHA" ]; then
-  row TOTAL "$t_lines" "$t_words" "$t_tokens" "$t_fenced"
-  [ "$supports" -eq 0 ] || row "TOTAL (on-demand)" "$od_lines" "$od_words" "$od_tokens" "$od_fenced"
-  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer\n' \
-    "$roots" "$skills" "$supports" "$sources" >&2
+  row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))"
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer\n' \
+    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" >&2
 else
-  row TOTAL "$t_lines" "$t_words" "$t_tokens" "$t_fenced" "$t_dlines" "$t_dtokens"
-  [ "$supports" -eq 0 ] || row "TOTAL (on-demand)" "$od_lines" "$od_words" "$od_tokens" "$od_fenced" "$od_dlines" "$od_dtokens"
-  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new\n' \
-    "$roots" "$skills" "$supports" "$sources" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news" >&2
+  row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))" "$((t_dlines + od_dlines))" "$((t_dtokens + od_dtokens))"
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new\n' \
+    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news" >&2
 fi
 
 exit "$rc"
