@@ -135,7 +135,7 @@ rc=0
 roots=0
 skills=0
 supports=0
-news=0
+news_loaded=0; news_od=0
 t_lines=0; t_words=0; t_tokens=0; t_fenced=0; t_dlines=0; t_dtokens=0
 # On-demand supporting files (#433) are measured and rowed like everything else but accumulated
 # APART, so the loaded-on-invocation figure — the claim the report exists to support — survives
@@ -234,9 +234,10 @@ emit() {
     else od_dlines=$(( od_dlines + dl )); od_dtokens=$(( od_dtokens + dt )); fi
     row "$f" "$lines" "$words" "$tokens" "$fenced" "$dl" "$dt"
   else
-    news=$(( news + 1 ))
-    if [ "$EMIT_BUCKET" = loaded ]; then t_dlines=$(( t_dlines + lines )); t_dtokens=$(( t_dtokens + tokens ))
-    else od_dlines=$(( od_dlines + lines )); od_dtokens=$(( od_dtokens + tokens )); fi
+    # Counted PER BUCKET: a batch of new supporting files used to report as "loaded … N new",
+    # which misstates the context-growth summary the loaded deltas exist to support.
+    if [ "$EMIT_BUCKET" = loaded ]; then news_loaded=$(( news_loaded + 1 )); t_dlines=$(( t_dlines + lines )); t_dtokens=$(( t_dtokens + tokens ))
+    else news_od=$(( news_od + 1 )); od_dlines=$(( od_dlines + lines )); od_dtokens=$(( od_dtokens + tokens )); fi
     row "$f" "$lines" "$words" "$tokens" "$fenced" new new
   fi
   if [ "$EMIT_BUCKET" = loaded ]; then
@@ -312,8 +313,8 @@ if [ -z "$SINCE_SHA" ]; then
     "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" >&2
 else
   row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))" "$((t_dlines + od_dlines))" "$((t_dtokens + od_dtokens))"
-  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new\n' \
-    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news" >&2
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new (on-demand: %s new)\n' \
+    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news_loaded" "$news_od" >&2
 fi
 
 exit "$rc"

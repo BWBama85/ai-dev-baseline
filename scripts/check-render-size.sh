@@ -386,6 +386,7 @@ check_git "$fx" update-ref refs/tags/-x HEAD~1 >/dev/null 2>&1 || bad "fixture: 
 run_rs "$fx" --since=-x
 yes "$RS_RC" "dash-ref: --since=-x resolves a tag named -x"
 assert_grown_ten
+has "$RS_ERR" "3 new (on-demand: 0 new)" "since: new artifacts are counted per bucket, so a supporting-file batch cannot masquerade as loaded growth"
 run_rs "$fx" --since HEAD --since HEAD~1
 eq "$RS_RC" "2" "refusal: --since twice exits 2"
 fx="$(mk_fixture norepo)" || bad "fixture: could not build the no-repository tree"
