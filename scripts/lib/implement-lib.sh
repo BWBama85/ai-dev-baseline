@@ -1255,6 +1255,7 @@ cmd_snapshot_issues() {
     local _ft="${ADB_SNAPSHOT_FETCH_TIMEOUT_SECS:-600}"
     case "$_ft" in ''|*[!0-9]*) _ft=600 ;; esac
     if [ "${#_ft}" -gt 9 ]; then _ft=600; else _ft=$(( 10#$_ft )); [ "$_ft" -gt 0 ] || _ft=600; fi
+    rm -f "$dir/issue-$n.json" "$dir/issue-$n.assoc"   # plantable names, unlinked before the redirects
     adb_run_bounded "$_ft" 10 gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "$dir/issue-$n.json" \
       || { _il_bail "$tok" "$dir" 20 "could not fetch issue #$n (not found, or the read outran its ${_ft}s bound) — verify repo scope (repo-scope.md)"; return $?; }
     adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' > "$dir/issue-$n.assoc" \
@@ -1401,6 +1402,10 @@ cmd_dispatch_survey() {
   dir="$1"; shift
   _il_claim_renew "$dir" "$tok" || return $?
   pf="$dir/survey-prompt.txt"
+  # Every fixed name a previously dispatched agent could pre-plant as a symlink is unlinked
+  # before its redirect (rm never follows) — a planted link would otherwise aim this build's
+  # truncate at any writable repository file.
+  rm -f "$pf"
   {
     printf '%s\n\n' 'You are surveying a repository BEFORE implementation of the GitHub issue(s) below. Explore the repository (read-only: read, list, search; change nothing) and return, in AT MOST 1500 words, exactly these four sections:'
     printf '%s\n' '## Files to change' '- <path> — <why>' '' '## Primitives to reuse' '- <path>:<function/subcommand> — <what it already does>' '' '## Constraints and conventions observed' '- <rule the diff must honor, with the file that states or exemplifies it>' '' '## Open questions' '- <anything the issue text does not settle>'
@@ -1584,6 +1589,8 @@ cmd_dispatch_gaps() {
   dir="$1"; shift
   _il_claim_renew "$dir" "$tok" || return $?
   pf="$dir/gap-prompt.txt"
+  # Same plantable-name rule as the survey prompt: unlink before the redirect.
+  rm -f "$pf"
   {
     printf '%s\n\n' 'You are performing an adversarial PRE-IMPLEMENTATION gap analysis of the GitHub issue(s) below, in the repository you are running in. Explore the repository as needed; do NOT implement. Flag: blocking ambiguities; hidden constraints (this repo'\''s conventions and neighbouring patterns); out-of-scope-creep risk; and test gaps.'
     printf '%s\n\n' 'Report your findings under exactly three headings — BLOCKING, SHOULD-CLARIFY, NICE-TO-HAVE — each listing `- <finding>` bullets or `- none`. End with one line: `VERDICT: <proceed|proceed-with-clarifications|blocked>`.'
@@ -1643,6 +1650,7 @@ cmd_dispatch_gaps() {
       _gt=2700
     fi
   fi
+  rm -f "$dir/gaps.md" "$dir/gaps.err"   # plantable output names, unlinked before the redirects
   ADB_DISPATCH_TIMEOUT_SECS="$_gt" \
     bash "$_IL_ROLE_DISPATCH" invoke gap_analysis < "$pf" > "$dir/gaps.md" 2> "$dir/gaps.err"
   rc=$?

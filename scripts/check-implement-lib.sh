@@ -1506,6 +1506,18 @@ eq "$(cat "$d/target3.txt" 2>/dev/null)" "precious repo content" \
   "19n …and never writes claim JSON through to its target"
 if [ -L "$d/.claude/state/gap-analysis.lock" ]; then
   bad "19n …and the canonical claim never becomes the planted symlink"; else ok; fi
+# The gap prompt (and every fixed name a dispatched agent can pre-plant) is unlinked before its
+# redirect — the surveyor runs FIRST with repo access and third-party text, so a later builder
+# following a planted link would truncate any writable repo file.
+d="$(new_repo)"; seed_snap "$d"
+printf 'precious repo content\n' > "$d/target4.txt"
+( cd "$d" && ln -s ../../target4.txt .claude/state/gap-prompt.txt ) >/dev/null 2>&1
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19n a planted gap prompt does not break the build"
+eq "$(head -n1 "$d/target4.txt" 2>/dev/null)" "precious repo content" \
+  "19n …and the prompt build never writes through it"
+if [ -L "$d/.claude/state/gap-prompt.txt" ]; then
+  bad "19n …and the built prompt is a regular file, not the planted link"; else ok; fi
 
 # ================= 19o. an oversized CODEX reply is a failed dispatch too (#435) ================
 # The codex arm emits its result with `cat` after the bounded call; the stage's 8 MiB head cap
