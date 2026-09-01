@@ -1276,13 +1276,20 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
   tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
   case "$tb" in ''|*[!0-9]*) return 0 ;; esac
   [ "$tb" -gt "$max" ] || return 0
-  if head -c "$max" "$dir/survey-trace.md" > "$dir/.trace-cap.tmp" 2>/dev/null; then
-    printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
-      "$max" "$(( tb - max ))" >> "$dir/.trace-cap.tmp"
-    mv -f "$dir/.trace-cap.tmp" "$dir/survey-trace.md" 2>/dev/null || rm -f "$dir/.trace-cap.tmp"
-  else
-    rm -f "$dir/.trace-cap.tmp"
+  # IN PLACE, never by rename: the surveyor holds an open descriptor, and replacing the pathname
+  # would detach it onto a hidden unlinked inode that keeps consuming disk unseen. The head is
+  # captured to a survey-family scratch (swept and cleared if an interruption strands it), the
+  # SAME inode is truncated, and head + marker are written back; the writer's later appends land
+  # past a sparse hole and are re-capped on the next pass.
+  if ! head -c "$max" "$dir/survey-trace.md" > "$dir/survey-trace-cap.md" 2>/dev/null; then
+    rm -f "$dir/survey-trace-cap.md"
+    return 0
   fi
+  printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
+    "$max" "$(( tb - max ))" >> "$dir/survey-trace-cap.md"
+  : > "$dir/survey-trace.md"
+  cat "$dir/survey-trace-cap.md" >> "$dir/survey-trace.md" 2>/dev/null
+  rm -f "$dir/survey-trace-cap.md"
   [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md exceeded %s bytes; capped\n' "$max" >&2
   return 0
 }

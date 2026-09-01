@@ -1407,6 +1407,23 @@ if [ -n "$TR_B" ] && [ "$TR_B" -le 400 ]; then ok; else
   bad "19m …and the 8-byte cap was applied (got ${TR_B:-none} bytes)"; fi
 rm -f "$shimbin/claude"
 
+# ================= 19n. the cap constrains the inode the writer HOLDS (#435) ====================
+# A rename-based cap replaced the pathname and left the surveyor's open descriptor on a hidden
+# unlinked inode that kept growing unseen. In-place truncation keeps the writer on the capped
+# inode, so its next append lands where the next pass (and the path's size) can see it.
+capfn="$(sed -n '/^_il_cap_trace()/,/^}/p' "$IL")"
+CAP_SIZE="$( d="$(new_repo)"; cd "$d" && eval "$capfn" \
+  && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md \
+  && exec 3>> .claude/state/survey-trace.md \
+  && _il_cap_trace .claude/state 1024 quiet \
+  && printf 'POST-CAP-WRITE' >&3 \
+  && wc -c < .claude/state/survey-trace.md | tr -d ' ' )"
+case "$CAP_SIZE" in
+  ''|*[!0-9]*) bad "19n the in-place cap probe did not run ('$CAP_SIZE')" ;;
+  *) if [ "$CAP_SIZE" -gt 2000 ]; then ok; else
+       bad "19n a post-cap write through the held fd must land on the visible path (size $CAP_SIZE — the writer was detached onto a hidden inode)"; fi ;;
+esac
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
@@ -1436,9 +1453,10 @@ for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md;
   : > "$d/.claude/state/$f"
 done
 : > "$d/.claude/state/review-prompt-stage.aB3xYz"   # a stage orphaned by a killed dispatch-review
+: > "$d/.claude/state/survey-trace-cap.md"           # the capper's scratch, orphaned by a kill
 admit "$d"
 eq "$AD_RC" "0" "22 admit succeeds over a finished run's survey artifacts"
-for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md review-prompt-stage.aB3xYz; do
+for f in survey-prompt.txt survey.md survey-trace.md survey.err survey-retry.md review-prompt-stage.aB3xYz survey-trace-cap.md; do
   if exists "$d/.claude/state/$f"; then bad "22 …but left $f behind (the containment rule broken toward /cleanup)"; else ok; fi
 done
 
