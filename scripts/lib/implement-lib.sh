@@ -254,7 +254,12 @@ _IL_CLAIM_MUTEX=".claim-mutex"
 _il_claim_mutex_take() {   # <state-dir>
   local dir="$1" m now grave gm
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    mkdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null && return 0
+    if mkdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null; then
+      # An OWNER MARK inside the instance binds the later drop to it: a displaced holder whose
+      # instance was misgrabbed must not rmdir whatever successor now occupies the pathname.
+      : > "$dir/$_IL_CLAIM_MUTEX/.owner.$$" 2>/dev/null || :
+      return 0
+    fi
     # adb_mtime, never an inline stat chain: GNU stat treats `-f %m` as a filesystem report and
     # can print it BEFORE failing, so `stat -f || stat -c` concatenated garbage on Ubuntu and a
     # stale mutex was honored forever there.
@@ -277,7 +282,7 @@ _il_claim_mutex_take() {   # <state-dir>
       if mv "$dir/$_IL_CLAIM_MUTEX" "$grave" 2>/dev/null; then
         gm="$(adb_mtime "$grave")"
         if [ -n "$gm" ] && [ "$(( now - gm ))" -gt 60 ]; then
-          rmdir "$grave" 2>/dev/null || :
+          rm -rf "$grave" 2>/dev/null || :   # carries the dead holder's owner mark, so not rmdir-able
         elif ! mv "$grave" "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null; then
           # A FRESH instance was grabbed and the path has already been re-taken by a third: the
           # displaced holder is live, so its instance is NEVER deleted — the grave stays as an
@@ -291,7 +296,11 @@ _il_claim_mutex_take() {   # <state-dir>
   done
   return 1
 }
-_il_claim_mutex_drop() { rmdir "$1/$_IL_CLAIM_MUTEX" 2>/dev/null || :; }
+_il_claim_mutex_drop() {   # <state-dir> — releases only THIS process's instance
+  [ -e "$1/$_IL_CLAIM_MUTEX/.owner.$$" ] || return 0
+  rm -f "$1/$_IL_CLAIM_MUTEX/.owner.$$" 2>/dev/null
+  rmdir "$1/$_IL_CLAIM_MUTEX" 2>/dev/null || :
+}
 
 # Take the claim, or fail because someone else holds it.
 #
