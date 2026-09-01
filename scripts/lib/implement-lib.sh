@@ -1013,7 +1013,13 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   rc=0
   now="$(date +%s 2>/dev/null)" || now=""
   cur="$(jq -r '.token // ""' "$dir/$_IL_CLAIM" 2>/dev/null)" || cur=""
-  if [ -z "$now" ]; then _il_claim_mutex_drop "$dir"; return 0; fi
+  if [ -z "$now" ]; then
+    # No clock, no verdict — and no verdict fails CLOSED: neither the lease nor the margin can be
+    # validated, so proceeding is the same near-expiry exposure every other arm refuses.
+    _il_claim_mutex_drop "$dir"
+    printf 'implement-lib: could not read the clock, so the claim lease at %s/%s cannot be validated or renewed — refusing rather than risking a concurrent reap\n' "$dir" "$_IL_CLAIM" >&2
+    return 20
+  fi
   if [ -z "$cur" ]; then
     # A tokenless or unreadable claim fails CLOSED for a token-bearing caller: the same damage
     # that loses .token loses the lease, which admit reads as immediately breakable — so
@@ -1275,6 +1281,10 @@ _il_publish_survey() {   # <state-dir>
     mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" || return 1
     _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" || return 1
     printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
+  else
+    # A shorter republication REMOVES a previous attempt's overflow: that file is documented as
+    # the full reply behind the bounded summary, and a stale copy must not wear the label.
+    rm -f "$dir/survey-overflow.md"
   fi
   mv -f "$dir/survey-stage.md" "$dir/survey.md" || return 1
 }

@@ -1334,6 +1334,13 @@ d="$(new_repo)"; seed_snap "$d"
 jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 ( cd "$d" && env ADB_RUN_CLAIM_LEASE_SECS=abc bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "12" "19l an invalid lease override refuses (12) instead of proceeding unrenewed"
+# An unreadable CLOCK fails closed too: without now, neither the lease nor the margin can be
+# validated, and proceeding is the same near-expiry exposure.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+mkdir -p "$d/fakebin"; printf '#!/usr/bin/env bash\nexit 1\n' > "$d/fakebin/date"; chmod +x "$d/fakebin/date"
+( cd "$d" && env PATH="$d/fakebin:$PATH" bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "20" "19l an unreadable clock refuses (20) — the lease cannot be validated without it"
 # Each fetch is BOUNDED under the lease: one stalled gh call used to hold the loop past 9000s
 # with the claim expiring under it. The bound is adb_run_bounded's; the knob exists for tests.
 d="$(new_repo)"; gid "$d"; clm "$d"
@@ -1386,6 +1393,12 @@ if [ -n "$SV_BYTES" ] && [ "$SV_BYTES" -le 16385 ]; then ok; else
   bad "19k a runaway native reply still publishes bounded (got ${SV_BYTES:-none} bytes)"; fi
 eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "8388608" \
   "19k …with the overflow capped at the 8 MiB runaway bound"
+# A shorter REPUBLICATION removes the stale overflow: the navigator describes that file as the
+# full reply behind the bounded summary, and a previous attempt's copy must not wear that label.
+printf 'short retry\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state )
+eq "$?" "0" "19k a shorter republication publishes"
+if exists "$d/.claude/state/survey-overflow.md"; then
+  bad "19k …and removes the previous attempt's overflow"; else ok; fi
 
 # ================= 19m. the trace is bounded WHILE the agent writes it (#435) ===================
 # The post-dispatch cap left the whole 1200-1500s invocation free to fill the disk. A watcher
