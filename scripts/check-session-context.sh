@@ -321,7 +321,7 @@ if [ "$MODE" = mutation ]; then
     '      elif false then "unsafe\t-"' \
     'outside the workflow'"'"'s name grammar'
   check_mut opaque-grammar-dropped \
-    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace\\.md)$") | not) then "unnamed\t-"' \
+    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-held\\.[A-Za-z0-9]{1,10}|survey-trace\\.md)$") | not) then "unnamed\t-"' \
     '      elif false then "unnamed\t-"' \
     'a prose-bearing family name'
   check_mut scheme-only-url-accepted \
@@ -585,6 +585,10 @@ has "$OUT" "survey-stage.md" "1b the interrupted-dispatch stage is a fixed workf
 hasnt "$OUT" "unnamed-artifacts" "1b ...not an unnamed count either"
 rm -f "$d/survey-stage.md"
 # The review prompt's mktemp stage carries a bounded random suffix; it is still workflow-born.
+printf 'z' > "$d/survey-held.aB3xYz"; summary "$d" "$SID_A"
+has "$OUT" "survey-held.aB3xYz" "1b an interrupted held trace is named"
+hasnt "$OUT" "unnamed-artifacts" "1b ...not an unnamed count"
+rm -f "$d/survey-held.aB3xYz"
 printf 'z' > "$d/survey-trace-cap.md"; summary "$d" "$SID_A"
 has "$OUT" "survey-trace-cap.md" "1b an interrupted trace-cap scratch is named"
 hasnt "$OUT" "unnamed-artifacts" "1b ...not an unnamed count"
