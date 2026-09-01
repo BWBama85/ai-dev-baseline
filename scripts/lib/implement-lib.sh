@@ -1310,8 +1310,22 @@ cmd_snapshot_issues() {
 # full reply is kept beside it as survey-overflow.md, inside the swept survey-*.md family.
 _il_publish_survey() {   # <state-dir>
   local dir="$1" _svb
+  # The stage must be a nonempty REGULAR file. A surveyor can unlink it mid-pipe (its stdout
+  # stays on the old inode) and leave a symlink at the name — publishing would hand an arbitrary
+  # repository or host file to the primary and the gap agent as "the survey". rm removes a
+  # planted link, never its target.
+  if [ -L "$dir/survey-stage.md" ] || [ ! -f "$dir/survey-stage.md" ]; then
+    rm -f "$dir/survey-stage.md"
+    printf 'implement-lib: the survey stage was not a regular file (a planted symlink?) — refusing to publish it\n' >&2
+    return 1
+  fi
   _svb="$(wc -c < "$dir/survey-stage.md" 2>/dev/null | tr -d ' ')"
   case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
+  if [ "$_svb" -eq 0 ]; then
+    rm -f "$dir/survey-stage.md"
+    printf 'implement-lib: the survey reply was EMPTY — a failed survey, never "ok 0 words"\n' >&2
+    return 1
+  fi
   if [ "$_svb" -gt 16384 ]; then
     mv -f "$dir/survey-stage.md" "$dir/survey-overflow.md" || return 1
     _il_survey_head "$dir/survey-overflow.md" > "$dir/survey-stage.md" || return 1

@@ -1620,6 +1620,42 @@ if [ "$OC_RC" -ne 0 ]; then ok; else bad "19o a 9 MiB codex reply is a FAILED di
 if [ -s "$d/.claude/state/survey.md" ]; then bad "19o …and publishes no truncated survey.md"; else ok; fi
 rm -f "$shimbin/codex"
 
+# ================= 19q. the stage must be a nonempty REGULAR file to publish (#435) =============
+# A surveyor can unlink the stage mid-pipe (its stdout stays on the old inode) and leave a
+# symlink at the name — publishing would then hand an arbitrary repo or host file to the primary
+# and the gap agent as "the survey". And an empty reply is a failed survey, never "ok 0 words".
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'decoy\n'
+rm -f .claude/state/survey-stage.md
+ln -s ../../secret.txt .claude/state/survey-stage.md
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf 'HOST-SECRET-CONTENT\n' > "$d/secret.txt"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+SW_RC=$?
+if [ "$SW_RC" -ne 0 ]; then ok; else bad "19q a swapped stage is a FAILED publication (got rc 0)"; fi
+if grep -q HOST-SECRET-CONTENT "$d/.claude/state/survey.md" 2>/dev/null; then
+  bad "19q …and no foreign file is published as the survey"; else ok; fi
+rm -f "$shimbin/claude"
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+if [ "$?" -ne 0 ]; then ok; else bad "19q an EMPTY reply is a failed survey, never ok-0-words"; fi
+if exists "$d/.claude/state/survey.md"; then bad "19q …and publishes nothing"; else ok; fi
+rm -f "$shimbin/claude"
+d="$(new_repo)"
+printf '' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+if [ "$?" -ne 0 ]; then ok; else bad "19q an empty native reply fails publication too"; fi
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
