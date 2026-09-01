@@ -118,7 +118,9 @@ found=0
 # pasted into the same shells, so it gets the same lint.
 for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
   [ -f "$wf" ] || continue
-  case "$(basename "$wf")" in README.md) continue ;; esac
+  # Only the ROOT README is reserved and skipped — build.sh renders a supporting
+  # <name>/README.md like any sibling, so its fenced blocks get the same lint.
+  [ "$wf" = "$WFDIR/README.md" ] && continue
   hits="${ scan_one "$wf"; }"
   [ -n "$hits" ] || continue
   found=1
