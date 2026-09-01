@@ -316,4 +316,5 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/implement-lib.sh:961` `fc6a5f7` `PRRT_kwDOTfywrM6d_MsN` PR #452 2026-09-01 — the renewal's token check and its replacement were two pathname operations, so a successor admitted between them was silently overwritten — the rename now claims the claim and the link-publish loses loudly
 - `partial-validation` `scripts/lib/implement-lib.sh:1577` `80a6231` `PRRT_kwDOTfywrM6d_MsS` PR #452 2026-09-01 — the diffable-file test followed symlinks, refusing links to directories or missing targets that no-index reviews fine as mode-120000 patches
 - `partial-validation` `scripts/lib/run-state.sh:278` `4c10bd3` `PRRT_kwDOTfywrM6d_MsV` PR #452 2026-09-01 — the opaque grammar omitted the review-prompt mktemp stage's bounded suffix shape, another name the workflow itself creates
+- `toctou` `scripts/lib/implement-lib.sh:957` `a5b9de1` `PRRT_kwDOTfywrM6d_-dH` PR #452 2026-09-01 — the compare-and-replace vacated the canonical claim path mid-renewal, so a concurrent admit saw no claim and cleared the live run — replaced by a non-vacating rename gated on remaining lease
 <!-- adb:hits:end -->
