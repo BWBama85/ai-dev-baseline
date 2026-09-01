@@ -343,4 +343,6 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/build.sh:669` `7c75549` `PRRT_kwDOTfywrM6eGuWV` PR #452 2026-09-01 — the .md child check accepted a dangling symlink the render loop then silently skipped — green build, absent sibling
 - `markup-injection` `scripts/lib/implement-lib.sh:1313` `336f109` `PRRT_kwDOTfywrM6eGuWY` PR #452 2026-09-01 — the agent-writable trace and stage names could be planted as symlinks, turning the cap's truncate into an eraser for any writable repo file
 - `partial-validation` `scripts/lib/implement-lib.sh:1748` `a9d147a` `PRRT_kwDOTfywrM6eGuWe` PR #452 2026-09-01 — absolutized untracked paths made no-index headers uncitable and leaked the checkout's host path into the prompt
+- `markup-injection` `scripts/lib/implement-lib.sh:1064` `0f71a82` `PRRT_kwDOTfywrM6eH93B` PR #452 2026-09-01 — the renewal and marker stage names were plantable symlinks — the redirect wrote claim JSON through one and the mv installed the link as the canonical claim
+- `reuse-missed` `scripts/lib/implement-lib.sh:258` `0f71a82` `PRRT_kwDOTfywrM6eH93M` PR #452 2026-09-01 — an inline stat -f-or-stat -c chain replaced the portable adb_mtime and concatenated GNU stat's report with the epoch, honoring stale mutexes forever on Ubuntu
 <!-- adb:hits:end -->
