@@ -1246,8 +1246,10 @@ cmd_snapshot_issues() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: snapshot-issues needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
-  _il_claim_renew "$dir" "$tok" || return $?
+  # Arguments are validated BEFORE the claim is touched: a usage error must exit without having
+  # renewed the lease, or a corrected fresh start is refused until the extension expires.
   for n in "$@"; do case "$n" in ''|*[!0-9]*) echo "implement-lib: not an issue number: '$n'" >&2; exit 2 ;; esac; done
+  _il_claim_renew "$dir" "$tok" || return $?
   command -v jq >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "jq is required"; return $?; }
   command -v gh >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "gh is required"; return $?; }
   # THE FILES, not the directory: a `.../state/` gitignore rule cannot match a directory git cannot
@@ -1831,8 +1833,10 @@ cmd_dispatch_review() {
   local -a nums=()
   local cand base n had_nullglob=0 mlist=""
   if [ -f "$dir/$_IL_MARKER" ]; then
-    mlist="$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" || mlist=""
-    [ -n "$mlist" ] || { rm -f "$pft"; printf 'implement-lib: the run marker at %s/%s has no readable .issue — fix the marker; the review scope is never guessed\n' "$dir" "$_IL_MARKER" >&2; return 20; }
+    # STRING-TYPED, the same fail-closed validation open-pr's guard uses: jq -r would silently
+    # stringify a number, letting marker corruption select the review criteria.
+    mlist="$(jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)" \
+      || { rm -f "$pft"; printf 'implement-lib: the run marker at %s/%s has no readable string .issue — fix the marker; the review scope is never guessed\n' "$dir" "$_IL_MARKER" >&2; return 20; }
     # The GRAMMAR is validated before any split: word splitting silently discards empty fields,
     # so "7," — a marker whose second issue was lost to corruption — would review only #7 while
     # this arm's whole contract is a refusal naming the corruption.

@@ -793,6 +793,15 @@ snap "$d" SHIM_ISSUE_FAIL=1
 eq "$SN_RC" "20" "18 a failed gh read is 20 (verify repo scope), not a silent pass"
 ( cd "$d" && bash "$IL" snapshot-issues .claude/state 7x ) >/dev/null 2>&1
 eq "$?" "2" "18 a non-numeric issue argument is a usage error"
+# …and a usage error must not have RENEWED the claim first: the documented release contract for
+# this path would then leave a corrected fresh start refused until the extended lease expires.
+d="$(new_repo)"; gid "$d"
+jq -n --argjson e "$(($(date +%s) + 100))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+cp "$d/.claude/state/gap-analysis.lock" "$d/lock-b4"
+( cd "$d" && bash "$IL" snapshot-issues --token tokT .claude/state 7x ) >/dev/null 2>&1
+eq "$?" "2" "18 a token-bearing usage error is still 2"
+if cmp -s "$d/.claude/state/gap-analysis.lock" "$d/lock-b4"; then ok; else
+  bad "18 …and the claim was NOT renewed before the arguments were even valid"; fi
 
 # ================= 19. dispatch prompts are BUILT CONTAINED (#433/#435) =========================
 # --prompt-only exercises assembly without any agent CLI; the envelope is structural.
@@ -940,6 +949,9 @@ jq -n '{branch:"issue-7-t", issue:"", phase:"committed"}' > "$RCLONE/.claude/sta
 eq "$?" "20" "20 …and an empty marker .issue refuses too, never falls back past the marker"
 # …and EMPTY FIELDS refuse: word splitting silently discarded them, so "7," — a marker whose
 # second issue was lost to corruption — reviewed only #7 while the contract promises a refusal.
+jq -n '{branch:"issue-7-t", issue:7, phase:"committed"}' > "$RCLONE/.claude/state/implement-issue-active.json"
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "20" "20 a NUMBER-typed marker .issue refuses (20) — jq -r must not silently stringify it"
 for badissue in '7,' ',7' '7,,8'; do
   jq -n --arg i "$badissue" '{branch:"issue-7-t", issue:$i, phase:"committed"}' > "$RCLONE/.claude/state/implement-issue-active.json"
   ( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
