@@ -1266,6 +1266,27 @@ _il_publish_survey() {   # <state-dir>
   mv -f "$dir/survey-stage.md" "$dir/survey.md" || return 1
 }
 
+# Cap survey-trace.md at <max> bytes — role-dispatch's HEAD-cap shape, marker included. `quiet`
+# mutes the NOTE: the in-flight watcher calls this every few seconds while the agent writes, and
+# the post-dispatch call reports once. Scratch is .trace-cap.tmp, never survey-stage.md — the
+# dispatch is writing that concurrently.
+_il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
+  local dir="$1" max="$2" quiet="${3:-}" tb
+  [ -f "$dir/survey-trace.md" ] || return 0
+  tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
+  case "$tb" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$tb" -gt "$max" ] || return 0
+  if head -c "$max" "$dir/survey-trace.md" > "$dir/.trace-cap.tmp" 2>/dev/null; then
+    printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
+      "$max" "$(( tb - max ))" >> "$dir/.trace-cap.tmp"
+    mv -f "$dir/.trace-cap.tmp" "$dir/survey-trace.md" 2>/dev/null || rm -f "$dir/.trace-cap.tmp"
+  else
+    rm -f "$dir/.trace-cap.tmp"
+  fi
+  [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md exceeded %s bytes; capped\n' "$max" >&2
+  return 0
+}
+
 # --- publish-survey (#435) -----------------------------------------------------------------------
 # The NATIVE subagent path's publisher: the driving agent pipes the subagent's reply here instead
 # of writing survey.md itself, so the bounded publication is structural on both paths rather than
@@ -1389,6 +1410,16 @@ cmd_dispatch_survey() {
         fi
       fi ;;
   esac
+  # The trace cap (validated here, watched below): the agent writes survey-trace.md DIRECTLY,
+  # outside role-dispatch's bounded streams, so a watcher re-caps it every ~5s during the
+  # dispatch — a runaway writer is bounded to the cap plus a few seconds of its write rate,
+  # never the whole invocation.
+  local _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}" _twp=""
+  case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
+  [ "${#_tmax}" -le 9 ] || _tmax=262144
+  if [ "$_tmax" -gt 0 ]; then
+    ( while :; do sleep 5; _il_cap_trace "$dir" "$_tmax" quiet; done ) 2>/dev/null & _twp=$!
+  fi
   # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
   # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem
   # during the dispatch, before any post-exit publisher runs. `head -c` closes the pipe at the
@@ -1398,6 +1429,7 @@ cmd_dispatch_survey() {
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" 2> "$dir/survey.err" \
     | head -c 8388608 > "$dir/survey-stage.md"
   rc=$?
+  if [ -n "$_twp" ]; then kill "$_twp" 2>/dev/null; wait "$_twp" 2>/dev/null || :; fi
   if [ "$rc" -eq 0 ]; then
     _il_publish_survey "$dir" || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
   else
@@ -1407,26 +1439,9 @@ cmd_dispatch_survey() {
   # it here to the same log bound, in the same HEAD-cap shape, or a verbose agent grows it
   # without limit. Best-effort: the trace is diagnostics, and a cap that failed must not change
   # the dispatch's own verdict.
-  # Mirrors role-dispatch's own reading of the same variable: digits only, WIDTH-bounded — an
-  # all-digit value past shell-integer range would make the -gt below an arithmetic error that
-  # evaluates FALSE, i.e. uncapped — and 0 disables the cap.
-  local _tb _tmax="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
-  case "$_tmax" in ''|*[!0-9]*) _tmax=262144 ;; esac
-  [ "${#_tmax}" -le 9 ] || _tmax=262144
-  if [ "$_tmax" -gt 0 ] && [ -f "$dir/survey-trace.md" ]; then
-    _tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
-    case "$_tb" in ''|*[!0-9]*) _tb=0 ;; esac
-    if [ "$_tb" -gt "$_tmax" ]; then
-      if head -c "$_tmax" "$dir/survey-trace.md" > "$dir/survey-stage.md" 2>/dev/null; then
-        printf '\n[implement-lib: trace capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the trace is missing.]\n' \
-          "$_tmax" "$((_tb - _tmax))" >> "$dir/survey-stage.md"
-        mv -f "$dir/survey-stage.md" "$dir/survey-trace.md" || rm -f "$dir/survey-stage.md"
-      else
-        rm -f "$dir/survey-stage.md"
-      fi
-      printf 'implement-lib: NOTE — survey-trace.md was %s bytes; capped at %s\n' "$_tb" "$_tmax" >&2
-    fi
-  fi
+  # The final cap normalizes whatever the watcher's last tick left (validated _tmax above; 0
+  # disables both, mirroring role-dispatch's own reading of the variable).
+  [ "$_tmax" -gt 0 ] && _il_cap_trace "$dir" "$_tmax"
   case "$rc" in
     0) local _svw
        _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"

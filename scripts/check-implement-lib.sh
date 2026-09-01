@@ -1368,6 +1368,29 @@ if [ -n "$SV_BYTES" ] && [ "$SV_BYTES" -le 16385 ]; then ok; else
 eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "8388608" \
   "19k …with the overflow capped at the 8 MiB runaway bound"
 
+# ================= 19m. the trace is bounded WHILE the agent writes it (#435) ===================
+# The post-dispatch cap left the whole 1200-1500s invocation free to fill the disk. A watcher
+# now caps the file every ~5s during the dispatch; the shim sleeps past two ticks and then
+# reports the size IT sees — pre-fix that is the full 300 KiB, post-fix a capped file.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1024 count=300 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md
+sleep 12
+wc -c < .claude/state/survey-trace.md | tr -d ' '
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_LOG_MAX_BYTES=1024 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19m the watched dispatch still completes rc 0"
+SEEN="$(cat "$d/.claude/state/survey.md" 2>/dev/null)"
+case "$SEEN" in
+  ''|*[!0-9]*) bad "19m …but the shim reported no readable size ('$SEEN')" ;;
+  *) if [ "$SEEN" -lt 300000 ]; then ok; else
+       bad "19m the trace must be capped DURING the dispatch (agent still saw $SEEN bytes)"; fi ;;
+esac
+rm -f "$shimbin/claude"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
