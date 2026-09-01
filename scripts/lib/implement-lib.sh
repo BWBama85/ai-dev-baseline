@@ -1612,12 +1612,15 @@ cmd_open_pr() {
 
   # --- the two guards, in order; both fail closed; a refusal is a REPORTED disposition -----------
   if [ -f "$dir/$_IL_BLOCKED" ]; then
-    local bb bi bo
+    # BRANCH+ISSUE IDENTIFY THE RUN — deliberately no owner test. Ownership is transferable
+    # (state-protocol.md): a resumed session re-stamps the ACTIVE marker's owner while the
+    # blocked file keeps the owner it copied at write time, so an owner comparison read this
+    # run's own block as unrelated and armed past it. The safe failure direction is withholding
+    # the arm, never arming.
+    local bb bi
     bb="$(jq -r '.branch // ""' "$dir/$_IL_BLOCKED" 2>/dev/null)"
     bi="$(jq -r '.issue // ""'  "$dir/$_IL_BLOCKED" 2>/dev/null)"
-    bo="$(jq -r '.owner // ""'  "$dir/$_IL_BLOCKED" 2>/dev/null)"
-    if [ "$bb" = "$branch" ] && [ "$bi" = "$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" ] \
-       && { [ -z "$bo" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || [ "$bo" = "${CLAUDE_CODE_SESSION_ID:-}" ]; }; then
+    if [ "$bb" = "$branch" ] && [ "$bi" = "$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" ]; then
       printf 'arm-skipped blocked-marker\n'
       return 0
     fi

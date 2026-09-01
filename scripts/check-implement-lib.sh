@@ -953,6 +953,14 @@ jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9"}' > "$PCLONE/
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "21 a blocked run still opens its PR"
 has "$OP_OUT" "arm-skipped blocked-marker" "21 …but never arms auto-merge"
+# …ACROSS AN OWNERSHIP TRANSFER TOO: a resumed session re-stamps the ACTIVE marker's owner while
+# the blocked file keeps the owner it copied at write time — branch+issue identify the run, and
+# the safe failure direction is withholding the arm, never arming past a matching block.
+jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9", owner:"session-elsewhere"}' \
+  > "$PCLONE/.claude/state/implement-issue-blocked.json"
+openpr CLAUDE_CODE_SESSION_ID=session-here SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 a blocked run resumed by another session still opens its PR"
+has "$OP_OUT" "arm-skipped blocked-marker" "21 …and the transferred run's block still withholds the arm"
 rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
 
 # ================= 19b. the survey is non-blocking: 124 twice, then the run CONTINUES (#435) ====
