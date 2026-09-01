@@ -1172,6 +1172,34 @@ eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "2700" "19j a generic overrid
 eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "1000" "19j …while tightening below it still governs"
 rm -f "$shimbin/claude"
 
+# ================= 19k. a RUNAWAY stream is capped WHILE it is written (#435) ===================
+# role-dispatch deliberately leaves a passthrough agent's final stdout uncapped, so a
+# malfunctioning CLI could fill the checkout's filesystem during the dispatch — before any
+# post-exit publisher can truncate. The stage write itself is bounded at 8 MiB; hitting it kills
+# the writer (SIGPIPE), which is a failed dispatch, not a published reply.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1024 count=9216 2>/dev/null | tr '\0' 'r'
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+RK_RC=$?
+if [ "$RK_RC" -ne 0 ]; then ok; else bad "19k a 9 MiB runaway reply is a FAILED dispatch (got rc 0)"; fi
+if [ -s "$d/.claude/state/survey.md" ]; then bad "19k …and publishes no survey.md"; else ok; fi
+if exists "$d/.claude/state/survey-stage.md"; then bad "19k …and leaves no stage behind"; else ok; fi
+rm -f "$shimbin/claude"
+# publish-survey's stdin gets the same runaway bound: the stage never exceeds 8 MiB, and the
+# ordinary 16 KiB publication bound still applies on top.
+d="$(new_repo)"
+dd if=/dev/zero bs=1024 count=9216 2>/dev/null | tr '\0' 'n' | ( cd "$d" && bash "$IL" publish-survey .claude/state )
+SV_BYTES="$(wc -c < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
+if [ -n "$SV_BYTES" ] && [ "$SV_BYTES" -le 16385 ]; then ok; else
+  bad "19k a runaway native reply still publishes bounded (got ${SV_BYTES:-none} bytes)"; fi
+eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "8388608" \
+  "19k …with the overflow capped at the 8 MiB runaway bound"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it

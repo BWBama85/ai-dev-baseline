@@ -1141,7 +1141,9 @@ cmd_publish_survey() {
   [ "$#" -eq 1 ] || { echo "implement-lib: publish-survey needs exactly 1 arg: <state-dir> (the reply on stdin)" >&2; exit 2; }
   local dir="$1" _svw
   [ -d "$dir" ] || { printf 'implement-lib: no state dir at %s\n' "$dir" >&2; return 20; }
-  cat > "$dir/survey-stage.md" \
+  # The same 8 MiB runaway bound as the CLI dispatch's stage write; the ordinary 16 KiB
+  # publication bound still applies on top, so past the bound the overflow copy is capped too.
+  head -c 8388608 > "$dir/survey-stage.md" \
     || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
   _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
   _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
@@ -1240,8 +1242,14 @@ cmd_dispatch_survey() {
     printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1500s share of the 9000s claim lease — clamping to 1500\n' "$_svt" >&2
     _svt=1500
   fi
+  # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
+  # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem
+  # during the dispatch, before any post-exit publisher runs. `head -c` closes the pipe at the
+  # bound; under pipefail the writer's SIGPIPE (141) is then the dispatch's status — a runaway
+  # reply is a FAILED dispatch, never a published one.
   ADB_DISPATCH_TIMEOUT_SECS="$_svt" \
-    bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" > "$dir/survey-stage.md" 2> "$dir/survey.err"
+    bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" 2> "$dir/survey.err" \
+    | head -c 8388608 > "$dir/survey-stage.md"
   rc=$?
   if [ "$rc" -eq 0 ]; then
     _il_publish_survey "$dir" || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
