@@ -363,7 +363,7 @@ cp "$pos" "$d/base/workflows/fixture.md"
 printf 'plain text\n' > "$d/base/workflows/fixture/notes.txt"
 bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a non-.md supporting file FAILS the build"
-has "$(cat "$d/build.log" 2>/dev/null)" 'only \*.md renders' "...naming the contract"
+has "$(cat "$d/build.log" 2>/dev/null)" 'only *.md renders' "...naming the contract"
 rm -f "$d/base/workflows/fixture/notes.txt"
 printf '# caps\n' > "$d/base/workflows/fixture/Notes.MD"
 bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
