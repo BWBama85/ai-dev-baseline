@@ -1057,6 +1057,16 @@ openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_
 eq "$OP_RC" "0" "21 an unreadable blocked marker still opens the PR"
 has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …but withholds the arm rather than proving the marker unrelated"
 rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
+# …and the ACTIVE side too: a valid block cannot be proved unrelated against a marker whose
+# .issue cannot be read — that comparison's other half is missing, so the arm is withheld.
+cp "$PCLONE/.claude/state/implement-issue-active.json" "$PCLONE/.claude/state/active-save.json"
+jq 'del(.issue)' "$PCLONE/.claude/state/active-save.json" > "$PCLONE/.claude/state/implement-issue-active.json"
+jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9"}' > "$PCLONE/.claude/state/implement-issue-blocked.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 an active marker without a readable .issue still opens the PR"
+has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …and withholds the arm — the comparison's other half is missing"
+mv "$PCLONE/.claude/state/active-save.json" "$PCLONE/.claude/state/implement-issue-active.json"
+rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
 
 # ================= 19b. the survey is non-blocking: 124 twice, then the run CONTINUES (#435) ====
 # The codex CLI is shimmed to die at the backstop code; two consecutive dispatches fail with the

@@ -1856,7 +1856,14 @@ cmd_open_pr() {
     fi
     bb="$(jq -r '.branch' "$dir/$_IL_BLOCKED" 2>/dev/null)"
     bi="$(jq -r '.issue'  "$dir/$_IL_BLOCKED" 2>/dev/null)"
-    if [ "$bb" = "$branch" ] && [ "$bi" = "$(jq -r '.issue // ""' "$dir/$_IL_MARKER" 2>/dev/null)" ]; then
+    # BOTH halves of the identity must be readable: a block cannot be proved unrelated against a
+    # marker whose .issue is missing or wrongly typed, so that shape withholds the arm too.
+    local mi
+    if ! mi="$(jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)"; then
+      printf 'arm-skipped blocked-marker-unreadable\n'
+      return 0
+    fi
+    if [ "$bb" = "$branch" ] && [ "$bi" = "$mi" ]; then
       printf 'arm-skipped blocked-marker\n'
       return 0
     fi
