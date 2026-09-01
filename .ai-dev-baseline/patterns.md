@@ -336,4 +336,8 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/implement-lib.sh:1420` `626e703` `PRRT_kwDOTfywrM6eEZC0` PR #452 2026-09-01 — the trace-cap validator checked digits and width but skipped base-10 normalization, so a zero-padded value died octal in the cap arithmetic
 - `exit-path-asymmetry` `scripts/lib/implement-lib.sh:1279` `7327ddc` `PRRT_kwDOTfywrM6eEZC7` PR #452 2026-09-01 — an interruption stranded the cap's dot-named scratch outside every sweep family — it now carries a survey-family name both lifecycles cover
 - `partial-validation` `scripts/build.sh:747` `7e916af` `PRRT_kwDOTfywrM6eEZDC` PR #452 2026-09-01 — the orphan check accepted README/ because README.md exists, though the render loop skips that source and its supporting files render to nobody
+- `status-swallowed` `scripts/lib/implement-lib.sh:1016` `1d5cfdc` `PRRT_kwDOTfywrM6eFmdH` PR #452 2026-09-01 — an unreadable clock folded to a successful renewal, leaving the lease unvalidated for every pre-marker writer
+- `partial-validation` `scripts/lib/run-state.sh:283` `be72c29` `PRRT_kwDOTfywrM6eFmdK` PR #452 2026-09-01 — the opaque grammar omitted the trace-cap scratch, one more fixed name the workflow itself writes
+- `partial-validation` `scripts/build.sh:669` `3674fb8` `PRRT_kwDOTfywrM6eFmdR` PR #452 2026-09-01 — supporting-dir validation covered only what the render glob yields — a notes.txt or Notes.MD committed while rendering to nobody
+- `stale-state-trusted` `scripts/lib/implement-lib.sh:1275` `1d5cfdc` `PRRT_kwDOTfywrM6eFmdZ` PR #452 2026-09-01 — a shorter republication left the previous attempt's overflow wearing the full-reply label beside the new summary
 <!-- adb:hits:end -->
