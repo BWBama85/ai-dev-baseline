@@ -340,4 +340,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/run-state.sh:283` `be72c29` `PRRT_kwDOTfywrM6eFmdK` PR #452 2026-09-01 — the opaque grammar omitted the trace-cap scratch, one more fixed name the workflow itself writes
 - `partial-validation` `scripts/build.sh:669` `3674fb8` `PRRT_kwDOTfywrM6eFmdR` PR #452 2026-09-01 — supporting-dir validation covered only what the render glob yields — a notes.txt or Notes.MD committed while rendering to nobody
 - `stale-state-trusted` `scripts/lib/implement-lib.sh:1275` `1d5cfdc` `PRRT_kwDOTfywrM6eFmdZ` PR #452 2026-09-01 — a shorter republication left the previous attempt's overflow wearing the full-reply label beside the new summary
+- `partial-validation` `scripts/build.sh:669` `7c75549` `PRRT_kwDOTfywrM6eGuWV` PR #452 2026-09-01 — the .md child check accepted a dangling symlink the render loop then silently skipped — green build, absent sibling
+- `markup-injection` `scripts/lib/implement-lib.sh:1313` `336f109` `PRRT_kwDOTfywrM6eGuWY` PR #452 2026-09-01 — the agent-writable trace and stage names could be planted as symlinks, turning the cap's truncate into an eraser for any writable repo file
+- `partial-validation` `scripts/lib/implement-lib.sh:1748` `a9d147a` `PRRT_kwDOTfywrM6eGuWe` PR #452 2026-09-01 — absolutized untracked paths made no-index headers uncitable and leaked the checkout's host path into the prompt
 <!-- adb:hits:end -->
