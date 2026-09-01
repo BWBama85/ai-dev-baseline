@@ -108,10 +108,10 @@ pre-marker window it covers is the survey dispatch (bounded at `ADB_SURVEY_TIMEO
 findings — and every pre-marker subcommand (`snapshot-issues`, `dispatch-survey`,
 `dispatch-gaps`) **renews the lease from its own start** — never vacating the canonical path
 (a concurrent `admit` must always see a claim, or it admits into the gap and clears the live
-run): the publish is a rename over the path, safe because renewal only proceeds while >= 5s of
-lease remain and `admit` only ever breaks an EXPIRED claim. A foreign token, and an
-already-lapsed own lease, both refuse the subcommand (13) rather than race a successor — so
-the 9000s bounds each step and the
+run), and SERIALIZED with `admit`'s expired-claim reap through a shared mutex under which both
+sides re-read before acting. A foreign token, an already-lapsed own lease, and an ABSENT claim
+(a successor may have completed admission and released at its marker) all refuse the
+subcommand (13) rather than race a successor — so the 9000s bounds each step and the
 gap to the next rather than the whole window: snapshot's `gh` reads and the triage between
 dispatches are unbounded, and a fixed lease from `admit` let a live run outlive its claim. A **retry** of a dispatch re-runs only the dispatch subcommand;
 it never re-takes the claim (the acquire is create-or-fail, and a second take is how `admit`

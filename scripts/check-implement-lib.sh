@@ -743,7 +743,10 @@ eq "$SN_RC" "22" "18 an un-gitignored state dir refuses (22) BEFORE any untruste
 if exists "$d/.claude/state/issue-7.json"; then bad "18 …and no snapshot was written"; else ok; fi
 if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released"; else ok; fi
 gid() { printf '.claude/state/\n' > "$1/.gitignore"; git -C "$1" add .gitignore >/dev/null 2>&1; }
-d="$(new_repo)"; gid "$d"
+# A live run always holds a claim during step 2 (admit precedes) — the fixtures carry one, since
+# a token-bearing call over an ABSENT claim now refuses (a successor may have superseded it).
+clm() { jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$1/.claude/state/gap-analysis.lock"; }
+d="$(new_repo)"; gid "$d"; clm "$d"
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 eq "$SN_RC" "0" "18 an OPEN issue snapshots cleanly"
 has "$SN_OUT" "snapshot #7 OPEN OWNER" "18 …reporting number, state and provenance"
@@ -756,7 +759,7 @@ d="$(new_repo)"
 printf '%s\n' '.claude/state/issue-*' '.claude/state/docs-consulted.tsv' '.claude/state/survey.md' \
   > "$d/.gitignore"
 git -C "$d" add .gitignore >/dev/null 2>&1
-jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+clm "$d"
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 eq "$SN_RC" "22" "18 an ignore set missing the prompt/err/stage shapes refuses (22)"
 if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released"; else ok; fi
@@ -773,6 +776,7 @@ printf '%s\n' '.claude/state/issue-*' '.claude/state/docs-consulted.tsv' \
   '.claude/state/survey-overflow.md' '.claude/state/survey-trace.md' '.claude/state/survey.err' \
   > "$d/.gitignore"
 git -C "$d" add .gitignore >/dev/null 2>&1
+clm "$d"
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 eq "$SN_RC" "22" "18 a literal-name rule set (generated names uncoverable) still refuses (22)"
 d="$(new_repo)"; gid "$d"
@@ -780,7 +784,7 @@ jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/ga
 snap "$d" SHIM_ISSUE_JSON="$(printf '%s' "$ISSUE_JSON" | jq -c '.state = "CLOSED"')"
 eq "$SN_RC" "21" "18 a CLOSED issue refuses (21) — never silently reopened"
 if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released on that path too"; else ok; fi
-d="$(new_repo)"; gid "$d"
+d="$(new_repo)"; gid "$d"; clm "$d"
 snap "$d" SHIM_ISSUE_FAIL=1
 eq "$SN_RC" "20" "18 a failed gh read is 20 (verify repo scope), not a silent pass"
 ( cd "$d" && bash "$IL" snapshot-issues .claude/state 7x ) >/dev/null 2>&1
@@ -1252,6 +1256,19 @@ cp "$d/.claude/state/gap-analysis.lock" "$d/lock-exp"
 eq "$?" "13" "19l an already-lapsed own lease refuses (13) instead of self-reviving"
 if cmp -s "$d/.claude/state/gap-analysis.lock" "$d/lock-exp"; then ok; else
   bad "19l …with the lapsed claim left untouched"; fi
+# An ABSENT claim refuses a token-bearing caller: a successor can have completed admission,
+# reached its marker and released — the old no-op let the stale run overwrite its artifacts.
+d="$(new_repo)"; seed_snap "$d"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokA --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "19l an absent claim refuses a token-bearing caller (13) — the pre-marker window is over"
+# Mutex hygiene: renewal leaves none behind, and a STALE one (dead holder) is broken through.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+mkdir "$d/.claude/state/.claim-mutex"
+touch -t 202001010000 "$d/.claude/state/.claim-mutex" 2>/dev/null
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "0" "19l a stale claim mutex is broken through, not honored forever"
+if [ -d "$d/.claude/state/.claim-mutex" ]; then bad "19l …and no mutex is left behind"; else ok; fi
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the

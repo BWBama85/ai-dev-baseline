@@ -243,6 +243,31 @@ _il_claim_expiry() {
   printf '%s' "$v"
 }
 
+_IL_CLAIM_MUTEX=".claim-mutex"
+# Serialize the two writers of a claim that may be LIVE — lease renewal, and admit's
+# expired-claim reap — so neither acts on a read the other has invalidated. mkdir is the atomic
+# take, rmdir the drop. A holder that died (or a machine that slept) is not honored forever:
+# both critical sections are milliseconds, so a mutex older than 60s is stale-broken. The wait
+# is bounded (~2s) and callers FAIL CLOSED on it — refusing beats acting unserialized. The
+# residual, stated: a holder suspended >60s inside its microseconds-long critical section can
+# still interleave; no userspace file protocol closes that without kernel fencing.
+_il_claim_mutex_take() {   # <state-dir>
+  local dir="$1" m now
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    mkdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null && return 0
+    m="$(stat -f %m "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null || stat -c %Y "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null)" || m=""
+    now="$(date +%s 2>/dev/null)" || now=""
+    case "$m" in ''|*[!0-9]*) m="" ;; esac
+    if [ -n "$m" ] && [ -n "$now" ] && [ "$(( now - m ))" -gt 60 ]; then
+      rmdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null
+      continue
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+_il_claim_mutex_drop() { rmdir "$1/$_IL_CLAIM_MUTEX" 2>/dev/null || :; }
+
 # Take the claim, or fail because someone else holds it.
 #
 # WRITE THEN LINK, never create-then-write. `( set -C; printf … > "$claim" )` looked equivalent and
@@ -637,18 +662,38 @@ EOF
     # rename(2) is a contest exactly one caller wins; everyone else is refused here rather than
     # sharing the checkout. This is the one path where a REFUSAL can still have mutated something —
     # the winner removed a stale file — and that is the point of it.
+    # SERIALIZED with lease renewal (the same mutex both take), and RE-READ under it: a renewal
+    # serialized just ahead may have extended the lease, and breaking on the pre-mutex
+    # observation would reap a live run.
+    if ! _il_claim_mutex_take "$dir"; then
+      echo "implement-lib: REFUSED — could not serialize with a concurrent claim operation; re-run." >&2
+      return 13
+    fi
+    now="$(date +%s)"
+    probe="$(_il_claim_probe "$claim")"
+    { IFS= read -r claim_ident; IFS= read -r expiry; } <<EOF_REREAD
+$probe
+EOF_REREAD
+    if [ -n "$expiry" ] && [ "$now" -lt "$expiry" ]; then
+      _il_claim_mutex_drop "$dir"
+      echo "implement-lib: REFUSED — the run claim was RENEWED while this run prepared to break it; it is live." >&2
+      echo "               $claim (lease expires in $(( expiry - now ))s)" >&2
+      return 13
+    fi
     if [ -n "$expiry" ]; then
       echo "implement-lib: NOTE — breaking an EXPIRED run claim ($(( now - expiry ))s past its lease): $claim" >&2
     else
       echo "implement-lib: NOTE — breaking a run claim with no readable lease (pre-#202 or corrupt): $claim" >&2
     fi
     if ! _il_break "$claim" "$claim_ident"; then
+      _il_claim_mutex_drop "$dir"
       echo "implement-lib: REFUSED — the stale claim was replaced or broken by another run while this" >&2
       echo "               one was breaking it (or the state directory is not writable). Nothing here" >&2
       echo "               took it; re-run to see the current state." >&2
       return 13
     fi
     if ! _il_acquire "$claim" "$payload"; then
+      _il_claim_mutex_drop "$dir"
       if [ -e "$claim" ] || [ -L "$claim" ]; then
         echo "implement-lib: REFUSED — the run claim was re-taken by another run while this one was breaking it." >&2
         return 13
@@ -656,6 +701,7 @@ EOF
       echo "implement-lib: REFUSED — could not replace the stale run claim at $claim (state directory not writable?)." >&2
       return 14
     fi
+    _il_claim_mutex_drop "$dir"
   fi
 
   # --- 2b. CONFIRM WHAT WE ACTUALLY HOLD --------------------------------------------------------
@@ -946,35 +992,49 @@ _IL_ROLE_DISPATCH="$_adb_il_libdir/role-dispatch.sh"
 # tokenless or malformed is left alone. Renewal itself never creates a claim, and it never
 # vacates the canonical path (the function's own comment carries why).
 _il_claim_renew() {   # <state-dir> <caller-token>
-  local dir="$1" tok="${2:-}" now lease cur exp
-  [ -f "$dir/$_IL_CLAIM" ] || return 0
+  local dir="$1" tok="${2:-}" now lease cur exp rc
   [ -n "$tok" ] || return 0
-  # THE CANONICAL PATH IS NEVER VACATED: a concurrent admit must always see a claim, or it admits
-  # into the gap and clears the live run's artifacts. So the publish is a plain rename OVER the
-  # path, and safety is by EXPIRY MARGIN rather than move-and-verify: admit only ever breaks an
-  # EXPIRED claim, so a claim renewed only while >= 5s remain cannot be broken between this read
-  # and the rename (same host, same clock, a milliseconds window) — and a claim at or past that
-  # margin is NOT revived: the run that let its lease lapse is reaped-eligible, a successor may
-  # already hold or be taking the path, and it stops (13) instead of racing.
-  now="$(date +%s 2>/dev/null)" || return 0
+  # ABSENT + a token offered REFUSES, never the old no-op: a successor can have completed
+  # admission, reached its marker and legitimately released — an absent claim tells a
+  # token-bearing caller its pre-marker window is OVER, and proceeding would overwrite the
+  # successor's artifacts. (A run legitimately past step 5 never re-runs these subcommands.)
+  if [ ! -f "$dir/$_IL_CLAIM" ]; then
+    printf 'implement-lib: no run claim is held at %s/%s — a successor may have superseded this run (or it already released at its marker). Stop: the pre-marker window is over; re-run admission if you are starting fresh.\n' "$dir" "$_IL_CLAIM" >&2
+    return 13
+  fi
+  # SERIALIZED with admit's reap: the mutex spans this read AND the rename, and admit re-reads
+  # under the same mutex, so neither can act on an observation the other invalidated. The
+  # canonical path is still never vacated (the publish is a rename OVER it), and a lapsed or
+  # nearly-lapsed own lease still refuses rather than self-reviving.
+  _il_claim_mutex_take "$dir" || {
+    printf 'implement-lib: could not serialize with a concurrent claim operation at %s — re-run.\n' "$dir" >&2
+    return 13
+  }
+  rc=0
+  now="$(date +%s 2>/dev/null)" || now=""
   cur="$(jq -r '.token // ""' "$dir/$_IL_CLAIM" 2>/dev/null)" || cur=""
-  [ -n "$cur" ] || return 0
+  if [ -z "$now" ] || [ -z "$cur" ]; then
+    _il_claim_mutex_drop "$dir"; return 0
+  fi
   if [ "$cur" != "$tok" ]; then
+    _il_claim_mutex_drop "$dir"
     printf 'implement-lib: the run claim at %s/%s belongs to a SUCCESSOR run (its token is not yours) — this run was reaped after its lease expired. Stop: do not write artifacts the live run owns.\n' "$dir" "$_IL_CLAIM" >&2
     return 13
   fi
   exp="$(jq -r 'if (.expiresAt | type) == "number" then (.expiresAt | floor | tostring) else "" end' "$dir/$_IL_CLAIM" 2>/dev/null)" || exp=""
-  case "$exp" in ''|*[!0-9-]*) return 0 ;; esac   # no readable lease: admit's own rules judge it
+  case "$exp" in ''|*[!0-9-]*) _il_claim_mutex_drop "$dir"; return 0 ;; esac
   if [ "$(( exp - now ))" -lt 5 ]; then
+    _il_claim_mutex_drop "$dir"
     printf 'implement-lib: this run'"'"'s claim lease at %s/%s has lapsed (or is about to) — the run overran its lease and is reaped-eligible, and a successor may already hold the path. Stop: re-run admission if you are resuming.\n' "$dir" "$_IL_CLAIM" >&2
     return 13
   fi
-  lease="$(_il_lease_secs)" || return 0
+  lease="$(_il_lease_secs)" || { _il_claim_mutex_drop "$dir"; return 0; }
   jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
       > "$dir/.claim.tmp" 2>/dev/null \
     && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" \
     || rm -f "$dir/.claim.tmp"
-  return 0
+  _il_claim_mutex_drop "$dir"
+  return "$rc"
 }
 
 # Release the claim on a pre-marker failure path, when the caller passed --token. Best-effort by
