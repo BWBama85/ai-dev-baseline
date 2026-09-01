@@ -1315,6 +1315,12 @@ d="$(new_repo)"; seed_snap "$d"
 jq -n '{startedAt:1, expiresAt:"soon", token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "13" "19l …and a wrongly typed lease refuses the same way"
+# An INVALID lease override mid-run refuses too: silently skipping the renewal leaves the run on
+# a lease that may be near expiry — the configuration error is reported, not worked around.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && env ADB_RUN_CLAIM_LEASE_SECS=abc bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "12" "19l an invalid lease override refuses (12) instead of proceeding unrenewed"
 # Each fetch is BOUNDED under the lease: one stalled gh call used to hold the loop past 9000s
 # with the claim expiring under it. The bound is adb_run_bounded's; the knob exists for tests.
 d="$(new_repo)"; gid "$d"; clm "$d"

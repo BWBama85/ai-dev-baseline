@@ -1042,7 +1042,14 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     printf 'implement-lib: this run'"'"'s claim lease at %s/%s has lapsed (or is about to) — the run overran its lease and is reaped-eligible, and a successor may already hold the path. Stop: re-run admission if you are resuming.\n' "$dir" "$_IL_CLAIM" >&2
     return 13
   fi
-  lease="$(_il_lease_secs)" || { _il_claim_mutex_drop "$dir"; return 0; }
+  # An invalid override REFUSES rather than silently skipping the renewal: the run would
+  # otherwise continue on a lease that may be near expiry, which is the exposure renewal exists
+  # to remove — and a configuration error the operator set deserves a report, not a workaround.
+  lease="$(_il_lease_secs)" || {
+    _il_claim_mutex_drop "$dir"
+    printf 'implement-lib: REFUSED — ADB_RUN_CLAIM_LEASE_SECS is invalid ('"'"'%s'"'"'), so the claim could not be renewed. Fix it; proceeding unrenewed risks a concurrent reap.\n' "${ADB_RUN_CLAIM_LEASE_SECS:-}" >&2
+    return 12
+  }
   # A renewal that cannot be PUBLISHED refuses: proceeding on the old lease is exactly the
   # near-expiry exposure renewal exists to remove, and a filesystem that refused this write is
   # about to refuse the artifacts too.
