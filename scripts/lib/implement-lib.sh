@@ -1019,7 +1019,10 @@ cmd_sync_default() {
   [ "$#" -eq 0 ] || { echo "implement-lib: sync-default takes no arguments" >&2; exit 2; }
   command -v git >/dev/null 2>&1 || { echo "implement-lib: git is required" >&2; return 20; }
   local db cur merged merged_sha protected b track
-  db="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+  # The SHARED resolver, never a narrower inline one: origin/HEAD is routinely absent, and a
+  # bare `main` fallback broke every master-default clone (adb_default_branch checks local
+  # main/master before falling back).
+  db="$(adb_default_branch)"
   [ -n "$db" ] || db=main
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     echo "implement-lib: tree not clean — commit or stash first" >&2; return 30
@@ -1486,7 +1489,8 @@ cmd_dispatch_review() {
   dir="$1"; token="$2"
   pf="$dir/review-prompt.txt"
   out="$dir/review${slot:+-$slot}.md"; errf="$dir/review${slot:+-$slot}.err"
-  db="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+  # The SHARED resolver — same reason as sync-default's site.
+  db="$(adb_default_branch)"
   [ -n "$db" ] || db=main
   # BUILT IN A TEMP, PUBLISHED BY RENAME. Concurrent review slots each rebuild this one prompt
   # path, and a truncate-then-append build lets one slot's dispatch read another's half-written

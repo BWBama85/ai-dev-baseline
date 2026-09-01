@@ -875,6 +875,21 @@ rm -rf "$RCLONE/subrepo"
 RK=$?
 chmod 755 "$RCLONE/noperm" 2>/dev/null; rm -rf "$RCLONE/noperm"
 eq "$RK" "20" "20 an unreadable directory refuses (20) — a partial untracked listing is never accepted"
+# A master-default clone WITHOUT origin/HEAD: the narrow inline resolver fell back to a
+# nonexistent `main`; the shared adb_default_branch checks local main/master and is the one home.
+mrem="$work/master-rem"; git init -q --bare "$mrem"
+mcl="$work/master-clone"; git init -q -b master "$mcl"
+( cd "$mcl" && printf 'seed\n' > seed && git add seed && git commit -qm seed \
+  && git remote add origin "$mrem" && git push -qu origin master ) >/dev/null 2>&1
+git -C "$mcl" remote set-head origin -d >/dev/null 2>&1
+mkdir -p "$mcl/.claude/state"
+MS_OUT="$( cd "$mcl" && bash "$IL" sync-default 2>&1 )"; MS_RC=$?
+eq "$MS_RC" "0" "20 a master-default clone without origin/HEAD syncs (0)"
+has "$MS_OUT" "synced master at" "20 …naming master via the shared resolver"
+( cd "$mcl" && git switch -q -c issue-7-m && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+seed_snap "$mcl"
+( cd "$mcl" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "0" "20 …and the review prompt builds against origin/master"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
 if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then
