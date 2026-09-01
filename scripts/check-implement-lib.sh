@@ -850,6 +850,12 @@ RP="$RCLONE/.claude/state/review-prompt.txt"
 has "$(cat "$RP")" 'REQUIRED or OPTIONAL' "20 the review prompt carries the required/optional contract"
 has "$(cat "$RP")" 'diff --git a/seed' "20 …the real diff against origin/<default>"
 has "$(cat "$RP")" 'github-issue #7 — acceptance criteria' "20 …and the contained criteria"
+# WORKTREE-INCLUSIVE: the Claude review path dispatches after /simplify may have edited but
+# before the next commit, so a committed-range diff hands the reviewer the pre-edit code.
+printf 'uncommitted-simplify-edit\n' >> "$RCLONE/seed"
+( cd "$RCLONE" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+has "$(cat "$RP")" 'uncommitted-simplify-edit' "20 …and uncommitted working-tree edits reach the reviewer"
+( cd "$RCLONE" && git checkout -q -- seed ) >/dev/null 2>&1   # a fixture file this test appended to; no untracked work at risk
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
 if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then
