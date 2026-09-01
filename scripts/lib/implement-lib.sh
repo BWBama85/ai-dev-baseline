@@ -1029,12 +1029,19 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     return 13
   fi
   lease="$(_il_lease_secs)" || { _il_claim_mutex_drop "$dir"; return 0; }
-  jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
-      > "$dir/.claim.tmp" 2>/dev/null \
-    && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" \
-    || rm -f "$dir/.claim.tmp"
+  # A renewal that cannot be PUBLISHED refuses: proceeding on the old lease is exactly the
+  # near-expiry exposure renewal exists to remove, and a filesystem that refused this write is
+  # about to refuse the artifacts too.
+  if { jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
+        > "$dir/.claim.tmp" 2>/dev/null \
+      && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" 2>/dev/null; }; then
+    _il_claim_mutex_drop "$dir"
+    return "$rc"
+  fi
+  rm -f "$dir/.claim.tmp" 2>/dev/null
   _il_claim_mutex_drop "$dir"
-  return "$rc"
+  printf 'implement-lib: could not publish the renewed claim at %s/%s (state directory writable?) — refusing rather than proceeding on the old lease\n' "$dir" "$_IL_CLAIM" >&2
+  return 20
 }
 
 # Release the claim on a pre-marker failure path, when the caller passed --token. Best-effort by

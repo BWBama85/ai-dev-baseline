@@ -1275,6 +1275,15 @@ touch -t 202001010000 "$d/.claude/state/.claim-mutex" 2>/dev/null
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "0" "19l a stale claim mutex is broken through, not honored forever"
 if [ -d "$d/.claude/state/.claim-mutex" ]; then bad "19l …and no mutex is left behind"; else ok; fi
+# A renewal that could NOT be published refuses (20): silently proceeding leaves the caller on a
+# near-expiry lease a concurrent admission can reap mid-work.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+mkdir "$d/.claude/state/.claim.tmp"   # makes the jq redirect fail while everything else works
+SN_OUT="$( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 2>&1 )"; RN_RC=$?
+rmdir "$d/.claude/state/.claim.tmp" 2>/dev/null
+eq "$RN_RC" "20" "19l an unpublishable renewal refuses (20), never proceeds on the old lease"
+has "$SN_OUT" "could not publish the renewed claim" "19l …named as the renewal itself"
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
