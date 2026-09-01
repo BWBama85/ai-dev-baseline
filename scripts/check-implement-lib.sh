@@ -1412,17 +1412,14 @@ rm -f "$shimbin/claude"
 # unlinked inode that kept growing unseen. In-place truncation keeps the writer on the capped
 # inode, so its next append lands where the next pass (and the path's size) can see it.
 capfn="$(sed -n '/^_il_cap_trace()/,/^}/p' "$IL")"
-CAP_SIZE="$( d="$(new_repo)"; cd "$d" && eval "$capfn" \
+CAP_D="$(new_repo)"
+( cd "$CAP_D" && eval "$capfn" \
   && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md \
   && exec 3>> .claude/state/survey-trace.md \
   && _il_cap_trace .claude/state 1024 quiet \
-  && printf 'POST-CAP-WRITE' >&3 \
-  && wc -c < .claude/state/survey-trace.md | tr -d ' ' )"
-case "$CAP_SIZE" in
-  ''|*[!0-9]*) bad "19n the in-place cap probe did not run ('$CAP_SIZE')" ;;
-  *) if [ "$CAP_SIZE" -gt 2000 ]; then ok; else
-       bad "19n a post-cap write through the held fd must land on the visible path (size $CAP_SIZE — the writer was detached onto a hidden inode)"; fi ;;
-esac
+  && printf 'POST-CAP-WRITE' >&3 ) || bad "19n the in-place cap probe did not run"
+if grep -aq 'POST-CAP-WRITE' "$CAP_D/.claude/state/survey-trace.md"; then ok; else
+  bad "19n a post-cap write through the held fd must land on the visible path (the writer was detached onto a hidden inode)"; fi
 
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
