@@ -1056,7 +1056,7 @@ cmd_sync_default() {
     git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads       | while IFS=' ' read -r b track; do
           [ "$track" = "[gone]" ] || continue
           printf '%s\n' "$b" | grep -qE "$protected" && continue
-          git branch -d "$b" 2>/dev/null \
+          git branch -d -q "$b" 2>/dev/null \
             || echo "implement-lib: NOTE — left '$b' (git branch -d refused — squash-merged? use /cleanup)" >&2
         done
   else

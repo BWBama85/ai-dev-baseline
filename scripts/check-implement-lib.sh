@@ -718,6 +718,19 @@ SY_OUT="${ sync "$CLONE"; }"
 eq "$SY_RC" "0" "17 a provably merged branch is switched away from (0)"
 eq "$(git -C "$CLONE" rev-parse --abbrev-ref HEAD)" "main" "17 …landing on the default branch"
 has "$SY_OUT" "synced main at" "17 …and the record line names the branch and sha"
+# STDOUT IS THE RECORD STREAM: tidying a gone-upstream branch made `git branch -d` print
+# `Deleted branch …` before the `synced` record, breaking the one-fact-per-line contract.
+( cd "$CLONE" && git switch -q -c issue-10-y && git commit -q --allow-empty -m w2 \
+  && git push -q -u origin issue-10-y && git switch -q main && git merge -q --ff-only issue-10-y \
+  && git push -q origin main && git push -q origin --delete issue-10-y \
+  && git fetch -q --prune && git switch -q issue-10-y ) >/dev/null 2>&1
+SY_STDOUT="$( cd "$CLONE" && bash "$IL" sync-default 2>/dev/null )"; SY_RC=$?
+eq "$SY_RC" "0" "17 the gone-upstream tidy still syncs (0)"
+if printf '%s\n' "$SY_STDOUT" | grep -q 'Deleted branch'; then
+  bad "17 …with git's deletion notice kept off the record stream"; else ok; fi
+has "$SY_STDOUT" "synced main at" "17 …which still carries the synced record"
+if git -C "$CLONE" show-ref --verify --quiet refs/heads/issue-10-y; then
+  bad "17 …and the gone-upstream branch really was tidied"; else ok; fi
 
 # ================= 18. snapshot-issues (#433) ===================================================
 # The gitignore probe, the snapshot pair, and the OPEN refusal — each observed refusing.
