@@ -310,4 +310,6 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `scripts/lib/implement-lib.sh:1674` `a961213` `PRRT_kwDOTfywrM6d9bgx` PR #452 2026-09-01 — a truncated or wrongly typed blocked marker read as empty fields and fell through unrelated — the arm proceeded past a block whose record could not be validated
 - `status-swallowed` `scripts/lib/implement-lib.sh:1517` `0959e9e` `PRRT_kwDOTfywrM6d9bgz` PR #452 2026-09-01 — ls-files warns and exits 0 over an unreadable directory, so a partial untracked listing was accepted and its files skipped review
 - `reuse-missed` `scripts/lib/implement-lib.sh:1023` `5790290` `PRRT_kwDOTfywrM6d9bg2` PR #452 2026-09-01 — two inline default-branch resolvers fell back to a bare main while the shared adb_default_branch already handles the absent-origin/HEAD master case
+- `false-guarantee` `scripts/lib/implement-lib.sh:1236` `3f372cb` `PRRT_kwDOTfywrM6d9__s` PR #452 2026-09-01 — the lease margin claimed to cover the pre-marker window while snapshot's unbounded gh reads and inter-dispatch triage ran outside every timer — renewal per subcommand is the mechanism
+- `partial-validation` `scripts/lib/run-state.sh:278` `3b0f47a` `PRRT_kwDOTfywrM6d9__x` PR #452 2026-09-01 — the opaque grammar gained overflow but still omitted survey-stage.md, another fixed name the workflow writes
 <!-- adb:hits:end -->
