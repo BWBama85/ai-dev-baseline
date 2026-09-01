@@ -1896,6 +1896,16 @@ cmd_dispatch_review() {
     bash "$_IL_ROLE_DISPATCH" invoke "$token" < "$pf" > "$out" 2> "$errf"
   fi
   rc=$?
+  # The result path must STILL be a regular file when the dispatch returns: a reviewer with repo
+  # tools processing third-party criteria can swap its output for a symlink after writing, and
+  # step 9 would then read an arbitrary file by reference as findings. rm removes the planted
+  # link, never its target. (Content substitution by the reviewer itself is not verifiable — its
+  # output is untrusted advisory input either way; by-reference reads are what this closes.)
+  if [ -L "$out" ] || { [ -e "$out" ] && [ ! -f "$out" ]; }; then
+    rm -f "$out"
+    printf 'implement-lib: the review output at %s was not a regular file after dispatch (a planted symlink?) — treating the slot as failed\n' "$out" >&2
+    [ "$rc" -eq 0 ] && rc=20
+  fi
   case "$rc" in
     0) printf 'review %s ok -> %s\n' "$token" "$out" ;;
     *) printf 'review %s failed rc=%s (read the classified line at the tail of %s)\n' "$token" "$rc" "$errf" ;;
