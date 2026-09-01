@@ -1455,6 +1455,26 @@ CAP_D="$(new_repo)"
   && printf 'POST-CAP-WRITE' >&3 ) || bad "19n the in-place cap probe did not run"
 if grep -aq 'POST-CAP-WRITE' "$CAP_D/.claude/state/survey-trace.md"; then ok; else
   bad "19n a post-cap write through the held fd must land on the visible path (the writer was detached onto a hidden inode)"; fi
+# The trace path is AGENT-WRITABLE and the issue text is third-party: a surveyor can plant it
+# as a symlink at any writable repo file, and a following truncate would erase that target.
+CAP_D="$(new_repo)"
+printf 'precious repo content\n' > "$CAP_D/target.txt"
+( cd "$CAP_D" && eval "$capfn" \
+  && ln -s ../../target.txt .claude/state/survey-trace.md \
+  && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' >> target.txt \
+  && _il_cap_trace .claude/state 1024 quiet )
+T_SZ="$(wc -c < "$CAP_D/target.txt" 2>/dev/null | tr -d ' ')"
+if [ -n "$T_SZ" ] && [ "$T_SZ" -gt 4000 ]; then ok; else
+  bad "19n a symlinked trace never truncates its target (target is ${T_SZ:-unreadable} bytes)"; fi
+if [ -L "$CAP_D/.claude/state/survey-trace.md" ]; then
+  bad "19n …and the planted link itself is removed"; else ok; fi
+# The stage the publishers write is plantable the same way.
+d="$(new_repo)"
+printf 'precious repo content\n' > "$d/target2.txt"
+( cd "$d" && ln -s ../../target2.txt .claude/state/survey-stage.md ) >/dev/null 2>&1
+printf 'native reply\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+eq "$(cat "$d/target2.txt" 2>/dev/null)" "precious repo content" \
+  "19n a symlinked stage never writes through to its target"
 
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial

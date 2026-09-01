@@ -1295,6 +1295,16 @@ _il_publish_survey() {   # <state-dir>
 # dispatch is writing that concurrently.
 _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
   local dir="$1" max="$2" quiet="${3:-}" tb
+  # NON-FOLLOWING first: the trace path is agent-writable and the issue text is third-party, so
+  # a surveyor can plant it — or the scratch — as a symlink at any writable repo file, and a
+  # following truncate would erase that target. A planted link is removed (rm does not follow)
+  # and the pass ends; the agent's own next write recreates a regular file.
+  if [ -L "$dir/survey-trace.md" ]; then
+    rm -f "$dir/survey-trace.md"
+    printf 'implement-lib: WARN — survey-trace.md was a symlink; removed without following it\n' >&2
+    return 0
+  fi
+  [ -L "$dir/survey-trace-cap.md" ] && rm -f "$dir/survey-trace-cap.md"
   [ -f "$dir/survey-trace.md" ] || return 0
   tb="$(wc -c < "$dir/survey-trace.md" 2>/dev/null | tr -d ' ')"
   case "$tb" in ''|*[!0-9]*) return 0 ;; esac
@@ -1340,6 +1350,8 @@ cmd_publish_survey() {
   _il_claim_renew "$dir" "$tok" || return $?
   # The same 8 MiB runaway bound as the CLI dispatch's stage write; the ordinary 16 KiB
   # publication bound still applies on top, so past the bound the overflow copy is capped too.
+  # The stage name is plantable as a symlink — unlinked first, never written through.
+  rm -f "$dir/survey-stage.md"
   head -c 8388608 > "$dir/survey-stage.md" \
     || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
   _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
@@ -1470,6 +1482,9 @@ cmd_dispatch_survey() {
   # during the dispatch, before any post-exit publisher runs. `head -c` closes the pipe at the
   # bound; under pipefail the writer's SIGPIPE (141) is then the dispatch's status — a runaway
   # reply is a FAILED dispatch, never a published one.
+  # The stage (and err) names are agent-adjacent and plantable as symlinks; a fresh redirect
+  # must never write THROUGH one, so the names are unlinked first (rm does not follow).
+  rm -f "$dir/survey-stage.md" "$dir/survey.err"
   ADB_DISPATCH_TIMEOUT_SECS="$_svt" \
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" 2> "$dir/survey.err" \
     | head -c 8388608 > "$dir/survey-stage.md"
