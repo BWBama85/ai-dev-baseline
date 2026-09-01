@@ -1387,7 +1387,18 @@ cmd_dispatch_gaps() {
     0|1) : ;;
     *) _il_bail "" "$dir" 18 "[roles.effort] gap_analysis is invalid — fix agents.toml (the line above names it)"; return $? ;;
   esac
-  bash "$_IL_ROLE_DISPATCH" invoke gap_analysis < "$pf" > "$dir/gaps.md" 2> "$dir/gaps.err"
+  # The GAP bound is clamped at 2700 — its share of the 9000 s claim lease (2 x survey ≤ 1500 +
+  # 2 x gap ≤ 2700 + 600 margin) — for the same reason the survey's is: an unclamped generic
+  # override let the pre-marker window provably outlive the claim. Tightening below the share
+  # still governs; invalid values fall to the share itself.
+  local _gt="${ADB_DISPATCH_TIMEOUT_SECS:-2700}"
+  case "$_gt" in ''|*[!0-9]*|0*) _gt=2700 ;; esac
+  if [ "${#_gt}" -gt 4 ] || [ "$_gt" -gt 2700 ]; then
+    printf 'implement-lib: ADB_DISPATCH_TIMEOUT_SECS=%s exceeds the gap dispatch'"'"'s 2700s share of the 9000s claim lease — clamping to 2700\n' "$_gt" >&2
+    _gt=2700
+  fi
+  ADB_DISPATCH_TIMEOUT_SECS="$_gt" \
+    bash "$_IL_ROLE_DISPATCH" invoke gap_analysis < "$pf" > "$dir/gaps.md" 2> "$dir/gaps.err"
   rc=$?
   case "$rc" in
     0) printf 'gaps ok\n' ;;

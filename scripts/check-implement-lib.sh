@@ -1144,6 +1144,22 @@ eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "3
 ( bash "$IL" publish-survey ) >/dev/null 2>&1
 eq "$?" "2" "19i publish-survey without its state-dir is a usage error"
 
+# ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
+# The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
+# pre-marker window reach 2x1200 + 2x4000 = 10400 s past the 9000 s claim.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${ADB_DISPATCH_TIMEOUT_SECS:-unset}"
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=4000 bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "2700" "19j a generic override past the gap share is clamped to 2700"
+( cd "$d" && env ADB_DISPATCH_TIMEOUT_SECS=1000 bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "1000" "19j …while tightening below it still governs"
+rm -f "$shimbin/claude"
+
 # ================= 19d. a dispatch that dies mid-write publishes NOTHING (#435) =================
 # Same passthrough agent, now emitting partial conclusions before failing. Unstaged, that partial
 # stdout used to land in survey.md — and dispatch-gaps includes every nonempty survey.md as if it
