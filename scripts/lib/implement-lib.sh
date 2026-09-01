@@ -940,47 +940,40 @@ _IL_ROLE_DISPATCH="$_adb_il_libdir/role-dispatch.sh"
 #
 # TOKEN-VERIFIED, never blind: after a reap-and-readmit the claim belongs to a SUCCESSOR run, and
 # renewing it anyway would rewrite the live run's claim and then race its artifacts — the
-# exclusion this file exists for, undone by its own keeper. A mismatched token therefore REFUSES
-# the subcommand (13, admit's own claim-held code); a caller that offers no token gets no renewal
-# and no verdict (pre-renewal behavior); a claim that is absent, tokenless or malformed is left
-# alone. Renewal itself never creates a claim.
+# exclusion this file exists for, undone by its own keeper. A mismatched token, and a lease that
+# has already lapsed, both REFUSE the subcommand (13, admit's own claim-held code); a caller that
+# offers no token gets no renewal and no verdict (pre-renewal behavior); a claim that is absent,
+# tokenless or malformed is left alone. Renewal itself never creates a claim, and it never
+# vacates the canonical path (the function's own comment carries why).
 _il_claim_renew() {   # <state-dir> <caller-token>
-  local dir="$1" tok="${2:-}" now lease cur hold
+  local dir="$1" tok="${2:-}" now lease cur exp
   [ -f "$dir/$_IL_CLAIM" ] || return 0
   [ -n "$tok" ] || return 0
-  # COMPARE-AND-REPLACE, never check-then-replace: the RENAME is the atomic claim of the claim —
-  # exactly one contender wins it — and the publish back is a LINK, which fails if a successor
-  # created a fresh claim while we held ours. A check and a replacement that are two pathname
-  # operations let a successor admitted between them be silently overwritten, which is the
-  # exclusion this file exists for, undone by its own keeper.
-  hold="$dir/.claim-renew.$$"
-  mv "$dir/$_IL_CLAIM" "$hold" 2>/dev/null || return 0   # lost the race: someone else is acting on it now
-  cur="$(jq -r '.token // ""' "$hold" 2>/dev/null)" || cur=""
+  # THE CANONICAL PATH IS NEVER VACATED: a concurrent admit must always see a claim, or it admits
+  # into the gap and clears the live run's artifacts. So the publish is a plain rename OVER the
+  # path, and safety is by EXPIRY MARGIN rather than move-and-verify: admit only ever breaks an
+  # EXPIRED claim, so a claim renewed only while >= 5s remain cannot be broken between this read
+  # and the rename (same host, same clock, a milliseconds window) — and a claim at or past that
+  # margin is NOT revived: the run that let its lease lapse is reaped-eligible, a successor may
+  # already hold or be taking the path, and it stops (13) instead of racing.
+  now="$(date +%s 2>/dev/null)" || return 0
+  cur="$(jq -r '.token // ""' "$dir/$_IL_CLAIM" 2>/dev/null)" || cur=""
+  [ -n "$cur" ] || return 0
   if [ "$cur" != "$tok" ]; then
-    # Not provably ours: restore EXACTLY what was found. link-then-unlink, so a claim a
-    # concurrent admit created meanwhile is never clobbered — losing that link means the world
-    # moved past the held copy, which is then superseded and dropped.
-    ln "$hold" "$dir/$_IL_CLAIM" 2>/dev/null || :
-    rm -f "$hold"
-    if [ -n "$cur" ]; then
-      printf 'implement-lib: the run claim at %s/%s belongs to a SUCCESSOR run (its token is not yours) — this run was reaped after its lease expired. Stop: do not write artifacts the live run owns.\n' "$dir" "$_IL_CLAIM" >&2
-      return 13
-    fi
-    return 0
-  fi
-  lease="$(_il_lease_secs)" && now="$(date +%s 2>/dev/null)" || { ln "$hold" "$dir/$_IL_CLAIM" 2>/dev/null || :; rm -f "$hold"; return 0; }
-  if jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$hold" > "$dir/.claim.tmp" 2>/dev/null; then
-    if ln "$dir/.claim.tmp" "$dir/$_IL_CLAIM" 2>/dev/null; then
-      rm -f "$dir/.claim.tmp" "$hold"
-      return 0
-    fi
-    # The link failed: a successor admitted while we held the old copy — we are the reaped run.
-    rm -f "$dir/.claim.tmp" "$hold"
-    printf 'implement-lib: a SUCCESSOR run took a fresh claim at %s/%s during renewal — this run was reaped after its lease expired. Stop: do not write artifacts the live run owns.\n' "$dir" "$_IL_CLAIM" >&2
+    printf 'implement-lib: the run claim at %s/%s belongs to a SUCCESSOR run (its token is not yours) — this run was reaped after its lease expired. Stop: do not write artifacts the live run owns.\n' "$dir" "$_IL_CLAIM" >&2
     return 13
   fi
-  ln "$hold" "$dir/$_IL_CLAIM" 2>/dev/null || :
-  rm -f "$dir/.claim.tmp" "$hold"
+  exp="$(jq -r 'if (.expiresAt | type) == "number" then (.expiresAt | floor | tostring) else "" end' "$dir/$_IL_CLAIM" 2>/dev/null)" || exp=""
+  case "$exp" in ''|*[!0-9-]*) return 0 ;; esac   # no readable lease: admit's own rules judge it
+  if [ "$(( exp - now ))" -lt 5 ]; then
+    printf 'implement-lib: this run'"'"'s claim lease at %s/%s has lapsed (or is about to) — the run overran its lease and is reaped-eligible, and a successor may already hold the path. Stop: re-run admission if you are resuming.\n' "$dir" "$_IL_CLAIM" >&2
+    return 13
+  fi
+  lease="$(_il_lease_secs)" || return 0
+  jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
+      > "$dir/.claim.tmp" 2>/dev/null \
+    && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" \
+    || rm -f "$dir/.claim.tmp"
   return 0
 }
 

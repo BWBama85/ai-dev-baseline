@@ -1233,6 +1233,17 @@ cp "$d/.claude/state/gap-analysis.lock" "$d/lock-before"
 eq "$?" "0" "19l a tokenless claim is no verdict — the subcommand proceeds"
 if cmp -s "$d/.claude/state/gap-analysis.lock" "$d/lock-before"; then ok; else
   bad "19l …and the claim is restored byte-identical"; fi
+# A run whose OWN lease has lapsed is reaped-eligible: it refuses (13) rather than self-reviving —
+# a successor may already hold or be taking the path — and the claim file is left untouched. This
+# is also what makes the non-vacating publish safe: only an EXPIRED claim can be broken by admit,
+# and an unexpired one is renewed in a milliseconds window it cannot expire inside.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS - 100))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+cp "$d/.claude/state/gap-analysis.lock" "$d/lock-exp"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "19l an already-lapsed own lease refuses (13) instead of self-reviving"
+if cmp -s "$d/.claude/state/gap-analysis.lock" "$d/lock-exp"; then ok; else
+  bad "19l …with the lapsed claim left untouched"; fi
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
