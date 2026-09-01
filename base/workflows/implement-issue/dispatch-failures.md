@@ -68,6 +68,7 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | rc | Subcommand | Meaning |
 |---|---|---|
 | `10`–`14` | `admit` | refused — another run's marker (10), unreadable marker (11), no jq / bad lease (12), claim held (13), state dir unusable (14). Never delete the other run's state to get past it. |
+| `13` | `snapshot-issues` / `dispatch-survey` / `dispatch-gaps` | the run claim now belongs to a SUCCESSOR run (this run was reaped after its lease expired) — stop; never write artifacts the live run owns |
 | `20` | any | a required read/write failed (gh, jq, git, the state dir, prompt assembly) |
 | `21` | `snapshot-issues` | an issue in the set is not OPEN — stop and confirm with the owner; never silently reopen shipped work |
 | `22` | `snapshot-issues` | the state dir would not be gitignored — fix `.gitignore` (or re-run `bin/agent-init`) first |

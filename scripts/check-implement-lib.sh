@@ -1202,6 +1202,19 @@ jq -n --argjson e "$((NOWS + 50))" '{startedAt:1, expiresAt:$e, token:"tokT"}' >
 snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
 if [ "$(renew_exp "$d")" -ge "$((NOWS + 8000))" ] 2>/dev/null; then ok; else
   bad "19l snapshot-issues renews the claim lease too (expiresAt stayed $(renew_exp "$d"))"; fi
+# …and a SUCCESSOR'S claim is never renewed: after a reap-and-readmit, the stale run's token no
+# longer matches — renewing anyway would rewrite the live run's claim and race its artifacts.
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokB"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokA --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "19l a successor's claim refuses the stale run (13), never renews past it"
+eq "$(jq -r .token "$d/.claude/state/gap-analysis.lock")" "tokB" "19l …with the successor's token untouched"
+eq "$(renew_exp "$d")" "$((NOWS + 9000))" "19l …and its lease untouched"
+d="$(new_repo)"; gid "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokB"}' > "$d/.claude/state/gap-analysis.lock"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+eq "$SN_RC" "13" "19l snapshot-issues refuses a successor's claim too (13)"
+if exists "$d/.claude/state/issue-7.json"; then bad "19l …and wrote no snapshot over the live run's"; else ok; fi
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the

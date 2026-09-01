@@ -936,12 +936,24 @@ _IL_ROLE_DISPATCH="$_adb_il_libdir/role-dispatch.sh"
 # Renew the pre-marker claim's lease from NOW — called at the top of every pre-marker subcommand,
 # so the lease bounds EACH step and the gap to the next rather than the whole window: snapshot's
 # gh reads and the agent's triage between dispatches are unbounded, and a fixed lease from admit
-# let a live run outlive its claim and be reaped mid-work. Best-effort and OVER-preserving by
-# design: renewing a claim another run holds only preserves artifacts, the fail-safe direction
-# state-protocol.md names. Never creates a claim; never touches a malformed one.
-_il_claim_renew() {   # <state-dir>
-  local dir="$1" now lease
+# let a live run outlive its claim and be reaped mid-work.
+#
+# TOKEN-VERIFIED, never blind: after a reap-and-readmit the claim belongs to a SUCCESSOR run, and
+# renewing it anyway would rewrite the live run's claim and then race its artifacts — the
+# exclusion this file exists for, undone by its own keeper. A mismatched token therefore REFUSES
+# the subcommand (13, admit's own claim-held code); a caller that offers no token gets no renewal
+# and no verdict (pre-renewal behavior); a claim that is absent, tokenless or malformed is left
+# alone. Renewal itself never creates a claim.
+_il_claim_renew() {   # <state-dir> <caller-token>
+  local dir="$1" tok="${2:-}" now lease cur
   [ -f "$dir/$_IL_CLAIM" ] || return 0
+  [ -n "$tok" ] || return 0
+  cur="$(jq -r '.token // ""' "$dir/$_IL_CLAIM" 2>/dev/null)" || cur=""
+  [ -n "$cur" ] || return 0
+  if [ "$cur" != "$tok" ]; then
+    printf 'implement-lib: the run claim at %s/%s belongs to a SUCCESSOR run (its token is not yours) — this run was reaped after its lease expired. Stop: do not write artifacts the live run owns.\n' "$dir" "$_IL_CLAIM" >&2
+    return 13
+  fi
   lease="$(_il_lease_secs)" || return 0
   now="$(date +%s 2>/dev/null)" || return 0
   jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
@@ -1103,7 +1115,7 @@ cmd_snapshot_issues() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: snapshot-issues needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
-  _il_claim_renew "$dir"
+  _il_claim_renew "$dir" "$tok" || return $?
   for n in "$@"; do case "$n" in ''|*[!0-9]*) echo "implement-lib: not an issue number: '$n'" >&2; exit 2 ;; esac; done
   command -v jq >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "jq is required"; return $?; }
   command -v gh >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "gh is required"; return $?; }
@@ -1192,12 +1204,12 @@ cmd_dispatch_survey() {
   # (dispatch-failures.md), and the re-run happens under the SAME admission — releasing left it
   # unprotected against a concurrent admit or /cleanup. state-protocol.md's rule is literal: the
   # claim is released at exactly three places, and a dispatch subcommand is none of them. The
-  # --token value is still accepted (callers pass it) and deliberately unused.
-  local prompt_only=0 dir pf rc
+  # --token value is used ONLY for the renewal/succession check — never for a release here.
+  local tok="" prompt_only=0 dir pf rc
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --token)       [ "$#" -ge 2 ] || { echo "implement-lib: --token needs a value" >&2; exit 2; }
-                     shift ;;
+                     tok="$2"; shift ;;
       --prompt-only) prompt_only=1 ;;
       -*)            echo "implement-lib: dispatch-survey: unknown option '$1'" >&2; exit 2 ;;
       *)             break ;;
@@ -1206,7 +1218,7 @@ cmd_dispatch_survey() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: dispatch-survey needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
-  _il_claim_renew "$dir"
+  _il_claim_renew "$dir" "$tok" || return $?
   pf="$dir/survey-prompt.txt"
   {
     printf '%s\n\n' 'You are surveying a repository BEFORE implementation of the GitHub issue(s) below. Explore the repository (read-only: read, list, search; change nothing) and return, in AT MOST 1500 words, exactly these four sections:'
@@ -1376,12 +1388,12 @@ _il_survey_head() {   # <file>
 # is structural rather than a step an agent could skip.
 cmd_dispatch_gaps() {
   # Same claim rule as dispatch-survey: an rc-20 fault here is retryable under the SAME
-  # admission, so --token is accepted and deliberately unused — no release on any path.
-  local prompt_only=0 dir pf rc sv_bytes
+  # admission, so --token never releases here — it feeds the renewal/succession check only.
+  local tok="" prompt_only=0 dir pf rc sv_bytes
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --token)       [ "$#" -ge 2 ] || { echo "implement-lib: --token needs a value" >&2; exit 2; }
-                     shift ;;
+                     tok="$2"; shift ;;
       --prompt-only) prompt_only=1 ;;
       -*)            echo "implement-lib: dispatch-gaps: unknown option '$1'" >&2; exit 2 ;;
       *)             break ;;
@@ -1390,7 +1402,7 @@ cmd_dispatch_gaps() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: dispatch-gaps needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
-  _il_claim_renew "$dir"
+  _il_claim_renew "$dir" "$tok" || return $?
   pf="$dir/gap-prompt.txt"
   {
     printf '%s\n\n' 'You are performing an adversarial PRE-IMPLEMENTATION gap analysis of the GitHub issue(s) below, in the repository you are running in. Explore the repository as needed; do NOT implement. Flag: blocking ambiguities; hidden constraints (this repo'\''s conventions and neighbouring patterns); out-of-scope-creep risk; and test gaps.'
