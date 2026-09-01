@@ -933,6 +933,24 @@ cmd_release() {
 
 _IL_ROLE_DISPATCH="$_adb_il_libdir/role-dispatch.sh"
 
+# Renew the pre-marker claim's lease from NOW — called at the top of every pre-marker subcommand,
+# so the lease bounds EACH step and the gap to the next rather than the whole window: snapshot's
+# gh reads and the agent's triage between dispatches are unbounded, and a fixed lease from admit
+# let a live run outlive its claim and be reaped mid-work. Best-effort and OVER-preserving by
+# design: renewing a claim another run holds only preserves artifacts, the fail-safe direction
+# state-protocol.md names. Never creates a claim; never touches a malformed one.
+_il_claim_renew() {   # <state-dir>
+  local dir="$1" now lease
+  [ -f "$dir/$_IL_CLAIM" ] || return 0
+  lease="$(_il_lease_secs)" || return 0
+  now="$(date +%s 2>/dev/null)" || return 0
+  jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
+      > "$dir/.claim.tmp" 2>/dev/null \
+    && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" \
+    || rm -f "$dir/.claim.tmp"
+  return 0
+}
+
 # Release the claim on a pre-marker failure path, when the caller passed --token. Best-effort by
 # design: the failure being reported is the story; a stuck claim expires on its own lease.
 _il_bail() {   # <token> <state-dir> <exit-code> <message...>
@@ -1085,6 +1103,7 @@ cmd_snapshot_issues() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: snapshot-issues needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
+  _il_claim_renew "$dir"
   for n in "$@"; do case "$n" in ''|*[!0-9]*) echo "implement-lib: not an issue number: '$n'" >&2; exit 2 ;; esac; done
   command -v jq >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "jq is required"; return $?; }
   command -v gh >/dev/null 2>&1 || { _il_bail "$tok" "$dir" 20 "gh is required"; return $?; }
@@ -1187,6 +1206,7 @@ cmd_dispatch_survey() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: dispatch-survey needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
+  _il_claim_renew "$dir"
   pf="$dir/survey-prompt.txt"
   {
     printf '%s\n\n' 'You are surveying a repository BEFORE implementation of the GitHub issue(s) below. Explore the repository (read-only: read, list, search; change nothing) and return, in AT MOST 1500 words, exactly these four sections:'
@@ -1370,6 +1390,7 @@ cmd_dispatch_gaps() {
   done
   [ "$#" -ge 2 ] || { echo "implement-lib: dispatch-gaps needs <state-dir> <issue>..." >&2; exit 2; }
   dir="$1"; shift
+  _il_claim_renew "$dir"
   pf="$dir/gap-prompt.txt"
   {
     printf '%s\n\n' 'You are performing an adversarial PRE-IMPLEMENTATION gap analysis of the GitHub issue(s) below, in the repository you are running in. Explore the repository as needed; do NOT implement. Flag: blocking ambiguities; hidden constraints (this repo'\''s conventions and neighbouring patterns); out-of-scope-creep risk; and test gaps.'

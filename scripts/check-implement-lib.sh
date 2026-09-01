@@ -1186,6 +1186,23 @@ eq "$(wc -c < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" "3
 ( bash "$IL" publish-survey ) >/dev/null 2>&1
 eq "$?" "2" "19i publish-survey without its state-dir is a usage error"
 
+# ================= 19l. every pre-marker subcommand RENEWS the claim lease (#435) ===============
+# The lease used to run from admit alone, so snapshot's unbounded gh reads and the agent's triage
+# between dispatches ate the fixed margin — a live run could outlive its claim and be reaped.
+# Renewal at each subcommand start makes the lease bound each step and the gap to the next.
+renew_exp() { jq -r '.expiresAt' "$1/.claude/state/gap-analysis.lock" 2>/dev/null; }
+d="$(new_repo)"; seed_snap "$d"
+NOWS="$(date +%s)"
+jq -n --argjson e "$((NOWS + 50))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+if [ "$(renew_exp "$d")" -ge "$((NOWS + 8000))" ] 2>/dev/null; then ok; else
+  bad "19l dispatch-gaps renews the claim lease (expiresAt stayed $(renew_exp "$d"))"; fi
+d="$(new_repo)"; gid "$d"
+jq -n --argjson e "$((NOWS + 50))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+if [ "$(renew_exp "$d")" -ge "$((NOWS + 8000))" ] 2>/dev/null; then ok; else
+  bad "19l snapshot-issues renews the claim lease too (expiresAt stayed $(renew_exp "$d"))"; fi
+
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
 # pre-marker window reach 2x1200 + 2x4000 = 10400 s past the 9000 s claim.
