@@ -120,9 +120,11 @@ detects a concurrent run).
 ## What `admit` clears, and the containment rule
 
 The marker, the blocked marker, the gap family (`gap-prompt.txt`, `gaps.md`, `gaps.err`,
-`gaps-*.{md,err}`), the review family (`review-prompt.txt`, `review-prompt-stage.*` — the
+`gaps-*.{md,err}`, `gaps-held.*` — the per-invocation copy a `--prompt-only` build hands its
+native consumer), the review family (`review-prompt.txt`, `review-prompt-stage.*` — the
 mktemp before the rename publish, `review.md`, `review.err`,
-`review-*.{md,err}`), the survey family (`survey-prompt.txt`, `survey.md`, `survey-trace.md`,
+`review-*.{md,err}`, and `.artifact.*` — read-artifact's private copy, orphaned only by a
+killed read), the survey family (`survey-prompt.txt`, `survey.md`, `survey-trace.md`,
 `survey.err`, `survey-*.{md,err}` — #435), the issue snapshots (`issue-<digits>.json/.assoc`)
 and the documentation-duty records (`docs-consulted.tsv`, `docs-consulted-*.tsv`). They are
 per-run data with one later reader — the compaction summary, which names their PATHS and never

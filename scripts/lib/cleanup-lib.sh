@@ -394,7 +394,8 @@ cmd_state_scan() {
         ;;
       # The whole gap-analysis family, not just the two names /implement-issue writes today: a
       # past run left `gaps-retry.{md,err}` behind, and #84 names that debris explicitly.
-      gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err)
+      # `gaps-held.*` is the per-invocation copy a --prompt-only build hands its native consumer.
+      gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err|gaps-held.*)
         _adb_cl_emit "$want_ident" gaps "$f" '-'
         ;;
       # /implement-issue step 8's review artifacts (#264), which had NEITHER half of the lifecycle
@@ -406,7 +407,10 @@ cmd_state_scan() {
       # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
       # `review-prompt-stage.*` is dispatch-review's mktemp before the rename publish — orphaned
       # by a kill it holds the diff and contained criteria, so it is swept with its family.
-      review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err)
+      # `.artifact.*` is read-artifact's private copy of a gap, survey or review file, held only
+      # for the duration of one read — a copy that outlives a killed read carries up to 8 MiB of
+      # that content, and as `other` it was unsweepable until the next admission cleared it.
+      review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err|.artifact.*)
         _adb_cl_emit "$want_ident" review "$f" '-'
         ;;
       # /implement-issue step 5b's documentation-duty record (#422): which third-party surfaces

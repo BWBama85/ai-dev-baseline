@@ -314,6 +314,20 @@ printf '# notes\n' > "$d/base/workflows/fixture/notes.md"$'\n'
 bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a supporting name ending in a newline FAILS the build"
 has "$(cat "$d/build.log" 2>/dev/null)" 'unsupported supporting file' "...naming the extension rule its real bytes fail"
+# …and a supporting DIRECTORY whose name ends in a newline: `$(basename …)` trimmed it to the
+# real workflow's name, so the orphan check tested fixture.md and accepted a directory the
+# render loop never visits.
+d="$WORK/nldir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"$'\n'
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# notes\n' > "$d/base/workflows/fixture"$'\n'"/notes.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a supporting directory whose name ends in a newline FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'supporting files belong to a workflow source' "...refused as an orphan of a workflow that does not exist"
 
 # --- 3d: reserved-name and duplicate checks fold case (#433) -----------------------------------
 # macOS checkouts sit on a case-insensitive filesystem, so `Skill.md` beside a rendered SKILL.md

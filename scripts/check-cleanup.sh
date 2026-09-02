@@ -401,6 +401,8 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/pr-body.md"
 : > "$S/some-other-skill.json"
 : > "$S/.marker.tmp"
+: > "$S/.artifact.w48123"
+: > "$S/gaps-held.w48123p"
 printf '{"branch":"issue-9-thing","issue":"9","phase":"pushed"}' > "$S/implement-issue-active.json"
 scan="$(bash "$CL" state-scan "$S")"
 kindof() { printf '%s\n' "$scan" | awk -F'\t' -v b="$1" '{n=split($2,p,"/"); if (p[n]==b) print $1}'; }
@@ -421,6 +423,8 @@ eq "${ kindof review.md; }"                    "review"  "3 …the reviewer's fi
 eq "${ kindof review.err; }"                   "review"  "3 …and the captured exploration stream"
 eq "${ kindof review-codex.md; }"              "review"  "3 …plus the per-slot family the glob anticipates"
 eq "${ kindof review-gemini.err; }"            "review"  "3 …on both suffixes"
+eq "${ kindof .artifact.w48123; }"             "review"  "3 …and read-artifact's private copy, which a killed read orphans with up to 8 MiB of content"
+eq "${ kindof gaps-held.w48123p; }"            "gaps"    "3 …and the per-invocation gap prompt copy a --prompt-only build hands its consumer"
 # The ALLOWLIST property, tested from the side that costs something: a near-miss must NOT become
 # sweepable. `state-scan` widening by accident is how a sweep starts eating files it never owned,
 # and the failure would look like corruption rather than a cleanup.

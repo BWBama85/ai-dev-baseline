@@ -65,6 +65,7 @@ case "$1 $2" in
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
   "issue view")
+    [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
     [ -n "${SHIM_ISSUE_SLEEP:-}" ] && sleep "$SHIM_ISSUE_SLEEP"
     if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then echo "gh: issue not found" >&2; exit 1; fi
     if [ -n "${SHIM_LOCK_SWAP:-}" ] && [ -f "$SHIM_LOCK_SWAP" ]; then
@@ -72,6 +73,12 @@ case "$1 $2" in
     fi
     printf '%s\n' "${SHIM_ISSUE_JSON:-}" ;;
   "api repos/{owner}/{repo}/issues/7")
+    # SHIM_SNAP_SWAP: a descendant REPLACING the fetched snapshot (a new inode at the name, not
+    # a rewrite of the held one) between the two gh reads.
+    if [ -n "${SHIM_SNAP_SWAP:-}" ]; then rm -f "$SHIM_SNAP_SWAP"; printf '{"state":"CLOSED"}\n' > "$SHIM_SNAP_SWAP"; fi
+    printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
+  "api --hostname")
+    [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
     printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
   "repo view")
     printf '%s\n' "${SHIM_SLUG:-o/r}" ;;
@@ -2686,6 +2693,60 @@ eq "$OP_RC" "27" "40 an untracked non-ignored file refuses open-pr (27) too"
 rm -f "$PCLONE/stray-helper.txt"
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "40 …and a clean worktree opens as before"
+
+# ================= 41. round 48: held snapshot reads pinned to origin, per-invocation prompt =====
+# =================     copies, the aggregate cap during assembly, a literal protected compare ==
+# The issue state is read from a descriptor held since the snapshot's creation: a replacement
+# landing between the two gh reads (the shim performs one) used to be what the state check read.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_SNAP_SWAP="$d/.claude/state/issue-7.json"
+eq "$SN_RC" "0" "41 a snapshot replaced after its fetch is still judged by the fetched bytes (OPEN)"
+has "$SN_OUT" "snapshot #7 OPEN OWNER" "41 …reporting the fetched state, not the replacement's"
+# Both snapshot reads are pinned to the checkout origin: gh's GH_REPO or configured default
+# would otherwise snapshot — and the run implement — a foreign repository's issue #7.
+d="$(new_repo)"; gid "$d"; clm "$d"
+git -C "$d" remote add origin git@github.com:o/r.git >/dev/null 2>&1
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ARGS_LOG="$d/gh-args.log"
+eq "$SN_RC" "0" "41 a forge origin snapshots cleanly"
+has "$(cat "$d/gh-args.log" 2>/dev/null)" "issue view 7 -R github.com/o/r" "41 …with the issue read pinned to origin"
+has "$(cat "$d/gh-args.log" 2>/dev/null)" "api --hostname github.com repos/o/r/issues/7" "41 …and the association read pinned to the same host and slug"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON"
+eq "$SN_RC" "0" "41 …while a checkout with no forge origin takes the stated fallback"
+has "$SN_OUT" "not a recognizable forge remote" "41 …and NOTEs it"
+# The prompt-only survey and gap builds hand their consumer a per-invocation copy inside the
+# swept family, never the shared name a surviving descendant can replace.
+d="$(new_repo)"; seed_snap "$d"
+SP_OUT="$( cd "$d" && bash "$IL" dispatch-survey --prompt-only .claude/state 7 2>/dev/null )"; SP_RC=$?
+eq "$SP_RC" "0" "41 a prompt-only survey builds"
+SP_PATH="${SP_OUT#prompt-ready }"
+case "$SP_PATH" in .claude/state/survey-held.*p) ok ;; *) bad "41 the survey prompt-only path is not a per-invocation family copy ($SP_PATH)" ;; esac
+if [ -f "$d/$SP_PATH" ] && cmp -s "$d/$SP_PATH" "$d/.claude/state/survey-prompt.txt"; then ok; else
+  bad "41 …with the same bytes as the shared survey prompt"; fi
+rm -rf "$d/.claude/state/survey-prompt.txt"
+has "$(cat "$d/$SP_PATH" 2>/dev/null)" 'github-issue #7' "41 …and it still reads after the shared name is removed"
+GP_OUT="$( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 2>/dev/null )"; GP_RC=$?
+eq "$GP_RC" "0" "41 a prompt-only gap build builds"
+GP_PATH="${GP_OUT#prompt-ready }"
+case "$GP_PATH" in .claude/state/gaps-held.*p) ok ;; *) bad "41 the gap prompt-only path is not a per-invocation family copy ($GP_PATH)" ;; esac
+rm -rf "$d/.claude/state/gap-prompt.txt"
+has "$(cat "$d/$GP_PATH" 2>/dev/null)" 'github-issue #7' "41 …and it still reads after the shared gap prompt is removed"
+# The aggregate cap is enforced as the stage grows: four 6 MiB untracked files used to be
+# appended in full (24 MiB on disk) before the post-assembly check refused.
+read -r _ RAG <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RAG/.claude/state"; seed_snap "$RAG"
+( cd "$RAG" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+for i in 1 2 3 4; do dd if=/dev/zero bs=1048576 count=6 2>/dev/null | tr '\0' 't' > "$RAG/u$i.txt"; done
+AG_OUT="$( cd "$RAG" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>&1 )"; AG_RC=$?
+eq "$AG_RC" "20" "41 many sub-bound untracked records refuse once the aggregate crosses the cap"
+has "$AG_OUT" "while assembling, at untracked u3.txt" "41 …at the record that crossed it, before the rest was appended"
+rm -f "$RAG"/u?.txt
+# The protected-branch test is a literal compare and a static glob, never the default branch
+# interpolated into an ERE.
+if grep -q 'grep -qE "\$protected"' "$IL"; then bad "41 the protected-branch test still interpolates a regex"; else ok; fi
+has "$(cat "$IL")" '[ "$b" = "$db" ] && continue' "41 …and compares the default branch literally"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

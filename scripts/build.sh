@@ -769,7 +769,7 @@ done
 # supporting entry rendered nowhere. -L is asked before -d, which would follow.
 for wfd in "$workflows"/* "$workflows"/.*; do
   [ -e "$wfd" ] || [ -L "$wfd" ] || continue
-  wfn="$(basename "$wfd")"
+  wfn="${wfd##*/}"   # the real bytes: $(basename …) drops a trailing newline, and `fixture<NL>/` then passed as fixture's own directory
   case "$wfn" in .|..) continue ;; esac
   case "$wfn" in *.md) continue ;; esac
   if [ -L "$wfd" ]; then

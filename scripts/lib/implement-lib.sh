@@ -892,7 +892,7 @@ _il_clear() {   # <state-dir>
   # cannot destroy a neighbour's file.
   shopt -q nullglob && had_nullglob=1
   shopt -s nullglob
-  targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err )
+  targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/gaps-held.* "$dir"/review-*.md "$dir"/review-*.err )
   # The review-prompt STAGE (dispatch-review's mktemp before the rename): orphaned by a kill, it
   # holds the diff and the contained criteria, so it gets the same lifecycle as its family.
   targets+=( "$dir"/review-prompt-stage.* )
@@ -1346,7 +1346,7 @@ _il_phase() {   # <state-dir> <phase>
 cmd_sync_default() {
   [ "$#" -eq 0 ] || { echo "implement-lib: sync-default takes no arguments" >&2; exit 2; }
   command -v git >/dev/null 2>&1 || { echo "implement-lib: git is required" >&2; return 20; }
-  local db cur merged merged_sha protected b track
+  local db cur merged merged_sha b track
   # The SHARED resolver, never a narrower inline one: origin/HEAD is routinely absent, and a
   # bare `main` fallback broke every master-default clone (adb_default_branch checks local
   # main/master before falling back).
@@ -1357,7 +1357,6 @@ cmd_sync_default() {
   fi
   git fetch --prune origin --quiet || { echo "implement-lib: git fetch failed" >&2; return 20; }
   cur="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo "implement-lib: cannot resolve HEAD" >&2; return 20; }
-  protected="^(HEAD|$db|main|master|develop|release/.*|hotfix/.*)$"
   _il_ff_default() {
     local c a bh
     c="$(git rev-list --left-right --count "$db...origin/$db" 2>/dev/null)"       || { echo "implement-lib: cannot compare $db with origin/$db" >&2; return 20; }
@@ -1394,7 +1393,10 @@ cmd_sync_default() {
     # squash-merged branch it refuses is left and NOTED, never force-deleted.
     git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads       | while IFS=' ' read -r b track; do
           [ "$track" = "[gone]" ] || continue
-          printf '%s\n' "$b" | grep -qE "$protected" && continue
+          # A literal compare and a static glob — never the branch name interpolated into an
+          # ERE, where a name git accepts (`prod)(`) restructures the whole protection pattern.
+          [ "$b" = "$db" ] && continue
+          case "$b" in HEAD|main|master|develop|release/*|hotfix/*) continue ;; esac
           git branch -d -q "$b" 2>/dev/null \
             || echo "implement-lib: NOTE — left '$b' (git branch -d refused — squash-merged? use /cleanup)" >&2
         done
@@ -1438,6 +1440,18 @@ cmd_snapshot_issues() {
     _il_bail "$tok" "$dir" 22 "$dir is NOT gitignored, and this run is about to write the untrusted issue body, its provenance label, prompts and exploration streams under exactly that path. Add '$dir/' to .gitignore (or re-run 'bin/agent-init') and start again."
     return $?
   fi
+  # Pinned to ORIGIN like every other gh read about this checkout: unqualified, gh answers for
+  # GH_REPO or its configured default, and the run would snapshot — and implement — a foreign
+  # repository's issue #n. `gh api` takes the host and the slug explicitly.
+  local _islug="" _ihost="" _ipath=""
+  local -a _irflag=()
+  if _islug="$(_il_origin_slug)"; then
+    _irflag=(-R "$_islug"); _ihost="${_islug%%/*}"; _ipath="${_islug#*/}"
+  else
+    _islug=""
+    printf 'implement-lib: NOTE — origin URL is not a recognizable forge remote; gh resolves the repository itself\n' >&2
+  fi
+  local -a _ist=()
   for n in "$@"; do
     # RENEWED PER ISSUE, not only at the subcommand's start: a large set or slow gh reads can
     # outlive a single lease, and a successor arriving mid-set must refuse the remainder rather
@@ -1452,24 +1466,40 @@ cmd_snapshot_issues() {
     if [ -z "$_ft" ] || [ "${#_ft}" -gt 9 ]; then _ft=600; else _ft=$(( 10#$_ft )); [ "$_ft" -gt 0 ] || _ft=600; fi
     # Exclusive creates with the descriptor held (_il_excl_create): the old rm-then-redirect
     # left a gap a raced plant could fill, aiming these writes at any writable file.
-    local _ijfd="" _iafd=""
+    local _ijfd="" _ijrfd="" _iafd=""
     _il_excl_create "$dir/issue-$n.json" _ijfd \
       || { _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.json exclusively (a planted object?)"; return $?; }
-    if ! adb_run_bounded "$_ft" 10 gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state 1>&"$_ijfd"; then
-      exec {_ijfd}>&-
+    # The state is read back through a descriptor opened at creation and proven one inode with
+    # the write side: a parent-shell jq on the NAME sat outside every bound, so a pipe swapped
+    # in after the fetch closed would block it until the claim lapsed under it.
+    if ! { exec {_ijrfd}<"$dir/issue-$n.json"; } 2>/dev/null || [ ! "/dev/fd/$_ijfd" -ef "/dev/fd/$_ijrfd" ]; then
+      _il_fd_close "$_ijfd" "$_ijrfd"
+      _il_bail "$tok" "$dir" 20 "the snapshot for #$n was swapped during staging"; return $?
+    fi
+    if ! adb_run_bounded "$_ft" 10 gh issue view "$n" "${_irflag[@]}" --json number,title,body,labels,author,comments,milestone,state 1>&"$_ijfd"; then
+      _il_fd_close "$_ijfd" "$_ijrfd"
       _il_bail "$tok" "$dir" 20 "could not fetch issue #$n (not found, or the read outran its ${_ft}s bound) — verify repo scope (repo-scope.md)"; return $?
     fi
     exec {_ijfd}>&-
+    st="$(jq -r .state <&"$_ijrfd" 2>/dev/null)" || st=""
+    exec {_ijrfd}<&-
+    _ist+=("$st")
     _il_excl_create "$dir/issue-$n.assoc" _iafd \
       || { _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?; }
-    if ! adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' 1>&"$_iafd"; then
+    if [ -n "$_islug" ]; then
+      adb_run_bounded "$_ft" 10 gh api --hostname "$_ihost" "repos/$_ipath/issues/$n" --jq '.author_association' 1>&"$_iafd"; rc=$?
+    else
+      adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' 1>&"$_iafd"; rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
       exec {_iafd}>&-
       _il_bail "$tok" "$dir" 20 "could not read #$n's author association (or the read outran its ${_ft}s bound)"; return $?
     fi
     exec {_iafd}>&-
   done
+  local _ii=0
   for n in "$@"; do
-    st="$(jq -r .state "$dir/issue-$n.json" 2>/dev/null)" || st=""
+    st="${_ist[$_ii]}"; _ii=$((_ii + 1))
     if [ "$st" != "OPEN" ]; then
       _il_bail "$tok" "$dir" 21 "issue #$n is ${st:-unreadable} — stop and confirm with the owner before implementing (do not silently reopen already-shipped work)"
       return $?
@@ -1920,8 +1950,14 @@ cmd_dispatch_survey() {
     || { _il_fd_close "$_spfd" "$_sprfd"; _il_bail "" "$dir" 20 "survey prompt assembly failed"; return $?; }
   exec {_spfd}>&-
   if [ "$prompt_only" -eq 1 ]; then
+    # THE CONSUMER'S FILE IS A PER-INVOCATION NAME — a second link to the prompt's inode inside
+    # the swept survey family — never the shared name, which a surviving earlier descendant can
+    # replace before the harness opens it (the review dispatcher's reason, and the same shape).
     exec {_sprfd}<&-
-    printf 'prompt-ready %s\n' "$pf"
+    rm -f "$dir/survey-held.w$$p"
+    ln "$pf" "$dir/survey-held.w$$p" 2>/dev/null || cp "$pf" "$dir/survey-held.w$$p" 2>/dev/null \
+      || { _il_bail "" "$dir" 20 "could not publish the survey prompt's per-invocation copy"; return $?; }
+    printf 'prompt-ready %s\n' "$dir/survey-held.w$$p"
     return 0
   fi
   # CONFIG FAULTS ARE 18, NEVER "an agent error": role-dispatch refuses a malformed declaration
@@ -2196,8 +2232,12 @@ cmd_dispatch_gaps() {
     || { _il_fd_close "$_gpfd" "$_gprfd"; _il_bail "" "$dir" 20 "gap prompt assembly failed"; return $?; }
   exec {_gpfd}>&-
   if [ "$prompt_only" -eq 1 ]; then
+    # Same per-invocation copy as the survey prompt, inside the swept gap family.
     exec {_gprfd}<&-
-    printf 'prompt-ready %s\n' "$pf"
+    rm -f "$dir/gaps-held.w$$p"
+    ln "$pf" "$dir/gaps-held.w$$p" 2>/dev/null || cp "$pf" "$dir/gaps-held.w$$p" 2>/dev/null \
+      || { _il_bail "" "$dir" 20 "could not publish the gap prompt's per-invocation copy"; return $?; }
+    printf 'prompt-ready %s\n' "$dir/gaps-held.w$$p"
     return 0
   fi
   # Same translation as dispatch-survey: a config refusal is 18 before the invoke, so a 2 from
@@ -2494,6 +2534,13 @@ cmd_dispatch_review() {
     fi
     if [ "$_ua" -eq "$_ub" ]; then
       printf 'diff --git a/dev/null b/%s\n(untracked entry with no diffable content — an empty file, or a non-regular object; review it in the tree)\n' "$uf" 1>&"$_rpfd"
+    fi
+    # The AGGREGATE cap is enforced as the stage grows, not only after the loop: many sub-bound
+    # records could otherwise fill the state filesystem before the post-assembly check ran.
+    if [ "$_ua" -gt 16777216 ]; then
+      exec {_rpfd}>&-; rm -f "$pft" "$_usnap"
+      printf 'implement-lib: the review prompt crossed the 16777216-byte cap while assembling, at untracked %s — split the change\n' "$uf" >&2
+      return 20
     fi
   done 0<&"$_urfd"
   exec {_urfd}<&-

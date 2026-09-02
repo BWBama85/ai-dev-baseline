@@ -200,7 +200,9 @@ context window**, returned as a bounded ≤1500-word `survey.md` (trace: `survey
 the PR, go to step 3). **When the resolved token is your own agent and your harness has a native
 read-only subagent facility** (Claude: the Agent tool, `Explore` type): build the contained
 prompt with `bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_CLAIM_TOKEN" --prompt-only
-.codex/state <n>…`, dispatch the subagent over it, and publish its returned summary through
+.codex/state <n>…`, dispatch the subagent over the path its `prompt-ready` line prints (a
+per-invocation copy — never the shared `survey-prompt.txt`, which a surviving descendant of an
+earlier dispatch can replace before the subagent opens it), and publish its returned summary through
 `bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-survey --token "$RUN_CLAIM_TOKEN" .codex/state` (the reply on
 stdin) — never write
 `survey.md` yourself: the publisher is what bounds an oversized reply. **The survey's time

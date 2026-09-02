@@ -321,7 +321,7 @@ if [ "$MODE" = mutation ]; then
     '      elif false then "unsafe\t-"' \
     'outside the workflow'"'"'s name grammar'
   check_mut opaque-grammar-dropped \
-    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace-full\\.md|survey-held\\.[A-Za-z0-9]{1,10}|survey-trace\\.md)$") | not) then "unnamed\t-"' \
+    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace-full\\.md|survey-held\\.[A-Za-z0-9]{1,10}|survey-trace\\.md|gaps-held\\.[A-Za-z0-9]{1,10}|\\.artifact\\.[A-Za-z0-9]{1,10})$") | not) then "unnamed\t-"' \
     '      elif false then "unnamed\t-"' \
     'a prose-bearing family name'
   check_mut scheme-only-url-accepted \
