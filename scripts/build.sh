@@ -761,10 +761,22 @@ done
 # silently ship to nobody. Refuse it rather than let it read as "supported". Dot-directories are
 # enumerated too — `*/` skips them everywhere, so a hidden one would commit while rendering to
 # no agent and passing every 1:1 check — and refused by name, like the dot-files above.
-for wfd in "$workflows"/*/ "$workflows"/.*/; do
-  [ -d "$wfd" ] || continue
+# NAME-LEVEL enumeration, not trailing-slash globs: `*/` resolves through links and skips a
+# DANGLING one entirely, so a committed symlink with no <name>.md passed every check while its
+# supporting entry rendered nowhere. -L is asked before -d, which would follow.
+for wfd in "$workflows"/* "$workflows"/.*; do
+  [ -e "$wfd" ] || [ -L "$wfd" ] || continue
   wfn="$(basename "$wfd")"
   case "$wfn" in .|..) continue ;; esac
+  case "$wfn" in *.md) continue ;; esac
+  if [ -L "$wfd" ]; then
+    echo "build.sh: base/workflows/$wfn is a symlink — supporting sources must live inside the repository, never behind a link" >&2
+    exit 3
+  fi
+  if [ ! -d "$wfd" ]; then
+    echo "build.sh: base/workflows/$wfn — unexpected entry; only <name>.md sources and <name>/ supporting directories live here" >&2
+    exit 3
+  fi
   case "$wfn" in .*)
     echo "build.sh: base/workflows/$wfn/ — hidden directories are refused: nothing enumerates them, so their files ship to nobody" >&2
     exit 3 ;;

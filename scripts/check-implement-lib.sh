@@ -2117,6 +2117,37 @@ if [ -f "$d/.claude/state/survey-overflow.md" ] \
    && [ "$(wc -w < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" = "5000" ]; then
   ok; else bad "29 …and the full 5000-word reply is preserved at survey-overflow.md"; fi
 
+# ================= 30. marker stages, the gap builder's survey copy, and open-pr's two gates ====
+# The marker stage writes get the same exclusive held-descriptor create as every other private
+# write, and the gap builder reads the published (agent-writable) survey through one bounded
+# copy — never a parent-shell reopen of the public name.
+if grep -q '> "\$dir/\.marker\.tmp"' "$IL"; then
+  bad "30 a pathname-redirect marker stage is back in the lib"; else ok; fi
+if grep -q '_il_survey_head "\$dir/survey.md"' "$IL" || grep -q 'wc -c < "\$dir/survey.md"' "$IL"; then
+  bad "30 the gap builder still reopens the published survey by name"; else ok; fi
+# gh honors GH_REPO/GH_HOST over the local checkout — a poisoned environment would aim the
+# create at another repository while git push went to origin, and every later verification
+# would consistently confirm the wrong target.
+openpr GH_REPO="elsewhere/other" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "25" "30 a set GH_REPO is refused before anything is pushed"
+has "$OP_OUT" "GH_REPO/GH_HOST is set" "30 …naming the environment override"
+# A mistyped --closes number outside the marker's issue set would sail through the GitHub proof
+# (which only confirms the same mistake registered) and close an unrelated issue on merge.
+OP_OUT="$( cd "$PCLONE" && env SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS" \
+  bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 8 2>&1 )"; OP_RC=$?
+eq "$OP_RC" "26" "30 a --closes number outside the marker's issue set refuses before the push"
+has "$OP_OUT" "not in the run marker" "30 …naming the mismatch"
+# The word-truncation slices the FIRST CROSSING LINE at the remaining budget wherever it is: a
+# blank first line followed by one 2000-word line used to publish a one-newline survey.md and
+# report survey ok 0 words — truncation recreating the rejected empty-summary outcome.
+d="$(new_repo)"
+{ printf '\n'; awk 'BEGIN{for(i=0;i<2000;i++)printf "w%d ", i; print ""}'; } \
+  | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+WS_RC=$?
+WS_W="$(wc -w < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
+eq "$WS_RC" "0" "30 a blank-led over-budget survey still publishes"
+eq "$WS_W" "1500" "30 …with the crossing line sliced at the remaining budget, never dropped whole"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"

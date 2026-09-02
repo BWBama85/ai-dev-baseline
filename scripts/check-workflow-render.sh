@@ -394,6 +394,14 @@ no "$rc" "a symlinked supporting DIRECTORY fails the build"
 has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused before -d can follow it"
 rm -f "$d/base/workflows/fixture"
 mv "$d/real-fixture-dir" "$d/base/workflows/fixture"
+# An ORPHANED symlink — no <name>.md beside it — was invisible to trailing-slash globs: `*/`
+# resolves through links and skips a dangling one entirely, so the committed entry passed every
+# check while rendering nowhere.
+ln -s /nonexistent-tree "$d/base/workflows/orphanlink"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a dangling supporting-directory symlink with no workflow source fails the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused as a link, not skipped"
+rm -f "$d/base/workflows/orphanlink"
 
 # --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
 # `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,
