@@ -1555,7 +1555,15 @@ cmd_read_artifact() {
     gaps)   f="$dir/gaps.md" ;;
     survey) f="$dir/survey.md" ;;
     review) f="$dir/review.md" ;;
-    *) echo "implement-lib: read-artifact: unknown artifact '$which' (gaps|survey|review)" >&2; exit 2 ;;
+    review-*)
+      # The numbered slot family (--slot N writes review-N.md), same 1-4 digit grammar the
+      # state scan and the sweeps speak — without this arm, later reviewers' findings were
+      # unreadable through the one reader the workflow permits.
+      case "${which#review-}" in
+        [0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]) f="$dir/$which.md" ;;
+        *) echo "implement-lib: read-artifact: '$which' is outside the review-N family grammar (1-4 digits)" >&2; exit 2 ;;
+      esac ;;
+    *) echo "implement-lib: read-artifact: unknown artifact '$which' (gaps|survey|review|review-N)" >&2; exit 2 ;;
   esac
   [ -e "$f" ] || [ -L "$f" ] || return 10
   if [ -L "$f" ] || [ ! -f "$f" ]; then
@@ -1604,9 +1612,19 @@ cmd_publish_survey() {
   # The stage name is plantable as a symlink — unlinked first, never written through. The
   # runaway REFUSAL itself lives in _il_publish_survey, on its private copy: sizing the public
   # stage name here would be one more reopen a surviving descendant can race.
-  rm -f "$dir/survey-stage.md"
-  head -c 8388609 > "$dir/survey-stage.md" \
-    || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
+  # Exclusive create with the descriptor held, like the CLI path: rm-then-redirect left a swap
+  # window a symlink could fill (the shell would follow it) and a FIFO could block, outside any
+  # bound — the reply streams from stdin through the held descriptor instead.
+  local _nsfd=""
+  _il_excl_create "$dir/survey-stage.md" _nsfd \
+    || { printf 'implement-lib: could not create the survey stage exclusively (a planted object?)\n' >&2; return 20; }
+  if ! head -c 8388609 1>&"$_nsfd"; then
+    exec {_nsfd}>&-
+    rm -f "$dir/survey-stage.md"
+    printf 'implement-lib: could not stage the survey reply\n' >&2
+    return 20
+  fi
+  exec {_nsfd}>&-
   _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
   _svw="$(adb_run_bounded 30 5 wc -w "$dir/survey.md" 2>/dev/null | awk '{print $1; exit}')" || _svw=""
   printf 'survey ok %s words\n' "${_svw:-0}"
@@ -2356,7 +2374,15 @@ cmd_open_pr() {
   # be able to reach the verification — so an already-open PR for this branch is ADOPTED, never a
   # failure. The adopt read is attempted only after create fails, so the common path costs nothing.
   local create_out
-  if create_out="$(gh pr create "${_rflag[@]}" --title "$title" --body-file "$bodyf" 2>&1)"; then
+  # --base EXPLICIT: without it, gh consults branch.<name>.gh-merge-base config BEFORE the
+  # repository default (gh pr create --help), so a stale or planted per-branch setting could
+  # open — and then arm and merge — against a release or stacked branch step 1 never
+  # synchronized. The closing-link and merge guards never validate the base, so it must be
+  # pinned where the PR is born.
+  local _pbase
+  _pbase="$(adb_default_branch)" && [ -n "$_pbase" ] \
+    || { printf 'implement-lib: cannot resolve the default branch for --base — refusing to open a PR against a guess\n' >&2; return 20; }
+  if create_out="$(gh pr create "${_rflag[@]}" --base "$_pbase" --title "$title" --body-file "$bodyf" 2>&1)"; then
     pr="$(printf '%s\n' "$create_out" | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
   else
     # ADOPT ONLY AN OPEN PR. `gh pr view <branch>` resolves the branch's most recent PR including

@@ -422,9 +422,9 @@ or a documented cross-model fallback. A slot that ran and cannot complete after 
 → blocked marker, `phase` stays `committed`; a slot whose CLI was absent never ran — that is
 rung 2/3, reported, never blocked (`dispatch-failures.md`). Then `phase=code_reviewed`.
 Completed findings are input to step 9, not a stopping point — read them with
-`{{IMPLEMENT_LIB}} read-artifact {{STATE_DIR}} review` (same rule as the gap and survey reads:
-the public name is agent-writable long after the dispatch, and the reader validates at the
-moment of consumption).
+`{{IMPLEMENT_LIB}} read-artifact {{STATE_DIR}} review`, and `review-<n>` for each additional
+configured slot (same rule as the gap and survey reads: the public names are agent-writable
+long after the dispatch, and the reader validates at the moment of consumption).
 
 ### 9. Triage + fix — and file what you defer, BEFORE anything cites it
 

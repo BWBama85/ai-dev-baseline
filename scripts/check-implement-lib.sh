@@ -2271,6 +2271,32 @@ openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_
 eq "$OP_RC" "0" "32 a local-path origin still opens (the stated fallback)"
 has "$OP_OUT" "not a recognizable forge remote" "32 …with the fallback NOTEd, never silent"
 
+# ================= 33. numbered slots read, the native stage held, the base pinned ==============
+# --slot N writes review-N.md and the workflow forbids direct opens — without a numbered arm in
+# read-artifact, later reviewers' findings were unreadable through the one permitted reader.
+d="$(new_repo)"
+printf 'slot two findings\n' > "$d/.claude/state/review-2.md"
+RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" review-2 2>/dev/null )"; RA_RC=$?
+eq "$RA_RC" "0" "33 a numbered review slot reads clean"
+eq "$RA_OUT" "slot two findings" "33 …emitting its content"
+bash "$IL" read-artifact "$d/.claude/state" review-x >/dev/null 2>&1
+eq "$?" "2" "33 a non-numeric slot suffix is a usage error"
+bash "$IL" read-artifact "$d/.claude/state" review-12345 >/dev/null 2>&1
+eq "$?" "2" "33 …and a 5-digit one is outside the family grammar"
+# The native publisher's stage gets the same exclusive held-descriptor create as the CLI path —
+# rm-then-redirect left the swap window everywhere else already closed.
+if grep -q 'head -c 8388609 > "\$dir/survey-stage.md"' "$IL"; then
+  bad "33 the native survey stage is back on rm-then-redirect"; else ok; fi
+printf 'native reply\n' | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+eq "$?" "0" "33 the native publish still works through the held descriptor"
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "native reply" "33 …publishing the reply"
+# gh consults branch.<name>.gh-merge-base BEFORE the repository default when --base is omitted,
+# and no later guard validates the base — the create pins it explicitly.
+if grep -q 'gh pr create "\${_rflag\[@\]}" --base "\$_pbase"' "$IL"; then ok; else
+  bad "33 gh pr create does not pin --base to the synchronized default"; fi
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "33 the pinned-base create still opens against the fixture"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
