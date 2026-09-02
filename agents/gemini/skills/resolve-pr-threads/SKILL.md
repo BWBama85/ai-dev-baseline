@@ -489,8 +489,9 @@ case "$LRC" in
   *)  echo "ERROR: could not reconcile the pattern-ledger lock (rc $LRC) — see above"; exit 1 ;;
 esac
 
-if [ -n "$(git status --porcelain)" ]; then
-  echo "ERROR: working tree dirty; commit or stash before invoking"
+# The read's own failure refuses too: an empty capture from a failed `git status` is not a clean tree.
+if ! _wst="$(git status --porcelain)" || [ -n "$_wst" ]; then
+  echo "ERROR: working tree dirty (or its status could not be read); commit or stash before invoking"
   exit 1
 fi
 
@@ -1185,9 +1186,10 @@ started on; fall back to the PR's **base** branch, then the repo default — nev
 hardcoded `main`.
 
 ```bash
-# Guard on a clean tree — never switch away over uncommitted work.
-if [ -n "$(git status --porcelain)" ]; then
-  echo "NOTE: tree not clean — staying on '$(git rev-parse --abbrev-ref HEAD)'; restore manually."
+# Guard on a clean tree — never switch away over uncommitted work, nor over a tree whose status
+# could not be read.
+if ! _wst="$(git status --porcelain)" || [ -n "$_wst" ]; then
+  echo "NOTE: tree not clean (or its status could not be read) — staying on '$(git rev-parse --abbrev-ref HEAD)'; restore manually."
 else
   DEFAULT="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
   [ -z "$DEFAULT" ] && DEFAULT=main

@@ -1355,17 +1355,25 @@ _il_append_checklist() {   # <out-fd> <consumer-word>
 # One phase write, idempotent, owner re-stamped — the same jq the workflow's phase-update snippet
 # carries (#243). Used by open-pr for the transitions it owns.
 _il_phase() {   # <state-dir> <phase>
-  local dir="$1" phase="$2" _mfd=""
+  local dir="$1" phase="$2" _mfd="" _mrfd=""
   # The stage is created EXCLUSIVELY with its descriptor held (_il_excl_create): the old
   # rm-then-redirect left a gap a raced plant could fill, and the phase write would have
   # truncated whatever the plant pointed at.
   _il_excl_create "$dir/.marker.tmp" _mfd || return 1
+  # A read descriptor on the stage, opened at creation and proven one inode with the write side,
+  # is what the rename is checked against afterward (the claim renewal's rule): a stage replaced
+  # between the write side closing and the mv would otherwise be published as the marker, and
+  # a substituted `.branch` reads the run as unrelated to its own Stop gate.
+  if ! { exec {_mrfd}<"$dir/.marker.tmp"; } 2>/dev/null || [ ! "/dev/fd/$_mfd" -ef "/dev/fd/$_mrfd" ]; then
+    _il_fd_close "$_mfd" "$_mrfd"; rm -f "$dir/.marker.tmp"
+    return 1
+  fi
   # The transform reads a bounded in-memory copy, never the marker pathname: a parent-shell jq
   # open could be blocked forever by a FIFO swapped at the name.
   local _mj
   _mj="$(adb_run_bounded 30 5 cat "$dir/$_IL_MARKER" 2>/dev/null)" || _mj=""
   if [ -z "$_mj" ]; then
-    exec {_mfd}>&-
+    _il_fd_close "$_mfd" "$_mrfd"
     rm -f "$dir/.marker.tmp"
     return 1
   fi
@@ -1375,15 +1383,20 @@ _il_phase() {   # <state-dir> <phase>
         | .phaseHistory = ((.phaseHistory // []) as $h
             | if ($h | length) > 0 and $h[-1].phase == $phase then $h else $h + [{phase: $phase, at: $at}] end)
         | (if $owner == "" then . else .owner = $owner end)' 1>&"$_mfd"; then
-    exec {_mfd}>&-
+    _il_fd_close "$_mfd" "$_mrfd"
     rm -f "$dir/.marker.tmp"
     return 1
   fi
   exec {_mfd}>&-
   # Verified like the claim publish: mv onto a directory swapped in at the marker name succeeds
-  # by moving INSIDE it, and the phase write would report ok having recorded nothing.
+  # by moving INSIDE it, and the phase write would report ok having recorded nothing — and the
+  # canonical name must be the STAGED INODE, checked against the held descriptor.
+  local _prc=0
   mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" \
-    && [ -f "$dir/$_IL_MARKER" ] && [ ! -L "$dir/$_IL_MARKER" ]
+    && [ -f "$dir/$_IL_MARKER" ] && [ ! -L "$dir/$_IL_MARKER" ] \
+    && _il_same_inode "$dir/$_IL_MARKER" "$_mrfd" || _prc=1
+  exec {_mrfd}<&-
+  return "$_prc"
 }
 
 # --- sync-default --------------------------------------------------------------------------------
@@ -1402,7 +1415,13 @@ cmd_sync_default() {
   # main/master before falling back).
   db="$(adb_default_branch)"
   [ -n "$db" ] || db=main
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  # The status read's own failure refuses too: an empty capture from a failed read is not a
+  # clean tree (open-pr's rule, same shape).
+  local _sst
+  if ! _sst="$(git status --porcelain 2>/dev/null)"; then
+    echo "implement-lib: could not read the worktree status — refusing rather than treating an unreadable tree as clean" >&2; return 30
+  fi
+  if [ -n "$_sst" ]; then
     echo "implement-lib: tree not clean — commit or stash first" >&2; return 30
   fi
   git fetch --prune origin --quiet || { echo "implement-lib: git fetch failed" >&2; return 20; }
@@ -2841,7 +2860,14 @@ cmd_open_pr() {
   # THE TIP MUST BE THE REVIEWED TREE: dispatch-review reviews the worktree-inclusive diff, so a
   # staged, unstaged or untracked change left here would push — then open, and arm — a revision
   # the findings and the PR body do not describe. Refused before anything leaves the checkout.
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  # THE STATUS READ ITSELF CAN FAIL, and an empty capture then read as clean: the command's
+  # status is captured on its own, and a read that could not be performed refuses too.
+  local _wst
+  if ! _wst="$(git status --porcelain 2>/dev/null)"; then
+    printf 'implement-lib: could not read the worktree status — the reviewed tree cannot be proved to be the tip; refusing to push\n' >&2
+    return 27
+  fi
+  if [ -n "$_wst" ]; then
     printf 'implement-lib: the worktree has uncommitted or untracked changes — the reviewed tree is not the tip; commit them (or gitignore what is not part of the change) before open-pr\n' >&2
     return 27
   fi

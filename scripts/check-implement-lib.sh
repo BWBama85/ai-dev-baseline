@@ -2501,7 +2501,7 @@ eq "$?" "0" "37 …and the prompt builds again without it"
 # marker name succeeds by moving the stage INSIDE it (BSD mv has no -T), and the caller would
 # proceed leaseless or phase-less. The marker twin is deterministic: a directory at the marker
 # name must fail the phase write, never report ok.
-phasefn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_phase()/,/^}/p' "$IL")"
+phasefn="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_phase()/,/^}/p' "$IL")"
 PH_D="$(new_repo)"
 mkdir "$PH_D/.claude/state/implement-issue-active.json"
 PH_RC="$( cd "$PH_D" && eval "$phasefn" || exit 99
@@ -2509,6 +2509,19 @@ PH_RC="$( cd "$PH_D" && eval "$phasefn" || exit 99
   _il_phase .claude/state pushed >/dev/null 2>&1; printf '%s' "$?" )"
 if [ "$PH_RC" != "0" ]; then ok; else
   bad "37 a directory swapped at the marker name reports a successful phase write"; fi
+# …and the published marker must be the STAGED INODE: a stage replaced between the write side
+# closing and the mv (an mv override does exactly that) used to be published with only its type
+# checked, and a substituted .branch reads the run as unrelated to its own Stop gate.
+PH_S="$(new_repo)"
+jq -n '{branch:"issue-9-x", issue:"9", phase:"triaged"}' > "$PH_S/.claude/state/implement-issue-active.json"
+PH_SRC="$( cd "$PH_S" && eval "$phasefn" || exit 99
+  _IL_MARKER="implement-issue-active.json"
+  mv() { local src="$1"; [ "$1" = "-f" ] && src="$2"
+         case "$src" in */.marker.tmp) /bin/rm -f "$src"; printf '{"branch":"elsewhere","issue":"9","phase":"pushed"}\n' > "$src" ;; esac
+         command mv "$@"; }
+  _il_phase .claude/state pushed >/dev/null 2>&1; printf '%s' "$?" )"
+if [ "$PH_SRC" != "0" ]; then ok; else
+  bad "37 a marker stage swapped before its rename reports a successful phase write"; fi
 if grep -q 'rm -f "\$dir/\$_IL_CLAIM/\${_cst##\*/}"' "$IL"; then ok; else
   bad "37 a mv-inside leaves the claim stage inside the planted directory forever"; fi
 
@@ -2869,6 +2882,28 @@ RNQ_P="$RNQ/.claude/state/review-prompt.txt"
 eq "$(grep -c '^diff --git a/dev/null b/"nl\\nlink"$' "$RNQ_P")" "1" "43 …with its synthetic record's name JSON-quoted onto one line"
 if grep -qx 'link' "$RNQ_P"; then bad "43 …and no bare fragment of the name opens a line of its own"; else ok; fi
 rm -f "$RNQ/$(printf 'nl\nlink')"
+
+# ================= 44. round 51: an unreadable worktree status is never "clean" =================
+# `[ -n "$(git status …)" ]` read a FAILED status as a clean tree: open-pr pushed and sync-default
+# switched over a tree nobody could read. A git shim fails only `status` and passes the rest on.
+mkdir -p "$work/gitstat"
+REALGIT="$(command -v git)"
+cat > "$work/gitstat/git" <<SH
+#!/usr/bin/env bash
+[ "\$1" = "status" ] && exit 128
+exec "$REALGIT" "\$@"
+SH
+chmod +x "$work/gitstat/git"
+openpr PATH="$work/gitstat:$PATH" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "27" "44 an unreadable worktree status refuses open-pr (27)"
+has "$OP_OUT" "could not read the worktree status" "44 …naming the failed read, not a dirty tree"
+if printf '%s\n' "$OP_OUT" | grep -q 'pushed issue-9-x'; then bad "44 …and nothing was pushed"; else ok; fi
+read -r _ SSC <<EOF
+${ remote_pair; }
+EOF
+SS_OUT="$( cd "$SSC" && env PATH="$work/gitstat:$PATH" bash "$IL" sync-default 2>&1 )"; SS_RC=$?
+eq "$SS_RC" "30" "44 …and sync-default refuses (30) rather than syncing over an unreadable tree"
+has "$SS_OUT" "could not read the worktree status" "44 …naming why"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
