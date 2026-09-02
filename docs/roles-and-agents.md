@@ -232,7 +232,7 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 
 | Agent | Non-interactive invocation | Root config it reads |
 |---|---|---|
-| `claude` | `claude -p "<prompt>"` (when Claude is already driving, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
+| `claude` | `claude -p < <prompt-file>` (when Claude is already driving, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
 | `codex` | `codex exec --cd <repo> -` (prompt piped on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
@@ -477,9 +477,9 @@ just executed by a different agent:
    the eventual PR body.
 2. Codex implements, runs gates, commits.
 3. **Step 8 (review)** resolves to `["claude"]`, a different agent than the
-   one driving → Codex shells out `claude -p "<review prompt over the
-   diff>"` to get Claude's independent review pass, since Claude isn't
-   already resident to run that pass in-process.
+   one driving → Codex shells out `claude -p` with the review prompt over
+   the diff on stdin to get Claude's independent review pass, since Claude
+   isn't already resident to run that pass in-process.
 4. Codex triages the findings, pushes, opens the PR, and files follow-up
    issues.
 

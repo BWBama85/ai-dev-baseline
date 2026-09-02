@@ -39,7 +39,7 @@
 # in-process (the CLI dispatch below is guarded so sourcing defines the functions without running).
 #
 # Cross-agent invocation (canonical home: base/roles.md; pinned by scripts/check-fact-drift.sh):
-#   claude → claude -p "<prompt>"            (stdout is the final message)
+#   claude → claude -p < <prompt-file>       (prompt on stdin; stdout is the final message)
 #   codex  → codex exec --cd <repo> -        (prompt on stdin; --output-last-message = clean final msg)
 #   gemini → agy -p "<prompt>"               (Antigravity CLI; stdout is the final message)
 # Every invocation is bounded by the 45-min hang backstop — see _ADB_RD_TIMEOUT_SECS below for
@@ -971,6 +971,48 @@ EOF
   esac
 }
 
+# The largest prompt an argv-taking agent is handed: Linux's MAX_ARG_STRLEN is 128 KiB per
+# single argument (E2BIG past it), and a bound stated here beats a launch failure nobody names.
+_ADB_RD_ARGV_PROMPT_MAX=131071
+_adb_rd_argv_fits() {   # <prompt-file> — 0 when the prompt can travel as one argument
+  local s
+  s="$(wc -c < "$1" 2>/dev/null)"; s="${s//[[:space:]]/}"
+  case "$s" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$s" -le "$_ADB_RD_ARGV_PROMPT_MAX" ]
+}
+
+# Create <path> EXCLUSIVELY and leave an open write descriptor on it in the caller's variable
+# named by <fdvar> (implement-lib's _il_excl_create, kept local: common.sh is every mutation
+# harness's input). rm first (never follows), then a noclobber open, so the descriptor is
+# bound to the inode created here and no later name swap can redirect the write.
+_adb_rd_excl_create() {   # <path> <fdvar-name>
+  local __p="$1" __had=0
+  local -n __fdref="$2"
+  __fdref=""
+  rm -f "$__p" 2>/dev/null
+  case "$-" in *C*) __had=1 ;; esac
+  set -C
+  if ! { exec {__fdref}>"$__p"; } 2>/dev/null; then
+    [ "$__had" -eq 1 ] || set +C
+    __fdref=""
+    return 1
+  fi
+  [ "$__had" -eq 1 ] || set +C
+  return 0
+}
+
+# The byte size of the file behind descriptor <fd>, read through /dev/fd on either stat flavor
+# (GNU first, BSD second, digits validated); empty and 1 when neither answers.
+_adb_rd_fd_size() {   # <fd>
+  local s
+  s="$(stat -L -c %s "/dev/fd/$1" 2>/dev/null)"; case "$s" in ''|*[!0-9]*) s="" ;; esac
+  if [ -z "$s" ]; then
+    s="$(stat -L -f %z "/dev/fd/$1" 2>/dev/null)"; case "$s" in ''|*[!0-9]*) s="" ;; esac
+  fi
+  [ -n "$s" ] || return 1
+  printf '%s\n' "$s"
+}
+
 # Invoke ONE concrete agent's CLI with the prompt from file $2; the agent's clean FINAL message
 # goes to this function's stdout, its exploration/log stream to stderr. Returns the CLI's status
 # (124 on timeout); for codex, a 0 exit that produced no final message is treated as incomplete
@@ -981,12 +1023,23 @@ _adb_rd_invoke_agent() {
     # `$(<"$pf")` rather than `$(cat "$pf")` (#258): a builtin file read, no `cat` process. Both
     # strip trailing newlines identically, and the prompt is passed as one argv element either way.
     claude)
+      # THE PROMPT TRAVELS ON STDIN, never as one argv element: Linux refuses a single argument
+      # past MAX_ARG_STRLEN (128 KiB), and a review prompt carrying a real diff is routinely
+      # larger. Claude Code's non-interactive mode takes its input "via a prompt argument or
+      # piped through standard input" (code.claude.com/docs/en/errors, read 2026-09-02).
       # log_stdout=0: stdout IS the final message, so it passes through uncapped; only the log
       # stream on stderr is bounded.
-      _adb_rd_bounded_capped 0 claude -p "$(<"$pf")"
+      _adb_rd_bounded_capped 0 claude -p < "$pf"
       return $?
       ;;
     gemini)
+      # agy takes the prompt as ONE argument (`agy --help`, 2026-09-02: -p/--print "Run a single
+      # prompt non-interactively"; no stdin form is documented), so the prompt is refused past
+      # the portable per-argument bound rather than failing at launch with E2BIG.
+      if ! _adb_rd_argv_fits "$pf"; then
+        printf 'role-dispatch: the prompt for agy is past the %s-byte single-argument bound (Linux MAX_ARG_STRLEN) — agy takes its prompt as one argument; split the change or route this role to an agent that reads stdin\n' "$_ADB_RD_ARGV_PROMPT_MAX" >&2
+        return 1
+      fi
       _adb_rd_bounded_capped 0 agy -p "$(<"$pf")"
       return $?
       ;;
@@ -1015,32 +1068,63 @@ _adb_rd_invoke_agent() {
       fi
       rc=$?
       if [ "$rc" -ne 0 ]; then rm -f "$last"; return "$rc"; fi
-      if [ ! -s "$last" ]; then
+      # ONE bounded copy of the result into an exclusively created inode whose read descriptor
+      # is held from creation, then the size and the emission come from THAT inode: sizing and
+      # emitting the result path by name were two opens a surviving descendant could aim at a
+      # symlink after the CLI exited — a small readable host file then passed the bound and was
+      # emitted as the agent's clean final message. The copy is by filename inside a bounded
+      # child (a FIFO swapped in expires the bound instead of blocking a redirect open forever),
+      # and the source is re-validated after the copy, so a swap that persists past the copy is
+      # caught; one installed and removed inside the copy window is the stated residual.
+      # What this does NOT bound is the materialization itself — --output-last-message is
+      # codex's own write, and the disk a runaway costs is spent before this line runs.
+      local lcp="$last.copy" lcfd="" lrfd=""
+      if ! _adb_rd_excl_create "$lcp" lcfd \
+         || ! { exec {lrfd}<"$lcp"; } 2>/dev/null || [ ! "/dev/fd/$lcfd" -ef "/dev/fd/$lrfd" ]; then
+        [ -n "$lcfd" ] && exec {lcfd}>&-; [ -n "$lrfd" ] && exec {lrfd}<&-
+        rm -f "$last" "$lcp"
+        printf 'role-dispatch: could not stage the final message for reading — treating as failed\n' >&2
+        return 1
+      fi
+      # head -c ONE PAST the result bound, not cat: the +1 byte keeps the copy byte-capped and
+      # lets the size check below detect past-cap without ever materializing more.
+      if ! adb_run_bounded 120 5 head -c 8388609 "$last" 1>&"$lcfd"; then
+        exec {lcfd}>&-; exec {lrfd}<&-; rm -f "$last" "$lcp"
+        printf 'role-dispatch: the final message could not be read within its bound (a planted pipe?) — treating as failed\n' >&2
+        return 1
+      fi
+      exec {lcfd}>&-
+      if [ -L "$last" ] || [ ! -f "$last" ]; then
+        exec {lrfd}<&-; rm -f "$last" "$lcp"
+        printf 'role-dispatch: the final message at the result path was swapped after the CLI exited (a planted link?) — treating as failed\n' >&2
+        return 1
+      fi
+      rm -f "$last"
+      lb="$(_adb_rd_fd_size "$lrfd")" || lb=""
+      case "$lb" in ''|*[!0-9]*)
+        exec {lrfd}<&-; rm -f "$lcp"
+        printf 'role-dispatch: could not size the final message — treating as failed\n' >&2
+        return 1 ;;
+      esac
+      if [ "$lb" -eq 0 ]; then
+        exec {lrfd}<&-; rm -f "$lcp"
         printf 'role-dispatch: codex exited 0 but wrote no final message — treating as incomplete\n' >&2
-        rm -f "$last"; return 1
+        return 1
       fi
       # The materialized message is SIZED and refused BEFORE emission: 8388608 matches the
       # tightest downstream stage cap, and a stated refusal beats a downstream pipe collapse.
-      # What this does NOT bound is the materialization itself — --output-last-message is
-      # codex's own write, and the disk a runaway costs is spent before this line runs.
-      # Both the sizing and the emission open $last by FILENAME inside a bounded child: the
-      # bounded runner's own contract admits descendants can survive the CLI, and one swapping
-      # the result path for a FIFO would block a parent-shell redirect open forever.
-      lb="$(adb_run_bounded 30 5 wc -c "$last" 2>/dev/null | awk '{print $1; exit}')" || lb=""
-      case "$lb" in ''|*[!0-9]*) lb=0 ;; esac
       if [ "$lb" -gt 8388608 ]; then
+        exec {lrfd}<&-; rm -f "$lcp"
         printf 'role-dispatch: the final message is %s bytes — past the 8388608-byte result bound; refusing to emit it\n' "$lb" >&2
-        rm -f "$last"; return 1
+        return 1
       fi
       # The emitter's own status is the emission's: a downstream cap (the survey stage's 8 MiB
       # head bound) closes the pipe mid-result, and masking that SIGPIPE published a TRUNCATED
-      # final message as a clean pass. A stalled read expires the bound and lands in the same
-      # refusal. head -c ONE PAST the result bound, not cat: the size check above is
-      # point-in-time, and a descendant swapping $last for a larger file after it would
-      # otherwise emit unbounded bytes into consumers that only bound time — the +1 byte keeps
-      # the emission byte-capped and lets a sizing consumer detect past-cap.
-      adb_run_bounded 120 5 head -c 8388609 "$last"; rc=$?
-      rm -f "$last"
+      # final message as a clean pass. From the held descriptor — a proven-regular inode needs
+      # no bound and cannot be redirected.
+      cat <&"$lrfd"; rc=$?
+      exec {lrfd}<&-
+      rm -f "$lcp"
       if [ "$rc" -ne 0 ]; then
         printf 'role-dispatch: the final message could not be emitted whole (a downstream cap closed the pipe?) — treating as failed\n' >&2
         return "$rc"

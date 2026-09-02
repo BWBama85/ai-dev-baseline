@@ -1224,10 +1224,20 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   # could fill with a symlink — the redirect would then write claim JSON through it. So the
   # stage is created EXCLUSIVELY with its descriptor held from creation (_il_excl_create): a
   # plant in the gap fails the open loudly, and the write is bound to the created inode.
-  local _cst="$dir/.claim.w$$" _cfd=""
+  local _cst="$dir/.claim.w$$" _cfd="" _crfd=""
   if ! _il_excl_create "$_cst" _cfd; then
     _il_claim_mutex_drop "$dir"
     printf 'implement-lib: could not create the renewal stage exclusively at %s (a planted object?) — refusing rather than proceeding on the old lease\n' "$_cst" >&2
+    return 20
+  fi
+  # A read descriptor on the stage, opened at creation and proven one inode with the write side,
+  # is what the rename is checked against afterward: a stage replaced by a descendant between
+  # the write side closing and the mv would otherwise be published as the claim, and the type
+  # checks alone cannot tell a planted regular file from the one assembled here.
+  if ! { exec {_crfd}<"$_cst"; } 2>/dev/null || [ ! "/dev/fd/$_cfd" -ef "/dev/fd/$_crfd" ]; then
+    _il_fd_close "$_cfd" "$_crfd"; rm -f "$_cst"
+    _il_claim_mutex_drop "$dir"
+    printf 'implement-lib: the renewal stage at %s was swapped during staging — refusing rather than proceeding on the old lease\n' "$_cst" >&2
     return 20
   fi
   # The transform reads the SAME bounded snapshot validation read (_lraw), never the pathname:
@@ -1238,8 +1248,12 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     # VERIFIED, not assumed: mv -f onto a directory swapped in at the canonical name succeeds by
     # moving the stage INSIDE it (BSD mv has no -T), and the caller would proceed leaseless. A
     # mv-inside leaves the stage in the planted directory — removed best-effort on the way out.
+    # And the canonical name must be the STAGED INODE (checked against the held descriptor):
+    # a success over a substituted file would renew an attacker-supplied claim.
     if mv -f "$_cst" "$dir/$_IL_CLAIM" 2>/dev/null \
-       && [ -f "$dir/$_IL_CLAIM" ] && [ ! -L "$dir/$_IL_CLAIM" ]; then
+       && [ -f "$dir/$_IL_CLAIM" ] && [ ! -L "$dir/$_IL_CLAIM" ] \
+       && _il_same_inode "$dir/$_IL_CLAIM" "$_crfd"; then
+      exec {_crfd}<&-
       _il_claim_mutex_drop "$dir"
       return "$rc"
     fi
@@ -1247,6 +1261,7 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   else
     exec {_cfd}>&-
   fi
+  exec {_crfd}<&-
   rm -f "$_cst" 2>/dev/null
   _il_claim_mutex_drop "$dir"
   printf 'implement-lib: could not publish the renewed claim at %s/%s (state directory writable?) — refusing rather than proceeding on the old lease\n' "$dir" "$_IL_CLAIM" >&2
@@ -2582,7 +2597,11 @@ cmd_dispatch_review() {
       return 20
     fi
     if [ "$_ua" -eq "$_ub" ]; then
-      printf 'diff --git a/dev/null b/%s\n(untracked entry with no diffable content — an empty file, or a non-regular object; review it in the tree)\n' "$uf" 1>&"$_rpfd"
+      # The name is JSON-encoded onto ONE line: git quotes unusual names in its own headers, and
+      # this synthetic record must not let a newline in an agent-creatable name open extra
+      # prompt lines outside the envelope that read as first-party diff.
+      printf 'diff --git a/dev/null b/%s\n(untracked entry with no diffable content — an empty file, or a non-regular object; review it in the tree)\n' \
+        "$(printf '%s' "$uf" | jq -Rs .)" 1>&"$_rpfd"
     fi
     # The AGGREGATE cap is enforced as the stage grows, not only after the loop: many sub-bound
     # records could otherwise fill the state filesystem before the post-assembly check ran.

@@ -2836,6 +2836,40 @@ has "$AI_OUT" "crossed the 16777216-byte cap while containing issue #9" "42 …n
 if compgen -G "$d/.claude/state/gaps-held.*" >/dev/null || [ -s "$d/.claude/state/gap-prompt.txt" ]; then
   bad "42 …and no oversized prompt is left published"; else ok; fi
 
+# ================= 43. round 50: the renewed claim is the staged inode; synthetic records =========
+# =================     quote their names ========================================================
+# The renewal's rename is checked against a descriptor held on the stage since its creation: a
+# stage replaced between the write side closing and the mv (an mv shim does exactly that) used
+# to be published as the claim, with only its file type checked.
+mkdir -p "$work/mvclaim"
+cat > "$work/mvclaim/mv" <<'SH'
+#!/usr/bin/env bash
+src="$1"; [ "$1" = "-f" ] && src="$2"
+case "$src" in */.claim.w*) /bin/rm -f "$src"; printf '{"token":"tokT","expiresAt":1,"startedAt":1}\n' > "$src" ;; esac
+/bin/mv "$@"
+SH
+chmod +x "$work/mvclaim/mv"
+d="$(new_repo)"; seed_snap "$d"
+jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+CR_OUT="$( cd "$d" && env PATH="$work/mvclaim:$PATH" bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 2>&1 )"; CR_RC=$?
+eq "$CR_RC" "20" "43 a renewal stage swapped before its rename is refused (20), never published as the claim"
+has "$CR_OUT" "could not publish the renewed claim" "43 …naming the refusal"
+# An untracked entry git yields NO patch for (a symlink to a directory — test 32's shape) gets
+# a synthetic record; with a newline in its name, the raw name used to open prompt lines
+# outside the envelope that read as first-party diff.
+read -r _ RNQ <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RNQ/.claude/state" "$RNQ/somedir"; seed_snap "$RNQ"
+( cd "$RNQ" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+( cd "$RNQ" && ln -s somedir "$(printf 'nl\nlink')" ) >/dev/null 2>&1
+( cd "$RNQ" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>"$work/rnq.err"; RNQ_RC=$?
+eq "$RNQ_RC" "0" "43 an untracked directory symlink with a newline in its name still builds ($(head -c 400 "$work/rnq.err" | tr '\n' ' '))"
+RNQ_P="$RNQ/.claude/state/review-prompt.txt"
+eq "$(grep -c '^diff --git a/dev/null b/"nl\\nlink"$' "$RNQ_P")" "1" "43 …with its synthetic record's name JSON-quoted onto one line"
+if grep -qx 'link' "$RNQ_P"; then bad "43 …and no bare fragment of the name opens a line of its own"; else ok; fi
+rm -f "$RNQ/$(printf 'nl\nlink')"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
