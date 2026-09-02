@@ -1004,6 +1004,11 @@ eq "$(jq -r '[.phaseHistory[].phase] | join(",")' "$M")" "triaged,pushed,pr_open
 openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "21 a re-run with an existing PR adopts it (create failure is not terminal)"
 has "$OP_OUT" "closing-refs ok [9]" "21 …and still re-proves the closing links"
+# The 23 arm says "fix the body and re-run" — and the re-run arrives with phase=pr_opened
+# already recorded. An unconditional phase write appended a false BACKWARD
+# pr_opened→pushed→pr_opened lifecycle to the history a resumed session reads.
+eq "$(jq -r '[.phaseHistory[].phase] | join(",")' "$M")" "triaged,pushed,pr_opened" \
+  "21 …and the re-run never regresses the phase history"
 # …but ONLY an OPEN one: `gh pr view <branch>` resolves the branch's most recent PR including a
 # closed or merged historical one, and adopting that aims every guard below at the wrong PR.
 openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_ADOPT_STATE=MERGED SHIM_CLOSING_JSON="$GOODREFS"
@@ -2079,6 +2084,14 @@ rm -f "$shimbin/claude"
 # shell-redirect open a FIFO swap could block forever, outside every dispatch bound.
 if grep -q 'wc -w < "\$dir/survey.md"' "$IL"; then
   bad "28 an unbounded redirect open of the published survey is back in the lib"; else ok; fi
+# …and the codex arm's result reads have the same contract: role-dispatch's own bounded-runner
+# comment admits descendants can survive, so the size read and the emission both open $last by
+# filename inside a bounded child, never a parent-shell redirect or a bare cat.
+RD="$ROOT/scripts/lib/role-dispatch.sh"
+if grep -q 'wc -c < "\$last"' "$RD"; then
+  bad "28 the codex result size is read through an unbounded redirect open"; else ok; fi
+if grep -Eq '^[[:space:]]*cat "\$last"' "$RD"; then
+  bad "28 the codex result is emitted by a bare cat outside any bound"; else ok; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

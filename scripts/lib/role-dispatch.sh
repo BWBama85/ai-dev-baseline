@@ -1023,7 +1023,10 @@ _adb_rd_invoke_agent() {
       # tightest downstream stage cap, and a stated refusal beats a downstream pipe collapse.
       # What this does NOT bound is the materialization itself — --output-last-message is
       # codex's own write, and the disk a runaway costs is spent before this line runs.
-      lb="$(wc -c < "$last" 2>/dev/null | tr -d ' ')"
+      # Both the sizing and the emission open $last by FILENAME inside a bounded child: the
+      # bounded runner's own contract admits descendants can survive the CLI, and one swapping
+      # the result path for a FIFO would block a parent-shell redirect open forever.
+      lb="$(adb_run_bounded 30 5 wc -c "$last" 2>/dev/null | awk '{print $1; exit}')" || lb=""
       case "$lb" in ''|*[!0-9]*) lb=0 ;; esac
       if [ "$lb" -gt 8388608 ]; then
         printf 'role-dispatch: the final message is %s bytes — past the 8388608-byte result bound; refusing to emit it\n' "$lb" >&2
@@ -1031,8 +1034,8 @@ _adb_rd_invoke_agent() {
       fi
       # `cat`'s own status is the emission's: a downstream cap (the survey stage's 8 MiB head
       # bound) closes the pipe mid-result, and masking that SIGPIPE published a TRUNCATED final
-      # message as a clean pass.
-      cat "$last"; rc=$?
+      # message as a clean pass. A stalled read expires the bound and lands in the same refusal.
+      adb_run_bounded 120 5 cat "$last"; rc=$?
       rm -f "$last"
       if [ "$rc" -ne 0 ]; then
         printf 'role-dispatch: the final message could not be emitted whole (a downstream cap closed the pipe?) — treating as failed\n' >&2

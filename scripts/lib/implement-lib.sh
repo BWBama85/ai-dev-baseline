@@ -2087,7 +2087,14 @@ cmd_open_pr() {
   # `>&2`: on a first push `git push -u` writes its upstream-registration message to STDOUT,
   # which is this subcommand's closed record stream; the status is unaffected.
   git push -u origin "$branch" >&2 || { printf 'implement-lib: push failed\n' >&2; return 24; }
-  _il_phase "$dir" pushed || { printf 'implement-lib: could not write phase=pushed\n' >&2; return 20; }
+  # A re-run after the 23 refusal arrives with phase=pr_opened already recorded — writing
+  # `pushed` then would append a false backward pr_opened→pushed→pr_opened lifecycle to the
+  # history a resumed session reads. The push happened either way; the phase only advances.
+  local cur_phase
+  cur_phase="$(jq -r '.phase // ""' "$dir/$_IL_MARKER" 2>/dev/null)" || cur_phase=""
+  if [ "$cur_phase" != "pr_opened" ]; then
+    _il_phase "$dir" pushed || { printf 'implement-lib: could not write phase=pushed\n' >&2; return 20; }
+  fi
   printf 'pushed %s\n' "$branch"
   # IDEMPOTENT ON RE-RUN: a 23 refusal below says "fix the body and re-run", and the re-run must
   # be able to reach the verification — so an already-open PR for this branch is ADOPTED, never a

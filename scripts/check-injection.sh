@@ -202,6 +202,23 @@ cleanup 0'
 # assignment in it must be `local` deliberately. `raw` was not, and is now — it was contained by
 # the old `$( )` and nothing outside reads it, so this was a latent leak rather than a live bug,
 # but it is exactly the shape that stops being harmless the moment someone reuses the name.
+
+# Does this rendered source fetch third-party text by any idiom these workflows actually use?
+# One home for the discovery predicate, asked of workflow bodies AND supporting files — two
+# inline copies would drift the moment one gains an idiom. Comment lines are stripped so prose
+# ABOUT the idioms is not mistaken for a read.
+fetches_untrusted() {   # <file>
+  awk '
+    /^```bash$/ { inb = 1; next }
+    /^```/      { inb = 0; next }
+    !inb { next }
+    { line = $0; sub(/[[:space:]]*#.*$/, "", line)
+      if (line ~ /--json[[:space:]]*[A-Za-z,]*(body|comments|title)/) { found = 1 }
+      if (line ~ /issues\/[^[:space:]]*\/comments/)                   { found = 1 }
+      if (line ~ /(WebFetch|run view[^|]*--log)/)                     { found = 1 } }
+    END { exit !found }' "$1"
+}
+
 scan_tree() {
   local base="$1" wf stem want got f raw
   local practice="$base/base/practices/untrusted-content.md"
@@ -261,17 +278,21 @@ EOF
     [ -f "$wf" ] || continue
     stem="$(basename "$wf" .md)"
     case "$stem" in README) continue ;; esac
-    if awk '
-         /^```bash$/ { inb = 1; next }
-         /^```/      { inb = 0; next }
-         !inb { next }
-         { line = $0; sub(/[[:space:]]*#.*$/, "", line)
-           if (line ~ /--json[[:space:]]*[A-Za-z,]*(body|comments|title)/) { found = 1 }
-           if (line ~ /issues\/[^[:space:]]*\/comments/)                   { found = 1 }
-           if (line ~ /(WebFetch|run view[^|]*--log)/)                     { found = 1 } }
-         END { exit !found }' "$base/base/workflows/$stem.md"; then
+    if fetches_untrusted "$base/base/workflows/$stem.md"; then
       grep -Fq -- "$MARK" "$base/base/workflows/$stem.md" \
         || printf 'workflow %s fetches third-party text but carries NO labelled read site\n' "$stem"
+    fi
+  done
+
+  # (c2b) …and the SUPPORTING files (#433): base/workflows/<name>/*.md renders into every
+  # shipped skill exactly as the workflow body does, so a fetch moved into one must carry its
+  # label there — or the discovery rule above goes green over the same read it exists to catch.
+  for wf in "$base"/base/workflows/*/*.md; do
+    [ -f "$wf" ] || continue
+    stem="$(basename "$(dirname "$wf")")/$(basename "$wf" .md)"
+    if fetches_untrusted "$wf"; then
+      grep -Fq -- "$MARK" "$wf" \
+        || printf 'supporting file %s fetches third-party text but carries NO labelled read site\n' "$stem"
     fi
   done
 
@@ -300,8 +321,11 @@ EOF
       printf '%s\n' "$raw" | sed 's/^/    /'
     fi
   fi
-  f="$base/base/workflows/implement-issue.md"
-  if [ -f "$f" ]; then
+  # The workflow body AND its supporting files (#433): both render into the shipped skill, so a
+  # raw paste moved into a supporting fence is the same regression in a file this pass used to
+  # never read.
+  for f in "$base/base/workflows/implement-issue.md" "$base"/base/workflows/*/*.md; do
+    [ -f "$f" ] || continue
     raw="$(awk '
         /^```bash$/ { inb = 1; next }
         /^```/      { inb = 0; next }
@@ -310,10 +334,10 @@ EOF
           # A line that reads issue text AND writes it into a prompt file, without the wrapper.
           if (line ~ /\.body/ && line ~ /prompt\.txt/ && line !~ /untrusted/) print FNR ": " $0 }' "$f")"
     if [ -n "$raw" ]; then
-      printf 'implement-issue: issue text is concatenated into a prompt WITHOUT the containment wrapper:\n'
+      printf '%s: issue text is concatenated into a prompt WITHOUT the containment wrapper:\n' "${f#"$base"/base/workflows/}"
       printf '%s\n' "$raw" | sed 's/^/    /'
     fi
-  fi
+  done
 }
 
 hits="${ scan_tree "$ROOT"; }"
@@ -410,6 +434,12 @@ m_partial_label() { awk -v m="$MARK" 'index($0, m) && !done { done = 1; next } {
 # pass satisfied by the survivor, so CI stopped enforcing the contract it advertises.
 m_roadmap_nth()   { awk -v m="$MARK" -v want="$NTH" 'index($0, m) { n++; if (n == want) next } { print }' \
                       "$1/base/workflows/roadmap.md" > "$1/x" && mv "$1/x" "$1/base/workflows/roadmap.md"; }
+# The SUPPORTING-FILE twins (#433): a fetch or a raw paste moved into base/workflows/<name>/*.md
+# renders into the shipped skill while both passes used to read only the workflow bodies.
+m_support_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' \
+                      >> "$1/base/workflows/implement-issue/state-protocol.md"; }
+m_support_paste() { printf '\n```bash\njq -r .body {{STATE_DIR}}/issue-1.json >> {{STATE_DIR}}/gap-prompt.txt\n```\n' \
+                      >> "$1/base/workflows/implement-issue/state-protocol.md"; }
 
 mutate_must_fail "strip a workflow's only label"         m_strip_label    "workflow debug"
 mutate_must_fail "remove ONE of implement-issue's four"  m_partial_label  "workflow implement-issue"
@@ -421,6 +451,8 @@ mutate_must_fail "delete the library containment call"   m_uncontain      "conta
 mutate_must_fail "RAW paste beside a surviving wrapper"  m_raw_paste      "WITHOUT the containment wrapper"
 mutate_must_fail "RAW paste into \$pf inside the library" m_raw_paste_lib  "WITHOUT the containment wrapper"
 mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carries NO labelled read site"
+mutate_must_fail "a third-party read in a SUPPORTING file" m_support_reads "carries NO labelled read site"
+mutate_must_fail "a RAW paste in a SUPPORTING file"      m_support_paste  "WITHOUT the containment wrapper"
 mutate_must_fail "delete the practice"                   m_drop_practice  "missing practice"
 mutate_must_fail "gut the practice's core rule"          m_gut_practice   "data-not-instruction"
 mutate_must_fail "drop the practice's index row"         m_drop_index     "no row in"
