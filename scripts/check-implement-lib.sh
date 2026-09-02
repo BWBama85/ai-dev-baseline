@@ -1100,8 +1100,16 @@ rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
 cp "$PCLONE/.claude/state/implement-issue-active.json" "$PCLONE/.claude/state/active-save.json"
 jq 'del(.issue)' "$PCLONE/.claude/state/active-save.json" > "$PCLONE/.claude/state/implement-issue-active.json"
 jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9"}' > "$PCLONE/.claude/state/implement-issue-blocked.json"
+# REVISED (round 37): with --closes present, an unreadable .issue now refuses BEFORE the push —
+# the membership gate cannot run without its set, and the auto-close a mistyped number carries
+# fires on ANY merge, armed or not, so open-but-unarmed was not actually safe. The
+# open-with-arm-withheld contract this case used to pin survives on the no---closes path.
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
-eq "$OP_RC" "0" "21 an active marker without a readable .issue still opens the PR"
+eq "$OP_RC" "26" "21 an active marker without a readable .issue refuses while --closes is present"
+has "$OP_OUT" "no readable string .issue" "21 …naming the marker fault before anything is pushed"
+OP_OUT="$( cd "$PCLONE" && env SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON='{"closingIssuesReferences":[]}' \
+  bash "$IL" open-pr .claude/state --title t --body-file body.md 2>&1 )"; OP_RC=$?
+eq "$OP_RC" "0" "21 …while WITHOUT --closes the same marker still opens the PR"
 has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …and withholds the arm — the comparison's other half is missing"
 mv "$PCLONE/.claude/state/active-save.json" "$PCLONE/.claude/state/implement-issue-active.json"
 rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
@@ -2147,6 +2155,64 @@ WS_RC=$?
 WS_W="$(wc -w < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
 eq "$WS_RC" "0" "30 a blank-led over-budget survey still publishes"
 eq "$WS_W" "1500" "30 …with the crossing line sliced at the remaining budget, never dropped whole"
+
+# ================= 31. the round-37 tightenings: fail-closed gates and byte-capped results ======
+# The marker's .issue set is validated with the strict grammar BEFORE any push — an absent,
+# non-string or malformed set used to silently skip the membership gate (fail-open).
+MSAVE="$(cat "$PCLONE/.claude/state/implement-issue-active.json")"
+jq '.issue = 7' <<<"$MSAVE" > "$PCLONE/.claude/state/implement-issue-active.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "26" "31 a number-typed marker .issue refuses before the push, never skips the membership gate"
+has "$OP_OUT" "no readable string .issue" "31 …naming the marker fault"
+jq '.issue = "9,x"' <<<"$MSAVE" > "$PCLONE/.claude/state/implement-issue-active.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "26" "31 …and a malformed comma list refuses too"
+printf '%s' "$MSAVE" > "$PCLONE/.claude/state/implement-issue-active.json"
+# The untracked snapshot is created exclusively with its descriptor held — mktemp-then-reopen
+# left the same swap window every other stage already closed.
+if grep -q '_usnap="\$(mktemp' "$IL"; then
+  bad "31 the untracked snapshot is back on mktemp-then-reopen"; else ok; fi
+# The codex emitter is byte-capped one past the result bound: the size check is point-in-time,
+# and a swap to a LARGER regular file after it would otherwise emit unbounded bytes into
+# consumers that only bound time.
+if grep -q 'adb_run_bounded 120 5 head -c 8388609 "\$last"' "$RD"; then ok; else
+  bad "31 the codex emission is not byte-capped"; fi
+# …and the gap/review slots refuse a past-cap result instead of accepting a silent truncation.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=1048576 count=9 2>/dev/null | tr '\0' 'g'
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+GC_RC=$?
+if [ "$GC_RC" -ne 0 ]; then ok; else bad "31 a 9 MiB gap analysis is a FAILED dispatch (got rc 0)"; fi
+rm -f "$shimbin/claude"
+# A RESTING symlink at the published survey is refused before the copy — the -s test and the
+# copy both follow one, embedding arbitrary readable content as this run's survey.
+d="$(new_repo)"; seed_snap "$d"
+printf 'not the survey\n' > "$d/decoy.txt"
+( cd "$d" && ln -s ../../decoy.txt .claude/state/survey.md ) >/dev/null 2>&1
+( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 ) >/dev/null 2>&1
+SL_RC=$?
+if [ "$SL_RC" -ne 0 ]; then ok; else bad "31 a symlinked survey.md is refused, not embedded (got rc 0)"; fi
+if grep -q 'not the survey' "$d/.claude/state/gap-prompt.txt" 2>/dev/null; then
+  bad "31 …and the link target never reaches the gap prompt"; else ok; fi
+# Zero padding is a spelling, stripped BEFORE the overflow-width guard: a fixed-width
+# 0000000001 is one second, not an oversized value to replace with the 1500s share.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${ADB_DISPATCH_TIMEOUT_SECS:-unset}"
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && env ADB_SURVEY_TIMEOUT_SECS=0000000001 bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1" \
+  "31 a wide zero-padded timeout is its number, not clamped to the share"
+rm -f "$shimbin/claude"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

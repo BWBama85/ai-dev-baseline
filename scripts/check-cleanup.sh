@@ -3238,8 +3238,13 @@ eq "$?" "10" "14 a missing state dir is no run (10)"
 bash "$CL" run-live >/dev/null 2>&1
 eq "$?" "2" "14 no argument is a usage error"
 rm -rf "$RL_D"
-# …and the workflow consults it between the identity snapshot and the delete loop.
+# …and the workflow consults it between the identity snapshot and the delete loop, branching on
+# the STATUS: only rc 10 means "no run", and any other nonzero (a damaged helper) keeps
+# everything rather than reading as staleness.
 if grep -q 'run-live "\$STATE"' "$ROOT/base/workflows/cleanup.md"; then ok; else
   bad "14 cleanup.md never re-asks liveness after the identity snapshot"; fi
+if grep -q 'liveness re-probe failed' "$ROOT/base/workflows/cleanup.md" \
+   && grep -q '"\$RL_RC" -ne 10' "$ROOT/base/workflows/cleanup.md"; then ok; else
+  bad "14 cleanup.md treats a run-live ERROR like rc 10 — a damaged helper would read as staleness"; fi
 
 check_summary "check-cleanup"

@@ -252,8 +252,10 @@ scan_tree() {
     f="$base/base/workflows/$stem.md"
     if [ ! -f "$f" ]; then printf 'registry names a missing workflow: %s\n' "$stem"; continue; fi
     got="$(grep -Fc -- "$MARK" "$f")"
-    if [ "$got" -lt "$want" ]; then
-      printf 'workflow %s: %s labelled read site(s), expected at least %s\n' "$stem" "$got" "$want"
+    # EQUALITY, not a floor: got >= want let one existing marker mask any number of additional
+    # unlabelled read sites forever — a new read must move the registered count with it.
+    if [ "$got" -ne "$want" ]; then
+      printf 'workflow %s: %s labelled read site(s), registry expects exactly %s\n' "$stem" "$got" "$want"
     fi
   done <<EOF
 $REGISTRY
@@ -453,6 +455,9 @@ m_support_paste() { printf '\n```bash\njq -r .body {{STATE_DIR}}/issue-1.json >>
 # read beside it would never be countable at all.
 m_support_unregistered() { printf '\n%s\n\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' "UNTRUSTED READ SITE" \
                       >> "$1/base/workflows/implement-issue/state-protocol.md"; }
+# A mark added WITHOUT its registry bump: got >= want tolerated this forever, and one surplus
+# mark is exactly the shape that later masks an unlabelled read beside it.
+m_extra_mark()    { printf '\n%s\n' "UNTRUSTED READ SITE" >> "$1/base/workflows/debug.md"; }
 
 mutate_must_fail "strip a workflow's only label"         m_strip_label    "workflow debug"
 mutate_must_fail "remove ONE of implement-issue's four"  m_partial_label  "workflow implement-issue"
@@ -467,6 +472,7 @@ mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carri
 mutate_must_fail "a third-party read in a SUPPORTING file" m_support_reads "carries NO labelled read site"
 mutate_must_fail "a RAW paste in a SUPPORTING file"      m_support_paste  "WITHOUT the containment wrapper"
 mutate_must_fail "a LABELLED fetch in an unregistered supporting file" m_support_unregistered "not in the untrusted-content registry"
+mutate_must_fail "a mark added without its registry bump"  m_extra_mark    "registry expects exactly"
 mutate_must_fail "delete the practice"                   m_drop_practice  "missing practice"
 mutate_must_fail "gut the practice's core rule"          m_gut_practice   "data-not-instruction"
 mutate_must_fail "drop the practice's index row"         m_drop_index     "no row in"

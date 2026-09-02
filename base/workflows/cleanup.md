@@ -953,10 +953,19 @@ DV="$({{CLEANUP_LIB}} state-verdict docs "$RUN_NOW")" || DV=keep
 # PR #452). Re-ask liveness NOW, after every identity is captured: presence at this instant
 # keeps every run artifact, and the remaining tail — an admission after this probe — is covered
 # by the identity check, because its clear-and-recreate gives the file a new identity.
-if {{CLEANUP_LIB}} run-live "$STATE"; then
+{{CLEANUP_LIB}} run-live "$STATE"; RL_RC=$?
+# ONLY rc 10 means "neither claim nor marker" — a damaged or mismatched helper exits with
+# something else, and treating that like 10 would leave the stale verdicts armed over a state
+# directory whose liveness was never established. Anything but 10 keeps everything.
+if [ "$RL_RC" -ne 10 ]; then
   GV=keep; SV=keep; IV=keep; RV=keep; DV=keep
-  NOTES="${NOTES}KEPT the run artifacts — a run claim or marker was present after the identity snapshot; none were judged this pass
+  if [ "$RL_RC" -eq 0 ]; then
+    NOTES="${NOTES}KEPT the run artifacts — a run claim or marker was present after the identity snapshot; none were judged this pass
 "
+  else
+    NOTES="${NOTES}KEPT the run artifacts — the liveness re-probe failed (rc $RL_RC), so staleness could not be established; nothing was swept
+"
+  fi
 fi
 
 # sweep_file <path> <identity-as-judged> <proof> — delete ONE file, but only if it is still the

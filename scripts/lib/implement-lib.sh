@@ -1339,7 +1339,8 @@ cmd_snapshot_issues() {
     # timeout knobs — base-10, width-bounded, zero refused to the default.
     local _ft="${ADB_SNAPSHOT_FETCH_TIMEOUT_SECS:-600}"
     case "$_ft" in ''|*[!0-9]*) _ft=600 ;; esac
-    if [ "${#_ft}" -gt 9 ]; then _ft=600; else _ft=$(( 10#$_ft )); [ "$_ft" -gt 0 ] || _ft=600; fi
+    _ft="${_ft#"${_ft%%[1-9]*}"}"   # zero-padding is a spelling, stripped pre-width
+    if [ -z "$_ft" ] || [ "${#_ft}" -gt 9 ]; then _ft=600; else _ft=$(( 10#$_ft )); [ "$_ft" -gt 0 ] || _ft=600; fi
     # Exclusive creates with the descriptor held (_il_excl_create): the old rm-then-redirect
     # left a gap a raced plant could fill, aiming these writes at any writable file.
     local _ijfd="" _iafd=""
@@ -1671,6 +1672,9 @@ cmd_dispatch_survey() {
       printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS="%s" is not a positive whole number of seconds — using the 1200s survey default\n' "$_svt" >&2
       _svt=1200 ;;
     *)
+      # Leading zeros are a SPELLING, stripped before the overflow-width guard: a fixed-width
+      # "0000000001" is one second, not an oversized value to replace with the 1500s share.
+      _svt="${_svt#"${_svt%%[1-9]*}"}"; [ -n "$_svt" ] || _svt=0
       if [ "${#_svt}" -gt 9 ]; then
         printf 'implement-lib: ADB_SURVEY_TIMEOUT_SECS=%s exceeds the survey'\''s 1500s share of the 9000s claim lease — clamping to 1500\n' "$_svt" >&2
         _svt=1500
@@ -1831,6 +1835,14 @@ cmd_dispatch_gaps() {
   _il_append_checklist "$_gpfd" "gap analysis"
   # The survey summary (#435), when one exists. CONTAINED like the issue text it derives from, and
   # BOUNDED: the first 16 KiB go in; anything past that stays on disk and the envelope says so.
+  # A RESTING plant at the published name is refused outright — the -s test and the copy would
+  # both follow a symlink already sitting there, embedding arbitrary readable content as this
+  # run's survey. (A swap raced in after this check substitutes content into the copy — the
+  # surveyor's own untrusted words either way — but is never read by reference.)
+  if [ -L "$dir/survey.md" ] || { [ -e "$dir/survey.md" ] && [ ! -f "$dir/survey.md" ]; }; then
+    exec {_gpfd}>&-
+    _il_bail "" "$dir" 20 "survey.md is not a regular file (a planted symlink?) — refusing to embed it"; return $?
+  fi
   if [ -s "$dir/survey.md" ]; then
     # Copied ONCE into a bounded private stage before anything reads it: the published name is
     # agent-writable, a symlink swapped in after the -s stat would be read as the survey, and a
@@ -1897,6 +1909,7 @@ cmd_dispatch_gaps() {
   # invalid value, and refusing it silently LENGTHENED a short ask to 2700.
   local _gt="${ADB_DISPATCH_TIMEOUT_SECS:-2700}"
   case "$_gt" in ''|*[!0-9]*) _gt=2700 ;; esac
+  _gt="${_gt#"${_gt%%[1-9]*}"}"; [ -n "$_gt" ] || _gt=0   # zero-padding is a spelling, stripped pre-width
   if [ "${#_gt}" -gt 9 ]; then
     printf 'implement-lib: ADB_DISPATCH_TIMEOUT_SECS=%s exceeds the gap dispatch'"'"'s 2700s share of the 9000s claim lease — clamping to 2700\n' "$_gt" >&2
     _gt=2700
@@ -1932,6 +1945,12 @@ cmd_dispatch_gaps() {
     # empty final message; the others do not), and an empty analysis accepted as "gaps ok" skips
     # the retry-then-surface policy exactly as a missing one would.
     printf 'implement-lib: the gap output at %s is missing or EMPTY after a rc-0 dispatch — treating the dispatch as failed\n' "$dir/gaps.md" >&2
+    rc=20
+  elif [ "$rc" -eq 0 ] \
+       && [ "$(adb_run_bounded 30 5 wc -c "$dir/gaps.md" 2>/dev/null | awk '{print $1; exit}')" -gt 8388608 ] 2>/dev/null; then
+    # The emitters byte-cap at ONE PAST 8388608, so a result past the cap means a runaway or a
+    # swap — refused, never accepted as a silently truncated analysis.
+    printf 'implement-lib: the gap output at %s exceeds the 8388608-byte result bound — treating the dispatch as failed\n' "$dir/gaps.md" >&2
     rc=20
   fi
   case "$rc" in
@@ -2041,11 +2060,17 @@ cmd_dispatch_review() {
   # over another: a directory turning unreadable between the two published a prompt missing
   # whatever a second, unchecked enumeration dropped. NUL-delimited on disk because a shell
   # variable cannot carry NULs; the snapshot lives in the review family's stage prefix.
-  _usnap="$(mktemp "$dir/review-prompt-stage.XXXXXX")" \
+  # Exclusive create with the descriptor held, like every adjacent stage: mktemp-then-reopen
+  # left a swap window, and the ls-files redirect would have written the listing through it.
+  local _usfd=""
+  _usnap="$dir/review-prompt-stage.w$$u"
+  _il_excl_create "$_usnap" _usfd \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not stage the untracked snapshot\n' >&2; return 20; }
-  if ! _uerr="$(git -C "$_utop" ls-files --others --exclude-standard -z 2>&1 > "$_usnap")"; then
+  if ! _uerr="$(git -C "$_utop" ls-files --others --exclude-standard -z 2>&1 1>&"$_usfd")"; then
+    exec {_usfd}>&-
     exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not enumerate untracked files\n' >&2; return 20
   fi
+  exec {_usfd}>&-
   if [ -n "$_uerr" ]; then
     exec {_rpfd}>&-; rm -f "$pft" "$_usnap"
     printf 'implement-lib: the untracked enumeration warned ("%.160s") — a partial listing would publish an unreviewed file; fix it and re-run\n' "$_uerr" >&2
@@ -2148,6 +2173,10 @@ cmd_dispatch_review() {
     # empty final message; the others do not), leaves step 9 nothing to read behind "completed".
     printf 'implement-lib: the review output at %s is missing or EMPTY after a rc-0 dispatch — treating the slot as failed\n' "$out" >&2
     rc=20
+  elif [ "$rc" -eq 0 ] \
+       && [ "$(adb_run_bounded 30 5 wc -c "$out" 2>/dev/null | awk '{print $1; exit}')" -gt 8388608 ] 2>/dev/null; then
+    printf 'implement-lib: the review output at %s exceeds the 8388608-byte result bound — treating the slot as failed\n' "$out" >&2
+    rc=20
   fi
   case "$rc" in
     0) printf 'review %s ok -> %s\n' "$token" "$out" ;;
@@ -2208,10 +2237,20 @@ cmd_open_pr() {
   fi
   # Every closing number must sit in the marker's recorded issue set (a SUBSET is legitimate —
   # refs-only issues stay open): the GitHub proof below only confirms that a mistyped number
-  # REGISTERED, and a registered mistake closes an unrelated issue on merge.
+  # REGISTERED, and a registered mistake closes an unrelated issue on merge. The set itself is
+  # validated FIRST, with dispatch-review's grammar — an absent, non-string, empty or malformed
+  # .issue must refuse rather than silently skip the membership gate (fail closed, not open).
+  # Scoped to a nonempty --closes: without a closing claim there is nothing to verify, and the
+  # open-with-arm-withheld contract for an unreadable marker stays intact on that path.
   local mset _mn _cn _found
-  mset="$(jq -r 'if (.issue | type) == "string" then .issue else "" end' "$dir/$_IL_MARKER" 2>/dev/null)" || mset=""
-  if [ -n "$mset" ] && [ -n "$closes" ]; then
+  if [ -n "$closes" ]; then
+    mset="$(jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)" \
+      || { printf 'implement-lib: the run marker at %s/%s has no readable string .issue — fix the marker; the closing set is never checked against a guess\n' "$dir" "$_IL_MARKER" >&2; return 26; }
+    case "$mset" in
+      ,*|*,|*,,*|*[!0-9,]*)
+        printf 'implement-lib: the run marker .issue "%s" is not a comma-joined issue-number list — fix the marker\n' "$mset" >&2
+        return 26 ;;
+    esac
     for _c in ${closes//,/ }; do
       _cn="${_c#"${_c%%[1-9]*}"}"
       _found=0

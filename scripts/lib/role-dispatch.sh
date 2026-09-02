@@ -1032,10 +1032,14 @@ _adb_rd_invoke_agent() {
         printf 'role-dispatch: the final message is %s bytes — past the 8388608-byte result bound; refusing to emit it\n' "$lb" >&2
         rm -f "$last"; return 1
       fi
-      # `cat`'s own status is the emission's: a downstream cap (the survey stage's 8 MiB head
-      # bound) closes the pipe mid-result, and masking that SIGPIPE published a TRUNCATED final
-      # message as a clean pass. A stalled read expires the bound and lands in the same refusal.
-      adb_run_bounded 120 5 cat "$last"; rc=$?
+      # The emitter's own status is the emission's: a downstream cap (the survey stage's 8 MiB
+      # head bound) closes the pipe mid-result, and masking that SIGPIPE published a TRUNCATED
+      # final message as a clean pass. A stalled read expires the bound and lands in the same
+      # refusal. head -c ONE PAST the result bound, not cat: the size check above is
+      # point-in-time, and a descendant swapping $last for a larger file after it would
+      # otherwise emit unbounded bytes into consumers that only bound time — the +1 byte keeps
+      # the emission byte-capped and lets a sizing consumer detect past-cap.
+      adb_run_bounded 120 5 head -c 8388609 "$last"; rc=$?
       rm -f "$last"
       if [ "$rc" -ne 0 ]; then
         printf 'role-dispatch: the final message could not be emitted whole (a downstream cap closed the pipe?) — treating as failed\n' >&2
