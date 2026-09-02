@@ -3258,6 +3258,14 @@ no "$?" "15 a missing path is loud, never a silent zero"
 mkdir "$FS_D/d"
 bash "$CL" file-size "$FS_D/d" >/dev/null 2>&1
 no "$?" "15 a directory is loud too"
+# GNU wc prints a `0` count line for a directory BEFORE exiting 1 (probed: coreutils 9.11), and a
+# `… | awk` pipeline returned awk's 0 over it — so the assertion above was red only on ubuntu. The
+# stub reproduces that exact shape, so the guard goes red on every platform.
+mkdir "$FS_D/bin"
+printf '#!/bin/sh\nprintf "0 %%s\\n" "$2"\nexit 1\n' > "$FS_D/bin/wc"
+chmod +x "$FS_D/bin/wc"
+PATH="$FS_D/bin:$PATH" bash "$CL" file-size "$FS_D/d" >/dev/null 2>&1
+no "$?" "15 a directory is loud under GNU wc too, whose 0 count line must not read as a size"
 bash "$CL" file-size >/dev/null 2>&1
 eq "$?" "2" "15 no argument is a usage error"
 rm -rf "$FS_D"

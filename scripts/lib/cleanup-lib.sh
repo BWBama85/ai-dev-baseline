@@ -737,8 +737,11 @@ cmd_run_live() {
 # happens inside a bounded child instead. Bytes on stdout; empty + nonzero on any failure.
 cmd_file_size() {
   [ "$#" -eq 1 ] || die "file-size: needs exactly 1 arg: <path>"
-  local out
-  out="$(adb_run_bounded 30 5 wc -c "$1" 2>/dev/null | awk '{print $1; exit}')" || return 1
+  local raw out
+  # wc's OWN status decides, never a pipeline's: GNU wc prints a `0` count line for a directory
+  # before exiting 1, and `… | awk` would return awk's 0 over it.
+  raw="$(adb_run_bounded 30 5 wc -c "$1" 2>/dev/null)" || return 1
+  out="$(printf '%s\n' "$raw" | awk '{print $1; exit}')"
   case "$out" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$out"
 }
