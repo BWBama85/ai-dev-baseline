@@ -78,6 +78,7 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `23` | `open-pr` | the closing keywords did not register: GitHub's link set ≠ `--closes`. Fix the body with `gh pr edit` NOW — after the merge the auto-close can never fire |
 | `24` / `25` | `open-pr` | the push / `gh pr create` failed |
 | `26` | `open-pr` | the run marker is unreadable, or HEAD is not on its branch |
+| `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 
 ## Every documented stop, in one place
 

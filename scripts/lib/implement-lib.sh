@@ -1015,6 +1015,8 @@ cmd_release() {
 #   22  snapshot-issues: the state dir would not be gitignored — refusing to write untrusted text.
 #   23  open-pr: the closing keywords did not register (GitHub's link set != --closes).
 #   24  open-pr: the push failed.   25: `gh pr create` failed.   26: the run marker is unreadable.
+#   27  open-pr: the worktree is not clean — an uncommitted or untracked change would be pushed
+#       around, so the reviewed tree would not be the tip.
 #   124/137/143 and agent errors pass through from role-dispatch unchanged (its classified stderr
 #   line is the diagnosis; see the workflow's rc table).
 
@@ -1086,6 +1088,20 @@ _il_same_inode() {   # <path> <fd>
   a="$(_il_inode "$1")" || return 1
   b="$(_il_inode "/dev/fd/$2")" || return 1
   [ "$a" = "$b" ]
+}
+
+# The current byte size of the file behind descriptor <fd>, read through /dev/fd (a held write
+# descriptor answers too; probed on both stat flavors). Measuring by descriptor is what lets a
+# stream be appended and then judged by its bytes with no name reopened and no read
+# descriptor consumed. Empty and 1 when neither flavor answers.
+_il_fd_size() {   # <fd>
+  local s
+  s="$(stat -L -c %s "/dev/fd/$1" 2>/dev/null)"; case "$s" in ''|*[!0-9]*) s="" ;; esac
+  if [ -z "$s" ]; then
+    s="$(stat -L -f %z "/dev/fd/$1" 2>/dev/null)"; case "$s" in ''|*[!0-9]*) s="" ;; esac
+  fi
+  [ -n "$s" ] || return 1
+  printf '%s\n' "$s"
 }
 
 # The checkout's origin as gh's `[HOST/]OWNER/REPO` slug, from the remote URL and never from gh's
@@ -1876,9 +1892,16 @@ cmd_dispatch_survey() {
   # rm-then-redirect left a gap a surviving descendant could fill with a symlink — the shell
   # would follow it and truncate an arbitrary writable file — and every later append reopened
   # the same swappable name.
-  local _spfd=""
+  local _spfd="" _sprfd=""
   _il_excl_create "$pf" _spfd \
     || { _il_bail "" "$dir" 20 "could not create $pf exclusively (a planted object?)"; return $?; }
+  # A read descriptor opened at creation and proven one inode with the write side feeds the
+  # invocation: a prompt reopened by NAME after the write side closed could be a descendant's
+  # substitute (the gap dispatch's reason, and the same fix).
+  if ! { exec {_sprfd}<"$pf"; } 2>/dev/null || [ ! "/dev/fd/$_spfd" -ef "/dev/fd/$_sprfd" ]; then
+    _il_fd_close "$_spfd" "$_sprfd"; rm -f "$pf"
+    _il_bail "" "$dir" 20 "the survey prompt was swapped during staging"; return $?
+  fi
   {
     printf '%s\n\n' 'You are surveying a repository BEFORE implementation of the GitHub issue(s) below. Explore the repository (read-only: read, list, search; change nothing) and return, in AT MOST 1500 words, exactly these four sections:'
     printf '%s\n' '## Files to change' '- <path> — <why>' '' '## Primitives to reuse' '- <path>:<function/subcommand> — <what it already does>' '' '## Constraints and conventions observed' '- <rule the diff must honor, with the file that states or exemplifies it>' '' '## Open questions' '- <anything the issue text does not settle>'
@@ -1894,9 +1917,10 @@ cmd_dispatch_survey() {
   } 1>&"$_spfd" 2>/dev/null || { exec {_spfd}>&-; _il_bail "" "$dir" 20 "could not write $pf"; return $?; }
   _il_append_checklist "$_spfd" "the survey"
   _il_append_issue_envelopes "$dir" "$_spfd" "" "$@" \
-    || { exec {_spfd}>&-; _il_bail "" "$dir" 20 "survey prompt assembly failed"; return $?; }
+    || { _il_fd_close "$_spfd" "$_sprfd"; _il_bail "" "$dir" 20 "survey prompt assembly failed"; return $?; }
   exec {_spfd}>&-
   if [ "$prompt_only" -eq 1 ]; then
+    exec {_sprfd}<&-
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
@@ -1986,13 +2010,14 @@ cmd_dispatch_survey() {
   fi
   _il_excl_create "$dir/survey.err" _sefd \
     || { exec {_stfd}>&-; rm -f "$dir/survey-stage.md"; _il_bail "" "$dir" 20 "could not create survey.err exclusively"; return $?; }
-  # The prompt is fed through a bounded filename-open too — the old parent-side stdin open
-  # could be blocked forever by a FIFO swap, before any dispatch bound started.
-  adb_run_bounded "$_svt" 5 cat "$pf" \
+  # The prompt is fed from the descriptor held since its creation — a proven-regular inode
+  # cannot hang and cannot be a descendant's substitute, so no bound and no name.
+  cat <&"$_sprfd" \
     | ADB_DISPATCH_TIMEOUT_SECS="$_svt" \
       bash "$_IL_ROLE_DISPATCH" invoke survey 2>&"$_sefd" \
     | head -c 8388609 1>&"$_stfd"
   rc=$?
+  exec {_sprfd}<&-
   exec {_stfd}>&-
   exec {_sefd}>&-
   if [ "$rc" -eq 0 ]; then
@@ -2100,9 +2125,17 @@ cmd_dispatch_gaps() {
   pf="$dir/gap-prompt.txt"
   # Same exclusive-create-and-hold rule as the survey prompt: the rm-then-redirect gap and every
   # append reopen were swappable by a surviving descendant.
-  local _gpfd=""
+  local _gpfd="" _gprfd=""
   _il_excl_create "$pf" _gpfd \
     || { _il_bail "" "$dir" 20 "could not create $pf exclusively (a planted object?)"; return $?; }
+  # A read descriptor opened at creation and proven one inode with the write side feeds the
+  # invocation below: the gap agent runs with repository tools, and a prompt reopened by NAME
+  # after the write side closed could be a descendant's substitute — attacker-chosen
+  # instructions in place of the contained issue text.
+  if ! { exec {_gprfd}<"$pf"; } 2>/dev/null || [ ! "/dev/fd/$_gpfd" -ef "/dev/fd/$_gprfd" ]; then
+    _il_fd_close "$_gpfd" "$_gprfd"; rm -f "$pf"
+    _il_bail "" "$dir" 20 "the gap prompt was swapped during staging"; return $?
+  fi
   {
     printf '%s\n\n' 'You are performing an adversarial PRE-IMPLEMENTATION gap analysis of the GitHub issue(s) below, in the repository you are running in. Explore the repository as needed; do NOT implement. Flag: blocking ambiguities; hidden constraints (this repo'\''s conventions and neighbouring patterns); out-of-scope-creep risk; and test gaps.'
     printf '%s\n\n' 'Report your findings under exactly three headings — BLOCKING, SHOULD-CLARIFY, NICE-TO-HAVE — each listing `- <finding>` bullets or `- none`. End with one line: `VERDICT: <proceed|proceed-with-clarifications|blocked>`.'
@@ -2160,9 +2193,10 @@ cmd_dispatch_gaps() {
     fi
   fi
   _il_append_issue_envelopes "$dir" "$_gpfd" "" "$@" \
-    || { exec {_gpfd}>&-; _il_bail "" "$dir" 20 "gap prompt assembly failed"; return $?; }
+    || { _il_fd_close "$_gpfd" "$_gprfd"; _il_bail "" "$dir" 20 "gap prompt assembly failed"; return $?; }
   exec {_gpfd}>&-
   if [ "$prompt_only" -eq 1 ]; then
+    exec {_gprfd}<&-
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
@@ -2206,11 +2240,13 @@ cmd_dispatch_gaps() {
   # Streamed through the byte cap WHILE being written, not only sized after: a runaway
   # claude/gemini stdout would otherwise materialize until the time limit with the state
   # filesystem already exhausted by the time the post-dispatch check runs.
-  adb_run_bounded "$_gt" 5 cat "$pf" \
+  # From the descriptor held since the prompt's creation — never the name (see its open above).
+  cat <&"$_gprfd" \
     | ADB_DISPATCH_TIMEOUT_SECS="$_gt" \
       bash "$_IL_ROLE_DISPATCH" invoke gap_analysis 2>&"$_gefd" \
     | head -c 8388609 1>&"$_gofd"
   rc=$?
+  exec {_gprfd}<&-
   exec {_gofd}>&-
   exec {_gefd}>&-
   # The result path must STILL be a regular file when the dispatch returns — the same contract
@@ -2323,16 +2359,13 @@ cmd_dispatch_review() {
   pft="$dir/review-prompt-stage.w$$r"
   _il_excl_create "$pft" _rpfd \
     || { printf 'implement-lib: could not create the review prompt stage exclusively under %s\n' "$dir" >&2; return 20; }
-  # READ DESCRIPTORS on the stage, opened at creation and proven one inode with the write side:
-  # two measure the tracked diff's bytes (before and after), one sizes the assembled prompt, one
-  # feeds the slot's invocation — none reopens a name. Each is closed where it is consumed; the
-  # abort paths below return from a top-level subcommand, so the process end closes the rest.
-  local _rs1="" _rs2="" _rs3="" _prfd=""
-  if ! { exec {_rs1}<"$pft"; } 2>/dev/null || ! { exec {_rs2}<"$pft"; } 2>/dev/null \
-     || ! { exec {_rs3}<"$pft"; } 2>/dev/null || ! { exec {_prfd}<"$pft"; } 2>/dev/null \
-     || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_rs1" ] || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_rs2" ] \
-     || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_rs3" ] || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_prfd" ]; then
-    _il_fd_close "$_rpfd" "$_rs1" "$_rs2" "$_rs3" "$_prfd"
+  # A READ DESCRIPTOR on the stage, opened at creation and proven one inode with the write side,
+  # feeds the slot's invocation; every size below is read by descriptor (_il_fd_size) — none
+  # reopens a name. The abort paths below return from a top-level subcommand, so the process end
+  # closes what they do not.
+  local _prfd=""
+  if ! { exec {_prfd}<"$pft"; } 2>/dev/null || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_prfd" ]; then
+    _il_fd_close "$_rpfd" "$_prfd"
     rm -f "$pft"
     printf 'implement-lib: the review prompt stage was swapped during staging\n' >&2
     return 20
@@ -2363,20 +2396,15 @@ cmd_dispatch_review() {
   # and after (from descriptors held since creation), and 141 — git dying on head's close — is
   # decided by the same count rather than read as the only over-bound signal.
   local _dbefore _dafter
-  _dbefore="$(wc -c <&"$_rs1" 2>/dev/null)"; _dbefore="${_dbefore//[[:space:]]/}"
-  exec {_rs1}<&-
+  _dbefore="$(_il_fd_size "$_rpfd")" \
+    || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
   git diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
   case "$?" in
     0|141) : ;;
     *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20 ;;
   esac
-  _dafter="$(wc -c <&"$_rs2" 2>/dev/null)"; _dafter="${_dafter//[[:space:]]/}"
-  exec {_rs2}<&-
-  case "$_dbefore" in ''|*[!0-9]*) _dbefore="" ;; esac
-  case "$_dafter"  in ''|*[!0-9]*) _dafter=""  ;; esac
-  if [ -z "$_dbefore" ] || [ -z "$_dafter" ]; then
-    exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20
-  fi
+  _dafter="$(_il_fd_size "$_rpfd")" \
+    || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
   if [ $((_dafter - _dbefore)) -ge 8388609 ]; then
     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: the tracked diff exceeds the 8388608-byte bound — split the change; a review prompt cannot carry it\n' >&2; return 20
   fi
@@ -2398,7 +2426,7 @@ cmd_dispatch_review() {
   # variable cannot carry NULs; the snapshot lives in the review family's stage prefix.
   # Exclusive create with the descriptor held, like every adjacent stage: mktemp-then-reopen
   # left a swap window, and the ls-files redirect would have written the listing through it.
-  local _usfd="" _urfd="" _urec=""
+  local _usfd="" _urfd=""
   _usnap="$dir/review-prompt-stage.w$$u"
   _il_excl_create "$_usnap" _usfd \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not stage the untracked snapshot\n' >&2; return 20; }
@@ -2444,24 +2472,27 @@ cmd_dispatch_review() {
     # with no patch, and a symlink to a directory exits 1 with no patch — both were silently
     # committed later without ever appearing in the review prompt. Bounded, because the entry
     # names are agent-creatable and a FIFO must expire a bound, never hang the build.
-    # CAPPED at one byte past the result bound before it ever lands in a variable: the runtime
-    # bound does not limit bytes, and a gigabyte untracked file would otherwise materialize in
-    # memory and then in the prompt. 141 is git dying on head's close — output past the cap —
-    # and is the same refusal as an at-cap capture.
-    _urec="$(adb_run_bounded 60 5 git -C "$_utop" diff --no-index -- /dev/null "$uf" 2>/dev/null | head -c 8388609)"
+    # STREAMED INTO THE STAGE and measured by descriptor, never captured into a variable: the
+    # runtime bound does not limit bytes, so the cap is in-stream at one past the bound — and a
+    # command substitution strips trailing newlines, so a record whose one-past-the-bound byte
+    # was a newline measured as exactly the bound and a truncated patch was accepted. The byte
+    # count decides; 141 (git dying on head's close) is decided by the same count.
+    local _ub _ua
+    _ub="$(_il_fd_size "$_rpfd")" \
+      || { exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not measure the review prompt stage\n' >&2; return 20; }
+    adb_run_bounded 60 5 git -C "$_utop" diff --no-index -- /dev/null "$uf" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
     case "$?" in
-      0|1) : ;;
-      141) exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: untracked %s diffs past the 8388608-byte bound — gitignore it or shrink it; a review prompt cannot carry it\n' "$uf" >&2; return 20 ;;
+      0|1|141) : ;;
       *)   exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
     esac
-    if [ "$(printf '%s' "$_urec" | wc -c | tr -d ' ')" -gt 8388608 ] 2>/dev/null; then
+    _ua="$(_il_fd_size "$_rpfd")" \
+      || { exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not measure the review prompt stage\n' >&2; return 20; }
+    if [ $((_ua - _ub)) -ge 8388609 ]; then
       exec {_rpfd}>&-; rm -f "$pft" "$_usnap"
       printf 'implement-lib: untracked %s diffs past the 8388608-byte bound — gitignore it or shrink it; a review prompt cannot carry it\n' "$uf" >&2
       return 20
     fi
-    if [ -n "$_urec" ]; then
-      printf '%s\n' "$_urec" 1>&"$_rpfd"
-    else
+    if [ "$_ua" -eq "$_ub" ]; then
       printf 'diff --git a/dev/null b/%s\n(untracked entry with no diffable content — an empty file, or a non-regular object; review it in the tree)\n' "$uf" 1>&"$_rpfd"
     fi
   done 0<&"$_urfd"
@@ -2503,12 +2534,12 @@ cmd_dispatch_review() {
   [ "${#nums[@]}" -gt 0 ] || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: no issue snapshots under %s — run snapshot-issues first\n' "$dir" >&2; return 20; }
   _il_append_issue_envelopes "$dir" "$_rpfd" " — acceptance criteria" "${nums[@]}" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: review prompt assembly failed\n' >&2; return 20; }
-  exec {_rpfd}>&-
   # The CUMULATIVE cap: each part is individually bounded, but many bounded parts still add up —
-  # the assembled prompt is refused past 16 MiB before it is ever published to a slot.
+  # the assembled prompt is refused past 16 MiB before it is ever published to a slot. Read by
+  # descriptor before the write side closes.
   local _ptot
-  _ptot="$(wc -c <&"$_rs3" 2>/dev/null)"; _ptot="${_ptot//[[:space:]]/}"
-  exec {_rs3}<&-
+  _ptot="$(_il_fd_size "$_rpfd")" || _ptot=""
+  exec {_rpfd}>&-
   case "$_ptot" in
     ''|*[!0-9]*)
       rm -f "$pft"; printf 'implement-lib: could not size the assembled review prompt\n' >&2; return 20 ;;
@@ -2519,12 +2550,19 @@ cmd_dispatch_review() {
     return 20
   fi
   rm -rf "$pf"   # a planted directory turns the publish rename into a move-INSIDE
-  mv -f "$pft" "$pf" || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
   if [ "$prompt_only" -eq 1 ]; then
+    # THE CONSUMER'S FILE IS THIS INVOCATION'S OWN STAGE, KEPT. The shared name is published
+    # too — a second link to the same inode, for the record and for every reader that expects
+    # it — but a concurrent slot's publish can remove or replace that name before a native
+    # subagent opens it, so the path handed back is the per-invocation one nobody else names.
+    # The stage prefix is in the swept review family, so the kept copy clears with the run.
     exec {_prfd}<&-
-    printf 'prompt-ready %s\n' "$pf"
+    ln "$pft" "$pf" 2>/dev/null || cp "$pft" "$pf" 2>/dev/null \
+      || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
+    printf 'prompt-ready %s\n' "$pft"
     return 0
   fi
+  mv -f "$pft" "$pf" || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
   local _rofd="" _refd=""
   _il_excl_create "$out" _rofd \
     || { exec {_prfd}<&-; printf 'implement-lib: could not create %s exclusively\n' "$out" >&2; return 20; }
@@ -2685,6 +2723,13 @@ cmd_open_pr() {
   # name would send whatever tip the ref holds at push time, and a ref advanced between the
   # branch check and here would ship commits the review and triage never saw. Upstream tracking
   # is set best-effort after — a nicety, never worth re-reading the ref for.
+  # THE TIP MUST BE THE REVIEWED TREE: dispatch-review reviews the worktree-inclusive diff, so a
+  # staged, unstaged or untracked change left here would push — then open, and arm — a revision
+  # the findings and the PR body do not describe. Refused before anything leaves the checkout.
+  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    printf 'implement-lib: the worktree has uncommitted or untracked changes — the reviewed tree is not the tip; commit them (or gitignore what is not part of the change) before open-pr\n' >&2
+    return 27
+  fi
   local _tip
   _tip="$(git rev-parse "refs/heads/$branch" 2>/dev/null)" \
     || { printf 'implement-lib: cannot resolve the tip of %s\n' "$branch" >&2; return 24; }

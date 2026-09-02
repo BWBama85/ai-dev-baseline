@@ -91,7 +91,10 @@ independent reviewer):
    the slot.
 2. **Adversarial bug review** — a Claude subagent (Agent tool, `general-purpose`) over the fresh
    diff (`dispatch-review --prompt-only` builds the same contained prompt for it), run
-   synchronously; consume its returned findings.
+   synchronously; consume its returned findings. Hand the subagent the path the subcommand's
+   `prompt-ready` line prints — this invocation's own kept stage — never the shared
+   `review-prompt.txt`, which a concurrent slot's publish can remove or replace before the
+   subagent opens it.
 
 **Never model-invoke `/code-review`** (user-only, `disable-model-invocation`) — it is an optional
 step the owner runs after the PR.

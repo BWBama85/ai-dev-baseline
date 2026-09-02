@@ -953,10 +953,13 @@ has "$MS_OUT" "synced master at" "20 …naming master via the shared resolver"
 seed_snap "$mcl"
 ( cd "$mcl" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
 eq "$?" "0" "20 …and the review prompt builds against origin/master"
+stage_count() { local n=0 f; for f in "$1"/review-prompt-stage.*; do [ -e "$f" ] && n=$((n + 1)); done; printf '%s' "$n"; }
+STG_BEFORE="$(stage_count "$RCLONE/.claude/state")"
 ( cd "$RCLONE" && bash "$IL" dispatch-review --slot abc .claude/state codex ) >/dev/null 2>&1
 eq "$?" "2" "20 a non-numeric --slot is a usage error (the review-N family grammar)"
-if compgen -G "$RCLONE/.claude/state/review-prompt-stage.*" >/dev/null; then
-  bad "20 a successful build leaves no prompt temp behind"; else ok; fi
+# A --prompt-only build KEEPS its own stage as the consumer's per-invocation file (section 40);
+# a refused invocation must add none.
+eq "$(stage_count "$RCLONE/.claude/state")" "$STG_BEFORE" "20 a refused invocation leaves no prompt temp behind"
 # THE MARKER IS AUTHORITATIVE ONCE IT EXISTS: a malformed .issue must refuse, never silently
 # narrow the scope to its parseable half ("7,x" reviewing only #7) or widen it to every stray
 # numeric snapshot. The glob fallback is for the PRE-marker window only.
@@ -1001,6 +1004,10 @@ read -r _ PCLONE <<EOF
 ${ remote_pair; }
 EOF
 mkdir -p "$PCLONE/.claude/state"
+# The state dir and the body file are ignored, as a real checkout's are: open-pr refuses (27) a
+# worktree with anything uncommitted or untracked, because the reviewed tree must be the tip.
+printf '.claude/\nbody.md\n' > "$PCLONE/.gitignore"
+( cd "$PCLONE" && git add .gitignore && git commit -qm ignore ) >/dev/null 2>&1
 ( cd "$PCLONE" && git switch -q -c issue-9-x && git commit -q --allow-empty -m wip ) >/dev/null 2>&1
 jq -n '{branch:"issue-9-x", issue:"9", phase:"triaged", startedAt:"2026-08-30T00:00:00Z",
         phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
@@ -1067,6 +1074,8 @@ read -r _ P3CLONE <<EOF
 ${ remote_pair; }
 EOF
 mkdir -p "$P3CLONE/.claude/state"
+printf '.claude/\nbody.md\n' > "$P3CLONE/.gitignore"
+( cd "$P3CLONE" && git add .gitignore && git commit -qm ignore ) >/dev/null 2>&1
 ( cd "$P3CLONE" && git switch -q -c issue-3-y && git commit -q --allow-empty -m wip ) >/dev/null 2>&1
 jq -n '{branch:"issue-3-y", issue:"3", phase:"triaged", startedAt:"2026-08-30T00:00:00Z",
         phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
@@ -2586,6 +2595,97 @@ eq "$BL_RC" "20" "39 a tracked diff a few hundred bytes past the bound refuses (
 has "$BL_OUT" "exceeds the 8388608-byte bound" "39 …naming the bound"
 if [ -e "$RVB/.claude/state/review-prompt.txt" ]; then
   bad "39 …and publishes no truncated prompt"; else ok; fi
+
+# ================= 40. round 47: held prompt inodes, the kept prompt-only stage, measured =======
+# =================     untracked records, and no push over an unclean worktree ==================
+# The survey and gap invocations read the descriptor held since their prompt's creation, never
+# the name a surviving descendant could swap between the write side closing and the cat.
+eq "$(grep -c 'cat <&"\$_gprfd"' "$IL")" "1" "40 the gap invocation reads the held prompt descriptor"
+eq "$(grep -c 'cat <&"\$_sprfd"' "$IL")" "1" "40 …and so does the survey invocation"
+if grep -q '5 cat "\$pf"' "$IL"; then bad "40 a dispatch still feeds its agent by reopening the prompt name"; else ok; fi
+# …observed: a plant swapped in at the prompt name AFTER the write side closed and BEFORE the
+# invocation (the window is made deterministic by an rm shim riding the result file's exclusive
+# create, which sits between the two) must not reach the agent — it reads the held inode.
+mkdir -p "$work/rmswap"
+cat > "$work/rmswap/rm" <<'SH'
+#!/usr/bin/env bash
+/bin/rm "$@"; rc=$?
+for a in "$@"; do case "$a" in */gaps.md)
+  d="${a%/gaps.md}"; /bin/rm -f "$d/gap-prompt.txt"; printf 'PLANTED-PROMPT\n' > "$d/gap-prompt.txt" ;;
+esac; done
+exit $rc
+SH
+chmod +x "$work/rmswap/rm"
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+if grep -q 'PLANTED-PROMPT'; then out='SAW-PLANT'; else out='SAW-PROMPT'; fi
+[ -n "$last" ] && printf '%s\n' "$out" > "$last"
+exit 0
+SH
+chmod +x "$shimbin/codex"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "codex"\n' > "$d/agents.toml"
+( cd "$d" && env PATH="$work/rmswap:$PATH" bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+GP_RC=$?
+eq "$GP_RC" "0" "40 the gap dispatch completes with a plant swapped in at the prompt name"
+eq "$(cat "$d/.claude/state/gaps.md" 2>/dev/null)" "SAW-PROMPT" "40 …and the agent received the contained prompt from the held inode, never the plant"
+rm -f "$shimbin/codex"
+# A --prompt-only review hands its consumer a per-invocation file — the kept stage — not the
+# shared name a concurrent slot's publish can remove: the printed path survives that removal.
+read -r _ RPO <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RPO/.claude/state"; seed_snap "$RPO"
+( cd "$RPO" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+PO_OUT="$( cd "$RPO" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>/dev/null )"; PO_RC=$?
+eq "$PO_RC" "0" "40 a prompt-only build succeeds"
+PO_PATH="${PO_OUT#prompt-ready }"
+if [ "$PO_PATH" = ".claude/state/review-prompt.txt" ]; then
+  bad "40 prompt-only hands back the shared name"; else ok; fi
+case "$PO_PATH" in .claude/state/review-prompt-stage.*) ok ;; *) bad "40 prompt-only's path is not its own kept stage ($PO_PATH)" ;; esac
+if [ -f "$RPO/$PO_PATH" ] && [ ! -L "$RPO/$PO_PATH" ]; then ok; else bad "40 …and that path is a regular file"; fi
+if cmp -s "$RPO/$PO_PATH" "$RPO/.claude/state/review-prompt.txt"; then ok; else
+  bad "40 …with the same bytes as the shared publication"; fi
+rm -rf "$RPO/.claude/state/review-prompt.txt"   # the other slot's rm -rf
+has "$(cat "$RPO/$PO_PATH" 2>/dev/null)" 'diff --git a/seed' "40 …and it still reads after the shared name is removed"
+# An untracked record is measured by descriptor, never through command substitution: a record
+# whose 8388609th byte is a newline used to lose it to the substitution, measure as exactly the
+# bound, and publish a truncated patch. The fixture sizes a one-line file so the --no-index diff
+# is exactly 8388609 bytes and ends in that newline, and proves it before asserting.
+read -r _ RNL <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RNL/.claude/state"; seed_snap "$RNL"
+( cd "$RNL" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+printf 'a\n' > "$RNL/nl.txt"
+NL_HDR="$(( $(cd "$RNL" && git diff --no-index -- /dev/null nl.txt | wc -c | tr -d ' ') - 3 ))"   # the diff of one 'a' line, minus its "+a\n"
+awk -v n="$(( 8388609 - NL_HDR - 2 ))" 'BEGIN{for(i=0;i<n;i++)printf "a"; print ""}' > "$RNL/nl.txt"
+NL_SZ="$(cd "$RNL" && git diff --no-index -- /dev/null nl.txt | wc -c | tr -d ' ')"
+eq "$NL_SZ" "8388609" "40 fixture: the untracked diff is exactly one byte past the bound"
+NL_LAST="$(cd "$RNL" && git diff --no-index -- /dev/null nl.txt | tail -c 1 | od -An -c | tr -d ' ')"
+eq "$NL_LAST" '\n' "40 fixture: …and that byte is a newline"
+NL_OUT="$( cd "$RNL" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>&1 )"; NL_RC=$?
+eq "$NL_RC" "20" "40 an untracked record exactly one byte past the bound, ending in a newline, refuses"
+has "$NL_OUT" "diffs past the 8388608-byte bound" "40 …naming the bound"
+rm -f "$RNL/nl.txt"
+# open-pr refuses an unclean worktree BEFORE anything is pushed: dispatch-review reviews the
+# worktree-inclusive diff, so an uncommitted or untracked change here means the pushed tip is
+# not the reviewed tree.
+printf 'unpushed-fix\n' >> "$PCLONE/seed"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "27" "40 an uncommitted tracked change refuses open-pr (27)"
+has "$OP_OUT" "reviewed tree is not the tip" "40 …naming why"
+if printf '%s\n' "$OP_OUT" | grep -q 'pushed issue-9-x'; then
+  bad "40 …and nothing was pushed"; else ok; fi
+( cd "$PCLONE" && git checkout -q -- seed ) >/dev/null 2>&1   # a fixture file this case appended to; no untracked work at risk
+printf 'stray\n' > "$PCLONE/stray-helper.txt"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "27" "40 an untracked non-ignored file refuses open-pr (27) too"
+rm -f "$PCLONE/stray-helper.txt"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "40 …and a clean worktree opens as before"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
