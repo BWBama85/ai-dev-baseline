@@ -1365,14 +1365,15 @@ if [ -d "$d/.claude/state/.claim-mutex" ]; then ok; else
   bad "19l …and the fresh mutex survives — it was never reaped"; fi
 rmdir "$d/.claude/state/.claim-mutex" 2>/dev/null
 # A renewal that could NOT be published refuses (20): silently proceeding leaves the caller on a
-# near-expiry lease a concurrent admission can reap mid-work.
+# near-expiry lease a concurrent admission can reap mid-work. The stage is now created
+# EXCLUSIVELY at .claim.w<pid>, so the inducement plants a directory at that exact name —
+# `exec` keeps the pre-exec shell's pid, which is how the test knows it — and the O_EXCL create
+# must fail loudly rather than write anywhere.
 d="$(new_repo)"; seed_snap "$d"
 jq -n --argjson e "$((NOWS + 9000))" '{startedAt:1, expiresAt:$e, token:"tokT"}' > "$d/.claude/state/gap-analysis.lock"
-mkdir "$d/.claude/state/.claim.tmp"   # makes the jq redirect fail while everything else works
-SN_OUT="$( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 2>&1 )"; RN_RC=$?
-rmdir "$d/.claude/state/.claim.tmp" 2>/dev/null
+SN_OUT="$( cd "$d" && bash -c 'mkdir -p ".claude/state/.claim.w$$"; exec bash "$1" dispatch-gaps --token tokT --prompt-only .claude/state 7' _ "$IL" 2>&1 )"; RN_RC=$?
 eq "$RN_RC" "20" "19l an unpublishable renewal refuses (20), never proceeds on the old lease"
-has "$SN_OUT" "could not publish the renewed claim" "19l …named as the renewal itself"
+has "$SN_OUT" "could not create the renewal stage exclusively" "19l …named as the renewal itself"
 # The lease is renewed BETWEEN issues, not only at the subcommand's start: a large set or slow
 # gh reads outlive a single lease, and a successor arriving mid-set must refuse the remainder.
 # The shim swaps the claim's token on the first gh call, so iteration two's renewal sees it.
@@ -1506,7 +1507,7 @@ rm -f "$shimbin/claude"
 # A rename-based cap replaced the pathname and left the surveyor's open descriptor on a hidden
 # unlinked inode that kept growing unseen. In-place truncation keeps the writer on the capped
 # inode, so its next append lands where the next pass (and the path's size) can see it.
-capfn="$(sed -n '/^_il_cap_trace()/,/^}/p' "$IL")"
+capfn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_cap_trace()/,/^}/p' "$IL")"
 CAP_D="$(new_repo)"
 ( cd "$CAP_D" && eval "$capfn" \
   && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md \
@@ -1894,7 +1895,7 @@ if [ -e "$d/.claude/state/survey-overflow.md" ]; then
 # The probe rides the head call itself: at that moment the public stage name must not exist (the
 # head is created under a private mktemp name and published by rename), and a plant dropped at
 # the vacated name during the head must neither receive the output nor survive as survey.md.
-pubfn="$(sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 PB_D="$(new_repo)"
 printf 'precious repo content\n' > "$PB_D/planted-target.txt"
 awk 'BEGIN{for(i=0;i<2000;i++)print "survey line " i}' > "$PB_D/.claude/state/survey-stage.md"
@@ -1940,7 +1941,7 @@ eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt
 #
 # The race is made deterministic by shimming `wc`: the publisher's first post-validation tool call
 # swaps the stage for a symlink, exactly as a surviving descendant would.
-pubfn2="$(sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn2="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 SW_D="$(new_repo)"
 printf 'precious repo content\n' > "$SW_D/swap-target.txt"
 printf 'a modest survey\n' > "$SW_D/.claude/state/survey-stage.md"
@@ -1989,6 +1990,71 @@ if [ "$OC2_RC" -ne 0 ]; then ok; else bad "26 a 9 MiB codex final message is a F
 if grep -q 'result bound' "$d/.claude/state/survey.err" 2>/dev/null; then ok; else
   bad "26 …refused by the stated result bound before emission, not by downstream pipe collapse"; fi
 rm -f "$shimbin/codex"
+
+# ================= 27. private stages: exclusive create, held descriptor, no empty results ======
+# mktemp-then-reopen and rm-then-redirect both left a gap between creating a stage name and
+# opening it — a surviving same-UID descendant can fill the gap with a symlink and receive the
+# write. Every private stage now goes through _il_excl_create: O_EXCL neither follows nor
+# truncates, so a plant in the gap fails the open loudly, and the held descriptor binds the
+# write to the created inode. (Observed red on the pre-fix lib: three mktemp survey-held sites
+# and the .claim.tmp pathname redirect, and an empty rc-0 gap dispatch reported "gaps ok".)
+if grep -q 'survey-held.XXXXXX' "$IL"; then
+  bad "27 a mktemp-then-reopen survey stage is back in the lib"; else ok; fi
+if grep -q '> "\$dir/\.claim' "$IL"; then
+  bad "27 a pathname-redirect claim stage is back in the lib"; else ok; fi
+# The helper's contract, driven to both answers: a clean create yields a held, writable
+# descriptor on a regular file; a planted directory at the name (rm -f cannot remove it) fails
+# the open loudly with nothing created; a resting planted link is removed first and the create
+# lands fresh — rm is the point, O_EXCL guards the gap after it.
+exfn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL")"
+EX_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-excl.XXXXXX")"
+EX_OUT="$(
+  eval "$exfn"
+  fd=""
+  if _il_excl_create "$EX_D/stage-a" fd; then
+    printf 'created '
+    printf 'hello' >&"$fd" && printf 'wrote '
+    exec {fd}>&-
+    [ -f "$EX_D/stage-a" ] && [ ! -L "$EX_D/stage-a" ] && printf 'regular '
+    printf '%s' "$(cat "$EX_D/stage-a")"
+  else printf 'create-failed'; fi
+)"
+eq "$EX_OUT" "created wrote regular hello" "27 a clean exclusive create yields a held, writable, regular stage"
+mkdir "$EX_D/stage-b"
+EX_OUT="$( eval "$exfn"; fd=""
+  if _il_excl_create "$EX_D/stage-b" fd; then printf 'created'; else printf 'refused'; fi )"
+eq "$EX_OUT" "refused" "27 a planted directory at the stage name fails the create loudly"
+ln -s /nonexistent "$EX_D/stage-c"
+EX_OUT="$( eval "$exfn"; fd=""
+  if _il_excl_create "$EX_D/stage-c" fd; then
+    exec {fd}>&-
+    [ -f "$EX_D/stage-c" ] && [ ! -L "$EX_D/stage-c" ] && printf 'fresh'
+  fi )"
+eq "$EX_OUT" "fresh" "27 a resting planted link is removed and the create lands fresh"
+rm -rf "$EX_D"
+# An EMPTY result from a rc-0 gap or review dispatch is a failed dispatch: claude/gemini CLIs
+# can exit 0 having written nothing (codex's arm refuses an empty final message; the others do
+# not), and an empty analysis accepted as ok skips the retry-then-surface policy exactly as a
+# missing one would.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+GE_RC=$?
+if [ "$GE_RC" -ne 0 ]; then ok; else bad "27 an EMPTY gap analysis from a rc-0 CLI is a failed dispatch (got rc 0)"; fi
+read -r _ RVE <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVE/.claude/state"; seed_snap "$RVE"
+( cd "$RVE" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+( cd "$RVE" && bash "$IL" dispatch-review .claude/state claude ) >/dev/null 2>&1
+RE_RC=$?
+if [ "$RE_RC" -ne 0 ]; then ok; else bad "27 an EMPTY review from a rc-0 CLI is a failed slot (got rc 0)"; fi
+rm -f "$shimbin/claude"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

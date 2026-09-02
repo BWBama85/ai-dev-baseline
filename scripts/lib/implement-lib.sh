@@ -899,6 +899,9 @@ _il_clear() {   # <state-dir>
   # The SURVEY family (#435) — same containment rule: state-scan classifies these `survey`, so a
   # name /cleanup can sweep that this cannot clear would read as a fresh run's survey.
   targets+=( "$dir"/survey-*.md "$dir"/survey-*.err "$dir"/survey-held.* )
+  # The claim-renewal stages (the retired fixed .claim.tmp and the exclusive .claim.w<pid>
+  # names) — transient, but a kill can orphan one, and a stale stage must not linger.
+  targets+=( "$dir"/.claim.* )
   # The DOCS-DUTY family (#422). Same containment rule as the two above: `state-scan` classifies
   # `docs-consulted.tsv` and `docs-consulted-*.tsv` as `docs`, so a name /cleanup can sweep that
   # this cannot clear would leave a previous run's documentation record in place — and a fresh
@@ -1028,6 +1031,30 @@ _IL_ROLE_DISPATCH="$_adb_il_libdir/role-dispatch.sh"
 # offers no token gets no renewal and no verdict (pre-renewal behavior); a claim that is absent,
 # tokenless or malformed is left alone. Renewal itself never creates a claim, and it never
 # vacates the canonical path (the function's own comment carries why).
+# Create <path> EXCLUSIVELY and leave an open write descriptor on it in the caller's variable
+# named by <fdvar>. rm first (never follows), then a noclobber open: O_EXCL neither follows nor
+# truncates, so a plant recreated in the rm-to-open gap fails the open LOUDLY instead of
+# receiving the write — and the descriptor is bound to the created inode, so no later name swap
+# can redirect what the caller writes through it. What this does NOT give: a same-UID descendant
+# can still rewrite the state directory's contents directly; the guarantee is only that THIS
+# writer never writes through a name it did not itself create. A failed create may leave a
+# pre-existing foreign object (a planted directory) at the name — nothing is CREATED on failure.
+_il_excl_create() {   # <path> <fdvar-name>
+  local __p="$1" __had=0
+  local -n __fdref="$2"
+  __fdref=""
+  rm -f "$__p" 2>/dev/null
+  case "$-" in *C*) __had=1 ;; esac
+  set -C
+  if ! { exec {__fdref}>"$__p"; } 2>/dev/null; then
+    [ "$__had" -eq 1 ] || set +C
+    __fdref=""
+    return 1
+  fi
+  [ "$__had" -eq 1 ] || set +C
+  return 0
+}
+
 _il_claim_renew() {   # <state-dir> <caller-token>
   local dir="$1" tok="${2:-}" now lease cur exp rc
   [ -n "$tok" ] || return 0
@@ -1096,17 +1123,26 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   # A renewal that cannot be PUBLISHED refuses: proceeding on the old lease is exactly the
   # near-expiry exposure renewal exists to remove, and a filesystem that refused this write is
   # about to refuse the artifacts too.
-  # The stage name is agent-adjacent and plantable as a symlink — unlinked first (rm does not
-  # follow), or the redirect would write claim JSON through it and the mv would install the
-  # link itself as the canonical claim.
-  rm -f "$dir/.claim.tmp"
-  if { jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" \
-        > "$dir/.claim.tmp" 2>/dev/null \
-      && mv -f "$dir/.claim.tmp" "$dir/$_IL_CLAIM" 2>/dev/null; }; then
+  # The stage is agent-adjacent, and rm-then-pathname-redirect left a gap a surviving descendant
+  # could fill with a symlink — the redirect would then write claim JSON through it. So the
+  # stage is created EXCLUSIVELY with its descriptor held from creation (_il_excl_create): a
+  # plant in the gap fails the open loudly, and the write is bound to the created inode.
+  local _cst="$dir/.claim.w$$" _cfd=""
+  if ! _il_excl_create "$_cst" _cfd; then
     _il_claim_mutex_drop "$dir"
-    return "$rc"
+    printf 'implement-lib: could not create the renewal stage exclusively at %s (a planted object?) — refusing rather than proceeding on the old lease\n' "$_cst" >&2
+    return 20
   fi
-  rm -f "$dir/.claim.tmp" 2>/dev/null
+  if jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" 1>&"$_cfd" 2>/dev/null; then
+    exec {_cfd}>&-
+    if mv -f "$_cst" "$dir/$_IL_CLAIM" 2>/dev/null; then
+      _il_claim_mutex_drop "$dir"
+      return "$rc"
+    fi
+  else
+    exec {_cfd}>&-
+  fi
+  rm -f "$_cst" 2>/dev/null
   _il_claim_mutex_drop "$dir"
   printf 'implement-lib: could not publish the renewed claim at %s/%s (state directory writable?) — refusing rather than proceeding on the old lease\n' "$dir" "$_IL_CLAIM" >&2
   return 20
@@ -1334,19 +1370,30 @@ _il_publish_survey() {   # <state-dir>
   # That check is point-in-time, and role-dispatch's bounded-runner contract admits descendants
   # can survive the CLI — so every LATER open of the public stage name is a race a survivor can
   # win (a FIFO swapped in blocks a redirect open forever, outside every dispatch bound). So the
-  # public name is read ONCE, by FILENAME inside a bounded child, into a private mktemp copy no
-  # descendant can name; every byte published below comes from private names, and the public
-  # ones are only ever rename TARGETS. One byte past the dispatch cap, so a grown or swapped
-  # larger object is DETECTED, never truncated-and-published.
-  _priv="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 1
-  if ! adb_run_bounded 60 5 head -c 8388609 "$dir/survey-stage.md" > "$_priv" 2>/dev/null; then
+  # public name is read ONCE, by FILENAME inside a bounded child, into a private copy created
+  # EXCLUSIVELY with its descriptor held from creation (_il_excl_create) — a swap after creation
+  # cannot redirect the write, because the write never reopens the name. Every byte published
+  # below comes from private names, and the public ones are only ever rename TARGETS. One byte
+  # past the dispatch cap, so a grown or swapped larger object is DETECTED, never
+  # truncated-and-published.
+  local _pfd=""
+  _priv="$dir/survey-held.w$$a"
+  if ! _il_excl_create "$_priv" _pfd; then
+    printf 'implement-lib: could not create the private survey copy exclusively (a planted object?) — refusing to publish\n' >&2
+    return 1
+  fi
+  if ! adb_run_bounded 60 5 head -c 8388609 "$dir/survey-stage.md" 1>&"$_pfd" 2>/dev/null; then
+    exec {_pfd}>&-
     rm -f "$_priv"
     rm -rf "$dir/survey-stage.md"
     printf 'implement-lib: the survey stage could not be read whole within its bound (a planted pipe?) — refusing to publish it\n' >&2
     return 1
   fi
+  exec {_pfd}>&-
   rm -rf "$dir/survey-stage.md"   # consumed — a plant swapped in mid-read goes with it, unfollowed
-  _svb="$(wc -c < "$_priv" 2>/dev/null | tr -d ' ')"
+  # Sized by FILENAME inside a bounded child for the same reason the cap sizes that way: the
+  # private copy's name is same-UID swappable, and a FIFO must expire a bound, never block.
+  _svb="$(adb_run_bounded 30 5 wc -c "$_priv" 2>/dev/null | awk '{print $1; exit}')" || _svb=""
   case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
   if [ "$_svb" -eq 0 ]; then
     rm -f "$_priv"
@@ -1359,8 +1406,18 @@ _il_publish_survey() {   # <state-dir>
     return 1
   fi
   if [ "$_svb" -gt 16384 ]; then
-    _pub="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || { rm -f "$_priv"; return 1; }
-    if ! _il_survey_head "$_priv" > "$_pub"; then rm -f "$_pub" "$_priv"; return 1; fi
+    local _bfd=""
+    _pub="$dir/survey-held.w$$b"
+    if ! _il_excl_create "$_pub" _bfd; then rm -f "$_priv"; return 1; fi
+    # The head still OPENS the private copy by name — a residual window this design states
+    # rather than closes: bash has no non-following reopen, and the copy's content is same-UID
+    # writable regardless. The -f guard rejects a resting swap; the write side is fd-bound.
+    if [ ! -f "$_priv" ] || [ -L "$_priv" ] || ! _il_survey_head "$_priv" >&"$_bfd"; then
+      exec {_bfd}>&-
+      rm -f "$_pub" "$_priv"
+      return 1
+    fi
+    exec {_bfd}>&-
     # rm -rf, not a bare mv: onto a planted DIRECTORY, mv -f moves the source INSIDE it.
     rm -rf "$dir/survey-overflow.md"
     mv -f "$_priv" "$dir/survey-overflow.md" || { rm -f "$_pub" "$_priv"; return 1; }
@@ -1410,9 +1467,14 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
   # name an artifact that is not at the name, and the family clear cannot remove a directory.
   rm -rf "$dir/survey-trace-full.md"
   mv -f "$dir/survey-trace.md" "$dir/survey-trace-full.md" 2>/dev/null || return 0
-  note="$(mktemp "$dir/survey-held.XXXXXX" 2>/dev/null)" || return 0
+  # The note stage gets the same exclusive held-descriptor create as every other private write:
+  # mktemp-then-reopen left a swap window between creation and the redirect.
+  note="$dir/survey-held.w$$c"
+  local _nfd=""
+  _il_excl_create "$note" _nfd || return 0
   printf '[implement-lib: the trace reached %s bytes, past the %s-byte bound (ADB_DISPATCH_LOG_MAX_BYTES); the full trace is at survey-trace-full.md]\n' \
-    "$tb" "$max" > "$note" 2>/dev/null
+    "$tb" "$max" 1>&"$_nfd" 2>/dev/null
+  exec {_nfd}>&-
   mv -f "$note" "$dir/survey-trace.md" 2>/dev/null || rm -f "$note"
   [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md was %s bytes; moved whole to survey-trace-full.md with a note in its place\n' "$tb" >&2
   return 0
@@ -1761,8 +1823,11 @@ cmd_dispatch_gaps() {
     rm -f "$dir/gaps.md"
     printf 'implement-lib: the gap output at %s was not a regular file after dispatch (a planted symlink?) — treating the dispatch as failed\n' "$dir/gaps.md" >&2
     [ "$rc" -eq 0 ] && rc=20
-  elif [ "$rc" -eq 0 ] && [ ! -f "$dir/gaps.md" ]; then
-    printf 'implement-lib: the gap output at %s is missing after a rc-0 dispatch — treating the dispatch as failed\n' "$dir/gaps.md" >&2
+  elif [ "$rc" -eq 0 ] && [ ! -s "$dir/gaps.md" ]; then
+    # -s, not -f: a claude/gemini CLI can exit 0 having written NOTHING (codex's arm refuses an
+    # empty final message; the others do not), and an empty analysis accepted as "gaps ok" skips
+    # the retry-then-surface policy exactly as a missing one would.
+    printf 'implement-lib: the gap output at %s is missing or EMPTY after a rc-0 dispatch — treating the dispatch as failed\n' "$dir/gaps.md" >&2
     rc=20
   fi
   case "$rc" in
@@ -1960,10 +2025,11 @@ cmd_dispatch_review() {
     rm -f "$out"
     printf 'implement-lib: the review output at %s was not a regular file after dispatch (a planted symlink?) — treating the slot as failed\n' "$out" >&2
     [ "$rc" -eq 0 ] && rc=20
-  elif [ "$rc" -eq 0 ] && [ ! -f "$out" ]; then
-    # Absence is the third shape: a reviewer that unlinks its output and exits 0 has discarded
-    # its review, and "completed" with nothing for step 9 to read is the same false success.
-    printf 'implement-lib: the review output at %s is missing after a rc-0 dispatch — treating the slot as failed\n' "$out" >&2
+  elif [ "$rc" -eq 0 ] && [ ! -s "$out" ]; then
+    # -s, not -f: absence AND emptiness are the same false success — a reviewer that unlinks its
+    # output, or a claude/gemini CLI that exits 0 having written nothing (codex's arm refuses an
+    # empty final message; the others do not), leaves step 9 nothing to read behind "completed".
+    printf 'implement-lib: the review output at %s is missing or EMPTY after a rc-0 dispatch — treating the slot as failed\n' "$out" >&2
     rc=20
   fi
   case "$rc" in
