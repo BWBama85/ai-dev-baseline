@@ -1143,7 +1143,10 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     printf 'implement-lib: could not create the renewal stage exclusively at %s (a planted object?) — refusing rather than proceeding on the old lease\n' "$_cst" >&2
     return 20
   fi
-  if jq --argjson e "$(( now + lease ))" '.expiresAt = $e' "$dir/$_IL_CLAIM" 1>&"$_cfd" 2>/dev/null; then
+  # The transform reads the SAME bounded snapshot validation read (_lraw), never the pathname:
+  # a reopen here could observe a swapped inode — a FIFO hanging renewal while the mutex is
+  # held, or a delayed read publishing over a successor's claim after a stale-break.
+  if printf '%s' "$_lraw" | jq --argjson e "$(( now + lease ))" '.expiresAt = $e' 1>&"$_cfd" 2>/dev/null; then
     exec {_cfd}>&-
     if mv -f "$_cst" "$dir/$_IL_CLAIM" 2>/dev/null; then
       _il_claim_mutex_drop "$dir"
@@ -1612,6 +1615,17 @@ cmd_read_artifact() {
     return 20
   fi
   exec {_cfd}>&-
+  # The source is re-validated AFTER the copy: the pre-check and head's own open are two
+  # moments, and a symlink swapped between them would have been followed into the copy — a
+  # plant that persists past the copy is caught here and the copy discarded. A swap installed
+  # and removed entirely inside the copy window remains the stated microsecond residual.
+  if [ -L "$f" ] || [ ! -f "$f" ]; then
+    exec {_rfd1}<&-
+    exec {_rfd2}<&-
+    rm -f "$_cp"
+    printf 'implement-lib: %s changed shape during the read (a raced plant?) — discarding the copy\n' "$f" >&2
+    return 20
+  fi
   sz="$(wc -c 0<&"$_rfd1" 2>/dev/null | tr -d ' ')"
   exec {_rfd1}<&-
   case "$sz" in ''|*[!0-9]*)
@@ -2181,12 +2195,23 @@ cmd_dispatch_review() {
   # variable cannot carry NULs; the snapshot lives in the review family's stage prefix.
   # Exclusive create with the descriptor held, like every adjacent stage: mktemp-then-reopen
   # left a swap window, and the ls-files redirect would have written the listing through it.
-  local _usfd="" _urec=""
+  local _usfd="" _urfd="" _urec=""
   _usnap="$dir/review-prompt-stage.w$$u"
   _il_excl_create "$_usnap" _usfd \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not stage the untracked snapshot\n' >&2; return 20; }
+  # The read descriptor opens at creation and is proven the same inode (-ef) BEFORE any content
+  # exists — the iteration below then reads the held inode, never the predictable pathname a
+  # descendant could swap for a FIFO (a hang outside every bound) or a different listing.
+  if ! { exec {_urfd}<"$_usnap"; } 2>/dev/null || [ ! "/dev/fd/$_usfd" -ef "/dev/fd/$_urfd" ]; then
+    exec {_usfd}>&-
+    [ -n "$_urfd" ] && exec {_urfd}<&-
+    exec {_rpfd}>&-; rm -f "$pft" "$_usnap"
+    printf 'implement-lib: the untracked snapshot was swapped during staging\n' >&2
+    return 20
+  fi
   if ! _uerr="$(git -C "$_utop" ls-files --others --exclude-standard -z 2>&1 1>&"$_usfd")"; then
     exec {_usfd}>&-
+    exec {_urfd}<&-
     exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not enumerate untracked files\n' >&2; return 20
   fi
   exec {_usfd}>&-
@@ -2226,7 +2251,8 @@ cmd_dispatch_review() {
     else
       printf 'diff --git a/dev/null b/%s\n(untracked entry with no diffable content — an empty file, or a non-regular object; review it in the tree)\n' "$uf" 1>&"$_rpfd"
     fi
-  done < "$_usnap"
+  done 0<&"$_urfd"
+  exec {_urfd}<&-
   rm -f "$_usnap"
   # The issue set is the MARKER's own comma list when a marker exists (a stray numeric snapshot
   # must not widen the review scope); the snapshot glob is the PRE-MARKER fallback only. Once a
@@ -2416,7 +2442,15 @@ cmd_open_pr() {
   fi
   # `>&2`: on a first push `git push -u` writes its upstream-registration message to STDOUT,
   # which is this subcommand's closed record stream; the status is unaffected.
-  git push -u origin "$branch" >&2 || { printf 'implement-lib: push failed\n' >&2; return 24; }
+  # The SHA is CAPTURED and that exact object pushed (git push <sha>:<ref>): pushing the ref
+  # name would send whatever tip the ref holds at push time, and a ref advanced between the
+  # branch check and here would ship commits the review and triage never saw. Upstream tracking
+  # is set best-effort after — a nicety, never worth re-reading the ref for.
+  local _tip
+  _tip="$(git rev-parse "refs/heads/$branch" 2>/dev/null)" \
+    || { printf 'implement-lib: cannot resolve the tip of %s\n' "$branch" >&2; return 24; }
+  git push origin "$_tip:refs/heads/$branch" >&2 || { printf 'implement-lib: push failed\n' >&2; return 24; }
+  git branch --set-upstream-to="origin/$branch" "$branch" >/dev/null 2>&1 || :
   # A re-run after the 23 refusal arrives with phase=pr_opened already recorded — writing
   # `pushed` then would append a false backward pr_opened→pushed→pr_opened lifecycle to the
   # history a resumed session reads. The push happened either way; the phase only advances.
@@ -2469,10 +2503,18 @@ cmd_open_pr() {
   [ -n "$pr" ] || { printf 'implement-lib: gh pr create returned no PR URL\n' >&2; return 25; }
   # …and the recorded PR's head is VERIFIED, not assumed: the URL is authoritative, so one read
   # proves the create (or the adopt) actually attached to the marker branch.
-  local _phead
-  _phead="$(gh pr view "$pr" --json headRefName --jq '.headRefName // ""' 2>/dev/null)" || _phead=""
+  local _phead _pjson _poid
+  _pjson="$(gh pr view "$pr" --json headRefName,headRefOid 2>/dev/null)" || _pjson=""
+  _phead="$(printf '%s' "$_pjson" | jq -r '.headRefName // ""' 2>/dev/null)" || _phead=""
+  _poid="$(printf '%s' "$_pjson" | jq -r '.headRefOid // ""' 2>/dev/null)" || _poid=""
   if [ "$_phead" != "$branch" ]; then
     printf 'implement-lib: the PR at %s has head "%s", not the marker branch "%s" — not recorded; fix the PR (or the marker) and re-run\n' "$pr" "${_phead:-unreadable}" "$branch" >&2
+    return 25
+  fi
+  # …and the head OID must be the CAPTURED tip: the ref-name checks alone pass even when a
+  # concurrent process advanced the branch, shipping commits the review never saw.
+  if [ "$_poid" != "$_tip" ]; then
+    printf 'implement-lib: the PR at %s has head OID %s, not the pushed tip %s — the branch moved since the reviewed tip; re-verify what is on it and re-run\n' "$pr" "${_poid:-unreadable}" "$_tip" >&2
     return 25
   fi
   local _pufd=""

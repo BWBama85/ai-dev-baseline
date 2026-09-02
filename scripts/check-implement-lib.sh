@@ -60,7 +60,7 @@ case "$1 $2" in
       *--json\ url,state*)
         if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
         printf '{"url":"%s","state":"%s","baseRefName":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" "${SHIM_ADOPT_STATE:-OPEN}" "${SHIM_ADOPT_BASE:-${SHIM_DEFAULT_BASE:-main}}"; exit 0 ;;
-      *headRefName*) printf '%s\n' "${SHIM_HEAD_REF:-issue-9-x}"; exit 0 ;;
+      *headRefName*) printf '{"headRefName":"%s","headRefOid":"%s"}\n' "${SHIM_HEAD_REF:-issue-9-x}" "${SHIM_HEAD_OID:-$(git rev-parse HEAD 2>/dev/null)}"; exit 0 ;;
     esac
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
@@ -2365,6 +2365,33 @@ eq "$OP_RC" "0" "35 …while a matching head still records"
 # The native survey path names its ENFORCED backstop: publish-survey's lease re-verification.
 if grep -q 'ENFORCED backstop is the claim lease' "$ROOT/base/workflows/implement-issue.md"; then
   ok; else bad "35 the native-path bound is narrated without naming its enforcement"; fi
+
+# ================= 36. round-42: the last pathname reopens, and the pushed tip pinned ===========
+# The renewal's publication transform reads the validated in-memory snapshot, never the lock
+# pathname — a reopen there could hang holding the mutex or publish over a successor.
+if grep -qF "jq --argjson e \"\$(( now + lease ))\" '.expiresAt = \$e' \"\$dir/\$_IL_CLAIM\"" "$IL"; then
+  bad "36 the renewal transform is back on the lock pathname"; else ok; fi
+# read-artifact re-validates the source AFTER the copy — a symlink swapped between the pre-check
+# and head's open was followed into the copy, and a plant that persists is caught and discarded.
+if grep -q 'changed shape during the read' "$IL"; then ok; else
+  bad "36 read-artifact never re-validates its source after the copy"; fi
+d="$(new_repo)"; printf 'x\n' > "$d/target-ra.txt"
+( cd "$d" && ln -s ../../target-ra.txt .claude/state/gaps.md ) >/dev/null 2>&1
+bash "$IL" read-artifact "$d/.claude/state" gaps >/dev/null 2>&1
+eq "$?" "20" "36 a resting link is still refused before any copy"
+# The push sends the CAPTURED SHA (sha:ref), and the PR's headRefOid must equal it — ref-name
+# checks alone pass even when a concurrent process advanced the branch past the reviewed tip.
+if grep -q 'git push origin "\$_tip:refs/heads/\$branch"' "$IL"; then ok; else
+  bad "36 the push sends a ref name, not the captured tip"; fi
+openpr SHIM_SLUG="o/r" SHIM_HEAD_OID="0000000000000000000000000000000000000000" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "25" "36 a PR whose head OID is not the pushed tip is refused, never recorded"
+has "$OP_OUT" "the branch moved since the reviewed tip" "36 …saying what happened"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "36 …while the matching tip still records"
+# The untracked-snapshot loop iterates the held inode (-ef proven at creation), never the
+# predictable pathname.
+if grep -q 'done 0<&"\$_urfd"' "$IL"; then ok; else
+  bad "36 the untracked loop is back on a pathname reopen"; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
