@@ -1402,7 +1402,7 @@ _il_publish_survey() {   # <state-dir>
   fi
   if [ "$_svb" -gt 8388608 ]; then
     rm -f "$_priv"
-    printf 'implement-lib: the survey stage grew past the 8388608-byte dispatch cap after validation (a surviving writer?) — refusing to publish it\n' >&2
+    printf 'implement-lib: the survey reply exceeds the 8388608-byte cap (a runaway reply, or a stage grown after validation) — refusing rather than truncating silently\n' >&2
     return 1
   fi
   if [ "$_svb" -gt 16384 ]; then
@@ -1511,7 +1511,7 @@ cmd_publish_survey() {
   head -c 8388609 > "$dir/survey-stage.md" \
     || { rm -f "$dir/survey-stage.md"; printf 'implement-lib: could not stage the survey reply\n' >&2; return 20; }
   _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
-  _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
+  _svw="$(adb_run_bounded 30 5 wc -w "$dir/survey.md" 2>/dev/null | awk '{print $1; exit}')" || _svw=""
   printf 'survey ok %s words\n' "${_svw:-0}"
   case "$_svw" in ''|*[!0-9]*) : ;; *)
     [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask\n' "$_svw" >&2 ;;
@@ -1637,15 +1637,18 @@ cmd_dispatch_survey() {
   if [ "${#_tmax}" -le 9 ]; then _tmax=$(( 10#$_tmax )); else _tmax=262144; fi
   # THE STAGE WRITE IS STREAM-BOUNDED at 8 MiB: role-dispatch deliberately leaves a passthrough
   # agent's final stdout uncapped, so a malfunctioning CLI could otherwise fill the filesystem
-  # during the dispatch, before any post-exit publisher runs. `head -c` closes the pipe at the
-  # bound; under pipefail the writer's SIGPIPE (141) is then the dispatch's status — a runaway
-  # reply is a FAILED dispatch, never a published one.
+  # during the dispatch, before any post-exit publisher runs. ONE BYTE PAST the cap is captured,
+  # not the cap itself: a reply only slightly past the bound can have its excess absorbed by the
+  # pipe buffer, so the producer exits 0 with no SIGPIPE, and an exactly-at-cap stage would be
+  # indistinguishable from a legitimate reply of that size — the extra byte is what lets the
+  # publisher REFUSE past-cap instead of publishing a silent truncation. A hard runaway still
+  # dies on SIGPIPE under pipefail and fails the dispatch outright.
   # The stage (and err) names are agent-adjacent and plantable as symlinks; a fresh redirect
   # must never write THROUGH one, so the names are unlinked first (rm does not follow).
   rm -f "$dir/survey-stage.md" "$dir/survey.err"
   ADB_DISPATCH_TIMEOUT_SECS="$_svt" \
     bash "$_IL_ROLE_DISPATCH" invoke survey < "$pf" 2> "$dir/survey.err" \
-    | head -c 8388608 > "$dir/survey-stage.md"
+    | head -c 8388609 > "$dir/survey-stage.md"
   rc=$?
   if [ "$rc" -eq 0 ]; then
     _il_publish_survey "$dir" || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
@@ -1661,7 +1664,7 @@ cmd_dispatch_survey() {
   [ "$_tmax" -gt 0 ] && _il_cap_trace "$dir" "$_tmax"
   case "$rc" in
     0) local _svw
-       _svw="$(wc -w < "$dir/survey.md" 2>/dev/null | tr -d ' ')"
+       _svw="$(adb_run_bounded 30 5 wc -w "$dir/survey.md" 2>/dev/null | awk '{print $1; exit}')" || _svw=""
        printf 'survey ok %s words\n' "${_svw:-0}"
        case "$_svw" in ''|*[!0-9]*) : ;; *)
          [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask; its gap-prompt copy is byte-bounded and the overflow is trace\n' "$_svw" >&2 ;;

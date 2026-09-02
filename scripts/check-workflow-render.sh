@@ -370,11 +370,30 @@ bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a case-variant extension FAILS the build too"
 rm -f "$d/base/workflows/fixture/Notes.MD"
 # A dangling .md symlink passes the extension check but the render loop's -f skips it — the
-# build stayed green while the referenced sibling rendered to nobody.
+# build stayed green while the referenced sibling rendered to nobody. (Since the -L refusal it
+# is refused as what it is: a link.)
 ln -s /nonexistent-ref "$d/base/workflows/fixture/ref.md"
 bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a dangling .md supporting symlink FAILS the build"
-has "$(cat "$d/build.log" 2>/dev/null)" 'not a readable regular file' "...naming the shape"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...naming the shape"
+rm -f "$d/base/workflows/fixture/ref.md"
+# A symlink with a VALID target is worse than a dangling one: -f follows it, and content from
+# OUTSIDE the repository renders into every tracked skill. Refused as a link, never followed.
+printf '# outside content\n' > "$d/outside.md"
+ln -s ../../../outside.md "$d/base/workflows/fixture/ref.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a valid-target .md supporting symlink FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused as a link, not followed"
+rm -f "$d/base/workflows/fixture/ref.md" "$d/outside.md"
+# And the supporting DIRECTORY itself: a committed link at base/workflows/<name> would render a
+# machine-local tree into every generated skill.
+mv "$d/base/workflows/fixture" "$d/real-fixture-dir"
+ln -s ../../real-fixture-dir "$d/base/workflows/fixture"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a symlinked supporting DIRECTORY fails the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused before -d can follow it"
+rm -f "$d/base/workflows/fixture"
+mv "$d/real-fixture-dir" "$d/base/workflows/fixture"
 
 # --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
 # `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,

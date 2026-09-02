@@ -653,6 +653,13 @@ render_agent_skill() {
   # the YAML `#` marker only means "comment" inside one.
   local sdir sfile sbase sbase_lc sseen="" sout ssub
   sdir="$workflows/$name"
+  # A SYMLINKED supporting directory is refused before -d can follow it: a committed link with a
+  # machine-local target renders host content into every tracked skill, and a dangling one skips
+  # silently — a green build with absent siblings either way.
+  if [ -L "$sdir" ]; then
+    echo "build.sh: base/workflows/$name is a symlink — supporting sources must live inside the repository, never behind a link" >&2
+    exit 3
+  fi
   if [ -d "$sdir" ]; then
     # EVERY direct child is validated, not only the ones the render glob yields: a subdirectory
     # (hidden or not) and a non-.md file (`notes.txt`, `Notes.MD`) all commit cleanly while
@@ -670,11 +677,15 @@ render_agent_skill() {
         echo "build.sh: base/workflows/$name/$sbase — unsupported supporting file (only *.md renders); it would ship to nobody" >&2
         exit 3 ;;
       esac
-      # …and a *.md child must be a READABLE REGULAR FILE: a dangling symlink passes the
-      # extension check while the render loop's -f silently skips it — green build, absent
-      # sibling.
+      # …and a *.md child must be a READABLE REGULAR FILE that is NOT a symlink: a dangling link
+      # passes the extension check while the render loop's -f silently skips it, and a link with
+      # a VALID target renders content from outside the repository into every tracked skill.
+      if [ -L "$ssub" ]; then
+        echo "build.sh: base/workflows/$name/$sbase is a symlink — supporting sources must live inside the repository, never behind a link" >&2
+        exit 3
+      fi
       if [ ! -f "$ssub" ] || [ ! -r "$ssub" ]; then
-        echo "build.sh: base/workflows/$name/$sbase — not a readable regular file (a dangling symlink?); it would ship to nobody" >&2
+        echo "build.sh: base/workflows/$name/$sbase — not a readable regular file; it would ship to nobody" >&2
         exit 3
       fi
     done

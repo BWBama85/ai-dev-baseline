@@ -2056,6 +2056,30 @@ RE_RC=$?
 if [ "$RE_RC" -ne 0 ]; then ok; else bad "27 an EMPTY review from a rc-0 CLI is a failed slot (got rc 0)"; fi
 rm -f "$shimbin/claude"
 
+# ================= 28. overflow is detected without SIGPIPE; no unbounded survey.md reopen ======
+# A reply only slightly past the 8 MiB cap fits the pipe buffer after head stops reading, so the
+# producer exits 0 with no SIGPIPE and an exactly-at-cap stage published as a silent truncation.
+# The dispatch pipeline captures ONE BYTE PAST the cap, and the publisher refuses past-cap.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+dd if=/dev/zero bs=8388708 count=1 2>/dev/null | tr '\0' 's'
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-survey .claude/state 7 ) >/dev/null 2>&1
+OV2_RC=$?
+if [ "$OV2_RC" -ne 0 ]; then ok; else
+  bad "28 a reply 100 bytes past the cap that exits 0 (excess absorbed by the pipe buffer) is a FAILED dispatch (got rc 0)"; fi
+if exists "$d/.claude/state/survey.md"; then
+  bad "28 …and no truncated survey.md is published"; else ok; fi
+rm -f "$shimbin/claude"
+# The post-publish word count opens survey.md by filename inside a bounded child — never a
+# shell-redirect open a FIFO swap could block forever, outside every dispatch bound.
+if grep -q 'wc -w < "\$dir/survey.md"' "$IL"; then
+  bad "28 an unbounded redirect open of the published survey is back in the lib"; else ok; fi
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
