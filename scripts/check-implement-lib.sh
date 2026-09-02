@@ -60,6 +60,7 @@ case "$1 $2" in
       *--json\ url,state*)
         if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
         printf '{"url":"%s","state":"%s","baseRefName":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" "${SHIM_ADOPT_STATE:-OPEN}" "${SHIM_ADOPT_BASE:-${SHIM_DEFAULT_BASE:-main}}"; exit 0 ;;
+      *headRefName*) printf '%s\n' "${SHIM_HEAD_REF:-issue-9-x}"; exit 0 ;;
     esac
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
@@ -2332,6 +2333,38 @@ d="$(new_repo)"; seed_snap "$d"
 printf '{"startedAt":1,"expiresAt":9223372036854775807,"token":"tokT"}' > "$d/.claude/state/gap-analysis.lock"
 ( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
 eq "$?" "13" "34 a wider-than-timestamp expiry is an unreadable lease, never a live one"
+
+# ================= 35. round-41: one-inode reads proven, renewal reads one copy, head pinned ====
+# read-artifact's read descriptors are opened at creation and proven one inode with -ef — after
+# that, size and emission never touch a pathname, so the predictable stage name has nothing left
+# to redirect. (The round-40 shape closed the write fd then reopened the name for wc and cat.)
+if grep -q -- '-ef "/dev/fd/\$_rfd1"' "$IL"; then ok; else
+  bad "35 read-artifact no longer proves its descriptors share one inode"; fi
+if grep -q 'wc -c "\$_cp"' "$IL" || grep -q 'cat "\$_cp"' "$IL"; then
+  bad "35 a pathname reopen of the read stage is back"; else ok; fi
+d="$(new_repo)"
+printf 'inode-held\n' > "$d/.claude/state/gaps.md"
+RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" gaps 2>/dev/null )"; RA_RC=$?
+eq "$RA_RC" "0" "35 the inode-held read emits a clean artifact"
+eq "$RA_OUT" "inode-held" "35 …byte-exact"
+# Renewal parses token and expiry from ONE bounded in-memory copy of the lock — two parent
+# jq opens could observe two inodes, and a FIFO swap would block the shell HOLDING THE MUTEX.
+if grep -q "jq -r '.token // \"\"' \"\$dir/\$_IL_CLAIM\"" "$IL"; then
+  bad "35 the renewal still opens the lock per-field by pathname"; else ok; fi
+if grep -q 'adb_run_bounded 30 5 cat "\$dir/\$_IL_CLAIM"' "$IL"; then ok; else
+  bad "35 the renewal's one bounded lock read is gone"; fi
+# gh pr create pins --head (gh defaults to the CURRENT branch at creation time), and the
+# recorded PR's head is verified through its URL before anything records it.
+if grep -q -- '--head "\$branch"' "$IL"; then ok; else
+  bad "35 gh pr create does not pin --head to the marker branch"; fi
+openpr SHIM_SLUG="o/r" SHIM_HEAD_REF="some-other-branch" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "25" "35 a created PR whose head is not the marker branch is refused, never recorded"
+has "$OP_OUT" 'has head "some-other-branch"' "35 …naming both branches"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "35 …while a matching head still records"
+# The native survey path names its ENFORCED backstop: publish-survey's lease re-verification.
+if grep -q 'ENFORCED backstop is the claim lease' "$ROOT/base/workflows/implement-issue.md"; then
+  ok; else bad "35 the native-path bound is narrated without naming its enforcement"; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

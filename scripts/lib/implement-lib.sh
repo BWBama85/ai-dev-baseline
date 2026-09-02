@@ -1077,7 +1077,12 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   }
   rc=0
   now="$(date +%s 2>/dev/null)" || now=""
-  cur="$(jq -r '.token // ""' "$dir/$_IL_CLAIM" 2>/dev/null)" || cur=""
+  # ONE bounded read of the lock, both fields parsed from the SAME in-memory copy: two
+  # parent-shell jq opens could observe two different inodes, and a FIFO swapped in after the
+  # -f check would block this shell WHILE IT HOLDS THE MUTEX, outside every dispatch backstop.
+  local _lraw
+  _lraw="$(adb_run_bounded 30 5 cat "$dir/$_IL_CLAIM" 2>/dev/null)" || _lraw=""
+  cur="$(printf '%s' "$_lraw" | jq -r '.token // ""' 2>/dev/null)" || cur=""
   if [ -z "$now" ]; then
     # No clock, no verdict — and no verdict fails CLOSED: neither the lease nor the margin can be
     # validated, so proceeding is the same near-expiry exposure every other arm refuses.
@@ -1098,7 +1103,7 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     printf 'implement-lib: the run claim at %s/%s belongs to a SUCCESSOR run (its token is not yours) — this run was reaped after its lease expired. Stop: do not write artifacts the live run owns.\n' "$dir" "$_IL_CLAIM" >&2
     return 13
   fi
-  exp="$(jq -r 'if (.expiresAt | type) == "number" then (.expiresAt | floor | tostring) else "" end' "$dir/$_IL_CLAIM" 2>/dev/null)" || exp=""
+  exp="$(printf '%s' "$_lraw" | jq -r 'if (.expiresAt | type) == "number" then (.expiresAt | floor | tostring) else "" end' 2>/dev/null)" || exp=""
   # The same 10-digit width bound _il_claim_expiry applies at admission: a wider value is not a
   # timestamp, and bash's signed arithmetic wraps `exp - now` into a large positive — renewal
   # would revive a claim admission treats as immediately breakable.
@@ -1579,31 +1584,51 @@ cmd_read_artifact() {
   # emission — runs on the private copy: sizing and emitting the public name as two separate
   # opens left a swap window where a symlink could be emitted by reference or a grown file
   # silently truncated under a clean status. One byte past the cap so past-cap is DETECTED.
-  local _cfd="" _cp="$dir/.artifact.w$$"
+  # TWO read descriptors are opened at creation, before any content exists, and all three are
+  # proven one inode with -ef — after that, the copy, the size and the emission never touch a
+  # pathname again, so a swap of the predictable stage name has nothing left to redirect. The
+  # verified inode is the O_EXCL-created regular file, which is also why the post-verification
+  # reads need no bound: a FIFO cannot be this inode.
+  local _cfd="" _rfd1="" _rfd2="" _cp="$dir/.artifact.w$$"
   _il_excl_create "$_cp" _cfd || {
     printf 'implement-lib: could not stage %s for reading\n' "$f" >&2
     return 20
   }
+  if ! { exec {_rfd1}<"$_cp"; } 2>/dev/null || ! { exec {_rfd2}<"$_cp"; } 2>/dev/null \
+     || [ ! "/dev/fd/$_cfd" -ef "/dev/fd/$_rfd1" ] || [ ! "/dev/fd/$_cfd" -ef "/dev/fd/$_rfd2" ]; then
+    exec {_cfd}>&-
+    [ -n "$_rfd1" ] && exec {_rfd1}<&-
+    [ -n "$_rfd2" ] && exec {_rfd2}<&-
+    rm -f "$_cp"
+    printf 'implement-lib: the read stage for %s was swapped during staging — refusing\n' "$f" >&2
+    return 20
+  fi
   if ! adb_run_bounded 60 5 head -c 8388609 "$f" 1>&"$_cfd"; then
     exec {_cfd}>&-
+    exec {_rfd1}<&-
+    exec {_rfd2}<&-
     rm -f "$_cp"
     printf 'implement-lib: could not read %s within its bound (a planted pipe?)\n' "$f" >&2
     return 20
   fi
   exec {_cfd}>&-
-  sz="$(adb_run_bounded 30 5 wc -c "$_cp" 2>/dev/null | awk '{print $1; exit}')" || sz=""
+  sz="$(wc -c 0<&"$_rfd1" 2>/dev/null | tr -d ' ')"
+  exec {_rfd1}<&-
   case "$sz" in ''|*[!0-9]*)
+    exec {_rfd2}<&-
     rm -f "$_cp"
     printf 'implement-lib: could not size the staged copy of %s\n' "$f" >&2
     return 20 ;;
   esac
   if [ "$sz" -gt 8388608 ]; then
+    exec {_rfd2}<&-
     rm -f "$_cp"
     printf 'implement-lib: %s exceeds the 8388608-byte result bound — refusing to read it\n' "$f" >&2
     return 20
   fi
-  adb_run_bounded 60 5 cat "$_cp"
+  cat 0<&"$_rfd2"
   sz=$?
+  exec {_rfd2}<&-
   rm -f "$_cp"
   [ "$sz" -eq 0 ] || {
     printf 'implement-lib: could not emit the staged copy of %s\n' "$f" >&2
@@ -2413,7 +2438,10 @@ cmd_open_pr() {
   local _pbase
   _pbase="$(adb_default_branch)" && [ -n "$_pbase" ] \
     || { printf 'implement-lib: cannot resolve the default branch for --base — refusing to open a PR against a guess\n' >&2; return 20; }
-  if create_out="$(gh pr create "${_rflag[@]}" --base "$_pbase" --title "$title" --body-file "$bodyf" 2>&1)"; then
+  # --head EXPLICIT: gh defaults the head to the CURRENT branch at creation time, so a checkout
+  # switched between the branch check and this line would open — and record — a PR for a
+  # different already-pushed branch.
+  if create_out="$(gh pr create "${_rflag[@]}" --base "$_pbase" --head "$branch" --title "$title" --body-file "$bodyf" 2>&1)"; then
     pr="$(printf '%s\n' "$create_out" | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
   else
     # ADOPT ONLY AN OPEN PR. `gh pr view <branch>` resolves the branch's most recent PR including
@@ -2439,6 +2467,14 @@ cmd_open_pr() {
     fi
   fi
   [ -n "$pr" ] || { printf 'implement-lib: gh pr create returned no PR URL\n' >&2; return 25; }
+  # …and the recorded PR's head is VERIFIED, not assumed: the URL is authoritative, so one read
+  # proves the create (or the adopt) actually attached to the marker branch.
+  local _phead
+  _phead="$(gh pr view "$pr" --json headRefName --jq '.headRefName // ""' 2>/dev/null)" || _phead=""
+  if [ "$_phead" != "$branch" ]; then
+    printf 'implement-lib: the PR at %s has head "%s", not the marker branch "%s" — not recorded; fix the PR (or the marker) and re-run\n' "$pr" "${_phead:-unreadable}" "$branch" >&2
+    return 25
+  fi
   local _pufd=""
   if ! _il_excl_create "$dir/.marker.tmp" _pufd; then
     printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20

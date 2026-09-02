@@ -205,10 +205,15 @@ prompt with `bash "$HOME/.claude/scripts/lib/implement-lib.sh" dispatch-survey -
 `bash "$HOME/.claude/scripts/lib/implement-lib.sh" publish-survey --token "$RUN_CLAIM_TOKEN" .claude/state` (the reply on
 stdin) — never write
 `survey.md` yourself: the publisher is what bounds an oversized reply. **The survey's time
-bound applies on this path too**: the 9000 s claim lease is sized for two ≤1500 s survey
-attempts, so a subagent still running past ~1500 s is abandoned (its error or timeout return
-is the terminal signal — never poll it), retried once, then the run continues without the
-survey. **Otherwise**, one bounded background call:
+bound applies on this path too — and its ENFORCED backstop is the claim lease, not this
+sentence**: `ADB_SURVEY_TIMEOUT_SECS` never reaches a native subagent (nothing on this path
+invokes the bounded runner), so pass the harness's own dispatch timeout when the facility
+offers one, and treat ~1500 s as the abandon point regardless (the subagent's error or timeout
+return is the terminal signal — never poll it; retry once, then continue without the survey).
+What makes an overrun safe rather than silent: `publish-survey` re-verifies the claim lease at
+publication, so a native survey that outlived the 9000 s lease is refused there (13) — the run
+stops for re-admission instead of continuing on a claim a successor may hold. **Otherwise**,
+one bounded background call:
 
 ```bash
 bash "$HOME/.claude/scripts/lib/implement-lib.sh" dispatch-survey --token "$RUN_CLAIM_TOKEN" .claude/state <issue numbers…>
