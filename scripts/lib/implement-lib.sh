@@ -1148,10 +1148,15 @@ _il_claim_renew() {   # <state-dir> <caller-token>
   # held, or a delayed read publishing over a successor's claim after a stale-break.
   if printf '%s' "$_lraw" | jq --argjson e "$(( now + lease ))" '.expiresAt = $e' 1>&"$_cfd" 2>/dev/null; then
     exec {_cfd}>&-
-    if mv -f "$_cst" "$dir/$_IL_CLAIM" 2>/dev/null; then
+    # VERIFIED, not assumed: mv -f onto a directory swapped in at the canonical name succeeds by
+    # moving the stage INSIDE it (BSD mv has no -T), and the caller would proceed leaseless. A
+    # mv-inside leaves the stage in the planted directory — removed best-effort on the way out.
+    if mv -f "$_cst" "$dir/$_IL_CLAIM" 2>/dev/null \
+       && [ -f "$dir/$_IL_CLAIM" ] && [ ! -L "$dir/$_IL_CLAIM" ]; then
       _il_claim_mutex_drop "$dir"
       return "$rc"
     fi
+    rm -f "$dir/$_IL_CLAIM/${_cst##*/}" 2>/dev/null
   else
     exec {_cfd}>&-
   fi
@@ -1248,7 +1253,10 @@ _il_phase() {   # <state-dir> <phase>
     return 1
   fi
   exec {_mfd}>&-
-  mv "$dir/.marker.tmp" "$dir/$_IL_MARKER"
+  # Verified like the claim publish: mv onto a directory swapped in at the marker name succeeds
+  # by moving INSIDE it, and the phase write would report ok having recorded nothing.
+  mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" \
+    && [ -f "$dir/$_IL_MARKER" ] && [ ! -L "$dir/$_IL_MARKER" ]
 }
 
 # --- sync-default --------------------------------------------------------------------------------
@@ -2241,11 +2249,21 @@ cmd_dispatch_review() {
     # with no patch, and a symlink to a directory exits 1 with no patch — both were silently
     # committed later without ever appearing in the review prompt. Bounded, because the entry
     # names are agent-creatable and a FIFO must expire a bound, never hang the build.
-    _urec="$(adb_run_bounded 60 5 git -C "$_utop" diff --no-index -- /dev/null "$uf" 2>/dev/null)"
+    # CAPPED at one byte past the result bound before it ever lands in a variable: the runtime
+    # bound does not limit bytes, and a gigabyte untracked file would otherwise materialize in
+    # memory and then in the prompt. 141 is git dying on head's close — output past the cap —
+    # and is the same refusal as an at-cap capture.
+    _urec="$(adb_run_bounded 60 5 git -C "$_utop" diff --no-index -- /dev/null "$uf" 2>/dev/null | head -c 8388609)"
     case "$?" in
       0|1) : ;;
+      141) exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: untracked %s diffs past the 8388608-byte bound — gitignore it or shrink it; a review prompt cannot carry it\n' "$uf" >&2; return 20 ;;
       *)   exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
     esac
+    if [ "$(printf '%s' "$_urec" | wc -c | tr -d ' ')" -gt 8388608 ] 2>/dev/null; then
+      exec {_rpfd}>&-; rm -f "$pft" "$_usnap"
+      printf 'implement-lib: untracked %s diffs past the 8388608-byte bound — gitignore it or shrink it; a review prompt cannot carry it\n' "$uf" >&2
+      return 20
+    fi
     if [ -n "$_urec" ]; then
       printf '%s\n' "$_urec" 1>&"$_rpfd"
     else
@@ -2527,7 +2545,9 @@ cmd_open_pr() {
     printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
   fi
   exec {_pufd}>&-
-  { mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" && _il_phase "$dir" pr_opened; } \
+  { mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" \
+      && [ -f "$dir/$_IL_MARKER" ] && [ ! -L "$dir/$_IL_MARKER" ] \
+      && _il_phase "$dir" pr_opened; } \
     || { printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20; }
   printf 'pr %s\n' "$pr"
 

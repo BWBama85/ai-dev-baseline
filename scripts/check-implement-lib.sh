@@ -2393,6 +2393,37 @@ eq "$OP_RC" "0" "36 …while the matching tip still records"
 if grep -q 'done 0<&"\$_urfd"' "$IL"; then ok; else
   bad "36 the untracked loop is back on a pathname reopen"; fi
 
+# ================= 37. round-43: bounded untracked diffs, verified canonical publishes ==========
+# A gigabyte untracked file used to materialize whole in a shell variable and then in the
+# prompt — the diff is byte-capped before capture, and past-cap refuses with the path named.
+d="$(new_repo)"
+read -r _ RVB <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVB/.claude/state"; seed_snap "$RVB"
+( cd "$RVB" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+dd if=/dev/zero bs=1048576 count=9 2>/dev/null | tr '\0' 'u' > "$RVB/huge-untracked.txt"
+UB_OUT="$( cd "$RVB" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>&1 )"; UB_RC=$?
+eq "$UB_RC" "20" "37 a 9 MiB untracked file refuses the review prompt"
+has "$UB_OUT" "diffs past the 8388608-byte bound" "37 …naming the bound and the remedy"
+rm -f "$RVB/huge-untracked.txt"
+( cd "$RVB" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "0" "37 …and the prompt builds again without it"
+# The canonical publishes VERIFY the result: mv -f onto a directory swapped in at the claim or
+# marker name succeeds by moving the stage INSIDE it (BSD mv has no -T), and the caller would
+# proceed leaseless or phase-less. The marker twin is deterministic: a directory at the marker
+# name must fail the phase write, never report ok.
+phasefn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_phase()/,/^}/p' "$IL")"
+PH_D="$(new_repo)"
+mkdir "$PH_D/.claude/state/implement-issue-active.json"
+PH_RC="$( cd "$PH_D" && eval "$phasefn" || exit 99
+  _IL_MARKER="implement-issue-active.json"
+  _il_phase .claude/state pushed >/dev/null 2>&1; printf '%s' "$?" )"
+if [ "$PH_RC" != "0" ]; then ok; else
+  bad "37 a directory swapped at the marker name reports a successful phase write"; fi
+if grep -q 'rm -f "\$dir/\$_IL_CLAIM/\${_cst##\*/}"' "$IL"; then ok; else
+  bad "37 a mv-inside leaves the claim stage inside the planted directory forever"; fi
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
