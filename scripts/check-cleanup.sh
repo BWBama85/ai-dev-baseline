@@ -3247,4 +3247,24 @@ if grep -q 'liveness re-probe failed' "$ROOT/base/workflows/cleanup.md" \
    && grep -q '"\$RL_RC" -ne 10' "$ROOT/base/workflows/cleanup.md"; then ok; else
   bad "14 cleanup.md treats a run-live ERROR like rc 10 — a damaged helper would read as staleness"; fi
 
+# ================= 15. file-size: the sweep's bounded size read (#435) ==========================
+# The report loop reads agent-written error files; a parent-shell `wc -c <` redirect could be
+# blocked forever by a FIFO swapped in after the scan.
+FS_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-fsize.XXXXXX")"
+printf 'hello\n' > "$FS_D/f"
+eq "$(bash "$CL" file-size "$FS_D/f" 2>/dev/null)" "6" "15 a regular file sizes to its bytes"
+bash "$CL" file-size "$FS_D/absent" >/dev/null 2>&1
+no "$?" "15 a missing path is loud, never a silent zero"
+mkdir "$FS_D/d"
+bash "$CL" file-size "$FS_D/d" >/dev/null 2>&1
+no "$?" "15 a directory is loud too"
+bash "$CL" file-size >/dev/null 2>&1
+eq "$?" "2" "15 no argument is a usage error"
+rm -rf "$FS_D"
+# …and the sweep's fence uses it instead of the redirect.
+if grep -q 'file-size "\$sfile"' "$ROOT/base/workflows/cleanup.md"; then ok; else
+  bad "15 cleanup.md still sizes report files through a parent-shell redirect"; fi
+if grep -q 'wc -c < "\$sfile"' "$ROOT/base/workflows/cleanup.md"; then
+  bad "15 …the unbounded redirect open is back in the fence"; else ok; fi
+
 check_summary "check-cleanup"

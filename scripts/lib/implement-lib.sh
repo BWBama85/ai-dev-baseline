@@ -1167,12 +1167,15 @@ _il_append_issue_envelopes() {   # <state-dir> <out-fd> <label-suffix> <n>...
   local dir="$1" pfd="$2" suffix="$3" n assoc text; shift 3
   for n in "$@"; do
     case "$n" in ''|*[!0-9]*) printf 'implement-lib: not an issue number: %s\n' "$n" >&2; return 1 ;; esac
-    assoc="$(cat "$dir/issue-$n.assoc" 2>/dev/null)" || assoc=""
+    # Bounded filename opens: these reads run AFTER the survey dispatch, so a surviving
+    # descendant can swap the snapshot names — a FIFO must expire a bound, never hang the
+    # prompt assembly, and the jq below must open inside the bounded child too.
+    assoc="$(adb_run_bounded 30 5 cat "$dir/issue-$n.assoc" 2>/dev/null)" || assoc=""
     if [ -z "$assoc" ]; then
       printf 'implement-lib: #%s has no provenance label (%s/issue-%s.assoc) — run snapshot-issues first; an unattributed body is never dispatched\n' "$n" "$dir" "$n" >&2
       return 1
     fi
-    text="$(jq -r --arg assoc "$assoc" '
+    text="$(adb_run_bounded 60 5 jq -r --arg assoc "$assoc" '
         [ "[ISSUE BODY — author: \(.author.login) (\($assoc))]\n\(.body // "")" ]
         + [ (.comments // [])[] | "[COMMENT — author: \(.author.login) (\(.authorAssociation // "NONE"))]\n\(.body // "")" ]
         | join("\n\n---\n\n")' "$dir/issue-$n.json" 2>/dev/null)" || text=""
@@ -1365,7 +1368,7 @@ cmd_snapshot_issues() {
       _il_bail "$tok" "$dir" 21 "issue #$n is ${st:-unreadable} — stop and confirm with the owner before implementing (do not silently reopen already-shipped work)"
       return $?
     fi
-    assoc="$(cat "$dir/issue-$n.assoc" 2>/dev/null)"
+    assoc="$(adb_run_bounded 30 5 cat "$dir/issue-$n.assoc" 2>/dev/null)"
     [ -n "$assoc" ] || { _il_bail "$tok" "$dir" 20 "#$n's provenance label is empty"; return $?; }
     printf 'snapshot #%s OPEN %s\n' "$n" "$assoc"
   done
@@ -1534,6 +1537,44 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
   mv -f "$note" "$dir/survey-trace.md" 2>/dev/null || rm -f "$note"
   [ -n "$quiet" ] || printf 'implement-lib: NOTE — survey-trace.md was %s bytes; moved whole to survey-trace-full.md with a note in its place\n' "$tb" >&2
   return 0
+}
+
+# --- read-artifact -------------------------------------------------------------------------------
+# The primary's by-name reads of published artifacts (gaps.md, survey.md, review.md) happen LONG
+# after the dispatch that wrote them, and a surviving descendant can swap the public name in
+# between — a FIFO would hang the primary's own shell, a symlink would hand it an arbitrary file
+# by reference as findings. One reader, validating at the MOMENT of consumption: regular
+# non-link, sized within a bound, emitted through a byte-capped bounded child. A post-check swap
+# can still substitute CONTENT (the dispatched agent's own words are unverifiable anyway); what
+# can no longer happen is an unbounded hang or a by-reference read.
+#   0 content on stdout · 10 absent (a skipped optional artifact) · 20 refused · 2 usage
+cmd_read_artifact() {
+  [ "$#" -eq 2 ] || { echo "implement-lib: read-artifact needs <state-dir> <gaps|survey|review>" >&2; exit 2; }
+  local dir="$1" which="$2" f sz
+  case "$which" in
+    gaps)   f="$dir/gaps.md" ;;
+    survey) f="$dir/survey.md" ;;
+    review) f="$dir/review.md" ;;
+    *) echo "implement-lib: read-artifact: unknown artifact '$which' (gaps|survey|review)" >&2; exit 2 ;;
+  esac
+  [ -e "$f" ] || [ -L "$f" ] || return 10
+  if [ -L "$f" ] || [ ! -f "$f" ]; then
+    printf 'implement-lib: %s is not a regular file (a planted object?) — refusing to read it\n' "$f" >&2
+    return 20
+  fi
+  sz="$(adb_run_bounded 30 5 wc -c "$f" 2>/dev/null | awk '{print $1; exit}')" || sz=""
+  case "$sz" in ''|*[!0-9]*)
+    printf 'implement-lib: could not size %s within its bound (a planted pipe?)\n' "$f" >&2
+    return 20 ;;
+  esac
+  if [ "$sz" -gt 8388608 ]; then
+    printf 'implement-lib: %s exceeds the 8388608-byte result bound — refusing to read it\n' "$f" >&2
+    return 20
+  fi
+  adb_run_bounded 60 5 head -c 8388608 "$f" || {
+    printf 'implement-lib: could not read %s within its bound\n' "$f" >&2
+    return 20
+  }
 }
 
 # --- publish-survey (#435) -----------------------------------------------------------------------
@@ -1926,9 +1967,13 @@ cmd_dispatch_gaps() {
     || { _il_bail "" "$dir" 20 "could not create gaps.md exclusively"; return $?; }
   _il_excl_create "$dir/gaps.err" _gefd \
     || { exec {_gofd}>&-; rm -f "$dir/gaps.md"; _il_bail "" "$dir" 20 "could not create gaps.err exclusively"; return $?; }
+  # Streamed through the byte cap WHILE being written, not only sized after: a runaway
+  # claude/gemini stdout would otherwise materialize until the time limit with the state
+  # filesystem already exhausted by the time the post-dispatch check runs.
   adb_run_bounded "$_gt" 5 cat "$pf" \
     | ADB_DISPATCH_TIMEOUT_SECS="$_gt" \
-      bash "$_IL_ROLE_DISPATCH" invoke gap_analysis 1>&"$_gofd" 2>&"$_gefd"
+      bash "$_IL_ROLE_DISPATCH" invoke gap_analysis 2>&"$_gefd" \
+    | head -c 8388609 1>&"$_gofd"
   rc=$?
   exec {_gofd}>&-
   exec {_gefd}>&-
@@ -2062,7 +2107,7 @@ cmd_dispatch_review() {
   # variable cannot carry NULs; the snapshot lives in the review family's stage prefix.
   # Exclusive create with the descriptor held, like every adjacent stage: mktemp-then-reopen
   # left a swap window, and the ls-files redirect would have written the listing through it.
-  local _usfd=""
+  local _usfd="" _urec=""
   _usnap="$dir/review-prompt-stage.w$$u"
   _il_excl_create "$_usnap" _usfd \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not stage the untracked snapshot\n' >&2; return 20; }
@@ -2093,11 +2138,20 @@ cmd_dispatch_review() {
       printf 'implement-lib: untracked entry %s is not a diffable file (an embedded repository or directory?) — resolve it before dispatching review\n' "$uf" >&2
       return 20
     fi
-    git -C "$_utop" diff --no-index -- /dev/null "$uf" 1>&"$_rpfd" 2>/dev/null
+    # Every entry PRODUCES A RECORD, proven by output rather than status: an empty file exits 0
+    # with no patch, and a symlink to a directory exits 1 with no patch — both were silently
+    # committed later without ever appearing in the review prompt. Bounded, because the entry
+    # names are agent-creatable and a FIFO must expire a bound, never hang the build.
+    _urec="$(adb_run_bounded 60 5 git -C "$_utop" diff --no-index -- /dev/null "$uf" 2>/dev/null)"
     case "$?" in
       0|1) : ;;
       *)   exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
     esac
+    if [ -n "$_urec" ]; then
+      printf '%s\n' "$_urec" 1>&"$_rpfd"
+    else
+      printf 'diff --git a/dev/null b/%s\n(untracked entry with no diffable content — an empty file, or a non-regular object; review it in the tree)\n' "$uf" 1>&"$_rpfd"
+    fi
   done < "$_usnap"
   rm -f "$_usnap"
   # The issue set is the MARKER's own comma list when a marker exists (a stray numeric snapshot
@@ -2150,10 +2204,12 @@ cmd_dispatch_review() {
     || { exec {_rofd}>&-; rm -f "$out"; printf 'implement-lib: could not create %s exclusively\n' "$errf" >&2; return 20; }
   if [ -n "$effort" ]; then
     adb_run_bounded 2700 5 cat "$pf" \
-      | bash "$_IL_ROLE_DISPATCH" invoke "$token" --effort "$effort" 1>&"$_rofd" 2>&"$_refd"
+      | bash "$_IL_ROLE_DISPATCH" invoke "$token" --effort "$effort" 2>&"$_refd" \
+      | head -c 8388609 1>&"$_rofd"
   else
     adb_run_bounded 2700 5 cat "$pf" \
-      | bash "$_IL_ROLE_DISPATCH" invoke "$token" 1>&"$_rofd" 2>&"$_refd"
+      | bash "$_IL_ROLE_DISPATCH" invoke "$token" 2>&"$_refd" \
+      | head -c 8388609 1>&"$_rofd"
   fi
   rc=$?
   exec {_rofd}>&-
@@ -2235,6 +2291,27 @@ cmd_open_pr() {
     printf 'implement-lib: GH_REPO/GH_HOST is set — open-pr targets the checkout origin only; unset it and re-run\n' >&2
     return 25
   fi
+  # From ORIGIN's URL, not gh's resolution: `gh repo set-default` aims unqualified creates and
+  # views at the configured default even with GH_REPO/GH_HOST unset, so in a multi-remote
+  # checkout the create (and every later verification) could target — and consistently confirm —
+  # a repository the push never went to. A parseable origin pins every gh call below with -R; an
+  # unparseable one (a local fixture path, a non-forge remote) falls back to gh's resolution
+  # with a NOTE, which is the pre-existing behavior.
+  local _ourl _rslug=""
+  local -a _rflag=()
+  _ourl="$(git remote get-url origin 2>/dev/null)" || _ourl=""
+  case "$_ourl" in
+    git@*:*/*)       _rslug="${_ourl#git@}"; _rslug="${_rslug/:/\/}" ;;
+    ssh://git@*/*/*) _rslug="${_ourl#ssh://git@}" ;;
+    https://*/*/*)   _rslug="${_ourl#https://}" ;;
+    http://*/*/*)    _rslug="${_ourl#http://}" ;;
+  esac
+  _rslug="${_rslug%.git}"; _rslug="${_rslug%/}"
+  case "$_rslug" in
+    */*/*) _rflag=(-R "$_rslug") ;;
+    *)     _rslug=""
+           printf 'implement-lib: NOTE — origin URL is not a recognizable forge remote; gh resolves the repository itself\n' >&2 ;;
+  esac
   # Every closing number must sit in the marker's recorded issue set (a SUBSET is legitimate —
   # refs-only issues stay open): the GitHub proof below only confirms that a mistyped number
   # REGISTERED, and a registered mistake closes an unrelated issue on merge. The set itself is
@@ -2279,14 +2356,14 @@ cmd_open_pr() {
   # be able to reach the verification — so an already-open PR for this branch is ADOPTED, never a
   # failure. The adopt read is attempted only after create fails, so the common path costs nothing.
   local create_out
-  if create_out="$(gh pr create --title "$title" --body-file "$bodyf" 2>&1)"; then
+  if create_out="$(gh pr create "${_rflag[@]}" --title "$title" --body-file "$bodyf" 2>&1)"; then
     pr="$(printf '%s\n' "$create_out" | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
   else
     # ADOPT ONLY AN OPEN PR. `gh pr view <branch>` resolves the branch's most recent PR including
     # a closed or merged historical one, and adopting that would record its URL in the marker and
     # aim the closing-link proof and both merge guards at the wrong pull request.
     local adopt_json adopt_state=""
-    adopt_json="$(gh pr view "$branch" --json url,state 2>/dev/null)" || adopt_json=""
+    adopt_json="$(gh pr view "$branch" "${_rflag[@]}" --json url,state 2>/dev/null)" || adopt_json=""
     if [ -n "$adopt_json" ]; then
       adopt_state="$(printf '%s' "$adopt_json" | jq -r '.state // ""' 2>/dev/null)" || adopt_state=""
       pr="$(printf '%s' "$adopt_json" | jq -r '.url // ""' 2>/dev/null | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
@@ -2317,8 +2394,12 @@ cmd_open_pr() {
   # CANONICALIZED to match GitHub's set: leading zeros stripped (the tokens are validated
   # non-zero above, so the strip never empties one), duplicates folded by `sort -nu`.
   want="$(printf '%s' "$closes" | tr ',' '\n' | sed '/^$/d; s/^0*//' | sort -nu | paste -sd, -)"
-  slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
-    || { printf 'implement-lib: cannot resolve this repo slug — verify the closing links by hand BEFORE merging\n' >&2; return 20; }
+  if [ -n "$_rslug" ]; then
+    slug="${_rslug#*/}"
+  else
+    slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+      || { printf 'implement-lib: cannot resolve this repo slug — verify the closing links by hand BEFORE merging\n' >&2; return 20; }
+  fi
   linked=""
   local _try refs_json
   for _try in 1 2 3 4 5; do
@@ -2397,6 +2478,7 @@ case "$SUB" in
   snapshot-issues)  cmd_snapshot_issues "$@" ;;
   dispatch-survey)  cmd_dispatch_survey "$@" ;;
   publish-survey)   cmd_publish_survey "$@" ;;
+  read-artifact)    cmd_read_artifact "$@" ;;
   dispatch-gaps)    cmd_dispatch_gaps "$@" ;;
   resolve-surfaces) cmd_resolve_surfaces "$@" ;;
   dispatch-review)  cmd_dispatch_review "$@" ;;

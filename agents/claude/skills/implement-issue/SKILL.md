@@ -248,7 +248,11 @@ delimiter) is built by the subcommand, not by hand — a raw paste is structural
 this path; never re-create one beside it.
 
 **Keep holding the claim after the dispatch returns** — the findings still have to be read, and
-the marker does not exist until step 5. On rc `124`/`143`/`137`/other: read the classified line
+the marker does not exist until step 5. **Read them with
+`bash "$HOME/.claude/scripts/lib/implement-lib.sh" read-artifact .claude/state gaps` — never open `gaps.md` by name**: a
+surviving dispatch descendant can swap the public name, and the reader is what validates
+(regular non-link, size-bounded) at the moment of consumption. On rc `124`/`143`/`137`/other:
+read the classified line
 at the tail of `gaps.err`, retry **once**, then report the incompleteness and stop cleanly —
 release the claim; `gap_analysis` **never substitut**es another agent (rc table and reasoning:
 `dispatch-failures.md`).
@@ -336,9 +340,11 @@ An unstated disposition is the defect — rc 11 at the report step, which 10/11 
 
 ### 6. Implement
 
-- `TaskCreate` 3–8 tracked sub-tasks. Read `.claude/state/survey.md` first **if it
-  exists** — a skipped (`survey = ""`) or twice-failed survey publishes none, and that is the
-  recorded disposition, not broken state; read code before
+- `TaskCreate` 3–8 tracked sub-tasks. Read the survey first if one was published —
+  `bash "$HOME/.claude/scripts/lib/implement-lib.sh" read-artifact .claude/state survey` (rc 10 = none was published: a skipped
+  `survey = ""` or twice-failed survey is the recorded disposition, not broken state). **Never
+  open `survey.md` by name** — a surviving surveyor can swap the public pathname long after
+  publication, and the reader validates at the moment of consumption; read code before
   editing; honor the project's conventions and module boundaries. Update documentation in the
   same PR for any user- or operator-facing change; add or extend tests in the same package.
 - Run the gates until green — **fix-and-rerun, not a wait** (#417):
@@ -412,7 +418,10 @@ Every configured slot must reach a terminal state — completed (a clean pass co
 or a documented cross-model fallback. A slot that ran and cannot complete after retry + fallback
 → blocked marker, `phase` stays `committed`; a slot whose CLI was absent never ran — that is
 rung 2/3, reported, never blocked (`dispatch-failures.md`). Then `phase=code_reviewed`.
-Completed findings are input to step 9, not a stopping point.
+Completed findings are input to step 9, not a stopping point — read them with
+`bash "$HOME/.claude/scripts/lib/implement-lib.sh" read-artifact .claude/state review` (same rule as the gap and survey reads:
+the public name is agent-writable long after the dispatch, and the reader validates at the
+moment of consumption).
 
 ### 9. Triage + fix — and file what you defer, BEFORE anything cites it
 

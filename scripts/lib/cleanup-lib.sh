@@ -37,6 +37,7 @@
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  docs    <run keep|stale|none>
 #   cleanup-lib.sh run-live       <state-dir>                  # 0 claim/marker present NOW, 10 none
+#   cleanup-lib.sh file-size      <path>                       # bytes via a bounded open; loud on failure
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh marker-shape    <path-or-name>
@@ -731,6 +732,17 @@ cmd_run_live() {
   return 10
 }
 
+# The sweep's report loop reads agent-controlled error files, and a parent-shell `wc -c <`
+# redirect could be blocked forever by a FIFO swapped in after the scan — the filename open
+# happens inside a bounded child instead. Bytes on stdout; empty + nonzero on any failure.
+cmd_file_size() {
+  [ "$#" -eq 1 ] || die "file-size: needs exactly 1 arg: <path>"
+  local out
+  out="$(adb_run_bounded 30 5 wc -c "$1" 2>/dev/null | awk '{print $1; exit}')" || return 1
+  case "$out" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$out"
+}
+
 cmd_state_verdict() {
   [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs|survey)"
   local kind="$1"; shift
@@ -1104,6 +1116,7 @@ main() {
     marker-identity) cmd_marker_identity "$@" ;;
     marker-shape)    cmd_marker_shape "$@" ;;
     file-identity)   cmd_file_identity "$@" ;;
+    file-size)       cmd_file_size "$@" ;;
     report)         cmd_report "$@" ;;
     state-line)     cmd_state_line "$@" ;;
     clone-state)    cmd_clone_state "$@" ;;

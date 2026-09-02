@@ -1151,7 +1151,10 @@ while IFS="$TABC" read -r kind sfile key ident; do
     *)      continue ;;
   esac
   case "$sfile" in *.err) : ;; *) continue ;; esac
-  sz="$(wc -c < "$sfile" 2>/dev/null | tr -d ' ')"
+  # A bounded filename open (bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" file-size), never a parent-shell redirect: these
+  # are agent-written error files, and a FIFO swapped in after the scan would block the open
+  # before wc ever started — /cleanup would hang with no bound anywhere above it.
+  sz="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" file-size "$sfile" 2>/dev/null)" || sz=""
   if [ -n "$sz" ] && [ "$sz" -gt 262144 ]; then
     NOTES="${NOTES}LARGE ${sfile##*/} is $((sz / 1024)) KB and belongs to a live run — kept
 "

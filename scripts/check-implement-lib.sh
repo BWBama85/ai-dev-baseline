@@ -2214,6 +2214,63 @@ eq "$(cat "$d/.claude/state/survey.md" 2>/dev/null)" "1" \
   "31 a wide zero-padded timeout is its number, not clamped to the share"
 rm -f "$shimbin/claude"
 
+# ================= 32. consumption-time validation: read-artifact, streamed caps, records =======
+# The primary's by-name reads of published artifacts happen LONG after the dispatch, and a
+# surviving descendant can swap the public name in between — read-artifact validates at the
+# moment of consumption and the workflow routes every artifact read through it.
+d="$(new_repo)"
+printf 'the findings\n' > "$d/.claude/state/gaps.md"
+RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" gaps 2>/dev/null )"; RA_RC=$?
+eq "$RA_RC" "0" "32 a regular artifact reads clean"
+eq "$RA_OUT" "the findings" "32 …emitting its content"
+bash "$IL" read-artifact "$d/.claude/state" survey >/dev/null 2>&1
+eq "$?" "10" "32 an absent optional artifact is 10, never an error"
+printf 'SECRET\n' > "$d/decoy2.txt"
+( cd "$d" && ln -s ../../decoy2.txt .claude/state/survey.md ) >/dev/null 2>&1
+RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" survey 2>/dev/null )"; RA_RC=$?
+eq "$RA_RC" "20" "32 a planted symlink at an artifact name is refused"
+if [ -z "$RA_OUT" ]; then ok; else bad "32 …and the link target is never emitted"; fi
+rm -f "$d/.claude/state/survey.md"
+mkdir "$d/.claude/state/review.md"
+bash "$IL" read-artifact "$d/.claude/state" review >/dev/null 2>&1
+eq "$?" "20" "32 a planted directory at an artifact name is refused"
+bash "$IL" read-artifact "$d/.claude/state" bogus >/dev/null 2>&1
+eq "$?" "2" "32 an unknown artifact name is a usage error"
+# …and the workflow routes all three artifact reads through it.
+eq "$(grep -c 'read-artifact {{STATE_DIR}}' "$ROOT/base/workflows/implement-issue.md")" "3" \
+  "32 the workflow reads gaps, survey and review via read-artifact"
+# The gap and review dispatches stream their results through the byte cap WHILE writing — a
+# runaway would otherwise materialize until the time limit with the filesystem already gone.
+eq "$(grep -c 'head -c 8388609 1>&"\$_gofd"' "$IL")" "1" "32 the gap result is byte-capped in-stream"
+eq "$(grep -c 'head -c 8388609 1>&"\$_rofd"' "$IL")" "2" "32 …and both review slot arms are"
+# The envelope reads open by filename inside a bounded child — they run after the survey
+# dispatch, where a FIFO swap at the snapshot names must expire a bound, never hang assembly.
+if grep -q 'assoc="\$(cat "\$dir/issue-\$n.assoc"' "$IL"; then
+  bad "32 the envelope association read is back on an unbounded parent-shell open"; else ok; fi
+# Every untracked entry produces a review record: an empty file (rc 0, no patch) and a symlink
+# to a directory (rc 1, no patch) both used to vanish from the review prompt.
+read -r _ RVU <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVU/.claude/state"; seed_snap "$RVU"
+( cd "$RVU" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+: > "$RVU/empty-untracked.txt"
+mkdir "$RVU/somedir"; ( cd "$RVU" && ln -s somedir dirlink ) >/dev/null 2>&1
+( cd "$RVU" && bash "$IL" dispatch-review --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "0" "32 the review prompt builds over empty and non-regular untracked entries"
+if grep -q 'empty-untracked.txt' "$RVU/.claude/state/review-prompt.txt" 2>/dev/null; then
+  ok; else bad "32 …and the empty untracked file appears as a record"; fi
+if grep -q 'dirlink' "$RVU/.claude/state/review-prompt.txt" 2>/dev/null; then
+  ok; else bad "32 …and the non-regular entry appears as a record"; fi
+# gh's configured default (gh repo set-default) aims unqualified creates elsewhere even with the
+# env clean — a parseable origin pins every gh call with -R; the fixture's local-path origin
+# takes the stated fallback.
+if grep -q 'gh pr create "\${_rflag\[@\]}"' "$IL"; then ok; else
+  bad "32 gh pr create is not pinned to the origin-derived slug"; fi
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "32 a local-path origin still opens (the stated fallback)"
+has "$OP_OUT" "not a recognizable forge remote" "32 …with the fallback NOTEd, never silent"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
