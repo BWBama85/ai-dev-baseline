@@ -1241,13 +1241,21 @@ _il_phase() {   # <state-dir> <phase>
   # rm-then-redirect left a gap a raced plant could fill, and the phase write would have
   # truncated whatever the plant pointed at.
   _il_excl_create "$dir/.marker.tmp" _mfd || return 1
-  if ! jq --arg phase "$phase" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
+  # The transform reads a bounded in-memory copy, never the marker pathname: a parent-shell jq
+  # open could be blocked forever by a FIFO swapped at the name.
+  local _mj
+  _mj="$(adb_run_bounded 30 5 cat "$dir/$_IL_MARKER" 2>/dev/null)" || _mj=""
+  if [ -z "$_mj" ]; then
+    exec {_mfd}>&-
+    rm -f "$dir/.marker.tmp"
+    return 1
+  fi
+  if ! printf '%s' "$_mj" | jq --arg phase "$phase" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
        --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        '.phase = $phase
         | .phaseHistory = ((.phaseHistory // []) as $h
             | if ($h | length) > 0 and $h[-1].phase == $phase then $h else $h + [{phase: $phase, at: $at}] end)
-        | (if $owner == "" then . else .owner = $owner end)' \
-       "$dir/$_IL_MARKER" 1>&"$_mfd"; then
+        | (if $owner == "" then . else .owner = $owner end)' 1>&"$_mfd"; then
     exec {_mfd}>&-
     rm -f "$dir/.marker.tmp"
     return 1
@@ -1402,8 +1410,8 @@ cmd_snapshot_issues() {
 # newline-free record — must not land whole in that reader's context and defeat the out-of-window
 # purpose. The head is the same whole-line UTF-8-safe 16 KiB bound the gap-prompt copy uses; the
 # full reply is kept beside it as survey-overflow.md, inside the swept survey-*.md family.
-_il_publish_survey() {   # <state-dir>
-  local dir="$1" _svb _pub _priv
+_il_publish_survey() {   # <state-dir> <stage-read-fd>
+  local dir="$1" _sfd="$2" _svb _pub _priv
   # The stage must be a nonempty REGULAR file. A surveyor can unlink it mid-pipe (its stdout
   # stays on the old inode) and leave a symlink at the name — publishing would hand an arbitrary
   # repository or host file to the primary and the gap agent as "the survey". rm removes a
@@ -1428,11 +1436,14 @@ _il_publish_survey() {   # <state-dir>
     printf 'implement-lib: could not create the private survey copy exclusively (a planted object?) — refusing to publish\n' >&2
     return 1
   fi
-  if ! adb_run_bounded 60 5 head -c 8388609 "$dir/survey-stage.md" 1>&"$_pfd" 2>/dev/null; then
+  # From the descriptor the CALLER has held since stage creation (-ef proven there), never a
+  # pathname reopen: the -L pre-check above and a filename open here were two moments a
+  # descendant could swap a link between. A proven-regular inode cannot hang, so no bound.
+  if ! head -c 8388609 0<&"$_sfd" 1>&"$_pfd" 2>/dev/null; then
     exec {_pfd}>&-
     rm -f "$_priv"
     rm -rf "$dir/survey-stage.md"
-    printf 'implement-lib: the survey stage could not be read whole within its bound (a planted pipe?) — refusing to publish it\n' >&2
+    printf 'implement-lib: the survey stage could not be read whole — refusing to publish it\n' >&2
     return 1
   fi
   exec {_pfd}>&-
@@ -1688,9 +1699,17 @@ cmd_publish_survey() {
   # Exclusive create with the descriptor held, like the CLI path: rm-then-redirect left a swap
   # window a symlink could fill (the shell would follow it) and a FIFO could block, outside any
   # bound — the reply streams from stdin through the held descriptor instead.
-  local _nsfd=""
+  local _nsfd="" _nsrfd=""
   _il_excl_create "$dir/survey-stage.md" _nsfd \
     || { printf 'implement-lib: could not create the survey stage exclusively (a planted object?)\n' >&2; return 20; }
+  if ! { exec {_nsrfd}<"$dir/survey-stage.md"; } 2>/dev/null \
+     || [ ! "/dev/fd/$_nsfd" -ef "/dev/fd/$_nsrfd" ]; then
+    exec {_nsfd}>&-
+    [ -n "$_nsrfd" ] && exec {_nsrfd}<&-
+    rm -f "$dir/survey-stage.md"
+    printf 'implement-lib: the survey stage was swapped during staging\n' >&2
+    return 20
+  fi
   if ! head -c 8388609 1>&"$_nsfd"; then
     exec {_nsfd}>&-
     rm -f "$dir/survey-stage.md"
@@ -1698,7 +1717,12 @@ cmd_publish_survey() {
     return 20
   fi
   exec {_nsfd}>&-
-  _il_publish_survey "$dir" || { printf 'implement-lib: could not publish survey.md\n' >&2; return 20; }
+  if ! _il_publish_survey "$dir" "$_nsrfd"; then
+    exec {_nsrfd}<&-
+    printf 'implement-lib: could not publish survey.md\n' >&2
+    return 20
+  fi
+  exec {_nsrfd}<&-
   _svw="$(adb_run_bounded 30 5 wc -w "$dir/survey.md" 2>/dev/null | awk '{print $1; exit}')" || _svw=""
   printf 'survey ok %s words\n' "${_svw:-0}"
   case "$_svw" in ''|*[!0-9]*) : ;; *)
@@ -1841,9 +1865,16 @@ cmd_dispatch_survey() {
   # dies on SIGPIPE under pipefail and fails the dispatch outright.
   # The stage (and err) names are agent-adjacent and plantable as symlinks; a fresh redirect
   # must never write THROUGH one, so the names are unlinked first (rm does not follow).
-  local _stfd="" _sefd=""
+  local _stfd="" _sefd="" _strfd=""
   _il_excl_create "$dir/survey-stage.md" _stfd \
     || { _il_bail "" "$dir" 20 "could not create the survey stage exclusively"; return $?; }
+  if ! { exec {_strfd}<"$dir/survey-stage.md"; } 2>/dev/null \
+     || [ ! "/dev/fd/$_stfd" -ef "/dev/fd/$_strfd" ]; then
+    exec {_stfd}>&-
+    [ -n "$_strfd" ] && exec {_strfd}<&-
+    rm -f "$dir/survey-stage.md"
+    _il_bail "" "$dir" 20 "the survey stage was swapped during staging"; return $?
+  fi
   _il_excl_create "$dir/survey.err" _sefd \
     || { exec {_stfd}>&-; rm -f "$dir/survey-stage.md"; _il_bail "" "$dir" 20 "could not create survey.err exclusively"; return $?; }
   # The prompt is fed through a bounded filename-open too — the old parent-side stdin open
@@ -1856,8 +1887,13 @@ cmd_dispatch_survey() {
   exec {_stfd}>&-
   exec {_sefd}>&-
   if [ "$rc" -eq 0 ]; then
-    _il_publish_survey "$dir" || { _il_bail "" "$dir" 20 "could not publish survey.md"; return $?; }
+    if ! _il_publish_survey "$dir" "$_strfd"; then
+      exec {_strfd}<&-
+      _il_bail "" "$dir" 20 "could not publish survey.md"; return $?
+    fi
+    exec {_strfd}<&-
   else
+    exec {_strfd}<&-
     rm -f "$dir/survey-stage.md"
   fi
   # The CLI surveyor writes survey-trace.md ITSELF, outside role-dispatch's capped streams — cap
@@ -2082,12 +2118,22 @@ cmd_dispatch_gaps() {
     # the retry-then-surface policy exactly as a missing one would.
     printf 'implement-lib: the gap output at %s is missing or EMPTY after a rc-0 dispatch — treating the dispatch as failed\n' "$dir/gaps.md" >&2
     rc=20
-  elif [ "$rc" -eq 0 ] \
-       && [ "$(adb_run_bounded 30 5 wc -c "$dir/gaps.md" 2>/dev/null | awk '{print $1; exit}')" -gt 8388608 ] 2>/dev/null; then
-    # The emitters byte-cap at ONE PAST 8388608, so a result past the cap means a runaway or a
-    # swap — refused, never accepted as a silently truncated analysis.
-    printf 'implement-lib: the gap output at %s exceeds the 8388608-byte result bound — treating the dispatch as failed\n' "$dir/gaps.md" >&2
-    rc=20
+  elif [ "$rc" -eq 0 ]; then
+    # The size is CAPTURED and validated, not tested inline: an unsizable result (a FIFO swap,
+    # a permission flip, a removal) made the inline arithmetic quietly false and reported
+    # "gaps ok" over an artifact read-artifact would refuse — bypassing the retry policy.
+    local _gsz
+    _gsz="$(adb_run_bounded 30 5 wc -c "$dir/gaps.md" 2>/dev/null | awk '{print $1; exit}')" || _gsz=""
+    case "$_gsz" in
+      ''|*[!0-9]*)
+        printf 'implement-lib: could not size the gap output at %s (a planted or unreadable object?) — treating the dispatch as failed\n' "$dir/gaps.md" >&2
+        rc=20 ;;
+      *)
+        if [ "$_gsz" -gt 8388608 ]; then
+          printf 'implement-lib: the gap output at %s exceeds the 8388608-byte result bound — treating the dispatch as failed\n' "$dir/gaps.md" >&2
+          rc=20
+        fi ;;
+    esac
   fi
   case "$rc" in
     0) printf 'gaps ok\n' ;;
@@ -2184,7 +2230,14 @@ cmd_dispatch_review() {
   local mb
   mb="$(git merge-base "origin/$db" HEAD 2>/dev/null)" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git merge-base origin/%s HEAD failed\n' "$db" >&2; return 20; }
-  git diff "$mb" 1>&"$_rpfd" 2>/dev/null || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20; }
+  # Capped in-stream at one past the result bound: a review prompt past it is unreadable by any
+  # slot anyway, and an uncapped diff could fill the state filesystem before any bound applied.
+  git diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
+  case "$?" in
+    0) : ;;
+    141) exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: the tracked diff exceeds the 8388608-byte bound — split the change; a review prompt cannot carry it\n' >&2; return 20 ;;
+    *)   exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20 ;;
+  esac
   # UNTRACKED non-ignored files produce NO diff from a tree-ish, so a brand-new helper created
   # before this dispatch would be committed without independent review — append each as a
   # /dev/null diff. `--no-index` exits 1 whenever the files differ, which is every time here;
@@ -2282,7 +2335,7 @@ cmd_dispatch_review() {
   if [ -f "$dir/$_IL_MARKER" ]; then
     # STRING-TYPED, the same fail-closed validation open-pr's guard uses: jq -r would silently
     # stringify a number, letting marker corruption select the review criteria.
-    mlist="$(jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)" \
+    mlist="$(adb_run_bounded 30 5 cat "$dir/$_IL_MARKER" 2>/dev/null | jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' 2>/dev/null)" \
       || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: the run marker at %s/%s has no readable string .issue — fix the marker; the review scope is never guessed\n' "$dir" "$_IL_MARKER" >&2; return 20; }
     # The GRAMMAR is validated before any split: word splitting silently discards empty fields,
     # so "7," — a marker whose second issue was lost to corruption — would review only #7 while
@@ -2309,6 +2362,19 @@ cmd_dispatch_review() {
   _il_append_issue_envelopes "$dir" "$_rpfd" " — acceptance criteria" "${nums[@]}" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: review prompt assembly failed\n' >&2; return 20; }
   exec {_rpfd}>&-
+  # The CUMULATIVE cap: each part is individually bounded, but many bounded parts still add up —
+  # the assembled prompt is refused past 16 MiB before it is ever published to a slot.
+  local _ptot
+  _ptot="$(adb_run_bounded 30 5 wc -c "$pft" 2>/dev/null | awk '{print $1; exit}')" || _ptot=""
+  case "$_ptot" in
+    ''|*[!0-9]*)
+      rm -f "$pft"; printf 'implement-lib: could not size the assembled review prompt\n' >&2; return 20 ;;
+  esac
+  if [ "$_ptot" -gt 16777216 ]; then
+    rm -f "$pft"
+    printf 'implement-lib: the assembled review prompt is %s bytes — past the 16777216-byte cap; split the change\n' "$_ptot" >&2
+    return 20
+  fi
   rm -rf "$pf"   # a planted directory turns the publish rename into a move-INSIDE
   mv -f "$pft" "$pf" || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
   if [ "$prompt_only" -eq 1 ]; then
@@ -2347,10 +2413,19 @@ cmd_dispatch_review() {
     # empty final message; the others do not), leaves step 9 nothing to read behind "completed".
     printf 'implement-lib: the review output at %s is missing or EMPTY after a rc-0 dispatch — treating the slot as failed\n' "$out" >&2
     rc=20
-  elif [ "$rc" -eq 0 ] \
-       && [ "$(adb_run_bounded 30 5 wc -c "$out" 2>/dev/null | awk '{print $1; exit}')" -gt 8388608 ] 2>/dev/null; then
-    printf 'implement-lib: the review output at %s exceeds the 8388608-byte result bound — treating the slot as failed\n' "$out" >&2
-    rc=20
+  elif [ "$rc" -eq 0 ]; then
+    local _rsz
+    _rsz="$(adb_run_bounded 30 5 wc -c "$out" 2>/dev/null | awk '{print $1; exit}')" || _rsz=""
+    case "$_rsz" in
+      ''|*[!0-9]*)
+        printf 'implement-lib: could not size the review output at %s (a planted or unreadable object?) — treating the slot as failed\n' "$out" >&2
+        rc=20 ;;
+      *)
+        if [ "$_rsz" -gt 8388608 ]; then
+          printf 'implement-lib: the review output at %s exceeds the 8388608-byte result bound — treating the slot as failed\n' "$out" >&2
+          rc=20
+        fi ;;
+    esac
   fi
   case "$rc" in
     0) printf 'review %s ok -> %s\n' "$token" "$out" ;;
@@ -2397,7 +2472,12 @@ cmd_open_pr() {
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "implement-lib: open-pr needs gh and jq" >&2; return 20; }
   # STRING-TYPED, like the review side's .issue read: jq -r would stringify a number, and a
   # checkout on a branch of that name would then push from malformed run state.
-  branch="$(jq -er 'if (.branch | type) == "string" and .branch != "" then .branch else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)" \
+  # ONE bounded read of the marker; every field below parses from the same in-memory copy. A
+  # parent-shell jq open could be blocked forever by a FIFO swapped at the name — a fully
+  # reviewed and gated run would then never reach its push.
+  local _mraw
+  _mraw="$(adb_run_bounded 30 5 cat "$dir/$_IL_MARKER" 2>/dev/null)" || _mraw=""
+  branch="$(printf '%s' "$_mraw" | jq -er 'if (.branch | type) == "string" and .branch != "" then .branch else error("unreadable") end' 2>/dev/null)" \
     || { printf 'implement-lib: the run marker at %s/%s is unreadable or has no string branch\n' "$dir" "$_IL_MARKER" >&2; return 26; }
   [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$branch" ] \
     || { printf 'implement-lib: HEAD is not on the marker branch %s — refusing to push\n' "$branch" >&2; return 26; }
@@ -2439,7 +2519,7 @@ cmd_open_pr() {
   # open-with-arm-withheld contract for an unreadable marker stays intact on that path.
   local mset _mn _cn _found
   if [ -n "$closes" ]; then
-    mset="$(jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)" \
+    mset="$(printf '%s' "$_mraw" | jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' 2>/dev/null)" \
       || { printf 'implement-lib: the run marker at %s/%s has no readable string .issue — fix the marker; the closing set is never checked against a guess\n' "$dir" "$_IL_MARKER" >&2; return 26; }
     case "$mset" in
       ,*|*,|*,,*|*[!0-9,]*)
@@ -2473,7 +2553,7 @@ cmd_open_pr() {
   # `pushed` then would append a false backward pr_opened→pushed→pr_opened lifecycle to the
   # history a resumed session reads. The push happened either way; the phase only advances.
   local cur_phase
-  cur_phase="$(jq -r '.phase // ""' "$dir/$_IL_MARKER" 2>/dev/null)" || cur_phase=""
+  cur_phase="$(printf '%s' "$_mraw" | jq -r '.phase // ""' 2>/dev/null)" || cur_phase=""
   if [ "$cur_phase" != "pr_opened" ]; then
     _il_phase "$dir" pushed || { printf 'implement-lib: could not write phase=pushed\n' >&2; return 20; }
   fi
@@ -2539,7 +2619,10 @@ cmd_open_pr() {
   if ! _il_excl_create "$dir/.marker.tmp" _pufd; then
     printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
   fi
-  if ! jq --arg url "$pr" '.prUrl = $url' "$dir/$_IL_MARKER" 1>&"$_pufd"; then
+  # A FRESH bounded copy, not _mraw: the phase write above changed the marker since capture.
+  local _mraw2
+  _mraw2="$(adb_run_bounded 30 5 cat "$dir/$_IL_MARKER" 2>/dev/null)" || _mraw2=""
+  if [ -z "$_mraw2" ] || ! printf '%s' "$_mraw2" | jq --arg url "$pr" '.prUrl = $url' 1>&"$_pufd"; then
     exec {_pufd}>&-
     rm -f "$dir/.marker.tmp"
     printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
@@ -2597,12 +2680,14 @@ cmd_open_pr() {
       printf 'arm-skipped blocked-marker-unreadable\n'
       return 0
     fi
-    bb="$(jq -r '.branch' "$dir/$_IL_BLOCKED" 2>/dev/null)"
-    bi="$(jq -r '.issue'  "$dir/$_IL_BLOCKED" 2>/dev/null)"
+    local _braw
+    _braw="$(adb_run_bounded 30 5 cat "$dir/$_IL_BLOCKED" 2>/dev/null)" || _braw=""
+    bb="$(printf '%s' "$_braw" | jq -r '.branch' 2>/dev/null)"
+    bi="$(printf '%s' "$_braw" | jq -r '.issue' 2>/dev/null)"
     # BOTH halves of the identity must be readable: a block cannot be proved unrelated against a
     # marker whose .issue is missing or wrongly typed, so that shape withholds the arm too.
     local mi
-    if ! mi="$(jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' "$dir/$_IL_MARKER" 2>/dev/null)"; then
+    if ! mi="$(printf '%s' "$_mraw" | jq -er 'if (.issue | type) == "string" and .issue != "" then .issue else error("unreadable") end' 2>/dev/null)"; then
       printf 'arm-skipped blocked-marker-unreadable\n'
       return 0
     fi

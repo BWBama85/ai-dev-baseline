@@ -1930,7 +1930,8 @@ PB_OUT="$(
     ln -s ../../planted-target.txt "$dir/survey-stage.md" 2>/dev/null
     return 0
   }
-  cd "$PB_D" && _il_publish_survey .claude/state 2>/dev/null; printf 'RC=%s\n' "$?"
+  cd "$PB_D" && exec {sfd}<.claude/state/survey-stage.md \
+    && _il_publish_survey .claude/state "$sfd" 2>/dev/null; printf 'RC=%s\n' "$?"
 )"
 has "$PB_OUT" "RC=0" "25 the oversize publish still succeeds"
 if [ -L "$PB_D/.claude/state/survey.md" ]; then
@@ -1970,7 +1971,8 @@ SW_OUT="$(
     rm -f "$SW_D/.claude/state/survey-stage.md" 2>/dev/null
     ln -s ../../swap-target.txt "$SW_D/.claude/state/survey-stage.md" 2>/dev/null
   }
-  cd "$SW_D" && _il_publish_survey .claude/state 2>/dev/null; printf 'RC=%s\n' "$?"
+  cd "$SW_D" && exec {sfd}<.claude/state/survey-stage.md \
+    && _il_publish_survey .claude/state "$sfd" 2>/dev/null; printf 'RC=%s\n' "$?"
 )"
 has "$SW_OUT" "RC=0" "26 the publish still succeeds when a descendant races it"
 if [ -L "$SW_D/.claude/state/survey.md" ]; then
@@ -2423,6 +2425,49 @@ if [ "$PH_RC" != "0" ]; then ok; else
   bad "37 a directory swapped at the marker name reports a successful phase write"; fi
 if grep -q 'rm -f "\$dir/\$_IL_CLAIM/\${_cst##\*/}"' "$IL"; then ok; else
   bad "37 a mv-inside leaves the claim stage inside the planted directory forever"; fi
+
+# ================= 38. round-44: sizing failures fail, stage fd held, marker copies, prompt cap =
+# An unsizable rc-0 result (a permission flip, a swap) used to leave the inline arithmetic
+# quietly false and report gaps ok over an artifact read-artifact refuses.
+cat > "$shimbin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'gap findings\n'
+chmod 000 .claude/state/gaps.md 2>/dev/null
+exit 0
+SH
+chmod +x "$shimbin/claude"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\ngap_analysis = "claude"\n' > "$d/agents.toml"
+( cd "$d" && bash "$IL" dispatch-gaps .claude/state 7 ) >/dev/null 2>&1
+GU_RC=$?
+chmod 644 "$d/.claude/state/gaps.md" 2>/dev/null
+if [ "$GU_RC" -ne 0 ]; then ok; else
+  bad "38 an unsizable rc-0 gap result is a FAILED dispatch (got rc 0)"; fi
+rm -f "$shimbin/claude"
+# The survey publisher reads the stage from the descriptor its caller has held since creation
+# (-ef proven) — the -L pre-check and a filename open were two moments a link could slip between.
+if grep -q 'head -c 8388609 0<&"\$_sfd"' "$IL"; then ok; else
+  bad "38 the publisher is back on a pathname open of the stage"; fi
+# open-pr's marker fields, the blocked guard, dispatch-review's issue list and _il_phase all
+# parse bounded in-memory copies — a FIFO at a marker name must expire a bound, never hang.
+if grep -qF 'jq -er '"'"'if (.branch | type) == "string"'"'"' "$dir/$_IL_MARKER"' "$IL"; then
+  bad "38 a pathname marker read is back in open-pr"; else ok; fi
+if grep -c 'adb_run_bounded 30 5 cat "\$dir/\$_IL_MARKER"' "$IL" | grep -q '^[4-9]'; then ok; else
+  bad "38 fewer than four bounded marker copies remain — a pathname read came back"; fi
+# The review prompt has a CUMULATIVE cap: a giant tracked diff refuses in-stream, and the
+# assembled prompt refuses past 16 MiB before publication.
+read -r _ RVT <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVT/.claude/state"; seed_snap "$RVT"
+( cd "$RVT" && git switch -q -c issue-7-t \
+  && dd if=/dev/zero bs=1048576 count=9 2>/dev/null | tr '\0' 't' > big-tracked.txt \
+  && git add big-tracked.txt && git commit -qm big ) >/dev/null 2>&1
+TB_OUT="$( cd "$RVT" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>&1 )"; TB_RC=$?
+eq "$TB_RC" "20" "38 a 9 MiB tracked diff refuses the review prompt"
+has "$TB_OUT" "split the change" "38 …naming the remedy"
+if grep -q '16777216-byte cap' "$IL"; then ok; else
+  bad "38 the assembled prompt has no cumulative cap"; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
