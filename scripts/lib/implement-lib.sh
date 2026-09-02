@@ -1338,14 +1338,14 @@ cmd_snapshot_issues() {
     # left a gap a raced plant could fill, aiming these writes at any writable file.
     local _ijfd="" _iafd=""
     _il_excl_create "$dir/issue-$n.json" _ijfd \
-      || { _il_bail "$tok" "$dir" 20 "could not create issue-$n.json exclusively (a planted object?)"; return $?; }
+      || { _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.json exclusively (a planted object?)"; return $?; }
     if ! adb_run_bounded "$_ft" 10 gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state 1>&"$_ijfd"; then
       exec {_ijfd}>&-
       _il_bail "$tok" "$dir" 20 "could not fetch issue #$n (not found, or the read outran its ${_ft}s bound) — verify repo scope (repo-scope.md)"; return $?
     fi
     exec {_ijfd}>&-
     _il_excl_create "$dir/issue-$n.assoc" _iafd \
-      || { _il_bail "$tok" "$dir" 20 "could not create issue-$n.assoc exclusively (a planted object?)"; return $?; }
+      || { _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?; }
     if ! adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' 1>&"$_iafd"; then
       exec {_iafd}>&-
       _il_bail "$tok" "$dir" 20 "could not read #$n's author association (or the read outran its ${_ft}s bound)"; return $?
