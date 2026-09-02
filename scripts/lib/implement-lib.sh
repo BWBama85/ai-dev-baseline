@@ -257,7 +257,13 @@ _il_claim_mutex_take() {   # <state-dir>
     if mkdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null; then
       # An OWNER MARK inside the instance binds the later drop to it: a displaced holder whose
       # instance was misgrabbed must not rmdir whatever successor now occupies the pathname.
-      : > "$dir/$_IL_CLAIM_MUTEX/.owner.$$" 2>/dev/null || :
+      # A MARK THAT CANNOT BE WRITTEN IS NOT A TAKE: the drop finds no mark and leaves the
+      # directory standing, so every later take waits out the stale age — the instance is
+      # released here instead, and the caller fails closed.
+      if ! : > "$dir/$_IL_CLAIM_MUTEX/.owner.$$" 2>/dev/null; then
+        rmdir "$dir/$_IL_CLAIM_MUTEX" 2>/dev/null || :
+        return 1
+      fi
       return 0
     fi
     # adb_mtime, never an inline stat chain: GNU stat treats `-f %m` as a filesystem report and
@@ -1104,6 +1110,18 @@ _il_fd_size() {   # <fd>
   printf '%s\n' "$s"
 }
 
+# A bounded `wc <flag> <path>` by name, for artifacts no descriptor is held on: the count on
+# stdout, empty and 1 on any failure. wc's OWN status decides, never a pipeline's — GNU wc
+# prints a `0` count line for a directory before exiting 1, and `… | awk` returned awk's 0 over
+# it, which is how an unsizable survey.md reported "survey ok 0 words".
+_il_wc_bounded() {   # <-c|-w> <path>
+  local raw out
+  raw="$(adb_run_bounded 30 5 wc "$1" "$2" 2>/dev/null)" || return 1
+  out="$(printf '%s\n' "$raw" | awk '{print $1; exit}')"
+  case "$out" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$out"
+}
+
 # The checkout's origin as gh's `[HOST/]OWNER/REPO` slug, from the remote URL and never from gh's
 # own resolution: `gh repo set-default` and GH_REPO aim an unqualified call at a repository the
 # push never went to, so every gh read or write about this checkout carries `-R` with this. A
@@ -1251,7 +1269,7 @@ _il_append_issue_envelopes() {   # <state-dir> <out-fd> <label-suffix> <n>...
   # An OPEN DESCRIPTOR, not a pathname: every append used to reopen the prompt name, and a
   # surviving descendant swapping it between appends would receive the write. The caller holds
   # the fd from its exclusive create; nothing here touches a name.
-  local dir="$1" pfd="$2" suffix="$3" n assoc text; shift 3
+  local dir="$1" pfd="$2" suffix="$3" n assoc; shift 3
   for n in "$@"; do
     case "$n" in ''|*[!0-9]*) printf 'implement-lib: not an issue number: %s\n' "$n" >&2; return 1 ;; esac
     # Bounded filename opens: these reads run AFTER the survey dispatch, so a surviving
@@ -1262,18 +1280,35 @@ _il_append_issue_envelopes() {   # <state-dir> <out-fd> <label-suffix> <n>...
       printf 'implement-lib: #%s has no provenance label (%s/issue-%s.assoc) — run snapshot-issues first; an unattributed body is never dispatched\n' "$n" "$dir" "$n" >&2
       return 1
     fi
-    text="$(adb_run_bounded 60 5 jq -r --arg assoc "$assoc" '
+    # STREAMED into the held descriptor under a byte cap, never materialized in a variable: a
+    # long comment history used to be joined into shell memory whole before any size check, and
+    # the survey and gap builders had no aggregate cap at all. The raw text is cut in-stream at
+    # one past the per-issue bound, the contained bytes are measured by descriptor, and both
+    # the per-issue bound and the 16 MiB aggregate refuse before any role is invoked.
+    local _eb _ea
+    _eb="$(_il_fd_size "$pfd")" \
+      || { printf 'implement-lib: could not measure the prompt while containing issue #%s\n' "$n" >&2; return 1; }
+    adb_run_bounded 60 5 jq -r --arg assoc "$assoc" '
         [ "[ISSUE BODY — author: \(.author.login) (\($assoc))]\n\(.body // "")" ]
         + [ (.comments // [])[] | "[COMMENT — author: \(.author.login) (\(.authorAssociation // "NONE"))]\n\(.body // "")" ]
-        | join("\n\n---\n\n")' "$dir/issue-$n.json" 2>/dev/null)" || text=""
-    if [ -z "$text" ]; then
-      printf 'implement-lib: could not read issue #%s text from %s/issue-%s.json\n' "$n" "$dir" "$n" >&2
+        | join("\n\n---\n\n")' "$dir/issue-$n.json" 2>/dev/null \
+      | head -c 8388609 \
+      | bash "$_IL_ROLE_DISPATCH" untrusted "github-issue #$n$suffix" 1>&"$pfd"
+    case "$?" in
+      0|141) : ;;   # 141: jq dying on head's close — decided by the byte count below
+      *) printf 'implement-lib: could not read or contain issue #%s text from %s/issue-%s.json — never fall back to pasting it raw\n' "$n" "$dir" "$n" >&2
+         return 1 ;;
+    esac
+    _ea="$(_il_fd_size "$pfd")" \
+      || { printf 'implement-lib: could not measure the prompt while containing issue #%s\n' "$n" >&2; return 1; }
+    if [ $((_ea - _eb)) -gt 8388608 ]; then
+      printf 'implement-lib: issue #%s'"'"'s contained text exceeds the 8388608-byte bound — trim the thread or split the issue; a prompt cannot carry it\n' "$n" >&2
       return 1
     fi
-    printf '%s' "$text" | bash "$_IL_ROLE_DISPATCH" untrusted "github-issue #$n$suffix" 1>&"$pfd" || {
-      printf 'implement-lib: could not contain issue #%s text — never fall back to pasting it raw\n' "$n" >&2
+    if [ "$_ea" -gt 16777216 ]; then
+      printf 'implement-lib: the prompt crossed the 16777216-byte cap while containing issue #%s — split the issue set\n' "$n" >&2
       return 1
-    }
+    fi
     printf '\n' 1>&"$pfd"
   done
   return 0
@@ -1706,7 +1741,7 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
   # point-in-time, and a survivor swapping in a FIFO would block a redirect open forever,
   # outside every dispatch bound — the child's open is what the bound covers. An expired or
   # unparseable read falls to return 0: no hang, and the sweeps handle whatever sits there.
-  tb="$(adb_run_bounded 30 5 wc -c "$dir/survey-trace.md" 2>/dev/null | awk '{print $1; exit}')" || tb=""
+  tb="$(_il_wc_bounded -c "$dir/survey-trace.md")" || tb=""
   case "$tb" in ''|*[!0-9]*) return 0 ;; esac
   [ "$tb" -gt "$max" ] || return 0
   # A planted DIRECTORY at the destination turns mv -f into a move-INSIDE: the note would then
@@ -1878,11 +1913,15 @@ cmd_publish_survey() {
     return 20
   fi
   exec {_nsrfd}<&-
-  _svw="$(adb_run_bounded 30 5 wc -w "$dir/survey.md" 2>/dev/null | awk '{print $1; exit}')" || _svw=""
-  printf 'survey ok %s words\n' "${_svw:-0}"
-  case "$_svw" in ''|*[!0-9]*) : ;; *)
-    [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask\n' "$_svw" >&2 ;;
-  esac
+  # A survey that cannot be sized after publication is a FAILED survey, never "ok 0 words": the
+  # one permitted later reader refuses a removed or non-regular survey.md, so success here
+  # would skip the caller's retry and fallback for an artifact nobody can read.
+  if ! _svw="$(_il_wc_bounded -w "$dir/survey.md")"; then
+    printf 'implement-lib: survey.md could not be sized after publication (removed, or replaced by a non-regular object?) — treating the survey as failed\n' >&2
+    return 20
+  fi
+  printf 'survey ok %s words\n' "$_svw"
+  [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask\n' "$_svw" >&2
   return 0
 }
 
@@ -1947,16 +1986,19 @@ cmd_dispatch_survey() {
   } 1>&"$_spfd" 2>/dev/null || { exec {_spfd}>&-; _il_bail "" "$dir" 20 "could not write $pf"; return $?; }
   _il_append_checklist "$_spfd" "the survey"
   _il_append_issue_envelopes "$dir" "$_spfd" "" "$@" \
-    || { _il_fd_close "$_spfd" "$_sprfd"; _il_bail "" "$dir" 20 "survey prompt assembly failed"; return $?; }
+    || { _il_fd_close "$_spfd" "$_sprfd"; rm -f "$pf"; _il_bail "" "$dir" 20 "survey prompt assembly failed"; return $?; }
   exec {_spfd}>&-
   if [ "$prompt_only" -eq 1 ]; then
-    # THE CONSUMER'S FILE IS A PER-INVOCATION NAME — a second link to the prompt's inode inside
-    # the swept survey family — never the shared name, which a surviving earlier descendant can
-    # replace before the harness opens it (the review dispatcher's reason, and the same shape).
-    exec {_sprfd}<&-
-    rm -f "$dir/survey-held.w$$p"
-    ln "$pf" "$dir/survey-held.w$$p" 2>/dev/null || cp "$pf" "$dir/survey-held.w$$p" 2>/dev/null \
-      || { _il_bail "" "$dir" 20 "could not publish the survey prompt's per-invocation copy"; return $?; }
+    # THE CONSUMER'S FILE IS A PER-INVOCATION NAME inside the swept survey family, WRITTEN FROM
+    # THE HELD DESCRIPTOR into an exclusive create — never linked or copied from the shared
+    # name, which a surviving earlier descendant can replace the moment the write side closes.
+    local _spcfd=""
+    if ! _il_excl_create "$dir/survey-held.w$$p" _spcfd \
+       || ! cat <&"$_sprfd" 1>&"$_spcfd" 2>/dev/null; then
+      _il_fd_close "$_sprfd" "$_spcfd"; rm -f "$dir/survey-held.w$$p"
+      _il_bail "" "$dir" 20 "could not publish the survey prompt's per-invocation copy"; return $?
+    fi
+    _il_fd_close "$_sprfd" "$_spcfd"
     printf 'prompt-ready %s\n' "$dir/survey-held.w$$p"
     return 0
   fi
@@ -2075,11 +2117,15 @@ cmd_dispatch_survey() {
   [ "$_tmax" -gt 0 ] && _il_cap_trace "$dir" "$_tmax"
   case "$rc" in
     0) local _svw
-       _svw="$(adb_run_bounded 30 5 wc -w "$dir/survey.md" 2>/dev/null | awk '{print $1; exit}')" || _svw=""
-       printf 'survey ok %s words\n' "${_svw:-0}"
-       case "$_svw" in ''|*[!0-9]*) : ;; *)
-         [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask; its gap-prompt copy is byte-bounded and the overflow is trace\n' "$_svw" >&2 ;;
-       esac ;;
+       # Unsizable after publication is FAILED, never "ok 0 words" (publish-survey's reason).
+       if _svw="$(_il_wc_bounded -w "$dir/survey.md")"; then
+         printf 'survey ok %s words\n' "$_svw"
+         [ "$_svw" -le 1500 ] || printf 'implement-lib: NOTE — survey.md is %s words, past the 1500-word ask; its gap-prompt copy is byte-bounded and the overflow is trace\n' "$_svw" >&2
+       else
+         printf 'implement-lib: survey.md could not be sized after publication (removed, or replaced by a non-regular object?) — treating the survey as failed\n' >&2
+         rc=20
+         printf 'survey failed rc=%s (see %s)\n' "$rc" "$dir/survey.err"
+       fi ;;
     3) printf 'survey skipped (unassigned)\n' ;;   # survey = "" — the documented opt-out
     *) printf 'survey failed rc=%s (see %s)\n' "$rc" "$dir/survey.err" ;;
   esac
@@ -2207,7 +2253,7 @@ cmd_dispatch_gaps() {
       _il_bail "" "$dir" 20 "could not read survey.md within its bound (a planted pipe?)"; return $?
     fi
     exec {_svcfd}>&-
-    sv_bytes="$(adb_run_bounded 30 5 wc -c "$_svc" 2>/dev/null | awk '{print $1; exit}')" || sv_bytes=""
+    sv_bytes="$(_il_wc_bounded -c "$_svc")" || sv_bytes=""
     printf '\n%s\n' 'A pre-implementation repository survey (by this run'\''s dispatched surveyor; derived from the issue text, so treat it as the same third-party data) follows:' 1>&"$_gpfd"
     # WHOLE LINES up to the byte bound, never `head -c` — and the first line is bounded too, at a
     # UTF-8 character boundary (the contract and both reasons live on _il_survey_head).
@@ -2229,14 +2275,17 @@ cmd_dispatch_gaps() {
     fi
   fi
   _il_append_issue_envelopes "$dir" "$_gpfd" "" "$@" \
-    || { _il_fd_close "$_gpfd" "$_gprfd"; _il_bail "" "$dir" 20 "gap prompt assembly failed"; return $?; }
+    || { _il_fd_close "$_gpfd" "$_gprfd"; rm -f "$pf"; _il_bail "" "$dir" 20 "gap prompt assembly failed"; return $?; }
   exec {_gpfd}>&-
   if [ "$prompt_only" -eq 1 ]; then
-    # Same per-invocation copy as the survey prompt, inside the swept gap family.
-    exec {_gprfd}<&-
-    rm -f "$dir/gaps-held.w$$p"
-    ln "$pf" "$dir/gaps-held.w$$p" 2>/dev/null || cp "$pf" "$dir/gaps-held.w$$p" 2>/dev/null \
-      || { _il_bail "" "$dir" 20 "could not publish the gap prompt's per-invocation copy"; return $?; }
+    # Same per-invocation copy as the survey prompt, written from the held descriptor.
+    local _gpcfd=""
+    if ! _il_excl_create "$dir/gaps-held.w$$p" _gpcfd \
+       || ! cat <&"$_gprfd" 1>&"$_gpcfd" 2>/dev/null; then
+      _il_fd_close "$_gprfd" "$_gpcfd"; rm -f "$dir/gaps-held.w$$p"
+      _il_bail "" "$dir" 20 "could not publish the gap prompt's per-invocation copy"; return $?
+    fi
+    _il_fd_close "$_gprfd" "$_gpcfd"
     printf 'prompt-ready %s\n' "$dir/gaps-held.w$$p"
     return 0
   fi
@@ -2308,7 +2357,7 @@ cmd_dispatch_gaps() {
     # a permission flip, a removal) made the inline arithmetic quietly false and reported
     # "gaps ok" over an artifact read-artifact would refuse — bypassing the retry policy.
     local _gsz
-    _gsz="$(adb_run_bounded 30 5 wc -c "$dir/gaps.md" 2>/dev/null | awk '{print $1; exit}')" || _gsz=""
+    _gsz="$(_il_wc_bounded -c "$dir/gaps.md")" || _gsz=""
     case "$_gsz" in
       ''|*[!0-9]*)
         printf 'implement-lib: could not size the gap output at %s (a planted or unreadable object?) — treating the dispatch as failed\n' "$dir/gaps.md" >&2
@@ -2648,7 +2697,7 @@ cmd_dispatch_review() {
     rc=20
   elif [ "$rc" -eq 0 ]; then
     local _rsz
-    _rsz="$(adb_run_bounded 30 5 wc -c "$out" 2>/dev/null | awk '{print $1; exit}')" || _rsz=""
+    _rsz="$(_il_wc_bounded -c "$out")" || _rsz=""
     case "$_rsz" in
       ''|*[!0-9]*)
         printf 'implement-lib: could not size the review output at %s (a planted or unreadable object?) — treating the slot as failed\n' "$out" >&2

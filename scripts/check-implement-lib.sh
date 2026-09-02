@@ -1415,9 +1415,11 @@ if [ -d "$d/.claude/state/.claim-mutex" ]; then bad "19l …and no mutex is left
 # Ubuntu. A GNU-flavored stat shim proves the portable helper survives it.
 cat > "$shimbin/stat" <<'SH'
 #!/usr/bin/env bash
+# GNU stat: -L is accepted anywhere, -f is the filesystem report, -c takes a format.
+[ "$1" = "-L" ] && shift
 case "$1" in
   -f) echo "  File: \"$3\" ID: 100 Namelen: 255"; exit 1 ;;
-  -c) perl -e 'print((stat($ARGV[0]))[9])' "$3" ;;
+  -c) perl -e '@s = stat($ARGV[1]) or exit 1; print $ARGV[0] eq "%s" ? $s[7] : $ARGV[0] eq "%i" ? $s[1] : $s[9]' "$2" "$3" ;;
   *)  exit 1 ;;
 esac
 SH
@@ -1583,7 +1585,7 @@ rm -f "$shimbin/claude"
 # A rename-based cap replaced the pathname and left the surveyor's open descriptor on a hidden
 # unlinked inode that kept growing unseen. In-place truncation keeps the writer on the capped
 # inode, so its next append lands where the next pass (and the path's size) can see it.
-capfn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_cap_trace()/,/^}/p' "$IL")"
+capfn="$(sed -n '/^_il_wc_bounded()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_cap_trace()/,/^}/p' "$IL")"
 CAP_D="$(new_repo)"
 ( cd "$CAP_D" && eval "$capfn" \
   && dd if=/dev/zero bs=1024 count=4 2>/dev/null | tr '\0' 't' > .claude/state/survey-trace.md \
@@ -2607,8 +2609,8 @@ if [ -e "$RVB/.claude/state/review-prompt.txt" ]; then
 # =================     untracked records, and no push over an unclean worktree ==================
 # The survey and gap invocations read the descriptor held since their prompt's creation, never
 # the name a surviving descendant could swap between the write side closing and the cat.
-eq "$(grep -c 'cat <&"\$_gprfd"' "$IL")" "1" "40 the gap invocation reads the held prompt descriptor"
-eq "$(grep -c 'cat <&"\$_sprfd"' "$IL")" "1" "40 …and so does the survey invocation"
+eq "$(grep -c 'cat <&"\$_gprfd"' "$IL")" "2" "40 the gap invocation and the prompt-only copy both read the held prompt descriptor"
+eq "$(grep -c 'cat <&"\$_sprfd"' "$IL")" "2" "40 …and so do the survey's"
 if grep -q '5 cat "\$pf"' "$IL"; then bad "40 a dispatch still feeds its agent by reopening the prompt name"; else ok; fi
 # …observed: a plant swapped in at the prompt name AFTER the write side closed and BEFORE the
 # invocation (the window is made deterministic by an rm shim riding the result file's exclusive
@@ -2747,6 +2749,92 @@ rm -f "$RAG"/u?.txt
 # interpolated into an ERE.
 if grep -q 'grep -qE "\$protected"' "$IL"; then bad "41 the protected-branch test still interpolates a regex"; else ok; fi
 has "$(cat "$IL")" '[ "$b" = "$db" ] && continue' "41 …and compares the default branch literally"
+
+# ================= 42. round 49: copies from the held inode, unsizable survey fails, the mutex ==
+# =================     take needs its mark, issue text is bounded in-stream =====================
+# The per-invocation prompt copy is written from the held descriptor: a plant swapped in at the
+# shared name the moment the write side closes (an rm shim rides the copy's exclusive create,
+# which sits exactly there) must not be what the consumer receives.
+mkdir -p "$work/rmswap2"
+cat > "$work/rmswap2/rm" <<'SH'
+#!/usr/bin/env bash
+/bin/rm "$@"; rc=$?
+for a in "$@"; do case "$a" in */survey-held.w*p)
+  d="${a%/survey-held.w*}"; /bin/rm -f "$d/survey-prompt.txt"; printf 'PLANTED-PROMPT\n' > "$d/survey-prompt.txt" ;;
+esac; done
+exit $rc
+SH
+chmod +x "$work/rmswap2/rm"
+d="$(new_repo)"; seed_snap "$d"
+SC_OUT="$( cd "$d" && env PATH="$work/rmswap2:$PATH" bash "$IL" dispatch-survey --prompt-only .claude/state 7 2>/dev/null )"; SC_RC=$?
+eq "$SC_RC" "0" "42 a prompt-only survey still builds with a plant swapped in at the shared name"
+SC_PATH="${SC_OUT#prompt-ready }"
+has "$(cat "$d/$SC_PATH" 2>/dev/null)" 'github-issue #7' "42 …and the consumer's copy carries the validated prompt"
+hasnt "$(cat "$d/$SC_PATH" 2>/dev/null)" 'PLANTED-PROMPT' "42 …never the plant"
+# A survey that cannot be sized after publication is FAILED, never "survey ok 0 words": the wc
+# shim answers as GNU wc does for a directory (a 0 count line, exit 1).
+mkdir -p "$work/wcfail"
+cat > "$work/wcfail/wc" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in */survey.md) printf '0 %s\n' "$a"; exit 1 ;; esac; done
+exec /usr/bin/wc "$@"
+SH
+chmod +x "$work/wcfail/wc"
+d="$(new_repo)"; seed_snap "$d"
+WF_OUT="$( printf 'native survey reply\n' | ( cd "$d" && env PATH="$work/wcfail:$PATH" bash "$IL" publish-survey .claude/state ) 2>&1 )"; WF_RC=$?
+eq "$WF_RC" "20" "42 an unsizable published survey fails the native publish (20)"
+has "$WF_OUT" "could not be sized after publication" "42 …naming why"
+hasnt "$WF_OUT" "survey ok" "42 …and never reports it ok"
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+[ -n "$last" ] && printf 'cli survey reply\n' > "$last"
+exit 0
+SH
+chmod +x "$shimbin/codex"
+d="$(new_repo)"; seed_snap "$d"
+printf '[roles]\nsurvey = "codex"\n' > "$d/agents.toml"
+WC_OUT="$( cd "$d" && env PATH="$work/wcfail:$PATH" bash "$IL" dispatch-survey .claude/state 7 2>&1 )"; WC_RC=$?
+eq "$WC_RC" "20" "42 …and the CLI dispatch path fails the same way (20)"
+hasnt "$WC_OUT" "survey ok" "42 …without a success record"
+rm -f "$shimbin/codex"
+# The mutex take needs its owner mark: a take whose mark cannot be written used to enter the
+# critical section unreleasably, wedging every later take until the stale age.
+if [ "$(id -u)" -eq 0 ]; then
+  printf 'SKIP: 42 the unwritable-mark case cannot fire as root\n'
+else
+  mutexfn="$(sed -n '/^_IL_CLAIM_MUTEX=/p' "$IL"; sed -n '/^_il_claim_mutex_take()/,/^}/p' "$IL"; sed -n '/^_il_claim_mutex_drop()/,/^}/p' "$IL")"
+  MX_D="$(mktemp -d "$work/mx.XXXXXX")"
+  MX_RC="$(
+    eval "$mutexfn"
+    mkdir() { command mkdir "$@" && chmod 555 "${@: -1}"; }
+    _il_claim_mutex_take "$MX_D" >/dev/null 2>&1; printf '%s' "$?"
+  )"
+  eq "$MX_RC" "1" "42 a take whose owner mark cannot be written FAILS instead of entering unreleasably"
+  if [ -d "$MX_D/.claim-mutex" ]; then bad "42 …and the just-taken instance is released, not left to wedge later takes"; else ok; fi
+fi
+# Issue text is bounded IN-STREAM before any prompt is materialized: a 9 MiB issue body refuses
+# at the per-issue bound, and three 6 MiB issues refuse at the 16 MiB aggregate — where the old
+# code built the whole prompt (and the survey and gap builders had no aggregate cap at all).
+d="$(new_repo)"
+dd if=/dev/zero bs=1048576 count=9 2>/dev/null | tr '\0' 'b' > "$d/big.txt"
+jq -n --rawfile b "$d/big.txt" '{state:"OPEN",title:"t",body:$b,author:{login:"alice"},comments:[]}' > "$d/.claude/state/issue-7.json"
+printf 'OWNER' > "$d/.claude/state/issue-7.assoc"
+BI_OUT="$( cd "$d" && bash "$IL" dispatch-survey --prompt-only .claude/state 7 2>&1 )"; BI_RC=$?
+eq "$BI_RC" "20" "42 a 9 MiB issue body refuses the survey prompt (20)"
+has "$BI_OUT" "exceeds the 8388608-byte bound" "42 …at the per-issue bound"
+d="$(new_repo)"
+dd if=/dev/zero bs=1048576 count=6 2>/dev/null | tr '\0' 'b' > "$d/mid.txt"
+for n in 7 8 9; do
+  jq -n --rawfile b "$d/mid.txt" '{state:"OPEN",title:"t",body:$b,author:{login:"alice"},comments:[]}' > "$d/.claude/state/issue-$n.json"
+  printf 'OWNER' > "$d/.claude/state/issue-$n.assoc"
+done
+AI_OUT="$( cd "$d" && bash "$IL" dispatch-gaps --prompt-only .claude/state 7 8 9 2>&1 )"; AI_RC=$?
+eq "$AI_RC" "20" "42 three 6 MiB issues refuse the gap prompt at the aggregate cap (20)"
+has "$AI_OUT" "crossed the 16777216-byte cap while containing issue #9" "42 …naming the issue that crossed it"
+if compgen -G "$d/.claude/state/gaps-held.*" >/dev/null || [ -s "$d/.claude/state/gap-prompt.txt" ]; then
+  bad "42 …and no oversized prompt is left published"; else ok; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
