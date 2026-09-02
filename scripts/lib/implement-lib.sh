@@ -2310,8 +2310,10 @@ cmd_dispatch_review() {
   [ -n "$db" ] || db=main
   # BUILT IN A TEMP, PUBLISHED BY RENAME. Concurrent review slots each rebuild this one prompt
   # path, and a truncate-then-append build lets one slot's dispatch read another's half-written
-  # file — or a failed build publish a torn one. The slots' prompts are byte-identical (same
-  # diff, same criteria), so a reader holding the previous inode still reads a complete prompt.
+  # file — or a failed build publish a torn one. The published name is a rename TARGET only:
+  # each slot feeds its invocation from a descriptor held on its OWN stage inode, because a slot
+  # that reopened the shared name could find it absent — or another slot's copy — between its
+  # own publish and its read.
   # The stage name sits inside the review family (`review-prompt-stage.*` in _il_clear and
   # cleanup-lib's scan), so a copy orphaned by a kill is cleared like any other run artifact — a
   # dot-prefixed temp was invisible to both and kept the diff and criteria forever.
@@ -2321,6 +2323,20 @@ cmd_dispatch_review() {
   pft="$dir/review-prompt-stage.w$$r"
   _il_excl_create "$pft" _rpfd \
     || { printf 'implement-lib: could not create the review prompt stage exclusively under %s\n' "$dir" >&2; return 20; }
+  # READ DESCRIPTORS on the stage, opened at creation and proven one inode with the write side:
+  # two measure the tracked diff's bytes (before and after), one sizes the assembled prompt, one
+  # feeds the slot's invocation — none reopens a name. Each is closed where it is consumed; the
+  # abort paths below return from a top-level subcommand, so the process end closes the rest.
+  local _rs1="" _rs2="" _rs3="" _prfd=""
+  if ! { exec {_rs1}<"$pft"; } 2>/dev/null || ! { exec {_rs2}<"$pft"; } 2>/dev/null \
+     || ! { exec {_rs3}<"$pft"; } 2>/dev/null || ! { exec {_prfd}<"$pft"; } 2>/dev/null \
+     || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_rs1" ] || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_rs2" ] \
+     || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_rs3" ] || [ ! "/dev/fd/$_rpfd" -ef "/dev/fd/$_prfd" ]; then
+    _il_fd_close "$_rpfd" "$_rs1" "$_rs2" "$_rs3" "$_prfd"
+    rm -f "$pft"
+    printf 'implement-lib: the review prompt stage was swapped during staging\n' >&2
+    return 20
+  fi
   {
     printf '%s\n\n' 'You are the independent code reviewer for the diff below. Work through this ordered checklist and report EVERYTHING you find — filter nothing, and do not withhold low-confidence findings (triage is the next step'\''s job, not yours). Every finding carries a `file:line` and an explicit REQUIRED or OPTIONAL mark.'
     printf '%s\n' '1. CORRECTNESS / EDGE CASES — empty, single, zero, negative, max, unicode; escaping wherever a value crosses a syntax boundary; off-by-one; idempotency; resource leaks.'
@@ -2341,12 +2357,29 @@ cmd_dispatch_review() {
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git merge-base origin/%s HEAD failed\n' "$db" >&2; return 20; }
   # Capped in-stream at one past the result bound: a review prompt past it is unreadable by any
   # slot anyway, and an uncapped diff could fill the state filesystem before any bound applied.
+  # THE BYTES DECIDE, never the producer's status: a diff of exactly one past the bound exits 0,
+  # and a slightly larger one can finish into the pipe buffer before head closes and exit 0 too
+  # — both landed the truncated sentinel prefix as "the diff". So the stage is measured before
+  # and after (from descriptors held since creation), and 141 — git dying on head's close — is
+  # decided by the same count rather than read as the only over-bound signal.
+  local _dbefore _dafter
+  _dbefore="$(wc -c <&"$_rs1" 2>/dev/null)"; _dbefore="${_dbefore//[[:space:]]/}"
+  exec {_rs1}<&-
   git diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
   case "$?" in
-    0) : ;;
-    141) exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: the tracked diff exceeds the 8388608-byte bound — split the change; a review prompt cannot carry it\n' >&2; return 20 ;;
-    *)   exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20 ;;
+    0|141) : ;;
+    *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20 ;;
   esac
+  _dafter="$(wc -c <&"$_rs2" 2>/dev/null)"; _dafter="${_dafter//[[:space:]]/}"
+  exec {_rs2}<&-
+  case "$_dbefore" in ''|*[!0-9]*) _dbefore="" ;; esac
+  case "$_dafter"  in ''|*[!0-9]*) _dafter=""  ;; esac
+  if [ -z "$_dbefore" ] || [ -z "$_dafter" ]; then
+    exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20
+  fi
+  if [ $((_dafter - _dbefore)) -ge 8388609 ]; then
+    exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: the tracked diff exceeds the 8388608-byte bound — split the change; a review prompt cannot carry it\n' >&2; return 20
+  fi
   # UNTRACKED non-ignored files produce NO diff from a tree-ish, so a brand-new helper created
   # before this dispatch would be committed without independent review — append each as a
   # /dev/null diff. `--no-index` exits 1 whenever the files differ, which is every time here;
@@ -2474,7 +2507,8 @@ cmd_dispatch_review() {
   # The CUMULATIVE cap: each part is individually bounded, but many bounded parts still add up —
   # the assembled prompt is refused past 16 MiB before it is ever published to a slot.
   local _ptot
-  _ptot="$(adb_run_bounded 30 5 wc -c "$pft" 2>/dev/null | awk '{print $1; exit}')" || _ptot=""
+  _ptot="$(wc -c <&"$_rs3" 2>/dev/null)"; _ptot="${_ptot//[[:space:]]/}"
+  exec {_rs3}<&-
   case "$_ptot" in
     ''|*[!0-9]*)
       rm -f "$pft"; printf 'implement-lib: could not size the assembled review prompt\n' >&2; return 20 ;;
@@ -2487,24 +2521,29 @@ cmd_dispatch_review() {
   rm -rf "$pf"   # a planted directory turns the publish rename into a move-INSIDE
   mv -f "$pft" "$pf" || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
   if [ "$prompt_only" -eq 1 ]; then
+    exec {_prfd}<&-
     printf 'prompt-ready %s\n' "$pf"
     return 0
   fi
   local _rofd="" _refd=""
   _il_excl_create "$out" _rofd \
-    || { printf 'implement-lib: could not create %s exclusively\n' "$out" >&2; return 20; }
+    || { exec {_prfd}<&-; printf 'implement-lib: could not create %s exclusively\n' "$out" >&2; return 20; }
   _il_excl_create "$errf" _refd \
-    || { exec {_rofd}>&-; rm -f "$out"; printf 'implement-lib: could not create %s exclusively\n' "$errf" >&2; return 20; }
+    || { exec {_rofd}>&-; exec {_prfd}<&-; rm -f "$out"; printf 'implement-lib: could not create %s exclusively\n' "$errf" >&2; return 20; }
+  # THIS slot's prompt, from the descriptor held on its own stage since creation — never the
+  # published name, which a concurrent slot's publish can remove or replace between this slot's
+  # rename and its read. A proven-regular inode cannot hang, so no bound on the read.
   if [ -n "$effort" ]; then
-    adb_run_bounded 2700 5 cat "$pf" \
+    cat <&"$_prfd" \
       | bash "$_IL_ROLE_DISPATCH" invoke "$token" --effort "$effort" 2>&"$_refd" \
       | head -c 8388609 1>&"$_rofd"
   else
-    adb_run_bounded 2700 5 cat "$pf" \
+    cat <&"$_prfd" \
       | bash "$_IL_ROLE_DISPATCH" invoke "$token" 2>&"$_refd" \
       | head -c 8388609 1>&"$_rofd"
   fi
   rc=$?
+  exec {_prfd}<&-
   exec {_rofd}>&-
   exec {_refd}>&-
   # The result path must STILL be a regular file when the dispatch returns: a reviewer with repo

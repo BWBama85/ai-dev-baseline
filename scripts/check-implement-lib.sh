@@ -2537,6 +2537,56 @@ has "$TB_OUT" "split the change" "38 …naming the remedy"
 if grep -q '16777216-byte cap' "$IL"; then ok; else
   bad "38 the assembled prompt has no cumulative cap"; fi
 
+# ================= 39. the slot reads its own stage; the tracked diff is measured ===============
+# A slot's invocation is fed from a descriptor held on ITS stage inode: concurrent slots each
+# publish the same shared name, and a slot that reopened it by name could find it absent — or
+# another slot's copy — between its own publish and its cat. The other slot's `rm -rf` is made
+# deterministic by an mv shim that removes the published name right after the publish rename.
+mkdir -p "$work/mvswap"
+cat > "$work/mvswap/mv" <<'SH'
+#!/usr/bin/env bash
+/bin/mv "$@"; rc=$?
+for a in "$@"; do case "$a" in */review-prompt.txt) rm -rf "$a" ;; esac; done
+exit $rc
+SH
+chmod +x "$work/mvswap/mv"
+cat > "$shimbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+if grep -q 'diff --git a/seed'; then out='SAW-PROMPT'; else out='NO-PROMPT'; fi
+[ -n "$last" ] && printf '%s\n' "$out" > "$last"
+exit 0
+SH
+chmod +x "$shimbin/codex"
+read -r _ RVS <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVS/.claude/state"; seed_snap "$RVS"
+( cd "$RVS" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+( cd "$RVS" && env PATH="$work/mvswap:$PATH" bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1
+SL_RC=$?
+eq "$SL_RC" "0" "39 a slot whose published prompt name vanishes right after its publish still completes"
+eq "$(cat "$RVS/.claude/state/review.md" 2>/dev/null)" "SAW-PROMPT" "39 …and the reviewer received THIS slot's prompt from the held stage inode"
+rm -f "$shimbin/codex"
+eq "$(grep -c 'cat <&"\$_prfd"' "$IL")" "2" "39 both slot arms read the held stage descriptor"
+if grep -q '2700 5 cat "\$pf"' "$IL"; then bad "39 a slot arm reopens the published prompt name"; else ok; fi
+# THE TRACKED DIFF IS MEASURED, never trusted to the producer's status: a diff a few hundred
+# bytes past the bound finishes into the pipe buffer before head closes, so git exits 0 and the
+# truncated sentinel prefix used to publish as "the diff".
+read -r _ RVB <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RVB/.claude/state"; seed_snap "$RVB"
+( cd "$RVB" && git switch -q -c issue-7-t \
+  && awk 'BEGIN{for(i=0;i<8388672;i++)printf "a"; print ""}' > big-line.txt \
+  && git add big-line.txt && git commit -qm big ) >/dev/null 2>&1
+BL_OUT="$( cd "$RVB" && bash "$IL" dispatch-review --prompt-only .claude/state codex 2>&1 )"; BL_RC=$?
+eq "$BL_RC" "20" "39 a tracked diff a few hundred bytes past the bound refuses (git exits 0 — the excess fits the pipe buffer)"
+has "$BL_OUT" "exceeds the 8388608-byte bound" "39 …naming the bound"
+if [ -e "$RVB/.claude/state/review-prompt.txt" ]; then
+  bad "39 …and publishes no truncated prompt"; else ok; fi
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
