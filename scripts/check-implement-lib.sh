@@ -2093,6 +2093,30 @@ if grep -q 'wc -c < "\$last"' "$RD"; then
 if grep -Eq '^[[:space:]]*cat "\$last"' "$RD"; then
   bad "28 the codex result is emitted by a bare cat outside any bound"; else ok; fi
 
+# ================= 29. prompts assemble through held descriptors; the word bound is enforced ====
+# Every prompt build used to rm-then-redirect a fixed name and reopen it per append — the same
+# swappable-pathname class the stages already left (#435 rounds passim). The builders now create
+# their prompt exclusively (_il_excl_create) and thread the DESCRIPTOR through assembly; the
+# dispatches feed stdin via a bounded filename cat and take their outputs on exclusive held
+# descriptors. Structural: no pathname redirect of a prompt file remains in the lib.
+if grep -Eq '(>>?|<) "\$pft?"' "$IL"; then
+  bad "29 a pathname redirect of a prompt file is back in the lib"; else ok; fi
+if grep -q 'invoke survey < ' "$IL" || grep -q 'invoke gap_analysis < ' "$IL"; then
+  bad "29 a dispatch still opens its prompt via a parent-shell stdin redirect"; else ok; fi
+# The 1500-word promise is enforced in the shared publisher: many short words stay under the
+# 16 KiB byte head, and step 6 reads survey.md whole.
+d="$(new_repo)"
+awk 'BEGIN{for(i=0;i<500;i++){for(j=0;j<10;j++)printf "w%d ", i*10+j; print ""}}' \
+  | ( cd "$d" && bash "$IL" publish-survey .claude/state ) >/dev/null 2>&1
+WB_RC=$?
+WB_W="$(wc -w < "$d/.claude/state/survey.md" 2>/dev/null | tr -d ' ')"
+eq "$WB_RC" "0" "29 a 5000-word survey still publishes"
+if [ -n "$WB_W" ] && [ "$WB_W" -le 1500 ]; then ok; else
+  bad "29 …but survey.md carries ${WB_W:-none} words — past the promised 1500-word bound"; fi
+if [ -f "$d/.claude/state/survey-overflow.md" ] \
+   && [ "$(wc -w < "$d/.claude/state/survey-overflow.md" 2>/dev/null | tr -d ' ')" = "5000" ]; then
+  ok; else bad "29 …and the full 5000-word reply is preserved at survey-overflow.md"; fi
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"

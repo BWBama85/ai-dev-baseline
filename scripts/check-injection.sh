@@ -287,12 +287,19 @@ EOF
   # (c2b) …and the SUPPORTING files (#433): base/workflows/<name>/*.md renders into every
   # shipped skill exactly as the workflow body does, so a fetch moved into one must carry its
   # label there — or the discovery rule above goes green over the same read it exists to catch.
+  # A label is NECESSARY but not sufficient: one mark satisfies a presence test forever, so an
+  # already-labelled file gaining a second unlabelled read would stay green — a fetching
+  # supporting file must therefore also sit in the registry, whose per-stem count the counting
+  # pass below enforces EXACTLY (its `base/workflows/$stem.md` derivation resolves slash stems
+  # like `implement-issue/state-protocol` unchanged).
   for wf in "$base"/base/workflows/*/*.md; do
     [ -f "$wf" ] || continue
     stem="$(basename "$(dirname "$wf")")/$(basename "$wf" .md)"
     if fetches_untrusted "$wf"; then
       grep -Fq -- "$MARK" "$wf" \
         || printf 'supporting file %s fetches third-party text but carries NO labelled read site\n' "$stem"
+      printf '%s\n' "$REGISTRY" | awk -v s="$stem" '$1 == s { found = 1 } END { exit !found }' \
+        || printf 'supporting file %s fetches third-party text and is not in the untrusted-content registry — register its exact site count\n' "$stem"
     fi
   done
 
@@ -313,9 +320,10 @@ EOF
     [ "$got" -ge 3 ] || printf 'implement-lib: %s dispatch prompt(s) route through _il_append_issue_envelopes, expected at least 3 (survey + gaps + review)\n' "$got"
     raw="$(awk '
         { line = $0; sub(/[[:space:]]*#.*$/, "", line)
-          # The prompt sink in this library is a VARIABLE ("$pf"/"$pft"), so the word `prompt`
-          # alone misses the natural regression `jq -r .body … >> "$pf"` — match both spellings.
-          if (line ~ /\.body/ && (line ~ /prompt/ || line ~ /"\$pft?"/) && line !~ /untrusted/ && line !~ /_il_append_issue_envelopes/) print FNR ": " $0 }' "$f")"
+          # The prompt sink in this library is a VARIABLE — a pathname ("$pf"/"$pft") before
+          # the held-descriptor refactor, an fd (1>&"$_gpfd") after it — so the word `prompt`
+          # alone misses the natural regression; match all three spellings.
+          if (line ~ /\.body/ && (line ~ /prompt/ || line ~ /"\$pft?"/ || line ~ />&"\$_[A-Za-z_]*fd"/) && line !~ /untrusted/ && line !~ /_il_append_issue_envelopes/) print FNR ": " $0 }' "$f")"
     if [ -n "$raw" ]; then
       printf 'implement-lib: issue text reaches a prompt WITHOUT the containment wrapper:\n'
       printf '%s\n' "$raw" | sed 's/^/    /'
@@ -422,7 +430,7 @@ m_raw_paste()     { awk '
 # word `prompt` absent, the sink a variable. A predicate keyed on `prompt` alone stays silent.
 m_raw_paste_lib() { awk '
                       { print }
-                      /_il_append_checklist "\$pf" "gap analysis"/ { print "  jq -r .body \"$dir/issue-7.json\" >> \"$pf\"" }' \
+                      /_il_append_checklist "\$_gpfd" "gap analysis"/ { print "  jq -r .body \"$dir/issue-7.json\" 1>&\"$_gpfd\"" }' \
                       "$1/scripts/lib/implement-lib.sh" > "$1/x" && mv "$1/x" "$1/scripts/lib/implement-lib.sh"; }
 # A third-party read added to a workflow registered as ZERO. Without the discovery rule this passes.
 m_cleanup_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' >> "$1/base/workflows/cleanup.md"; }
@@ -440,6 +448,11 @@ m_support_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n`
                       >> "$1/base/workflows/implement-issue/state-protocol.md"; }
 m_support_paste() { printf '\n```bash\njq -r .body {{STATE_DIR}}/issue-1.json >> {{STATE_DIR}}/gap-prompt.txt\n```\n' \
                       >> "$1/base/workflows/implement-issue/state-protocol.md"; }
+# A LABELLED fetch in an unregistered supporting file: the presence test is satisfied, so only
+# the registry-completeness rule can see it — and without a registry row, a second unlabelled
+# read beside it would never be countable at all.
+m_support_unregistered() { printf '\n%s\n\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' "UNTRUSTED READ SITE" \
+                      >> "$1/base/workflows/implement-issue/state-protocol.md"; }
 
 mutate_must_fail "strip a workflow's only label"         m_strip_label    "workflow debug"
 mutate_must_fail "remove ONE of implement-issue's four"  m_partial_label  "workflow implement-issue"
@@ -453,6 +466,7 @@ mutate_must_fail "RAW paste into \$pf inside the library" m_raw_paste_lib  "WITH
 mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carries NO labelled read site"
 mutate_must_fail "a third-party read in a SUPPORTING file" m_support_reads "carries NO labelled read site"
 mutate_must_fail "a RAW paste in a SUPPORTING file"      m_support_paste  "WITHOUT the containment wrapper"
+mutate_must_fail "a LABELLED fetch in an unregistered supporting file" m_support_unregistered "not in the untrusted-content registry"
 mutate_must_fail "delete the practice"                   m_drop_practice  "missing practice"
 mutate_must_fail "gut the practice's core rule"          m_gut_practice   "data-not-instruction"
 mutate_must_fail "drop the practice's index row"         m_drop_index     "no row in"
