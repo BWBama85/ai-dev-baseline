@@ -1056,6 +1056,59 @@ _il_excl_create() {   # <path> <fdvar-name>
   return 0
 }
 
+# Close every descriptor number given; empty arguments (a descriptor never opened) are skipped.
+_il_fd_close() {
+  local n
+  for n in "$@"; do [ -n "$n" ] && exec {n}<&-; done
+  return 0
+}
+
+# The inode number of <path>, links followed — GNU stat first, BSD second, each answer validated
+# as digits (adb_mtime's shape: the two flavors are not interchangeable). Empty and 1 when
+# neither answers.
+_il_inode() {   # <path>
+  local i
+  i="$(stat -L -c %i "$1" 2>/dev/null)"; case "$i" in ''|*[!0-9]*) i="" ;; esac
+  if [ -z "$i" ]; then
+    i="$(stat -L -f %i "$1" 2>/dev/null)"; case "$i" in ''|*[!0-9]*) i="" ;; esac
+  fi
+  [ -n "$i" ] || return 1
+  printf '%s\n' "$i"
+}
+
+# Is <path> the open file behind descriptor <fd>? Inode equality, deliberately not `-ef`: on
+# macOS a /dev/fd entry stats with the fdesc device, so `path -ef /dev/fd/N` is false for the
+# very same file (probed, bash 5.3.15), while /dev/fd's inode is the open file's on both
+# platforms. Every caller compares names inside ONE directory, where one inode is one file.
+# An unreadable inode on either side is not-same.
+_il_same_inode() {   # <path> <fd>
+  local a b
+  a="$(_il_inode "$1")" || return 1
+  b="$(_il_inode "/dev/fd/$2")" || return 1
+  [ "$a" = "$b" ]
+}
+
+# The checkout's origin as gh's `[HOST/]OWNER/REPO` slug, from the remote URL and never from gh's
+# own resolution: `gh repo set-default` and GH_REPO aim an unqualified call at a repository the
+# push never went to, so every gh read or write about this checkout carries `-R` with this. A
+# non-forge origin (a local path, a bare host) prints nothing and returns 1; the caller states its
+# fallback.
+_il_origin_slug() {
+  local _ourl _rslug=""
+  _ourl="$(git remote get-url origin 2>/dev/null)" || return 1
+  case "$_ourl" in
+    git@*:*/*)       _rslug="${_ourl#git@}"; _rslug="${_rslug/:/\/}" ;;
+    ssh://git@*/*/*) _rslug="${_ourl#ssh://git@}" ;;
+    https://*/*/*)   _rslug="${_ourl#https://}" ;;
+    http://*/*/*)    _rslug="${_ourl#http://}" ;;
+  esac
+  _rslug="${_rslug%.git}"; _rslug="${_rslug%/}"
+  case "$_rslug" in
+    */*/*) printf '%s\n' "$_rslug"; return 0 ;;
+    *)     return 1 ;;
+  esac
+}
+
 _il_claim_renew() {   # <state-dir> <caller-token>
   local dir="$1" tok="${2:-}" now lease cur exp rc
   [ -n "$tok" ] || return 0
@@ -1304,7 +1357,15 @@ cmd_sync_default() {
     merged=0
     git merge-base --is-ancestor HEAD "origin/$db" 2>/dev/null && merged=1
     if [ "$merged" -eq 0 ] && command -v gh >/dev/null 2>&1; then
-      merged_sha="$(gh pr list --head "$cur" --state merged --json headRefOid --jq '.[0].headRefOid' 2>/dev/null || echo '')"
+      # Pinned to ORIGIN exactly as open-pr's create is: unqualified, gh answers for GH_REPO or
+      # its configured default, and a fork's merged PR at this same head would read an unmerged
+      # local branch as merged and switch away from it.
+      local _mslug
+      local -a _mrflag=()
+      if _mslug="$(_il_origin_slug)"; then _mrflag=(-R "$_mslug"); else
+        printf 'implement-lib: NOTE — origin URL is not a recognizable forge remote; gh resolves the repository itself\n' >&2
+      fi
+      merged_sha="$(gh pr list "${_mrflag[@]}" --head "$cur" --state merged --json headRefOid --jq '.[0].headRefOid' 2>/dev/null || echo '')"
       [ -n "$merged_sha" ] && [ "$merged_sha" = "$(git rev-parse HEAD)" ] && merged=1
     fi
     if [ "$merged" -ne 1 ]; then
@@ -1422,25 +1483,39 @@ _il_publish_survey() {   # <state-dir> <stage-read-fd>
     return 1
   fi
   # That check is point-in-time, and role-dispatch's bounded-runner contract admits descendants
-  # can survive the CLI — so every LATER open of the public stage name is a race a survivor can
+  # can survive the CLI — so every LATER open of an agent-writable name is a race a survivor can
   # win (a FIFO swapped in blocks a redirect open forever, outside every dispatch bound). So the
-  # public name is read ONCE, by FILENAME inside a bounded child, into a private copy created
-  # EXCLUSIVELY with its descriptor held from creation (_il_excl_create) — a swap after creation
-  # cannot redirect the write, because the write never reopens the name. Every byte published
-  # below comes from private names, and the public ones are only ever rename TARGETS. One byte
-  # past the dispatch cap, so a grown or swapped larger object is DETECTED, never
-  # truncated-and-published.
-  local _pfd=""
+  # public name is read ONCE, from the descriptor the caller has held since stage creation, into
+  # a private copy created EXCLUSIVELY with its descriptor held from creation (_il_excl_create).
+  # Every byte published below comes from descriptors proven one inode with that copy — the
+  # private NAMES are only ever rename SOURCES, and each rename is proven afterward to have moved
+  # the validated inode. One byte past the dispatch cap, so a grown or swapped larger object is
+  # DETECTED, never truncated-and-published.
+  local _pfd="" _pr1="" _pr2="" _pr3="" _bfd="" _br1="" _br2="" _wfd="" _wr1="" _pubr1="" _pubr2="" _finfd=""
   _priv="$dir/survey-held.w$$a"
   if ! _il_excl_create "$_priv" _pfd; then
     printf 'implement-lib: could not create the private survey copy exclusively (a planted object?) — refusing to publish\n' >&2
+    return 1
+  fi
+  # THREE read descriptors opened at creation and proven one inode with the write side (the
+  # read-artifact idiom): the size, the head or the word count, and the publication identity
+  # check each read one of THESE, never the predictable private name again — so a swap of that
+  # name after creation has nothing left to redirect, and a proven-regular inode needs no bound.
+  # One descriptor per read, because a /dev/fd open shares the offset on macOS.
+  if ! { exec {_pr1}<"$_priv"; } 2>/dev/null || ! { exec {_pr2}<"$_priv"; } 2>/dev/null \
+     || ! { exec {_pr3}<"$_priv"; } 2>/dev/null \
+     || [ ! "/dev/fd/$_pfd" -ef "/dev/fd/$_pr1" ] || [ ! "/dev/fd/$_pfd" -ef "/dev/fd/$_pr2" ] \
+     || [ ! "/dev/fd/$_pfd" -ef "/dev/fd/$_pr3" ]; then
+    _il_fd_close "$_pfd" "$_pr1" "$_pr2" "$_pr3"
+    rm -f "$_priv"
+    printf 'implement-lib: the private survey copy was swapped during staging — refusing to publish\n' >&2
     return 1
   fi
   # From the descriptor the CALLER has held since stage creation (-ef proven there), never a
   # pathname reopen: the -L pre-check above and a filename open here were two moments a
   # descendant could swap a link between. A proven-regular inode cannot hang, so no bound.
   if ! head -c 8388609 0<&"$_sfd" 1>&"$_pfd" 2>/dev/null; then
-    exec {_pfd}>&-
+    _il_fd_close "$_pfd" "$_pr1" "$_pr2" "$_pr3"
     rm -f "$_priv"
     rm -rf "$dir/survey-stage.md"
     printf 'implement-lib: the survey stage could not be read whole — refusing to publish it\n' >&2
@@ -1448,64 +1523,78 @@ _il_publish_survey() {   # <state-dir> <stage-read-fd>
   fi
   exec {_pfd}>&-
   rm -rf "$dir/survey-stage.md"   # consumed — a plant swapped in mid-read goes with it, unfollowed
-  # Sized by FILENAME inside a bounded child for the same reason the cap sizes that way: the
-  # private copy's name is same-UID swappable, and a FIFO must expire a bound, never block.
-  _svb="$(adb_run_bounded 30 5 wc -c "$_priv" 2>/dev/null | awk '{print $1; exit}')" || _svb=""
+  _svb="$(wc -c <&"$_pr1" 2>/dev/null)"; _svb="${_svb//[[:space:]]/}"
+  exec {_pr1}<&-
   case "$_svb" in ''|*[!0-9]*) _svb=0 ;; esac
   if [ "$_svb" -eq 0 ]; then
+    _il_fd_close "$_pr2" "$_pr3"
     rm -f "$_priv"
     printf 'implement-lib: the survey reply was EMPTY — a failed survey, never "ok 0 words"\n' >&2
     return 1
   fi
   if [ "$_svb" -gt 8388608 ]; then
+    _il_fd_close "$_pr2" "$_pr3"
     rm -f "$_priv"
     printf 'implement-lib: the survey reply exceeds the 8388608-byte cap (a runaway reply, or a stage grown after validation) — refusing rather than truncating silently\n' >&2
     return 1
   fi
   if [ "$_svb" -gt 16384 ]; then
-    local _bfd=""
     _pub="$dir/survey-held.w$$b"
-    if ! _il_excl_create "$_pub" _bfd; then rm -f "$_priv"; return 1; fi
-    # The head still OPENS the private copy by name — a residual window this design states
-    # rather than closes: bash has no non-following reopen, and the copy's content is same-UID
-    # writable regardless. The -f guard rejects a resting swap; the write side is fd-bound.
-    if [ ! -f "$_priv" ] || [ -L "$_priv" ] || ! _il_survey_head "$_priv" >&"$_bfd"; then
-      exec {_bfd}>&-
+    if ! _il_excl_create "$_pub" _bfd; then _il_fd_close "$_pr2" "$_pr3"; rm -f "$_priv"; return 1; fi
+    # The head reads the held private descriptor, never the private name, and lands through the
+    # write side of a second O_EXCL inode whose two read descriptors are opened and proven here.
+    if ! { exec {_br1}<"$_pub"; } 2>/dev/null || ! { exec {_br2}<"$_pub"; } 2>/dev/null \
+       || [ ! "/dev/fd/$_bfd" -ef "/dev/fd/$_br1" ] || [ ! "/dev/fd/$_bfd" -ef "/dev/fd/$_br2" ] \
+       || ! _il_survey_head "/dev/fd/$_pr2" >&"$_bfd"; then
+      _il_fd_close "$_bfd" "$_br1" "$_br2" "$_pr2" "$_pr3"
       rm -f "$_pub" "$_priv"
       return 1
     fi
     exec {_bfd}>&-
-    # rm -rf, not a bare mv: onto a planted DIRECTORY, mv -f moves the source INSIDE it.
+    exec {_pr2}<&-
+    # rm -rf, not a bare mv: onto a planted DIRECTORY, mv -f moves the source INSIDE it. And the
+    # name that was moved is proven to be the validated inode AFTER the move — a swap of the
+    # private name in the window before the rename would otherwise publish the plant under this
+    # label with a success status.
     rm -rf "$dir/survey-overflow.md"
-    mv -f "$_priv" "$dir/survey-overflow.md" || { rm -f "$_pub" "$_priv"; return 1; }
+    if ! mv -f "$_priv" "$dir/survey-overflow.md" \
+       || [ -L "$dir/survey-overflow.md" ] || ! _il_same_inode "$dir/survey-overflow.md" "$_pr3"; then
+      _il_fd_close "$_br1" "$_br2" "$_pr3"
+      rm -rf "$dir/survey-overflow.md" "$_pub" "$_priv"
+      printf 'implement-lib: survey-overflow.md is not the validated copy (swapped before publication) — refusing\n' >&2
+      return 1
+    fi
+    exec {_pr3}<&-
     printf 'implement-lib: NOTE — the survey reply was %s bytes; survey.md carries the first 16384 (whole lines, UTF-8-safe) and the full reply is at survey-overflow.md\n' "$_svb" >&2
+    _pubr1="$_br1"; _pubr2="$_br2"
   else
     # A shorter republication REMOVES a previous attempt's overflow: that file is documented as
     # the full reply behind the bounded summary, and a stale copy must not wear the label —
     # including a planted directory, which rm -f cannot remove.
     rm -rf "$dir/survey-overflow.md"
-    _pub="$_priv"
+    _pub="$_priv"; _pubr1="$_pr2"; _pubr2="$_pr3"
   fi
   # The 1500-word promise is ENFORCED here, not narrated at the call sites: many short words
   # stay under the 16 KiB byte head (5000 x "x " is ~10 KiB), and step 6 reads survey.md whole —
   # so an over-budget reply used to ship whole behind a stderr note nobody acts on. Whole lines
   # up to the budget (a first line alone over it is cut at word 1500); the full reply keeps (or
   # takes) the survey-overflow.md label.
-  local _swc _wfd="" _wn
-  _swc="$(adb_run_bounded 30 5 wc -w "$_pub" 2>/dev/null | awk '{print $1; exit}')" || _swc=""
+  local _swc _wn
+  _swc="$(wc -w <&"$_pubr1" 2>/dev/null)"; _swc="${_swc//[[:space:]]/}"
+  exec {_pubr1}<&-
   case "$_swc" in ''|*[!0-9]*) _swc=0 ;; esac
   if [ "$_swc" -gt 1500 ]; then
     _wn="$dir/survey-held.w$$d"
-    if ! _il_excl_create "$_wn" _wfd; then rm -f "$_pub"; return 1; fi
-    if [ ! -f "$_pub" ] || [ -L "$_pub" ] \
+    if ! _il_excl_create "$_wn" _wfd; then _il_fd_close "$_pubr2"; rm -f "$_pub"; return 1; fi
+    if ! { exec {_wr1}<"$_wn"; } 2>/dev/null || [ ! "/dev/fd/$_wfd" -ef "/dev/fd/$_wr1" ] \
        || ! awk 'BEGIN{c=0}
             { n = NF
               if (c + n > 1500) {
                 r = 1500 - c
                 if (r > 0) { for (i = 1; i <= r; i++) printf "%s%s", $i, (i < r ? " " : "\n") }
                 exit }
-              print; c += n }' "$_pub" 1>&"$_wfd"; then
-      exec {_wfd}>&-
+              print; c += n }' <&"$_pubr2" 1>&"$_wfd"; then
+      _il_fd_close "$_wfd" "$_wr1" "$_pubr2"
       rm -f "$_wn" "$_pub"
       return 1
     fi
@@ -1515,13 +1604,33 @@ _il_publish_survey() {   # <state-dir> <stage-read-fd>
       rm -f "$_pub"
     else
       rm -rf "$dir/survey-overflow.md"
-      mv -f "$_pub" "$dir/survey-overflow.md" || { rm -f "$_wn" "$_pub"; return 1; }
+      if ! mv -f "$_pub" "$dir/survey-overflow.md" \
+         || [ -L "$dir/survey-overflow.md" ] || ! _il_same_inode "$dir/survey-overflow.md" "$_pubr2"; then
+        _il_fd_close "$_wr1" "$_pubr2"
+        rm -rf "$dir/survey-overflow.md" "$_wn" "$_pub"
+        printf 'implement-lib: survey-overflow.md is not the validated copy (swapped before publication) — refusing\n' >&2
+        return 1
+      fi
     fi
-    _pub="$_wn"
+    exec {_pubr2}<&-
+    _pub="$_wn"; _finfd="$_wr1"
     printf 'implement-lib: NOTE — the survey reply was %s words; survey.md carries the first 1500 (whole lines) and the full reply is at survey-overflow.md\n' "$_swc" >&2
+  else
+    _finfd="$_pubr2"
   fi
   rm -rf "$dir/survey.md"   # a planted directory here would swallow the publish the same way
-  mv -f "$_pub" "$dir/survey.md" || return 1
+  # Proven AFTER the rename, against a descriptor held since the inode was created: a swap of the
+  # private name in the window before mv would otherwise publish the plant as survey.md under a
+  # success status.
+  if ! mv -f "$_pub" "$dir/survey.md" \
+     || [ -L "$dir/survey.md" ] || ! _il_same_inode "$dir/survey.md" "$_finfd"; then
+    exec {_finfd}<&-
+    rm -rf "$dir/survey.md" "$_pub"
+    printf 'implement-lib: survey.md is not the validated copy (swapped before publication) — refusing\n' >&2
+    return 1
+  fi
+  exec {_finfd}<&-
+  return 0
 }
 
 # Cap survey-trace.md at <max> bytes — role-dispatch's HEAD-cap shape, marker included. `quiet`
@@ -2495,21 +2604,14 @@ cmd_open_pr() {
   # a repository the push never went to. A parseable origin pins every gh call below with -R; an
   # unparseable one (a local fixture path, a non-forge remote) falls back to gh's resolution
   # with a NOTE, which is the pre-existing behavior.
-  local _ourl _rslug=""
+  local _rslug=""
   local -a _rflag=()
-  _ourl="$(git remote get-url origin 2>/dev/null)" || _ourl=""
-  case "$_ourl" in
-    git@*:*/*)       _rslug="${_ourl#git@}"; _rslug="${_rslug/:/\/}" ;;
-    ssh://git@*/*/*) _rslug="${_ourl#ssh://git@}" ;;
-    https://*/*/*)   _rslug="${_ourl#https://}" ;;
-    http://*/*/*)    _rslug="${_ourl#http://}" ;;
-  esac
-  _rslug="${_rslug%.git}"; _rslug="${_rslug%/}"
-  case "$_rslug" in
-    */*/*) _rflag=(-R "$_rslug") ;;
-    *)     _rslug=""
-           printf 'implement-lib: NOTE — origin URL is not a recognizable forge remote; gh resolves the repository itself\n' >&2 ;;
-  esac
+  if _rslug="$(_il_origin_slug)"; then
+    _rflag=(-R "$_rslug")
+  else
+    _rslug=""
+    printf 'implement-lib: NOTE — origin URL is not a recognizable forge remote; gh resolves the repository itself\n' >&2
+  fi
   # Every closing number must sit in the marker's recorded issue set (a SUBSET is legitimate —
   # refs-only issues stay open): the GitHub proof below only confirms that a mistyped number
   # REGISTERED, and a registered mistake closes an unrelated issue on merge. The set itself is
@@ -2665,7 +2767,7 @@ cmd_open_pr() {
   printf 'closing-refs ok [%s]\n' "$linked"
 
   # --- the two guards, in order; both fail closed; a refusal is a REPORTED disposition -----------
-  if [ -f "$dir/$_IL_BLOCKED" ]; then
+  if [ -e "$dir/$_IL_BLOCKED" ] || [ -L "$dir/$_IL_BLOCKED" ]; then
     # BRANCH+ISSUE IDENTIFY THE RUN — deliberately no owner test. Ownership is transferable
     # (state-protocol.md): a resumed session re-stamps the ACTIVE marker's owner while the
     # blocked file keeps the owner it copied at write time, so an owner comparison read this
@@ -2673,15 +2775,20 @@ cmd_open_pr() {
     # the arm, never arming — which is also why a marker that EXISTS but cannot be validated
     # (truncated, unparseable, wrongly typed identity fields) withholds too: "unrelated" is a
     # verdict only a validated record can support.
-    local bb bi
-    if ! jq -e '(.branch | type == "string") and (.branch != "")
-                and (.issue | type == "string") and (.issue != "")' \
-         "$dir/$_IL_BLOCKED" >/dev/null 2>&1; then
+    #
+    # ONE bounded read, with the validation and both fields taken from those same bytes: a
+    # validate-by-name followed by a second copy is two moments a swap can fall between, and an
+    # empty second read compared as "unrelated" armed past this run's own block. Presence is
+    # -e/-L rather than -f for the same direction: a planted pipe or directory at the name
+    # withholds (the pipe expires the bound, the directory fails the read) instead of reading as
+    # no block at all.
+    local bb bi _braw
+    if ! _braw="$(adb_run_bounded 30 5 cat "$dir/$_IL_BLOCKED" 2>/dev/null)" \
+       || ! printf '%s' "$_braw" | jq -e '(.branch | type == "string") and (.branch != "")
+                and (.issue | type == "string") and (.issue != "")' >/dev/null 2>&1; then
       printf 'arm-skipped blocked-marker-unreadable\n'
       return 0
     fi
-    local _braw
-    _braw="$(adb_run_bounded 30 5 cat "$dir/$_IL_BLOCKED" 2>/dev/null)" || _braw=""
     bb="$(printf '%s' "$_braw" | jq -r '.branch' 2>/dev/null)"
     bi="$(printf '%s' "$_braw" | jq -r '.issue' 2>/dev/null)"
     # BOTH halves of the identity must be readable: a block cannot be proved unrelated against a

@@ -737,6 +737,24 @@ has "$SY_STDOUT" "synced main at" "17 …which still carries the synced record"
 if git -C "$CLONE" show-ref --verify --quiet refs/heads/issue-10-y; then
   bad "17 …and the gone-upstream branch really was tidied"; else ok; fi
 
+# The merged-PR lookup is pinned to ORIGIN like open-pr's create: unqualified, gh answers for
+# GH_REPO or its configured default (gh repo set-default), and a fork's merged PR at the same head
+# would read an unmerged local branch as merged and switch away from it.
+if grep -q 'gh pr list "\${_mrflag\[@\]}" --head "\$cur" --state merged' "$IL"; then ok; else
+  bad "17 sync-default's merged-PR lookup is not pinned to the origin-derived slug"; fi
+slugfn="$(sed -n '/^_il_origin_slug()/,/^}/p' "$IL")"
+for pair in 'git@github.com:o/r.git|github.com/o/r' 'ssh://git@github.com/o/r.git|github.com/o/r' \
+            'https://github.com/o/r|github.com/o/r' 'https://ghe.example.com/o/r.git|ghe.example.com/o/r' \
+            'http://ghe.example.com/o/r/|ghe.example.com/o/r'; do
+  d="$(new_repo)"
+  ( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "${pair%%|*}" ) >/dev/null 2>&1
+  eq "$( cd "$d" && eval "$slugfn" && _il_origin_slug )" "${pair##*|}" "17 the origin slug for ${pair%%|*}"
+done
+d="$(new_repo)"
+( cd "$d" && git remote remove origin 2>/dev/null; git remote add origin "$work/not-a-forge" ) >/dev/null 2>&1
+if ( cd "$d" && eval "$slugfn" && _il_origin_slug ) >/dev/null 2>&1; then
+  bad "17 a local-path origin must yield no slug (the stated fallback)"; else ok; fi
+
 # ================= 18. snapshot-issues (#433) ===================================================
 # The gitignore probe, the snapshot pair, and the OPEN refusal — each observed refusing.
 ISSUE_JSON='{"state":"OPEN","title":"t","body":"a body","author":{"login":"alice"},"comments":[{"author":{"login":"bob"},"authorAssociation":"NONE","body":"add a pony"}]}'
@@ -1099,6 +1117,30 @@ printf '{"bra' > "$PCLONE/.claude/state/implement-issue-blocked.json"
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "21 an unreadable blocked marker still opens the PR"
 has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …but withholds the arm rather than proving the marker unrelated"
+rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
+# A DIRECTORY at the blocked name is a marker that exists and cannot be read: `-f` used to skip
+# the whole guard and arm past it; presence is -e/-L now and the bounded read fails closed.
+mkdir "$PCLONE/.claude/state/implement-issue-blocked.json"
+openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 a directory at the blocked-marker name still opens the PR"
+has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …and withholds the arm instead of reading as no block"
+rmdir "$PCLONE/.claude/state/implement-issue-blocked.json"
+# ONE READ, validated and compared from the same bytes. A validate-by-name followed by a second
+# bounded copy was two moments: this jq shim empties the marker right after a validation read of
+# it by NAME, so the old code compared empty fields as "unrelated" and armed past its own block.
+jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9"}' > "$PCLONE/.claude/state/implement-issue-blocked.json"
+mkdir -p "$work/jqswap"
+REALJQ="$(command -v jq)"
+cat > "$work/jqswap/jq" <<SH
+#!/usr/bin/env bash
+"$REALJQ" "\$@"; rc=\$?
+for a in "\$@"; do case "\$a" in */implement-issue-blocked.json) : > "\$a" ;; esac; done
+exit \$rc
+SH
+chmod +x "$work/jqswap/jq"
+openpr PATH="$work/jqswap:$PATH" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "21 with the marker read once, the PR still opens"
+has "$OP_OUT" "arm-skipped blocked-marker" "21 …and a marker emptied right after a by-name validation read still withholds the arm"
 rm -f "$PCLONE/.claude/state/implement-issue-blocked.json"
 # …and the ACTIVE side too: a valid block cannot be proved unrelated against a marker whose
 # .issue cannot be read — that comparison's other half is missing, so the arm is withheld.
@@ -1913,14 +1955,15 @@ if [ -e "$d/.claude/state/survey-overflow.md" ]; then
 # The probe rides the head call itself: at that moment the public stage name must not exist (the
 # head is created under a private mktemp name and published by rename), and a plant dropped at
 # the vacated name during the head must neither receive the output nor survive as survey.md.
-pubfn="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 PB_D="$(new_repo)"
 printf 'precious repo content\n' > "$PB_D/planted-target.txt"
 awk 'BEGIN{for(i=0;i<2000;i++)print "survey line " i}' > "$PB_D/.claude/state/survey-stage.md"
 PB_OUT="$(
   eval "$pubfn"
   _il_survey_head() {
-    local dir="${1%/*}"
+    # The state dir by fixture path: the head now reads a held /dev/fd descriptor, not a name.
+    local dir="$PB_D/.claude/state"
     if [ -e "$dir/survey-stage.md" ] || [ -L "$dir/survey-stage.md" ]; then
       printf 'REOPENED-PUBLIC-NAME\n'
     else
@@ -1951,6 +1994,31 @@ eq "$HB_N" "16384" "25 a >16384-byte first line emits exactly 16384 bytes, newli
 HB_N="$( set -u; eval "$headfn"; _il_survey_head "$HB_D/big2.txt" | wc -c | tr -d ' ' )"
 eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt gate let it through whole)"
 
+# The publish rename is proven against the held inode AFTER it happens: a swap of the private
+# name in the window before mv used to publish the plant as survey.md under rc 0. The swap rides
+# the rename itself, exactly where a surviving descendant would land it.
+pubfn3="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+PV_D="$(new_repo)"
+printf 'precious repo content\n' > "$PV_D/swap-target.txt"
+printf 'a modest survey\n' > "$PV_D/.claude/state/survey-stage.md"
+PV_OUT="$(
+  eval "$pubfn3"
+  mv() {
+    local src="$1"; [ "$1" = "-f" ] && src="$2"
+    case "$src" in */survey-held.w*) rm -f "$src"; ln -s ../../swap-target.txt "$src" ;; esac
+    command mv "$@"
+  }
+  cd "$PV_D" && exec {sfd}<.claude/state/survey-stage.md \
+    && _il_publish_survey .claude/state "$sfd" 2>/dev/null; printf 'RC=%s\n' "$?"
+)"
+if printf '%s\n' "$PV_OUT" | grep -q 'RC=0'; then
+  bad "25 a private copy swapped before the publish rename is a FAILED publication (got rc 0)"; else ok; fi
+if [ -L "$PV_D/.claude/state/survey.md" ] || [ -e "$PV_D/.claude/state/survey.md" ]; then
+  bad "25 …and nothing is left at survey.md"; else ok; fi
+eq "$(cat "$PV_D/swap-target.txt" 2>/dev/null)" "precious repo content" "25 …and the swap target is untouched"
+if compgen -G "$PV_D/.claude/state/survey-held.w*" >/dev/null; then
+  bad "25 …and no private copy is left behind"; else ok; fi
+
 # ================= 26. the publish and the cap never reopen an agent-writable name (#435) =======
 # role-dispatch's contract admits descendants can survive the CLI, so every check-then-reopen on
 # survey-stage.md / survey-trace.md is a race a survivor can win: swap in a symlink and the reopen
@@ -1960,7 +2028,7 @@ eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt
 #
 # The race is made deterministic by shimming `wc`: the publisher's first post-validation tool call
 # swaps the stage for a symlink, exactly as a surviving descendant would.
-pubfn2="$(sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn2="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 SW_D="$(new_repo)"
 printf 'precious repo content\n' > "$SW_D/swap-target.txt"
 printf 'a modest survey\n' > "$SW_D/.claude/state/survey-stage.md"
