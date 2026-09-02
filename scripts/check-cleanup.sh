@@ -2260,7 +2260,10 @@ RE_SNIPPET="${ check_wf_snippet "$WF" remote-enum; }"
 # a few builds render it `origin/HEAD`), or the fixture stopped exercising #38 and a green
 # filter assertion below would mean nothing.
 raw_enum="${ check_git "$RM" branch -r --merged origin/main --format='%(refname:short)'; }"
-if printf '%s\n' "$raw_enum" | grep -Eqx 'origin|origin/HEAD'; then ok; else
+# A here-string, never `printf | grep -q`: under pipefail grep's early exit can hand printf an
+# EPIPE, and the probe then reads as "not surfaced" over output that did surface it (observed
+# under a loaded selfcheck; check-lib.sh states the rule).
+if grep -Eqx 'origin|origin/HEAD' <<< "$raw_enum"; then ok; else
   bad "11 enum: fixture did not surface the origin/HEAD symref (raw: ${ printf '%s' "$raw_enum" | tr '\n' ' '; })"
 fi
 # The variables the workflow sets in its own earlier steps, mirrored for a fixture whose default
