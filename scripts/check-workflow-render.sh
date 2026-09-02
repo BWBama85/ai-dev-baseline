@@ -300,6 +300,21 @@ bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
 no "$rc" "a dot-named supporting source FAILS the build"
 has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming the dot rule"
 
+# --- 3c: a supporting name ending in a newline FAILS the build (#433) --------------------------
+# `$(basename …)` strips a trailing newline, so `notes.md<NL>` validated as notes.md while the
+# *.md render glob never matched it — a green build with a supporting file that shipped nowhere.
+d="$WORK/nlsupport"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# notes\n' > "$d/base/workflows/fixture/notes.md"$'\n'
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a supporting name ending in a newline FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'unsupported supporting file' "...naming the extension rule its real bytes fail"
+
 # --- 3d: reserved-name and duplicate checks fold case (#433) -----------------------------------
 # macOS checkouts sit on a case-insensitive filesystem, so `Skill.md` beside a rendered SKILL.md
 # aliases or overwrites the skill entry there while rendering fine on Linux — the tree becomes

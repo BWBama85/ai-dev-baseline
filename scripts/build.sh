@@ -667,7 +667,10 @@ render_agent_skill() {
     # tries to load it from a tree every 1:1 check called complete.
     for ssub in "$sdir"/* "$sdir"/.*; do
       [ -e "$ssub" ] || [ -L "$ssub" ] || continue
-      sbase="$(basename "$ssub")"
+      # Parameter expansion, never $(basename …): command substitution strips a trailing newline,
+      # so `notes.md<NL>` validated here as notes.md while the *.md render glob below never
+      # matched it — a green build with a supporting file that shipped to nobody.
+      sbase="${ssub##*/}"
       case "$sbase" in .|..) continue ;; esac
       if [ -d "$ssub" ]; then
         echo "build.sh: base/workflows/$name/$sbase/ — supporting files are a flat directory; a subdirectory renders to nobody" >&2
@@ -694,7 +697,7 @@ render_agent_skill() {
     # passing every 1:1 check.
     for sfile in "$sdir"/*.md "$sdir"/.*.md; do
       [ -f "$sfile" ] || continue
-      sbase="$(basename "$sfile")"
+      sbase="${sfile##*/}"
       # The name grammar render-size.sh promises for its TSV, enforced where the file is born.
       # A LEADING DOT is refused too: every consumer enumerates `*.md`, which skips dotfiles, so
       # a hidden supporting file would neither render everywhere nor orphan loudly (reviewer find).
