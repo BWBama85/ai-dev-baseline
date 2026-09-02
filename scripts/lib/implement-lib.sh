@@ -900,8 +900,9 @@ _il_clear() {   # <state-dir>
   # name /cleanup can sweep that this cannot clear would read as a fresh run's survey.
   targets+=( "$dir"/survey-*.md "$dir"/survey-*.err "$dir"/survey-held.* )
   # The claim-renewal stages (the retired fixed .claim.tmp and the exclusive .claim.w<pid>
-  # names) — transient, but a kill can orphan one, and a stale stage must not linger.
-  targets+=( "$dir"/.claim.* )
+  # names) and read-artifact's private copies — transient, but a kill can orphan one, and a
+  # stale stage must not linger.
+  targets+=( "$dir"/.claim.* "$dir"/.artifact.* )
   # The DOCS-DUTY family (#422). Same containment rule as the two above: `state-scan` classifies
   # `docs-consulted.tsv` and `docs-consulted-*.tsv` as `docs`, so a name /cleanup can sweep that
   # this cannot clear would leave a previous run's documentation record in place — and a fresh
@@ -1098,6 +1099,10 @@ _il_claim_renew() {   # <state-dir> <caller-token>
     return 13
   fi
   exp="$(jq -r 'if (.expiresAt | type) == "number" then (.expiresAt | floor | tostring) else "" end' "$dir/$_IL_CLAIM" 2>/dev/null)" || exp=""
+  # The same 10-digit width bound _il_claim_expiry applies at admission: a wider value is not a
+  # timestamp, and bash's signed arithmetic wraps `exp - now` into a large positive — renewal
+  # would revive a claim admission treats as immediately breakable.
+  [ -z "$exp" ] || [ "${#exp}" -le 10 ] || exp="wider-than-a-timestamp"
   case "$exp" in
     ''|*[!0-9-]*)
       # OUR token with an UNREADABLE lease fails CLOSED: admit reads exactly this shape as
@@ -1570,17 +1575,38 @@ cmd_read_artifact() {
     printf 'implement-lib: %s is not a regular file (a planted object?) — refusing to read it\n' "$f" >&2
     return 20
   fi
-  sz="$(adb_run_bounded 30 5 wc -c "$f" 2>/dev/null | awk '{print $1; exit}')" || sz=""
+  # ONE bounded copy through a held descriptor, then every later step — the size check and the
+  # emission — runs on the private copy: sizing and emitting the public name as two separate
+  # opens left a swap window where a symlink could be emitted by reference or a grown file
+  # silently truncated under a clean status. One byte past the cap so past-cap is DETECTED.
+  local _cfd="" _cp="$dir/.artifact.w$$"
+  _il_excl_create "$_cp" _cfd || {
+    printf 'implement-lib: could not stage %s for reading\n' "$f" >&2
+    return 20
+  }
+  if ! adb_run_bounded 60 5 head -c 8388609 "$f" 1>&"$_cfd"; then
+    exec {_cfd}>&-
+    rm -f "$_cp"
+    printf 'implement-lib: could not read %s within its bound (a planted pipe?)\n' "$f" >&2
+    return 20
+  fi
+  exec {_cfd}>&-
+  sz="$(adb_run_bounded 30 5 wc -c "$_cp" 2>/dev/null | awk '{print $1; exit}')" || sz=""
   case "$sz" in ''|*[!0-9]*)
-    printf 'implement-lib: could not size %s within its bound (a planted pipe?)\n' "$f" >&2
+    rm -f "$_cp"
+    printf 'implement-lib: could not size the staged copy of %s\n' "$f" >&2
     return 20 ;;
   esac
   if [ "$sz" -gt 8388608 ]; then
+    rm -f "$_cp"
     printf 'implement-lib: %s exceeds the 8388608-byte result bound — refusing to read it\n' "$f" >&2
     return 20
   fi
-  adb_run_bounded 60 5 head -c 8388608 "$f" || {
-    printf 'implement-lib: could not read %s within its bound\n' "$f" >&2
+  adb_run_bounded 60 5 cat "$_cp"
+  sz=$?
+  rm -f "$_cp"
+  [ "$sz" -eq 0 ] || {
+    printf 'implement-lib: could not emit the staged copy of %s\n' "$f" >&2
     return 20
   }
 }
@@ -2060,7 +2086,12 @@ cmd_dispatch_review() {
       --effort)      [ "$#" -ge 2 ] || { echo "implement-lib: --effort needs a value" >&2; exit 2; }
                      effort="$2"; shift ;;
       --slot)        [ "$#" -ge 2 ] || { echo "implement-lib: --slot needs a value" >&2; exit 2; }
-                     case "$2" in ''|*[!0-9]*) echo "implement-lib: --slot must be numeric (the review-N family grammar)" >&2; exit 2 ;; esac
+                     # The reader's exact grammar (1-4 digits): a wider slot would publish a name
+                     # read-artifact refuses, leaving the slot's findings unreadable at triage.
+                     case "$2" in
+                       [0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]) : ;;
+                       *) echo "implement-lib: --slot must be 1-4 digits (the review-N family grammar)" >&2; exit 2 ;;
+                     esac
                      slot="$2"; shift ;;
       --prompt-only) prompt_only=1 ;;
       -*)            echo "implement-lib: dispatch-review: unknown option '$1'" >&2; exit 2 ;;
@@ -2388,14 +2419,20 @@ cmd_open_pr() {
     # ADOPT ONLY AN OPEN PR. `gh pr view <branch>` resolves the branch's most recent PR including
     # a closed or merged historical one, and adopting that would record its URL in the marker and
     # aim the closing-link proof and both merge guards at the wrong pull request.
-    local adopt_json adopt_state=""
-    adopt_json="$(gh pr view "$branch" "${_rflag[@]}" --json url,state 2>/dev/null)" || adopt_json=""
+    local adopt_json adopt_state="" adopt_base=""
+    adopt_json="$(gh pr view "$branch" "${_rflag[@]}" --json url,state,baseRefName 2>/dev/null)" || adopt_json=""
     if [ -n "$adopt_json" ]; then
       adopt_state="$(printf '%s' "$adopt_json" | jq -r '.state // ""' 2>/dev/null)" || adopt_state=""
+      adopt_base="$(printf '%s' "$adopt_json" | jq -r '.baseRefName // ""' 2>/dev/null)" || adopt_base=""
       pr="$(printf '%s' "$adopt_json" | jq -r '.url // ""' 2>/dev/null | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
     fi
-    if [ -n "$pr" ] && [ "$adopt_state" = "OPEN" ]; then
+    if [ -n "$pr" ] && [ "$adopt_state" = "OPEN" ] && [ "$adopt_base" = "$_pbase" ]; then
       printf 'implement-lib: NOTE — an open PR already exists for %s; adopting it\n' "$branch" >&2
+    elif [ -n "$pr" ] && [ "$adopt_state" = "OPEN" ]; then
+      # The create is base-pinned; an ADOPTED PR must meet the same bar, or the closing-link
+      # proof and both merge guards aim at a PR that merges into a branch nobody synchronized.
+      printf 'implement-lib: the open PR for %s targets base "%s", not the default "%s" — not adopted; retarget it (gh pr edit --base) or close it, then re-run\n' "$branch" "${adopt_base:-unreadable}" "$_pbase" >&2
+      return 25
     else
       [ -n "$pr" ] && printf 'implement-lib: the PR found for %s is %s — not OPEN, not adopted\n' "$branch" "${adopt_state:-unreadable}" >&2
       printf 'implement-lib: gh pr create failed: %s\n' "$create_out" >&2; return 25

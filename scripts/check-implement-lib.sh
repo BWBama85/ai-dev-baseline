@@ -59,7 +59,7 @@ case "$1 $2" in
       *closingIssuesReferences*) printf '%s\n' "${SHIM_CLOSING_JSON:-}"; exit 0 ;;
       *--json\ url,state*)
         if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
-        printf '{"url":"%s","state":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" "${SHIM_ADOPT_STATE:-OPEN}"; exit 0 ;;
+        printf '{"url":"%s","state":"%s","baseRefName":"%s"}\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" "${SHIM_ADOPT_STATE:-OPEN}" "${SHIM_ADOPT_BASE:-${SHIM_DEFAULT_BASE:-main}}"; exit 0 ;;
     esac
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_STATE:-}" ;;
@@ -987,6 +987,10 @@ jq -n '{branch:"issue-9-x", issue:"9", phase:"triaged", startedAt:"2026-08-30T00
         phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
   > "$PCLONE/.claude/state/implement-issue-active.json"
 printf 'body\n\nCloses #9\n' > "$PCLONE/body.md"
+# The adopt-path base gate compares against the fixture's REAL default branch — exported so the
+# gh shim's baseRefName fallback always matches it unless a case overrides SHIM_ADOPT_BASE.
+SHIM_DEFAULT_BASE="$(cd "$PCLONE" && adb_default_branch)"
+export SHIM_DEFAULT_BASE
 GOODREFS='{"closingIssuesReferences":[{"number":9,"repository":{"name":"r","owner":{"login":"o"}}}]}'
 openpr() { OP_OUT="$( cd "$PCLONE" && env "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 9 2>&1 )"; OP_RC=$?; }
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
@@ -2296,6 +2300,38 @@ if grep -q 'gh pr create "\${_rflag\[@\]}" --base "\$_pbase"' "$IL"; then ok; el
   bad "33 gh pr create does not pin --base to the synchronized default"; fi
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "33 the pinned-base create still opens against the fixture"
+
+# ================= 34. round-40: adopted bases, slot grammar, one-inode reads, expiry width =====
+# An ADOPTED PR must meet the same base bar as a created one — the closing-link proof and both
+# merge guards never validate the base, so adopting an open PR aimed at a release branch would
+# arm a merge into a branch nobody synchronized.
+openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_ADOPT_BASE=release-1 SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "25" "34 an open PR on a foreign base is refused, never adopted"
+has "$OP_OUT" 'targets base "release-1"' "34 …naming both branches"
+openpr SHIM_SLUG="o/r" SHIM_CREATE_FAIL=1 SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "34 …while a default-based open PR still adopts"
+# The --slot writer speaks the reader's exact 1-4 digit grammar — a wider slot published a name
+# read-artifact refuses, leaving that slot's findings unreadable at triage.
+d="$(new_repo)"; seed_snap "$d"
+( cd "$d" && bash "$IL" dispatch-review --slot 12345 --prompt-only .claude/state codex ) >/dev/null 2>&1
+eq "$?" "2" "34 a 5-digit slot is refused at dispatch, matching the reader"
+# read-artifact copies ONCE through a held descriptor and validates/emits the copy — sizing and
+# emitting the public name as two separate opens left a swap window.
+if grep -q '"\$dir/\.artifact\.w\$\$"' "$IL"; then ok; else
+  bad "34 read-artifact no longer stages through a private held copy"; fi
+d="$(new_repo)"
+printf 'still fine\n' > "$d/.claude/state/gaps.md"
+RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" gaps 2>/dev/null )"; RA_RC=$?
+eq "$RA_RC" "0" "34 the staged read still emits a clean artifact"
+eq "$RA_OUT" "still fine" "34 …byte-exact"
+if ls "$d/.claude/state"/.artifact.* >/dev/null 2>&1; then
+  bad "34 …with no staging residue"; else ok; fi
+# Renewal applies admission's 10-digit expiry width bound: a wider value wraps bash arithmetic
+# and revived a claim admission treats as immediately breakable.
+d="$(new_repo)"; seed_snap "$d"
+printf '{"startedAt":1,"expiresAt":9223372036854775807,"token":"tokT"}' > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" dispatch-gaps --token tokT --prompt-only .claude/state 7 ) >/dev/null 2>&1
+eq "$?" "13" "34 a wider-than-timestamp expiry is an unreadable lease, never a live one"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
