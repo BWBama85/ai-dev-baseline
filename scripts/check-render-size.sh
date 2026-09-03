@@ -156,8 +156,28 @@ eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { l += $2; w += $3; t 
    "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 == "TOTAL" { print $2, $3, $4, $5 }')" \
    "green: TOTAL equals the sum of the artifact rows in all four measurements"
 eq "$(col "$ALPHA" 5)" "0" "green: an artifact with no fence has 0 fenced comment lines"
-has "$RS_ERR" "measured 3 root doc(s) and 6 skill(s)" "green: it says what it checked"
+has "$RS_ERR" "measured 3 root doc(s), 6 skill(s) and 0 on-demand supporting file(s)" "green: it says what it checked"
 has "$RS_ERR" "not a tokenizer" "green: the approximation is stated, not implied"
+
+# --- supports-present: ONE final TOTAL summing EVERY row above (#433) ---------------------------
+# The TSV contract is the header's own sentence — one row per artifact, then a TOTAL summing the
+# rows above it in every column. Supporting files must not bend it: no row after TOTAL, and no
+# row TOTAL silently excludes. The loaded/on-demand split lives in the stderr summary instead.
+fxs="$(mk_fixture supp)" || bad "fixture: could not build the supports tree"
+mkdir -p "$fxs/base/workflows/alpha"
+printf '# on-demand notes\nsome words here\n' > "$fxs/base/workflows/alpha/notes.md"
+for agent in claude codex gemini; do
+  printf '# on-demand notes\nsome words here\n' > "$fxs/agents/$agent/skills/alpha/notes.md"
+done
+run_rs "$fxs"
+yes "$RS_RC" "supports: a tree with supporting files exits 0"
+eq "$(printf '%s\n' "$RS_OUT" | tail -n1 | awk -F'\t' '{print $1}')" "TOTAL" \
+   "supports: the LAST row is TOTAL — nothing rides after it"
+eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { l += $2; w += $3; t += $4; c += $5 } END { print l, w, t, c }')" \
+   "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 == "TOTAL" { print $2, $3, $4, $5 }')" \
+   "supports: TOTAL sums EVERY row above it, supporting rows included"
+has "$RS_ERR" "3 on-demand supporting file(s)" "supports: the stderr summary counts them"
+has "$RS_ERR" "loaded approx_tokens" "supports: …and carries the loaded/on-demand token split"
 
 # --- fenced_comment_lines (#432) ----------------------------------------------------------------
 
@@ -366,6 +386,7 @@ check_git "$fx" update-ref refs/tags/-x HEAD~1 >/dev/null 2>&1 || bad "fixture: 
 run_rs "$fx" --since=-x
 yes "$RS_RC" "dash-ref: --since=-x resolves a tag named -x"
 assert_grown_ten
+has "$RS_ERR" "3 new (on-demand: 0 new)" "since: new artifacts are counted per bucket, so a supporting-file batch cannot masquerade as loaded growth"
 run_rs "$fx" --since HEAD --since HEAD~1
 eq "$RS_RC" "2" "refusal: --since twice exits 2"
 fx="$(mk_fixture norepo)" || bad "fixture: could not build the no-repository tree"

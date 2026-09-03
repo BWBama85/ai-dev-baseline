@@ -979,8 +979,16 @@ for i in $(seq 1 20); do
       --fix "$(printf 'abcd%03d' "$i")" --pr 2 --thread "C$i" >/dev/null 2>"$work/l7c-rc/err.$i"; echo "$?" > "$work/l7c-rc/rc.$i"; } &
 done
 wait
+# EVERY NON-ZERO WRITER'S rc AND STDERR ARE THE EVIDENCE (#449): a count alone said "no refusal"
+# and nothing else, and the one writer that failed for some other reason left no trace unless a
+# row was also lost.
+_nz7c=""
+for i in $(seq 1 20); do
+  _r="$(cat "$work/l7c-rc/rc.$i" 2>/dev/null)"
+  [ "$_r" = 0 ] || _nz7c="${_nz7c}writer C$i rc ${_r:-?}: $(tr '\n' ' ' < "$work/l7c-rc/err.$i" 2>/dev/null | cut -c1-300); "
+done
 eq "$(cat "$work"/l7c-rc/rc.* | grep -vc '^0$')" 0 \
-   "twenty concurrent writers: none was REFUSED at the lock's wait bound (a refusal is told with rc 20 — this is the queue draining too slowly, not a lost write: $(cat "$work"/l7c-rc/err.* 2>/dev/null | grep -m1 'could not take the write lock' || printf 'no refusal')"
+   "twenty concurrent writers: every writer exits 0 (a refusal at the wait bound is rc 20, a lost row 21; the failing writers: ${_nz7c:-none})"
 _landed="$(bash "$PL" classes --ledger "$L7c" | awk -F'\t' '$2=="conc"{print $1}')"
 if [ "$_landed" != 20 ]; then
   # EVIDENCE, NOT A COUNT. A shortfall here has flapped on the ubuntu runner and never locally, so
@@ -1050,8 +1058,13 @@ for i in $(seq 1 25); do
       --fix "$(printf 'abcd%03d' "$i")" --pr 1 --thread "F$i" >/dev/null 2>"$work/l7e-rc/err.$i"; echo "$?" > "$work/l7e-rc/rc.$i"; } &
 done
 wait
+_nz7e=""
+for i in $(seq 1 25); do
+  _r="$(cat "$work/l7e-rc/rc.$i" 2>/dev/null)"
+  [ "$_r" = 0 ] || _nz7e="${_nz7e}writer F$i rc ${_r:-?}: $(tr '\n' ' ' < "$work/l7e-rc/err.$i" 2>/dev/null | cut -c1-300); "
+done
 eq "$(cat "$work"/l7e-rc/rc.* | grep -vc '^0$')" 0 \
-   "25 first-time writers: none was REFUSED at the lock's wait bound ($(cat "$work"/l7e-rc/err.* 2>/dev/null | grep -m1 'could not take the write lock' || printf 'no refusal'))"
+   "25 first-time writers: every writer exits 0 (the failing writers: ${_nz7e:-none})"
 _landed="$(bash "$PL" classes --ledger "$L7e" 2>/dev/null | awk -F'\t' '$2=="firstc"{print $1}')"
 if [ "$_landed" != 25 ]; then
   printf '  --- 7e shortfall: landed %s of 25 ---\n' "$_landed" >&2
@@ -1063,6 +1076,37 @@ if [ "$_landed" != 25 ]; then
 fi
 eq "$_landed" 25 \
    "25 concurrent writers creating the ledger for the FIRST time all land"
+
+# THE WAIT BOUND COUNTS TIME WITHOUT PROGRESS, NOT QUEUE TIME (#449). A healthy queue drains
+# through the lock in more than the bound on a slow runner (25 first-time writers took over 30s
+# on CI), and a bound on total waiting refused its tail. The signal of progress is the holder
+# changing, so this holds the lock for ~2.4s while rewriting its owner record every 0.3s — a
+# queue passing through — and a writer under a ONE-SECOND bound must wait it out and land. The
+# old bound refused it at one second whatever the holder did. (Deterministic: nothing here
+# depends on how long a real hold takes under load.)
+L7q="$work/queue/q.md"; mkdir -p "$work/queue"
+bash "$PL" record --ledger "$L7q" --class queuec --site s.sh --fix abc1231 --pr 1 --thread Q0 >/dev/null 2>&1
+mkdir -p "$L7q.lock/HOLDERTOKEN"
+( n=0; while [ "$n" -lt 8 ]; do printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$((90000 + n))" > "$L7q.lock/meta"; sleep 0.3; n=$((n + 1)); done; rm -rf "$L7q.lock" ) &
+_hold=$!
+ADB_PATTERN_LOCK_WAIT_SECS=1 bash "$PL" record --ledger "$L7q" --class queuec --site s2.sh --fix abc1232 --pr 1 --thread Q1 >/dev/null 2>"$work/queue.err"; QRC=$?
+wait "$_hold" 2>/dev/null
+eq "$QRC" 0 "a lock whose holder keeps changing is waited out past a 1s bound — the bound counts time without progress, not queue time ($(tr '\n' ' ' < "$work/queue.err" | cut -c1-160))"
+eq "$(bash "$PL" classes --ledger "$L7q" 2>/dev/null | awk -F'\t' '$2=="queuec"{print $1}')" 2 \
+   "…and the write landed once the holder released"
+# …WHILE A WEDGED HOLDER STILL TRIPS IT: a lock whose owner record never changes (a live pid that
+# makes no progress) is refused after the bound, so the backstop is intact.
+L7w="$work/wedge/w.md"; mkdir -p "$work/wedge"
+bash "$PL" record --ledger "$L7w" --class wedgec --site s.sh --fix abc1231 --pr 1 --thread W0 >/dev/null 2>&1
+mkdir -p "$L7w.lock/LIVETOKEN"
+printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$L7w.lock/meta"   # this suite's own pid: alive, making no progress
+_t0=$SECONDS
+ADB_PATTERN_LOCK_WAIT_SECS=1 bash "$PL" record --ledger "$L7w" --class wedgec --site s2.sh --fix abc1232 --pr 1 --thread W1 >/dev/null 2>"$work/wedge.err"; WRC=$?
+_dt=$((SECONDS - _t0))
+eq "$WRC" 20 "a wedged live holder is still refused at the bound (20)"
+has "$(cat "$work/wedge.err")" "could not take the write lock" "…naming the refusal"
+if [ "$_dt" -le 10 ]; then ok; else bad "…within the bound, not after a queue-sized wait (took ${_dt}s)"; fi
+rm -rf "$L7w.lock"
 
 # THE LOCK PATH IS NOT SHELL SOURCE (PR #429). The EXIT trap interpolated the ledger path into text
 # `trap` evaluates later, so a directory named with a quote and a command ran it. Reproduced by the
@@ -1578,17 +1622,17 @@ has "$RESTXT" 'ROUND_PROMOTED' "…including the promotions, which the delta der
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown
 # command at exactly the moment they need a working diagnostic.
 IMPTXT2="$(cat "$IMP")"
-has   "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} verify' "the malformed-ledger path invokes the real verifier"
+has   "$(cat scripts/lib/implement-lib.sh)" 'pattern-ledger.sh" verify' "the malformed-ledger path invokes the real verifier (implement-lib's checklist helper since #433)"
 hasnt "$IMPTXT2" 'baseline patterns verify'      "…and not a CLI subcommand nothing implements"
 # THE OVER-BUDGET CODE IS HANDLED (PR #429): the library emits nothing for 21, and a consumer that
 # treated it as the wildcard would proceed without saying why the checklist is absent.
-has "$IMPTXT2" 'exceeds the prompt budget (rc 21)' "/implement-issue handles an over-budget checklist (21) at the gap dispatch"
-eq "$(grep -c 'prompt budget' "$IMP")" 2 "…at BOTH read sites"
-has "$(cat "$IMP")" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side)"
-# BOTH read sites, separately. One `checklist` call would satisfy a single `has`, and the two ends
-# are different claims: the gap dispatch acts before the code exists, the self-review after.
-eq "$(grep -c '{{PATTERN_LEDGER_LIB}} checklist' "$IMP")" 2 \
-   "…at BOTH ends — the gap-analysis dispatch and the self-review sweep"
+# Since #433 the dispatch-end read lives in implement-lib's ONE checklist helper, which both the
+# survey and the gap prompt route through; the self-review end stays in the workflow.
+has "$(cat scripts/lib/implement-lib.sh)" 'exceeds the prompt budget (rc 21)' "/implement-issue handles an over-budget checklist (21) at the dispatch end (implement-lib's helper)"
+eq "$(grep -c '_il_append_checklist "\$_[sg]pfd"' scripts/lib/implement-lib.sh)" 2 \
+   "…and BOTH dispatch prompts (survey + gaps) route through that one helper"
+has "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side, the self-review sweep)"
+has "$IMPTXT2" 'over budget' "…and step 8 still says what rc 21 means"
 
 # The ledger must NOT be swept as run debris: it is durable project history, and /cleanup only
 # enumerates files under the state directory.

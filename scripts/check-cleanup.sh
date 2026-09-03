@@ -379,6 +379,7 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/gaps-retry.err"
 : > "$S/gap-analysis.lock"
 : > "$S/review-prompt.txt"
+: > "$S/review-prompt-stage.k2Xb9Q"
 : > "$S/review.md"
 : > "$S/review.err"
 : > "$S/review-codex.md"
@@ -400,6 +401,8 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/pr-body.md"
 : > "$S/some-other-skill.json"
 : > "$S/.marker.tmp"
+: > "$S/.artifact.w48123"
+: > "$S/gaps-held.w48123p"
 printf '{"branch":"issue-9-thing","issue":"9","phase":"pushed"}' > "$S/implement-issue-active.json"
 scan="$(bash "$CL" state-scan "$S")"
 kindof() { printf '%s\n' "$scan" | awk -F'\t' -v b="$1" '{n=split($2,p,"/"); if (p[n]==b) print $1}'; }
@@ -415,10 +418,13 @@ eq "${ kindof gap-prompt.txt; }"               "gaps"    "3 …and the prompt, w
 # #264: the three names /implement-issue step 8 actually writes, all of which used to fall through
 # to `other` and therefore lived forever.
 eq "${ kindof review-prompt.txt; }"            "review"  "3 the review prompt is classified (#264)"
+eq "${ kindof review-prompt-stage.k2Xb9Q; }"   "review"  "3 …and its mktemp stage, which holds the diff before publication"
 eq "${ kindof review.md; }"                    "review"  "3 …the reviewer's findings"
 eq "${ kindof review.err; }"                   "review"  "3 …and the captured exploration stream"
 eq "${ kindof review-codex.md; }"              "review"  "3 …plus the per-slot family the glob anticipates"
 eq "${ kindof review-gemini.err; }"            "review"  "3 …on both suffixes"
+eq "${ kindof .artifact.w48123; }"             "review"  "3 …and read-artifact's private copy, which a killed read orphans with up to 8 MiB of content"
+eq "${ kindof gaps-held.w48123p; }"            "gaps"    "3 …and the per-invocation gap prompt copy a --prompt-only build hands its consumer"
 # The ALLOWLIST property, tested from the side that costs something: a near-miss must NOT become
 # sweepable. `state-scan` widening by accident is how a sweep starts eating files it never owned,
 # and the failure would look like corruption rather than a cleanup.
@@ -1145,7 +1151,7 @@ else
       }
     }' ; }"
   if [ -n "$sweeparms" ]; then
-    eq "$sweeparms" "gaps issue review docs threads " \
+    eq "$sweeparms" "gaps survey issue review docs threads " \
        "6 the sweep loop's delete arms are EXACTLY gaps/issue/review/docs/threads — no default arm, so 'unsafe' cannot be deleted"
   else
     bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
@@ -1198,14 +1204,14 @@ else
   # reads as a codex error. Writing the prompt with a file-write tool makes that window a whole
   # agent turn.
   iitake="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} admit {{STATE_DIR}}' | head -n1 | cut -d: -f1; }"
-  iiprompt="${ printf '%s\n' "$ii" | grep -n 'cat > {{STATE_DIR}}/gap-prompt.txt' | head -n1 | cut -d: -f1; }"
+  iiprompt="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} dispatch-gaps' | head -n1 | cut -d: -f1; }"
   if [ -n "$iitake" ] && [ -n "$iiprompt" ] && [ "$iitake" -lt "$iiprompt" ]; then ok; else
-    bad "6 the claim must be taken BEFORE gap-prompt.txt is written (admit@${iitake:-?} prompt@${iiprompt:-?})"
+    bad "6 the claim must be taken BEFORE the gap prompt is built (admit@${iitake:-?} dispatch-gaps@${iiprompt:-?})"
   fi
   # The release must NOT sit in the same fenced block as the dispatch: that block is dispatched
   # to the harness's DETACHED facility, so a release appended to it drops the claim immediately
   # and leaves it unheld for the whole pass — the only window it exists for.
-  iidisp="${ printf '%s\n' "$ii" | grep -n '{{ROLE_DISPATCH}} invoke gap_analysis' | head -n1 | cut -d: -f1; }"
+  iidisp="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} dispatch-gaps --token' | head -n1 | cut -d: -f1; }"
   iirel="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} release --token' | tail -n1 | cut -d: -f1; }"
   iifence="${ printf '%s\n' "$ii" | awk -v d="${iidisp:-0}" 'NR > d && /^```$/ { print NR; exit }'; }"
   if [ -n "$iirel" ] && [ -n "$iifence" ] && [ "$iirel" -gt "$iifence" ]; then ok; else
@@ -1832,11 +1838,11 @@ eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'state-scan --with-identity'; }" "1
 # really a checksum.
 has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
 # EVERY deleting arm, not just the one this issue was reported against.
-for arm in gaps issue review docs threads; do
+for arm in gaps survey issue review docs threads; do
   has "$SW_SNIPPET" "    $arm)" "8d the $arm arm is present in the sweep"
 done
-eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "5" \
-   "8d …and all five pass the judged identity to the delete"
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "6" \
+   "8d …and all six pass the judged identity to the delete"
 hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
 ' "8d no arm still deletes by pathname alone"
 
@@ -2258,7 +2264,10 @@ RE_SNIPPET="${ check_wf_snippet "$WF" remote-enum; }"
 # a few builds render it `origin/HEAD`), or the fixture stopped exercising #38 and a green
 # filter assertion below would mean nothing.
 raw_enum="${ check_git "$RM" branch -r --merged origin/main --format='%(refname:short)'; }"
-if printf '%s\n' "$raw_enum" | grep -Eqx 'origin|origin/HEAD'; then ok; else
+# A here-string, never `printf | grep -q`: under pipefail grep's early exit can hand printf an
+# EPIPE, and the probe then reads as "not surfaced" over output that did surface it (observed
+# under a loaded selfcheck; check-lib.sh states the rule).
+if grep -Eqx 'origin|origin/HEAD' <<< "$raw_enum"; then ok; else
   bad "11 enum: fixture did not surface the origin/HEAD symref (raw: ${ printf '%s' "$raw_enum" | tr '\n' ' '; })"
 fi
 # The variables the workflow sets in its own earlier steps, mirrored for a fixture whose default
@@ -3206,5 +3215,71 @@ else ok; fi
 mr_run "$MR" "$CL" "$MRJ_BROKEN"
 has "${ mr_line; }" 'artifacts kept for a run in flight' \
    "13k the control (the key test blinded) reports unknown liveness as a run in flight — the overclaim the review names"
+
+# ================= 14. run-live: the post-scan liveness re-probe (#435) =========================
+# The sweep's verdicts rest on LOCK/RUN_NOW as ONE scan captured them, and the scan fingerprints
+# artifacts as it walks — so an admission landing mid-walk yields "no run" verdicts beside a live
+# run's identities. The workflow re-asks THIS question after every identity is captured, so the
+# answer must be a live read of the directory, fail-closed toward "live".
+RL_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-runlive.XXXXXX")"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "10" "14 an empty state dir is not a live run (10)"
+: > "$RL_D/gap-analysis.lock"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 a claim present NOW is a live run (0)"
+rm -f "$RL_D/gap-analysis.lock"
+: > "$RL_D/implement-issue-active.json"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 an active marker present NOW is a live run (0)"
+rm -f "$RL_D/implement-issue-active.json"
+: > "$RL_D/implement-issue-blocked.json"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 a blocked marker keeps its run's artifacts too (0)"
+rm -f "$RL_D/implement-issue-blocked.json"
+ln -s /nonexistent "$RL_D/gap-analysis.lock"
+bash "$CL" run-live "$RL_D" >/dev/null 2>&1
+eq "$?" "0" "14 even a planted link at the claim name reads live — fail closed toward keeping"
+rm -f "$RL_D/gap-analysis.lock"
+bash "$CL" run-live "$RL_D/absent" >/dev/null 2>&1
+eq "$?" "10" "14 a missing state dir is no run (10)"
+bash "$CL" run-live >/dev/null 2>&1
+eq "$?" "2" "14 no argument is a usage error"
+rm -rf "$RL_D"
+# …and the workflow consults it between the identity snapshot and the delete loop, branching on
+# the STATUS: only rc 10 means "no run", and any other nonzero (a damaged helper) keeps
+# everything rather than reading as staleness.
+if grep -q 'run-live "\$STATE"' "$ROOT/base/workflows/cleanup.md"; then ok; else
+  bad "14 cleanup.md never re-asks liveness after the identity snapshot"; fi
+if grep -q 'liveness re-probe failed' "$ROOT/base/workflows/cleanup.md" \
+   && grep -q '"\$RL_RC" -ne 10' "$ROOT/base/workflows/cleanup.md"; then ok; else
+  bad "14 cleanup.md treats a run-live ERROR like rc 10 — a damaged helper would read as staleness"; fi
+
+# ================= 15. file-size: the sweep's bounded size read (#435) ==========================
+# The report loop reads agent-written error files; a parent-shell `wc -c <` redirect could be
+# blocked forever by a FIFO swapped in after the scan.
+FS_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-fsize.XXXXXX")"
+printf 'hello\n' > "$FS_D/f"
+eq "$(bash "$CL" file-size "$FS_D/f" 2>/dev/null)" "6" "15 a regular file sizes to its bytes"
+bash "$CL" file-size "$FS_D/absent" >/dev/null 2>&1
+no "$?" "15 a missing path is loud, never a silent zero"
+mkdir "$FS_D/d"
+bash "$CL" file-size "$FS_D/d" >/dev/null 2>&1
+no "$?" "15 a directory is loud too"
+# GNU wc prints a `0` count line for a directory BEFORE exiting 1 (probed: coreutils 9.11), and a
+# `… | awk` pipeline returned awk's 0 over it — so the assertion above was red only on ubuntu. The
+# stub reproduces that exact shape, so the guard goes red on every platform.
+mkdir "$FS_D/bin"
+printf '#!/bin/sh\nprintf "0 %%s\\n" "$2"\nexit 1\n' > "$FS_D/bin/wc"
+chmod +x "$FS_D/bin/wc"
+PATH="$FS_D/bin:$PATH" bash "$CL" file-size "$FS_D/d" >/dev/null 2>&1
+no "$?" "15 a directory is loud under GNU wc too, whose 0 count line must not read as a size"
+bash "$CL" file-size >/dev/null 2>&1
+eq "$?" "2" "15 no argument is a usage error"
+rm -rf "$FS_D"
+# …and the sweep's fence uses it instead of the redirect.
+if grep -q 'file-size "\$sfile"' "$ROOT/base/workflows/cleanup.md"; then ok; else
+  bad "15 cleanup.md still sizes report files through a parent-shell redirect"; fi
+if grep -q 'wc -c < "\$sfile"' "$ROOT/base/workflows/cleanup.md"; then
+  bad "15 …the unbounded redirect open is back in the fence"; else ok; fi
 
 check_summary "check-cleanup"

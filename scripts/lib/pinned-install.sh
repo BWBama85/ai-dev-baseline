@@ -955,8 +955,11 @@ _pi_stage() {
       # `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify …` (agents/*/[CLAUDE|AGENTS].md:69),
       # so a verbatim copy told a pinned project's agent to run a library at the user-global path —
       # which on a pinned-only machine does not exist, and on a mixed machine is the OTHER install's.
+      # `*/skills/*/*.md`, not `SKILL.md` alone (#433): a skill's supporting files carry the
+      # same rendered `bash "$HOME/.<agent>/scripts/lib/…"` invocations, and a verbatim copy of
+      # one is exactly the cross-install reach _pi_assert_reanchored refuses below.
       case "$dest" in
-        */skills/*/SKILL.md|*/rules/ai-dev-baseline.md|*/AGENTS.practices.md)
+        */skills/*/*.md|*/rules/ai-dev-baseline.md|*/AGENTS.practices.md)
           cmd_reanchor "$agent" "$p" < "$src" > "$stage/$rel" || return 1 ;;
         *)
           cp "$src" "$stage/$rel" || return 1 ;;

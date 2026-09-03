@@ -57,6 +57,17 @@ bounded by each CLI).
   silently adding a byte is the wrong way to differ from the `cat` it replaced (#304). The
   rendered *output* still ends with exactly one trailing newline.
 - **`README.md` is not a workflow** — the renderer skips it.
+- **Supporting files (#433).** A workflow may keep on-demand reference material in
+  `base/workflows/<name>/*.md`; each file renders **beside** every agent's `SKILL.md`
+  (`agents/<agent>/skills/<name>/<file>.md`) through the same per-agent block filter and the
+  same `{{TOKEN}}` map, under an HTML generated-file banner. They carry **no frontmatter** (a
+  leading `---` is rejected), their names stay in `[A-Za-z0-9._-]`, the directory requires
+  `<name>.md` to exist, and they stay **flat** — the pinned installer refuses skill
+  subdirectories. Claude and Codex read a referenced sibling on demand (their vendors document
+  exactly this shape); for Antigravity the rendered file is a plain `cat`-able path, which is why
+  SKILL.md states the installed location. `render-size.sh` reports them under a separate
+  on-demand total, `workflow-map` holds them 1:1 with their sources, and `/cleanup`'s
+  classification duty applies to any state files their steps write, exactly as for the SKILL.md.
 
 ### Neutral placeholder vocabulary
 

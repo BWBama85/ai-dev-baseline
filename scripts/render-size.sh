@@ -134,8 +134,16 @@ fi
 rc=0
 roots=0
 skills=0
-news=0
+supports=0
+news_loaded=0; news_od=0
 t_lines=0; t_words=0; t_tokens=0; t_fenced=0; t_dlines=0; t_dtokens=0
+# On-demand supporting files (#433) are measured and rowed like everything else but accumulated
+# APART, so the loaded-on-invocation figure — the claim the report exists to support — survives
+# as its own number. It is carried in the STDERR summary, never as a second total row: the TSV
+# contract is one final TOTAL summing every row above it, and a subtotal row would break any
+# consumer that sums the rows or reads the last row as the total.
+od_lines=0; od_words=0; od_tokens=0; od_fenced=0; od_dlines=0; od_dtokens=0
+EMIT_BUCKET=loaded
 M_LINES=0; M_WORDS=0; M_TOKENS=0
 
 # measure <file> <label> — set M_LINES / M_WORDS / M_TOKENS from <file>, or diagnose <label> on
@@ -222,15 +230,23 @@ emit() {
     fi
     measure "$REF_DIR/$f" "$f at $SINCE_SHORT" || { rc=1; return 1; }
     dl=$(( lines - M_LINES )); dt=$(( tokens - M_TOKENS ))
-    t_dlines=$(( t_dlines + dl )); t_dtokens=$(( t_dtokens + dt ))
+    if [ "$EMIT_BUCKET" = loaded ]; then t_dlines=$(( t_dlines + dl )); t_dtokens=$(( t_dtokens + dt ))
+    else od_dlines=$(( od_dlines + dl )); od_dtokens=$(( od_dtokens + dt )); fi
     row "$f" "$lines" "$words" "$tokens" "$fenced" "$dl" "$dt"
   else
-    news=$(( news + 1 ))
-    t_dlines=$(( t_dlines + lines )); t_dtokens=$(( t_dtokens + tokens ))
+    # Counted PER BUCKET: a batch of new supporting files used to report as "loaded … N new",
+    # which misstates the context-growth summary the loaded deltas exist to support.
+    if [ "$EMIT_BUCKET" = loaded ]; then news_loaded=$(( news_loaded + 1 )); t_dlines=$(( t_dlines + lines )); t_dtokens=$(( t_dtokens + tokens ))
+    else news_od=$(( news_od + 1 )); od_dlines=$(( od_dlines + lines )); od_dtokens=$(( od_dtokens + tokens )); fi
     row "$f" "$lines" "$words" "$tokens" "$fenced" new new
   fi
-  t_lines=$(( t_lines + lines )); t_words=$(( t_words + words ))
-  t_tokens=$(( t_tokens + tokens )); t_fenced=$(( t_fenced + fenced ))
+  if [ "$EMIT_BUCKET" = loaded ]; then
+    t_lines=$(( t_lines + lines )); t_words=$(( t_words + words ))
+    t_tokens=$(( t_tokens + tokens )); t_fenced=$(( t_fenced + fenced ))
+  else
+    od_lines=$(( od_lines + lines )); od_words=$(( od_words + words ))
+    od_tokens=$(( od_tokens + tokens )); od_fenced=$(( od_fenced + fenced ))
+  fi
 }
 
 COLS=(name lines words approx_tokens fenced_comment_lines)
@@ -261,6 +277,23 @@ for wf in base/workflows/*.md; do
   for pair in $AGENTS; do
     emit "agents/${pair%%:*}/skills/$name/SKILL.md" && skills=$(( skills + 1 ))
   done
+  # Supporting files (#433): derived from base/workflows/<name>/, never globbed from agents/ —
+  # a sibling that failed to render must be MISSING here, not absent from the report.
+  if [ -d "base/workflows/$name" ]; then
+    EMIT_BUCKET=ondemand
+    for sf in "base/workflows/$name"/*.md; do
+      [ -f "$sf" ] || continue
+      sbase="$(basename "$sf")"
+      case "$sbase" in *[!A-Za-z0-9._-]*)
+        printf 'render-size: UNNAMEABLE base/workflows/%s/%s — outside [A-Za-z0-9._-]\n' "$name" "$(adb_display_value "$sbase")" >&2
+        rc=1; continue ;;
+      esac
+      for pair in $AGENTS; do
+        emit "agents/${pair%%:*}/skills/$name/$sbase" && supports=$(( supports + 1 ))
+      done
+    done
+    EMIT_BUCKET=loaded
+  fi
 done
 
 # Zero sources means the derivation collapsed, and a collapsed derivation prints a clean, short
@@ -270,14 +303,18 @@ if [ "$sources" -eq 0 ]; then
   rc=1
 fi
 
+# TOTAL is the ONE final row and sums EVERY row above it — the header's own contract, kept even
+# with supporting files present. The loaded-on-invocation figure ("the invocation context got
+# smaller", #433's claim) is carried in the stderr summary as loaded/on-demand approx_tokens; a
+# subtotal ROW would break any consumer that sums the rows or reads the last row as the total.
 if [ -z "$SINCE_SHA" ]; then
-  row TOTAL "$t_lines" "$t_words" "$t_tokens" "$t_fenced"
-  printf 'render-size: measured %s root doc(s) and %s skill(s) from %s workflow source(s); approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer\n' \
-    "$roots" "$skills" "$sources" >&2
+  row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))"
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer\n' \
+    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" >&2
 else
-  row TOTAL "$t_lines" "$t_words" "$t_tokens" "$t_fenced" "$t_dlines" "$t_dtokens"
-  printf 'render-size: measured %s root doc(s) and %s skill(s) from %s workflow source(s); approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): delta_lines %s, delta_tokens %s, %s new\n' \
-    "$roots" "$skills" "$sources" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news" >&2
+  row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))" "$((t_dlines + od_dlines))" "$((t_dtokens + od_dtokens))"
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new (on-demand: %s new)\n' \
+    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news_loaded" "$news_od" >&2
 fi
 
 exit "$rc"

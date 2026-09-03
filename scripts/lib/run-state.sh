@@ -29,7 +29,7 @@
 #   issues: #<n>, #<n>
 #   pr: #<number>                                        (when prUrl is present — the number only)
 #   blocked: yes — reason recorded in <state>/implement-issue-blocked.json
-#   artifacts: <path>, …                                 (gaps/review/docs records, the first 400 by path)
+#   artifacts: <path>, …                                 (gaps/review/docs/survey records, the first 400 by path)
 #   artifacts-omitted: <n>                               (members past that cap — counted, never named)
 #   unsafe-names: <n>                                    (records `state-scan` refused to name)
 #   unnamed-artifacts: <n>                               (family members outside the opaque name grammar)
@@ -249,7 +249,7 @@ _rs_show() {
   esac
 }
 
-# _rs_scan <dir> — `state-scan` once; sets RS_ARTS (gaps/review/docs paths, sorted, comma-joined),
+# _rs_scan <dir> — `state-scan` once; sets RS_ARTS (gaps/review/docs/survey paths, sorted, comma-joined),
 # RS_ISSUES (`#n, …` from the issue snapshots) and RS_UNSAFE (count of refused names).
 # The most artifact paths a summary renders (400). Every path is short, but a family may hold thousands
 # of members (the name grammar allows 10,000 per family), and a run-state read that forked once
@@ -275,12 +275,12 @@ _rs_scan() {
   scan="$(printf '%s\n' "$scan" | jq -rR "$_RS_UNSAFE_JQ"' split("\t") | select(length >= 2)
     | if (.[1] | unsafe_path) then "unsafe\t-"
       elif (.[0] != "unsafe") and ((.[1] | split("/") | last) | test("^[A-Za-z0-9._-]{1,64}$") | not) then "unsafe\t-"
-      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv)$") | not) then "unnamed\t-"
+      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace-full\\.md|survey-held\\.[A-Za-z0-9]{1,10}|survey-trace\\.md|gaps-held\\.[A-Za-z0-9]{1,10}|\\.artifact\\.[A-Za-z0-9]{1,10})$") | not) then "unnamed\t-"
       else "\(.[0])\t\(.[1])" end' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r kind sfile key; do
     [ -n "$kind" ] || continue
     case "$kind" in
-      gaps|review|docs)
+      gaps|review|docs|survey)
         if [ "$arts_n" -lt "$_RS_MAX_ARTS" ]; then
           # _rs_show's rendering, inline: a `$(…)` here is one fork per member.
           case "$sfile" in

@@ -178,7 +178,7 @@ bash "$ROOT/scripts/lib/role-dispatch.sh" untrusted >/dev/null 2>&1; eq "$?" "2"
 #                        /adopt reads other projects' ones while holding repo tool access. That is
 #                        the highest-risk shape in this registry, and the only workflow here whose
 #                        untrusted text arrives from the filesystem rather than the network.
-REGISTRY='implement-issue 3
+REGISTRY='implement-issue 4
 adopt 1
 resolve-pr-threads 2
 roadmap 3
@@ -202,6 +202,23 @@ cleanup 0'
 # assignment in it must be `local` deliberately. `raw` was not, and is now — it was contained by
 # the old `$( )` and nothing outside reads it, so this was a latent leak rather than a live bug,
 # but it is exactly the shape that stops being harmless the moment someone reuses the name.
+
+# Does this rendered source fetch third-party text by any idiom these workflows actually use?
+# One home for the discovery predicate, asked of workflow bodies AND supporting files — two
+# inline copies would drift the moment one gains an idiom. Comment lines are stripped so prose
+# ABOUT the idioms is not mistaken for a read.
+fetches_untrusted() {   # <file>
+  awk '
+    /^```bash$/ { inb = 1; next }
+    /^```/      { inb = 0; next }
+    !inb { next }
+    { line = $0; sub(/[[:space:]]*#.*$/, "", line)
+      if (line ~ /--json[[:space:]]*[A-Za-z,]*(body|comments|title)/) { found = 1 }
+      if (line ~ /issues\/[^[:space:]]*\/comments/)                   { found = 1 }
+      if (line ~ /(WebFetch|run view[^|]*--log)/)                     { found = 1 } }
+    END { exit !found }' "$1"
+}
+
 scan_tree() {
   local base="$1" wf stem want got f raw
   local practice="$base/base/practices/untrusted-content.md"
@@ -235,8 +252,10 @@ scan_tree() {
     f="$base/base/workflows/$stem.md"
     if [ ! -f "$f" ]; then printf 'registry names a missing workflow: %s\n' "$stem"; continue; fi
     got="$(grep -Fc -- "$MARK" "$f")"
-    if [ "$got" -lt "$want" ]; then
-      printf 'workflow %s: %s labelled read site(s), expected at least %s\n' "$stem" "$got" "$want"
+    # EQUALITY, not a floor: got >= want let one existing marker mask any number of additional
+    # unlabelled read sites forever — a new read must move the registered count with it.
+    if [ "$got" -ne "$want" ]; then
+      printf 'workflow %s: %s labelled read site(s), registry expects exactly %s\n' "$stem" "$got" "$want"
     fi
   done <<EOF
 $REGISTRY
@@ -261,33 +280,62 @@ EOF
     [ -f "$wf" ] || continue
     stem="$(basename "$wf" .md)"
     case "$stem" in README) continue ;; esac
-    if awk '
-         /^```bash$/ { inb = 1; next }
-         /^```/      { inb = 0; next }
-         !inb { next }
-         { line = $0; sub(/[[:space:]]*#.*$/, "", line)
-           if (line ~ /--json[[:space:]]*[A-Za-z,]*(body|comments|title)/) { found = 1 }
-           if (line ~ /issues\/[^[:space:]]*\/comments/)                   { found = 1 }
-           if (line ~ /(WebFetch|run view[^|]*--log)/)                     { found = 1 } }
-         END { exit !found }' "$base/base/workflows/$stem.md"; then
+    if fetches_untrusted "$base/base/workflows/$stem.md"; then
       grep -Fq -- "$MARK" "$base/base/workflows/$stem.md" \
         || printf 'workflow %s fetches third-party text but carries NO labelled read site\n' "$stem"
     fi
   done
 
-  # (d) the two dispatch sites must CONTAIN, not concatenate. This is the rule with teeth: it is
-  #     the difference between a hostile body being data and being instruction to an agent with
-  #     repo tool access.
-  #
-  #     TWO rules, because presence alone is not the property. The first counts the contained
-  #     hand-offs; the second is the one that catches a RAW concatenation — any line inside a fenced
-  #     block that extracts issue text (`.body`) and sends it into a prompt file must pass through
-  #     the wrapper. A lexical presence check alone would stay green while someone appended the body
-  #     directly right next to a surviving `untrusted` call, which is the realistic regression.
-  f="$base/base/workflows/implement-issue.md"
-  if [ -f "$f" ]; then
+  # (c2b) …and the SUPPORTING files (#433): base/workflows/<name>/*.md renders into every
+  # shipped skill exactly as the workflow body does, so a fetch moved into one must carry its
+  # label there — or the discovery rule above goes green over the same read it exists to catch.
+  # A label is NECESSARY but not sufficient: one mark satisfies a presence test forever, so an
+  # already-labelled file gaining a second unlabelled read would stay green — a fetching
+  # supporting file must therefore also sit in the registry, whose per-stem count the counting
+  # pass below enforces EXACTLY (its `base/workflows/$stem.md` derivation resolves slash stems
+  # like `implement-issue/state-protocol` unchanged).
+  for wf in "$base"/base/workflows/*/*.md; do
+    [ -f "$wf" ] || continue
+    stem="$(basename "$(dirname "$wf")")/$(basename "$wf" .md)"
+    if fetches_untrusted "$wf"; then
+      grep -Fq -- "$MARK" "$wf" \
+        || printf 'supporting file %s fetches third-party text but carries NO labelled read site\n' "$stem"
+      printf '%s\n' "$REGISTRY" | awk -v s="$stem" '$1 == s { found = 1 } END { exit !found }' \
+        || printf 'supporting file %s fetches third-party text and is not in the untrusted-content registry — register its exact site count\n' "$stem"
+    fi
+  done
+
+  # (d) the dispatch prompts must CONTAIN, not concatenate. Since #433 the builders live in
+  #     scripts/lib/implement-lib.sh and the envelope call is STRUCTURAL: one shared builder
+  #     (_il_append_issue_envelopes) that every dispatch prompt routes through. Three rules: the
+  #     builder still contains (the $CONTAIN spelling), all three prompts still route through it,
+  #     and no line in the library extracts issue text into a prompt outside it. The workflow keeps
+  #     its own raw-paste detector, because a fence added THERE is the regression an implementer
+  #     would actually introduce.
+  f="$base/scripts/lib/implement-lib.sh"
+  if [ ! -f "$f" ]; then
+    printf 'missing library: scripts/lib/implement-lib.sh (the containment home since #433)\n'
+  else
     got="$(grep -Fc -- "$CONTAIN" "$f")"
-    [ "$got" -ge 2 ] || printf 'implement-issue: %s contained hand-off(s) to a dispatched agent, expected 2 (gap-analysis + review)\n' "$got"
+    [ "$got" -ge 1 ] || printf 'implement-lib: %s contained hand-off(s) — the shared envelope builder lost its containment call\n' "$got"
+    got="$(grep -c '_il_append_issue_envelopes "\$dir"' "$f")"
+    [ "$got" -ge 3 ] || printf 'implement-lib: %s dispatch prompt(s) route through _il_append_issue_envelopes, expected at least 3 (survey + gaps + review)\n' "$got"
+    raw="$(awk '
+        { line = $0; sub(/[[:space:]]*#.*$/, "", line)
+          # The prompt sink in this library is a VARIABLE — a pathname ("$pf"/"$pft") before
+          # the held-descriptor refactor, an fd (1>&"$_gpfd") after it — so the word `prompt`
+          # alone misses the natural regression; match all three spellings.
+          if (line ~ /\.body/ && (line ~ /prompt/ || line ~ /"\$pft?"/ || line ~ />&"\$_[A-Za-z_]*fd"/) && line !~ /untrusted/ && line !~ /_il_append_issue_envelopes/) print FNR ": " $0 }' "$f")"
+    if [ -n "$raw" ]; then
+      printf 'implement-lib: issue text reaches a prompt WITHOUT the containment wrapper:\n'
+      printf '%s\n' "$raw" | sed 's/^/    /'
+    fi
+  fi
+  # The workflow body AND its supporting files (#433): both render into the shipped skill, so a
+  # raw paste moved into a supporting fence is the same regression in a file this pass used to
+  # never read.
+  for f in "$base/base/workflows/implement-issue.md" "$base"/base/workflows/*/*.md; do
+    [ -f "$f" ] || continue
     raw="$(awk '
         /^```bash$/ { inb = 1; next }
         /^```/      { inb = 0; next }
@@ -296,10 +344,10 @@ EOF
           # A line that reads issue text AND writes it into a prompt file, without the wrapper.
           if (line ~ /\.body/ && line ~ /prompt\.txt/ && line !~ /untrusted/) print FNR ": " $0 }' "$f")"
     if [ -n "$raw" ]; then
-      printf 'implement-issue: issue text is concatenated into a prompt WITHOUT the containment wrapper:\n'
+      printf '%s: issue text is concatenated into a prompt WITHOUT the containment wrapper:\n' "${f#"$base"/base/workflows/}"
       printf '%s\n' "$raw" | sed 's/^/    /'
     fi
-  fi
+  done
 }
 
 hits="${ scan_tree "$ROOT"; }"
@@ -333,7 +381,7 @@ for agent in claude codex gemini; do
   rendered="$ROOT/agents/$agent/skills/implement-issue/SKILL.md"
   if [ ! -f "$rendered" ]; then bad "$agent render of implement-issue is missing"; continue; fi
   n="$(grep -Fc -- "$MARK" "$rendered")"   # see the note above on why there is no `|| echo 0`
-  if [ "$n" -ge 3 ]; then ok; else bad "$agent render of implement-issue carries $n labelled read sites, expected 3"; fi
+  if [ "$n" -ge 4 ]; then ok; else bad "$agent render of implement-issue carries $n labelled read sites, expected 4"; fi
 done
 
 # ============================================================================================
@@ -360,7 +408,7 @@ mutate_must_fail() {   # mutate_must_fail <label> <mutator-fn> <expected-substri
 }
 
 m_strip_label()   { grep -v -F -- "$MARK" "$1/base/workflows/debug.md" > "$1/x" && mv "$1/x" "$1/base/workflows/debug.md"; }
-m_uncontain()     { grep -v -F -- "$CONTAIN" "$1/base/workflows/implement-issue.md" > "$1/x" && mv "$1/x" "$1/base/workflows/implement-issue.md"; }
+m_uncontain()     { grep -v -F -- "$CONTAIN" "$1/scripts/lib/implement-lib.sh" > "$1/x" && mv "$1/x" "$1/scripts/lib/implement-lib.sh"; }
 m_drop_practice() { rm -f "$1/base/practices/untrusted-content.md"; }
 m_gut_practice()  { grep -v -F 'data, not instruction' "$1/base/practices/untrusted-content.md" > "$1/x" && mv "$1/x" "$1/base/practices/untrusted-content.md"; }
 m_drop_index()    { grep -v -F '`untrusted-content.md`' "$1/base/practices/00-index.md" > "$1/x" && mv "$1/x" "$1/base/practices/00-index.md"; }
@@ -379,6 +427,13 @@ m_raw_paste()     { awk '
                       /^```bash$/ { print; print "jq -r .body {{STATE_DIR}}/issue-1.json >> {{STATE_DIR}}/gap-prompt.txt"; next }
                       { print }' "$1/base/workflows/implement-issue.md" > "$1/x" \
                     && mv "$1/x" "$1/base/workflows/implement-issue.md"; }
+# The LIBRARY-side twin of m_raw_paste: the natural regression appends `jq -r .body … >> "$pf"`
+# beside the surviving envelope call inside a dispatch builder — `.body` present, the literal
+# word `prompt` absent, the sink a variable. A predicate keyed on `prompt` alone stays silent.
+m_raw_paste_lib() { awk '
+                      { print }
+                      /_il_append_checklist "\$_gpfd" "gap analysis"/ { print "  jq -r .body \"$dir/issue-7.json\" 1>&\"$_gpfd\"" }' \
+                      "$1/scripts/lib/implement-lib.sh" > "$1/x" && mv "$1/x" "$1/scripts/lib/implement-lib.sh"; }
 # A third-party read added to a workflow registered as ZERO. Without the discovery rule this passes.
 m_cleanup_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' >> "$1/base/workflows/cleanup.md"; }
 m_partial_label() { awk -v m="$MARK" 'index($0, m) && !done { done = 1; next } { print }' \
@@ -389,16 +444,35 @@ m_partial_label() { awk -v m="$MARK" 'index($0, m) && !done { done = 1; next } {
 # pass satisfied by the survivor, so CI stopped enforcing the contract it advertises.
 m_roadmap_nth()   { awk -v m="$MARK" -v want="$NTH" 'index($0, m) { n++; if (n == want) next } { print }' \
                       "$1/base/workflows/roadmap.md" > "$1/x" && mv "$1/x" "$1/base/workflows/roadmap.md"; }
+# The SUPPORTING-FILE twins (#433): a fetch or a raw paste moved into base/workflows/<name>/*.md
+# renders into the shipped skill while both passes used to read only the workflow bodies.
+m_support_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' \
+                      >> "$1/base/workflows/implement-issue/state-protocol.md"; }
+m_support_paste() { printf '\n```bash\njq -r .body {{STATE_DIR}}/issue-1.json >> {{STATE_DIR}}/gap-prompt.txt\n```\n' \
+                      >> "$1/base/workflows/implement-issue/state-protocol.md"; }
+# A LABELLED fetch in an unregistered supporting file: the presence test is satisfied, so only
+# the registry-completeness rule can see it — and without a registry row, a second unlabelled
+# read beside it would never be countable at all.
+m_support_unregistered() { printf '\n%s\n\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' "UNTRUSTED READ SITE" \
+                      >> "$1/base/workflows/implement-issue/state-protocol.md"; }
+# A mark added WITHOUT its registry bump: got >= want tolerated this forever, and one surplus
+# mark is exactly the shape that later masks an unlabelled read beside it.
+m_extra_mark()    { printf '\n%s\n' "UNTRUSTED READ SITE" >> "$1/base/workflows/debug.md"; }
 
 mutate_must_fail "strip a workflow's only label"         m_strip_label    "workflow debug"
-mutate_must_fail "remove ONE of implement-issue's three" m_partial_label  "workflow implement-issue"
+mutate_must_fail "remove ONE of implement-issue's four"  m_partial_label  "workflow implement-issue"
 # Each roadmap site, one at a time. `NTH` is read by the mutator above.
 for NTH in 1 2 3; do
   mutate_must_fail "remove roadmap label #$NTH of 3"     m_roadmap_nth    "workflow roadmap"
 done
-mutate_must_fail "delete both contained hand-offs"       m_uncontain      "contained hand-off"
+mutate_must_fail "delete the library containment call"   m_uncontain      "contained hand-off"
 mutate_must_fail "RAW paste beside a surviving wrapper"  m_raw_paste      "WITHOUT the containment wrapper"
+mutate_must_fail "RAW paste into \$pf inside the library" m_raw_paste_lib  "WITHOUT the containment wrapper"
 mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carries NO labelled read site"
+mutate_must_fail "a third-party read in a SUPPORTING file" m_support_reads "carries NO labelled read site"
+mutate_must_fail "a RAW paste in a SUPPORTING file"      m_support_paste  "WITHOUT the containment wrapper"
+mutate_must_fail "a LABELLED fetch in an unregistered supporting file" m_support_unregistered "not in the untrusted-content registry"
+mutate_must_fail "a mark added without its registry bump"  m_extra_mark    "registry expects exactly"
 mutate_must_fail "delete the practice"                   m_drop_practice  "missing practice"
 mutate_must_fail "gut the practice's core rule"          m_gut_practice   "data-not-instruction"
 mutate_must_fail "drop the practice's index row"         m_drop_index     "no row in"

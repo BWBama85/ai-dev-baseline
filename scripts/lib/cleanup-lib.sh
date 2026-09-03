@@ -36,6 +36,8 @@
 #   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  docs    <run keep|stale|none>
+#   cleanup-lib.sh run-live       <state-dir>                  # 0 claim/marker present NOW, 10 none
+#   cleanup-lib.sh file-size      <path>                       # bytes via a bounded open; loud on failure
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh marker-shape    <path-or-name>
@@ -392,7 +394,8 @@ cmd_state_scan() {
         ;;
       # The whole gap-analysis family, not just the two names /implement-issue writes today: a
       # past run left `gaps-retry.{md,err}` behind, and #84 names that debris explicitly.
-      gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err)
+      # `gaps-held.*` is the per-invocation copy a --prompt-only build hands its native consumer.
+      gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err|gaps-held.*)
         _adb_cl_emit "$want_ident" gaps "$f" '-'
         ;;
       # /implement-issue step 8's review artifacts (#264), which had NEITHER half of the lifecycle
@@ -402,7 +405,12 @@ cmd_state_scan() {
       # obvious next shape and would otherwise fall straight back into `other`. The PREFLIGHT set
       # in base/workflows/implement-issue.md is kept identical to this glob: a name this arm can
       # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
-      review-prompt.txt|review.md|review.err|review-*.md|review-*.err)
+      # `review-prompt-stage.*` is dispatch-review's mktemp before the rename publish — orphaned
+      # by a kill it holds the diff and contained criteria, so it is swept with its family.
+      # `.artifact.*` is read-artifact's private copy of a gap, survey or review file, held only
+      # for the duration of one read — a copy that outlives a killed read carries up to 8 MiB of
+      # that content, and as `other` it was unsweepable until the next admission cleared it.
+      review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err|.artifact.*)
         _adb_cl_emit "$want_ident" review "$f" '-'
         ;;
       # /implement-issue step 5b's documentation-duty record (#422): which third-party surfaces
@@ -417,6 +425,16 @@ cmd_state_scan() {
       # and here that file is the one asserting which documentation this run consulted.
       docs-consulted.tsv|docs-consulted-*.tsv)
         _adb_cl_emit "$want_ident" docs "$f" '-'
+        ;;
+      # /implement-issue's survey artifacts (#435): the survey prompt, the bounded summary the
+      # dispatched surveyor returns (`survey.md`), its trace (`survey-trace.md`) and the dispatch
+      # stream (`survey.err`). Written between steps 2 and 3 — BEFORE the branch and the run
+      # marker exist — under the same claim `admit` took in preflight, and read again when the
+      # gap prompt is built AND at step 6, so the caller passes the FRESH run verdict to the
+      # delete (see `state-verdict`'s issue-snapshot note). Same family shape as the gaps arm;
+      # the PREFLIGHT clear in implement-lib.sh `_il_clear` is kept identical to this glob.
+      survey-prompt.txt|survey.md|survey.err|survey-*.md|survey-*.err|survey-held.*)
+        _adb_cl_emit "$want_ident" survey "$f" '-'
         ;;
       # /implement-issue step 2's issue snapshot (#250) — the untrusted issue text and the
       # `author_association` provenance label that decides whether a dispatched agent is told the
@@ -701,8 +719,39 @@ cmd_file_identity() {
 # LIVENESS IS NEVER mtime. #84 is explicit: a file's age says nothing about whether the PR or run
 # it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
 # fast one's. Every fact below is a live PR state or a freshly-fetched ref.
+
+# Is a run's claim or marker present NOW? The sweep's verdicts rest on liveness as ONE scan
+# captured it, and that scan fingerprints artifacts as it walks — so an admission landing
+# mid-walk yields "no run" verdicts beside a live run's identities, and the delete-time identity
+# check then matches the live file. The workflow asks this AFTER the identity snapshot,
+# immediately before the delete loop. Presence is -e/-L: an unreadable or planted object at a
+# liveness name reads LIVE — fail closed toward keeping.
+#   0  a claim or marker exists    10  neither    2  usage
+cmd_run_live() {
+  [ "$#" -eq 1 ] || die "run-live: needs exactly 1 arg: <state-dir>"
+  local dir="$1" n
+  for n in gap-analysis.lock implement-issue-active.json implement-issue-blocked.json; do
+    if [ -e "$dir/$n" ] || [ -L "$dir/$n" ]; then return 0; fi
+  done
+  return 10
+}
+
+# The sweep's report loop reads agent-controlled error files, and a parent-shell `wc -c <`
+# redirect could be blocked forever by a FIFO swapped in after the scan — the filename open
+# happens inside a bounded child instead. Bytes on stdout; empty + nonzero on any failure.
+cmd_file_size() {
+  [ "$#" -eq 1 ] || die "file-size: needs exactly 1 arg: <path>"
+  local raw out
+  # wc's OWN status decides, never a pipeline's: GNU wc prints a `0` count line for a directory
+  # before exiting 1, and `… | awk` would return awk's 0 over it.
+  raw="$(adb_run_bounded 30 5 wc -c "$1" 2>/dev/null)" || return 1
+  out="$(printf '%s\n' "$raw" | awk '{print $1; exit}')"
+  case "$out" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$out"
+}
+
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs|survey)"
   local kind="$1"; shift
   case "$kind" in
     threads)
@@ -740,7 +789,8 @@ cmd_state_verdict() {
       case "$1" in unknown) printf 'keep\n'; return 0 ;; esac
       printf 'stale\n'
       ;;
-    # ONE PREDICATE, TWO NAMES — never a second copy of it. The issue snapshot (#250) has exactly
+    # ONE PREDICATE, THREE NAMES — never a second copy of it. The issue snapshot (#250) and the
+    # survey artifacts (#435) have exactly
     # the gap artifacts' lifetime: /implement-issue step 2 writes it BEFORE the branch and the run
     # marker exist, under the same claim `admit` took in preflight, and step 8 is still reading it
     # long after the marker took over. So the same two facts decide both — is a pre-marker run
@@ -755,7 +805,7 @@ cmd_state_verdict() {
     # earlier in the sweep cannot be wrong about them in a way that matters; the snapshot is read
     # again in step 8, so a run that reached step 5 mid-sweep must show up as live. cleanup.md
     # passes `$RUN_NOW` here and `$RUN` to `gaps` for exactly that reason.
-    gaps|issue)
+    gaps|issue|survey)
       [ "$#" -eq 2 ] || die "state-verdict $kind: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
       # Both up front, for the reason given under `marker`: the lock short-circuits below, so
       # validating <run> only where it is read would let `gaps 1 <typo>` print a confident `keep`.
@@ -821,7 +871,7 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs)" ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs|survey)" ;;
   esac
 }
 
@@ -1068,10 +1118,12 @@ main() {
     branch-verdict) cmd_branch_verdict "$@" ;;
     state-scan)     cmd_state_scan "$@" ;;
     state-verdict)  cmd_state_verdict "$@" ;;
+    run-live)       cmd_run_live "$@" ;;
     marker-branch)   cmd_marker_branch "$@" ;;
     marker-identity) cmd_marker_identity "$@" ;;
     marker-shape)    cmd_marker_shape "$@" ;;
     file-identity)   cmd_file_identity "$@" ;;
+    file-size)       cmd_file_size "$@" ;;
     report)         cmd_report "$@" ;;
     state-line)     cmd_state_line "$@" ;;
     clone-state)    cmd_clone_state "$@" ;;

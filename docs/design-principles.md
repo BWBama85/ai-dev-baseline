@@ -59,7 +59,7 @@ edit by hand, and what stops me forgetting one?* If the answer is "more than one
 "nothing," you have found drift — give it a source and a check.
 
 **Where a restatement is legitimate.** "One implementation" governs *executable* logic.
-A skill's Markdown is loaded whole by the agent and cannot `source` a library, so a
+A skill's Markdown is loaded as instructions by the agent and cannot `source` a library, so a
 workflow may restate a rule in prose (e.g. the default-branch snippet in `cleanup`) —
 but that restatement is then subject to the fact-drift lint, not exempt from it. Prose
 that an agent executes and code that a shell sources are different consumers of the same

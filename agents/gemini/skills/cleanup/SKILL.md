@@ -2,11 +2,8 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/cleanup.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
-# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
-# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
-# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
+# $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
+# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: cleanup
 description: Sweep ALL merged branches (local and, on confirmation, remote) plus resolved run-state, not just the current task's branch. Detects squash/rebase merges, which `--merged` alone can never see. Names each branch explicitly so command-safety gating never blocks the delete. Never touches unmerged or protected branches, or state for a live run.
 ---
@@ -926,6 +923,12 @@ RUN_NOW=none
 if printf '%s\n' "$SCAN" | grep -q "^marker${TABC}"; then RUN_NOW=keep; fi
 
 GV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK" "$RUN")" || GV=keep
+# The survey artifacts (#435) are written between steps 2 and 3 — BEFORE any marker exists,
+# under the claim `admit` took in preflight — and READ AGAIN at step 6 ("Read survey.md first"),
+# after the marker has taken over. So the lock is their pre-marker signal and the DELETE takes
+# `$RUN_NOW`, the fresh re-scan's answer, exactly as the issue snapshots do: a run that reached
+# step 5 mid-sweep must show up as live at the moment of the delete (reviewer find).
+SV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict survey "$LOCK" "$RUN_NOW")" || SV=keep
 # The issue snapshot (#250) takes the SAME two facts as the gap artifacts, and the library answers
 # both from one predicate — /implement-issue step 2 writes it before any marker exists, under the
 # claim, and step 8 still reads it after the marker has taken over. Asked under its own kind name
@@ -944,6 +947,28 @@ RV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN
 # /implement-issue step 5b writes it after the marker exists, and step 10 and step 11 both read it
 # back, so `$RUN_NOW` is what governs the delete.
 DV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict docs "$RUN_NOW")" || DV=keep
+
+# The five verdicts above rest on LOCK and RUN_NOW as ONE scan captured them, and the scan
+# fingerprints artifacts as it walks — the claim's row can be probed BEFORE a survey row is
+# fingerprinted, so an admission landing mid-walk yields "no run" verdicts beside a LIVE run's
+# identities, and the delete-time identity check then MATCHES the live file (reviewer find,
+# PR #452). Re-ask liveness NOW, after every identity is captured: presence at this instant
+# keeps every run artifact, and the remaining tail — an admission after this probe — is covered
+# by the identity check, because its clear-and-recreate gives the file a new identity.
+bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" run-live "$STATE"; RL_RC=$?
+# ONLY rc 10 means "neither claim nor marker" — a damaged or mismatched helper exits with
+# something else, and treating that like 10 would leave the stale verdicts armed over a state
+# directory whose liveness was never established. Anything but 10 keeps everything.
+if [ "$RL_RC" -ne 10 ]; then
+  GV=keep; SV=keep; IV=keep; RV=keep; DV=keep
+  if [ "$RL_RC" -eq 0 ]; then
+    NOTES="${NOTES}KEPT the run artifacts — a run claim or marker was present after the identity snapshot; none were judged this pass
+"
+  else
+    NOTES="${NOTES}KEPT the run artifacts — the liveness re-probe failed (rc $RL_RC), so staleness could not be established; nothing was swept
+"
+  fi
+fi
 
 # sweep_file <path> <identity-as-judged> <proof> — delete ONE file, but only if it is still the
 # file the verdict was about (#305), and record WHY it was removed (#332).
@@ -993,6 +1018,10 @@ while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
+      sweep_file "$sfile" "$ident" "no run in flight"
+      ;;
+    survey)
+      [ "$SV" = stale ] || continue
       sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     issue)
@@ -1116,11 +1145,15 @@ liveness would name the wrong file as belonging to a live run.
 while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)   [ "$GV" = keep ] || continue ;;
+    survey) [ "$SV" = keep ] || continue ;;
     review) [ "$RV" = keep ] || continue ;;
     *)      continue ;;
   esac
   case "$sfile" in *.err) : ;; *) continue ;; esac
-  sz="$(wc -c < "$sfile" 2>/dev/null | tr -d ' ')"
+  # A bounded filename open (bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" file-size), never a parent-shell redirect: these
+  # are agent-written error files, and a FIFO swapped in after the scan would block the open
+  # before wc ever started — /cleanup would hang with no bound anywhere above it.
+  sz="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" file-size "$sfile" 2>/dev/null)" || sz=""
   if [ -n "$sz" ] && [ "$sz" -gt 262144 ]; then
     NOTES="${NOTES}LARGE ${sfile##*/} is $((sz / 1024)) KB and belongs to a live run — kept
 "

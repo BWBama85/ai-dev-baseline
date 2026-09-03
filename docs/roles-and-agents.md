@@ -17,7 +17,7 @@ who executes each step moves.
 "Role-aware" is a property of the *consumer*, not something the manifest
 imposes. A role only takes effect where some workflow explicitly resolves it
 (via `role-dispatch.sh`, below). Today `/implement-issue` consumes
-`gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
+`survey` + `gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
 `[reviewers]` bot allowlist. `debug`, `issue_author`, and `release` are
 **declared but not yet consumed** by any shipped workflow — they resolve
 correctly and are there for your own skills to honor. This matters most for
@@ -31,6 +31,7 @@ project-owned `/release` skill is responsible for resolving its own role, or
 |---|---|---|---|
 | `primary` | Drives implementation end-to-end (`implement-issue`) | exactly 1 | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | 0 or 1 | skip the pass |
+| `survey` | Bounded pre-implementation repo survey (`implement-issue` step 2b, #435) | 0 or 1 | primary (`""` skips) |
 | `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |
@@ -217,8 +218,8 @@ default manifest. Two layers are easy to conflate, so name them precisely:
   most machines actually resolve against.
 - **The built-in fallback** — used only when even the global manifest is absent —
   is the "Default if unset" column of the role table above: `primary = claude`,
-  `gap_analysis` **skips**, and `review` / `debug` / `issue_author` / `release`
-  fall back to the **primary**. (So the built-in `review` is *the primary's own
+  `gap_analysis` **skips**, and `review` / `debug` / `issue_author` / `release` /
+  `survey` fall back to the **primary** (a DECLARED `survey = ""` is the skip, #435). (So the built-in `review` is *the primary's own
   pass*, not `[claude]` literally — they happen to coincide when the primary is
   Claude, but they are different rules.)
 
@@ -231,7 +232,7 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 
 | Agent | Non-interactive invocation | Root config it reads |
 |---|---|---|
-| `claude` | `claude -p "<prompt>"` (when Claude is already driving, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
+| `claude` | `claude -p < <prompt-file>` (when Claude is already driving, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
 | `codex` | `codex exec --cd <repo> -` (prompt piped on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
@@ -267,7 +268,7 @@ workflow calls it instead of hand-writing the same lookup + CLI in each skill:
 
 | Command | What it does |
 |---|---|
-| `role-dispatch.sh resolve <role>` | Print the resolved agent token(s), one per line. Empty output = a legitimate skip (only `gap_analysis`). Validates the manifest — an unknown token or an explicit `review = []` is a hard error, never a silent fall-through. |
+| `role-dispatch.sh resolve <role>` | Print the resolved agent token(s), one per line. Empty output = a legitimate skip (`gap_analysis` unset/`""`, and `survey = ""`). Validates the manifest — an unknown token or an explicit `review = []` is a hard error, never a silent fall-through. |
 | `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the 45-min hang backstop; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A non-zero exit prints one **classified** line to stderr (our backstop 124 / outer SIGTERM 143 / real agent error). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
 | `role-dispatch.sh available <agent>` | Is that agent's CLI on PATH **here**? Silent — the exit code is the answer (`0` available · `1` known agent whose CLI is absent · `2` not an agent token). A third question, deliberately separate from *which agent is assigned* (`resolve`) and *did the agent fail* (an `invoke` rc): an absent CLI is a configuration fact knowable in advance, not a reviewer that broke. It answers "on PATH" and claims no more — not authenticated, not configured, not working. |
 | `role-dispatch.sh bots` | Print the configured async external-bot reviewer logins (see below). |
@@ -476,9 +477,9 @@ just executed by a different agent:
    the eventual PR body.
 2. Codex implements, runs gates, commits.
 3. **Step 8 (review)** resolves to `["claude"]`, a different agent than the
-   one driving → Codex shells out `claude -p "<review prompt over the
-   diff>"` to get Claude's independent review pass, since Claude isn't
-   already resident to run that pass in-process.
+   one driving → Codex shells out `claude -p` with the review prompt over
+   the diff on stdin to get Claude's independent review pass, since Claude
+   isn't already resident to run that pass in-process.
 4. Codex triages the findings, pushes, opens the PR, and files follow-up
    issues.
 

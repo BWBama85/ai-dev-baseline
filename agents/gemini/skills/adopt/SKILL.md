@@ -2,11 +2,8 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/adopt.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
-# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
-# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
-# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
+# $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
+# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: adopt
 description: Bring the baseline into an EXISTING project. Scans the config it already has, classifies every artifact keep / remove / move / escalate with evidence and parity caveats, infers an agents.toml from the project's own signals, flags four adoption-hygiene risks, and emits an ordered migration plan. It never deletes, moves, or edits a file in the project it scans; with --apply it may create only agents.toml and the upstream pin, and only when they do not already exist.
 ---

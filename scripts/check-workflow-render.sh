@@ -285,6 +285,180 @@ for broken in 'adb_actions_app_slug() { printf ""; }' 'adb_actions_app_slug() { 
   fi
 done
 
+# --- 3b: a dot-named supporting source FAILS the build, never silently renders nowhere (#433) --
+# `*.md` skips dotfiles, so before the enumeration included them the leading-dot refusal was
+# unreachable: `.notes.md` committed cleanly, rendered to no agent, and passed every 1:1 check.
+d="$WORK/dotsupport"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# hidden notes\n' > "$d/base/workflows/fixture/.notes.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a dot-named supporting source FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming the dot rule"
+
+# --- 3c: a supporting name ending in a newline FAILS the build (#433) --------------------------
+# `$(basename …)` strips a trailing newline, so `notes.md<NL>` validated as notes.md while the
+# *.md render glob never matched it — a green build with a supporting file that shipped nowhere.
+d="$WORK/nlsupport"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# notes\n' > "$d/base/workflows/fixture/notes.md"$'\n'
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a supporting name ending in a newline FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'unsupported supporting file' "...naming the extension rule its real bytes fail"
+# …and a supporting DIRECTORY whose name ends in a newline: `$(basename …)` trimmed it to the
+# real workflow's name, so the orphan check tested fixture.md and accepted a directory the
+# render loop never visits.
+d="$WORK/nldir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"$'\n'
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# notes\n' > "$d/base/workflows/fixture"$'\n'"/notes.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a supporting directory whose name ends in a newline FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'supporting files belong to a workflow source' "...refused as an orphan of a workflow that does not exist"
+
+# --- 3d: reserved-name and duplicate checks fold case (#433) -----------------------------------
+# macOS checkouts sit on a case-insensitive filesystem, so `Skill.md` beside a rendered SKILL.md
+# aliases or overwrites the skill entry there while rendering fine on Linux — the tree becomes
+# unrepresentable on the repository's other CI platform.
+d="$WORK/casefold"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# case variant\n' > "$d/base/workflows/fixture/Skill.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a case variant of SKILL.md FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'collide with the rendered skill entry' "...naming the collision"
+# Case-folded duplicates among supporting files — buildable only on a case-sensitive filesystem,
+# so the fixture is probed for and the case runs where it can exist (Linux CI).
+: > "$WORK/CaseProbe"
+if [ ! -e "$WORK/caseprobe" ]; then
+  rm -f "$WORK/CaseProbe"
+  d="$WORK/casedup"
+  mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+  cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+  printf '# index\n' > "$d/base/practices/00-index.md"
+  printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+  cp "$pos" "$d/base/workflows/fixture.md"
+  printf '# lower\n' > "$d/base/workflows/fixture/notes.md"
+  printf '# upper\n' > "$d/base/workflows/fixture/Notes.md"
+  bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+  no "$rc" "case-folded duplicate supporting files FAIL the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" 'collides case-insensitively' "...naming the duplicate rule"
+else
+  rm -f "$WORK/CaseProbe"
+fi
+
+# --- 3e: README/ is reserved — its source is skipped, so its supporting files render to nobody --
+d="$WORK/readmedir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/README"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf 'readme\n' > "$d/base/workflows/README.md"
+printf '# notes\n' > "$d/base/workflows/README/notes.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a supporting directory for the reserved README source FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'README' "...naming the reserved source"
+
+# --- 3f: a supporting file OUTSIDE the *.md contract is refused, never silently skipped --------
+# `notes.txt` (or `Notes.MD`) commits cleanly while every renderer and 1:1 check ignores it — a
+# navigator referencing it then breaks only when an agent tries to load the absent sibling.
+d="$WORK/nonmd"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf 'plain text\n' > "$d/base/workflows/fixture/notes.txt"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a non-.md supporting file FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'only *.md renders' "...naming the contract"
+rm -f "$d/base/workflows/fixture/notes.txt"
+printf '# caps\n' > "$d/base/workflows/fixture/Notes.MD"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a case-variant extension FAILS the build too"
+rm -f "$d/base/workflows/fixture/Notes.MD"
+# A dangling .md symlink passes the extension check but the render loop's -f skips it — the
+# build stayed green while the referenced sibling rendered to nobody. (Since the -L refusal it
+# is refused as what it is: a link.)
+ln -s /nonexistent-ref "$d/base/workflows/fixture/ref.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a dangling .md supporting symlink FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...naming the shape"
+rm -f "$d/base/workflows/fixture/ref.md"
+# A symlink with a VALID target is worse than a dangling one: -f follows it, and content from
+# OUTSIDE the repository renders into every tracked skill. Refused as a link, never followed.
+printf '# outside content\n' > "$d/outside.md"
+ln -s ../../../outside.md "$d/base/workflows/fixture/ref.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a valid-target .md supporting symlink FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused as a link, not followed"
+rm -f "$d/base/workflows/fixture/ref.md" "$d/outside.md"
+# And the supporting DIRECTORY itself: a committed link at base/workflows/<name> would render a
+# machine-local tree into every generated skill.
+mv "$d/base/workflows/fixture" "$d/real-fixture-dir"
+ln -s ../../real-fixture-dir "$d/base/workflows/fixture"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a symlinked supporting DIRECTORY fails the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused before -d can follow it"
+rm -f "$d/base/workflows/fixture"
+mv "$d/real-fixture-dir" "$d/base/workflows/fixture"
+# An ORPHANED symlink — no <name>.md beside it — was invisible to trailing-slash globs: `*/`
+# resolves through links and skips a dangling one entirely, so the committed entry passed every
+# check while rendering nowhere.
+ln -s /nonexistent-tree "$d/base/workflows/orphanlink"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a dangling supporting-directory symlink with no workflow source fails the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'is a symlink' "...refused as a link, not skipped"
+rm -f "$d/base/workflows/orphanlink"
+
+# --- 3c: hidden and nested DIRECTORIES are refused too, not silently skipped (#433) ------------
+# `*/` never visits `.notes/`, so the orphan refusal did not run on it — the source committed,
+# rendered to no agent, and passed every 1:1 check. Same shape one level down: a subdirectory
+# inside a supporting dir is enumerated by nothing and must be refused where it is born.
+d="$WORK/dotdir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/.notes"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# hidden reference\n' > "$d/base/workflows/.notes/reference.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a hidden directory under base/workflows FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'hidden director' "...naming the hidden-directory rule"
+d="$WORK/nestdir"
+mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture/extra"
+cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+printf '# index\n' > "$d/base/practices/00-index.md"
+printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+cp "$pos" "$d/base/workflows/fixture.md"
+printf '# nested\n' > "$d/base/workflows/fixture/extra/y.md"
+bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+no "$rc" "a subdirectory inside a supporting dir FAILS the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'flat' "...naming the flat-directory rule"
+
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
 for a in claude codex gemini; do
   for sk in "$ROOT"/agents/"$a"/skills/*/SKILL.md; do

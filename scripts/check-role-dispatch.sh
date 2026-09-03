@@ -92,6 +92,11 @@ set_repo '[roles]' 'gap_analysis = ""'
 out="${ rd resolve gap_analysis; }"; rc=$?
 eq "$out" "" 'gap_analysis="" → empty'; yes "$rc" 'gap_analysis="" is a 0 status'
 
+# survey (#435): "" is the documented skip; unset falls back to primary (the loop below proves it)
+set_repo '[roles]' 'survey = ""'
+out="${ rd resolve survey; }"; rc=$?
+eq "$out" "" 'survey="" → empty (the documented skip)'; yes "$rc" 'survey="" is a 0 status'
+
 # review = "" (empty string) → the primary's own pass (documented default), NOT an error
 set_repo '[roles]' 'primary = "claude"' 'review = ""'
 eq "${ rd resolve review; }" "claude" 'review="" → primary'
@@ -100,7 +105,7 @@ eq "${ rd resolve review; }" "claude" 'review="" → primary'
 # The baseline ships no /release skill on purpose — `release` names WHO would cut a release in a
 # project-owned skill someone else writes. Resolution is therefore the ONLY contract the baseline
 # owes it, so pin it. Validation (unknown token, list cardinality) is NOT re-tested per role: the
-# resolver handles gap_analysis|review|debug|issue_author|release in ONE case arm, so the
+# resolver handles gap_analysis|review|debug|issue_author|release|survey in ONE case arm, so the
 # gap_analysis cases below already cover that arm for every key.
 set_repo '[roles]' 'primary = "claude"' 'release = "codex"'
 eq "${ rd resolve release; }" "codex" "explicit release wins over the primary fallback"
@@ -111,7 +116,7 @@ eq "${ rd resolve release; }" "codex" "explicit release wins over the primary fa
 # assert EVERY primary-defaulting role at once — the general check, not one special-cased to the
 # two roles this change happened to add.
 set_repo '[roles]' 'primary = "gemini"'
-for r in review debug issue_author release; do
+for r in review debug issue_author release survey; do
   eq "${ rd resolve "$r"; }" "gemini" "unset $r falls back to primary (not literal claude)"
 done
 
@@ -436,7 +441,9 @@ EOF
 chmod +x "$BIN/codex"
 cat > "$BIN/claude" <<'EOF'
 #!/usr/bin/env bash
+# claude -p takes its prompt as an argument OR piped on stdin (code.claude.com/docs/en/errors).
 p=""; prev=""; for a in "$@"; do case "$prev" in -p) p="$a" ;; esac; prev="$a"; done
+[ -n "$p" ] || p="$(cat)"
 printf 'CLAUDE:%s\n' "$p"
 EOF
 chmod +x "$BIN/claude"
@@ -506,6 +513,46 @@ has "$err" "does NOT fall back" "a failed gap_analysis states its no-substitutio
 # force the portable watchdog path (no timeout binary) and confirm it also fires
 out_rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 || out_rc=$?
 eq "$out_rc" "124" "the bash watchdog fallback also enforces the timeout"
+
+# --- prompts past a single argument's limit (PR #452, round 50) --------------
+# claude takes its prompt on STDIN (code.claude.com/docs/en/errors: input via a prompt argument
+# or piped standard input), so a prompt past Linux's MAX_ARG_STRLEN (128 KiB) still arrives whole.
+set_repo '[roles]' 'primary = "claude"' 'gap_analysis = "codex"' 'review = ["claude", "gemini"]'
+if grep -q 'claude -p < "\$pf"' "$RD"; then ok; else bad "the claude arm passes the prompt as an argument, not on stdin"; fi
+BIGP="$(awk 'BEGIN{for(i=0;i<200000;i++)printf "p"}')"
+out="${ printf '%s' "$BIGP" | rd invoke claude 2>/dev/null; }"; rc=$?
+yes "$rc" "a 200000-byte prompt reaches claude"
+eq "${#out}" "$(( 200000 + 7 ))" "…whole, through stdin (CLAUDE: + 200000 bytes)"
+# agy takes its prompt as ONE argument (agy --help, 2026-09-02), so past the portable
+# single-argument bound the dispatch REFUSES with the reason instead of failing at launch.
+BIGA="$(awk 'BEGIN{for(i=0;i<131072;i++)printf "a"}')"
+err="$(printf '%s' "$BIGA" | rd invoke gemini 2>&1 >/dev/null)"; rc=$?
+no "$rc" "a 131072-byte prompt for agy is refused, never handed to exec"
+has "$err" "single-argument bound" "…naming the bound"
+FITA="$(awk 'BEGIN{for(i=0;i<131071;i++)printf "a"}')"
+out="${ printf '%s' "$FITA" | rd invoke gemini 2>/dev/null; }"; rc=$?
+yes "$rc" "…while a prompt at the bound still dispatches"
+eq "${#out}" "$(( 131071 + 7 ))" "…whole (GEMINI: + 131071 bytes)"
+
+# --- the codex result is read from one held inode (PR #452, round 50) --------
+# A descendant that swaps the --output-last-message path for a symlink after the CLI exits used
+# to have the target sized and emitted by name as the agent's clean final message.
+printf 'HOST-SECRET-must-not-be-emitted\n' > "$work/secret.txt"
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+last=""
+while [ "$#" -gt 0 ]; do [ "$1" = "--output-last-message" ] && { last="$2"; shift; }; shift; done
+cat >/dev/null
+if [ -n "$last" ]; then printf 'VERDICT: fine\n' > "$last"; rm -f "$last"; ln -s "$SWAP_TARGET" "$last"; fi
+exit 0
+EOF
+chmod +x "$BIN/codex"
+set_repo '[roles]' 'gap_analysis = "codex"'
+out="$(printf 'x' | rd_env SWAP_TARGET="$work/secret.txt" bash "$RD" invoke gap_analysis 2>"$work/swap.err")"; rc=$?
+no "$rc" "a result path swapped for a symlink after the CLI exits is a FAILED dispatch"
+hasnt "$out" "HOST-SECRET" "…and the link's target is never emitted as the final message"
+has "$(cat "$work/swap.err")" "swapped after the CLI exited" "…naming why"
+if ls "${TMPDIR:-/tmp}"/adb-rd-last-*.copy "${TMPDIR:-/tmp}"/tmp.*.copy >/dev/null 2>&1; then bad "…and no result copy is left behind"; else ok; fi
 
 # --- the committed DEFAULT bound (#93) ---------------------------------------
 # The bound that matters is the one a fresh clone gets with NO environment set. Every timeout

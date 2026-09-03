@@ -10,7 +10,7 @@ The rule covers **CI and workflow YAML** exactly as it covers `*.sh`, `*.ts`,
 
 It covers the **fenced code blocks inside `base/workflows/*.md`** too, and there a
 comment costs more than a reader's time: a workflow body is rendered into each agent's
-skill and loaded whole on every invocation, so a comment inside one of its fences is
+skill and loaded on every invocation, so a comment inside one of its fences is
 prompt text paid for by every run of that skill, once per agent that renders it, for
 as long as it stays. A review-round annotation beside a fix — *"reported by the
 declared reviewer on PR #N"* — is class 2 there exactly as it is in a script: the
