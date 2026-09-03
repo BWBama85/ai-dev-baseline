@@ -134,7 +134,13 @@ unwire_settings() {
     adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them"
     return 0
   fi
-  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then
+  # NO SETTINGS FILE MEANS NOTHING TO REMOVE — the receipt goes with it, because the keys it
+  # describes cannot exist. A MISSING PAYLOAD IS NOT THAT CASE: ownership lives in the receipt, and
+  # the merge's `--remove` mode does not need the fragment at all, so deleting the receipt here
+  # would destroy the only record of which keys are ours while leaving every one of them installed
+  # — an uninstall that reports success and silently strands the sandbox settings for good.
+  # (PR review)
+  if [ ! -s "$settings" ]; then
     rm -f "$receipt"
     return 0
   fi
@@ -142,7 +148,9 @@ unwire_settings() {
     adb_info "  WARN   ~/.claude/settings.json is not valid JSON — sandbox settings NOT removed; edit it by hand"
     return 1; }
   tmp="$settings.adb.$$.tmp"
-  if printf '%s' "$result" | jq '.settings' > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$settings"; then
+  # Same shared publish as the installer: refuse a destination that is not a regular file, and
+  # carry the original's mode across rather than stamping the umask default onto it.
+  if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then
     names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
     names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"

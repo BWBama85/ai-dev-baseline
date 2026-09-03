@@ -1429,13 +1429,13 @@ EOF
       }
       _pi_say "  hooks  wired project Stop gates into .claude/settings.json"
       # SAID, NOT SILENTLY OMITTED (#248, D97). The global installer also writes a least-privilege
-      # `sandbox` fragment into ~/.claude/settings.json; the pinned model writes a PROJECT-scoped
-      # settings.json, and the vendor ignores several of those keys outside user/managed/CLI
-      # scope. Writing them here would report protection the CLI never applied — and worse than in
-      # the global case, because a pinned install's settings.json is TRACKED, so an inert security
-      # key would be reviewed, committed and believed.
-      _pi_say "  sandbox  NOT written — the least-privilege sandbox keys are honoured only in user"
-      _pi_say "           scope; run ./install.sh (global) to get them. See docs/installation.md."
+      # `sandbox` fragment into ~/.claude/settings.json; this model writes a PROJECT-scoped
+      # settings.json and deliberately does not carry it. The reason is ownership, not vendor
+      # support: this file is TRACKED by the adopting project, so writing a sandbox policy here
+      # would commit one on behalf of every contributor to that repository. (Some sandbox keys ARE
+      # user/managed-only, but the ones this fragment ships are not — D97 records the correction.)
+      _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"
+      _pi_say "           sandbox policy is left to the global install. See docs/installation.md."
       # RECORDED, because uninstall must not delete a settings.json it cannot prove it created —
       # and CARRIED FORWARD from the prior receipt, because only the FIRST install creates it. A
       # re-run that dropped the marker would both break byte idempotence and quietly hand the file

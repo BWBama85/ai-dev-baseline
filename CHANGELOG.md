@@ -24,8 +24,10 @@ only by a published release, which is what these entries are the notes for.
   whose ownership boundary is the set of **leaf paths** it declares — not the file, and not the
   `sandbox` key, so an adopter's own `sandbox.excludedCommands` survives untouched beside our
   `sandbox.enabled`. It ships `sandbox.enabled`, `credentials.files` denying `~/.aws` and `~/.ssh`,
-  `credentials.envVars` denying `GITHUB_TOKEN`, and a `network.allowedDomains` list holding this
-  framework's own hosts. It deliberately does **not** ship `sandbox.filesystem.disabled` (which
+  `credentials.envVars` denying `GITHUB_TOKEN`, and a `network.allowedDomains` list holding
+  `api.anthropic.com` and the GitHub hosts — a starting point rather than a complete set, since a
+  project whose remote or package registry is elsewhere will still be prompted for those and can
+  add them in its own settings (array keys merge across scopes). It deliberately does **not** ship `sandbox.filesystem.disabled` (which
   turns filesystem isolation *off* — the error #214 recorded, which would have shipped as
   hardening) or `sandbox.network.strictAllowlist` (a different key from the allowlist, and a
   larger imposition than the one the owner weighed).

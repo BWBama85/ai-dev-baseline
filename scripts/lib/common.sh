@@ -499,6 +499,45 @@ EOF
   printf '^%s/\\.claude/scripts/(%s)\\.sh$' "$esc" "$alt"
 }
 
+# Publish <tmp> over <dest> by rename, preserving <dest>'s permission bits.
+#
+# TWO THINGS `mv` ALONE GETS WRONG on a settings file, and both were shipped (PR review, #248):
+#
+#   * A DIRECTORY at <dest> makes `mv tmp dest` move the file INSIDE it and exit 0 — so a caller
+#     that trusts the status reports a write that every later reader will fail to find, because
+#     the path it reads is not a regular file. Refused here instead.
+#   * The temp file is created under the process UMASK, so publishing it over a mode-0600
+#     `settings.json` silently relaxes it to 0644. That file can hold an `env` block, so the
+#     permission is not cosmetic. The mode is carried across before the rename.
+#
+# Deliberately shared rather than written per call site: `wire_hooks` had both defects too, and a
+# fix applied to one writer of a file with two writers is a fix that half holds.
+#
+# A SYMLINK at <dest> that resolves to a regular file is still REPLACED by a regular file, exactly
+# as before — narrowing that is a behaviour change for the hook surface and is not claimed here.
+#
+# Usage: adb_publish_json <tmp> <dest>
+# Returns: 0 published · 1 refused or failed (the temp file is removed on every failure)
+adb_publish_json() {
+  local tmp="$1" dest="$2" mode=""
+  if [ -e "$dest" ] && [ ! -f "$dest" ]; then
+    rm -f "$tmp"
+    adb_info "  WARN   $dest is not a regular file — refusing to publish over it"
+    return 1
+  fi
+  [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+  if [ -f "$dest" ]; then
+    # Mode digits only, and only when they are digits: `stat` differs between GNU and BSD, so both
+    # spellings are tried and an unreadable mode simply leaves the umask default rather than
+    # failing the write — a preserved-but-unknown permission is not worth losing the settings over.
+    mode="$(stat -f '%Lp' "$dest" 2>/dev/null || stat -c '%a' "$dest" 2>/dev/null || true)"
+    case "$mode" in ''|*[!0-7]*) mode="" ;; esac
+  fi
+  [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
+  mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
 # --- the non-hook settings fragment (#248, D95-D98) --------------------------------------------
 #
 # `install.sh` owns two surfaces inside ~/.claude/settings.json and they are deliberately
@@ -531,9 +570,13 @@ adb_claude_settings_floor() { printf '2.1.187'; }
 # makes the CLI reachable, and a version we could not read is NOT evidence that the keys would
 # be honoured (D98).
 adb_claude_cli_candidates() {
+  # `command -v` FIRST, and the fixed paths only as a fallback. The question this probe answers is
+  # "which CLI will read these settings", and that is the one PATH resolves — an installer that
+  # preferred a stale $HOME/.local/bin/claude over the v2.1.259 on PATH would skip settings the
+  # running CLI honours, or write ones it does not. (PR review, #248)
+  command -v claude 2>/dev/null || true
   if [ -n "${HOME:-}" ]; then printf '%s\n' "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; fi
   printf '%s\n' /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude
-  command -v claude 2>/dev/null || true
 }
 
 # The installed CLI's version on stdout, or non-zero when none can be read.
@@ -612,8 +655,9 @@ adb_claude_settings_disposition() {
   esac
 }
 
-# The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Empty for any
-# disposition but `installed`. A malformed row is DROPPED rather than guessed at: a row whose
+# The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Emitted for the two
+# OWNING dispositions — `installed`, and `skipped-optout`, which carries the rows forward precisely
+# so a pause does not orphan the keys an earlier install wrote. Empty for every other one. A malformed row is DROPPED rather than guessed at: a row whose
 # value cannot be parsed cannot be compared, and a leaf we cannot prove is ours is one we must
 # not remove.
 # Usage: adb_claude_settings_receipt_leaves <receipt>
@@ -639,8 +683,8 @@ adb_claude_settings_receipt_leaves() {
 }
 
 # THE MERGE. Prints one JSON object on stdout:
-#   {settings: <the new settings>, wrote: [...], skipped: [...], pruned: [...], kept: [...]}
-# where every list holds leaf paths. The three rules of D95's ownership boundary are here and
+#   {settings: <the new settings>, wrote: [], skipped: [], removed: [], pruned: [], kept: []}
+# where every list but `settings` holds leaf paths. The three rules of D95's ownership boundary are here and
 # nowhere else, so install.sh and uninstall.sh cannot drift about what "ours" means:
 #   * WRITE a fragment leaf only when it is absent, or still equal to what the receipt says we
 #     wrote. Anything else is the operator's value and is SKIPPED, not overwritten.
@@ -657,9 +701,22 @@ adb_claude_settings_receipt_leaves() {
 # check-settings-fragment.sh pins that property so a future null in the fragment fails loudly.
 # Usage: adb_claude_settings_merge <settings.json> <payload.json> <receipt|/dev/null> [--remove]
 adb_claude_settings_merge() {
-  local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned
+  local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned work_empty rc
+  work_empty=""
+  if [ ! -s "$payload" ] && [ "$mode" = "--remove" ]; then
+    work_empty="$(mktemp)" || return 1
+    printf '{}\n' > "$work_empty"
+  fi
   command -v jq >/dev/null 2>&1 || return 2
   owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1
+  # REMOVAL DOES NOT NEED THE PAYLOAD. Ownership lives in the receipt; the fragment only supplies
+  # the leaf SET to write, and `--remove` writes nothing. Requiring it would make an uninstall from
+  # a damaged or partial clone unable to remove the keys it owns — and the caller's only remaining
+  # move would be to drop the receipt, which is the one record that says what is ours. (PR review)
+  if [ ! -s "$payload" ]; then
+    [ "$mode" = "--remove" ] || return 1
+    payload="$work_empty"
+  fi
   jq -n -e \
      --slurpfile cur "$settings" \
      --slurpfile frag "$payload" \
@@ -710,6 +767,9 @@ adb_claude_settings_merge() {
   | { settings: .s, wrote: .wrote, skipped: .skipped, removed: .removed,
       pruned: .pruned, kept: .kept }
   ' 2>/dev/null
+  rc=$?
+  [ -n "$work_empty" ] && rm -f "$work_empty"
+  return "$rc"
 }
 
 # The receipt as the JSON array the merge consumes: [{p: <path>, v: <value>}, ...].

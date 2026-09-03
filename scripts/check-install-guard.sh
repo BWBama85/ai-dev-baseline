@@ -145,5 +145,10 @@ nl_urc=$?
 if [ "$nl_urc" -ne 0 ]; then ok; else bad "uninstall.sh must exit non-zero when HOME cannot be represented (got $nl_urc)"; fi
 grep -q 'NOTHING was unlinked' "$nl_ulog" && ok || bad "uninstall.sh must say that nothing was unlinked"
 grep -q 'Uninstall INCOMPLETE' "$nl_ulog" && ok || bad "uninstall.sh must not report a clean uninstall it did not perform"
+# ...and the settings surface must be untouched by that refusal too (#248). The ownership receipt
+# is the one artifact whose loss is unrecoverable — without it no later uninstall can prove which
+# `sandbox` keys were ours — so a refusal that deleted it would strand them for good.
+if [ -e "$nl_home/.claude/settings.json" ]; then bad "uninstall.sh must not create settings.json when it refuses"; else ok; fi
+if [ -e "$nl_home/.claude/.adb-settings-owned" ]; then bad "uninstall.sh must not leave a settings receipt behind after refusing"; else ok; fi
 
 check_summary "install-guard"

@@ -226,6 +226,16 @@ for junk in "Claude Code" "" "v2.1.259" "2" "abc.def"; do
   if adb_claude_cli_version "$work/bin/claude" >/dev/null 2>&1
   then bad "the probe must refuse an unparseable version banner: '$junk'"; else ok; fi
 done
+# CANDIDATE ORDER: the CLI that will actually read these settings is the one PATH resolves, so a
+# stale binary sitting at a fixed fallback path must never win. Driven with both present.
+mkdir -p "$work/orderhome/.local/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "2.1.100 (Claude Code)"\n' > "$work/orderhome/.local/bin/claude"
+chmod +x "$work/orderhome/.local/bin/claude"
+stub "2.1.259 (Claude Code)"
+ordered="$(HOME="$work/orderhome" PATH="$work/bin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_claude_cli_version')"
+[ "$ordered" = "2.1.259" ] && ok \
+  || bad "the probe must prefer the CLI on PATH over a stale binary at a fixed candidate path; got '$ordered'"
+
 printf 'not executable\n' > "$work/bin/noexec"
 if adb_claude_cli_version "$work/bin/noexec" >/dev/null 2>&1; then bad "the probe must refuse a non-executable path"; else ok; fi
 if adb_claude_cli_version "$work/bin/nothing-here" >/dev/null 2>&1; then bad "the probe must refuse a missing binary"; else ok; fi
@@ -309,6 +319,63 @@ HOME="$naive_home" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 if diff -q <(jq -S . "$naive_home/.claude/settings.json") <(jq -S . "$work/naive-pristine.json") >/dev/null 2>&1
 then ok; else bad "with no receipt, uninstall must not touch sandbox keys it cannot prove it wrote"; fi
 
+# --- an uninstall must never trade the ownership record for nothing ------------------------------
+#
+# The receipt is the ONLY proof of which `sandbox` keys are ours. Deleting it while the keys stay
+# installed strands them for good: no later uninstall can prove them, and the next install reads
+# them as the operator's. A damaged or partial clone (missing payload) must not be able to produce
+# that state, which is why removal is defined against the receipt rather than the shipped fragment.
+lost_home="$work/lostpayload"; mkdir -p "$lost_home/.claude"
+cp "$work/installed.json" "$lost_home/.claude/settings.json"
+cp "$work/installed-receipt" "$lost_home/.claude/.adb-settings-owned"
+lost_repo="$work/lostrepo"; mkdir -p "$lost_repo"
+( cd "$ROOT" && cp -R . "$lost_repo" ) >/dev/null 2>&1; rm -rf "$lost_repo/.git"
+: > "$lost_repo/agents/claude/settings.fragment.json"
+HOME="$lost_home" bash "$lost_repo/uninstall.sh" --agent claude >"$work/lost.log" 2>&1
+if jq -e '.sandbox.credentials == null and .sandbox.network == null' "$lost_home/.claude/settings.json" >/dev/null 2>&1; then ok
+elif [ -f "$lost_home/.claude/.adb-settings-owned" ]; then ok   # kept the record instead: also correct
+else bad "uninstall must not delete the ownership receipt while leaving the sandbox keys installed — they could never be removed again"; fi
+
+# --- publishing a settings file: a directory must not read as success, and the mode must survive -
+pub_dir="$work/pub"; mkdir -p "$pub_dir/dest.json"
+printf '{"a":1}\n' > "$pub_dir/tmp.json"
+if adb_publish_json "$pub_dir/tmp.json" "$pub_dir/dest.json" 2>/dev/null; then
+  bad "adb_publish_json must REFUSE a destination that is not a regular file — mv would move the file inside it and exit 0"
+else ok; fi
+[ -d "$pub_dir/dest.json" ] && ok || bad "the refusal must leave the destination alone"
+
+printf '{"a":1}\n' > "$pub_dir/real.json"; chmod 600 "$pub_dir/real.json"
+printf '{"a":2}\n' > "$pub_dir/tmp2.json"; chmod 644 "$pub_dir/tmp2.json"
+adb_publish_json "$pub_dir/tmp2.json" "$pub_dir/real.json" && ok || bad "adb_publish_json must publish over a regular file"
+pubmode="$(stat -f '%Lp' "$pub_dir/real.json" 2>/dev/null || stat -c '%a' "$pub_dir/real.json" 2>/dev/null)"
+[ "$pubmode" = "600" ] && ok || bad "adb_publish_json must preserve the destination's mode (settings.json can hold an env block); got $pubmode"
+
+# ...and end to end: a mode-0600 settings.json must survive a real install with its mode intact.
+mode_home="$work/modehome"; mkdir -p "$mode_home/.claude"
+echo '{"model":"opus"}' > "$mode_home/.claude/settings.json"; chmod 600 "$mode_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$mode_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+emode="$(stat -f '%Lp' "$mode_home/.claude/settings.json" 2>/dev/null || stat -c '%a' "$mode_home/.claude/settings.json" 2>/dev/null)"
+[ "$emode" = "600" ] && ok || bad "install.sh must not relax a restricted ~/.claude/settings.json to the umask default; got $emode"
+
+# --- the headline must not claim protection the merge did not apply ------------------------------
+off_home="$work/offhome"; mkdir -p "$off_home/.claude"
+echo '{"sandbox":{"enabled":false}}' > "$off_home/.claude/settings.json"
+HOME="$off_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/off.log" 2>&1
+grep -qi "SANDBOXING IS NOT ON" "$work/off.log" && ok \
+  || bad "with sandbox.enabled left at the operator's false, the installer must NOT report least-privilege settings applied — every credential rule is inert"
+
+# --- the ownership receipt is a precondition, not an afterthought --------------------------------
+# Settings without a receipt are keys nobody can prove are ours; the next install reads them as the
+# operator's and records nothing, after which uninstall can never remove them. So a receipt that
+# cannot be published means nothing is written at all.
+ro_home="$work/rohome"; mkdir -p "$ro_home/.claude"
+echo '{"model":"opus"}' > "$ro_home/.claude/settings.json"
+mkdir -p "$ro_home/.claude/.adb-settings-owned"     # a directory: the receipt can never be published here
+HOME="$ro_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/ro.log" 2>&1
+jq -e '.sandbox == null' "$ro_home/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "install.sh must write NO sandbox key when the ownership receipt cannot be published — unremovable keys are worse than none"
+
 # --- `baseline update` must NOTICE a pending surface (bin/baseline) ------------------------------
 #
 # The `current` + links-OK path exits "nothing to do" without consulting the settings at all, so
@@ -331,6 +398,14 @@ pending() {   # pending <disposition> <stub-version> -> 0 if the surface is pend
     eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
     adb_settings_pending "$SRC"'
 }
+# ASSERT THE FUNCTION IS THERE FIRST. Three of the six cases below are NEGATIVE, and a
+# `command not found` returns exactly the non-zero status they treat as a pass — so without this
+# the whole block would go green against a `bin/baseline` that had lost the predicate entirely.
+bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+  command -v adb_settings_pending >/dev/null' && ok \
+  || bad "adb_settings_pending must be extractable from bin/baseline — the negative cases below cannot tell its absence from a correct 'no'"
+
 pending none            "2.1.259 (Claude Code)" && ok || bad "an install predating this surface (no receipt) must be PENDING — that is how existing installs receive it"
 pending skipped-below-floor "2.1.259 (Claude Code)" && ok || bad "a below-floor skip must become PENDING once the CLI clears the floor — the transition the design exists for"
 pending skipped-unprobeable "2.1.259 (Claude Code)" && ok || bad "an unprobeable skip must become PENDING once a probeable CLI is on PATH"
@@ -345,6 +420,7 @@ if [ "$MUTATION" -eq 1 ]; then
   prepare() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/scripts/lib/common.sh"; }
   prepare_payload() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/agents/claude/settings.fragment.json"; }
   prepare_install() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/install.sh"; }
+  prepare_uninstall() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/uninstall.sh"; }
   prepare_baseline() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/bin/baseline"; }
   runner() { bash "$1/repo/scripts/check-settings-fragment.sh" 2>&1; }
 
@@ -390,6 +466,18 @@ if [ "$MUTATION" -eq 1 ]; then
     "adb_claude_settings_floor() { printf '2.1.187'; }" \
     "adb_claude_settings_floor() { printf '2.1.100'; }" \
     'D98 pinned it to'
+  check_mut 'adb_publish_json accepts a directory destination' \
+    'if [ -e "$dest" ] && [ ! -f "$dest" ]; then' \
+    'if false; then' \
+    'must REFUSE a destination that is not a regular file'
+  check_mut 'adb_publish_json stamps the umask mode over a restricted file' \
+    '[ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null' \
+    ':' \
+    "must preserve the destination's mode"
+  check_mut 'the version probe prefers a stale fixed path over PATH' \
+    '  command -v claude 2>/dev/null || true' \
+    '  :' \
+    'must prefer the CLI on PATH over a stale binary'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -426,7 +514,22 @@ if [ "$MUTATION" -eq 1 ]; then
     'if [ "$WIRE_SETTINGS" -eq 0 ]; then' \
     'if false; then' \
     "must record disposition 'skipped-optout'"
+  check_mut 'the installer writes settings it can never record ownership of' \
+    'if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then' \
+    'if false; then' \
+    'must write NO sandbox key when the ownership receipt cannot be published'
+  check_mut 'the headline claims least privilege with sandboxing off' \
+    '|| [ "$(jq -r '"'"'.sandbox.enabled // false'"'"' "$settings" 2>/dev/null)" = true ]; then' \
+    '|| true; then' \
+    'must NOT report least-privilege settings applied'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
+
+  check_mut_reset
+  check_mut 'uninstall drops the ownership record when the payload is missing' \
+    '  if [ ! -s "$settings" ]; then' \
+    '  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then' \
+    'must not delete the ownership receipt while leaving the sandbox keys installed'
+  check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
   check_mut 'the updater overrules an explicit --no-sandbox opt-out' \

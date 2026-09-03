@@ -158,7 +158,7 @@ wire_settings() {
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
     if ! { grep '^leaf	' "$receipt" 2>/dev/null || true; } \
          | adb_claude_settings_receipt_render skipped-optout "-" "$floor" > "$receipt.adb.$$.tmp" \
-         || ! mv "$receipt.adb.$$.tmp" "$receipt"; then
+         || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
       rm -f "$receipt.adb.$$.tmp"
       adb_info "  WARN   --no-sandbox honoured, but the receipt could not be written; the next update may re-offer the settings"
       return 0
@@ -189,32 +189,70 @@ wire_settings() {
   # An EMPTY settings.json is not valid JSON and `--slurpfile` would refuse it. Same brace, same
   # reason, as wire_hooks': jq reads empty input as an empty stream and would exit 0 with nothing.
   [ -s "$settings" ] || echo '{}' > "$settings"
-  # ONE BACKUP PER RUN. wire_hooks already copied the PRISTINE file; copying again here would
-  # overwrite it with the hook-wired intermediate and lose the operator's original.
-  mkdir -p "$BACKUP_DIR$(dirname "$settings")"
-  [ -e "$BACKUP_DIR$settings" ] || cp "$settings" "$BACKUP_DIR$settings"
+  # ONE BACKUP PER RUN, AND ITS STATUS IS CHECKED. wire_hooks already copied the PRISTINE file;
+  # copying again here would overwrite it with the hook-wired intermediate and lose the operator's
+  # original. The success line below says "backed up", and an unwritable backup destination would
+  # otherwise let this mutate the operator's settings while that promise was false. (PR review)
+  if [ ! -e "$BACKUP_DIR$settings" ]; then
+    if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" || ! cp "$settings" "$BACKUP_DIR$settings"; then
+      adb_info "  WARN   could not back up $settings under $BACKUP_DIR — sandbox settings NOT written"
+      return 1
+    fi
+  fi
 
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt")" || {
     adb_info "  WARN   ~/.claude/settings.json is not valid JSON — sandbox settings NOT written (restore from the backup)"
     return 1; }
-  tmp="$settings.adb.$$.tmp"
-  printf '%s' "$result" | jq '.settings' > "$tmp" || {
-    rm -f "$tmp"; adb_info "  WARN   could not render the merged settings — NOT written"; return 1; }
-  [ -s "$tmp" ] || { rm -f "$tmp"; adb_info "  WARN   the settings merge produced an empty file — NOT written (original left intact)"; return 1; }
-  mv "$tmp" "$settings" || { rm -f "$tmp"; adb_info "  WARN   could not write ~/.claude/settings.json — sandbox settings NOT written"; return 1; }
-
-  # THE RECEIPT, after the keys are durable — and it records the leaves this run OWNS, which is
-  # the ones it wrote plus the ones it deliberately left to the operator's own removal. A leaf
-  # `skipped` because the operator's value was already there is NOT ours and is not recorded.
+  # THE RECEIPT IS RENDERED BEFORE THE SETTINGS ARE PUBLISHED, and the old one is kept until both
+  # are durable. Ownership is the load-bearing half: settings without a receipt are keys nobody
+  # can prove are ours, and the NEXT install reads them as the operator's — writes an empty
+  # ownership record — after which uninstall can never remove them. So a receipt this run cannot
+  # render is a refusal, not a warning, and nothing is written at all. (PR review)
+  # The publishability of the receipt PATH is checked before anything is written, not just its
+  # rendering: `adb_publish_json` refuses a non-regular destination, but it does so at publish
+  # time — which is after the settings would already be durable. `precondition-ordering`: the
+  # guard has to run where the thing it guards has not happened yet.
+  if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then
+    adb_info "  WARN   $receipt is not a regular file — sandbox settings NOT written"
+    adb_info "         (keys with no receipt could never be removed by uninstall, so none were applied)"
+    return 1
+  fi
+  local rtmp="$receipt.adb.$$.tmp"
   if ! adb_claude_settings_leaf_rows "$payload" \
          "$(printf '%s' "$result" | jq -c '.wrote + .removed')" \
-       | adb_claude_settings_receipt_render installed "$version" "$floor" > "$receipt.adb.$$.tmp" \
-     || ! mv "$receipt.adb.$$.tmp" "$receipt"; then
-    rm -f "$receipt.adb.$$.tmp"
-    adb_info "  WARN   could not write $receipt — the settings ARE applied, but a key you later remove will be re-written by the next update until it exists"
+       | adb_claude_settings_receipt_render installed "$version" "$floor" > "$rtmp" \
+     || [ ! -s "$rtmp" ]; then
+    rm -f "$rtmp"
+    adb_info "  WARN   could not render the ownership receipt $receipt — sandbox settings NOT written"
+    adb_info "         (keys with no receipt could never be removed by uninstall, so none were applied)"
+    return 1
   fi
 
-  adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
+  tmp="$settings.adb.$$.tmp"
+  if ! printf '%s' "$result" | jq '.settings' > "$tmp" || [ ! -s "$tmp" ]; then
+    rm -f "$tmp" "$rtmp"
+    adb_info "  WARN   could not render the merged settings — NOT written (original left intact)"
+    return 1
+  fi
+  # Published through the shared primitive: it refuses a destination that is not a regular file
+  # (a directory would swallow the rename and report success) and carries the original's mode
+  # across, so a mode-0600 settings.json is not relaxed to the umask default.
+  adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
+  if ! adb_publish_json "$rtmp" "$receipt"; then
+    adb_info "  WARN   the settings ARE applied but $receipt could not be published — run ./install.sh again;"
+    adb_info "         until it exists, uninstall cannot prove which sandbox keys are ours to remove"
+  fi
+
+  # THE HEADLINE MUST NOT OVERSTATE. A merge that SKIPPED `sandbox.enabled` because the operator
+  # already set it to false leaves every credential rule inert, and "least-privilege settings
+  # applied" would be false in the one way that matters. (PR review)
+  if [ "$(printf '%s' "$result" | jq -r '[.wrote[] | join(".")] | index("sandbox.enabled") != null')" = true ] \
+     || [ "$(jq -r '.sandbox.enabled // false' "$settings" 2>/dev/null)" = true ]; then
+    adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
+  else
+    adb_info "  sandbox  settings written, but SANDBOXING IS NOT ON: \`sandbox.enabled\` is yours, not ours,"
+    adb_info "           and is not true — the credential and network rules below are inert until it is."
+  fi
   _adb_report_settings "$result" wrote   "wrote"
   _adb_report_settings "$result" skipped "left alone (your value, not ours)"
   _adb_report_settings "$result" removed "left removed (your opt-out — re-add by hand or re-run after deleting the receipt)"
@@ -225,12 +263,12 @@ wire_settings() {
 
 # Record a skip, and SAY SO WHEN IT CANNOT BE RECORDED. The receipt is the entire reason a skip is
 # retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
-# cosmetic loss: the next update reads `none`, which is also retried, but nothing ever tells the
-# operator that the reason they were given is not on disk. Both call sites used to swallow it.
+# cosmetic loss: nothing else tells the operator that the reason they were just given is not on
+# disk.
 _adb_record_skip() {
   local disposition="$1" version="$2" floor="$3" receipt="$4"
   if : | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" > "$receipt.adb.$$.tmp" \
-     && mv "$receipt.adb.$$.tmp" "$receipt"; then
+     && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     return 0
   fi
   rm -f "$receipt.adb.$$.tmp"
@@ -394,8 +432,10 @@ wire_hooks() {
     adb_info "  WARN   hook wiring produced an empty settings.json — NOT wired (original left intact)"
     return 1
   fi
-  mv "$tmp" "$settings" || {
-    rm -f "$tmp"
+  # Through the shared primitive for the same two reasons the settings writer uses it: a directory
+  # at the destination would swallow the rename and report success, and a bare `mv` publishes the
+  # temp file's umask mode over a settings.json the operator may have deliberately restricted.
+  adb_publish_json "$tmp" "$settings" || {
     adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
   adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
   # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed

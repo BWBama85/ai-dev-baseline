@@ -1317,8 +1317,14 @@ than none:
     can be retried outside the sandbox after a prompt.
   - **A subagent still shares the parent session's configuration**, so a dispatch inherits
     whatever the parent had — including an opt-out.
+  - **It fails OPEN when the sandbox cannot start.** Per the vendor reference, if dependencies are
+    missing or the platform is unsupported, Claude Code warns and runs commands *without*
+    sandboxing; `failIfUnavailable` is what makes that a hard error, and the installer does not
+    ship it. On a Linux or WSL2 host missing the sandbox packages, neither the file denials nor the
+    environment scrub applies — and the visible signal is a warning, not a failure.
 
-  Treat it as a floor that removes the easiest credential reads, not as containment.
+  Treat it as a floor that removes the easiest credential reads on a host where the sandbox
+  actually starts, not as containment.
 - **The screening is advisory.** There is no classifier gating these reads. The
   reporting duty above is a duty on the agent doing the work, and an agent that has
   already been subverted will not discharge it.

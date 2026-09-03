@@ -7665,8 +7665,10 @@ survive is the part a later reader needs.
              writer (`wire_settings`) whose ownership boundary is the set of LEAF PATHS the
              fragment declares — `sandbox.enabled`, `sandbox.credentials.files`, and so on — not
              the file and not the top-level key. Three rules make the boundary operative:
-             (a) a leaf is written only when it is ABSENT or still byte-equal to what a receipt
-             says we wrote, so an operator's own value is never overwritten;
+             (a) a leaf is written only when it is ABSENT AND UNRECORDED, or still equal to what
+             a receipt says we wrote — jq VALUE equality, not byte equality, so a reformatted
+             settings.json compares equal and an operator's own value is never overwritten;
+             a leaf the receipt records that is now absent was removed by hand and is left alone;
              (b) uninstall removes only leaves that still match the receipt, keeps and NAMES one
              the operator has since edited, and prunes containers it emptied;
              (c) a leaf the receipt records but the current fragment no longer declares is PRUNED
@@ -7701,8 +7703,14 @@ survive is the part a later reader needs.
              and "whether to touch `allowedDomains` at all". So the shipped fragment is exactly:
              `sandbox.enabled: true`; `sandbox.credentials.files` denying `~/.aws` and `~/.ssh`;
              `sandbox.credentials.envVars` denying `GITHUB_TOKEN`; and
-             `sandbox.network.allowedDomains` holding the hosts THIS framework's own workflows
-             reach and nothing else.
+             `sandbox.network.allowedDomains` holding `api.anthropic.com` and the GitHub hosts
+             this repository's own `git`/`gh` traffic reaches. NOT a complete set, and not claimed
+             as one: the framework dispatches `codex` and `agy` too, and an adopting project's
+             remote or package registry may be anywhere. It is a starting point that array-key
+             merging lets a project extend from its own settings, and `github.com` is deliberately
+             BROAD — the vendor's security notes call out wide domains as an exfiltration surface
+             while the proxy does not inspect TLS by default, and it is here because `git` and
+             `gh` need it, not because it is tightly scoped.
              `mode` is `deny` for every entry, because `mask` is only meaningful alongside
              `network.tlsTerminate` and per-entry `injectHosts` — keys the owner did not name and
              which authorize the proxy to send a real credential to a listed host.
@@ -7713,8 +7721,15 @@ survive is the part a later reader needs.
              shipping it as hardening is the exact error #214 made and this issue exists to record.
 - placement: `agents/claude/settings.fragment.json` · `docs/installation.md` (the shipped values
              and how to extend them) · `.ai-dev-baseline/decisions.md` (here)
-- reason:    Every value is verified against the vendor reference fetched on the implementation
-             date rather than inherited from the issue's dated table (`third-party-claims.md`):
+- reason:    Every value is verified against BOTH halves the acceptance criterion names — the
+             installed CLI and the vendor reference — on the implementation date, rather than
+             inherited from the issue's dated table (`third-party-claims.md`).
+             INSTALLED CLI, rung 1, executed 2026-09-03: `claude --version` printed
+             `2.1.259 (Claude Code)` from `~/.local/bin/claude`, which clears all three floors
+             below, so this run's own end-to-end install exercised the write path rather than the
+             skip path; the below-floor path is exercised against a stub CLI in
+             `scripts/check-settings-fragment.sh`.
+             VENDOR REFERENCE, rung 3, fetched 2026-09-03:
              https://code.claude.com/docs/en/sandboxing, 2026-09-03 — `credentials` entries are
              ARRAYS of `{path,mode}` / `{name,mode}` objects; the default read policy "still
              allows reading credential files such as `~/.aws/credentials` and `~/.ssh/`", which is
@@ -7729,11 +7744,17 @@ survive is the part a later reader needs.
              `sandbox.enabled` is true blocks sandboxed `git` over SSH, and this repository's own
              documented setup clones over SSH (`README.md:28`, and `origin` is `git@github.com:`).
              `gh` breaks the same way wherever `GITHUB_TOKEN` is the token source. The escape
-             hatch is a prompt (`allowUnsandboxedCommands` defaults to `"ask"`), which stalls an
-             autonomous run rather than failing it. The fix — `sandbox.excludedCommands` for `git`
-             and `gh` — WIDENS what runs unsandboxed and was not among the keys the owner
-             approved, so it is documented as an adopter's recipe and filed for an owner decision
-             rather than invented here.
+             hatch is that the blocked command may be retried OUTSIDE the sandbox, which then goes
+             through the regular permission flow — a confirmation prompt in Manual mode — so the
+             failure mode is a stalled autonomous run rather than a hard error. (`sandbox.
+             allowUnsandboxedCommands` is what disables that hatch, by being set to `false`; this
+             entry deliberately does NOT state its default, because the only source that gave one
+             was a SUMMARY of the settings reference, and that same summary described
+             `credentials.files` as an object map when the vendor page shows an array of objects.
+             A value nobody read in the primary source does not belong in a decision record.)
+             The fix for the conflict — `sandbox.excludedCommands` for `git` and `gh` — WIDENS what
+             runs unsandboxed and was not among the keys the owner approved, so it is documented as
+             an adopter's recipe and filed for an owner decision rather than invented here.
 - baseline-issue: n/a (this repo IS the baseline; the conflict above is filed separately)
 
 ## D97 — the fragment is written to USER settings only, and the pinned model refuses it outright
@@ -7747,13 +7768,34 @@ survive is the part a later reader needs.
 - placement: `install.sh` (`wire_settings` targets `$HOME/.claude/settings.json`) ·
              `scripts/lib/pinned-install.sh` (the refusal + its line) · `docs/installation.md`
              ("What it does not do")
-- reason:    Vendor-defined, verified 2026-09-03 at https://code.claude.com/docs/en/sandboxing:
-             several of these keys are honoured only from user, managed or `--settings` scope and
-             are IGNORED in a repository's `.claude/settings.json`. A project-scoped write of a
-             key the CLI ignores is the worst outcome available — it reports protection it never
-             applied — and it is worse for the pinned model than for the global one, because a
-             pinned install's settings file is TRACKED by the adopting project, so an ignored
-             security key would be reviewed, committed and believed.
+- reason:    THE OWNER'S STATED PREMISE FOR THIS DECISION DOES NOT HOLD FOR THE KEYS WE SHIP, and
+             the decision survives on other grounds. The addendum's reason was that "the vendor
+             docs are explicit that several of these keys are honoured only from user/managed/CLI
+             settings and ignored in a repo's `.claude/settings.json`" — and the addendum itself
+             instructed that its vendor facts be re-resolved rather than inherited. Re-resolved
+             2026-09-03 at https://code.claude.com/docs/en/sandboxing: that is true of
+             `filesystem.disabled`, `network.strictAllowlist`, `credentials` `mask` entries,
+             `awsPairs`, `sigv4` and `allowAppleEvents` — and this fragment ships NONE of them.
+             Of what it DOES ship the page states the opposite: `deny` entries are "merge[d] from
+             every settings scope the session loads", since "a `deny` entry only ever narrows
+             access, so any scope can add one", and the sandbox mode itself is saved to a
+             project's own `.claude/settings.local.json` by the `/sandbox` panel. So a
+             project-scoped write of THIS key set would be honoured, and "the CLI would ignore it"
+             is not available as a reason. (Caught by the independent review of this PR — the same
+             defect class the issue exists to record: a plausible behavioural summary asserted as
+             vendor fact.)
+
+             User scope is still right, for reasons that are OURS rather than the vendor's:
+             (1) the global installer's entire model is user-level configuration — it is what
+             `--agent` installs and what `uninstall.sh` reverses, and a project-scoped surface
+             would need a per-project uninstall nothing else here has;
+             (2) a pinned install's `.claude/settings.json` is TRACKED by the adopting project, so
+             a project-scoped write would commit a security policy into somebody's repository on
+             behalf of every contributor to it — a decision far past the one the owner made; and
+             (3) the key set is not stable at project scope: the moment a future version adds
+             `strictAllowlist` or a `mask` entry, part of the fragment WOULD be silently inert
+             there. That is the failure the owner's answer was reaching for, even though the
+             premise named the wrong keys.
 - baseline-issue: n/a (this repo IS the baseline)
 
 ## D98 — below the version floor the installer writes NOTHING, and the receipt records WHY

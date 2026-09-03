@@ -163,17 +163,34 @@ Claude Code's sandbox keys — unless `--no-sandbox` is passed. Source:
 | `sandbox.enabled` | `true` | Bash commands run under OS-enforced filesystem and network isolation. |
 | `sandbox.credentials.files` | `deny` on `~/.aws`, `~/.ssh` | The vendor's default read policy **still allows** reading those; this closes it. |
 | `sandbox.credentials.envVars` | `deny` on `GITHUB_TOKEN` | Sandboxed commands inherit the parent environment, credentials included; this unsets it for them. |
-| `sandbox.network.allowedDomains` | this framework's own hosts | Pre-allows the hosts `git`, `gh` and the CLI reach, so they do not prompt. |
+| `sandbox.network.allowedDomains` | `api.anthropic.com` and the GitHub hosts | Pre-allows the hosts this repo's own `git`/`gh` traffic reaches, so they do not prompt. |
+
+The allowlist is a starting point, not a claim of completeness: it covers **`api.anthropic.com` and
+GitHub**, so a project whose remote is elsewhere, or whose build fetches a package registry, will
+still be prompted for those hosts — add them in your own settings, since array keys merge across
+every scope. And note that `github.com` is a **broad** entry: the vendor's own security notes point
+out that a wide domain can be used for exfiltration when TLS is not inspected (the built-in proxy
+does not inspect it by default). It is here because `git` and `gh` need it, not because it is
+tightly scoped.
 
 Two keys are deliberately **not** shipped. `sandbox.filesystem.disabled` turns filesystem
 isolation *off* (that is what it does — it reads like hardening and is the opposite);
 `sandbox.network.strictAllowlist` converts the allowlist from *pre-allow* to *deny*, which is a
 larger imposition than the allowlist itself. Both are yours to add.
 
-**It is written to USER scope only** (`~/.claude/settings.json`). Several of these keys are
-ignored in a repository's `.claude/settings.json`, and a key the CLI ignores reports protection it
-never applied — so `install.sh --pinned`, whose settings file is project-scoped, does not write
-them at all and says so.
+**It is written to USER scope only** (`~/.claude/settings.json`) — a choice, not a vendor
+limitation. The keys shipped here *would* be honoured in a repository's `.claude/settings.json`
+(`deny` entries merge from every scope the session loads); the ones that are genuinely user- or
+managed-only are `filesystem.disabled`, `strictAllowlist` and the `mask` family, none of which
+this fragment ships. It stays user-scoped because the global installer's whole model is user-level
+config, and because `install.sh --pinned` writes a **tracked** project settings file — writing a
+security policy there would commit one on behalf of every contributor to that repository. The
+pinned model therefore does not write these keys at all, and says so.
+
+One thing this does **not** buy you: if the sandbox cannot start — missing packages on Linux or
+WSL2, or an unsupported platform — Claude Code warns and runs commands *unsandboxed*, and none of
+these rules apply. `sandbox.failIfUnavailable` turns that into a hard error and is deliberately not
+shipped, since refusing to start is not a default this installer should choose for you.
 
 **Below the version floor, nothing is written.** The keys need Claude Code **v2.1.187** or later
 (`sandbox.credentials`). The installer probes the CLI; below the floor, or when no `claude` binary
@@ -199,9 +216,10 @@ and it is what makes four otherwise identical absences distinguishable:
 #### The one conflict to know about
 
 `sandbox.enabled` plus a `deny` on `~/.ssh` blocks sandboxed `git` over SSH, and a `deny` on
-`GITHUB_TOKEN` breaks `gh` wherever that variable is its token source. With
-`allowUnsandboxedCommands` at its default the command can be retried outside the sandbox after a
-prompt — which is a stall, not a failure, but a stall is enough to interrupt an autonomous
+`GITHUB_TOKEN` breaks `gh` wherever that variable is its token source. Unless you have set
+`allowUnsandboxedCommands` to `false`, the blocked command can be retried outside the sandbox,
+which then goes through the ordinary permission flow — a confirmation prompt in Manual mode. That
+is a stall rather than a failure, but a stall is enough to interrupt an autonomous
 `/implement-issue` run. If your remotes are SSH, either add the commands you trust:
 
 ```json
