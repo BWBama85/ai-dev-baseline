@@ -1055,7 +1055,7 @@ jobs:
   install-guard:
     name: install-guard
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1064,13 +1064,27 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 → the mutation gate below needs a merge-base against origin/<base>
+        # to decide whether this change touched the harness's declared inputs. It fails CLOSED
+        # without one, so a shallow clone would silently run every harness on every push.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
       - name: A missing manifest source must make install.sh fail loud (#48)
         run: bash scripts/check-install-guard.sh
+
+      # The installer's second settings surface (#248). It rides this job rather than a new one:
+      # a new job is a new check context, and branch protection would then see a context nobody
+      # made required (docs/repo-settings.md).
+      - name: The settings fragment must own only its own leaves (#248)
+        run: bash scripts/check-settings-fragment.sh
+
+      - name: ...and every one of those rules must be observed failing (#248)
+        run: bash scripts/mutation-gate.sh run settings-fragment-mutation -- bash scripts/check-settings-fragment.sh --mutation
 
   pinned-install:
     name: pinned-install

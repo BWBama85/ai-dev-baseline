@@ -499,6 +499,271 @@ EOF
   printf '^%s/\\.claude/scripts/(%s)\\.sh$' "$esc" "$alt"
 }
 
+# --- the non-hook settings fragment (#248, D95-D98) --------------------------------------------
+#
+# `install.sh` owns two surfaces inside ~/.claude/settings.json and they are deliberately
+# separate. The hook surface above owns whole GROUPS under `.hooks`, keyed by the command path.
+# This one owns LEAF PATHS anywhere else in the file — `sandbox.enabled`,
+# `sandbox.credentials.files` — because an adopter's own `sandbox.excludedCommands` is a sibling
+# of a key we own, in a file neither of us owns whole (D95). Do NOT add a fragment key to
+# adb_claude_hook_scripts, and do not add hook groups to the fragment payload: the hook merge
+# nests everything it is given beneath `.hooks`, so a `sandbox` block there becomes
+# `.hooks.sandbox` and means nothing (#248's originating gap).
+
+# The shipped fragment, relative to a clone root.
+# Usage: adb_claude_settings_payload <repo-root>
+adb_claude_settings_payload() { printf '%s/agents/claude/settings.fragment.json' "$1"; }
+
+# Where the receipt lives — beside the hook receipt, and read by exactly the same kind of
+# question: is this thing absent because somebody CHOSE that, or because it was never written?
+# Usage: adb_claude_settings_receipt [home]
+adb_claude_settings_receipt() { printf '%s/.claude/.adb-settings-owned' "${1:-${HOME:-/root}}"; }
+
+# The CLI version floor for the fragment as shipped: the HIGHEST floor among the keys it writes.
+# `sandbox.credentials` is the binding one (vendor reference, verified 2026-09-03:
+# https://code.claude.com/docs/en/sandboxing — "Requires Claude Code v2.1.187 or later").
+# `sandbox.enabled` and `sandbox.network.allowedDomains` state no floor. Raise this when a key
+# with a higher floor joins the payload; scripts/check-settings-fragment.sh pins the pairing.
+adb_claude_settings_floor() { printf '2.1.187'; }
+
+# Candidate `claude` binaries, most specific first. Same shape and the same reason as
+# adb_bash_candidates: a non-interactive installer shell routinely lacks the PATH entry that
+# makes the CLI reachable, and a version we could not read is NOT evidence that the keys would
+# be honoured (D98).
+adb_claude_cli_candidates() {
+  if [ -n "${HOME:-}" ]; then printf '%s\n' "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; fi
+  printf '%s\n' /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude
+  command -v claude 2>/dev/null || true
+}
+
+# The installed CLI's version on stdout, or non-zero when none can be read.
+# STRICTLY PARSED, and that is the point: `claude --version` prints `2.1.259 (Claude Code)`, and
+# handing the whole line to adb_version_ge would silently take its awk fallback and compare
+# garbage. Only a leading dotted run of digits is accepted; anything else is unreadable, which is
+# a distinct outcome from "below the floor" and the caller reports it as one.
+# Usage: adb_claude_cli_version [binary]
+adb_claude_cli_version() {
+  local bin out v
+  if [ "$#" -gt 0 ] && [ -n "$1" ]; then
+    _adb_claude_cli_probe "$1" && return 0
+    return 1
+  fi
+  while IFS= read -r bin; do
+    [ -n "$bin" ] || continue
+    _adb_claude_cli_probe "$bin" && return 0
+  done <<EOF
+$(adb_claude_cli_candidates)
+EOF
+  return 1
+}
+
+_adb_claude_cli_probe() {
+  local bin="$1" out v
+  [ -x "$bin" ] || return 1
+  out="$("$bin" --version 2>/dev/null)" || return 1
+  v="${out%%[!0-9.]*}"
+  case "$v" in
+    ''|.*|*..*) return 1 ;;
+    *[!0-9.]*)  return 1 ;;
+  esac
+  case "$v" in *.*) ;; *) return 1 ;; esac
+  v="${v%.}"
+  printf '%s' "$v"
+}
+
+# The fragment's OWNED LEAF PATHS, one compact JSON array per line (`["sandbox","enabled"]`).
+# A leaf is a value that is not an object, addressed by a path of object keys only — so an ARRAY
+# is a leaf and its elements are not. That is what makes `sandbox.credentials.files` a single
+# owned thing rather than three, which is what uninstall has to remove and re-install has to
+# replace. Needs jq; returns 2 without it, never an empty list (an empty enumeration would read
+# as "we own nothing" and silently disarm both the write and the removal).
+# Usage: adb_claude_settings_leaves <payload.json>
+adb_claude_settings_leaves() {
+  local payload="$1"
+  command -v jq >/dev/null 2>&1 || return 2
+  [ -s "$payload" ] || return 1
+  jq -c -e '
+    [ paths(type != "object") | select(all(.[]; type == "string")) ] | .[]
+  ' "$payload" 2>/dev/null || return 1
+}
+
+# A leaf path rendered for a human: ["sandbox","enabled"] -> sandbox.enabled
+# Usage: adb_claude_settings_leaf_name <json-path-array>
+adb_claude_settings_leaf_name() {
+  command -v jq >/dev/null 2>&1 || { printf '%s' "$1"; return 0; }
+  printf '%s' "$1" | jq -r 'join(".")' 2>/dev/null || printf '%s' "$1"
+}
+
+# The receipt's disposition — the ONE thing that tells four identical-looking absences apart
+# (D98): `installed`, `skipped-optout`, `skipped-below-floor`, `skipped-unprobeable`, or `none`
+# when there is no receipt at all. Only `skipped-optout` and a removal from an `installed`
+# receipt are CHOICES; every other absence is retried by the next install.
+# Usage: adb_claude_settings_disposition [receipt]
+adb_claude_settings_disposition() {
+  local receipt="${1:-$(adb_claude_settings_receipt)}" line
+  [ -f "$receipt" ] || { printf 'none'; return 0; }
+  line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)" || { printf 'none'; return 0; }
+  line="${line#disposition}"
+  line="${line# }"
+  line="${line%% *}"
+  case "$line" in
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) printf '%s' "$line" ;;
+    *) printf 'none' ;;
+  esac
+}
+
+# The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Empty for any
+# disposition but `installed`. A malformed row is DROPPED rather than guessed at: a row whose
+# value cannot be parsed cannot be compared, and a leaf we cannot prove is ours is one we must
+# not remove.
+# Usage: adb_claude_settings_receipt_leaves <receipt>
+adb_claude_settings_receipt_leaves() {
+  local receipt="$1" line rest p v tab
+  tab="$(printf '\t')"
+  [ -f "$receipt" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 2
+  while IFS= read -r line; do
+    case "$line" in "leaf$tab"*) ;; *) continue ;; esac
+    rest="${line#leaf$tab}"
+    p="${rest%%$tab*}"
+    v="${rest#*$tab}"
+    [ "$p" != "$rest" ] || continue
+    printf '%s' "$p" | jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null 2>&1 || continue
+    printf '%s' "$v" | jq -e . >/dev/null 2>&1 || continue
+    printf '%s\t%s\n' "$p" "$v"
+  done < "$receipt"
+}
+
+# THE MERGE. Prints one JSON object on stdout:
+#   {settings: <the new settings>, wrote: [...], skipped: [...], pruned: [...], kept: [...]}
+# where every list holds leaf paths. The three rules of D95's ownership boundary are here and
+# nowhere else, so install.sh and uninstall.sh cannot drift about what "ours" means:
+#   * WRITE a fragment leaf only when it is absent, or still equal to what the receipt says we
+#     wrote. Anything else is the operator's value and is SKIPPED, not overwritten.
+#   * PRUNE a receipt leaf the fragment no longer declares — the settings analogue of the retired
+#     manifest register. A key dropped from the payload would otherwise sit in every adopter's
+#     settings for good with nobody owning it.
+#   * KEEP, and name, any leaf whose current value differs from the receipt: it has been edited
+#     since we wrote it, so it is no longer ours to replace or remove.
+#   * REPORT as REMOVED — and do not rewrite — a leaf the receipt records that is now absent.
+#     Deleting the key from settings.json is the by-hand opt-out, exactly as deleting a hook entry
+#     is (docs/installation.md), and rewriting it would undo a supported choice on the next
+#     session's self-heal. `absent AND unrecorded` is the only shape that gets written fresh.
+# `absent` is `getpath == null`, which is exact for this payload because it ships no null value;
+# check-settings-fragment.sh pins that property so a future null in the fragment fails loudly.
+# Usage: adb_claude_settings_merge <settings.json> <payload.json> <receipt|/dev/null> [--remove]
+adb_claude_settings_merge() {
+  local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned
+  command -v jq >/dev/null 2>&1 || return 2
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1
+  jq -n -e \
+     --slurpfile cur "$settings" \
+     --slurpfile frag "$payload" \
+     --argjson owned "$owned" \
+     --arg mode "$mode" '
+    # `has_path` and `member`, spelled out, because jq'"'"'s `index/1` searches an array argument as
+    # a SUBSEQUENCE — `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason and
+    # `[["a","b","c"]] | index(["a","b"])` is 0 outright. Every path membership test here is an
+    # explicit equality scan for that reason.
+    def member($xs; $x): ($xs | map(. == $x) | any);
+    ($cur[0] // {})  as $settings
+  | ($frag[0] // {}) as $fragment
+  | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
+  | ( if $mode == "--remove" then [] else $leaves end ) as $want
+  | reduce ($want[]) as $p
+      ( { s: $settings, wrote: [], skipped: [], removed: [], pruned: [], kept: [] };
+        ( $owned | map(select(.p == $p)) | first ) as $rec
+        | ( .s | getpath($p) ) as $now
+        | if $now == null and $rec == null then
+            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
+          elif $now == null then
+            .removed += [$p]
+          elif $rec != null and $now == $rec.v then
+            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
+          else
+            .skipped += [$p]
+          end )
+  | ( $owned | map(.p) | map(select(member($want; .) | not)) ) as $stale
+  | reduce ($stale[]) as $p
+      ( .;
+        ( $owned | map(select(.p == $p)) | first ) as $rec
+        | ( .s | getpath($p) ) as $now
+        | if $now == null then .
+          elif $now == $rec.v then .s = (.s | delpaths([$p])) | .pruned += [$p]
+          else .kept += [$p]
+          end )
+    # Prune ONLY the containers this removal emptied, never every empty object in the file: a
+    # blanket `walk` would delete an operator'"'"'s own `{}` somewhere else in settings.json, which
+    # is exactly the over-reach leaf-level ownership exists to prevent. Ancestors are visited
+    # deepest-first so an object emptied by its own child'"'"'s removal is seen after that child.
+  | ( [ .pruned[] | . as $p | range(1; ($p | length)) | $p[0:.] ]
+      | unique | sort_by(-length) ) as $ancestors
+  | reduce ($ancestors[]) as $a
+      ( .;
+        ( .s | getpath($a) ) as $now
+        | if ($now | type) == "object" and ($now | length) == 0
+          then .s = (.s | delpaths([$a])) else . end )
+  | { settings: .s, wrote: .wrote, skipped: .skipped, removed: .removed,
+      pruned: .pruned, kept: .kept }
+  ' 2>/dev/null
+}
+
+# The receipt as the JSON array the merge consumes: [{p: <path>, v: <value>}, ...].
+_adb_claude_settings_owned_json() {
+  local receipt="$1" line p v tab out=""
+  tab="$(printf '\t')"
+  case "$(adb_claude_settings_disposition "$receipt")" in
+    installed|skipped-optout) ;;
+    *) printf '[]'; return 0 ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="${line%%$tab*}"
+    v="${line#*$tab}"
+    out="$out${out:+,}{\"p\":$p,\"v\":$v}"
+  done <<EOF
+$(adb_claude_settings_receipt_leaves "$receipt")
+EOF
+  printf '[%s]' "$out"
+}
+
+# The `leaf` rows for a receipt, on stdout: one `leaf<TAB><path><TAB><value>` per written leaf.
+# Separate from the renderer because the OPT-OUT path has rows to carry too — the ones a previous
+# install recorded — and ownership must outlive a pause, or `--no-sandbox` would orphan the keys
+# it declines to touch (D95's prune has nothing to prune once the record is gone).
+# Usage: adb_claude_settings_leaf_rows <payload.json> <written-json-array>
+adb_claude_settings_leaf_rows() {
+  local payload="$1" written="$2" p
+  command -v jq >/dev/null 2>&1 || return 2
+  [ -s "$payload" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf 'leaf\t%s\t%s\n' "$p" \
+      "$(jq -c --argjson path "$p" 'getpath($path)' "$payload" 2>/dev/null)"
+  done <<EOF
+$(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)
+EOF
+}
+
+# The receipt this run should leave behind, rendered to stdout; `leaf` rows are read from STDIN so
+# one renderer serves both the install path (rows from the payload) and the opt-out path (rows
+# carried over from the previous receipt). Written in EVERY case, because the disposition is the
+# whole point: an absence with no receipt is indistinguishable from four different causes (D98).
+# Usage: adb_claude_settings_receipt_render <disposition> <version|-> <floor> < <leaf rows>
+adb_claude_settings_receipt_render() {
+  local disposition="$1" version="$2" floor="$3" line tab
+  tab="$(printf '\t')"
+  printf '# ai-dev-baseline settings fragment (#248) — written by install.sh; do not hand-edit.\n'
+  printf '# `disposition` is what tells a key nobody chose to remove from one somebody did.\n'
+  printf 'disposition %s\n' "$disposition"
+  printf 'version %s\n' "$version"
+  printf 'floor %s\n' "$floor"
+  while IFS= read -r line; do
+    case "$line" in "leaf$tab"*) printf '%s\n' "$line" ;; esac
+  done
+}
+
+
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s
   # The precondition is asked INSIDE each known branch, never once above the `case`. Hoisting it

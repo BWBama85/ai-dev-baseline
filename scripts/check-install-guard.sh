@@ -121,6 +121,23 @@ if cmp -s "$prefix/keep.txt" "$work/nl-pristine.txt"; then ok; else bad "install
 # And no link was created anywhere under the real (newline-bearing) home either.
 if [ -e "$nl_home/.claude/CLAUDE.md" ]; then bad "install.sh must link nothing when it refuses"; else ok; fi
 
+# THE SECOND SETTINGS SURFACE MUST OBEY THE SAME REFUSAL (#248). This job's charter is that a
+# refusal leaves the tree untouched, and wire_settings is a second writer into a file the operator
+# owns — so "nothing was linked" has to mean nothing was WRITTEN either. Asserted on the
+# unrepresentable-HOME run above, which refuses before any agent is installed.
+if [ -e "$nl_home/.claude/settings.json" ]; then bad "install.sh must not create settings.json when it refuses the manifest"; else ok; fi
+if [ -e "$nl_home/.claude/.adb-settings-owned" ]; then bad "install.sh must not write the settings receipt when it refuses the manifest"; else ok; fi
+
+# ...and the first fault class too: a missing manifest source fails the install, and the settings
+# surface must not be left half-applied by it. `wire_settings` writes by tmp+mv, so the file is
+# either the merged one or the original — never a partial merge.
+if [ -f "$fh/.claude/settings.json" ]; then
+  jq -e . "$fh/.claude/settings.json" >/dev/null 2>&1 && ok \
+    || bad "install.sh left ~/.claude/settings.json unparseable after a mid-manifest failure"
+else
+  ok   # --no-hooks and no prior file: nothing to parse, and nothing was half-written
+fi
+
 # The uninstaller refuses the same pair, and says so instead of printing "Uninstalled".
 nl_ulog="$work/uninstall-nl.log"
 HOME="$nl_home" bash "$repo2/uninstall.sh" --agent claude >"$nl_ulog" 2>&1

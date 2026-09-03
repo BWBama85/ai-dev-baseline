@@ -45,6 +45,7 @@ cd ~/Code/ai-dev-baseline
 ./install.sh                       # installs the 'claude' agent + wires gates
 ./install.sh --agent claude --agent codex
 ./install.sh --agent claude --no-hooks
+./install.sh --agent claude --no-sandbox
 ```
 
 Options:
@@ -53,6 +54,7 @@ Options:
 |---|---|
 | `--agent <claude\|codex\|gemini>` | Repeatable. Which agent(s) to install. Default: `claude`. |
 | `--no-hooks` | Skip wiring the global Stop-hook gates into `~/.claude/settings.json`. |
+| `--no-sandbox` | Skip the [least-privilege sandbox settings](#least-privilege-sandbox-settings). Recorded, so `baseline update` keeps honouring it. |
 | `-h`, `--help` | Print the usage header. |
 
 `codex` and `gemini` run their `agents/<token>/adapter.sh`, which symlinks that
@@ -149,6 +151,64 @@ one entry you removed plus one hook that just shipped — keeps the opt-out and 
 **unlinked** as well as unwired (a linked-but-unwired hook would read as a second opt-out on the
 next update), restoring anything the install displaced at that path; the update says so every run, and `./install.sh` wires the full set (which re-adds
 the one you removed). The per-hook form that resolves this is #444.
+
+### Least-privilege sandbox settings
+
+`install.sh` also writes a second, **non-hook** fragment into `~/.claude/settings.json` —
+Claude Code's sandbox keys — unless `--no-sandbox` is passed. Source:
+`agents/claude/settings.fragment.json`.
+
+| Key | Value | What it buys |
+|---|---|---|
+| `sandbox.enabled` | `true` | Bash commands run under OS-enforced filesystem and network isolation. |
+| `sandbox.credentials.files` | `deny` on `~/.aws`, `~/.ssh` | The vendor's default read policy **still allows** reading those; this closes it. |
+| `sandbox.credentials.envVars` | `deny` on `GITHUB_TOKEN` | Sandboxed commands inherit the parent environment, credentials included; this unsets it for them. |
+| `sandbox.network.allowedDomains` | this framework's own hosts | Pre-allows the hosts `git`, `gh` and the CLI reach, so they do not prompt. |
+
+Two keys are deliberately **not** shipped. `sandbox.filesystem.disabled` turns filesystem
+isolation *off* (that is what it does — it reads like hardening and is the opposite);
+`sandbox.network.strictAllowlist` converts the allowlist from *pre-allow* to *deny*, which is a
+larger imposition than the allowlist itself. Both are yours to add.
+
+**It is written to USER scope only** (`~/.claude/settings.json`). Several of these keys are
+ignored in a repository's `.claude/settings.json`, and a key the CLI ignores reports protection it
+never applied — so `install.sh --pinned`, whose settings file is project-scoped, does not write
+them at all and says so.
+
+**Below the version floor, nothing is written.** The keys need Claude Code **v2.1.187** or later
+(`sandbox.credentials`). The installer probes the CLI; below the floor, or when no `claude` binary
+can be probed, it writes **no key** and prints the version found, the floor required, and the
+protection that was therefore not applied. That absence is recorded as a *skip*, not a choice, so
+the next `baseline update` applies the settings by itself once you upgrade the CLI.
+
+#### What it owns, and what it will never touch
+
+The installer owns exactly the **leaf paths** the fragment declares — not the file, and not the
+`sandbox` key. Your own `sandbox.excludedCommands` sits beside our `sandbox.enabled` and is never
+read, rewritten or removed. A receipt at `~/.claude/.adb-settings-owned` records what was written,
+and it is what makes four otherwise identical absences distinguishable:
+
+| You do this | What happens next |
+|---|---|
+| Set `sandbox.enabled` yourself before installing | Left alone. We never overwrite a value we did not write. |
+| Edit a value we wrote | Left alone from then on, and **kept** (and named) at uninstall. |
+| Delete our keys from `settings.json` | Treated as an opt-out and not rewritten — the same rule as removing a hook entry. |
+| `install.sh --no-sandbox` | Nothing written, the choice recorded; `baseline update` keeps honouring it. |
+| A future version stops shipping a key | The next install **prunes** it, so no orphan is left in your file. |
+
+#### The one conflict to know about
+
+`sandbox.enabled` plus a `deny` on `~/.ssh` blocks sandboxed `git` over SSH, and a `deny` on
+`GITHUB_TOKEN` breaks `gh` wherever that variable is its token source. With
+`allowUnsandboxedCommands` at its default the command can be retried outside the sandbox after a
+prompt — which is a stall, not a failure, but a stall is enough to interrupt an autonomous
+`/implement-issue` run. If your remotes are SSH, either add the commands you trust:
+
+```json
+{ "sandbox": { "excludedCommands": ["git", "gh"] } }
+```
+
+...or install with `--no-sandbox`. This is a known trade-off, not an oversight; see D96.
 
 ### Run markers are session-owned
 
@@ -297,7 +357,8 @@ below), even though it's edited in place rather than replaced by a symlink.
 Anything the installer would overwrite — an existing non-symlink
 `~/.claude/CLAUDE.md`, a pre-existing skill directory, an existing
 `~/.claude/settings.json` — is moved (or copied, for `settings.json`) into a
-timestamped backup directory first:
+timestamped backup directory first. `settings.json` is copied **once per run**, before either
+writer touches it, so the backup is your original file rather than a half-merged intermediate:
 
 ```
 ~/.claude/backups/ai-dev-baseline-<YYYYMMDD-HHMMSS>/
@@ -760,6 +821,10 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   and no `bin/` — a pinned project consumes the baseline, it does not develop it.
 - **The pin is not a lock file.** It records what was installed; the receipt is what proves the
   tree still matches it.
+- **It does not write the least-privilege sandbox settings.** Those keys are honoured only in user,
+  managed or `--settings` scope, and this model writes a *project*-scoped `.claude/settings.json` —
+  which the CLI would ignore, while the file is tracked, reviewed and believed. The install says so
+  rather than omitting them silently; run the global `./install.sh` to get them.
 - **Codex truncates long project instructions, and this install cannot stop it.** Its
   `project_doc_max_bytes` defaults to 32 KiB and larger files are truncated *silently*, while the
   rendered practices are far bigger. The install measures the resulting `AGENTS.md` and prints the
@@ -796,7 +861,17 @@ via `jq`, matched by filename) and removes a hook-event key entirely once that
 leaves it empty. Hooks you added yourself under the same events are left alone.
 Removing the SessionStart entry matters as much as unlinking the script: a
 leftover entry pointing at a deleted command would error on every future
-session. Your backups under
+session.
+
+It also removes the **sandbox settings** it wrote, and only those: a leaf is deleted while its
+value still matches the receipt at `~/.claude/.adb-settings-owned`, one you have edited since is
+**kept and named** in the output, and containers emptied by the removal are pruned while an empty
+object of your own elsewhere in the file is not. **With no receipt, nothing is removed** — an
+install that predates this surface, a below-floor skip and an already-cleaned home are
+indistinguishable from `settings.json` alone, and guessing would delete `sandbox` keys the
+installer never wrote.
+
+Your backups under
 `~/.claude/backups/ai-dev-baseline-*` are **never** touched by uninstall —
 restore from them by hand if you want the pre-install files back.
 

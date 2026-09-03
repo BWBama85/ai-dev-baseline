@@ -182,6 +182,30 @@ adb_installed_agents() {
 # maintained. Keeping the name means existing callers read the stricter answer for free.
 adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" = "wired" ]; }
 
+# Is the SANDBOX SETTINGS SURFACE (#248, D98) waiting to be installed? True when Claude is
+# installed from THIS src and the receipt's disposition is one that must be RETRIED rather than
+# preserved — no receipt at all (an install predating the surface), a below-floor skip, or an
+# unprobeable CLI — AND the CLI now clears the floor. `skipped-optout` is the one disposition
+# that is a choice, and it is never pending. `installed` has nothing to do.
+#
+# This exists because the `current` + links-OK path exits "nothing to do" without consulting the
+# settings surface at all — the same shape as #242, where a partial hook set sailed past a
+# link-only verifier. Without it, an adopter who upgrades the CLI past the floor never receives
+# the settings: the one transition the whole detect-skip-say design is FOR.
+# Usage: adb_settings_pending <src>
+adb_settings_pending() {
+  local src="$1" version
+  command -v jq >/dev/null 2>&1 || return 1
+  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1
+  [ -s "$(adb_claude_settings_payload "$src")" ] || return 1
+  case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" in
+    none|skipped-below-floor|skipped-unprobeable) ;;
+    *) return 1 ;;
+  esac
+  version="$(adb_claude_cli_version)" || return 1
+  adb_version_ge "$version" "$(adb_claude_settings_floor)"
+}
+
 # Report a PARTIAL hook set — and never repair it. Removing one hook's entry from settings.json is
 # the DOCUMENTED way to turn that hook off (docs/installation.md: "To turn it off, remove its entry
 # from ~/.claude/settings.json"), so re-wiring would destroy a supported configuration, and would
@@ -357,6 +381,13 @@ EOF
   # supported choice, and the SessionStart currency hook survives a per-hook removal, so it would
   # undo it again on the next session. #242's defect was that `partial` was INDISTINGUISHABLE from
   # `none` and reported nothing — not that it went unrepaired.
+  # The settings opt-out is EXPLICIT, not inferred (D98): `--no-sandbox` recorded a disposition,
+  # and re-passing the flag is what keeps honouring it. Absence of the keys is deliberately NOT
+  # the signal — four different causes produce it, and only this one is a choice.
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC" \
+     && [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-optout ]; then
+    args+=(--no-sandbox)
+  fi
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
       none)
@@ -644,11 +675,19 @@ case "$STATUS" in
     # adb_self_heal's: a root doc pointing at another clone is not ours to re-wire.
     LINKS_OK=0; adb_verify_links "$SRC" && LINKS_OK=1
     adb_report_partial_hooks "$SRC"
-    if [ "$LINKS_OK" -eq 1 ]; then
+    # THREE questions now, not two (#248). The sandbox settings can be pending while every link
+    # resolves and every hook is wired — that is exactly the state a below-floor install leaves,
+    # and the CLI upgrade that clears it moves nothing this path was looking at.
+    SETTINGS_PENDING=0; adb_settings_pending "$SRC" && SETTINGS_PENDING=1
+    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
-    echo "baseline: an installed path is broken though up to date — repairing …"
+    if [ "$LINKS_OK" -eq 1 ]; then
+      echo "baseline: links are current, but the least-privilege sandbox settings are not applied yet (#248) — installing them …"
+    else
+      echo "baseline: an installed path is broken though up to date — repairing …"
+    fi
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that

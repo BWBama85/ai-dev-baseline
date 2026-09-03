@@ -7651,3 +7651,139 @@ survive is the part a later reader needs.
              measured cost fell on every run whether or not the paths were taken. roadmap, cleanup
              and resolve-pr-threads follow as siblings once this instance's check pins prove out.
 - baseline-issue: n/a — this repo IS the baseline; #433/#435 are the tracking issues.
+
+## D95 — the installer's non-hook settings surface is a named FRAGMENT with leaf-level ownership
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 1. `install.sh` could write `~/.claude/settings.json` only under
+             `.hooks`: `wire_hooks` merges every top-level group of
+             `agents/claude/settings.hooks.json` beneath `.hooks`, so a `sandbox` or `permissions`
+             block added to that payload would land at `.hooks.sandbox` and mean nothing. There
+             was no surface at all for a non-hook settings fragment, which is what #288 and epic
+             #283 were waiting on.
+- decision:  A second shipped payload, `agents/claude/settings.fragment.json`, merged by a second
+             writer (`wire_settings`) whose ownership boundary is the set of LEAF PATHS the
+             fragment declares — `sandbox.enabled`, `sandbox.credentials.files`, and so on — not
+             the file and not the top-level key. Three rules make the boundary operative:
+             (a) a leaf is written only when it is ABSENT or still byte-equal to what a receipt
+             says we wrote, so an operator's own value is never overwritten;
+             (b) uninstall removes only leaves that still match the receipt, keeps and NAMES one
+             the operator has since edited, and prunes containers it emptied;
+             (c) a leaf the receipt records but the current fragment no longer declares is PRUNED
+             on the next install — the settings analogue of `adb_agent_manifest_retired`, without
+             which a key dropped from the payload would sit in every adopter's settings forever
+             with no owner.
+             The receipt is `~/.claude/.adb-settings-owned`, beside `.adb-hooks-wired`, and it
+             carries a DISPOSITION line as well as the leaves (see D98).
+- placement: `agents/claude/settings.fragment.json` (payload) · `scripts/lib/common.sh`
+             (`adb_claude_settings_*` — enumeration, ownership, receipt, state) · `install.sh`
+             (`wire_settings`, `--no-sandbox`) · `uninstall.sh` (`unwire_settings`) ·
+             `bin/baseline` (self-heal preserves the opt-out) · `scripts/check-settings-fragment.sh`
+- reason:    File-level ownership cannot express the real case — an adopter who adds
+             `sandbox.excludedCommands` next to our `sandbox.enabled` owns a sibling of a key we
+             own, in a file neither of us owns whole. Top-level-key ownership is no better: it
+             would make us the owner of everything under `sandbox`, so uninstall would delete the
+             adopter's own entries. Leaf paths are the smallest unit the merge and the removal can
+             both name, and a receipt of what we wrote is the only thing that distinguishes "ours,
+             untouched" from "ours, since edited" from "theirs all along". `pinned-install.sh`'s
+             per-file digest receipt (D77) is the same move one grain up, and its conclusion is
+             reused verbatim: membership is not ownership — the recorded value is.
+- baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work, #288 the consumer)
+
+## D96 — the fragment ships `sandbox.enabled`, the two credential lists and `allowedDomains`; NOT `strictAllowlist`, NOT `filesystem.disabled`
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 2, answered by the owner as "All of them, `allowedDomains` included,
+             shipped with a documented opt-out". "All of them" names a set by reference and the
+             set had to be resolved before a key could be written.
+- decision:  The referent is decision 2's own question, which enumerated `sandbox.enabled`;
+             `credentials.files` / `credentials.envVars` for `~/.aws`, `~/.ssh`, `GITHUB_TOKEN`;
+             and "whether to touch `allowedDomains` at all". So the shipped fragment is exactly:
+             `sandbox.enabled: true`; `sandbox.credentials.files` denying `~/.aws` and `~/.ssh`;
+             `sandbox.credentials.envVars` denying `GITHUB_TOKEN`; and
+             `sandbox.network.allowedDomains` holding the hosts THIS framework's own workflows
+             reach and nothing else.
+             `mode` is `deny` for every entry, because `mask` is only meaningful alongside
+             `network.tlsTerminate` and per-entry `injectHosts` — keys the owner did not name and
+             which authorize the proxy to send a real credential to a listed host.
+             `sandbox.network.strictAllowlist` is NOT shipped: it is a different key from the
+             allowlist, it was never in decision 2's enumeration, and it converts the list from
+             pre-allow to deny — a strictly larger imposition than the one the owner weighed.
+             `sandbox.filesystem.disabled` is NOT shipped: it turns filesystem isolation OFF, and
+             shipping it as hardening is the exact error #214 made and this issue exists to record.
+- placement: `agents/claude/settings.fragment.json` · `docs/installation.md` (the shipped values
+             and how to extend them) · `.ai-dev-baseline/decisions.md` (here)
+- reason:    Every value is verified against the vendor reference fetched on the implementation
+             date rather than inherited from the issue's dated table (`third-party-claims.md`):
+             https://code.claude.com/docs/en/sandboxing, 2026-09-03 — `credentials` entries are
+             ARRAYS of `{path,mode}` / `{name,mode}` objects; the default read policy "still
+             allows reading credential files such as `~/.aws/credentials` and `~/.ssh/`", which is
+             the hole the two lists close; sandboxed commands "inherit the parent process
+             environment by default, including any credentials set there", which is the hole
+             `envVars` closes; and `allowedDomains` with `strictAllowlist` at its default `false`
+             only pre-allows, so a short framework-scoped list can never deny an adopter anything.
+             Array keys merge across every settings scope, so an adopter extends the allowlist
+             from their own project settings without editing ours.
+
+             THE KNOWN CONFLICT, recorded rather than quietly fixed: denying `~/.ssh` while
+             `sandbox.enabled` is true blocks sandboxed `git` over SSH, and this repository's own
+             documented setup clones over SSH (`README.md:28`, and `origin` is `git@github.com:`).
+             `gh` breaks the same way wherever `GITHUB_TOKEN` is the token source. The escape
+             hatch is a prompt (`allowUnsandboxedCommands` defaults to `"ask"`), which stalls an
+             autonomous run rather than failing it. The fix — `sandbox.excludedCommands` for `git`
+             and `gh` — WIDENS what runs unsandboxed and was not among the keys the owner
+             approved, so it is documented as an adopter's recipe and filed for an owner decision
+             rather than invented here.
+- baseline-issue: n/a (this repo IS the baseline; the conflict above is filed separately)
+
+## D97 — the fragment is written to USER settings only, and the pinned model refuses it outright
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 3 — user scope or project scope? The global installer writes
+             `~/.claude/settings.json`; the pinned model (D77) writes a PROJECT-scoped
+             `<project>/.claude/settings.json`, and both are "the installer".
+- decision:  `~/.claude/settings.json` only. `install.sh --pinned` does not write the fragment at
+             all, and says so on stdout rather than omitting it silently.
+- placement: `install.sh` (`wire_settings` targets `$HOME/.claude/settings.json`) ·
+             `scripts/lib/pinned-install.sh` (the refusal + its line) · `docs/installation.md`
+             ("What it does not do")
+- reason:    Vendor-defined, verified 2026-09-03 at https://code.claude.com/docs/en/sandboxing:
+             several of these keys are honoured only from user, managed or `--settings` scope and
+             are IGNORED in a repository's `.claude/settings.json`. A project-scoped write of a
+             key the CLI ignores is the worst outcome available — it reports protection it never
+             applied — and it is worse for the pinned model than for the global one, because a
+             pinned install's settings file is TRACKED by the adopting project, so an ignored
+             security key would be reviewed, committed and believed.
+- baseline-issue: n/a (this repo IS the baseline)
+
+## D98 — below the version floor the installer writes NOTHING, and the receipt records WHY
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 4 — the keys are inert on an older CLI. Answered "detect, skip, and say
+             so". What the answer does not settle is how the resulting ABSENCE is read later: the
+             installed set is repaired by `bin/baseline`'s self-heal on every session start, and
+             the hooks surface teaches that an absent thing is sometimes a choice.
+- decision:  `wire_settings` probes the `claude` binary (`--version`, parsed strictly, through the
+             existing `adb_version_ge`), and below the floor writes no key and prints the version
+             found, the floor required, and the protection not applied. The receipt is written in
+             EVERY case, carrying a `disposition` line — `installed`, `skipped-below-floor`,
+             `skipped-unprobeable` or `skipped-optout` — and the leaves only when the disposition
+             is `installed`. Self-heal reads the disposition: `skipped-optout` is preserved
+             (`--no-sandbox` again), and every other skip is RETRIED, so an install that ran
+             against an old CLI installs the fragment by itself once the CLI is upgraded.
+             An unprobeable CLI skips rather than writes: an unread version is not evidence that
+             the keys would be honoured, and writing a key that reports protection it never
+             applied is the failure decision 3 already ruled out.
+- placement: `scripts/lib/common.sh` (`adb_claude_cli_version`, `adb_claude_settings_floor`,
+             `adb_claude_settings_disposition`) · `install.sh` · `bin/baseline` (`adb_self_heal`) ·
+             `scripts/check-settings-fragment.sh` (each disposition driven and observed)
+- reason:    The pattern ledger's `new-default-read-as-opt-out` class states the rule this entry
+             obeys: for every predicate that reads a persisted state as a CHOICE, enumerate the
+             other ways that exact shape arises and confirm each is distinguishable. "No `sandbox`
+             keys in settings.json" arises from at least four causes — the operator removed them,
+             the operator passed `--no-sandbox`, the CLI was below the floor at install time, and
+             the CLI could not be probed — and only the first two are choices. Inferring from the
+             absence alone would freeze a below-floor skip into a permanent opt-out the moment the
+             adopter upgraded, which is #242's defect one surface over. The receipt is what makes
+             the four distinguishable, so it is written even when nothing else is.
+- baseline-issue: n/a (this repo IS the baseline)

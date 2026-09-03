@@ -15,12 +15,14 @@
 #   ./install.sh                       # installs the 'claude' agent + wires gates
 #   ./install.sh --agent claude --agent codex
 #   ./install.sh --agent claude --no-hooks
+#   ./install.sh --agent claude --no-sandbox
 #   ./install.sh --pinned --project DIR --version X.Y.Z [--agent claude|codex]...
 #   ./install.sh --pinned --project DIR --artifact FILE --sums FILE
 #
 # Options:
 #   --agent <claude|codex|gemini>   repeatable; default: claude
 #   --no-hooks                      don't wire the global Stop-hook gates
+#   --no-sandbox                    don't write the least-privilege sandbox settings (#248)
 #   --pinned                        release-pinned per-project install; every remaining argument
 #                                   is passed to scripts/lib/pinned-install.sh install
 #   -h, --help
@@ -113,17 +115,125 @@ done
 # a hook this run added) names the directory instead of guessing a timestamp.
 BACKUP_DIR="${ADB_BACKUP_DIR:-$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)}"
 WIRE_HOOKS=1
+WIRE_SETTINGS=1
 AGENTS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) AGENTS+=("$2"); shift 2 ;;
     --no-hooks) WIRE_HOOKS=0; shift ;;
+    --no-sandbox) WIRE_SETTINGS=0; shift ;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude)
+
+# THE SECOND SETTINGS SURFACE (#248, D95-D98): the non-hook fragment. Deliberately a separate
+# function from wire_hooks and not a generalization of it — the two own different THINGS. Hooks
+# own whole groups under `.hooks`, keyed by our command path; this owns individual LEAF PATHS
+# anywhere else in the file, so an adopter's `sandbox.excludedCommands` survives beside our
+# `sandbox.enabled`. All the ownership arithmetic lives in adb_claude_settings_merge; this
+# function is the I/O, the version probe and the reporting.
+#
+# Returns 0 installed OR deliberately skipped (each writes a receipt saying WHICH), 1 broken,
+# 3 skipped for want of jq — the same three-status contract wire_hooks uses, and for the same
+# reason: an unconditional success line was the recorded defect (#242).
+wire_settings() {
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  WARN   jq not found — cannot write the sandbox settings; install jq and re-run"
+    return 3
+  fi
+  local settings="$HOME/.claude/settings.json"
+  local receipt payload floor version tmp result
+  payload="$(adb_claude_settings_payload "$REPO")"
+  receipt="$(adb_claude_settings_receipt "$HOME")"
+  floor="$(adb_claude_settings_floor)"
+  [ -s "$payload" ] || {
+    adb_info "  WARN   could not read $payload — sandbox settings NOT written"; return 1; }
+
+  # THE OPT-OUT WRITES A RECEIPT TOO, and carries the previous run's `leaf` rows forward.
+  # Dropping them would orphan any key an earlier install wrote: uninstall could no longer prove
+  # which keys were ours, and D95's retirement prune would have nothing to prune.
+  if [ "$WIRE_SETTINGS" -eq 0 ]; then
+    if ! { grep '^leaf	' "$receipt" 2>/dev/null || true; } \
+         | adb_claude_settings_receipt_render skipped-optout "-" "$floor" > "$receipt.adb.$$.tmp" \
+         || ! mv "$receipt.adb.$$.tmp" "$receipt"; then
+      rm -f "$receipt.adb.$$.tmp"
+      adb_info "  WARN   --no-sandbox honoured, but the receipt could not be written; the next update may re-offer the settings"
+      return 0
+    fi
+    adb_info "  sandbox  --no-sandbox: no settings written (recorded, so \`baseline update\` keeps honouring it)"
+    return 0
+  fi
+
+  # THE VERSION PROBE (D98). Three outcomes, three receipts — never one silent absence. Below the
+  # floor, or unreadable, we write NOTHING: a key the running CLI ignores reports protection it
+  # never applied, which is the failure decision 3 already ruled out.
+  if ! version="$(adb_claude_cli_version)"; then
+    : | adb_claude_settings_receipt_render skipped-unprobeable "-" "$floor" > "$receipt.adb.$$.tmp" \
+      && mv "$receipt.adb.$$.tmp" "$receipt" || rm -f "$receipt.adb.$$.tmp"
+    adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
+    adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
+    adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
+    return 0
+  fi
+  if ! adb_version_ge "$version" "$floor"; then
+    : | adb_claude_settings_receipt_render skipped-below-floor "$version" "$floor" > "$receipt.adb.$$.tmp" \
+      && mv "$receipt.adb.$$.tmp" "$receipt" || rm -f "$receipt.adb.$$.tmp"
+    adb_info "  sandbox  SKIPPED — claude v$version is below the v$floor floor for \`sandbox.credentials\`."
+    adb_info "           NOT applied: sandbox isolation, the ~/.aws and ~/.ssh read denials, the"
+    adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
+    adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
+    return 0
+  fi
+
+  # An EMPTY settings.json is not valid JSON and `--slurpfile` would refuse it. Same brace, same
+  # reason, as wire_hooks': jq reads empty input as an empty stream and would exit 0 with nothing.
+  [ -s "$settings" ] || echo '{}' > "$settings"
+  # ONE BACKUP PER RUN. wire_hooks already copied the PRISTINE file; copying again here would
+  # overwrite it with the hook-wired intermediate and lose the operator's original.
+  mkdir -p "$BACKUP_DIR$(dirname "$settings")"
+  [ -e "$BACKUP_DIR$settings" ] || cp "$settings" "$BACKUP_DIR$settings"
+
+  result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt")" || {
+    adb_info "  WARN   ~/.claude/settings.json is not valid JSON — sandbox settings NOT written (restore from the backup)"
+    return 1; }
+  tmp="$settings.adb.$$.tmp"
+  printf '%s' "$result" | jq '.settings' > "$tmp" || {
+    rm -f "$tmp"; adb_info "  WARN   could not render the merged settings — NOT written"; return 1; }
+  [ -s "$tmp" ] || { rm -f "$tmp"; adb_info "  WARN   the settings merge produced an empty file — NOT written (original left intact)"; return 1; }
+  mv "$tmp" "$settings" || { rm -f "$tmp"; adb_info "  WARN   could not write ~/.claude/settings.json — sandbox settings NOT written"; return 1; }
+
+  # THE RECEIPT, after the keys are durable — and it records the leaves this run OWNS, which is
+  # the ones it wrote plus the ones it deliberately left to the operator's own removal. A leaf
+  # `skipped` because the operator's value was already there is NOT ours and is not recorded.
+  if ! adb_claude_settings_leaf_rows "$payload" \
+         "$(printf '%s' "$result" | jq -c '.wrote + .removed')" \
+       | adb_claude_settings_receipt_render installed "$version" "$floor" > "$receipt.adb.$$.tmp" \
+     || ! mv "$receipt.adb.$$.tmp" "$receipt"; then
+    rm -f "$receipt.adb.$$.tmp"
+    adb_info "  WARN   could not write $receipt — the settings ARE applied, but a key you later remove will be re-written by the next update until it exists"
+  fi
+
+  adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
+  _adb_report_settings "$result" wrote   "wrote"
+  _adb_report_settings "$result" skipped "left alone (your value, not ours)"
+  _adb_report_settings "$result" removed "left removed (your opt-out — re-add by hand or re-run after deleting the receipt)"
+  _adb_report_settings "$result" pruned  "pruned (no longer shipped)"
+  _adb_report_settings "$result" kept    "kept (you edited it since we wrote it)"
+  return 0
+}
+
+# One reporting line per non-empty bucket, naming the leaves. SAY WHAT IT DID, not merely that it
+# succeeded: `skipped` and `wrote` produce identical exit codes and identical silence otherwise,
+# and "which of my sandbox keys did this actually set" is the only question an operator has here.
+_adb_report_settings() {
+  local result="$1" bucket="$2" label="$3" names
+  names="$(printf '%s' "$result" | jq -r --arg b "$bucket" '.[$b] | map(join(".")) | join(", ")' 2>/dev/null)"
+  [ -n "$names" ] && [ "$names" != "null" ] || return 0
+  adb_info "           $label: $names"
+}
 
 install_claude() {
   local rc=0 manifest
@@ -205,6 +315,15 @@ EOF
   else
     adb_info "  (gates not wired — --no-hooks)"
   fi
+
+  # THE SECOND SETTINGS SURFACE (#248), and deliberately AFTER the hook wiring, not folded into
+  # it: wire_hooks copies the PRISTINE settings.json into $BACKUP_DIR, and wire_settings must see
+  # that backup already there so it does not overwrite it with the hook-wired intermediate.
+  # Its own write is atomic (tmp + mv), so a failure here leaves the hook entries standing and the
+  # sandbox keys simply unwritten — two independent surfaces, neither half-applied.
+  local src=0
+  wire_settings || src=$?
+  [ "$src" -eq 0 ] || [ "$src" -eq 3 ] || rc=1
   return "$rc"
 }
 

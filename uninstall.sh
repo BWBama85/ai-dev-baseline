@@ -111,7 +111,48 @@ EOF
   else
     adb_info "  WARN   jq not found — hook entries left in ~/.claude/settings.json; remove them by hand"
   fi
+
+  unwire_settings || rc=1
   return "$rc"
+}
+
+# The mirror of install.sh's wire_settings (#248, D95): remove the sandbox leaves this install
+# OWNS, and only those. Ownership comes from the receipt, never from the shipped payload —
+# `adb_claude_settings_merge --remove` deletes a leaf only while its live value still equals what
+# the receipt says we wrote, KEEPS and NAMES one the operator has edited since, and prunes the
+# containers it emptied without touching an empty object anybody else left in the file.
+#
+# NO RECEIPT MEANS NO REMOVAL, deliberately. An install that predates this surface, one that
+# skipped below the floor, and one whose keys the operator has already deleted all look the same
+# from settings.json alone, and guessing would delete `sandbox` keys we never wrote.
+unwire_settings() {
+  local settings="$HOME/.claude/settings.json" receipt payload result names tmp
+  receipt="$(adb_claude_settings_receipt "$HOME")"
+  payload="$(adb_claude_settings_payload "$REPO")"
+  [ -f "$receipt" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them"
+    return 0
+  fi
+  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then
+    rm -f "$receipt"
+    return 0
+  fi
+  result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)" || {
+    adb_info "  WARN   ~/.claude/settings.json is not valid JSON — sandbox settings NOT removed; edit it by hand"
+    return 1; }
+  tmp="$settings.adb.$$.tmp"
+  if printf '%s' "$result" | jq '.settings' > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$settings"; then
+    names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
+    [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
+    names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
+    [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
+    rm -f "$receipt"
+    return 0
+  fi
+  rm -f "$tmp"
+  adb_info "  WARN   could not rewrite ~/.claude/settings.json — sandbox settings NOT removed; edit it by hand"
+  return 1
 }
 
 # THE LOOP ACCUMULATES, AND THE SCRIPT EXITS ON IT (#324, D64). It used to call each remover and

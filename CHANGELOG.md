@@ -10,6 +10,49 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **The installer can write settings that are not hooks, and the first thing it writes with it is
+  least privilege (#248).** `install.sh` could reach `~/.claude/settings.json` only under `.hooks`
+  — `wire_hooks` nests every top-level group of `agents/claude/settings.hooks.json` beneath it, so
+  a `sandbox` or `permissions` block added there would land at `.hooks.sandbox` and mean nothing.
+  There was no surface for a non-hook fragment at all, which is what #288 and epic #283 were
+  waiting on. Meanwhile the framework dispatches attacker-influenceable issue and review text to
+  agent CLIs running with the workstation's full privileges, and per the vendor reference the
+  default sandbox read policy **still allows** `~/.aws/credentials` and `~/.ssh/`, while sandboxed
+  commands inherit the parent environment, credentials included.
+
+  A second shipped payload, `agents/claude/settings.fragment.json`, is merged by a second writer
+  whose ownership boundary is the set of **leaf paths** it declares — not the file, and not the
+  `sandbox` key, so an adopter's own `sandbox.excludedCommands` survives untouched beside our
+  `sandbox.enabled`. It ships `sandbox.enabled`, `credentials.files` denying `~/.aws` and `~/.ssh`,
+  `credentials.envVars` denying `GITHUB_TOKEN`, and a `network.allowedDomains` list holding this
+  framework's own hosts. It deliberately does **not** ship `sandbox.filesystem.disabled` (which
+  turns filesystem isolation *off* — the error #214 recorded, which would have shipped as
+  hardening) or `sandbox.network.strictAllowlist` (a different key from the allowlist, and a
+  larger imposition than the one the owner weighed).
+
+  Four rules make the boundary operative, and a receipt at `~/.claude/.adb-settings-owned` is what
+  they read: a leaf is written only when it is **absent and unrecorded**, or still equal to what we
+  wrote; one you edited is left alone on install and **kept and named** at uninstall; one you
+  deleted is treated as an opt-out and never rewritten; and one a future payload stops shipping is
+  **pruned**, so no orphan is left in your file. Uninstall with no receipt removes nothing.
+
+  **User scope only**, because several of these keys are ignored in a repository's
+  `.claude/settings.json` and a key the CLI ignores reports protection it never applied — so
+  `install.sh --pinned` refuses them outright and says so. **Below the v2.1.187 floor nothing is
+  written**, and the installer prints the version found, the floor required and the protection not
+  applied; that absence is recorded as a *skip*, never a choice, so `baseline update` applies the
+  settings by itself once the CLI is upgraded — a transition the `current` + links-OK path used to
+  exit before ever asking about (the #242 shape, one surface over). `install.sh --no-sandbox` is
+  the documented opt-out and is recorded so self-heal keeps honouring it.
+
+  **One known conflict, recorded rather than quietly fixed:** denying `~/.ssh` while the sandbox is
+  enabled blocks sandboxed `git` over SSH, and this repository's own documented setup clones over
+  SSH. The escape hatch is a prompt, which stalls an autonomous run rather than failing it; the fix
+  (`sandbox.excludedCommands`) widens what runs unsandboxed and was not among the approved keys, so
+  it is documented as an adopter's recipe. Decisions D95-D98; regression-tested by
+  `scripts/check-settings-fragment.sh`, whose 17 mutations are each required red on their own
+  witness.
+
 - **Instruction regrowth is visible per pull request, and the in-fence channel that fed it is
   closed (#432).** The #361 rewrite cut `implement-issue.md` from 16,237 to 13,457 words on
   2026-08-18; ten days later it stood at 16,266 — past where it started — and its fenced comment
