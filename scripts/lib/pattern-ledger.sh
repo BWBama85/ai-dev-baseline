@@ -698,9 +698,19 @@ _adb_pl_owner_gone() {
 # and then unlock its SUCCESSOR's, letting a third process into the critical section.
 # Reported by the declared reviewer on PR #429.
 _adb_pl_lock() {
-  local dir="$1.lock" waited=0 age tomb
+  local dir="$1.lock" waited=0 age tomb owner_seen="" owner_now
   _ADB_PL_LOCK_TOKEN="$$.$RANDOM.$RANDOM"
   while ! mkdir "$dir" 2>/dev/null; do
+    # THE BOUND IS A HANG BACKSTOP, NOT A QUEUE QUOTA: it counts time during which the lock made
+    # NO PROGRESS. A queue of healthy writers each holding the lock for a fraction of a second
+    # still drains in more than the bound on a slow two-core runner (25 first-time writers took
+    # over 30s there), and refusing the tail of that queue was the flap #449 records. So the
+    # clock restarts whenever the holder changes — the owner record inside the lock is the
+    # signal — and only a holder that stays the same for the whole bound is refused.
+    owner_now="$(cat "$dir/meta" 2>/dev/null)" || owner_now=""
+    if [ -n "$owner_now" ] && [ "$owner_now" != "$owner_seen" ]; then
+      owner_seen="$owner_now"; waited=0
+    fi
     # A LOCK OLDER THAN THE STALE AGE IS BROKEN, so a writer killed mid-insert cannot wedge the
     # ledger permanently. `adb_age_secs` is the shared primitive for this question; if it cannot
     # answer, the lock is treated as live, which fails closed toward waiting rather than toward
@@ -768,6 +778,13 @@ _adb_pl_lock() {
   # stale-breaker renaming it away. We never held the lock, so there is nothing to release: start
   # the whole acquisition again rather than returning success over a lock we do not have.
   if ! mkdir "$dir/$_ADB_PL_LOCK_TOKEN" 2>/dev/null; then
+    # …OR THE CREATE FAILED FOR ANY OTHER REASON while the directory is still the one this
+    # process made: retrying then waits on its own empty, meta-less lock — which nothing can ever
+    # prove abandoned — until the bound refuses, and every later writer inherits the wedge. An
+    # empty directory of ours is released first; a yanked one is already gone and the rmdir is
+    # a harmless no-op. (`|| :`, not the release's `|| true`: the mutation harness rewrites the
+    # release's exact line, and a textual twin here would take that rewrite instead.)
+    rmdir "$dir" 2>/dev/null || :
     _adb_pl_lock "$1"
     return $?
   fi
