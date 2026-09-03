@@ -190,13 +190,18 @@ r="$(m "$(cat "$work/installed.json")" "$work/optout-receipt" --remove)"
 # renderer emits no rows for it. Driven with rows PRESENT under a non-owning disposition, which is
 # what a hand-edited or half-written receipt looks like: with only the renderer standing between
 # them, a corrupt receipt would authorise deleting keys this install never wrote.
-{ printf 'disposition skipped-below-floor\n'; grep '^leaf\t' "$work/installed-receipt"; } > "$work/below-receipt"
-[ "$(grep -c '^leaf\t' "$work/below-receipt")" -eq 4 ] && ok || bad "precondition: the corrupt below-floor receipt should carry leaf rows"
+# LITERAL TAB, never a BRE `\t`: GNU grep reads the backslash form as a plain `t`, so on Linux
+# these three greps matched nothing and the receipt they built was empty — the assertion below
+# then failed for a reason that had nothing to do with what it tests. macOS grep matches it, which
+# is exactly why a local green is not a verdict for the other runner.
+ADB_TAB="$(printf '\t')"
+{ printf 'disposition skipped-below-floor\n'; grep "^leaf$ADB_TAB" "$work/installed-receipt"; } > "$work/below-receipt"
+[ "$(grep -c "^leaf$ADB_TAB" "$work/below-receipt")" -eq 4 ] && ok || bad "precondition: the corrupt below-floor receipt should carry leaf rows"
 r="$(m "$(cat "$work/installed.json")" "$work/below-receipt" --remove)"
 [ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 0 ] && ok || bad "a non-owning disposition must authorise no removal even when the receipt carries leaf rows"
 # ...and independently, the renderer emits no leaf rows for a skip, so both halves hold.
 : | adb_claude_settings_receipt_render skipped-below-floor 2.1.100 "$FLOOR" > "$work/below-rendered"
-[ "$(grep -c '^leaf\t' "$work/below-rendered" || true)" -eq 0 ] && ok || bad "the renderer must emit no leaf rows for a below-floor skip"
+[ "$(grep -c "^leaf$ADB_TAB" "$work/below-rendered" || true)" -eq 0 ] && ok || bad "the renderer must emit no leaf rows for a below-floor skip"
 
 # A malformed row is DROPPED, not guessed at: a leaf we cannot prove is ours is one we must not
 # remove. Checked against the READER, because that is what every consumer goes through.
@@ -235,6 +240,15 @@ stub "2.1.259 (Claude Code)"
 ordered="$(HOME="$work/orderhome" PATH="$work/bin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_claude_cli_version')"
 [ "$ordered" = "2.1.259" ] && ok \
   || bad "the probe must prefer the CLI on PATH over a stale binary at a fixed candidate path; got '$ordered'"
+
+# ...and an UNPARSEABLE binary on PATH must remain a failed probe. Falling through to a fixed path
+# would report a version belonging to an installation no session runs, and `wire_settings` would
+# then apply keys on the strength of it — the exact state D98 says must skip.
+printf '#!/bin/sh\nprintf "%%s\\n" "not-a-version"\n' > "$work/bin/claude"; chmod +x "$work/bin/claude"
+if HOME="$work/orderhome" PATH="$work/bin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_claude_cli_version' >/dev/null 2>&1
+then bad "an unparseable CLI on PATH must fail the probe, not fall through to a fixed candidate path"
+else ok; fi
+stub "2.1.259 (Claude Code)"
 
 printf 'not executable\n' > "$work/bin/noexec"
 if adb_claude_cli_version "$work/bin/noexec" >/dev/null 2>&1; then bad "the probe must refuse a non-executable path"; else ok; fi
@@ -376,6 +390,67 @@ HOME="$ro_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --
 jq -e '.sandbox == null' "$ro_home/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "install.sh must write NO sandbox key when the ownership receipt cannot be published — unremovable keys are worse than none"
 
+# --- a SKIP must never discard ownership of keys already written ---------------------------------
+#
+# "Write no new keys" is not "forget the ones already there". A CLI that becomes unprobeable, or is
+# downgraded below the floor, must not replace an `installed` receipt with an empty one while the
+# values stay in settings.json — uninstall could then never remove them, and the next install would
+# read them as the operator's and record an empty ownership set for good.
+for d in unprobeable belowfloor; do
+  sk_home="$work/skip-$d"; mkdir -p "$sk_home/.claude"
+  cp "$work/installed.json" "$sk_home/.claude/settings.json"
+  cp "$work/installed-receipt" "$sk_home/.claude/.adb-settings-owned"
+  case "$d" in
+    unprobeable) sk_path="/usr/bin:/bin" ;;
+    belowfloor)  stub "2.1.100 (Claude Code)"; sk_path="$work/bin:/usr/bin:/bin" ;;
+  esac
+  HOME="$sk_home" PATH="$sk_path" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/skip-$d.log" 2>&1
+  [ "$(grep -c "^leaf$ADB_TAB" "$sk_home/.claude/.adb-settings-owned" 2>/dev/null || true)" -eq 4 ] && ok \
+    || bad "a '$d' skip must carry the previous receipt's leaf rows forward — dropping them strands every key it just declined to touch"
+  # ...and it still records WHICH skip, so the retry/opt-out distinction survives.
+  case "$(adb_claude_settings_disposition "$sk_home/.claude/.adb-settings-owned")" in
+    skipped-unprobeable|skipped-below-floor) ok ;;
+    *) bad "a '$d' skip must still record its disposition" ;;
+  esac
+done
+stub "2.1.259 (Claude Code)"
+
+# --- --no-sandbox is recorded even without jq ----------------------------------------------------
+# A missing jq is a supported degraded environment, and the opt-out receipt is plain text. If the
+# flag went unrecorded there, the first update after jq arrived would apply the fragment over a
+# choice the operator made by contract.
+nojq_home="$work/nojq"; mkdir -p "$nojq_home/.claude"
+# THE SAME ENVIRONMENT MINUS jq, built by mirroring every PATH directory as symlinks and omitting
+# only `jq`. Dropping jq's whole directory is not equivalent — on this machine jq lives in
+# /usr/bin beside `sed` and `mktemp`, so removing it starves the installer's own CRLF bootstrap
+# scan and the run would test the fixture rather than the flag.
+nojq_bin="$work/nojqbin"; mkdir -p "$nojq_bin"
+printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+  [ -n "$d" ] && [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    b="${f##*/}"
+    [ "$b" = "jq" ] && continue
+    [ -e "$nojq_bin/$b" ] && continue
+    [ -x "$f" ] && ln -s "$f" "$nojq_bin/$b" 2>/dev/null
+  done
+done
+nojq_path="$nojq_bin"
+if PATH="$nojq_path" command -v jq >/dev/null 2>&1; then
+  printf 'NOTE: jq is still reachable in the mirrored PATH — skipping the no-jq opt-out case\n' >&2
+elif ! PATH="$nojq_path" command -v sed >/dev/null 2>&1; then
+  printf 'NOTE: the mirrored PATH is missing core tools — skipping the no-jq opt-out case\n' >&2
+else
+  HOME="$nojq_home" PATH="$nojq_path" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/nojq.log" 2>&1
+  [ "$(adb_claude_settings_disposition "$nojq_home/.claude/.adb-settings-owned")" = skipped-optout ] && ok \
+    || bad "--no-sandbox must be recorded even when jq is absent — its receipt is plain text, and an unrecorded opt-out is overridden by the next update"
+fi
+
+# --- the settings temp file is never world-readable, even for an instant -------------------------
+# It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
+# file under a traversable ~/.claude is readable by another user for as long as that window lasts.
+grep -q 'umask 077' "$ROOT/install.sh" && ok \
+  || bad "the settings temp file must be created restricted BEFORE it is populated, not chmod'd after the write"
+
 # --- `baseline update` must NOTICE a pending surface (bin/baseline) ------------------------------
 #
 # The `current` + links-OK path exits "nothing to do" without consulting the settings at all, so
@@ -390,7 +465,14 @@ pending() {   # pending <disposition> <stub-version> -> 0 if the surface is pend
   local disp="$1" ver="$2" ph="$work/pending-home"
   rm -rf "$ph"; mkdir -p "$ph/.claude"
   ln -s "$ROOT/agents/claude/CLAUDE.md" "$ph/.claude/CLAUDE.md"
-  [ "$disp" = none ] || : | adb_claude_settings_receipt_render "$disp" - "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+  if [ "$disp" = installed ]; then
+    # A CURRENT installed receipt: its leaf set must equal the payload's, or `pending` correctly
+    # reports it stale and this case would pass for the wrong reason.
+    adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s .)" \
+      | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+  elif [ "$disp" != none ]; then
+    : | adb_claude_settings_receipt_render "$disp" - "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+  fi
   stub "$ver"
   HOME="$ph" PATH="$work/bin:$PATH" bash -c '
     . "'"$ROOT"'/scripts/lib/common.sh"
@@ -411,6 +493,20 @@ pending skipped-below-floor "2.1.259 (Claude Code)" && ok || bad "a below-floor 
 pending skipped-unprobeable "2.1.259 (Claude Code)" && ok || bad "an unprobeable skip must become PENDING once a probeable CLI is on PATH"
 pending skipped-optout  "2.1.259 (Claude Code)" && bad "an explicit --no-sandbox opt-out must NEVER be pending — self-heal would overrule a supported choice on every session" || ok
 pending installed       "2.1.259 (Claude Code)" && bad "an installed surface must not be pending" || ok
+
+# ...unless its recorded leaf set no longer matches the payload. A plain `git pull` of the
+# install-source clone can add or retire a fragment leaf without touching one installed symlink,
+# and the fast path exits before anything else would notice.
+stale_home="$work/stalehome"; mkdir -p "$stale_home/.claude"
+ln -s "$ROOT/agents/claude/CLAUDE.md" "$stale_home/.claude/CLAUDE.md"
+{ printf 'disposition installed\nversion 9.9.9\nfloor %s\n' "$FLOOR"
+  printf 'leaf%s["sandbox","enabled"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$stale_home/.claude/.adb-settings-owned"
+stub "2.1.259 (Claude Code)"
+if HOME="$stale_home" PATH="$work/bin:$PATH" bash -c '
+    . "'"$ROOT"'/scripts/lib/common.sh"
+    eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+    adb_settings_pending "'"$ROOT"'"'; then ok
+else bad "an 'installed' receipt whose leaf set differs from the payload must be PENDING — otherwise a pulled-in new leaf is never written and a retired one never pruned"; fi
 pending skipped-below-floor "2.1.100 (Claude Code)" && bad "a below-floor skip must stay put while the CLI is STILL below the floor" || ok
 stub "2.1.259 (Claude Code)"
 
@@ -474,10 +570,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '[ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null' \
     ':' \
     "must preserve the destination's mode"
-  check_mut 'the version probe prefers a stale fixed path over PATH' \
-    '  command -v claude 2>/dev/null || true' \
-    '  :' \
-    'must prefer the CLI on PATH over a stale binary'
+  check_mut 'an unprobeable CLI on PATH falls through to a fixed path' \
+    '  if [ -n "$path_bin" ]; then' \
+    '  if false; then' \
+    'must fail the probe, not fall through'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -522,6 +618,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '|| [ "$(jq -r '"'"'.sandbox.enabled // false'"'"' "$settings" 2>/dev/null)" = true ]; then' \
     '|| true; then' \
     'must NOT report least-privilege settings applied'
+  check_mut 'a skip discards the ownership it inherited' \
+    '  carried="$(_adb_owned_rows "$receipt")"' \
+    '  carried=""' \
+    "must carry the previous receipt's leaf rows forward"
+  check_mut 'the settings temp file is world-readable while it is written' \
+    '  ( umask 077; : > "$tmp" ) ||' \
+    '  ( : > "$tmp" ) ||' \
+    'must be created restricted BEFORE it is populated'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -544,6 +648,10 @@ if [ "$MUTATION" -eq 1 ]; then
     'adb_version_ge "$version" "$(adb_claude_settings_floor)"' \
     'true' \
     'must stay put while the CLI is STILL below the floor'
+  check_mut 'an installed receipt is trusted without comparing it to the payload' \
+    '      [ "$have" = "$want" ] && return 1 ;;' \
+    '      return 1 ;;' \
+    'must be PENDING'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

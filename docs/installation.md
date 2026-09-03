@@ -839,10 +839,12 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   and no `bin/` — a pinned project consumes the baseline, it does not develop it.
 - **The pin is not a lock file.** It records what was installed; the receipt is what proves the
   tree still matches it.
-- **It does not write the least-privilege sandbox settings.** Those keys are honoured only in user,
-  managed or `--settings` scope, and this model writes a *project*-scoped `.claude/settings.json` —
-  which the CLI would ignore, while the file is tracked, reviewed and believed. The install says so
-  rather than omitting them silently; run the global `./install.sh` to get them.
+- **It does not write the least-privilege sandbox settings.** Not because the CLI would ignore
+  them — the shipped key set *would* be honoured in project scope, since `deny` entries merge from
+  every loaded scope — but because this model's `.claude/settings.json` is **tracked**: writing a
+  sandbox policy there commits one on behalf of every contributor to that repository, and the
+  ownership and uninstall semantics are the global install's, not a reviewed file's. The install
+  says so rather than omitting them silently; run the global `./install.sh` to get them.
 - **Codex truncates long project instructions, and this install cannot stop it.** Its
   `project_doc_max_bytes` defaults to 32 KiB and larger files are truncated *silently*, while the
   rendered practices are far bigger. The install measures the resulting `AGENTS.md` and prints the

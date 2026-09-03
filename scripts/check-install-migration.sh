@@ -138,7 +138,14 @@ if command -v jq >/dev/null 2>&1 && [ -s "$ROOT/agents/claude/settings.fragment.
     printf 'floor %s\n' "$(adb_claude_settings_floor)"
     printf 'leaf\t["sandbox","network","strictAllowlist"]\ttrue\n'
   } > "$sh_home/.claude/.adb-settings-owned"
-  if HOME="$sh_home" bash "$ROOT/install.sh" --agent claude --no-hooks >"$sw/install.log" 2>&1; then
+  # A PROBEABLE CLI IS PART OF THE FIXTURE. The retirement prune happens on the WRITE path, and
+  # the CI runner has no `claude` at all — without a stub the installer takes `skipped-unprobeable`
+  # and the assertion below fails having exercised nothing. The stub reports a version above the
+  # floor so the path under test is the one that actually runs. (PR review)
+  mkdir -p "$sw/bin"
+  printf '#!/bin/sh\nprintf "%%s\\n" "9.9.9 (Claude Code)"\n' > "$sw/bin/claude"
+  chmod +x "$sw/bin/claude"
+  if HOME="$sh_home" PATH="$sw/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$sw/install.log" 2>&1; then
     if jq -e '.sandbox.network.strictAllowlist == null' "$sh_home/.claude/settings.json" >/dev/null 2>&1; then ok
     else bad "install.sh must PRUNE a settings leaf its payload no longer ships (#248) — an orphaned key in the operator's settings.json is a dangling link by another name"; fi
     jq -e '.model == "opus"' "$sh_home/.claude/settings.json" >/dev/null 2>&1 && ok \

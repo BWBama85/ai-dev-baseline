@@ -140,23 +140,23 @@ done
 # 3 skipped for want of jq — the same three-status contract wire_hooks uses, and for the same
 # reason: an unconditional success line was the recorded defect (#242).
 wire_settings() {
-  if ! command -v jq >/dev/null 2>&1; then
-    adb_info "  WARN   jq not found — cannot write the sandbox settings; install jq and re-run"
-    return 3
-  fi
   local settings="$HOME/.claude/settings.json"
   local receipt payload floor version tmp result
   payload="$(adb_claude_settings_payload "$REPO")"
   receipt="$(adb_claude_settings_receipt "$HOME")"
   floor="$(adb_claude_settings_floor)"
-  [ -s "$payload" ] || {
-    adb_info "  WARN   could not read $payload — sandbox settings NOT written"; return 1; }
 
-  # THE OPT-OUT WRITES A RECEIPT TOO, and carries the previous run's `leaf` rows forward.
-  # Dropping them would orphan any key an earlier install wrote: uninstall could no longer prove
-  # which keys were ours, and D95's retirement prune would have nothing to prune.
+  # THE OPT-OUT IS RECORDED BEFORE THE jq GUARD, deliberately. Its receipt is plain text and needs
+  # no jq, and a missing jq is a SUPPORTED degraded environment — so returning early here would
+  # leave `--no-sandbox` unrecorded, and the first `baseline update` after jq arrived would read
+  # disposition `none` and apply the fragment over a choice the operator made by contract.
+  # `precondition-ordering`: the step that can satisfy the guard runs first. (PR review)
+  #
+  # It also carries the previous run's `leaf` rows forward. Dropping them would orphan any key an
+  # earlier install wrote: uninstall could no longer prove which keys were ours, and D95's
+  # retirement prune would have nothing to prune.
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
-    if ! { grep '^leaf	' "$receipt" 2>/dev/null || true; } \
+    if ! printf '%s\n' "$(_adb_owned_rows "$receipt")" \
          | adb_claude_settings_receipt_render skipped-optout "-" "$floor" > "$receipt.adb.$$.tmp" \
          || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
       rm -f "$receipt.adb.$$.tmp"
@@ -166,6 +166,13 @@ wire_settings() {
     adb_info "  sandbox  --no-sandbox: no settings written (recorded, so \`baseline update\` keeps honouring it)"
     return 0
   fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  WARN   jq not found — cannot write the sandbox settings; install jq and re-run"
+    return 3
+  fi
+  [ -s "$payload" ] || {
+    adb_info "  WARN   could not read $payload — sandbox settings NOT written"; return 1; }
 
   # THE VERSION PROBE (D98). Three outcomes, three receipts — never one silent absence. Below the
   # floor, or unreadable, we write NOTHING: a key the running CLI ignores reports protection it
@@ -229,6 +236,12 @@ wire_settings() {
   fi
 
   tmp="$settings.adb.$$.tmp"
+  # RESTRICTED BEFORE IT IS POPULATED. The merged settings carry every unrelated key too — an
+  # `env` block among them — and copying the destination's mode only at publish time leaves a
+  # window in which a predictable, PID-named, umask-readable file holds all of it. On a host where
+  # ~/.claude is traversable that window is readable by another user. (PR review)
+  rm -f "$tmp"
+  ( umask 077; : > "$tmp" ) || { adb_info "  WARN   could not create the settings temp file — NOT written"; return 1; }
   if ! printf '%s' "$result" | jq '.settings' > "$tmp" || [ ! -s "$tmp" ]; then
     rm -f "$tmp" "$rtmp"
     adb_info "  WARN   could not render the merged settings — NOT written (original left intact)"
@@ -265,9 +278,21 @@ wire_settings() {
 # retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
 # cosmetic loss: nothing else tells the operator that the reason they were just given is not on
 # disk.
+# The `leaf` rows a receipt already carries, or nothing. One home, because BOTH non-writing paths
+# (the opt-out and the version skips) must preserve ownership, and a second copy of this grep is a
+# second chance to lose it.
+_adb_owned_rows() { grep "^leaf$(printf '\t')" "$1" 2>/dev/null || true; }
+
 _adb_record_skip() {
-  local disposition="$1" version="$2" floor="$3" receipt="$4"
-  if : | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" > "$receipt.adb.$$.tmp" \
+  local disposition="$1" version="$2" floor="$3" receipt="$4" carried
+  # CARRY THE PRIOR OWNED ROWS FORWARD. A skip means "write no NEW keys" — it never means "forget
+  # the ones already there". A CLI that becomes unprobeable, or is downgraded, would otherwise
+  # replace an `installed` receipt with an empty one while the sandbox values stay in the file:
+  # uninstall could then never remove them, and the next install would read them as the operator's
+  # and record an empty ownership set permanently. (PR review)
+  carried="$(_adb_owned_rows "$receipt")"
+  if printf '%s\n' "$carried" \
+     | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" > "$receipt.adb.$$.tmp" \
      && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     return 0
   fi

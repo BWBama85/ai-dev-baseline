@@ -194,12 +194,24 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # the settings: the one transition the whole detect-skip-say design is FOR.
 # Usage: adb_settings_pending <src>
 adb_settings_pending() {
-  local src="$1" version
+  local src="$1" version receipt payload have want
   command -v jq >/dev/null 2>&1 || return 1
   adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1
-  [ -s "$(adb_claude_settings_payload "$src")" ] || return 1
-  case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" in
+  payload="$(adb_claude_settings_payload "$src")"
+  [ -s "$payload" ] || return 1
+  receipt="$(adb_claude_settings_receipt "$HOME")"
+  case "$(adb_claude_settings_disposition "$receipt")" in
     none|skipped-below-floor|skipped-unprobeable) ;;
+    installed)
+      # `installed` IS NOT AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone
+      # can add a fragment leaf or retire one WITHOUT touching a single installed symlink, and
+      # this path is the only thing between that pull and the fast-path `exit 0` — so an
+      # `installed` receipt counts as current only while the leaf set it recorded still equals the
+      # payload's. Otherwise the new leaf is never written and the retired one is never pruned,
+      # for as long as the links keep resolving. (PR review; the #242 shape again, one level in.)
+      have="$(adb_claude_settings_receipt_leaves "$receipt" | cut -f1 | LC_ALL=C sort)"
+      want="$(adb_claude_settings_leaves "$payload" | LC_ALL=C sort)" || return 1
+      [ "$have" = "$want" ] && return 1 ;;
     *) return 1 ;;
   esac
   version="$(adb_claude_cli_version)" || return 1

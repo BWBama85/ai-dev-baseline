@@ -518,6 +518,21 @@ EOF
 #
 # Usage: adb_publish_json <tmp> <dest>
 # Returns: 0 published · 1 refused or failed (the temp file is removed on every failure)
+# The destination's permission bits, or empty. ORDER MATTERS AND IS NOT SYMMETRIC: GNU `stat`
+# spells the mode `-c '%a'` and reads `-f` as `--file-system` (which takes no format argument, so
+# `stat -f '%Lp' FILE' still PRINTS a filesystem block for FILE while exiting non-zero) — an
+# `A || B` with BSD first therefore captures that block's text on Linux and the octal mode is lost
+# in it. GNU is tried first and each attempt is validated before it is believed.
+# Usage: adb_file_mode <file>
+adb_file_mode() {
+  local f="$1" m
+  [ -e "$f" ] || return 1
+  m="$(stat -c '%a' "$f" 2>/dev/null)" || m=""
+  case "$m" in ''|*[!0-7]*) m="$(stat -f '%Lp' "$f" 2>/dev/null)" || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s' "$m"
+}
+
 adb_publish_json() {
   local tmp="$1" dest="$2" mode=""
   if [ -e "$dest" ] && [ ! -f "$dest" ]; then
@@ -526,13 +541,9 @@ adb_publish_json() {
     return 1
   fi
   [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
-  if [ -f "$dest" ]; then
-    # Mode digits only, and only when they are digits: `stat` differs between GNU and BSD, so both
-    # spellings are tried and an unreadable mode simply leaves the umask default rather than
-    # failing the write — a preserved-but-unknown permission is not worth losing the settings over.
-    mode="$(stat -f '%Lp' "$dest" 2>/dev/null || stat -c '%a' "$dest" 2>/dev/null || true)"
-    case "$mode" in ''|*[!0-7]*) mode="" ;; esac
-  fi
+  # An unreadable mode leaves the umask default rather than failing the write: a
+  # preserved-but-unknown permission is not worth losing the settings over.
+  if [ -f "$dest" ]; then mode="$(adb_file_mode "$dest")" || mode=""; fi
   [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
   mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
   return 0
@@ -569,12 +580,13 @@ adb_claude_settings_floor() { printf '2.1.187'; }
 # adb_bash_candidates: a non-interactive installer shell routinely lacks the PATH entry that
 # makes the CLI reachable, and a version we could not read is NOT evidence that the keys would
 # be honoured (D98).
+# The FALLBACK candidates only — the PATH lookup is not here, it is in adb_claude_cli_version,
+# which consults PATH first and treats its answer as final. Keeping a second `command -v claude`
+# in this list would be dead code that reads as if it decided the order.
+#
+# These exist for the shell that has no `claude` at all: a non-interactive installer routinely
+# lacks the PATH entry an interactive login shell has.
 adb_claude_cli_candidates() {
-  # `command -v` FIRST, and the fixed paths only as a fallback. The question this probe answers is
-  # "which CLI will read these settings", and that is the one PATH resolves — an installer that
-  # preferred a stale $HOME/.local/bin/claude over the v2.1.259 on PATH would skip settings the
-  # running CLI honours, or write ones it does not. (PR review, #248)
-  command -v claude 2>/dev/null || true
   if [ -n "${HOME:-}" ]; then printf '%s\n' "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; fi
   printf '%s\n' /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude
 }
@@ -586,9 +598,19 @@ adb_claude_cli_candidates() {
 # a distinct outcome from "below the floor" and the caller reports it as one.
 # Usage: adb_claude_cli_version [binary]
 adb_claude_cli_version() {
-  local bin out v
+  local bin path_bin
   if [ "$#" -gt 0 ] && [ -n "$1" ]; then
     _adb_claude_cli_probe "$1" && return 0
+    return 1
+  fi
+  # THE CLI ON PATH IS AUTHORITATIVE, INCLUDING WHEN IT CANNOT BE PROBED. It is the one a session
+  # will actually execute, so a version read from somewhere else is a fact about the wrong binary:
+  # falling through to a fixed path after an unparseable PATH binary would apply keys on the
+  # strength of an installation nobody runs, which is precisely the state D98 says must SKIP.
+  # The fixed paths exist for the shell that has no `claude` at all, and only for that. (PR review)
+  path_bin="$(command -v claude 2>/dev/null)" || path_bin=""
+  if [ -n "$path_bin" ]; then
+    _adb_claude_cli_probe "$path_bin" && return 0
     return 1
   fi
   while IFS= read -r bin; do
