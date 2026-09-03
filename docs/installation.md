@@ -226,7 +226,7 @@ is a stall rather than a failure, but a stall is enough to interrupt an autonomo
 { "sandbox": { "excludedCommands": ["git", "gh"] } }
 ```
 
-...or install with `--no-sandbox`. This is a known trade-off, not an oversight; see D96.
+...or install with `--no-sandbox`. This is a known trade-off, not an oversight: see D96, and #462 carries the owner decision on whether to ship `excludedCommands` by default.
 
 ### Run markers are session-owned
 

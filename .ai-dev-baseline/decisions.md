@@ -7754,7 +7754,7 @@ survive is the part a later reader needs.
              A value nobody read in the primary source does not belong in a decision record.)
              The fix for the conflict — `sandbox.excludedCommands` for `git` and `gh` — WIDENS what
              runs unsandboxed and was not among the keys the owner approved, so it is documented as
-             an adopter's recipe and filed for an owner decision rather than invented here.
+             an adopter's recipe and filed for an owner decision rather than invented here (#462).
 - baseline-issue: n/a (this repo IS the baseline; the conflict above is filed separately)
 
 ## D97 — the fragment is written to USER settings only, and the pinned model refuses it outright
