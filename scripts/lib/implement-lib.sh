@@ -1303,21 +1303,26 @@ _il_append_issue_envelopes() {   # <state-dir> <out-fd> <label-suffix> <n>...
     local _eb _ea
     _eb="$(_il_fd_size "$pfd")" \
       || { printf 'implement-lib: could not measure the prompt while containing issue #%s\n' "$n" >&2; return 1; }
+    local _erc
     adb_run_bounded 60 5 jq -r --arg assoc "$assoc" '
         [ "[ISSUE BODY — author: \(.author.login) (\($assoc))]\n\(.body // "")" ]
         + [ (.comments // [])[] | "[COMMENT — author: \(.author.login) (\(.authorAssociation // "NONE"))]\n\(.body // "")" ]
         | join("\n\n---\n\n")' "$dir/issue-$n.json" 2>/dev/null \
       | head -c 8388609 \
       | bash "$_IL_ROLE_DISPATCH" untrusted "github-issue #$n$suffix" 1>&"$pfd"
-    case "$?" in
-      0|141) : ;;   # 141: jq dying on head's close — decided by the byte count below
-      *) printf 'implement-lib: could not read or contain issue #%s text from %s/issue-%s.json — never fall back to pasting it raw\n' "$n" "$dir" "$n" >&2
-         return 1 ;;
-    esac
+    _erc=$?
     _ea="$(_il_fd_size "$pfd")" \
       || { printf 'implement-lib: could not measure the prompt while containing issue #%s\n' "$n" >&2; return 1; }
+    # THE BYTES DECIDE FIRST: past the bound is past the bound whatever status the producer died
+    # with when head closed the pipe (141 on the machines this was written on; a macOS runner
+    # reported something else for the same event). Only an in-bound append is judged by status,
+    # and that status travels in the message so the next occurrence explains itself.
     if [ $((_ea - _eb)) -gt 8388608 ]; then
       printf 'implement-lib: issue #%s'"'"'s contained text exceeds the 8388608-byte bound — trim the thread or split the issue; a prompt cannot carry it\n' "$n" >&2
+      return 1
+    fi
+    if [ "$_erc" -ne 0 ]; then
+      printf 'implement-lib: could not read or contain issue #%s text from %s/issue-%s.json (rc %s) — never fall back to pasting it raw\n' "$n" "$dir" "$n" "$_erc" >&2
       return 1
     fi
     if [ "$_ea" -gt 16777216 ]; then
@@ -2690,9 +2695,20 @@ cmd_dispatch_review() {
     # it — but a concurrent slot's publish can remove or replace that name before a native
     # subagent opens it, so the path handed back is the per-invocation one nobody else names.
     # The stage prefix is in the swept review family, so the kept copy clears with the run.
+    # PUBLISHED BY A SEPARATELY CREATED LINK AND A RENAME, never a write through the shared
+    # name: a `cp` fallback followed a symlink recreated at that name (overwriting its target
+    # with the prompt) and truncated another prompt-only slot's kept stage when the name was
+    # its hard link. The rename replaces whatever sits there without opening it, and the
+    # published name is then proven to be this stage's inode against the held descriptor.
+    local _plnk="$dir/review-prompt-stage.w$$l"
+    rm -f "$_plnk"
+    if ! ln "$pft" "$_plnk" 2>/dev/null || ! mv -f "$_plnk" "$pf" 2>/dev/null \
+       || [ -L "$pf" ] || ! _il_same_inode "$pf" "$_prfd"; then
+      exec {_prfd}<&-
+      rm -f "$_plnk" "$pf/${_plnk##*/}" "$pft" 2>/dev/null
+      printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20
+    fi
     exec {_prfd}<&-
-    ln "$pft" "$pf" 2>/dev/null || cp "$pft" "$pf" 2>/dev/null \
-      || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
     printf 'prompt-ready %s\n' "$pft"
     return 0
   fi
@@ -2871,10 +2887,40 @@ cmd_open_pr() {
     printf 'implement-lib: the worktree has uncommitted or untracked changes — the reviewed tree is not the tip; commit them (or gitignore what is not part of the change) before open-pr\n' >&2
     return 27
   fi
+  # THE PR BODY IS COPIED ONCE, BEFORE THE PUSH, into an exclusively created inode whose read
+  # descriptor is held from creation, and `gh pr create` reads that descriptor (`--body-file -`,
+  # gh's documented stdin form): the body file is agent-adjacent, and opening it by name at
+  # create time — after the push — let a swap publish an arbitrary readable file as the body,
+  # or block on a pipe. The copy is bounded (a pipe expires it), the source is re-validated
+  # after it, and past-cap is refused rather than truncated. Staged after every pre-push
+  # refusal above, so a refusal leaves no copy behind; the paths between here and the create
+  # drop it themselves.
+  local _bcp="$dir/.artifact.w$$b" _bcfd="" _brfd="" _bsz
+  if ! _il_excl_create "$_bcp" _bcfd \
+     || ! { exec {_brfd}<"$_bcp"; } 2>/dev/null || [ ! "/dev/fd/$_bcfd" -ef "/dev/fd/$_brfd" ]; then
+    _il_fd_close "$_bcfd" "$_brfd"; rm -f "$_bcp"
+    printf 'implement-lib: could not stage the PR body for reading\n' >&2; return 20
+  fi
+  if ! adb_run_bounded 30 5 head -c 1048577 "$bodyf" 1>&"$_bcfd" \
+     || [ -L "$bodyf" ] || [ ! -f "$bodyf" ]; then
+    _il_fd_close "$_bcfd" "$_brfd"; rm -f "$_bcp"
+    printf 'implement-lib: the PR body at %s could not be read as a regular file within its bound (swapped, or a planted pipe?) — refusing before anything is pushed\n' "$bodyf" >&2; return 20
+  fi
+  exec {_bcfd}>&-
+  _bsz="$(_il_fd_size "$_brfd")" || _bsz=""
+  case "$_bsz" in ''|*[!0-9]*|0)
+    exec {_brfd}<&-; rm -f "$_bcp"
+    printf 'implement-lib: the PR body at %s is empty or could not be sized — refusing before anything is pushed\n' "$bodyf" >&2; return 20 ;;
+  esac
+  if [ "$_bsz" -gt 1048576 ]; then
+    exec {_brfd}<&-; rm -f "$_bcp"
+    printf 'implement-lib: the PR body at %s is %s bytes — past the 1048576-byte bound; refusing before anything is pushed\n' "$bodyf" "$_bsz" >&2; return 20
+  fi
   local _tip
   _tip="$(git rev-parse "refs/heads/$branch" 2>/dev/null)" \
-    || { printf 'implement-lib: cannot resolve the tip of %s\n' "$branch" >&2; return 24; }
-  git push origin "$_tip:refs/heads/$branch" >&2 || { printf 'implement-lib: push failed\n' >&2; return 24; }
+    || { exec {_brfd}<&-; rm -f "$_bcp"; printf 'implement-lib: cannot resolve the tip of %s\n' "$branch" >&2; return 24; }
+  git push origin "$_tip:refs/heads/$branch" >&2 \
+    || { exec {_brfd}<&-; rm -f "$_bcp"; printf 'implement-lib: push failed\n' >&2; return 24; }
   git branch --set-upstream-to="origin/$branch" "$branch" >/dev/null 2>&1 || :
   # A re-run after the 23 refusal arrives with phase=pr_opened already recorded — writing
   # `pushed` then would append a false backward pr_opened→pushed→pr_opened lifecycle to the
@@ -2882,7 +2928,8 @@ cmd_open_pr() {
   local cur_phase
   cur_phase="$(printf '%s' "$_mraw" | jq -r '.phase // ""' 2>/dev/null)" || cur_phase=""
   if [ "$cur_phase" != "pr_opened" ]; then
-    _il_phase "$dir" pushed || { printf 'implement-lib: could not write phase=pushed\n' >&2; return 20; }
+    _il_phase "$dir" pushed \
+      || { exec {_brfd}<&-; rm -f "$_bcp"; printf 'implement-lib: could not write phase=pushed\n' >&2; return 20; }
   fi
   printf 'pushed %s\n' "$branch"
   # IDEMPOTENT ON RE-RUN: a 23 refusal below says "fix the body and re-run", and the re-run must
@@ -2900,7 +2947,10 @@ cmd_open_pr() {
   # --head EXPLICIT: gh defaults the head to the CURRENT branch at creation time, so a checkout
   # switched between the branch check and this line would open — and record — a PR for a
   # different already-pushed branch.
-  if create_out="$(gh pr create "${_rflag[@]}" --base "$_pbase" --head "$branch" --title "$title" --body-file "$bodyf" 2>&1)"; then
+  # The body travels from the held copy (see its staging above), never from the name.
+  create_out="$(gh pr create "${_rflag[@]}" --base "$_pbase" --head "$branch" --title "$title" --body-file - 2>&1 <&"$_brfd")"; local _crc=$?
+  exec {_brfd}<&-; rm -f "$_bcp"
+  if [ "$_crc" -eq 0 ]; then
     pr="$(printf '%s\n' "$create_out" | grep -Eo 'https://[^[:space:]]+/pull/[0-9]+' | head -n1)"
   else
     # ADOPT ONLY AN OPEN PR. `gh pr view <branch>` resolves the branch's most recent PR including
@@ -2942,22 +2992,35 @@ cmd_open_pr() {
     printf 'implement-lib: the PR at %s has head OID %s, not the pushed tip %s — the branch moved since the reviewed tip; re-verify what is on it and re-run\n' "$pr" "${_poid:-unreadable}" "$_tip" >&2
     return 25
   fi
-  local _pufd=""
+  local _pufd="" _purfd=""
   if ! _il_excl_create "$dir/.marker.tmp" _pufd; then
+    printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
+  fi
+  # A read descriptor held on the stage from creation, proven one inode with the write side, is
+  # what the rename below is checked against (_il_phase's rule): a stage replaced after the
+  # write side closed would otherwise be published, and a substituted .branch reads the run as
+  # unrelated to its own Stop gate exactly when the closing-link proof needs it enforced.
+  if ! { exec {_purfd}<"$dir/.marker.tmp"; } 2>/dev/null || [ ! "/dev/fd/$_pufd" -ef "/dev/fd/$_purfd" ]; then
+    _il_fd_close "$_pufd" "$_purfd"; rm -f "$dir/.marker.tmp"
     printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
   fi
   # A FRESH bounded copy, not _mraw: the phase write above changed the marker since capture.
   local _mraw2
   _mraw2="$(adb_run_bounded 30 5 cat "$dir/$_IL_MARKER" 2>/dev/null)" || _mraw2=""
   if [ -z "$_mraw2" ] || ! printf '%s' "$_mraw2" | jq --arg url "$pr" '.prUrl = $url' 1>&"$_pufd"; then
-    exec {_pufd}>&-
+    _il_fd_close "$_pufd" "$_purfd"
     rm -f "$dir/.marker.tmp"
     printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
   fi
   exec {_pufd}>&-
-  { mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" \
+  if ! { mv "$dir/.marker.tmp" "$dir/$_IL_MARKER" \
       && [ -f "$dir/$_IL_MARKER" ] && [ ! -L "$dir/$_IL_MARKER" ] \
-      && _il_phase "$dir" pr_opened; } \
+      && _il_same_inode "$dir/$_IL_MARKER" "$_purfd"; }; then
+    exec {_purfd}<&-
+    printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20
+  fi
+  exec {_purfd}<&-
+  _il_phase "$dir" pr_opened \
     || { printf 'implement-lib: could not record prUrl/phase\n' >&2; return 20; }
   printf 'pr %s\n' "$pr"
 

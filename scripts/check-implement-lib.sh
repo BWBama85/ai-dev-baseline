@@ -83,6 +83,13 @@ case "$1 $2" in
   "repo view")
     printf '%s\n' "${SHIM_SLUG:-o/r}" ;;
   "pr create")
+    [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
+    # SHIM_BODY_CAPTURE: what gh actually received as the body — stdin for `--body-file -`,
+    # else the named file (the pre-fix shape).
+    if [ -n "${SHIM_BODY_CAPTURE:-}" ]; then
+      bf=""; prev=""; for a in "$@"; do case "$prev" in --body-file|-F) bf="$a" ;; esac; prev="$a"; done
+      if [ "$bf" = "-" ]; then cat > "$SHIM_BODY_CAPTURE"; else cat "$bf" > "$SHIM_BODY_CAPTURE" 2>/dev/null; fi
+    fi
     if [ "${SHIM_CREATE_FAIL:-0}" = "1" ]; then echo "a pull request for branch already exists" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_URL:-https://github.com/o/r/pull/1}" ;;
   "pr list")
@@ -2904,6 +2911,73 @@ EOF
 SS_OUT="$( cd "$SSC" && env PATH="$work/gitstat:$PATH" bash "$IL" sync-default 2>&1 )"; SS_RC=$?
 eq "$SS_RC" "30" "44 …and sync-default refuses (30) rather than syncing over an unreadable tree"
 has "$SS_OUT" "could not read the worktree status" "44 …naming why"
+
+# ================= 45. round 52: the PR body, the prUrl marker and the prompt-only publish ======
+# =================     never trust a name after it was checked =================================
+# gh receives the body from a descriptor held on a private copy taken BEFORE the push
+# (`--body-file -`), so a body file swapped after the check — here by a git shim riding the push
+# itself — cannot become the PR body.
+printf 'PLANTED-BODY-must-not-be-published\n' > "$work/planted-body.txt"
+mkdir -p "$work/gitswap"
+REALGIT="$(command -v git)"
+cat > "$work/gitswap/git" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = "push" ]; then /bin/rm -f body.md; ln -s "$work/planted-body.txt" body.md; fi
+exec "$REALGIT" "\$@"
+SH
+chmod +x "$work/gitswap/git"
+openpr PATH="$work/gitswap:$PATH" SHIM_ARGS_LOG="$work/body-args.log" SHIM_BODY_CAPTURE="$work/body-capture.txt" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "0" "45 open-pr still opens with the body file swapped after its check"
+has "$(cat "$work/body-args.log" 2>/dev/null)" "--body-file -" "45 …feeding gh the body on stdin"
+eq "$(cat "$work/body-capture.txt" 2>/dev/null)" "$(printf 'body\n\nCloses #9')" "45 …with the body captured before the push, never the plant"
+rm -f "$PCLONE/body.md"; printf 'body\n\nCloses #9\n' > "$PCLONE/body.md"   # the fixture's body, restored
+if compgen -G "$PCLONE/.claude/state/.artifact.w*" >/dev/null; then bad "45 …and no body copy is left behind"; else ok; fi
+# The prUrl marker publisher checks its rename against a descriptor held on the stage (the
+# shape _il_phase was fixed for): an mv shim replaces only the prUrl-carrying stage.
+mkdir -p "$work/mvprurl"
+cat > "$work/mvprurl/mv" <<'SH'
+#!/usr/bin/env bash
+src="$1"; [ "$1" = "-f" ] && src="$2"
+case "$src" in */.marker.tmp)
+  # ONLY the prUrl publisher's stage (phase still "pushed"); _il_phase's own pr_opened stage
+  # carries prUrl too and has its own check — swapping it as well would hide this publisher's.
+  if jq -e '.prUrl and .phase == "pushed"' "$src" >/dev/null 2>&1; then /bin/rm -f "$src"; printf '{"branch":"elsewhere","issue":"9","phase":"pushed","prUrl":"https://github.com/o/r/pull/5"}\n' > "$src"; fi ;;
+esac
+/bin/mv "$@"
+SH
+chmod +x "$work/mvprurl/mv"
+cp "$PCLONE/.claude/state/implement-issue-active.json" "$PCLONE/.claude/state/active-r52.json"
+# A FRESH triaged marker: earlier cases left this fixture's marker at pr_opened with a prUrl, so
+# the phase=pushed write is skipped and the prUrl stage the shim keys on never has that shape.
+jq -n '{branch:"issue-9-x", issue:"9", phase:"triaged", startedAt:"2026-08-30T00:00:00Z",
+        phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
+  > "$PCLONE/.claude/state/implement-issue-active.json"
+openpr PATH="$work/mvprurl:$PATH" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
+eq "$OP_RC" "20" "45 a prUrl marker stage swapped before its rename is refused (20)"
+has "$OP_OUT" "could not record prUrl/phase" "45 …naming the refusal"
+mv "$PCLONE/.claude/state/active-r52.json" "$PCLONE/.claude/state/implement-issue-active.json"
+# The prompt-only publish never writes through the shared name: a symlink recreated at
+# review-prompt.txt after the pre-publish rm (an rm shim plants it) used to be FOLLOWED by the
+# cp fallback, overwriting its target with the prompt.
+printf 'precious repo content\n' > "$work/prompt-target.txt"
+mkdir -p "$work/rmplant"
+cat > "$work/rmplant/rm" <<SH
+#!/usr/bin/env bash
+/bin/rm "\$@"; rc=\$?
+for a in "\$@"; do case "\$a" in */review-prompt.txt) ln -s "$work/prompt-target.txt" "\$a" 2>/dev/null ;; esac; done
+exit \$rc
+SH
+chmod +x "$work/rmplant/rm"
+read -r _ RPP <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RPP/.claude/state"; seed_snap "$RPP"
+( cd "$RPP" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+PP_OUT="$( cd "$RPP" && env PATH="$work/rmplant:$PATH" bash "$IL" dispatch-review --prompt-only .claude/state codex 2>/dev/null )"; PP_RC=$?
+eq "$(cat "$work/prompt-target.txt")" "precious repo content" "45 a symlink planted at the shared prompt name is never written through"
+if [ -L "$RPP/.claude/state/review-prompt.txt" ]; then bad "45 …and the plant does not survive as the published name"; else ok; fi
+if grep -q 'cp "\$pft" "\$pf"' "$IL"; then bad "45 …the cp fallback is gone"; else ok; fi
+if [ "$PP_RC" -eq 0 ] && has "$(cat "$RPP/$(printf '%s' "$PP_OUT" | sed 's/^prompt-ready //')" 2>/dev/null)" 'diff --git a/seed' "45 …and the kept stage still carries the prompt"; then :; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
