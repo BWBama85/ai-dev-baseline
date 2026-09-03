@@ -478,4 +478,5 @@ One line per resolved review thread, newest last.
 - `stale-doc-claim` `docs/installation.md` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJgw` PR #463 2026-09-03 — the pinned bullet kept the vendor-scope claim the same commit's decision record had just corrected
 - `status-swallowed` `scripts/lib/common.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJhF` PR #463 2026-09-03 — an unparseable CLI on PATH fell through to fixed candidates, reporting a version from a binary no session runs
 - `exit-path-asymmetry` `install.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJhM` PR #463 2026-09-03 — the temp file was populated under the umask and restricted only at publish, leaving the merged settings readable during the window
+- `platform-divergent-test` `scripts/check-settings-fragment.sh` `cdecfae76924631eb8c640ad610f1e15ff9c07c1` `ci-install-guard-stat-mode` PR #463 2026-09-03 — the assertions verifying mode preservation kept a BSD-first stat idiom while the library they check had already been fixed to try GNU first
 <!-- adb:hits:end -->

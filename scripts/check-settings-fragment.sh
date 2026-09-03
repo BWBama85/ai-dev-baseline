@@ -358,10 +358,48 @@ if adb_publish_json "$pub_dir/tmp.json" "$pub_dir/dest.json" 2>/dev/null; then
 else ok; fi
 [ -d "$pub_dir/dest.json" ] && ok || bad "the refusal must leave the destination alone"
 
+# BOTH `stat` DIALECTS, driven with stubs — this runner is only ever one of them, and the whole
+# defect class here is an assertion that speaks for the platform it happened to run on. The GNU
+# stub reproduces the real trap: `-f` is --file-system, takes no format argument, and still PRINTS
+# a block for the file while exiting non-zero, so a BSD-first `A || B` captures that text.
+mkdir -p "$work/statbin"
+printf '{"a":1}\n' > "$pub_dir/modeprobe.json"   # its own fixture: the refusal above removes its temp
+cat > "$work/statbin/stat" <<'GNUSTAT'
+#!/bin/sh
+case "$1" in
+  -c) [ "$2" = "%a" ] && { printf '600
+'; exit 0; }; exit 1 ;;
+  -f) printf '  File: "x"
+    ID: 99 Namelen: 255 Type: tmpfs
+'; exit 1 ;;
+esac
+exit 1
+GNUSTAT
+chmod +x "$work/statbin/stat"
+gnumode="$(PATH="$work/statbin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_file_mode "'"$pub_dir"'/modeprobe.json" 2>/dev/null')"
+[ "$gnumode" = "600" ] && ok || bad "adb_file_mode must read the mode under GNU stat, where -f prints a filesystem block and exits non-zero; got '$gnumode'"
+cat > "$work/statbin/stat" <<'BSDSTAT'
+#!/bin/sh
+case "$1" in
+  -f) [ "$2" = "%Lp" ] && { printf '600
+'; exit 0; }; exit 1 ;;
+  -c) printf 'stat: illegal option -- c
+' >&2; exit 1 ;;
+esac
+exit 1
+BSDSTAT
+chmod +x "$work/statbin/stat"
+bsdmode="$(PATH="$work/statbin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_file_mode "'"$pub_dir"'/modeprobe.json" 2>/dev/null')"
+[ "$bsdmode" = "600" ] && ok || bad "adb_file_mode must read the mode under BSD stat, where -c is an illegal option; got '$bsdmode'"
+
 printf '{"a":1}\n' > "$pub_dir/real.json"; chmod 600 "$pub_dir/real.json"
 printf '{"a":2}\n' > "$pub_dir/tmp2.json"; chmod 644 "$pub_dir/tmp2.json"
 adb_publish_json "$pub_dir/tmp2.json" "$pub_dir/real.json" && ok || bad "adb_publish_json must publish over a regular file"
-pubmode="$(stat -f '%Lp' "$pub_dir/real.json" 2>/dev/null || stat -c '%a' "$pub_dir/real.json" 2>/dev/null)"
+# Through the shared helper, not a hand-rolled `stat`: GNU reads `-f` as --file-system and still
+# PRINTS a filesystem block for the file while exiting non-zero, so a BSD-first `A || B` captures
+# that text with the octal mode buried in it. This assertion was written that way and was green on
+# macOS and red on ubuntu — the same platform-divergent-test class as the greps above.
+pubmode="$(adb_file_mode "$pub_dir/real.json")"
 [ "$pubmode" = "600" ] && ok || bad "adb_publish_json must preserve the destination's mode (settings.json can hold an env block); got $pubmode"
 
 # ...and end to end: a mode-0600 settings.json must survive a real install with its mode intact.
@@ -369,7 +407,7 @@ mode_home="$work/modehome"; mkdir -p "$mode_home/.claude"
 echo '{"model":"opus"}' > "$mode_home/.claude/settings.json"; chmod 600 "$mode_home/.claude/settings.json"
 stub "2.1.259 (Claude Code)"
 HOME="$mode_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
-emode="$(stat -f '%Lp' "$mode_home/.claude/settings.json" 2>/dev/null || stat -c '%a' "$mode_home/.claude/settings.json" 2>/dev/null)"
+emode="$(adb_file_mode "$mode_home/.claude/settings.json")"
 [ "$emode" = "600" ] && ok || bad "install.sh must not relax a restricted ~/.claude/settings.json to the umask default; got $emode"
 
 # --- the headline must not claim protection the merge did not apply ------------------------------
@@ -574,6 +612,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ -n "$path_bin" ]; then' \
     '  if false; then' \
     'must fail the probe, not fall through'
+  check_mut 'adb_file_mode tries the BSD spelling first' \
+    '  m="$(stat -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
+    '  m="$(stat -f '"'"'%Lp'"'"' "$f" 2>/dev/null || stat -c '"'"'%a'"'"' "$f" 2>/dev/null)"' \
+    'must read the mode under GNU stat'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
