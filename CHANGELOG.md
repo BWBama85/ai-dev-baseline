@@ -50,8 +50,9 @@ only by a published release, which is what these entries are the notes for.
   SSH. The escape hatch is a prompt, which stalls an autonomous run rather than failing it; the fix
   (`sandbox.excludedCommands`) widens what runs unsandboxed and was not among the approved keys, so
   it is documented as an adopter's recipe. Decisions D95-D98; regression-tested by
-  `scripts/check-settings-fragment.sh`, whose 17 mutations are each required red on their own
-  witness.
+  `scripts/check-settings-fragment.sh`, whose mutation rows are each required red on their own
+  witness (the count is printed by `--mutation` rather than quoted here, for the reason golden
+  rule 3 gives about figures that go stale).
 
 - **Instruction regrowth is visible per pull request, and the in-fence channel that fed it is
   closed (#432).** The #361 rewrite cut `implement-issue.md` from 16,237 to 13,457 words on

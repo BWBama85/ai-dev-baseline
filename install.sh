@@ -171,16 +171,14 @@ wire_settings() {
   # floor, or unreadable, we write NOTHING: a key the running CLI ignores reports protection it
   # never applied, which is the failure decision 3 already ruled out.
   if ! version="$(adb_claude_cli_version)"; then
-    : | adb_claude_settings_receipt_render skipped-unprobeable "-" "$floor" > "$receipt.adb.$$.tmp" \
-      && mv "$receipt.adb.$$.tmp" "$receipt" || rm -f "$receipt.adb.$$.tmp"
+    _adb_record_skip skipped-unprobeable "-" "$floor" "$receipt"
     adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
     adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
     adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
     return 0
   fi
   if ! adb_version_ge "$version" "$floor"; then
-    : | adb_claude_settings_receipt_render skipped-below-floor "$version" "$floor" > "$receipt.adb.$$.tmp" \
-      && mv "$receipt.adb.$$.tmp" "$receipt" || rm -f "$receipt.adb.$$.tmp"
+    _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt"
     adb_info "  sandbox  SKIPPED — claude v$version is below the v$floor floor for \`sandbox.credentials\`."
     adb_info "           NOT applied: sandbox isolation, the ~/.aws and ~/.ssh read denials, the"
     adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
@@ -222,6 +220,21 @@ wire_settings() {
   _adb_report_settings "$result" removed "left removed (your opt-out — re-add by hand or re-run after deleting the receipt)"
   _adb_report_settings "$result" pruned  "pruned (no longer shipped)"
   _adb_report_settings "$result" kept    "kept (you edited it since we wrote it)"
+  return 0
+}
+
+# Record a skip, and SAY SO WHEN IT CANNOT BE RECORDED. The receipt is the entire reason a skip is
+# retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
+# cosmetic loss: the next update reads `none`, which is also retried, but nothing ever tells the
+# operator that the reason they were given is not on disk. Both call sites used to swallow it.
+_adb_record_skip() {
+  local disposition="$1" version="$2" floor="$3" receipt="$4"
+  if : | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" > "$receipt.adb.$$.tmp" \
+     && mv "$receipt.adb.$$.tmp" "$receipt"; then
+    return 0
+  fi
+  rm -f "$receipt.adb.$$.tmp"
+  adb_info "  WARN   could not write $receipt — the skip stands, but its REASON is not recorded"
   return 0
 }
 

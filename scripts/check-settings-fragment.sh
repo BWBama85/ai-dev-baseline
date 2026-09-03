@@ -309,12 +309,43 @@ HOME="$naive_home" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 if diff -q <(jq -S . "$naive_home/.claude/settings.json") <(jq -S . "$work/naive-pristine.json") >/dev/null 2>&1
 then ok; else bad "with no receipt, uninstall must not touch sandbox keys it cannot prove it wrote"; fi
 
+# --- `baseline update` must NOTICE a pending surface (bin/baseline) ------------------------------
+#
+# The `current` + links-OK path exits "nothing to do" without consulting the settings at all, so
+# the CLI upgrade that clears the floor — the one transition the whole detect-skip-say design
+# exists for — moved nothing that path was looking at. `adb_settings_pending` is the third
+# question that fixes it, and it is a predicate whose failure mode is silence: answering "no"
+# forever looks exactly like answering "no" correctly.
+#
+# Driven by SOURCING bin/baseline's predicate rather than running the whole updater: the updater
+# needs a git clone, a network classification and a lock, none of which this claim depends on.
+pending() {   # pending <disposition> <stub-version> -> 0 if the surface is pending
+  local disp="$1" ver="$2" ph="$work/pending-home"
+  rm -rf "$ph"; mkdir -p "$ph/.claude"
+  ln -s "$ROOT/agents/claude/CLAUDE.md" "$ph/.claude/CLAUDE.md"
+  [ "$disp" = none ] || : | adb_claude_settings_receipt_render "$disp" - "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+  stub "$ver"
+  HOME="$ph" PATH="$work/bin:$PATH" bash -c '
+    . "'"$ROOT"'/scripts/lib/common.sh"
+    SRC="'"$ROOT"'"
+    eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+    adb_settings_pending "$SRC"'
+}
+pending none            "2.1.259 (Claude Code)" && ok || bad "an install predating this surface (no receipt) must be PENDING — that is how existing installs receive it"
+pending skipped-below-floor "2.1.259 (Claude Code)" && ok || bad "a below-floor skip must become PENDING once the CLI clears the floor — the transition the design exists for"
+pending skipped-unprobeable "2.1.259 (Claude Code)" && ok || bad "an unprobeable skip must become PENDING once a probeable CLI is on PATH"
+pending skipped-optout  "2.1.259 (Claude Code)" && bad "an explicit --no-sandbox opt-out must NEVER be pending — self-heal would overrule a supported choice on every session" || ok
+pending installed       "2.1.259 (Claude Code)" && bad "an installed surface must not be pending" || ok
+pending skipped-below-floor "2.1.100 (Claude Code)" && bad "a below-floor skip must stay put while the CLI is STILL below the floor" || ok
+stub "2.1.259 (Claude Code)"
+
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
 
 if [ "$MUTATION" -eq 1 ]; then
   prepare() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/scripts/lib/common.sh"; }
   prepare_payload() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/agents/claude/settings.fragment.json"; }
   prepare_install() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/install.sh"; }
+  prepare_baseline() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/bin/baseline"; }
   runner() { bash "$1/repo/scripts/check-settings-fragment.sh" 2>&1; }
 
   # Each row breaks ONE rule, and its witness is the assertion that claims to cover it. A row that
@@ -396,6 +427,21 @@ if [ "$MUTATION" -eq 1 ]; then
     'if false; then' \
     "must record disposition 'skipped-optout'"
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
+
+  check_mut_reset
+  check_mut 'the updater overrules an explicit --no-sandbox opt-out' \
+    'none|skipped-below-floor|skipped-unprobeable) ;;' \
+    'none|skipped-below-floor|skipped-unprobeable|skipped-optout) ;;' \
+    'must NEVER be pending'
+  check_mut 'the updater stops noticing a below-floor skip once the CLI is upgraded' \
+    'none|skipped-below-floor|skipped-unprobeable) ;;' \
+    'none) ;;' \
+    'must become PENDING once the CLI clears the floor'
+  check_mut 'the updater treats a still-below-floor CLI as pending' \
+    'adb_version_ge "$version" "$(adb_claude_settings_floor)"' \
+    'true' \
+    'must stay put while the CLI is STILL below the floor'
+  check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 
 check_summary "settings-fragment"

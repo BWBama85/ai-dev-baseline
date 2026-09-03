@@ -622,7 +622,7 @@ adb_claude_settings_receipt_leaves() {
   tab="$(printf '\t')"
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in "leaf$tab"*) ;; *) continue ;; esac
     rest="${line#leaf$tab}"
     p="${rest%%$tab*}"
@@ -631,7 +631,11 @@ adb_claude_settings_receipt_leaves() {
     printf '%s' "$p" | jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null 2>&1 || continue
     printf '%s' "$v" | jq -e . >/dev/null 2>&1 || continue
     printf '%s\t%s\n' "$p" "$v"
-  done < "$receipt"
+    # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`
+    # returns non-zero on that last partial line WITHOUT running the body — silently dropping the
+    # leaf, so uninstall would leave a key it owns behind and the retirement prune would never see
+    # it. The validation above still governs whether the partial line is usable.
+  done < "$receipt" || true
 }
 
 # THE MERGE. Prints one JSON object on stdout:
