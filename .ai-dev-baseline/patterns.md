@@ -507,4 +507,8 @@ One line per resolved review thread, newest last.
 - `new-default-read-as-opt-out` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFt2` PR #463 2026-09-04 — a blocked receipt still owned its carried rows, so a value the operator deleted and later re-added by hand would be removed as ours
 - `stale-state-trusted` `install.sh` `9aaa9a5` `PRRT_kwDOTfywrM6fbB7v` PR #463 2026-09-04 — the receipt carried the previous clone's source verbatim, so a second clone's own uninstall would refuse its own settings as another clone's
 - `evidence-discarded` `scripts/lib/pinned-install.sh` `9aaa9a5` `PRRT_kwDOTfywrM6fbB72` PR #463 2026-09-04 — the sandbox-omission notice sat inside the jq-success branch, so the security-relevant omission went unsaid exactly in the degraded environment
+- `partial-validation` `scripts/lib/common.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkJ` PR #463 2026-09-04 — the fragment was not validated like the settings, so a whitespace-only payload read as shipping nothing and retired every protection
+- `exit-path-asymmetry` `scripts/lib/common.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkO` PR #463 2026-09-04 — the refusal reset discarded a safe retirement, leaving the retired key installed with no ownership record to remove it by
+- `status-swallowed` `install.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkM` PR #463 2026-09-04 — a refusal whose own record could not be published returned success with the previous installed claim and its digest standing
+- `stale-state-trusted` `install.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkI` PR #463 2026-09-04 — the no-jq path rendered no receipt, leaving provenance naming the previous clone while the root link named this one
 <!-- adb:hits:end -->
