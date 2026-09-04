@@ -152,17 +152,20 @@ adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" "$
   | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$work/installed-receipt"
 [ "$(adb_claude_settings_disposition "$work/installed-receipt")" = installed ] && ok || bad "a rendered install receipt must read back as 'installed'"
 
-# ...and that is true of the MERGE, not only of the caller that declines to publish it. Retirement
-# runs before the block check, so a result carrying `pruned` beside `verdict: refuse` would be a
-# contradiction the next reader inherits.
+# ...of the FRAGMENT. A refusal governs whether the shipped keys apply; it does NOT discard a
+# retirement, because removing a key we no longer ship is cleanup and is independent of whether
+# the rest applies. Resetting it looked tidy and orphaned the retired key permanently — a blocked
+# receipt carries no rows, so nothing could ever remove it afterwards.
 r2="$(printf '{"model":"opus","sandbox":{"enabled":false,"network":{"strictAllowlist":true}}}' > "$work/ref.json"
       { cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/ref-receipt"
       adb_claude_settings_merge "$work/ref.json" "$PAYLOAD" "$work/ref-receipt")"
 [ "$(verdict "$r2")" = refuse ] && ok || bad "precondition: that fixture should refuse"
-[ "$(printf '%s' "$r2" | jq -r '.pruned | length')" = 0 ] && ok \
-  || bad "a refusal must discard what retirement did — pruned beside verdict refuse is a contradiction"
-[ "$(printf '%s' "$r2" | jq -r '.settings.sandbox.network.strictAllowlist')" = true ] && ok \
-  || bad "a refusal must leave the file exactly as it found it"
+[ "$(printf '%s' "$r2" | jq -r '.wrote | length')" = 0 ] && ok \
+  || bad "a refusal must write no fragment leaf"
+[ "$(printf '%s' "$r2" | jq -r '[.pruned[] | join(".")] | index("sandbox.network.strictAllowlist") != null')" = true ] && ok \
+  || bad "a refusal must still PRUNE a retired key — dropping it leaves the key installed with no ownership record, so nothing can ever remove it"
+[ "$(printf '%s' "$r2" | jq -r '.settings.sandbox.network.strictAllowlist')" = null ] && ok \
+  || bad "the retired key must actually be gone from the returned settings"
 
 # An ESTABLISHED install with everything as we left it rewrites cleanly and reports nothing odd.
 r="$(m "$(cat "$work/installed.json")" "$work/installed-receipt")"
@@ -645,6 +648,22 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
 [ -z "$(adb_claude_settings_source_row "$(printf '/a\nb')")" ] && ok \
   || bad "a source path containing a NEWLINE must be refused — a truncated path resolves to a real sibling"
 
+# --- a damaged FRAGMENT is refused, not read as "ships nothing" ----------------------------------
+#
+# A payload that is non-empty but holds only whitespace slurps to `[]`, and the old `// {}` turned
+# that into an empty fragment — so an established install classified EVERY recorded leaf as
+# retired, removed the protections, and published a receipt whose digest made the damaged file
+# look current.
+for frag in '   ' '' '{"a":1}{"b":2}' 'null' 'false' '[1]' '"str"'; do
+  printf '%s\n' "$frag" > "$work/badfrag.json"
+  if adb_claude_settings_merge "$work/installed.json" "$work/badfrag.json" "$work/installed-receipt" >/dev/null 2>&1
+  then bad "a fragment of [$frag] must be REFUSED, never read as shipping nothing"
+  else ok; fi
+done
+# ...and removal is unaffected, because it never reads the payload at all.
+adb_claude_settings_merge "$work/installed.json" "$work/badfrag.json" "$work/installed-receipt" --remove >/dev/null 2>&1 \
+  && ok || bad "removal must still ignore the payload entirely"
+
 # --- provenance names the clone that LAST WROTE the receipt --------------------------------------
 #
 # `source` is not ownership and must not be carried forward: a receipt that kept naming clone A
@@ -665,6 +684,26 @@ HOME="$prov_home" PATH="$work/bin:$PATH" bash "$clone_b2/install.sh" --agent cla
   || bad "refreshing the source must not drop the ownership rows"
 [ "$(grep -c "^source$ADB_TAB" "$prov_home/.claude/.adb-settings-owned")" -eq 1 ] && ok \
   || bad "a receipt must carry exactly one source row"
+
+# ...and the no-jq path refreshes it too. Every primitive that render needs is grep and printf, so
+# returning early without doing it leaves a receipt naming the PREVIOUS clone while the root-doc
+# link names this one — and an uninstall from here that also lacks jq removes that link before
+# failing, so the retry it advises rejects the receipt as somebody else's.
+grep -qF 'PROVENANCE IS STILL REFRESHED' "$ROOT/install.sh" && ok \
+  || bad "the no-jq path must refresh the receipt source — none of that render needs jq"
+
+# --- a refusal that cannot be recorded must not leave the old claim standing ---------------------
+#
+# Returning success left the previous `installed` receipt in place with a matching digest, so the
+# refusal was never re-reported and its ownership rows could still authorise a removal.
+# A STRUCTURAL PIN, and named as one. Driving this behaviourally needs a publish that fails while
+# the subsequent `rm` succeeds, and the temp path is PID-derived — every fixture that breaks the
+# one breaks the other. What is checkable is that the failure path invalidates rather than
+# returning success, and that it fails loudly when it cannot.
+grep -qF 'if rm -f "$receipt"; then' "$ROOT/install.sh" && ok \
+  || bad "a refusal whose record could not be published must remove the previous ownership record, not return success with it standing"
+awk '/could not record the refusal in \$receipt, and the stale ownership record/{print "loud"; exit}' "$ROOT/install.sh" | grep -q loud && ok \
+  || bad "...and must fail loudly when even that removal is impossible"
 
 # --- the pinned model says what it omitted, on EVERY path ----------------------------------------
 #
@@ -954,10 +993,6 @@ if [ "$MUTATION" -eq 1 ]; then
       '                elif ($doc | getpath($a) | type) == "object" then "cont"' \
       '                elif true then "cont"' \
       'must not fail the merge'
-  check_mut 'a refusal still carries what retirement did' \
-      '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .created = []' \
-      '          | .' \
-      'must discard what retirement did'
   check_mut 'a blocked receipt is treated as ownership-bearing' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership' \
@@ -970,6 +1005,18 @@ if [ "$MUTATION" -eq 1 ]; then
       "  local _nl=\$'\\n'" \
       '  local _nl; _nl="$(printf '"'"'\\n'"'"')"' \
       'NEWLINE must be refused'
+  check_mut 'a damaged fragment is read as shipping nothing' \
+      '  | ( if ($frag | length) != 1 then error("the fragment must hold exactly one JSON value") else . end )' \
+      '  | ( . )' \
+      'must be REFUSED, never read as shipping nothing'
+  check_mut 'a non-object fragment coerces to an empty one' \
+      '  | ( if ($frag[0] | type) != "object" then error("the fragment must hold a JSON object") else . end )' \
+      '  | ( . )' \
+      'must be REFUSED, never read as shipping nothing'
+  check_mut 'a refusal discards the retirement it already made' \
+      '          | .wrote = [] | .created = []' \
+      '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .wrote = [] | .created = []' \
+      'must still PRUNE a retired key'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -1034,6 +1081,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '"^(leaf|container)$(printf' \
     '"^(leaf|container|source)$(printf' \
     'must carry exactly one source row'
+  check_mut 'the refusal returns success with the stale record standing' \
+    '    if rm -f "$receipt"; then' \
+    '    if false; then' \
+    'must remove the previous ownership record'
+  check_mut 'the no-jq path stops refreshing provenance' \
+    '    # PROVENANCE IS STILL REFRESHED, because none of it needs jq — the render, the ownership rows' \
+    '    # provenance is not refreshed here' \
+    'no-jq path must refresh the receipt source'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset

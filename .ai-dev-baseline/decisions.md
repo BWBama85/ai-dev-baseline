@@ -7952,4 +7952,15 @@ survive is the part a later reader needs.
              Provenance moved with it: the receipt records the install `source`, because
              `uninstall_claude` removes the root-doc link BEFORE the settings cleanup can fail, and
              the retry it advises could not otherwise prove the receipt was its own.
+
+             SECOND CORRECTION, one round later. "A refusal writes nothing" was too strong: it
+             governs the FRAGMENT, not a RETIREMENT. When a payload retires one recorded leaf while
+             another still-shipped leaf has diverged, discarding the safe prune left the retired
+             key installed with no ownership record at all — a blocked receipt carries no rows — so
+             nothing could ever remove it. Retirement is cleanup of something we no longer ship and
+             applies regardless; only the fragment writes are undone. And the FRAGMENT is now
+             validated exactly as the settings are: a payload that is non-empty but holds only
+             whitespace slurps to an empty array, and reading that as "ships nothing" made an
+             established install retire EVERY recorded leaf and publish a receipt whose digest made
+             the damaged file look current.
 - baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)

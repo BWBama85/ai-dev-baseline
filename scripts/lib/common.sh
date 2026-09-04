@@ -888,8 +888,15 @@ adb_claude_settings_merge() {
 
     ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )
   | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )
+    # THE FRAGMENT IS VALIDATED THE SAME WAY, and this is the sharper of the two. A payload that is
+    # non-empty but holds only whitespace slurps to `[]`, and `// {}` turned that into "ships
+    # nothing" — so an established install classified EVERY recorded leaf as retired, removed the
+    # protections, and published a receipt whose digest made the damaged file look current. A
+    # stream of several values was likewise truncated to the first.
+  | ( if ($frag | length) != 1 then error("the fragment must hold exactly one JSON value") else . end )
+  | ( if ($frag[0] | type) != "object" then error("the fragment must hold a JSON object") else . end )
   | ($cur[0])        as $settings
-  | ($frag[0] // {}) as $fragment
+  | ($frag[0])       as $fragment
   | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
   | ( $owned | map(.p) ) as $ownedp
   | { verdict: "insync", settings: $settings,
@@ -961,11 +968,14 @@ adb_claude_settings_merge() {
                         or ( ($settings | getpath($r.p)) != $r.v ) ))
           | map(.p) ) as $diverged
       | if ($blocked | length) > 0 or ($diverged | length) > 0 then
-          # RESET what the retirement pass did. A refusal writes NOTHING, and that has to be true
-          # of this function rather than only of the caller that declines to publish it — a result
-          # carrying `pruned` beside `verdict: refuse` is a contradiction the next reader inherits.
+          # A REFUSAL GOVERNS THE FRAGMENT, NOT THE RETIREMENT. Resetting everything looked tidy
+          # and orphaned a key permanently: when a payload retires one recorded leaf while another
+          # still-shipped leaf has diverged, discarding the safe prune leaves the retired key
+          # installed with no ownership record — a blocked receipt carries no rows — so nothing can
+          # ever remove it. Retirement is cleanup of something we no longer ship and is independent
+          # of whether the rest applies; only the fragment writes are undone here.
           .verdict = "refuse" | .blocked = $blocked | .diverged = $diverged
-          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .created = []
+          | .wrote = [] | .created = []
         else
           reduce ($leaves[]) as $p
             ( .;

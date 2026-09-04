@@ -170,6 +170,22 @@ wire_settings() {
 
   if ! command -v jq >/dev/null 2>&1; then
     adb_info "  WARN   jq not found — cannot write the sandbox settings; install jq and re-run"
+    # PROVENANCE IS STILL REFRESHED, because none of it needs jq — the render, the ownership rows
+    # and the digest read are all grep and printf. Returning here without doing it leaves a
+    # receipt naming the PREVIOUS clone while the root-doc link now names this one, and an
+    # uninstall from here that also lacks jq removes that link before failing: the retry it advises
+    # then rejects the receipt as somebody else's and strands the settings for good.
+    if [ -f "$receipt" ]; then
+      if { adb_claude_settings_source_row "$REPO"; _adb_owned_rows "$receipt"; } \
+         | adb_claude_settings_receipt_render \
+             "$(adb_claude_settings_disposition "$receipt")" \
+             "-" "$floor" \
+             "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" \
+             > "$receipt.adb.$$.tmp" && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then :; else
+        rm -f "$receipt.adb.$$.tmp"
+        adb_info "  WARN   ...and the receipt still names another clone; uninstall from that clone instead"
+      fi
+    fi
     return 3
   fi
   [ -s "$payload" ] || {
@@ -248,16 +264,44 @@ wire_settings() {
     # And NO ROWS are carried: under the all-or-nothing contract a refusal relinquishes the
     # surface, so claiming ownership of keys the operator has taken over is what would let a later
     # uninstall delete a value they re-added by hand.
+    # A REFUSAL MAY STILL CARRY A RETIREMENT. Removing a key we no longer ship is cleanup, not
+    # part of the all-or-nothing decision — and dropping it here would leave that key installed
+    # with no ownership record at all, since a blocked receipt carries no rows.
+    local retired
+    retired="$(printf '%s' "$result" | jq -r '[.pruned[] | join(".")] | join(", ")')"
+    if [ -n "$retired" ]; then
+      local rtmp2="$settings.adb.$$.ret"
+      rm -f "$rtmp2"
+      if ( umask 077; : > "$rtmp2" ) && printf '%s' "$result" | jq '.settings' > "$rtmp2" \
+         && [ -s "$rtmp2" ] && adb_publish_json "$rtmp2" "$settings"; then
+        adb_info "  sandbox  pruned (no longer shipped): $retired"
+      else
+        rm -f "$rtmp2"
+        adb_info "  WARN   could not prune the retired key(s) $retired — they remain in $settings"
+      fi
+    fi
     local refused_digest
     refused_digest="$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')"
     if adb_claude_settings_source_row "$REPO" \
        | adb_claude_settings_receipt_render skipped-blocked "$version" "$floor" \
              "$refused_digest" > "$receipt.adb.$$.tmp" \
-       && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then :; else
-      rm -f "$receipt.adb.$$.tmp"
-      adb_info "  WARN   could not record the refusal in $receipt — the next update will re-report it"
+       && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
+      return 0
     fi
-    return 0
+    # THE OLD RECORD MUST NOT SURVIVE THE FAILURE. Returning success here left the previous
+    # `installed` receipt in place with a digest that still matched, so `adb_settings_pending`
+    # would never re-report the refusal — and its ownership rows would let a later uninstall
+    # delete a value the operator had since restored by hand.
+    rm -f "$receipt.adb.$$.tmp"
+    if rm -f "$receipt"; then
+      adb_info "  WARN   could not record the refusal in $receipt, so the previous ownership record"
+      adb_info "         was removed rather than left stale. Re-run ./install.sh."
+      return 0
+    fi
+    adb_info "  ERROR  could not record the refusal in $receipt, and the stale ownership record"
+    adb_info "         could not be removed either. Delete it by hand before re-running:"
+    adb_info "         it still claims keys this install no longer owns."
+    return 1
   fi
 
   local rtmp="$receipt.adb.$$.tmp"
