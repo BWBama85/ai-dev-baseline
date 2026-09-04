@@ -156,7 +156,27 @@ wire_settings() {
   # earlier install wrote: uninstall could no longer prove which keys were ours, and D95's
   # retirement prune would have nothing to prune.
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
-    if ! { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$(_adb_owned_rows "$receipt")"; } \
+    # THE CARRIED ROWS ARE RECHECKED WHEN jq IS THERE. `--no-sandbox` preserves ownership so an
+    # earlier install is not orphaned — but carrying it BLINDLY kept claiming a leaf the operator
+    # had since deleted, and if they later recreated that value by hand an uninstall would remove
+    # it as ours. Under the all-or-nothing contract a divergence relinquishes the surface, and the
+    # opt-out is not an exception to it. Without jq the rows are carried unchecked, which is the
+    # documented degradation rather than a silent one.
+    local optout_rows
+    optout_rows="$(_adb_owned_rows "$receipt")"
+    if [ -n "$optout_rows" ] && command -v jq >/dev/null 2>&1 && [ -s "$settings" ] && [ -s "$payload" ]; then
+      local probe
+      probe="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" 2>/dev/null)" || probe=""
+      if [ -n "$probe" ] \
+         && [ "$(printf '%s' "$probe" | jq -r '.verdict')" = refuse ] \
+         && [ "$(printf '%s' "$probe" | jq -r '.diverged | length')" -gt 0 ]; then
+        adb_info "  sandbox  ownership relinquished: $(printf '%s' "$probe" | jq -r '[.diverged[] | join(".")] | join(", ")')"
+        adb_info "           is no longer as this install left it, so --no-sandbox records the choice"
+        adb_info "           without claiming those keys."
+        optout_rows=""
+      fi
+    fi
+    if ! { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$optout_rows"; } \
          | adb_claude_settings_receipt_render skipped-optout "-" "$floor" \
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
          || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
@@ -210,24 +230,37 @@ wire_settings() {
     return 0
   fi
 
-  # An EMPTY settings.json is not valid JSON and `--slurpfile` would refuse it. Same brace, same
-  # reason, as wire_hooks': jq reads empty input as an empty stream and would exit 0 with nothing.
-  [ -s "$settings" ] || echo '{}' > "$settings"
+  # AN EMPTY OR ABSENT settings.json IS SUBSTITUTED, NEVER CREATED IN PLACE. `--slurpfile` refuses
+  # an empty file, but `echo '{}' > "$settings"` FOLLOWS a symlink — so a dangling link, or one
+  # pointing at an empty file, had its target created or overwritten before the publish replaced
+  # the link itself. That is a write outside ~/.claude, from a path whose whole design is
+  # rename-only. The merge reads a synthetic `{}` instead and the destination is touched once, by
+  # the publish.
+  local cur_input="$settings"
+  local synth=""
+  if [ ! -s "$settings" ]; then
+    synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }
+    printf '{}\n' > "$synth"
+    cur_input="$synth"
+  fi
   # ONE BACKUP PER RUN, AND ITS STATUS IS CHECKED. wire_hooks already copied the PRISTINE file;
   # copying again here would overwrite it with the hook-wired intermediate and lose the operator's
   # original. The success line below says "backed up", and an unwritable backup destination would
   # otherwise let this mutate the operator's settings while that promise was false. (PR review)
-  if [ ! -e "$BACKUP_DIR$settings" ]; then
+  if [ -e "$settings" ] && [ ! -e "$BACKUP_DIR$settings" ]; then
     if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" || ! cp "$settings" "$BACKUP_DIR$settings"; then
+      rm -f "$synth"
       adb_info "  WARN   could not back up $settings under $BACKUP_DIR — sandbox settings NOT written"
       return 1
     fi
   fi
 
-  result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt")" || {
+  result="$(adb_claude_settings_merge "$cur_input" "$payload" "$receipt")" || {
+    rm -f "$synth"
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
     adb_info "         settings NOT written (it must hold exactly one object; restore from the backup)"
     return 1; }
+  rm -f "$synth"; synth=""
   # THE RECEIPT IS RENDERED BEFORE THE SETTINGS ARE PUBLISHED, and the old one is kept until both
   # are durable. Ownership is the load-bearing half: settings without a receipt are keys nobody
   # can prove are ours, and the NEXT install reads them as the operator's — writes an empty
@@ -277,7 +310,13 @@ wire_settings() {
         adb_info "  sandbox  pruned (no longer shipped): $retired"
       else
         rm -f "$rtmp2"
-        adb_info "  WARN   could not prune the retired key(s) $retired — they remain in $settings"
+        adb_info "  WARN   could not prune the retired key(s) $retired — they remain in $settings."
+        adb_info "         The previous ownership record is LEFT IN PLACE so a later run can still"
+        adb_info "         remove them; nothing was recorded about this refusal. Re-run ./install.sh."
+        # ABORT BEFORE REPLACING THE RECEIPT. A `skipped-blocked` receipt carries no rows, so
+        # writing one here would leave the un-pruned retired key with no record able to remove it
+        # on any later update or uninstall.
+        return 1   # prune-abort
       fi
     fi
     local refused_digest
@@ -338,16 +377,23 @@ wire_settings() {
   # succeeded — and settings without a receipt are the one unrecoverable state: the next install
   # reads those values as the operator's and records nothing, after which uninstall can never
   # remove them. So the failure path undoes what the success path did, in reverse.
-  local pre="$settings.adb.$$.pre"
+  # THE PRE-IMAGE MAY BE "NOTHING". With the synthetic input above, a first install can run against
+  # a destination that does not exist yet — and restoring that state means REMOVING the file, not
+  # putting bytes back.
+  local pre="$settings.adb.$$.pre" had_settings=0
   rm -f "$pre"
-  if ! { ( umask 077; : > "$pre" ) && cat "$settings" > "$pre"; }; then
-    rm -f "$tmp" "$rtmp" "$pre"
-    adb_info "  WARN   could not snapshot $settings before writing — sandbox settings NOT written"
-    return 1
+  if [ -e "$settings" ]; then
+    had_settings=1
+    if ! { ( umask 077; : > "$pre" ) && cat "$settings" > "$pre"; }; then
+      rm -f "$tmp" "$rtmp" "$pre"
+      adb_info "  WARN   could not snapshot $settings before writing — sandbox settings NOT written"
+      return 1
+    fi
   fi
   adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
   if ! adb_publish_json "$rtmp" "$receipt"; then
-    if adb_publish_json "$pre" "$settings"; then
+    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \
+       || { [ "$had_settings" -eq 0 ] && rm -f "$settings"; }; then
       adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK."
       adb_info "         Nothing was applied and nothing was orphaned — fix that path and re-run ./install.sh."
     else

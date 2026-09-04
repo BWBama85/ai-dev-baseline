@@ -648,6 +648,54 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
 [ -z "$(adb_claude_settings_source_row "$(printf '/a\nb')")" ] && ok \
   || bad "a source path containing a NEWLINE must be refused — a truncated path resolves to a real sibling"
 
+# --- the opt-out rechecks what it carries --------------------------------------------------------
+#
+# `--no-sandbox` preserves ownership so an earlier install is not orphaned, but carrying it BLINDLY
+# kept claiming a leaf the operator had since deleted — and if they later recreated that value by
+# hand, uninstall would remove it as ours. A divergence relinquishes the surface, and the opt-out
+# is not an exception.
+oo_home="$work/optoutrecheck"; rm -rf "$oo_home"; mkdir -p "$oo_home/.claude"
+echo '{"model":"opus"}' > "$oo_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$oo_home/.claude/.adb-settings-owned")" -eq 4 ] && ok || bad "precondition: the install should own four leaves"
+# unchanged: --no-sandbox keeps ownership, so an earlier install is not orphaned
+HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$oo_home/.claude/.adb-settings-owned")" -eq 4 ] && ok \
+  || bad "--no-sandbox over an UNCHANGED install must keep its ownership rows"
+# diverged: the surface is the operator's, so the opt-out records the choice without claiming it
+jq 'del(.sandbox.enabled)' "$oo_home/.claude/settings.json" > "$work/oo.json" && mv "$work/oo.json" "$oo_home/.claude/settings.json"
+HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/oo.log" 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$oo_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "--no-sandbox over a DIVERGED install must relinquish ownership, or a value the operator recreates by hand is later deleted as ours"
+[ "$(adb_claude_settings_disposition "$oo_home/.claude/.adb-settings-owned")" = skipped-optout ] && ok \
+  || bad "...and must still record the opt-out itself"
+
+# --- an empty or absent settings.json is SUBSTITUTED, never created in place ---------------------
+#
+# `echo '{}' > "$settings"` follows a symlink, so a dangling link had its target created before the
+# publish replaced the link — a write outside ~/.claude from a path whose design is rename-only.
+sym_home="$work/symhome"; rm -rf "$sym_home"; mkdir -p "$sym_home/.claude"
+ln -s "$sym_home/outside-target.json" "$sym_home/.claude/settings.json"
+HOME="$sym_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -e "$sym_home/outside-target.json" ] && bad "a dangling settings symlink must not have its target created — the publish is rename-only for exactly this reason" || ok
+# ...and a HOME with no settings.json at all still installs.
+none_home="$work/nonehome"; rm -rf "$none_home"; mkdir -p "$none_home/.claude"
+HOME="$none_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq -e '.sandbox.enabled == true' "$none_home/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "an absent settings.json must still receive the fragment"
+
+# --- a failed retirement prune must not be followed by an ownership-free receipt -----------------
+#
+# A `skipped-blocked` receipt carries no rows, so writing one after a prune that could not be
+# published leaves the retired key installed with nothing able to remove it.
+# A STRUCTURAL PIN on the abort itself, not on the comment beside it: driving this needs a
+# settings publish that fails while the receipt publish would succeed, and every fixture that
+# blocks the one blocks the other. Pinning the comment would have been worse than useless — it
+# stays green while the `return` it describes is removed.
+grep -qF 'return 1   # prune-abort' "$ROOT/install.sh" && ok \
+  || bad "a prune that could not be published must abort before replacing the receipt, not leave the retired key unrecorded"
+
 # --- a damaged FRAGMENT is refused, not read as "ships nothing" ----------------------------------
 #
 # A payload that is non-empty but holds only whitespace slurps to `[]`, and the old `// {}` turned
@@ -1074,8 +1122,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  ( : > "$tmp" ) ||' \
     'must be created restricted BEFORE it is populated'
   check_mut 'a receipt that cannot be published only warns' \
-    '    if adb_publish_json "$pre" "$settings"; then' \
-    '    if false; then' \
+    '    had_settings=1' \
+    '    had_settings=0' \
     'must ROLL BACK the settings'
   check_mut 'the source row is carried forward instead of refreshed' \
     '"^(leaf|container)$(printf' \
@@ -1089,6 +1137,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '    # PROVENANCE IS STILL REFRESHED, because none of it needs jq — the render, the ownership rows' \
     '    # provenance is not refreshed here' \
     'no-jq path must refresh the receipt source'
+  check_mut 'the opt-out carries its rows without rechecking them' \
+    '        optout_rows=""' \
+    '        : ' \
+    'must relinquish ownership'
+  check_mut 'the settings file is initialised in place again' \
+    '    synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }' \
+    '    echo "{}" > "$settings"; synth=""' \
+    'must not have its target created'
+  check_mut 'a failed prune still replaces the receipt' \
+    '        return 1   # prune-abort' \
+    '        :   # prune-abort' \
+    'must abort before replacing the receipt'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
