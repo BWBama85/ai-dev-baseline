@@ -157,7 +157,8 @@ wire_settings() {
   # retirement prune would have nothing to prune.
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
     if ! printf '%s\n' "$(_adb_owned_rows "$receipt")" \
-         | adb_claude_settings_receipt_render skipped-optout "-" "$floor" > "$receipt.adb.$$.tmp" \
+         | adb_claude_settings_receipt_render skipped-optout "-" "$floor" \
+             "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
          || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
       rm -f "$receipt.adb.$$.tmp"
       adb_info "  WARN   --no-sandbox honoured, but the receipt could not be written; the next update may re-offer the settings"
@@ -227,7 +228,8 @@ wire_settings() {
   local rtmp="$receipt.adb.$$.tmp"
   if ! adb_claude_settings_leaf_rows "$payload" \
          "$(printf '%s' "$result" | jq -c '.wrote + .removed')" \
-       | adb_claude_settings_receipt_render installed "$version" "$floor" > "$rtmp" \
+       | adb_claude_settings_receipt_render installed "$version" "$floor" \
+             "$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')" > "$rtmp" \
      || [ ! -s "$rtmp" ]; then
     rm -f "$rtmp"
     adb_info "  WARN   could not render the ownership receipt $receipt — sandbox settings NOT written"
@@ -284,15 +286,20 @@ wire_settings() {
 _adb_owned_rows() { grep "^leaf$(printf '\t')" "$1" 2>/dev/null || true; }
 
 _adb_record_skip() {
-  local disposition="$1" version="$2" floor="$3" receipt="$4" carried
+  local disposition="$1" version="$2" floor="$3" receipt="$4" carried digest
   # CARRY THE PRIOR OWNED ROWS FORWARD. A skip means "write no NEW keys" — it never means "forget
   # the ones already there". A CLI that becomes unprobeable, or is downgraded, would otherwise
   # replace an `installed` receipt with an empty one while the sandbox values stay in the file:
   # uninstall could then never remove them, and the next install would read them as the operator's
   # and record an empty ownership set permanently. (PR review)
   carried="$(_adb_owned_rows "$receipt")"
+  # THE PRIOR DIGEST IS CARRIED TOO, for the same reason as the rows: a skip applied no payload, so
+  # it must not claim to have applied THIS one — but neither may it erase the record of the payload
+  # an earlier install really did apply, which is what `pending` compares against.
+  digest="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')"
+  [ -n "$digest" ] || digest="-"
   if printf '%s\n' "$carried" \
-     | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" > "$receipt.adb.$$.tmp" \
+     | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" "$digest" > "$receipt.adb.$$.tmp" \
      && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     return 0
   fi

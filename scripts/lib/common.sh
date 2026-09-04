@@ -677,6 +677,22 @@ adb_claude_settings_disposition() {
   esac
 }
 
+# The payload digest a receipt records, or empty. A receipt written before this field existed has
+# none, which reads as "unknown" — and unknown must mean PENDING, so an install predating the field
+# re-applies once and records it, rather than being trusted forever on no evidence.
+# Usage: adb_claude_settings_payload_digest <receipt>
+adb_claude_settings_payload_digest() {
+  local receipt="$1" line
+  [ -f "$receipt" ] || return 1
+  line="$(grep -m1 '^payload[[:space:]]' "$receipt" 2>/dev/null)" || return 1
+  line="${line#payload}"; line="${line# }"; line="${line%% *}"
+  case "$line" in
+    ''|-|*[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#line}" -eq 64 ] || return 1
+  printf '%s' "$line"
+}
+
 # The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Emitted for the two
 # OWNING dispositions — `installed`, and `skipped-optout`, which carries the rows forward precisely
 # so a pause does not orphan the keys an earlier install wrote. Empty for every other one. A malformed row is DROPPED rather than guessed at: a row whose
@@ -694,7 +710,11 @@ adb_claude_settings_receipt_leaves() {
     p="${rest%%$tab*}"
     v="${rest#*$tab}"
     [ "$p" != "$rest" ] || continue
-    printf '%s' "$p" | jq -e 'type == "array" and all(.[]; type == "string")' >/dev/null 2>&1 || continue
+    # `length > 0` IS LOAD-BEARING, not defensive tidiness: `all(.[]; …)` is vacuously TRUE for an
+    # empty array, so a hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as
+    # ownership of the JSON ROOT, and `delpaths([[]])` replaced the entire settings document with
+    # `null` — destroying every unrelated key during an ordinary uninstall.
+    printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 || continue
     printf '%s' "$v" | jq -e . >/dev/null 2>&1 || continue
     printf '%s\t%s\n' "$p" "$v"
     # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`
@@ -798,8 +818,19 @@ adb_claude_settings_merge() {
 _adb_claude_settings_owned_json() {
   local receipt="$1" line p v tab out=""
   tab="$(printf '\t')"
+  # EVERY DISPOSITION THAT CAN LEGITIMATELY CARRY ROWS OWNS THEM. `_adb_record_skip` carries the
+  # prior rows into a `skipped-below-floor`/`skipped-unprobeable` receipt precisely so a downgraded
+  # or unprobeable CLI does not orphan the keys an earlier install wrote — and a reader that then
+  # discarded those rows made the carry pointless: uninstall removed nothing, and the next install
+  # read the values as the operator's and dropped them from the receipt for good.
+  #
+  # The disposition is NOT what protects against a doctored receipt, and treating it as though it
+  # were was circular — anyone able to edit a `leaf` row can edit the `disposition` line above it.
+  # What actually protects is the pair of rules the merge applies to every row: it is validated
+  # (a non-empty array of string components, and a parseable value), and a leaf is removed ONLY
+  # while its live value still equals the recorded one.
   case "$(adb_claude_settings_disposition "$receipt")" in
-    installed|skipped-optout) ;;
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;
     *) printf '[]'; return 0 ;;
   esac
   while IFS= read -r line; do
@@ -835,15 +866,22 @@ EOF
 # one renderer serves both the install path (rows from the payload) and the opt-out path (rows
 # carried over from the previous receipt). Written in EVERY case, because the disposition is the
 # whole point: an absence with no receipt is indistinguishable from four different causes (D98).
-# Usage: adb_claude_settings_receipt_render <disposition> <version|-> <floor> < <leaf rows>
+# `payload` is the DIGEST OF THE FRAGMENT THIS RECEIPT APPLIED, and it is what answers "is the
+# installed surface current?" — the owned leaf PATHS cannot. A leaf the operator already owned is
+# never recorded, so a path-set comparison reports pending forever and re-runs the installer on
+# every session; and changing a shipped VALUE (another domain in `allowedDomains`) leaves the path
+# set identical, so the same comparison never notices a payload that a plain `git pull` just
+# changed. A digest answers both.
+# Usage: adb_claude_settings_receipt_render <disposition> <version|-> <floor> [payload-digest] < <leaf rows>
 adb_claude_settings_receipt_render() {
-  local disposition="$1" version="$2" floor="$3" line tab
+  local disposition="$1" version="$2" floor="$3" digest="${4:--}" line tab
   tab="$(printf '\t')"
   printf '# ai-dev-baseline settings fragment (#248) — written by install.sh; do not hand-edit.\n'
   printf '# `disposition` is what tells a key nobody chose to remove from one somebody did.\n'
   printf 'disposition %s\n' "$disposition"
   printf 'version %s\n' "$version"
   printf 'floor %s\n' "$floor"
+  printf 'payload %s\n' "$digest"
   while IFS= read -r line; do
     case "$line" in "leaf$tab"*) printf '%s\n' "$line" ;; esac
   done

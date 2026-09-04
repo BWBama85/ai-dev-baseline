@@ -186,22 +186,46 @@ printf 'disposition wat\n' > "$work/d-bogus"
 grep '^leaf	' "$work/installed-receipt" | adb_claude_settings_receipt_render skipped-optout - "$FLOOR" > "$work/optout-receipt"
 r="$(m "$(cat "$work/installed.json")" "$work/optout-receipt" --remove)"
 [ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 4 ] && ok || bad "a skipped-optout receipt must still carry ownership, so uninstall can remove what it owns"
-# A skip OWNS NOTHING, and the DISPOSITION is what enforces that — not merely the fact that the
-# renderer emits no rows for it. Driven with rows PRESENT under a non-owning disposition, which is
-# what a hand-edited or half-written receipt looks like: with only the renderer standing between
-# them, a corrupt receipt would authorise deleting keys this install never wrote.
+# A TRANSIENT SKIP STILL OWNS WHAT AN EARLIER INSTALL WROTE. `_adb_record_skip` carries the prior
+# rows into a below-floor or unprobeable receipt precisely so a downgraded CLI does not orphan
+# them — and a reader that discarded those rows made the carry pointless: uninstall would remove
+# nothing and the next install would read the values as the operator's and drop them for good.
+#
 # LITERAL TAB, never a BRE `\t`: GNU grep reads the backslash form as a plain `t`, so on Linux
-# these three greps matched nothing and the receipt they built was empty — the assertion below
-# then failed for a reason that had nothing to do with what it tests. macOS grep matches it, which
-# is exactly why a local green is not a verdict for the other runner.
+# these greps matched nothing and the receipt they built was empty — the assertion below then
+# failed for a reason that had nothing to do with what it tests. macOS grep matches it, which is
+# exactly why a local green is not a verdict for the other runner.
 ADB_TAB="$(printf '\t')"
-{ printf 'disposition skipped-below-floor\n'; grep "^leaf$ADB_TAB" "$work/installed-receipt"; } > "$work/below-receipt"
-[ "$(grep -c "^leaf$ADB_TAB" "$work/below-receipt")" -eq 4 ] && ok || bad "precondition: the corrupt below-floor receipt should carry leaf rows"
+{ printf 'disposition skipped-below-floor\nversion -\nfloor %s\npayload -\n' "$FLOOR"
+  grep "^leaf$ADB_TAB" "$work/installed-receipt"; } > "$work/below-receipt"
+[ "$(grep -c "^leaf$ADB_TAB" "$work/below-receipt")" -eq 4 ] && ok || bad "precondition: the below-floor receipt should carry leaf rows"
 r="$(m "$(cat "$work/installed.json")" "$work/below-receipt" --remove)"
-[ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 0 ] && ok || bad "a non-owning disposition must authorise no removal even when the receipt carries leaf rows"
-# ...and independently, the renderer emits no leaf rows for a skip, so both halves hold.
+[ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 4 ] && ok \
+  || bad "a transient skip must still OWN the rows it carried forward — otherwise uninstall strands every key it declined to touch"
+# What protects a doctored receipt is NOT the disposition (anyone who can edit a leaf row can edit
+# the disposition line above it) — it is the value match: a row whose recorded value no longer
+# equals the live one is kept, never removed.
+r="$(m "$(jq -c '.sandbox.enabled = "TAMPERED"' "$work/installed.json")" "$work/below-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -r '[.kept[] | join(".")] | index("sandbox.enabled") != null')" = true ] && ok \
+  || bad "a recorded leaf whose live value no longer matches must be KEPT, whatever the disposition says"
+# A skip the RENDERER produced from scratch carries no rows, so it owns nothing.
 : | adb_claude_settings_receipt_render skipped-below-floor 2.1.100 "$FLOOR" > "$work/below-rendered"
-[ "$(grep -c "^leaf$ADB_TAB" "$work/below-rendered" || true)" -eq 0 ] && ok || bad "the renderer must emit no leaf rows for a below-floor skip"
+[ "$(grep -c "^leaf$ADB_TAB" "$work/below-rendered" || true)" -eq 0 ] && ok || bad "a freshly rendered below-floor skip must carry no leaf rows"
+r="$(m "$(cat "$work/installed.json")" "$work/below-rendered" --remove)"
+[ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 0 ] && ok || bad "a receipt with no rows must authorise no removal"
+
+# AN EMPTY PATH IS OWNERSHIP OF THE JSON ROOT, and `delpaths([[]])` replaces the whole settings
+# document with null. `all(.[]; …)` is vacuously true for `[]`, so this row passed validation and an
+# ordinary uninstall destroyed every unrelated key in the file.
+{ printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload -\n' "$FLOOR"
+  printf 'leaf%s[]%s{"sandbox":{"enabled":true}}\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/rootpath-receipt"
+[ -z "$(adb_claude_settings_receipt_leaves "$work/rootpath-receipt")" ] && ok \
+  || bad "a receipt row whose path is the EMPTY array must be refused — it reads as ownership of the document root"
+r="$(m "$(cat "$work/installed.json")" "$work/rootpath-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -r '.settings | type')" = object ] && ok \
+  || bad "an empty-path row must never null the settings document"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = true ] && ok \
+  || bad "an empty-path row must leave every unrelated key intact"
 
 # A malformed row is DROPPED, not guessed at: a leaf we cannot prove is ours is one we must not
 # remove. Checked against the READER, because that is what every consumer goes through.
@@ -507,7 +531,8 @@ pending() {   # pending <disposition> <stub-version> -> 0 if the surface is pend
     # A CURRENT installed receipt: its leaf set must equal the payload's, or `pending` correctly
     # reports it stale and this case would pass for the wrong reason.
     adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s .)" \
-      | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+      | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" \
+      > "$ph/.claude/.adb-settings-owned"
   elif [ "$disp" != none ]; then
     : | adb_claude_settings_receipt_render "$disp" - "$FLOOR" > "$ph/.claude/.adb-settings-owned"
   fi
@@ -532,19 +557,52 @@ pending skipped-unprobeable "2.1.259 (Claude Code)" && ok || bad "an unprobeable
 pending skipped-optout  "2.1.259 (Claude Code)" && bad "an explicit --no-sandbox opt-out must NEVER be pending — self-heal would overrule a supported choice on every session" || ok
 pending installed       "2.1.259 (Claude Code)" && bad "an installed surface must not be pending" || ok
 
+# ...unless the PAYLOAD ITSELF changed since it was applied. Currency is a digest question: a leaf
+# the operator already owned is never recorded, so a path-set comparison reports pending forever
+# and re-runs the installer every session; and changing a shipped VALUE leaves the path set
+# identical, so the same comparison never notices a payload a plain `git pull` just changed.
+pending_receipt() {   # pending_receipt <home> <payload-digest>
+  adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s .)" \
+    | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$2" > "$1/.claude/.adb-settings-owned"
+}
+ask_pending() {       # ask_pending <home>
+  HOME="$1" PATH="$work/bin:$PATH" bash -c '
+    . "'"$ROOT"'/scripts/lib/common.sh"
+    eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+    adb_settings_pending "'"$ROOT"'"'
+}
+stub "2.1.259 (Claude Code)"
+
+# (a) the payload MOVED — a value changed, the path set did not.
+moved="$work/movedhome"; rm -rf "$moved"; mkdir -p "$moved/.claude"
+ln -s "$ROOT/agents/claude/CLAUDE.md" "$moved/.claude/CLAUDE.md"
+pending_receipt "$moved" "0000000000000000000000000000000000000000000000000000000000000000"
+ask_pending "$moved" && ok \
+  || bad "a payload whose CONTENT changed must be PENDING — a value-only change leaves the leaf paths identical, so a path-set comparison never applies it"
+
+# (b) an operator-owned leaf was skipped, so it is missing from the receipt — this must NOT make
+# the surface pending forever, re-running the installer on every session.
+skipped="$work/skippedhome"; rm -rf "$skipped"; mkdir -p "$skipped/.claude"
+ln -s "$ROOT/agents/claude/CLAUDE.md" "$skipped/.claude/CLAUDE.md"
+{ printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")"
+  adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s . | jq -c '.[1:]')" \
+    | grep "^leaf$ADB_TAB"; } > "$skipped/.claude/.adb-settings-owned"
+ask_pending "$skipped" && bad "a leaf the operator already owned is never recorded — that must NOT report the surface pending on every update, or the installer re-runs and reports a repair every session" || ok
+
+# (c) a receipt predating the digest field is unknown, and unknown must mean pending ONCE.
+nodigest="$work/nodigesthome"; rm -rf "$nodigest"; mkdir -p "$nodigest/.claude"
+ln -s "$ROOT/agents/claude/CLAUDE.md" "$nodigest/.claude/CLAUDE.md"
+pending_receipt "$nodigest" "-"
+ask_pending "$nodigest" && ok || bad "a receipt with no payload digest is UNKNOWN, and unknown must be pending — never trusted forever on no evidence"
+
 # ...unless its recorded leaf set no longer matches the payload. A plain `git pull` of the
 # install-source clone can add or retire a fragment leaf without touching one installed symlink,
 # and the fast path exits before anything else would notice.
-stale_home="$work/stalehome"; mkdir -p "$stale_home/.claude"
-ln -s "$ROOT/agents/claude/CLAUDE.md" "$stale_home/.claude/CLAUDE.md"
-{ printf 'disposition installed\nversion 9.9.9\nfloor %s\n' "$FLOOR"
-  printf 'leaf%s["sandbox","enabled"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$stale_home/.claude/.adb-settings-owned"
-stub "2.1.259 (Claude Code)"
-if HOME="$stale_home" PATH="$work/bin:$PATH" bash -c '
-    . "'"$ROOT"'/scripts/lib/common.sh"
-    eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
-    adb_settings_pending "'"$ROOT"'"'; then ok
-else bad "an 'installed' receipt whose leaf set differs from the payload must be PENDING — otherwise a pulled-in new leaf is never written and a retired one never pruned"; fi
+# A CURRENT receipt — right digest — is not pending, so the fast path stays fast.
+current_home="$work/currenthome"; rm -rf "$current_home"; mkdir -p "$current_home/.claude"
+ln -s "$ROOT/agents/claude/CLAUDE.md" "$current_home/.claude/CLAUDE.md"
+pending_receipt "$current_home" "$(adb_sha256 "$PAYLOAD")"
+ask_pending "$current_home" && bad "a receipt recording THIS payload's digest must not be pending" || ok
 pending skipped-below-floor "2.1.100 (Claude Code)" && bad "a below-floor skip must stay put while the CLI is STILL below the floor" || ok
 stub "2.1.259 (Claude Code)"
 
@@ -580,12 +638,16 @@ if [ "$MUTATION" -eq 1 ]; then
     '    *) printf '"'"'none'"'"' ;;' \
     '    *) printf '"'"'%s'"'"' "$line" ;;' \
     "must read as 'none'"
-  check_mut 'a non-owning disposition authorises removals' \
-    'installed|skipped-optout) ;;' \
-    'installed|skipped-optout|skipped-below-floor) ;;' \
-    'must authorise no removal even when the receipt carries leaf rows'
+  check_mut 'a transient skip stops owning the rows it carried' \
+    '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;' \
+    '    installed|skipped-optout) ;;' \
+    'must still OWN the rows it carried forward'
+  check_mut 'an empty receipt path is accepted as ownership of the document root' \
+    'type == "array" and length > 0 and all(.[]; type == "string")' \
+    'type == "array" and all(.[]; type == "string")' \
+    'must be refused'
   check_mut 'the receipt reader accepts a malformed leaf row' \
-    "printf '%s' \"\$p\" | jq -e 'type == \"array\" and all(.[]; type == \"string\")' >/dev/null 2>&1 || continue" \
+    "printf '%s' \"\$p\" | jq -e 'type == \"array\" and length > 0 and all(.[]; type == \"string\")' >/dev/null 2>&1 || continue" \
     ': ' \
     'malformed receipt row must be dropped'
   check_mut 'the version probe swallows a whole banner' \
@@ -690,10 +752,14 @@ if [ "$MUTATION" -eq 1 ]; then
     'adb_version_ge "$version" "$(adb_claude_settings_floor)"' \
     'true' \
     'must stay put while the CLI is STILL below the floor'
-  check_mut 'an installed receipt is trusted without comparing it to the payload' \
+  check_mut 'an installed receipt is trusted without comparing payloads' \
     '      [ "$have" = "$want" ] && return 1 ;;' \
     '      return 1 ;;' \
     'must be PENDING'
+  check_mut 'currency is decided by the owned leaf PATHS again' \
+    '      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once' \
+    '      have="$(adb_claude_settings_receipt_leaves "$receipt" | cut -f1 | LC_ALL=C sort)"; want="$(adb_claude_settings_leaves "$payload" | LC_ALL=C sort)"; [ "$have" = "$want" ] && return 1; return 0' \
+    'must NOT report the surface pending on every update'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

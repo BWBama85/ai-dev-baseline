@@ -212,6 +212,8 @@ and it is what makes four otherwise identical absences distinguishable:
 | Delete our keys from `settings.json` | Treated as an opt-out and not rewritten — the same rule as removing a hook entry. |
 | `install.sh --no-sandbox` | Nothing written, the choice recorded; `baseline update` keeps honouring it. |
 | A future version stops shipping a key | The next install **prunes** it, so no orphan is left in your file. |
+| The shipped values change (a new allowed domain) | `baseline update` notices — the receipt records the **digest** of the fragment it applied, so a changed *value* is caught, not just a changed key. |
+| Your CLI is downgraded or drops off `PATH` | Nothing new is written, and the receipt **keeps** the record of what it already owns, so uninstall can still remove it. |
 
 #### The one conflict to know about
 

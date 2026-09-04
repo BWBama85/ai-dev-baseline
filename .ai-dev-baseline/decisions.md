@@ -7676,7 +7676,20 @@ survive is the part a later reader needs.
              which a key dropped from the payload would sit in every adopter's settings forever
              with no owner.
              The receipt is `~/.claude/.adb-settings-owned`, beside `.adb-hooks-wired`, and it
-             carries a DISPOSITION line as well as the leaves (see D98).
+             carries a DISPOSITION line as well as the leaves (see D98) — plus the DIGEST of the
+             payload it applied, which is what answers "is the installed surface current?".
+             The owned leaf PATHS cannot answer it in either direction: a leaf the operator already
+             owned is never recorded, so a path-set comparison reports pending forever and re-runs
+             the installer every session, and changing a shipped VALUE leaves the path set
+             identical, so the same comparison never notices a payload a `git pull` just changed.
+             Every disposition that can legitimately carry rows OWNS them, including the transient
+             skips — a reader that discarded the rows a skip carried forward made the carry
+             pointless. The disposition is not what protects a doctored receipt (anyone who can
+             edit a leaf row can edit the disposition above it); what protects is that each row is
+             validated — a NON-EMPTY array of string components, and a parseable value — and that a
+             leaf is removed only while its live value still equals the recorded one. The
+             non-empty requirement is load-bearing: `all(.[]; …)` is vacuously true for `[]`, and
+             `delpaths([[]])` replaces the entire settings document with `null`.
 - placement: `agents/claude/settings.fragment.json` (payload) · `scripts/lib/common.sh`
              (`adb_claude_settings_*` — enumeration, ownership, receipt, state) · `install.sh`
              (`wire_settings`, `--no-sandbox`) · `uninstall.sh` (`unwire_settings`) ·

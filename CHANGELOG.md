@@ -32,7 +32,8 @@ only by a published release, which is what these entries are the notes for.
   hardening) or `sandbox.network.strictAllowlist` (a different key from the allowlist, and a
   larger imposition than the one the owner weighed).
 
-  Four rules make the boundary operative, and a receipt at `~/.claude/.adb-settings-owned` is what
+  Four rules make the boundary operative, and a receipt at `~/.claude/.adb-settings-owned` — which
+  records the owned leaves, the disposition, and the **digest of the payload it applied** — is what
   they read: a leaf is written only when it is **absent and unrecorded**, or still equal to what we
   wrote; one you edited is left alone on install and **kept and named** at uninstall; one you
   deleted is treated as an opt-out and never rewritten; and one a future payload stops shipping is

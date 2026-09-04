@@ -203,14 +203,17 @@ adb_settings_pending() {
   case "$(adb_claude_settings_disposition "$receipt")" in
     none|skipped-below-floor|skipped-unprobeable) ;;
     installed)
-      # `installed` IS NOT AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone
-      # can add a fragment leaf or retire one WITHOUT touching a single installed symlink, and
-      # this path is the only thing between that pull and the fast-path `exit 0` — so an
-      # `installed` receipt counts as current only while the leaf set it recorded still equals the
-      # payload's. Otherwise the new leaf is never written and the retired one is never pruned,
-      # for as long as the links keep resolving. (PR review; the #242 shape again, one level in.)
-      have="$(adb_claude_settings_receipt_leaves "$receipt" | cut -f1 | LC_ALL=C sort)"
-      want="$(adb_claude_settings_leaves "$payload" | LC_ALL=C sort)" || return 1
+      # `installed` IS NOT AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone can
+      # change the fragment WITHOUT touching a single installed symlink, and this path is the only
+      # thing between that pull and the fast-path `exit 0`.
+      #
+      # CURRENCY IS A DIGEST QUESTION, NOT A PATH-SET ONE. Comparing owned leaf PATHS fails in both
+      # directions: a leaf the operator already owned is never recorded, so the sets differ forever
+      # and every session re-runs the installer and reports a repair; and changing a shipped VALUE —
+      # one more domain in `allowedDomains` — leaves the path set identical, so the update never
+      # applies it. The receipt records the digest of the payload it applied; compare that.
+      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once
+      want="$(adb_sha256 "$payload")" || return 1
       [ "$have" = "$want" ] && return 1 ;;
     *) return 1 ;;
   esac
