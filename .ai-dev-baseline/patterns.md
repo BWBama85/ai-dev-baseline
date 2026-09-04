@@ -482,4 +482,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh` `4a86f67` `PRRT_kwDOTfywrM6fIocR` PR #463 2026-09-04 — all(.[]; ...) is vacuously true for an empty array, so a receipt row claiming the JSON root passed validation and delpaths nulled the whole settings document
 - `ledger-coverage-gap` `scripts/lib/common.sh` `4a86f67` `PRRT_kwDOTfywrM6fIocN` PR #463 2026-09-04 — the fix carried the prior rows into a skip receipt but the reader still discarded them by disposition, so the carry changed nothing a consumer could see
 - `metric-scope-mismatch` `bin/baseline` `4a86f67` `PRRT_kwDOTfywrM6fIocP` PR #463 2026-09-04 — owned leaf paths were used as the currency marker, which cannot see a changed value and reports pending forever for a leaf the operator already owned
+- `partial-validation` `scripts/lib/common.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU-7` PR #463 2026-09-04 — getpath cannot distinguish a missing path from one whose value is null, so an adopter's explicit null read as absent and was overwritten
+- `stale-state-trusted` `uninstall.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU_A` PR #463 2026-09-04 — the global receipt was treated as proof of ownership, so one clone's uninstaller removed another clone's live settings
+- `exit-path-asymmetry` `install.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU_C` PR #463 2026-09-04 — the receipt publish could fail after the settings rename succeeded and only warned, leaving applied keys with no ownership record
 <!-- adb:hits:end -->
