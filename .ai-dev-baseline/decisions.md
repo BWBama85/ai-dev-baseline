@@ -7690,6 +7690,15 @@ survive is the part a later reader needs.
              leaf is removed only while its live value still equals the recorded one. The
              non-empty requirement is load-bearing: `all(.[]; …)` is vacuously true for `[]`, and
              `delpaths([[]])` replaces the entire settings document with `null`.
+             ABSENCE IS ASKED WITH `has`, never by comparing to null: `getpath` cannot tell a
+             missing path from one whose value IS null, so an adopter's deliberate
+             `{"sandbox":{"enabled":null}}` read as absent, was overwritten, and was recorded as
+             ours — the boundary failing on the one input designed to test it.
+             OWNERSHIP IS ALSO SCOPED TO THE CLONE. The receipt is global, so its existence proves
+             only that SOME clone installed these keys; a second clone's install replaces both the
+             links and the receipt. Uninstall therefore asks the same question `bin/baseline` asks
+             before re-wiring a root doc — does `~/.claude` belong to THIS clone — and captures the
+             answer before `adb_unlink_manifest` removes the link it depends on.
 - placement: `agents/claude/settings.fragment.json` (payload) · `scripts/lib/common.sh`
              (`adb_claude_settings_*` — enumeration, ownership, receipt, state) · `install.sh`
              (`wire_settings`, `--no-sandbox`) · `uninstall.sh` (`unwire_settings`) ·

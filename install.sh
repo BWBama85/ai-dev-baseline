@@ -252,11 +252,32 @@ wire_settings() {
   # Published through the shared primitive: it refuses a destination that is not a regular file
   # (a directory would swallow the rename and report success) and carries the original's mode
   # across, so a mode-0600 settings.json is not relaxed to the umask default.
-  adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
-  if ! adb_publish_json "$rtmp" "$receipt"; then
-    adb_info "  WARN   the settings ARE applied but $receipt could not be published — run ./install.sh again;"
-    adb_info "         until it exists, uninstall cannot prove which sandbox keys are ours to remove"
+  # THE PRE-IMAGE IS KEPT so the settings write can be UNDONE. The receipt is checked and rendered
+  # before anything is published, but publishing it can still fail after the settings rename has
+  # succeeded — and settings without a receipt are the one unrecoverable state: the next install
+  # reads those values as the operator's and records nothing, after which uninstall can never
+  # remove them. So the failure path undoes what the success path did, in reverse.
+  local pre="$settings.adb.$$.pre"
+  rm -f "$pre"
+  if ! { ( umask 077; : > "$pre" ) && cat "$settings" > "$pre"; }; then
+    rm -f "$tmp" "$rtmp" "$pre"
+    adb_info "  WARN   could not snapshot $settings before writing — sandbox settings NOT written"
+    return 1
   fi
+  adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
+  if ! adb_publish_json "$rtmp" "$receipt"; then
+    if adb_publish_json "$pre" "$settings"; then
+      adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK."
+      adb_info "         Nothing was applied and nothing was orphaned — fix that path and re-run ./install.sh."
+    else
+      rm -f "$pre"
+      adb_info "  ERROR  $receipt could not be published AND the settings could not be rolled back."
+      adb_info "         The sandbox keys are applied with no ownership record: uninstall cannot"
+      adb_info "         remove them. Remove the \`sandbox\` keys from $settings by hand, then re-run."
+    fi
+    return 1
+  fi
+  rm -f "$pre"
 
   # THE HEADLINE MUST NOT OVERSTATE. A merge that SKIPPED `sandbox.enabled` because the operator
   # already set it to false leaves every credential rule inert, and "least-privilege settings

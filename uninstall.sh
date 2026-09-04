@@ -56,8 +56,17 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude codex gemini)
 
 uninstall_claude() {
-  local rc=0 manifest
+  local rc=0 manifest ours_settings=0
   adb_info "claude"
+  # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the root-doc link the
+  # answer depends on — a check inside `unwire_settings` would run after that removal and could
+  # never pass. Two clones can each install globally: the second overwrites the first's links and
+  # its receipt, and running the FIRST clone's uninstaller must then leave the second's settings
+  # alone. The link half of that is already true (`adb_unlink_if_ours` refuses a link into another
+  # clone); the settings half read the receipt as proof of ownership and removed keys this clone
+  # no longer owns. Same predicate `bin/baseline` uses to decide a root doc "is not ours to
+  # re-wire". (PR review)
+  adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO" && ours_settings=1
   # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
   # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
   #
@@ -112,7 +121,7 @@ EOF
     adb_info "  WARN   jq not found — hook entries left in ~/.claude/settings.json; remove them by hand"
   fi
 
-  unwire_settings || rc=1
+  unwire_settings "$ours_settings" || rc=1
   return "$rc"
 }
 
@@ -126,10 +135,19 @@ EOF
 # skipped below the floor, and one whose keys the operator has already deleted all look the same
 # from settings.json alone, and guessing would delete `sandbox` keys we never wrote.
 unwire_settings() {
+  local ours="${1:-0}"
   local settings="$HOME/.claude/settings.json" receipt payload result names tmp
   receipt="$(adb_claude_settings_receipt "$HOME")"
   payload="$(adb_claude_settings_payload "$REPO")"
   [ -f "$receipt" ] || return 0
+  # NOT OURS, NOT OURS TO REMOVE. The receipt is global, so its mere existence proves only that
+  # SOME clone installed these keys — and a second clone's install replaced both the links and the
+  # receipt. Leaving them is the same answer `adb_unlink_if_ours` gives for a link pointing
+  # elsewhere, and it is said rather than done in silence.
+  if [ "$ours" != "1" ]; then
+    adb_info "  sandbox  left alone — ~/.claude is installed from another clone, so its settings are not ours to remove"
+    return 0
+  fi
   if ! command -v jq >/dev/null 2>&1; then
     adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them"
     return 0

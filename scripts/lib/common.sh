@@ -739,8 +739,12 @@ adb_claude_settings_receipt_leaves() {
 #     Deleting the key from settings.json is the by-hand opt-out, exactly as deleting a hook entry
 #     is (docs/installation.md), and rewriting it would undo a supported choice on the next
 #     session's self-heal. `absent AND unrecorded` is the only shape that gets written fresh.
-# `absent` is `getpath == null`, which is exact for this payload because it ships no null value;
-# check-settings-fragment.sh pins that property so a future null in the fragment fails loudly.
+# ABSENCE IS ASKED WITH `has`, NOT BY COMPARING TO null. `getpath` answers null for a path that is
+# missing AND for one whose value really is null, so an adopter carrying `{"sandbox":{"enabled":
+# null}}` — a value they chose — read as "absent", was overwritten, and was then recorded as ours.
+# That is the ownership boundary failing on the one input designed to test it. (The payload itself
+# still ships no null, which check-settings-fragment.sh pins; that is a separate property and it
+# was never the one that made this safe.)
 # Usage: adb_claude_settings_merge <settings.json> <payload.json> <receipt|/dev/null> [--remove]
 adb_claude_settings_merge() {
   local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned work_empty rc
@@ -769,6 +773,10 @@ adb_claude_settings_merge() {
     # `[["a","b","c"]] | index(["a","b"])` is 0 outright. Every path membership test here is an
     # explicit equality scan for that reason.
     def member($xs; $x): ($xs | map(. == $x) | any);
+    # PRESENCE, not "is it null": the parent must be an object that HAS the final key. Every path
+    # here has at least one component (the receipt reader refuses an empty one), so `$p[-1]` is
+    # always a real key.
+    def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));
     ($cur[0] // {})  as $settings
   | ($frag[0] // {}) as $fragment
   | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
@@ -777,9 +785,10 @@ adb_claude_settings_merge() {
       ( { s: $settings, wrote: [], skipped: [], removed: [], pruned: [], kept: [] };
         ( $owned | map(select(.p == $p)) | first ) as $rec
         | ( .s | getpath($p) ) as $now
-        | if $now == null and $rec == null then
+        | ( .s | present($p) ) as $has
+        | if ($has | not) and $rec == null then
             .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
-          elif $now == null then
+          elif ($has | not) then
             .removed += [$p]
           elif $rec != null and $now == $rec.v then
             .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
@@ -791,7 +800,7 @@ adb_claude_settings_merge() {
       ( .;
         ( $owned | map(select(.p == $p)) | first ) as $rec
         | ( .s | getpath($p) ) as $now
-        | if $now == null then .
+        | if ( .s | present($p) | not ) then .
           elif $now == $rec.v then .s = (.s | delpaths([$p])) | .pruned += [$p]
           else .kept += [$p]
           end )

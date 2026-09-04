@@ -369,6 +369,9 @@ cp "$work/installed-receipt" "$lost_home/.claude/.adb-settings-owned"
 lost_repo="$work/lostrepo"; mkdir -p "$lost_repo"
 ( cd "$ROOT" && cp -R . "$lost_repo" ) >/dev/null 2>&1; rm -rf "$lost_repo/.git"
 : > "$lost_repo/agents/claude/settings.fragment.json"
+# THE ROOT DOC MUST POINT AT THIS CLONE, or the ownership guard takes the not-ours path and the
+# assertion below passes without exercising the receipt logic it exists to test.
+ln -s "$lost_repo/agents/claude/CLAUDE.md" "$lost_home/.claude/CLAUDE.md"
 HOME="$lost_home" bash "$lost_repo/uninstall.sh" --agent claude >"$work/lost.log" 2>&1
 if jq -e '.sandbox.credentials == null and .sandbox.network == null' "$lost_home/.claude/settings.json" >/dev/null 2>&1; then ok
 elif [ -f "$lost_home/.claude/.adb-settings-owned" ]; then ok   # kept the record instead: also correct
@@ -451,6 +454,30 @@ mkdir -p "$ro_home/.claude/.adb-settings-owned"     # a directory: the receipt c
 HOME="$ro_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/ro.log" 2>&1
 jq -e '.sandbox == null' "$ro_home/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "install.sh must write NO sandbox key when the ownership receipt cannot be published — unremovable keys are worse than none"
+# REFUSED BEFORE WRITING, not written-and-undone. The rollback below is the backstop for a publish
+# that fails unexpectedly; an unpublishable receipt PATH is knowable up front, and a run that
+# reached the rollback did work it never needed to do.
+grep -qi "not a regular file" "$work/ro.log" && ok \
+  || bad "an unpublishable receipt PATH must be refused up front, naming the reason"
+grep -qi "ROLLED BACK" "$work/ro.log" && bad "the receipt precheck must refuse BEFORE writing, not write and roll back" || ok
+
+# --- an EXPLICIT null is a value the adopter chose, not an absence ------------------------------
+#
+# `getpath` answers null for a missing path AND for one whose value really is null, so the obvious
+# absence test overwrites a deliberate `{"sandbox":{"enabled":null}}` and records it as ours — the
+# ownership boundary failing on the one input designed to test it.
+r="$(m '{"sandbox":{"enabled":null}}' "$work/empty-receipt")"
+[ "$(names "$r" skipped)" = "sandbox.enabled" ] && ok \
+  || bad "an explicit null is the operator's value and must be SKIPPED, not read as absent; skipped: $(names "$r" skipped)"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = null ] && ok \
+  || bad "an explicit null must not be overwritten"
+# ...and a genuinely missing leaf is still written, or the fix would have disabled the surface.
+r="$(m '{}' "$work/empty-receipt")"
+[ "$(printf '%s' "$r" | jq -r '.wrote | length')" = 4 ] && ok || bad "a genuinely absent leaf must still be written"
+# A leaf we OWN whose value the operator has since set to null is theirs now, and stays.
+r="$(m '{"sandbox":{"enabled":null}}' "$work/installed-receipt" --remove)"
+[ "$(names "$r" kept)" = "sandbox.enabled" ] && ok \
+  || bad "an owned leaf the operator set to null must be KEPT on removal, not deleted; kept: $(names "$r" kept)"
 
 # --- a SKIP must never discard ownership of keys already written ---------------------------------
 #
@@ -510,8 +537,38 @@ fi
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
-grep -q 'umask 077' "$ROOT/install.sh" && ok \
+# A SOURCE PIN, and named as one: the temp file is gone by the time any assertion could stat it, so
+# what is checkable is that the creation is restricted. Pinned to the EXACT line — a bare
+# `grep umask 077` also matched the pre-image snapshot added later and went on matching after the
+# line under test had been mutated away.
+grep -qF '( umask 077; : > "$tmp" )' "$ROOT/install.sh" && ok \
   || bad "the settings temp file must be created restricted BEFORE it is populated, not chmod'd after the write"
+
+# --- a receipt that cannot be published ROLLS THE SETTINGS BACK ----------------------------------
+#
+# The receipt is checked and rendered before anything is published, but publishing it can still
+# fail after the settings rename succeeded. Settings with no receipt are the one unrecoverable
+# state: the next install reads those values as the operator's and records nothing, after which
+# uninstall can never remove them. So the failure path must undo the write, not warn past it.
+rb_home="$work/rollback"; mkdir -p "$rb_home/.claude"
+printf '{"model":"opus"}\n' > "$rb_home/.claude/settings.json"
+cp "$rb_home/.claude/settings.json" "$work/rollback-pristine.json"
+rb_repo="$work/rollbackrepo"; mkdir -p "$rb_repo"
+( cd "$ROOT" && cp -R . "$rb_repo" ) >/dev/null 2>&1; rm -rf "$rb_repo/.git"
+# Fault the receipt publish ONLY — the settings publish must still succeed, or this would prove
+# nothing about the ordering it exists to test.
+python3 - "$rb_repo/install.sh" <<'RBPY'
+import sys
+p=sys.argv[1]; s=open(p).read()
+s=s.replace('  if ! adb_publish_json "$rtmp" "$receipt"; then',
+            '  if ! { rm -f "$rtmp"; false; }; then',1)
+open(p,'w').write(s)
+RBPY
+stub "2.1.259 (Claude Code)"
+HOME="$rb_home" PATH="$work/bin:$PATH" bash "$rb_repo/install.sh" --agent claude --no-hooks >"$work/rollback.log" 2>&1
+if diff -q <(jq -S . "$rb_home/.claude/settings.json") <(jq -S . "$work/rollback-pristine.json") >/dev/null 2>&1; then ok
+else bad "a receipt that cannot be published must ROLL BACK the settings — applied keys with no ownership record can never be removed"; fi
+grep -qi "ROLLED BACK" "$work/rollback.log" && ok || bad "the rollback must be reported, not silent"
 
 # --- `baseline update` must NOTICE a pending surface (bin/baseline) ------------------------------
 #
@@ -606,6 +663,26 @@ ask_pending "$current_home" && bad "a receipt recording THIS payload's digest mu
 pending skipped-below-floor "2.1.100 (Claude Code)" && bad "a below-floor skip must stay put while the CLI is STILL below the floor" || ok
 stub "2.1.259 (Claude Code)"
 
+# --- an uninstall from ANOTHER clone must not consume this one's settings ------------------------
+#
+# Two clones can each install globally: the second overwrites the first's links and its receipt.
+# Running the FIRST clone's uninstaller must then leave the second's settings alone — the link half
+# is already true (`adb_unlink_if_ours` refuses a link into another clone), and the settings half
+# read the global receipt as proof of ownership.
+two_home="$work/twoclone"; mkdir -p "$two_home/.claude"
+clone_b="$work/cloneB"; mkdir -p "$clone_b"
+( cd "$ROOT" && cp -R . "$clone_b" ) >/dev/null 2>&1; rm -rf "$clone_b/.git"
+echo '{"model":"opus"}' > "$two_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$two_home" PATH="$work/bin:$PATH" bash "$clone_b/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq -e '.sandbox.enabled == true' "$two_home/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "precondition: clone B's install should have written the sandbox keys"
+# Now run THIS clone's uninstaller over an install that belongs to clone B.
+HOME="$two_home" bash "$ROOT/uninstall.sh" --agent claude >"$work/twoclone.log" 2>&1
+jq -e '.sandbox.enabled == true' "$two_home/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "uninstalling from a clone that does not own ~/.claude must NOT remove another clone's sandbox settings"
+grep -qi "another clone" "$work/twoclone.log" && ok || bad "leaving another clone's settings alone must be SAID, not silent"
+
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
 
 if [ "$MUTATION" -eq 1 ]; then
@@ -619,8 +696,8 @@ if [ "$MUTATION" -eq 1 ]; then
   # Each row breaks ONE rule, and its witness is the assertion that claims to cover it. A row that
   # goes red elsewhere is scored as caught by accident, which is not evidence.
   check_mut 'merge rewrites a leaf the operator deleted' \
-    'if $now == null and $rec == null then' \
-    'if $now == null then' \
+    'if ($has | not) and $rec == null then' \
+    'if ($has | not) then' \
     'must NOT rewrite a leaf the operator deleted'
   check_mut 'merge overwrites an operator value it never wrote' \
     'elif $rec != null and $now == $rec.v then' \
@@ -678,6 +755,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  m="$(stat -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
     '  m="$(stat -f '"'"'%Lp'"'"' "$f" 2>/dev/null || stat -c '"'"'%a'"'"' "$f" 2>/dev/null)"' \
     'must read the mode under GNU stat'
+  check_mut 'absence is decided by comparing to null again' \
+    'present($p) ) as $has' \
+    '(($now == null) | not) ) as $has' \
+    'must be SKIPPED, not read as absent'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -714,10 +795,10 @@ if [ "$MUTATION" -eq 1 ]; then
     'if [ "$WIRE_SETTINGS" -eq 0 ]; then' \
     'if false; then' \
     "must record disposition 'skipped-optout'"
-  check_mut 'the installer writes settings it can never record ownership of' \
+  check_mut 'the receipt precheck is dropped, so the run writes then undoes' \
     'if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then' \
     'if false; then' \
-    'must write NO sandbox key when the ownership receipt cannot be published'
+    'must refuse BEFORE writing'
   check_mut 'the headline claims least privilege with sandboxing off' \
     '|| [ "$(jq -r '"'"'.sandbox.enabled // false'"'"' "$settings" 2>/dev/null)" = true ]; then' \
     '|| true; then' \
@@ -730,9 +811,17 @@ if [ "$MUTATION" -eq 1 ]; then
     '  ( umask 077; : > "$tmp" ) ||' \
     '  ( : > "$tmp" ) ||' \
     'must be created restricted BEFORE it is populated'
+  check_mut 'a receipt that cannot be published only warns' \
+    '    if adb_publish_json "$pre" "$settings"; then' \
+    '    if false; then' \
+    'must ROLL BACK the settings'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
+  check_mut 'uninstall consumes a receipt belonging to another clone' \
+    '  if [ "$ours" != "1" ]; then' \
+    '  if false; then' \
+    'must NOT remove another clone'
   check_mut 'uninstall drops the ownership record when the payload is missing' \
     '  if [ ! -s "$settings" ]; then' \
     '  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then' \
