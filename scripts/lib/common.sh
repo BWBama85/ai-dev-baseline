@@ -676,7 +676,7 @@ adb_claude_settings_disposition() {
   line="${line# }"
   line="${line%% *}"
   case "$line" in
-    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) printf '%s' "$line" ;;
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) printf '%s' "$line" ;;
     *) printf 'none' ;;
   esac
 }
@@ -732,46 +732,90 @@ adb_claude_settings_receipt_leaves() {
   done < "$receipt" || true
 }
 
-# THE MERGE. Prints one JSON object on stdout:
-#   {settings: <the new settings>, wrote: [], skipped: [], removed: [], pruned: [], kept: []}
-# where every list but `settings` holds leaf paths. The three rules of D95's ownership boundary are here and
-# nowhere else, so install.sh and uninstall.sh cannot drift about what "ours" means:
-#   * WRITE a fragment leaf only when it is absent, or still equal to what the receipt says we
-#     wrote. Anything else is the operator's value and is SKIPPED, not overwritten.
-#   * PRUNE a receipt leaf the fragment no longer declares — the settings analogue of the retired
-#     manifest register. A key dropped from the payload would otherwise sit in every adopter's
-#     settings for good with nobody owning it.
-#   * KEEP, and name, any leaf whose current value differs from the receipt: it has been edited
-#     since we wrote it, so it is no longer ours to replace or remove.
-#   * REPORT as REMOVED — and do not rewrite — a leaf the receipt records that is now absent.
-#     Deleting the key from settings.json is the by-hand opt-out, exactly as deleting a hook entry
-#     is (docs/installation.md), and rewriting it would undo a supported choice on the next
-#     session's self-heal. `absent AND unrecorded` is the only shape that gets written fresh.
-# ABSENCE IS ASKED WITH `has`, NOT BY COMPARING TO null. `getpath` answers null for a path that is
-# missing AND for one whose value really is null, so an adopter carrying `{"sandbox":{"enabled":
-# null}}` — a value they chose — read as "absent", was overwritten, and was then recorded as ours.
-# That is the ownership boundary failing on the one input designed to test it. (The payload itself
-# still ships no null, which check-settings-fragment.sh pins; that is a separate property and it
-# was never the one that made this safe.)
+# The CONTAINER paths a receipt records — the objects this install had to create on its way to a
+# leaf, and therefore the only ones a removal may ever delete. An adopter who already had
+# `{"sandbox":{}}` keeps it: we own leaves, and the containers we made, and nothing else.
+# Validated exactly as leaf paths are, and for the same reason: an empty path is ownership of the
+# document root, and `delpaths([[]])` replaces the whole settings file with null.
+# Usage: adb_claude_settings_receipt_containers <receipt>
+adb_claude_settings_receipt_containers() {
+  local receipt="$1" line rest tab
+  tab="$(printf '\t')"
+  [ -f "$receipt" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "container$tab"*) ;; *) continue ;; esac
+    rest="${line#container$tab}"
+    rest="${rest%%$tab*}"
+    printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 || continue
+    printf '%s\n' "$rest"
+  done < "$receipt" || true
+}
+
+_adb_claude_settings_created_json() {
+  local receipt="$1" line out=""
+  case "$(adb_claude_settings_disposition "$receipt")" in
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # container ownership
+    *) printf '[]'; return 0 ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    out="$out${out:+,}$line"
+  done <<EOF
+$(adb_claude_settings_receipt_containers "$receipt")
+EOF
+  printf '[%s]' "$out"
+}
+
+# THE MERGE, AND IT IS ALL-OR-NOTHING (owner decision, round 6 of #248's review). Prints one JSON
+# object on stdout:
+#   {verdict, settings, wrote:[], created:[], blocked:[], diverged:[], pruned:[], kept:[]}
+# `verdict` is `write`, `insync`, `refuse` or `remove`; every list but `settings` holds leaf paths
+# (`created` holds container paths). This is the ONE home for what "ours" means, so install.sh and
+# uninstall.sh cannot drift about it.
+#
+# WHY ALL-OR-NOTHING. The earlier contract applied per leaf: write what it could, skip what the
+# operator owned, remember what they had deleted. Every one of those states needed its own
+# provenance, and four consecutive review rounds found defects in that bookkeeping rather than in
+# the policy it was carrying — a partial application that had to answer, for each key
+# independently, "is this mine, theirs, mine-but-edited, or mine-but-deleted". The states are gone:
+#
+#   * FIRST INSTALL writes the whole fragment only when EVERY leaf is absent and every ancestor is
+#     traversable. Anything already there BLOCKS the lot, and the refusal names it. An adopter is
+#     told exactly what is in the way rather than given a partial policy that reports protection it
+#     does not have.
+#   * AN ESTABLISHED INSTALL updates only while every recorded leaf is still present with the value
+#     recorded for it. Any divergence — an edit, or a deletion, which is the documented by-hand
+#     opt-out — means the operator has taken the surface over: nothing is written, and the refusal
+#     names what diverged. That is also why no tombstone is needed. A deleted leaf is not
+#     remembered as "ours, removed"; it simply makes the surface theirs, so it is never rewritten
+#     and never later deleted on the strength of a record.
+#   * A RETIRED leaf — recorded, no longer shipped — is still pruned when its value matches, and
+#     KEPT and named when it does not. Dropping a key from the payload must not orphan it.
+#   * REMOVAL takes the leaves whose live value still equals the record, keeps and names the rest,
+#     and prunes ONLY the containers this install is recorded as having CREATED. An operator who
+#     already had `{"sandbox":{}}` keeps it: we own leaves, and we own the containers we made, and
+#     nothing else.
+#
+# ABSENCE IS ASKED WITH `has`, NOT BY COMPARING TO null — `getpath` answers null for a missing path
+# AND for one whose value really is null, and an adopter's chosen null is theirs. Ancestors are
+# walked in order and the walk STOPS on the first answer, because `getpath` RAISES through a
+# scalar: `{"a":false} | getpath(["a","b"])` is an error, not null.
+#
 # Usage: adb_claude_settings_merge <settings.json> <payload.json> <receipt|/dev/null> [--remove]
 adb_claude_settings_merge() {
-  local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned work_empty rc
+  local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned created work_empty rc
+  command -v jq >/dev/null 2>&1 || return 2
   work_empty=""
   # REMOVAL IGNORES THE PAYLOAD ENTIRELY, not merely a missing one. Ownership lives in the receipt
-  # and `--remove` writes nothing, so the fragment supplies only the leaf SET, which removal does
-  # not use. Substituting it only when the file was EMPTY left the damaged-clone contract half
-  # true: a payload that exists but is truncated or unparseable still reached `--slurpfile` and
-  # failed the merge, stranding every receipt-owned key.
+  # and `--remove` writes nothing, so a fragment that exists but is truncated must not reach
+  # `--slurpfile` and strand every receipt-owned key.
   if [ "$mode" = "--remove" ]; then
     work_empty="$(mktemp)" || return 1
     printf '{}\n' > "$work_empty"
   fi
-  command -v jq >/dev/null 2>&1 || return 2
   owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1
-  # REMOVAL DOES NOT NEED THE PAYLOAD. Ownership lives in the receipt; the fragment only supplies
-  # the leaf SET to write, and `--remove` writes nothing. Requiring it would make an uninstall from
-  # a damaged or partial clone unable to remove the keys it owns — and the caller's only remaining
-  # move would be to drop the receipt, which is the one record that says what is ours. (PR review)
+  created="$(_adb_claude_settings_created_json "$receipt")" || return 1
   if [ -n "$work_empty" ]; then
     payload="$work_empty"
   elif [ ! -s "$payload" ]; then
@@ -781,25 +825,16 @@ adb_claude_settings_merge() {
      --slurpfile cur "$settings" \
      --slurpfile frag "$payload" \
      --argjson owned "$owned" \
+     --argjson created "$created" \
      --arg mode "$mode" '
-    # `has_path` and `member`, spelled out, because jq'"'"'s `index/1` searches an array argument as
-    # a SUBSEQUENCE — `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason and
-    # `[["a","b","c"]] | index(["a","b"])` is 0 outright. Every path membership test here is an
-    # explicit equality scan for that reason.
+    # `member`, spelled out, because jq'"'"'s `index/1` searches an array argument as a SUBSEQUENCE:
+    # `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason. Every path membership test here
+    # is an explicit equality scan.
     def member($xs; $x): ($xs | map(. == $x) | any);
-    # PRESENCE, not "is it null": the parent must be an object that HAS the final key. Every path
-    # here has at least one component (the receipt reader refuses an empty one), so `$p[-1]` is
-    # always a real key.
+    # PRESENCE, not "is it null": the parent must be an object that HAS the final key.
     def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));
-    # ...AND EVERY ANCESTOR ON THE WAY DOWN. `present` asks only about the final key, so an adopter
-    # carrying `{"sandbox":null}` — or `{"sandbox":{"credentials":null}}` — reported every
-    # descendant as absent and `setpath` replaced that chosen null with an object. A missing
-    # ancestor is fine (we create it); one that EXISTS and is not an object is a conflict, and the
-    # leaf below it is skipped rather than written through.
-    # WALKED IN ORDER AND STOPPED ON THE FIRST ANSWER, because `getpath` RAISES through a scalar:
-    # `{"a":false} | getpath(["a","b"])` is a jq error, not null. So each prefix may only be read
-    # once its own parent has been shown to be an object, and a chain that is simply MISSING is
-    # writable (we create it) rather than a conflict. Three states, not two.
+    # Walked in order and stopped on the first answer, because `getpath` raises through a scalar.
+    # Three states: a MISSING chain is writable (we create it), a scalar one is a conflict.
     def anc_ok($p): . as $doc | ( reduce range(1; ($p | length)) as $i
         ("cont";
          if . != "cont" then .
@@ -810,66 +845,90 @@ adb_claude_settings_merge() {
                 elif ($doc | getpath($a) | type) == "object" then "cont"
                 else "conflict" end
          end) ) != "conflict";
-    # EXACTLY ONE TOP-LEVEL VALUE. `--slurpfile` reads a STREAM, so a settings.json holding an
-    # object followed by an accidentally appended one slurps two — and `$cur[0]` then published
-    # the first and silently discarded every later value the operator had, instead of taking the
-    # invalid-JSON refusal path the caller reports.
+    # The ancestor prefixes of $p that do not exist yet — the containers a write would CREATE, and
+    # therefore the only ones a removal may ever delete.
+    def missing_ancestors($p): . as $doc
+      | [ range(1; ($p | length)) as $i | $p[0:$i] ]
+      | map(. as $a | select( ($doc | anc_ok($a)) and ($doc | present($a) | not) ));
+
     ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )
-    # ...AND THAT VALUE MUST BE AN OBJECT. `// {}` is false for `null` AND for `false`, so either
-    # root coerced to an empty object and the whole file an operator had was replaced by the merge
-    # rather than refused. The caller writes `{}` itself when the file is genuinely absent or
-    # empty, so nothing legitimate reaches here needing the coercion.
   | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )
   | ($cur[0])        as $settings
   | ($frag[0] // {}) as $fragment
   | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
-  | ( if $mode == "--remove" then [] else $leaves end ) as $want
-  | ( $owned | map(.p) | map(select(member($want; .) | not)) ) as $stale
-    # STALE FIRST, NEW SECOND. When a payload turns an owned leaf into a container or back — the
-    # receipt owns `x.y`, the new fragment declares a scalar `x` — evaluating the new paths first
-    # sees the leftover object at `x`, calls it present-but-unowned and SKIPS it; the stale prune
-    # then removes `x.y` and leaves `x` absent entirely, while the receipt records the new digest
-    # so nothing ever retries. Reconciling what we no longer own first — including the containers
-    # that leaves empty — makes the replacement path genuinely absent when it is evaluated.
-  | reduce ($stale[]) as $p
-      ( { s: $settings, wrote: [], skipped: [], removed: [], pruned: [], kept: [] };
-        ( $owned | map(select(.p == $p)) | first ) as $rec
-        | ( .s | anc_ok($p) ) as $ok
-        | ( if $ok then (.s | getpath($p)) else null end ) as $now
-        | if ($ok | not) then .
-          elif ( .s | present($p) | not ) then .
-          elif $now == $rec.v then .s = (.s | delpaths([$p])) | .pruned += [$p]
-          else .kept += [$p]
-          end )
-    # Prune ONLY the containers this removal emptied, never every empty object in the file: a
-    # blanket `walk` would delete an operator'"'"'s own `{}` somewhere else in settings.json, which
-    # is exactly the over-reach leaf-level ownership exists to prevent. Ancestors are visited
-    # deepest-first so an object emptied by its own child'"'"'s removal is seen after that child.
-  | ( [ .pruned[] | . as $p | range(1; ($p | length)) | $p[0:.] ] | unique | sort_by(-length) ) as $emptied
-  | reduce ($emptied[]) as $a
-      ( .;
-        ( .s | getpath($a) ) as $now
-        | if ($now | type) == "object" and ($now | length) == 0
-          then .s = (.s | delpaths([$a])) else . end )
-  | reduce ($want[]) as $p
-      ( .;
-        ( $owned | map(select(.p == $p)) | first ) as $rec
-        | ( .s | anc_ok($p) ) as $ok
-        | ( if $ok then (.s | getpath($p)) else null end ) as $now
-        | ( if $ok then (.s | present($p)) else false end ) as $has
-        | if ($ok | not) then
-            .skipped += [$p]
-          elif ($has | not) and $rec == null then
-            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
-          elif ($has | not) then
-            .removed += [$p]
-          elif $rec != null and $now == $rec.v then
-            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
-          else
-            .skipped += [$p]
-          end )
-  | { settings: .s, wrote: .wrote, skipped: .skipped, removed: .removed,
-      pruned: .pruned, kept: .kept }
+  | ( $owned | map(.p) ) as $ownedp
+  | { verdict: "insync", settings: $settings,
+      wrote: [], created: [], blocked: [], diverged: [], pruned: [], kept: [] }
+  | if $mode == "--remove" then
+      # Owned leaves first: matching values go, edited ones are kept and named.
+      reduce ($ownedp[]) as $p
+        ( .;
+          ( $owned | map(select(.p == $p)) | first ) as $rec
+          | ( .settings | anc_ok($p) ) as $ok
+          | if ($ok | not) then .
+            elif ( .settings | present($p) | not ) then .
+            elif ( .settings | getpath($p) ) == $rec.v then
+              .settings = (.settings | delpaths([$p])) | .pruned += [$p]
+            else .kept += [$p]
+            end )
+      # ...then ONLY the containers this install recorded as created, deepest first.
+      | ( $created | sort_by(-length) ) as $mine
+      | reduce ($mine[]) as $a
+          ( .;
+            ( .settings | getpath($a) ) as $now
+            | if ($now | type) == "object" and ($now | length) == 0
+              then .settings = (.settings | delpaths([$a])) else . end )
+      | .verdict = "remove"
+    else
+      # RETIREMENT runs first and unconditionally: a leaf we recorded and no longer ship must not
+      # be orphaned, whatever the fragment now says about the rest.
+      ( $ownedp | map(select(member($leaves; .) | not)) ) as $stale
+      | reduce ($stale[]) as $p
+          ( .;
+            ( $owned | map(select(.p == $p)) | first ) as $rec
+            | ( .settings | anc_ok($p) ) as $ok
+            | if ($ok | not) then .
+              elif ( .settings | present($p) | not ) then .
+              elif ( .settings | getpath($p) ) == $rec.v then
+                .settings = (.settings | delpaths([$p])) | .pruned += [$p]
+              else .kept += [$p]
+              end )
+      # ...and the containers THAT retirement emptied go with it, but only ones we created. Without
+      # this a payload that turns an owned leaf into a scalar is blocked by the very container the
+      # previous install made for it: `x.y` is pruned, `x` is left as `{}`, and `{}` is "present".
+      | ( $created | sort_by(-length) ) as $mine
+      | reduce ($mine[]) as $a
+          ( .;
+            ( .settings | getpath($a) ) as $now
+            | if ($now | type) == "object" and ($now | length) == 0
+              then .settings = (.settings | delpaths([$a])) else . end )
+      | .settings as $settings
+      # BLOCKED: a leaf we do not own that is already there, or whose ancestors cannot be walked.
+      | ( [ $leaves[] | select( member($ownedp; .) | not ) ]
+          | map(. as $p | select( ( $settings | anc_ok($p) | not ) or ( $settings | present($p) ) )) ) as $blocked
+      # DIVERGED: a leaf we DO own that is gone, or no longer carries the value we recorded. Either
+      # way the operator has taken the surface over — a deletion is the documented opt-out.
+      | ( [ $owned[] | select( member($leaves; .p) ) ]
+          | map(. as $r | select( ( $settings | anc_ok($r.p) | not )
+                        or ( $settings | present($r.p) | not )
+                        or ( ($settings | getpath($r.p)) != $r.v ) ))
+          | map(.p) ) as $diverged
+      | if ($blocked | length) > 0 or ($diverged | length) > 0 then
+          # RESET what the retirement pass did. A refusal writes NOTHING, and that has to be true
+          # of this function rather than only of the caller that declines to publish it — a result
+          # carrying `pruned` beside `verdict: refuse` is a contradiction the next reader inherits.
+          .verdict = "refuse" | .blocked = $blocked | .diverged = $diverged
+          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .created = []
+        else
+          reduce ($leaves[]) as $p
+            ( .;
+              .created += ( .settings | missing_ancestors($p) )
+              | .settings = (.settings | setpath($p; $fragment | getpath($p)))
+              | .wrote += [$p] )
+          | .created = ( (.created + $created) | unique )
+          | .verdict = "write"
+        end
+    end
   ' 2>/dev/null
   rc=$?
   [ -n "$work_empty" ] && rm -f "$work_empty"
@@ -892,7 +951,7 @@ _adb_claude_settings_owned_json() {
   # (a non-empty array of string components, and a parseable value), and a leaf is removed ONLY
   # while its live value still equals the recorded one.
   case "$(adb_claude_settings_disposition "$receipt")" in
-    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership
     *) printf '[]'; return 0 ;;
   esac
   while IFS= read -r line; do
@@ -910,9 +969,9 @@ EOF
 # Separate from the renderer because the OPT-OUT path has rows to carry too — the ones a previous
 # install recorded — and ownership must outlive a pause, or `--no-sandbox` would orphan the keys
 # it declines to touch (D95's prune has nothing to prune once the record is gone).
-# Usage: adb_claude_settings_leaf_rows <payload.json> <written-json-array>
+# Usage: adb_claude_settings_leaf_rows <payload.json> <written-json-array> [created-json-array]
 adb_claude_settings_leaf_rows() {
-  local payload="$1" written="$2" p
+  local payload="$1" written="$2" createdj="${3:-[]}" p
   command -v jq >/dev/null 2>&1 || return 2
   [ -s "$payload" ] || return 1
   while IFS= read -r p; do
@@ -921,6 +980,12 @@ adb_claude_settings_leaf_rows() {
       "$(jq -c --argjson path "$p" 'getpath($path)' "$payload" 2>/dev/null)"
   done <<EOF
 $(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)
+EOF
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf 'container\t%s\n' "$p"
+  done <<EOF
+$(printf '%s' "$createdj" | jq -c '.[]?' 2>/dev/null)
 EOF
 }
 
@@ -945,7 +1010,7 @@ adb_claude_settings_receipt_render() {
   printf 'floor %s\n' "$floor"
   printf 'payload %s\n' "$digest"
   while IFS= read -r line; do
-    case "$line" in "leaf$tab"*) printf '%s\n' "$line" ;; esac
+    case "$line" in "leaf$tab"*|"container$tab"*) printf '%s\n' "$line" ;; esac
   done
 }
 

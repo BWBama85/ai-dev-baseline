@@ -32,12 +32,15 @@ only by a published release, which is what these entries are the notes for.
   hardening) or `sandbox.network.strictAllowlist` (a different key from the allowlist, and a
   larger imposition than the one the owner weighed).
 
-  Four rules make the boundary operative, and a receipt at `~/.claude/.adb-settings-owned` — which
-  records the owned leaves, the disposition, and the **digest of the payload it applied** — is what
-  they read: a leaf is written only when it is **absent and unrecorded**, or still equal to what we
-  wrote; one you edited is left alone on install and **kept and named** at uninstall; one you
-  deleted is treated as an opt-out and never rewritten; and one a future payload stops shipping is
-  **pruned**, so no orphan is left in your file. Uninstall with no receipt removes nothing.
+  **It applies whole or not at all.** The fragment installs only when every key it ships is absent;
+  anything already there refuses the lot and is named, because a half-applied policy reports
+  protection it does not have. An established install updates only while every key still carries
+  the value we recorded — edit or delete one and the surface is yours from then on, and a deletion
+  is not remembered as ours, so a later re-add by hand is never removed on the strength of a
+  record. A receipt at `~/.claude/.adb-settings-owned` holds the keys written, the **containers
+  created** for them (so an adopter's own `{"sandbox":{}}` survives uninstall) and the **digest of
+  the payload applied**. A key a future payload stops shipping is **pruned**, so no orphan is left.
+  Uninstall with no receipt removes nothing.
 
   **User scope only** — a choice, not a vendor limitation. The shipped key set *would* be honoured
   in a repository's `.claude/settings.json` (`deny` entries merge from every loaded scope); the

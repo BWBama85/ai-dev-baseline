@@ -159,7 +159,10 @@ unwire_settings() {
   # — an uninstall that reports success and silently strands the sandbox settings for good.
   # (PR review)
   if [ ! -s "$settings" ]; then
-    rm -f "$receipt"
+    rm -f "$receipt" || {
+      adb_info "  WARN   could not remove $receipt — remove it by hand."
+      adb_info "         Until you do, a re-install reads its leaves as YOUR removals and will not restore them."
+      return 1; }
     return 0
   fi
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)" || {
@@ -181,7 +184,15 @@ unwire_settings() {
     [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
     names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
-    rm -f "$receipt"
+    # THE RECEIPT'S REMOVAL IS CHECKED. A stale ownership record survives an otherwise clean
+    # uninstall, and the next install reads its leaves as recorded removals — the documented
+    # by-hand opt-out — and deliberately refuses to restore them. Sandbox protection then stays
+    # off until somebody finds and deletes a file they were never told about.
+    rm -f "$receipt" || {
+      adb_info "  WARN   the sandbox settings were removed, but $receipt could not be deleted."
+      adb_info "         Remove it by hand: until you do, a re-install reads its leaves as YOUR"
+      adb_info "         removals and will not restore the protection."
+      return 1; }
     return 0
   fi
   rm -f "$tmp"

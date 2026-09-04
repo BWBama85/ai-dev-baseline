@@ -44,6 +44,10 @@ trap 'rm -rf "$work"' EXIT
 
 PAYLOAD="$ROOT/agents/claude/settings.fragment.json"
 FLOOR="$(adb_claude_settings_floor)"
+# A LITERAL TAB, never a BRE `\t`: GNU grep reads the backslash form as a plain `t` while BSD grep
+# reads it as a tab, so a receipt built with the backslash form is empty on Linux and the assertion
+# that reads it fails for a reason unrelated to what it tests.
+ADB_TAB="$(printf '\t')"
 
 # --- the payload itself ------------------------------------------------------------------------
 #
@@ -100,7 +104,12 @@ else bad "the fragment must ship no null value — the merge reads null as ABSEN
 # reference, 2026-09-03); if a key with a higher floor joins, this must move with it.
 [ "$FLOOR" = "2.1.187" ] && ok || bad "the shipped floor is $FLOOR; D98 pinned it to sandbox.credentials' v2.1.187 — raise it deliberately when a higher-floor key joins the payload"
 
-# --- the merge's five verdicts ------------------------------------------------------------------
+# --- the merge's verdicts, under the ALL-OR-NOTHING contract -------------------------------------
+#
+# The earlier contract applied per leaf and had to answer, for each key independently, whether it
+# was ours, theirs, ours-but-edited or ours-but-deleted. Four consecutive review rounds found
+# defects in that bookkeeping rather than in the policy it carried, and the owner replaced it: the
+# fragment applies whole or not at all. These assertions are the contract.
 
 m() {   # m <settings-json> <receipt-file> [--remove] -> the merge result on stdout
   local s="$1" r="$2" mode="${3:-}"
@@ -108,68 +117,101 @@ m() {   # m <settings-json> <receipt-file> [--remove] -> the merge result on std
   adb_claude_settings_merge "$work/m.json" "$PAYLOAD" "$r" "$mode"
 }
 names() { printf '%s' "$1" | jq -r --arg b "$2" '.[$b] | map(join(".")) | join(",")'; }
+verdict() { printf '%s' "$1" | jq -r .verdict; }
 
 : > "$work/empty-receipt"
 
-# WROTE: absent and unrecorded is the only shape written fresh.
-r="$(m '{}' "$work/empty-receipt")"
+# A FIRST INSTALL writes everything, and records the containers it had to create.
+r="$(m '{"model":"opus"}' "$work/empty-receipt")"
+[ "$(verdict "$r")" = write ] && ok || bad "a clean first install must write; verdict $(verdict "$r")"
 [ "$(names "$r" wrote)" = "sandbox.enabled,sandbox.credentials.files,sandbox.credentials.envVars,sandbox.network.allowedDomains" ] && ok \
-  || bad "merge must write every leaf into empty settings; wrote: $(names "$r" wrote)"
+  || bad "a clean first install must write every leaf; wrote: $(names "$r" wrote)"
+[ "$(names "$r" created)" = "sandbox,sandbox.credentials,sandbox.network" ] && ok \
+  || bad "a clean first install must record the containers it created; created: $(names "$r" created)"
 
-# SKIPPED: the operator already has a value there and no receipt says it is ours.
+# ANY leaf of ours already present BLOCKS THE LOT — no partial policy, and the refusal names it.
 r="$(m '{"sandbox":{"enabled":false}}' "$work/empty-receipt")"
-[ "$(names "$r" skipped)" = "sandbox.enabled" ] && ok || bad "merge must SKIP an operator value it never wrote; skipped: $(names "$r" skipped)"
-[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = false ] && ok || bad "merge must not overwrite an operator's own value"
+[ "$(verdict "$r")" = refuse ] && ok || bad "a leaf of ours already present must refuse the whole fragment; verdict $(verdict "$r")"
+[ "$(names "$r" blocked)" = "sandbox.enabled" ] && ok || bad "the refusal must name what blocked it; blocked: $(names "$r" blocked)"
+[ "$(printf '%s' "$r" | jq -r '.wrote | length')" = 0 ] && ok || bad "a refusal must write nothing at all"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = false ] && ok || bad "a refusal must leave the operator value untouched"
 
-# UNRELATED KEYS SURVIVE — the whole point of leaf-level ownership over file- or top-key-level.
+# An adopter's own SIBLING key is not ours and does not block.
 r="$(m '{"model":"opus","sandbox":{"excludedCommands":["docker"]}}' "$work/empty-receipt")"
-[ "$(printf '%s' "$r" | jq -r '.settings.model')" = opus ] && ok || bad "merge must leave unrelated top-level keys alone"
+[ "$(verdict "$r")" = write ] && ok || bad "a sibling key the fragment does not ship must not block the install"
 [ "$(printf '%s' "$r" | jq -c '.settings.sandbox.excludedCommands')" = '["docker"]' ] && ok \
-  || bad "merge must leave an adopter's OWN sandbox sibling key alone — this is what leaf-level ownership is for"
+  || bad "an adopter's own sandbox sibling must survive the write"
+[ "$(names "$r" created)" = "sandbox.credentials,sandbox.network" ] && ok \
+  || bad "a container the adopter already had must NOT be recorded as ours; created: $(names "$r" created)"
+[ "$(printf '%s' "$r" | jq -r '.settings.model')" = opus ] && ok || bad "unrelated top-level keys must survive"
 
-# Build a real `installed` receipt to exercise the recorded-ownership verdicts.
-r="$(m '{}' "$work/empty-receipt")"
+# Build a real `installed` receipt for the established-ownership cases.
+r="$(m '{"model":"opus"}' "$work/empty-receipt")"
 printf '%s' "$r" | jq '.settings' > "$work/installed.json"
-adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" \
-  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" > "$work/installed-receipt"
-[ "$(adb_claude_settings_disposition "$work/installed-receipt")" = installed ] && ok || bad "a rendered install receipt must read back as disposition 'installed'"
+adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" "$(printf '%s' "$r" | jq -c .created)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$work/installed-receipt"
+[ "$(adb_claude_settings_disposition "$work/installed-receipt")" = installed ] && ok || bad "a rendered install receipt must read back as 'installed'"
 
-# IDEMPOTENT: ours and untouched is rewritten with the current value, never reported as a conflict.
+# ...and that is true of the MERGE, not only of the caller that declines to publish it. Retirement
+# runs before the block check, so a result carrying `pruned` beside `verdict: refuse` would be a
+# contradiction the next reader inherits.
+r2="$(printf '{"model":"opus","sandbox":{"enabled":false,"network":{"strictAllowlist":true}}}' > "$work/ref.json"
+      { cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/ref-receipt"
+      adb_claude_settings_merge "$work/ref.json" "$PAYLOAD" "$work/ref-receipt")"
+[ "$(verdict "$r2")" = refuse ] && ok || bad "precondition: that fixture should refuse"
+[ "$(printf '%s' "$r2" | jq -r '.pruned | length')" = 0 ] && ok \
+  || bad "a refusal must discard what retirement did — pruned beside verdict refuse is a contradiction"
+[ "$(printf '%s' "$r2" | jq -r '.settings.sandbox.network.strictAllowlist')" = true ] && ok \
+  || bad "a refusal must leave the file exactly as it found it"
+
+# An ESTABLISHED install with everything as we left it rewrites cleanly and reports nothing odd.
 r="$(m "$(cat "$work/installed.json")" "$work/installed-receipt")"
-[ "$(names "$r" skipped)" = "" ] && [ "$(names "$r" kept)" = "" ] && ok || bad "a re-run over our own untouched values must report neither skipped nor kept"
+[ "$(verdict "$r")" = write ] && ok || bad "an unchanged established install must write; verdict $(verdict "$r")"
+[ "$(names "$r" kept)" = "" ] && [ "$(names "$r" blocked)" = "" ] && ok || bad "an unchanged established install must report nothing kept or blocked"
 
-# REMOVED: the receipt says we wrote it and it is gone — the by-hand opt-out, never rewritten.
+# A DELETED leaf is the documented opt-out: the surface is the operator's now, so nothing is
+# rewritten — and no tombstone is recorded, which is what stops a later re-add being deleted as ours.
 r="$(m "$(jq -c 'del(.sandbox.enabled)' "$work/installed.json")" "$work/installed-receipt")"
-[ "$(names "$r" removed)" = "sandbox.enabled" ] && ok || bad "a recorded leaf now absent must be REMOVED (the by-hand opt-out); removed: $(names "$r" removed)"
+[ "$(verdict "$r")" = refuse ] && ok || bad "a leaf the operator deleted must refuse the update, not rewrite it"
+[ "$(names "$r" diverged)" = "sandbox.enabled" ] && ok || bad "the refusal must name the diverged leaf; diverged: $(names "$r" diverged)"
 [ "$(printf '%s' "$r" | jq -r '.settings.sandbox | has("enabled")')" = false ] && ok \
-  || bad "merge must NOT rewrite a leaf the operator deleted — that would undo the opt-out on every session"
+  || bad "a leaf the operator deleted must NOT be rewritten — that would undo the opt-out on every session"
 
-# KEPT: ours, but edited since. Never replaced on write, never deleted on remove.
-edited="$(jq -c '.sandbox.enabled = false' "$work/installed.json")"
-r="$(m "$edited" "$work/installed-receipt")"
-[ "$(names "$r" skipped)" = "sandbox.enabled" ] && ok || bad "an edited owned leaf must be skipped on write; skipped: $(names "$r" skipped)"
-r="$(m "$edited" "$work/installed-receipt" --remove)"
-[ "$(names "$r" kept)" = "sandbox.enabled" ] && ok || bad "an edited owned leaf must be KEPT on removal; kept: $(names "$r" kept)"
-[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = false ] && ok || bad "removal must not delete a leaf the operator edited"
+# An EDITED leaf refuses the same way.
+r="$(m "$(jq -c '.sandbox.enabled = false' "$work/installed.json")" "$work/installed-receipt")"
+[ "$(verdict "$r")" = refuse ] && ok || bad "an edited owned leaf must refuse the update"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = false ] && ok || bad "an edited owned leaf must not be overwritten"
 
-# PRUNED (retirement): the receipt records a leaf the payload no longer declares. Without this a
-# key dropped from a future payload sits in every adopter's settings forever with nobody owning it.
-{ cat "$work/installed-receipt"; printf 'leaf\t["sandbox","network","strictAllowlist"]\ttrue\n'; } > "$work/retired-receipt"
+# RETIREMENT still runs, and is not a refusal: a leaf we recorded and no longer ship is pruned when
+# it still matches, and kept and named when the operator has edited it.
+{ cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/retired-receipt"
 r="$(m "$(jq -c '.sandbox.network.strictAllowlist = true' "$work/installed.json")" "$work/retired-receipt")"
 [ "$(names "$r" pruned)" = "sandbox.network.strictAllowlist" ] && ok \
-  || bad "a recorded leaf the payload no longer declares must be PRUNED on install; pruned: $(names "$r" pruned)"
-# ...unless the operator edited it, in which case it is theirs now.
+  || bad "a recorded leaf the payload no longer ships must be PRUNED; pruned: $(names "$r" pruned)"
 r="$(m "$(jq -c '.sandbox.network.strictAllowlist = false' "$work/installed.json")" "$work/retired-receipt")"
 [ "$(names "$r" kept)" = "sandbox.network.strictAllowlist" ] && ok || bad "a retired leaf the operator edited must be kept, not pruned"
 
-# REMOVAL prunes only the containers IT emptied — never every empty object in the file. A blanket
-# walk would delete an operator's own `{}` elsewhere, the exact over-reach leaf ownership prevents.
-r="$(m "$(jq -c '.theirs = {} | .sandbox.excludedCommands = ["docker"]' "$work/installed.json")" "$work/installed-receipt" --remove)"
-[ "$(printf '%s' "$r" | jq -c '.settings.theirs')" = '{}' ] && ok || bad "removal must not delete an operator's own empty object elsewhere in the file"
-[ "$(printf '%s' "$r" | jq -c '.settings.sandbox')" = '{"excludedCommands":["docker"]}' ] && ok \
-  || bad "removal must prune the containers it emptied but keep the adopter's sibling; got $(printf '%s' "$r" | jq -c '.settings.sandbox')"
+# REMOVAL takes what still matches, keeps what was edited, and prunes ONLY containers we created.
 r="$(m "$(cat "$work/installed.json")" "$work/installed-receipt" --remove)"
-[ "$(printf '%s' "$r" | jq -r '.settings | has("sandbox")')" = false ] && ok || bad "a clean removal must leave no empty sandbox object behind"
+[ "$(printf '%s' "$r" | jq -r '.settings | has("sandbox")')" = false ] && ok || bad "a clean removal must take the containers it created"
+r="$(m "$(jq -c '.sandbox.enabled = false' "$work/installed.json")" "$work/installed-receipt" --remove)"
+[ "$(names "$r" kept)" = "sandbox.enabled" ] && ok || bad "an edited owned leaf must be KEPT on removal; kept: $(names "$r" kept)"
+r="$(m "$(jq -c '.sandbox.excludedCommands = ["docker"]' "$work/installed.json")" "$work/installed-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -c '.settings.sandbox')" = '{"excludedCommands":["docker"]}' ] && ok \
+  || bad "a container we created must survive while an adopter key is still in it; got $(printf '%s' "$r" | jq -c '.settings.sandbox')"
+
+# THE CONTAINER AN OPERATOR ALREADY HAD IS NOT OURS TO DELETE. This is the whole reason `created`
+# is recorded rather than derived from the pruned leaf paths.
+r="$(m '{"model":"opus","sandbox":{}}' "$work/empty-receipt")"
+printf '%s' "$r" | jq '.settings' > "$work/pre-sandbox.json"
+adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" "$(printf '%s' "$r" | jq -c .created)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$work/pre-sandbox-receipt"
+[ "$(names "$r" created)" = "sandbox.credentials,sandbox.network" ] && ok \
+  || bad "a container the operator already had must not be recorded as created; created: $(names "$r" created)"
+r="$(m "$(cat "$work/pre-sandbox.json")" "$work/pre-sandbox-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -c '.settings.sandbox')" = '{}' ] && ok \
+  || bad "an operator's pre-existing empty container must survive uninstall; got $(printf '%s' "$r" | jq -c '.settings.sandbox')"
+[ "$(printf '%s' "$r" | jq -r '.settings.model')" = opus ] && ok || bad "removal must not disturb unrelated keys"
 
 # --- the receipt: four dispositions, and only one of them is a choice ---------------------------
 
@@ -191,17 +233,17 @@ r="$(m "$(cat "$work/installed.json")" "$work/optout-receipt" --remove)"
 # them — and a reader that discarded those rows made the carry pointless: uninstall would remove
 # nothing and the next install would read the values as the operator's and drop them for good.
 #
-# LITERAL TAB, never a BRE `\t`: GNU grep reads the backslash form as a plain `t`, so on Linux
-# these greps matched nothing and the receipt they built was empty — the assertion below then
-# failed for a reason that had nothing to do with what it tests. macOS grep matches it, which is
-# exactly why a local green is not a verdict for the other runner.
-ADB_TAB="$(printf '\t')"
 { printf 'disposition skipped-below-floor\nversion -\nfloor %s\npayload -\n' "$FLOOR"
-  grep "^leaf$ADB_TAB" "$work/installed-receipt"; } > "$work/below-receipt"
+  grep -E "^(leaf|container)$ADB_TAB" "$work/installed-receipt"; } > "$work/below-receipt"
 [ "$(grep -c "^leaf$ADB_TAB" "$work/below-receipt")" -eq 4 ] && ok || bad "precondition: the below-floor receipt should carry leaf rows"
 r="$(m "$(cat "$work/installed.json")" "$work/below-receipt" --remove)"
 [ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 4 ] && ok \
   || bad "a transient skip must still OWN the rows it carried forward — otherwise uninstall strands every key it declined to touch"
+# ...CONTAINERS INCLUDED. Carrying the leaves without the objects made for them is the same loss in
+# miniature: uninstall removes the keys and leaves our empty containers behind for good.
+r="$(m "$(cat "$work/installed.json")" "$work/below-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -r '.settings | has("sandbox")')" = false ] && ok \
+  || bad "a transient skip must take the containers it created too; left: $(printf '%s' "$r" | jq -c '.settings.sandbox')"
 # What protects a doctored receipt is NOT the disposition (anyone who can edit a leaf row can edit
 # the disposition line above it) — it is the value match: a row whose recorded value no longer
 # equals the live one is kept, never removed.
@@ -449,33 +491,33 @@ HOME="$mode_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude 
 emode="$(adb_file_mode "$mode_home/.claude/settings.json")"
 [ "$emode" = "600" ] && ok || bad "install.sh must not relax a restricted ~/.claude/settings.json to the umask default; got $emode"
 
-# --- the headline must not claim protection the merge did not apply ------------------------------
+# --- the headline cannot overstate, because the contract will not let it ------------------------
 #
-# `sandbox.enabled` is not the only way it can overstate: an operator whose own
-# `sandbox.credentials.files = []` is skipped keeps ~/.aws and ~/.ssh readable, and reporting full
-# protection because sandboxing happens to be ON is exactly the false line this guards.
-headline() {   # headline <settings-json> -> the sandbox headline
+# Under all-or-nothing a `write` verdict means every shipped leaf was applied — anything already
+# there would have refused the lot — so the headline is true by construction rather than by a
+# check. What must still be right is that a refusal SAYS so, and names what is in the way.
+headline() {   # headline <settings-json> -> the sandbox line and its first continuation
   local h="$work/hl"; rm -rf "$h"; mkdir -p "$h/.claude"
   printf '%s\n' "$1" > "$h/.claude/settings.json"
   HOME="$h" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1 \
-    | grep -E '^  sandbox ' | head -1
+    | grep -E '^  sandbox |^           ' | head -2
 }
 stub "2.1.259 (Claude Code)"
 case "$(headline '{"model":"opus"}')" in
   *"least-privilege settings applied"*) ok ;;
   *) bad "a clean install must report least-privilege settings applied" ;;
 esac
-case "$(headline '{"sandbox":{"enabled":true,"credentials":{"files":[]}}}')" in
-  *PARTIALLY*) ok ;;
-  *) bad "a shipped leaf left at the operator's weaker value must be reported PARTIAL, not as full protection — ~/.aws and ~/.ssh stay readable" ;;
+case "$(headline '{"sandbox":{"credentials":{"files":[]}}}')" in
+  *"NOT written"*"sandbox.credentials.files"*) ok ;;
+  *) bad "a pre-existing leaf of ours must be reported as NOT written and named — never as protection applied" ;;
 esac
 case "$(headline '{"sandbox":{"enabled":false}}')" in
-  *"SANDBOXING IS NOT ON"*) ok ;;
-  *) bad "with sandbox.enabled left at the operator's false, every credential rule is inert and the headline must say so" ;;
+  *"NOT written"*"sandbox.enabled"*) ok ;;
+  *) bad "an operator who disabled the sandbox must be told the fragment was not written, and why" ;;
 esac
 case "$(headline "$(jq -c . "$PAYLOAD")")" in
-  *"least-privilege settings applied"*) ok ;;
-  *) bad "an operator who already set exactly our values has full protection and must not be told otherwise" ;;
+  *"NOT written"*) ok ;;
+  *) bad "an operator who already set our exact values owns them; the install must refuse rather than claim them" ;;
 esac
 
 # --- the ownership receipt is a precondition, not an afterthought --------------------------------
@@ -495,38 +537,25 @@ grep -qi "not a regular file" "$work/ro.log" && ok \
   || bad "an unpublishable receipt PATH must be refused up front, naming the reason"
 grep -qi "ROLLED BACK" "$work/ro.log" && bad "the receipt precheck must refuse BEFORE writing, not write and roll back" || ok
 
-# --- an EXPLICIT null is a value the adopter chose, not an absence ------------------------------
+# --- an EXPLICIT null, and a non-object ANCESTOR, BLOCK the install ------------------------------
 #
-# `getpath` answers null for a missing path AND for one whose value really is null, so the obvious
-# absence test overwrites a deliberate `{"sandbox":{"enabled":null}}` and records it as ours — the
-# ownership boundary failing on the one input designed to test it.
+# `getpath` answers null for a missing path AND for one whose value really is null, and it RAISES
+# through a scalar — `{"a":false} | getpath(["a","b"])` is a jq error. Under all-or-nothing both
+# shapes are the same answer: the operator has something there, so the fragment does not apply.
 r="$(m '{"sandbox":{"enabled":null}}' "$work/empty-receipt")"
-[ "$(names "$r" skipped)" = "sandbox.enabled" ] && ok \
-  || bad "an explicit null is the operator's value and must be SKIPPED, not read as absent; skipped: $(names "$r" skipped)"
-[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = null ] && ok \
-  || bad "an explicit null must not be overwritten"
-# ...and a genuinely missing leaf is still written, or the fix would have disabled the surface.
-r="$(m '{}' "$work/empty-receipt")"
-[ "$(printf '%s' "$r" | jq -r '.wrote | length')" = 4 ] && ok || bad "a genuinely absent leaf must still be written"
-# A leaf we OWN whose value the operator has since set to null is theirs now, and stays.
-r="$(m '{"sandbox":{"enabled":null}}' "$work/installed-receipt" --remove)"
-[ "$(names "$r" kept)" = "sandbox.enabled" ] && ok \
-  || bad "an owned leaf the operator set to null must be KEPT on removal, not deleted; kept: $(names "$r" kept)"
+[ "$(verdict "$r")" = refuse ] && ok || bad "an explicit null is a value the operator chose and must block the install"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.enabled')" = null ] && ok || bad "an explicit null must not be overwritten"
 
-# --- a null ANCESTOR is the operator's value too -------------------------------------------------
-#
-# `present` asks only about the FINAL key, so `{"sandbox":null}` reported every descendant as
-# absent and `setpath` replaced the chosen null with an object. Fixing the leaf case did not fix
-# this one.
-r="$(m '{"sandbox":null}' "$work/empty-receipt")"
-[ "$(printf '%s' "$r" | jq -r '.wrote | length')" = 0 ] && ok || bad "a null ANCESTOR must block every descendant leaf, not just the final key"
-[ "$(printf '%s' "$r" | jq -r '.settings.sandbox | type')" = null ] && ok || bad "a null ancestor must survive — setpath must not replace it with an object"
-# ...and the conflict is scoped to the subtree it actually covers.
-r="$(m '{"sandbox":{"credentials":null}}' "$work/empty-receipt")"
-[ "$(names "$r" skipped)" = "sandbox.credentials.files,sandbox.credentials.envVars" ] && ok \
-  || bad "a null ancestor must skip only the leaves beneath it; skipped: $(names "$r" skipped)"
-[ "$(names "$r" wrote)" = "sandbox.enabled,sandbox.network.allowedDomains" ] && ok \
-  || bad "leaves outside the conflicting subtree must still be written; wrote: $(names "$r" wrote)"
+for anc in 'false' '5' '"str"' '[1]' 'null'; do
+  printf '{"sandbox":{"credentials":%s}}\n' "$anc" > "$work/anc.json"
+  r="$(m "$(cat "$work/anc.json")" "$work/empty-receipt")" \
+    || { bad "a credentials ancestor of $anc must not fail the merge — getpath raises through a scalar"; continue; }
+  [ "$(verdict "$r")" = refuse ] && ok || bad "a credentials ancestor of $anc must block the install; verdict $(verdict "$r")"
+  [ "$(printf '%s' "$r" | jq -r '.wrote | length')" = 0 ] && ok || bad "a blocked install must write nothing (ancestor $anc)"
+done
+# ...and removal classifies the same shapes instead of failing.
+r="$(m '{"sandbox":{"credentials":false}}' "$work/installed-receipt" --remove)" \
+  && ok || bad "removal must not fail on a non-object ancestor"
 
 # --- the settings root must be an OBJECT, not merely valid JSON ---------------------------------
 #
@@ -538,24 +567,6 @@ for root in 'null' 'false' '"a string"' '[1,2]' '42'; do
   then bad "a settings root of $root must be REFUSED — it is valid JSON and is not an object"
   else ok; fi
 done
-
-# --- a non-object ancestor must CLASSIFY, never raise --------------------------------------------
-#
-# `getpath` raises through a scalar — `{"a":false} | getpath(["a","b"])` is a jq error, not null —
-# so an owned ancestor replaced by a scalar or an array made both merge passes die, and reinstall
-# and uninstall failed outright instead of skipping the descendants.
-for anc in 'false' '5' '"str"' '[1]' 'null'; do
-  printf '{"sandbox":{"credentials":%s}}\n' "$anc" > "$work/anc.json"
-  r="$(m "$(cat "$work/anc.json")" "$work/empty-receipt")" || { bad "a credentials ancestor of $anc must not fail the merge"; continue; }
-  # scoped to the subtree beneath it, and no wider
-  [ "$(names "$r" skipped)" = "sandbox.credentials.files,sandbox.credentials.envVars" ] && ok \
-    || bad "a credentials ancestor of $anc must skip exactly the leaves beneath it; skipped: $(names "$r" skipped)"
-  [ "$(names "$r" wrote)" = "sandbox.enabled,sandbox.network.allowedDomains" ] && ok \
-    || bad "a credentials ancestor of $anc must not block leaves outside its subtree; wrote: $(names "$r" wrote)"
-done
-# ...and removal must classify it too rather than failing.
-r="$(m '{"sandbox":{"credentials":false}}' "$work/installed-receipt" --remove)" \
-  && ok || bad "removal must not fail on a non-object ancestor"
 
 # --- removal ignores the payload ENTIRELY, not just a missing one --------------------------------
 #
@@ -585,7 +596,10 @@ else ok; fi
 printf '{"x": 5}\n' > "$work/typechange-payload.json"
 printf '{"x": {"y": 1}, "keep": "mine"}\n' > "$work/typechange.json"
 { printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload -\n' "$FLOOR"
-  printf 'leaf%s["x","y"]%s1\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/typechange-receipt"
+  printf 'leaf%s["x","y"]%s1\n' "$ADB_TAB" "$ADB_TAB"
+  # THE CONTAINER MATTERS HERE: `x` exists only because a previous install made it, so it must be
+  # recorded as ours — otherwise the very container we created blocks the replacement.
+  printf 'container%s["x"]\n' "$ADB_TAB"; } > "$work/typechange-receipt"
 r="$(adb_claude_settings_merge "$work/typechange.json" "$work/typechange-payload.json" "$work/typechange-receipt")"
 [ "$(printf '%s' "$r" | jq -r '.settings.x')" = 5 ] && ok \
   || bad "an owned leaf whose ancestor becomes a scalar must be reconciled first, so the replacement is written; got $(printf '%s' "$r" | jq -c '.settings')"
@@ -809,104 +823,44 @@ if [ "$MUTATION" -eq 1 ]; then
 
   # Each row breaks ONE rule, and its witness is the assertion that claims to cover it. A row that
   # goes red elsewhere is scored as caught by accident, which is not evidence.
-  check_mut 'merge rewrites a leaf the operator deleted' \
-    'if ($has | not) and $rec == null then' \
-    'if ($has | not) then' \
-    'must NOT rewrite a leaf the operator deleted'
-  check_mut 'merge overwrites an operator value it never wrote' \
-    'elif $rec != null and $now == $rec.v then' \
-    'elif true then' \
-    'must not overwrite'
+  # Each row breaks ONE rule of the all-or-nothing contract, and its witness is the assertion that
+  # claims to cover it. A row that goes red elsewhere is scored as caught by accident.
+  check_mut 'a leaf already present no longer blocks the install' \
+      '          | map(. as $p | select( ( $settings | anc_ok($p) | not ) or ( $settings | present($p) ) )) ) as $blocked' \
+      '          | map(. as $p | select( false )) ) as $blocked' \
+      'must refuse the whole fragment'
+  check_mut 'a diverged owned leaf is rewritten instead of refused' \
+      '                        or ( ($settings | getpath($r.p)) != $r.v ) ))' \
+      '                        or false ))' \
+      'an edited owned leaf must refuse the update'
   check_mut 'removal deletes a leaf the operator edited' \
-    'elif $now == $rec.v then .s = (.s | delpaths([$p])) | .pruned += [$p]' \
-    'elif true then .s = (.s | delpaths([$p])) | .pruned += [$p]' \
-    'must not delete a leaf the operator edited'
-  check_mut 'container pruning becomes a blanket walk over the whole file' \
-    '| ( [ .pruned[] | . as $p | range(1; ($p | length)) | $p[0:.] ]' \
-    '| ( [ .s | paths(type == "object") ]' \
-    "must not delete an operator's own empty object"
-  check_mut 'the receipt trusts an unrecognised disposition word' \
-    '    *) printf '"'"'none'"'"' ;;' \
-    '    *) printf '"'"'%s'"'"' "$line" ;;' \
-    "must read as 'none'"
-  check_mut 'a transient skip stops owning the rows it carried' \
-    '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;' \
-    '    installed|skipped-optout) ;;' \
-    'must still OWN the rows it carried forward'
-  check_mut 'an empty receipt path is accepted as ownership of the document root' \
-    'type == "array" and length > 0 and all(.[]; type == "string")' \
-    'type == "array" and all(.[]; type == "string")' \
-    'must be refused'
-  check_mut 'the receipt reader accepts a malformed leaf row' \
-    "printf '%s' \"\$p\" | jq -e 'type == \"array\" and length > 0 and all(.[]; type == \"string\")' >/dev/null 2>&1 || continue" \
-    ': ' \
-    'malformed receipt row must be dropped'
-  check_mut 'the version probe swallows a whole banner' \
-    'v="${out%%[!0-9.]*}"' \
-    'v="$out"' \
-    'must parse the leading dotted version out of the CLI banner'
-  check_mut 'the version probe accepts a bare major with no dot' \
-    'case "$v" in *.*) ;; *) return 1 ;; esac' \
-    'case "$v" in *) ;; esac' \
-    'must refuse an unparseable version banner'
-  check_mut 'the floor drops below what sandbox.credentials needs' \
-    "adb_claude_settings_floor() { printf '2.1.187'; }" \
-    "adb_claude_settings_floor() { printf '2.1.100'; }" \
-    'D98 pinned it to'
-  check_mut 'adb_publish_json accepts a directory destination' \
-    'if [ -e "$dest" ] && [ ! -f "$dest" ]; then' \
-    'if false; then' \
-    'must REFUSE a destination that is not a regular file'
-  check_mut 'adb_publish_json stamps the umask mode over a restricted file' \
-    '[ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null' \
-    ':' \
-    "must preserve the destination's mode"
-  check_mut 'an unprobeable CLI on PATH falls through to a fixed path' \
-    '  if [ -n "$path_bin" ]; then' \
-    '  if false; then' \
-    'must fail the probe, not fall through'
-  check_mut 'adb_file_mode tries the BSD spelling first' \
-    '  m="$(stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
-    '  m="$(stat -L -f '"'"'%Lp'"'"' "$f" 2>/dev/null || stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)"' \
-    'must read the DEREFERENCED mode under GNU stat'
+      '            elif ( .settings | getpath($p) ) == $rec.v then' \
+      '            elif true then' \
+      'must be KEPT on removal'
+  check_mut 'removal prunes containers it never created' \
+      '      | ( $created | sort_by(-length) ) as $mine' \
+      '      | ( [ .settings | paths(type == "object") ] | sort_by(-length) ) as $mine' \
+      "pre-existing empty container must survive"
+  check_mut 'a transient skip stops owning the LEAVES it carried' \
+      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership' \
+      '    installed|skipped-optout) ;;   # leaf ownership' \
+      'must still OWN the rows it carried forward'
+  check_mut 'a transient skip stops owning the CONTAINERS it carried' \
+      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # container ownership' \
+      '    installed|skipped-optout) ;;   # container ownership' \
+      'must take the containers it created'
   check_mut 'absence is decided by comparing to null again' \
-    '        | ( if $ok then (.s | present($p)) else false end ) as $has' \
-    '        | ( if $ok then (($now == null) | not) else false end ) as $has' \
-    'must be SKIPPED, not read as absent'
-  check_mut 'the GNU mode read stops dereferencing' \
-    '  m="$(stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
-    '  m="$(stat -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
-    'must read the DEREFERENCED mode under GNU stat'
-  check_mut 'the BSD mode read stops dereferencing' \
-    'm="$(stat -L -f '"'"'%Lp'"'"' "$f" 2>/dev/null)" || m="" ;; esac' \
-    'm="$(stat -f '"'"'%Lp'"'"' "$f" 2>/dev/null)" || m="" ;; esac' \
-    'DEREFERENCED mode'
-  # The FIRST occurrence is the removal pass — the stale reconcile runs before the write pass —
-  # so this row is about removal reading a leaf without checking its ancestors first.
-  check_mut "removal reads the leaf before the ancestor verdict is known" \
-    '        | ( .s | anc_ok($p) ) as $ok' \
-    '        | true as $ok' \
-    'removal must not fail on a non-object ancestor'
+      '    def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));' \
+      '    def present($p): (getpath($p) != null);' \
+      'must block the install'
   check_mut 'a non-object ancestor is treated as traversable' \
-    '                elif ($doc | getpath($a) | type) == "object" then "cont"' \
-    '                elif true then "cont"' \
-    'null ANCESTOR must block every descendant leaf'
-  check_mut 'a settings file with two top-level values is truncated to the first' \
-    '    ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )' \
-    '    ( . )' \
-    'more than one top-level JSON value must be REFUSED'
-  check_mut 'the stale prune runs after the new paths are evaluated' \
-    '  | reduce ($stale[]) as $p' \
-    '  | reduce ([][]) as $p' \
-    'must be reconciled first, so the replacement is written'
-  check_mut 'a null or false settings root coerces to an empty object' \
-    '  | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )' \
-    '  | ( . )' \
-    'must be REFUSED'
-  check_mut 'removal reads the payload when the file is non-empty' \
-    '  if [ "$mode" = "--remove" ]; then' \
-    '  if [ "$mode" = "--remove" ] && [ ! -s "$payload" ]; then' \
-    'must ignore an unparseable payload'
+      '                elif ($doc | getpath($a) | type) == "object" then "cont"' \
+      '                elif true then "cont"' \
+      'must not fail the merge'
+  check_mut 'a refusal still carries what retirement did' \
+      '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .created = []' \
+      '          | .' \
+      'must discard what retirement did'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -947,10 +901,10 @@ if [ "$MUTATION" -eq 1 ]; then
     'if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then' \
     'if false; then' \
     'must refuse BEFORE writing'
-  check_mut 'the headline ignores a skipped protection-bearing leaf' \
-    '  if [ -z "$ineffective" ]; then' \
-    '  if true; then' \
-    'must be reported PARTIAL'
+  check_mut 'a refusal is reported as an install' \
+    '  if [ "$verdict" = refuse ]; then' \
+    '  if false; then' \
+    'must be reported as NOT written and named'
   check_mut 'a skip discards the ownership it inherited' \
     '  carried="$(_adb_owned_rows "$receipt")"' \
     '  carried=""' \

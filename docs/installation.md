@@ -198,22 +198,28 @@ can be probed, it writes **no key** and prints the version found, the floor requ
 protection that was therefore not applied. That absence is recorded as a *skip*, not a choice, so
 the next `baseline update` applies the settings by itself once you upgrade the CLI.
 
-#### What it owns, and what it will never touch
+#### It applies whole, or not at all
 
-The installer owns exactly the **leaf paths** the fragment declares — not the file, and not the
-`sandbox` key. Your own `sandbox.excludedCommands` sits beside our `sandbox.enabled` and is never
-read, rewritten or removed. A receipt at `~/.claude/.adb-settings-owned` records what was written,
-and it is what makes four otherwise identical absences distinguishable:
+The fragment is installed **only when every key it ships is absent**. If any of them is already in
+your `settings.json` — whatever the value — nothing is written and the installer names what is in
+the way. There is no partial application: a half-applied policy reports protection it does not
+have, and `sandbox.enabled` without the credential rules (or the reverse) is exactly that.
+
+Your own keys are never in the way unless they *are* one of ours: `sandbox.excludedCommands` sits
+beside our `sandbox.enabled` and is never read, rewritten or removed.
+
+A receipt at `~/.claude/.adb-settings-owned` records the keys written, the containers created for
+them, and the digest of the fragment applied:
 
 | You do this | What happens next |
 |---|---|
-| Set `sandbox.enabled` yourself before installing | Left alone. We never overwrite a value we did not write. |
-| Edit a value we wrote | Left alone from then on, and **kept** (and named) at uninstall. |
-| Delete our keys from `settings.json` | Treated as an opt-out and not rewritten — the same rule as removing a hook entry. |
+| Already have any key we ship | **Nothing is written**, and the refusal names it. Remove or rename it and re-run `./install.sh` to take the policy. |
+| Edit or delete a key we wrote | The surface is yours from then on: the next install refuses rather than rewriting, and names what changed. Deleting is the opt-out, and it is not remembered as ours — so if you later re-add that value by hand, uninstall will not take it. |
 | `install.sh --no-sandbox` | Nothing written, the choice recorded; `baseline update` keeps honouring it. |
 | A future version stops shipping a key | The next install **prunes** it, so no orphan is left in your file. |
 | The shipped values change (a new allowed domain) | `baseline update` notices — the receipt records the **digest** of the fragment it applied, so a changed *value* is caught, not just a changed key. |
-| Your CLI is downgraded or drops off `PATH` | Nothing new is written, and the receipt **keeps** the record of what it already owns, so uninstall can still remove it. |
+| Your CLI is downgraded or drops off `PATH` | Nothing new is written, and the receipt **keeps** what it already owns, so uninstall can still remove it. |
+| You already had `{"sandbox": {}}` | It survives uninstall. We delete only the containers we made, which is why they are recorded rather than inferred. |
 
 #### The one conflict to know about
 

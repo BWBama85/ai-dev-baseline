@@ -7895,3 +7895,50 @@ survive is the part a later reader needs.
              excluded from the `stat` rule because its mutation rows must be able to write the
              defect down in order to inject it.
 - baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)
+
+## D100 — the settings fragment applies WHOLE or not at all
+- date:      2026-09-04
+- category:  project-delta
+- unknown:   D95 gave the fragment a per-leaf ownership boundary: write what it can, skip what the
+             operator owns, remember what they deleted. #248's review then ran six rounds, and
+             rounds 3 to 6 found their defects almost entirely in that BOOKKEEPING rather than in
+             the policy it carried — a null leaf read as absent, a null ancestor read as absent, a
+             scalar ancestor raising instead of classifying, a leaf that became a container leaving
+             the replacement skipped and the old key gone, a tombstone that would authorise
+             deleting a value the operator had re-added by hand, an emptied container deleted
+             though the operator had made it. Each fix was right and each new state needed its own
+             provenance. The question the owner was asked: keep paying for partial application, or
+             narrow the contract.
+- decision:  ALL-OR-NOTHING (owner, 2026-09-04). A first install writes the whole fragment only
+             when every leaf is absent and every ancestor is traversable; anything already there
+             BLOCKS the lot and the refusal names it. An established install updates only while
+             every recorded leaf is still present with the value recorded for it; any divergence —
+             an edit, or a deletion, which is the by-hand opt-out — means the operator has taken
+             the surface over, so nothing is written and the refusal names what diverged.
+             Retirement still runs: a recorded leaf the payload no longer ships is pruned when it
+             matches and kept and named when it does not. Removal takes the leaves that still match
+             and prunes ONLY the containers the receipt records this install as having CREATED.
+             A refusal is recorded as `skipped-blocked` and is retried when the PAYLOAD changes,
+             not on every session — retrying each time is the `baseline update` repair loop that
+             reporting pending-forever already caused once.
+- placement: `scripts/lib/common.sh` (`adb_claude_settings_merge`, the `container` receipt rows and
+             their reader) · `install.sh` (the verdict branch, `skipped-blocked`) · `bin/baseline`
+             (`adb_settings_pending`) · `scripts/check-settings-fragment.sh` · `docs/installation.md`
+- reason:    The states are what was generating the defects, so the states are gone: `skipped`,
+             `removed` and the partial headline no longer exist. Three consequences are worth
+             naming because they are why this is smaller rather than merely different.
+             (1) NO TOMBSTONE IS NEEDED. A deleted leaf is not remembered as "ours, removed"; it
+             simply makes the surface theirs, so it is never rewritten and never later deleted on
+             the strength of a record — which was the defect the tombstone would have carried.
+             (2) THE HEADLINE CANNOT OVERSTATE, by construction rather than by a check: a `write`
+             verdict means every shipped leaf was applied, because anything already there would
+             have refused the lot.
+             (3) CONTAINERS ARE STILL RECORDED, and that is the one piece of provenance the narrow
+             contract does not remove: an adopter who already had `{"sandbox":{}}` must keep it, so
+             ownership of the objects we create cannot be derived from the leaf paths at removal
+             time. It is recorded at write time instead.
+             The cost, stated plainly: an adopter with any pre-existing key of ours gets NO
+             protection until they resolve it themselves. That is the trade the owner took, and it
+             is the failure mode this project prefers everywhere else — refuse and say why, rather
+             than apply half a policy and report it as protection.
+- baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)

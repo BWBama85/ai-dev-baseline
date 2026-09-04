@@ -202,10 +202,14 @@ adb_settings_pending() {
   receipt="$(adb_claude_settings_receipt "$HOME")"
   case "$(adb_claude_settings_disposition "$receipt")" in
     none|skipped-below-floor|skipped-unprobeable) ;;
-    installed)
-      # `installed` IS NOT AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone can
+    installed|skipped-blocked)
+      # NEITHER `installed` NOR A BLOCKED REFUSAL IS AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone can
       # change the fragment WITHOUT touching a single installed symlink, and this path is the only
-      # thing between that pull and the fast-path `exit 0`.
+      # thing between that pull and the fast-path `exit 0`. A refusal is recorded the same way and
+      # asked the same question: it is retried when the PAYLOAD changes, not on every session —
+      # re-running it each time would put `baseline update` into the repair loop that reporting
+      # pending-forever already caused once. An adopter who clears the blocker re-runs
+      # `./install.sh`, and the refusal message says so.
       #
       # CURRENCY IS A DIGEST QUESTION, NOT A PATH-SET ONE. Comparing owned leaf PATHS fails in both
       # directions: a leaf the operator already owned is never recorded, so the sets differ forever

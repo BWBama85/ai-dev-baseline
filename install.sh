@@ -226,9 +226,29 @@ wire_settings() {
     adb_info "         (keys with no receipt could never be removed by uninstall, so none were applied)"
     return 1
   fi
+  # ALL-OR-NOTHING: a refusal writes NO KEY. Either the whole fragment applies or the operator is
+  # told exactly what is in the way, because a partial policy reports protection it does not have.
+  local verdict blockers
+  verdict="$(printf '%s' "$result" | jq -r '.verdict')"
+  if [ "$verdict" = refuse ]; then
+    blockers="$(printf '%s' "$result" | jq -r '[(.blocked + .diverged)[] | join(".")] | join(", ")')"
+    if [ "$(printf '%s' "$result" | jq -r '.diverged | length')" -gt 0 ]; then
+      adb_info "  sandbox  NOT written — these keys are no longer as this install left them: $blockers"
+      adb_info "           Editing or deleting one is the documented opt-out, so nothing was rewritten."
+      adb_info "           To take the policy back, remove the \`sandbox\` keys and re-run ./install.sh."
+    else
+      adb_info "  sandbox  NOT written — you already have: $blockers"
+      adb_info "           The policy applies whole or not at all, so none of it was written."
+      adb_info "           Remove or rename those keys and re-run ./install.sh to take it."
+    fi
+    _adb_record_skip skipped-blocked "$version" "$floor" "$receipt"
+    return 0
+  fi
+
   local rtmp="$receipt.adb.$$.tmp"
   if ! adb_claude_settings_leaf_rows "$payload" \
-         "$(printf '%s' "$result" | jq -c '.wrote + .removed')" \
+         "$(printf '%s' "$result" | jq -c '.wrote')" \
+         "$(printf '%s' "$result" | jq -c '.created')" \
        | adb_claude_settings_receipt_render installed "$version" "$floor" \
              "$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')" > "$rtmp" \
      || [ ! -s "$rtmp" ]; then
@@ -280,35 +300,13 @@ wire_settings() {
   fi
   rm -f "$pre"
 
-  # THE HEADLINE MUST NOT OVERSTATE, AND `sandbox.enabled` IS NOT THE ONLY WAY IT CAN. Asking only
-  # whether sandboxing is ON reported full protection to an operator whose own
-  # `sandbox.credentials.files = []` had been skipped — leaving ~/.aws and ~/.ssh readable while
-  # the line said least privilege was applied. So the question is asked of EVERY shipped leaf:
-  # which of them does the file, as it now stands, not actually carry? A leaf the operator had
-  # already set to our value is effective and is not named here, which is why this compares live
-  # values rather than reusing the `skipped` bucket.
-  local ineffective
-  ineffective="$(jq -n -r --slurpfile s "$settings" --slurpfile f "$payload" '
-      ($s[0] // {}) as $S | ($f[0] // {}) as $F
-      | [ $F | paths(type != "object") | select(all(.[]; type == "string")) ]
-      | map(. as $p | select( (try ($S | getpath($p)) catch null) != ($F | getpath($p)) ) | join("."))
-      | join(", ")' 2>/dev/null)" || ineffective=""
-
-  if [ -z "$ineffective" ]; then
-    adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
-  elif [ "$(jq -r '.sandbox.enabled // false' "$settings" 2>/dev/null)" != true ]; then
-    adb_info "  sandbox  settings written, but SANDBOXING IS NOT ON: \`sandbox.enabled\` is yours, not ours,"
-    adb_info "           and is not true — every credential and network rule is inert until it is."
-    adb_info "           Also not in effect: $ineffective"
-  else
-    adb_info "  sandbox  PARTIALLY applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)."
-    adb_info "           NOT in effect, because your own value is there: $ineffective"
-  fi
+  # THE HEADLINE CANNOT OVERSTATE ANY MORE, and that is the contract doing the work rather than a
+  # check: a `write` verdict means every shipped leaf was applied, because anything already there
+  # would have refused the lot.
+  adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
   _adb_report_settings "$result" wrote   "wrote"
-  _adb_report_settings "$result" skipped "left alone (your value, not ours)"
-  _adb_report_settings "$result" removed "left removed (your opt-out — re-add by hand or re-run after deleting the receipt)"
   _adb_report_settings "$result" pruned  "pruned (no longer shipped)"
-  _adb_report_settings "$result" kept    "kept (you edited it since we wrote it)"
+  _adb_report_settings "$result" kept    "kept (no longer shipped, and you edited it since we wrote it)"
   return 0
 }
 
@@ -316,10 +314,12 @@ wire_settings() {
 # retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
 # cosmetic loss: nothing else tells the operator that the reason they were just given is not on
 # disk.
-# The `leaf` rows a receipt already carries, or nothing. One home, because BOTH non-writing paths
-# (the opt-out and the version skips) must preserve ownership, and a second copy of this grep is a
-# second chance to lose it.
-_adb_owned_rows() { grep "^leaf$(printf '\t')" "$1" 2>/dev/null || true; }
+# The ownership rows a receipt already carries — `leaf` AND `container` — or nothing. One home,
+# because BOTH non-writing paths (the opt-out and the version skips) must preserve ownership, and a
+# second copy of this grep is a second chance to lose it. Carrying the leaves without the
+# containers is exactly that loss in miniature: uninstall then removes the keys and leaves the
+# objects it made behind.
+_adb_owned_rows() { grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null || true; }
 
 _adb_record_skip() {
   local disposition="$1" version="$2" floor="$3" receipt="$4" carried digest
@@ -440,9 +440,21 @@ EOF
   # that backup already there so it does not overwrite it with the hook-wired intermediate.
   # Its own write is atomic (tmp + mv), so a failure here leaves the hook entries standing and the
   # sandbox keys simply unwritten — two independent surfaces, neither half-applied.
+  # ONLY WHEN THE ROOT LINK IDENTIFIES THIS CLONE. `adb_link_manifest` may have failed — a missing
+  # source, an unwritable destination — and the installer still exits non-zero, but this call ran
+  # regardless and wrote both the settings and their receipt. Uninstall then asks the SAME question
+  # before consuming that receipt (a clone that does not own ~/.claude must not remove another
+  # one's settings), so a failed install left keys that nothing could ever remove. The predicate is
+  # the one bin/baseline and uninstall.sh already use; asking it here is what makes the three agree.
   local src=0
-  wire_settings || src=$?
-  [ "$src" -eq 0 ] || [ "$src" -eq 3 ] || rc=1
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO"; then
+    wire_settings || src=$?
+    [ "$src" -eq 0 ] || [ "$src" -eq 3 ] || rc=1
+  else
+    adb_info "  sandbox  NOT written — ~/.claude/CLAUDE.md does not point into this clone, so an"
+    adb_info "           uninstall from here could never remove them again. Fix the errors above and re-run."
+    rc=1
+  fi
   return "$rc"
 }
 
