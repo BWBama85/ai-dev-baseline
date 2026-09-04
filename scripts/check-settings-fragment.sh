@@ -605,6 +605,46 @@ r="$(adb_claude_settings_merge "$work/typechange.json" "$work/typechange-payload
   || bad "an owned leaf whose ancestor becomes a scalar must be reconciled first, so the replacement is written; got $(printf '%s' "$r" | jq -c '.settings')"
 [ "$(printf '%s' "$r" | jq -r '.settings.keep')" = "mine" ] && ok || bad "the reconciliation must not disturb an unrelated sibling"
 
+# --- a REFUSAL relinquishes the surface: a blocked receipt owns NOTHING --------------------------
+#
+# Under all-or-nothing a divergence means the operator has taken the keys over. Carrying the rows
+# into the blocked receipt would let a later uninstall delete a value they re-added by hand — the
+# tombstone hazard returning through a different door.
+{ printf 'disposition skipped-blocked\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")"
+  grep -E "^(leaf|container)$ADB_TAB" "$work/installed-receipt"; } > "$work/blocked-receipt"
+r="$(m "$(cat "$work/installed.json")" "$work/blocked-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 0 ] && ok \
+  || bad "a blocked receipt must own NOTHING — a refusal relinquishes the surface, and claiming it lets uninstall delete a value the operator re-added"
+
+# --- the created-container cleanup is guarded like the leaf reads --------------------------------
+#
+# `getpath` raises through a scalar, and this loop is the sibling of the leaf reads that learned it
+# two rounds earlier. A recorded child container under an ancestor the operator replaced with
+# `false` killed the whole removal pass.
+r="$(m '{"model":"opus","sandbox":false}' "$work/installed-receipt" --remove)" \
+  && ok || bad "removal must not fail when a recorded container sits under a scalar ancestor"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox')" = false ] && ok \
+  || bad "the operator's scalar must survive that removal untouched"
+# ...AND A CONTAINER RECORDED DEEPER THAN THE SCALAR. `present` reads one level up, so for a
+# two-deep path it is itself safe; only the ancestor walk saves a THREE-deep container whose
+# grandparent is a scalar. Without that case the two guards cover each other and neither can be
+# shown to matter.
+{ cat "$work/installed-receipt"; printf 'container%s["sandbox","credentials","deep"]\n' "$ADB_TAB"; } > "$work/deep-receipt"
+r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
+  && ok || bad "removal must not fail when a recorded container is DEEPER than the scalar that blocks the walk"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox')" = false ] && ok \
+  || bad "the operator's scalar must survive the deep-container removal untouched"
+
+# --- provenance survives the root-doc unlink ----------------------------------------------------
+#
+# `uninstall_claude` removes the root-doc link BEFORE the settings cleanup can fail, so a cleanup
+# that could not run leaves a receipt whose live proof is gone — and the retry it tells the
+# operator to make would refuse its own settings as another clone's.
+[ -n "$(adb_claude_settings_source_row "$ROOT")" ] && ok || bad "an ordinary clone path must be recordable as a source"
+[ -z "$(adb_claude_settings_source_row "$(printf '/a\tb')")" ] && ok || bad "a source path containing a TAB must be refused — the receipt is tab-delimited"
+[ -z "$(adb_claude_settings_source_row "$(printf '/a\nb')")" ] && ok \
+  || bad "a source path containing a NEWLINE must be refused — a truncated path resolves to a real sibling"
+
 # --- a SKIP must never discard ownership of keys already written ---------------------------------
 #
 # "Write no new keys" is not "forget the ones already there". A CLI that becomes unprobeable, or is
@@ -791,6 +831,28 @@ ask_pending "$current_home" && bad "a receipt recording THIS payload's digest mu
 pending skipped-below-floor "2.1.100 (Claude Code)" && bad "a below-floor skip must stay put while the CLI is STILL below the floor" || ok
 stub "2.1.259 (Claude Code)"
 
+# --- a blocked refusal records the payload it refused, so it is not retried forever --------------
+#
+# Carrying the PRIOR digest (or `-` on a first install) leaves `adb_settings_pending` seeing an
+# unknown digest on every update, re-running the installer and reporting a repair that changed
+# nothing — the loop that reporting pending-forever already caused once.
+blk_home="$work/blockedhome"; rm -rf "$blk_home"; mkdir -p "$blk_home/.claude"
+echo '{"sandbox":{"enabled":false}}' > "$blk_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$blk_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(adb_claude_settings_disposition "$blk_home/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
+  || bad "a blocked install must record skipped-blocked"
+[ "$(adb_claude_settings_payload_digest "$blk_home/.claude/.adb-settings-owned")" = "$(adb_sha256 "$PAYLOAD")" ] && ok \
+  || bad "a blocked receipt must record the digest of the payload it REFUSED, or every update re-runs the installer and reports a repair"
+[ "$(grep -c "^leaf$ADB_TAB" "$blk_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "a blocked receipt must carry no ownership rows"
+ln -sf "$ROOT/agents/claude/CLAUDE.md" "$blk_home/.claude/CLAUDE.md"
+if HOME="$blk_home" PATH="$work/bin:$PATH" bash -c '
+    . "'"$ROOT"'/scripts/lib/common.sh"
+    eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+    adb_settings_pending "'"$ROOT"'"'
+then bad "a blocked receipt recording THIS payload must not be pending — that is the repair loop"; else ok; fi
+
 # --- an uninstall from ANOTHER clone must not consume this one's settings ------------------------
 #
 # Two clones can each install globally: the second overwrites the first's links and its receipt.
@@ -842,11 +904,11 @@ if [ "$MUTATION" -eq 1 ]; then
       '      | ( [ .settings | paths(type == "object") ] | sort_by(-length) ) as $mine' \
       "pre-existing empty container must survive"
   check_mut 'a transient skip stops owning the LEAVES it carried' \
-      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership' \
+      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
       '    installed|skipped-optout) ;;   # leaf ownership' \
       'must still OWN the rows it carried forward'
   check_mut 'a transient skip stops owning the CONTAINERS it carried' \
-      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # container ownership' \
+      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership' \
       '    installed|skipped-optout) ;;   # container ownership' \
       'must take the containers it created'
   check_mut 'absence is decided by comparing to null again' \
@@ -861,6 +923,18 @@ if [ "$MUTATION" -eq 1 ]; then
       '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .created = []' \
       '          | .' \
       'must discard what retirement did'
+  check_mut 'a blocked receipt is treated as ownership-bearing' \
+      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
+      '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership' \
+      'a blocked receipt must own NOTHING'
+  check_mut 'the remove-pass container cleanup skips its ancestor walk' \
+      '            ( .settings | anc_ok($a) ) as $ok   # remove-pass container' \
+      '            true as $ok   # remove-pass container' \
+      'must not fail when a recorded container is DEEPER than the scalar'
+  check_mut 'the source guard captures its newline instead of quoting it' \
+      "  local _nl=\$'\\n'" \
+      '  local _nl; _nl="$(printf '"'"'\\n'"'"')"' \
+      'NEWLINE must be refused'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -901,6 +975,10 @@ if [ "$MUTATION" -eq 1 ]; then
     'if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then' \
     'if false; then' \
     'must refuse BEFORE writing'
+  check_mut 'a blocked refusal records the prior digest instead of the refused one' \
+    '    refused_digest="$(adb_sha256 "$payload" 2>/dev/null || printf '"'"'%s'"'"' '"'"'-'"'"')"' \
+    '    refused_digest="-"' \
+    'must record the digest of the payload it REFUSED'
   check_mut 'a refusal is reported as an install' \
     '  if [ "$verdict" = refuse ]; then' \
     '  if false; then' \

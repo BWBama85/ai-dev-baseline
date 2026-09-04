@@ -681,6 +681,41 @@ adb_claude_settings_disposition() {
   esac
 }
 
+# The install SOURCE a receipt records, or empty. Ownership is normally proved by the root-doc
+# link pointing into this clone — but `uninstall_claude` removes that link before the settings
+# cleanup can fail, so a cleanup that could not run (no jq) leaves a receipt no later retry can
+# prove. This is the durable half of the same proof.
+#
+# A path containing a TAB or NEWLINE is refused rather than recorded: the receipt is tab-delimited,
+# and a truncated path does not arrive obviously broken — it arrives as a shorter path that
+# frequently exists (`/w/project<NL>shadow` reads back as `/w/project`, a real sibling). Nothing is
+# recorded in that case and the link check remains the only proof, which is the fail-closed answer.
+# Usage: adb_claude_settings_receipt_source <receipt>
+adb_claude_settings_receipt_source() {
+  local receipt="$1" line
+  [ -f "$receipt" ] || return 1
+  line="$(grep -m1 '^source	' "$receipt" 2>/dev/null)" || return 1
+  line="${line#source	}"
+  [ -n "$line" ] || return 1
+  printf '%s' "$line"
+}
+
+# Usage: adb_claude_settings_source_row <repo-root>   (prints nothing for an unrepresentable path)
+adb_claude_settings_source_row() {
+  # `$'\n'`, NOT a command substitution. `$(printf '\n')` is the EMPTY STRING — substitution strips
+  # every trailing newline — so `*"$(printf '\n')"*` is `*""*`, which matches every path and
+  # silently refused to record any source at all. The sentinel spelling `$(printf 'x\n')` with the
+  # `x` stripped fails identically, for the same reason; a `$'…'` literal is not captured at all.
+  local _nl=$'\n'
+  case "$1" in
+    *"$(printf '\t')"*) return 0 ;;
+  esac
+  case "$1" in
+    *"$_nl"*) return 0 ;;
+  esac
+  printf 'source\t%s\n' "$1"
+}
+
 # The payload digest a receipt records, or empty. A receipt written before this field existed has
 # none, which reads as "unknown" — and unknown must mean PENDING, so an install predating the field
 # re-applies once and records it, rather than being trusted forever on no evidence.
@@ -755,7 +790,7 @@ adb_claude_settings_receipt_containers() {
 _adb_claude_settings_created_json() {
   local receipt="$1" line out=""
   case "$(adb_claude_settings_disposition "$receipt")" in
-    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # container ownership
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership
     *) printf '[]'; return 0 ;;
   esac
   while IFS= read -r line; do
@@ -875,9 +910,13 @@ adb_claude_settings_merge() {
       | ( $created | sort_by(-length) ) as $mine
       | reduce ($mine[]) as $a
           ( .;
-            ( .settings | getpath($a) ) as $now
-            | if ($now | type) == "object" and ($now | length) == 0
-              then .settings = (.settings | delpaths([$a])) else . end )
+            ( .settings | anc_ok($a) ) as $ok   # remove-pass container
+            | if ($ok | not) then .
+              elif ( .settings | present($a) | not ) then .   # remove-pass
+              else ( .settings | getpath($a) ) as $now
+                   | if ($now | type) == "object" and ($now | length) == 0
+                     then .settings = (.settings | delpaths([$a])) else . end
+              end )
       | .verdict = "remove"
     else
       # RETIREMENT runs first and unconditionally: a leaf we recorded and no longer ship must not
@@ -899,9 +938,17 @@ adb_claude_settings_merge() {
       | ( $created | sort_by(-length) ) as $mine
       | reduce ($mine[]) as $a
           ( .;
-            ( .settings | getpath($a) ) as $now
-            | if ($now | type) == "object" and ($now | length) == 0
-              then .settings = (.settings | delpaths([$a])) else . end )
+            # GUARDED LIKE THE LEAF READS. `getpath` raises through a scalar, so a recorded child
+            # container under an ancestor the operator has replaced with `false` killed the whole
+            # pass. The leaf reads learned this two rounds earlier; this loop is their sibling and
+            # was not swept with them.
+            ( .settings | anc_ok($a) ) as $ok   # write-pass container
+            | if ($ok | not) then .
+              elif ( .settings | present($a) | not ) then .   # write-pass
+              else ( .settings | getpath($a) ) as $now
+                   | if ($now | type) == "object" and ($now | length) == 0
+                     then .settings = (.settings | delpaths([$a])) else . end
+              end )
       | .settings as $settings
       # BLOCKED: a leaf we do not own that is already there, or whose ancestors cannot be walked.
       | ( [ $leaves[] | select( member($ownedp; .) | not ) ]
@@ -951,7 +998,7 @@ _adb_claude_settings_owned_json() {
   # (a non-empty array of string components, and a parseable value), and a leaf is removed ONLY
   # while its live value still equals the recorded one.
   case "$(adb_claude_settings_disposition "$receipt")" in
-    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership
     *) printf '[]'; return 0 ;;
   esac
   while IFS= read -r line; do
@@ -1010,7 +1057,7 @@ adb_claude_settings_receipt_render() {
   printf 'floor %s\n' "$floor"
   printf 'payload %s\n' "$digest"
   while IFS= read -r line; do
-    case "$line" in "leaf$tab"*|"container$tab"*) printf '%s\n' "$line" ;; esac
+    case "$line" in "leaf$tab"*|"container$tab"*|"source$tab"*) printf '%s\n' "$line" ;; esac
   done
 }
 

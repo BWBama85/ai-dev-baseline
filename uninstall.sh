@@ -145,12 +145,24 @@ unwire_settings() {
   # receipt. Leaving them is the same answer `adb_unlink_if_ours` gives for a link pointing
   # elsewhere, and it is said rather than done in silence.
   if [ "$ours" != "1" ]; then
-    adb_info "  sandbox  left alone — ~/.claude is installed from another clone, so its settings are not ours to remove"
-    return 0
+    # THE LINK IS NOT THE ONLY PROOF, and by now it may be gone: `adb_unlink_manifest` runs before
+    # this, so a cleanup that could not complete (no jq) leaves a receipt whose live proof has been
+    # removed — and the retry this function tells the operator to make would then refuse its own
+    # settings as another clone's. The recorded source is the durable half.
+    local recorded
+    recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
+    if [ -n "$recorded" ] && [ "$recorded" = "$REPO" ]; then
+      adb_info "  sandbox  the root-doc link is gone, but this receipt records this clone as its source — proceeding"
+    else
+      adb_info "  sandbox  left alone — ~/.claude is installed from another clone, so its settings are not ours to remove"
+      return 0
+    fi
   fi
   if ! command -v jq >/dev/null 2>&1; then
-    adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them"
-    return 0
+    adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them."
+    adb_info "         Install jq and re-run: the receipt records this clone as its source, so the"
+    adb_info "         retry can still prove they are ours even though the root-doc link is gone."
+    return 1
   fi
   # NO SETTINGS FILE MEANS NOTHING TO REMOVE — the receipt goes with it, because the keys it
   # describes cannot exist. A MISSING PAYLOAD IS NOT THAT CASE: ownership lives in the receipt, and

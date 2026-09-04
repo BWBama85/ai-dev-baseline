@@ -7941,4 +7941,15 @@ survive is the part a later reader needs.
              protection until they resolve it themselves. That is the trade the owner took, and it
              is the failure mode this project prefers everywhere else — refuse and say why, rather
              than apply half a policy and report it as protection.
+
+             CORRECTION, one review round later. "No tombstone is needed" was true of the merge and
+             FALSE of the receipt: the refusal still wrote a `skipped-blocked` record carrying the
+             prior rows, so a value the operator deleted, was refused over, and then re-added by
+             hand would have been deleted by uninstall as ours — the same hazard through a
+             different door. A refusal now RELINQUISHES: `skipped-blocked` owns nothing, carries no
+             rows, and records the digest of the payload it refused (carrying the prior digest left
+             `adb_settings_pending` mismatched forever, re-running the installer on every update).
+             Provenance moved with it: the receipt records the install `source`, because
+             `uninstall_claude` removes the root-doc link BEFORE the settings cleanup can fail, and
+             the retry it advises could not otherwise prove the receipt was its own.
 - baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)

@@ -241,14 +241,30 @@ wire_settings() {
       adb_info "           The policy applies whole or not at all, so none of it was written."
       adb_info "           Remove or rename those keys and re-run ./install.sh to take it."
     fi
-    _adb_record_skip skipped-blocked "$version" "$floor" "$receipt"
+    # ITS OWN RECEIPT, not `_adb_record_skip`'s. Two things differ from a version skip, and both
+    # matter. The DIGEST must be the payload this refusal evaluated — carrying the prior one (or
+    # `-` on a first install) leaves `adb_settings_pending` seeing an unknown or mismatched digest
+    # forever, so every update re-runs the installer and reports a repair that changed nothing.
+    # And NO ROWS are carried: under the all-or-nothing contract a refusal relinquishes the
+    # surface, so claiming ownership of keys the operator has taken over is what would let a later
+    # uninstall delete a value they re-added by hand.
+    local refused_digest
+    refused_digest="$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')"
+    if adb_claude_settings_source_row "$REPO" \
+       | adb_claude_settings_receipt_render skipped-blocked "$version" "$floor" \
+             "$refused_digest" > "$receipt.adb.$$.tmp" \
+       && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then :; else
+      rm -f "$receipt.adb.$$.tmp"
+      adb_info "  WARN   could not record the refusal in $receipt — the next update will re-report it"
+    fi
     return 0
   fi
 
   local rtmp="$receipt.adb.$$.tmp"
-  if ! adb_claude_settings_leaf_rows "$payload" \
-         "$(printf '%s' "$result" | jq -c '.wrote')" \
-         "$(printf '%s' "$result" | jq -c '.created')" \
+  if ! { adb_claude_settings_source_row "$REPO"
+         adb_claude_settings_leaf_rows "$payload" \
+           "$(printf '%s' "$result" | jq -c '.wrote')" \
+           "$(printf '%s' "$result" | jq -c '.created')"; } \
        | adb_claude_settings_receipt_render installed "$version" "$floor" \
              "$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')" > "$rtmp" \
      || [ ! -s "$rtmp" ]; then
@@ -319,7 +335,7 @@ wire_settings() {
 # second copy of this grep is a second chance to lose it. Carrying the leaves without the
 # containers is exactly that loss in miniature: uninstall then removes the keys and leaves the
 # objects it made behind.
-_adb_owned_rows() { grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null || true; }
+_adb_owned_rows() { grep -E "^(leaf|container|source)$(printf '\t')" "$1" 2>/dev/null || true; }
 
 _adb_record_skip() {
   local disposition="$1" version="$2" floor="$3" receipt="$4" carried digest
