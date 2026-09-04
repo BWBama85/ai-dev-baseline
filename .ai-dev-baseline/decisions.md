@@ -7699,6 +7699,16 @@ survive is the part a later reader needs.
              links and the receipt. Uninstall therefore asks the same question `bin/baseline` asks
              before re-wiring a root doc — does `~/.claude` belong to THIS clone — and captures the
              answer before `adb_unlink_manifest` removes the link it depends on.
+             ABSENCE IS ASKED OF EVERY ANCESTOR, not only the final key: an adopter's
+             `{"sandbox":null}` made every descendant look absent and `setpath` replaced the chosen
+             null with an object. STALE LEAVES ARE RECONCILED FIRST, before the new paths are
+             evaluated, or a payload that turns an owned leaf into a container leaves the
+             replacement skipped and the old leaf pruned into nothing. THE SETTINGS FILE MUST HOLD
+             EXACTLY ONE JSON VALUE — `--slurpfile` reads a stream, and taking `[0]` silently
+             discarded everything after the first object. And the mode carried across a publish is
+             read with `stat -L`: without it, a settings.json that is a symlink reports the LINK's
+             mode (measured 755 on macOS, 777 on Linux), which would then be stamped onto the
+             regular file replacing it.
 - placement: `agents/claude/settings.fragment.json` (payload) · `scripts/lib/common.sh`
              (`adb_claude_settings_*` — enumeration, ownership, receipt, state) · `install.sh`
              (`wire_settings`, `--no-sandbox`) · `uninstall.sh` (`unwire_settings`) ·

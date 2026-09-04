@@ -393,9 +393,11 @@ mkdir -p "$work/statbin"
 printf '{"a":1}\n' > "$pub_dir/modeprobe.json"   # its own fixture: the refusal above removes its temp
 cat > "$work/statbin/stat" <<'GNUSTAT'
 #!/bin/sh
+deref=no
+[ "$1" = "-L" ] && { deref=yes; shift; }
 case "$1" in
-  -c) [ "$2" = "%a" ] && { printf '600
-'; exit 0; }; exit 1 ;;
+  -c) [ "$2" = "%a" ] && { [ "$deref" = yes ] && printf '600
+' || printf '777\n'; exit 0; }; exit 1 ;;
   -f) printf '  File: "x"
     ID: 99 Namelen: 255 Type: tmpfs
 '; exit 1 ;;
@@ -404,12 +406,14 @@ exit 1
 GNUSTAT
 chmod +x "$work/statbin/stat"
 gnumode="$(PATH="$work/statbin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_file_mode "'"$pub_dir"'/modeprobe.json" 2>/dev/null')"
-[ "$gnumode" = "600" ] && ok || bad "adb_file_mode must read the mode under GNU stat, where -f prints a filesystem block and exits non-zero; got '$gnumode'"
+[ "$gnumode" = "600" ] && ok || bad "adb_file_mode must read the DEREFERENCED mode under GNU stat (where -f prints a filesystem block and exits non-zero); got '$gnumode'"
 cat > "$work/statbin/stat" <<'BSDSTAT'
 #!/bin/sh
+deref=no
+[ "$1" = "-L" ] && { deref=yes; shift; }
 case "$1" in
-  -f) [ "$2" = "%Lp" ] && { printf '600
-'; exit 0; }; exit 1 ;;
+  -f) [ "$2" = "%Lp" ] && { [ "$deref" = yes ] && printf '600
+' || printf '777\n'; exit 0; }; exit 1 ;;
   -c) printf 'stat: illegal option -- c
 ' >&2; exit 1 ;;
 esac
@@ -417,7 +421,15 @@ exit 1
 BSDSTAT
 chmod +x "$work/statbin/stat"
 bsdmode="$(PATH="$work/statbin:$PATH" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"; adb_file_mode "'"$pub_dir"'/modeprobe.json" 2>/dev/null')"
-[ "$bsdmode" = "600" ] && ok || bad "adb_file_mode must read the mode under BSD stat, where -c is an illegal option; got '$bsdmode'"
+[ "$bsdmode" = "600" ] && ok || bad "adb_file_mode must read the DEREFERENCED mode under BSD stat (where -c is an illegal option); got '$bsdmode'"
+
+# A SYMLINK'S OWN MODE IS NOT ITS TARGET'S. Without `-L`, `stat` reports the link (measured 755 on
+# macOS, 777 on Linux) — so a settings.json that is a symlink to a restricted file would have had
+# that mode stamped onto the regular file replacing it: world-readable, and on Linux world-WRITABLE.
+printf '{"a":1}\n' > "$pub_dir/symtarget.json"; chmod 600 "$pub_dir/symtarget.json"
+ln -sf "$pub_dir/symtarget.json" "$pub_dir/symlink.json"
+symmode="$(adb_file_mode "$pub_dir/symlink.json")"
+[ "$symmode" = "600" ] && ok || bad "adb_file_mode must read the DEREFERENCED mode through a symlink (the target's, not the link's own); got '$symmode'"
 
 printf '{"a":1}\n' > "$pub_dir/real.json"; chmod 600 "$pub_dir/real.json"
 printf '{"a":2}\n' > "$pub_dir/tmp2.json"; chmod 644 "$pub_dir/tmp2.json"
@@ -478,6 +490,45 @@ r="$(m '{}' "$work/empty-receipt")"
 r="$(m '{"sandbox":{"enabled":null}}' "$work/installed-receipt" --remove)"
 [ "$(names "$r" kept)" = "sandbox.enabled" ] && ok \
   || bad "an owned leaf the operator set to null must be KEPT on removal, not deleted; kept: $(names "$r" kept)"
+
+# --- a null ANCESTOR is the operator's value too -------------------------------------------------
+#
+# `present` asks only about the FINAL key, so `{"sandbox":null}` reported every descendant as
+# absent and `setpath` replaced the chosen null with an object. Fixing the leaf case did not fix
+# this one.
+r="$(m '{"sandbox":null}' "$work/empty-receipt")"
+[ "$(printf '%s' "$r" | jq -r '.wrote | length')" = 0 ] && ok || bad "a null ANCESTOR must block every descendant leaf, not just the final key"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox | type')" = null ] && ok || bad "a null ancestor must survive — setpath must not replace it with an object"
+# ...and the conflict is scoped to the subtree it actually covers.
+r="$(m '{"sandbox":{"credentials":null}}' "$work/empty-receipt")"
+[ "$(names "$r" skipped)" = "sandbox.credentials.files,sandbox.credentials.envVars" ] && ok \
+  || bad "a null ancestor must skip only the leaves beneath it; skipped: $(names "$r" skipped)"
+[ "$(names "$r" wrote)" = "sandbox.enabled,sandbox.network.allowedDomains" ] && ok \
+  || bad "leaves outside the conflicting subtree must still be written; wrote: $(names "$r" wrote)"
+
+# --- settings.json must hold EXACTLY ONE top-level value -----------------------------------------
+#
+# `--slurpfile` reads a STREAM, so an object followed by an appended one slurps two and `$cur[0]`
+# published the first — silently discarding every later value instead of refusing.
+printf '{"model":"opus"}{"appended":1}\n' > "$work/multi.json"
+if adb_claude_settings_merge "$work/multi.json" "$PAYLOAD" "$work/empty-receipt" >/dev/null 2>&1
+then bad "a settings.json holding more than one top-level JSON value must be REFUSED, not silently truncated to the first"
+else ok; fi
+
+# --- a stale leaf is reconciled BEFORE the new paths are evaluated -------------------------------
+#
+# When a payload turns an owned leaf into a container or back, evaluating the new paths first sees
+# the leftover object, calls it present-but-unowned and skips it; the stale prune then removes the
+# old leaf and the replacement is never written — while the receipt records the new digest, so
+# nothing retries.
+printf '{"x": 5}\n' > "$work/typechange-payload.json"
+printf '{"x": {"y": 1}, "keep": "mine"}\n' > "$work/typechange.json"
+{ printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload -\n' "$FLOOR"
+  printf 'leaf%s["x","y"]%s1\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/typechange-receipt"
+r="$(adb_claude_settings_merge "$work/typechange.json" "$work/typechange-payload.json" "$work/typechange-receipt")"
+[ "$(printf '%s' "$r" | jq -r '.settings.x')" = 5 ] && ok \
+  || bad "an owned leaf whose ancestor becomes a scalar must be reconciled first, so the replacement is written; got $(printf '%s' "$r" | jq -c '.settings')"
+[ "$(printf '%s' "$r" | jq -r '.settings.keep')" = "mine" ] && ok || bad "the reconciliation must not disturb an unrelated sibling"
 
 # --- a SKIP must never discard ownership of keys already written ---------------------------------
 #
@@ -543,6 +594,8 @@ fi
 # line under test had been mutated away.
 grep -qF '( umask 077; : > "$tmp" )' "$ROOT/install.sh" && ok \
   || bad "the settings temp file must be created restricted BEFORE it is populated, not chmod'd after the write"
+grep -qF '( umask 077; : > "$tmp" )' "$ROOT/uninstall.sh" && ok \
+  || bad "uninstall's settings temp file must be created restricted too — it holds the same whole document"
 
 # --- a receipt that cannot be published ROLLS THE SETTINGS BACK ----------------------------------
 #
@@ -752,13 +805,33 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if false; then' \
     'must fail the probe, not fall through'
   check_mut 'adb_file_mode tries the BSD spelling first' \
-    '  m="$(stat -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
-    '  m="$(stat -f '"'"'%Lp'"'"' "$f" 2>/dev/null || stat -c '"'"'%a'"'"' "$f" 2>/dev/null)"' \
-    'must read the mode under GNU stat'
+    '  m="$(stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
+    '  m="$(stat -L -f '"'"'%Lp'"'"' "$f" 2>/dev/null || stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)"' \
+    'must read the DEREFERENCED mode under GNU stat'
   check_mut 'absence is decided by comparing to null again' \
     'present($p) ) as $has' \
     '(($now == null) | not) ) as $has' \
     'must be SKIPPED, not read as absent'
+  check_mut 'the GNU mode read stops dereferencing' \
+    '  m="$(stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
+    '  m="$(stat -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
+    'must read the DEREFERENCED mode under GNU stat'
+  check_mut 'the BSD mode read stops dereferencing' \
+    'm="$(stat -L -f '"'"'%Lp'"'"' "$f" 2>/dev/null)" || m="" ;; esac' \
+    'm="$(stat -f '"'"'%Lp'"'"' "$f" 2>/dev/null)" || m="" ;; esac' \
+    'DEREFERENCED mode'
+  check_mut 'a null ancestor is written straight through' \
+    '        | if ( .s | anc_ok($p) | not ) then' \
+    '        | if false then' \
+    'null ANCESTOR must block every descendant leaf'
+  check_mut 'a settings file with two top-level values is truncated to the first' \
+    '    ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )' \
+    '    ( . )' \
+    'more than one top-level JSON value must be REFUSED'
+  check_mut 'the stale prune runs after the new paths are evaluated' \
+    '  | reduce ($stale[]) as $p' \
+    '  | reduce ([][]) as $p' \
+    'must be reconciled first, so the replacement is written'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -818,6 +891,10 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
+  check_mut "uninstall's settings temp file is world-readable while it is written" \
+    '  ( umask 077; : > "$tmp" ) || {' \
+    '  ( : > "$tmp" ) || {' \
+    "uninstall's settings temp file must be created restricted"
   check_mut 'uninstall consumes a receipt belonging to another clone' \
     '  if [ "$ours" != "1" ]; then' \
     '  if false; then' \

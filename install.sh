@@ -209,7 +209,8 @@ wire_settings() {
   fi
 
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt")" || {
-    adb_info "  WARN   ~/.claude/settings.json is not valid JSON — sandbox settings NOT written (restore from the backup)"
+    adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
+    adb_info "         settings NOT written (it must hold exactly one object; restore from the backup)"
     return 1; }
   # THE RECEIPT IS RENDERED BEFORE THE SETTINGS ARE PUBLISHED, and the old one is kept until both
   # are durable. Ownership is the load-bearing half: settings without a receipt are keys nobody

@@ -163,9 +163,17 @@ unwire_settings() {
     return 0
   fi
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)" || {
-    adb_info "  WARN   ~/.claude/settings.json is not valid JSON — sandbox settings NOT removed; edit it by hand"
+    adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox settings NOT removed; edit it by hand"
     return 1; }
   tmp="$settings.adb.$$.tmp"
+  # RESTRICTED BEFORE IT IS POPULATED, exactly as the installer's writer does it. This temp holds
+  # the WHOLE settings document — every unrelated key, an `env` block among them — and creating it
+  # under the caller's umask leaves a predictable, PID-named, world-readable file for as long as
+  # the write takes. `adb_publish_json` carries the destination's mode across only at publish time,
+  # which is the end of that window rather than the start of it.
+  rm -f "$tmp"
+  ( umask 077; : > "$tmp" ) || {
+    adb_info "  WARN   could not create the settings temp file — sandbox settings NOT removed"; return 1; }
   # Same shared publish as the installer: refuse a destination that is not a regular file, and
   # carry the original's mode across rather than stamping the umask default onto it.
   if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then

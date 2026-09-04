@@ -527,8 +527,12 @@ EOF
 adb_file_mode() {
   local f="$1" m
   [ -e "$f" ] || return 1
-  m="$(stat -c '%a' "$f" 2>/dev/null)" || m=""
-  case "$m" in ''|*[!0-7]*) m="$(stat -f '%Lp' "$f" 2>/dev/null)" || m="" ;; esac
+  # `-L` ON BOTH SPELLINGS, and it is not a nicety: without it `stat` reports the SYMLINK's own
+  # mode — measured 755 for a link to a 600 file on macOS, and 777 on Linux — so a settings.json
+  # that is a symlink to a restricted file would have had that mode stamped onto the regular file
+  # replacing it, publishing an `env` block world-readable and, on Linux, world-WRITABLE.
+  m="$(stat -L -c '%a' "$f" 2>/dev/null)" || m=""
+  case "$m" in ''|*[!0-7]*) m="$(stat -L -f '%Lp' "$f" 2>/dev/null)" || m="" ;; esac
   case "$m" in ''|*[!0-7]*) return 1 ;; esac
   printf '%s' "$m"
 }
@@ -777,27 +781,33 @@ adb_claude_settings_merge() {
     # here has at least one component (the receipt reader refuses an empty one), so `$p[-1]` is
     # always a real key.
     def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));
-    ($cur[0] // {})  as $settings
+    # ...AND EVERY ANCESTOR ON THE WAY DOWN. `present` asks only about the final key, so an adopter
+    # carrying `{"sandbox":null}` — or `{"sandbox":{"credentials":null}}` — reported every
+    # descendant as absent and `setpath` replaced that chosen null with an object. A missing
+    # ancestor is fine (we create it); one that EXISTS and is not an object is a conflict, and the
+    # leaf below it is skipped rather than written through.
+    def anc_ok($p): all( range(1; ($p | length)) as $i
+                       | ($p[0:$i]) as $a
+                       | if present($a) then (getpath($a) | type) == "object" else true end
+                       ; . );
+    # EXACTLY ONE TOP-LEVEL VALUE. `--slurpfile` reads a STREAM, so a settings.json holding an
+    # object followed by an accidentally appended one slurps two — and `$cur[0]` then published
+    # the first and silently discarded every later value the operator had, instead of taking the
+    # invalid-JSON refusal path the caller reports.
+    ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )
+  | ($cur[0] // {})  as $settings
   | ($frag[0] // {}) as $fragment
   | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
   | ( if $mode == "--remove" then [] else $leaves end ) as $want
-  | reduce ($want[]) as $p
-      ( { s: $settings, wrote: [], skipped: [], removed: [], pruned: [], kept: [] };
-        ( $owned | map(select(.p == $p)) | first ) as $rec
-        | ( .s | getpath($p) ) as $now
-        | ( .s | present($p) ) as $has
-        | if ($has | not) and $rec == null then
-            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
-          elif ($has | not) then
-            .removed += [$p]
-          elif $rec != null and $now == $rec.v then
-            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
-          else
-            .skipped += [$p]
-          end )
   | ( $owned | map(.p) | map(select(member($want; .) | not)) ) as $stale
+    # STALE FIRST, NEW SECOND. When a payload turns an owned leaf into a container or back — the
+    # receipt owns `x.y`, the new fragment declares a scalar `x` — evaluating the new paths first
+    # sees the leftover object at `x`, calls it present-but-unowned and SKIPS it; the stale prune
+    # then removes `x.y` and leaves `x` absent entirely, while the receipt records the new digest
+    # so nothing ever retries. Reconciling what we no longer own first — including the containers
+    # that leaves empty — makes the replacement path genuinely absent when it is evaluated.
   | reduce ($stale[]) as $p
-      ( .;
+      ( { s: $settings, wrote: [], skipped: [], removed: [], pruned: [], kept: [] };
         ( $owned | map(select(.p == $p)) | first ) as $rec
         | ( .s | getpath($p) ) as $now
         | if ( .s | present($p) | not ) then .
@@ -808,13 +818,28 @@ adb_claude_settings_merge() {
     # blanket `walk` would delete an operator'"'"'s own `{}` somewhere else in settings.json, which
     # is exactly the over-reach leaf-level ownership exists to prevent. Ancestors are visited
     # deepest-first so an object emptied by its own child'"'"'s removal is seen after that child.
-  | ( [ .pruned[] | . as $p | range(1; ($p | length)) | $p[0:.] ]
-      | unique | sort_by(-length) ) as $ancestors
-  | reduce ($ancestors[]) as $a
+  | ( [ .pruned[] | . as $p | range(1; ($p | length)) | $p[0:.] ] | unique | sort_by(-length) ) as $emptied
+  | reduce ($emptied[]) as $a
       ( .;
         ( .s | getpath($a) ) as $now
         | if ($now | type) == "object" and ($now | length) == 0
           then .s = (.s | delpaths([$a])) else . end )
+  | reduce ($want[]) as $p
+      ( .;
+        ( $owned | map(select(.p == $p)) | first ) as $rec
+        | ( .s | getpath($p) ) as $now
+        | ( .s | present($p) ) as $has
+        | if ( .s | anc_ok($p) | not ) then
+            .skipped += [$p]
+          elif ($has | not) and $rec == null then
+            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
+          elif ($has | not) then
+            .removed += [$p]
+          elif $rec != null and $now == $rec.v then
+            .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]
+          else
+            .skipped += [$p]
+          end )
   | { settings: .s, wrote: .wrote, skipped: .skipped, removed: .removed,
       pruned: .pruned, kept: .kept }
   ' 2>/dev/null
