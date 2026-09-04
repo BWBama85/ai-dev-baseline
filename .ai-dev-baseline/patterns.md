@@ -511,4 +511,7 @@ One line per resolved review thread, newest last.
 - `exit-path-asymmetry` `scripts/lib/common.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkO` PR #463 2026-09-04 — the refusal reset discarded a safe retirement, leaving the retired key installed with no ownership record to remove it by
 - `status-swallowed` `install.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkM` PR #463 2026-09-04 — a refusal whose own record could not be published returned success with the previous installed claim and its digest standing
 - `stale-state-trusted` `install.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkI` PR #463 2026-09-04 — the no-jq path rendered no receipt, leaving provenance naming the previous clone while the root link named this one
+- `stale-state-trusted` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfY` PR #463 2026-09-04 — the opt-out carried its ownership rows without rechecking them against the live settings, so a leaf the operator had deleted stayed claimed
+- `exit-path-asymmetry` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfU` PR #463 2026-09-04 — a prune that could not be published was followed by an ownership-free receipt, leaving the retired key with nothing able to remove it
+- `toctou` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfa` PR #463 2026-09-04 — initialising an empty settings.json wrote through a dangling symlink, creating a file outside the directory a rename-only publish path exists to protect
 <!-- adb:hits:end -->
