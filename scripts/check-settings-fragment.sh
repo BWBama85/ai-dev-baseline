@@ -645,6 +645,40 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
 [ -z "$(adb_claude_settings_source_row "$(printf '/a\nb')")" ] && ok \
   || bad "a source path containing a NEWLINE must be refused — a truncated path resolves to a real sibling"
 
+# --- provenance names the clone that LAST WROTE the receipt --------------------------------------
+#
+# `source` is not ownership and must not be carried forward: a receipt that kept naming clone A
+# after clone B took the install over would make B's own uninstall refuse B's settings as somebody
+# else's — the exact failure the source row was added to prevent, one clone over.
+prov_home="$work/provhome"; rm -rf "$prov_home"; mkdir -p "$prov_home/.claude"
+echo '{"model":"opus"}' > "$prov_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$prov_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(adb_claude_settings_receipt_source "$prov_home/.claude/.adb-settings-owned")" = "$ROOT" ] && ok \
+  || bad "an install must record its own clone as the receipt source"
+clone_b2="$work/cloneB2"; rm -rf "$clone_b2"; mkdir -p "$clone_b2"
+( cd "$ROOT" && cp -R . "$clone_b2" ) >/dev/null 2>&1; rm -rf "$clone_b2/.git"
+HOME="$prov_home" PATH="$work/bin:$PATH" bash "$clone_b2/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(adb_claude_settings_receipt_source "$prov_home/.claude/.adb-settings-owned")" = "$clone_b2" ] && ok \
+  || bad "a non-writing path must refresh the source to the clone that wrote it, not carry the previous one"
+[ "$(grep -c "^leaf$ADB_TAB" "$prov_home/.claude/.adb-settings-owned")" -eq 4 ] && ok \
+  || bad "refreshing the source must not drop the ownership rows"
+[ "$(grep -c "^source$ADB_TAB" "$prov_home/.claude/.adb-settings-owned")" -eq 1 ] && ok \
+  || bad "a receipt must carry exactly one source row"
+
+# --- the pinned model says what it omitted, on EVERY path ----------------------------------------
+#
+# The omission is security-relevant, and the branch that lacks jq is precisely where going unsaid
+# matters most.
+# A STRUCTURAL PIN, and named as one: driving the pinned installer without jq needs a published
+# artifact and belongs to check-pinned-install.sh. What is checkable here is WHERE the line sits.
+# Inside the `else` it is indented six spaces; at the loop body level it is four — and only the
+# second prints on both paths.
+grep -qE '^    _pi_say "  sandbox  NOT written' "$ROOT/scripts/lib/pinned-install.sh" && ok \
+  || bad "the pinned sandbox omission must sit at the loop body level, not inside the jq-success branch — the degraded path is where an unsaid omission matters most"
+grep -qE '^      _pi_say "  sandbox  NOT written' "$ROOT/scripts/lib/pinned-install.sh" && \
+  bad "the pinned sandbox omission is indented inside a branch — it will not print without jq" || ok
+
 # --- a SKIP must never discard ownership of keys already written ---------------------------------
 #
 # "Write no new keys" is not "forget the ones already there". A CLI that becomes unprobeable, or is
@@ -880,6 +914,7 @@ if [ "$MUTATION" -eq 1 ]; then
   prepare_payload() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/agents/claude/settings.fragment.json"; }
   prepare_install() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/install.sh"; }
   prepare_uninstall() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/uninstall.sh"; }
+  prepare_pinned() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/scripts/lib/pinned-install.sh"; }
   prepare_baseline() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/bin/baseline"; }
   runner() { bash "$1/repo/scripts/check-settings-fragment.sh" 2>&1; }
 
@@ -995,7 +1030,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '    if adb_publish_json "$pre" "$settings"; then' \
     '    if false; then' \
     'must ROLL BACK the settings'
+  check_mut 'the source row is carried forward instead of refreshed' \
+    '"^(leaf|container)$(printf' \
+    '"^(leaf|container|source)$(printf' \
+    'must carry exactly one source row'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
+
+  check_mut_reset
+  check_mut 'the pinned sandbox omission moves inside the jq branch' \
+    '    _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"' \
+    '      _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"' \
+    'must sit at the loop body level'
+  check_mutation_pool "check-settings-fragment(pinned)" "$work/mut-pinned" prepare_pinned runner 2
 
   check_mut_reset
   check_mut "uninstall's settings temp file is world-readable while it is written" \

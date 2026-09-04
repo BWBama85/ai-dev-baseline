@@ -1428,14 +1428,6 @@ EOF
         rm -rf "$work"; trap - EXIT; return 14
       }
       _pi_say "  hooks  wired project Stop gates into .claude/settings.json"
-      # SAID, NOT SILENTLY OMITTED (#248, D97). The global installer also writes a least-privilege
-      # `sandbox` fragment into ~/.claude/settings.json; this model writes a PROJECT-scoped
-      # settings.json and deliberately does not carry it. The reason is ownership, not vendor
-      # support: this file is TRACKED by the adopting project, so writing a sandbox policy here
-      # would commit one on behalf of every contributor to that repository. (Some sandbox keys ARE
-      # user/managed-only, but the ones this fragment ships are not — D97 records the correction.)
-      _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"
-      _pi_say "           sandbox policy is left to the global install. See docs/installation.md."
       # RECORDED, because uninstall must not delete a settings.json it cannot prove it created —
       # and CARRIED FORWARD from the prior receipt, because only the FIRST install creates it. A
       # re-run that dropped the marker would both break byte idempotence and quietly hand the file
@@ -1444,6 +1436,17 @@ EOF
         printf '# created: .claude/settings.json\n' >> "$rp"
       fi
     fi
+    # SAID ON EVERY PATH, NOT ONLY THE ONE WITH jq (#248, D97). The global installer also writes a
+    # least-privilege `sandbox` fragment into ~/.claude/settings.json; this model writes a
+    # PROJECT-scoped settings.json and deliberately does not carry it — the file is TRACKED by the
+    # adopting project, so a sandbox policy written here is committed on behalf of every
+    # contributor to it. (Some sandbox keys ARE user/managed-only; the ones this fragment ships are
+    # not, and D97 records that correction.)
+    #
+    # OUTSIDE the jq branch, because a security-relevant omission that goes unsaid precisely in the
+    # degraded environment is the one place it most needs saying.
+    _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"
+    _pi_say "           sandbox policy is left to the global install. See docs/installation.md."
   done
 
   _pi_say "pinned to $ver — commit .ai-dev-baseline/ and the vendored .<agent>/ payload"

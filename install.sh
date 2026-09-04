@@ -156,7 +156,7 @@ wire_settings() {
   # earlier install wrote: uninstall could no longer prove which keys were ours, and D95's
   # retirement prune would have nothing to prune.
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
-    if ! printf '%s\n' "$(_adb_owned_rows "$receipt")" \
+    if ! { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$(_adb_owned_rows "$receipt")"; } \
          | adb_claude_settings_receipt_render skipped-optout "-" "$floor" \
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
          || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
@@ -330,12 +330,16 @@ wire_settings() {
 # retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
 # cosmetic loss: nothing else tells the operator that the reason they were just given is not on
 # disk.
-# The ownership rows a receipt already carries — `leaf` AND `container` — or nothing. One home,
+# The OWNERSHIP rows a receipt already carries — `leaf` AND `container` — or nothing. One home,
 # because BOTH non-writing paths (the opt-out and the version skips) must preserve ownership, and a
 # second copy of this grep is a second chance to lose it. Carrying the leaves without the
 # containers is exactly that loss in miniature: uninstall then removes the keys and leaves the
 # objects it made behind.
-_adb_owned_rows() { grep -E "^(leaf|container|source)$(printf '\t')" "$1" 2>/dev/null || true; }
+#
+# PROVENANCE IS NOT CARRIED. `source` names the clone that LAST WROTE the receipt, and every render
+# appends the current one — carrying it verbatim let a receipt keep naming clone A after clone B
+# took the install over, so B's own uninstall would later refuse B's settings as somebody else's.
+_adb_owned_rows() { grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null || true; }
 
 _adb_record_skip() {
   local disposition="$1" version="$2" floor="$3" receipt="$4" carried digest
@@ -350,7 +354,7 @@ _adb_record_skip() {
   # an earlier install really did apply, which is what `pending` compares against.
   digest="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')"
   [ -n "$digest" ] || digest="-"
-  if printf '%s\n' "$carried" \
+  if { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$carried"; } \
      | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" "$digest" > "$receipt.adb.$$.tmp" \
      && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     return 0

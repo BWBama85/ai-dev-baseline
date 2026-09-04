@@ -773,7 +773,7 @@ add settings-fragment   bash scripts/check-settings-fragment.sh
 # broken in a COPY — of the library, of the payload, of install.sh — and required RED on its own
 # witness.
 add settings-fragment-mutation bash scripts/check-settings-fragment.sh --mutation
-inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline
+inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
