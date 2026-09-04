@@ -501,4 +501,8 @@ One line per resolved review thread, newest last.
 - `new-default-read-as-opt-out` `install.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjs` PR #463 2026-09-04 — a removed leaf was recorded with the payload value, so an operator who re-added it by hand would have had it deleted as ours
 - `precondition-ordering` `install.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjv` PR #463 2026-09-04 — the settings were written even when the root link failed, leaving keys that uninstall's own ownership check would then refuse to remove
 - `status-swallowed` `uninstall.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmj0` PR #463 2026-09-04 — the receipt's rm status was ignored, so a stale ownership record survived a reported-clean uninstall and made the next install refuse to restore protection
+- `metric-scope-mismatch` `install.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtg` PR #463 2026-09-04 — the blocked receipt carried the prior digest, so pending saw a mismatch forever and re-ran the installer on every update
+- `partial-validation` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtk` PR #463 2026-09-04 — the created-container cleanup read getpath unguarded, the sibling loop of the leaf reads that had already been fixed for it
+- `exit-path-asymmetry` `uninstall.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtr` PR #463 2026-09-04 — uninstall returned success without jq after the link proving ownership had been removed, so the retry it advised could never complete
+- `new-default-read-as-opt-out` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFt2` PR #463 2026-09-04 — a blocked receipt still owned its carried rows, so a value the operator deleted and later re-added by hand would be removed as ours
 <!-- adb:hits:end -->
