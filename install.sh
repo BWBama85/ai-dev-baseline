@@ -280,15 +280,29 @@ wire_settings() {
   fi
   rm -f "$pre"
 
-  # THE HEADLINE MUST NOT OVERSTATE. A merge that SKIPPED `sandbox.enabled` because the operator
-  # already set it to false leaves every credential rule inert, and "least-privilege settings
-  # applied" would be false in the one way that matters. (PR review)
-  if [ "$(printf '%s' "$result" | jq -r '[.wrote[] | join(".")] | index("sandbox.enabled") != null')" = true ] \
-     || [ "$(jq -r '.sandbox.enabled // false' "$settings" 2>/dev/null)" = true ]; then
+  # THE HEADLINE MUST NOT OVERSTATE, AND `sandbox.enabled` IS NOT THE ONLY WAY IT CAN. Asking only
+  # whether sandboxing is ON reported full protection to an operator whose own
+  # `sandbox.credentials.files = []` had been skipped — leaving ~/.aws and ~/.ssh readable while
+  # the line said least privilege was applied. So the question is asked of EVERY shipped leaf:
+  # which of them does the file, as it now stands, not actually carry? A leaf the operator had
+  # already set to our value is effective and is not named here, which is why this compares live
+  # values rather than reusing the `skipped` bucket.
+  local ineffective
+  ineffective="$(jq -n -r --slurpfile s "$settings" --slurpfile f "$payload" '
+      ($s[0] // {}) as $S | ($f[0] // {}) as $F
+      | [ $F | paths(type != "object") | select(all(.[]; type == "string")) ]
+      | map(. as $p | select( (try ($S | getpath($p)) catch null) != ($F | getpath($p)) ) | join("."))
+      | join(", ")' 2>/dev/null)" || ineffective=""
+
+  if [ -z "$ineffective" ]; then
     adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
-  else
+  elif [ "$(jq -r '.sandbox.enabled // false' "$settings" 2>/dev/null)" != true ]; then
     adb_info "  sandbox  settings written, but SANDBOXING IS NOT ON: \`sandbox.enabled\` is yours, not ours,"
-    adb_info "           and is not true — the credential and network rules below are inert until it is."
+    adb_info "           and is not true — every credential and network rule is inert until it is."
+    adb_info "           Also not in effect: $ineffective"
+  else
+    adb_info "  sandbox  PARTIALLY applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)."
+    adb_info "           NOT in effect, because your own value is there: $ineffective"
   fi
   _adb_report_settings "$result" wrote   "wrote"
   _adb_report_settings "$result" skipped "left alone (your value, not ours)"

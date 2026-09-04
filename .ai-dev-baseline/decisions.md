@@ -7841,8 +7841,9 @@ survive is the part a later reader needs.
              existing `adb_version_ge`), and below the floor writes no key and prints the version
              found, the floor required, and the protection not applied. The receipt is written in
              EVERY case, carrying a `disposition` line — `installed`, `skipped-below-floor`,
-             `skipped-unprobeable` or `skipped-optout` — and the leaves only when the disposition
-             is `installed`. Self-heal reads the disposition: `skipped-optout` is preserved
+             `skipped-unprobeable` or `skipped-optout` — and the leaf rows under EVERY one of them
+             except a first-ever skip that has no prior rows to carry: a skip means "write no NEW
+             keys", never "forget the ones already there". Self-heal reads the disposition: `skipped-optout` is preserved
              (`--no-sandbox` again), and every other skip is RETRIED, so an install that ran
              against an old CLI installs the fragment by itself once the CLI is upgraded.
              An unprobeable CLI skips rather than writes: an unread version is not evidence that

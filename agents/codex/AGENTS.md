@@ -1313,8 +1313,8 @@ than none:
     a CLI below the floor gets nothing at all (by design: an inert key would report
     protection it never applied). Neither state is detectable from an agent's prose.
   - **It bounds sandboxed Bash, not the agent.** In-process tools follow their permission
-    rules instead, and with `allowUnsandboxedCommands` at its default a blocked command
-    can be retried outside the sandbox after a prompt.
+    rules instead, and unless `allowUnsandboxedCommands` is set to `false` a blocked command can
+    be retried outside the sandbox, which then goes through the ordinary permission flow.
   - **A subagent still shares the parent session's configuration**, so a dispatch inherits
     whatever the parent had — including an opt-out.
   - **It fails OPEN when the sandbox cannot start.** Per the vendor reference, if dependencies are

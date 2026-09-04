@@ -450,11 +450,33 @@ emode="$(adb_file_mode "$mode_home/.claude/settings.json")"
 [ "$emode" = "600" ] && ok || bad "install.sh must not relax a restricted ~/.claude/settings.json to the umask default; got $emode"
 
 # --- the headline must not claim protection the merge did not apply ------------------------------
-off_home="$work/offhome"; mkdir -p "$off_home/.claude"
-echo '{"sandbox":{"enabled":false}}' > "$off_home/.claude/settings.json"
-HOME="$off_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/off.log" 2>&1
-grep -qi "SANDBOXING IS NOT ON" "$work/off.log" && ok \
-  || bad "with sandbox.enabled left at the operator's false, the installer must NOT report least-privilege settings applied — every credential rule is inert"
+#
+# `sandbox.enabled` is not the only way it can overstate: an operator whose own
+# `sandbox.credentials.files = []` is skipped keeps ~/.aws and ~/.ssh readable, and reporting full
+# protection because sandboxing happens to be ON is exactly the false line this guards.
+headline() {   # headline <settings-json> -> the sandbox headline
+  local h="$work/hl"; rm -rf "$h"; mkdir -p "$h/.claude"
+  printf '%s\n' "$1" > "$h/.claude/settings.json"
+  HOME="$h" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1 \
+    | grep -E '^  sandbox ' | head -1
+}
+stub "2.1.259 (Claude Code)"
+case "$(headline '{"model":"opus"}')" in
+  *"least-privilege settings applied"*) ok ;;
+  *) bad "a clean install must report least-privilege settings applied" ;;
+esac
+case "$(headline '{"sandbox":{"enabled":true,"credentials":{"files":[]}}}')" in
+  *PARTIALLY*) ok ;;
+  *) bad "a shipped leaf left at the operator's weaker value must be reported PARTIAL, not as full protection — ~/.aws and ~/.ssh stay readable" ;;
+esac
+case "$(headline '{"sandbox":{"enabled":false}}')" in
+  *"SANDBOXING IS NOT ON"*) ok ;;
+  *) bad "with sandbox.enabled left at the operator's false, every credential rule is inert and the headline must say so" ;;
+esac
+case "$(headline "$(jq -c . "$PAYLOAD")")" in
+  *"least-privilege settings applied"*) ok ;;
+  *) bad "an operator who already set exactly our values has full protection and must not be told otherwise" ;;
+esac
 
 # --- the ownership receipt is a precondition, not an afterthought --------------------------------
 # Settings without a receipt are keys nobody can prove are ours; the next install reads them as the
@@ -505,6 +527,45 @@ r="$(m '{"sandbox":{"credentials":null}}' "$work/empty-receipt")"
   || bad "a null ancestor must skip only the leaves beneath it; skipped: $(names "$r" skipped)"
 [ "$(names "$r" wrote)" = "sandbox.enabled,sandbox.network.allowedDomains" ] && ok \
   || bad "leaves outside the conflicting subtree must still be written; wrote: $(names "$r" wrote)"
+
+# --- the settings root must be an OBJECT, not merely valid JSON ---------------------------------
+#
+# `// {}` is false for `null` AND for `false`, so either root coerced to an empty object and the
+# whole file was replaced by the merge rather than refused.
+for root in 'null' 'false' '"a string"' '[1,2]' '42'; do
+  printf '%s\n' "$root" > "$work/root.json"
+  if adb_claude_settings_merge "$work/root.json" "$PAYLOAD" "$work/empty-receipt" >/dev/null 2>&1
+  then bad "a settings root of $root must be REFUSED — it is valid JSON and is not an object"
+  else ok; fi
+done
+
+# --- a non-object ancestor must CLASSIFY, never raise --------------------------------------------
+#
+# `getpath` raises through a scalar — `{"a":false} | getpath(["a","b"])` is a jq error, not null —
+# so an owned ancestor replaced by a scalar or an array made both merge passes die, and reinstall
+# and uninstall failed outright instead of skipping the descendants.
+for anc in 'false' '5' '"str"' '[1]' 'null'; do
+  printf '{"sandbox":{"credentials":%s}}\n' "$anc" > "$work/anc.json"
+  r="$(m "$(cat "$work/anc.json")" "$work/empty-receipt")" || { bad "a credentials ancestor of $anc must not fail the merge"; continue; }
+  # scoped to the subtree beneath it, and no wider
+  [ "$(names "$r" skipped)" = "sandbox.credentials.files,sandbox.credentials.envVars" ] && ok \
+    || bad "a credentials ancestor of $anc must skip exactly the leaves beneath it; skipped: $(names "$r" skipped)"
+  [ "$(names "$r" wrote)" = "sandbox.enabled,sandbox.network.allowedDomains" ] && ok \
+    || bad "a credentials ancestor of $anc must not block leaves outside its subtree; wrote: $(names "$r" wrote)"
+done
+# ...and removal must classify it too rather than failing.
+r="$(m '{"sandbox":{"credentials":false}}' "$work/installed-receipt" --remove)" \
+  && ok || bad "removal must not fail on a non-object ancestor"
+
+# --- removal ignores the payload ENTIRELY, not just a missing one --------------------------------
+#
+# Ownership lives in the receipt and `--remove` writes nothing, so a payload that exists but is
+# truncated must not reach the merge and strand every receipt-owned key.
+printf '{"sandbox":' > "$work/truncated-payload.json"
+r="$(adb_claude_settings_merge "$work/installed.json" "$work/truncated-payload.json" "$work/installed-receipt" --remove)" \
+  && ok || bad "removal must ignore an unparseable payload — ownership is the receipt's, and removal writes nothing"
+[ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 4 ] && ok \
+  || bad "removal with an unparseable payload must still remove every receipt-owned leaf"
 
 # --- settings.json must hold EXACTLY ONE top-level value -----------------------------------------
 #
@@ -809,8 +870,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  m="$(stat -L -f '"'"'%Lp'"'"' "$f" 2>/dev/null || stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)"' \
     'must read the DEREFERENCED mode under GNU stat'
   check_mut 'absence is decided by comparing to null again' \
-    'present($p) ) as $has' \
-    '(($now == null) | not) ) as $has' \
+    '        | ( if $ok then (.s | present($p)) else false end ) as $has' \
+    '        | ( if $ok then (($now == null) | not) else false end ) as $has' \
     'must be SKIPPED, not read as absent'
   check_mut 'the GNU mode read stops dereferencing' \
     '  m="$(stat -L -c '"'"'%a'"'"' "$f" 2>/dev/null)" || m=""' \
@@ -820,9 +881,15 @@ if [ "$MUTATION" -eq 1 ]; then
     'm="$(stat -L -f '"'"'%Lp'"'"' "$f" 2>/dev/null)" || m="" ;; esac' \
     'm="$(stat -f '"'"'%Lp'"'"' "$f" 2>/dev/null)" || m="" ;; esac' \
     'DEREFERENCED mode'
-  check_mut 'a null ancestor is written straight through' \
-    '        | if ( .s | anc_ok($p) | not ) then' \
-    '        | if false then' \
+  # The FIRST occurrence is the removal pass — the stale reconcile runs before the write pass —
+  # so this row is about removal reading a leaf without checking its ancestors first.
+  check_mut "removal reads the leaf before the ancestor verdict is known" \
+    '        | ( .s | anc_ok($p) ) as $ok' \
+    '        | true as $ok' \
+    'removal must not fail on a non-object ancestor'
+  check_mut 'a non-object ancestor is treated as traversable' \
+    '                elif ($doc | getpath($a) | type) == "object" then "cont"' \
+    '                elif true then "cont"' \
     'null ANCESTOR must block every descendant leaf'
   check_mut 'a settings file with two top-level values is truncated to the first' \
     '    ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )' \
@@ -832,6 +899,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  | reduce ($stale[]) as $p' \
     '  | reduce ([][]) as $p' \
     'must be reconciled first, so the replacement is written'
+  check_mut 'a null or false settings root coerces to an empty object' \
+    '  | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )' \
+    '  | ( . )' \
+    'must be REFUSED'
+  check_mut 'removal reads the payload when the file is non-empty' \
+    '  if [ "$mode" = "--remove" ]; then' \
+    '  if [ "$mode" = "--remove" ] && [ ! -s "$payload" ]; then' \
+    'must ignore an unparseable payload'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -872,10 +947,10 @@ if [ "$MUTATION" -eq 1 ]; then
     'if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then' \
     'if false; then' \
     'must refuse BEFORE writing'
-  check_mut 'the headline claims least privilege with sandboxing off' \
-    '|| [ "$(jq -r '"'"'.sandbox.enabled // false'"'"' "$settings" 2>/dev/null)" = true ]; then' \
-    '|| true; then' \
-    'must NOT report least-privilege settings applied'
+  check_mut 'the headline ignores a skipped protection-bearing leaf' \
+    '  if [ -z "$ineffective" ]; then' \
+    '  if true; then' \
+    'must be reported PARTIAL'
   check_mut 'a skip discards the ownership it inherited' \
     '  carried="$(_adb_owned_rows "$receipt")"' \
     '  carried=""' \

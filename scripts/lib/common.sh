@@ -697,9 +697,13 @@ adb_claude_settings_payload_digest() {
   printf '%s' "$line"
 }
 
-# The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Emitted for the two
-# OWNING dispositions — `installed`, and `skipped-optout`, which carries the rows forward precisely
-# so a pause does not orphan the keys an earlier install wrote. Empty for every other one. A malformed row is DROPPED rather than guessed at: a row whose
+# The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Emitted for EVERY
+# ownership-bearing disposition — `installed`, and all three skips (`skipped-optout`,
+# `skipped-below-floor`, `skipped-unprobeable`), each of which carries the prior rows forward
+# precisely so a pause, a downgrade or an unprobeable CLI does not orphan the keys an earlier
+# install wrote. Only `none` owns nothing. Keep this list and the one in
+# `_adb_claude_settings_owned_json` identical: a reader that trusted a narrower one here is what
+# made the carry pointless once already. A malformed row is DROPPED rather than guessed at: a row whose
 # value cannot be parsed cannot be compared, and a leaf we cannot prove is ours is one we must
 # not remove.
 # Usage: adb_claude_settings_receipt_leaves <receipt>
@@ -753,7 +757,12 @@ adb_claude_settings_receipt_leaves() {
 adb_claude_settings_merge() {
   local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned work_empty rc
   work_empty=""
-  if [ ! -s "$payload" ] && [ "$mode" = "--remove" ]; then
+  # REMOVAL IGNORES THE PAYLOAD ENTIRELY, not merely a missing one. Ownership lives in the receipt
+  # and `--remove` writes nothing, so the fragment supplies only the leaf SET, which removal does
+  # not use. Substituting it only when the file was EMPTY left the damaged-clone contract half
+  # true: a payload that exists but is truncated or unparseable still reached `--slurpfile` and
+  # failed the merge, stranding every receipt-owned key.
+  if [ "$mode" = "--remove" ]; then
     work_empty="$(mktemp)" || return 1
     printf '{}\n' > "$work_empty"
   fi
@@ -763,9 +772,10 @@ adb_claude_settings_merge() {
   # the leaf SET to write, and `--remove` writes nothing. Requiring it would make an uninstall from
   # a damaged or partial clone unable to remove the keys it owns — and the caller's only remaining
   # move would be to drop the receipt, which is the one record that says what is ours. (PR review)
-  if [ ! -s "$payload" ]; then
-    [ "$mode" = "--remove" ] || return 1
+  if [ -n "$work_empty" ]; then
     payload="$work_empty"
+  elif [ ! -s "$payload" ]; then
+    return 1
   fi
   jq -n -e \
      --slurpfile cur "$settings" \
@@ -786,16 +796,31 @@ adb_claude_settings_merge() {
     # descendant as absent and `setpath` replaced that chosen null with an object. A missing
     # ancestor is fine (we create it); one that EXISTS and is not an object is a conflict, and the
     # leaf below it is skipped rather than written through.
-    def anc_ok($p): all( range(1; ($p | length)) as $i
-                       | ($p[0:$i]) as $a
-                       | if present($a) then (getpath($a) | type) == "object" else true end
-                       ; . );
+    # WALKED IN ORDER AND STOPPED ON THE FIRST ANSWER, because `getpath` RAISES through a scalar:
+    # `{"a":false} | getpath(["a","b"])` is a jq error, not null. So each prefix may only be read
+    # once its own parent has been shown to be an object, and a chain that is simply MISSING is
+    # writable (we create it) rather than a conflict. Three states, not two.
+    def anc_ok($p): . as $doc | ( reduce range(1; ($p | length)) as $i
+        ("cont";
+         if . != "cont" then .
+         else ($p[0:$i]) as $a
+              | ($doc | getpath($a[0:-1])) as $parent
+              | if ($parent | type) != "object" then "conflict"
+                elif ($parent | has($a[-1]) | not) then "missing"
+                elif ($doc | getpath($a) | type) == "object" then "cont"
+                else "conflict" end
+         end) ) != "conflict";
     # EXACTLY ONE TOP-LEVEL VALUE. `--slurpfile` reads a STREAM, so a settings.json holding an
     # object followed by an accidentally appended one slurps two — and `$cur[0]` then published
     # the first and silently discarded every later value the operator had, instead of taking the
     # invalid-JSON refusal path the caller reports.
     ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )
-  | ($cur[0] // {})  as $settings
+    # ...AND THAT VALUE MUST BE AN OBJECT. `// {}` is false for `null` AND for `false`, so either
+    # root coerced to an empty object and the whole file an operator had was replaced by the merge
+    # rather than refused. The caller writes `{}` itself when the file is genuinely absent or
+    # empty, so nothing legitimate reaches here needing the coercion.
+  | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )
+  | ($cur[0])        as $settings
   | ($frag[0] // {}) as $fragment
   | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
   | ( if $mode == "--remove" then [] else $leaves end ) as $want
@@ -809,8 +834,10 @@ adb_claude_settings_merge() {
   | reduce ($stale[]) as $p
       ( { s: $settings, wrote: [], skipped: [], removed: [], pruned: [], kept: [] };
         ( $owned | map(select(.p == $p)) | first ) as $rec
-        | ( .s | getpath($p) ) as $now
-        | if ( .s | present($p) | not ) then .
+        | ( .s | anc_ok($p) ) as $ok
+        | ( if $ok then (.s | getpath($p)) else null end ) as $now
+        | if ($ok | not) then .
+          elif ( .s | present($p) | not ) then .
           elif $now == $rec.v then .s = (.s | delpaths([$p])) | .pruned += [$p]
           else .kept += [$p]
           end )
@@ -827,9 +854,10 @@ adb_claude_settings_merge() {
   | reduce ($want[]) as $p
       ( .;
         ( $owned | map(select(.p == $p)) | first ) as $rec
-        | ( .s | getpath($p) ) as $now
-        | ( .s | present($p) ) as $has
-        | if ( .s | anc_ok($p) | not ) then
+        | ( .s | anc_ok($p) ) as $ok
+        | ( if $ok then (.s | getpath($p)) else null end ) as $now
+        | ( if $ok then (.s | present($p)) else false end ) as $has
+        | if ($ok | not) then
             .skipped += [$p]
           elif ($has | not) and $rec == null then
             .s = (.s | setpath($p; $fragment | getpath($p))) | .wrote += [$p]

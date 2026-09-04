@@ -39,8 +39,12 @@ only by a published release, which is what these entries are the notes for.
   deleted is treated as an opt-out and never rewritten; and one a future payload stops shipping is
   **pruned**, so no orphan is left in your file. Uninstall with no receipt removes nothing.
 
-  **User scope only**, because several of these keys are ignored in a repository's
-  `.claude/settings.json` and a key the CLI ignores reports protection it never applied — so
+  **User scope only** — a choice, not a vendor limitation. The shipped key set *would* be honoured
+  in a repository's `.claude/settings.json` (`deny` entries merge from every loaded scope); the
+  keys that are genuinely user- or managed-only are `filesystem.disabled`, `strictAllowlist` and
+  the `mask` family, none of which ship. It stays user-scoped because the global installer's model
+  is user-level config and because a pinned install's settings file is **tracked** — writing a
+  sandbox policy there commits one on behalf of every contributor to that repository. So
   `install.sh --pinned` refuses them outright and says so. **Below the v2.1.187 floor nothing is
   written**, and the installer prints the version found, the floor required and the protection not
   applied; that absence is recorded as a *skip*, never a choice, so `baseline update` applies the
