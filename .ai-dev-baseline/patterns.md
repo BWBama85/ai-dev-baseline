@@ -497,4 +497,8 @@ One line per resolved review thread, newest last.
 - `stale-doc-claim` `scripts/lib/common.sh` `cf23972` `PRRT_kwDOTfywrM6fM7BZ` PR #463 2026-09-04 — the receipt-leaves header and D98 still named only two ownership-bearing dispositions after the fix made all four carry rows
 - `metric-scope-mismatch` `install.sh` `cf23972` `PRRT_kwDOTfywrM6fM7Bk` PR #463 2026-09-04 — the headline asked only whether sandboxing was on, so a skipped protection-bearing leaf was reported as full protection
 - `stale-doc-claim` `base/practices/untrusted-content.md` `cf23972` `PRRT_kwDOTfywrM6fM7Bu` PR #463 2026-09-04 — the practice stated an allowUnsandboxedCommands default that the same change's decision record explicitly refuses to state, and it renders into every agent root doc
+- `partial-validation` `scripts/lib/common.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjo` PR #463 2026-09-04 — uninstall derived container ownership from the pruned leaf paths, so an operator's pre-existing empty sandbox object was deleted
+- `new-default-read-as-opt-out` `install.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjs` PR #463 2026-09-04 — a removed leaf was recorded with the payload value, so an operator who re-added it by hand would have had it deleted as ours
+- `precondition-ordering` `install.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjv` PR #463 2026-09-04 — the settings were written even when the root link failed, leaving keys that uninstall's own ownership check would then refuse to remove
+- `status-swallowed` `uninstall.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmj0` PR #463 2026-09-04 — the receipt's rm status was ignored, so a stale ownership record survived a reported-clean uninstall and made the next install refuse to restore protection
 <!-- adb:hits:end -->
