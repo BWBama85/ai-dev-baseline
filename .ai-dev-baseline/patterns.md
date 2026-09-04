@@ -505,4 +505,6 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtk` PR #463 2026-09-04 — the created-container cleanup read getpath unguarded, the sibling loop of the leaf reads that had already been fixed for it
 - `exit-path-asymmetry` `uninstall.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtr` PR #463 2026-09-04 — uninstall returned success without jq after the link proving ownership had been removed, so the retry it advised could never complete
 - `new-default-read-as-opt-out` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFt2` PR #463 2026-09-04 — a blocked receipt still owned its carried rows, so a value the operator deleted and later re-added by hand would be removed as ours
+- `stale-state-trusted` `install.sh` `9aaa9a5` `PRRT_kwDOTfywrM6fbB7v` PR #463 2026-09-04 — the receipt carried the previous clone's source verbatim, so a second clone's own uninstall would refuse its own settings as another clone's
+- `evidence-discarded` `scripts/lib/pinned-install.sh` `9aaa9a5` `PRRT_kwDOTfywrM6fbB72` PR #463 2026-09-04 — the sandbox-omission notice sat inside the jq-success branch, so the security-relevant omission went unsaid exactly in the degraded environment
 <!-- adb:hits:end -->
