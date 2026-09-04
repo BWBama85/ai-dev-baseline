@@ -485,4 +485,9 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU-7` PR #463 2026-09-04 — getpath cannot distinguish a missing path from one whose value is null, so an adopter's explicit null read as absent and was overwritten
 - `stale-state-trusted` `uninstall.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU_A` PR #463 2026-09-04 — the global receipt was treated as proof of ownership, so one clone's uninstaller removed another clone's live settings
 - `exit-path-asymmetry` `install.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU_C` PR #463 2026-09-04 — the receipt publish could fail after the settings rename succeeded and only warned, leaving applied keys with no ownership record
+- `third-party-default` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhS` PR #463 2026-09-04 — stat without -L reports the symlink's own mode, so a symlinked settings.json would have had 755/777 stamped onto the file replacing it
+- `partial-validation` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhU` PR #463 2026-09-04 — the absence test asked only about the final key, so a null ANCESTOR made every descendant look absent
+- `partial-validation` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhW` PR #463 2026-09-04 — slurpfile reads a stream and taking element 0 discarded every later top-level value instead of refusing
+- `precondition-ordering` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhP` PR #463 2026-09-04 — stale owned leaves were pruned after the new paths were evaluated, so a leaf becoming a container left the replacement skipped and the old leaf gone
+- `exit-path-asymmetry` `uninstall.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhH` PR #463 2026-09-04 — the install-side umask fix was not applied to its mirror, leaving the whole settings document world-readable while uninstall wrote it
 <!-- adb:hits:end -->
