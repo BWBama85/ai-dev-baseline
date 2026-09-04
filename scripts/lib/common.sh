@@ -520,7 +520,7 @@ EOF
 # Returns: 0 published · 1 refused or failed (the temp file is removed on every failure)
 # The destination's permission bits, or empty. ORDER MATTERS AND IS NOT SYMMETRIC: GNU `stat`
 # spells the mode `-c '%a'` and reads `-f` as `--file-system` (which takes no format argument, so
-# `stat -f '%Lp' FILE' still PRINTS a filesystem block for FILE while exiting non-zero) — an
+# the BSD spelling with no `-L` still PRINTS a filesystem block for FILE while exiting non-zero) — an
 # `A || B` with BSD first therefore captures that block's text on Linux and the octal mode is lost
 # in it. GNU is tried first and each attempt is validated before it is believed.
 # Usage: adb_file_mode <file>
@@ -3053,9 +3053,13 @@ adb_global_manifest() { printf '%s/.config/ai-dev-baseline/agents.toml\n' "${HOM
 # answer is accepted. Usage: adb_mtime <path>
 adb_mtime() {
   local m
-  m="$(stat -c %Y "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+  # `-L` for the same reason adb_file_mode carries it: a `stat` without it answers about the LINK.
+  # No caller passes a symlink today — they pass run markers and lock directories — so this is
+  # uniformity, not a fix. It is what lets the lint forbid the un-dereferenced spelling outright
+  # instead of asking each reader to judge whether their site is the exception.
+  m="$(stat -L -c %Y "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
   if [ -z "$m" ]; then
-    m="$(stat -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+    m="$(stat -L -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
   fi
   printf '%s' "$m"
 }

@@ -7861,3 +7861,36 @@ survive is the part a later reader needs.
              adopter upgraded, which is #242's defect one surface over. The receipt is what makes
              the four distinguishable, so it is written even when nothing else is.
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D99 — the recurring settings-writer classes are pinned as lint rules, because the prose rule demonstrably did not hold
+- date:      2026-09-04
+- category:  project-delta
+- unknown:   #248's review loop ran four rounds. Three of the findings in rounds 3 and 4 were the
+             SAME defect as an earlier round, at a sibling site the earlier fix had not swept: the
+             null check fixed at the leaf and not the ancestor, the `umask 077` guard added to the
+             install writer and not its mirror in `uninstall.sh`, the `stat -L` correction applied
+             to the library while two assertions kept the old spelling. `debugging.md` already says
+             to grep for the CLASS rather than the instance, and the pattern ledger's promoted
+             checklist says it again in as many words. Both were loaded in context and quoted in
+             the run's own self-review report. Neither changed the outcome.
+- decision:  Convert the classes that have a mechanical signature into `absent:`/`fixed:` rules in
+             `scripts/check-fact-drift.sh`, which scans every listed file and — for `absent:` —
+             must be observed going RED under `--mutation`. Three rules:
+             `stat-mode-dereferences` (no un-dereferenced `stat -[cf] '%…'` anywhere in the shipped
+             shell), `merge-absence-uses-has` (no `$now == null` absence test in the merge), and
+             `settings-temp-created-restricted` (the `umask 077` creation pinned in BOTH writers by
+             name, since naming only the file under discussion is what produced the miss).
+             `adb_mtime` gained `-L` as part of this: not a fix — no caller passes it a symlink —
+             but uniformity, so the rule can be a pattern rather than a per-site judgement.
+- placement: `scripts/check-fact-drift.sh` (the rules) · `scripts/lib/common.sh` (`adb_mtime`,
+             and a header comment reworded so it no longer carries the spelling it warns about)
+- reason:    A rule an agent is asked to remember is not a mechanism, and this repository has
+             concluded that before: `verify-before-asserting.md` records a stale-status claim made
+             with the practice loaded in context, which is why `state-assert.sh` is a command
+             rather than another paragraph. The same evidence appeared here, and the same remedy
+             applies. What is deliberately NOT claimed: only spellings with a grep signature are
+             covered. "Did this check walk the ancestors as well as the final key" has no pattern,
+             so that class stays review-side — and `scripts/check-settings-fragment.sh` is
+             excluded from the `stat` rule because its mutation rows must be able to write the
+             defect down in order to inject it.
+- baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)
