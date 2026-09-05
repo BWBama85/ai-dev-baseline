@@ -177,8 +177,8 @@ _adb_wire_settings_locked() {
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
          || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
       rm -f "$receipt.adb.$$.tmp"
-      adb_info "  WARN   --no-sandbox honoured, but the receipt could not be written; the next update may re-offer the settings"
-      return 0
+      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured"
+      return $?
     fi
     adb_info "  sandbox  --no-sandbox: no settings written (recorded, so \`baseline update\` keeps honouring it)"
     return 0
@@ -328,15 +328,14 @@ _adb_wire_settings_locked() {
     # would never re-report the refusal — and its ownership rows would let a later uninstall
     # delete a value the operator had since restored by hand.
     rm -f "$receipt.adb.$$.tmp"
-    if rm -f "$receipt"; then
-      adb_info "  WARN   could not record the refusal in $receipt, so the previous ownership record"
-      adb_info "         was removed rather than left stale. Re-run ./install.sh."
-      return 0
-    fi
-    adb_info "  ERROR  could not record the refusal in $receipt, and the stale ownership record"
-    adb_info "         could not be removed either. Delete it by hand before re-running:"
-    adb_info "         it still claims keys this install no longer owns."
-    return 1
+    # THE SHARED INVALIDATOR, not a second copy of it. This path had its own `rm`-and-report body
+    # saying the same thing in different words, and the duplicate is what made the mutation row
+    # covering it undetectable: the structural pin matched either site, so deleting one left the
+    # other answering for it. `reuse-missed`. The helper also handles the case this copy got wrong
+    # — a FIRST install has no receipt to invalidate, and `rm -f` succeeds on nothing, so the copy
+    # reported removing a record that never existed.
+    _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written"
+    return $?
   fi
 
   local rtmp="$receipt.adb.$$.tmp"
@@ -445,20 +444,25 @@ _adb_wire_settings_locked() {
 # environment, and — under all-or-nothing — a later install would then find those keys present and
 # unowned and refuse, leaving the operator to delete them by hand. The narrow risk of keeping an
 # unverified claim is the better trade, and it is said out loud.
+# ITS STDOUT IS ITS RETURN VALUE, so every diagnostic here goes to STDERR. Called inside `$( )`,
+# an `adb_info` line would be captured into the caller's row variable and then silently dropped by
+# the receipt renderer, which passes only `leaf`/`container`/`source` rows — so the operator was
+# never told that ownership had been relinquished, or carried unverified, which are exactly the
+# safety-relevant states this function exists to decide.
 # Usage: _adb_carry_rows <receipt> <settings> <payload>
 _adb_carry_rows() {
   local receipt="$1" live="$2" frag="$3" rows probe
   rows="$(_adb_owned_rows "$receipt")"
   [ -n "$rows" ] || return 0
   if ! command -v jq >/dev/null 2>&1; then
-    adb_info "  sandbox  ownership carried UNVERIFIED (no jq): if you have changed these keys by"
-    adb_info "           hand, install jq and re-run so the claim can be rechecked."
+    adb_info "  sandbox  ownership carried UNVERIFIED (no jq): if you have changed these keys by" >&2
+    adb_info "           hand, install jq and re-run so the claim can be rechecked." >&2
     printf '%s\n' "$rows"
     return 0
   fi
   if [ ! -s "$live" ]; then
-    adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run"
-    adb_info "           cannot prove those keys are still ours."
+    adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run" >&2
+    adb_info "           cannot prove those keys are still ours." >&2
     return 0
   fi
   # PROVED AGAINST THE RECEIPT, NOT AGAINST THE FRAGMENT. Asking the write path meant a clone whose
@@ -469,7 +473,7 @@ _adb_carry_rows() {
   # So ownership holds exactly while every recorded row comes back as `pruned`.
   probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)" || probe=""
   if [ -z "$probe" ]; then
-    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed."
+    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed." >&2
     return 0
   fi
   local recorded proved
@@ -478,8 +482,8 @@ _adb_carry_rows() {
   case "$proved" in ''|*[!0-9]*) proved=0 ;; esac
   case "$recorded" in ''|*[!0-9]*) recorded=0 ;; esac
   if [ "$proved" -ne "$recorded" ]; then
-    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)"
-    adb_info "           are no longer as this install left them."
+    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2
+    adb_info "           are no longer as this install left them." >&2
     return 0
   fi
   printf '%s\n' "$rows"
@@ -519,8 +523,26 @@ _adb_record_skip() {
     return 0
   fi
   rm -f "$receipt.adb.$$.tmp"
-  adb_info "  WARN   could not write $receipt — the skip stands, but its REASON is not recorded"
-  return 0
+  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded"
+  return $?
+}
+
+# A receipt that could not be replaced must not be left ASSERTING what this run has just decided is
+# no longer true. `_adb_carry_rows` may have relinquished ownership, and a surviving `installed`
+# record still claims it — so a value the operator later recreates by hand would be deleted as
+# ours. Remove it, or say loudly that it could not be removed.
+# Usage: _adb_invalidate_stale_receipt <receipt> <what-still-holds>
+_adb_invalidate_stale_receipt() {
+  local receipt="$1" holds="$2"
+  [ -f "$receipt" ] || { adb_info "  WARN   could not write $receipt — $holds"; return 0; }
+  if rm -f "$receipt"; then
+    adb_info "  WARN   could not write $receipt — $holds, and the previous ownership record was"
+    adb_info "         REMOVED rather than left stale. Re-run ./install.sh."
+    return 0
+  fi
+  adb_info "  ERROR  could not write $receipt — $holds, and the stale ownership record could not be"
+  adb_info "         removed either. Delete it by hand: it still claims keys this run no longer owns."
+  return 1
 }
 
 # One reporting line per non-empty bucket, naming the leaves. SAY WHAT IT DID, not merely that it
@@ -534,6 +556,28 @@ _adb_report_settings() {
 }
 
 install_claude() {
+  # THE LOCK COMES FIRST, BEFORE THE LINKS ARE READ OR REPLACED. Ownership of the settings surface
+  # is decided by the root-doc link, and `adb_link_manifest` REPLACES it — so two overlapping
+  # installs could each relink before contending for the lock, leaving the loser's replacements in
+  # place while the winner observed a changed root link and refused its own settings write. It also
+  # let an installer relink Claude while an uninstall held the lock, invalidating the ownership
+  # snapshot that uninstall had already taken.
+  #
+  # ONE RELEASE, ON EVERY EXIT: the body is a helper so a failure inside it cannot skip the unlock.
+  local slock; slock="$(adb_settings_lock_path "$HOME")"
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  if ! adb_update_lock "$slock"; then
+    adb_info "claude → ~/.claude"
+    adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."
+    adb_info "         If nothing else is running, remove: $slock"
+    return 1
+  fi
+  _install_claude_locked; local icrc=$?
+  adb_update_unlock "$slock"
+  return "$icrc"
+}
+
+_install_claude_locked() {
   local rc=0 manifest
   adb_info "claude → ~/.claude"
   # The install surface (root doc, every skill, the runtime scripts, and the shared
@@ -587,16 +631,6 @@ EOF
   # wire_hooks are dead: install.sh would exit 0 with a corrupt settings.json, and bin/baseline's
   # adb_self_heal — which gates only on that status — would report "update complete" while the
   # gates sat silently unwired. (A missing jq deliberately returns 0; see wire_hooks.)
-  # ONE LOCK PER HOME, AROUND EVERY WRITER OF ~/.claude/settings.json. Two renames with distinct
-  # temp names are not atomic as a pair, and the file has two writers in this function alone.
-  local slock; slock="$(adb_settings_lock_path "$HOME")"
-  mkdir -p "$HOME/.claude" 2>/dev/null || true
-  if ! adb_update_lock "$slock"; then
-    adb_info "  WARN   another install is writing ~/.claude/settings.json — hooks and sandbox settings NOT written."
-    adb_info "         If nothing else is running, remove: $slock"
-    return 1
-  fi
-
   if [ "$WIRE_HOOKS" -eq 1 ]; then
     local wrc=0 i
     wire_hooks || wrc=$?
@@ -644,7 +678,6 @@ EOF
     adb_info "           uninstall from here could never remove them again. Fix the errors above and re-run."
     rc=1
   fi
-  adb_update_unlock "$slock"
   return "$rc"
 }
 

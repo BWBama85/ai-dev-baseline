@@ -56,6 +56,22 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude codex gemini)
 
 uninstall_claude() {
+  # ONE RELEASE, ON EVERY EXIT. The body returns from several places — a manifest that cannot be
+  # enumerated among them — and a lock left behind refuses every later install and uninstall for
+  # the stale interval, or longer if the recorded pid is reused.
+  local slock; slock="$(adb_settings_lock_path "$HOME")"
+  if ! adb_update_lock "$slock"; then
+    adb_info "claude"
+    adb_info "  WARN   an install is writing ~/.claude — nothing was removed."
+    adb_info "         If nothing else is running, remove: $slock"
+    return 1
+  fi
+  _uninstall_claude_locked; local ucrc=$?
+  adb_update_unlock "$slock"
+  return "$ucrc"
+}
+
+_uninstall_claude_locked() {
   local rc=0 manifest ours_settings=0
   adb_info "claude"
   # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the root-doc link the
@@ -67,14 +83,6 @@ uninstall_claude() {
   # no longer owns. Same predicate `bin/baseline` uses to decide a root doc "is not ours to
   # re-wire". (PR review)
   adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO" && ours_settings=1
-  # THE SAME LOCK THE INSTALLER TAKES. This function removes hook entries AND sandbox keys from
-  # ~/.claude/settings.json; running it against a concurrent install republishes over that run.
-  local slock; slock="$(adb_settings_lock_path "$HOME")"
-  if ! adb_update_lock "$slock"; then
-    adb_info "  WARN   an install is writing ~/.claude/settings.json — nothing was removed from it."
-    adb_info "         If nothing else is running, remove: $slock"
-    return 1
-  fi
   # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
   # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
   #
@@ -130,7 +138,6 @@ EOF
   fi
 
   unwire_settings "$ours_settings" || rc=1
-  adb_update_unlock "$slock"
   return "$rc"
 }
 

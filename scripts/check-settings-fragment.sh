@@ -663,7 +663,7 @@ HOME="$lk_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --
 mkdir -p "$lk_home/.claude/.adb-settings.lock"
 printf '%s %s\n' "$$" "$(date +%s)" > "$lk_home/.claude/.adb-settings.lock/owner"
 HOME="$lk_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/lock.log" 2>&1
-grep -qi "another install is writing" "$work/lock.log" && ok \
+grep -qi "another install or uninstall is writing" "$work/lock.log" && ok \
   || bad "a live settings lock must refuse the run and name the lock, not publish over it"
 rm -rf "$lk_home/.claude/.adb-settings.lock"
 # ...and every documented non-writing path releases it too, since they all return from inside.
@@ -685,7 +685,7 @@ stub "2.1.259 (Claude Code)"
 mkdir -p "$(adb_settings_lock_path "$lk2")"
 printf '%s %s\n' "$$" "$(date +%s)" > "$(adb_settings_lock_path "$lk2")/owner"
 HOME="$lk2" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >"$work/lockall.log" 2>&1
-grep -qi "hooks and sandbox settings NOT written" "$work/lockall.log" && ok \
+grep -qi "nothing was changed" "$work/lockall.log" && ok \
   || bad "a live settings lock must block the HOOK writer too — it writes the same file"
 jq -e '.hooks == null' "$lk2/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and nothing may be written to settings.json while the lock is held"
@@ -698,6 +698,83 @@ HOME="$lk2" bash "$ROOT/uninstall.sh" --agent claude >"$work/unlockall.log" 2>&1
 jq -e '.sandbox.enabled == true' "$lk2/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "uninstall must take the same lock and remove nothing while an install holds it"
 rm -rf "$(adb_settings_lock_path "$lk2")"
+
+# --- the lock precedes the RELINK, and is released on every exit ---------------------------------
+#
+# Ownership of the settings surface is decided by the root-doc link, and `adb_link_manifest`
+# REPLACES it — so two overlapping installs could each relink before contending for the lock,
+# leaving the loser's replacements in place while the winner observed a changed root link and
+# refused its own settings write.
+pre_home="$work/prelink"; rm -rf "$pre_home"; mkdir -p "$pre_home/.claude"
+mkdir -p "$(adb_settings_lock_path "$pre_home")"
+printf '%s %s\n' "$$" "$(date +%s)" > "$(adb_settings_lock_path "$pre_home")/owner"
+stub "2.1.259 (Claude Code)"
+HOME="$pre_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >"$work/prelink.log" 2>&1
+[ -e "$pre_home/.claude/CLAUDE.md" ] && bad "a held lock must be taken BEFORE the links are replaced — the root-doc link is what decides ownership" || ok
+grep -qi "nothing was changed" "$work/prelink.log" && ok || bad "...and the refusal must say that nothing was changed"
+rm -rf "$(adb_settings_lock_path "$pre_home")"
+
+# EVERY EXIT RELEASES IT. A lock left behind refuses every later install and uninstall for the
+# stale interval, or longer if the recorded pid is reused — so the release cannot sit only on the
+# happy path.
+rel_home="$work/release"; rm -rf "$rel_home"; mkdir -p "$rel_home/.claude"
+echo '{"model":"opus"}' > "$rel_home/.claude/settings.json"
+for variant in "--no-hooks" "--no-hooks --no-sandbox" ""; do
+  HOME="$rel_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude $variant >/dev/null 2>&1
+  [ -e "$(adb_settings_lock_path "$rel_home")" ] && bad "the lock must be released after install '$variant'" || ok
+done
+HOME="$rel_home" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+[ -e "$(adb_settings_lock_path "$rel_home")" ] && bad "the lock must be released after uninstall" || ok
+# ...including the refusal path, where the body never runs at all.
+nl_home="$work/nlrelease"$'\n'"shadow"; rm -rf "$nl_home"; mkdir -p "$nl_home/.claude"
+HOME="$nl_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+[ -e "$(adb_settings_lock_path "$nl_home")" ] && bad "the lock must be released when the manifest itself is refused" || ok
+
+# --- the carry diagnostics reach the OPERATOR, not the row capture -------------------------------
+#
+# `_adb_carry_rows` returns its rows on stdout and is called inside `$( )`, so an `adb_info` line
+# there was captured into the caller's variable and then silently filtered by the receipt renderer.
+# Every "ownership relinquished" and "carried unverified" message was invisible.
+diag_home="$work/diag"; rm -rf "$diag_home"; mkdir -p "$diag_home/.claude"
+echo '{"model":"opus"}' > "$diag_home/.claude/settings.json"
+HOME="$diag_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq 'del(.sandbox.enabled)' "$diag_home/.claude/settings.json" > "$work/dg.json" && mv "$work/dg.json" "$diag_home/.claude/settings.json"
+HOME="$diag_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/diag.log" 2>&1
+grep -qi "relinquish" "$work/diag.log" && ok \
+  || bad "the operator must be TOLD that ownership was relinquished — the message is the only signal that a safety-relevant state changed"
+[ "$(grep -c "^leaf$ADB_TAB" "$diag_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "...and the rows must still be dropped"
+# EVERY diagnostic in that function, not only the one the fixture above happens to reach. The
+# behavioural check proves one message escapes the capture; a diagnostic added later without `>&2`
+# would be swallowed exactly as these five were, and nothing would say so. The set is closed and
+# enumerable, so it is asserted rather than trusted.
+[ "$(awk '/^_adb_carry_rows\(\) \{/{i=1} i && /adb_info/ && !/>&2$/{n++} i && /^}/{exit} END{print n+0}' \
+     "$ROOT/install.sh")" -eq 0 ] && ok \
+  || bad "every adb_info inside _adb_carry_rows must redirect to stderr — its stdout is its return value, so a diagnostic there is captured into the caller's rows and dropped"
+
+# --- a skip whose RECORD could not be written says so, on both non-writing paths -----------------
+#
+# The receipt is the entire reason a skip is retried rather than frozen into a permanent absence
+# (D98), and `_adb_carry_rows` may have relinquished ownership on the way here — so a surviving
+# `installed` record still claims keys this run just decided are no longer ours. Silence there is
+# the worst of the three outcomes: the operator is told the skip happened and never told that its
+# reason, and the ownership decision behind it, did not reach disk.
+inv_home="$work/invalidate"; rm -rf "$inv_home"; mkdir -p "$inv_home/.claude"
+echo '{"model":"opus"}' > "$inv_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$inv_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+# The receipt path is OCCUPIED BY A DIRECTORY, so `adb_publish_json` refuses it while everything
+# around it still works — the one shape that fails the publish without also breaking the fixture.
+rm -f "$inv_home/.claude/.adb-settings-owned"; mkdir "$inv_home/.claude/.adb-settings-owned"
+stub "2.1.100 (Claude Code)"
+HOME="$inv_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/inv1.log" 2>&1
+grep -qi "the skip stands, but its REASON is not recorded" "$work/inv1.log" && ok \
+  || bad "a version skip whose receipt could not be published must say the reason did not reach disk"
+stub "2.1.259 (Claude Code)"
+HOME="$inv_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/inv2.log" 2>&1
+grep -qi "\-\-no-sandbox was honoured" "$work/inv2.log" && ok \
+  || bad "...and the opt-out path must say the same — it reaches the identical invalidator"
+rm -rf "$inv_home/.claude/.adb-settings-owned"
 
 # --- ownership is proved against the RECEIPT, never against the fragment -------------------------
 #
@@ -856,13 +933,20 @@ grep -qF 'PROVENANCE IS STILL REFRESHED' "$ROOT/install.sh" && ok \
 #
 # Returning success left the previous `installed` receipt in place with a matching digest, so the
 # refusal was never re-reported and its ownership rows could still authorise a removal.
-# A STRUCTURAL PIN, and named as one. Driving this behaviourally needs a publish that fails while
-# the subsequent `rm` succeeds, and the temp path is PID-derived — every fixture that breaks the
-# one breaks the other. What is checkable is that the failure path invalidates rather than
-# returning success, and that it fails loudly when it cannot.
-grep -qF 'if rm -f "$receipt"; then' "$ROOT/install.sh" && ok \
-  || bad "a refusal whose record could not be published must remove the previous ownership record, not return success with it standing"
-awk '/could not record the refusal in \$receipt, and the stale ownership record/{print "loud"; exit}' "$ROOT/install.sh" | grep -q loud && ok \
+# A STRUCTURAL PIN, and named as one. Driving the REMOVAL behaviourally needs a publish that fails
+# while the subsequent `rm` succeeds, and the temp path is PID-derived — every fixture that breaks
+# the one breaks the other. (The branch ABOVE it is drivable, and is: see the occupied-receipt
+# fixture earlier in this file.) What is checkable here is that the failure path invalidates rather
+# than returning success, and that it fails loudly when it cannot.
+#
+# ONE SITE, and the pin depends on that. The blocked-refusal path used to carry its own copy of
+# this body, so this unanchored grep matched either one and the mutation row covering it stayed
+# green with the other still answering — the row could not fail. Every failed-publish path now
+# routes through `_adb_invalidate_stale_receipt`; a second copy would silently disarm this pin
+# again, so the count is asserted, not assumed.
+[ "$(grep -cF 'if rm -f "$receipt"; then' "$ROOT/install.sh")" -eq 1 ] && ok \
+  || bad "a refusal whose record could not be published must remove the previous ownership record through the ONE shared invalidator — a second copy disarms the pin below"
+awk '/stale ownership record could not be/{print "loud"; exit}' "$ROOT/install.sh" | grep -q loud && ok \
   || bad "...and must fail loudly when even that removal is impossible"
 
 # --- the pinned model says what it omitted, on EVERY path ----------------------------------------
@@ -1246,9 +1330,9 @@ if [ "$MUTATION" -eq 1 ]; then
     '"^(leaf|container|source)$(printf' \
     'must carry exactly one source row'
   check_mut 'the refusal returns success with the stale record standing' \
-    '    if rm -f "$receipt"; then' \
-    '    if false; then' \
-    'must remove the previous ownership record'
+    '  if rm -f "$receipt"; then' \
+    '  if false; then' \
+    'must remove the previous ownership record through the ONE shared invalidator'
   check_mut 'the no-jq path stops refreshing provenance' \
     '    # PROVENANCE IS STILL REFRESHED, because none of it needs jq — the render, the ownership rows' \
     '    # provenance is not refreshed here' \
@@ -1284,6 +1368,26 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_update_unlock "$slock"' \
     '  :' \
     'lock must be released on the success path'
+  check_mut 'the links are replaced before the settings lock is taken' \
+    '    adb_info "         If nothing else is running, remove: $slock"' \
+    '    adb_info "         If nothing else is running, remove: $slock"; adb_link_manifest "$BACKUP_DIR" <<< "$(adb_agent_manifest claude "$REPO" "$HOME")" >/dev/null 2>&1' \
+    'must be taken BEFORE the links are replaced'
+  check_mut 'the carry diagnostics are captured into the row list instead of reaching the operator' \
+    '    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2' \
+    '    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)"' \
+    'must be TOLD that ownership was relinquished'
+  check_mut 'a carry diagnostic the fixtures do not reach loses its redirect' \
+    '    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed." >&2' \
+    '    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed."' \
+    'must redirect to stderr'
+  check_mut 'a skip whose record could not be published stays silent' \
+    '  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded"' \
+    '  :' \
+    'must say the reason did not reach disk'
+  check_mut 'the opt-out leaves its unpublished record unmentioned' \
+    '      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured"' \
+    '      :' \
+    'opt-out path must say the same'
   check_mut 'a version skip carries its rows unchecked' \
     '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
     '  carried="$(_adb_owned_rows "$receipt")"' \
@@ -1306,6 +1410,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ "$ours" != "1" ]; then' \
     '  if false; then' \
     'must NOT remove another clone'
+  check_mut 'uninstall never releases the settings lock' \
+    '  adb_update_unlock "$slock"' \
+    '  :' \
+    'lock must be released after uninstall'
   check_mut 'uninstall drops the ownership record when the payload is missing' \
     '  if [ ! -s "$settings" ]; then' \
     '  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then' \
