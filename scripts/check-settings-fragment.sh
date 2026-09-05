@@ -674,6 +674,62 @@ done
 HOME="$lk_home" PATH="/usr/bin:/bin" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 [ -e "$lk_home/.claude/.adb-settings.lock" ] && bad "the settings lock must be released after an unprobeable-CLI skip" || ok
 
+# --- the lock covers EVERY writer of settings.json, not just the sandbox half --------------------
+#
+# `wire_hooks` writes the same file. A lock around the sandbox half alone let a delayed hook rename
+# overwrite a locked peer's keys — and the next merge read that absence as operator divergence,
+# recorded `skipped-blocked`, and both installs exited successfully with the protections gone.
+lk2="$work/lockall"; rm -rf "$lk2"; mkdir -p "$lk2/.claude"
+echo '{"model":"opus"}' > "$lk2/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+mkdir -p "$(adb_settings_lock_path "$lk2")"
+printf '%s %s\n' "$$" "$(date +%s)" > "$(adb_settings_lock_path "$lk2")/owner"
+HOME="$lk2" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >"$work/lockall.log" 2>&1
+grep -qi "hooks and sandbox settings NOT written" "$work/lockall.log" && ok \
+  || bad "a live settings lock must block the HOOK writer too — it writes the same file"
+jq -e '.hooks == null' "$lk2/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and nothing may be written to settings.json while the lock is held"
+rm -rf "$(adb_settings_lock_path "$lk2")"
+# uninstall contends for the same lock
+HOME="$lk2" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+mkdir -p "$(adb_settings_lock_path "$lk2")"
+printf '%s %s\n' "$$" "$(date +%s)" > "$(adb_settings_lock_path "$lk2")/owner"
+HOME="$lk2" bash "$ROOT/uninstall.sh" --agent claude >"$work/unlockall.log" 2>&1
+jq -e '.sandbox.enabled == true' "$lk2/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "uninstall must take the same lock and remove nothing while an install holds it"
+rm -rf "$(adb_settings_lock_path "$lk2")"
+
+# --- ownership is proved against the RECEIPT, never against the fragment -------------------------
+#
+# Asking the write path meant a clone whose payload is missing or damaged dropped every row even
+# when each live value still equalled the one recorded for it — the keys stayed installed and
+# became unremovable.
+dmg="$work/damagedfrag"; rm -rf "$dmg"; mkdir -p "$dmg/.claude"
+echo '{"model":"opus"}' > "$dmg/.claude/settings.json"
+HOME="$dmg" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+dmg_clone="$work/dmgclone"; rm -rf "$dmg_clone"; mkdir -p "$dmg_clone"
+( cd "$ROOT" && cp -R . "$dmg_clone" ) >/dev/null 2>&1; rm -rf "$dmg_clone/.git"
+printf '{"sandbox":' > "$dmg_clone/agents/claude/settings.fragment.json"
+HOME="$dmg" PATH="$work/bin:$PATH" bash "$dmg_clone/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$dmg/.claude/.adb-settings-owned" || true)" -eq 4 ] && ok \
+  || bad "a damaged FRAGMENT must not cost ownership — every live value still equals its recorded one, and the keys would otherwise stay installed and unremovable"
+
+# --- a container retirement deletes is no longer ours --------------------------------------------
+#
+# Carrying it forward would claim an empty object the operator later creates at that path.
+r="$(m '{"model":"opus"}' "$work/empty-receipt")"
+printf '%s' "$r" | jq '.settings' > "$work/cret.json"
+adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" "$(printf '%s' "$r" | jq -c .created)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$work/cret-receipt"
+jq 'del(.sandbox.network)' "$PAYLOAD" > "$work/cret-payload.json"
+r="$(adb_claude_settings_merge "$work/cret.json" "$work/cret-payload.json" "$work/cret-receipt")"
+[ "$(names "$r" created)" = "sandbox,sandbox.credentials" ] && ok \
+  || bad "a container retirement emptied must be dropped from ownership; created: $(names "$r" created)"
+
+# --- a rollback restores the SYMLINK, not the bytes behind it ------------------------------------
+grep -qF 'ln -s "$link_target" "$settings"' "$ROOT/install.sh" && ok \
+  || bad "the rollback must restore a symlink destination as a symlink — the pre-image is dereferenced bytes, and writing them back loses the topology permanently"
+
 # --- the opt-out rechecks what it carries --------------------------------------------------------
 #
 # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but carrying it BLINDLY
@@ -1121,6 +1177,10 @@ if [ "$MUTATION" -eq 1 ]; then
       '          | .wrote = [] | .created = []' \
       '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .wrote = [] | .created = []' \
       'must still PRUNE a retired key'
+  check_mut 'a retired container is carried forward anyway' \
+      '                         | map(. as $a | select($after | present($a))) )' \
+      '                         | map(. as $a | select(true)) )' \
+      'container retirement emptied must be dropped from ownership'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -1208,7 +1268,18 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'the settings window is not serialized' \
     '  if ! adb_update_lock "$slock"; then' \
     '  if false; then' \
-    'must refuse the run and name the lock'
+    'must block the HOOK writer too'
+  check_mut 'the rollback writes bytes over a symlink destination' \
+    '      if rm -f "$settings" && ln -s "$link_target" "$settings"; then' \
+    '      if false; then' \
+    'must restore a symlink destination as a symlink'
+  # NO ROW for the empty-probe branch: since ownership is proved by COUNTING the rows that came
+  # back `pruned`, an unparseable probe yields zero and relinquishes anyway. That branch exists for
+  # its message, not for the outcome, and a row that cannot fail is worse than no row.
+  check_mut 'ownership is proved against the fragment again' \
+    '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)" || probe=""' \
+    '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)" || probe=""' \
+    'damaged FRAGMENT must not cost ownership'
   check_mut 'the lock is never released' \
     '  adb_update_unlock "$slock"' \
     '  :' \
@@ -1217,10 +1288,6 @@ if [ "$MUTATION" -eq 1 ]; then
     '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
     '  carried="$(_adb_owned_rows "$receipt")"' \
     'below-floor skip over a DIVERGED install must relinquish ownership'
-  check_mut 'an unparseable probe still counts as proof of ownership' \
-    '  if [ -z "$probe" ]; then' \
-    '  if false; then' \
-    'inability to prove ownership and must drop the carried rows'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset

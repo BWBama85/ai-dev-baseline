@@ -618,6 +618,13 @@ adb_update_unlock() {
   rmdir "$lock" 2>/dev/null
 }
 
+# The lock every writer of ~/.claude/settings.json takes. ONE home for the path, because the
+# installer, the uninstaller and `baseline update` must contend for the same name — a second
+# spelling is a second lock, which excludes nobody. Scoped to the HOME being written rather than
+# to a clone: that is what two racing runs actually contend for.
+# Usage: adb_settings_lock_path [home]
+adb_settings_lock_path() { printf '%s/.claude/.adb-settings.lock' "${1:-${HOME:-/root}}"; }
+
 # --- the non-hook settings fragment (#248, D95-D98) --------------------------------------------
 #
 # `install.sh` owns two surfaces inside ~/.claude/settings.json and they are deliberately
@@ -1047,7 +1054,12 @@ adb_claude_settings_merge() {
               .created += ( .settings | missing_ancestors($p) )
               | .settings = (.settings | setpath($p; $fragment | getpath($p)))
               | .wrote += [$p] )
-          | .created = ( (.created + $created) | unique )
+          # ONLY THE CONTAINERS THAT STILL EXIST. Retirement can delete a container we created —
+          # its last owned leaf went with it — and carrying that path forward would claim an empty
+          # object the operator later creates there.
+          | ( .settings ) as $after
+          | .created = ( ((.created + $created) | unique)
+                         | map(. as $a | select($after | present($a))) )
           | .verdict = "write"
         end
     end

@@ -146,26 +146,12 @@ wire_settings() {
   receipt="$(adb_claude_settings_receipt "$HOME")"
   floor="$(adb_claude_settings_floor)"
 
-  # ONE RUN AT A TIME PER HOME, ACROSS THE WHOLE READ-TO-PUBLISH WINDOW. The settings and the
-  # receipt are published by two separate renames, and distinct temp names do not make the pair
-  # atomic: a normal install and a concurrent `--no-sandbox` can both read the old state, and if
-  # the opt-out publishes its ownership-free receipt LAST, the keys the other run just applied are
-  # left unowned — both commands report success, `baseline update` preserves the opt-out, and
-  # uninstall can never remove them. The lock is the same one `baseline update` takes, moved into
-  # the shared library for this, and it is scoped to the HOME being written rather than to a clone,
-  # because that is what two racing installs actually contend for.
-  local slock="$HOME/.claude/.adb-settings.lock"
-  mkdir -p "$HOME/.claude" 2>/dev/null || true
-  if ! adb_update_lock "$slock"; then
-    adb_info "  WARN   another install is writing ~/.claude/settings.json — sandbox settings NOT written."
-    adb_info "         If nothing else is running, remove: $slock"
-    return 1
-  fi
-  # RELEASED ON EVERY PATH, including the documented refusals and skips, which all `return` from
-  # inside this function rather than falling through to one exit.
-  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor"; local wsrc=$?
-  adb_update_unlock "$slock"
-  return "$wsrc"
+  # THE LOCK IS THE CALLER'S (see adb_settings_lock_path and install_claude). It has to span
+  # EVERY writer of this one file, not just this function: `wire_hooks` writes the same
+  # settings.json, so a lock around the sandbox half alone let a delayed hook rename overwrite a
+  # locked peer's keys — and the next merge then read that absence as operator divergence,
+  # recorded `skipped-blocked`, and both installs exited successfully with the protections gone.
+  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor"
 }
 
 _adb_wire_settings_locked() {
@@ -390,8 +376,16 @@ _adb_wire_settings_locked() {
   # THE PRE-IMAGE MAY BE "NOTHING". With the synthetic input above, a first install can run against
   # a destination that does not exist yet — and restoring that state means REMOVING the file, not
   # putting bytes back.
-  local pre="$settings.adb.$$.pre" had_settings=0
+  # THE LINK ITSELF IS PART OF THE PRE-IMAGE. Recording only the dereferenced bytes meant a
+  # rollback after a symlink destination had been replaced wrote those bytes back as a REGULAR
+  # file and then reported that nothing was applied — the topology an operator deliberately set up
+  # was gone, silently, on the path whose whole purpose is to leave no trace.
+  local pre="$settings.adb.$$.pre" had_settings=0 was_link="" link_target=""
   rm -f "$pre"
+  if [ -L "$settings" ]; then
+    was_link=1
+    link_target="$(readlink -n "$settings"; printf x)"; link_target="${link_target%x}"
+  fi
   if [ -e "$settings" ]; then
     had_settings=1
     if ! { ( umask 077; : > "$pre" ) && cat "$settings" > "$pre"; }; then
@@ -402,6 +396,18 @@ _adb_wire_settings_locked() {
   fi
   adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
   if ! adb_publish_json "$rtmp" "$receipt"; then
+    # A SYMLINK IS RESTORED AS A SYMLINK, not as the bytes it pointed at.
+    if [ -n "$was_link" ] && [ -n "$link_target" ]; then
+      rm -f "$pre"
+      if rm -f "$settings" && ln -s "$link_target" "$settings"; then
+        adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK"
+        adb_info "         and $settings restored as the symlink it was."
+        return 1
+      fi
+      adb_info "  ERROR  $receipt could not be published AND $settings could not be restored to the"
+      adb_info "         symlink it was. Re-create it by hand; it pointed at: $link_target"
+      return 1
+    fi
     if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \
        || { [ "$had_settings" -eq 0 ] && rm -f "$settings"; }; then
       adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK."
@@ -450,20 +456,30 @@ _adb_carry_rows() {
     printf '%s\n' "$rows"
     return 0
   fi
-  if [ ! -s "$live" ] || [ ! -s "$frag" ]; then
+  if [ ! -s "$live" ]; then
     adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run"
     adb_info "           cannot prove those keys are still ours."
     return 0
   fi
-  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)" || probe=""
+  # PROVED AGAINST THE RECEIPT, NOT AGAINST THE FRAGMENT. Asking the write path meant a clone whose
+  # payload is missing or damaged dropped every row even when each live value still equalled the
+  # one recorded for it — the keys stayed installed and became unremovable. Removal mode answers
+  # the question directly and reads no payload at all: a recorded leaf that still carries its
+  # recorded value is `pruned`, one that has changed is `kept`, and one that has gone is neither.
+  # So ownership holds exactly while every recorded row comes back as `pruned`.
+  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)" || probe=""
   if [ -z "$probe" ]; then
     adb_info "  sandbox  ownership relinquished — the live settings could not be parsed."
     return 0
   fi
-  if [ "$(printf '%s' "$probe" | jq -r '.verdict')" = refuse ] \
-     && [ "$(printf '%s' "$probe" | jq -r '.diverged | length')" -gt 0 ]; then
-    adb_info "  sandbox  ownership relinquished: $(printf '%s' "$probe" | jq -r '[.diverged[] | join(".")] | join(", ")')"
-    adb_info "           is no longer as this install left it."
+  local recorded proved
+  recorded="$(adb_claude_settings_receipt_leaves "$receipt" | grep -c . || true)"
+  proved="$(printf '%s' "$probe" | jq -r '.pruned | length')"
+  case "$proved" in ''|*[!0-9]*) proved=0 ;; esac
+  case "$recorded" in ''|*[!0-9]*) recorded=0 ;; esac
+  if [ "$proved" -ne "$recorded" ]; then
+    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)"
+    adb_info "           are no longer as this install left them."
     return 0
   fi
   printf '%s\n' "$rows"
@@ -571,6 +587,16 @@ EOF
   # wire_hooks are dead: install.sh would exit 0 with a corrupt settings.json, and bin/baseline's
   # adb_self_heal — which gates only on that status — would report "update complete" while the
   # gates sat silently unwired. (A missing jq deliberately returns 0; see wire_hooks.)
+  # ONE LOCK PER HOME, AROUND EVERY WRITER OF ~/.claude/settings.json. Two renames with distinct
+  # temp names are not atomic as a pair, and the file has two writers in this function alone.
+  local slock; slock="$(adb_settings_lock_path "$HOME")"
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  if ! adb_update_lock "$slock"; then
+    adb_info "  WARN   another install is writing ~/.claude/settings.json — hooks and sandbox settings NOT written."
+    adb_info "         If nothing else is running, remove: $slock"
+    return 1
+  fi
+
   if [ "$WIRE_HOOKS" -eq 1 ]; then
     local wrc=0 i
     wire_hooks || wrc=$?
@@ -618,6 +644,7 @@ EOF
     adb_info "           uninstall from here could never remove them again. Fix the errors above and re-run."
     rc=1
   fi
+  adb_update_unlock "$slock"
   return "$rc"
 }
 
