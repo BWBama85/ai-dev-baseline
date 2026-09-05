@@ -517,4 +517,8 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUR` PR #463 2026-09-05 — the version-skip paths carried ownership rows without rechecking them, the opt-out fix one path over
 - `partial-validation` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUV` PR #463 2026-09-05 — the ownership probe was bypassed for absent, empty or unparseable settings, so those cases kept every stale row
 - `toctou` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUX` PR #463 2026-09-05 — the settings and receipt renames were unserialized, so a concurrent opt-out could publish an ownership-free receipt over another run's applied keys
+- `toctou` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLVz` PR #463 2026-09-05 — the lock covered only the sandbox writer while wire_hooks writes the same file and uninstall took none
+- `consumer-contract-mismatch` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV1` PR #463 2026-09-05 — ownership was proved by asking the write path, so a damaged fragment dropped rows whose live values still matched
+- `partial-validation` `scripts/lib/common.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV5` PR #463 2026-09-05 — a container the retirement had just deleted was still carried as ours, so an operator object later created there would be removed
+- `exit-path-asymmetry` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV8` PR #463 2026-09-05 — the rollback pre-image held dereferenced bytes, so restoring over a replaced symlink destroyed the link topology
 <!-- adb:hits:end -->
