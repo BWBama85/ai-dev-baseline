@@ -56,8 +56,44 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude codex gemini)
 
 uninstall_claude() {
-  local rc=0 manifest
+  # ONE RELEASE, ON EVERY EXIT — INCLUDING A SIGNAL. The body returns from several places (a
+  # manifest that cannot be enumerated among them), and `adb_settings_lock_take` arms the traps so
+  # a Ctrl-C mid-run cannot leave the lock behind either: one left behind refuses every later
+  # install and uninstall for the stale interval, or longer if the recorded pid is reused.
+  # NOTHING TO REMOVE IS NOT A FAILURE, and it is asked BEFORE the lock. The lock directory is
+  # nested inside ~/.claude, so on a home that never had it — a clean machine, or someone who
+  # installed only Codex or Gemini — `adb_update_lock` cannot create it and fails exactly as a
+  # contended lock does. That reported "an install is writing" and ended the run with
+  # "Uninstall INCOMPLETE" over a home with no Claude state at all. Creating the directory to lock
+  # it would be worse: an uninstall must not materialise the tree it exists to remove. (PR review)
+  if [ ! -d "$HOME/.claude" ]; then
+    adb_info "claude"
+    adb_info "  nothing to remove — ~/.claude does not exist"
+    return 0
+  fi
+  if ! adb_settings_lock_take; then
+    adb_info "claude"
+    adb_info "  WARN   an install is writing ~/.claude — nothing was removed."
+    adb_info "         If nothing else is running, remove: $(adb_settings_lock_path "$HOME")"
+    return 1
+  fi
+  _uninstall_claude_locked; local ucrc=$?
+  adb_settings_lock_drop
+  return "$ucrc"
+}
+
+_uninstall_claude_locked() {
+  local rc=0 manifest ours_settings=0
   adb_info "claude"
+  # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the root-doc link the
+  # answer depends on — a check inside `unwire_settings` would run after that removal and could
+  # never pass. Two clones can each install globally: the second overwrites the first's links and
+  # its receipt, and running the FIRST clone's uninstaller must then leave the second's settings
+  # alone. The link half of that is already true (`adb_unlink_if_ours` refuses a link into another
+  # clone); the settings half read the receipt as proof of ownership and removed keys this clone
+  # no longer owns. Same predicate `bin/baseline` uses to decide a root doc "is not ours to
+  # re-wire". (PR review)
+  adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO" && ours_settings=1
   # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
   # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
   #
@@ -111,7 +147,96 @@ EOF
   else
     adb_info "  WARN   jq not found — hook entries left in ~/.claude/settings.json; remove them by hand"
   fi
+
+  unwire_settings "$ours_settings" || rc=1
   return "$rc"
+}
+
+# The mirror of install.sh's wire_settings (#248, D95): remove the sandbox leaves this install
+# OWNS, and only those. Ownership comes from the receipt, never from the shipped payload —
+# `adb_claude_settings_merge --remove` deletes a leaf only while its live value still equals what
+# the receipt says we wrote, KEEPS and NAMES one the operator has edited since, and prunes the
+# containers it emptied without touching an empty object anybody else left in the file.
+#
+# NO RECEIPT MEANS NO REMOVAL, deliberately. An install that predates this surface, one that
+# skipped below the floor, and one whose keys the operator has already deleted all look the same
+# from settings.json alone, and guessing would delete `sandbox` keys we never wrote.
+unwire_settings() {
+  local ours="${1:-0}"
+  local settings="$HOME/.claude/settings.json" receipt payload result names tmp
+  receipt="$(adb_claude_settings_receipt "$HOME")"
+  payload="$(adb_claude_settings_payload "$REPO")"
+  [ -f "$receipt" ] || return 0
+  # NOT OURS, NOT OURS TO REMOVE. The receipt is global, so its mere existence proves only that
+  # SOME clone installed these keys — and a second clone's install replaced both the links and the
+  # receipt. Leaving them is the same answer `adb_unlink_if_ours` gives for a link pointing
+  # elsewhere, and it is said rather than done in silence.
+  if [ "$ours" != "1" ]; then
+    # THE LINK IS NOT THE ONLY PROOF, and by now it may be gone: `adb_unlink_manifest` runs before
+    # this, so a cleanup that could not complete (no jq) leaves a receipt whose live proof has been
+    # removed — and the retry this function tells the operator to make would then refuse its own
+    # settings as another clone's. The recorded source is the durable half.
+    local recorded
+    recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
+    if [ -n "$recorded" ] && [ "$recorded" = "$REPO" ]; then
+      adb_info "  sandbox  the root-doc link is gone, but this receipt records this clone as its source — proceeding"
+    else
+      adb_info "  sandbox  left alone — ~/.claude is installed from another clone, so its settings are not ours to remove"
+      return 0
+    fi
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them."
+    adb_info "         Install jq and re-run: the receipt records this clone as its source, so the"
+    adb_info "         retry can still prove they are ours even though the root-doc link is gone."
+    return 1
+  fi
+  # NO SETTINGS FILE MEANS NOTHING TO REMOVE — the receipt goes with it, because the keys it
+  # describes cannot exist. A MISSING PAYLOAD IS NOT THAT CASE: ownership lives in the receipt, and
+  # the merge's `--remove` mode does not need the fragment at all, so deleting the receipt here
+  # would destroy the only record of which keys are ours while leaving every one of them installed
+  # — an uninstall that reports success and silently strands the sandbox settings for good.
+  # (PR review)
+  if [ ! -s "$settings" ]; then
+    rm -f "$receipt" || {
+      adb_info "  WARN   could not remove $receipt — remove it by hand."
+      adb_info "         Until you do, a re-install reads its leaves as YOUR removals and will not restore them."
+      return 1; }
+    return 0
+  fi
+  result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)" || {
+    adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox settings NOT removed; edit it by hand"
+    return 1; }
+  tmp="$settings.adb.$$.tmp"
+  # RESTRICTED BEFORE IT IS POPULATED, exactly as the installer's writer does it. This temp holds
+  # the WHOLE settings document — every unrelated key, an `env` block among them — and creating it
+  # under the caller's umask leaves a predictable, PID-named, world-readable file for as long as
+  # the write takes. `adb_publish_json` carries the destination's mode across only at publish time,
+  # which is the end of that window rather than the start of it.
+  rm -f "$tmp"
+  ( umask 077; : > "$tmp" ) || {
+    adb_info "  WARN   could not create the settings temp file — sandbox settings NOT removed"; return 1; }
+  # Same shared publish as the installer: refuse a destination that is not a regular file, and
+  # carry the original's mode across rather than stamping the umask default onto it.
+  if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then
+    names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
+    [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
+    names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
+    [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
+    # THE RECEIPT'S REMOVAL IS CHECKED. A stale ownership record survives an otherwise clean
+    # uninstall, and the next install reads its leaves as recorded removals — the documented
+    # by-hand opt-out — and deliberately refuses to restore them. Sandbox protection then stays
+    # off until somebody finds and deletes a file they were never told about.
+    rm -f "$receipt" || {
+      adb_info "  WARN   the sandbox settings were removed, but $receipt could not be deleted."
+      adb_info "         Remove it by hand: until you do, a re-install reads its leaves as YOUR"
+      adb_info "         removals and will not restore the protection."
+      return 1; }
+    return 0
+  fi
+  rm -f "$tmp"
+  adb_info "  WARN   could not rewrite ~/.claude/settings.json — sandbox settings NOT removed; edit it by hand"
+  return 1
 }
 
 # THE LOOP ACCUMULATES, AND THE SCRIPT EXITS ON IT (#324, D64). It used to call each remover and

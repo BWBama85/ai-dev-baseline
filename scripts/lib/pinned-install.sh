@@ -1436,6 +1436,17 @@ EOF
         printf '# created: .claude/settings.json\n' >> "$rp"
       fi
     fi
+    # SAID ON EVERY PATH, NOT ONLY THE ONE WITH jq (#248, D97). The global installer also writes a
+    # least-privilege `sandbox` fragment into ~/.claude/settings.json; this model writes a
+    # PROJECT-scoped settings.json and deliberately does not carry it — the file is TRACKED by the
+    # adopting project, so a sandbox policy written here is committed on behalf of every
+    # contributor to it. (Some sandbox keys ARE user/managed-only; the ones this fragment ships are
+    # not, and D97 records that correction.)
+    #
+    # OUTSIDE the jq branch, because a security-relevant omission that goes unsaid precisely in the
+    # degraded environment is the one place it most needs saying.
+    _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"
+    _pi_say "           sandbox policy is left to the global install. See docs/installation.md."
   done
 
   _pi_say "pinned to $ver — commit .ai-dev-baseline/ and the vendored .<agent>/ payload"

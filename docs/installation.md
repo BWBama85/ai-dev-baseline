@@ -45,6 +45,7 @@ cd ~/Code/ai-dev-baseline
 ./install.sh                       # installs the 'claude' agent + wires gates
 ./install.sh --agent claude --agent codex
 ./install.sh --agent claude --no-hooks
+./install.sh --agent claude --no-sandbox
 ```
 
 Options:
@@ -53,6 +54,7 @@ Options:
 |---|---|
 | `--agent <claude\|codex\|gemini>` | Repeatable. Which agent(s) to install. Default: `claude`. |
 | `--no-hooks` | Skip wiring the global Stop-hook gates into `~/.claude/settings.json`. |
+| `--no-sandbox` | Skip the [least-privilege sandbox settings](#least-privilege-sandbox-settings). Recorded, so `baseline update` keeps honouring it. |
 | `-h`, `--help` | Print the usage header. |
 
 `codex` and `gemini` run their `agents/<token>/adapter.sh`, which symlinks that
@@ -149,6 +151,90 @@ one entry you removed plus one hook that just shipped — keeps the opt-out and 
 **unlinked** as well as unwired (a linked-but-unwired hook would read as a second opt-out on the
 next update), restoring anything the install displaced at that path; the update says so every run, and `./install.sh` wires the full set (which re-adds
 the one you removed). The per-hook form that resolves this is #444.
+
+### Least-privilege sandbox settings
+
+`install.sh` also writes a second, **non-hook** fragment into `~/.claude/settings.json` —
+Claude Code's sandbox keys — unless `--no-sandbox` is passed. Source:
+`agents/claude/settings.fragment.json`.
+
+| Key | Value | What it buys |
+|---|---|---|
+| `sandbox.enabled` | `true` | Bash commands run under OS-enforced filesystem and network isolation. |
+| `sandbox.credentials.files` | `deny` on `~/.aws`, `~/.ssh` | The vendor's default read policy **still allows** reading those; this closes it. |
+| `sandbox.credentials.envVars` | `deny` on `GITHUB_TOKEN` | Sandboxed commands inherit the parent environment, credentials included; this unsets it for them. |
+| `sandbox.network.allowedDomains` | `api.anthropic.com` and the GitHub hosts | Pre-allows the hosts this repo's own `git`/`gh` traffic reaches, so they do not prompt. |
+
+The allowlist is a starting point, not a claim of completeness: it covers **`api.anthropic.com` and
+GitHub**, so a project whose remote is elsewhere, or whose build fetches a package registry, will
+still be prompted for those hosts — add them in your own settings, since array keys merge across
+every scope. And note that `github.com` is a **broad** entry: the vendor's own security notes point
+out that a wide domain can be used for exfiltration when TLS is not inspected (the built-in proxy
+does not inspect it by default). It is here because `git` and `gh` need it, not because it is
+tightly scoped.
+
+Two keys are deliberately **not** shipped. `sandbox.filesystem.disabled` turns filesystem
+isolation *off* (that is what it does — it reads like hardening and is the opposite);
+`sandbox.network.strictAllowlist` converts the allowlist from *pre-allow* to *deny*, which is a
+larger imposition than the allowlist itself. Both are yours to add.
+
+**It is written to USER scope only** (`~/.claude/settings.json`) — a choice, not a vendor
+limitation. The keys shipped here *would* be honoured in a repository's `.claude/settings.json`
+(`deny` entries merge from every scope the session loads); the ones that are genuinely user- or
+managed-only are `filesystem.disabled`, `strictAllowlist` and the `mask` family, none of which
+this fragment ships. It stays user-scoped because the global installer's whole model is user-level
+config, and because `install.sh --pinned` writes a **tracked** project settings file — writing a
+security policy there would commit one on behalf of every contributor to that repository. The
+pinned model therefore does not write these keys at all, and says so.
+
+One thing this does **not** buy you: if the sandbox cannot start — missing packages on Linux or
+WSL2, or an unsupported platform — Claude Code warns and runs commands *unsandboxed*, and none of
+these rules apply. `sandbox.failIfUnavailable` turns that into a hard error and is deliberately not
+shipped, since refusing to start is not a default this installer should choose for you.
+
+**Below the version floor, nothing is written.** The keys need Claude Code **v2.1.187** or later
+(`sandbox.credentials`). The installer probes the CLI; below the floor, or when no `claude` binary
+can be probed, it writes **no key** and prints the version found, the floor required, and the
+protection that was therefore not applied. That absence is recorded as a *skip*, not a choice, so
+the next `baseline update` applies the settings by itself once you upgrade the CLI.
+
+#### It applies whole, or not at all
+
+The fragment is installed **only when every key it ships is absent**. If any of them is already in
+your `settings.json` — whatever the value — nothing is written and the installer names what is in
+the way. There is no partial application: a half-applied policy reports protection it does not
+have, and `sandbox.enabled` without the credential rules (or the reverse) is exactly that.
+
+Your own keys are never in the way unless they *are* one of ours: `sandbox.excludedCommands` sits
+beside our `sandbox.enabled` and is never read, rewritten or removed.
+
+A receipt at `~/.claude/.adb-settings-owned` records the keys written, the containers created for
+them, and the digest of the fragment applied:
+
+| You do this | What happens next |
+|---|---|
+| Already have any key we ship | **Nothing is written**, and the refusal names it. Remove or rename it and re-run `./install.sh` to take the policy. |
+| Edit or delete a key we wrote | The surface is yours from then on: the next install refuses rather than rewriting, and names what changed. Deleting is the opt-out, and it is not remembered as ours — so if you later re-add that value by hand, uninstall will not take it. |
+| `install.sh --no-sandbox` | Nothing written, the choice recorded; `baseline update` keeps honouring it. |
+| A future version stops shipping a key | The next install **prunes** it, so no orphan is left in your file. |
+| The shipped values change (a new allowed domain) | `baseline update` notices — the receipt records the **digest** of the fragment it applied, so a changed *value* is caught, not just a changed key. |
+| Your CLI is downgraded or drops off `PATH` | Nothing new is written, and the receipt **keeps** what it already owns, so uninstall can still remove it. |
+| You already had `{"sandbox": {}}` | It survives uninstall. We delete only the containers we made, which is why they are recorded rather than inferred. |
+
+#### The one conflict to know about
+
+`sandbox.enabled` plus a `deny` on `~/.ssh` blocks sandboxed `git` over SSH, and a `deny` on
+`GITHUB_TOKEN` breaks `gh` wherever that variable is its token source. Unless you have set
+`allowUnsandboxedCommands` to `false`, the blocked command can be retried outside the sandbox,
+which then goes through the ordinary permission flow — a confirmation prompt in Manual mode. That
+is a stall rather than a failure, but a stall is enough to interrupt an autonomous
+`/implement-issue` run. If your remotes are SSH, either add the commands you trust:
+
+```json
+{ "sandbox": { "excludedCommands": ["git", "gh"] } }
+```
+
+...or install with `--no-sandbox`. This is a known trade-off, not an oversight: see D96, and #462 carries the owner decision on whether to ship `excludedCommands` by default.
 
 ### Run markers are session-owned
 
@@ -297,7 +383,8 @@ below), even though it's edited in place rather than replaced by a symlink.
 Anything the installer would overwrite — an existing non-symlink
 `~/.claude/CLAUDE.md`, a pre-existing skill directory, an existing
 `~/.claude/settings.json` — is moved (or copied, for `settings.json`) into a
-timestamped backup directory first:
+timestamped backup directory first. `settings.json` is copied **once per run**, before either
+writer touches it, so the backup is your original file rather than a half-merged intermediate:
 
 ```
 ~/.claude/backups/ai-dev-baseline-<YYYYMMDD-HHMMSS>/
@@ -760,6 +847,12 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   and no `bin/` — a pinned project consumes the baseline, it does not develop it.
 - **The pin is not a lock file.** It records what was installed; the receipt is what proves the
   tree still matches it.
+- **It does not write the least-privilege sandbox settings.** Not because the CLI would ignore
+  them — the shipped key set *would* be honoured in project scope, since `deny` entries merge from
+  every loaded scope — but because this model's `.claude/settings.json` is **tracked**: writing a
+  sandbox policy there commits one on behalf of every contributor to that repository, and the
+  ownership and uninstall semantics are the global install's, not a reviewed file's. The install
+  says so rather than omitting them silently; run the global `./install.sh` to get them.
 - **Codex truncates long project instructions, and this install cannot stop it.** Its
   `project_doc_max_bytes` defaults to 32 KiB and larger files are truncated *silently*, while the
   rendered practices are far bigger. The install measures the resulting `AGENTS.md` and prints the
@@ -796,7 +889,17 @@ via `jq`, matched by filename) and removes a hook-event key entirely once that
 leaves it empty. Hooks you added yourself under the same events are left alone.
 Removing the SessionStart entry matters as much as unlinking the script: a
 leftover entry pointing at a deleted command would error on every future
-session. Your backups under
+session.
+
+It also removes the **sandbox settings** it wrote, and only those: a leaf is deleted while its
+value still matches the receipt at `~/.claude/.adb-settings-owned`, one you have edited since is
+**kept and named** in the output, and containers emptied by the removal are pruned while an empty
+object of your own elsewhere in the file is not. **With no receipt, nothing is removed** — an
+install that predates this surface, a below-floor skip and an already-cleaned home are
+indistinguishable from `settings.json` alone, and guessing would delete `sandbox` keys the
+installer never wrote.
+
+Your backups under
 `~/.claude/backups/ai-dev-baseline-*` are **never** touched by uninstall —
 restore from them by hand if you want the pre-install files back.
 

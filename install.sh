@@ -15,12 +15,14 @@
 #   ./install.sh                       # installs the 'claude' agent + wires gates
 #   ./install.sh --agent claude --agent codex
 #   ./install.sh --agent claude --no-hooks
+#   ./install.sh --agent claude --no-sandbox
 #   ./install.sh --pinned --project DIR --version X.Y.Z [--agent claude|codex]...
 #   ./install.sh --pinned --project DIR --artifact FILE --sums FILE
 #
 # Options:
 #   --agent <claude|codex|gemini>   repeatable; default: claude
 #   --no-hooks                      don't wire the global Stop-hook gates
+#   --no-sandbox                    don't write the least-privilege sandbox settings (#248)
 #   --pinned                        release-pinned per-project install; every remaining argument
 #                                   is passed to scripts/lib/pinned-install.sh install
 #   -h, --help
@@ -113,19 +115,477 @@ done
 # a hook this run added) names the directory instead of guessing a timestamp.
 BACKUP_DIR="${ADB_BACKUP_DIR:-$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)}"
 WIRE_HOOKS=1
+WIRE_SETTINGS=1
 AGENTS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) AGENTS+=("$2"); shift 2 ;;
     --no-hooks) WIRE_HOOKS=0; shift ;;
+    --no-sandbox) WIRE_SETTINGS=0; shift ;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude)
 
+# THE SECOND SETTINGS SURFACE (#248, D95-D98): the non-hook fragment. Deliberately a separate
+# function from wire_hooks and not a generalization of it — the two own different THINGS. Hooks
+# own whole groups under `.hooks`, keyed by our command path; this owns individual LEAF PATHS
+# anywhere else in the file, so an adopter's `sandbox.excludedCommands` survives beside our
+# `sandbox.enabled`. All the ownership arithmetic lives in adb_claude_settings_merge; this
+# function is the I/O, the version probe and the reporting.
+#
+# Returns 0 installed OR deliberately skipped (each writes a receipt saying WHICH), 1 broken,
+# 3 skipped for want of jq — the same three-status contract wire_hooks uses, and for the same
+# reason: an unconditional success line was the recorded defect (#242).
+wire_settings() {
+  local settings="$HOME/.claude/settings.json"
+  local receipt payload floor version tmp result
+  payload="$(adb_claude_settings_payload "$REPO")"
+  receipt="$(adb_claude_settings_receipt "$HOME")"
+  floor="$(adb_claude_settings_floor)"
+
+  # THE LOCK IS THE CALLER'S (see adb_settings_lock_path and install_claude). It has to span
+  # EVERY writer of this one file, not just this function: `wire_hooks` writes the same
+  # settings.json, so a lock around the sandbox half alone let a delayed hook rename overwrite a
+  # locked peer's keys — and the next merge then read that absence as operator divergence,
+  # recorded `skipped-blocked`, and both installs exited successfully with the protections gone.
+  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor"
+}
+
+_adb_wire_settings_locked() {
+  local settings="$1" receipt="$2" payload="$3" floor="$4"
+  local version tmp result
+
+  # THE OPT-OUT IS RECORDED BEFORE THE jq GUARD, deliberately. Its receipt is plain text and needs
+  # no jq, and a missing jq is a SUPPORTED degraded environment — so returning early here would
+  # leave `--no-sandbox` unrecorded, and the first `baseline update` after jq arrived would read
+  # disposition `none` and apply the fragment over a choice the operator made by contract.
+  # `precondition-ordering`: the step that can satisfy the guard runs first. (PR review)
+  #
+  # It also carries the previous run's `leaf` rows forward. Dropping them would orphan any key an
+  # earlier install wrote: uninstall could no longer prove which keys were ours, and D95's
+  # retirement prune would have nothing to prune.
+  if [ "$WIRE_SETTINGS" -eq 0 ]; then
+    # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but only what it
+    # can still PROVE — the shared rule, so the opt-out and the version skips cannot disagree.
+    local optout_rows
+    optout_rows="$(_adb_carry_rows "$receipt" "$settings" "$payload")"
+    if ! { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$optout_rows"; } \
+         | adb_claude_settings_receipt_render skipped-optout "-" "$floor" \
+             "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
+         || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
+      rm -f "$receipt.adb.$$.tmp"
+      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured"
+      return $?
+    fi
+    adb_info "  sandbox  --no-sandbox: no settings written (recorded, so \`baseline update\` keeps honouring it)"
+    return 0
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  WARN   jq not found — cannot write the sandbox settings; install jq and re-run"
+    # PROVENANCE IS STILL REFRESHED, because none of it needs jq — the render, the ownership rows
+    # and the digest read are all grep and printf. Returning here without doing it leaves a
+    # receipt naming the PREVIOUS clone while the root-doc link now names this one, and an
+    # uninstall from here that also lacks jq removes that link before failing: the retry it advises
+    # then rejects the receipt as somebody else's and strands the settings for good.
+    if [ -f "$receipt" ]; then
+      if { adb_claude_settings_source_row "$REPO"; _adb_owned_rows "$receipt"; } \
+         | adb_claude_settings_receipt_render \
+             "$(adb_claude_settings_disposition "$receipt")" \
+             "-" "$floor" \
+             "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" \
+             > "$receipt.adb.$$.tmp" && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then :; else
+        rm -f "$receipt.adb.$$.tmp"
+        adb_info "  WARN   ...and the receipt still names another clone; uninstall from that clone instead"
+      fi
+    fi
+    return 3
+  fi
+  [ -s "$payload" ] || {
+    adb_info "  WARN   could not read $payload — sandbox settings NOT written"; return 1; }
+
+  # THE VERSION PROBE (D98). Three outcomes, three receipts — never one silent absence. Below the
+  # floor, or unreadable, we write NOTHING: a key the running CLI ignores reports protection it
+  # never applied, which is the failure decision 3 already ruled out.
+  # THE RECORD'S STATUS IS THE BRANCH'S. `_adb_record_skip` returns non-zero only when it could
+  # neither publish the replacement receipt nor remove the stale one — so the prior `installed`
+  # rows survive, still able to authorise a removal, and a self-heal that reported success would
+  # never revisit it. The skip itself still stands and is still explained; what changes is that
+  # the caller learns the record did not. (PR review)
+  local skiprc
+  if ! version="$(adb_claude_cli_version)"; then
+    skiprc=0; _adb_record_skip skipped-unprobeable "-" "$floor" "$receipt" || skiprc=$?
+    adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
+    adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
+    adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
+    return "$skiprc"
+  fi
+  if ! adb_version_ge "$version" "$floor"; then
+    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?
+    adb_info "  sandbox  SKIPPED — claude v$version is below the v$floor floor for \`sandbox.credentials\`."
+    adb_info "           NOT applied: sandbox isolation, the ~/.aws and ~/.ssh read denials, the"
+    adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
+    adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
+    return "$skiprc"
+  fi
+
+  # AN EMPTY OR ABSENT settings.json IS SUBSTITUTED, NEVER CREATED IN PLACE. `--slurpfile` refuses
+  # an empty file, but `echo '{}' > "$settings"` FOLLOWS a symlink — so a dangling link, or one
+  # pointing at an empty file, had its target created or overwritten before the publish replaced
+  # the link itself. That is a write outside ~/.claude, from a path whose whole design is
+  # rename-only. The merge reads a synthetic `{}` instead and the destination is touched once, by
+  # the publish.
+  local cur_input="$settings"
+  local synth=""
+  if [ ! -s "$settings" ]; then
+    synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }
+    printf '{}\n' > "$synth"
+    cur_input="$synth"
+  fi
+  # ONE BACKUP PER RUN, AND ITS STATUS IS CHECKED. wire_hooks already copied the PRISTINE file;
+  # copying again here would overwrite it with the hook-wired intermediate and lose the operator's
+  # original. The success line below says "backed up", and an unwritable backup destination would
+  # otherwise let this mutate the operator's settings while that promise was false. (PR review)
+  if [ -e "$settings" ] && [ ! -e "$BACKUP_DIR$settings" ]; then
+    if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" || ! cp "$settings" "$BACKUP_DIR$settings"; then
+      rm -f "$synth"
+      adb_info "  WARN   could not back up $settings under $BACKUP_DIR — sandbox settings NOT written"
+      return 1
+    fi
+  fi
+
+  result="$(adb_claude_settings_merge "$cur_input" "$payload" "$receipt")" || {
+    rm -f "$synth"
+    adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
+    adb_info "         settings NOT written (it must hold exactly one object; restore from the backup)"
+    return 1; }
+  rm -f "$synth"; synth=""
+  # THE RECEIPT IS RENDERED BEFORE THE SETTINGS ARE PUBLISHED, and the old one is kept until both
+  # are durable. Ownership is the load-bearing half: settings without a receipt are keys nobody
+  # can prove are ours, and the NEXT install reads them as the operator's — writes an empty
+  # ownership record — after which uninstall can never remove them. So a receipt this run cannot
+  # render is a refusal, not a warning, and nothing is written at all. (PR review)
+  # The publishability of the receipt PATH is checked before anything is written, not just its
+  # rendering: `adb_publish_json` refuses a non-regular destination, but it does so at publish
+  # time — which is after the settings would already be durable. `precondition-ordering`: the
+  # guard has to run where the thing it guards has not happened yet.
+  if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then
+    adb_info "  WARN   $receipt is not a regular file — sandbox settings NOT written"
+    adb_info "         (keys with no receipt could never be removed by uninstall, so none were applied)"
+    return 1
+  fi
+  # ALL-OR-NOTHING: a refusal writes NO KEY. Either the whole fragment applies or the operator is
+  # told exactly what is in the way, because a partial policy reports protection it does not have.
+  local verdict blockers
+  verdict="$(printf '%s' "$result" | jq -r '.verdict')"
+  if [ "$verdict" = refuse ]; then
+    blockers="$(printf '%s' "$result" | jq -r '[(.blocked + .diverged)[] | join(".")] | join(", ")')"
+    if [ "$(printf '%s' "$result" | jq -r '.diverged | length')" -gt 0 ]; then
+      adb_info "  sandbox  NOT written — these keys are no longer as this install left them: $blockers"
+      adb_info "           Editing or deleting one is the documented opt-out, so nothing was rewritten."
+      adb_info "           To take the policy back, remove the \`sandbox\` keys and re-run ./install.sh."
+    else
+      adb_info "  sandbox  NOT written — you already have: $blockers"
+      adb_info "           The policy applies whole or not at all, so none of it was written."
+      adb_info "           Remove or rename those keys and re-run ./install.sh to take it."
+    fi
+    # ITS OWN RECEIPT, not `_adb_record_skip`'s. Two things differ from a version skip, and both
+    # matter. The DIGEST must be the payload this refusal evaluated — carrying the prior one (or
+    # `-` on a first install) leaves `adb_settings_pending` seeing an unknown or mismatched digest
+    # forever, so every update re-runs the installer and reports a repair that changed nothing.
+    # And NO ROWS are carried: under the all-or-nothing contract a refusal relinquishes the
+    # surface, so claiming ownership of keys the operator has taken over is what would let a later
+    # uninstall delete a value they re-added by hand.
+    # A REFUSAL MAY STILL CARRY A RETIREMENT. Removing a key we no longer ship is cleanup, not
+    # part of the all-or-nothing decision — and dropping it here would leave that key installed
+    # with no ownership record at all, since a blocked receipt carries no rows.
+    local retired
+    retired="$(printf '%s' "$result" | jq -r '[.pruned[] | join(".")] | join(", ")')"
+    if [ -n "$retired" ]; then
+      local rtmp2="$settings.adb.$$.ret"
+      rm -f "$rtmp2"
+      if ( umask 077; : > "$rtmp2" ) && printf '%s' "$result" | jq '.settings' > "$rtmp2" \
+         && [ -s "$rtmp2" ] && adb_publish_json "$rtmp2" "$settings"; then
+        adb_info "  sandbox  pruned (no longer shipped): $retired"
+      else
+        rm -f "$rtmp2"
+        adb_info "  WARN   could not prune the retired key(s) $retired — they remain in $settings."
+        adb_info "         The previous ownership record is LEFT IN PLACE so a later run can still"
+        adb_info "         remove them; nothing was recorded about this refusal. Re-run ./install.sh."
+        # ABORT BEFORE REPLACING THE RECEIPT. A `skipped-blocked` receipt carries no rows, so
+        # writing one here would leave the un-pruned retired key with no record able to remove it
+        # on any later update or uninstall.
+        return 1   # prune-abort
+      fi
+    fi
+    local refused_digest
+    refused_digest="$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')"
+    if adb_claude_settings_source_row "$REPO" \
+       | adb_claude_settings_receipt_render skipped-blocked "$version" "$floor" \
+             "$refused_digest" > "$receipt.adb.$$.tmp" \
+       && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
+      return 0
+    fi
+    # THE OLD RECORD MUST NOT SURVIVE THE FAILURE. Returning success here left the previous
+    # `installed` receipt in place with a digest that still matched, so `adb_settings_pending`
+    # would never re-report the refusal — and its ownership rows would let a later uninstall
+    # delete a value the operator had since restored by hand.
+    rm -f "$receipt.adb.$$.tmp"
+    # THE SHARED INVALIDATOR, not a second copy of it. This path had its own `rm`-and-report body
+    # saying the same thing in different words, and the duplicate is what made the mutation row
+    # covering it undetectable: the structural pin matched either site, so deleting one left the
+    # other answering for it. `reuse-missed`. The helper also handles the case this copy got wrong
+    # — a FIRST install has no receipt to invalidate, and `rm -f` succeeds on nothing, so the copy
+    # reported removing a record that never existed.
+    _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written"
+    return $?
+  fi
+
+  local rtmp="$receipt.adb.$$.tmp"
+  if ! { adb_claude_settings_source_row "$REPO"
+         adb_claude_settings_leaf_rows "$payload" \
+           "$(printf '%s' "$result" | jq -c '.wrote')" \
+           "$(printf '%s' "$result" | jq -c '.created')"; } \
+       | adb_claude_settings_receipt_render installed "$version" "$floor" \
+             "$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')" > "$rtmp" \
+     || [ ! -s "$rtmp" ]; then
+    rm -f "$rtmp"
+    adb_info "  WARN   could not render the ownership receipt $receipt — sandbox settings NOT written"
+    adb_info "         (keys with no receipt could never be removed by uninstall, so none were applied)"
+    return 1
+  fi
+
+  tmp="$settings.adb.$$.tmp"
+  # RESTRICTED BEFORE IT IS POPULATED. The merged settings carry every unrelated key too — an
+  # `env` block among them — and copying the destination's mode only at publish time leaves a
+  # window in which a predictable, PID-named, umask-readable file holds all of it. On a host where
+  # ~/.claude is traversable that window is readable by another user. (PR review)
+  rm -f "$tmp"
+  ( umask 077; : > "$tmp" ) || { adb_info "  WARN   could not create the settings temp file — NOT written"; return 1; }
+  if ! printf '%s' "$result" | jq '.settings' > "$tmp" || [ ! -s "$tmp" ]; then
+    rm -f "$tmp" "$rtmp"
+    adb_info "  WARN   could not render the merged settings — NOT written (original left intact)"
+    return 1
+  fi
+  # Published through the shared primitive: it refuses a destination that is not a regular file
+  # (a directory would swallow the rename and report success) and carries the original's mode
+  # across, so a mode-0600 settings.json is not relaxed to the umask default.
+  # THE PRE-IMAGE IS KEPT so the settings write can be UNDONE. The receipt is checked and rendered
+  # before anything is published, but publishing it can still fail after the settings rename has
+  # succeeded — and settings without a receipt are the one unrecoverable state: the next install
+  # reads those values as the operator's and records nothing, after which uninstall can never
+  # remove them. So the failure path undoes what the success path did, in reverse.
+  # THE PRE-IMAGE MAY BE "NOTHING". With the synthetic input above, a first install can run against
+  # a destination that does not exist yet — and restoring that state means REMOVING the file, not
+  # putting bytes back.
+  # THE LINK ITSELF IS PART OF THE PRE-IMAGE. Recording only the dereferenced bytes meant a
+  # rollback after a symlink destination had been replaced wrote those bytes back as a REGULAR
+  # file and then reported that nothing was applied — the topology an operator deliberately set up
+  # was gone, silently, on the path whose whole purpose is to leave no trace.
+  local pre="$settings.adb.$$.pre" had_settings=0 was_link="" link_target=""
+  rm -f "$pre"
+  if [ -L "$settings" ]; then
+    was_link=1
+    link_target="$(readlink -n "$settings"; printf x)"; link_target="${link_target%x}"
+  fi
+  if [ -e "$settings" ]; then
+    had_settings=1
+    if ! { ( umask 077; : > "$pre" ) && cat "$settings" > "$pre"; }; then
+      rm -f "$tmp" "$rtmp" "$pre"
+      adb_info "  WARN   could not snapshot $settings before writing — sandbox settings NOT written"
+      return 1
+    fi
+  fi
+  adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
+  if ! adb_publish_json "$rtmp" "$receipt"; then
+    # A SYMLINK IS RESTORED AS A SYMLINK, not as the bytes it pointed at.
+    if [ -n "$was_link" ] && [ -n "$link_target" ]; then
+      rm -f "$pre"
+      if rm -f "$settings" && ln -s "$link_target" "$settings"; then
+        adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK"
+        adb_info "         and $settings restored as the symlink it was."
+        return 1
+      fi
+      adb_info "  ERROR  $receipt could not be published AND $settings could not be restored to the"
+      adb_info "         symlink it was. Re-create it by hand; it pointed at: $link_target"
+      return 1
+    fi
+    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \
+       || { [ "$had_settings" -eq 0 ] && rm -f "$settings"; }; then
+      adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK."
+      adb_info "         Nothing was applied and nothing was orphaned — fix that path and re-run ./install.sh."
+    else
+      rm -f "$pre"
+      adb_info "  ERROR  $receipt could not be published AND the settings could not be rolled back."
+      adb_info "         The sandbox keys are applied with no ownership record: uninstall cannot"
+      adb_info "         remove them. Remove the \`sandbox\` keys from $settings by hand, then re-run."
+    fi
+    return 1
+  fi
+  rm -f "$pre"
+
+  # THE HEADLINE CANNOT OVERSTATE ANY MORE, and that is the contract doing the work rather than a
+  # check: a `write` verdict means every shipped leaf was applied, because anything already there
+  # would have refused the lot.
+  adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
+  _adb_report_settings "$result" wrote   "wrote"
+  _adb_report_settings "$result" pruned  "pruned (no longer shipped)"
+  _adb_report_settings "$result" kept    "kept (no longer shipped, and you edited it since we wrote it)"
+  return 0
+}
+
+# The ownership rows a non-writing path may still claim — ONE home, because the opt-out and the
+# version skips must answer this identically and a second copy is a second chance to diverge.
+#
+# The rule is: claim only what can be PROVED still ours. A row is kept while the live settings
+# still carry the value recorded for it; a divergence relinquishes the whole surface, exactly as it
+# does on the write path, so a value the operator later recreates by hand is never deleted as ours.
+# Settings that are absent, empty or unparseable are inability to prove, and drop the rows too.
+#
+# WITHOUT jq THE ROWS ARE CARRIED UNCHECKED, and that is deliberate rather than an oversight:
+# dropping them there would relinquish every previously installed key in a supported degraded
+# environment, and — under all-or-nothing — a later install would then find those keys present and
+# unowned and refuse, leaving the operator to delete them by hand. The narrow risk of keeping an
+# unverified claim is the better trade, and it is said out loud.
+# ITS STDOUT IS ITS RETURN VALUE, so every diagnostic here goes to STDERR. Called inside `$( )`,
+# an `adb_info` line would be captured into the caller's row variable and then silently dropped by
+# the receipt renderer, which passes only `leaf`/`container`/`source` rows — so the operator was
+# never told that ownership had been relinquished, or carried unverified, which are exactly the
+# safety-relevant states this function exists to decide.
+# Usage: _adb_carry_rows <receipt> <settings> <payload>
+_adb_carry_rows() {
+  local receipt="$1" live="$2" frag="$3" rows probe
+  rows="$(_adb_owned_rows "$receipt")"
+  [ -n "$rows" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  sandbox  ownership carried UNVERIFIED (no jq): if you have changed these keys by" >&2
+    adb_info "           hand, install jq and re-run so the claim can be rechecked." >&2
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  if [ ! -s "$live" ]; then
+    adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run" >&2
+    adb_info "           cannot prove those keys are still ours." >&2
+    return 0
+  fi
+  # PROVED AGAINST THE RECEIPT, NOT AGAINST THE FRAGMENT. Asking the write path meant a clone whose
+  # payload is missing or damaged dropped every row even when each live value still equalled the
+  # one recorded for it — the keys stayed installed and became unremovable. Removal mode answers
+  # the question directly and reads no payload at all: a recorded leaf that still carries its
+  # recorded value is `pruned`, one that has changed is `kept`, and one that has gone is neither.
+  # So ownership holds exactly while every recorded row comes back as `pruned`.
+  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)" || probe=""
+  if [ -z "$probe" ]; then
+    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed." >&2
+    return 0
+  fi
+  local recorded proved
+  recorded="$(adb_claude_settings_receipt_leaves "$receipt" | grep -c . || true)"
+  proved="$(printf '%s' "$probe" | jq -r '.pruned | length')"
+  case "$proved" in ''|*[!0-9]*) proved=0 ;; esac
+  case "$recorded" in ''|*[!0-9]*) recorded=0 ;; esac
+  if [ "$proved" -ne "$recorded" ]; then
+    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2
+    adb_info "           are no longer as this install left them." >&2
+    return 0
+  fi
+  printf '%s\n' "$rows"
+}
+
+# Record a skip, and SAY SO WHEN IT CANNOT BE RECORDED. The receipt is the entire reason a skip is
+# retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
+# cosmetic loss: nothing else tells the operator that the reason they were just given is not on
+# disk.
+# The OWNERSHIP rows a receipt already carries — `leaf` AND `container` — or nothing. One home,
+# because BOTH non-writing paths (the opt-out and the version skips) must preserve ownership, and a
+# second copy of this grep is a second chance to lose it. Carrying the leaves without the
+# containers is exactly that loss in miniature: uninstall then removes the keys and leaves the
+# objects it made behind.
+#
+# PROVENANCE IS NOT CARRIED. `source` names the clone that LAST WROTE the receipt, and every render
+# appends the current one — carrying it verbatim let a receipt keep naming clone A after clone B
+# took the install over, so B's own uninstall would later refuse B's settings as somebody else's.
+_adb_owned_rows() { grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null || true; }
+
+_adb_record_skip() {
+  local disposition="$1" version="$2" floor="$3" receipt="$4" carried digest
+  # CARRY THE PRIOR OWNED ROWS FORWARD. A skip means "write no NEW keys" — it never means "forget
+  # the ones already there". A CLI that becomes unprobeable, or is downgraded, would otherwise
+  # replace an `installed` receipt with an empty one while the sandbox values stay in the file:
+  # uninstall could then never remove them, and the next install would read them as the operator's
+  # and record an empty ownership set permanently. (PR review)
+  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"
+  # THE PRIOR DIGEST IS CARRIED TOO, for the same reason as the rows: a skip applied no payload, so
+  # it must not claim to have applied THIS one — but neither may it erase the record of the payload
+  # an earlier install really did apply, which is what `pending` compares against.
+  digest="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')"
+  [ -n "$digest" ] || digest="-"
+  if { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$carried"; } \
+     | adb_claude_settings_receipt_render "$disposition" "$version" "$floor" "$digest" > "$receipt.adb.$$.tmp" \
+     && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
+    return 0
+  fi
+  rm -f "$receipt.adb.$$.tmp"
+  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded"
+  return $?
+}
+
+# A receipt that could not be replaced must not be left ASSERTING what this run has just decided is
+# no longer true. `_adb_carry_rows` may have relinquished ownership, and a surviving `installed`
+# record still claims it — so a value the operator later recreates by hand would be deleted as
+# ours. Remove it, or say loudly that it could not be removed.
+# Usage: _adb_invalidate_stale_receipt <receipt> <what-still-holds>
+_adb_invalidate_stale_receipt() {
+  local receipt="$1" holds="$2"
+  [ -f "$receipt" ] || { adb_info "  WARN   could not write $receipt — $holds"; return 0; }
+  if rm -f "$receipt"; then
+    adb_info "  WARN   could not write $receipt — $holds, and the previous ownership record was"
+    adb_info "         REMOVED rather than left stale. Re-run ./install.sh."
+    return 0
+  fi
+  adb_info "  ERROR  could not write $receipt — $holds, and the stale ownership record could not be"
+  adb_info "         removed either. Delete it by hand: it still claims keys this run no longer owns."
+  return 1
+}
+
+# One reporting line per non-empty bucket, naming the leaves. SAY WHAT IT DID, not merely that it
+# succeeded: `skipped` and `wrote` produce identical exit codes and identical silence otherwise,
+# and "which of my sandbox keys did this actually set" is the only question an operator has here.
+_adb_report_settings() {
+  local result="$1" bucket="$2" label="$3" names
+  names="$(printf '%s' "$result" | jq -r --arg b "$bucket" '.[$b] | map(join(".")) | join(", ")' 2>/dev/null)"
+  [ -n "$names" ] && [ "$names" != "null" ] || return 0
+  adb_info "           $label: $names"
+}
+
 install_claude() {
+  # THE LOCK COMES FIRST, BEFORE THE LINKS ARE READ OR REPLACED. Ownership of the settings surface
+  # is decided by the root-doc link, and `adb_link_manifest` REPLACES it — so two overlapping
+  # installs could each relink before contending for the lock, leaving the loser's replacements in
+  # place while the winner observed a changed root link and refused its own settings write. It also
+  # let an installer relink Claude while an uninstall held the lock, invalidating the ownership
+  # snapshot that uninstall had already taken.
+  #
+  # ONE RELEASE, ON EVERY EXIT — INCLUDING A SIGNAL. The body is a helper so no ordinary return can
+  # skip the unlock, and `adb_settings_lock_take` arms EXIT/TERM/INT traps so a Ctrl-C cannot
+  # either: the shell would otherwise exit before any unlock statement and leave the lock refusing
+  # every later run. (PR review)
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  if ! adb_settings_lock_take; then
+    adb_info "claude → ~/.claude"
+    adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."
+    adb_info "         If nothing else is running, remove: $(adb_settings_lock_path "$HOME")"
+    return 1
+  fi
+  _install_claude_locked; local icrc=$?
+  adb_settings_lock_drop
+  return "$icrc"
+}
+
+_install_claude_locked() {
   local rc=0 manifest
   adb_info "claude → ~/.claude"
   # The install surface (root doc, every skill, the runtime scripts, and the shared
@@ -205,6 +665,27 @@ EOF
   else
     adb_info "  (gates not wired — --no-hooks)"
   fi
+
+  # THE SECOND SETTINGS SURFACE (#248), and deliberately AFTER the hook wiring, not folded into
+  # it: wire_hooks copies the PRISTINE settings.json into $BACKUP_DIR, and wire_settings must see
+  # that backup already there so it does not overwrite it with the hook-wired intermediate.
+  # Its own write is atomic (tmp + mv), so a failure here leaves the hook entries standing and the
+  # sandbox keys simply unwritten — two independent surfaces, neither half-applied.
+  # ONLY WHEN THE ROOT LINK IDENTIFIES THIS CLONE. `adb_link_manifest` may have failed — a missing
+  # source, an unwritable destination — and the installer still exits non-zero, but this call ran
+  # regardless and wrote both the settings and their receipt. Uninstall then asks the SAME question
+  # before consuming that receipt (a clone that does not own ~/.claude must not remove another
+  # one's settings), so a failed install left keys that nothing could ever remove. The predicate is
+  # the one bin/baseline and uninstall.sh already use; asking it here is what makes the three agree.
+  local src=0
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO"; then
+    wire_settings || src=$?
+    [ "$src" -eq 0 ] || [ "$src" -eq 3 ] || rc=1
+  else
+    adb_info "  sandbox  NOT written — ~/.claude/CLAUDE.md does not point into this clone, so an"
+    adb_info "           uninstall from here could never remove them again. Fix the errors above and re-run."
+    rc=1
+  fi
   return "$rc"
 }
 
@@ -262,8 +743,10 @@ wire_hooks() {
     adb_info "  WARN   hook wiring produced an empty settings.json — NOT wired (original left intact)"
     return 1
   fi
-  mv "$tmp" "$settings" || {
-    rm -f "$tmp"
+  # Through the shared primitive for the same two reasons the settings writer uses it: a directory
+  # at the destination would swallow the rename and report success, and a bare `mv` publishes the
+  # temp file's umask mode over a settings.json the operator may have deliberately restricted.
+  adb_publish_json "$tmp" "$settings" || {
     adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
   adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
   # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed

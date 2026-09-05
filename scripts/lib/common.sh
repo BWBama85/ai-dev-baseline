@@ -499,6 +499,703 @@ EOF
   printf '^%s/\\.claude/scripts/(%s)\\.sh$' "$esc" "$alt"
 }
 
+# Publish <tmp> over <dest> by rename, preserving <dest>'s permission bits.
+#
+# TWO THINGS `mv` ALONE GETS WRONG on a settings file, and both were shipped (PR review, #248):
+#
+#   * A DIRECTORY at <dest> makes `mv tmp dest` move the file INSIDE it and exit 0 — so a caller
+#     that trusts the status reports a write that every later reader will fail to find, because
+#     the path it reads is not a regular file. Refused here instead.
+#   * The temp file is created under the process UMASK, so publishing it over a mode-0600
+#     `settings.json` silently relaxes it to 0644. That file can hold an `env` block, so the
+#     permission is not cosmetic. The mode is carried across before the rename.
+#
+# Deliberately shared rather than written per call site: `wire_hooks` had both defects too, and a
+# fix applied to one writer of a file with two writers is a fix that half holds.
+#
+# A SYMLINK at <dest> that resolves to a regular file is still REPLACED by a regular file, exactly
+# as before — narrowing that is a behaviour change for the hook surface and is not claimed here.
+#
+# Usage: adb_publish_json <tmp> <dest>
+# Returns: 0 published · 1 refused or failed (the temp file is removed on every failure)
+# The destination's permission bits, or empty. ORDER MATTERS AND IS NOT SYMMETRIC: GNU `stat`
+# spells the mode `-c '%a'` and reads `-f` as `--file-system` (which takes no format argument, so
+# the BSD spelling with no `-L` still PRINTS a filesystem block for FILE while exiting non-zero) — an
+# `A || B` with BSD first therefore captures that block's text on Linux and the octal mode is lost
+# in it. GNU is tried first and each attempt is validated before it is believed.
+# Usage: adb_file_mode <file>
+adb_file_mode() {
+  local f="$1" m
+  [ -e "$f" ] || return 1
+  # `-L` ON BOTH SPELLINGS, and it is not a nicety: without it `stat` reports the SYMLINK's own
+  # mode — measured 755 for a link to a 600 file on macOS, and 777 on Linux — so a settings.json
+  # that is a symlink to a restricted file would have had that mode stamped onto the regular file
+  # replacing it, publishing an `env` block world-readable and, on Linux, world-WRITABLE.
+  m="$(stat -L -c '%a' "$f" 2>/dev/null)" || m=""
+  case "$m" in ''|*[!0-7]*) m="$(stat -L -f '%Lp' "$f" 2>/dev/null)" || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s' "$m"
+}
+
+adb_publish_json() {
+  local tmp="$1" dest="$2" mode=""
+  if [ -e "$dest" ] && [ ! -f "$dest" ]; then
+    rm -f "$tmp"
+    adb_info "  WARN   $dest is not a regular file — refusing to publish over it"
+    return 1
+  fi
+  [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+  # An unreadable mode leaves the umask default rather than failing the write: a
+  # preserved-but-unknown permission is not worth losing the settings over.
+  if [ -f "$dest" ]; then mode="$(adb_file_mode "$dest")" || mode=""; fi
+  [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
+  mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# --- the update lock, shared (#248) -------------------------------------------------------------
+#
+# It lived in `bin/baseline` until install.sh needed the same mutual exclusion for the settings
+# surface. Two copies of a lock are two locks: they would not exclude each other, which is the one
+# thing a lock is for. Moved here whole rather than re-implemented, so the stale-break reasoning
+# below has one home and one set of tests.
+
+_ADB_LOCK_STALE_SECS="${ADB_UPDATE_LOCK_STALE_SECS:-600}"
+
+# The token identifying the lock THIS process holds — empty when it holds none. Release compares
+# against it so a holder can never remove a lock that has since been broken and re-taken by a
+# peer: `rmdir` on the path alone would delete the new owner's lock, letting a THIRD mutator in
+# while the second is still pulling.
+_ADB_LOCK_TOKEN=""
+
+# Create the lock and record ownership. Returns 0 only if we created it.
+_adb_take_lock() {
+  local lock="$1" token
+  mkdir "$lock" 2>/dev/null || return 1
+  token="$$ $(date +%s 2>/dev/null)"
+  printf '%s\n' "$token" > "$lock/owner" 2>/dev/null
+  _ADB_LOCK_TOKEN="$token"
+  return 0
+}
+
+# Acquire the update lock at <lock>. Returns 0 when held by us, 1 when another update holds it.
+# The lock lives beside the clone's git dir rather than in $HOME so it is scoped to the clone
+# being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
+# can never collide with a real one.
+adb_update_lock() {
+  local lock="$1" age holder stale
+  _adb_take_lock "$lock" && return 0
+
+  # Held. Breaking it is only safe when the holder is genuinely gone, and AGE ALONE DOES NOT
+  # SHOW THAT: a laptop suspended mid-update, or a manual run behind a slow fetch, is old and
+  # perfectly alive. Breaking one of those runs `git pull` + `install.sh` twice at once, which
+  # is the thing this lock exists to prevent. So both must hold: old enough, AND no live holder.
+  age="$(adb_age_secs "$lock")"
+  # Empty = unreadable or FUTURE-dated (clock skew). Never break a lock we cannot date.
+  [ -n "$age" ] || return 1
+  [ "$age" -gt "$_ADB_LOCK_STALE_SECS" ] || return 1
+  holder="$(cut -d' ' -f1 < "$lock/owner" 2>/dev/null)"
+  case "$holder" in ''|*[!0-9]*) holder="" ;; esac
+  [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
+
+  # Claim the break by RENAMING rather than rmdir+mkdir. Two processes that both judge the same
+  # lock stale would otherwise each remove it and each create it — both "holding" it. Rename
+  # succeeds for exactly one of them; the loser finds no source and stands down.
+  stale="${lock:?}.stale.$$"
+  mv "$lock" "$stale" 2>/dev/null || return 1
+  rm -rf "$stale" 2>/dev/null
+  _adb_take_lock "$lock"
+}
+
+# Release the lock ONLY if we still own it (see _ADB_LOCK_TOKEN). Safe to call more than once,
+# which the EXIT trap relies on when a signal trap has already run.
+adb_update_unlock() {
+  local lock="$1"
+  [ -n "$_ADB_LOCK_TOKEN" ] || return 0
+  [ "$(cat "$lock/owner" 2>/dev/null)" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
+  _ADB_LOCK_TOKEN=""
+  rm -f "$lock/owner" 2>/dev/null
+  rmdir "$lock" 2>/dev/null
+}
+
+# The lock every writer of ~/.claude/settings.json takes. ONE home for the path, because the
+# installer, the uninstaller and `baseline update` must contend for the same name — a second
+# spelling is a second lock, which excludes nobody. Scoped to the HOME being written rather than
+# to a clone: that is what two racing runs actually contend for.
+# Usage: adb_settings_lock_path [home]
+adb_settings_lock_path() { printf '%s/.claude/.adb-settings.lock' "${1:-${HOME:-/root}}"; }
+
+# Take the settings lock AND arm its release against a signal, or fail.
+#
+# `adb_update_lock` plus a helper function only covers an ordinary return: a TERM or an INT while
+# the body runs exits the shell before any unlock statement is reached, and the lock left behind
+# refuses every later install and uninstall for the stale interval — longer if the recorded pid is
+# reused. `bin/baseline` already traps for exactly this on the same primitive; the installers did
+# not, which is what made a Ctrl-C during an install a lasting failure. (PR review)
+#
+# ONE HOME: install.sh and uninstall.sh both call this rather than each spelling out three traps.
+#
+# It sets EXIT, TERM and INT unconditionally and `adb_settings_lock_drop` clears all three, so a
+# caller that has its OWN EXIT trap must not use this pair — neither installer does.
+# Globals: _ADB_SETTINGS_LOCK (written)
+# Arguments: none — the lock is always this HOME's
+# Returns: 0 with the lock held and the release armed; 1 if another run holds it
+adb_settings_lock_take() {
+  _ADB_SETTINGS_LOCK="$(adb_settings_lock_path "$HOME")"
+  adb_update_lock "$_ADB_SETTINGS_LOCK" || { _ADB_SETTINGS_LOCK=""; return 1; }
+  _adb_arm_lock_traps
+  return 0
+}
+
+# ARMING IS ONE DECISION, SO IT IS ONE CALL. Measured on bash 5.3/macOS: with only EXIT armed a
+# TERM still releases the lock, and with only TERM armed it also does — each is sufficient on its
+# own. The redundancy is deliberate, because whether a fatal signal runs the EXIT trap is exactly
+# the kind of semantics that differs between this project's two CI legs, and a Ctrl-C reaches a
+# whole process group rather than the one pid a test can signal. But three mutually-redundant lines
+# means no single-line mutation of any one of them can be observed failing — the guard covering
+# them would be unfalsifiable. Keeping them behind one call is what makes the row that deletes the
+# arming able to go red. (PR review)
+_adb_arm_lock_traps() {
+  trap 'adb_settings_lock_drop' EXIT
+  trap 'adb_settings_lock_drop; exit 143' TERM
+  trap 'adb_settings_lock_drop; exit 130' INT
+}
+
+# Release the settings lock and disarm the traps. Idempotent: safe on a lock already dropped, which
+# is what lets the EXIT trap fire harmlessly after an ordinary release.
+# Globals: _ADB_SETTINGS_LOCK (read, cleared)
+adb_settings_lock_drop() {
+  [ -n "$_ADB_SETTINGS_LOCK" ] || return 0
+  adb_update_unlock "$_ADB_SETTINGS_LOCK"
+  _ADB_SETTINGS_LOCK=""
+  trap - EXIT TERM INT
+  return 0
+}
+
+# --- the non-hook settings fragment (#248, D95-D98) --------------------------------------------
+#
+# `install.sh` owns two surfaces inside ~/.claude/settings.json and they are deliberately
+# separate. The hook surface above owns whole GROUPS under `.hooks`, keyed by the command path.
+# This one owns LEAF PATHS anywhere else in the file — `sandbox.enabled`,
+# `sandbox.credentials.files` — because an adopter's own `sandbox.excludedCommands` is a sibling
+# of a key we own, in a file neither of us owns whole (D95). Do NOT add a fragment key to
+# adb_claude_hook_scripts, and do not add hook groups to the fragment payload: the hook merge
+# nests everything it is given beneath `.hooks`, so a `sandbox` block there becomes
+# `.hooks.sandbox` and means nothing (#248's originating gap).
+
+# The shipped fragment, relative to a clone root.
+# Usage: adb_claude_settings_payload <repo-root>
+adb_claude_settings_payload() { printf '%s/agents/claude/settings.fragment.json' "$1"; }
+
+# Where the receipt lives — beside the hook receipt, and read by exactly the same kind of
+# question: is this thing absent because somebody CHOSE that, or because it was never written?
+# Usage: adb_claude_settings_receipt [home]
+adb_claude_settings_receipt() { printf '%s/.claude/.adb-settings-owned' "${1:-${HOME:-/root}}"; }
+
+# The CLI version floor for the fragment as shipped: the HIGHEST floor among the keys it writes.
+# `sandbox.credentials` is the binding one (vendor reference, verified 2026-09-03:
+# https://code.claude.com/docs/en/sandboxing — "Requires Claude Code v2.1.187 or later").
+# `sandbox.enabled` and `sandbox.network.allowedDomains` state no floor. Raise this when a key
+# with a higher floor joins the payload; scripts/check-settings-fragment.sh pins the pairing.
+adb_claude_settings_floor() { printf '2.1.187'; }
+
+# Candidate `claude` binaries, most specific first. Same shape and the same reason as
+# adb_bash_candidates: a non-interactive installer shell routinely lacks the PATH entry that
+# makes the CLI reachable, and a version we could not read is NOT evidence that the keys would
+# be honoured (D98).
+# The FALLBACK candidates only — the PATH lookup is not here, it is in adb_claude_cli_version,
+# which consults PATH first and treats its answer as final. Keeping a second `command -v claude`
+# in this list would be dead code that reads as if it decided the order.
+#
+# These exist for the shell that has no `claude` at all: a non-interactive installer routinely
+# lacks the PATH entry an interactive login shell has.
+adb_claude_cli_candidates() {
+  if [ -n "${HOME:-}" ]; then printf '%s\n' "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; fi
+  printf '%s\n' /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude
+}
+
+# The installed CLI's version on stdout, or non-zero when none can be read.
+# STRICTLY PARSED, and that is the point: `claude --version` prints `2.1.259 (Claude Code)`, and
+# handing the whole line to adb_version_ge would silently take its awk fallback and compare
+# garbage. Only a leading dotted run of digits is accepted; anything else is unreadable, which is
+# a distinct outcome from "below the floor" and the caller reports it as one.
+# Usage: adb_claude_cli_version [binary]
+adb_claude_cli_version() {
+  local bin path_bin
+  if [ "$#" -gt 0 ] && [ -n "$1" ]; then
+    _adb_claude_cli_probe "$1" && return 0
+    return 1
+  fi
+  # THE CLI ON PATH IS AUTHORITATIVE, INCLUDING WHEN IT CANNOT BE PROBED. It is the one a session
+  # will actually execute, so a version read from somewhere else is a fact about the wrong binary:
+  # falling through to a fixed path after an unparseable PATH binary would apply keys on the
+  # strength of an installation nobody runs, which is precisely the state D98 says must SKIP.
+  # The fixed paths exist for the shell that has no `claude` at all, and only for that. (PR review)
+  path_bin="$(command -v claude 2>/dev/null)" || path_bin=""
+  if [ -n "$path_bin" ]; then
+    _adb_claude_cli_probe "$path_bin" && return 0
+    return 1
+  fi
+  while IFS= read -r bin; do
+    [ -n "$bin" ] || continue
+    _adb_claude_cli_probe "$bin" && return 0
+  done <<EOF
+$(adb_claude_cli_candidates)
+EOF
+  return 1
+}
+
+_adb_claude_cli_probe() {
+  local bin="$1" out v
+  [ -x "$bin" ] || return 1
+  out="$("$bin" --version 2>/dev/null)" || return 1
+  v="${out%%[!0-9.]*}"
+  case "$v" in
+    ''|.*|*..*) return 1 ;;
+    *[!0-9.]*)  return 1 ;;
+  esac
+  case "$v" in *.*) ;; *) return 1 ;; esac
+  v="${v%.}"
+  printf '%s' "$v"
+}
+
+# The fragment's OWNED LEAF PATHS, one compact JSON array per line (`["sandbox","enabled"]`).
+# A leaf is a value that is not an object, addressed by a path of object keys only — so an ARRAY
+# is a leaf and its elements are not. That is what makes `sandbox.credentials.files` a single
+# owned thing rather than three, which is what uninstall has to remove and re-install has to
+# replace. Needs jq; returns 2 without it, never an empty list (an empty enumeration would read
+# as "we own nothing" and silently disarm both the write and the removal).
+# Usage: adb_claude_settings_leaves <payload.json>
+adb_claude_settings_leaves() {
+  local payload="$1"
+  command -v jq >/dev/null 2>&1 || return 2
+  [ -s "$payload" ] || return 1
+  jq -c -e '
+    [ paths(type != "object") | select(all(.[]; type == "string")) ] | .[]
+  ' "$payload" 2>/dev/null || return 1
+}
+
+# A leaf path rendered for a human: ["sandbox","enabled"] -> sandbox.enabled
+# Usage: adb_claude_settings_leaf_name <json-path-array>
+adb_claude_settings_leaf_name() {
+  command -v jq >/dev/null 2>&1 || { printf '%s' "$1"; return 0; }
+  printf '%s' "$1" | jq -r 'join(".")' 2>/dev/null || printf '%s' "$1"
+}
+
+# The receipt's disposition — the ONE thing that tells four identical-looking absences apart
+# (D98): `installed`, `skipped-optout`, `skipped-below-floor`, `skipped-unprobeable`, or `none`
+# when there is no receipt at all. Only `skipped-optout` and a removal from an `installed`
+# receipt are CHOICES; every other absence is retried by the next install.
+# Usage: adb_claude_settings_disposition [receipt]
+adb_claude_settings_disposition() {
+  local receipt="${1:-$(adb_claude_settings_receipt)}" line
+  [ -f "$receipt" ] || { printf 'none'; return 0; }
+  line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)" || { printf 'none'; return 0; }
+  line="${line#disposition}"
+  line="${line# }"
+  line="${line%% *}"
+  case "$line" in
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) printf '%s' "$line" ;;
+    *) printf 'none' ;;
+  esac
+}
+
+# The install SOURCE a receipt records, or empty. Ownership is normally proved by the root-doc
+# link pointing into this clone — but `uninstall_claude` removes that link before the settings
+# cleanup can fail, so a cleanup that could not run (no jq) leaves a receipt no later retry can
+# prove. This is the durable half of the same proof.
+#
+# A path containing a TAB or NEWLINE is refused rather than recorded: the receipt is tab-delimited,
+# and a truncated path does not arrive obviously broken — it arrives as a shorter path that
+# frequently exists (`/w/project<NL>shadow` reads back as `/w/project`, a real sibling). Nothing is
+# recorded in that case and the link check remains the only proof, which is the fail-closed answer.
+# Usage: adb_claude_settings_receipt_source <receipt>
+adb_claude_settings_receipt_source() {
+  local receipt="$1" line
+  [ -f "$receipt" ] || return 1
+  line="$(grep -m1 '^source	' "$receipt" 2>/dev/null)" || return 1
+  line="${line#source	}"
+  [ -n "$line" ] || return 1
+  printf '%s' "$line"
+}
+
+# Usage: adb_claude_settings_source_row <repo-root>   (prints nothing for an unrepresentable path)
+adb_claude_settings_source_row() {
+  # `$'\n'`, NOT a command substitution. `$(printf '\n')` is the EMPTY STRING — substitution strips
+  # every trailing newline — so `*"$(printf '\n')"*` is `*""*`, which matches every path and
+  # silently refused to record any source at all. The sentinel spelling `$(printf 'x\n')` with the
+  # `x` stripped fails identically, for the same reason; a `$'…'` literal is not captured at all.
+  local _nl=$'\n'
+  case "$1" in
+    *"$(printf '\t')"*) return 0 ;;
+  esac
+  case "$1" in
+    *"$_nl"*) return 0 ;;
+  esac
+  printf 'source\t%s\n' "$1"
+}
+
+# The payload digest a receipt records, or empty. A receipt written before this field existed has
+# none, which reads as "unknown" — and unknown must mean PENDING, so an install predating the field
+# re-applies once and records it, rather than being trusted forever on no evidence.
+# Usage: adb_claude_settings_payload_digest <receipt>
+adb_claude_settings_payload_digest() {
+  local receipt="$1" line
+  [ -f "$receipt" ] || return 1
+  line="$(grep -m1 '^payload[[:space:]]' "$receipt" 2>/dev/null)" || return 1
+  line="${line#payload}"; line="${line# }"; line="${line%% *}"
+  case "$line" in
+    ''|-|*[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#line}" -eq 64 ] || return 1
+  printf '%s' "$line"
+}
+
+# The leaves a receipt records, as `<json-path-array><TAB><json-value>` lines. Emitted for EVERY
+# ownership-bearing disposition — `installed`, and all three skips (`skipped-optout`,
+# `skipped-below-floor`, `skipped-unprobeable`), each of which carries the prior rows forward
+# precisely so a pause, a downgrade or an unprobeable CLI does not orphan the keys an earlier
+# install wrote. Only `none` owns nothing. Keep this list and the one in
+# `_adb_claude_settings_owned_json` identical: a reader that trusted a narrower one here is what
+# made the carry pointless once already. A malformed row is DROPPED rather than guessed at: a row whose
+# value cannot be parsed cannot be compared, and a leaf we cannot prove is ours is one we must
+# not remove.
+# Usage: adb_claude_settings_receipt_leaves <receipt>
+adb_claude_settings_receipt_leaves() {
+  local receipt="$1" line rest p v tab
+  tab="$(printf '\t')"
+  [ -f "$receipt" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "leaf$tab"*) ;; *) continue ;; esac
+    rest="${line#leaf$tab}"
+    p="${rest%%$tab*}"
+    v="${rest#*$tab}"
+    [ "$p" != "$rest" ] || continue
+    # `length > 0` IS LOAD-BEARING, not defensive tidiness: `all(.[]; …)` is vacuously TRUE for an
+    # empty array, so a hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as
+    # ownership of the JSON ROOT, and `delpaths([[]])` replaced the entire settings document with
+    # `null` — destroying every unrelated key during an ordinary uninstall.
+    printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 || continue
+    printf '%s' "$v" | jq -e . >/dev/null 2>&1 || continue
+    printf '%s\t%s\n' "$p" "$v"
+    # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`
+    # returns non-zero on that last partial line WITHOUT running the body — silently dropping the
+    # leaf, so uninstall would leave a key it owns behind and the retirement prune would never see
+    # it. The validation above still governs whether the partial line is usable.
+  done < "$receipt" || true
+}
+
+# The CONTAINER paths a receipt records — the objects this install had to create on its way to a
+# leaf, and therefore the only ones a removal may ever delete. An adopter who already had
+# `{"sandbox":{}}` keeps it: we own leaves, and the containers we made, and nothing else.
+# Validated exactly as leaf paths are, and for the same reason: an empty path is ownership of the
+# document root, and `delpaths([[]])` replaces the whole settings file with null.
+# Usage: adb_claude_settings_receipt_containers <receipt>
+adb_claude_settings_receipt_containers() {
+  local receipt="$1" line rest tab
+  tab="$(printf '\t')"
+  [ -f "$receipt" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "container$tab"*) ;; *) continue ;; esac
+    rest="${line#container$tab}"
+    rest="${rest%%$tab*}"
+    printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 || continue
+    printf '%s\n' "$rest"
+  done < "$receipt" || true
+}
+
+_adb_claude_settings_created_json() {
+  local receipt="$1" line out=""
+  case "$(adb_claude_settings_disposition "$receipt")" in
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership
+    *) printf '[]'; return 0 ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    out="$out${out:+,}$line"
+  done <<EOF
+$(adb_claude_settings_receipt_containers "$receipt")
+EOF
+  printf '[%s]' "$out"
+}
+
+# THE MERGE, AND IT IS ALL-OR-NOTHING (owner decision, round 6 of #248's review). Prints one JSON
+# object on stdout:
+#   {verdict, settings, wrote:[], created:[], blocked:[], diverged:[], pruned:[], kept:[]}
+# `verdict` is `write`, `insync`, `refuse` or `remove`; every list but `settings` holds leaf paths
+# (`created` holds container paths). This is the ONE home for what "ours" means, so install.sh and
+# uninstall.sh cannot drift about it.
+#
+# WHY ALL-OR-NOTHING. The earlier contract applied per leaf: write what it could, skip what the
+# operator owned, remember what they had deleted. Every one of those states needed its own
+# provenance, and four consecutive review rounds found defects in that bookkeeping rather than in
+# the policy it was carrying — a partial application that had to answer, for each key
+# independently, "is this mine, theirs, mine-but-edited, or mine-but-deleted". The states are gone:
+#
+#   * FIRST INSTALL writes the whole fragment only when EVERY leaf is absent and every ancestor is
+#     traversable. Anything already there BLOCKS the lot, and the refusal names it. An adopter is
+#     told exactly what is in the way rather than given a partial policy that reports protection it
+#     does not have.
+#   * AN ESTABLISHED INSTALL updates only while every recorded leaf is still present with the value
+#     recorded for it. Any divergence — an edit, or a deletion, which is the documented by-hand
+#     opt-out — means the operator has taken the surface over: nothing is written, and the refusal
+#     names what diverged. That is also why no tombstone is needed. A deleted leaf is not
+#     remembered as "ours, removed"; it simply makes the surface theirs, so it is never rewritten
+#     and never later deleted on the strength of a record.
+#   * A RETIRED leaf — recorded, no longer shipped — is still pruned when its value matches, and
+#     KEPT and named when it does not. Dropping a key from the payload must not orphan it.
+#   * REMOVAL takes the leaves whose live value still equals the record, keeps and names the rest,
+#     and prunes ONLY the containers this install is recorded as having CREATED. An operator who
+#     already had `{"sandbox":{}}` keeps it: we own leaves, and we own the containers we made, and
+#     nothing else.
+#
+# ABSENCE IS ASKED WITH `has`, NOT BY COMPARING TO null — `getpath` answers null for a missing path
+# AND for one whose value really is null, and an adopter's chosen null is theirs. Ancestors are
+# walked in order and the walk STOPS on the first answer, because `getpath` RAISES through a
+# scalar: `{"a":false} | getpath(["a","b"])` is an error, not null.
+#
+# Usage: adb_claude_settings_merge <settings.json> <payload.json> <receipt|/dev/null> [--remove]
+adb_claude_settings_merge() {
+  local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned created work_empty rc
+  command -v jq >/dev/null 2>&1 || return 2
+  work_empty=""
+  # REMOVAL IGNORES THE PAYLOAD ENTIRELY, not merely a missing one. Ownership lives in the receipt
+  # and `--remove` writes nothing, so a fragment that exists but is truncated must not reach
+  # `--slurpfile` and strand every receipt-owned key.
+  if [ "$mode" = "--remove" ]; then
+    work_empty="$(mktemp)" || return 1
+    printf '{}\n' > "$work_empty"
+  fi
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1
+  created="$(_adb_claude_settings_created_json "$receipt")" || return 1
+  if [ -n "$work_empty" ]; then
+    payload="$work_empty"
+  elif [ ! -s "$payload" ]; then
+    return 1
+  fi
+  jq -n -e \
+     --slurpfile cur "$settings" \
+     --slurpfile frag "$payload" \
+     --argjson owned "$owned" \
+     --argjson created "$created" \
+     --arg mode "$mode" '
+    # `member`, spelled out, because jq'"'"'s `index/1` searches an array argument as a SUBSEQUENCE:
+    # `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason. Every path membership test here
+    # is an explicit equality scan.
+    def member($xs; $x): ($xs | map(. == $x) | any);
+    # PRESENCE, not "is it null": the parent must be an object that HAS the final key.
+    def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));
+    # Walked in order and stopped on the first answer, because `getpath` raises through a scalar.
+    # Three states: a MISSING chain is writable (we create it), a scalar one is a conflict.
+    def anc_ok($p): . as $doc | ( reduce range(1; ($p | length)) as $i
+        ("cont";
+         if . != "cont" then .
+         else ($p[0:$i]) as $a
+              | ($doc | getpath($a[0:-1])) as $parent
+              | if ($parent | type) != "object" then "conflict"
+                elif ($parent | has($a[-1]) | not) then "missing"
+                elif ($doc | getpath($a) | type) == "object" then "cont"
+                else "conflict" end
+         end) ) != "conflict";
+    # The ancestor prefixes of $p that do not exist yet — the containers a write would CREATE, and
+    # therefore the only ones a removal may ever delete.
+    def missing_ancestors($p): . as $doc
+      | [ range(1; ($p | length)) as $i | $p[0:$i] ]
+      | map(. as $a | select( ($doc | anc_ok($a)) and ($doc | present($a) | not) ));
+
+    ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )
+  | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )
+    # THE FRAGMENT IS VALIDATED THE SAME WAY, and this is the sharper of the two. A payload that is
+    # non-empty but holds only whitespace slurps to `[]`, and `// {}` turned that into "ships
+    # nothing" — so an established install classified EVERY recorded leaf as retired, removed the
+    # protections, and published a receipt whose digest made the damaged file look current. A
+    # stream of several values was likewise truncated to the first.
+  | ( if ($frag | length) != 1 then error("the fragment must hold exactly one JSON value") else . end )
+  | ( if ($frag[0] | type) != "object" then error("the fragment must hold a JSON object") else . end )
+  | ($cur[0])        as $settings
+  | ($frag[0])       as $fragment
+  | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
+  | ( $owned | map(.p) ) as $ownedp
+  | { verdict: "insync", settings: $settings,
+      wrote: [], created: [], blocked: [], diverged: [], pruned: [], kept: [] }
+  | if $mode == "--remove" then
+      # Owned leaves first: matching values go, edited ones are kept and named.
+      reduce ($ownedp[]) as $p
+        ( .;
+          ( $owned | map(select(.p == $p)) | first ) as $rec
+          | ( .settings | anc_ok($p) ) as $ok
+          | if ($ok | not) then .
+            elif ( .settings | present($p) | not ) then .
+            elif ( .settings | getpath($p) ) == $rec.v then
+              .settings = (.settings | delpaths([$p])) | .pruned += [$p]
+            else .kept += [$p]
+            end )
+      # ...then ONLY the containers this install recorded as created, deepest first.
+      | ( $created | sort_by(-length) ) as $mine
+      | reduce ($mine[]) as $a
+          ( .;
+            ( .settings | anc_ok($a) ) as $ok   # remove-pass container
+            | if ($ok | not) then .
+              elif ( .settings | present($a) | not ) then .   # remove-pass
+              else ( .settings | getpath($a) ) as $now
+                   | if ($now | type) == "object" and ($now | length) == 0
+                     then .settings = (.settings | delpaths([$a])) else . end
+              end )
+      | .verdict = "remove"
+    else
+      # RETIREMENT runs first and unconditionally: a leaf we recorded and no longer ship must not
+      # be orphaned, whatever the fragment now says about the rest.
+      ( $ownedp | map(select(member($leaves; .) | not)) ) as $stale
+      | reduce ($stale[]) as $p
+          ( .;
+            ( $owned | map(select(.p == $p)) | first ) as $rec
+            | ( .settings | anc_ok($p) ) as $ok
+            | if ($ok | not) then .
+              elif ( .settings | present($p) | not ) then .
+              elif ( .settings | getpath($p) ) == $rec.v then
+                .settings = (.settings | delpaths([$p])) | .pruned += [$p]
+              else .kept += [$p]
+              end )
+      # ...and the containers THAT retirement emptied go with it, but only ones we created. Without
+      # this a payload that turns an owned leaf into a scalar is blocked by the very container the
+      # previous install made for it: `x.y` is pruned, `x` is left as `{}`, and `{}` is "present".
+      | ( $created | sort_by(-length) ) as $mine
+      | reduce ($mine[]) as $a
+          ( .;
+            # GUARDED LIKE THE LEAF READS. `getpath` raises through a scalar, so a recorded child
+            # container under an ancestor the operator has replaced with `false` killed the whole
+            # pass. The leaf reads learned this two rounds earlier; this loop is their sibling and
+            # was not swept with them.
+            ( .settings | anc_ok($a) ) as $ok   # write-pass container
+            | if ($ok | not) then .
+              elif ( .settings | present($a) | not ) then .   # write-pass
+              else ( .settings | getpath($a) ) as $now
+                   | if ($now | type) == "object" and ($now | length) == 0
+                     then .settings = (.settings | delpaths([$a])) else . end
+              end )
+      | .settings as $settings
+      # BLOCKED: a leaf we do not own that is already there, or whose ancestors cannot be walked.
+      | ( [ $leaves[] | select( member($ownedp; .) | not ) ]
+          | map(. as $p | select( ( $settings | anc_ok($p) | not ) or ( $settings | present($p) ) )) ) as $blocked
+      # DIVERGED: a leaf we DO own that is gone, or no longer carries the value we recorded. Either
+      # way the operator has taken the surface over — a deletion is the documented opt-out.
+      | ( [ $owned[] | select( member($leaves; .p) ) ]
+          | map(. as $r | select( ( $settings | anc_ok($r.p) | not )
+                        or ( $settings | present($r.p) | not )
+                        or ( ($settings | getpath($r.p)) != $r.v ) ))
+          | map(.p) ) as $diverged
+      | if ($blocked | length) > 0 or ($diverged | length) > 0 then
+          # A REFUSAL GOVERNS THE FRAGMENT, NOT THE RETIREMENT. Resetting everything looked tidy
+          # and orphaned a key permanently: when a payload retires one recorded leaf while another
+          # still-shipped leaf has diverged, discarding the safe prune leaves the retired key
+          # installed with no ownership record — a blocked receipt carries no rows — so nothing can
+          # ever remove it. Retirement is cleanup of something we no longer ship and is independent
+          # of whether the rest applies; only the fragment writes are undone here.
+          .verdict = "refuse" | .blocked = $blocked | .diverged = $diverged
+          | .wrote = [] | .created = []
+        else
+          reduce ($leaves[]) as $p
+            ( .;
+              .created += ( .settings | missing_ancestors($p) )
+              | .settings = (.settings | setpath($p; $fragment | getpath($p)))
+              | .wrote += [$p] )
+          # ONLY THE CONTAINERS THAT STILL EXIST. Retirement can delete a container we created —
+          # its last owned leaf went with it — and carrying that path forward would claim an empty
+          # object the operator later creates there.
+          | ( .settings ) as $after
+          | .created = ( ((.created + $created) | unique)
+                         | map(. as $a | select($after | present($a))) )
+          | .verdict = "write"
+        end
+    end
+  ' 2>/dev/null
+  rc=$?
+  [ -n "$work_empty" ] && rm -f "$work_empty"
+  return "$rc"
+}
+
+# The receipt as the JSON array the merge consumes: [{p: <path>, v: <value>}, ...].
+_adb_claude_settings_owned_json() {
+  local receipt="$1" line p v tab out=""
+  tab="$(printf '\t')"
+  # EVERY DISPOSITION THAT CAN LEGITIMATELY CARRY ROWS OWNS THEM. `_adb_record_skip` carries the
+  # prior rows into a `skipped-below-floor`/`skipped-unprobeable` receipt precisely so a downgraded
+  # or unprobeable CLI does not orphan the keys an earlier install wrote — and a reader that then
+  # discarded those rows made the carry pointless: uninstall removed nothing, and the next install
+  # read the values as the operator's and dropped them from the receipt for good.
+  #
+  # The disposition is NOT what protects against a doctored receipt, and treating it as though it
+  # were was circular — anyone able to edit a `leaf` row can edit the `disposition` line above it.
+  # What actually protects is the pair of rules the merge applies to every row: it is validated
+  # (a non-empty array of string components, and a parseable value), and a leaf is removed ONLY
+  # while its live value still equals the recorded one.
+  case "$(adb_claude_settings_disposition "$receipt")" in
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership
+    *) printf '[]'; return 0 ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="${line%%$tab*}"
+    v="${line#*$tab}"
+    out="$out${out:+,}{\"p\":$p,\"v\":$v}"
+  done <<EOF
+$(adb_claude_settings_receipt_leaves "$receipt")
+EOF
+  printf '[%s]' "$out"
+}
+
+# The `leaf` rows for a receipt, on stdout: one `leaf<TAB><path><TAB><value>` per written leaf.
+# Separate from the renderer because the OPT-OUT path has rows to carry too — the ones a previous
+# install recorded — and ownership must outlive a pause, or `--no-sandbox` would orphan the keys
+# it declines to touch (D95's prune has nothing to prune once the record is gone).
+# Usage: adb_claude_settings_leaf_rows <payload.json> <written-json-array> [created-json-array]
+adb_claude_settings_leaf_rows() {
+  local payload="$1" written="$2" createdj="${3:-[]}" p
+  command -v jq >/dev/null 2>&1 || return 2
+  [ -s "$payload" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf 'leaf\t%s\t%s\n' "$p" \
+      "$(jq -c --argjson path "$p" 'getpath($path)' "$payload" 2>/dev/null)"
+  done <<EOF
+$(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)
+EOF
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf 'container\t%s\n' "$p"
+  done <<EOF
+$(printf '%s' "$createdj" | jq -c '.[]?' 2>/dev/null)
+EOF
+}
+
+# The receipt this run should leave behind, rendered to stdout; `leaf` rows are read from STDIN so
+# one renderer serves both the install path (rows from the payload) and the opt-out path (rows
+# carried over from the previous receipt). Written in EVERY case, because the disposition is the
+# whole point: an absence with no receipt is indistinguishable from four different causes (D98).
+# `payload` is the DIGEST OF THE FRAGMENT THIS RECEIPT APPLIED, and it is what answers "is the
+# installed surface current?" — the owned leaf PATHS cannot. A leaf the operator already owned is
+# never recorded, so a path-set comparison reports pending forever and re-runs the installer on
+# every session; and changing a shipped VALUE (another domain in `allowedDomains`) leaves the path
+# set identical, so the same comparison never notices a payload that a plain `git pull` just
+# changed. A digest answers both.
+# Usage: adb_claude_settings_receipt_render <disposition> <version|-> <floor> [payload-digest] < <leaf rows>
+adb_claude_settings_receipt_render() {
+  local disposition="$1" version="$2" floor="$3" digest="${4:--}" line tab
+  tab="$(printf '\t')"
+  printf '# ai-dev-baseline settings fragment (#248) — written by install.sh; do not hand-edit.\n'
+  printf '# `disposition` is what tells a key nobody chose to remove from one somebody did.\n'
+  printf 'disposition %s\n' "$disposition"
+  printf 'version %s\n' "$version"
+  printf 'floor %s\n' "$floor"
+  printf 'payload %s\n' "$digest"
+  while IFS= read -r line; do
+    case "$line" in "leaf$tab"*|"container$tab"*|"source$tab"*) printf '%s\n' "$line" ;; esac
+  done
+}
+
+
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s
   # The precondition is asked INSIDE each known branch, never once above the `case`. Hoisting it
@@ -2630,9 +3327,13 @@ adb_global_manifest() { printf '%s/.config/ai-dev-baseline/agents.toml\n' "${HOM
 # answer is accepted. Usage: adb_mtime <path>
 adb_mtime() {
   local m
-  m="$(stat -c %Y "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+  # `-L` for the same reason adb_file_mode carries it: a `stat` without it answers about the LINK.
+  # No caller passes a symlink today — they pass run markers and lock directories — so this is
+  # uniformity, not a fix. It is what lets the lint forbid the un-dereferenced spelling outright
+  # instead of asking each reader to judge whether their site is the exception.
+  m="$(stat -L -c %Y "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
   if [ -z "$m" ]; then
-    m="$(stat -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+    m="$(stat -L -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
   fi
   printf '%s' "$m"
 }

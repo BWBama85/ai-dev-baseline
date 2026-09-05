@@ -182,6 +182,49 @@ adb_installed_agents() {
 # maintained. Keeping the name means existing callers read the stricter answer for free.
 adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" = "wired" ]; }
 
+# Is the SANDBOX SETTINGS SURFACE (#248, D98) waiting to be installed? True when Claude is
+# installed from THIS src and the receipt's disposition is one that must be RETRIED rather than
+# preserved — no receipt at all (an install predating the surface), a below-floor skip, or an
+# unprobeable CLI — AND the CLI now clears the floor. `skipped-optout` is the one disposition
+# that is a choice, and it is never pending. `installed` has nothing to do.
+#
+# This exists because the `current` + links-OK path exits "nothing to do" without consulting the
+# settings surface at all — the same shape as #242, where a partial hook set sailed past a
+# link-only verifier. Without it, an adopter who upgrades the CLI past the floor never receives
+# the settings: the one transition the whole detect-skip-say design is FOR.
+# Usage: adb_settings_pending <src>
+adb_settings_pending() {
+  local src="$1" version receipt payload have want
+  command -v jq >/dev/null 2>&1 || return 1
+  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1
+  payload="$(adb_claude_settings_payload "$src")"
+  [ -s "$payload" ] || return 1
+  receipt="$(adb_claude_settings_receipt "$HOME")"
+  case "$(adb_claude_settings_disposition "$receipt")" in
+    none|skipped-below-floor|skipped-unprobeable) ;;
+    installed|skipped-blocked)
+      # NEITHER `installed` NOR A BLOCKED REFUSAL IS AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone can
+      # change the fragment WITHOUT touching a single installed symlink, and this path is the only
+      # thing between that pull and the fast-path `exit 0`. A refusal is recorded the same way and
+      # asked the same question: it is retried when the PAYLOAD changes, not on every session —
+      # re-running it each time would put `baseline update` into the repair loop that reporting
+      # pending-forever already caused once. An adopter who clears the blocker re-runs
+      # `./install.sh`, and the refusal message says so.
+      #
+      # CURRENCY IS A DIGEST QUESTION, NOT A PATH-SET ONE. Comparing owned leaf PATHS fails in both
+      # directions: a leaf the operator already owned is never recorded, so the sets differ forever
+      # and every session re-runs the installer and reports a repair; and changing a shipped VALUE —
+      # one more domain in `allowedDomains` — leaves the path set identical, so the update never
+      # applies it. The receipt records the digest of the payload it applied; compare that.
+      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once
+      want="$(adb_sha256 "$payload")" || return 1
+      [ "$have" = "$want" ] && return 1 ;;
+    *) return 1 ;;
+  esac
+  version="$(adb_claude_cli_version)" || return 1
+  adb_version_ge "$version" "$(adb_claude_settings_floor)"
+}
+
 # Report a PARTIAL hook set — and never repair it. Removing one hook's entry from settings.json is
 # the DOCUMENTED way to turn that hook off (docs/installation.md: "To turn it off, remove its entry
 # from ~/.claude/settings.json"), so re-wiring would destroy a supported configuration, and would
@@ -357,6 +400,13 @@ EOF
   # supported choice, and the SessionStart currency hook survives a per-hook removal, so it would
   # undo it again on the next session. #242's defect was that `partial` was INDISTINGUISHABLE from
   # `none` and reported nothing — not that it went unrepaired.
+  # The settings opt-out is EXPLICIT, not inferred (D98): `--no-sandbox` recorded a disposition,
+  # and re-passing the flag is what keeps honouring it. Absence of the keys is deliberately NOT
+  # the signal — four different causes produce it, and only this one is a choice.
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC" \
+     && [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-optout ]; then
+    args+=(--no-sandbox)
+  fi
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
       none)
@@ -445,63 +495,9 @@ EOF
 # from "that pid was recycled", and the failure we are protecting against is a killed updater
 # (the hook's own harness timeout can do exactly that), not a wedged one. The bound is generous
 # because a legitimate pull + full re-install is seconds, not minutes.
-_ADB_LOCK_STALE_SECS="${ADB_UPDATE_LOCK_STALE_SECS:-600}"
-
-# The token identifying the lock THIS process holds — empty when it holds none. Release compares
-# against it so a holder can never remove a lock that has since been broken and re-taken by a
-# peer: `rmdir` on the path alone would delete the new owner's lock, letting a THIRD mutator in
-# while the second is still pulling.
-_ADB_LOCK_TOKEN=""
-
-# Create the lock and record ownership. Returns 0 only if we created it.
-_adb_take_lock() {
-  local lock="$1" token
-  mkdir "$lock" 2>/dev/null || return 1
-  token="$$ $(date +%s 2>/dev/null)"
-  printf '%s\n' "$token" > "$lock/owner" 2>/dev/null
-  _ADB_LOCK_TOKEN="$token"
-  return 0
-}
-
-# Acquire the update lock at <lock>. Returns 0 when held by us, 1 when another update holds it.
-# The lock lives beside the clone's git dir rather than in $HOME so it is scoped to the clone
-# being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
-# can never collide with a real one.
-adb_update_lock() {
-  local lock="$1" age holder stale
-  _adb_take_lock "$lock" && return 0
-
-  # Held. Breaking it is only safe when the holder is genuinely gone, and AGE ALONE DOES NOT
-  # SHOW THAT: a laptop suspended mid-update, or a manual run behind a slow fetch, is old and
-  # perfectly alive. Breaking one of those runs `git pull` + `install.sh` twice at once, which
-  # is the thing this lock exists to prevent. So both must hold: old enough, AND no live holder.
-  age="$(adb_age_secs "$lock")"
-  # Empty = unreadable or FUTURE-dated (clock skew). Never break a lock we cannot date.
-  [ -n "$age" ] || return 1
-  [ "$age" -gt "$_ADB_LOCK_STALE_SECS" ] || return 1
-  holder="$(cut -d' ' -f1 < "$lock/owner" 2>/dev/null)"
-  case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
-
-  # Claim the break by RENAMING rather than rmdir+mkdir. Two processes that both judge the same
-  # lock stale would otherwise each remove it and each create it — both "holding" it. Rename
-  # succeeds for exactly one of them; the loser finds no source and stands down.
-  stale="${lock:?}.stale.$$"
-  mv "$lock" "$stale" 2>/dev/null || return 1
-  rm -rf "$stale" 2>/dev/null
-  _adb_take_lock "$lock"
-}
-
-# Release the lock ONLY if we still own it (see _ADB_LOCK_TOKEN). Safe to call more than once,
-# which the EXIT trap relies on when a signal trap has already run.
-adb_update_unlock() {
-  local lock="$1"
-  [ -n "$_ADB_LOCK_TOKEN" ] || return 0
-  [ "$(cat "$lock/owner" 2>/dev/null)" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
-  _ADB_LOCK_TOKEN=""
-  rm -f "$lock/owner" 2>/dev/null
-  rmdir "$lock" 2>/dev/null
-}
+# The update lock lives in `scripts/lib/common.sh` — `adb_update_lock` / `adb_update_unlock`.
+# It moved there when install.sh needed the same mutual exclusion for the settings surface, and a
+# second copy of a lock is two locks that do not exclude each other.
 
 # --- argument parsing --------------------------------------------------------
 
@@ -644,11 +640,19 @@ case "$STATUS" in
     # adb_self_heal's: a root doc pointing at another clone is not ours to re-wire.
     LINKS_OK=0; adb_verify_links "$SRC" && LINKS_OK=1
     adb_report_partial_hooks "$SRC"
-    if [ "$LINKS_OK" -eq 1 ]; then
+    # THREE questions now, not two (#248). The sandbox settings can be pending while every link
+    # resolves and every hook is wired — that is exactly the state a below-floor install leaves,
+    # and the CLI upgrade that clears it moves nothing this path was looking at.
+    SETTINGS_PENDING=0; adb_settings_pending "$SRC" && SETTINGS_PENDING=1
+    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
-    echo "baseline: an installed path is broken though up to date — repairing …"
+    if [ "$LINKS_OK" -eq 1 ]; then
+      echo "baseline: links are current, but the least-privilege sandbox settings are not applied yet (#248) — installing them …"
+    else
+      echo "baseline: an installed path is broken though up to date — repairing …"
+    fi
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that

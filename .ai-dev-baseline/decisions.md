@@ -7651,3 +7651,316 @@ survive is the part a later reader needs.
              measured cost fell on every run whether or not the paths were taken. roadmap, cleanup
              and resolve-pr-threads follow as siblings once this instance's check pins prove out.
 - baseline-issue: n/a — this repo IS the baseline; #433/#435 are the tracking issues.
+
+## D95 — the installer's non-hook settings surface is a named FRAGMENT with leaf-level ownership
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 1. `install.sh` could write `~/.claude/settings.json` only under
+             `.hooks`: `wire_hooks` merges every top-level group of
+             `agents/claude/settings.hooks.json` beneath `.hooks`, so a `sandbox` or `permissions`
+             block added to that payload would land at `.hooks.sandbox` and mean nothing. There
+             was no surface at all for a non-hook settings fragment, which is what #288 and epic
+             #283 were waiting on.
+- decision:  A second shipped payload, `agents/claude/settings.fragment.json`, merged by a second
+             writer (`wire_settings`) whose ownership boundary is the set of LEAF PATHS the
+             fragment declares — `sandbox.enabled`, `sandbox.credentials.files`, and so on — not
+             the file and not the top-level key. Three rules make the boundary operative:
+             (a) a leaf is written only when it is ABSENT AND UNRECORDED, or still equal to what
+             a receipt says we wrote — jq VALUE equality, not byte equality, so a reformatted
+             settings.json compares equal and an operator's own value is never overwritten;
+             a leaf the receipt records that is now absent was removed by hand and is left alone;
+             (b) uninstall removes only leaves that still match the receipt, keeps and NAMES one
+             the operator has since edited, and prunes containers it emptied;
+             (c) a leaf the receipt records but the current fragment no longer declares is PRUNED
+             on the next install — the settings analogue of `adb_agent_manifest_retired`, without
+             which a key dropped from the payload would sit in every adopter's settings forever
+             with no owner.
+             The receipt is `~/.claude/.adb-settings-owned`, beside `.adb-hooks-wired`, and it
+             carries a DISPOSITION line as well as the leaves (see D98) — plus the DIGEST of the
+             payload it applied, which is what answers "is the installed surface current?".
+             The owned leaf PATHS cannot answer it in either direction: a leaf the operator already
+             owned is never recorded, so a path-set comparison reports pending forever and re-runs
+             the installer every session, and changing a shipped VALUE leaves the path set
+             identical, so the same comparison never notices a payload a `git pull` just changed.
+             Every disposition that can legitimately carry rows OWNS them, including the transient
+             skips — a reader that discarded the rows a skip carried forward made the carry
+             pointless. The disposition is not what protects a doctored receipt (anyone who can
+             edit a leaf row can edit the disposition above it); what protects is that each row is
+             validated — a NON-EMPTY array of string components, and a parseable value — and that a
+             leaf is removed only while its live value still equals the recorded one. The
+             non-empty requirement is load-bearing: `all(.[]; …)` is vacuously true for `[]`, and
+             `delpaths([[]])` replaces the entire settings document with `null`.
+             ABSENCE IS ASKED WITH `has`, never by comparing to null: `getpath` cannot tell a
+             missing path from one whose value IS null, so an adopter's deliberate
+             `{"sandbox":{"enabled":null}}` read as absent, was overwritten, and was recorded as
+             ours — the boundary failing on the one input designed to test it.
+             OWNERSHIP IS ALSO SCOPED TO THE CLONE. The receipt is global, so its existence proves
+             only that SOME clone installed these keys; a second clone's install replaces both the
+             links and the receipt. Uninstall therefore asks the same question `bin/baseline` asks
+             before re-wiring a root doc — does `~/.claude` belong to THIS clone — and captures the
+             answer before `adb_unlink_manifest` removes the link it depends on.
+             ABSENCE IS ASKED OF EVERY ANCESTOR, not only the final key: an adopter's
+             `{"sandbox":null}` made every descendant look absent and `setpath` replaced the chosen
+             null with an object. STALE LEAVES ARE RECONCILED FIRST, before the new paths are
+             evaluated, or a payload that turns an owned leaf into a container leaves the
+             replacement skipped and the old leaf pruned into nothing. THE SETTINGS FILE MUST HOLD
+             EXACTLY ONE JSON VALUE — `--slurpfile` reads a stream, and taking `[0]` silently
+             discarded everything after the first object. And the mode carried across a publish is
+             read with `stat -L`: without it, a settings.json that is a symlink reports the LINK's
+             mode (measured 755 on macOS, 777 on Linux), which would then be stamped onto the
+             regular file replacing it.
+- placement: `agents/claude/settings.fragment.json` (payload) · `scripts/lib/common.sh`
+             (`adb_claude_settings_*` — enumeration, ownership, receipt, state) · `install.sh`
+             (`wire_settings`, `--no-sandbox`) · `uninstall.sh` (`unwire_settings`) ·
+             `bin/baseline` (self-heal preserves the opt-out) · `scripts/check-settings-fragment.sh`
+- reason:    File-level ownership cannot express the real case — an adopter who adds
+             `sandbox.excludedCommands` next to our `sandbox.enabled` owns a sibling of a key we
+             own, in a file neither of us owns whole. Top-level-key ownership is no better: it
+             would make us the owner of everything under `sandbox`, so uninstall would delete the
+             adopter's own entries. Leaf paths are the smallest unit the merge and the removal can
+             both name, and a receipt of what we wrote is the only thing that distinguishes "ours,
+             untouched" from "ours, since edited" from "theirs all along". `pinned-install.sh`'s
+             per-file digest receipt (D77) is the same move one grain up, and its conclusion is
+             reused verbatim: membership is not ownership — the recorded value is.
+- baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work, #288 the consumer)
+
+## D96 — the fragment ships `sandbox.enabled`, the two credential lists and `allowedDomains`; NOT `strictAllowlist`, NOT `filesystem.disabled`
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 2, answered by the owner as "All of them, `allowedDomains` included,
+             shipped with a documented opt-out". "All of them" names a set by reference and the
+             set had to be resolved before a key could be written.
+- decision:  The referent is decision 2's own question, which enumerated `sandbox.enabled`;
+             `credentials.files` / `credentials.envVars` for `~/.aws`, `~/.ssh`, `GITHUB_TOKEN`;
+             and "whether to touch `allowedDomains` at all". So the shipped fragment is exactly:
+             `sandbox.enabled: true`; `sandbox.credentials.files` denying `~/.aws` and `~/.ssh`;
+             `sandbox.credentials.envVars` denying `GITHUB_TOKEN`; and
+             `sandbox.network.allowedDomains` holding `api.anthropic.com` and the GitHub hosts
+             this repository's own `git`/`gh` traffic reaches. NOT a complete set, and not claimed
+             as one: the framework dispatches `codex` and `agy` too, and an adopting project's
+             remote or package registry may be anywhere. It is a starting point that array-key
+             merging lets a project extend from its own settings, and `github.com` is deliberately
+             BROAD — the vendor's security notes call out wide domains as an exfiltration surface
+             while the proxy does not inspect TLS by default, and it is here because `git` and
+             `gh` need it, not because it is tightly scoped.
+             `mode` is `deny` for every entry, because `mask` is only meaningful alongside
+             `network.tlsTerminate` and per-entry `injectHosts` — keys the owner did not name and
+             which authorize the proxy to send a real credential to a listed host.
+             `sandbox.network.strictAllowlist` is NOT shipped: it is a different key from the
+             allowlist, it was never in decision 2's enumeration, and it converts the list from
+             pre-allow to deny — a strictly larger imposition than the one the owner weighed.
+             `sandbox.filesystem.disabled` is NOT shipped: it turns filesystem isolation OFF, and
+             shipping it as hardening is the exact error #214 made and this issue exists to record.
+- placement: `agents/claude/settings.fragment.json` · `docs/installation.md` (the shipped values
+             and how to extend them) · `.ai-dev-baseline/decisions.md` (here)
+- reason:    Every value is verified against BOTH halves the acceptance criterion names — the
+             installed CLI and the vendor reference — on the implementation date, rather than
+             inherited from the issue's dated table (`third-party-claims.md`).
+             INSTALLED CLI, rung 1, executed 2026-09-03: `claude --version` printed
+             `2.1.259 (Claude Code)` from `~/.local/bin/claude`, which clears all three floors
+             below, so this run's own end-to-end install exercised the write path rather than the
+             skip path; the below-floor path is exercised against a stub CLI in
+             `scripts/check-settings-fragment.sh`.
+             VENDOR REFERENCE, rung 3, fetched 2026-09-03:
+             https://code.claude.com/docs/en/sandboxing, 2026-09-03 — `credentials` entries are
+             ARRAYS of `{path,mode}` / `{name,mode}` objects; the default read policy "still
+             allows reading credential files such as `~/.aws/credentials` and `~/.ssh/`", which is
+             the hole the two lists close; sandboxed commands "inherit the parent process
+             environment by default, including any credentials set there", which is the hole
+             `envVars` closes; and `allowedDomains` with `strictAllowlist` at its default `false`
+             only pre-allows, so a short framework-scoped list can never deny an adopter anything.
+             Array keys merge across every settings scope, so an adopter extends the allowlist
+             from their own project settings without editing ours.
+
+             THE KNOWN CONFLICT, recorded rather than quietly fixed: denying `~/.ssh` while
+             `sandbox.enabled` is true blocks sandboxed `git` over SSH, and this repository's own
+             documented setup clones over SSH (`README.md:28`, and `origin` is `git@github.com:`).
+             `gh` breaks the same way wherever `GITHUB_TOKEN` is the token source. The escape
+             hatch is that the blocked command may be retried OUTSIDE the sandbox, which then goes
+             through the regular permission flow — a confirmation prompt in Manual mode — so the
+             failure mode is a stalled autonomous run rather than a hard error. (`sandbox.
+             allowUnsandboxedCommands` is what disables that hatch, by being set to `false`; this
+             entry deliberately does NOT state its default, because the only source that gave one
+             was a SUMMARY of the settings reference, and that same summary described
+             `credentials.files` as an object map when the vendor page shows an array of objects.
+             A value nobody read in the primary source does not belong in a decision record.)
+             The fix for the conflict — `sandbox.excludedCommands` for `git` and `gh` — WIDENS what
+             runs unsandboxed and was not among the keys the owner approved, so it is documented as
+             an adopter's recipe and filed for an owner decision rather than invented here (#462).
+- baseline-issue: n/a (this repo IS the baseline; the conflict above is filed separately)
+
+## D97 — the fragment is written to USER settings only, and the pinned model refuses it outright
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 3 — user scope or project scope? The global installer writes
+             `~/.claude/settings.json`; the pinned model (D77) writes a PROJECT-scoped
+             `<project>/.claude/settings.json`, and both are "the installer".
+- decision:  `~/.claude/settings.json` only. `install.sh --pinned` does not write the fragment at
+             all, and says so on stdout rather than omitting it silently.
+- placement: `install.sh` (`wire_settings` targets `$HOME/.claude/settings.json`) ·
+             `scripts/lib/pinned-install.sh` (the refusal + its line) · `docs/installation.md`
+             ("What it does not do")
+- reason:    THE OWNER'S STATED PREMISE FOR THIS DECISION DOES NOT HOLD FOR THE KEYS WE SHIP, and
+             the decision survives on other grounds. The addendum's reason was that "the vendor
+             docs are explicit that several of these keys are honoured only from user/managed/CLI
+             settings and ignored in a repo's `.claude/settings.json`" — and the addendum itself
+             instructed that its vendor facts be re-resolved rather than inherited. Re-resolved
+             2026-09-03 at https://code.claude.com/docs/en/sandboxing: that is true of
+             `filesystem.disabled`, `network.strictAllowlist`, `credentials` `mask` entries,
+             `awsPairs`, `sigv4` and `allowAppleEvents` — and this fragment ships NONE of them.
+             Of what it DOES ship the page states the opposite: `deny` entries are "merge[d] from
+             every settings scope the session loads", since "a `deny` entry only ever narrows
+             access, so any scope can add one", and the sandbox mode itself is saved to a
+             project's own `.claude/settings.local.json` by the `/sandbox` panel. So a
+             project-scoped write of THIS key set would be honoured, and "the CLI would ignore it"
+             is not available as a reason. (Caught by the independent review of this PR — the same
+             defect class the issue exists to record: a plausible behavioural summary asserted as
+             vendor fact.)
+
+             User scope is still right, for reasons that are OURS rather than the vendor's:
+             (1) the global installer's entire model is user-level configuration — it is what
+             `--agent` installs and what `uninstall.sh` reverses, and a project-scoped surface
+             would need a per-project uninstall nothing else here has;
+             (2) a pinned install's `.claude/settings.json` is TRACKED by the adopting project, so
+             a project-scoped write would commit a security policy into somebody's repository on
+             behalf of every contributor to it — a decision far past the one the owner made; and
+             (3) the key set is not stable at project scope: the moment a future version adds
+             `strictAllowlist` or a `mask` entry, part of the fragment WOULD be silently inert
+             there. That is the failure the owner's answer was reaching for, even though the
+             premise named the wrong keys.
+- baseline-issue: n/a (this repo IS the baseline)
+
+## D98 — below the version floor the installer writes NOTHING, and the receipt records WHY
+- date:      2026-09-03
+- category:  project-delta
+- unknown:   #248 decision 4 — the keys are inert on an older CLI. Answered "detect, skip, and say
+             so". What the answer does not settle is how the resulting ABSENCE is read later: the
+             installed set is repaired by `bin/baseline`'s self-heal on every session start, and
+             the hooks surface teaches that an absent thing is sometimes a choice.
+- decision:  `wire_settings` probes the `claude` binary (`--version`, parsed strictly, through the
+             existing `adb_version_ge`), and below the floor writes no key and prints the version
+             found, the floor required, and the protection not applied. The receipt is written in
+             EVERY case, carrying a `disposition` line — `installed`, `skipped-below-floor`,
+             `skipped-unprobeable` or `skipped-optout` — and the leaf rows under EVERY one of them
+             except a first-ever skip that has no prior rows to carry: a skip means "write no NEW
+             keys", never "forget the ones already there". Self-heal reads the disposition: `skipped-optout` is preserved
+             (`--no-sandbox` again), and every other skip is RETRIED, so an install that ran
+             against an old CLI installs the fragment by itself once the CLI is upgraded.
+             An unprobeable CLI skips rather than writes: an unread version is not evidence that
+             the keys would be honoured, and writing a key that reports protection it never
+             applied is the failure decision 3 already ruled out.
+- placement: `scripts/lib/common.sh` (`adb_claude_cli_version`, `adb_claude_settings_floor`,
+             `adb_claude_settings_disposition`) · `install.sh` · `bin/baseline` (`adb_self_heal`) ·
+             `scripts/check-settings-fragment.sh` (each disposition driven and observed)
+- reason:    The pattern ledger's `new-default-read-as-opt-out` class states the rule this entry
+             obeys: for every predicate that reads a persisted state as a CHOICE, enumerate the
+             other ways that exact shape arises and confirm each is distinguishable. "No `sandbox`
+             keys in settings.json" arises from at least four causes — the operator removed them,
+             the operator passed `--no-sandbox`, the CLI was below the floor at install time, and
+             the CLI could not be probed — and only the first two are choices. Inferring from the
+             absence alone would freeze a below-floor skip into a permanent opt-out the moment the
+             adopter upgraded, which is #242's defect one surface over. The receipt is what makes
+             the four distinguishable, so it is written even when nothing else is.
+- baseline-issue: n/a (this repo IS the baseline)
+
+## D99 — the recurring settings-writer classes are pinned as lint rules, because the prose rule demonstrably did not hold
+- date:      2026-09-04
+- category:  project-delta
+- unknown:   #248's review loop ran four rounds. Three of the findings in rounds 3 and 4 were the
+             SAME defect as an earlier round, at a sibling site the earlier fix had not swept: the
+             null check fixed at the leaf and not the ancestor, the `umask 077` guard added to the
+             install writer and not its mirror in `uninstall.sh`, the `stat -L` correction applied
+             to the library while two assertions kept the old spelling. `debugging.md` already says
+             to grep for the CLASS rather than the instance, and the pattern ledger's promoted
+             checklist says it again in as many words. Both were loaded in context and quoted in
+             the run's own self-review report. Neither changed the outcome.
+- decision:  Convert the classes that have a mechanical signature into `absent:`/`fixed:` rules in
+             `scripts/check-fact-drift.sh`, which scans every listed file and — for `absent:` —
+             must be observed going RED under `--mutation`. Three rules:
+             `stat-mode-dereferences` (no un-dereferenced `stat -[cf] '%…'` anywhere in the shipped
+             shell), `merge-absence-uses-has` (no `$now == null` absence test in the merge), and
+             `settings-temp-created-restricted` (the `umask 077` creation pinned in BOTH writers by
+             name, since naming only the file under discussion is what produced the miss).
+             `adb_mtime` gained `-L` as part of this: not a fix — no caller passes it a symlink —
+             but uniformity, so the rule can be a pattern rather than a per-site judgement.
+- placement: `scripts/check-fact-drift.sh` (the rules) · `scripts/lib/common.sh` (`adb_mtime`,
+             and a header comment reworded so it no longer carries the spelling it warns about)
+- reason:    A rule an agent is asked to remember is not a mechanism, and this repository has
+             concluded that before: `verify-before-asserting.md` records a stale-status claim made
+             with the practice loaded in context, which is why `state-assert.sh` is a command
+             rather than another paragraph. The same evidence appeared here, and the same remedy
+             applies. What is deliberately NOT claimed: only spellings with a grep signature are
+             covered. "Did this check walk the ancestors as well as the final key" has no pattern,
+             so that class stays review-side — and `scripts/check-settings-fragment.sh` is
+             excluded from the `stat` rule because its mutation rows must be able to write the
+             defect down in order to inject it.
+- baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)
+
+## D100 — the settings fragment applies WHOLE or not at all
+- date:      2026-09-04
+- category:  project-delta
+- unknown:   D95 gave the fragment a per-leaf ownership boundary: write what it can, skip what the
+             operator owns, remember what they deleted. #248's review then ran six rounds, and
+             rounds 3 to 6 found their defects almost entirely in that BOOKKEEPING rather than in
+             the policy it carried — a null leaf read as absent, a null ancestor read as absent, a
+             scalar ancestor raising instead of classifying, a leaf that became a container leaving
+             the replacement skipped and the old key gone, a tombstone that would authorise
+             deleting a value the operator had re-added by hand, an emptied container deleted
+             though the operator had made it. Each fix was right and each new state needed its own
+             provenance. The question the owner was asked: keep paying for partial application, or
+             narrow the contract.
+- decision:  ALL-OR-NOTHING (owner, 2026-09-04). A first install writes the whole fragment only
+             when every leaf is absent and every ancestor is traversable; anything already there
+             BLOCKS the lot and the refusal names it. An established install updates only while
+             every recorded leaf is still present with the value recorded for it; any divergence —
+             an edit, or a deletion, which is the by-hand opt-out — means the operator has taken
+             the surface over, so nothing is written and the refusal names what diverged.
+             Retirement still runs: a recorded leaf the payload no longer ships is pruned when it
+             matches and kept and named when it does not. Removal takes the leaves that still match
+             and prunes ONLY the containers the receipt records this install as having CREATED.
+             A refusal is recorded as `skipped-blocked` and is retried when the PAYLOAD changes,
+             not on every session — retrying each time is the `baseline update` repair loop that
+             reporting pending-forever already caused once.
+- placement: `scripts/lib/common.sh` (`adb_claude_settings_merge`, the `container` receipt rows and
+             their reader) · `install.sh` (the verdict branch, `skipped-blocked`) · `bin/baseline`
+             (`adb_settings_pending`) · `scripts/check-settings-fragment.sh` · `docs/installation.md`
+- reason:    The states are what was generating the defects, so the states are gone: `skipped`,
+             `removed` and the partial headline no longer exist. Three consequences are worth
+             naming because they are why this is smaller rather than merely different.
+             (1) NO TOMBSTONE IS NEEDED. A deleted leaf is not remembered as "ours, removed"; it
+             simply makes the surface theirs, so it is never rewritten and never later deleted on
+             the strength of a record — which was the defect the tombstone would have carried.
+             (2) THE HEADLINE CANNOT OVERSTATE, by construction rather than by a check: a `write`
+             verdict means every shipped leaf was applied, because anything already there would
+             have refused the lot.
+             (3) CONTAINERS ARE STILL RECORDED, and that is the one piece of provenance the narrow
+             contract does not remove: an adopter who already had `{"sandbox":{}}` must keep it, so
+             ownership of the objects we create cannot be derived from the leaf paths at removal
+             time. It is recorded at write time instead.
+             The cost, stated plainly: an adopter with any pre-existing key of ours gets NO
+             protection until they resolve it themselves. That is the trade the owner took, and it
+             is the failure mode this project prefers everywhere else — refuse and say why, rather
+             than apply half a policy and report it as protection.
+
+             CORRECTION, one review round later. "No tombstone is needed" was true of the merge and
+             FALSE of the receipt: the refusal still wrote a `skipped-blocked` record carrying the
+             prior rows, so a value the operator deleted, was refused over, and then re-added by
+             hand would have been deleted by uninstall as ours — the same hazard through a
+             different door. A refusal now RELINQUISHES: `skipped-blocked` owns nothing, carries no
+             rows, and records the digest of the payload it refused (carrying the prior digest left
+             `adb_settings_pending` mismatched forever, re-running the installer on every update).
+             Provenance moved with it: the receipt records the install `source`, because
+             `uninstall_claude` removes the root-doc link BEFORE the settings cleanup can fail, and
+             the retry it advises could not otherwise prove the receipt was its own.
+
+             SECOND CORRECTION, one round later. "A refusal writes nothing" was too strong: it
+             governs the FRAGMENT, not a RETIREMENT. When a payload retires one recorded leaf while
+             another still-shipped leaf has diverged, discarding the safe prune left the retired
+             key installed with no ownership record at all — a blocked receipt carries no rows — so
+             nothing could ever remove it. Retirement is cleanup of something we no longer ship and
+             applies regardless; only the fragment writes are undone. And the FRAGMENT is now
+             validated exactly as the settings are: a payload that is non-empty but holds only
+             whitespace slurps to an empty array, and reading that as "ships nothing" made an
+             established install retire EVERY recorded leaf and publish a receipt whose digest made
+             the damaged file look current.
+- baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)
