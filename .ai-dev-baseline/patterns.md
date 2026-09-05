@@ -514,4 +514,7 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfY` PR #463 2026-09-04 — the opt-out carried its ownership rows without rechecking them against the live settings, so a leaf the operator had deleted stayed claimed
 - `exit-path-asymmetry` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfU` PR #463 2026-09-04 — a prune that could not be published was followed by an ownership-free receipt, leaving the retired key with nothing able to remove it
 - `toctou` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfa` PR #463 2026-09-04 — initialising an empty settings.json wrote through a dangling symlink, creating a file outside the directory a rename-only publish path exists to protect
+- `stale-state-trusted` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUR` PR #463 2026-09-05 — the version-skip paths carried ownership rows without rechecking them, the opt-out fix one path over
+- `partial-validation` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUV` PR #463 2026-09-05 — the ownership probe was bypassed for absent, empty or unparseable settings, so those cases kept every stale row
+- `toctou` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUX` PR #463 2026-09-05 — the settings and receipt renames were unserialized, so a concurrent opt-out could publish an ownership-free receipt over another run's applied keys
 <!-- adb:hits:end -->
