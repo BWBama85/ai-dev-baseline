@@ -648,6 +648,32 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
 [ -z "$(adb_claude_settings_source_row "$(printf '/a\nb')")" ] && ok \
   || bad "a source path containing a NEWLINE must be refused — a truncated path resolves to a real sibling"
 
+# --- one run at a time per HOME, across the whole read-to-publish window -------------------------
+#
+# The settings and the receipt are published by two separate renames, and distinct temp names do
+# not make the pair atomic: a normal install and a concurrent `--no-sandbox` can both read the old
+# state, and if the opt-out publishes its ownership-free receipt LAST the keys the other run just
+# applied are left unowned — both commands report success and uninstall can never remove them.
+lk_home="$work/lockhome"; rm -rf "$lk_home"; mkdir -p "$lk_home/.claude"
+echo '{"model":"opus"}' > "$lk_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$lk_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -e "$lk_home/.claude/.adb-settings.lock" ] && bad "the settings lock must be released on the success path" || ok
+# A LIVE holder refuses rather than racing. `$$` is this suite, which is alive by construction.
+mkdir -p "$lk_home/.claude/.adb-settings.lock"
+printf '%s %s\n' "$$" "$(date +%s)" > "$lk_home/.claude/.adb-settings.lock/owner"
+HOME="$lk_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/lock.log" 2>&1
+grep -qi "another install is writing" "$work/lock.log" && ok \
+  || bad "a live settings lock must refuse the run and name the lock, not publish over it"
+rm -rf "$lk_home/.claude/.adb-settings.lock"
+# ...and every documented non-writing path releases it too, since they all return from inside.
+for arg in "--no-sandbox" ""; do
+  HOME="$lk_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks $arg >/dev/null 2>&1
+  [ -e "$lk_home/.claude/.adb-settings.lock" ] && bad "the settings lock must be released after '$arg'" || ok
+done
+HOME="$lk_home" PATH="/usr/bin:/bin" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -e "$lk_home/.claude/.adb-settings.lock" ] && bad "the settings lock must be released after an unprobeable-CLI skip" || ok
+
 # --- the opt-out rechecks what it carries --------------------------------------------------------
 #
 # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but carrying it BLINDLY
@@ -663,6 +689,36 @@ HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --
 HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
 [ "$(grep -c "^leaf$ADB_TAB" "$oo_home/.claude/.adb-settings-owned")" -eq 4 ] && ok \
   || bad "--no-sandbox over an UNCHANGED install must keep its ownership rows"
+# the SAME rule governs the version skips, which is the finding one path over: a below-floor or
+# unprobeable run must not keep claiming a leaf the operator has since changed.
+skip_home="$work/skiprecheck"; rm -rf "$skip_home"; mkdir -p "$skip_home/.claude"
+echo '{"model":"opus"}' > "$skip_home/.claude/settings.json"
+HOME="$skip_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq 'del(.sandbox.enabled)' "$skip_home/.claude/settings.json" > "$work/sk.json" && mv "$work/sk.json" "$skip_home/.claude/settings.json"
+stub "2.1.100 (Claude Code)"
+HOME="$skip_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$skip_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "a below-floor skip over a DIVERGED install must relinquish ownership, exactly as the opt-out does"
+stub "2.1.259 (Claude Code)"
+
+# settings that cannot be READ are inability to prove, and drop the rows too
+unread_home="$work/unreadable"; rm -rf "$unread_home"; mkdir -p "$unread_home/.claude"
+echo '{"model":"opus"}' > "$unread_home/.claude/settings.json"
+HOME="$unread_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+rm -f "$unread_home/.claude/settings.json"
+HOME="$unread_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$unread_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "an absent settings.json is inability to prove ownership and must drop the carried rows"
+# ...and one that EXISTS but does not parse. The two checks cover the absent case together, so only
+# this input can show that the probe result itself is examined rather than merely the file size.
+bad_home="$work/unparseable"; rm -rf "$bad_home"; mkdir -p "$bad_home/.claude"
+echo '{"model":"opus"}' > "$bad_home/.claude/settings.json"
+HOME="$bad_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+printf '{"sandbox": \n' > "$bad_home/.claude/settings.json"
+HOME="$bad_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$bad_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "a settings.json that exists but does not parse is inability to prove ownership and must drop the carried rows"
+
 # diverged: the surface is the operator's, so the opt-out records the choice without claiming it
 jq 'del(.sandbox.enabled)' "$oo_home/.claude/settings.json" > "$work/oo.json" && mv "$work/oo.json" "$oo_home/.claude/settings.json"
 HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/oo.log" 2>&1
@@ -1114,7 +1170,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if false; then' \
     'must be reported as NOT written and named'
   check_mut 'a skip discards the ownership it inherited' \
-    '  carried="$(_adb_owned_rows "$receipt")"' \
+    '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
     '  carried=""' \
     "must carry the previous receipt's leaf rows forward"
   check_mut 'the settings temp file is world-readable while it is written' \
@@ -1138,8 +1194,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '    # provenance is not refreshed here' \
     'no-jq path must refresh the receipt source'
   check_mut 'the opt-out carries its rows without rechecking them' \
-    '        optout_rows=""' \
-    '        : ' \
+    '    optout_rows="$(_adb_carry_rows "$receipt" "$settings" "$payload")"' \
+    '    optout_rows="$(_adb_owned_rows "$receipt")"' \
     'must relinquish ownership'
   check_mut 'the settings file is initialised in place again' \
     '    synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }' \
@@ -1149,6 +1205,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 1   # prune-abort' \
     '        :   # prune-abort' \
     'must abort before replacing the receipt'
+  check_mut 'the settings window is not serialized' \
+    '  if ! adb_update_lock "$slock"; then' \
+    '  if false; then' \
+    'must refuse the run and name the lock'
+  check_mut 'the lock is never released' \
+    '  adb_update_unlock "$slock"' \
+    '  :' \
+    'lock must be released on the success path'
+  check_mut 'a version skip carries its rows unchecked' \
+    '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
+    '  carried="$(_adb_owned_rows "$receipt")"' \
+    'below-floor skip over a DIVERGED install must relinquish ownership'
+  check_mut 'an unparseable probe still counts as proof of ownership' \
+    '  if [ -z "$probe" ]; then' \
+    '  if false; then' \
+    'inability to prove ownership and must drop the carried rows'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset

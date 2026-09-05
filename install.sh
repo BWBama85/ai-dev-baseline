@@ -146,6 +146,32 @@ wire_settings() {
   receipt="$(adb_claude_settings_receipt "$HOME")"
   floor="$(adb_claude_settings_floor)"
 
+  # ONE RUN AT A TIME PER HOME, ACROSS THE WHOLE READ-TO-PUBLISH WINDOW. The settings and the
+  # receipt are published by two separate renames, and distinct temp names do not make the pair
+  # atomic: a normal install and a concurrent `--no-sandbox` can both read the old state, and if
+  # the opt-out publishes its ownership-free receipt LAST, the keys the other run just applied are
+  # left unowned — both commands report success, `baseline update` preserves the opt-out, and
+  # uninstall can never remove them. The lock is the same one `baseline update` takes, moved into
+  # the shared library for this, and it is scoped to the HOME being written rather than to a clone,
+  # because that is what two racing installs actually contend for.
+  local slock="$HOME/.claude/.adb-settings.lock"
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  if ! adb_update_lock "$slock"; then
+    adb_info "  WARN   another install is writing ~/.claude/settings.json — sandbox settings NOT written."
+    adb_info "         If nothing else is running, remove: $slock"
+    return 1
+  fi
+  # RELEASED ON EVERY PATH, including the documented refusals and skips, which all `return` from
+  # inside this function rather than falling through to one exit.
+  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor"; local wsrc=$?
+  adb_update_unlock "$slock"
+  return "$wsrc"
+}
+
+_adb_wire_settings_locked() {
+  local settings="$1" receipt="$2" payload="$3" floor="$4"
+  local version tmp result
+
   # THE OPT-OUT IS RECORDED BEFORE THE jq GUARD, deliberately. Its receipt is plain text and needs
   # no jq, and a missing jq is a SUPPORTED degraded environment — so returning early here would
   # leave `--no-sandbox` unrecorded, and the first `baseline update` after jq arrived would read
@@ -156,26 +182,10 @@ wire_settings() {
   # earlier install wrote: uninstall could no longer prove which keys were ours, and D95's
   # retirement prune would have nothing to prune.
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
-    # THE CARRIED ROWS ARE RECHECKED WHEN jq IS THERE. `--no-sandbox` preserves ownership so an
-    # earlier install is not orphaned — but carrying it BLINDLY kept claiming a leaf the operator
-    # had since deleted, and if they later recreated that value by hand an uninstall would remove
-    # it as ours. Under the all-or-nothing contract a divergence relinquishes the surface, and the
-    # opt-out is not an exception to it. Without jq the rows are carried unchecked, which is the
-    # documented degradation rather than a silent one.
+    # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but only what it
+    # can still PROVE — the shared rule, so the opt-out and the version skips cannot disagree.
     local optout_rows
-    optout_rows="$(_adb_owned_rows "$receipt")"
-    if [ -n "$optout_rows" ] && command -v jq >/dev/null 2>&1 && [ -s "$settings" ] && [ -s "$payload" ]; then
-      local probe
-      probe="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" 2>/dev/null)" || probe=""
-      if [ -n "$probe" ] \
-         && [ "$(printf '%s' "$probe" | jq -r '.verdict')" = refuse ] \
-         && [ "$(printf '%s' "$probe" | jq -r '.diverged | length')" -gt 0 ]; then
-        adb_info "  sandbox  ownership relinquished: $(printf '%s' "$probe" | jq -r '[.diverged[] | join(".")] | join(", ")')"
-        adb_info "           is no longer as this install left it, so --no-sandbox records the choice"
-        adb_info "           without claiming those keys."
-        optout_rows=""
-      fi
-    fi
+    optout_rows="$(_adb_carry_rows "$receipt" "$settings" "$payload")"
     if ! { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$optout_rows"; } \
          | adb_claude_settings_receipt_render skipped-optout "-" "$floor" \
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
@@ -416,6 +426,49 @@ wire_settings() {
   return 0
 }
 
+# The ownership rows a non-writing path may still claim — ONE home, because the opt-out and the
+# version skips must answer this identically and a second copy is a second chance to diverge.
+#
+# The rule is: claim only what can be PROVED still ours. A row is kept while the live settings
+# still carry the value recorded for it; a divergence relinquishes the whole surface, exactly as it
+# does on the write path, so a value the operator later recreates by hand is never deleted as ours.
+# Settings that are absent, empty or unparseable are inability to prove, and drop the rows too.
+#
+# WITHOUT jq THE ROWS ARE CARRIED UNCHECKED, and that is deliberate rather than an oversight:
+# dropping them there would relinquish every previously installed key in a supported degraded
+# environment, and — under all-or-nothing — a later install would then find those keys present and
+# unowned and refuse, leaving the operator to delete them by hand. The narrow risk of keeping an
+# unverified claim is the better trade, and it is said out loud.
+# Usage: _adb_carry_rows <receipt> <settings> <payload>
+_adb_carry_rows() {
+  local receipt="$1" live="$2" frag="$3" rows probe
+  rows="$(_adb_owned_rows "$receipt")"
+  [ -n "$rows" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    adb_info "  sandbox  ownership carried UNVERIFIED (no jq): if you have changed these keys by"
+    adb_info "           hand, install jq and re-run so the claim can be rechecked."
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  if [ ! -s "$live" ] || [ ! -s "$frag" ]; then
+    adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run"
+    adb_info "           cannot prove those keys are still ours."
+    return 0
+  fi
+  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)" || probe=""
+  if [ -z "$probe" ]; then
+    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed."
+    return 0
+  fi
+  if [ "$(printf '%s' "$probe" | jq -r '.verdict')" = refuse ] \
+     && [ "$(printf '%s' "$probe" | jq -r '.diverged | length')" -gt 0 ]; then
+    adb_info "  sandbox  ownership relinquished: $(printf '%s' "$probe" | jq -r '[.diverged[] | join(".")] | join(", ")')"
+    adb_info "           is no longer as this install left it."
+    return 0
+  fi
+  printf '%s\n' "$rows"
+}
+
 # Record a skip, and SAY SO WHEN IT CANNOT BE RECORDED. The receipt is the entire reason a skip is
 # retried instead of frozen into a permanent absence (D98), so a write that fails here is not a
 # cosmetic loss: nothing else tells the operator that the reason they were just given is not on
@@ -438,7 +491,7 @@ _adb_record_skip() {
   # replace an `installed` receipt with an empty one while the sandbox values stay in the file:
   # uninstall could then never remove them, and the next install would read them as the operator's
   # and record an empty ownership set permanently. (PR review)
-  carried="$(_adb_owned_rows "$receipt")"
+  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"
   # THE PRIOR DIGEST IS CARRIED TOO, for the same reason as the rows: a skip applied no payload, so
   # it must not claim to have applied THIS one — but neither may it erase the record of the payload
   # an earlier install really did apply, which is what `pending` compares against.

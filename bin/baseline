@@ -495,63 +495,9 @@ EOF
 # from "that pid was recycled", and the failure we are protecting against is a killed updater
 # (the hook's own harness timeout can do exactly that), not a wedged one. The bound is generous
 # because a legitimate pull + full re-install is seconds, not minutes.
-_ADB_LOCK_STALE_SECS="${ADB_UPDATE_LOCK_STALE_SECS:-600}"
-
-# The token identifying the lock THIS process holds — empty when it holds none. Release compares
-# against it so a holder can never remove a lock that has since been broken and re-taken by a
-# peer: `rmdir` on the path alone would delete the new owner's lock, letting a THIRD mutator in
-# while the second is still pulling.
-_ADB_LOCK_TOKEN=""
-
-# Create the lock and record ownership. Returns 0 only if we created it.
-_adb_take_lock() {
-  local lock="$1" token
-  mkdir "$lock" 2>/dev/null || return 1
-  token="$$ $(date +%s 2>/dev/null)"
-  printf '%s\n' "$token" > "$lock/owner" 2>/dev/null
-  _ADB_LOCK_TOKEN="$token"
-  return 0
-}
-
-# Acquire the update lock at <lock>. Returns 0 when held by us, 1 when another update holds it.
-# The lock lives beside the clone's git dir rather than in $HOME so it is scoped to the clone
-# being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
-# can never collide with a real one.
-adb_update_lock() {
-  local lock="$1" age holder stale
-  _adb_take_lock "$lock" && return 0
-
-  # Held. Breaking it is only safe when the holder is genuinely gone, and AGE ALONE DOES NOT
-  # SHOW THAT: a laptop suspended mid-update, or a manual run behind a slow fetch, is old and
-  # perfectly alive. Breaking one of those runs `git pull` + `install.sh` twice at once, which
-  # is the thing this lock exists to prevent. So both must hold: old enough, AND no live holder.
-  age="$(adb_age_secs "$lock")"
-  # Empty = unreadable or FUTURE-dated (clock skew). Never break a lock we cannot date.
-  [ -n "$age" ] || return 1
-  [ "$age" -gt "$_ADB_LOCK_STALE_SECS" ] || return 1
-  holder="$(cut -d' ' -f1 < "$lock/owner" 2>/dev/null)"
-  case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
-
-  # Claim the break by RENAMING rather than rmdir+mkdir. Two processes that both judge the same
-  # lock stale would otherwise each remove it and each create it — both "holding" it. Rename
-  # succeeds for exactly one of them; the loser finds no source and stands down.
-  stale="${lock:?}.stale.$$"
-  mv "$lock" "$stale" 2>/dev/null || return 1
-  rm -rf "$stale" 2>/dev/null
-  _adb_take_lock "$lock"
-}
-
-# Release the lock ONLY if we still own it (see _ADB_LOCK_TOKEN). Safe to call more than once,
-# which the EXIT trap relies on when a signal trap has already run.
-adb_update_unlock() {
-  local lock="$1"
-  [ -n "$_ADB_LOCK_TOKEN" ] || return 0
-  [ "$(cat "$lock/owner" 2>/dev/null)" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
-  _ADB_LOCK_TOKEN=""
-  rm -f "$lock/owner" 2>/dev/null
-  rmdir "$lock" 2>/dev/null
-}
+# The update lock lives in `scripts/lib/common.sh` — `adb_update_lock` / `adb_update_unlock`.
+# It moved there when install.sh needed the same mutual exclusion for the settings surface, and a
+# second copy of a lock is two locks that do not exclude each other.
 
 # --- argument parsing --------------------------------------------------------
 
