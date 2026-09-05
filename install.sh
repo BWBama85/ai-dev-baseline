@@ -210,20 +210,26 @@ _adb_wire_settings_locked() {
   # THE VERSION PROBE (D98). Three outcomes, three receipts — never one silent absence. Below the
   # floor, or unreadable, we write NOTHING: a key the running CLI ignores reports protection it
   # never applied, which is the failure decision 3 already ruled out.
+  # THE RECORD'S STATUS IS THE BRANCH'S. `_adb_record_skip` returns non-zero only when it could
+  # neither publish the replacement receipt nor remove the stale one — so the prior `installed`
+  # rows survive, still able to authorise a removal, and a self-heal that reported success would
+  # never revisit it. The skip itself still stands and is still explained; what changes is that
+  # the caller learns the record did not. (PR review)
+  local skiprc
   if ! version="$(adb_claude_cli_version)"; then
-    _adb_record_skip skipped-unprobeable "-" "$floor" "$receipt"
+    skiprc=0; _adb_record_skip skipped-unprobeable "-" "$floor" "$receipt" || skiprc=$?
     adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
     adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
     adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
-    return 0
+    return "$skiprc"
   fi
   if ! adb_version_ge "$version" "$floor"; then
-    _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt"
+    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?
     adb_info "  sandbox  SKIPPED — claude v$version is below the v$floor floor for \`sandbox.credentials\`."
     adb_info "           NOT applied: sandbox isolation, the ~/.aws and ~/.ssh read denials, the"
     adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
     adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
-    return 0
+    return "$skiprc"
   fi
 
   # AN EMPTY OR ABSENT settings.json IS SUBSTITUTED, NEVER CREATED IN PLACE. `--slurpfile` refuses
@@ -563,17 +569,19 @@ install_claude() {
   # let an installer relink Claude while an uninstall held the lock, invalidating the ownership
   # snapshot that uninstall had already taken.
   #
-  # ONE RELEASE, ON EVERY EXIT: the body is a helper so a failure inside it cannot skip the unlock.
-  local slock; slock="$(adb_settings_lock_path "$HOME")"
+  # ONE RELEASE, ON EVERY EXIT — INCLUDING A SIGNAL. The body is a helper so no ordinary return can
+  # skip the unlock, and `adb_settings_lock_take` arms EXIT/TERM/INT traps so a Ctrl-C cannot
+  # either: the shell would otherwise exit before any unlock statement and leave the lock refusing
+  # every later run. (PR review)
   mkdir -p "$HOME/.claude" 2>/dev/null || true
-  if ! adb_update_lock "$slock"; then
+  if ! adb_settings_lock_take; then
     adb_info "claude → ~/.claude"
     adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."
-    adb_info "         If nothing else is running, remove: $slock"
+    adb_info "         If nothing else is running, remove: $(adb_settings_lock_path "$HOME")"
     return 1
   fi
   _install_claude_locked; local icrc=$?
-  adb_update_unlock "$slock"
+  adb_settings_lock_drop
   return "$icrc"
 }
 

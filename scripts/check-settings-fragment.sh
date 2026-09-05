@@ -752,6 +752,107 @@ grep -qi "relinquish" "$work/diag.log" && ok \
      "$ROOT/install.sh")" -eq 0 ] && ok \
   || bad "every adb_info inside _adb_carry_rows must redirect to stderr — its stdout is its return value, so a diagnostic there is captured into the caller's rows and dropped"
 
+# --- a signal releases the lock too, not only an ordinary return ---------------------------------
+#
+# A helper wrapper covers every `return`; it covers no signal. A TERM or INT while the body runs
+# exits the shell before any unlock statement, and the lock left behind refuses every later install
+# and uninstall for the stale interval — longer if the recorded pid is reused. `bin/baseline`
+# already traps for this on the same primitive.
+#
+# THE SIGNAL LANDS DETERMINISTICALLY, WITH NO CLOCK IN IT. A plain install finishes in well under
+# a second, so a timed kill against it is a coin flip that passes either way. A *slow* stub plus a
+# fixed delay is no better: under `selfcheck`'s parallel load the install had not yet taken the
+# lock when the timer fired, and this fixture failed in CI-like conditions while passing unloaded —
+# the timing class `ci-discipline.md` calls "'flaky' causes that are actually real".
+#
+# So the stub HANDSHAKES instead. It is executed by the version probe, which runs inside the locked
+# region: it announces itself, then blocks until released. The test waits for that announcement
+# (bounded, never a bare clock), asserts the lock is held, signals, and lets the stub go. No step
+# depends on how fast the machine is.
+sig_home="$work/signal"; rm -rf "$sig_home"; mkdir -p "$sig_home/.claude" "$work/slowbin"
+export ADB_SIG_READY="$work/sig.ready" ADB_SIG_GO="$work/sig.go"
+rm -f "$ADB_SIG_READY" "$ADB_SIG_GO"
+cat > "$work/slowbin/claude" <<'SIGSTUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+  : > "$ADB_SIG_READY"
+  i=0
+  while [ ! -f "$ADB_SIG_GO" ] && [ "$i" -lt 900 ]; do sleep 0.1; i=$((i+1)); done
+  echo "2.1.259 (Claude Code)"
+  exit 0
+fi
+exit 1
+SIGSTUB
+chmod +x "$work/slowbin/claude"
+HOME="$sig_home" PATH="$work/slowbin:$PATH" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1 &
+sig_pid=$!
+sig_i=0
+while [ ! -f "$ADB_SIG_READY" ] && [ "$sig_i" -lt 900 ]; do sleep 0.1; sig_i=$((sig_i+1)); done
+[ -f "$ADB_SIG_READY" ] && ok || bad "the install never reached the version probe — the signal fixture proves nothing"
+[ -e "$(adb_settings_lock_path "$sig_home")" ] && ok \
+  || bad "the fixture must signal the install WHILE it holds the lock, or it proves nothing"
+kill -TERM "$sig_pid" 2>/dev/null
+: > "$ADB_SIG_GO"
+wait "$sig_pid" 2>/dev/null; sig_rc=$?
+rm -f "$ADB_SIG_READY" "$ADB_SIG_GO"
+unset ADB_SIG_READY ADB_SIG_GO
+[ "$sig_rc" -eq 143 ] && ok || bad "a TERM must terminate the install as a TERM (143), not be swallowed (got $sig_rc)"
+[ -e "$(adb_settings_lock_path "$sig_home")" ] && \
+  bad "a TERM mid-install must not leave the settings lock behind — it refuses every later run" || ok
+
+# --- the lock is released WHEN THE PHASE ENDS, not merely when the process does -------------------
+#
+# A STRUCTURAL PIN, and the reason it has to be one is worth stating: the EXIT trap releases the
+# lock at process exit, so deleting the explicit release is invisible to every assertion made after
+# the run finishes — which is every behavioural assertion available here. Both rows covering these
+# call sites were observed staying GREEN for exactly that reason before this pin existed.
+#
+# The explicit call is not redundant. `install.sh` goes on to install the other agents and to prune
+# retired payloads after the Claude phase; without it the settings lock would be held for the whole
+# remaining process, blocking a concurrent `baseline update` far longer than the window it guards.
+# What the trap covers is the ABNORMAL exit; what this covers is the ordinary one.
+[ "$(grep -c 'adb_settings_lock_drop' "$ROOT/install.sh")" -eq 1 ] && ok \
+  || bad "install.sh must release the settings lock explicitly when the Claude phase ends — the EXIT trap covers a crash, not a phase boundary"
+[ "$(grep -c 'adb_settings_lock_drop' "$ROOT/uninstall.sh")" -eq 1 ] && ok \
+  || bad "uninstall.sh must release the settings lock explicitly when the Claude phase ends, for the same reason"
+
+# --- an uninstall with no Claude state is DONE, not blocked ---------------------------------------
+#
+# The lock directory is nested inside ~/.claude, so on a home that never had one — a clean machine,
+# or someone who installed only Codex or Gemini — `adb_update_lock` cannot create it and fails
+# exactly as a contended lock does. That reported "an install is writing" over a home with no
+# Claude state at all, and ended the run "INCOMPLETE".
+bare_home="$work/barehome"; rm -rf "$bare_home"; mkdir -p "$bare_home"
+HOME="$bare_home" bash "$ROOT/uninstall.sh" --agent claude >"$work/bare.log" 2>&1 && ok \
+  || bad "an uninstall on a home with no ~/.claude must succeed — there is nothing to remove"
+grep -qi "INCOMPLETE" "$work/bare.log" && \
+  bad "...and must not report the run INCOMPLETE" || ok
+grep -qi "an install is writing" "$work/bare.log" && \
+  bad "...and must not blame a concurrent install for an absent directory" || ok
+[ -e "$bare_home/.claude" ] && \
+  bad "...and must not CREATE ~/.claude in order to lock it — an uninstall may not materialise the tree it removes" || ok
+
+# --- a version skip returns the RECORD's status ----------------------------------------------------
+#
+# `_adb_record_skip` returns non-zero only when it could neither publish the replacement receipt nor
+# remove the stale one, which leaves the prior `installed` rows able to authorise a removal. A
+# branch that discarded that status let an automatic self-heal report success over it.
+#
+# A STRUCTURAL PIN for the propagation, and the reason is measured rather than assumed: the only
+# portable way to make the invalidator's `rm -f` fail is a read-only parent directory, and that same
+# condition makes the LOCK's `mkdir` fail first — so the run never reaches the receipt. The
+# behavioural half that IS drivable is asserted below it.
+[ "$(grep -c '_adb_record_skip skipped-[a-z-]* .*|| skiprc=\$?' "$ROOT/install.sh")" -eq 2 ] && ok \
+  || bad "both version-skip branches must capture _adb_record_skip's status, not discard it"
+[ "$(grep -c 'return "\$skiprc"' "$ROOT/install.sh")" -eq 2 ] && ok \
+  || bad "...and both must RETURN it — capturing a status nobody returns is the same defect"
+# ...and a skip that records cleanly still succeeds, which is what stops the pin above being
+# satisfied by a branch that simply always fails.
+okskip="$work/okskip"; rm -rf "$okskip"; mkdir -p "$okskip/.claude"
+stub "2.1.100 (Claude Code)"
+HOME="$okskip" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1 && ok \
+  || bad "a below-floor skip whose receipt WAS written must still succeed"
+
 # --- a skip whose RECORD could not be written says so, on both non-writing paths -----------------
 #
 # The receipt is the entire reason a skip is retried rather than frozen into a permanent absence
@@ -1265,6 +1366,14 @@ if [ "$MUTATION" -eq 1 ]; then
       '                         | map(. as $a | select($after | present($a))) )' \
       '                         | map(. as $a | select(true)) )' \
       'container retirement emptied must be dropped from ownership'
+  check_mut 'the release is a no-op, on every path at once' \
+    '  adb_update_unlock "$_ADB_SETTINGS_LOCK"' \
+    '  :' \
+    'lock must be released on the success path'
+  check_mut 'a signal is not trapped, so the lock outlives the run' \
+    '  _adb_arm_lock_traps' \
+    '  :' \
+    'must not leave the settings lock behind'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -1350,7 +1459,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '        :   # prune-abort' \
     'must abort before replacing the receipt'
   check_mut 'the settings window is not serialized' \
-    '  if ! adb_update_lock "$slock"; then' \
+    '  if ! adb_settings_lock_take; then' \
     '  if false; then' \
     'must block the HOOK writer too'
   check_mut 'the rollback writes bytes over a symlink destination' \
@@ -1365,12 +1474,20 @@ if [ "$MUTATION" -eq 1 ]; then
     '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)" || probe=""' \
     'damaged FRAGMENT must not cost ownership'
   check_mut 'the lock is never released' \
-    '  adb_update_unlock "$slock"' \
+    '  adb_settings_lock_drop' \
     '  :' \
-    'lock must be released on the success path'
+    'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'a version skip discards the record status' \
+    '    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?' \
+    '    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt"' \
+    'must capture _adb_record_skip'"'"'s status'
+  check_mut 'a version skip captures the record status and never returns it' \
+    '    return "$skiprc"' \
+    '    return 0' \
+    'must RETURN it'
   check_mut 'the links are replaced before the settings lock is taken' \
-    '    adb_info "         If nothing else is running, remove: $slock"' \
-    '    adb_info "         If nothing else is running, remove: $slock"; adb_link_manifest "$BACKUP_DIR" <<< "$(adb_agent_manifest claude "$REPO" "$HOME")" >/dev/null 2>&1' \
+    '    adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."' \
+    '    adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."; adb_link_manifest "$BACKUP_DIR" <<< "$(adb_agent_manifest claude "$REPO" "$HOME")" >/dev/null 2>&1' \
     'must be taken BEFORE the links are replaced'
   check_mut 'the carry diagnostics are captured into the row list instead of reaching the operator' \
     '    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2' \
@@ -1410,10 +1527,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ "$ours" != "1" ]; then' \
     '  if false; then' \
     'must NOT remove another clone'
+  check_mut 'uninstall locks a home that has no Claude directory' \
+    '  if [ ! -d "$HOME/.claude" ]; then' \
+    '  if false; then' \
+    'must succeed — there is nothing to remove'
   check_mut 'uninstall never releases the settings lock' \
-    '  adb_update_unlock "$slock"' \
+    '  adb_settings_lock_drop' \
     '  :' \
-    'lock must be released after uninstall'
+    'must release the settings lock explicitly when the Claude phase ends, for the same reason'
   check_mut 'uninstall drops the ownership record when the payload is missing' \
     '  if [ ! -s "$settings" ]; then' \
     '  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then' \

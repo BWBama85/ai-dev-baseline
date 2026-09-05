@@ -625,6 +625,53 @@ adb_update_unlock() {
 # Usage: adb_settings_lock_path [home]
 adb_settings_lock_path() { printf '%s/.claude/.adb-settings.lock' "${1:-${HOME:-/root}}"; }
 
+# Take the settings lock AND arm its release against a signal, or fail.
+#
+# `adb_update_lock` plus a helper function only covers an ordinary return: a TERM or an INT while
+# the body runs exits the shell before any unlock statement is reached, and the lock left behind
+# refuses every later install and uninstall for the stale interval — longer if the recorded pid is
+# reused. `bin/baseline` already traps for exactly this on the same primitive; the installers did
+# not, which is what made a Ctrl-C during an install a lasting failure. (PR review)
+#
+# ONE HOME: install.sh and uninstall.sh both call this rather than each spelling out three traps.
+#
+# It sets EXIT, TERM and INT unconditionally and `adb_settings_lock_drop` clears all three, so a
+# caller that has its OWN EXIT trap must not use this pair — neither installer does.
+# Globals: _ADB_SETTINGS_LOCK (written)
+# Arguments: none — the lock is always this HOME's
+# Returns: 0 with the lock held and the release armed; 1 if another run holds it
+adb_settings_lock_take() {
+  _ADB_SETTINGS_LOCK="$(adb_settings_lock_path "$HOME")"
+  adb_update_lock "$_ADB_SETTINGS_LOCK" || { _ADB_SETTINGS_LOCK=""; return 1; }
+  _adb_arm_lock_traps
+  return 0
+}
+
+# ARMING IS ONE DECISION, SO IT IS ONE CALL. Measured on bash 5.3/macOS: with only EXIT armed a
+# TERM still releases the lock, and with only TERM armed it also does — each is sufficient on its
+# own. The redundancy is deliberate, because whether a fatal signal runs the EXIT trap is exactly
+# the kind of semantics that differs between this project's two CI legs, and a Ctrl-C reaches a
+# whole process group rather than the one pid a test can signal. But three mutually-redundant lines
+# means no single-line mutation of any one of them can be observed failing — the guard covering
+# them would be unfalsifiable. Keeping them behind one call is what makes the row that deletes the
+# arming able to go red. (PR review)
+_adb_arm_lock_traps() {
+  trap 'adb_settings_lock_drop' EXIT
+  trap 'adb_settings_lock_drop; exit 143' TERM
+  trap 'adb_settings_lock_drop; exit 130' INT
+}
+
+# Release the settings lock and disarm the traps. Idempotent: safe on a lock already dropped, which
+# is what lets the EXIT trap fire harmlessly after an ordinary release.
+# Globals: _ADB_SETTINGS_LOCK (read, cleared)
+adb_settings_lock_drop() {
+  [ -n "$_ADB_SETTINGS_LOCK" ] || return 0
+  adb_update_unlock "$_ADB_SETTINGS_LOCK"
+  _ADB_SETTINGS_LOCK=""
+  trap - EXIT TERM INT
+  return 0
+}
+
 # --- the non-hook settings fragment (#248, D95-D98) --------------------------------------------
 #
 # `install.sh` owns two surfaces inside ~/.claude/settings.json and they are deliberately

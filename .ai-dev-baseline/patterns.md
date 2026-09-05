@@ -521,4 +521,9 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV1` PR #463 2026-09-05 — ownership was proved by asking the write path, so a damaged fragment dropped rows whose live values still matched
 - `partial-validation` `scripts/lib/common.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV5` PR #463 2026-09-05 — a container the retirement had just deleted was still carried as ours, so an operator object later created there would be removed
 - `exit-path-asymmetry` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV8` PR #463 2026-09-05 — the rollback pre-image held dereferenced bytes, so restoring over a replaced symlink destroyed the link topology
+- `toctou` `install.sh:559` `eab0b90` `PRRT_kwDOTfywrM6ff2-y` PR #463 2026-09-05 — the lock was taken after adb_link_manifest had already replaced the root-doc link that decides ownership
+- `exit-path-asymmetry` `uninstall.sh:58` `eab0b90` `PRRT_kwDOTfywrM6ff2-0` PR #463 2026-09-05 — the settings lock was released on the success path only; several early returns left it held
+- `stale-state-trusted` `install.sh:180` `eab0b90` `PRRT_kwDOTfywrM6ff2-1` PR #463 2026-09-05 — a skip whose receipt could not be published left the previous installed record asserting ownership the run had relinquished
+- `evidence-discarded` `install.sh:454` `eab0b90` `PRRT_kwDOTfywrM6ff2-3` PR #463 2026-09-05 — every diagnostic in a function whose stdout is its return value was captured into the caller and dropped
+- `reuse-missed` `install.sh:330` `eab0b90` `self-review-r13` PR #463 2026-09-05 — the blocked-refusal path hand-rolled a copy of the shared invalidator, which disarmed the mutation row pinning it
 <!-- adb:hits:end -->

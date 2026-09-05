@@ -56,18 +56,29 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude codex gemini)
 
 uninstall_claude() {
-  # ONE RELEASE, ON EVERY EXIT. The body returns from several places — a manifest that cannot be
-  # enumerated among them — and a lock left behind refuses every later install and uninstall for
-  # the stale interval, or longer if the recorded pid is reused.
-  local slock; slock="$(adb_settings_lock_path "$HOME")"
-  if ! adb_update_lock "$slock"; then
+  # ONE RELEASE, ON EVERY EXIT — INCLUDING A SIGNAL. The body returns from several places (a
+  # manifest that cannot be enumerated among them), and `adb_settings_lock_take` arms the traps so
+  # a Ctrl-C mid-run cannot leave the lock behind either: one left behind refuses every later
+  # install and uninstall for the stale interval, or longer if the recorded pid is reused.
+  # NOTHING TO REMOVE IS NOT A FAILURE, and it is asked BEFORE the lock. The lock directory is
+  # nested inside ~/.claude, so on a home that never had it — a clean machine, or someone who
+  # installed only Codex or Gemini — `adb_update_lock` cannot create it and fails exactly as a
+  # contended lock does. That reported "an install is writing" and ended the run with
+  # "Uninstall INCOMPLETE" over a home with no Claude state at all. Creating the directory to lock
+  # it would be worse: an uninstall must not materialise the tree it exists to remove. (PR review)
+  if [ ! -d "$HOME/.claude" ]; then
+    adb_info "claude"
+    adb_info "  nothing to remove — ~/.claude does not exist"
+    return 0
+  fi
+  if ! adb_settings_lock_take; then
     adb_info "claude"
     adb_info "  WARN   an install is writing ~/.claude — nothing was removed."
-    adb_info "         If nothing else is running, remove: $slock"
+    adb_info "         If nothing else is running, remove: $(adb_settings_lock_path "$HOME")"
     return 1
   fi
   _uninstall_claude_locked; local ucrc=$?
-  adb_update_unlock "$slock"
+  adb_settings_lock_drop
   return "$ucrc"
 }
 
