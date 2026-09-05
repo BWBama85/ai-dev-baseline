@@ -526,4 +526,9 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `install.sh:180` `eab0b90` `PRRT_kwDOTfywrM6ff2-1` PR #463 2026-09-05 — a skip whose receipt could not be published left the previous installed record asserting ownership the run had relinquished
 - `evidence-discarded` `install.sh:454` `eab0b90` `PRRT_kwDOTfywrM6ff2-3` PR #463 2026-09-05 — every diagnostic in a function whose stdout is its return value was captured into the caller and dropped
 - `reuse-missed` `install.sh:330` `eab0b90` `self-review-r13` PR #463 2026-09-05 — the blocked-refusal path hand-rolled a copy of the shared invalidator, which disarmed the mutation row pinning it
+- `status-swallowed` `install.sh:222` `f32318c` `PRRT_kwDOTfywrM6fgejF` PR #463 2026-09-05 — both version-skip branches discarded _adb_record_skip's status, so a failed ownership invalidation reported success
+- `exit-path-asymmetry` `scripts/lib/common.sh:627` `f32318c` `PRRT_kwDOTfywrM6fgejH` PR #463 2026-09-05 — a helper wrapper released the lock on every return but no signal, so a Ctrl-C stranded it
+- `precondition-ordering` `uninstall.sh:58` `f32318c` `PRRT_kwDOTfywrM6fgejI` PR #463 2026-09-05 — the lock lives inside the directory being removed, so a home that never had it read as contention
+- `false-guarantee` `scripts/lib/common.sh:634` `f32318c` `self-review-r14-traps` PR #463 2026-09-05 — three mutually-redundant traps made every single-line mutation of the arming unfalsifiable
+- `platform-divergent-test` `scripts/check-settings-fragment.sh:707` `f32318c` `self-review-r14-timing` PR #463 2026-09-05 — a fixed-delay signal fixture passed unloaded and failed under selfcheck's parallel load
 <!-- adb:hits:end -->
