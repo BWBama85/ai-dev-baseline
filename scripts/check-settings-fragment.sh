@@ -222,8 +222,24 @@ for d in installed skipped-optout skipped-below-floor skipped-unprobeable; do
   : | adb_claude_settings_receipt_render "$d" 1.2.3 "$FLOOR" > "$work/d-$d"
   [ "$(adb_claude_settings_disposition "$work/d-$d")" = "$d" ] && ok || bad "disposition '$d' must round-trip through the receipt"
 done
+# AN UNRECOGNISED WORD IS DAMAGED, NOT `none`. This used to require it read as `none`, on the
+# reasoning that a doctored value must never be trusted verbatim — which is right, and `none` is
+# not the way to say it. `none` means "nobody has written a receipt", and every reader treats it as
+# zero owned rows: a receipt carrying leaf rows under a damaged disposition therefore had those
+# rows silently discarded, and uninstall deleted the file while every key stayed installed. The
+# refusal below is strictly stronger than the old rule — it still does not trust the word, and it
+# no longer answers a question it cannot answer. (PR review)
 printf 'disposition wat\n' > "$work/d-bogus"
-[ "$(adb_claude_settings_disposition "$work/d-bogus")" = none ] && ok || bad "an unrecognised disposition word must read as 'none', never be trusted verbatim"
+adb_claude_settings_disposition "$work/d-bogus" >/dev/null 2>&1 && \
+  bad "an unrecognised disposition word must be REFUSED, not answered — 'none' means no receipt, and every reader turns that into zero owned rows" || ok
+[ -z "$(adb_claude_settings_disposition "$work/d-bogus" 2>/dev/null)" ] && ok \
+  || bad "...and it must print nothing, never the unrecognised word verbatim"
+printf '# a receipt with rows but no disposition line\nleaf%s["sandbox","enabled"]%strue\n' "$ADB_TAB" "$ADB_TAB" > "$work/d-nodisp"
+adb_claude_settings_disposition "$work/d-nodisp" >/dev/null 2>&1 && \
+  bad "a receipt carrying rows but no disposition line must be refused — answering 'none' discards the rows it carries" || ok
+: > "$work/d-empty"
+[ "$(adb_claude_settings_disposition "$work/d-empty")" = none ] && ok \
+  || bad "an EMPTY receipt is absent, not damaged — it carries no rows, so there is nothing to strand and a fresh install simply re-applies"
 [ "$(adb_claude_settings_disposition "$work/does-not-exist")" = none ] && ok || bad "a missing receipt must read as 'none'"
 
 # Ownership OUTLIVES a pause: --no-sandbox carries the rows forward, so uninstall still knows what
@@ -788,6 +804,141 @@ HOME="$unread" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 && ok \
   || bad "the retry must succeed once the receipt is readable"
 jq -e '.sandbox == null' "$unread/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and must then remove the keys it held on to"
+
+# --- an unreadable receipt is refused by the ROW reader too, not only by the disposition ----------
+#
+# `_adb_owned_rows` answered zero rows for a receipt it could not open, and zero rows is a
+# legitimate answer — so an established opt-out or version skip published a readable,
+# OWNERSHIP-FREE receipt over it while every sandbox key stayed installed. Measured before the fix:
+# 4 leaf rows became 0 and the keys became permanently unremovable.
+ur="$work/unreadrows"; rm -rf "$ur"; mkdir -p "$ur/.claude"
+echo '{"model":"opus"}' > "$ur/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$ur" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+ur_before="$(grep -c "^leaf$ADB_TAB" "$ur/.claude/.adb-settings-owned")"
+[ "$ur_before" -gt 0 ] && ok || bad "precondition: the fixture must have owned rows to lose"
+chmod 000 "$ur/.claude/.adb-settings-owned"
+HOME="$ur" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/ur.log" 2>&1 && \
+  bad "an opt-out over a receipt that could not be READ must fail, not publish an ownership-free replacement" || ok
+stub "2.1.100 (Claude Code)"
+HOME="$ur" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/ur2.log" 2>&1 && \
+  bad "a version skip over an unreadable receipt must fail for the same reason" || ok
+chmod 600 "$ur/.claude/.adb-settings-owned"
+[ "$(grep -c "^leaf$ADB_TAB" "$ur/.claude/.adb-settings-owned")" -eq "$ur_before" ] && ok \
+  || bad "...and every owned row must survive both attempts"
+# ...while a receipt that is merely ABSENT, or a path occupied by something that is not a file, is
+# zero rows and goes on to fail at the publish and SAY so. Only a regular file can hold rows.
+
+# --- a damaged disposition is not `none` either ---------------------------------------------------
+#
+# The unreadable case had a twin: a receipt that reads fine but whose `disposition` line is missing
+# or unrecognised. `none` means "nobody has written a receipt", and every reader turns that into
+# zero owned rows — so uninstall pruned nothing, published the unchanged settings, deleted the last
+# record of which keys were ours and reported success.
+dd="$work/damaged"; rm -rf "$dd"; mkdir -p "$dd/.claude"
+echo '{"model":"opus"}' > "$dd/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$dd" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+grep -v '^disposition' "$dd/.claude/.adb-settings-owned" > "$work/dd.tmp" && mv "$work/dd.tmp" "$dd/.claude/.adb-settings-owned"
+HOME="$dd" bash "$ROOT/uninstall.sh" --agent claude >"$work/dd.log" 2>&1 && \
+  bad "an uninstall against a receipt whose disposition is damaged must FAIL, not report success" || ok
+[ -f "$dd/.claude/.adb-settings-owned" ] && ok \
+  || bad "...and must KEEP it — its leaf rows are the only record of which keys are ours"
+jq -e '.sandbox.enabled == true' "$dd/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and must leave the keys it could not prove ownership of alone"
+# DAMAGED AND UNREADABLE ARE DIFFERENT REMEDIES, so they are different messages. Sending an
+# operator to fix permissions on a file that is already readable wastes the one hint they get.
+grep -qi "disposition" "$work/dd.log" && ok \
+  || bad "...and must name the damaged disposition line, not send the operator to fix permissions"
+grep -qi "could not be READ" "$work/dd.log" && \
+  bad "...and must not report a readable-but-damaged receipt as unreadable" || ok
+grep -qi "could not be READ" "$work/unread.log" && ok \
+  || bad "...while a genuinely unreadable one must still say exactly that"
+
+# --- the lock is the OWNER FILE, so a write that fails is an acquisition that failed --------------
+#
+# `mkdir` succeeded and the owner write did not, and the unchecked redirection returned success:
+# the run proceeded believing it held the lock, while `adb_update_unlock` found no token matching
+# its own and deliberately left the DIRECTORY behind. Every later settings operation was then
+# refused until the stale interval elapsed. A full filesystem, a quota or an ACL is enough; the
+# fixture uses a umask that makes the new directory unwritable, which needs no privileges.
+lo="$work/lockowner"; rm -rf "$lo"; mkdir -p "$lo"
+( umask 777; _adb_take_lock "$lo/lk" ) 2>/dev/null && \
+  bad "taking the lock must FAIL when its owner file cannot be written — the token is the lock" || ok
+[ -e "$lo/lk" ] && \
+  bad "...and must not leave the directory behind: it can never be released, so it refuses every later run" || ok
+
+# --- a signal may not land BETWEEN the two publications -------------------------------------------
+#
+# The settings and the receipt are published separately. The armed handlers release the lock and
+# exit immediately — right everywhere else, and here it would leave the new sandbox values
+# installed with no ownership record AND skip the rollback, which is worse than the interruption it
+# handles. Deferred, not ignored: the signal is honoured the moment the pair is complete.
+sd="$work/deferhome"; rm -rf "$sd"; mkdir -p "$sd/.claude"
+rm -f "$work/defer.after" "$work/defer.past"
+HOME="$sd" bash -c '
+  . "'"$ROOT"'/scripts/lib/common.sh"
+  adb_settings_lock_take || exit 9
+  adb_settings_lock_defer_signals
+  kill -TERM $$
+  : > "'"$work"'/defer.after"
+  adb_settings_lock_resume_signals
+  : > "'"$work"'/defer.past"
+'
+sd_rc=$?
+[ -f "$work/defer.after" ] && ok \
+  || bad "a signal arriving mid-transaction must be DEFERRED — the second publication has to complete"
+[ -f "$work/defer.past" ] && \
+  bad "...and must then be honoured, not swallowed: nothing after the resume may run" || ok
+[ "$sd_rc" -eq 143 ] && ok || bad "...and must exit with the signal's own status (got $sd_rc)"
+[ -e "$(adb_settings_lock_path "$sd")" ] && \
+  bad "...and must still release the lock on its way out" || ok
+
+# --- a refused sandbox install is not a "repair" ---------------------------------------------------
+#
+# When the settings were what was pending and the operator already owns one of the shipped keys,
+# the all-or-nothing contract makes `install.sh` write `skipped-blocked` and return 0 — nothing
+# applied. `bin/baseline` printed "repaired." and exited 6, and `currency-lib.sh` renders 6 as
+# "repaired the installed links" while suppressing the installer's own output, so the refusal was
+# invisible in the automatic SessionStart flow.
+#
+# STRUCTURAL PINS, and named as such: driving the `current)` arm end to end needs a git clone, a
+# network classification and the update lock, which is the same reason the `pending()` harness above
+# sources the predicate rather than running the updater. What IS driven behaviourally is the
+# premise — that a blocked install really does return 0 with `skipped-blocked` recorded.
+blk="$work/blocked-repair"; rm -rf "$blk"; mkdir -p "$blk/.claude"
+echo '{"sandbox":{"enabled":false}}' > "$blk/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$blk" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1 && ok \
+  || bad "premise: a blocked sandbox install must still return 0 — that is what makes the caller's success line wrong"
+[ "$(adb_claude_settings_disposition "$blk/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
+  || bad "premise: and must record skipped-blocked"
+jq -e '.sandbox.enabled == false' "$blk/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "premise: and must have applied nothing"
+grep -qF 'adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-blocked' "$ROOT/bin/baseline" && ok \
+  || bad "bin/baseline must re-read the receipt after self-heal — a successful installer run is not the same as a repair"
+grep -qE '^\s*\[ "\$LINKS_OK" -eq 1 \] && exit 7' "$ROOT/bin/baseline" && ok \
+  || bad "...and must exit with a code distinct from 6 when nothing was actually applied"
+grep -qE '^\s*7\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
+  || bad "currency-lib.sh must classify that code explicitly — falling through to the catch-all reports it as a failure it is not"
+awk '/^    7\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit}' "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
+  || bad "...and must report it as REFUSED, never as repaired or silent — a security-relevant omission may not read as success"
+
+# --- the publish transaction defers signals, and resumes on EVERY way out --------------------------
+#
+# One deferral, and a resume on each exit from the pair — the rollback included. A resume placed at
+# the top of the failure branch would let a pending Ctrl-C exit before the settings were put back,
+# which is the half-applied state the rollback exists to prevent.
+[ "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/install.sh")" -eq 1 ] && ok \
+  || bad "install.sh must defer signals exactly once, around the two publications"
+[ "$(grep -c 'adb_settings_lock_resume_signals' "$ROOT/install.sh")" -ge 5 ] && ok \
+  || bad "...and must resume on every exit from that transaction, the rollback paths included"
+# THE CONSTRAINT, stated as itself: the receipt-publish failure branch must not resume on its FIRST
+# line. Everything after that line is the rollback, and a pending signal honoured before it runs
+# leaves exactly the half-applied state the rollback exists to undo.
+awk '/if ! adb_publish_json "\$rtmp" "\$receipt"; then/{getline; if ($0 ~ /adb_settings_lock_resume_signals/) {print "early"; exit}}' \
+  "$ROOT/install.sh" | grep -q early && \
+  bad "the rollback runs INSIDE the transaction — resuming at the top of the failure branch lets a pending signal exit before the settings are put back" || ok
 
 # --- an opt-out that could not be RECORDED is a failed install ------------------------------------
 #
@@ -1489,12 +1640,32 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_update_unlock "$_ADB_SETTINGS_LOCK"' \
     '  :' \
     'lock must be released on the success path'
-  check_mut 'an unreadable receipt reads as an absent one' \
+  check_mut 'a damaged disposition reads as an absent receipt' \
+    '  [ "$grc" -eq 0 ] || return 21' \
+    '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
+    'must FAIL, not report success'
+  check_mut 'an unrecognised disposition word is answered instead of refused' \
+    '    *) return 21 ;;' \
+    '    *) printf '"'"'none'"'"' ;;' \
+    'must be REFUSED, not answered'
+  check_mut 'the lock owner write is unchecked again' \
+    '  if ! ( printf '"'"'%s\n'"'"' "$token" > "$lock/owner" ) 2>/dev/null; then' \
+    '  if false; then' \
+    'the token is the lock'
+  check_mut 'a signal is not deferred across the two publications' \
+    "  trap '_ADB_SIGNAL_PENDING=143' TERM" \
+    '  :' \
+    'must be DEFERRED'
+  check_mut 'a deferred signal is swallowed rather than honoured' \
+    '  [ -n "$pending" ] || return 0' \
+    '  return 0' \
+    'must then be honoured, not swallowed'
+  check_mut 'an unreadable receipt is reported as a damaged one' \
     '  [ "$grc" -le 1 ] || return 20' \
     '  :' \
-    'must FAIL, not report success'
+    'must still say exactly that'
   check_mut 'the merge cannot tell an unreadable receipt from unparseable settings' \
-    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 20' \
+    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?' \
     '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1' \
     'must not blame settings.json'
   check_mut 'the live-leaf predicate answers intact for a divergence' \
@@ -1608,6 +1779,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'the row reader answers zero rows for a receipt it could not read' \
+    '  [ "$grc" -le 1 ] || return 20' \
+    '  :' \
+    'must fail, not publish an ownership-free replacement'
+  check_mut 'the opt-out publishes over a receipt it could not read' \
+    '    if [ "$ocrc" -ne 0 ]; then' \
+    '    if false; then' \
+    'must fail, not publish an ownership-free replacement'
+  check_mut 'a version skip publishes over a receipt it could not read' \
+    '  if [ "$crc" -ne 0 ]; then' \
+    '  if false; then' \
+    'version skip over an unreadable receipt must fail'
   check_mut 'an unrecorded opt-out still reports a successful install' \
     '      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured" || true' \
     '      return 0' \
@@ -1677,6 +1860,10 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
+  check_mut 'a blocked sandbox install is reported as a repair' \
+    '      [ "$LINKS_OK" -eq 1 ] && exit 7' \
+    '      :' \
+    'must exit with a code distinct from 6'
   check_mut 'currency stops asking the live file once the digest matches' \
     '      [ $? -eq 1 ] && return 0' \
     '      [ $? -eq 99 ] && return 0' \

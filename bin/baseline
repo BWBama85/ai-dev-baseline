@@ -664,6 +664,20 @@ case "$STATUS" in
       echo "baseline: an installed path is broken though up to date — repairing …"
     fi
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
+    # A SUCCESSFUL INSTALLER RUN IS NOT THE SAME AS A REPAIR. When the sandbox settings were the
+    # thing pending and the operator already owns one of the shipped keys, the all-or-nothing
+    # contract makes `install.sh` write `skipped-blocked` and return 0 — nothing was applied, and
+    # printing "repaired" turned a security-relevant refusal into a success line. It is invisible
+    # in the automatic SessionStart flow, which suppresses the installer's own output and renders
+    # exit 6 as "repaired the installed links". Ask the receipt what actually happened rather than
+    # inferring it from the installer's status. (PR review)
+    if [ "$SETTINGS_PENDING" -eq 1 ] \
+       && [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-blocked ]; then
+      echo "baseline: the least-privilege sandbox settings were NOT applied — you already own one of" >&2
+      echo "          the keys they ship, so the whole policy was refused (#248). Run ./install.sh in" >&2
+      echo "          $SRC to see which, then remove or rename those keys and re-run it." >&2
+      [ "$LINKS_OK" -eq 1 ] && exit 7
+    fi
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
     # infers "something changed" from the HEAD delta would miss it entirely. The SessionStart hook

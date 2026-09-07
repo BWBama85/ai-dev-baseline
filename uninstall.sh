@@ -207,9 +207,17 @@ unwire_settings() {
   local mrc
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)"; mrc=$?
   if [ "$mrc" -eq 20 ]; then
-    adb_info "  WARN   $receipt exists but could not be read — sandbox settings NOT removed and the"
+    adb_info "  WARN   $receipt exists but could not be READ — sandbox settings NOT removed and the"
     adb_info "         ownership record was KEPT. It is the only thing that can prove which keys are"
     adb_info "         ours; fix its permissions and re-run, or the settings are stranded for good."
+    return 1
+  elif [ "$mrc" -eq 21 ]; then
+    # DAMAGED, NOT UNREADABLE, and the remedy is different: no permission change will help. The
+    # rows are still there and still name our keys, so the record is kept and the operator is told
+    # what to repair rather than being sent to chmod something that is already readable.
+    adb_info "  WARN   $receipt is readable but its \`disposition\` line is missing or unrecognised, so"
+    adb_info "         it cannot be classified — sandbox settings NOT removed and the record was KEPT."
+    adb_info "         Its \`leaf\` rows still name the keys we own; repair that line and re-run."
     return 1
   elif [ "$mrc" -ne 0 ]; then
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox settings NOT removed; edit it by hand"

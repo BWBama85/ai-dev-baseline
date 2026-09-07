@@ -170,8 +170,14 @@ _adb_wire_settings_locked() {
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
     # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but only what it
     # can still PROVE — the shared rule, so the opt-out and the version skips cannot disagree.
-    local optout_rows
-    optout_rows="$(_adb_carry_rows "$receipt" "$settings" "$payload")"
+    local optout_rows ocrc
+    optout_rows="$(_adb_carry_rows "$receipt" "$settings" "$payload")"; ocrc=$?
+    if [ "$ocrc" -ne 0 ]; then
+      adb_info "  WARN   $receipt exists but could not be read, so the opt-out was NOT recorded and"
+      adb_info "         the existing ownership record was left exactly as it is. Publishing over it"
+      adb_info "         would replace it with an ownership-free one while the keys stay installed."
+      return 1
+    fi
     if ! { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$optout_rows"; } \
          | adb_claude_settings_receipt_render skipped-optout "-" "$floor" \
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
@@ -200,7 +206,14 @@ _adb_wire_settings_locked() {
     # uninstall from here that also lacks jq removes that link before failing: the retry it advises
     # then rejects the receipt as somebody else's and strands the settings for good.
     if [ -f "$receipt" ]; then
-      if { adb_claude_settings_source_row "$REPO"; _adb_owned_rows "$receipt"; } \
+      local njrows njrc
+      njrows="$(_adb_owned_rows "$receipt")"; njrc=$?
+      if [ "$njrc" -ne 0 ]; then
+        adb_info "  WARN   $receipt could not be read, so its provenance was NOT refreshed and the"
+        adb_info "         record was left as it is. Install jq and re-run once it is readable."
+        return 1
+      fi
+      if { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$njrows"; } \
          | adb_claude_settings_receipt_render \
              "$(adb_claude_settings_disposition "$receipt")" \
              "-" "$floor" \
@@ -407,18 +420,33 @@ _adb_wire_settings_locked() {
       return 1
     fi
   fi
-  adb_publish_json "$tmp" "$settings" || { rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"; return 1; }
+  # THE TWO PUBLICATIONS ARE ONE TRANSACTION, so a signal may not land between them. The armed
+  # handlers release the lock and exit immediately — correct everywhere else, and here it would
+  # leave the new sandbox values installed with no ownership record and skip the rollback below,
+  # which is a worse outcome than the interruption it exists to handle. Deferred, not ignored: a
+  # Ctrl-C is honoured the moment the pair is complete. (PR review)
+  adb_settings_lock_defer_signals
+  if ! adb_publish_json "$tmp" "$settings"; then
+    rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"
+    adb_settings_lock_resume_signals
+    return 1
+  fi
   if ! adb_publish_json "$rtmp" "$receipt"; then
+    # THE ROLLBACK IS INSIDE THE TRANSACTION, so signals stay deferred through it. Resuming at the
+    # top of this branch would let a pending Ctrl-C exit before the settings were put back — the
+    # exact half-applied state the rollback exists to prevent.
     # A SYMLINK IS RESTORED AS A SYMLINK, not as the bytes it pointed at.
     if [ -n "$was_link" ] && [ -n "$link_target" ]; then
       rm -f "$pre"
       if rm -f "$settings" && ln -s "$link_target" "$settings"; then
         adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK"
         adb_info "         and $settings restored as the symlink it was."
+        adb_settings_lock_resume_signals
         return 1
       fi
       adb_info "  ERROR  $receipt could not be published AND $settings could not be restored to the"
       adb_info "         symlink it was. Re-create it by hand; it pointed at: $link_target"
+      adb_settings_lock_resume_signals
       return 1
     fi
     if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \
@@ -431,8 +459,10 @@ _adb_wire_settings_locked() {
       adb_info "         The sandbox keys are applied with no ownership record: uninstall cannot"
       adb_info "         remove them. Remove the \`sandbox\` keys from $settings by hand, then re-run."
     fi
+    adb_settings_lock_resume_signals
     return 1
   fi
+  adb_settings_lock_resume_signals
   rm -f "$pre"
 
   # THE HEADLINE CANNOT OVERSTATE ANY MORE, and that is the contract doing the work rather than a
@@ -465,8 +495,11 @@ _adb_wire_settings_locked() {
 # safety-relevant states this function exists to decide.
 # Usage: _adb_carry_rows <receipt> <settings> <payload>
 _adb_carry_rows() {
-  local receipt="$1" live="$2" frag="$3" rows probe
-  rows="$(_adb_owned_rows "$receipt")"
+  local receipt="$1" live="$2" frag="$3" rows probe orc
+  # 20 PROPAGATES. "No rows" and "could not read the rows" are the same string and opposite facts,
+  # and the callers publish a replacement receipt on the strength of it.
+  rows="$(_adb_owned_rows "$receipt")"; orc=$?
+  [ "$orc" -eq 0 ] || return "$orc"
   [ -n "$rows" ] || return 0
   if ! command -v jq >/dev/null 2>&1; then
     adb_info "  sandbox  ownership carried UNVERIFIED (no jq): if you have changed these keys by" >&2
@@ -516,7 +549,26 @@ _adb_carry_rows() {
 # PROVENANCE IS NOT CARRIED. `source` names the clone that LAST WROTE the receipt, and every render
 # appends the current one — carrying it verbatim let a receipt keep naming clone A after clone B
 # took the install over, so B's own uninstall would later refuse B's settings as somebody else's.
-_adb_owned_rows() { grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null || true; }
+# Usage: _adb_owned_rows <receipt>  -> the rows on stdout; 20 when the receipt could not be READ.
+#
+# `|| true` turned a read failure into zero rows, and zero rows is a legitimate answer — so an
+# unreadable receipt (mode 000, an ACL) let an established opt-out or version skip publish a
+# readable, OWNERSHIP-FREE replacement over it while every sandbox key stayed installed. Measured
+# before the fix: 4 leaf rows became 0 and the keys became permanently unremovable. grep's exit 1
+# is "no matching line" and is a real answer; 2 and above are not. (PR review)
+_adb_owned_rows() {
+  local rows grc
+  # ABSENT IS ZERO ROWS; UNREADABLE IS A REFUSAL. grep exits 2 for a missing file, for a directory
+  # and for a file it cannot open, and only the last of those has rows to lose — a receipt's rows
+  # can only live in a regular file. So `-f` is the test: no file, or a path occupied by something
+  # that is not one, is zero rows and the caller goes on to fail at the publish and SAY so; a
+  # regular file that will not open is the strand risk and refuses here.
+  [ -f "$1" ] || return 0
+  rows="$(grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null)"; grc=$?
+  [ "$grc" -le 1 ] || return 20
+  [ -n "$rows" ] && printf '%s\n' "$rows"
+  return 0
+}
 
 _adb_record_skip() {
   local disposition="$1" version="$2" floor="$3" receipt="$4" carried digest
@@ -525,7 +577,13 @@ _adb_record_skip() {
   # replace an `installed` receipt with an empty one while the sandbox values stay in the file:
   # uninstall could then never remove them, and the next install would read them as the operator's
   # and record an empty ownership set permanently. (PR review)
-  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"
+  local crc
+  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"; crc=$?
+  if [ "$crc" -ne 0 ]; then
+    adb_info "  WARN   $receipt exists but could not be read — the skip stands, and the existing"
+    adb_info "         ownership record was KEPT rather than replaced with an ownership-free one."
+    return 1
+  fi
   # THE PRIOR DIGEST IS CARRIED TOO, for the same reason as the rows: a skip applied no payload, so
   # it must not claim to have applied THIS one — but neither may it erase the record of the payload
   # an earlier install really did apply, which is what `pending` compares against.

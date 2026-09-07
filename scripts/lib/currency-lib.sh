@@ -34,6 +34,8 @@
 #   silent    nothing happened worth reporting (already current)      message empty
 #   updated   the clone advanced; installed payload changed
 #   repaired  same HEAD, but a broken installed link was restored
+#             (a same-HEAD run whose only pending item was the sandbox settings, and whose
+#              settings the installer REFUSED, reports `refused` instead — nothing was applied)
 #   behind    notify mode: the clone IS behind and was left alone
 #   refused   `baseline` refused for safety; message names the clone state
 #   offline   the remote was unreachable / unresolvable
@@ -363,6 +365,15 @@ cmd_check() {
       # A same-HEAD repair: already current, but a broken installed link was restored. HEAD did
       # not move, so a caller inferring "something changed" from the delta would miss it entirely.
       _adb_cu_emit repaired "repaired the installed links (clone already current)."
+      ;;
+    7)
+      # The links were already current and the SANDBOX SETTINGS were what was pending — and the
+      # installer refused them because the operator already owns one of the shipped keys. Nothing
+      # was applied, so this is neither `repaired` nor `silent`; reporting either would hide a
+      # security-relevant refusal behind a success line, which is the whole reason this arm exists
+      # rather than letting 7 fall through to `failed` and be described as a failure it is not.
+      _adb_cu_emit refused \
+        "the least-privilege sandbox settings were refused — you already own one of the keys they ship; run './install.sh' in the install-source to see which."
       ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \

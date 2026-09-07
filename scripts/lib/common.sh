@@ -573,7 +573,17 @@ _adb_take_lock() {
   local lock="$1" token
   mkdir "$lock" 2>/dev/null || return 1
   token="$$ $(date +%s 2>/dev/null)"
-  printf '%s\n' "$token" > "$lock/owner" 2>/dev/null
+  # THE OWNER FILE IS THE LOCK, so a write that fails is an acquisition that failed. Unchecked,
+  # this returned success with no token on disk: `adb_update_unlock` then found nothing matching
+  # its token and deliberately left the DIRECTORY behind, so every later settings operation was
+  # refused until the stale interval elapsed or somebody removed it by hand. A full filesystem, a
+  # quota or an ACL is enough. The directory is empty at this point, so `rmdir` puts the tree back
+  # exactly as it was. (PR review)
+  if ! ( printf '%s\n' "$token" > "$lock/owner" ) 2>/dev/null; then
+    rm -f "$lock/owner" 2>/dev/null
+    rmdir "$lock" 2>/dev/null
+    return 1
+  fi
   _ADB_LOCK_TOKEN="$token"
   return 0
 }
@@ -659,6 +669,35 @@ _adb_arm_lock_traps() {
   trap 'adb_settings_lock_drop' EXIT
   trap 'adb_settings_lock_drop; exit 143' TERM
   trap 'adb_settings_lock_drop; exit 130' INT
+}
+
+# Hold a signal until the caller says it is safe to act on it, then act on it.
+#
+# The armed handlers release the lock and exit IMMEDIATELY, which is right almost everywhere and
+# wrong across the settings write: that is two publications — the settings, then the receipt — and
+# an exit between them leaves the new sandbox values installed with no ownership record, so a later
+# install reads them as operator-owned and uninstall cannot remove them. Worse than the crash it
+# was protecting against, because it is silent.
+#
+# Deferring rather than ignoring: the signal is honoured the moment the pair is complete, so a
+# Ctrl-C still works, it just lands on a boundary the file system can survive. `_ADB_SIGNAL_PENDING`
+# carries the status the handler would have exited with. (PR review)
+# Globals: _ADB_SIGNAL_PENDING (written)
+adb_settings_lock_defer_signals() {
+  _ADB_SIGNAL_PENDING=""
+  trap '_ADB_SIGNAL_PENDING=143' TERM
+  trap '_ADB_SIGNAL_PENDING=130' INT
+}
+
+# Re-arm the immediate handlers and honour anything that arrived while they were deferred.
+# Globals: _ADB_SIGNAL_PENDING (read, cleared)
+adb_settings_lock_resume_signals() {
+  local pending="$_ADB_SIGNAL_PENDING"
+  _ADB_SIGNAL_PENDING=""
+  _adb_arm_lock_traps
+  [ -n "$pending" ] || return 0
+  adb_settings_lock_drop
+  exit "$pending"
 }
 
 # Release the settings lock and disarm the traps. Idempotent: safe on a lock already dropped, which
@@ -797,15 +836,26 @@ adb_claude_settings_disposition() {
   # DELETED the receipt and reported success — every sandbox key left installed with no record able
   # to remove them, permanently. `status-swallowed`. Grep's exit 2 is the read error, distinct from
   # exit 1 (a readable file with no disposition line, which really is `none`). (PR review)
+  # AN EMPTY FILE IS ABSENT, NOT DAMAGED, and the difference is what there is to lose: a receipt
+  # with no bytes carries no ownership rows, so treating it as `none` strands nothing and a fresh
+  # install simply re-applies. The damaged case below is the opposite — rows present, disposition
+  # missing or unrecognised — and answering `none` there is what deletes them.
+  [ -s "$receipt" ] || { printf 'none'; return 0; }
   line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)"; grc=$?
   [ "$grc" -le 1 ] || return 20
-  [ "$grc" -eq 0 ] || { printf 'none'; return 0; }
+  # A RECEIPT THAT EXISTS BUT CANNOT BE CLASSIFIED IS DAMAGED, NOT ABSENT. `none` means "nobody has
+  # written one", and mapping a missing or unrecognised `disposition` line onto it had the same
+  # ending as the unreadable case: the row readers answered `[]`, uninstall pruned nothing,
+  # published the unchanged settings, deleted the last record of which keys were ours and reported
+  # success. 21, distinct from 20, because "damaged" and "unreadable" have different remedies —
+  # every caller refuses on either. (PR review)
+  [ "$grc" -eq 0 ] || return 21
   line="${line#disposition}"
   line="${line# }"
   line="${line%% *}"
   case "$line" in
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) printf '%s' "$line" ;;
-    *) printf 'none' ;;
+    *) return 21 ;;
   esac
 }
 
@@ -956,7 +1006,8 @@ adb_claude_settings_receipt_containers() {
 
 _adb_claude_settings_created_json() {
   local receipt="$1" line out=""
-  local _disp; _disp="$(adb_claude_settings_disposition "$receipt")" || return 20
+  local _disp _drc; _disp="$(adb_claude_settings_disposition "$receipt")"; _drc=$?
+  [ "$_drc" -eq 0 ] || return "$_drc"
   case "$_disp" in
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership
     *) printf '[]'; return 0 ;;
@@ -1020,8 +1071,8 @@ adb_claude_settings_merge() {
   # 20, NOT 1: an unreadable RECEIPT and an unparseable SETTINGS file are different failures with
   # different remedies, and one message for both sent the operator to edit the wrong file on the
   # only path that can strand keys.
-  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 20
-  created="$(_adb_claude_settings_created_json "$receipt")" || return 20
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?
+  created="$(_adb_claude_settings_created_json "$receipt")" || return $?
   if [ -n "$work_empty" ]; then
     payload="$work_empty"
   elif [ ! -s "$payload" ]; then
@@ -1193,7 +1244,8 @@ _adb_claude_settings_owned_json() {
   # What actually protects is the pair of rules the merge applies to every row: it is validated
   # (a non-empty array of string components, and a parseable value), and a leaf is removed ONLY
   # while its live value still equals the recorded one.
-  local _disp; _disp="$(adb_claude_settings_disposition "$receipt")" || return 20
+  local _disp _drc; _disp="$(adb_claude_settings_disposition "$receipt")"; _drc=$?
+  [ "$_drc" -eq 0 ] || return "$_drc"
   case "$_disp" in
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership
     *) printf '[]'; return 0 ;;
