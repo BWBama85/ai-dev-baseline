@@ -78,7 +78,7 @@ uninstall_claude() {
     return 1
   fi
   _uninstall_claude_locked; local ucrc=$?
-  adb_settings_lock_drop
+  adb_settings_lock_drop || ucrc=1
   return "$ucrc"
 }
 
@@ -171,19 +171,29 @@ unwire_settings() {
   # SOME clone installed these keys — and a second clone's install replaced both the links and the
   # receipt. Leaving them is the same answer `adb_unlink_if_ours` gives for a link pointing
   # elsewhere, and it is said rather than done in silence.
-  if [ "$ours" != "1" ]; then
-    # THE LINK IS NOT THE ONLY PROOF, and by now it may be gone: `adb_unlink_manifest` runs before
-    # this, so a cleanup that could not complete (no jq) leaves a receipt whose live proof has been
-    # removed — and the retry this function tells the operator to make would then refuse its own
-    # settings as another clone's. The recorded source is the durable half.
-    local recorded
-    recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
-    if [ -n "$recorded" ] && [ "$recorded" = "$REPO" ]; then
-      adb_info "  sandbox  the root-doc link is gone, but this receipt records this clone as its source — proceeding"
-    else
-      adb_info "  sandbox  left alone — ~/.claude is installed from another clone, so its settings are not ours to remove"
+  # WHOSE RECEIPT IS THIS? The recorded source answers it whenever there IS one; the link is the
+  # fallback for a legacy receipt that carries none.
+  #
+  # Asking the link FIRST was wrong in the failed-takeover state, and that state is reachable: clone
+  # B replaces the root-doc link and then fails before refreshing the receipt — the no-jq provenance
+  # path does exactly this. The link then says "ours", the source row still says A, and B's
+  # uninstall consumed and deleted settings whose record explicitly named somebody else. A present
+  # source row is evidence about the receipt itself; the link is evidence about the tree around it,
+  # and only one of those is what a receipt means. (PR review)
+  local recorded
+  recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
+  if [ -n "$recorded" ]; then
+    if [ "$recorded" != "$REPO" ]; then
+      adb_info "  sandbox  left alone — this ownership record names another clone as its source, so"
+      adb_info "           its settings are not ours to remove. Uninstall from: $recorded"
       return 0
     fi
+    [ "$ours" = "1" ] || adb_info "  sandbox  the root-doc link is gone, but this receipt records this clone as its source — proceeding"
+  elif [ "$ours" != "1" ]; then
+    # NO SOURCE ROW AT ALL — a receipt written before provenance was recorded. The link is the only
+    # evidence there is, and it says this is not ours.
+    adb_info "  sandbox  left alone — ~/.claude is installed from another clone, so its settings are not ours to remove"
+    return 0
   fi
   if ! command -v jq >/dev/null 2>&1; then
     adb_info "  WARN   jq not found — sandbox settings left in ~/.claude/settings.json; $receipt lists them."
@@ -250,19 +260,26 @@ unwire_settings() {
   # read-only parent) blocks this too, and it is restored immediately so the state is unchanged on
   # the way to the publish. That leaves a window rather than a transaction, but the window is now
   # microseconds of rename rather than the whole settings rewrite. (PR review)
+  # THE PROBE IS ITSELF TWO RENAMES, so the deferral opens BEFORE it rather than after. A signal
+  # between the move-aside and the restore left the receipt stranded at the `.probe` path: the next
+  # install would see no ownership record, read the still-installed values as the operator's, and
+  # publish an ownership-free refusal over the evidence. Guarding the write it protects while
+  # leaving its own two renames exposed was the same window one step earlier. (PR review)
+  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal
   local _rprobe="$receipt.adb.$$.probe"
   if ! mv "$receipt" "$_rprobe" 2>/dev/null; then
     adb_info "  WARN   $receipt cannot be removed, so the sandbox settings were NOT touched."
     adb_info "         Removing them first would leave this record claiming values that are gone,"
     adb_info "         and a retry would then delete anything you recreated under those keys."
+    adb_settings_lock_resume_signals
     return 1
   fi
   if ! mv "$_rprobe" "$receipt" 2>/dev/null; then
     adb_info "  ERROR  $receipt was moved aside to test removability and could not be put back."
     adb_info "         It is at $_rprobe — restore it by hand before re-running; nothing else changed."
+    adb_settings_lock_resume_signals
     return 1
   fi
-  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal
   if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then
     names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"

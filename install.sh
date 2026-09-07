@@ -541,7 +541,18 @@ _adb_carry_rows() {
   # the question directly and reads no payload at all: a recorded leaf that still carries its
   # recorded value is `pruned`, one that has changed is `kept`, and one that has gone is neither.
   # So ownership holds exactly while every recorded row comes back as `pruned`.
-  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)" || probe=""
+  # THE MERGE HAS THREE ANSWERS HERE, NOT TWO. 20 and 21 mean the RECEIPT could not be read or
+  # could not be classified — the rows are still there and still name our keys — while any other
+  # failure means the live settings would not parse, which is an inability to prove ownership and
+  # correctly relinquishes. Folding the first two into `probe=""` turned a damaged receipt into a
+  # successful relinquishment, so the caller published an ownership-free skip over it while every
+  # matching leaf stayed installed. Refuse instead, and let the caller keep the old record.
+  local mrc
+  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)"; mrc=$?
+  if [ "$mrc" -eq 20 ] || [ "$mrc" -eq 21 ]; then
+    return "$mrc"
+  fi
+  [ "$mrc" -eq 0 ] || probe=""
   if [ -z "$probe" ]; then
     adb_info "  sandbox  ownership relinquished — the live settings could not be parsed." >&2
     return 0
@@ -672,7 +683,11 @@ install_claude() {
     return 1
   fi
   _install_claude_locked; local icrc=$?
-  adb_settings_lock_drop
+  # A LOCK THAT WOULD NOT RELEASE IS THIS COMMAND'S FAILURE. The helper reports it now, but a
+  # wrapper that discards the status exits 0 anyway — and a self-heal suppresses the warning, so
+  # the run reports success while every later install and uninstall is refused by a lock nobody
+  # can see. The body's own status still wins when both fail. (PR review)
+  adb_settings_lock_drop || icrc=1
   return "$icrc"
 }
 

@@ -1132,6 +1132,60 @@ unset ADB_SIG_READY ADB_SIG_GO
 [ -e "$(adb_settings_lock_path "$sig_home")" ] && \
   bad "a TERM mid-install must not leave the settings lock behind — it refuses every later run" || ok
 
+# --- the wrapper's result carries a failed release ------------------------------------------------
+#
+# The helper reports it; a wrapper that discards the status still exits 0, and a self-heal
+# suppresses the warning — so the command reports success while every later install and uninstall
+# is refused by a lock nobody can see.
+awk '/^install_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| icrc=1/{print "ok"; exit} f && /^}/{exit}' \
+  "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "install_claude must fold a failed lock release into its own status — the helper's warning is not an exit code"
+awk '/^uninstall_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| ucrc=1/{print "ok"; exit} f && /^}/{exit}' \
+  "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "uninstall_claude must do the same"
+
+# --- a receipt that could not be CLASSIFIED is not an unparseable live file -------------------------
+#
+# The merge answers 20 and 21 for a receipt it could not read or classify — the rows are still there
+# and still name our keys — while any other failure means the live settings would not parse, which
+# really is an inability to prove ownership. Folding the first two into `probe=""` turned a damaged
+# receipt into a successful relinquishment, so a non-writing install published an ownership-free
+# skip over it while every matching leaf stayed installed.
+dm="$work/damaged-carry"; rm -rf "$dm"; mkdir -p "$dm/.claude"
+echo '{"model":"opus"}' > "$dm/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$dm" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+dm_before="$(grep -c "^leaf$ADB_TAB" "$dm/.claude/.adb-settings-owned")"
+[ "$dm_before" -gt 0 ] && ok || bad "precondition: the fixture must have rows to lose"
+grep -v '^disposition' "$dm/.claude/.adb-settings-owned" > "$work/dm.tmp" && mv "$work/dm.tmp" "$dm/.claude/.adb-settings-owned"
+HOME="$dm" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1 && \
+  bad "an opt-out over a receipt that could not be CLASSIFIED must fail, not publish an ownership-free replacement" || ok
+[ "$(grep -c "^leaf$ADB_TAB" "$dm/.claude/.adb-settings-owned")" -eq "$dm_before" ] && ok \
+  || bad "...and every owned row must survive"
+jq -e '.sandbox.enabled == true' "$dm/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and the keys it could not prove ownership of must be left alone"
+
+# --- a present source row decides, and the link is only the fallback --------------------------------
+#
+# The failed-takeover state is reachable: clone B replaces the root-doc link and then fails before
+# refreshing the receipt — the no-jq provenance path does exactly that. The link then says "ours"
+# while the source row still names A, and B's uninstall consumed and deleted settings whose record
+# explicitly named somebody else. A source row is evidence about the RECEIPT; the link is evidence
+# about the tree around it.
+ft="$work/failedtakeover"; rm -rf "$ft"; mkdir -p "$ft/.claude"
+echo '{"model":"opus"}' > "$ft/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$ft" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+sed "s|^source$ADB_TAB.*|source$ADB_TAB/some/other/clone|" "$ft/.claude/.adb-settings-owned" > "$work/ft.tmp" \
+  && mv "$work/ft.tmp" "$ft/.claude/.adb-settings-owned"
+HOME="$ft" bash "$ROOT/uninstall.sh" --agent claude >"$work/ft.log" 2>&1
+jq -e '.sandbox.enabled == true' "$ft/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "a receipt naming ANOTHER clone must be left alone even when the root-doc link says this one — the link can be replaced by a takeover that then failed"
+[ -f "$ft/.claude/.adb-settings-owned" ] && ok \
+  || bad "...and its record must survive, since the clone that owns it still needs it"
+grep -qi "names another clone" "$work/ft.log" && ok \
+  || bad "...and the run must say whose it is, so the operator knows where to uninstall from"
+
 # --- a release that did not release is reported, not reported as success ---------------------------
 #
 # The token used to be cleared BEFORE the removal, so an `rm`/`rmdir` defeated by an ACL or a
@@ -1184,6 +1238,15 @@ awk '/^unwire_settings\(\)/{f=1}
      f && /mv "\$receipt" "\$_rprobe"/{print "ok"; exit}
      f && /adb_publish_json "\$tmp" "\$settings"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall must prove the receipt can be removed BEFORE it rewrites settings.json — discovering it afterwards leaves the transaction half-applied"
+# ...and the PROBE IS ITSELF TWO RENAMES, so the deferral opens before it. A signal between the
+# move-aside and the restore strands the receipt at the `.probe` path, and the next install then
+# reads the still-installed values as the operator's and publishes an ownership-free refusal over
+# the evidence. Guarding the write while leaving the probe exposed is the same window one step
+# earlier.
+awk '/^unwire_settings\(\)/{f=1}
+     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /mv "\$receipt" "\$_rprobe"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "the removability probe is itself two renames — signals must already be deferred when the first one runs"
 # ...and driven for real where the platform can make a file undeletable without privileges. macOS
 # has `chflags uchg`; Linux's equivalent needs root, so this says SKIP rather than pretending.
 if command -v chflags >/dev/null 2>&1; then
@@ -1762,6 +1825,23 @@ jq -e '.sandbox.enabled == true' "$two_home/.claude/settings.json" >/dev/null 2>
   || bad "uninstalling from a clone that does not own ~/.claude must NOT remove another clone's sandbox settings"
 grep -qi "another clone" "$work/twoclone.log" && ok || bad "leaving another clone's settings alone must be SAID, not silent"
 
+# ...and the LEGACY path, where the receipt carries no source row at all. Since a present source row
+# became the deciding evidence, the case above is answered by that row and never reaches the link
+# fallback — so without this fixture the fallback had no coverage, and the mutation row aiming at it
+# went red on a different assertion instead. A receipt written before provenance was recorded has
+# only the link to go on, and the link says this is not ours.
+legacy_home="$work/legacyclone"; rm -rf "$legacy_home"; mkdir -p "$legacy_home/.claude"
+echo '{"model":"opus"}' > "$legacy_home/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$legacy_home" PATH="$work/bin:$PATH" bash "$clone_b/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+grep -v "^source$ADB_TAB" "$legacy_home/.claude/.adb-settings-owned" > "$work/legacy.tmp" \
+  && mv "$work/legacy.tmp" "$legacy_home/.claude/.adb-settings-owned"
+[ -z "$(adb_claude_settings_receipt_source "$legacy_home/.claude/.adb-settings-owned" 2>/dev/null)" ] && ok \
+  || bad "precondition: the legacy fixture must carry no source row"
+HOME="$legacy_home" bash "$ROOT/uninstall.sh" --agent claude >"$work/legacy.log" 2>&1
+jq -e '.sandbox.enabled == true' "$legacy_home/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "a receipt with NO source row must fall back to the link — and the link says this clone does not own ~/.claude, so its settings must NOT be removed"
+
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
 
 if [ "$MUTATION" -eq 1 ]; then
@@ -1981,8 +2061,8 @@ if [ "$MUTATION" -eq 1 ]; then
   # back `pruned`, an unparseable probe yields zero and relinquishes anyway. That branch exists for
   # its message, not for the outcome, and a row that cannot fail is worse than no row.
   check_mut 'ownership is proved against the fragment again' \
-    '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)" || probe=""' \
-    '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)" || probe=""' \
+    '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)"; mrc=$?' \
+    '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)"; mrc=$?' \
     'damaged FRAGMENT must not cost ownership'
   check_mut 'the lock is never released' \
     '  adb_settings_lock_drop' \
@@ -2008,6 +2088,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 1   # provenance-broken' \
     '        :' \
     'must FAIL, not return the tolerated no-jq skip'
+  check_mut 'a receipt that could not be classified is read as unparseable settings' \
+    '  if [ "$mrc" -eq 20 ] || [ "$mrc" -eq 21 ]; then' \
+    '  if false; then' \
+    'must fail, not publish an ownership-free replacement'
+  check_mut 'the wrapper discards a failed lock release' \
+    '  adb_settings_lock_drop || icrc=1' \
+    '  adb_settings_lock_drop' \
+    'must fold a failed lock release into its own status'
   check_mut 'the row reader answers zero rows for a receipt it could not read' \
     '  [ "$grc" -le 1 ] || return 20' \
     '  :' \
@@ -2071,9 +2159,25 @@ if [ "$MUTATION" -eq 1 ]; then
     '  ( : > "$tmp" ) || {' \
     "uninstall's settings temp file must be created restricted"
   check_mut 'uninstall consumes a receipt belonging to another clone' \
-    '  if [ "$ours" != "1" ]; then' \
+    '  if [ -n "$recorded" ]; then' \
     '  if false; then' \
-    'must NOT remove another clone'
+    'must be left alone even when the root-doc link says this one'
+  check_mut 'a legacy receipt with no source row skips the link fallback' \
+    '  elif [ "$ours" != "1" ]; then' \
+    '  elif false; then' \
+    'must fall back to the link'
+  check_mut 'uninstall discards a failed lock release' \
+    '  adb_settings_lock_drop || ucrc=1' \
+    '  adb_settings_lock_drop' \
+    'uninstall_claude must do the same'
+  check_mut 'the probe renames run outside the deferral' \
+    '  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal' \
+    '  :' \
+    'signals must already be deferred when the first one runs'
+  check_mut 'the link outranks a source row that names another clone' \
+    '    if [ "$recorded" != "$REPO" ]; then' \
+    '    if false; then' \
+    'must be left alone even when the root-doc link says this one'
   check_mut 'uninstall rewrites the settings before proving the receipt removable' \
     '  if ! mv "$receipt" "$_rprobe" 2>/dev/null; then' \
     '  if false; then' \
