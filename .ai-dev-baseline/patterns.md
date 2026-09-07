@@ -546,4 +546,11 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `install.sh:230` `d5c0b08` `PRRT_kwDOTfywrM6fyO_U` PR #463 2026-09-07 — a provenance refresh that could not publish returned the tolerated no-jq skip
 - `exit-path-asymmetry` `install.sh:837` `d5c0b08` `self-review-r17-hooks` PR #463 2026-09-07 — the hook wiring and its receipt were a third undeferred pair, found by sweeping the class
 - `false-guarantee` `scripts/check-settings-fragment.sh:926` `d5c0b08` `self-review-r17-pins` PR #463 2026-09-07 — three guards pinned the comment above each deferral rather than the call itself
+- `status-swallowed` `scripts/lib/common.sh:628` `e66737f` `PRRT_kwDOTfywrM6f_L3z` PR #463 2026-09-07 — the lock token was cleared before removal, so a failed release reported success
+- `status-swallowed` `install.sh:382` `e66737f` `PRRT_kwDOTfywrM6f_L3l` PR #463 2026-09-07 — the blocked refusal returned the invalidator benign zero, reporting success having recorded nothing
+- `exit-path-asymmetry` `uninstall.sh:258` `e66737f` `PRRT_kwDOTfywrM6f_L3o` PR #463 2026-09-07 — the settings were rewritten before removability was known, leaving the receipt claiming values that were gone
+- `stale-state-trusted` `bin/baseline:205` `e66737f` `PRRT_kwDOTfywrM6f_L3s` PR #463 2026-09-07 — carried ownership rows were revalidated only inside the installer, so a divergence seen by an update was never observed
+- `evidence-discarded` `bin/baseline:703` `e66737f` `PRRT_kwDOTfywrM6f_L3e` PR #463 2026-09-07 — the refusal was gated on LINKS_OK and absent from the post-pull path, so a repair or update hid it
+- `status-swallowed` `install.sh:615` `e66737f` `self-review-r18-record-skip` PR #463 2026-09-07 — _adb_record_skip returned the same benign invalidator status, found by sweeping the callers
+- `false-guarantee` `scripts/check-settings-fragment.sh` `e66737f` `self-review-r18-countpin` PR #463 2026-09-07 — a grep -c pin counted the function definition and its comment, so deleting a call still cleared it
 <!-- adb:hits:end -->
