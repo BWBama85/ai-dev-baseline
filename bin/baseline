@@ -218,7 +218,17 @@ adb_settings_pending() {
       # applies it. The receipt records the digest of the payload it applied; compare that.
       have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once
       want="$(adb_sha256 "$payload")" || return 1
-      [ "$have" = "$want" ] && return 1 ;;
+      # A MATCHING DIGEST IS NOT THE WHOLE ANSWER. It says the payload has not changed; it says
+      # nothing about the live file. An operator who edits a recorded leaf has taken the surface
+      # over, and until the installer OBSERVES that it never records the ownership-free refusal —
+      # so an edit made, left through an update, and later reverted by hand ended with uninstall
+      # deleting the restored value as ours. Divergence is pending ONCE: the refusal it produces is
+      # recorded with this same digest, so the next session is current again. "Cannot tell" is not
+      # divergence, or this becomes the repair loop the comment above warns about. (PR review)
+      [ "$have" = "$want" ] || return 0
+      adb_claude_settings_leaves_intact "$receipt" "$HOME/.claude/settings.json"
+      [ $? -eq 1 ] && return 0
+      return 1 ;;
     *) return 1 ;;
   esac
   version="$(adb_claude_cli_version)" || return 1

@@ -177,8 +177,16 @@ _adb_wire_settings_locked() {
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" > "$receipt.adb.$$.tmp" \
          || ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
       rm -f "$receipt.adb.$$.tmp"
-      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured"
-      return $?
+      # THE INVALIDATOR'S STATUS IS NOT THIS BRANCH'S. It answers "is a stale claim still standing",
+      # and on a FIRST opt-out there is no receipt at all — so it returns 0 and the install used to
+      # succeed having recorded nothing. `baseline update` then reads disposition `none`, omits
+      # `--no-sandbox`, and applies the policy over an explicit choice the operator made by
+      # contract. The opt-out not reaching disk is a failure of this branch whether or not there was
+      # anything to invalidate. (PR review)
+      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured" || true
+      adb_info "  WARN   the opt-out was honoured for this run but could NOT be recorded — the next"
+      adb_info "         \`baseline update\` will not know about it. Re-run once $receipt is writable."
+      return 1
     fi
     adb_info "  sandbox  --no-sandbox: no settings written (recorded, so \`baseline update\` keeps honouring it)"
     return 0

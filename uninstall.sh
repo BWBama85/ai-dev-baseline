@@ -204,9 +204,17 @@ unwire_settings() {
       return 1; }
     return 0
   fi
-  result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)" || {
+  local mrc
+  result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)"; mrc=$?
+  if [ "$mrc" -eq 20 ]; then
+    adb_info "  WARN   $receipt exists but could not be read — sandbox settings NOT removed and the"
+    adb_info "         ownership record was KEPT. It is the only thing that can prove which keys are"
+    adb_info "         ours; fix its permissions and re-run, or the settings are stranded for good."
+    return 1
+  elif [ "$mrc" -ne 0 ]; then
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox settings NOT removed; edit it by hand"
-    return 1; }
+    return 1
+  fi
   tmp="$settings.adb.$$.tmp"
   # RESTRICTED BEFORE IT IS POPULATED, exactly as the installer's writer does it. This temp holds
   # the WHOLE settings document — every unrelated key, an `env` block among them — and creating it

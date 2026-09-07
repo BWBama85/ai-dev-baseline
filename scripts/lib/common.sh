@@ -788,9 +788,18 @@ adb_claude_settings_leaf_name() {
 # receipt are CHOICES; every other absence is retried by the next install.
 # Usage: adb_claude_settings_disposition [receipt]
 adb_claude_settings_disposition() {
-  local receipt="${1:-$(adb_claude_settings_receipt)}" line
+  local receipt="${1:-$(adb_claude_settings_receipt)}" line grc
   [ -f "$receipt" ] || { printf 'none'; return 0; }
-  line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)" || { printf 'none'; return 0; }
+  # AN UNREADABLE RECEIPT IS NOT AN ABSENT ONE, and answering `none` for both was the benign answer
+  # to a read that did not happen. `-f` is true for a file with mode 000 or a denying ACL, so a
+  # receipt that exists and cannot be read reported "no receipt": the owned-rows readers then
+  # returned `[]`, the remove pass pruned nothing, uninstall published the unchanged settings,
+  # DELETED the receipt and reported success — every sandbox key left installed with no record able
+  # to remove them, permanently. `status-swallowed`. Grep's exit 2 is the read error, distinct from
+  # exit 1 (a readable file with no disposition line, which really is `none`). (PR review)
+  line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)"; grc=$?
+  [ "$grc" -le 1 ] || return 20
+  [ "$grc" -eq 0 ] || { printf 'none'; return 0; }
   line="${line#disposition}"
   line="${line# }"
   line="${line%% *}"
@@ -798,6 +807,45 @@ adb_claude_settings_disposition() {
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) printf '%s' "$line" ;;
     *) printf 'none' ;;
   esac
+}
+
+# Does every leaf the receipt records still carry the value it records for it?
+#
+# The question `adb_settings_pending` could not ask from a digest alone: an operator who edits a
+# recorded leaf has taken the surface over, and the installer must SEE that once so it can
+# relinquish. With currency decided purely by the payload digest, an edit made and then reverted by
+# hand was never observed at all, and uninstall later deleted the restored value as installer-owned.
+#
+# Three answers, deliberately, because "cannot tell" must not read as either: 0 intact, 1 diverged,
+# 2 unanswerable (no jq, no settings, an unreadable receipt, or a settings file that is not exactly
+# one JSON value). A caller that treats 2 as divergence would put `baseline update` into the repair
+# loop that reporting pending-forever already caused once.
+# Usage: adb_claude_settings_leaves_intact <receipt> <settings>
+adb_claude_settings_leaves_intact() {
+  local receipt="$1" settings="$2" owned rc
+  command -v jq >/dev/null 2>&1 || return 2
+  [ -s "$settings" ] || return 2
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 2
+  [ "$owned" != "[]" ] || return 0
+  # `try`, because `getpath` RAISES through a scalar: an operator who replaced an ancestor object
+  # with `false` would otherwise take the whole predicate down rather than answering "diverged".
+  # NO SECOND `def present`. The merge defines one, and a mutation row pins it — a duplicate here
+  # was matched FIRST by that row (this function is defined earlier in the file), so the row
+  # silently stopped testing the merge at all and reported green. The `has` rule this inlines is
+  # pinned file-wide by `check-fact-drift.sh`'s `merge-absence-uses-has`, which is what makes one
+  # spelling enough. (PR review)
+  jq -se --argjson owned "$owned" '
+    if length != 1 then error("not one value") else .[0] end
+    | . as $doc
+    | ( $owned
+        | all( . as $r
+               | ( try ( ($doc | getpath($r.p[0:-1]) | type) == "object"
+                         and ($doc | getpath($r.p[0:-1]) | has($r.p[-1]))
+                         and (($doc | getpath($r.p)) == $r.v) )
+                   catch false ) ) )
+  ' "$settings" >/dev/null 2>&1
+  rc=$?
+  case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
 # The install SOURCE a receipt records, or empty. Ownership is normally proved by the root-doc
@@ -908,7 +956,8 @@ adb_claude_settings_receipt_containers() {
 
 _adb_claude_settings_created_json() {
   local receipt="$1" line out=""
-  case "$(adb_claude_settings_disposition "$receipt")" in
+  local _disp; _disp="$(adb_claude_settings_disposition "$receipt")" || return 20
+  case "$_disp" in
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership
     *) printf '[]'; return 0 ;;
   esac
@@ -968,8 +1017,11 @@ adb_claude_settings_merge() {
     work_empty="$(mktemp)" || return 1
     printf '{}\n' > "$work_empty"
   fi
-  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1
-  created="$(_adb_claude_settings_created_json "$receipt")" || return 1
+  # 20, NOT 1: an unreadable RECEIPT and an unparseable SETTINGS file are different failures with
+  # different remedies, and one message for both sent the operator to edit the wrong file on the
+  # only path that can strand keys.
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 20
+  created="$(_adb_claude_settings_created_json "$receipt")" || return 20
   if [ -n "$work_empty" ]; then
     payload="$work_empty"
   elif [ ! -s "$payload" ]; then
@@ -1101,12 +1153,22 @@ adb_claude_settings_merge() {
               .created += ( .settings | missing_ancestors($p) )
               | .settings = (.settings | setpath($p; $fragment | getpath($p)))
               | .wrote += [$p] )
-          # ONLY THE CONTAINERS THAT STILL EXIST. Retirement can delete a container we created —
-          # its last owned leaf went with it — and carrying that path forward would claim an empty
-          # object the operator later creates there.
-          | ( .settings ) as $after
+          # ONLY THE CONTAINERS THAT STILL EXIST *AND* STILL HOLD SOMETHING WE OWN. Existence alone
+          # was not enough: when a payload retires the last owned leaf under a container we created
+          # and the operator had EDITED that leaf, retirement correctly keeps the edited value and
+          # writes no leaf row for it — but the container was carried anyway, because the object is
+          # still there. The receipt then claimed a container with no owned descendant, and if the
+          # operator later deleted that subtree and recreated an empty object in its place,
+          # uninstall deleted THEIR object on the strength of the stale row. A container is only
+          # ever created to hold a leaf we write, so it is kept only while it is a proper ancestor
+          # of one. (PR review)
+          | ( .wrote ) as $written
           | .created = ( ((.created + $created) | unique)
-                         | map(. as $a | select($after | present($a))) )
+                         | map(. as $a
+                               | ( $written
+                                   | any( (length > ($a | length))
+                                          and (.[0:($a | length)] == $a) ) ) as $owns
+                               | select($owns) ) )
           | .verdict = "write"
         end
     end
@@ -1131,7 +1193,8 @@ _adb_claude_settings_owned_json() {
   # What actually protects is the pair of rules the merge applies to every row: it is validated
   # (a non-empty array of string components, and a parseable value), and a leaf is removed ONLY
   # while its live value still equals the recorded one.
-  case "$(adb_claude_settings_disposition "$receipt")" in
+  local _disp; _disp="$(adb_claude_settings_disposition "$receipt")" || return 20
+  case "$_disp" in
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership
     *) printf '[]'; return 0 ;;
   esac

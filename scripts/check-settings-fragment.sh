@@ -752,6 +752,111 @@ grep -qi "relinquish" "$work/diag.log" && ok \
      "$ROOT/install.sh")" -eq 0 ] && ok \
   || bad "every adb_info inside _adb_carry_rows must redirect to stderr — its stdout is its return value, so a diagnostic there is captured into the caller's rows and dropped"
 
+# --- the merge's absence rule has exactly ONE spelling ---------------------------------------------
+#
+# `def present` is pinned by a mutation row. A second copy defined EARLIER in common.sh was matched
+# first by that row, which silently stopped testing the merge and reported green — the guard was
+# disarmed by a duplicate, not by an edit to the thing it guards.
+[ "$(grep -c 'def present(\$p)' "$ROOT/scripts/lib/common.sh")" -eq 1 ] && ok \
+  || bad "common.sh must define \`present\` exactly once — a second copy is matched first by the mutation row pinning the merge's, disarming it"
+
+# --- an UNREADABLE receipt is not an absent one ---------------------------------------------------
+#
+# `-f` is true for a file with mode 000 or a denying ACL, so a receipt that exists and cannot be
+# read reported disposition `none`; the owned-rows readers answered `[]`, the remove pass pruned
+# nothing, and uninstall published the unchanged settings, DELETED the receipt and reported
+# success. Every sandbox key stayed installed with nothing left able to remove them — permanent,
+# silent, and reported as a clean uninstall. `status-swallowed`.
+unread="$work/unreadable"; rm -rf "$unread"; mkdir -p "$unread/.claude"
+echo '{"model":"opus"}' > "$unread/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$unread" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+chmod 000 "$unread/.claude/.adb-settings-owned"
+HOME="$unread" bash "$ROOT/uninstall.sh" --agent claude >"$work/unread.log" 2>&1 && \
+  bad "an uninstall that could not read the ownership receipt must FAIL, not report success" || ok
+[ -f "$unread/.claude/.adb-settings-owned" ] && ok \
+  || bad "...and must KEEP the receipt — it is the only thing that can prove which keys are ours"
+jq -e '.sandbox.enabled == true' "$unread/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and must not have half-removed the keys it could not prove ownership of"
+grep -qi "could not be read" "$work/unread.log" && ok \
+  || bad "...and must say the RECEIPT could not be read"
+grep -qi "settings.json could not be read as a single JSON value" "$work/unread.log" && \
+  bad "...and must not blame settings.json — that is a different failure with a different remedy" || ok
+# ...and the retry works once it is readable again, which is what makes the refusal a hold and not a wall.
+chmod 600 "$unread/.claude/.adb-settings-owned"
+HOME="$unread" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 && ok \
+  || bad "the retry must succeed once the receipt is readable"
+jq -e '.sandbox == null' "$unread/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and must then remove the keys it held on to"
+
+# --- an opt-out that could not be RECORDED is a failed install ------------------------------------
+#
+# `_adb_invalidate_stale_receipt` answers "is a stale claim still standing", and on a FIRST opt-out
+# there is nothing to invalidate — so it returned 0 and the install succeeded having recorded
+# nothing. The next `baseline update` then reads disposition `none`, omits `--no-sandbox`, and
+# applies the policy over a choice the operator made by contract.
+oo="$work/optoutfail"; rm -rf "$oo"; mkdir -p "$oo/.claude"
+echo '{"model":"opus"}' > "$oo/.claude/settings.json"
+mkdir "$oo/.claude/.adb-settings-owned"       # occupies the path; there is no prior receipt
+HOME="$oo" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/oo.log" 2>&1 && \
+  bad "a --no-sandbox install whose opt-out could not be recorded must FAIL — an unrecorded opt-out is silently overridden by the next update" || ok
+grep -qi "could NOT be recorded" "$work/oo.log" && ok \
+  || bad "...and must say so, naming what the next update will do"
+rmdir "$oo/.claude/.adb-settings-owned"
+HOME="$oo" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1 && ok \
+  || bad "an opt-out that CAN be recorded must still succeed"
+[ "$(adb_claude_settings_disposition "$oo/.claude/.adb-settings-owned")" = "skipped-optout" ] && ok \
+  || bad "...and must record skipped-optout"
+
+# --- a container is owned only while it still holds a leaf we own ----------------------------------
+#
+# Existence alone was not enough. When a payload retires the last owned leaf under a container we
+# created AND the operator had edited that leaf, retirement keeps the edited value and writes no
+# leaf row — but the container was carried forward because the object is still there. The receipt
+# then claimed a container with no owned descendant, and an operator who deleted that subtree and
+# recreated an empty object in its place had THEIR object removed by uninstall.
+cw="$work/container"; rm -rf "$cw"; mkdir -p "$cw"
+printf 'disposition installed\nversion 2.1.259\nfloor 2.1.187\npayload deadbeef\nsource%s%s\nleaf%s["x","y"]%s"ours"\ncontainer%s["x"]\n' \
+  "$ADB_TAB" "$ROOT" "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" > "$cw/receipt"
+echo '{"x":{"y":"EDITED-BY-OPERATOR"}}' > "$cw/settings.json"
+echo '{"other":1}' > "$cw/fragment.json"
+cw_out="$(adb_claude_settings_merge "$cw/settings.json" "$cw/fragment.json" "$cw/receipt")"
+[ "$(printf '%s' "$cw_out" | jq -c '.kept')" = '[["x","y"]]' ] && ok \
+  || bad "an edited retired leaf must be KEPT, not pruned"
+[ "$(printf '%s' "$cw_out" | jq -c '.created')" = '[]' ] && ok \
+  || bad "a container with no owned descendant left must not be carried into the new receipt — uninstall would remove an object the operator recreated there"
+# ...and one that DOES still hold an owned leaf survives, or the rule above would relinquish everything.
+echo '{"x":{"y":"ours"}}' > "$cw/s2.json"
+echo '{"x":{"y":"ours","z":"new"}}' > "$cw/f2.json"
+[ "$(adb_claude_settings_merge "$cw/s2.json" "$cw/f2.json" "$cw/receipt" | jq -c '.created')" = '[["x"]]' ] && ok \
+  || bad "a container that still holds an owned leaf must be retained"
+
+# --- currency asks the LIVE file too, not only the payload digest ----------------------------------
+#
+# The digest says the payload has not changed; it says nothing about what is in settings.json. An
+# operator who edits a recorded leaf has taken the surface over, and until the installer observes
+# that it never records the ownership-free refusal — so an edit made, left through an update, and
+# later reverted by hand ended with uninstall deleting the restored value as installer-owned.
+li="$work/liveint"; rm -rf "$li"; mkdir -p "$li/.claude"
+echo '{"model":"opus"}' > "$li/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$li" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+li_r="$li/.claude/.adb-settings-owned"; li_s="$li/.claude/settings.json"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 0 ] && ok \
+  || bad "a clean install must read as intact"
+jq '.sandbox.enabled = false' "$li_s" > "$work/li.tmp" && mv "$work/li.tmp" "$li_s"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
+  || bad "an edited recorded leaf must read as DIVERGED"
+jq 'del(.sandbox.enabled)' "$li_s" > "$work/li.tmp" && mv "$work/li.tmp" "$li_s"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
+  || bad "a deleted recorded leaf must read as diverged too"
+jq '.sandbox = false' "$li_s" > "$work/li.tmp" && mv "$work/li.tmp" "$li_s"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
+  || bad "an ancestor replaced by a SCALAR must answer diverged — getpath raises through one, and an unguarded read took the whole predicate down"
+printf 'not json' > "$li_s"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 2 ] && ok \
+  || bad "an unparseable settings file must answer UNANSWERABLE, never divergence — treating it as divergence is the repair loop"
+
 # --- a signal releases the lock too, not only an ordinary return ---------------------------------
 #
 # A helper wrapper covers every `return`; it covers no signal. A TERM or INT while the body runs
@@ -1166,10 +1271,11 @@ grep -qi "ROLLED BACK" "$work/rollback.log" && ok || bad "the rollback must be r
 #
 # Driven by SOURCING bin/baseline's predicate rather than running the whole updater: the updater
 # needs a git clone, a network classification and a lock, none of which this claim depends on.
-pending() {   # pending <disposition> <stub-version> -> 0 if the surface is pending
-  local disp="$1" ver="$2" ph="$work/pending-home"
+pending() {   # pending <disposition> <stub-version> [settings-file] -> 0 if the surface is pending
+  local disp="$1" ver="$2" live="${3:-}" ph="$work/pending-home"
   rm -rf "$ph"; mkdir -p "$ph/.claude"
   ln -s "$ROOT/agents/claude/CLAUDE.md" "$ph/.claude/CLAUDE.md"
+  [ -n "$live" ] && cp "$live" "$ph/.claude/settings.json"
   if [ "$disp" = installed ]; then
     # A CURRENT installed receipt: its leaf set must equal the payload's, or `pending` correctly
     # reports it stale and this case would pass for the wrong reason.
@@ -1199,6 +1305,19 @@ pending skipped-below-floor "2.1.259 (Claude Code)" && ok || bad "a below-floor 
 pending skipped-unprobeable "2.1.259 (Claude Code)" && ok || bad "an unprobeable skip must become PENDING once a probeable CLI is on PATH"
 pending skipped-optout  "2.1.259 (Claude Code)" && bad "an explicit --no-sandbox opt-out must NEVER be pending — self-heal would overrule a supported choice on every session" || ok
 pending installed       "2.1.259 (Claude Code)" && bad "an installed surface must not be pending" || ok
+
+# ...and a matching digest is NOT the whole answer: the LIVE file is asked too. An operator who
+# edits a recorded leaf has taken the surface over, and until the installer OBSERVES that it never
+# records the ownership-free refusal — so an edit made, left through an update, and later reverted
+# by hand ended with uninstall deleting the restored value as installer-owned.
+pending installed "2.1.259 (Claude Code)" "$PAYLOAD" && \
+  bad "an installed surface whose recorded leaves all still match must not be pending" || ok
+jq '.sandbox.enabled = false' "$PAYLOAD" > "$work/pend-edited.json"
+pending installed "2.1.259 (Claude Code)" "$work/pend-edited.json" && ok \
+  || bad "an installed surface whose recorded leaf the operator EDITED must be pending once, so the installer can observe the divergence and relinquish"
+printf 'not json' > "$work/pend-broken.json"
+pending installed "2.1.259 (Claude Code)" "$work/pend-broken.json" && \
+  bad "an unreadable settings file must NOT read as divergence — 'cannot tell' becomes a repair loop that re-runs the installer every session" || ok
 
 # ...unless the PAYLOAD ITSELF changed since it was applied. Currency is a digest question: a leaf
 # the operator already owned is never recorded, so a path-set comparison reports pending forever
@@ -1362,14 +1481,26 @@ if [ "$MUTATION" -eq 1 ]; then
       '          | .wrote = [] | .created = []' \
       '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .wrote = [] | .created = []' \
       'must still PRUNE a retired key'
-  check_mut 'a retired container is carried forward anyway' \
-      '                         | map(. as $a | select($after | present($a))) )' \
-      '                         | map(. as $a | select(true)) )' \
+  check_mut 'a prior container is carried without an owned descendant' \
+      '                               | select($owns) ) )' \
+      '                               | select(true) ) )' \
       'container retirement emptied must be dropped from ownership'
   check_mut 'the release is a no-op, on every path at once' \
     '  adb_update_unlock "$_ADB_SETTINGS_LOCK"' \
     '  :' \
     'lock must be released on the success path'
+  check_mut 'an unreadable receipt reads as an absent one' \
+    '  [ "$grc" -le 1 ] || return 20' \
+    '  :' \
+    'must FAIL, not report success'
+  check_mut 'the merge cannot tell an unreadable receipt from unparseable settings' \
+    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 20' \
+    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1' \
+    'must not blame settings.json'
+  check_mut 'the live-leaf predicate answers intact for a divergence' \
+    '        | all( . as $r' \
+    '        | any( . as $r' \
+    'must read as DIVERGED'
   check_mut 'a signal is not trapped, so the lock outlives the run' \
     '  _adb_arm_lock_traps' \
     '  :' \
@@ -1477,6 +1608,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'an unrecorded opt-out still reports a successful install' \
+    '      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured" || true' \
+    '      return 0' \
+    'must FAIL — an unrecorded opt-out is silently overridden'
   check_mut 'a version skip discards the record status' \
     '    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?' \
     '    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt"' \
@@ -1542,6 +1677,10 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
+  check_mut 'currency stops asking the live file once the digest matches' \
+    '      [ $? -eq 1 ] && return 0' \
+    '      [ $? -eq 99 ] && return 0' \
+    'must be pending once, so the installer can observe the divergence'
   check_mut 'the updater overrules an explicit --no-sandbox opt-out' \
     'none|skipped-below-floor|skipped-unprobeable) ;;' \
     'none|skipped-below-floor|skipped-unprobeable|skipped-optout) ;;' \
@@ -1555,8 +1694,8 @@ if [ "$MUTATION" -eq 1 ]; then
     'true' \
     'must stay put while the CLI is STILL below the floor'
   check_mut 'an installed receipt is trusted without comparing payloads' \
-    '      [ "$have" = "$want" ] && return 1 ;;' \
-    '      return 1 ;;' \
+    '      [ "$have" = "$want" ] || return 0' \
+    '      :' \
     'must be PENDING'
   check_mut 'currency is decided by the owned leaf PATHS again' \
     '      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once' \
