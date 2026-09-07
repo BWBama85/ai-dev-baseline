@@ -367,13 +367,17 @@ cmd_check() {
       _adb_cu_emit repaired "repaired the installed links (clone already current)."
       ;;
     7)
-      # The links were already current and the SANDBOX SETTINGS were what was pending — and the
-      # installer refused them because the operator already owns one of the shipped keys. Nothing
-      # was applied, so this is neither `repaired` nor `silent`; reporting either would hide a
-      # security-relevant refusal behind a success line, which is the whole reason this arm exists
-      # rather than letting 7 fall through to `failed` and be described as a failure it is not.
+      # The SANDBOX SETTINGS were pending and the installer refused them, because the operator
+      # already owns one of the shipped keys. Nothing of the policy was applied, so this is neither
+      # `repaired` nor `silent`; reporting either would hide a security-relevant refusal behind a
+      # success line, which is the whole reason this arm exists rather than letting 7 fall through
+      # to `failed` and be described as a failure it is not.
+      #
+      # It is emitted whatever ELSE the run did. A repair or a pull in the same run may well have
+      # succeeded — the message says so — because gating the refusal on "nothing else happened"
+      # is what made it vanish exactly when something else had gone wrong too.
       _adb_cu_emit refused \
-        "the least-privilege sandbox settings were refused — you already own one of the keys they ship; run './install.sh' in the install-source to see which."
+        "the least-privilege sandbox settings were refused — you already own one of the keys they ship; run './install.sh' in the install-source to see which. Any clone update or link repair in the same run DID complete."
       ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \

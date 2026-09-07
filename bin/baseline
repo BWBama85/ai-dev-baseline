@@ -193,6 +193,19 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # link-only verifier. Without it, an adopter who upgrades the CLI past the floor never receives
 # the settings: the one transition the whole detect-skip-say design is FOR.
 # Usage: adb_settings_pending <src>
+# Did the self-heal that just ran leave the sandbox policy REFUSED? Asked of the receipt rather
+# than inferred from the installer's status, which is 0 by contract for an all-or-nothing refusal.
+# Usage: adb_settings_refused_now <were-the-settings-pending-before>
+# Returns: 0 when the run should report a refusal rather than a plain success
+adb_settings_refused_now() {
+  [ "${1:-0}" -eq 1 ] || return 1
+  [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" = skipped-blocked ] || return 1
+  echo "baseline: the least-privilege sandbox settings were NOT applied — you already own one of" >&2
+  echo "          the keys they ship, so the whole policy was refused (#248). Run ./install.sh in" >&2
+  echo "          $SRC to see which, then remove or rename those keys and re-run it." >&2
+  return 0
+}
+
 adb_settings_pending() {
   local src="$1" version receipt payload have want
   command -v jq >/dev/null 2>&1 || return 1
@@ -200,7 +213,20 @@ adb_settings_pending() {
   payload="$(adb_claude_settings_payload "$src")"
   [ -s "$payload" ] || return 1
   receipt="$(adb_claude_settings_receipt "$HOME")"
-  case "$(adb_claude_settings_disposition "$receipt")" in
+  local disp; disp="$(adb_claude_settings_disposition "$receipt")" || return 1
+  # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED THE LIVE QUESTION, not just `installed`. A skip and
+  # an opt-out deliberately keep the previous install's ownership rows, and those rows were only
+  # ever rechecked inside the installer — so an operator could edit an owned leaf, run the automatic
+  # update while it was divergent, restore the value later, and have uninstall delete it as ours,
+  # because nothing had ever invoked the installer to relinquish. Pending ONCE is enough: self-heal
+  # re-runs with `--no-sandbox` for an opt-out and re-takes the version skip otherwise, so the rows
+  # are relinquished without any policy key being newly applied. (PR review)
+  case "$disp" in
+    installed|skipped-optout|skipped-below-floor|skipped-unprobeable)
+      adb_claude_settings_leaves_intact "$receipt" "$HOME/.claude/settings.json"
+      [ $? -eq 1 ] && return 0 ;;
+  esac
+  case "$disp" in
     none|skipped-below-floor|skipped-unprobeable) ;;
     installed|skipped-blocked)
       # NEITHER `installed` NOR A BLOCKED REFUSAL IS AUTOMATICALLY CURRENT. A plain `git pull` of the install-source clone can
@@ -226,8 +252,6 @@ adb_settings_pending() {
       # recorded with this same digest, so the next session is current again. "Cannot tell" is not
       # divergence, or this becomes the repair loop the comment above warns about. (PR review)
       [ "$have" = "$want" ] || return 0
-      adb_claude_settings_leaves_intact "$receipt" "$HOME/.claude/settings.json"
-      [ $? -eq 1 ] && return 0
       return 1 ;;
     *) return 1 ;;
   esac
@@ -671,12 +695,14 @@ case "$STATUS" in
     # in the automatic SessionStart flow, which suppresses the installer's own output and renders
     # exit 6 as "repaired the installed links". Ask the receipt what actually happened rather than
     # inferring it from the installer's status. (PR review)
-    if [ "$SETTINGS_PENDING" -eq 1 ] \
-       && [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-blocked ]; then
-      echo "baseline: the least-privilege sandbox settings were NOT applied — you already own one of" >&2
-      echo "          the keys they ship, so the whole policy was refused (#248). Run ./install.sh in" >&2
-      echo "          $SRC to see which, then remove or rename those keys and re-run it." >&2
-      [ "$LINKS_OK" -eq 1 ] && exit 7
+    # PROPAGATED FROM EVERY SELF-HEAL, not only the one that had nothing else to do. Gating this on
+    # `LINKS_OK` meant a run that ALSO repaired a broken link fell through to "repaired." and exit 6
+    # — and the SessionStart caller suppresses the installer's own output, so the refusal vanished
+    # behind a success line precisely when something else had gone wrong too. The refusal outranks
+    # the repair in what it must tell the operator; the message carries both facts. (PR review)
+    if adb_settings_refused_now "$SETTINGS_PENDING"; then
+      [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
+      exit 7
     fi
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
@@ -700,7 +726,18 @@ case "$STATUS" in
     # a rename left dangling that the installer would otherwise never clean up.
     echo "baseline: pulled to origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
     adb_prune_orphans "$SRC"
+    # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that
+    # changes the fragment is exactly how this path acquires pending settings in the first place.
+    BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC" && BEHIND_SETTINGS_PENDING=1
     if adb_self_heal && adb_verify_links "$SRC"; then
+      # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an
+      # update that also refused the policy was rendered as a plain `updated` with the installer's
+      # own output suppressed. The clone really did advance, and the message says so — but the
+      # refusal is what the operator needs to see, so it chooses the code.
+      if adb_settings_refused_now "$BEHIND_SETTINGS_PENDING"; then
+        echo "baseline: the clone WAS updated and every link resolves; only the settings were refused." >&2
+        exit 7
+      fi
       echo "baseline: update complete."
       exit 0
     fi

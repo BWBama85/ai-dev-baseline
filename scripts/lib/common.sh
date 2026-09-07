@@ -623,9 +623,18 @@ adb_update_unlock() {
   local lock="$1"
   [ -n "$_ADB_LOCK_TOKEN" ] || return 0
   [ "$(cat "$lock/owner" 2>/dev/null)" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
-  _ADB_LOCK_TOKEN=""
   rm -f "$lock/owner" 2>/dev/null
   rmdir "$lock" 2>/dev/null
+  # THE TOKEN IS CLEARED ONLY WHEN THE LOCK IS ACTUALLY GONE. It used to be cleared FIRST, so a
+  # removal defeated by an ACL or an immutable flag left the directory standing while the run
+  # reported a clean release — and every later install and uninstall was refused until the stale
+  # interval elapsed or somebody removed it by hand. Keeping ownership is what lets a later attempt
+  # in the same process succeed, and returning non-zero is what lets the caller say so. (PR review)
+  if [ -e "$lock" ]; then
+    return 1
+  fi
+  _ADB_LOCK_TOKEN=""
+  return 0
 }
 
 # The lock every writer of ~/.claude/settings.json takes. ONE home for the path, because the
@@ -705,9 +714,18 @@ adb_settings_lock_resume_signals() {
 # Globals: _ADB_SETTINGS_LOCK (read, cleared)
 adb_settings_lock_drop() {
   [ -n "$_ADB_SETTINGS_LOCK" ] || return 0
-  adb_update_unlock "$_ADB_SETTINGS_LOCK"
+  local _lk="$_ADB_SETTINGS_LOCK" _urc=0
+  adb_update_unlock "$_lk" || _urc=$?
   _ADB_SETTINGS_LOCK=""
   trap - EXIT TERM INT
+  # A FAILED RELEASE IS SAID, not swallowed. Every path calls this helper now, which was the point
+  # of having one — but a helper that reports success for a lock still sitting on disk moves the
+  # silence one level down rather than removing it. The operator is the only one who can clear it.
+  if [ "$_urc" -ne 0 ]; then
+    adb_info "  WARN   the settings lock could not be released and is still there: $_lk"
+    adb_info "         Later installs and uninstalls will refuse until it is removed."
+    return 1
+  fi
   return 0
 }
 

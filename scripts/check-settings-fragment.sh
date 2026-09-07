@@ -966,10 +966,24 @@ HOME="$blk" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-h
   || bad "premise: and must record skipped-blocked"
 jq -e '.sandbox.enabled == false' "$blk/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "premise: and must have applied nothing"
-grep -qF 'adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-blocked' "$ROOT/bin/baseline" && ok \
+grep -qF 'adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" = skipped-blocked' "$ROOT/bin/baseline" && ok \
   || bad "bin/baseline must re-read the receipt after self-heal — a successful installer run is not the same as a repair"
-grep -qE '^\s*\[ "\$LINKS_OK" -eq 1 \] && exit 7' "$ROOT/bin/baseline" && ok \
-  || bad "...and must exit with a code distinct from 6 when nothing was actually applied"
+# EVERY SELF-HEAL, not the one that repaired nothing else. Gating the refusal on \`LINKS_OK\` meant a
+# run that ALSO fixed a broken link fell through to "repaired." and exit 6, and the \`behind\` branch
+# exited 0 after a pull without asking at all — so the refusal vanished behind a success line
+# exactly when something else had gone wrong too.
+# BY POSITION, NOT BY COUNT. A `grep -c` over the name counts the function definition and the
+# comment above it too, so deleting one of the two CALLS still cleared the threshold and the row
+# covering it could not go red. Each call site is asserted where it has to be: before the line that
+# reports success.
+awk '/adb_self_heal && adb_verify_links/{f=1}
+     f && /adb_settings_refused_now/{print "ok"; exit}
+     f && /baseline: repaired\./{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "the same-HEAD repair path must ask whether the policy came back refused BEFORE it reports \"repaired\""
+grep -qE '\[ "\$LINKS_OK" -eq 1 \] && exit 7' "$ROOT/bin/baseline" && \
+  bad "the refusal must not be gated on LINKS_OK — a run that also repaired a link would report the repair and drop the refusal" || ok
+awk '/^  behind\)/{f=1} f && /adb_settings_refused_now/{print "ok"; exit} f && /^  dirty\)/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "...and the post-pull path must ask before it reports the update complete"
 grep -qE '^\s*7\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
   || bad "currency-lib.sh must classify that code explicitly — falling through to the catch-all reports it as a failure it is not"
 awk '/^    7\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit}' "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
@@ -1117,6 +1131,79 @@ unset ADB_SIG_READY ADB_SIG_GO
 [ "$sig_rc" -eq 143 ] && ok || bad "a TERM must terminate the install as a TERM (143), not be swallowed (got $sig_rc)"
 [ -e "$(adb_settings_lock_path "$sig_home")" ] && \
   bad "a TERM mid-install must not leave the settings lock behind — it refuses every later run" || ok
+
+# --- a release that did not release is reported, not reported as success ---------------------------
+#
+# The token used to be cleared BEFORE the removal, so an `rm`/`rmdir` defeated by an ACL or a
+# read-only parent left the directory standing while the run reported a clean release — and every
+# later install and uninstall was refused until the stale interval elapsed. Every path calls the
+# helper now, which was the point of having one; a helper that swallows the failure just moves the
+# silence one level down.
+ur2="$work/unrelease"; rm -rf "$ur2"; mkdir -p "$ur2/.claude"
+HOME="$ur2" bash -c '
+  . "'"$ROOT"'/scripts/lib/common.sh"
+  adb_settings_lock_take || exit 9
+  chmod 500 "$HOME/.claude"          # the lock survives: its parent is no longer writable
+  adb_settings_lock_drop; drc=$?
+  chmod 700 "$HOME/.claude"
+  exit "$drc"
+' >"$work/unrelease.log" 2>&1 && \
+  bad "a settings lock that could not be removed must NOT report a clean release — every later run is refused until somebody deletes it" || ok
+grep -qi "could not be released" "$work/unrelease.log" && ok \
+  || bad "...and must say so, naming the path, because the operator is the only one who can clear it"
+rm -rf "$(adb_settings_lock_path "$ur2")" 2>/dev/null
+
+# --- a record that was not written is not a success, whoever asks ----------------------------------
+#
+# `_adb_invalidate_stale_receipt` answers "does a stale claim still survive". On a FIRST refusal or
+# skip there is nothing to invalidate, so it returns 0 — and two callers were still returning that
+# as their own status, reporting success having recorded nothing. The opt-out was fixed when it was
+# reported; these two are its siblings, swept rather than waited for.
+#
+# STRUCTURAL, and the reason is the one this file has recorded twice: the only drivable way to fail
+# these publishes is a non-regular receipt path, and an earlier check catches that and returns 1
+# before either branch is reached. What is checkable is that neither branch returns the
+# invalidator's status any more.
+awk '/_adb_invalidate_stale_receipt "\$receipt" "the refusal stands/{f=1}
+     f && /return 1   # blocked-not-recorded/{print "ok"; exit}
+     f && /return "\$invrc"|return \$\?/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "a blocked refusal whose receipt was not published must return non-zero — the invalidator's 0 means only that no stale claim survives"
+awk '/_adb_invalidate_stale_receipt "\$receipt" "the skip stands/{f=1}
+     f && /return 1   # skip-not-recorded/{print "ok"; exit}
+     f && /return \$\?/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "...and a skip whose receipt was not published must do the same"
+[ "$(grep -c 'return \$?' "$ROOT/install.sh")" -eq 0 ] && ok \
+  || bad "no path may hand the invalidator's benign status back as its own — that is the defect, and it is spelled the same way each time"
+
+# --- the receipt must be PROVED removable before the settings are rewritten ------------------------
+#
+# Deferring signals closed the interruption window and did nothing for an ordinary I/O failure
+# between the same two durable changes: with the receipt made immutable, uninstall removed every
+# owned leaf and then could not delete the record, leaving it claiming four values that were gone.
+awk '/^unwire_settings\(\)/{f=1}
+     f && /mv "\$receipt" "\$_rprobe"/{print "ok"; exit}
+     f && /adb_publish_json "\$tmp" "\$settings"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "uninstall must prove the receipt can be removed BEFORE it rewrites settings.json — discovering it afterwards leaves the transaction half-applied"
+# ...and driven for real where the platform can make a file undeletable without privileges. macOS
+# has `chflags uchg`; Linux's equivalent needs root, so this says SKIP rather than pretending.
+if command -v chflags >/dev/null 2>&1; then
+  im="$work/immutable"; rm -rf "$im"; mkdir -p "$im/.claude"
+  echo '{"model":"opus"}' > "$im/.claude/settings.json"
+  stub "2.1.259 (Claude Code)"
+  HOME="$im" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+  chflags uchg "$im/.claude/.adb-settings-owned" 2>/dev/null
+  HOME="$im" bash "$ROOT/uninstall.sh" --agent claude >"$work/im.log" 2>&1 && \
+    bad "an uninstall that cannot remove the receipt must fail" || ok
+  jq -e '.sandbox.enabled == true' "$im/.claude/settings.json" >/dev/null 2>&1 && ok \
+    || bad "...and must leave settings.json UNTOUCHED — removing the leaves first is what strands the record"
+  [ "$(grep -c "^leaf$ADB_TAB" "$im/.claude/.adb-settings-owned")" -gt 0 ] && ok \
+    || bad "...and must leave the record's rows intact for the retry"
+  chflags nouchg "$im/.claude/.adb-settings-owned" 2>/dev/null
+  HOME="$im" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 && ok \
+    || bad "...and the retry must succeed once the receipt is removable"
+else
+  echo "SKIP: no chflags on this platform — the immutable-receipt case is pinned structurally above"
+fi
 
 # --- arming is what makes an un-deferred signal release the lock --------------------------------
 #
@@ -1507,8 +1594,8 @@ grep -qi "ROLLED BACK" "$work/rollback.log" && ok || bad "the rollback must be r
 #
 # Driven by SOURCING bin/baseline's predicate rather than running the whole updater: the updater
 # needs a git clone, a network classification and a lock, none of which this claim depends on.
-pending() {   # pending <disposition> <stub-version> [settings-file] -> 0 if the surface is pending
-  local disp="$1" ver="$2" live="${3:-}" ph="$work/pending-home"
+pending() {   # pending <disposition> <stub-version> [settings-file] [carry] -> 0 if pending
+  local disp="$1" ver="$2" live="${3:-}" carry="${4:-}" ph="$work/pending-home"
   rm -rf "$ph"; mkdir -p "$ph/.claude"
   ln -s "$ROOT/agents/claude/CLAUDE.md" "$ph/.claude/CLAUDE.md"
   [ -n "$live" ] && cp "$live" "$ph/.claude/settings.json"
@@ -1519,7 +1606,17 @@ pending() {   # pending <disposition> <stub-version> [settings-file] -> 0 if the
       | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" \
       > "$ph/.claude/.adb-settings-owned"
   elif [ "$disp" != none ]; then
-    : | adb_claude_settings_receipt_render "$disp" - "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+    # `carry` renders the skip or opt-out WITH the previous install's ownership rows, which is what
+    # those dispositions really look like on disk — `_adb_record_skip` and the opt-out both carry
+    # them forward deliberately. A rowless fixture cannot reach the live-divergence question at all,
+    # which is why every case here used to pass without exercising it.
+    if [ "$carry" = carry ]; then
+      adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s .)" \
+        | adb_claude_settings_receipt_render "$disp" - "$FLOOR" "$(adb_sha256 "$PAYLOAD")" \
+        > "$ph/.claude/.adb-settings-owned"
+    else
+      : | adb_claude_settings_receipt_render "$disp" - "$FLOOR" > "$ph/.claude/.adb-settings-owned"
+    fi
   fi
   stub "$ver"
   HOME="$ph" PATH="$work/bin:$PATH" bash -c '
@@ -1554,6 +1651,25 @@ pending installed "2.1.259 (Claude Code)" "$work/pend-edited.json" && ok \
 printf 'not json' > "$work/pend-broken.json"
 pending installed "2.1.259 (Claude Code)" "$work/pend-broken.json" && \
   bad "an unreadable settings file must NOT read as divergence — 'cannot tell' becomes a repair loop that re-runs the installer every session" || ok
+
+# --- and EVERY disposition that carries rows is asked the same question -----------------------------
+#
+# A skip and an opt-out deliberately keep the previous install's ownership rows, and those rows were
+# rechecked only inside the installer — so an operator could edit an owned leaf, run the automatic
+# update while it was divergent, restore the value later, and have uninstall delete it as ours,
+# because nothing ever invoked the installer to relinquish. Pending once is enough: self-heal passes
+# `--no-sandbox` for an opt-out and re-takes the version skip otherwise, so no policy key is newly
+# applied by the visit.
+pending skipped-optout "2.1.259 (Claude Code)" "$PAYLOAD" carry && \
+  bad "an opt-out whose carried rows all still match must NOT be pending — that would re-run the installer every session over a supported choice" || ok
+pending skipped-optout "2.1.259 (Claude Code)" "$work/pend-edited.json" carry && ok \
+  || bad "an opt-out whose carried rows have DIVERGED must be pending once, so the installer can relinquish them — it is re-run with --no-sandbox, so the opt-out survives"
+pending skipped-below-floor "2.1.100 (Claude Code)" "$work/pend-edited.json" carry && ok \
+  || bad "a below-floor skip whose carried rows have diverged must be pending even though the CLI is STILL below the floor — the version question is not the ownership question"
+pending skipped-unprobeable "2.1.100 (Claude Code)" "$work/pend-edited.json" carry && ok \
+  || bad "an unprobeable skip whose carried rows have diverged must be pending for the same reason"
+pending skipped-below-floor "2.1.100 (Claude Code)" "$PAYLOAD" carry && \
+  bad "...but a below-floor skip whose rows all still match must stay not-pending while the CLI is below the floor" || ok
 
 # ...unless the PAYLOAD ITSELF changed since it was applied. Currency is a digest question: a leaf
 # the operator already owned is never recorded, so a path-set comparison reports pending forever
@@ -1722,9 +1838,17 @@ if [ "$MUTATION" -eq 1 ]; then
       '                               | select(true) ) )' \
       'container retirement emptied must be dropped from ownership'
   check_mut 'the release is a no-op, on every path at once' \
-    '  adb_update_unlock "$_ADB_SETTINGS_LOCK"' \
+    '  adb_update_unlock "$_lk" || _urc=$?' \
     '  :' \
     'lock must be released on the success path'
+  check_mut 'the lock token is cleared before the lock is actually gone' \
+    '  if [ -e "$lock" ]; then' \
+    '  if false; then' \
+    'must NOT report a clean release'
+  check_mut 'a failed release is not reported to the operator' \
+    '  if [ "$_urc" -ne 0 ]; then' \
+    '  if false; then' \
+    'must say so, naming the path'
   check_mut 'a damaged disposition reads as an absent receipt' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
@@ -1864,6 +1988,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'a blocked refusal hands back the invalidator benign status' \
+    '    return 1   # blocked-not-recorded' \
+    '    return 0' \
+    'must return non-zero — the invalidator'"'"'s 0 means only that no stale claim survives'
+  check_mut 'a skip hands back the invalidator benign status' \
+    '  return 1   # skip-not-recorded' \
+    '  return 0' \
+    'skip whose receipt was not published must do the same'
   check_mut 'the retirement-and-refusal pair publishes outside the deferral' \
     '    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt' \
     '    :' \
@@ -1942,6 +2074,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ "$ours" != "1" ]; then' \
     '  if false; then' \
     'must NOT remove another clone'
+  check_mut 'uninstall rewrites the settings before proving the receipt removable' \
+    '  if ! mv "$receipt" "$_rprobe" 2>/dev/null; then' \
+    '  if false; then' \
+    'must prove the receipt can be removed BEFORE it rewrites'
   check_mut 'the uninstall pair publishes outside the deferral' \
     '  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal' \
     '  :' \
@@ -1962,9 +2098,17 @@ if [ "$MUTATION" -eq 1 ]; then
 
   check_mut_reset
   check_mut 'a blocked sandbox install is reported as a repair' \
-    '      [ "$LINKS_OK" -eq 1 ] && exit 7' \
-    '      :' \
-    'must exit with a code distinct from 6'
+    '    if adb_settings_refused_now "$SETTINGS_PENDING"; then' \
+    '    if false; then' \
+    'same-HEAD repair path must ask'
+  check_mut 'only an installed receipt is asked the live question' \
+    '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable)' \
+    '    installed)' \
+    'must be pending even though the CLI is STILL below the floor'
+  check_mut 'the post-pull path never asks whether the policy was refused' \
+    '      if adb_settings_refused_now "$BEHIND_SETTINGS_PENDING"; then' \
+    '      if false; then' \
+    'post-pull path must ask before it reports the update complete'
   check_mut 'currency stops asking the live file once the digest matches' \
     '      [ $? -eq 1 ] && return 0' \
     '      [ $? -eq 99 ] && return 0' \

@@ -376,10 +376,16 @@ _adb_wire_settings_locked() {
     # other answering for it. `reuse-missed`. The helper also handles the case this copy got wrong
     # — a FIRST install has no receipt to invalidate, and `rm -f` succeeds on nothing, so the copy
     # reported removing a record that never existed.
-    _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written"
-    local invrc=$?
+    # THE INVALIDATOR'S STATUS IS NOT THIS BRANCH'S — the same rule the opt-out path already
+    # follows. It answers "does a stale claim still survive", and on a FIRST refusal there is no
+    # receipt to invalidate, so it returns 0 and this branch used to report success having recorded
+    # nothing: `adb_settings_pending` then retries the refusal forever and a self-heal calls it a
+    # repair. The refusal not reaching disk is a failure of this branch either way. (PR review)
+    _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written" || true
+    adb_info "  WARN   the refusal was NOT recorded, so \`baseline update\` will keep retrying it and"
+    adb_info "         reporting a repair that applied nothing. Re-run once $receipt is writable."
     adb_settings_lock_resume_signals
-    return "$invrc"
+    return 1   # blocked-not-recorded
   fi
 
   local rtmp="$receipt.adb.$$.tmp"
@@ -612,8 +618,10 @@ _adb_record_skip() {
     return 0
   fi
   rm -f "$receipt.adb.$$.tmp"
-  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded"
-  return $?
+  # SAME RULE, SWEPT RATHER THAN REPORTED. `_adb_record_skip`'s job is to record the skip; the
+  # invalidator's 0 means only that no stale claim survives, which on a first skip is vacuous.
+  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded" || true
+  return 1   # skip-not-recorded
 }
 
 # A receipt that could not be replaced must not be left ASSERTING what this run has just decided is

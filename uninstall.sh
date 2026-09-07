@@ -240,6 +240,28 @@ unwire_settings() {
   #
   # Same shared publish as the installer: refuse a destination that is not a regular file, and
   # carry the original's mode across rather than stamping the umask default onto it.
+  # REMOVABILITY IS PROVED BEFORE THE SETTINGS ARE REWRITTEN, not discovered afterwards. Deferring
+  # signals closed the interruption window; it did nothing for an ordinary I/O failure between the
+  # same two durable changes. Measured: with the receipt made immutable, uninstall removed every
+  # owned leaf and then could not delete the record — leaving it claiming four values that were
+  # gone, so an operator who recreated them had them deleted as ours on the retry.
+  #
+  # A rename is the proof: whatever blocks the unlink (an immutable flag, a delete ACL, a
+  # read-only parent) blocks this too, and it is restored immediately so the state is unchanged on
+  # the way to the publish. That leaves a window rather than a transaction, but the window is now
+  # microseconds of rename rather than the whole settings rewrite. (PR review)
+  local _rprobe="$receipt.adb.$$.probe"
+  if ! mv "$receipt" "$_rprobe" 2>/dev/null; then
+    adb_info "  WARN   $receipt cannot be removed, so the sandbox settings were NOT touched."
+    adb_info "         Removing them first would leave this record claiming values that are gone,"
+    adb_info "         and a retry would then delete anything you recreated under those keys."
+    return 1
+  fi
+  if ! mv "$_rprobe" "$receipt" 2>/dev/null; then
+    adb_info "  ERROR  $receipt was moved aside to test removability and could not be put back."
+    adb_info "         It is at $_rprobe — restore it by hand before re-running; nothing else changed."
+    return 1
+  fi
   adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal
   if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then
     names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
