@@ -531,4 +531,9 @@ One line per resolved review thread, newest last.
 - `precondition-ordering` `uninstall.sh:58` `f32318c` `PRRT_kwDOTfywrM6fgejI` PR #463 2026-09-05 — the lock lives inside the directory being removed, so a home that never had it read as contention
 - `false-guarantee` `scripts/lib/common.sh:634` `f32318c` `self-review-r14-traps` PR #463 2026-09-05 — three mutually-redundant traps made every single-line mutation of the arming unfalsifiable
 - `platform-divergent-test` `scripts/check-settings-fragment.sh:707` `f32318c` `self-review-r14-timing` PR #463 2026-09-05 — a fixed-delay signal fixture passed unloaded and failed under selfcheck's parallel load
+- `status-swallowed` `scripts/lib/common.sh:793` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1V` PR #463 2026-09-07 — an unreadable receipt reported disposition none, so uninstall deleted the record and stranded every key
+- `status-swallowed` `install.sh:181` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1W` PR #463 2026-09-07 — a first opt-out whose receipt could not be written exited 0 having recorded nothing
+- `stale-state-trusted` `scripts/lib/common.sh:1109` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1Y` PR #463 2026-09-07 — a container was carried on existence alone, claiming an object with no owned descendant
+- `stale-state-trusted` `bin/baseline:221` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1Z` PR #463 2026-09-07 — currency compared only the payload digest and never looked at the live file
+- `reuse-missed` `scripts/lib/common.sh:800` `dd5b2e4` `self-review-r15-present` PR #463 2026-09-07 — a duplicate def present was matched first by the mutation row pinning the merge's, disarming it
 <!-- adb:hits:end -->
