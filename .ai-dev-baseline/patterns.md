@@ -536,4 +536,9 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `scripts/lib/common.sh:1109` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1Y` PR #463 2026-09-07 — a container was carried on existence alone, claiming an object with no owned descendant
 - `stale-state-trusted` `bin/baseline:221` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1Z` PR #463 2026-09-07 — currency compared only the payload digest and never looked at the live file
 - `reuse-missed` `scripts/lib/common.sh:800` `dd5b2e4` `self-review-r15-present` PR #463 2026-09-07 — a duplicate def present was matched first by the mutation row pinning the merge's, disarming it
+- `exit-path-asymmetry` `install.sh:428` `44099fe` `PRRT_kwDOTfywrM6fw0Bq` PR #463 2026-09-07 — a signal between the two publications skipped both the receipt write and the rollback
+- `status-swallowed` `install.sh:519` `44099fe` `PRRT_kwDOTfywrM6fw0Bt` PR #463 2026-09-07 — a grep that could not read answered zero rows, and zero rows is a legitimate answer
+- `status-swallowed` `uninstall.sh:238` `44099fe` `PRRT_kwDOTfywrM6fw0Bx` PR #463 2026-09-07 — a readable receipt with a damaged disposition mapped to none, discarding the rows it carried
+- `status-swallowed` `scripts/lib/common.sh:576` `44099fe` `PRRT_kwDOTfywrM6fw0B0` PR #463 2026-09-07 — the lock owner write was unchecked, so acquisition succeeded with no token and the lock could never be released
+- `evidence-discarded` `bin/baseline:666` `44099fe` `PRRT_kwDOTfywrM6fw0B2` PR #463 2026-09-07 — a refused sandbox install was reported as a repair, and the SessionStart flow hid the refusal entirely
 <!-- adb:hits:end -->
