@@ -894,6 +894,57 @@ sd_rc=$?
 [ -e "$(adb_settings_lock_path "$sd")" ] && \
   bad "...and must still release the lock on its way out" || ok
 
+# --- a no-jq provenance refresh that could not publish is not a tolerated skip --------------------
+#
+# 3 means "no jq, nothing was written, come back later", which is true of the settings and false of
+# the ownership proof: when clone B takes over from clone A without jq and the refresh fails, B's
+# root link is paired with a receipt naming A. Uninstalling from B then removes the link and stops,
+# and the retry it advises refuses the settings as A's.
+#
+# A STRUCTURAL PIN, and the reason is the same one that forced the others in this file — stated
+# once here because it keeps recurring: the lock, the receipt and the receipt's temp file all live
+# in ~/.claude, so every way of making the receipt publish fail (an unwritable directory) fails the
+# LOCK's mkdir first and the run refuses before it reaches this branch at all. A fixture that tries
+# anyway does not exercise it; it exits 1 somewhere else and passes for the wrong reason, which is
+# how the first version of this guard was written and why it is not written that way now.
+awk '/uninstall from that clone instead/{f=1} f && /^        return 1   # provenance-broken$/{print "fails"; exit} f && /return 3/{exit}' \
+  "$ROOT/install.sh" | grep -q fails && ok \
+  || bad "a provenance refresh that could not be published must FAIL, not return the tolerated no-jq skip — the root link names this clone while the receipt names another, and that pairing is what a later uninstall depends on"
+grep -qF 'NOT THE TOLERATED SKIP' "$ROOT/install.sh" && ok \
+  || bad "...and must say why it is not the ordinary no-jq case"
+
+# --- the OTHER transactions defer too --------------------------------------------------------------
+#
+# Three more pairs of durable writes were outside the deferral the write path got: the refusal that
+# also prunes a retired key (settings, then a receipt that stops claiming it), the uninstall side
+# (settings, then the receipt is deleted), and the hook wiring (entries, then their receipt). Each
+# leaves a receipt describing a state the file no longer has.
+#
+# Driven on the MECHANISM rather than by racing a signal into each branch: the library call is what
+# every one of them shares, and it is proven above to hold a signal and honour it at the boundary.
+# What is asserted per site is that the branch is inside a deferral at all — see the pins below.
+# PINNED ON THE CODE, NOT ON THE COMMENT. The first version of these three greps matched the
+# explanatory comment above each deferral — so deleting the `adb_settings_lock_defer_signals` call
+# and leaving the prose would have kept them green, which is the failure mode this file has already
+# recorded once. What each asserts now is the ORDER: the deferral is reached before the first
+# durable write of its pair.
+awk '/^    retired=/{f=1}
+     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /adb_publish_json "\$rtmp2" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "the refusal-that-prunes branch must defer signals BEFORE it publishes the pruned settings — the receipt that stops claiming the retired leaf is its second write"
+awk '/^unwire_settings\(\)/{f=1}
+     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /adb_publish_json "\$tmp" "\$settings"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "uninstall must defer signals BEFORE it publishes the rewritten settings — the receipt removal is its second write"
+awk '/^wire_hooks\(\)/{f=1}
+     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /adb_publish_json "\$tmp" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "the hook wiring must defer signals BEFORE it publishes settings.json — its wiring receipt is the second write of the pair"
+# ...and the prune-abort path, which returns from the middle of the transaction, must resume.
+awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) {print "leaked"; exit}} {prev=$0}' \
+  "$ROOT/install.sh" | grep -q leaked && \
+  bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
+
 # --- a refused sandbox install is not a "repair" ---------------------------------------------------
 #
 # When the settings were what was pending and the operator already owns one of the shipped keys,
@@ -929,10 +980,21 @@ awk '/^    7\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit}' "$ROOT/scrip
 # One deferral, and a resume on each exit from the pair — the rollback included. A resume placed at
 # the top of the failure branch would let a pending Ctrl-C exit before the settings were put back,
 # which is the half-applied state the rollback exists to prevent.
-[ "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/install.sh")" -eq 1 ] && ok \
-  || bad "install.sh must defer signals exactly once, around the two publications"
-[ "$(grep -c 'adb_settings_lock_resume_signals' "$ROOT/install.sh")" -ge 5 ] && ok \
-  || bad "...and must resume on every exit from that transaction, the rollback paths included"
+# EVERY TRANSACTION DEFERS, not just the one that was reported. This said "exactly once" when it
+# was written, which encoded the count of transactions that happened to be guarded rather than the
+# rule — and three more pairs of durable writes were sitting in the open: the refusal that also
+# prunes a retired key, the uninstall side, and the hook wiring and its receipt. A count is the
+# wrong shape for "every"; what is checkable is that install.sh guards all three of its own pairs
+# and that no deferral is left without a way back.
+[ "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/install.sh")" -ge 3 ] && ok \
+  || bad "install.sh has three pairs of durable writes — the settings+receipt write, the refusal that prunes, and the hook wiring+receipt — and each must defer signals across its pair"
+[ "$(grep -c 'adb_settings_lock_resume_signals' "$ROOT/install.sh")" \
+  -ge "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/install.sh")" ] && ok \
+  || bad "...and every deferral needs at least one way back: a transaction that defers and never resumes leaves the signal held for the rest of the run"
+[ "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/uninstall.sh")" -eq 1 ] && ok \
+  || bad "uninstall.sh publishes the rewritten settings and then removes the receipt — that pair must defer signals too"
+[ "$(grep -c 'adb_settings_lock_resume_signals' "$ROOT/uninstall.sh")" -ge 3 ] && ok \
+  || bad "...and must resume on each of its three exits (published, receipt-removal failed, rewrite failed)"
 # THE CONSTRAINT, stated as itself: the receipt-publish failure branch must not resume on its FIRST
 # line. Everything after that line is the rollback, and a pending signal honoured before it runs
 # leaves exactly the half-applied state the rollback exists to undo.
@@ -1055,6 +1117,29 @@ unset ADB_SIG_READY ADB_SIG_GO
 [ "$sig_rc" -eq 143 ] && ok || bad "a TERM must terminate the install as a TERM (143), not be swallowed (got $sig_rc)"
 [ -e "$(adb_settings_lock_path "$sig_home")" ] && \
   bad "a TERM mid-install must not leave the settings lock behind — it refuses every later run" || ok
+
+# --- arming is what makes an un-deferred signal release the lock --------------------------------
+#
+# Asserted at the LIBRARY, with no transaction in the way, and that is the point. Driven through
+# `install.sh` this cannot fail: `wire_hooks` runs first and its deferring TERM handler survives
+# into the version probe, so a signal there is recorded rather than fatal and the lock is released
+# by the ordinary path — the fixture reports success while the arming it claims to cover is gone.
+# Measured: with `_adb_arm_lock_traps` neutered the installer still exited 143 with the lock
+# released. A guard whose subject is masked by a neighbouring mechanism is not a guard.
+ad="$work/armdirect"; rm -rf "$ad"; mkdir -p "$ad/.claude"; rm -f "$work/arm.past"
+HOME="$ad" bash -c '
+  . "'"$ROOT"'/scripts/lib/common.sh"
+  adb_settings_lock_take || exit 9
+  kill -TERM $$
+  : > "'"$work"'/arm.past"
+'
+ad_rc=$?
+[ ! -f "$work/arm.past" ] && ok \
+  || bad "an un-deferred TERM must be fatal — nothing after it may run"
+[ "$ad_rc" -eq 143 ] && ok \
+  || bad "...and must exit with the signal's own status, which is what the armed handler adds over bash's default (got $ad_rc)"
+[ -e "$(adb_settings_lock_path "$ad")" ] && \
+  bad "...and must release the lock on its way out — without the armed handler bash dies with the lock still held" || ok
 
 # --- the lock is released WHEN THE PHASE ENDS, not merely when the process does -------------------
 #
@@ -1675,7 +1760,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'a signal is not trapped, so the lock outlives the run' \
     '  _adb_arm_lock_traps' \
     '  :' \
-    'must not leave the settings lock behind'
+    'must release the lock on its way out'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -1779,6 +1864,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'the retirement-and-refusal pair publishes outside the deferral' \
+    '    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt' \
+    '    :' \
+    'must defer signals BEFORE it publishes the pruned settings'
+  check_mut 'the hook wiring publishes outside the deferral' \
+    '  adb_settings_lock_defer_signals   # transaction: hook entries + wiring receipt' \
+    '  :' \
+    'must defer signals BEFORE it publishes settings.json'
+  check_mut 'a broken provenance refresh reports the tolerated no-jq skip' \
+    '        return 1   # provenance-broken' \
+    '        :' \
+    'must FAIL, not return the tolerated no-jq skip'
   check_mut 'the row reader answers zero rows for a receipt it could not read' \
     '  [ "$grc" -le 1 ] || return 20' \
     '  :' \
@@ -1845,6 +1942,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ "$ours" != "1" ]; then' \
     '  if false; then' \
     'must NOT remove another clone'
+  check_mut 'the uninstall pair publishes outside the deferral' \
+    '  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal' \
+    '  :' \
+    'must defer signals BEFORE it publishes the rewritten settings'
   check_mut 'uninstall locks a home that has no Claude directory' \
     '  if [ ! -d "$HOME/.claude" ]; then' \
     '  if false; then' \

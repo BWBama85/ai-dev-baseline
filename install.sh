@@ -220,7 +220,14 @@ _adb_wire_settings_locked() {
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" \
              > "$receipt.adb.$$.tmp" && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then :; else
         rm -f "$receipt.adb.$$.tmp"
-        adb_info "  WARN   ...and the receipt still names another clone; uninstall from that clone instead"
+        adb_info "  WARN   ...and the receipt still names another clone; uninstall from that clone instead."
+        adb_info "         Uninstalling from HERE would remove the root-doc link and stop, and the retry"
+        adb_info "         it advises would then refuse these settings as that clone's — install jq first."
+        # NOT THE TOLERATED SKIP. 3 says "no jq, nothing was written, come back later", which is true
+        # of the settings and false of the ownership proof: this run has taken the install over and
+        # the receipt still names the previous clone, so the pairing a later uninstall depends on is
+        # BROKEN rather than merely deferred. (PR review)
+        return 1   # provenance-broken
       fi
     fi
     return 3
@@ -325,6 +332,12 @@ _adb_wire_settings_locked() {
     # with no ownership record at all, since a blocked receipt carries no rows.
     local retired
     retired="$(printf '%s' "$result" | jq -r '[.pruned[] | join(".")] | join(", ")')"
+    # A REFUSAL THAT PRUNES IS TWO DURABLE WRITES, so it is a transaction exactly as the write path
+    # is: the settings lose the retired key, then the receipt stops claiming it. A signal in
+    # between leaves the old receipt naming a leaf that is no longer there, and if the operator
+    # recreates that value before the next successful install, uninstall deletes it as ours. Only
+    # the normal write branch deferred; this one did its two writes in the open. (PR review)
+    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt
     if [ -n "$retired" ]; then
       local rtmp2="$settings.adb.$$.ret"
       rm -f "$rtmp2"
@@ -339,6 +352,7 @@ _adb_wire_settings_locked() {
         # ABORT BEFORE REPLACING THE RECEIPT. A `skipped-blocked` receipt carries no rows, so
         # writing one here would leave the un-pruned retired key with no record able to remove it
         # on any later update or uninstall.
+        adb_settings_lock_resume_signals
         return 1   # prune-abort
       fi
     fi
@@ -348,6 +362,7 @@ _adb_wire_settings_locked() {
        | adb_claude_settings_receipt_render skipped-blocked "$version" "$floor" \
              "$refused_digest" > "$receipt.adb.$$.tmp" \
        && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
+      adb_settings_lock_resume_signals
       return 0
     fi
     # THE OLD RECORD MUST NOT SURVIVE THE FAILURE. Returning success here left the previous
@@ -362,7 +377,9 @@ _adb_wire_settings_locked() {
     # — a FIRST install has no receipt to invalidate, and `rm -f` succeeds on nothing, so the copy
     # reported removing a record that never existed.
     _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written"
-    return $?
+    local invrc=$?
+    adb_settings_lock_resume_signals
+    return "$invrc"
   fi
 
   local rtmp="$receipt.adb.$$.tmp"
@@ -425,7 +442,7 @@ _adb_wire_settings_locked() {
   # leave the new sandbox values installed with no ownership record and skip the rollback below,
   # which is a worse outcome than the interruption it exists to handle. Deferred, not ignored: a
   # Ctrl-C is honoured the moment the pair is complete. (PR review)
-  adb_settings_lock_defer_signals
+  adb_settings_lock_defer_signals   # transaction: settings + ownership receipt
   if ! adb_publish_json "$tmp" "$settings"; then
     rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"
     adb_settings_lock_resume_signals
@@ -812,8 +829,17 @@ wire_hooks() {
   # Through the shared primitive for the same two reasons the settings writer uses it: a directory
   # at the destination would swallow the rename and report success, and a bare `mv` publishes the
   # temp file's umask mode over a settings.json the operator may have deliberately restricted.
-  adb_publish_json "$tmp" "$settings" || {
-    adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
+  # THE HOOK ENTRIES AND THEIR RECEIPT ARE A TRANSACTION TOO. Same shape as the settings writer:
+  # two durable writes whose PAIRING is what a later self-heal reads, and a signal between them
+  # leaves entries wired with no receipt — so a hook the operator then removes is re-wired every
+  # session, because "removed by hand" and "never landed" become the same state. Milder than the
+  # settings case and the same defect; found by sweeping the class rather than reported.
+  adb_settings_lock_defer_signals   # transaction: hook entries + wiring receipt
+  if ! adb_publish_json "$tmp" "$settings"; then
+    adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"
+    adb_settings_lock_resume_signals
+    return 1
+  fi
   adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
   # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed
   # entry from one that never landed (adb_claude_hooks_receipt). Written by rename, like the
@@ -823,6 +849,7 @@ wire_hooks() {
     rm -f "$receipt.adb.$$.tmp"
     adb_info "  WARN   could not write the wiring receipt $receipt — a hook entry you later remove will be re-wired by the next self-heal until it exists"
   fi
+  adb_settings_lock_resume_signals
 }
 
 run_adapter() {

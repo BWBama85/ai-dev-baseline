@@ -232,8 +232,15 @@ unwire_settings() {
   rm -f "$tmp"
   ( umask 077; : > "$tmp" ) || {
     adb_info "  WARN   could not create the settings temp file — sandbox settings NOT removed"; return 1; }
+  # TWO DURABLE CHANGES, ONE TRANSACTION — the mirror of the installer's. The settings lose the
+  # keys, then the receipt stops claiming them, and a signal in between leaves a receipt naming
+  # leaves that are already gone: if the operator recreates matching values before retrying, the
+  # retry reads them as installer-owned and deletes them. The install side deferred and this side
+  # never did. (PR review)
+  #
   # Same shared publish as the installer: refuse a destination that is not a regular file, and
   # carry the original's mode across rather than stamping the umask default onto it.
+  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal
   if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then
     names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
@@ -247,11 +254,14 @@ unwire_settings() {
       adb_info "  WARN   the sandbox settings were removed, but $receipt could not be deleted."
       adb_info "         Remove it by hand: until you do, a re-install reads its leaves as YOUR"
       adb_info "         removals and will not restore the protection."
+      adb_settings_lock_resume_signals
       return 1; }
+    adb_settings_lock_resume_signals
     return 0
   fi
   rm -f "$tmp"
   adb_info "  WARN   could not rewrite ~/.claude/settings.json — sandbox settings NOT removed; edit it by hand"
+  adb_settings_lock_resume_signals
   return 1
 }
 
