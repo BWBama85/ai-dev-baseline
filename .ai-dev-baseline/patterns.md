@@ -541,4 +541,9 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `uninstall.sh:238` `44099fe` `PRRT_kwDOTfywrM6fw0Bx` PR #463 2026-09-07 — a readable receipt with a damaged disposition mapped to none, discarding the rows it carried
 - `status-swallowed` `scripts/lib/common.sh:576` `44099fe` `PRRT_kwDOTfywrM6fw0B0` PR #463 2026-09-07 — the lock owner write was unchecked, so acquisition succeeded with no token and the lock could never be released
 - `evidence-discarded` `bin/baseline:666` `44099fe` `PRRT_kwDOTfywrM6fw0B2` PR #463 2026-09-07 — a refused sandbox install was reported as a repair, and the SessionStart flow hid the refusal entirely
+- `exit-path-asymmetry` `install.sh:340` `d5c0b08` `PRRT_kwDOTfywrM6fyO_L` PR #463 2026-09-07 — the refusal that prunes did its two durable writes outside the deferral
+- `exit-path-asymmetry` `uninstall.sh:243` `d5c0b08` `PRRT_kwDOTfywrM6fyO_Q` PR #463 2026-09-07 — the uninstall settings rewrite and receipt removal never deferred signals
+- `status-swallowed` `install.sh:230` `d5c0b08` `PRRT_kwDOTfywrM6fyO_U` PR #463 2026-09-07 — a provenance refresh that could not publish returned the tolerated no-jq skip
+- `exit-path-asymmetry` `install.sh:837` `d5c0b08` `self-review-r17-hooks` PR #463 2026-09-07 — the hook wiring and its receipt were a third undeferred pair, found by sweeping the class
+- `false-guarantee` `scripts/check-settings-fragment.sh:926` `d5c0b08` `self-review-r17-pins` PR #463 2026-09-07 — three guards pinned the comment above each deferral rather than the call itself
 <!-- adb:hits:end -->
