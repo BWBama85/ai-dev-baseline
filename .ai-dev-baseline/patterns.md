@@ -553,4 +553,9 @@ One line per resolved review thread, newest last.
 - `evidence-discarded` `bin/baseline:703` `e66737f` `PRRT_kwDOTfywrM6f_L3e` PR #463 2026-09-07 — the refusal was gated on LINKS_OK and absent from the post-pull path, so a repair or update hid it
 - `status-swallowed` `install.sh:615` `e66737f` `self-review-r18-record-skip` PR #463 2026-09-07 — _adb_record_skip returned the same benign invalidator status, found by sweeping the callers
 - `false-guarantee` `scripts/check-settings-fragment.sh` `e66737f` `self-review-r18-countpin` PR #463 2026-09-07 — a grep -c pin counted the function definition and its comment, so deleting a call still cleared it
+- `exit-path-asymmetry` `uninstall.sh:258` `129730b` `PRRT_kwDOTfywrM6gBZ8K` PR #463 2026-09-07 — the removability probe was two renames sitting outside the deferral it protects
+- `status-swallowed` `install.sh:676` `129730b` `PRRT_kwDOTfywrM6gBZ8M` PR #463 2026-09-07 — both wrappers discarded the lock-release status the helper had just started reporting
+- `status-swallowed` `install.sh:544` `129730b` `PRRT_kwDOTfywrM6gBZ8P` PR #463 2026-09-07 — the caller folded the merge's new 20 and 21 into the relinquish path they were introduced to distinguish
+- `stale-state-trusted` `uninstall.sh:174` `129730b` `PRRT_kwDOTfywrM6gBZ8Q` PR #463 2026-09-07 — the root-doc link outranked a source row that explicitly named another clone
+- `false-guarantee` `scripts/check-settings-fragment.sh:1825` `129730b` `self-review-r19-moved-coverage` PR #463 2026-09-07 — preferring the source row moved coverage off the link fallback, leaving it unguarded while the guard still passed
 <!-- adb:hits:end -->
