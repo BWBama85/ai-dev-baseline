@@ -1075,6 +1075,13 @@ EOF
 # scalar: `{"a":false} | getpath(["a","b"])` is an error, not null.
 #
 # Usage: adb_claude_settings_merge <settings.json> <payload.json> <receipt|/dev/null> [--remove]
+# Remove `--remove` mode's synthetic empty payload. The file is created before the receipt is
+# parsed, so the early returns that propagate a receipt-classification failure walked straight past
+# the cleanup at the end of the function — and every failed install or uninstall retry against a
+# damaged receipt left another one behind. Measured: five failed removals, five files.
+# Usage: _adb_merge_cleanup <path-or-empty>
+_adb_merge_cleanup() { [ -n "$1" ] && rm -f "$1" 2>/dev/null; return 0; }
+
 adb_claude_settings_merge() {
   local settings="$1" payload="$2" receipt="$3" mode="${4:-}" owned created work_empty rc
   command -v jq >/dev/null 2>&1 || return 2
@@ -1089,8 +1096,8 @@ adb_claude_settings_merge() {
   # 20, NOT 1: an unreadable RECEIPT and an unparseable SETTINGS file are different failures with
   # different remedies, and one message for both sent the operator to edit the wrong file on the
   # only path that can strand keys.
-  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?
-  created="$(_adb_claude_settings_created_json "$receipt")" || return $?
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
+  created="$(_adb_claude_settings_created_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
   if [ -n "$work_empty" ]; then
     payload="$work_empty"
   elif [ ! -s "$payload" ]; then

@@ -945,6 +945,22 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- a reconciliation is not a repair --------------------------------------------------------------
+#
+# Divergent rows under a skip or an opt-out make the settings pending so the installer can
+# relinquish them, and the receipt keeps that skip disposition — so the blocked check does not fire
+# and the run reported "repaired." for a visit in which no link and no setting changed. The
+# SessionStart caller renders that as "repaired the installed links".
+#
+# STRUCTURAL, for the reason the sibling pin gives: driving the `current)` arm end to end needs a
+# clone, a network classification and the update lock.
+awk '/adb_self_heal && adb_verify_links/{f=1}
+     f && /skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{print "ok"; exit}
+     f && /baseline: repaired\./{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "a visit that only relinquished stale ownership must not report a repair — no link and no setting was changed"
+grep -qE '^\s*8\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
+  || bad "currency-lib.sh must classify that code explicitly rather than letting it fall through to the catch-all as a failure"
+
 # --- a refused sandbox install is not a "repair" ---------------------------------------------------
 #
 # When the settings were what was pending and the operator already owns one of the shipped keys,
@@ -1143,6 +1159,62 @@ awk '/^install_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| icrc=1/{print 
 awk '/^uninstall_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| ucrc=1/{print "ok"; exit} f && /^}/{exit}' \
   "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall_claude must do the same"
+
+# --- nothing of ours in the file means the file is not touched -------------------------------------
+#
+# A rowless receipt — a first blocked refusal, a below-floor skip — or one whose every owned leaf
+# the operator has since edited prunes nothing, and republishing the document anyway rewrote it for
+# no reason. Measured before the fix: an operator's settings.json SYMLINK became a regular file and
+# the contents were reformatted, by an uninstall that had nothing of ours to remove.
+#
+# BOTH WRITERS, because the hook half had the same defect and the review named only the settings
+# half: it republished unconditionally AND through a bare `mv` rather than the shared publish, so it
+# neither refused a non-regular destination nor carried the original's mode across.
+nt="$work/nottouched"; rm -rf "$nt"; mkdir -p "$nt/.claude" "$nt/real"
+printf '{\n  "sandbox": { "enabled": false },\n  "model": "opus"\n}\n' > "$nt/real/settings.json"
+ln -s "$nt/real/settings.json" "$nt/.claude/settings.json"
+nt_sum="$(adb_sha256 "$nt/real/settings.json")"
+stub "2.1.259 (Claude Code)"
+HOME="$nt" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(adb_claude_settings_disposition "$nt/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
+  || bad "precondition: the operator already owns a shipped key, so the install must refuse and record no rows"
+HOME="$nt" bash "$ROOT/uninstall.sh" --agent claude >"$work/nt.log" 2>&1
+[ -L "$nt/.claude/settings.json" ] && ok \
+  || bad "an uninstall with nothing of ours to remove must leave settings.json alone — republishing it turns the operator's SYMLINK into a regular file"
+[ "$(adb_sha256 "$nt/real/settings.json")" = "$nt_sum" ] && ok \
+  || bad "...and must leave it byte-for-byte, not reformatted by a round trip through jq"
+grep -qi "left untouched" "$work/nt.log" && ok \
+  || bad "...and must say that nothing of ours was there, rather than reporting a removal it did not make"
+[ -e "$nt/.claude/.adb-settings-owned" ] && \
+  bad "...but the ownership record itself must still go — that is what uninstall is for" || ok
+# ...and a real removal still happens, or the rule above would be satisfied by never removing anything.
+rt="$work/realremove"; rm -rf "$rt"; mkdir -p "$rt/.claude"
+echo '{"model":"opus"}' > "$rt/.claude/settings.json"
+HOME="$rt" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+jq -e '.hooks != null and .sandbox.enabled == true' "$rt/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "precondition: this fixture must have both hooks and sandbox keys installed"
+HOME="$rt" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+jq -e '(.hooks | length) == 0 and .sandbox == null' "$rt/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and an uninstall that DOES own things must still remove them from both surfaces"
+
+# --- a refused removal leaves no temp file behind ---------------------------------------------------
+#
+# `--remove` mode creates its synthetic empty payload BEFORE the receipt is parsed, so the early
+# returns that propagate a receipt-classification failure walked past the cleanup at the end of the
+# function. Every failed install or uninstall retry against a damaged receipt left another one.
+#
+# Counted in the directory `mktemp` actually uses, which is NOT $TMPDIR on macOS: with no template
+# it takes the per-user confstr path, so a fixture that exports TMPDIR and counts there measures an
+# empty directory and reports success. That is how the first version of this check passed.
+tl="$work/tmpleak"; rm -rf "$tl"; mkdir -p "$tl"
+tl_sys="$(dirname "$(mktemp -u)")"
+printf 'disposition wat\nleaf%s["sandbox","enabled"]%strue\n' "$ADB_TAB" "$ADB_TAB" > "$tl/receipt"
+echo '{"sandbox":{"enabled":true}}' > "$tl/s.json"; echo '{}' > "$tl/f.json"
+tl_before="$(find "$tl_sys" -maxdepth 1 -name 'tmp.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+for _i in 1 2 3; do adb_claude_settings_merge "$tl/s.json" "$tl/f.json" "$tl/receipt" --remove >/dev/null 2>&1; done
+tl_after="$(find "$tl_sys" -maxdepth 1 -name 'tmp.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+[ "$tl_after" -le "$tl_before" ] && ok \
+  || bad "a removal refused for a damaged receipt must not leak its synthetic payload — 3 attempts left $((tl_after - tl_before)) file(s)"
 
 # --- a receipt that could not be CLASSIFIED is not an unparseable live file -------------------------
 #
@@ -1734,6 +1806,31 @@ pending skipped-unprobeable "2.1.100 (Claude Code)" "$work/pend-edited.json" car
 pending skipped-below-floor "2.1.100 (Claude Code)" "$PAYLOAD" carry && \
   bad "...but a below-floor skip whose rows all still match must stay not-pending while the CLI is below the floor" || ok
 
+# --- a receipt naming ANOTHER clone is never current -----------------------------------------------
+#
+# The failed-takeover state leaves this clone's root link paired with the previous clone's record.
+# Uninstall now correctly refuses a foreign record, so a currency check that never compares `source`
+# leaves the keys installed and removable by neither clone while the update reports the install
+# healthy. The installer rewrites `source` on every path, so one visit converges.
+fs_home="$work/foreignsrc"; rm -rf "$fs_home"; mkdir -p "$fs_home/.claude"
+ln -s "$ROOT/agents/claude/CLAUDE.md" "$fs_home/.claude/CLAUDE.md"
+cp "$PAYLOAD" "$fs_home/.claude/settings.json"
+# Everything about it is current EXCEPT the source, which names somebody else. The renderer does
+# not invent a source row — every caller pipes one in — so the fixture supplies it the same way.
+{ adb_claude_settings_source_row "/some/other/clone"
+  adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s .)"; } \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" \
+  > "$fs_home/.claude/.adb-settings-owned"
+[ "$(adb_claude_settings_receipt_source "$fs_home/.claude/.adb-settings-owned")" = "/some/other/clone" ] && ok \
+  || bad "precondition: the fixture receipt must actually record another clone as its source"
+stub "2.1.259 (Claude Code)"
+if HOME="$fs_home" PATH="$work/bin:$PATH" bash -c '
+    . "'"$ROOT"'/scripts/lib/common.sh"
+    SRC="'"$ROOT"'"
+    eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+    adb_settings_pending "$SRC"'
+then ok; else bad "a receipt whose source names another clone must be PENDING — otherwise provenance is never refreshed and uninstall refuses it from both clones"; fi
+
 # ...unless the PAYLOAD ITSELF changed since it was applied. Currency is a digest question: a leaf
 # the operator already owned is never recorded, so a path-set comparison reports pending forever
 # and re-runs the installer every session; and changing a shipped VALUE leaves the path set
@@ -1929,6 +2026,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ "$_urc" -ne 0 ]; then' \
     '  if false; then' \
     'must say so, naming the path'
+  check_mut 'a refused removal leaks its synthetic payload' \
+    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }' \
+    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?' \
+    'must not leak its synthetic payload'
   check_mut 'a damaged disposition reads as an absent receipt' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
@@ -1954,8 +2055,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  :' \
     'must still say exactly that'
   check_mut 'the merge cannot tell an unreadable receipt from unparseable settings' \
-    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?' \
-    '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 1' \
+    '{ rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }' \
+    '{ _adb_merge_cleanup "$work_empty"; return 1; }' \
     'must not blame settings.json'
   check_mut 'the live-leaf predicate answers intact for a divergence' \
     '        | all( . as $r' \
@@ -2166,6 +2267,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  elif [ "$ours" != "1" ]; then' \
     '  elif false; then' \
     'must fall back to the link'
+  check_mut 'uninstall rewrites settings.json when nothing of ours was pruned' \
+    '  if [ "$_pruned_n" -eq 0 ]; then' \
+    '  if false; then' \
+    'must leave settings.json alone'
+  check_mut 'the hook removal republishes a document it did not change' \
+    "        if jq -e --slurpfile orig \"\$settings\" '. == \$orig[0]' \"\$settings.adb.\$\$.tmp\" >/dev/null 2>&1; then" \
+    '        if false; then' \
+    'must leave settings.json alone'
   check_mut 'uninstall discards a failed lock release' \
     '  adb_settings_lock_drop || ucrc=1' \
     '  adb_settings_lock_drop' \
@@ -2205,6 +2314,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '    if adb_settings_refused_now "$SETTINGS_PENDING"; then' \
     '    if false; then' \
     'same-HEAD repair path must ask'
+  check_mut 'a receipt naming another clone is treated as current' \
+    '  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0' \
+    '  :' \
+    'must be PENDING'
+  check_mut 'a reconciliation is reported as a repair' \
+    '        skipped-optout|skipped-below-floor|skipped-unprobeable)' \
+    '        no-such-disposition)' \
+    'must not report a repair'
   check_mut 'only an installed receipt is asked the live question' \
     '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable)' \
     '    installed)' \

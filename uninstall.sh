@@ -135,10 +135,26 @@ EOF
                 else . end
                 | select((.value | type) != "array" or (.value | length) > 0))
             else . end
-          ' "$settings" > "$settings.adb.$$.tmp" && [ -s "$settings.adb.$$.tmp" ] \
-             && mv "$settings.adb.$$.tmp" "$settings"; then
-        adb_info "  hooks  removed global Stop gates + SessionStart currency and run-state hooks from ~/.claude/settings.json"
-        rm -f "$(adb_claude_hooks_receipt "$HOME")"
+          ' "$settings" > "$settings.adb.$$.tmp" && [ -s "$settings.adb.$$.tmp" ]; then
+        # NOTHING OF OURS MEANS NOTHING IS WRITTEN — the same rule the settings half follows, and
+        # the same measured consequence: republishing a document we did not change rewrote an
+        # operator's settings.json symlink into a regular file and reformatted the contents. The
+        # comparison is SEMANTIC, not byte-wise, because jq reformats whatever it reads, so a
+        # byte compare would report a difference on every no-op.
+        if jq -e --slurpfile orig "$settings" '. == $orig[0]' "$settings.adb.$$.tmp" >/dev/null 2>&1; then
+          rm -f "$settings.adb.$$.tmp"
+          rm -f "$(adb_claude_hooks_receipt "$HOME")"
+        # ...and published through the SHARED primitive, for the reasons install.sh's writer gives:
+        # a bare `mv` neither refuses a destination that is not a regular file nor carries the
+        # original's mode across, so it stamps the umask default onto a file the operator may have
+        # deliberately restricted.
+        elif adb_publish_json "$settings.adb.$$.tmp" "$settings"; then
+          adb_info "  hooks  removed global Stop gates + SessionStart currency and run-state hooks from ~/.claude/settings.json"
+          rm -f "$(adb_claude_hooks_receipt "$HOME")"
+        else
+          rm -f "$settings.adb.$$.tmp"
+          adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
+        fi
       else
         rm -f "$settings.adb.$$.tmp"
         adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
@@ -260,6 +276,24 @@ unwire_settings() {
   # read-only parent) blocks this too, and it is restored immediately so the state is unchanged on
   # the way to the publish. That leaves a window rather than a transaction, but the window is now
   # microseconds of rename rather than the whole settings rewrite. (PR review)
+  # NOTHING OF OURS IN THE FILE MEANS THE FILE IS NOT TOUCHED. A rowless receipt — a first blocked
+  # refusal, a below-floor skip — or one whose every owned leaf the operator has since edited or
+  # deleted prunes nothing, and republishing the document anyway rewrote it for no reason: measured,
+  # it turned an operator's settings.json SYMLINK into a regular file and reformatted the contents.
+  # There is nothing of ours to remove, so the record goes and the file is left byte-for-byte.
+  local _pruned_n
+  _pruned_n="$(printf '%s' "$result" | jq -r '.pruned | length' 2>/dev/null)"
+  case "$_pruned_n" in ''|*[!0-9]*) _pruned_n=0 ;; esac
+  if [ "$_pruned_n" -eq 0 ]; then
+    names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
+    [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
+    adb_info "  sandbox  nothing of ours is in ~/.claude/settings.json — the file was left untouched"
+    rm -f "$receipt" || {
+      adb_info "  WARN   the ownership record $receipt could not be deleted — remove it by hand."
+      return 1; }
+    return 0
+  fi
+
   # THE PROBE IS ITSELF TWO RENAMES, so the deferral opens BEFORE it rather than after. A signal
   # between the move-aside and the restore left the receipt stranded at the `.probe` path: the next
   # install would see no ownership record, read the still-installed values as the operator's, and

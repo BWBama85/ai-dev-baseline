@@ -379,6 +379,13 @@ cmd_check() {
       _adb_cu_emit refused \
         "the least-privilege sandbox settings were refused — you already own one of the keys they ship; run './install.sh' in the install-source to see which. Any clone update or link repair in the same run DID complete."
       ;;
+    8)
+      # The settings were pending because ownership rows had DIVERGED under a skip or an opt-out,
+      # and the visit relinquished them without applying any policy key. Something changed — the
+      # ownership record — so this is not `silent`; no link and no setting was repaired, so it is
+      # not the plain `repaired` line either, and saying so is the whole point of the distinct code.
+      _adb_cu_emit repaired "relinquished stale sandbox ownership rows; no link or setting was changed."
+      ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \
           "install-source not updated ($(adb_clone_status "$src" "$(adb_default_branch "$src")" 2>/dev/null)) — reconcile $src, then 'baseline update'." ;;

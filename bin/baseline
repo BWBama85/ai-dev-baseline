@@ -213,6 +213,15 @@ adb_settings_pending() {
   payload="$(adb_claude_settings_payload "$src")"
   [ -s "$payload" ] || return 1
   receipt="$(adb_claude_settings_receipt "$HOME")"
+  # A RECEIPT THAT NAMES ANOTHER CLONE IS NEVER CURRENT, whatever its disposition says. The
+  # failed-takeover state leaves this clone's root link paired with the previous clone's record,
+  # and uninstall now (correctly) refuses a foreign record — so a pull that never refreshes
+  # provenance leaves the keys installed and unremovable by either clone while `baseline update`
+  # reports the install healthy. The installer rewrites `source` on every path it takes, so this
+  # converges after one visit. (PR review)
+  local rsource
+  rsource="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
+  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0
   local disp; disp="$(adb_claude_settings_disposition "$receipt")" || return 1
   # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED THE LIVE QUESTION, not just `installed`. A skip and
   # an opt-out deliberately keep the previous install's ownership rows, and those rows were only
@@ -703,6 +712,19 @@ case "$STATUS" in
     if adb_settings_refused_now "$SETTINGS_PENDING"; then
       [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
       exit 7
+    fi
+    # A RECONCILIATION IS NOT A REPAIR. Divergent rows under a skip or an opt-out make the settings
+    # pending so the installer can relinquish them — and the receipt keeps that skip disposition, so
+    # the blocked check above does not fire and this fell through to "repaired." for a run in which
+    # no link and no setting was changed. Gated on `LINKS_OK` unlike the refusal above, and the
+    # difference is deliberate: with a broken link there really was a repair, whereas a refusal is
+    # security-relevant and must be said whatever else happened. (PR review)
+    if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
+      case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
+        skipped-optout|skipped-below-floor|skipped-unprobeable)
+          echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
+          exit 8 ;;
+      esac
     fi
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
