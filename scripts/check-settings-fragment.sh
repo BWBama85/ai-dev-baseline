@@ -794,8 +794,13 @@ HOME="$unread" bash "$ROOT/uninstall.sh" --agent claude >"$work/unread.log" 2>&1
   || bad "...and must KEEP the receipt — it is the only thing that can prove which keys are ours"
 jq -e '.sandbox.enabled == true' "$unread/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and must not have half-removed the keys it could not prove ownership of"
-grep -qi "could not be read" "$work/unread.log" && ok \
+grep -qi "cannot be read" "$work/unread.log" && ok \
   || bad "...and must say the RECEIPT could not be read"
+# ...and it refuses BEFORE anything is unlinked, because the root-doc link may be that receipt's
+# only proof and this run cannot tell. Warning and carrying on removed the proof and then relied on
+# the settings cleanup to succeed — which is the retryable failure the stamp exists to survive.
+[ -L "$unread/.claude/CLAUDE.md" ] && ok \
+  || bad "...and must unlink NOTHING: the link may be that receipt's only proof of ownership, and this run cannot tell"
 grep -qi "settings.json could not be read as a single JSON value" "$work/unread.log" && \
   bad "...and must not blame settings.json — that is a different failure with a different remedy" || ok
 # ...and the retry works once it is readable again, which is what makes the refusal a hold and not a wall.
@@ -852,7 +857,7 @@ grep -qi "disposition" "$work/dd.log" && ok \
   || bad "...and must name the damaged disposition line, not send the operator to fix permissions"
 grep -qi "could not be READ" "$work/dd.log" && \
   bad "...and must not report a readable-but-damaged receipt as unreadable" || ok
-grep -qi "could not be READ" "$work/unread.log" && ok \
+grep -qi "cannot be read" "$work/unread.log" && ok \
   || bad "...while a genuinely unreadable one must still say exactly that"
 
 # --- the lock is the OWNER FILE, so a write that fails is an acquisition that failed --------------
@@ -1160,6 +1165,26 @@ awk '/^uninstall_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| ucrc=1/{prin
   "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall_claude must do the same"
 
+# --- an unstamped legacy install is not unlinked ----------------------------------------------------
+#
+# A stamp that failed used to warn and carry on into `adb_unlink_manifest`, which removes the only
+# proof a legacy receipt has — and then relied on the settings cleanup succeeding, which is exactly
+# the retryable failure the stamp exists to survive.
+#
+# A STRUCTURAL PIN, and the first version of this was a behavioural fixture that PASSED WITHOUT EVER
+# REACHING THE STAMP. Making the stamp fail needs ~/.claude unwritable, and the settings lock is a
+# directory inside ~/.claude — so the run refuses at the lock, three assertions go green, and none
+# of them has exercised anything. That is the third time this file has met that wall; it is stated
+# here rather than rediscovered a fourth time.
+awk '/could not record provenance on this legacy/{f=1}
+     f && /return 1   # stamp-failed/{print "ok"; exit}
+     f && /^  fi$/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "a legacy receipt whose provenance could not be stamped must FAIL rather than unlink the proof it depends on"
+awk '/^_uninstall_claude_locked\(\)/{f=1}
+     f && /could not record provenance on this legacy/{print "ok"; exit}
+     f && /^  adb_unlink_manifest "\$REPO"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "...and that refusal must come BEFORE adb_unlink_manifest, or the proof is already gone when it fires"
+
 # --- a legacy receipt gains durable provenance before the link that proves it is removed ------------
 #
 # `adb_unlink_manifest` runs before `unwire_settings`, so a receipt with no `source` row whose
@@ -1289,18 +1314,45 @@ jq -e '(.hooks | length) == 0 and .sandbox == null' "$rt/.claude/settings.json" 
 # returns that propagate a receipt-classification failure walked past the cleanup at the end of the
 # function. Every failed install or uninstall retry against a damaged receipt left another one.
 #
-# Counted in the directory `mktemp` actually uses, which is NOT $TMPDIR on macOS: with no template
-# it takes the per-user confstr path, so a fixture that exports TMPDIR and counts there measures an
-# empty directory and reports success. That is how the first version of this check passed.
-tl="$work/tmpleak"; rm -rf "$tl"; mkdir -p "$tl"
-tl_sys="$(dirname "$(mktemp -u)")"
+# COUNTED IN A PRIVATE SPOOL, via a stubbed `mktemp` on PATH. The first version counted the real
+# temp directory, and that directory is SHARED: under `selfcheck`'s parallel run the neighbouring
+# steps create files there constantly, so the check failed on a clean tree with "3 attempts left 1
+# file(s)". Counting a shared namespace cannot be made reliable — isolating the namespace can.
+# (It also cannot use TMPDIR: macOS `mktemp` with no template ignores it and takes the per-user
+# confstr path, which is what made the version before THAT report no leak at all.)
+tl="$work/tmpleak"; rm -rf "$tl"; mkdir -p "$tl/bin" "$tl/spool"
+cat > "$tl/bin/mktemp" <<TLSTUB
+#!/bin/sh
+# No template and no flags is the call the merge makes; everything else passes through untouched.
+if [ \$# -eq 0 ]; then exec $(command -v mktemp) "$tl/spool/tmp.XXXXXX"; fi
+exec $(command -v mktemp) "\$@"
+TLSTUB
+chmod +x "$tl/bin/mktemp"
 printf 'disposition wat\nleaf%s["sandbox","enabled"]%strue\n' "$ADB_TAB" "$ADB_TAB" > "$tl/receipt"
 echo '{"sandbox":{"enabled":true}}' > "$tl/s.json"; echo '{}' > "$tl/f.json"
-tl_before="$(find "$tl_sys" -maxdepth 1 -name 'tmp.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
-for _i in 1 2 3; do adb_claude_settings_merge "$tl/s.json" "$tl/f.json" "$tl/receipt" --remove >/dev/null 2>&1; done
-tl_after="$(find "$tl_sys" -maxdepth 1 -name 'tmp.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
-[ "$tl_after" -le "$tl_before" ] && ok \
-  || bad "a removal refused for a damaged receipt must not leak its synthetic payload — 3 attempts left $((tl_after - tl_before)) file(s)"
+( PATH="$tl/bin:$PATH"
+  for _i in 1 2 3; do adb_claude_settings_merge "$tl/s.json" "$tl/f.json" "$tl/receipt" --remove >/dev/null 2>&1; done )
+[ "$(find "$tl/spool" -type f | wc -l | tr -d ' ')" -eq 0 ] && ok \
+  || bad "a removal refused for a damaged receipt must not leak its synthetic payload — 3 attempts left $(find "$tl/spool" -type f | wc -l | tr -d ' ') file(s)"
+# ...and the stub must actually have been reached, or the count above is zero for the wrong reason.
+( PATH="$tl/bin:$PATH"; adb_claude_settings_merge "$tl/s.json" "$tl/f.json" "$tl/receipt" >/dev/null 2>&1 ) || true
+mktemp_probe="$(PATH="$tl/bin:$PATH" mktemp)"; case "$mktemp_probe" in "$tl/spool/"*) ok ;; *) bad "the mktemp stub was not on PATH, so the leak count above proved nothing" ;; esac
+rm -f "$mktemp_probe"
+
+# --- the reader still tells UNREADABLE from DAMAGED, even though uninstall now refuses earlier ------
+#
+# `unwire_settings` prints a different message for each, and that was their only behavioural
+# observable — but uninstall now refuses an unreadable receipt BEFORE it gets there, so the 20 path
+# is reachable only by a race between that check and the merge's own read. The branch is kept as
+# defence in depth against exactly that race, and pinned here because nothing else can fail on it.
+awk '/^adb_claude_settings_disposition\(\)/{f=1}
+     f && /\[ "\$grc" -le 1 \] \|\| return 20/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/scripts/lib/common.sh" | grep -q ok && ok \
+  || bad "the disposition reader must still answer 20 for a receipt it could not READ, distinct from 21 for one it could not classify — uninstall re-reads after its own check and the two need different remedies"
+awk '/^unwire_settings\(\)/{f=1}
+     f && /elif \[ "\$mrc" -eq 21 \]; then/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "...and unwire_settings must keep a distinct arm for each, or the remedies collapse into one wrong message"
 
 # --- a receipt that could not be CLASSIFIED is not an unparseable live file -------------------------
 #
@@ -1592,15 +1644,27 @@ rm -f "$unread_home/.claude/settings.json"
 HOME="$unread_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
 [ "$(grep -c "^leaf$ADB_TAB" "$unread_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
   || bad "an absent settings.json is inability to prove ownership and must drop the carried rows"
-# ...and one that EXISTS but does not parse. The two checks cover the absent case together, so only
-# this input can show that the probe result itself is examined rather than merely the file size.
+# ...but one that EXISTS and cannot be READ OR PARSED is a different fact, and this rule is the
+# REVERSE of the one that stood here. It used to require the rows dropped, on the reasoning that an
+# unprovable claim must not be kept — and the consequence was worse than the premise: the run
+# published a skip receipt with NO ownership rows while every sandbox key stayed installed, so
+# uninstall could never remove them and the next install read them as the operator's and refused.
+#
+# Keeping them is safe because removal is value-gated independently: a recorded leaf is deleted only
+# while its live value still equals the recorded one, so a retained row can never delete something
+# the operator put there. An ABSENT or EMPTY file stays a relinquishment, because no file means no
+# keys and there is genuinely nothing left to own.
 bad_home="$work/unparseable"; rm -rf "$bad_home"; mkdir -p "$bad_home/.claude"
 echo '{"model":"opus"}' > "$bad_home/.claude/settings.json"
 HOME="$bad_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+bad_rows="$(grep -c "^leaf$ADB_TAB" "$bad_home/.claude/.adb-settings-owned")"
 printf '{"sandbox": \n' > "$bad_home/.claude/settings.json"
-HOME="$bad_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
-[ "$(grep -c "^leaf$ADB_TAB" "$bad_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
-  || bad "a settings.json that exists but does not parse is inability to prove ownership and must drop the carried rows"
+HOME="$bad_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/bad.log" 2>&1 && \
+  bad "an opt-out over settings that cannot be parsed must FAIL — writing a rowless receipt there leaves every installed key unremovable" || ok
+[ "$(grep -c "^leaf$ADB_TAB" "$bad_home/.claude/.adb-settings-owned")" -eq "$bad_rows" ] && ok \
+  || bad "...and must keep every carried row: ownership was neither proved nor given up, and removal is value-gated anyway"
+grep -qi "neither proved nor" "$work/bad.log" && ok \
+  || bad "...and must say which of the two it is, rather than reporting a relinquishment it did not make"
 
 # diverged: the surface is the operator's, so the opt-out records the choice without claiming it
 jq 'del(.sandbox.enabled)' "$oo_home/.claude/settings.json" > "$work/oo.json" && mv "$work/oo.json" "$oo_home/.claude/settings.json"
@@ -2147,11 +2211,11 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'an unreadable receipt is reported as a damaged one' \
     '  [ "$grc" -le 1 ] || return 20' \
     '  :' \
-    'must still say exactly that'
+    'must still answer 20 for a receipt it could not READ'
   check_mut 'the merge cannot tell an unreadable receipt from unparseable settings' \
     '{ rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }' \
     '{ _adb_merge_cleanup "$work_empty"; return 1; }' \
-    'must not blame settings.json'
+    'must name the damaged disposition line'
   check_mut 'the live-leaf predicate answers intact for a divergence' \
     '        | all( . as $r' \
     '        | any( . as $r' \
@@ -2258,7 +2322,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'ownership is proved against the fragment again' \
     '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)"; mrc=$?' \
     '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)"; mrc=$?' \
-    'damaged FRAGMENT must not cost ownership'
+    'must carry the previous receipt'"'"'s leaf rows forward'
   check_mut 'the lock is never released' \
     '  adb_settings_lock_drop' \
     '  :' \
@@ -2299,8 +2363,12 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 1   # provenance-broken' \
     '        :' \
     'must FAIL, not return the tolerated no-jq skip'
+  check_mut 'an unreadable live file is treated as a relinquishment' \
+    '  if [ "$mrc" -ne 0 ]; then' \
+    '  if false; then' \
+    'must keep every carried row'
   check_mut 'a receipt that could not be classified is read as unparseable settings' \
-    '  if [ "$mrc" -eq 20 ] || [ "$mrc" -eq 21 ]; then' \
+    '  if [ "$mrc" -ne 0 ]; then' \
     '  if false; then' \
     'must fail, not publish an ownership-free replacement'
   check_mut 'the wrapper discards a failed lock release' \
@@ -2340,8 +2408,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)"' \
     'must be TOLD that ownership was relinquished'
   check_mut 'a carry diagnostic the fixtures do not reach loses its redirect' \
-    '    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed." >&2' \
-    '    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed."' \
+    '    adb_info "  sandbox  the live settings could not be read, so ownership was neither proved nor" >&2' \
+    '    adb_info "  sandbox  the live settings could not be read, so ownership was neither proved nor"' \
     'must redirect to stderr'
   check_mut 'a skip whose record could not be published stays silent' \
     '  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded"' \
@@ -2385,14 +2453,18 @@ if [ "$MUTATION" -eq 1 ]; then
     "  if printf '%s' \"\$result\" | jq -e --slurpfile orig \"\$settings\" '.settings == \$orig[0]' >/dev/null 2>&1; then" \
     "  if [ \"\$(printf '%s' \"\$result\" | jq -r '.pruned | length')\" -eq 0 ]; then" \
     'empty container this install created must still be removed'
+  check_mut 'an unreadable legacy receipt is unlinked anyway' \
+    '    if [ -f "$_lr" ] && ! cat "$_lr" >/dev/null 2>&1; then' \
+    '    if false; then' \
+    'must unlink NOTHING'
+  check_mut 'a failed stamp warns and carries on' \
+    '        return 1   # stamp-failed' \
+    '        return 0' \
+    'must FAIL rather than unlink the proof it depends on'
   check_mut 'the legacy provenance stamp is skipped' \
     '    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \' \
     '    if false; then :; elif false; then \' \
     'must be stamped with this clone as its source'
-  check_mut 'the provenance stamp writes from an empty read' \
-    '_lrbody="$(cat "$_lr" 2>/dev/null)" \' \
-    '_lrbody="$(cat "$_lr" 2>/dev/null; true)" \' \
-    'must be left untouched by the provenance stamp'
   check_mut 'the hook removal republishes a document it did not change' \
     "        if jq -e --slurpfile orig \"\$settings\" '. == \$orig[0]' \"\$settings.adb.\$\$.tmp\" >/dev/null 2>&1; then" \
     '        if false; then' \

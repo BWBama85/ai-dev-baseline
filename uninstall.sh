@@ -102,6 +102,16 @@ _uninstall_claude_locked() {
   # reader of this file greps for its own row prefix rather than a fixed layout.
   if [ "$ours_settings" -eq 1 ]; then
     local _lr _lrbody; _lr="$(adb_claude_settings_receipt "$HOME")"
+    # AN UNREADABLE RECEIPT STOPS THE RUN BEFORE ANYTHING IS UNLINKED. We cannot tell whether it
+    # carries a source row, so we cannot tell whether removing the link destroys its only proof —
+    # and the link is removed a few lines below, before the settings cleanup that would report the
+    # problem. Refusing here costs a retry; continuing costs the ability to ever clean up.
+    if [ -f "$_lr" ] && ! cat "$_lr" >/dev/null 2>&1; then
+      adb_info "  ERROR  $_lr exists but cannot be read, so this run cannot tell whether the root-doc"
+      adb_info "         link is its only proof of ownership. NOTHING was unlinked — fix its"
+      adb_info "         permissions and re-run, or removing the link would strand the settings."
+      return 1
+    fi
     # READ IT WHOLE FIRST, and write from that copy. A receipt this run cannot read reports NO
     # source row for the same reason it reports nothing else — so a stamp driven off that answer
     # ran `cat` on an unreadable file, got nothing, and published a receipt containing only the new
@@ -115,8 +125,13 @@ _uninstall_claude_locked() {
         adb_info "           cleanup can still be retried after the root-doc link is gone"
       else
         rm -f "$_lr.adb.$$.prov"
-        adb_info "  WARN   could not record provenance on the legacy ownership record — if the settings"
-        adb_info "         cleanup below fails, a retry will not be able to prove these keys are ours"
+        # AND A FAILED STAMP STOPS THE RUN TOO. Warning and carrying on into `adb_unlink_manifest`
+        # removed the only proof this receipt has and then relied on the settings cleanup to
+        # succeed — which is exactly the retryable failure the stamp exists to survive.
+        adb_info "  ERROR  could not record provenance on this legacy ownership record, and the"
+        adb_info "         root-doc link is its only proof. NOTHING was unlinked — fix whatever"
+        adb_info "         prevented the write and re-run."
+        return 1   # stamp-failed
       fi
     fi
   fi

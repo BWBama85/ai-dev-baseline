@@ -575,13 +575,16 @@ _adb_carry_rows() {
   # matching leaf stayed installed. Refuse instead, and let the caller keep the old record.
   local mrc
   probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)"; mrc=$?
-  if [ "$mrc" -eq 20 ] || [ "$mrc" -eq 21 ]; then
+  # EVERY MERGE FAILURE HERE IS OPERATIONAL, so every one of them refuses. Divergence is not
+  # signalled by a failure at all — it is the row count further down — so treating a failed merge as
+  # "cannot prove, therefore relinquish" published a skip receipt with no ownership rows while the
+  # keys stayed installed, and uninstall could then never remove them. A settings file that is
+  # ABSENT or EMPTY is a different fact and is handled above: no file means no keys, so there is
+  # genuinely nothing left to own. (PR review)
+  if [ "$mrc" -ne 0 ]; then
+    adb_info "  sandbox  the live settings could not be read, so ownership was neither proved nor" >&2
+    adb_info "           given up — the existing record is kept and this run does not write one." >&2
     return "$mrc"
-  fi
-  [ "$mrc" -eq 0 ] || probe=""
-  if [ -z "$probe" ]; then
-    adb_info "  sandbox  ownership relinquished — the live settings could not be parsed." >&2
-    return 0
   fi
   local recorded proved
   recorded="$(adb_claude_settings_receipt_leaves "$receipt" | grep -c . || true)"
