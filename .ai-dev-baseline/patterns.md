@@ -570,4 +570,8 @@ One line per resolved review thread, newest last.
 - `exit-path-asymmetry` `install.sh:364` `e6557af` `PRRT_kwDOTfywrM6gFbBD` PR #463 2026-09-08 — retirement pruned the settings before the refusal receipt was known to be replaceable
 - `evidence-discarded` `uninstall.sh:208` `e6557af` `PRRT_kwDOTfywrM6gFbBL` PR #463 2026-09-08 — a legacy receipt lost its only proof of ownership when the link was removed before cleanup
 - `partial-validation` `uninstall.sh:210` `e6557af` `self-review-r21-stamp-truncation` PR #463 2026-09-08 — the provenance stamp wrote from an empty read, destroying every ownership row on an unreadable receipt
+- `status-swallowed` `install.sh:584` `c8621f8` `PRRT_kwDOTfywrM6gIqHH` PR #463 2026-09-08 — an operational read failure was treated as proved divergence and relinquished ownership
+- `exit-path-asymmetry` `uninstall.sh:120` `c8621f8` `PRRT_kwDOTfywrM6gIqHK` PR #463 2026-09-08 — a failed or impossible provenance stamp warned and carried on into the unlink that removes its proof
+- `platform-divergent-test` `scripts/check-settings-fragment.sh` `c8621f8` `self-review-r22-shared-tmp` PR #463 2026-09-08 — the leak guard counted a SHARED temp directory and failed under the parallel gate
+- `evidence-discarded` `scripts/check-settings-fragment.sh` `c8621f8` `self-review-r22-splice` PR #463 2026-09-08 — a positional text splice deleted two assertions, leaving their mutation rows pointing at nothing
 <!-- adb:hits:end -->
