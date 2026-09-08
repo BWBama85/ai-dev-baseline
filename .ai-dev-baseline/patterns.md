@@ -558,4 +558,10 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `install.sh:544` `129730b` `PRRT_kwDOTfywrM6gBZ8P` PR #463 2026-09-07 — the caller folded the merge's new 20 and 21 into the relinquish path they were introduced to distinguish
 - `stale-state-trusted` `uninstall.sh:174` `129730b` `PRRT_kwDOTfywrM6gBZ8Q` PR #463 2026-09-07 — the root-doc link outranked a source row that explicitly named another clone
 - `false-guarantee` `scripts/check-settings-fragment.sh:1825` `129730b` `self-review-r19-moved-coverage` PR #463 2026-09-07 — preferring the source row moved coverage off the link fallback, leaving it unguarded while the guard still passed
+- `exit-path-asymmetry` `uninstall.sh:283` `e328e92` `PRRT_kwDOTfywrM6gDcLO` PR #463 2026-09-08 — the settings were republished when nothing was pruned, destroying the operator's symlink
+- `status-swallowed` `scripts/lib/common.sh:1092` `e328e92` `PRRT_kwDOTfywrM6gDcLI` PR #463 2026-09-08 — the early return added for 20/21 walked past the temp cleanup at the end of the function
+- `stale-state-trusted` `bin/baseline:216` `e328e92` `PRRT_kwDOTfywrM6gDcLH` PR #463 2026-09-08 — currency never compared the receipt's source, so a foreign record was reported healthy forever
+- `evidence-discarded` `bin/baseline:703` `e328e92` `PRRT_kwDOTfywrM6gDcLD` PR #463 2026-09-08 — a visit that only relinquished stale ownership was reported as a repair of links
+- `reuse-missed` `uninstall.sh:135` `e328e92` `self-review-r20-hooks-publish` PR #463 2026-09-08 — the hook removal republished unconditionally and through a bare mv rather than the shared publish
+- `false-guarantee` `scripts/check-settings-fragment.sh` `e328e92` `self-review-r20-handverified` PR #463 2026-09-08 — the symlink fix was verified by hand and never guarded, so two mutation rows pointed at an assertion that did not exist
 <!-- adb:hits:end -->
