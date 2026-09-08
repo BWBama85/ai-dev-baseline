@@ -950,6 +950,68 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- the row count is ONE integer, whatever the receipt holds ---------------------------------------
+#
+# `grep -c` PRINTS the count and EXITS 1 when it is zero, so a `|| printf 0` fallback appended a
+# second zero and the function returned "0\n0". The caller compares it arithmetically, so a rowless
+# receipt made the classifier say "integer expression expected" and fall through to the wrong
+# outcome — a rowless `skipped-optout` being refreshed is exactly that case.
+rc_home="$work/rowcount"; rm -rf "$rc_home"; mkdir -p "$rc_home/.claude"
+printf 'disposition skipped-optout\nversion -\nfloor 2.1.187\n' > "$rc_home/.claude/.adb-settings-owned"
+rc_out="$(HOME="$rc_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+  adb_settings_row_count')"
+[ "$(printf '%s' "$rc_out" | wc -l | tr -d ' ')" -eq 0 ] && ok \
+  || bad "the row count must be ONE value — grep -c prints its zero AND exits 1, and a printf fallback then emits a second one"
+HOME="$rc_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+  n="$(adb_settings_row_count)"; [ "$n" -eq 0 ]' 2>/dev/null && ok \
+  || bad "...and must survive the arithmetic comparison its only caller performs"
+# ...and it still counts correctly when there ARE rows.
+printf 'disposition installed\nleaf%s["a","b"]%strue\nleaf%s["c","d"]%s1\n' \
+  "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" > "$rc_home/.claude/.adb-settings-owned"
+[ "$(HOME="$rc_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+  adb_settings_row_count')" = "2" ] && ok \
+  || bad "...and must still report the real count when the receipt carries rows"
+# ...and when the receipt exists but cannot be READ at all, grep fails and prints nothing, so the
+# normalisation is what stands between that and an empty string reaching the caller's arithmetic.
+chmod 000 "$rc_home/.claude/.adb-settings-owned"
+rc_unread="$(HOME="$rc_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+  adb_settings_row_count')"
+chmod 600 "$rc_home/.claude/.adb-settings-owned"
+case "$rc_unread" in ''|*[!0-9]*) bad "the row count must still be ONE integer when the receipt cannot be read — grep prints nothing there, and an empty string reaches an arithmetic test" ;; *) ok ;; esac
+
+# --- a malformed source row is not provenance -------------------------------------------------------
+#
+# `source<TAB>` with nothing after it satisfies a raw grep for the row and is REJECTED by the reader,
+# so the stamp was skipped and the receipt kept provenance nobody can use — and then the link went.
+ms="$work/malformedsrc"; rm -rf "$ms"; mkdir -p "$ms/.claude"
+echo '{"model":"opus"}' > "$ms/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$ms" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+sed "s|^source$ADB_TAB.*|source$ADB_TAB|" "$ms/.claude/.adb-settings-owned" > "$work/ms.tmp" && mv "$work/ms.tmp" "$ms/.claude/.adb-settings-owned"
+[ -z "$(adb_claude_settings_receipt_source "$ms/.claude/.adb-settings-owned" 2>/dev/null)" ] && ok \
+  || bad "precondition: the reader must reject a source row with no value"
+printf 'not json' > "$ms/.claude/settings.json"
+HOME="$ms" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+[ "$(adb_claude_settings_receipt_source "$ms/.claude/.adb-settings-owned" 2>/dev/null)" = "$ROOT" ] && ok \
+  || bad "a receipt whose source row is malformed must be stamped like one that has none — a row is not a value, and the link is about to be removed"
+[ "$(grep -c "^source$ADB_TAB" "$ms/.claude/.adb-settings-owned")" -eq 1 ] && ok \
+  || bad "...and the malformed row must be REPLACED, not left to outrank the good one appended after it"
+
+# --- the post-pull path asks both questions ---------------------------------------------------------
+#
+# It exited 0 on any successful heal, so an update that also lost the protections was rendered as a
+# plain `updated` with the installer's own warning suppressed by the wrapper.
+awk '/^  behind\)/{f=1}
+     f && /adb_settings_downgraded_now/{print "ok"; exit}
+     f && /baseline: update complete\./{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "the post-pull path must ask whether the protections were downgraded before it reports the update complete"
+[ "$(grep -c 'adb_settings_downgraded_now' "$ROOT/bin/baseline")" -ge 3 ] && ok \
+  || bad "...through the shared predicate both self-heal paths use, not a second copy of the question"
+
 # --- a DOWNGRADE is not a reconciliation either -----------------------------------------------------
 #
 # Both leave a skip disposition behind, and classifying them by that label printed "relinquished
@@ -961,9 +1023,13 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
 # STRUCTURAL, for the reason its siblings give: driving the `current)` arm needs a clone, a network
 # classification and the update lock.
 awk '/skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{f=1}
-     f && /\[ "\$\(adb_settings_row_count\)" -eq "\$SETTINGS_ROWS_BEFORE" \]/{print "ok"; exit}
+     f && /adb_settings_downgraded_now/{print "ok"; exit}
      f && /relinquished stale sandbox ownership/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "a skip left by a self-heal must be classified by whether ownership rows were actually relinquished, not by the disposition label — the sandbox protections are NOT being applied is a different fact from a reconciliation"
+awk '/^adb_settings_downgraded_now\(\)/{f=1}
+     f && /\[ "\$\(adb_settings_row_count\)" -eq "\$2" \]/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "...and that predicate must decide on the ROW COUNT: a reconciliation drops the rows and a downgrade keeps every one, which is the only thing that separates them"
 grep -qE '^\s*9\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
   || bad "currency-lib.sh must classify the downgrade code explicitly rather than letting it fall through to the catch-all as a failure"
 awk '/^    9\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit} f && /^    5\)/{exit}' \
@@ -2539,6 +2605,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 1   # stamp-failed' \
     '        return 0' \
     'must FAIL rather than unlink the proof it depends on'
+  check_mut 'a malformed source row counts as provenance' \
+    '       && [ -z "$(adb_claude_settings_receipt_source "$_lr" 2>/dev/null || true)" ]; then' \
+    '       && [ -z "$(printf '"'"'%s\\n'"'"' "$_lrbody" | grep -m1 "^source$(printf '"'"'\\t'"'"')" || true)" ]; then' \
+    'must be stamped like one that has none'
   check_mut 'the legacy provenance stamp is skipped' \
     '    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \' \
     '    if false; then :; elif false; then \' \
@@ -2590,10 +2660,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if [ "$disp" = installed ]; then' \
     '      if false; then' \
     'downgraded BELOW the floor must be pending once'
+  check_mut 'the row count is emitted without normalising what grep produced' \
+    '  case "$n" in '"''"'|*[!0-9]*) n=0 ;; esac' \
+    '  :' \
+    'must still be ONE integer when the receipt cannot be read'
+  check_mut 'the post-pull path never asks about a downgrade' \
+    '      if adb_settings_downgraded_now "$BEHIND_SETTINGS_PENDING" "$BEHIND_ROWS_BEFORE"; then' \
+    '      if false; then' \
+    'post-pull path must ask whether the protections were downgraded'
   check_mut 'a downgrade is reported as a relinquishment' \
-    '             && [ "$(adb_settings_row_count)" -eq "$SETTINGS_ROWS_BEFORE" ]; then' \
-    '             && false; then' \
-    'must be classified by whether ownership rows were actually relinquished'
+    '  [ "$(adb_settings_row_count)" -eq "$2" ] || return 1' \
+    '  :' \
+    'must decide on the ROW COUNT'
   check_mut 'a receipt naming another clone is treated as current' \
     '  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0' \
     '  :' \

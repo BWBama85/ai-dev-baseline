@@ -117,9 +117,15 @@ _uninstall_claude_locked() {
     # ran `cat` on an unreadable file, got nothing, and published a receipt containing only the new
     # source row: every ownership row destroyed by the very step meant to preserve provenance.
     # An unreadable receipt is left exactly alone; `unwire_settings` refuses it and says so.
+    # A ROW IS NOT A VALUE. `source<TAB>` with nothing after it satisfies a raw grep for the row and
+    # is rejected by the reader, so the stamp was skipped and the receipt kept provenance nobody can
+    # use — then the link went, and the next run read it as foreign. Ask the READER what it will
+    # answer, and rebuild without any existing source rows so a malformed one cannot outrank the
+    # good one appended after it. (PR review)
     if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \
-       && [ -z "$(printf '%s\n' "$_lrbody" | grep -m1 "^source$(printf '\t')" || true)" ]; then
-      if { printf '%s\n' "$_lrbody"; adb_claude_settings_source_row "$REPO"; } > "$_lr.adb.$$.prov" \
+       && [ -z "$(adb_claude_settings_receipt_source "$_lr" 2>/dev/null || true)" ]; then
+      if { printf '%s\n' "$_lrbody" | grep -v "^source$(printf '\t')"
+           adb_claude_settings_source_row "$REPO"; } > "$_lr.adb.$$.prov" \
          && adb_publish_json "$_lr.adb.$$.prov" "$_lr"; then
         adb_info "  sandbox  recorded this clone as the source of a legacy ownership record, so a failed"
         adb_info "           cleanup can still be retried after the root-doc link is gone"

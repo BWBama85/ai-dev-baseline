@@ -193,6 +193,25 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # link-only verifier. Without it, an adopter who upgrades the CLI past the floor never receives
 # the settings: the one transition the whole detect-skip-say design is FOR.
 # Usage: adb_settings_pending <src>
+# Did the self-heal that just ran leave the protections UNAPPLIED rather than relinquished? Both
+# outcomes wear a skip disposition; only the ownership rows tell them apart — a reconciliation drops
+# them, a downgrade keeps every one and stops the policy being applied at all.
+# Usage: adb_settings_downgraded_now <were-the-settings-pending-before> <row-count-before>
+# Returns: 0 when this run should report a downgrade rather than a reconciliation
+adb_settings_downgraded_now() {
+  [ "${1:-0}" -eq 1 ] || return 1
+  [ "${2:-0}" -gt 0 ] || return 1
+  case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
+    skipped-below-floor|skipped-unprobeable) ;;
+    *) return 1 ;;
+  esac
+  [ "$(adb_settings_row_count)" -eq "$2" ] || return 1
+  echo "baseline: the sandbox protections are NOT being applied — the \`claude\` CLI no longer" >&2
+  echo "          clears the version floor, or could not be probed (#248). Ownership of the" >&2
+  echo "          keys already written is unchanged; upgrade the CLI to have them re-applied." >&2
+  return 0
+}
+
 # Did the self-heal that just ran leave the sandbox policy REFUSED? Asked of the receipt rather
 # than inferred from the installer's status, which is 0 by contract for an all-or-nothing refusal.
 # Usage: adb_settings_refused_now <were-the-settings-pending-before>
@@ -202,9 +221,15 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # self-heal, both of which leave a skip disposition behind.
 # Outputs: the count on stdout; 0 when there is no readable receipt
 adb_settings_row_count() {
-  local r; r="$(adb_claude_settings_receipt "$HOME")"
+  local r n; r="$(adb_claude_settings_receipt "$HOME")"
   [ -f "$r" ] || { printf '0'; return 0; }
-  grep -c "^leaf$(printf '\t')" "$r" 2>/dev/null || printf '0'
+  # `grep -c` PRINTS the count and EXITS 1 when that count is zero, so `|| printf 0` appended a
+  # second zero and this returned "0\n0" — which made the caller's arithmetic test say "integer
+  # expression expected" and fall through to the wrong classification. Keep grep's number and
+  # neutralise only its status. (PR review)
+  n="$(grep -c "^leaf$(printf '\t')" "$r" 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
 }
 
 adb_settings_refused_now() {
@@ -743,19 +768,9 @@ case "$STATUS" in
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
-          # WHICH KIND OF SKIP IS THIS? A reconciliation RELINQUISHES rows; a downgrade keeps every
-          # one of them and stops the protections being applied at all. Classifying both from the
-          # disposition printed "relinquished stale ownership" over a CLI that had dropped below the
-          # floor — and the SessionStart wrapper suppresses the installer's own warning, so that
-          # false line was the only thing an operator saw. Compare the row count instead of the
-          # label: it is what actually distinguishes them. (PR review)
-          if [ "$SETTINGS_ROWS_BEFORE" -gt 0 ] \
-             && [ "$(adb_settings_row_count)" -eq "$SETTINGS_ROWS_BEFORE" ]; then
-            echo "baseline: the sandbox protections are NOT being applied — the \`claude\` CLI no longer" >&2
-            echo "          clears the version floor, or could not be probed (#248). Ownership of the" >&2
-            echo "          keys already written is unchanged; upgrade the CLI to have them re-applied." >&2
-            exit 9
-          fi
+          # WHICH KIND OF SKIP IS THIS? Asked through the shared predicate, because the post-pull
+          # path has to ask it too and a second copy is a second chance to disagree.
+          adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && exit 9
           echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
           exit 8 ;;
       esac
@@ -785,6 +800,7 @@ case "$STATUS" in
     # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that
     # changes the fragment is exactly how this path acquires pending settings in the first place.
     BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC" && BEHIND_SETTINGS_PENDING=1
+    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"
     if adb_self_heal && adb_verify_links "$SRC"; then
       # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an
       # update that also refused the policy was rendered as a plain `updated` with the installer's
@@ -793,6 +809,13 @@ case "$STATUS" in
       if adb_settings_refused_now "$BEHIND_SETTINGS_PENDING"; then
         echo "baseline: the clone WAS updated and every link resolves; only the settings were refused." >&2
         exit 7
+      fi
+      # AND THE DOWNGRADE, for the same reason the refusal is asked here: this branch exited 0 on
+      # any successful heal, so an update that also lost the protections was rendered as a plain
+      # `updated` with the installer's own warning suppressed.
+      if adb_settings_downgraded_now "$BEHIND_SETTINGS_PENDING" "$BEHIND_ROWS_BEFORE"; then
+        echo "baseline: the clone WAS updated and every link resolves." >&2
+        exit 9
       fi
       echo "baseline: update complete."
       exit 0
