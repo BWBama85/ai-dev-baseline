@@ -564,4 +564,10 @@ One line per resolved review thread, newest last.
 - `evidence-discarded` `bin/baseline:703` `e328e92` `PRRT_kwDOTfywrM6gDcLD` PR #463 2026-09-08 — a visit that only relinquished stale ownership was reported as a repair of links
 - `reuse-missed` `uninstall.sh:135` `e328e92` `self-review-r20-hooks-publish` PR #463 2026-09-08 — the hook removal republished unconditionally and through a bare mv rather than the shared publish
 - `false-guarantee` `scripts/check-settings-fragment.sh` `e328e92` `self-review-r20-handverified` PR #463 2026-09-08 — the symlink fix was verified by hand and never guarded, so two mutation rows pointed at an assertion that did not exist
+- `partial-validation` `uninstall.sh:287` `e6557af` `PRRT_kwDOTfywrM6gFbBF` PR #463 2026-09-08 — the change test counted pruned leaves while the removal also deletes owned containers
+- `stale-state-trusted` `bin/baseline:264` `e6557af` `PRRT_kwDOTfywrM6gFbBI` PR #463 2026-09-08 — an installed receipt was current forever without rechecking that the CLI still clears the floor
+- `exit-path-asymmetry` `install.sh:634` `e6557af` `PRRT_kwDOTfywrM6gFbBA` PR #463 2026-09-08 — a still-accurate ownership record was invalidated because its replacement could not be written
+- `exit-path-asymmetry` `install.sh:364` `e6557af` `PRRT_kwDOTfywrM6gFbBD` PR #463 2026-09-08 — retirement pruned the settings before the refusal receipt was known to be replaceable
+- `evidence-discarded` `uninstall.sh:208` `e6557af` `PRRT_kwDOTfywrM6gFbBL` PR #463 2026-09-08 — a legacy receipt lost its only proof of ownership when the link was removed before cleanup
+- `partial-validation` `uninstall.sh:210` `e6557af` `self-review-r21-stamp-truncation` PR #463 2026-09-08 — the provenance stamp wrote from an empty read, destroying every ownership row on an unreadable receipt
 <!-- adb:hits:end -->
