@@ -94,6 +94,32 @@ _uninstall_claude_locked() {
   # no longer owns. Same predicate `bin/baseline` uses to decide a root doc "is not ours to
   # re-wire". (PR review)
   adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO" && ours_settings=1
+  # A LEGACY RECEIPT'S ONLY PROOF IS THE LINK, AND THE LINK IS ABOUT TO GO. `adb_unlink_manifest`
+  # runs before `unwire_settings`, so a receipt with no `source` row whose cleanup then fails in a
+  # retryable way (no jq, a momentarily invalid settings.json) is left with no durable provenance at
+  # all — and the next run reads it as foreign and can never clean it up, even once the original
+  # problem is fixed. Stamp what the link proves while it still proves it. Appended, because every
+  # reader of this file greps for its own row prefix rather than a fixed layout.
+  if [ "$ours_settings" -eq 1 ]; then
+    local _lr _lrbody; _lr="$(adb_claude_settings_receipt "$HOME")"
+    # READ IT WHOLE FIRST, and write from that copy. A receipt this run cannot read reports NO
+    # source row for the same reason it reports nothing else — so a stamp driven off that answer
+    # ran `cat` on an unreadable file, got nothing, and published a receipt containing only the new
+    # source row: every ownership row destroyed by the very step meant to preserve provenance.
+    # An unreadable receipt is left exactly alone; `unwire_settings` refuses it and says so.
+    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \
+       && [ -z "$(printf '%s\n' "$_lrbody" | grep -m1 "^source$(printf '\t')" || true)" ]; then
+      if { printf '%s\n' "$_lrbody"; adb_claude_settings_source_row "$REPO"; } > "$_lr.adb.$$.prov" \
+         && adb_publish_json "$_lr.adb.$$.prov" "$_lr"; then
+        adb_info "  sandbox  recorded this clone as the source of a legacy ownership record, so a failed"
+        adb_info "           cleanup can still be retried after the root-doc link is gone"
+      else
+        rm -f "$_lr.adb.$$.prov"
+        adb_info "  WARN   could not record provenance on the legacy ownership record — if the settings"
+        adb_info "         cleanup below fails, a retry will not be able to prove these keys are ours"
+      fi
+    fi
+  fi
   # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
   # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
   #
@@ -281,10 +307,12 @@ unwire_settings() {
   # deleted prunes nothing, and republishing the document anyway rewrote it for no reason: measured,
   # it turned an operator's settings.json SYMLINK into a regular file and reformatted the contents.
   # There is nothing of ours to remove, so the record goes and the file is left byte-for-byte.
-  local _pruned_n
-  _pruned_n="$(printf '%s' "$result" | jq -r '.pruned | length' 2>/dev/null)"
-  case "$_pruned_n" in ''|*[!0-9]*) _pruned_n=0 ;; esac
-  if [ "$_pruned_n" -eq 0 ]; then
+  # ASKED OF THE MERGED DOCUMENT, not of `.pruned`. That array counts LEAVES, and the removal also
+  # deletes the containers this install created — so an operator who had deleted every recorded leaf
+  # but left our empty `sandbox` object behind pruned nothing, and the file was skipped with that
+  # object orphaned in it permanently. Comparing the result to the live document answers the
+  # question actually being asked: is there anything of ours left to take out?
+  if printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1; then
     names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
     adb_info "  sandbox  nothing of ours is in ~/.claude/settings.json — the file was left untouched"

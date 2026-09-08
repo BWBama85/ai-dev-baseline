@@ -1160,6 +1160,92 @@ awk '/^uninstall_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| ucrc=1/{prin
   "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall_claude must do the same"
 
+# --- a legacy receipt gains durable provenance before the link that proves it is removed ------------
+#
+# `adb_unlink_manifest` runs before `unwire_settings`, so a receipt with no `source` row whose
+# cleanup then fails in a retryable way is left with no proof at all — the next run reads it as
+# foreign and can never clean it up, even once the original problem is fixed.
+lp="$work/legacyprov"; rm -rf "$lp"; mkdir -p "$lp/.claude"
+echo '{"model":"opus"}' > "$lp/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$lp" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+grep -v "^source$ADB_TAB" "$lp/.claude/.adb-settings-owned" > "$work/lp.tmp" && mv "$work/lp.tmp" "$lp/.claude/.adb-settings-owned"
+[ -z "$(adb_claude_settings_receipt_source "$lp/.claude/.adb-settings-owned")" ] && ok \
+  || bad "precondition: the legacy fixture must carry no source row"
+# Make the settings unparseable so the cleanup fails RETRYABLY, after the link has gone.
+printf 'not json' > "$lp/.claude/settings.json"
+HOME="$lp" bash "$ROOT/uninstall.sh" --agent claude >"$work/lp.log" 2>&1
+[ "$(adb_claude_settings_receipt_source "$lp/.claude/.adb-settings-owned")" = "$ROOT" ] && ok \
+  || bad "a legacy receipt must be stamped with this clone as its source BEFORE the root-doc link is removed — otherwise a retryable failure strands it as foreign forever"
+# ...and the retry, once the settings are valid again, can still prove ownership with no link left.
+cp "$PAYLOAD" "$lp/.claude/settings.json"
+HOME="$lp" bash "$ROOT/uninstall.sh" --agent claude >"$work/lp2.log" 2>&1
+jq -e '.sandbox == null' "$lp/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...so the retry must succeed on the strength of that recorded source alone"
+# AN UNREADABLE RECEIPT IS LEFT ALONE BY THAT STAMP. It reports no source row for the same reason it
+# reports nothing else, and a stamp driven off that answer published a receipt carrying ONLY the new
+# source row — every ownership row destroyed by the step meant to preserve provenance.
+lu="$work/legacyunreadable"; rm -rf "$lu"; mkdir -p "$lu/.claude"
+echo '{"model":"opus"}' > "$lu/.claude/settings.json"
+HOME="$lu" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+lu_rows="$(grep -c "^leaf$ADB_TAB" "$lu/.claude/.adb-settings-owned")"
+chmod 000 "$lu/.claude/.adb-settings-owned"
+HOME="$lu" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+chmod 600 "$lu/.claude/.adb-settings-owned"
+[ "$(grep -c "^leaf$ADB_TAB" "$lu/.claude/.adb-settings-owned")" -eq "$lu_rows" ] && ok \
+  || bad "an unreadable receipt must be left untouched by the provenance stamp — writing from an empty read destroys every ownership row"
+
+# --- an owned CONTAINER is still something of ours ---------------------------------------------------
+#
+# "Did the file change" was asked of `.pruned`, which counts LEAVES — and the removal also deletes
+# the containers this install created. An operator who had deleted every recorded leaf but left our
+# empty `sandbox` object behind pruned nothing, so the write was skipped and that object was
+# orphaned in settings.json permanently.
+oc="$work/orphancontainer"; rm -rf "$oc"; mkdir -p "$oc/.claude"
+echo '{"model":"opus"}' > "$oc/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$oc" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(grep -c "^container$ADB_TAB" "$oc/.claude/.adb-settings-owned")" -gt 0 ] && ok \
+  || bad "precondition: the install must have recorded the containers it created"
+jq '.sandbox = {}' "$oc/.claude/settings.json" > "$work/oc.tmp" && mv "$work/oc.tmp" "$oc/.claude/settings.json"
+HOME="$oc" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+jq -e 'has("sandbox") | not' "$oc/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "an empty container this install created must still be removed — a zero LEAF count is not proof that nothing of ours is left"
+jq -e '.model == "opus"' "$oc/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and the operator's own keys must survive that removal"
+
+# --- an ACCURATE ownership record is never destroyed because its replacement failed -----------------
+#
+# `_adb_carry_rows` returns rows only when every recorded leaf still carries its recorded value, so
+# a non-empty carry means the OLD receipt is still correct. Invalidating it because the replacement
+# could not be written leaves the installed keys with no owner at all: uninstall cannot remove them,
+# and the next install reads them as the operator's and refuses the policy.
+#
+# STRUCTURAL for the same measured reason as its siblings: the only drivable publish failure is a
+# non-regular receipt path, which an earlier check catches first.
+awk '/^_adb_record_skip\(\)/{f=1}
+     f && /if \[ -n "\$carried" \]; then/{print "ok"; exit}
+     f && /_adb_invalidate_stale_receipt/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "a version skip whose receipt could not be published must KEEP a still-accurate record rather than invalidating it"
+awk '/if \[ -n "\$carried" \]; then/{f=1}
+     f && /return 1   # skip-not-recorded-kept/{print "ok"; exit}
+     f && /^  fi$/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "...and that kept-record branch must still FAIL the run: the skip was not recorded, so reporting success leaves the next update unaware of it"
+awk '/optout_rows="\$\(_adb_carry_rows/{f=1}
+     f && /if \[ -n "\$optout_rows" \]; then/{print "ok"; exit}
+     f && /_adb_invalidate_stale_receipt/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "...and the --no-sandbox sibling must do the same"
+
+# --- nothing is pruned until the receipt is known to be replaceable ---------------------------------
+#
+# Retirement rewrites the settings first and publishes the refusal receipt second, so a receipt that
+# can be neither replaced nor removed leaves the old record claiming a value the prune already took
+# out — and an operator who recreates it has it deleted as ours.
+awk '/transaction: retirement prune \+ refusal receipt/{f=1}
+     f && /mv "\$receipt" "\$_bprobe"/{print "ok"; exit}
+     f && /adb_publish_json "\$rtmp2" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "the retirement prune must prove the receipt is replaceable BEFORE it rewrites settings.json"
+
 # --- nothing of ours in the file means the file is not touched -------------------------------------
 #
 # A rowless receipt — a first blocked refusal, a below-floor skip — or one whose every owned leaf
@@ -1295,7 +1381,7 @@ awk '/_adb_invalidate_stale_receipt "\$receipt" "the refusal stands/{f=1}
      f && /return "\$invrc"|return \$\?/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "a blocked refusal whose receipt was not published must return non-zero — the invalidator's 0 means only that no stale claim survives"
 awk '/_adb_invalidate_stale_receipt "\$receipt" "the skip stands/{f=1}
-     f && /return 1   # skip-not-recorded/{print "ok"; exit}
+     f && /return 1   # skip-relinquished/{print "ok"; exit}
      f && /return \$\?/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "...and a skip whose receipt was not published must do the same"
 [ "$(grep -c 'return \$?' "$ROOT/install.sh")" -eq 0 ] && ok \
@@ -1784,6 +1870,14 @@ jq '.sandbox.enabled = false' "$PAYLOAD" > "$work/pend-edited.json"
 pending installed "2.1.259 (Claude Code)" "$work/pend-edited.json" && ok \
   || bad "an installed surface whose recorded leaf the operator EDITED must be pending once, so the installer can observe the divergence and relinquish"
 printf 'not json' > "$work/pend-broken.json"
+# ...and an installed surface stops being current when the CLI stops honouring it. A downgrade below
+# the floor touches neither the payload nor the live file, so digest and rows both still match while
+# the credential protections the floor exists for may no longer be applied at all.
+pending installed "2.1.100 (Claude Code)" "$PAYLOAD" && ok \
+  || bad "an installed surface whose CLI has been downgraded BELOW the floor must be pending once, so the installer can record and surface the skip"
+pending installed "2.1.259 (Claude Code)" "$PAYLOAD" && \
+  bad "...but one whose CLI still clears the floor must stay not-pending" || ok
+
 pending installed "2.1.259 (Claude Code)" "$work/pend-broken.json" && \
   bad "an unreadable settings file must NOT read as divergence — 'cannot tell' becomes a repair loop that re-runs the installer every session" || ok
 
@@ -2169,14 +2263,30 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'a still-accurate record is invalidated when its replacement fails' \
+    '  if [ -n "$carried" ]; then' \
+    '  if false; then' \
+    'must KEEP a still-accurate record'
+  check_mut 'the opt-out sibling invalidates a still-accurate record' \
+    '      if [ -n "$optout_rows" ]; then' \
+    '      if false; then' \
+    'sibling must do the same'
+  check_mut 'the retirement prunes before proving the receipt replaceable' \
+    '      if ! mv "$receipt" "$_bprobe" 2>/dev/null; then' \
+    '      if false; then' \
+    'must prove the receipt is replaceable BEFORE it rewrites'
   check_mut 'a blocked refusal hands back the invalidator benign status' \
     '    return 1   # blocked-not-recorded' \
     '    return 0' \
     'must return non-zero — the invalidator'"'"'s 0 means only that no stale claim survives'
   check_mut 'a skip hands back the invalidator benign status' \
-    '  return 1   # skip-not-recorded' \
+    '  return 1   # skip-relinquished' \
     '  return 0' \
     'skip whose receipt was not published must do the same'
+  check_mut 'a kept-record skip reports success' \
+    '    return 1   # skip-not-recorded-kept' \
+    '    return 0' \
+    'kept-record branch must still FAIL the run'
   check_mut 'the retirement-and-refusal pair publishes outside the deferral' \
     '    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt' \
     '    :' \
@@ -2268,9 +2378,21 @@ if [ "$MUTATION" -eq 1 ]; then
     '  elif false; then' \
     'must fall back to the link'
   check_mut 'uninstall rewrites settings.json when nothing of ours was pruned' \
-    '  if [ "$_pruned_n" -eq 0 ]; then' \
+    "  if printf '%s' \"\$result\" | jq -e --slurpfile orig \"\$settings\" '.settings == \$orig[0]' >/dev/null 2>&1; then" \
     '  if false; then' \
     'must leave settings.json alone'
+  check_mut 'a zero leaf count is taken as proof that nothing of ours is left' \
+    "  if printf '%s' \"\$result\" | jq -e --slurpfile orig \"\$settings\" '.settings == \$orig[0]' >/dev/null 2>&1; then" \
+    "  if [ \"\$(printf '%s' \"\$result\" | jq -r '.pruned | length')\" -eq 0 ]; then" \
+    'empty container this install created must still be removed'
+  check_mut 'the legacy provenance stamp is skipped' \
+    '    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \' \
+    '    if false; then :; elif false; then \' \
+    'must be stamped with this clone as its source'
+  check_mut 'the provenance stamp writes from an empty read' \
+    '_lrbody="$(cat "$_lr" 2>/dev/null)" \' \
+    '_lrbody="$(cat "$_lr" 2>/dev/null; true)" \' \
+    'must be left untouched by the provenance stamp'
   check_mut 'the hook removal republishes a document it did not change' \
     "        if jq -e --slurpfile orig \"\$settings\" '. == \$orig[0]' \"\$settings.adb.\$\$.tmp\" >/dev/null 2>&1; then" \
     '        if false; then' \
@@ -2314,6 +2436,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    if adb_settings_refused_now "$SETTINGS_PENDING"; then' \
     '    if false; then' \
     'same-HEAD repair path must ask'
+  check_mut 'an installed surface stays current after a CLI downgrade' \
+    '      if [ "$disp" = installed ]; then' \
+    '      if false; then' \
+    'downgraded BELOW the floor must be pending once'
   check_mut 'a receipt naming another clone is treated as current' \
     '  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0' \
     '  :' \

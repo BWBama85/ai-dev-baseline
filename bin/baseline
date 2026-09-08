@@ -261,6 +261,16 @@ adb_settings_pending() {
       # recorded with this same digest, so the next session is current again. "Cannot tell" is not
       # divergence, or this becomes the repair loop the comment above warns about. (PR review)
       [ "$have" = "$want" ] || return 0
+      # AN INSTALLED SURFACE IS CURRENT ONLY WHILE THE CLI STILL HONOURS IT. A downgrade below the
+      # floor — or a binary that stops being probeable — does not touch the payload or the live
+      # file, so digest and rows both still match while the credential protections the floor exists
+      # for may no longer be applied at all. Pending once: the installer records the below-floor or
+      # unprobeable disposition, and that disposition then answers the version question itself, so
+      # the next session is current again. `skipped-blocked` applied nothing and is not asked.
+      if [ "$disp" = installed ]; then
+        local _cliv; _cliv="$(adb_claude_cli_version)" || return 0
+        adb_version_ge "$_cliv" "$(adb_claude_settings_floor)" || return 0
+      fi
       return 1 ;;
     *) return 1 ;;
   esac

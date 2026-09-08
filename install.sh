@@ -189,6 +189,12 @@ _adb_wire_settings_locked() {
       # `--no-sandbox`, and applies the policy over an explicit choice the operator made by
       # contract. The opt-out not reaching disk is a failure of this branch whether or not there was
       # anything to invalidate. (PR review)
+      if [ -n "$optout_rows" ]; then
+        adb_info "  WARN   --no-sandbox was honoured for this run but could NOT be recorded, and the"
+        adb_info "         previous ownership record is still accurate so it was KEPT. The next"
+        adb_info "         \`baseline update\` will not know about the opt-out; re-run once $receipt is writable."
+        return 1
+      fi
       _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured" || true
       adb_info "  WARN   the opt-out was honoured for this run but could NOT be recorded — the next"
       adb_info "         \`baseline update\` will not know about it. Re-run once $receipt is writable."
@@ -338,6 +344,26 @@ _adb_wire_settings_locked() {
     # recreates that value before the next successful install, uninstall deletes it as ours. Only
     # the normal write branch deferred; this one did its two writes in the open. (PR review)
     adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt
+    # PROVE THE RECEIPT CAN BE REPLACED BEFORE ANYTHING IS PRUNED. Retirement rewrites the settings
+    # first and publishes the refusal receipt second, so a receipt that can be neither replaced nor
+    # removed — an immutable flag, a delete ACL — leaves the OLD record claiming a value the prune
+    # has already taken out, and an operator who recreates it has it deleted as ours. The same
+    # rename-and-restore proof the uninstall side uses, for the same reason.
+    if [ -n "$retired" ] && [ -f "$receipt" ]; then
+      local _bprobe="$receipt.adb.$$.probe"
+      if ! mv "$receipt" "$_bprobe" 2>/dev/null; then
+        adb_info "  WARN   $receipt cannot be replaced, so the retired key(s) $retired were NOT pruned."
+        adb_info "         Pruning them first would leave this record claiming a value that is gone."
+        adb_settings_lock_resume_signals
+        return 1
+      fi
+      if ! mv "$_bprobe" "$receipt" 2>/dev/null; then
+        adb_info "  ERROR  $receipt was moved aside to test replaceability and could not be put back."
+        adb_info "         It is at $_bprobe — restore it by hand; nothing else was changed."
+        adb_settings_lock_resume_signals
+        return 1
+      fi
+    fi
     if [ -n "$retired" ]; then
       local rtmp2="$settings.adb.$$.ret"
       rm -f "$rtmp2"
@@ -629,10 +655,21 @@ _adb_record_skip() {
     return 0
   fi
   rm -f "$receipt.adb.$$.tmp"
+  # AN ACCURATE RECORD IS NOT A STALE ONE. `_adb_carry_rows` returns rows only when every recorded
+  # leaf still carries its recorded value, so a non-empty carry means the OLD receipt is still a
+  # correct ownership record — and destroying it because the replacement could not be written
+  # leaves the installed keys with no owner at all: uninstall cannot remove them and the next
+  # install reads them as the operator's and refuses. Invalidate only when this run actually
+  # relinquished. (PR review)
+  if [ -n "$carried" ]; then
+    adb_info "  WARN   the skip could not be recorded, but the previous ownership record is still"
+    adb_info "         accurate and was KEPT. Re-run once $receipt is writable."
+    return 1   # skip-not-recorded-kept
+  fi
   # SAME RULE, SWEPT RATHER THAN REPORTED. `_adb_record_skip`'s job is to record the skip; the
   # invalidator's 0 means only that no stale claim survives, which on a first skip is vacuous.
   _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded" || true
-  return 1   # skip-not-recorded
+  return 1   # skip-relinquished
 }
 
 # A receipt that could not be replaced must not be left ASSERTING what this run has just decided is
