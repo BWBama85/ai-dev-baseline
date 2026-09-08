@@ -579,4 +579,7 @@ One line per resolved review thread, newest last.
 - `evidence-discarded` `bin/baseline:736` `b070924` `PRRT_kwDOTfywrM6gU1oJ` PR #463 2026-09-08 — a CLI downgrade was reported as a relinquishment, hiding that the protections stopped being applied
 - `partial-validation` `install.sh:367` `b070924` `PRRT_kwDOTfywrM6gU1oE` PR #463 2026-09-08 — the blocked writer decided from retired leaves while the merge could also change containers
 - `false-guarantee` `scripts/check-settings-fragment.sh` `b070924` `self-review-r23-adjacent-token` PR #463 2026-09-08 — a structural pin watched a token adjacent to the one its mutation removed, so the row could not fire
+- `status-swallowed` `bin/baseline:207` `a0c2e69` `PRRT_kwDOTfywrM6gZze3` PR #463 2026-09-08 — grep -c prints its zero and exits 1, so the fallback appended a second value and broke the caller's arithmetic
+- `partial-validation` `uninstall.sh:123` `a0c2e69` `PRRT_kwDOTfywrM6gZze0` PR #463 2026-09-08 — the stamp asked whether a source ROW existed, while the reader requires a source VALUE
+- `evidence-discarded` `bin/baseline:798` `a0c2e69` `PRRT_kwDOTfywrM6gZzev` PR #463 2026-09-08 — the post-pull path never asked the downgrade question, so a lost protection read as a plain update
 <!-- adb:hits:end -->
