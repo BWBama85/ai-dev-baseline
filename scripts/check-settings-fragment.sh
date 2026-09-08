@@ -950,6 +950,26 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- a DOWNGRADE is not a reconciliation either -----------------------------------------------------
+#
+# Both leave a skip disposition behind, and classifying them by that label printed "relinquished
+# stale sandbox ownership" over a CLI that had dropped below the floor — while the SessionStart
+# wrapper suppresses the installer's own warning, so that false line was the only thing an operator
+# saw. What actually distinguishes them is the ownership rows: a reconciliation drops them, a
+# downgrade keeps every one and stops the protections being applied at all.
+#
+# STRUCTURAL, for the reason its siblings give: driving the `current)` arm needs a clone, a network
+# classification and the update lock.
+awk '/skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{f=1}
+     f && /\[ "\$\(adb_settings_row_count\)" -eq "\$SETTINGS_ROWS_BEFORE" \]/{print "ok"; exit}
+     f && /relinquished stale sandbox ownership/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "a skip left by a self-heal must be classified by whether ownership rows were actually relinquished, not by the disposition label — the sandbox protections are NOT being applied is a different fact from a reconciliation"
+grep -qE '^\s*9\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
+  || bad "currency-lib.sh must classify the downgrade code explicitly rather than letting it fall through to the catch-all as a failure"
+awk '/^    9\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit} f && /^    5\)/{exit}' \
+  "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
+  || bad "...and must report it as REFUSED: nothing was relinquished and nothing was repaired, what changed is that the protections stopped being applied"
+
 # --- a reconciliation is not a repair --------------------------------------------------------------
 #
 # Divergent rows under a skip or an opt-out make the settings pending so the installer can
@@ -1219,6 +1239,60 @@ HOME="$lu" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 chmod 600 "$lu/.claude/.adb-settings-owned"
 [ "$(grep -c "^leaf$ADB_TAB" "$lu/.claude/.adb-settings-owned")" -eq "$lu_rows" ] && ok \
   || bad "an unreadable receipt must be left untouched by the provenance stamp — writing from an empty read destroys every ownership row"
+
+# --- every file this suite READS is declared as a gate input ---------------------------------------
+#
+# `mutation-gate.sh` dispatches the harness only when the change touches its declared inputs, so a
+# file the suite reads but the registry does not name means a PR changing only that file skips the
+# falsifiability check entirely. This suite grew pins on `currency-lib.sh` when the exit-code
+# classifications landed, and the input set was not swept with them — `declared-inputs-incomplete`,
+# which is on this project's promoted checklist.
+sf_inputs="$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$1=="settings-fragment-mutation"{print $5}')"
+for _f in scripts/lib/common.sh install.sh uninstall.sh bin/baseline scripts/lib/currency-lib.sh \
+          scripts/lib/pinned-install.sh agents/claude/settings.fragment.json; do
+  case ",$sf_inputs," in
+    *",$_f,"*) ok ;;
+    *) bad "settings-fragment-mutation must declare $_f as an input — this suite reads it, and a PR touching only that file would skip the harness" ;;
+  esac
+done
+
+# --- a container the OPERATOR recreated survives a mixed refusal --------------------------------------
+#
+# The retirement pass used to walk every container the receipt records and delete any that was
+# empty. In a mixed refusal — one recorded leaf retired, another still-shipped leaf taken over by
+# the operator — the retirement publishes the document, so an empty object the operator had
+# recreated at one of those paths was deleted before the receipt relinquished anything. A container
+# is a candidate only while it is a proper ancestor of a leaf THIS pass actually pruned.
+mx="$work/mixedrefusal"; rm -rf "$mx"; mkdir -p "$mx"
+printf 'disposition installed\nversion 2.1.259\nfloor 2.1.187\npayload deadbeef\nsource%s%s\nleaf%s["a","gone"]%s"ours"\nleaf%s["b","kept"]%s"ours"\ncontainer%s["a"]\ncontainer%s["b"]\n' \
+  "$ADB_TAB" "$ROOT" "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" "$ADB_TAB" > "$mx/receipt"
+echo '{"a":{"gone":"ours"},"b":{}}' > "$mx/s.json"
+echo '{"b":{"kept":"ours"}}' > "$mx/f.json"
+mx_out="$(adb_claude_settings_merge "$mx/s.json" "$mx/f.json" "$mx/receipt")"
+[ "$(printf '%s' "$mx_out" | jq -r '.verdict')" = refuse ] && ok \
+  || bad "precondition: a still-shipped leaf the operator deleted must make this a refusal"
+[ "$(printf '%s' "$mx_out" | jq -c '.pruned')" = '[["a","gone"]]' ] && ok \
+  || bad "precondition: the retired leaf must still be pruned — retirement is independent of the refusal"
+printf '%s' "$mx_out" | jq -e '.settings | has("a") | not' >/dev/null 2>&1 && ok \
+  || bad "a container THIS run emptied by retiring its last owned leaf must be removed with it"
+printf '%s' "$mx_out" | jq -e '.settings.b == {}' >/dev/null 2>&1 && ok \
+  || bad "...but an empty object at a path the operator has taken over must SURVIVE — we cannot tell it from one of ours, so we must not delete it"
+
+# --- and the coupling that makes the blocked writer's condition exact -------------------------------
+#
+# The blocked path asks whether the DOCUMENT changed, as the uninstall side does. Given the rule
+# above, that is equivalent today to "a leaf was pruned": containers are only removed as ancestors
+# of pruned leaves, and nothing is written on a refusal. The equivalence is asserted rather than
+# assumed, so relaxing the container rule cannot silently reintroduce the skip that finding
+# described — it breaks this instead.
+cp_out="$(adb_claude_settings_merge "$mx/s.json" "$mx/f.json" "$mx/receipt")"
+if printf '%s' "$cp_out" | jq -e --slurpfile orig "$mx/s.json" '.settings == $orig[0]' >/dev/null 2>&1; then
+  [ "$(printf '%s' "$cp_out" | jq -r '.pruned | length')" -eq 0 ] && ok \
+    || bad "a refusal that left the document unchanged must have pruned nothing"
+else
+  [ "$(printf '%s' "$cp_out" | jq -r '.pruned | length')" -gt 0 ] && ok \
+    || bad "a refusal that CHANGED the document must have pruned a leaf — if a container can move on its own, the blocked writer's \$retired guard is no longer exact"
+fi
 
 # --- an owned CONTAINER is still something of ours ---------------------------------------------------
 #
@@ -2188,6 +2262,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }' \
     '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?' \
     'must not leak its synthetic payload'
+  check_mut 'retirement prunes every recorded container, not the ones it emptied' \
+    '          | map(. as $a | select( $justpruned' \
+    '          | map(. as $a | select( true or $justpruned' \
+    'must SURVIVE'
   check_mut 'a damaged disposition reads as an absent receipt' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
@@ -2512,6 +2590,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if [ "$disp" = installed ]; then' \
     '      if false; then' \
     'downgraded BELOW the floor must be pending once'
+  check_mut 'a downgrade is reported as a relinquishment' \
+    '             && [ "$(adb_settings_row_count)" -eq "$SETTINGS_ROWS_BEFORE" ]; then' \
+    '             && false; then' \
+    'must be classified by whether ownership rows were actually relinquished'
   check_mut 'a receipt naming another clone is treated as current' \
     '  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0' \
     '  :' \

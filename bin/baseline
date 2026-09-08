@@ -197,6 +197,16 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # than inferred from the installer's status, which is 0 by contract for an all-or-nothing refusal.
 # Usage: adb_settings_refused_now <were-the-settings-pending-before>
 # Returns: 0 when the run should report a refusal rather than a plain success
+# How many ownership rows does the receipt carry right now? The one fact that tells a
+# RELINQUISHMENT (rows dropped) from a DOWNGRADE (rows kept, protections no longer applied) after a
+# self-heal, both of which leave a skip disposition behind.
+# Outputs: the count on stdout; 0 when there is no readable receipt
+adb_settings_row_count() {
+  local r; r="$(adb_claude_settings_receipt "$HOME")"
+  [ -f "$r" ] || { printf '0'; return 0; }
+  grep -c "^leaf$(printf '\t')" "$r" 2>/dev/null || printf '0'
+}
+
 adb_settings_refused_now() {
   [ "${1:-0}" -eq 1 ] || return 1
   [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" = skipped-blocked ] || return 1
@@ -697,6 +707,7 @@ case "$STATUS" in
     # resolves and every hook is wired — that is exactly the state a below-floor install leaves,
     # and the CLI upgrade that clears it moves nothing this path was looking at.
     SETTINGS_PENDING=0; adb_settings_pending "$SRC" && SETTINGS_PENDING=1
+    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
@@ -732,6 +743,19 @@ case "$STATUS" in
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
+          # WHICH KIND OF SKIP IS THIS? A reconciliation RELINQUISHES rows; a downgrade keeps every
+          # one of them and stops the protections being applied at all. Classifying both from the
+          # disposition printed "relinquished stale ownership" over a CLI that had dropped below the
+          # floor — and the SessionStart wrapper suppresses the installer's own warning, so that
+          # false line was the only thing an operator saw. Compare the row count instead of the
+          # label: it is what actually distinguishes them. (PR review)
+          if [ "$SETTINGS_ROWS_BEFORE" -gt 0 ] \
+             && [ "$(adb_settings_row_count)" -eq "$SETTINGS_ROWS_BEFORE" ]; then
+            echo "baseline: the sandbox protections are NOT being applied — the \`claude\` CLI no longer" >&2
+            echo "          clears the version floor, or could not be probed (#248). Ownership of the" >&2
+            echo "          keys already written is unchanged; upgrade the CLI to have them re-applied." >&2
+            exit 9
+          fi
           echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
           exit 8 ;;
       esac

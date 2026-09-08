@@ -1189,7 +1189,17 @@ adb_claude_settings_merge() {
       # ...and the containers THAT retirement emptied go with it, but only ones we created. Without
       # this a payload that turns an owned leaf into a scalar is blocked by the very container the
       # previous install made for it: `x.y` is pruned, `x` is left as `{}`, and `{}` is "present".
-      | ( $created | sort_by(-length) ) as $mine
+      # ...AND ONLY THE ONES THIS RUN EMPTIED. Walking every recorded container deleted an empty
+      # object the OPERATOR may have recreated after taking a still-shipped leaf over — and in a
+      # mixed refusal (one leaf retired, another diverged) the retirement publishes the document, so
+      # that user-owned object went with it before the receipt relinquished anything. A container is
+      # a candidate only while it is a proper ancestor of a leaf this pass actually pruned.
+      | .pruned as $justpruned
+      | ( $created
+          | map(. as $a | select( $justpruned
+                                  | any( (length > ($a | length))
+                                         and (.[0:($a | length)] == $a) ) ))
+          | sort_by(-length) ) as $mine
       | reduce ($mine[]) as $a
           ( .;
             # GUARDED LIKE THE LEAF READS. `getpath` raises through a scalar, so a recorded child

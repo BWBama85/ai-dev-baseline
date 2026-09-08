@@ -349,7 +349,16 @@ _adb_wire_settings_locked() {
     # removed — an immutable flag, a delete ACL — leaves the OLD record claiming a value the prune
     # has already taken out, and an operator who recreates it has it deleted as ours. The same
     # rename-and-restore proof the uninstall side uses, for the same reason.
-    if [ -n "$retired" ] && [ -f "$receipt" ]; then
+    # THE DOCUMENT DECIDES, NOT `$retired`. That name lists retired LEAVES, and the merge also
+    # removes containers this install created — so a payload retiring a leaf the operator had
+    # already deleted changes the document while `$retired` is empty, and the write was skipped
+    # while the blocked receipt went on to discard all container ownership. The empty object was
+    # then orphaned for good, and could block a future scalar key at that path. Same question the
+    # uninstall side already asks, asked the same way. (PR review)
+    local _blk_changed=0
+    printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1 \
+      || _blk_changed=1
+    if [ "$_blk_changed" -eq 1 ] && [ -f "$receipt" ]; then
       local _bprobe="$receipt.adb.$$.probe"
       if ! mv "$receipt" "$_bprobe" 2>/dev/null; then
         adb_info "  WARN   $receipt cannot be replaced, so the retired key(s) $retired were NOT pruned."
@@ -364,15 +373,19 @@ _adb_wire_settings_locked() {
         return 1
       fi
     fi
-    if [ -n "$retired" ]; then
+    if [ "$_blk_changed" -eq 1 ]; then
       local rtmp2="$settings.adb.$$.ret"
       rm -f "$rtmp2"
       if ( umask 077; : > "$rtmp2" ) && printf '%s' "$result" | jq '.settings' > "$rtmp2" \
          && [ -s "$rtmp2" ] && adb_publish_json "$rtmp2" "$settings"; then
-        adb_info "  sandbox  pruned (no longer shipped): $retired"
+        if [ -n "$retired" ]; then
+          adb_info "  sandbox  pruned (no longer shipped): $retired"
+        else
+          adb_info "  sandbox  removed an empty object this install had created (no shipped key was in it)"
+        fi
       else
         rm -f "$rtmp2"
-        adb_info "  WARN   could not prune the retired key(s) $retired — they remain in $settings."
+        adb_info "  WARN   could not prune the retired key(s) ${retired:-<none: an empty object we created>} — they remain in $settings."
         adb_info "         The previous ownership record is LEFT IN PLACE so a later run can still"
         adb_info "         remove them; nothing was recorded about this refusal. Re-run ./install.sh."
         # ABORT BEFORE REPLACING THE RECEIPT. A `skipped-blocked` receipt carries no rows, so

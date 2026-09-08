@@ -386,6 +386,15 @@ cmd_check() {
       # not the plain `repaired` line either, and saying so is the whole point of the distinct code.
       _adb_cu_emit repaired "relinquished stale sandbox ownership rows; no link or setting was changed."
       ;;
+    9)
+      # The CLI stopped clearing the version floor, or stopped being probeable, while the keys it
+      # applied are still owned and still in the file. Nothing was relinquished and nothing was
+      # repaired — what changed is that the protections are no longer being applied, which is the
+      # security-relevant half and the one the installer's own warning would have carried if this
+      # flow did not suppress it.
+      _adb_cu_emit refused \
+        "the sandbox protections are NOT being applied — the 'claude' CLI no longer clears the version floor or could not be probed; upgrade it to have them re-applied."
+      ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \
           "install-source not updated ($(adb_clone_status "$src" "$(adb_default_branch "$src")" 2>/dev/null)) — reconcile $src, then 'baseline update'." ;;
