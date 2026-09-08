@@ -574,4 +574,9 @@ One line per resolved review thread, newest last.
 - `exit-path-asymmetry` `uninstall.sh:120` `c8621f8` `PRRT_kwDOTfywrM6gIqHK` PR #463 2026-09-08 — a failed or impossible provenance stamp warned and carried on into the unlink that removes its proof
 - `platform-divergent-test` `scripts/check-settings-fragment.sh` `c8621f8` `self-review-r22-shared-tmp` PR #463 2026-09-08 — the leak guard counted a SHARED temp directory and failed under the parallel gate
 - `evidence-discarded` `scripts/check-settings-fragment.sh` `c8621f8` `self-review-r22-splice` PR #463 2026-09-08 — a positional text splice deleted two assertions, leaving their mutation rows pointing at nothing
+- `declared-inputs-incomplete` `scripts/selfcheck.sh:776` `b070924` `PRRT_kwDOTfywrM6gU1oW` PR #463 2026-09-08 — the suite grew pins on currency-lib and the gate's declared input set was not swept with them
+- `partial-validation` `scripts/lib/common.sh:1204` `b070924` `PRRT_kwDOTfywrM6gU1oO` PR #463 2026-09-08 — retirement pruned every recorded empty container, including one the operator had recreated
+- `evidence-discarded` `bin/baseline:736` `b070924` `PRRT_kwDOTfywrM6gU1oJ` PR #463 2026-09-08 — a CLI downgrade was reported as a relinquishment, hiding that the protections stopped being applied
+- `partial-validation` `install.sh:367` `b070924` `PRRT_kwDOTfywrM6gU1oE` PR #463 2026-09-08 — the blocked writer decided from retired leaves while the merge could also change containers
+- `false-guarantee` `scripts/check-settings-fragment.sh` `b070924` `self-review-r23-adjacent-token` PR #463 2026-09-08 — a structural pin watched a token adjacent to the one its mutation removed, so the row could not fire
 <!-- adb:hits:end -->
