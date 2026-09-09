@@ -584,4 +584,7 @@ One line per resolved review thread, newest last.
 - `evidence-discarded` `bin/baseline:798` `a0c2e69` `PRRT_kwDOTfywrM6gZzev` PR #463 2026-09-08 — the post-pull path never asked the downgrade question, so a lost protection read as a plain update
 - `partial-validation` `install.sh:360` `025b563` `PRRT_kwDOTfywrM6gc6xw` PR #463 2026-09-09 — the refusal compared its output against the real path when the merge had read a synthetic pre-image
 - `status-swallowed` `scripts/lib/common.sh:551` `025b563` `PRRT_kwDOTfywrM6gc6x1` PR #463 2026-09-09 — a failed chmod was ignored and the rename proceeded, publishing a restricted file at the umask default
+- `status-swallowed` `scripts/lib/common.sh:903` `6ef97ba` `PRRT_kwDOTfywrM6gexrQ` PR #463 2026-09-09 — a provably absent settings file was reported as unanswerable, so reconciliation was never scheduled
+- `exit-path-asymmetry` `uninstall.sh:336` `6ef97ba` `PRRT_kwDOTfywrM6gexrO` PR #463 2026-09-09 — the no-change branch returned without removing the temp it had already staged
+- `evidence-discarded` `bin/baseline:768` `6ef97ba` `PRRT_kwDOTfywrM6gexrM` PR #463 2026-09-09 — a downgrade was gated behind LINKS_OK, so a run that also repaired a link hid the lost protection
 <!-- adb:hits:end -->
