@@ -900,9 +900,15 @@ adb_claude_settings_disposition() {
 adb_claude_settings_leaves_intact() {
   local receipt="$1" settings="$2" owned rc
   command -v jq >/dev/null 2>&1 || return 2
-  [ -s "$settings" ] || return 2
   owned="$(_adb_claude_settings_owned_json "$receipt")" || return 2
   [ "$owned" != "[]" ] || return 0
+  # PROVABLY GONE IS DIVERGED, NOT UNANSWERABLE. An absent or zero-byte settings.json is not a read
+  # this run could not perform — it is a definite answer: every recorded leaf is gone. Reporting it
+  # as "cannot tell" meant `adb_settings_pending` never scheduled the reconciliation, so an operator
+  # who deleted the file, let an update run, and later recreated the recorded values had them
+  # deleted by uninstall as installer-owned. Asked AFTER the rowless check: with nothing recorded
+  # there is nothing to diverge. (PR review)
+  [ -s "$settings" ] || return 1
   # `try`, because `getpath` RAISES through a scalar: an operator who replaced an ancestor object
   # with `false` would otherwise take the whole predicate down rather than answering "diverged".
   # NO SECOND `def present`. The merge defines one, and a mutation row pins it — a duplicate here

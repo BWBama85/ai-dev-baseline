@@ -765,12 +765,19 @@ case "$STATUS" in
     # no link and no setting was changed. Gated on `LINKS_OK` unlike the refusal above, and the
     # difference is deliberate: with a broken link there really was a repair, whereas a refusal is
     # security-relevant and must be said whatever else happened. (PR review)
+    # A DOWNGRADE IS REPORTED WHATEVER ELSE HAPPENED, and that is the opposite of the line below it.
+    # The reconciliation report is gated on `LINKS_OK` because with a broken link there really was a
+    # repair, so "repaired" is true and the reconciliation is only a matter of accuracy. A downgrade
+    # is not: the protections have stopped being applied, and a run that also fixed a link would
+    # have reported exit 6 and let the SessionStart wrapper render it as repaired links alone.
+    # Same rule as the refusal above — a security-relevant fact does not wait its turn. (PR review)
+    adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && {
+      [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
+      exit 9
+    }
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
-          # WHICH KIND OF SKIP IS THIS? Asked through the shared predicate, because the post-pull
-          # path has to ask it too and a second copy is a second chance to disagree.
-          adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && exit 9
           echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
           exit 8 ;;
       esac

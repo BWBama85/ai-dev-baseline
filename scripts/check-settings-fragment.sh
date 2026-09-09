@@ -950,6 +950,30 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- a no-op uninstall stages nothing it leaves behind ------------------------------------------------
+#
+# The staged file is created before the "nothing of ours is here" comparison, so every cycle that
+# removed nothing left a zero-byte `settings.json.adb.<pid>.tmp` in ~/.claude.
+nz="$work/nostage"; rm -rf "$nz"; mkdir -p "$nz/.claude"
+echo '{"sandbox":{"enabled":false}}' > "$nz/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$nz" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+HOME="$nz" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+[ "$(find "$nz/.claude" -name 'settings.json.adb.*' | wc -l | tr -d ' ')" -eq 0 ] && ok \
+  || bad "an uninstall that removed nothing must not leave its staged temp behind — one per cycle accumulates in ~/.claude"
+
+# --- a downgrade outranks a link repair ---------------------------------------------------------------
+#
+# The reconciliation report is gated on `LINKS_OK` because with a broken link there really was a
+# repair, so that line is only a matter of accuracy. A downgrade is not: the protections have
+# stopped being applied, and a run that ALSO fixed a link exited 6 and let the wrapper render it as
+# repaired links alone. Same rule as the refusal — a security-relevant fact does not wait its turn.
+awk '/adb_self_heal && adb_verify_links/{f=1}
+     f && /adb_settings_downgraded_now/{print "ok"; exit}
+     f && /\[ "\$SETTINGS_PENDING" -eq 1 \] && \[ "\$LINKS_OK" -eq 1 \]/{exit}' \
+  "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "the downgrade classification must run BEFORE the LINKS_OK gate — a run that also repaired a link would otherwise report the repair and drop the downgrade"
+
 # --- a refusal over a SYNTHETIC pre-image writes nothing --------------------------------------------
 #
 # When settings.json is absent or empty the merge reads a synthetic `{}` — deleting a managed leaf
@@ -1248,6 +1272,21 @@ adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
 printf 'not json' > "$li_s"
 adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 2 ] && ok \
   || bad "an unparseable settings file must answer UNANSWERABLE, never divergence — treating it as divergence is the repair loop"
+# ...but ABSENT and ZERO-BYTE are definite answers, not reads this run could not perform: every
+# recorded leaf is provably gone. Reporting them as "cannot tell" meant the reconciliation was never
+# scheduled, so an operator who deleted the file, let an update run, and later recreated the
+# recorded values had them deleted by uninstall as installer-owned.
+rm -f "$li_s"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
+  || bad "an ABSENT settings file must read as DIVERGED — the recorded leaves are provably gone, which is an answer rather than a failure to look"
+: > "$li_s"
+adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
+  || bad "...and so must a zero-byte one"
+# ...and with NOTHING recorded there is nothing to diverge, however absent the file is.
+: | adb_claude_settings_receipt_render skipped-optout - "$FLOOR" > "$work/li-rowless"
+rm -f "$li_s"
+adb_claude_settings_leaves_intact "$work/li-rowless" "$li_s"; [ $? -eq 0 ] && ok \
+  || bad "a rowless receipt must read as intact whatever the settings file is — the absence check has to come after the rowless one"
 
 # --- a signal releases the lock too, not only an ordinary return ---------------------------------
 #
@@ -2120,7 +2159,7 @@ pending none            "2.1.259 (Claude Code)" && ok || bad "an install predati
 pending skipped-below-floor "2.1.259 (Claude Code)" && ok || bad "a below-floor skip must become PENDING once the CLI clears the floor — the transition the design exists for"
 pending skipped-unprobeable "2.1.259 (Claude Code)" && ok || bad "an unprobeable skip must become PENDING once a probeable CLI is on PATH"
 pending skipped-optout  "2.1.259 (Claude Code)" && bad "an explicit --no-sandbox opt-out must NEVER be pending — self-heal would overrule a supported choice on every session" || ok
-pending installed       "2.1.259 (Claude Code)" && bad "an installed surface must not be pending" || ok
+pending installed "2.1.259 (Claude Code)" "$PAYLOAD" && bad "an installed surface must not be pending" || ok
 
 # ...and a matching digest is NOT the whole answer: the LIVE file is asked too. An operator who
 # edits a recorded leaf has taken the surface over, and until the installer OBSERVES that it never
@@ -2194,6 +2233,10 @@ then ok; else bad "a receipt whose source names another clone must be PENDING �
 pending_receipt() {   # pending_receipt <home> <payload-digest>
   adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s .)" \
     | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$2" > "$1/.claude/.adb-settings-owned"
+  # AND THE LIVE FILE THE RECEIPT DESCRIBES. An `installed` receipt whose recorded leaves are
+  # nowhere in settings.json is not "installed and current" — it is provable divergence, and since
+  # that became pending-once these fixtures were asserting a state that cannot exist.
+  cp "$PAYLOAD" "$1/.claude/settings.json"
 }
 ask_pending() {       # ask_pending <home>
   HOME="$1" PATH="$work/bin:$PATH" bash -c '
@@ -2217,6 +2260,7 @@ ln -s "$ROOT/agents/claude/CLAUDE.md" "$skipped/.claude/CLAUDE.md"
 { printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")"
   adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s . | jq -c '.[1:]')" \
     | grep "^leaf$ADB_TAB"; } > "$skipped/.claude/.adb-settings-owned"
+cp "$PAYLOAD" "$skipped/.claude/settings.json"
 ask_pending "$skipped" && bad "a leaf the operator already owned is never recorded — that must NOT report the surface pending on every update, or the installer re-runs and reports a repair every session" || ok
 
 # (c) a receipt predating the digest field is unknown, and unknown must mean pending ONCE.
@@ -2394,6 +2438,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ -n "$mode" ] && ! chmod "$mode" "$tmp" 2>/dev/null; then' \
     '  if false; then' \
     'must fail the publication'
+  check_mut 'an absent settings file reads as unanswerable' \
+    '  [ -s "$settings" ] || return 1' \
+    '  [ -s "$settings" ] || return 2' \
+    'must read as DIVERGED'
   check_mut 'a damaged disposition reads as an absent receipt' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
@@ -2699,6 +2747,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if ! mv "$receipt" "$_rprobe" 2>/dev/null; then' \
     '  if false; then' \
     'must prove the receipt can be removed BEFORE it rewrites'
+  check_mut 'a no-op uninstall leaves its staged temp behind' \
+    '    rm -f "$tmp"   # no-op-stage' \
+    '    :' \
+    'must not leave its staged temp behind'
   check_mut 'the uninstall pair publishes outside the deferral' \
     '  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal' \
     '  :' \
@@ -2726,6 +2778,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if [ "$disp" = installed ]; then' \
     '      if false; then' \
     'downgraded BELOW the floor must be pending once'
+  check_mut 'the downgrade waits behind the LINKS_OK gate' \
+    '    adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && {' \
+    '    false && {' \
+    'must run BEFORE the LINKS_OK gate'
   check_mut 'the row count is emitted without normalising what grep produced' \
     '  case "$n" in '"''"'|*[!0-9]*) n=0 ;; esac' \
     '  :' \

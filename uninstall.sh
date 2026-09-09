@@ -337,6 +337,10 @@ unwire_settings() {
     names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
     adb_info "  sandbox  nothing of ours is in ~/.claude/settings.json — the file was left untouched"
+    # THE STAGED FILE GOES WITH THE NO-OP. It is created before this comparison, so every
+    # install/uninstall cycle that removed nothing left a zero-byte `settings.json.adb.<pid>.tmp`
+    # sitting in ~/.claude. (PR review)
+    rm -f "$tmp"   # no-op-stage
     rm -f "$receipt" || {
       adb_info "  WARN   the ownership record $receipt could not be deleted — remove it by hand."
       return 1; }
