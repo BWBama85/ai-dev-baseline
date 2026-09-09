@@ -587,4 +587,8 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `scripts/lib/common.sh:903` `6ef97ba` `PRRT_kwDOTfywrM6gexrQ` PR #463 2026-09-09 — a provably absent settings file was reported as unanswerable, so reconciliation was never scheduled
 - `exit-path-asymmetry` `uninstall.sh:336` `6ef97ba` `PRRT_kwDOTfywrM6gexrO` PR #463 2026-09-09 — the no-change branch returned without removing the temp it had already staged
 - `evidence-discarded` `bin/baseline:768` `6ef97ba` `PRRT_kwDOTfywrM6gexrM` PR #463 2026-09-09 — a downgrade was gated behind LINKS_OK, so a run that also repaired a link hid the lost protection
+- `status-swallowed` `install.sh:447` `7bc8d32` `PRRT_kwDOTfywrM6gjKzK` PR #463 2026-09-09 — a failed jq became an empty argument and the row writer reported success, publishing keys under a rowless receipt
+- `partial-validation` `install.sh:192` `7bc8d32` `PRRT_kwDOTfywrM6gjKzE` PR #463 2026-09-09 — the opt-out retention tested for rows when the record itself is the evidence of the choice
+- `partial-validation` `bin/baseline:208` `7bc8d32` `PRRT_kwDOTfywrM6gjKzH` PR #463 2026-09-09 — the downgrade was decided by row count, which cannot separate a mixed downgrade-plus-reconciliation
+- `false-guarantee` `scripts/check-settings-fragment.sh` `7bc8d32` `self-review-r27-one-of-two` PR #463 2026-09-09 — a pin asserted that an array check exists while the mutation deleted one of two, leaving half the reads uncovered
 <!-- adb:hits:end -->
