@@ -200,12 +200,18 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # Returns: 0 when this run should report a downgrade rather than a reconciliation
 adb_settings_downgraded_now() {
   [ "${1:-0}" -eq 1 ] || return 1
-  [ "${2:-0}" -gt 0 ] || return 1
   case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
     skipped-below-floor|skipped-unprobeable) ;;
     *) return 1 ;;
   esac
-  [ "$(adb_settings_row_count)" -eq "$2" ] || return 1
+  # THE ROW COUNT IS NOT THE TEST, and using it as one lost the mixed case: a CLI that drops below
+  # the floor WHILE a recorded leaf was also edited relinquishes its rows, so the counts differ and
+  # the run was classified as a plain reconciliation — the operator was told ownership had been
+  # tidied up and never that the protections had stopped being applied. The disposition after the
+  # heal is the fact; a reconciliation that happened alongside it is reported too, not instead.
+  # (PR review)
+  [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ] \
+    && echo "baseline: stale sandbox ownership was also relinquished." >&2
   echo "baseline: the sandbox protections are NOT being applied — the \`claude\` CLI no longer" >&2
   echo "          clears the version floor, or could not be probed (#248). Ownership of the" >&2
   echo "          keys already written is unchanged; upgrade the CLI to have them re-applied." >&2

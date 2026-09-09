@@ -950,6 +950,22 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- the merge's decision is read back and CHECKED before anything is published ----------------------
+#
+# `.wrote` and `.created` were extracted inline, so a `jq` that failed became an EMPTY argument:
+# `adb_claude_settings_leaf_rows` emitted fewer rows, or none, and still returned success, which
+# `pipefail` cannot catch. For `.wrote` that publishes every sandbox key under a ROWLESS `installed`
+# receipt — uninstall cannot remove them and the next install reads them as the operator's.
+awk '/local rtmp=/{f=1}
+     f && /wrote_json="\$\(printf/{print "ok"; exit}
+     f && /adb_claude_settings_receipt_render installed/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "the merge's .wrote and .created must be captured before the receipt is rendered — inline, a failed jq becomes an empty argument and the row writer reports success"
+# BOTH, counted. Asserting only that SOME array check exists let a mutation delete one of the two
+# and stay green — `.wrote` and `.created` are separate reads and either one failing produces the
+# same empty string, so one check covers one of them and nothing covers the other.
+[ "$(grep -c 'type == "array"' "$ROOT/install.sh")" -eq 2 ] && ok \
+  || bad "...and BOTH must be VALIDATED as arrays: an empty string is what either failure looks like, and it renders as a receipt with no rows"
+
 # --- a no-op uninstall stages nothing it leaves behind ------------------------------------------------
 #
 # The staged file is created before the "nothing of ours is here" comparison, so every cycle that
@@ -1108,10 +1124,20 @@ awk '/skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{f=1}
      f && /adb_settings_downgraded_now/{print "ok"; exit}
      f && /relinquished stale sandbox ownership/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "a skip left by a self-heal must be classified by whether ownership rows were actually relinquished, not by the disposition label — the sandbox protections are NOT being applied is a different fact from a reconciliation"
+# THE DISPOSITION IS THE FACT, NOT THE ROW DELTA. This rule USED to be the reverse — the predicate
+# required the row count unchanged, on the reasoning that a reconciliation drops rows and a
+# downgrade keeps them. That lost the mixed case: a CLI dropping below the floor WHILE a recorded
+# leaf was also edited relinquishes its rows, so the counts differ and the run was reported as a
+# tidy-up while the protections had silently stopped being applied. A reconciliation alongside it is
+# reported too, not instead.
 awk '/^adb_settings_downgraded_now\(\)/{f=1}
-     f && /\[ "\$\(adb_settings_row_count\)" -eq "\$2" \]/{print "ok"; exit}
+     f && /skipped-below-floor\|skipped-unprobeable/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
-  || bad "...and that predicate must decide on the ROW COUNT: a reconciliation drops the rows and a downgrade keeps every one, which is the only thing that separates them"
+  || bad "the downgrade predicate must decide on the DISPOSITION left behind by the heal — the row count cannot tell a mixed downgrade-plus-reconciliation from a reconciliation alone"
+awk '/^adb_settings_downgraded_now\(\)/{f=1}
+     f && /\[ "\$\(adb_settings_row_count\)" -eq "\$2" \] \|\| return 1/{print "bad"; exit}
+     f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q bad && \
+  bad "...and must NOT require the row count unchanged: that is exactly what hid the mixed case" || ok
 grep -qE '^\s*9\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
   || bad "currency-lib.sh must classify the downgrade code explicitly rather than letting it fall through to the catch-all as a failure"
 awk '/^    9\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit} f && /^    5\)/{exit}' \
@@ -1494,9 +1520,16 @@ awk '/if \[ -n "\$carried" \]; then/{f=1}
      f && /^  fi$/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "...and that kept-record branch must still FAIL the run: the skip was not recorded, so reporting success leaves the next update unaware of it"
 awk '/optout_rows="\$\(_adb_carry_rows/{f=1}
-     f && /if \[ -n "\$optout_rows" \]; then/{print "ok"; exit}
+     f && /if \[ -n "\$optout_rows" \]/{print "ok"; exit}
      f && /_adb_invalidate_stale_receipt/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "...and the --no-sandbox sibling must do the same"
+# ...and it keeps a ROWLESS opt-out record too, which is the normal shape when `--no-sandbox` was
+# chosen before this installer owned any keys. Deleting that because the replacement could not be
+# written makes the next update read `none` and apply the policy over an explicit decision.
+awk '/optout_rows="\$\(_adb_carry_rows/{f=1}
+     f && /= skipped-optout/{print "ok"; exit}
+     f && /_adb_invalidate_stale_receipt/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "...and must keep an existing opt-out record even when it carries no rows — the record IS the evidence of the choice"
 
 # --- nothing is pruned until the receipt is known to be replaceable ---------------------------------
 #
@@ -2581,13 +2614,21 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
+  check_mut 'the merge decision is rendered without being read back' \
+    '     || ! printf '"'"'%s'"'"' "$wrote_json" | jq -e '"'"'type == "array"'"'"' >/dev/null 2>&1 \' \
+    '     || false \' \
+    'BOTH must be VALIDATED as arrays'
+  check_mut 'a rowless opt-out record is discarded when the replacement fails' \
+    '         || [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then' \
+    '         || false; then' \
+    'must keep an existing opt-out record even when it carries no rows'
   check_mut 'a still-accurate record is invalidated when its replacement fails' \
     '  if [ -n "$carried" ]; then' \
     '  if false; then' \
     'must KEEP a still-accurate record'
   check_mut 'the opt-out sibling invalidates a still-accurate record' \
-    '      if [ -n "$optout_rows" ]; then' \
-    '      if false; then' \
+    '      if [ -n "$optout_rows" ] \' \
+    '      if false \' \
     'sibling must do the same'
   check_mut 'the retirement prunes before proving the receipt replaceable' \
     '      if ! mv "$receipt" "$_bprobe" 2>/dev/null; then' \
@@ -2790,10 +2831,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if adb_settings_downgraded_now "$BEHIND_SETTINGS_PENDING" "$BEHIND_ROWS_BEFORE"; then' \
     '      if false; then' \
     'post-pull path must ask whether the protections were downgraded'
+  check_mut 'the downgrade predicate requires the row count unchanged again' \
+    '  [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ] \' \
+    '  [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -eq "$2" ] || return 1; [ 1 = 1 ] \' \
+    'must NOT require the row count unchanged'
   check_mut 'a downgrade is reported as a relinquishment' \
-    '  [ "$(adb_settings_row_count)" -eq "$2" ] || return 1' \
-    '  :' \
-    'must decide on the ROW COUNT'
+    '    skipped-below-floor|skipped-unprobeable) ;;' \
+    '    no-such-disposition) ;;' \
+    'must decide on the DISPOSITION left behind by the heal'
   check_mut 'a receipt naming another clone is treated as current' \
     '  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0' \
     '  :' \

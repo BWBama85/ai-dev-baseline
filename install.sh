@@ -189,11 +189,17 @@ _adb_wire_settings_locked() {
       # `--no-sandbox`, and applies the policy over an explicit choice the operator made by
       # contract. The opt-out not reaching disk is a failure of this branch whether or not there was
       # anything to invalidate. (PR review)
-      if [ -n "$optout_rows" ]; then
+      # ROWS ARE NOT THE ONLY THING WORTH KEEPING. A rowless `skipped-optout` receipt is the normal
+      # shape when `--no-sandbox` was chosen before this installer owned any keys, and it is still
+      # the whole evidence of that choice — deleting it because the replacement could not be written
+      # makes the next update read `none` and apply the policy over an explicit decision. Keep an
+      # existing record that is either still accurate OR already records this same choice.
+      if [ -n "$optout_rows" ] \
+         || [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then
         adb_info "  WARN   --no-sandbox was honoured for this run but could NOT be recorded, and the"
-        adb_info "         previous ownership record is still accurate so it was KEPT. The next"
-        adb_info "         \`baseline update\` will not know about the opt-out; re-run once $receipt is writable."
-        return 1
+        adb_info "         previous record still stands for that choice so it was KEPT. Re-run once"
+        adb_info "         $receipt is writable."
+        return 1   # optout-kept
       fi
       _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured" || true
       adb_info "  WARN   the opt-out was honoured for this run but could NOT be recorded — the next"
@@ -441,10 +447,22 @@ _adb_wire_settings_locked() {
   fi
 
   local rtmp="$receipt.adb.$$.tmp"
+  # THE ROW INPUTS ARE CAPTURED AND CHECKED FIRST. Inline, a `jq` that failed became an EMPTY
+  # argument — `adb_claude_settings_leaf_rows` then emitted fewer rows, or none, and still returned
+  # success, so `pipefail` had nothing to catch. For `.wrote` that publishes every sandbox key under
+  # a rowless `installed` receipt: uninstall cannot remove them and the next install reads them as
+  # the operator's. Validate both as arrays before anything is written. (PR review)
+  local wrote_json created_json
+  if ! wrote_json="$(printf '%s' "$result" | jq -c '.wrote')" \
+     || ! created_json="$(printf '%s' "$result" | jq -c '.created')" \
+     || ! printf '%s' "$wrote_json" | jq -e 'type == "array"' >/dev/null 2>&1 \
+     || ! printf '%s' "$created_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    adb_info "  WARN   could not read back what the merge decided — sandbox settings NOT written"
+    adb_info "         (an incomplete ownership record is worse than none: the keys could never be removed)"
+    return 1
+  fi
   if ! { adb_claude_settings_source_row "$REPO"
-         adb_claude_settings_leaf_rows "$payload" \
-           "$(printf '%s' "$result" | jq -c '.wrote')" \
-           "$(printf '%s' "$result" | jq -c '.created')"; } \
+         adb_claude_settings_leaf_rows "$payload" "$wrote_json" "$created_json"; } \
        | adb_claude_settings_receipt_render installed "$version" "$floor" \
              "$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')" > "$rtmp" \
      || [ ! -s "$rtmp" ]; then
