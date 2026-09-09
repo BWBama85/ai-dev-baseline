@@ -582,4 +582,6 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `bin/baseline:207` `a0c2e69` `PRRT_kwDOTfywrM6gZze3` PR #463 2026-09-08 — grep -c prints its zero and exits 1, so the fallback appended a second value and broke the caller's arithmetic
 - `partial-validation` `uninstall.sh:123` `a0c2e69` `PRRT_kwDOTfywrM6gZze0` PR #463 2026-09-08 — the stamp asked whether a source ROW existed, while the reader requires a source VALUE
 - `evidence-discarded` `bin/baseline:798` `a0c2e69` `PRRT_kwDOTfywrM6gZzev` PR #463 2026-09-08 — the post-pull path never asked the downgrade question, so a lost protection read as a plain update
+- `partial-validation` `install.sh:360` `025b563` `PRRT_kwDOTfywrM6gc6xw` PR #463 2026-09-09 — the refusal compared its output against the real path when the merge had read a synthetic pre-image
+- `status-swallowed` `scripts/lib/common.sh:551` `025b563` `PRRT_kwDOTfywrM6gc6x1` PR #463 2026-09-09 — a failed chmod was ignored and the rename proceeded, publishing a restricted file at the umask default
 <!-- adb:hits:end -->
