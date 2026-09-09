@@ -296,6 +296,13 @@ _adb_wire_settings_locked() {
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
     adb_info "         settings NOT written (it must hold exactly one object; restore from the backup)"
     return 1; }
+  # REMEMBER THAT THE INPUT WAS SYNTHETIC. The file is removed here, but the refusal branch below
+  # has to know what the merge actually READ: with an absent or empty settings.json the merge saw a
+  # synthetic `{}`, and comparing its output against the real path — which slurps to `null` — made
+  # every such refusal look like a change. It then published `{}`, recreating a file the operator
+  # had deleted and replacing an empty or dangling symlink with a regular file. (PR review)
+  local used_synth=0
+  [ -n "$synth" ] && used_synth=1
   rm -f "$synth"; synth=""
   # THE RECEIPT IS RENDERED BEFORE THE SETTINGS ARE PUBLISHED, and the old one is kept until both
   # are durable. Ownership is the load-bearing half: settings without a receipt are keys nobody
@@ -356,8 +363,14 @@ _adb_wire_settings_locked() {
     # then orphaned for good, and could block a future scalar key at that path. Same question the
     # uninstall side already asks, asked the same way. (PR review)
     local _blk_changed=0
-    printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1 \
-      || _blk_changed=1
+    if [ "$used_synth" -eq 1 ]; then
+      # The pre-image was `{}`, not the file. A refusal that leaves it `{}` has nothing to write,
+      # and writing anyway would CREATE the path rather than update it.
+      printf '%s' "$result" | jq -e '.settings == {}' >/dev/null 2>&1 || _blk_changed=1
+    else
+      printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1 \
+        || _blk_changed=1
+    fi
     if [ "$_blk_changed" -eq 1 ] && [ -f "$receipt" ]; then
       local _bprobe="$receipt.adb.$$.probe"
       if ! mv "$receipt" "$_bprobe" 2>/dev/null; then

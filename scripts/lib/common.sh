@@ -548,7 +548,15 @@ adb_publish_json() {
   # An unreadable mode leaves the umask default rather than failing the write: a
   # preserved-but-unknown permission is not worth losing the settings over.
   if [ -f "$dest" ]; then mode="$(adb_file_mode "$dest")" || mode=""; fi
-  [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
+  # A MODE WE READ AND COULD NOT SET IS A PUBLICATION FAILURE. The hook writers build their temp
+  # under the caller's ordinary umask, so publishing anyway replaces a 0600 settings.json with a
+  # 0644 one — and that file carries unrelated values, an `env` block among them. Failing to READ
+  # the mode still proceeds (the comment above); failing to APPLY one we read does not. (PR review)
+  if [ -n "$mode" ] && ! chmod "$mode" "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    adb_info "  WARN   could not preserve $dest's mode ($mode) on the replacement — NOT published"
+    return 1
+  fi
   mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
   return 0
 }

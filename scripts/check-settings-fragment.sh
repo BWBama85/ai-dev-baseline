@@ -950,6 +950,64 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- a refusal over a SYNTHETIC pre-image writes nothing --------------------------------------------
+#
+# When settings.json is absent or empty the merge reads a synthetic `{}` — deleting a managed leaf
+# is a documented opt-out, so this is a state operators reach on purpose. Comparing the merge's
+# output against the REAL path slurps `null`, so every such refusal looked like a change and the
+# branch published `{}`: it recreated a file the operator had deleted, and replaced an empty or
+# dangling symlink with a regular file.
+sy="$work/synthrefusal"; rm -rf "$sy"; mkdir -p "$sy/.claude"
+echo '{"model":"opus"}' > "$sy/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$sy" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$sy/.claude/.adb-settings-owned")" -gt 0 ] && ok \
+  || bad "precondition: the fixture needs recorded rows, so their absence reads as divergence"
+rm -f "$sy/.claude/settings.json"
+HOME="$sy" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/sy.log" 2>&1
+grep -qi "no longer as this install left them" "$work/sy.log" && ok \
+  || bad "precondition: recorded leaves that are gone must read as divergence and refuse"
+[ -e "$sy/.claude/settings.json" ] && \
+  bad "a refusal must not CREATE settings.json — the merge read a synthetic {}, and comparing its output against the absent path made every such refusal look like a change" || ok
+# ...and the same for a DANGLING symlink, which is the other way to reach an empty pre-image. A
+# FRESH fixture, because the refusal above recorded a rowless `skipped-blocked` receipt — reusing
+# that home would leave nothing to diverge, so the next run takes the WRITE path and replaces the
+# link legitimately. The assertion would then fail for a reason that has nothing to do with the rule.
+syl="$work/synthsymlink"; rm -rf "$syl"; mkdir -p "$syl/.claude"
+echo '{"model":"opus"}' > "$syl/.claude/settings.json"
+HOME="$syl" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$syl/.claude/.adb-settings-owned")" -gt 0 ] && ok \
+  || bad "precondition: the symlink fixture needs live ownership rows too"
+rm -f "$syl/.claude/settings.json"
+ln -s "$syl/.claude/nowhere.json" "$syl/.claude/settings.json"
+HOME="$syl" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -L "$syl/.claude/settings.json" ] && ok \
+  || bad "...and must leave a dangling settings symlink as a symlink rather than replacing it with a regular file"
+[ -e "$syl/.claude/nowhere.json" ] && \
+  bad "...and must not create the link's missing target either" || ok
+
+# --- a mode we READ and could not SET is a publication failure ---------------------------------------
+#
+# The hook writers build their temp under the caller's ordinary umask, so publishing anyway replaces
+# a 0600 settings.json with a 0644 one — and that file carries unrelated values, an `env` block
+# among them. Failing to READ the mode still proceeds; failing to APPLY one we read does not.
+pm="$work/publishmode"; rm -rf "$pm"; mkdir -p "$pm/bin"
+printf '%s\n' '{"a":1}' > "$pm/dest.json"; chmod 600 "$pm/dest.json"
+printf '%s\n' '{"a":2}' > "$pm/new.json"
+cat > "$pm/bin/chmod" <<'PMSTUB'
+#!/bin/sh
+exit 1
+PMSTUB
+chmod +x "$pm/bin/chmod"
+( PATH="$pm/bin:$PATH"; adb_publish_json "$pm/new.json" "$pm/dest.json" ) >"$work/pm.log" 2>&1 && \
+  bad "a chmod that failed on a mode we successfully READ must fail the publication — publishing anyway exposes the destination's contents at the umask default" || ok
+[ "$(adb_file_mode "$pm/dest.json")" = "600" ] && ok \
+  || bad "...and the destination must be untouched"
+[ -e "$pm/new.json" ] && \
+  bad "...and the temp must be removed rather than left behind" || ok
+grep -qi "could not preserve" "$work/pm.log" && ok \
+  || bad "...and the refusal must say what it could not preserve"
+
 # --- the row count is ONE integer, whatever the receipt holds ---------------------------------------
 #
 # `grep -c` PRINTS the count and EXITS 1 when it is zero, so a `|| printf 0` fallback appended a
@@ -2332,6 +2390,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '          | map(. as $a | select( $justpruned' \
     '          | map(. as $a | select( true or $justpruned' \
     'must SURVIVE'
+  check_mut 'a failed chmod still publishes' \
+    '  if [ -n "$mode" ] && ! chmod "$mode" "$tmp" 2>/dev/null; then' \
+    '  if false; then' \
+    'must fail the publication'
   check_mut 'a damaged disposition reads as an absent receipt' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
@@ -2495,6 +2557,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # skip-not-recorded-kept' \
     '    return 0' \
     'kept-record branch must still FAIL the run'
+  check_mut 'a refusal compares against the real path it never read' \
+    '    if [ "$used_synth" -eq 1 ]; then' \
+    '    if false; then' \
+    'must not CREATE settings.json'
   check_mut 'the retirement-and-refusal pair publishes outside the deferral' \
     '    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt' \
     '    :' \
