@@ -600,4 +600,10 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `uninstall.sh:247` `9ab187c` `PRRT_kwDOTfywrM6g6ivf` PR #463 2026-09-10 — an unreadable receipt became an empty source, so the run reported Uninstalled over settings it never touched
 - `partial-validation` `install.sh:230` `9ab187c` `PRRT_kwDOTfywrM6g6ivi` PR #463 2026-09-10 — the none sentinel was persisted into a present receipt, which no reader can classify
 - `false-guarantee` `scripts/check-settings-fragment.sh` `9ab187c` `self-review-r29-probe-error` PR #463 2026-09-10 — two verification probes errored and printed what looked like findings
+- `status-swallowed` `install.sh` `7cac833` `PRRT_kwDOTfywrM6hDn8w` PR #463 2026-09-10
+- `status-swallowed` `scripts/lib/common.sh` `7cac833` `PRRT_kwDOTfywrM6hDn81` PR #463 2026-09-10
+- `status-swallowed` `uninstall.sh` `7cac833` `PRRT_kwDOTfywrM6hDn89` PR #463 2026-09-10
+- `status-swallowed` `install.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9B` PR #463 2026-09-10
+- `false-guarantee` `scripts/lib/currency-lib.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9H` PR #463 2026-09-10
+- `status-swallowed` `uninstall.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9N` PR #463 2026-09-10
 <!-- adb:hits:end -->
