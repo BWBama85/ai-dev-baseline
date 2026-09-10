@@ -591,4 +591,8 @@ One line per resolved review thread, newest last.
 - `partial-validation` `install.sh:192` `7bc8d32` `PRRT_kwDOTfywrM6gjKzE` PR #463 2026-09-09 — the opt-out retention tested for rows when the record itself is the evidence of the choice
 - `partial-validation` `bin/baseline:208` `7bc8d32` `PRRT_kwDOTfywrM6gjKzH` PR #463 2026-09-09 — the downgrade was decided by row count, which cannot separate a mixed downgrade-plus-reconciliation
 - `false-guarantee` `scripts/check-settings-fragment.sh` `7bc8d32` `self-review-r27-one-of-two` PR #463 2026-09-09 — a pin asserted that an array check exists while the mutation deleted one of two, leaving half the reads uncovered
+- `status-swallowed` `scripts/lib/common.sh:1325` `41a865e` `PRRT_kwDOTfywrM6g20BV` PR #463 2026-09-10 — each leaf value was read through an unchecked command substitution, emitting an empty field on failure
+- `evidence-discarded` `install.sh:424` `41a865e` `PRRT_kwDOTfywrM6g20Bd` PR #463 2026-09-10 — the refusal never named the kept bucket, and the receipt it then wrote carried no rows
+- `false-guarantee` `bin/baseline:217` `41a865e` `PRRT_kwDOTfywrM6g20Ba` PR #463 2026-09-10 — the downgrade message claimed ownership was unchanged in the case where it had just been relinquished
+- `false-guarantee` `scripts/check-settings-fragment.sh` `41a865e` `self-review-r28-unreachable-string` PR #463 2026-09-10 — a pin grepped for message text that survives unreachable when its branch is disabled
 <!-- adb:hits:end -->
