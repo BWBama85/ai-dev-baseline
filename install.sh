@@ -225,9 +225,21 @@ _adb_wire_settings_locked() {
         adb_info "         record was left as it is. Install jq and re-run once it is readable."
         return 1
       fi
+      # `none` IS A SENTINEL, NOT A DISPOSITION. It means "nobody has written a receipt", and the
+      # reader refuses it in a receipt that exists — so persisting it here produces a record that
+      # cannot be classified by anything afterwards: `adb_settings_pending` cannot read it and the
+      # merge answers 21, so the policy can never be installed until somebody deletes the file by
+      # hand. An empty receipt is exactly the input that yields it. (PR review)
+      local njdisp
+      njdisp="$(adb_claude_settings_disposition "$receipt" 2>/dev/null || true)"
+      if [ -z "$njdisp" ] || [ "$njdisp" = none ]; then
+        adb_info "  WARN   $receipt carries no usable disposition, so its provenance was NOT"
+        adb_info "         refreshed — writing one here would leave a record nothing can classify."
+        return 1
+      fi
       if { adb_claude_settings_source_row "$REPO"; printf '%s\n' "$njrows"; } \
          | adb_claude_settings_receipt_render \
-             "$(adb_claude_settings_disposition "$receipt")" \
+             "$njdisp" \
              "-" "$floor" \
              "$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null || printf '%s' '-')" \
              > "$receipt.adb.$$.tmp" && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then :; else
@@ -327,10 +339,26 @@ _adb_wire_settings_locked() {
   # ALL-OR-NOTHING: a refusal writes NO KEY. Either the whole fragment applies or the operator is
   # told exactly what is in the way, because a partial policy reports protection it does not have.
   local verdict blockers
-  verdict="$(printf '%s' "$result" | jq -r '.verdict')"
+  if ! verdict="$(_adb_result_field "$result" -r '.verdict')"; then
+    adb_info "  WARN   could not read the merge verdict — sandbox settings NOT written"
+    return 1
+  fi
+  # ...AND IT MUST BE ONE WE KNOW. An unrecognised verdict is not a reason to take the write path:
+  # that is the branch that publishes keys, and it must be chosen deliberately.
+  case "$verdict" in
+    write|refuse|remove) ;;
+    *) adb_info "  WARN   the merge returned an unrecognised verdict — sandbox settings NOT written"
+       return 1 ;;
+  esac
   if [ "$verdict" = refuse ]; then
-    blockers="$(printf '%s' "$result" | jq -r '[(.blocked + .diverged)[] | join(".")] | join(", ")')"
-    if [ "$(printf '%s' "$result" | jq -r '.diverged | length')" -gt 0 ]; then
+    local diverged_n
+    if ! blockers="$(_adb_result_field "$result" -r '[(.blocked + .diverged)[] | join(".")] | join(", ")')" \
+       || ! diverged_n="$(_adb_result_field "$result" -r '.diverged | length')"; then
+      adb_info "  WARN   could not read what blocked the merge — sandbox settings NOT written"
+      return 1
+    fi
+    case "$diverged_n" in ''|*[!0-9]*) diverged_n=0 ;; esac
+    if [ "$diverged_n" -gt 0 ]; then
       adb_info "  sandbox  NOT written — these keys are no longer as this install left them: $blockers"
       adb_info "           Editing or deleting one is the documented opt-out, so nothing was rewritten."
       adb_info "           To take the policy back, remove the \`sandbox\` keys and re-run ./install.sh."
@@ -356,7 +384,10 @@ _adb_wire_settings_locked() {
     # part of the all-or-nothing decision — and dropping it here would leave that key installed
     # with no ownership record at all, since a blocked receipt carries no rows.
     local retired
-    retired="$(printf '%s' "$result" | jq -r '[.pruned[] | join(".")] | join(", ")')"
+    if ! retired="$(_adb_result_field "$result" -r '[.pruned[] | join(".")] | join(", ")')"; then
+      adb_info "  WARN   could not read what the retirement pruned — sandbox settings NOT written"
+      return 1   # read before the deferral opens: nothing to resume
+    fi
     # A REFUSAL THAT PRUNES IS TWO DURABLE WRITES, so it is a transaction exactly as the write path
     # is: the settings lose the retired key, then the receipt stops claiming it. A signal in
     # between leaves the old receipt naming a leaf that is no longer there, and if the operator
@@ -746,6 +777,20 @@ _adb_invalidate_stale_receipt() {
 # One reporting line per non-empty bucket, naming the leaves. SAY WHAT IT DID, not merely that it
 # succeeded: `skipped` and `wrote` produce identical exit codes and identical silence otherwise,
 # and "which of my sandbox keys did this actually set" is the only question an operator has here.
+# One field out of the merge result, or a refusal. Every one of these decides something — the
+# verdict picks the branch, the counts gate messages, the names are the operator's only record — and
+# a command substitution turns a failed `jq` into an EMPTY STRING that reads as a legitimate answer.
+# An empty verdict fell through to the WRITE path over a refusing merge, publishing an `installed`
+# receipt with no rows and the current digest, so no later update ever retried the policy.
+# Usage: _adb_result_field <result-json> <jq-args...>
+# Outputs: the field on stdout. Returns 1 when the read failed.
+_adb_result_field() {
+  local result="$1"; shift
+  local out
+  out="$(printf '%s' "$result" | jq "$@" 2>/dev/null)" || return 1
+  printf '%s' "$out"
+}
+
 _adb_report_settings() {
   local result="$1" bucket="$2" label="$3" names
   names="$(printf '%s' "$result" | jq -r --arg b "$bucket" '.[$b] | map(join(".")) | join(", ")' 2>/dev/null)"

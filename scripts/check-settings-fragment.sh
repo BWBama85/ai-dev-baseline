@@ -933,7 +933,7 @@ grep -qF 'NOT THE TOLERATED SKIP' "$ROOT/install.sh" && ok \
 # and leaving the prose would have kept them green, which is the failure mode this file has already
 # recorded once. What each asserts now is the ORDER: the deferral is reached before the first
 # durable write of its pair.
-awk '/^    retired=/{f=1}
+awk '/retired="\$\(_adb_result_field/{f=1}
      f && /adb_settings_lock_defer_signals/{print "ok"; exit}
      f && /adb_publish_json "\$rtmp2" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the refusal-that-prunes branch must defer signals BEFORE it publishes the pruned settings — the receipt that stops claiming the retired leaf is its second write"
@@ -949,6 +949,34 @@ awk '/^wire_hooks\(\)/{f=1}
 awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) {print "leaked"; exit}} {prev=$0}' \
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
+
+# --- the merge result is read through ONE checked reader --------------------------------------------
+#
+# Every field here decides something: the verdict picks the branch, the counts gate messages, the
+# names are the operator's only record. A command substitution turns a failed `jq` into an EMPTY
+# STRING that reads as a legitimate answer — and an empty verdict fell through to the WRITE path
+# over a refusing merge, publishing an `installed` receipt with no rows and the current digest, so
+# no later update ever retried the policy.
+grep -q '_adb_result_field() {' "$ROOT/install.sh" && ok \
+  || bad "the merge result must be read through one checked helper, not by unchecked command substitution at each site"
+# EVERY FIELD THROUGH THE HELPER. Counted as call sites rather than by hunting the old spelling: an
+# unchecked read left beside the helper is precisely the defect the helper exists to remove.
+[ "$(grep -c '_adb_result_field "\$result"' "$ROOT/install.sh")" -ge 4 ] && ok \
+  || bad "...and every field must go through it — the verdict, the blockers, the diverged count and the retirement list are four separate reads and each one decides something"
+grep -qE "jq -r '\.verdict'" "$ROOT/install.sh" && \
+  bad "...with no unchecked read left beside it: reading .verdict directly is what let an empty string fall through to the write path" || ok
+awk '/verdict="\$\(_adb_result_field/{f=1}
+     f && /write\|refuse\|remove\)/{print "ok"; exit}
+     f && /if \[ "\$verdict" = refuse \]/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "...and the verdict must be one of the KNOWN values before the write path is taken — that branch publishes keys and must be chosen, not fallen into"
+# ...and the row writer's two path enumerations, which fail the same way one level out.
+# BOTH GUARDS, COUNTED, and the pin watches the `|| return 1` rather than the assignment — the
+# assignment survives the mutation that deletes the guard, which is how the first version of this
+# pin passed over a real defect. Two enumerations, so a count: deleting either one leaves the other
+# to answer for it.
+[ "$(awk '/^adb_claude_settings_leaf_rows\(\)/{f=1} f && /_paths="\$\(printf/ && /\|\| return 1/{n++} f && /^}/{exit} END{print n+0}' \
+     "$ROOT/scripts/lib/common.sh")" -eq 2 ] && ok \
+  || bad "both leaf-row enumerations must be captured AND checked before any row is printed — inside the heredoc a failed jq walks zero paths and the writer still returns 0"
 
 # --- and so is EACH LEAF VALUE, one level down -------------------------------------------------------
 #
@@ -1433,6 +1461,38 @@ awk '/^install_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| icrc=1/{print 
 awk '/^uninstall_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| ucrc=1/{print "ok"; exit} f && /^}/{exit}' \
   "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall_claude must do the same"
+
+# --- an unreadable receipt is not one WITHOUT a source ------------------------------------------------
+#
+# With the root-doc link already gone, `|| true` turned a failed read into an empty source, which
+# reads as "legacy, and not ours" — so uninstall returned 0, the outer script printed `Uninstalled`,
+# and every owned sandbox setting stayed active with nobody told.
+us2="$work/unreadsource"; rm -rf "$us2"; mkdir -p "$us2/.claude"
+echo '{"model":"opus"}' > "$us2/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$us2" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+rm -f "$us2/.claude/CLAUDE.md"
+chmod 000 "$us2/.claude/.adb-settings-owned"
+HOME="$us2" bash "$ROOT/uninstall.sh" --agent claude >"$work/us2.log" 2>&1 && \
+  bad "an uninstall that cannot read the receipt must FAIL — with the link gone, an empty source reads as another clone's and every owned key is silently left behind" || ok
+chmod 600 "$us2/.claude/.adb-settings-owned"
+grep -qiE '^Uninstalled' "$work/us2.log" && \
+  bad "...and must not print Uninstalled over settings it never touched" || ok
+jq -e '.sandbox.enabled == true' "$us2/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "...and the keys must still be there, since nothing proved they were ours to remove"
+
+# --- `none` is a sentinel and is never persisted ------------------------------------------------------
+#
+# It means "nobody has written a receipt", and the reader refuses it in a receipt that EXISTS — so
+# writing it produces a record nothing afterwards can classify: `adb_settings_pending` cannot read
+# it, the merge answers 21, and the policy can never be installed until the file is deleted by hand.
+# An empty receipt is exactly the input that yields it.
+grep -q 'njdisp' "$ROOT/install.sh" && ok \
+  || bad "the no-jq provenance path must not render whatever the disposition reader returned — `none` is a sentinel for an ABSENT receipt and cannot be written into a present one"
+awk '/njdisp="\$\(adb_claude_settings_disposition/{f=1}
+     f && /= none \]/{print "ok"; exit}
+     f && /receipt_render/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "...and must refuse specifically when it reads `none`, which is what an empty receipt produces"
 
 # --- an unstamped legacy install is not unlinked ----------------------------------------------------
 #
@@ -2535,6 +2595,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ -s "$settings" ] || return 1' \
     '  [ -s "$settings" ] || return 2' \
     'must read as DIVERGED'
+  check_mut 'the path enumerations are not checked' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)" || return 1' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)"' \
+    'must be captured AND checked before any row is printed'
   check_mut 'a per-leaf extraction failure becomes an empty value' \
     '    if ! v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)" || [ -z "$v" ]; then' \
     '    v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)"; if false; then' \
@@ -2710,6 +2774,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # skip-not-recorded-kept' \
     '    return 0' \
     'kept-record branch must still FAIL the run'
+  check_mut 'an unknown verdict falls through to the write path' \
+    '    write|refuse|remove) ;;' \
+    '    write|refuse|remove|"") ;;' \
+    'verdict must be one of the KNOWN values'
+  check_mut 'the no-jq path persists the none sentinel' \
+    '      if [ -z "$njdisp" ] || [ "$njdisp" = none ]; then' \
+    '      if false; then' \
+    'must refuse specifically when it reads'
   check_mut 'a refusal returns without naming what it kept' \
     '    _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"' \
     '    :' \
@@ -2820,6 +2892,10 @@ if [ "$MUTATION" -eq 1 ]; then
     "  if printf '%s' \"\$result\" | jq -e --slurpfile orig \"\$settings\" '.settings == \$orig[0]' >/dev/null 2>&1; then" \
     "  if [ \"\$(printf '%s' \"\$result\" | jq -r '.pruned | length')\" -eq 0 ]; then" \
     'empty container this install created must still be removed'
+  check_mut 'an unreadable receipt source is read as absent' \
+    '    return 1   # unreadable-source' \
+    '    :' \
+    'must not print Uninstalled over settings it never touched'
   check_mut 'an unreadable legacy receipt is unlinked anyway' \
     '    if [ -f "$_lr" ] && ! cat "$_lr" >/dev/null 2>&1; then' \
     '    if false; then' \

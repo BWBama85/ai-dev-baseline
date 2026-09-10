@@ -1325,6 +1325,15 @@ adb_claude_settings_leaf_rows() {
   # uninstall could not remove it, and the matching payload digest stopped later updates from
   # repairing the ownership. The `.wrote`/`.created` arrays were fixed one level up; this is the
   # same failure per leaf. (PR review)
+  # THE ENUMERATIONS ARE CHECKED BEFORE ANY ROW IS PRINTED. Inside the heredoc a failed `jq`
+  # produced an EMPTY document and both loops then walked zero paths while this function returned
+  # 0 — the caller published the settings against a receipt missing its leaf rows, and a missing
+  # leaf row strands the written value for good: the payload digest still looks current, so no
+  # later update repairs the ownership, and uninstall has nothing to remove it by. Same failure as
+  # the per-value read below, one level out. (PR review)
+  local wrote_paths created_paths
+  wrote_paths="$(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)" || return 1
+  created_paths="$(printf '%s' "$createdj" | jq -c '.[]?' 2>/dev/null)" || return 1
   local v
   while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -1333,13 +1342,13 @@ adb_claude_settings_leaf_rows() {
     fi
     printf 'leaf\t%s\t%s\n' "$p" "$v"
   done <<EOF
-$(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)
+$wrote_paths
 EOF
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     printf 'container\t%s\n' "$p"
   done <<EOF
-$(printf '%s' "$createdj" | jq -c '.[]?' 2>/dev/null)
+$created_paths
 EOF
 }
 

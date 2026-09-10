@@ -243,7 +243,16 @@ unwire_settings() {
   # uninstall consumed and deleted settings whose record explicitly named somebody else. A present
   # source row is evidence about the receipt itself; the link is evidence about the tree around it,
   # and only one of those is what a receipt means. (PR review)
+  # AN UNREADABLE RECEIPT IS NOT ONE WITHOUT A SOURCE. `|| true` turned a failed read into an empty
+  # source, and with the root-doc link already gone that reads as "legacy, and not ours" — so this
+  # returned 0, the outer script printed `Uninstalled`, and every owned sandbox setting stayed
+  # active with nobody told. The file existing and refusing to open is a reason to stop. (PR review)
   local recorded
+  if [ -f "$receipt" ] && ! cat "$receipt" >/dev/null 2>&1; then
+    adb_info "  ERROR  $receipt exists but cannot be read, so this run cannot tell whose settings"
+    adb_info "         these are. NOTHING was removed — restore access to it and re-run."
+    return 1   # unreadable-source
+  fi
   recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
   if [ -n "$recorded" ]; then
     if [ "$recorded" != "$REPO" ]; then
