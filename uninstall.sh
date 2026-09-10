@@ -124,7 +124,20 @@ _uninstall_claude_locked() {
     # good one appended after it. (PR review)
     if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \
        && [ -z "$(adb_claude_settings_receipt_source "$_lr" 2>/dev/null || true)" ]; then
-      if { printf '%s\n' "$_lrbody" | grep -v "^source$(printf '\t')"
+      # THE FILTER IS RUN AND CHECKED SEPARATELY. Inside a brace group its status is discarded —
+      # the group reports whatever the LAST command did — so a `grep` that failed operationally
+      # published a receipt carrying only the new source row, with every leaf row destroyed, and
+      # the root doc was unlinked immediately after. No retry could then remove the settings.
+      # `grep -v` exits 1 when it filters everything out, which for a receipt of only source rows
+      # is a legitimate empty result, so 1 is accepted and 2-and-above is not. (PR review)
+      local _lrkept _grc
+      _lrkept="$(printf '%s\n' "$_lrbody" | grep -v "^source$(printf '\t')")"; _grc=$?
+      if [ "$_grc" -gt 1 ]; then
+        adb_info "  WARN   could not filter the legacy ownership record, so its provenance was NOT"
+        adb_info "         recorded and the record was left exactly as it is."
+        return 1   # stamp-filter-failed
+      fi
+      if { printf '%s\n' "$_lrkept"
            adb_claude_settings_source_row "$REPO"; } > "$_lr.adb.$$.prov" \
          && adb_publish_json "$_lr.adb.$$.prov" "$_lr"; then
         adb_info "  sandbox  recorded this clone as the source of a legacy ownership record, so a failed"
@@ -286,7 +299,7 @@ unwire_settings() {
       return 1; }
     return 0
   fi
-  local mrc
+  local mrc _nochange
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)"; mrc=$?
   if [ "$mrc" -eq 20 ]; then
     adb_info "  WARN   $receipt exists but could not be READ — sandbox settings NOT removed and the"
@@ -342,7 +355,20 @@ unwire_settings() {
   # but left our empty `sandbox` object behind pruned nothing, and the file was skipped with that
   # object orphaned in it permanently. Comparing the result to the live document answers the
   # question actually being asked: is there anything of ours left to take out?
-  if printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1; then
+  # `jq -e` ANSWERS 1 FOR FALSE AND 5 FOR AN ERROR. Treating both as "the document changed" meant a
+  # transient failure republished a document that was actually unchanged — which for a settings.json
+  # SYMLINK replaces the link with a regular file and reformats the operator's document, the exact
+  # damage the no-op branch exists to avoid. An unanswerable comparison stops the run. (PR review)
+  printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1
+  _nochange=$?
+  if [ "$_nochange" -gt 1 ]; then
+    rm -f "$tmp"
+    adb_info "  WARN   could not compare the removal result with ~/.claude/settings.json — sandbox"
+    adb_info "         settings NOT removed. Nothing was written; re-run once the file is readable."
+    adb_settings_lock_resume_signals
+    return 1
+  fi
+  if [ "$_nochange" -eq 0 ]; then
     names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
     adb_info "  sandbox  nothing of ours is in ~/.claude/settings.json — the file was left untouched"

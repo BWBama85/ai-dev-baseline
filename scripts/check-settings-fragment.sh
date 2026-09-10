@@ -950,6 +950,46 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- an OPERATIONAL failure is never a semantic answer ------------------------------------------------
+#
+# The class this suite has now met at nine sites: a command substitution or a predicate whose
+# failure is indistinguishable from a legitimate result. `jq -e` is the sharpest case — it answers
+# **1 for false and 5 for an error**, and code that tests only "non-zero" reads a dead process as a
+# considered "no".
+#
+# Each of these is one site where that difference decides whether ownership survives.
+awk '/^_adb_carry_rows\(\)/{f=1}
+     f && /if ! proved="\$\(printf/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "the pruned-count read must be checked before it is normalised — an empty value normalises to 0, which reads as every recorded key having diverged and publishes a rowless receipt"
+awk '/^_adb_report_settings\(\)/{f=1}
+     f && /if ! names="\$\(printf/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
+  || bad "the bucket reporter must distinguish an empty bucket from a failed read — on the refusal path its `kept` line is the last thing that ever names an edited obsolete key"
+# ALL THREE ROW PREDICATES — two in the leaves reader, one in the containers reader. The third was
+# missed on the first pass and found only because this count is over the file rather than over one
+# function.
+[ "$(grep -c 'case $? in 0) ;; 1) continue ;; \*) return 20 ;; esac' "$ROOT/scripts/lib/common.sh")" -eq 3 ] && ok \
+  || bad "every row predicate must treat jq's 1 (false) and its 5 (error) differently — conflating them drops a valid row, so the merge owns fewer leaves and uninstall leaves the live key behind"
+[ "$(grep -c "jq -e 'type == \"array\" and length > 0 and all(.\[\]; type == \"string\")' >/dev/null 2>&1 || continue" "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
+  || bad "...and none may still be spelled with a bare \`|| continue\`, which is the conflation itself"
+awk '/^unwire_settings\(\)/{f=1}
+     f && /\[ "\$_nochange" -gt 1 \]/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "the no-op comparison must tell an execution error from an inequality — treating both as a difference republishes an unchanged document, which turns a settings.json symlink into a regular file"
+awk '/_lrkept="\$\(printf/{f=1}
+     f && /\[ "\$_grc" -gt 1 \]/{print "ok"; exit}
+     f && /adb_publish_json/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
+  || bad "the legacy filter must be run and checked on its own — inside a brace group its status is discarded, so a failed grep publishes a receipt with every leaf row destroyed"
+# ...and the currency wrapper, which cannot tell the two downgrade cases apart and must therefore
+# not promise the one that is sometimes false.
+grep -q "if the sandbox keys are still in settings.json afterwards they are no longer owned" \
+  "$ROOT/scripts/lib/currency-lib.sh" && ok \
+  || bad "the exit-9 message must hold whether or not ownership was also relinquished: this wrapper discards baseline's output by design and reads only the exit code, so it cannot detect the mixed case"
+awk '/^    9\)/{f=1} f && /\$out/{print "bad"; exit} f && /^    5\)/{exit}' \
+  "$ROOT/scripts/lib/currency-lib.sh" | grep -q bad && \
+  bad "...and must not reach for baseline's prose to find out: the outcome contract here is the EXIT CODE, and \$out is not in scope in that arm" || ok
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -2595,6 +2635,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ -s "$settings" ] || return 1' \
     '  [ -s "$settings" ] || return 2' \
     'must read as DIVERGED'
+  check_mut 'a row predicate treats a jq error as a malformed row' \
+    '    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac' \
+    '    case $? in 0) ;; *) continue ;; esac' \
+    'must treat jq'"'"'s 1 (false) and its 5 (error) differently'
   check_mut 'the path enumerations are not checked' \
     '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)" || return 1' \
     '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)"' \
@@ -2814,6 +2858,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_settings_lock_drop || icrc=1' \
     '  adb_settings_lock_drop' \
     'must fold a failed lock release into its own status'
+  check_mut 'the pruned count is normalised before it is checked' \
+    '  if ! proved="$(printf '"'"'%s'"'"' "$probe" | jq -r '"'"'.pruned | length'"'"' 2>/dev/null)"; then' \
+    '  proved="$(printf '"'"'%s'"'"' "$probe" | jq -r '"'"'.pruned | length'"'"' 2>/dev/null)"; if false; then' \
+    'must be checked before it is normalised'
+  check_mut 'the bucket reporter masks a failed read' \
+    '  if ! names="$(printf '"'"'%s'"'"' "$result" | jq -r --arg b "$bucket" '"'"'.[$b] | map(join(".")) | join(", ")'"'"' 2>/dev/null)"; then' \
+    '  names="$(printf '"'"'%s'"'"' "$result" | jq -r --arg b "$bucket" '"'"'.[$b] | map(join(".")) | join(", ")'"'"' 2>/dev/null)"; if false; then' \
+    'must distinguish an empty bucket from a failed read'
   check_mut 'the row reader answers zero rows for a receipt it could not read' \
     '  [ "$grc" -le 1 ] || return 20' \
     '  :' \
@@ -2885,13 +2937,21 @@ if [ "$MUTATION" -eq 1 ]; then
     '  elif false; then' \
     'must fall back to the link'
   check_mut 'uninstall rewrites settings.json when nothing of ours was pruned' \
-    "  if printf '%s' \"\$result\" | jq -e --slurpfile orig \"\$settings\" '.settings == \$orig[0]' >/dev/null 2>&1; then" \
+    '  if [ "$_nochange" -eq 0 ]; then' \
     '  if false; then' \
     'must leave settings.json alone'
   check_mut 'a zero leaf count is taken as proof that nothing of ours is left' \
-    "  if printf '%s' \"\$result\" | jq -e --slurpfile orig \"\$settings\" '.settings == \$orig[0]' >/dev/null 2>&1; then" \
+    '  if [ "$_nochange" -eq 0 ]; then' \
     "  if [ \"\$(printf '%s' \"\$result\" | jq -r '.pruned | length')\" -eq 0 ]; then" \
     'empty container this install created must still be removed'
+  check_mut 'an execution error counts as a document difference' \
+    '  if [ "$_nochange" -gt 1 ]; then' \
+    '  if false; then' \
+    'must tell an execution error from an inequality'
+  check_mut 'the legacy filter status is discarded again' \
+    '      if [ "$_grc" -gt 1 ]; then' \
+    '      if false; then' \
+    'must be run and checked on its own'
   check_mut 'an unreadable receipt source is read as absent' \
     '    return 1   # unreadable-source' \
     '    :' \

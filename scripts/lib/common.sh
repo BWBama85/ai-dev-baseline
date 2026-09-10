@@ -1006,8 +1006,14 @@ adb_claude_settings_receipt_leaves() {
     # empty array, so a hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as
     # ownership of the JSON ROOT, and `delpaths([[]])` replaced the entire settings document with
     # `null` — destroying every unrelated key during an ordinary uninstall.
-    printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 || continue
-    printf '%s' "$v" | jq -e . >/dev/null 2>&1 || continue
+    # `jq -e` RETURNS 1 FOR FALSE AND 5 FOR AN ERROR, and treating both as "malformed row" silently
+    # dropped a perfectly good row when jq died transiently — the merge then owned fewer leaves,
+    # uninstall left the live key in place, and the receipt was deleted anyway. Skip a row the
+    # predicate rejects; refuse the whole read when the predicate could not be evaluated.
+    printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
+    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
+    printf '%s' "$v" | jq -e . >/dev/null 2>&1
+    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
     printf '%s\t%s\n' "$p" "$v"
     # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`
     # returns non-zero on that last partial line WITHOUT running the body — silently dropping the
@@ -1031,7 +1037,8 @@ adb_claude_settings_receipt_containers() {
     case "$line" in "container$tab"*) ;; *) continue ;; esac
     rest="${line#container$tab}"
     rest="${rest%%$tab*}"
-    printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 || continue
+    printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
+    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
     printf '%s\n' "$rest"
   done < "$receipt" || true
 }

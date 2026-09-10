@@ -392,8 +392,20 @@ cmd_check() {
       # repaired — what changed is that the protections are no longer being applied, which is the
       # security-relevant half and the one the installer's own warning would have carried if this
       # flow did not suppress it.
+      # THE PROMISE MUST HOLD IN BOTH CASES, because this wrapper cannot tell them apart. When a
+      # downgrade coincides with an edited or deleted owned leaf the self-heal ALSO drops every
+      # ownership row, so the keys still in the file are no longer ours: upgrading does not
+      # re-apply them and an all-or-nothing install refuses while they are there. An unconditional
+      # "upgrade and they come back" is therefore false in that case.
+      #
+      # It is not detectable from here, and deliberately so: step 8 runs `baseline update` with its
+      # output discarded and reads the outcome from the EXIT CODE, never by parsing prose — "prose
+      # is free to change, the contract is not". Distinguishing the two would need its own exit
+      # code, which is a contract change every consumer inherits. The message covers both instead:
+      # upgrade, and if the keys survive that, they are unowned and must be removed by hand.
+      # (PR review)
       _adb_cu_emit refused \
-        "the sandbox protections are NOT being applied — the 'claude' CLI no longer clears the version floor or could not be probed; upgrade it to have them re-applied."
+        "the sandbox protections are NOT being applied — the 'claude' CLI no longer clears the version floor or could not be probed. Upgrade it; if the sandbox keys are still in settings.json afterwards they are no longer owned, so remove them by hand and re-run './install.sh'."
       ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \

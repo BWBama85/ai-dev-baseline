@@ -669,7 +669,15 @@ _adb_carry_rows() {
   fi
   local recorded proved
   recorded="$(adb_claude_settings_receipt_leaves "$receipt" | grep -c . || true)"
-  proved="$(printf '%s' "$probe" | jq -r '.pruned | length')"
+  # A FAILED READ IS NOT A COUNT OF ZERO. Unchecked, a `jq` that died here made `proved` empty, the
+  # normalisation below turned that into 0, and every recorded key then read as diverged — so a
+  # skip published a ROWLESS receipt while all the installed values still matched, and uninstall
+  # lost its only evidence of ownership. Normalising is for a value we actually read. (PR review)
+  if ! proved="$(printf '%s' "$probe" | jq -r '.pruned | length' 2>/dev/null)"; then
+    adb_info "  sandbox  ownership was neither proved nor given up — the removal probe could not be" >&2
+    adb_info "           read back, so the existing record is kept and this run writes none." >&2
+    return 20
+  fi
   case "$proved" in ''|*[!0-9]*) proved=0 ;; esac
   case "$recorded" in ''|*[!0-9]*) recorded=0 ;; esac
   if [ "$proved" -ne "$recorded" ]; then
@@ -793,7 +801,14 @@ _adb_result_field() {
 
 _adb_report_settings() {
   local result="$1" bucket="$2" label="$3" names
-  names="$(printf '%s' "$result" | jq -r --arg b "$bucket" '.[$b] | map(join(".")) | join(", ")' 2>/dev/null)"
+  # AN EMPTY BUCKET AND A FAILED READ ARE DIFFERENT ANSWERS. Masking the second as the first
+  # returned success while saying nothing — and on the refusal path the `kept` line is the LAST
+  # point at which anything names an edited obsolete key, because the receipt written next carries
+  # no rows. The caller needs to know it did not get told. (PR review)
+  if ! names="$(printf '%s' "$result" | jq -r --arg b "$bucket" '.[$b] | map(join(".")) | join(", ")' 2>/dev/null)"; then
+    adb_info "  WARN   could not read the '$bucket' list back from the merge"
+    return 1
+  fi
   [ -n "$names" ] && [ "$names" != "null" ] || return 0
   adb_info "           $label: $names"
 }
