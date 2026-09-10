@@ -1051,11 +1051,17 @@ _adb_claude_settings_created_json() {
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership
     *) printf '[]'; return 0 ;;
   esac
+  # Same masking as the leaves reader one function down, and the same consequence: a container
+  # this install created that no longer reaches the merge is left behind in the operator's file
+  # with nothing recording that it was ours. (PR review)
+  local _crows _crrc
+  _crows="$(adb_claude_settings_receipt_containers "$receipt")"; _crrc=$?
+  [ "$_crrc" -eq 0 ] || return "$_crrc"   # containers-reader-status
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     out="$out${out:+,}$line"
   done <<EOF
-$(adb_claude_settings_receipt_containers "$receipt")
+$_crows
 EOF
   printf '[%s]' "$out"
 }
@@ -1306,13 +1312,21 @@ _adb_claude_settings_owned_json() {
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership
     *) printf '[]'; return 0 ;;
   esac
+  # THE READER IS CAPTURED AND CHECKED BEFORE THE LOOP. Inside the heredoc its status is
+  # discarded — the loop simply walks whatever arrived — so a reader that returned 20 on an
+  # operational `jq` failure produced a PARTIAL array, or `[]`, with a status of 0. The merge then
+  # performed an uninstall against fewer ownership rows than the receipt holds and deleted the
+  # receipt afterwards, stranding every matching sandbox key for good. (PR review)
+  local _rows _rrc
+  _rows="$(adb_claude_settings_receipt_leaves "$receipt")"; _rrc=$?
+  [ "$_rrc" -eq 0 ] || return "$_rrc"   # leaves-reader-status
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     p="${line%%$tab*}"
     v="${line#*$tab}"
     out="$out${out:+,}{\"p\":$p,\"v\":$v}"
   done <<EOF
-$(adb_claude_settings_receipt_leaves "$receipt")
+$_rows
 EOF
   printf '[%s]' "$out"
 }

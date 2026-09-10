@@ -990,6 +990,42 @@ awk '/^    9\)/{f=1} f && /\$out/{print "bad"; exit} f && /^    5\)/{exit}' \
   "$ROOT/scripts/lib/currency-lib.sh" | grep -q bad && \
   bad "...and must not reach for baseline's prose to find out: the outcome contract here is the EXIT CODE, and \$out is not in scope in that arm" || ok
 
+# --- ...and a CALLER that ignores the status is the same defect one level out ----------------------
+#
+# Round 30 gave three of these functions a non-zero return. Round 31's findings are the callers that
+# do not look at it, which is the same class arriving from the other side: the failure is reported
+# and then discarded, so the run continues on the benign branch anyway.
+#
+# NEITHER reader may be fed straight into a heredoc: there its status is unobservable, the loop
+# walks whatever arrived, and a partial or empty array leaves the function returning 0.
+[ "$(grep -c 'done <<EOF' "$ROOT/scripts/lib/common.sh")" -ge 2 ] && \
+  [ "$(grep -c '^\$(adb_claude_settings_receipt' "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
+  || bad "no receipt reader may be substituted directly inside a heredoc — its status is discarded there, and a merge run against fewer ownership rows deletes the receipt afterwards and strands the keys"
+grep -q 'return "$_rrc"   # leaves-reader-status' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the leaves reader's status must be captured and checked before the loop that consumes it"
+grep -q 'return "$_crrc"   # containers-reader-status' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the containers reader's status must be captured and checked before the loop that consumes it"
+# The installer must keep the merge's THREE answers apart. 20 and 21 name the receipt; collapsing
+# them sends the operator to restore a settings.json that was never the problem.
+grep -q 'return 1   # merge-unreadable-receipt' "$ROOT/install.sh" && \
+  grep -q 'return 1   # merge-damaged-receipt' "$ROOT/install.sh" && ok \
+  || bad "install must report an unreadable receipt (20) and a damaged one (21) as themselves, as the uninstall path already does — restoring a valid settings.json cannot fix either"
+# The refusal path may not proceed past a report it could not make: the receipt it writes next
+# carries no rows, so that line is the last thing that ever names an edited obsolete key.
+grep -q 'return 1   # refusal-kept-unreadable' "$ROOT/install.sh" && ok \
+  || bad "a refusal whose kept-list could not be read must stop with the existing record untouched, not replace it with one that remembers nothing"
+# BOTH uninstall branches, and the second pair was NOT reported — found by sweeping the class
+# across the file rather than visiting the site the finding named.
+grep -q 'return 1   # noop-kept-unreadable' "$ROOT/uninstall.sh" && ok \
+  || bad "when nothing was pruned, an unreadable kept-list must keep the receipt: every recorded leaf was edited and all of them stay active"
+grep -q 'return 1   # published-kept-unreadable' "$ROOT/uninstall.sh" && ok \
+  || bad "after the settings are published, an unreadable kept-list must still keep the receipt — aborting cannot un-publish, but the record is what names the values left active"
+# ANCHORED ON THE BARE SPELLING. The first attempt matched `if ! names="$(...` too and so fired on
+# the fix itself — a guard that cannot tell the defect from its repair checks nothing.
+[ "$(grep -c '^[[:space:]]*names="\$(printf' "$ROOT/uninstall.sh")" -eq 0 ] && \
+  [ "$(grep -c 'if ! names="\$(printf' "$ROOT/uninstall.sh")" -eq 3 ] && ok \
+  || bad "all three bucket reads in uninstall must be checked, and none may still be spelled bare — the bare form is the masking itself"
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -2683,6 +2719,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _adb_arm_lock_traps' \
     '  :' \
     'must release the lock on its way out'
+  check_mut 'the leaves reader status is discarded again' \
+    '  [ "$_rrc" -eq 0 ] || return "$_rrc"   # leaves-reader-status' \
+    '  :   # leaves-reader-status' \
+    "the leaves reader's status must be captured and checked"
+  check_mut 'the containers reader status is discarded again' \
+    '  [ "$_crrc" -eq 0 ] || return "$_crrc"   # containers-reader-status' \
+    '  :   # containers-reader-status' \
+    "the containers reader's status must be captured and checked"
+  check_mut 'the leaves reader is substituted straight into the heredoc' \
+    '$_rows' \
+    '$(adb_claude_settings_receipt_leaves "$receipt")' \
+    'no receipt reader may be substituted directly inside a heredoc'
+  check_mut 'the containers reader is substituted straight into the heredoc' \
+    '$_crows' \
+    '$(adb_claude_settings_receipt_containers "$receipt")' \
+    'no receipt reader may be substituted directly inside a heredoc'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -2827,8 +2879,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if false; then' \
     'must refuse specifically when it reads'
   check_mut 'a refusal returns without naming what it kept' \
-    '    _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"' \
-    '    :' \
+    '    if ! _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"; then' \
+    '    if false; then' \
     'must NAME the retired leaf it kept'
   check_mut 'a refusal compares against the real path it never read' \
     '    if [ "$used_synth" -eq 1 ]; then' \
@@ -2914,6 +2966,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
     '  carried="$(_adb_owned_rows "$receipt")"' \
     'below-floor skip over a DIVERGED install must relinquish ownership'
+  check_mut 'the merge classification is collapsed again' \
+    '    return 1   # merge-unreadable-receipt' \
+    '    :' \
+    'must report an unreadable receipt (20) and a damaged one (21) as themselves'
+  check_mut 'a refusal proceeds past a kept-list it could not read' \
+    '      return 1   # refusal-kept-unreadable' \
+    '      :' \
+    'must stop with the existing record untouched'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3012,6 +3072,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ ! -s "$settings" ]; then' \
     '  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then' \
     'must not delete the ownership receipt while leaving the sandbox keys installed'
+  check_mut 'the no-op branch deletes the receipt after an unreadable kept-list' \
+    '      return 1   # noop-kept-unreadable' \
+    '      :' \
+    'an unreadable kept-list must keep the receipt'
+  check_mut 'the published branch drops the receipt after an unreadable kept-list' \
+    '      return 1   # published-kept-unreadable' \
+    '      :' \
+    'must still keep the receipt'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset

@@ -369,7 +369,17 @@ unwire_settings() {
     return 1
   fi
   if [ "$_nochange" -eq 0 ]; then
-    names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
+    # NOTHING WAS PRUNED, SO `.kept` IS THE WHOLE ANSWER — every recorded leaf was edited and all of
+    # them stay active. An empty `names` from a failed read is indistinguishable from "nothing was
+    # kept", and this branch deletes the receipt three lines down: the values would remain in the
+    # operator's file with no ownership record and no diagnostic naming them. (PR review)
+    if ! names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"; then
+      rm -f "$tmp"
+      adb_info "  WARN   nothing of ours could be removed, and the list of values you edited could not"
+      adb_info "         be read back — the ownership record was KEPT so they can still be identified."
+      adb_settings_lock_resume_signals
+      return 1   # noop-kept-unreadable
+    fi
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
     adb_info "  sandbox  nothing of ours is in ~/.claude/settings.json — the file was left untouched"
     # THE STAGED FILE GOES WITH THE NO-OP. It is created before this comparison, so every
@@ -403,9 +413,24 @@ unwire_settings() {
     return 1
   fi
   if printf '%s' "$result" | jq '.settings' > "$tmp" && adb_publish_json "$tmp" "$settings"; then
-    names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"
-    [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
-    names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"
+    # THE SAME TWO READS, ON THE PATH WHERE THE SETTINGS ARE ALREADY PUBLISHED. Aborting cannot
+    # un-publish them, so the remedy differs: what must survive is the RECEIPT, because a `.kept`
+    # that could not be named leaves those values active with nothing recording that they were
+    # ours. `.pruned` is diagnostic — those keys are gone either way — so a failure there is
+    # reported and the uninstall completes. Neither was reported; both are the reported class.
+    if ! names="$(printf '%s' "$result" | jq -r '.pruned | map(join(".")) | join(", ")' 2>/dev/null)"; then
+      adb_info "  WARN   the removed keys could not be listed back, but they ARE removed."
+    else
+      [ -n "$names" ] && adb_info "  sandbox  removed from ~/.claude/settings.json: $names"
+    fi
+    if ! names="$(printf '%s' "$result" | jq -r '.kept | map(join(".")) | join(", ")' 2>/dev/null)"; then
+      adb_info "  WARN   the sandbox settings were removed, but the values you edited could not be"
+      adb_info "         listed back — the ownership record was KEPT so they can still be identified."
+      adb_info "         Remove $receipt by hand once you have: until you do, a re-install reads its"
+      adb_info "         leaves as YOUR removals and will not restore the protection."
+      adb_settings_lock_resume_signals
+      return 1   # published-kept-unreadable
+    fi
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"
     # THE RECEIPT'S REMOVAL IS CHECKED. A stale ownership record survives an otherwise clean
     # uninstall, and the next install reads its leaves as recorded removals — the documented

@@ -309,11 +309,31 @@ _adb_wire_settings_locked() {
     fi
   fi
 
-  result="$(adb_claude_settings_merge "$cur_input" "$payload" "$receipt")" || {
+  # THE MERGE'S CLASSIFICATION SURVIVES. It returns 20 for a receipt it could not READ and 21 for
+  # one whose `disposition` line is damaged, precisely so a caller can name the record rather than
+  # the settings file. Collapsing all three into "settings.json is invalid, restore from backup"
+  # sent the operator to repair a file that is already valid, and no amount of restoring it fixes
+  # a receipt they were never told about — so both a manual install and a self-heal stayed stuck.
+  # The uninstall path already branches these; this is the same three answers. (PR review)
+  local _mrc
+  result="$(adb_claude_settings_merge "$cur_input" "$payload" "$receipt")"; _mrc=$?
+  if [ "$_mrc" -eq 20 ]; then
+    rm -f "$synth"
+    adb_info "  WARN   $receipt exists but could not be READ — sandbox settings NOT written. It is the"
+    adb_info "         only thing that can prove which keys are ours; fix its permissions and re-run."
+    return 1   # merge-unreadable-receipt
+  elif [ "$_mrc" -eq 21 ]; then
+    rm -f "$synth"
+    adb_info "  WARN   $receipt is readable but its \`disposition\` line is missing or unrecognised, so"
+    adb_info "         it cannot be classified — sandbox settings NOT written. No permission change will"
+    adb_info "         help; repair that line and re-run."
+    return 1   # merge-damaged-receipt
+  elif [ "$_mrc" -ne 0 ]; then
     rm -f "$synth"
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
     adb_info "         settings NOT written (it must hold exactly one object; restore from the backup)"
-    return 1; }
+    return 1
+  fi
   # REMEMBER THAT THE INPUT WAS SYNTHETIC. The file is removed here, but the refusal branch below
   # has to know what the merge actually READ: with an absent or empty settings.json the merge saw a
   # synthetic `{}`, and comparing its output against the real path — which slurps to `null` — made
@@ -372,7 +392,16 @@ _adb_wire_settings_locked() {
     # rows, so after this run nothing anywhere can identify that key: not a later update, not
     # uninstall. The write path and the uninstall path both name this bucket; the refusal was the
     # one place that returned without it. (PR review)
-    _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"
+    # AND ITS STATUS DECIDES WHETHER THE REFUSAL MAY PROCEED. The receipt written below carries NO
+    # rows, so this line is the last moment at which anything names an edited obsolete key. If the
+    # read failed the name is gone for good — not from a later update, not from uninstall — so the
+    # refusal stops here with the existing record untouched rather than replacing it with one that
+    # remembers nothing. (PR review)
+    if ! _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"; then
+      adb_info "           The refusal was NOT recorded: that list is the only thing that could name"
+      adb_info "           the key, and the existing record was left exactly as it is. Re-run."
+      return 1   # refusal-kept-unreadable
+    fi
     # ITS OWN RECEIPT, not `_adb_record_skip`'s. Two things differ from a version skip, and both
     # matter. The DIGEST must be the payload this refusal evaluated — carrying the prior one (or
     # `-` on a first install) leaves `adb_settings_pending` seeing an unknown or mismatched digest
