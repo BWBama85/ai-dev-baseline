@@ -595,4 +595,9 @@ One line per resolved review thread, newest last.
 - `evidence-discarded` `install.sh:424` `41a865e` `PRRT_kwDOTfywrM6g20Bd` PR #463 2026-09-10 — the refusal never named the kept bucket, and the receipt it then wrote carried no rows
 - `false-guarantee` `bin/baseline:217` `41a865e` `PRRT_kwDOTfywrM6g20Ba` PR #463 2026-09-10 — the downgrade message claimed ownership was unchanged in the case where it had just been relinquished
 - `false-guarantee` `scripts/check-settings-fragment.sh` `41a865e` `self-review-r28-unreachable-string` PR #463 2026-09-10 — a pin grepped for message text that survives unreachable when its branch is disabled
+- `status-swallowed` `install.sh:330` `9ab187c` `PRRT_kwDOTfywrM6g6ivh` PR #463 2026-09-10 — an unchecked verdict read let a refusing merge fall through to the write path
+- `status-swallowed` `scripts/lib/common.sh:1336` `9ab187c` `PRRT_kwDOTfywrM6g6ivb` PR #463 2026-09-10 — both path enumerations discarded jq's status inside a heredoc, walking zero paths and returning 0
+- `status-swallowed` `uninstall.sh:247` `9ab187c` `PRRT_kwDOTfywrM6g6ivf` PR #463 2026-09-10 — an unreadable receipt became an empty source, so the run reported Uninstalled over settings it never touched
+- `partial-validation` `install.sh:230` `9ab187c` `PRRT_kwDOTfywrM6g6ivi` PR #463 2026-09-10 — the none sentinel was persisted into a present receipt, which no reader can classify
+- `false-guarantee` `scripts/check-settings-fragment.sh` `9ab187c` `self-review-r29-probe-error` PR #463 2026-09-10 — two verification probes errored and printed what looked like findings
 <!-- adb:hits:end -->
