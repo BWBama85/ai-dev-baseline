@@ -606,4 +606,8 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `install.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9B` PR #463 2026-09-10
 - `false-guarantee` `scripts/lib/currency-lib.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9H` PR #463 2026-09-10
 - `status-swallowed` `uninstall.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9N` PR #463 2026-09-10
+- `status-swallowed` `scripts/lib/common.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiJ` PR #463 2026-09-10
+- `consumer-contract-mismatch` `install.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNid` PR #463 2026-09-10
+- `status-swallowed` `install.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiQ` PR #463 2026-09-10
+- `status-swallowed` `uninstall.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiV` PR #463 2026-09-10
 <!-- adb:hits:end -->
