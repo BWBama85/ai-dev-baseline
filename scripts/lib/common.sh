@@ -1319,10 +1319,19 @@ adb_claude_settings_leaf_rows() {
   local payload="$1" written="$2" createdj="${3:-[]}" p
   command -v jq >/dev/null 2>&1 || return 2
   [ -s "$payload" ] || return 1
+  # EACH VALUE IS CAPTURED AND CHECKED. Inline, a `jq` that failed emitted `leaf<TAB><path><TAB>`
+  # with an EMPTY value and this function still returned 0 — the caller then published the settings
+  # against a receipt whose malformed row every reader discards, so the written leaf had no owner:
+  # uninstall could not remove it, and the matching payload digest stopped later updates from
+  # repairing the ownership. The `.wrote`/`.created` arrays were fixed one level up; this is the
+  # same failure per leaf. (PR review)
+  local v
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    printf 'leaf\t%s\t%s\n' "$p" \
-      "$(jq -c --argjson path "$p" 'getpath($path)' "$payload" 2>/dev/null)"
+    if ! v="$(jq -c --argjson path "$p" 'getpath($path)' "$payload" 2>/dev/null)" || [ -z "$v" ]; then
+      return 1
+    fi
+    printf 'leaf\t%s\t%s\n' "$p" "$v"
   done <<EOF
 $(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)
 EOF

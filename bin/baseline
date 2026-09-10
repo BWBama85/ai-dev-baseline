@@ -210,11 +210,20 @@ adb_settings_downgraded_now() {
   # tidied up and never that the protections had stopped being applied. The disposition after the
   # heal is the fact; a reconciliation that happened alongside it is reported too, not instead.
   # (PR review)
-  [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ] \
-    && echo "baseline: stale sandbox ownership was also relinquished." >&2
+  # THE SECOND HALF CONTRADICTED THE FIRST. When a reconciliation ran alongside the downgrade the
+  # rows really were dropped, so "ownership is unchanged" was false in exactly the case the line
+  # above had just announced — and the promise of automatic re-application is false with it, since
+  # an upgrade then meets keys nobody owns and refuses. Say which of the two happened. (PR review)
   echo "baseline: the sandbox protections are NOT being applied — the \`claude\` CLI no longer" >&2
-  echo "          clears the version floor, or could not be probed (#248). Ownership of the" >&2
-  echo "          keys already written is unchanged; upgrade the CLI to have them re-applied." >&2
+  echo "          clears the version floor, or could not be probed (#248)." >&2
+  if [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ]; then
+    echo "          Stale ownership was ALSO relinquished, so the keys still in the file are no" >&2
+    echo "          longer ours: upgrading will not re-apply them, and an install will refuse" >&2
+    echo "          while they are there. Remove them by hand, then re-run ./install.sh." >&2
+  else
+    echo "          Ownership of the keys already written is unchanged; upgrade the CLI to have" >&2
+    echo "          them re-applied." >&2
+  fi
   return 0
 }
 

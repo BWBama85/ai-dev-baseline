@@ -950,6 +950,32 @@ awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) 
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
+# --- and so is EACH LEAF VALUE, one level down -------------------------------------------------------
+#
+# The arrays were fixed one level up; each value inside them was still extracted by an unchecked
+# command substitution. A `jq` that failed emitted `leaf<TAB><path><TAB>` with an empty value and
+# the writer still returned 0 — every reader discards a malformed row, so the written leaf had no
+# owner at all: uninstall could not remove it, and the matching payload digest stopped later
+# updates from repairing the ownership.
+lv="$work/leafvalue"; rm -rf "$lv"; mkdir -p "$lv"
+echo '{"sandbox":{"enabled":true}}' > "$lv/payload.json"
+lv_out="$(adb_claude_settings_leaf_rows "$lv/payload.json" '[["sandbox","enabled"]]')"
+[ "$lv_out" = "leaf${ADB_TAB}[\"sandbox\",\"enabled\"]${ADB_TAB}true" ] && ok \
+  || bad "a leaf row must carry its value: got [$lv_out]"
+# A path the payload does not have is a legitimate `null`, NOT a failure — the check must tell an
+# extraction that failed from a value that is legitimately null, or every absent path aborts.
+adb_claude_settings_leaf_rows "$lv/payload.json" '[["nope","missing"]]' >/dev/null 2>&1 && ok \
+  || bad "a path yielding null must still emit a row — jq prints 'null', which is a value, not a failure"
+# ...and the row writer must REFUSE rather than emit an empty value.
+awk '/^adb_claude_settings_leaf_rows\(\)/{f=1}
+     f && /v="\$\(jq -c --argjson path/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/scripts/lib/common.sh" | grep -q ok && ok \
+  || bad "each leaf value must be captured before the row is printed — inline, a failed jq becomes an empty field and the writer still returns 0"
+awk '/^adb_claude_settings_leaf_rows\(\)/{f=1}
+     f && /\[ -z "\$v" \]/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/scripts/lib/common.sh" | grep -q ok && ok \
+  || bad "...and an empty extraction must fail the writer, since that is exactly what the failure looks like"
+
 # --- the merge's decision is read back and CHECKED before anything is published ----------------------
 #
 # `.wrote` and `.created` were extracted inline, so a `jq` that failed became an EMPTY argument:
@@ -989,6 +1015,25 @@ awk '/adb_self_heal && adb_verify_links/{f=1}
      f && /\[ "\$SETTINGS_PENDING" -eq 1 \] && \[ "\$LINKS_OK" -eq 1 \]/{exit}' \
   "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "the downgrade classification must run BEFORE the LINKS_OK gate — a run that also repaired a link would otherwise report the repair and drop the downgrade"
+
+# --- a refusal names what it is about to stop owning --------------------------------------------------
+#
+# A leaf we no longer ship that the operator has edited lands in `.kept`. The refusal then writes a
+# `skipped-blocked` receipt carrying NO rows, so after that run nothing can identify the key — not a
+# later update, not uninstall. The write path and the uninstall path both name this bucket; the
+# refusal was the one place that returned without it.
+kb="$work/keptblocked"; rm -rf "$kb"; mkdir -p "$kb/.claude"
+echo '{"model":"opus"}' > "$kb/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$kb" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+printf 'leaf%s["sandbox","retired"]%s"ours"\n' "$ADB_TAB" "$ADB_TAB" >> "$kb/.claude/.adb-settings-owned"
+jq '.sandbox.retired = "EDITED" | .sandbox.enabled = false' "$kb/.claude/settings.json" > "$work/kb.tmp" \
+  && mv "$work/kb.tmp" "$kb/.claude/settings.json"
+HOME="$kb" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/kb.log" 2>&1
+grep -qi "NOT written" "$work/kb.log" && ok \
+  || bad "precondition: an edited shipped leaf must make this a refusal"
+grep -qi "kept (no longer shipped" "$work/kb.log" && ok \
+  || bad "a refusal must NAME the retired leaf it kept — the blocked receipt it is about to write carries no rows, so this line is the last chance anything identifies that key"
 
 # --- a refusal over a SYNTHETIC pre-image writes nothing --------------------------------------------
 #
@@ -1109,6 +1154,21 @@ awk '/^  behind\)/{f=1}
   || bad "the post-pull path must ask whether the protections were downgraded before it reports the update complete"
 [ "$(grep -c 'adb_settings_downgraded_now' "$ROOT/bin/baseline")" -ge 3 ] && ok \
   || bad "...through the shared predicate both self-heal paths use, not a second copy of the question"
+
+# --- the downgrade message does not contradict itself ------------------------------------------------
+#
+# When a reconciliation runs alongside the downgrade the rows really are dropped — so the trailing
+# "ownership of the keys already written is unchanged" was false in exactly the case the preceding
+# line had just announced, and the promise of automatic re-application went with it: an upgrade then
+# meets keys nobody owns and refuses. The follow-up text is conditional on whether the count fell.
+awk '/^adb_settings_downgraded_now\(\)/{f=1}
+     f && /\[ "\$\(adb_settings_row_count\)" -lt "\$2" \]/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "the downgrade report must BRANCH on whether the row count fell — Stale ownership was ALSO relinquished is a different instruction to the operator than ownership being unchanged"
+awk '/^adb_settings_downgraded_now\(\)/{f=1}
+     f && /Remove them by hand, then re-run/{print "ok"; exit}
+     f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "...and when ownership WAS relinquished it must not promise automatic re-application: an upgrade meets keys nobody owns and refuses"
 
 # --- a DOWNGRADE is not a reconciliation either -----------------------------------------------------
 #
@@ -2475,6 +2535,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ -s "$settings" ] || return 1' \
     '  [ -s "$settings" ] || return 2' \
     'must read as DIVERGED'
+  check_mut 'a per-leaf extraction failure becomes an empty value' \
+    '    if ! v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)" || [ -z "$v" ]; then' \
+    '    v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)"; if false; then' \
+    'empty extraction must fail the writer'
   check_mut 'a damaged disposition reads as an absent receipt' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
@@ -2646,6 +2710,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # skip-not-recorded-kept' \
     '    return 0' \
     'kept-record branch must still FAIL the run'
+  check_mut 'a refusal returns without naming what it kept' \
+    '    _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"' \
+    '    :' \
+    'must NAME the retired leaf it kept'
   check_mut 'a refusal compares against the real path it never read' \
     '    if [ "$used_synth" -eq 1 ]; then' \
     '    if false; then' \
@@ -2832,9 +2900,13 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if false; then' \
     'post-pull path must ask whether the protections were downgraded'
   check_mut 'the downgrade predicate requires the row count unchanged again' \
-    '  [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ] \' \
-    '  [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -eq "$2" ] || return 1; [ 1 = 1 ] \' \
+    '  [ "${1:-0}" -eq 1 ] || return 1' \
+    '  [ "${1:-0}" -eq 1 ] || return 1; [ "$(adb_settings_row_count)" -eq "$2" ] || return 1' \
     'must NOT require the row count unchanged'
+  check_mut 'the downgrade claims ownership is unchanged after relinquishing it' \
+    '  if [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ]; then' \
+    '  if false; then' \
+    'Stale ownership was ALSO relinquished'
   check_mut 'a downgrade is reported as a relinquishment' \
     '    skipped-below-floor|skipped-unprobeable) ;;' \
     '    no-such-disposition) ;;' \

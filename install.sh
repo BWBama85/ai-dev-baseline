@@ -339,6 +339,12 @@ _adb_wire_settings_locked() {
       adb_info "           The policy applies whole or not at all, so none of it was written."
       adb_info "           Remove or rename those keys and re-run ./install.sh to take it."
     fi
+    # AND WHAT THE REFUSAL IS ABOUT TO STOP OWNING. A leaf we no longer ship that the operator has
+    # edited lands in `.kept` — the refusal then writes a `skipped-blocked` receipt carrying NO
+    # rows, so after this run nothing anywhere can identify that key: not a later update, not
+    # uninstall. The write path and the uninstall path both name this bucket; the refusal was the
+    # one place that returned without it. (PR review)
+    _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"
     # ITS OWN RECEIPT, not `_adb_record_skip`'s. Two things differ from a version skip, and both
     # matter. The DIGEST must be the payload this refusal evaluated — carrying the prior one (or
     # `-` on a first install) leaves `adb_settings_pending` seeing an unknown or mismatched digest
