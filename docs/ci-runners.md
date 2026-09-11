@@ -322,18 +322,22 @@ nightly matrix equal to the registry, every declared input a path that exists �
 `--mutation` mode breaks every gate rule whose failure is a wrong SKIP in a copy — and un-gates a
 copy of each workflow file — requiring the suite red on each row's own witness.
 
-**Less exactly three named steps — one since #339, one since PR #429, one since PR #443.** The job
-invokes `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation`. Each
+**Less exactly four named steps — one since #339, one since PR #429, one since PR #443, one since
+PR #463.** The job invokes
+`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation`. Each
 re-runs a whole suite once per injected defect to answer a question about *logic* — can the guards
 fail closed? — and an ubuntu job already answers it on every relevant PR: `adopt` for the first
 (on run 32451790033 it was 680s of a 1086s job that was the run's critical path),
 `pattern-ledger` for the second (on run 32889697083 it was 1932s of a 39.5-minute job, and the
 two pushes after it were cancelled by the job's 45-minute ceiling with that step still running),
-and `implement-gate` for the third (on run 33043334817 it took 1370s there while its duplicate
-remained the sole unfinished macOS step at that job's 45-minute ceiling). The registry is not
+`implement-gate` for the third (on run 33043334817 it took 1370s there while its duplicate
+remained the sole unfinished macOS step at that job's 45-minute ceiling), and `install-guard` for
+the fourth (on run 34564598749 it was cancelled at that job's then 15-minute ceiling and at the
+macOS leg's 45, having last completed in CI at 601s on 2026-09-05; `install-guard` now allows 45 —
+D101). The registry is not
 smaller and the local suite is unchanged: these are per-invocation `--skip`s, the log names each
 twice, an unknown name is an error rather than a quiet no-op, and `check-fact-drift.sh` pins all
-three ubuntu invocations because those jobs are now each step's only per-PR execution. The
+four ubuntu invocations because those jobs are now each step's only per-PR execution. The
 non-mutation `adopt-readiness`, `pattern-ledger`, and `session-context` halves still run here, so
 all three keep macOS coverage.
 

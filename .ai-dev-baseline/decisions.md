@@ -7964,3 +7964,28 @@ survive is the part a later reader needs.
              established install retire EVERY recorded leaf and publish a receipt whose digest made
              the damaged file look current.
 - baseline-issue: n/a (this repo IS the baseline; #248 is the tracked work)
+
+## D101 — `settings-fragment-mutation` leaves the macOS leg, and `install-guard` gets the time to run it
+- date:      2026-09-11
+- category:  project-delta
+- unknown:   PR #463's settings-fragment mutation harness grew with every review round — 283s in CI on
+             2026-09-04, 601-755s on 2026-09-05, the last day it completed — and outgrew both jobs that
+             ran it. `install-guard` (15-minute ceiling) cancelled it at 15m16s; `selfcheck-macos`
+             (45 minutes) ran it too and was cancelled at 45m17s. Both are required checks, so the PR
+             could not merge. Observed on run 34564598749 and on the two heads before it.
+- decision:  Owner decision 2026-09-11. `install-guard`'s timeout rises 15 -> 45 minutes, matching the
+             other harness-carrying jobs (`adopt`, `implement-gate`), and `selfcheck-macos` adds
+             `settings-fragment-mutation` to its `--skip` — D87's rule applied a fourth time: it answers
+             a logic question, not a platform one, and `install-guard` runs it on every relevant PR.
+             `check-fact-drift.sh` pins that ubuntu invocation, now the harness's only per-PR
+             execution, and pins the fourth name in the macOS invocation.
+- placement: .github/workflows/ci.yml; scripts/check-fact-drift.sh; CLAUDE.md; CONTRIBUTING.md;
+             docs/ci-runners.md
+- reason:    This ACCOMMODATES the cost; it does not remove it. The removal is #468 (run only each
+             mutant's witness) with #469-#471, all queued behind #463 while #463 was blocked on the
+             cost they remove. A new dedicated job was rejected because `required-drift` flags any job
+             that is not a required check, so it needs a branch-protection change; pulling #468 into a
+             PR past 30 review rounds was rejected as a substantial change to shared harness code. The
+             45-minute figure rests on an ESTIMATE of ~17-22 minutes at 148 rows, scaled from the
+             2026-09-05 series: re-measure from the first green run and adjust.
+- baseline-issue: n/a

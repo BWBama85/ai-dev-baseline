@@ -1055,7 +1055,8 @@ jobs:
   install-guard:
     name: install-guard
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    # 45, not 15: this job carries settings-fragment-mutation, which outgrew 15 minutes (D101).
+    timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1515,14 +1516,14 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less THREE steps. shellcheck is installed above for a reason: selfcheck
+      # The offline suite, less FOUR steps. shellcheck is installed above for a reason: selfcheck
       # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
       # false in precisely the silent way this repo keeps writing guards against.
       #
-      # These three mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
+      # These four mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
       # jobs run each on every relevant PR, and check-fact-drift.sh pins those invocations because
       # they are each harness's ONLY per-PR execution after this skip. Their non-mutation halves
-      # still run here. Measurements and rationale: D87.
+      # still run here. Measurements and rationale: D87, D101.
       #
       # AND THE MUTATION GATE APPLIES HERE TOO (#441): the runner asks `scripts/mutation-gate.sh`
       # before dispatching any `*-mutation` step, against ADB_MUTATION_BASE (workflow `env:`), so an
@@ -1534,7 +1535,7 @@ jobs:
       - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent
