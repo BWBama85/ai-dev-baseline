@@ -610,4 +610,7 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `install.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNid` PR #463 2026-09-10
 - `status-swallowed` `install.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiQ` PR #463 2026-09-10
 - `status-swallowed` `uninstall.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiV` PR #463 2026-09-10
+- `status-swallowed` `install.sh` `31a9816` `PRRT_kwDOTfywrM6hRWGH` PR #463 2026-09-11
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `31a9816` `PRRT_kwDOTfywrM6hRWGO` PR #463 2026-09-11
+- `status-swallowed` `bin/baseline` `31a9816` `PRRT_kwDOTfywrM6hRWGT` PR #463 2026-09-11
 <!-- adb:hits:end -->
