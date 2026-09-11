@@ -122,8 +122,26 @@ _uninstall_claude_locked() {
     # use — then the link went, and the next run read it as foreign. Ask the READER what it will
     # answer, and rebuild without any existing source rows so a malformed one cannot outrank the
     # good one appended after it. (PR review)
-    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \
-       && [ -z "$(adb_claude_settings_receipt_source "$_lr" 2>/dev/null || true)" ]; then
+    # `-s`, NOT `-f`: A ZERO-BYTE RECEIPT IS ABSENT, NOT LEGACY. `adb_claude_settings_disposition`
+    # already treats an empty file as absent — it owns no keys — but `-f` accepted it here and
+    # stamped a source-only receipt over it. The file is then non-empty with no `disposition` line,
+    # which the reader correctly rejects as DAMAGED, so sandbox cleanup failed on every retry over a
+    # record that had owned nothing in the first place. (PR review)
+    #
+    # ...and the source read is asked for its STATUS, because 1 and 20 are different answers: no
+    # source row is the legacy receipt this branch is for, while a read that could not be performed
+    # is not evidence of anything. `|| true` made them the same.
+    local _srcrc=99
+    if [ -s "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)"; then
+      adb_claude_settings_receipt_source "$_lr" >/dev/null 2>&1; _srcrc=$?
+    fi
+    if [ "$_srcrc" -eq 20 ]; then
+      adb_info "  ERROR  $_lr could not be searched for its provenance, so this run cannot tell whether"
+      adb_info "         the root-doc link is its only proof of ownership. NOTHING was unlinked —"
+      adb_info "         re-run once it can be read, or removing the link would strand the settings."
+      return 1   # stamp-source-unreadable
+    fi
+    if [ "$_srcrc" -eq 1 ]; then
       # THE FILTER IS RUN AND CHECKED SEPARATELY. Inside a brace group its status is discarded —
       # the group reports whatever the LAST command did — so a `grep` that failed operationally
       # published a receipt carrying only the new source row, with every leaf row destroyed, and
@@ -201,9 +219,24 @@ EOF
         # operator's settings.json symlink into a regular file and reformatted the contents. The
         # comparison is SEMANTIC, not byte-wise, because jq reformats whatever it reads, so a
         # byte compare would report a difference on every no-op.
-        if jq -e --slurpfile orig "$settings" '. == $orig[0]' "$settings.adb.$$.tmp" >/dev/null 2>&1; then
+        # AND THE COMPARISON'S OWN FAILURE IS NOT A DIFFERENCE. `jq -e` answers 1 for false and 5 for
+        # an error, and an `elif` chain reads every non-zero as "the documents differ" — so a second
+        # `jq` that failed while reopening the settings path published the staged document anyway.
+        # With no managed hooks present that reformats a file we did not change and replaces an
+        # operator's settings.json SYMLINK with a regular file, which is the damage the comparison
+        # exists to avoid. The settings half was fixed for exactly this; the hook half was not.
+        # (PR review)
+        local _hkrc
+        jq -e --slurpfile orig "$settings" '. == $orig[0]' "$settings.adb.$$.tmp" >/dev/null 2>&1
+        _hkrc=$?
+        if [ "$_hkrc" -eq 0 ]; then
           rm -f "$settings.adb.$$.tmp"
           rm -f "$(adb_claude_hooks_receipt "$HOME")"
+        elif [ "$_hkrc" -gt 1 ]; then
+          rm -f "$settings.adb.$$.tmp"
+          adb_info "  WARN   could not compare the hook removal with ~/.claude/settings.json — the hook"
+          adb_info "         entries were NOT removed. Nothing was written; re-run once it is readable."
+          rc=1
         # ...and published through the SHARED primitive, for the reasons install.sh's writer gives:
         # a bare `mv` neither refuses a destination that is not a regular file nor carries the
         # original's mode across, so it stamps the umask default onto a file the operator may have
@@ -260,13 +293,23 @@ unwire_settings() {
   # source, and with the root-doc link already gone that reads as "legacy, and not ours" — so this
   # returned 0, the outer script printed `Uninstalled`, and every owned sandbox setting stayed
   # active with nobody told. The file existing and refusing to open is a reason to stop. (PR review)
-  local recorded
-  if [ -f "$receipt" ] && ! cat "$receipt" >/dev/null 2>&1; then
+  # THE STATUS, NOT JUST THE VALUE, AND ONE CHECK RATHER THAN TWO. `|| true` turned an operational
+  # failure into "no source row", which is the legacy-receipt answer — and in the failed-takeover
+  # state, where this clone's root link is paired with ANOTHER clone's record, that fallback
+  # consumes the other clone's receipt and the sandbox settings it owns. 1 is a real absence; 20 is
+  # a reason to stop.
+  #
+  # A separate `cat` readability probe used to sit in front of this. Once the reader distinguishes
+  # 20, it is redundant — an unreadable file fails the search too — and a second mechanism guarding
+  # one defect means no single edit can reintroduce it, so neither can be observed failing. Its
+  # wording was the better of the two and is kept here. (PR review)
+  local recorded _rsrc
+  recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null)"; _rsrc=$?
+  if [ "$_rsrc" -eq 20 ]; then
     adb_info "  ERROR  $receipt exists but cannot be read, so this run cannot tell whose settings"
     adb_info "         these are. NOTHING was removed — restore access to it and re-run."
-    return 1   # unreadable-source
+    return 1   # cleanup-source-unreadable
   fi
-  recorded="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
   if [ -n "$recorded" ]; then
     if [ "$recorded" != "$REPO" ]; then
       adb_info "  sandbox  left alone — this ownership record names another clone as its source, so"
@@ -365,7 +408,10 @@ unwire_settings() {
     rm -f "$tmp"
     adb_info "  WARN   could not compare the removal result with ~/.claude/settings.json — sandbox"
     adb_info "         settings NOT removed. Nothing was written; re-run once the file is readable."
-    adb_settings_lock_resume_signals
+    # NO RESUME HERE: this branch is reached BEFORE `adb_settings_lock_defer_signals` below, so
+    # there is nothing deferred to resume. The helper is now total, so this would no longer kill the
+    # shell — but calling it is still meaningless, and the ordering is the thing being fixed.
+    # (PR review)
     return 1
   fi
   if [ "$_nochange" -eq 0 ]; then
@@ -377,7 +423,6 @@ unwire_settings() {
       rm -f "$tmp"
       adb_info "  WARN   nothing of ours could be removed, and the list of values you edited could not"
       adb_info "         be read back — the ownership record was KEPT so they can still be identified."
-      adb_settings_lock_resume_signals
       return 1   # noop-kept-unreadable
     fi
     [ -n "$names" ] && adb_info "  sandbox  KEPT (you edited these since we wrote them; remove by hand if you want them gone): $names"

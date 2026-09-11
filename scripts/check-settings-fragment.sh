@@ -933,20 +933,23 @@ grep -qF 'NOT THE TOLERATED SKIP' "$ROOT/install.sh" && ok \
 # and leaving the prose would have kept them green, which is the failure mode this file has already
 # recorded once. What each asserts now is the ORDER: the deferral is reached before the first
 # durable write of its pair.
+# ANCHORED ON A CALL, here and in every scan of these helpers below. Unanchored, a COMMENT naming the
+# helper satisfied them: the note in unwire_settings' no-op branch sits before the real deferral, so
+# a row deleting the deferral left two of these printing `ok` and their witnesses never fired.
 awk '/retired="\$\(_adb_result_field/{f=1}
-     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /^[[:space:]]*adb_settings_lock_defer_signals/{print "ok"; exit}
      f && /adb_publish_json "\$rtmp2" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the refusal-that-prunes branch must defer signals BEFORE it publishes the pruned settings — the receipt that stops claiming the retired leaf is its second write"
 awk '/^unwire_settings\(\)/{f=1}
-     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /^[[:space:]]*adb_settings_lock_defer_signals/{print "ok"; exit}
      f && /adb_publish_json "\$tmp" "\$settings"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall must defer signals BEFORE it publishes the rewritten settings — the receipt removal is its second write"
 awk '/^wire_hooks\(\)/{f=1}
-     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /^[[:space:]]*adb_settings_lock_defer_signals/{print "ok"; exit}
      f && /adb_publish_json "\$tmp" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the hook wiring must defer signals BEFORE it publishes settings.json — its wiring receipt is the second write of the pair"
 # ...and the prune-abort path, which returns from the middle of the transaction, must resume.
-awk '/return 1   # prune-abort/{if (prev !~ /adb_settings_lock_resume_signals/) {print "leaked"; exit}} {prev=$0}' \
+awk '/return 1   # prune-abort/{if (prev !~ /^[[:space:]]*adb_settings_lock_resume_signals/) {print "leaked"; exit}} {prev=$0}' \
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
 
@@ -1053,6 +1056,35 @@ grep -q 'return 20 ;;   # intact-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unanswerable intactness comparison must not fall through to be decided on the payload digest, which cannot speak for rows nobody could compare"
 [ "$(grep -c 'adb_settings_unreadable_record "\$[A-Z]*SPRC"; exit 1' "$ROOT/bin/baseline")" -eq 2 ] && ok \
   || bad "both adb_settings_pending call sites must fail loud on 20/21 — reporting a healthy install over a record nothing could interpret is the defect"
+
+# --- a GUARD THAT KILLS THE SHELL, and a reader that cannot say why it found nothing ---------------
+#
+# BEHAVIOURAL, not a grep. Both globals are assigned on exactly one path, every entry point runs
+# `set -u`, and the EXIT trap calls `adb_settings_lock_drop` — so a read reached before that path
+# terminated the process on the way out of a failure the caller was about to report. Run it.
+bash -c 'set -uo pipefail; . "$1/scripts/lib/common.sh"; adb_settings_lock_resume_signals' _ "$ROOT" >/dev/null 2>&1 && ok \
+  || bad "resuming signals before any deferral must RETURN, not terminate the shell — under set -u an unset _ADB_SIGNAL_PENDING killed the uninstaller instead of letting it report the incomplete run"
+bash -c 'set -uo pipefail; . "$1/scripts/lib/common.sh"; adb_settings_lock_drop' _ "$ROOT" >/dev/null 2>&1 && ok \
+  || bad "dropping a lock that was never taken must RETURN, not terminate the shell — this one runs from the EXIT trap, so it fires on every failure path"
+# THE SOURCE READER ANSWERS TWO DIFFERENT QUESTIONS WITH TWO CODES. 1 is "no source row", which is
+# the legacy receipt some callers are FOR; 20 is "the search could not be performed", which is
+# evidence of nothing.
+grep -q 'return 20   # source-search-failed' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the source reader must tell a failed search from an absent row — one code for both let a failed-takeover state consume another clone's receipt and the settings it owns"
+[ "$(cat "$ROOT/uninstall.sh" "$ROOT/bin/baseline" | grep -c 'adb_claude_settings_receipt_source "[^"]*" 2>/dev/null || true')" -eq 0 ] && ok \
+  || bad "...and no caller may still swallow it with \`|| true\`, which is the conflation itself"
+grep -q 'return 1   # stamp-source-unreadable' "$ROOT/uninstall.sh" && ok \
+  || bad "the provenance stamp must stop when the receipt could not be searched — it unlinks the root doc a few lines later, and the link is the only other proof"
+grep -q 'return 1   # cleanup-source-unreadable' "$ROOT/uninstall.sh" && ok \
+  || bad "sandbox cleanup must stop when the receipt could not be searched, rather than falling back to the link snapshot"
+grep -q 'return 20   # source-unanswerable' "$ROOT/bin/baseline" && ok \
+  || bad "the currency check must not read a failed source search as 'no source' — a record naming another clone would pass the foreign-source guard as ours"
+# A ZERO-BYTE RECEIPT IS ABSENT. `disposition` already says so; this branch did not.
+grep -q 'if \[ -s "\$_lr" \] && _lrbody=' "$ROOT/uninstall.sh" && ok \
+  || bad "a zero-byte receipt must be treated as absent, not stamped — stamping makes it non-empty with no disposition, which the reader then rejects as DAMAGED on every retry over a record that owned nothing"
+# The HOOK half of the no-op comparison, which the settings half was fixed for and this was not.
+grep -q 'elif \[ "\$_hkrc" -gt 1 \]; then' "$ROOT/uninstall.sh" && ok \
+  || bad "the hook removal's comparison must tell an execution error from a difference — an elif chain published the staged document on a failed compare, reformatting a file we did not change and replacing a settings.json symlink with a regular file"
 
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
@@ -1414,19 +1446,22 @@ awk '/^    7\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit}' "$ROOT/scrip
 # prunes a retired key, the uninstall side, and the hook wiring and its receipt. A count is the
 # wrong shape for "every"; what is checkable is that install.sh guards all three of its own pairs
 # and that no deferral is left without a way back.
-[ "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/install.sh")" -ge 3 ] && ok \
+# ANCHORED TO A CALL, not a mention. These counted any occurrence, so a comment naming the helper
+# was counted as a deferral — and the uninstall assertion, which pins an EXACT count of 1, went red
+# the moment one was written. A guard that a comment can satisfy is a guard a comment can break.
+[ "$(grep -c '^[[:space:]]*adb_settings_lock_defer_signals' "$ROOT/install.sh")" -ge 3 ] && ok \
   || bad "install.sh has three pairs of durable writes — the settings+receipt write, the refusal that prunes, and the hook wiring+receipt — and each must defer signals across its pair"
-[ "$(grep -c 'adb_settings_lock_resume_signals' "$ROOT/install.sh")" \
-  -ge "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/install.sh")" ] && ok \
+[ "$(grep -c '^[[:space:]]*adb_settings_lock_resume_signals' "$ROOT/install.sh")" \
+  -ge "$(grep -c '^[[:space:]]*adb_settings_lock_defer_signals' "$ROOT/install.sh")" ] && ok \
   || bad "...and every deferral needs at least one way back: a transaction that defers and never resumes leaves the signal held for the rest of the run"
-[ "$(grep -c 'adb_settings_lock_defer_signals' "$ROOT/uninstall.sh")" -eq 1 ] && ok \
+[ "$(grep -c '^[[:space:]]*adb_settings_lock_defer_signals' "$ROOT/uninstall.sh")" -eq 1 ] && ok \
   || bad "uninstall.sh publishes the rewritten settings and then removes the receipt — that pair must defer signals too"
-[ "$(grep -c 'adb_settings_lock_resume_signals' "$ROOT/uninstall.sh")" -ge 3 ] && ok \
+[ "$(grep -c '^[[:space:]]*adb_settings_lock_resume_signals' "$ROOT/uninstall.sh")" -ge 3 ] && ok \
   || bad "...and must resume on each of its three exits (published, receipt-removal failed, rewrite failed)"
 # THE CONSTRAINT, stated as itself: the receipt-publish failure branch must not resume on its FIRST
 # line. Everything after that line is the rollback, and a pending signal honoured before it runs
 # leaves exactly the half-applied state the rollback exists to undo.
-awk '/if ! adb_publish_json "\$rtmp" "\$receipt"; then/{getline; if ($0 ~ /adb_settings_lock_resume_signals/) {print "early"; exit}}' \
+awk '/if ! adb_publish_json "\$rtmp" "\$receipt"; then/{getline; if ($0 ~ /^[[:space:]]*adb_settings_lock_resume_signals/) {print "early"; exit}}' \
   "$ROOT/install.sh" | grep -q early && \
   bad "the rollback runs INSIDE the transaction — resuming at the top of the failure branch lets a pending signal exit before the settings are put back" || ok
 
@@ -1955,9 +1990,18 @@ awk '/^unwire_settings\(\)/{f=1}
 # the evidence. Guarding the write while leaving the probe exposed is the same window one step
 # earlier.
 awk '/^unwire_settings\(\)/{f=1}
-     f && /adb_settings_lock_defer_signals/{print "ok"; exit}
+     f && /^[[:space:]]*adb_settings_lock_defer_signals/{print "ok"; exit}
      f && /mv "\$receipt" "\$_rprobe"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "the removability probe is itself two renames — signals must already be deferred when the first one runs"
+# ORDERING, and it lives HERE rather than beside the crash it enabled. Every assertion above is
+# about whether a deferral exists and where; this one is about a RESUME that precedes it. Placed
+# earlier, it fired first on any mutation that moved the deferral at all and claimed those rows'
+# witnesses — a correct assertion in the wrong place makes other guards look like accidents.
+awk '/^unwire_settings\(\)/{f=1}
+     f && /^[[:space:]]*adb_settings_lock_resume_signals/ && !d {print "early"; exit}
+     f && /^[[:space:]]*adb_settings_lock_defer_signals/{d=1}
+     f && /^}/{exit}' "$ROOT/uninstall.sh" | grep -q early && \
+  bad "a resume inside unwire_settings must come after the deferral — before it there is nothing to resume" || ok
 # ...and driven for real where the platform can make a file undeletable without privileges. macOS
 # has `chflags uchg`; Linux's equivalent needs root, so this says SKIP rather than pretending.
 if command -v chflags >/dev/null 2>&1; then
@@ -2774,6 +2818,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '    printf '"'"'%s'"'"' "$v" | jq -e '"'"'type'"'"' >/dev/null 2>&1' \
     '    printf '"'"'%s'"'"' "$v" | jq -e . >/dev/null 2>&1' \
     'must validate PARSEABILITY, not truthiness'
+  check_mut 'the deferred-signal global is not defined at load' \
+    '_ADB_SIGNAL_PENDING="${_ADB_SIGNAL_PENDING:-}"' \
+    ':' \
+    'must RETURN, not terminate the shell'
+  check_mut 'the lock global is not defined at load' \
+    '_ADB_SETTINGS_LOCK="${_ADB_SETTINGS_LOCK:-}"' \
+    ':' \
+    'must RETURN, not terminate the shell'
+  check_mut 'the source reader collapses a failed search into an absent row' \
+    '  [ "$grc" -le 1 ] || return 20   # source-search-failed' \
+    '  :' \
+    'must tell a failed search from an absent row'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3059,10 +3115,6 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if [ "$_grc" -gt 1 ]; then' \
     '      if false; then' \
     'must be run and checked on its own'
-  check_mut 'an unreadable receipt source is read as absent' \
-    '    return 1   # unreadable-source' \
-    '    :' \
-    'must not print Uninstalled over settings it never touched'
   check_mut 'an unreadable legacy receipt is unlinked anyway' \
     '    if [ -f "$_lr" ] && ! cat "$_lr" >/dev/null 2>&1; then' \
     '    if false; then' \
@@ -3072,15 +3124,15 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 0' \
     'must FAIL rather than unlink the proof it depends on'
   check_mut 'a malformed source row counts as provenance' \
-    '       && [ -z "$(adb_claude_settings_receipt_source "$_lr" 2>/dev/null || true)" ]; then' \
-    '       && [ -z "$(printf '"'"'%s\\n'"'"' "$_lrbody" | grep -m1 "^source$(printf '"'"'\\t'"'"')" || true)" ]; then' \
+    '      adb_claude_settings_receipt_source "$_lr" >/dev/null 2>&1; _srcrc=$?' \
+    '      printf '"'"'%s\\n'"'"' "$_lrbody" | grep -q "^source$(printf '"'"'\\t'"'"')"; _srcrc=$?' \
     'must be stamped like one that has none'
   check_mut 'the legacy provenance stamp is skipped' \
-    '    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)" \' \
-    '    if false; then :; elif false; then \' \
+    '    if [ "$_srcrc" -eq 1 ]; then' \
+    '    if false; then' \
     'must be stamped with this clone as its source'
   check_mut 'the hook removal republishes a document it did not change' \
-    "        if jq -e --slurpfile orig \"\$settings\" '. == \$orig[0]' \"\$settings.adb.\$\$.tmp\" >/dev/null 2>&1; then" \
+    '        if [ "$_hkrc" -eq 0 ]; then' \
     '        if false; then' \
     'must leave settings.json alone'
   check_mut 'uninstall discards a failed lock release' \
@@ -3127,6 +3179,26 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1   # published-kept-unreadable' \
     '      :' \
     'must still keep the receipt'
+  check_mut 'a zero-byte receipt is stamped as a legacy record' \
+    '    if [ -s "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)"; then' \
+    '    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)"; then' \
+    'must be treated as absent, not stamped'
+  check_mut 'the stamp proceeds over a receipt it could not search' \
+    '      return 1   # stamp-source-unreadable' \
+    '      :' \
+    'must stop when the receipt could not be searched'
+  check_mut 'cleanup proceeds over a receipt it could not search' \
+    '    return 1   # cleanup-source-unreadable' \
+    '    :' \
+    'must stop when the receipt could not be searched, rather than falling back'
+  check_mut 'the hook comparison counts an execution error as a difference' \
+    '        elif [ "$_hkrc" -gt 1 ]; then' \
+    '        elif false; then' \
+    "must tell an execution error from a difference"
+  check_mut 'a resume is placed before the deferral it belongs to' \
+    '      return 1   # noop-kept-unreadable' \
+    '      adb_settings_lock_resume_signals; return 1   # noop-kept-unreadable' \
+    'must come after the deferral'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
@@ -3214,6 +3286,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '      20|21) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
     '      20|21) : ;;' \
     'must fail loud on 20/21'
+  check_mut 'a failed source search reads as no source at all' \
+    '  [ "$_rsrc" -eq 20 ] && return 20   # source-unanswerable' \
+    '  :' \
+    "must not read a failed source search as 'no source'"
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

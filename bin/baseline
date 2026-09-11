@@ -285,8 +285,13 @@ adb_settings_pending() {
   # provenance leaves the keys installed and unremovable by either clone while `baseline update`
   # reports the install healthy. The installer rewrites `source` on every path it takes, so this
   # converges after one visit. (PR review)
-  local rsource
-  rsource="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
+  # THE THIRD CALL SITE OF THE SAME READER, and the same `|| true`. 1 means there is no source row
+  # (a receipt written before provenance was recorded); 20 means the row could not be looked for, and
+  # reading that as "no source" lets a record naming ANOTHER clone pass this guard as ours.
+  # (PR review)
+  local rsource _rsrc
+  rsource="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null)"; _rsrc=$?
+  [ "$_rsrc" -eq 20 ] && return 20   # source-unanswerable
   [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0
   # AN UNINTERPRETABLE RECORD IS NOT AN ANSWER OF "NOT PENDING". `|| return 1` collapsed the
   # reader's 20 (unreadable) and 21 (damaged disposition) into the same status the caller reads as

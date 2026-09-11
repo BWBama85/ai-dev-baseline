@@ -664,6 +664,15 @@ adb_settings_lock_path() { printf '%s/.claude/.adb-settings.lock' "${1:-${HOME:-
 #
 # It sets EXIT, TERM and INT unconditionally and `adb_settings_lock_drop` clears all three, so a
 # caller that has its OWN EXIT trap must not use this pair — neither installer does.
+# BOTH GLOBALS ARE DEFINED AT LOAD. Each is assigned on exactly ONE path — the lock by
+# `adb_settings_lock_take`, the pending signal by `adb_settings_lock_defer_signals` — and every
+# entry point runs `set -u`, so any read reached before that path expands an UNSET variable and
+# TERMINATES the shell. The EXIT trap's `adb_settings_lock_drop` is the worst case: it fires on the
+# way out of a failure the caller was about to report, so the report never happens. Defining them
+# here makes every read total instead of relying on each site to remember. (PR review)
+_ADB_SETTINGS_LOCK="${_ADB_SETTINGS_LOCK:-}"
+_ADB_SIGNAL_PENDING="${_ADB_SIGNAL_PENDING:-}"
+
 # Globals: _ADB_SETTINGS_LOCK (written)
 # Arguments: none — the lock is always this HOME's
 # Returns: 0 with the lock held and the release armed; 1 if another run holds it
@@ -709,6 +718,11 @@ adb_settings_lock_defer_signals() {
 # Re-arm the immediate handlers and honour anything that arrived while they were deferred.
 # Globals: _ADB_SIGNAL_PENDING (read, cleared)
 adb_settings_lock_resume_signals() {
+  # A RESUME THAT HAS NOTHING TO RESUME IS A NO-OP, not a fatal error — which it was, because only
+  # `adb_settings_lock_defer_signals` assigns this and every entry point runs `set -u`. The fix is
+  # the load-time definition above, deliberately in ONE place: a `${x:-}` here as well would mean no
+  # single edit could reintroduce the crash, and a defence nothing can break is a defence nothing has
+  # tested. (PR review)
   local pending="$_ADB_SIGNAL_PENDING"
   _ADB_SIGNAL_PENDING=""
   _adb_arm_lock_traps
@@ -941,9 +955,17 @@ adb_claude_settings_leaves_intact() {
 # recorded in that case and the link check remains the only proof, which is the fail-closed answer.
 # Usage: adb_claude_settings_receipt_source <receipt>
 adb_claude_settings_receipt_source() {
-  local receipt="$1" line
+  local receipt="$1" line grc
   [ -f "$receipt" ] || return 1
-  line="$(grep -m1 '^source	' "$receipt" 2>/dev/null)" || return 1
+  # 1 IS "NO SOURCE ROW", 20 IS "COULD NOT LOOK". One code for both made every caller read an
+  # operational failure as a receipt written before provenance was recorded — and in the
+  # failed-takeover state, where this clone's root link is paired with ANOTHER clone's record, that
+  # fallback consumes the other clone's receipt and its settings. `grep` exits 1 when it matches
+  # nothing, which is the legitimate no-row answer, so 1 is accepted and 2-and-above is not.
+  # (PR review)
+  line="$(grep -m1 '^source	' "$receipt" 2>/dev/null)"; grc=$?
+  [ "$grc" -le 1 ] || return 20   # source-search-failed
+  [ "$grc" -eq 0 ] || return 1
   line="${line#source	}"
   [ -n "$line" ] || return 1
   printf '%s' "$line"
