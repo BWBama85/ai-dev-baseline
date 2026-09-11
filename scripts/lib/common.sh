@@ -1012,7 +1012,14 @@ adb_claude_settings_receipt_leaves() {
     # predicate rejects; refuse the whole read when the predicate could not be evaluated.
     printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
     case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
-    printf '%s' "$v" | jq -e . >/dev/null 2>&1
+    # `type`, NOT `.` — the filter's own output is the `-e` predicate, so decoding the value and
+    # testing IT makes a legitimate `false` or `null` leaf indistinguishable from a malformed row.
+    # Probed on jq-1.7.1: `printf false | jq -e .` exits **1**, exactly like a rejected row. The
+    # row was then discarded, uninstall left that installer-written key in place while deleting the
+    # receipt, and the ownership evidence was gone for good. `type` returns a non-empty string for
+    # every JSON value, so it is truthy for all of them and 1 cannot arise; 5 still means the text
+    # did not parse. (PR review)
+    printf '%s' "$v" | jq -e 'type' >/dev/null 2>&1
     case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
     printf '%s\t%s\n' "$p" "$v"
     # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`

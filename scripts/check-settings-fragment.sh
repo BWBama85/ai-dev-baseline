@@ -1026,6 +1026,34 @@ grep -q 'return 1   # published-kept-unreadable' "$ROOT/uninstall.sh" && ok \
   [ "$(grep -c 'if ! names="\$(printf' "$ROOT/uninstall.sh")" -eq 3 ] && ok \
   || bad "all three bucket reads in uninstall must be checked, and none may still be spelled bare — the bare form is the masking itself"
 
+# --- a PREDICATE whose own output is the answer, and the readers behind it -------------------------
+#
+# `jq -e` takes the FILTER'S OUTPUT as its predicate. Decoding a value and testing IT therefore
+# conflates a legitimate falsey leaf with a rejected row: probed on jq-1.7.1, `printf false | jq -e .`
+# exits 1, exactly like a malformed path. `type` is a non-empty string for every JSON value, so it
+# is truthy for all of them and 1 cannot arise.
+grep -q "printf '%s' \"\$v\" | jq -e 'type' >/dev/null 2>&1" "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the recorded-value check must validate PARSEABILITY, not truthiness — a leaf of false or null is valid JSON, and discarding its row loses the ownership evidence for a key uninstall then leaves in place"
+[ "$(grep -c "jq -e \. >/dev/null" "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
+  || bad "...and no bare \`jq -e .\` may survive there, which is the conflation itself"
+# The row COUNT reads a checked reader: in a pipeline the status is the grep's, and `|| true`
+# discards even that.
+grep -q 'return "$_rrrc"   # carry-rows-reader-status' "$ROOT/install.sh" && ok \
+  || bad "the carried-row count must check the reader before counting it — a partial count reads as operator divergence and publishes a rowless receipt while every installed key still matches"
+[ "$(grep -c 'adb_claude_settings_receipt_leaves "$receipt" | grep -c' "$ROOT/install.sh")" -eq 0 ] && ok \
+  || bad "...and the reader may not be piped straight into a counter, which is the masking itself"
+# THE BLOCKED PATH'S COMPARISON, the mirror of the one in unwire_settings. Same predicate, same two
+# codes, opposite file — fixed on one side only until this assertion existed.
+grep -q 'return 1   # blocked-compare-unanswerable' "$ROOT/install.sh" && ok \
+  || bad "the refusal's document comparison must tell an execution error from a difference — reading both as a change moves the receipt aside and writes on a path that determined nothing"
+# An uninterpretable ownership record is not a report of "not pending".
+grep -q 'return "$_disprc" ;;   # pending-unanswerable' "$ROOT/bin/baseline" && ok \
+  || bad "an unreadable (20) or damaged (21) receipt must travel out of adb_settings_pending, not collapse into the status the caller reads as nothing-to-do"
+grep -q 'return 20 ;;   # intact-unanswerable' "$ROOT/bin/baseline" && ok \
+  || bad "an unanswerable intactness comparison must not fall through to be decided on the payload digest, which cannot speak for rows nobody could compare"
+[ "$(grep -c 'adb_settings_unreadable_record "\$[A-Z]*SPRC"; exit 1' "$ROOT/bin/baseline")" -eq 2 ] && ok \
+  || bad "both adb_settings_pending call sites must fail loud on 20/21 — reporting a healthy install over a record nothing could interpret is the defect"
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -1158,6 +1186,13 @@ grep -qi "no longer as this install left them" "$work/sy.log" && ok \
   || bad "precondition: recorded leaves that are gone must read as divergence and refuse"
 [ -e "$sy/.claude/settings.json" ] && \
   bad "a refusal must not CREATE settings.json — the merge read a synthetic {}, and comparing its output against the absent path made every such refusal look like a change" || ok
+# AND IT MUST REACH ITS VERDICT, not abort. Since the blocked comparison started treating an
+# execution error as unanswerable, comparing against the ABSENT path no longer writes `{}` — a
+# `--slurpfile` of a missing file makes jq exit 2, so the new guard stops the run instead. Safe, but
+# it means the key that refusal should have pruned is never pruned and the previous assertion can no
+# longer see the difference. This is the consequence that survives.
+grep -qi "could not be compared" "$work/sy.log" && \
+  bad "a refusal over an absent settings.json must compare against the synthetic {} it actually read, not abort as unanswerable — the retired keys would then never be pruned on any run" || ok
 # ...and the same for a DANGLING symlink, which is the other way to reach an empty pre-image. A
 # FRESH fixture, because the refusal above recorded a rowless `skipped-blocked` receipt — reusing
 # that home would leave nothing to diverge, so the next run takes the WRITE path and replaces the
@@ -2735,6 +2770,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '$_crows' \
     '$(adb_claude_settings_receipt_containers "$receipt")' \
     'no receipt reader may be substituted directly inside a heredoc'
+  check_mut 'the recorded-value check tests truthiness again' \
+    '    printf '"'"'%s'"'"' "$v" | jq -e '"'"'type'"'"' >/dev/null 2>&1' \
+    '    printf '"'"'%s'"'"' "$v" | jq -e . >/dev/null 2>&1' \
+    'must validate PARSEABILITY, not truthiness'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -2885,7 +2924,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'a refusal compares against the real path it never read' \
     '    if [ "$used_synth" -eq 1 ]; then' \
     '    if false; then' \
-    'must not CREATE settings.json'
+    'must compare against the synthetic {} it actually read'
   check_mut 'the retirement-and-refusal pair publishes outside the deferral' \
     '    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt' \
     '    :' \
@@ -2974,6 +3013,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1   # refusal-kept-unreadable' \
     '      :' \
     'must stop with the existing record untouched'
+  check_mut 'the carried-row reader status is discarded again' \
+    '    return "$_rrrc"   # carry-rows-reader-status' \
+    '    :' \
+    'must check the reader before counting it'
+  check_mut 'the blocked comparison counts an execution error as a difference' \
+    '      return 1   # blocked-compare-unanswerable' \
+    '      :' \
+    "must tell an execution error from a difference"
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3132,8 +3179,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if false; then' \
     'post-pull path must ask before it reports the update complete'
   check_mut 'currency stops asking the live file once the digest matches' \
-    '      [ $? -eq 1 ] && return 0' \
-    '      [ $? -eq 99 ] && return 0' \
+    '        1) return 0 ;;' \
+    '        99) return 0 ;;' \
     'must be pending once, so the installer can observe the divergence'
   check_mut 'the updater overrules an explicit --no-sandbox opt-out' \
     'none|skipped-below-floor|skipped-unprobeable) ;;' \
@@ -3155,6 +3202,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once' \
     '      have="$(adb_claude_settings_receipt_leaves "$receipt" | cut -f1 | LC_ALL=C sort)"; want="$(adb_claude_settings_leaves "$payload" | LC_ALL=C sort)"; [ "$have" = "$want" ] && return 1; return 0' \
     'must NOT report the surface pending on every update'
+  check_mut 'an uninterpretable receipt collapses into not-pending' \
+    '    20|21) return "$_disprc" ;;   # pending-unanswerable' \
+    '    20|21) return 1 ;;' \
+    'must travel out of adb_settings_pending'
+  check_mut 'an unanswerable intactness check falls through to the digest' \
+    '        2) return 20 ;;   # intact-unanswerable' \
+    '        2) : ;;' \
+    'must not fall through to be decided on the payload digest'
+  check_mut 'a pending call site reads an uninterpretable record as healthy' \
+    '      20|21) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
+    '      20|21) : ;;' \
+    'must fail loud on 20/21'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

@@ -256,6 +256,22 @@ adb_settings_refused_now() {
   return 0
 }
 
+# The one diagnostic for a record neither `adb_settings_pending` nor anything downstream can
+# interpret. Two remedies, because the two codes have different ones: 20 is a permission problem,
+# 21 is a damaged `disposition` line that no permission change will fix.
+# Usage: adb_settings_unreadable_record <20|21>
+adb_settings_unreadable_record() {
+  local receipt; receipt="$(adb_claude_settings_receipt "$HOME")"
+  if [ "$1" = "20" ]; then
+    echo "baseline: $receipt exists but could not be READ, so it is unknown whether the sandbox" >&2
+    echo "          settings are current. Fix its permissions and re-run 'baseline update'." >&2
+  else
+    echo "baseline: $receipt is readable but its 'disposition' line is missing or unrecognised, so" >&2
+    echo "          it cannot be classified. No permission change will help; repair that line and" >&2
+    echo "          re-run 'baseline update'. Its 'leaf' rows still name the keys we own." >&2
+  fi
+}
+
 adb_settings_pending() {
   local src="$1" version receipt payload have want
   command -v jq >/dev/null 2>&1 || return 1
@@ -272,7 +288,19 @@ adb_settings_pending() {
   local rsource
   rsource="$(adb_claude_settings_receipt_source "$receipt" 2>/dev/null || true)"
   [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0
-  local disp; disp="$(adb_claude_settings_disposition "$receipt")" || return 1
+  # AN UNINTERPRETABLE RECORD IS NOT AN ANSWER OF "NOT PENDING". `|| return 1` collapsed the
+  # reader's 20 (unreadable) and 21 (damaged disposition) into the same status the caller reads as
+  # nothing-to-do, so with every link resolving `baseline update` printed "all installed links
+  # resolve — nothing to do" and exited 0 over a receipt it could not interpret: no reconciliation,
+  # no diagnostic, and the one record that proves which keys are ours silently unread. Both codes
+  # travel out to the caller, which fails loud. (PR review)
+  local disp _disprc
+  disp="$(adb_claude_settings_disposition "$receipt")"; _disprc=$?
+  case "$_disprc" in
+    0)     ;;
+    20|21) return "$_disprc" ;;   # pending-unanswerable
+    *)     return 1 ;;
+  esac
   # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED THE LIVE QUESTION, not just `installed`. A skip and
   # an opt-out deliberately keep the previous install's ownership rows, and those rows were only
   # ever rechecked inside the installer — so an operator could edit an owned leaf, run the automatic
@@ -282,8 +310,13 @@ adb_settings_pending() {
   # are relinquished without any policy key being newly applied. (PR review)
   case "$disp" in
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable)
+      # 0 intact / 1 diverged / 2 UNANSWERABLE — and the third was falling through to be decided
+      # on the payload digest, which cannot speak for rows nobody could compare. (PR review)
       adb_claude_settings_leaves_intact "$receipt" "$HOME/.claude/settings.json"
-      [ $? -eq 1 ] && return 0 ;;
+      case $? in
+        1) return 0 ;;
+        2) return 20 ;;   # intact-unanswerable
+      esac ;;
   esac
   case "$disp" in
     none|skipped-below-floor|skipped-unprobeable) ;;
@@ -746,7 +779,13 @@ case "$STATUS" in
     # THREE questions now, not two (#248). The sandbox settings can be pending while every link
     # resolves and every hook is wired — that is exactly the state a below-floor install leaves,
     # and the CLI upgrade that clears it moves nothing this path was looking at.
-    SETTINGS_PENDING=0; adb_settings_pending "$SRC" && SETTINGS_PENDING=1
+    # NON-ZERO IS NO LONGER ONE ANSWER. 20/21 mean the ownership record could not be interpreted,
+    # and reporting a healthy install over it is the failure this asks about. (PR review)
+    SETTINGS_PENDING=0; adb_settings_pending "$SRC"; SPRC=$?
+    case "$SPRC" in
+      0)     SETTINGS_PENDING=1 ;;
+      20|21) adb_settings_unreadable_record "$SPRC"; exit 1 ;;
+    esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
@@ -821,7 +860,11 @@ case "$STATUS" in
     adb_prune_orphans "$SRC"
     # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that
     # changes the fragment is exactly how this path acquires pending settings in the first place.
-    BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC" && BEHIND_SETTINGS_PENDING=1
+    BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC"; BSPRC=$?
+    case "$BSPRC" in
+      0)     BEHIND_SETTINGS_PENDING=1 ;;
+      20|21) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;
+    esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"
     if adb_self_heal && adb_verify_links "$SRC"; then
       # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an

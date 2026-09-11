@@ -434,15 +434,27 @@ _adb_wire_settings_locked() {
     # while the blocked receipt went on to discard all container ownership. The empty object was
     # then orphaned for good, and could block a future scalar key at that path. Same question the
     # uninstall side already asks, asked the same way. (PR review)
-    local _blk_changed=0
+    # AND THE COMPARISON'S OWN FAILURE IS NOT "IT CHANGED". `jq -e` answers 1 for false and 5 for an
+    # error; `|| _blk_changed=1` read both as a difference, so an unanswerable comparison moved the
+    # receipt aside and wrote the document on a refusal path that had determined nothing. This is
+    # the exact mirror of the no-op comparison in `unwire_settings`, which was fixed while this side
+    # was not — the same predicate, the same two codes, the opposite file. (PR review)
+    local _blk_changed=0 _blkrc
     if [ "$used_synth" -eq 1 ]; then
       # The pre-image was `{}`, not the file. A refusal that leaves it `{}` has nothing to write,
       # and writing anyway would CREATE the path rather than update it.
-      printf '%s' "$result" | jq -e '.settings == {}' >/dev/null 2>&1 || _blk_changed=1
+      printf '%s' "$result" | jq -e '.settings == {}' >/dev/null 2>&1
     else
-      printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1 \
-        || _blk_changed=1
+      printf '%s' "$result" | jq -e --slurpfile orig "$settings" '.settings == $orig[0]' >/dev/null 2>&1
     fi
+    _blkrc=$?
+    if [ "$_blkrc" -gt 1 ]; then
+      adb_info "  WARN   the refusal could not be compared with ~/.claude/settings.json, so the retired"
+      adb_info "         key(s) $retired were NOT pruned and the ownership record was left as it is."
+      adb_settings_lock_resume_signals
+      return 1   # blocked-compare-unanswerable
+    fi
+    [ "$_blkrc" -eq 1 ] && _blk_changed=1
     if [ "$_blk_changed" -eq 1 ] && [ -f "$receipt" ]; then
       local _bprobe="$receipt.adb.$$.probe"
       if ! mv "$receipt" "$_bprobe" 2>/dev/null; then
@@ -696,8 +708,20 @@ _adb_carry_rows() {
     adb_info "           given up — the existing record is kept and this run does not write one." >&2
     return "$mrc"
   fi
-  local recorded proved
-  recorded="$(adb_claude_settings_receipt_leaves "$receipt" | grep -c . || true)"
+  local recorded proved _rrows _rrrc
+  # THE READER IS CAPTURED AND CHECKED BEFORE IT IS COUNTED. In a pipeline its status is the
+  # `grep`'s, and `|| true` discarded even that — so a reader that failed while validating rows
+  # yielded a partial or zero count that the comparison below read as OPERATOR DIVERGENCE. A
+  # version-skip or an opt-out then published a rowless receipt while every installed key still
+  # matched, and uninstall was left with no ownership evidence to remove them by. Same masking as
+  # the heredoc one level down, through a pipe instead. (PR review)
+  _rrows="$(adb_claude_settings_receipt_leaves "$receipt")"; _rrrc=$?
+  if [ "$_rrrc" -ne 0 ]; then
+    adb_info "  sandbox  ownership was neither proved nor given up — the ownership record could not" >&2
+    adb_info "           be read back, so it is kept and this run writes none." >&2
+    return "$_rrrc"   # carry-rows-reader-status
+  fi
+  recorded="$(printf '%s' "$_rrows" | grep -c . || true)"
   # A FAILED READ IS NOT A COUNT OF ZERO. Unchecked, a `jq` that died here made `proved` empty, the
   # normalisation below turned that into 0, and every recorded key then read as diverged — so a
   # skip published a ROWLESS receipt while all the installed values still matched, and uninstall
