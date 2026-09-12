@@ -620,7 +620,10 @@ _adb_wire_settings_locked() {
       adb_settings_lock_resume_signals
       return 1
     fi
-    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \
+    # `--allow-empty`: the pre-image is a byte-for-byte copy of the original, and an original that
+    # was a zero-byte regular file is a legitimate thing to put back. Without it the publisher's
+    # nonempty guard rejected AND deleted the pre-image, so this rollback failed. (PR review)
+    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings" --allow-empty; } \
        || { [ "$had_settings" -eq 0 ] && rm -f "$settings"; }; then
       adb_info "  WARN   $receipt could not be published, so the sandbox settings were ROLLED BACK."
       adb_info "         Nothing was applied and nothing was orphaned — fix that path and re-run ./install.sh."

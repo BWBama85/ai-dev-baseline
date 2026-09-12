@@ -537,14 +537,23 @@ adb_file_mode() {
   printf '%s' "$m"
 }
 
+# `--allow-empty` (third argument) is an OPT-IN, and only the install rollback uses it. The `-s`
+# guard below exists because a zero-byte temp is almost always a truncated write, and publishing it
+# destroys the destination — but the rollback's pre-image is a byte-for-byte copy of the original
+# settings.json, and an original that was legitimately zero bytes then got REJECTED AND DELETED by
+# that guard, so the rollback failed and left the sandbox keys applied with no ownership record:
+# exactly the unrecoverable state the rollback exists to prevent. Restoring it here rather than
+# writing a second publisher keeps the rename and the mode-preservation in one place. (PR review)
 adb_publish_json() {
-  local tmp="$1" dest="$2" mode=""
+  local tmp="$1" dest="$2" allow_empty="${3:-}" mode=""
   if [ -e "$dest" ] && [ ! -f "$dest" ]; then
     rm -f "$tmp"
     adb_info "  WARN   $dest is not a regular file — refusing to publish over it"
     return 1
   fi
-  [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+  if [ "$allow_empty" != "--allow-empty" ]; then
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+  fi
   # An unreadable mode leaves the umask default rather than failing the write: a
   # preserved-but-unknown permission is not worth losing the settings over.
   if [ -f "$dest" ]; then mode="$(adb_file_mode "$dest")" || mode=""; fi
@@ -912,9 +921,30 @@ adb_claude_settings_disposition() {
 # loop that reporting pending-forever already caused once.
 # Usage: adb_claude_settings_leaves_intact <receipt> <settings>
 adb_claude_settings_leaves_intact() {
-  local receipt="$1" settings="$2" owned rc
+  local receipt="$1" settings="$2" payload="${3:-}" owned rc disp shipped recorded
   command -v jq >/dev/null 2>&1 || return 2
   owned="$(_adb_claude_settings_owned_json "$receipt")" || return 2
+  # AN `installed` RECEIPT MUST OWN EVERY SHIPPED LEAF, because the fragment applies WHOLE or not at
+  # all (D100). A record that kept its disposition and its payload digest but lost or malformed leaf
+  # rows was measured intact here on the SURVIVING rows — an empty set most of all, which returned 0
+  # outright — so `adb_settings_pending` reported the surface current, and uninstall then removed
+  # only the rows that remained, deleted the receipt, and stranded the rest of the sandbox keys with
+  # no owner. Compared against the payload, not merely counted: the same count can be the wrong
+  # paths. Without a payload argument the caller gets the old row-only question, which is all the
+  # skip dispositions can answer. (PR review)
+  if [ -n "$payload" ] && [ -s "$payload" ]; then
+    disp="$(adb_claude_settings_disposition "$receipt")" || return 2
+    if [ "$disp" = installed ]; then
+      # `adb_claude_settings_leaves`, NOT a third copy of the expression. A leaf is any path whose
+      # value is not an object and whose components are all strings — so an ARRAY is a leaf and its
+      # numeric-index descendants are not. `paths(scalars)` returns those numeric paths, which no
+      # recorded row can ever equal (the receipt validates every component as a string), so every
+      # installed receipt read as diverged. Sorted, because set equality is the question. (PR review)
+      shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
+      recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 2
+      [ "$shipped" = "$recorded" ] || return 1   # installed-rows-incomplete
+    fi
+  fi
   [ "$owned" != "[]" ] || return 0
   # PROVABLY GONE IS DIVERGED, NOT UNANSWERABLE. An absent or zero-byte settings.json is not a read
   # this run could not perform — it is a definite answer: every recorded leaf is gone. Reporting it
@@ -1018,6 +1048,13 @@ adb_claude_settings_receipt_leaves() {
   tab="$(printf '\t')"
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
+  # THE OPEN IS CHECKED; THE LOOP'S OWN STATUS IS NOT. `done < "$receipt" || true` absorbed both,
+  # so a receipt that could not be OPENED ran the body zero times and still returned success — this
+  # reader answered "no rows", the merge then uninstalled with no owned leaves and deleted the
+  # receipt, and every matching sandbox key stayed installed with nothing recording it. The
+  # `|| true` is still required for the loop itself, since `read` reports non-zero at EOF, so the
+  # two are separated rather than merged. (PR review)
+  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-leaves
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in "leaf$tab"*) ;; *) continue ;; esac
     rest="${line#leaf$tab}"
@@ -1048,7 +1085,9 @@ adb_claude_settings_receipt_leaves() {
     # returns non-zero on that last partial line WITHOUT running the body — silently dropping the
     # leaf, so uninstall would leave a key it owns behind and the retirement prune would never see
     # it. The validation above still governs whether the partial line is usable.
-  done < "$receipt" || true
+  done <<EOF || true
+$_rbody
+EOF
 }
 
 # The CONTAINER paths a receipt records — the objects this install had to create on its way to a
@@ -1058,10 +1097,17 @@ adb_claude_settings_receipt_leaves() {
 # document root, and `delpaths([[]])` replaces the whole settings file with null.
 # Usage: adb_claude_settings_receipt_containers <receipt>
 adb_claude_settings_receipt_containers() {
-  local receipt="$1" line rest tab
+  local receipt="$1" line rest tab _rbody
   tab="$(printf '\t')"
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
+  # THE OPEN IS CHECKED; THE LOOP'S OWN STATUS IS NOT. `done < "$receipt" || true` absorbed both,
+  # so a receipt that could not be OPENED ran the body zero times and still returned success — this
+  # reader answered "no rows", the merge then uninstalled with no owned leaves and deleted the
+  # receipt, and every matching sandbox key stayed installed with nothing recording it. The
+  # `|| true` is still required for the loop itself, since `read` reports non-zero at EOF, so the
+  # two are separated rather than merged. (PR review)
+  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-containers
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in "container$tab"*) ;; *) continue ;; esac
     rest="${line#container$tab}"
@@ -1069,7 +1115,9 @@ adb_claude_settings_receipt_containers() {
     printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
     case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
     printf '%s\n' "$rest"
-  done < "$receipt" || true
+  done <<EOF || true
+$_rbody
+EOF
 }
 
 _adb_claude_settings_created_json() {
@@ -1322,7 +1370,7 @@ adb_claude_settings_merge() {
 
 # The receipt as the JSON array the merge consumes: [{p: <path>, v: <value>}, ...].
 _adb_claude_settings_owned_json() {
-  local receipt="$1" line p v tab out=""
+  local receipt="$1" line p v tab out="" _rbody
   tab="$(printf '\t')"
   # EVERY DISPOSITION THAT CAN LEGITIMATELY CARRY ROWS OWNS THEM. `_adb_record_skip` carries the
   # prior rows into a `skipped-below-floor`/`skipped-unprobeable` receipt precisely so a downgraded

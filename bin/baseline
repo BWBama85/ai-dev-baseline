@@ -262,7 +262,15 @@ adb_settings_refused_now() {
 # Usage: adb_settings_unreadable_record <20|21>
 adb_settings_unreadable_record() {
   local receipt; receipt="$(adb_claude_settings_receipt "$HOME")"
-  if [ "$1" = "20" ]; then
+  if [ "$1" = "22" ]; then
+    # NOT THE RECEIPT. `adb_claude_settings_leaves_intact` answers 2 when it cannot read
+    # settings.json or the file is not exactly one JSON value — the receipt may be perfectly
+    # valid, and sending the operator to repair its permissions cannot unblock the update.
+    # (PR review)
+    echo "baseline: ~/.claude/settings.json could not be read as a single JSON value, so it is" >&2
+    echo "          unknown whether the sandbox settings are current. Repair that file (or its" >&2
+    echo "          access) and re-run 'baseline update'; the ownership record is not the problem." >&2
+  elif [ "$1" = "20" ]; then
     echo "baseline: $receipt exists but could not be READ, so it is unknown whether the sandbox" >&2
     echo "          settings are current. Fix its permissions and re-run 'baseline update'." >&2
   else
@@ -317,10 +325,10 @@ adb_settings_pending() {
     installed|skipped-optout|skipped-below-floor|skipped-unprobeable)
       # 0 intact / 1 diverged / 2 UNANSWERABLE — and the third was falling through to be decided
       # on the payload digest, which cannot speak for rows nobody could compare. (PR review)
-      adb_claude_settings_leaves_intact "$receipt" "$HOME/.claude/settings.json"
+      adb_claude_settings_leaves_intact "$receipt" "$HOME/.claude/settings.json" "$payload"
       case $? in
         1) return 0 ;;
-        2) return 20 ;;   # intact-unanswerable
+        2) return 22 ;;   # settings-unanswerable
       esac ;;
   esac
   case "$disp" in
@@ -789,7 +797,7 @@ case "$STATUS" in
     SETTINGS_PENDING=0; adb_settings_pending "$SRC"; SPRC=$?
     case "$SPRC" in
       0)     SETTINGS_PENDING=1 ;;
-      20|21) adb_settings_unreadable_record "$SPRC"; exit 1 ;;
+      20|21|22) adb_settings_unreadable_record "$SPRC"; exit 1 ;;
     esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
@@ -868,7 +876,7 @@ case "$STATUS" in
     BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC"; BSPRC=$?
     case "$BSPRC" in
       0)     BEHIND_SETTINGS_PENDING=1 ;;
-      20|21) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;
+      20|21|22) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;
     esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"
     if adb_self_heal && adb_verify_links "$SRC"; then

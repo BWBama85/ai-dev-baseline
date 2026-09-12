@@ -1052,7 +1052,7 @@ grep -q 'return 1   # blocked-compare-unanswerable' "$ROOT/install.sh" && ok \
 # An uninterpretable ownership record is not a report of "not pending".
 grep -q 'return "$_disprc" ;;   # pending-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unreadable (20) or damaged (21) receipt must travel out of adb_settings_pending, not collapse into the status the caller reads as nothing-to-do"
-grep -q 'return 20 ;;   # intact-unanswerable' "$ROOT/bin/baseline" && ok \
+grep -q 'return 22 ;;   # settings-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unanswerable intactness comparison must not fall through to be decided on the payload digest, which cannot speak for rows nobody could compare"
 [ "$(grep -c 'adb_settings_unreadable_record "\$[A-Z]*SPRC"; exit 1' "$ROOT/bin/baseline")" -eq 2 ] && ok \
   || bad "both adb_settings_pending call sites must fail loud on 20/21 — reporting a healthy install over a record nothing could interpret is the defect"
@@ -1085,6 +1085,53 @@ grep -q 'if \[ -s "\$_lr" \] && _lrbody=' "$ROOT/uninstall.sh" && ok \
 # The HOOK half of the no-op comparison, which the settings half was fixed for and this was not.
 grep -q 'elif \[ "\$_hkrc" -gt 1 \]; then' "$ROOT/uninstall.sh" && ok \
   || bad "the hook removal's comparison must tell an execution error from a difference — an elif chain published the staged document on a failed compare, reformatting a file we did not change and replacing a settings.json symlink with a regular file"
+
+# --- round 34: an OPEN that failed, a publisher that deletes, and two answers wearing one code -----
+#
+# BEHAVIOURAL. A receipt that cannot be OPENED must refuse, not report "no rows": the merge would
+# otherwise uninstall with no owned leaves, delete the receipt, and strand every sandbox key.
+_ro="$work/openfail"; rm -rf "$_ro"; mkdir -p "$_ro"
+printf 'disposition\tinstalled\nleaf\t["sandbox","enabled"]\ttrue\n' > "$_ro/r"
+chmod 000 "$_ro/r"
+_lrc=0; bash -c '. "$1/scripts/lib/common.sh"; adb_claude_settings_receipt_leaves "$2" >/dev/null 2>&1' _ "$ROOT" "$_ro/r" || _lrc=$?
+[ "$_lrc" -eq 20 ] && ok || bad "an unreadable receipt must make the leaf reader refuse (20), not answer zero rows — the merge then owns nothing and deletes the record"
+_crc=0; bash -c '. "$1/scripts/lib/common.sh"; adb_claude_settings_receipt_containers "$2" >/dev/null 2>&1' _ "$ROOT" "$_ro/r" || _crc=$?
+[ "$_crc" -eq 20 ] && ok || bad "...and the container reader with it — the same masking, the same consequence for a container this install created"
+chmod 600 "$_ro/r"
+_orc=0; bash -c '. "$1/scripts/lib/common.sh"; adb_claude_settings_receipt_leaves "$2" >/dev/null 2>&1' _ "$ROOT" "$_ro/r" || _orc=$?
+[ "$_orc" -eq 0 ] && ok || bad "...and a READABLE receipt must still be read — a refusal that fires on the healthy case is worse than the masking"
+grep -q 'return 20   # receipt-open-failed-leaves' "$ROOT/scripts/lib/common.sh" && \
+  grep -q 'return 20   # receipt-open-failed-containers' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "both receipt readers must check the read before iterating it"
+# ANCHORED, for the reason the deferral scans were: unanchored it matched the COMMENTS above each
+# reader, which quote the old spelling to explain it — a guard a comment can satisfy, this time
+# failing on a clean tree instead of passing on a broken one.
+[ "$(grep -c '^[[:space:]]*done < "\$receipt" || true' "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
+  || bad "...and neither may still absorb the open failure with \`done < \$receipt || true\`, which is the masking itself"
+
+# BEHAVIOURAL. The publisher deletes a zero-byte temp by design; the rollback's pre-image is a
+# byte-for-byte copy of the original, and a zero-byte original is a legitimate thing to restore.
+_pe="$work/emptypub"; rm -rf "$_pe"; mkdir -p "$_pe"
+: > "$_pe/tmp"; printf '{"a":1}' > "$_pe/dest"
+bash -c '. "$1/scripts/lib/common.sh"; adb_publish_json "$2/tmp" "$2/dest" --allow-empty' _ "$ROOT" "$_pe" >/dev/null 2>&1 \
+  && [ -f "$_pe/dest" ] && [ ! -s "$_pe/dest" ] && ok \
+  || bad "adb_publish_json --allow-empty must publish a zero-byte pre-image — without it the rollback's own restore is rejected AND deleted, leaving the sandbox keys applied with no receipt"
+: > "$_pe/tmp2"; printf '{"a":1}' > "$_pe/dest2"
+bash -c '. "$1/scripts/lib/common.sh"; adb_publish_json "$2/tmp2" "$2/dest2"' _ "$ROOT" "$_pe" >/dev/null 2>&1 \
+  && bad "...and WITHOUT the opt-in a zero-byte temp must still be refused: that guard catches a truncated write" \
+  || { [ ! -e "$_pe/tmp2" ] && [ -s "$_pe/dest2" ] && ok \
+       || bad "...and the refusal must remove the temp and leave the destination untouched"; }
+grep -q 'adb_publish_json "$pre" "$settings" --allow-empty' "$ROOT/install.sh" && ok \
+  || bad "the rollback must restore its pre-image with the empty-capable publish"
+
+# An `installed` receipt owns EVERY shipped leaf, because the fragment applies whole or not at all.
+grep -q 'return 1   # installed-rows-incomplete' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "an installed receipt that lost leaf rows must read as DIVERGED — checking only the survivors reports the surface current, and uninstall then strands the rows that are gone"
+# ...and the settings file's own error is not the receipt's.
+grep -q 'return 22 ;;   # settings-unanswerable' "$ROOT/bin/baseline" && ok \
+  || bad "an unreadable or malformed settings.json must not be reported as a receipt error — repairing a valid receipt cannot unblock the update"
+[ "$(grep -c '20|21|22) adb_settings_unreadable_record' "$ROOT/bin/baseline")" -eq 2 ] && ok \
+  || bad "...and both pending call sites must accept the settings-file code"
 
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
@@ -2561,15 +2608,21 @@ pending_receipt "$moved" "000000000000000000000000000000000000000000000000000000
 ask_pending "$moved" && ok \
   || bad "a payload whose CONTENT changed must be PENDING — a value-only change leaves the leaf paths identical, so a path-set comparison never applies it"
 
-# (b) an operator-owned leaf was skipped, so it is missing from the receipt — this must NOT make
-# the surface pending forever, re-running the installer on every session.
+# (b) an `installed` receipt that does NOT own every shipped leaf. This assertion is INVERTED from
+# what it was, deliberately: it encoded D95's per-leaf model, where a leaf the operator already
+# owned was skipped and simply absent from the receipt. D100 removed that state — the fragment
+# applies WHOLE or not at all, so an install that meets any shipped key already present refuses the
+# lot and records `skipped-blocked`. An `installed` receipt missing a leaf is therefore not a
+# legitimate partial record; it is a damaged one, and reporting it current is what let uninstall
+# remove only the surviving rows, delete the receipt, and strand the rest with no owner. (PR review)
 skipped="$work/skippedhome"; rm -rf "$skipped"; mkdir -p "$skipped/.claude"
 ln -s "$ROOT/agents/claude/CLAUDE.md" "$skipped/.claude/CLAUDE.md"
 { printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")"
   adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s . | jq -c '.[1:]')" \
     | grep "^leaf$ADB_TAB"; } > "$skipped/.claude/.adb-settings-owned"
 cp "$PAYLOAD" "$skipped/.claude/settings.json"
-ask_pending "$skipped" && bad "a leaf the operator already owned is never recorded — that must NOT report the surface pending on every update, or the installer re-runs and reports a repair every session" || ok
+ask_pending "$skipped" && ok \
+  || bad "an installed receipt that does not own every shipped leaf must be PENDING — under D100 that record cannot come from the installer, and treating it as current lets uninstall strand the leaves it never recorded"
 
 # (c) a receipt predating the digest field is unknown, and unknown must mean pending ONCE.
 nodigest="$work/nodigesthome"; rm -rf "$nodigest"; mkdir -p "$nodigest/.claude"
@@ -2830,6 +2883,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ "$grc" -le 1 ] || return 20   # source-search-failed' \
     '  :' \
     'must tell a failed search from an absent row'
+  check_mut 'the leaf reader masks a failed open again' \
+    '  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-leaves' \
+    '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
+    'must make the leaf reader refuse (20)'
+  check_mut 'the container reader masks a failed open again' \
+    '  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-containers' \
+    '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
+    'the container reader with it'
+  check_mut 'an installed receipt need not own every shipped leaf' \
+    '      [ "$shipped" = "$recorded" ] || return 1   # installed-rows-incomplete' \
+    '      :' \
+    'must read as DIVERGED'
+  check_mut 'the empty-publish opt-in is ignored' \
+    '  if [ "$allow_empty" != "--allow-empty" ]; then' \
+    '  if true; then' \
+    'must publish a zero-byte pre-image'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3077,6 +3146,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1   # blocked-compare-unanswerable' \
     '      :' \
     "must tell an execution error from a difference"
+  check_mut 'the rollback restores its pre-image through the nonempty guard' \
+    '    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings" --allow-empty; } \' \
+    '    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \' \
+    'must restore its pre-image with the empty-capable publish'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3123,9 +3196,16 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 1   # stamp-failed' \
     '        return 0' \
     'must FAIL rather than unlink the proof it depends on'
-  check_mut 'a malformed source row counts as provenance' \
+  # DETERMINISTIC, and renamed to match what it injects. The replacement used to be a raw
+  # `grep -q "^source<TAB>"`, which is the defect in spirit but depends on grep and on how the
+  # harness splices a `\t` into the file: it fired its witness on macOS and went GREEN on the ubuntu
+  # leg (run 34665741508), where an unrelated load-sensitive failure then made it look red by
+  # accident. Taking the decision without asking the reader at all is the same defect with no
+  # platform in it — broader, since the stamp is then skipped for every receipt, so the two
+  # neighbouring stamp assertions fail with the witness. (PR review)
+  check_mut 'the source decision is taken without asking the reader' \
     '      adb_claude_settings_receipt_source "$_lr" >/dev/null 2>&1; _srcrc=$?' \
-    '      printf '"'"'%s\\n'"'"' "$_lrbody" | grep -q "^source$(printf '"'"'\\t'"'"')"; _srcrc=$?' \
+    '      _srcrc=0' \
     'must be stamped like one that has none'
   check_mut 'the legacy provenance stamp is skipped' \
     '    if [ "$_srcrc" -eq 1 ]; then' \
@@ -3273,23 +3353,27 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'currency is decided by the owned leaf PATHS again' \
     '      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once' \
     '      have="$(adb_claude_settings_receipt_leaves "$receipt" | cut -f1 | LC_ALL=C sort)"; want="$(adb_claude_settings_leaves "$payload" | LC_ALL=C sort)"; [ "$have" = "$want" ] && return 1; return 0' \
-    'must NOT report the surface pending on every update'
+    'must be PENDING'
   check_mut 'an uninterpretable receipt collapses into not-pending' \
     '    20|21) return "$_disprc" ;;   # pending-unanswerable' \
     '    20|21) return 1 ;;' \
     'must travel out of adb_settings_pending'
   check_mut 'an unanswerable intactness check falls through to the digest' \
-    '        2) return 20 ;;   # intact-unanswerable' \
+    '        2) return 22 ;;   # settings-unanswerable' \
     '        2) : ;;' \
     'must not fall through to be decided on the payload digest'
   check_mut 'a pending call site reads an uninterpretable record as healthy' \
-    '      20|21) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
-    '      20|21) : ;;' \
+    '      20|21|22) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
+    '      20|21|22) : ;;' \
     'must fail loud on 20/21'
   check_mut 'a failed source search reads as no source at all' \
     '  [ "$_rsrc" -eq 20 ] && return 20   # source-unanswerable' \
     '  :' \
     "must not read a failed source search as 'no source'"
+  check_mut 'a settings-file error is reported as a receipt error' \
+    '        2) return 22 ;;   # settings-unanswerable' \
+    '        2) return 20 ;;' \
+    'must not be reported as a receipt error'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 
