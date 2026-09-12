@@ -639,7 +639,18 @@ adb_update_lock() {
 adb_update_unlock() {
   local lock="$1"
   [ -n "$_ADB_LOCK_TOKEN" ] || return 0
-  [ "$(cat "$lock/owner" 2>/dev/null)" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
+  # A LOCK THAT IS GONE IS RELEASED; A LOCK WE CANNOT READ IS NOT. The owner check used to be one
+  # command substitution, so an unreadable `owner` — an ACL change, a transient failure — produced
+  # the empty string and compared equal to "somebody else holds it": the token was dropped, success
+  # was reported, and the directory stayed. The install and uninstall wrappers trust that success,
+  # so they finished quietly while every later settings operation was refused until the stale
+  # interval expired or the operator found the lock by hand. The absent case must stay separate or
+  # this loses the idempotency the EXIT trap relies on. (PR review)
+  if [ ! -e "$lock" ]; then _ADB_LOCK_TOKEN=""; return 0; fi
+  local _owner _orc
+  _owner="$(cat "$lock/owner" 2>/dev/null)"; _orc=$?
+  [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable
+  [ "$_owner" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
   rm -f "$lock/owner" 2>/dev/null
   rmdir "$lock" 2>/dev/null
   # THE TOKEN IS CLEARED ONLY WHEN THE LOCK IS ACTUALLY GONE. It used to be cleared FIRST, so a
@@ -732,9 +743,15 @@ adb_settings_lock_resume_signals() {
   # the load-time definition above, deliberately in ONE place: a `${x:-}` here as well would mean no
   # single edit could reintroduce the crash, and a defence nothing can break is a defence nothing has
   # tested. (PR review)
+  # RE-ARM FIRST. Copying `pending` and clearing it before the handlers were back left a window
+  # where the still-deferred handler wrote the arriving signal into `_ADB_SIGNAL_PENDING` and the
+  # very next assignment threw it away — the Ctrl-C was lost and the run carried on into the writes
+  # that follow, which for the hook publication means the sandbox settings and the remaining agents
+  # were installed anyway. Armed first, a signal from that moment on takes the immediate handler;
+  # one that arrived before is still in the variable and is read here. (PR review)
+  _adb_arm_lock_traps   # armed-before-read
   local pending="$_ADB_SIGNAL_PENDING"
   _ADB_SIGNAL_PENDING=""
-  _adb_arm_lock_traps
   [ -n "$pending" ] || return 0
   adb_settings_lock_drop
   exit "$pending"
@@ -915,9 +932,11 @@ adb_claude_settings_disposition() {
 # relinquish. With currency decided purely by the payload digest, an edit made and then reverted by
 # hand was never observed at all, and uninstall later deleted the restored value as installer-owned.
 #
-# Three answers, deliberately, because "cannot tell" must not read as either: 0 intact, 1 diverged,
+# Four answers, deliberately, because "cannot tell" must not read as either: 0 intact, 1 diverged,
 # 2 unanswerable (no jq, no settings, an unreadable receipt, or a settings file that is not exactly
-# one JSON value). A caller that treats 2 as divergence would put `baseline update` into the repair
+# one JSON value), and 23 an `installed` receipt that does not list every leaf the payload ships —
+# reported and preserved rather than reconciled, because the reconciliation destroys the rows it
+# does list. A caller that treats 2 as divergence would put `baseline update` into the repair
 # loop that reporting pending-forever already caused once.
 # Usage: adb_claude_settings_leaves_intact <receipt> <settings>
 adb_claude_settings_leaves_intact() {
@@ -942,7 +961,12 @@ adb_claude_settings_leaves_intact() {
       # installed receipt read as diverged. Sorted, because set equality is the question. (PR review)
       shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
       recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 2
-      [ "$shipped" = "$recorded" ] || return 1   # installed-rows-incomplete
+      # 23, NOT 1. "Diverged" sends `baseline update` into the self-heal, and the installer then
+      # meets the still-applied leaf this receipt failed to list, reads it as operator-owned, and
+      # writes a ROWLESS `skipped-blocked` record — discarding ownership of every leaf the receipt
+      # did list, after which uninstall removes none of them. An objectively incomplete record is
+      # not a state to reconcile; it is one to report and preserve. (PR review)
+      [ "$shipped" = "$recorded" ] || return 23   # installed-rows-incomplete
     fi
   fi
   [ "$owned" != "[]" ] || return 0

@@ -262,7 +262,15 @@ adb_settings_refused_now() {
 # Usage: adb_settings_unreadable_record <20|21>
 adb_settings_unreadable_record() {
   local receipt; receipt="$(adb_claude_settings_receipt "$HOME")"
-  if [ "$1" = "22" ]; then
+  if [ "$1" = "23" ]; then
+    # NEITHER PERMISSIONS NOR JSON. The record parses and names this clone; it simply does not list
+    # every key the fragment ships, which the installer cannot produce — so it is damaged, and the
+    # self-heal must not run: reconciling it discards the rows it DOES list. (PR review)
+    echo "baseline: $receipt does not record every sandbox key the fragment ships, so it cannot be" >&2
+    echo "          acted on safely — a repair would discard the keys it does record. Remove the" >&2
+    echo "          'sandbox' block from ~/.claude/settings.json and that record, then re-run" >&2
+    echo "          './install.sh' to reinstall the policy cleanly." >&2
+  elif [ "$1" = "22" ]; then
     # NOT THE RECEIPT. `adb_claude_settings_leaves_intact` answers 2 when it cannot read
     # settings.json or the file is not exactly one JSON value — the receipt may be perfectly
     # valid, and sending the operator to repair its permissions cannot unblock the update.
@@ -329,6 +337,7 @@ adb_settings_pending() {
       case $? in
         1) return 0 ;;
         2) return 22 ;;   # settings-unanswerable
+        23) return 23 ;;  # receipt-incomplete
       esac ;;
   esac
   case "$disp" in
@@ -797,7 +806,7 @@ case "$STATUS" in
     SETTINGS_PENDING=0; adb_settings_pending "$SRC"; SPRC=$?
     case "$SPRC" in
       0)     SETTINGS_PENDING=1 ;;
-      20|21|22) adb_settings_unreadable_record "$SPRC"; exit 1 ;;
+      20|21|22|23) adb_settings_unreadable_record "$SPRC"; exit 1 ;;
     esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
@@ -876,7 +885,7 @@ case "$STATUS" in
     BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC"; BSPRC=$?
     case "$BSPRC" in
       0)     BEHIND_SETTINGS_PENDING=1 ;;
-      20|21|22) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;
+      20|21|22|23) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;
     esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"
     if adb_self_heal && adb_verify_links "$SRC"; then

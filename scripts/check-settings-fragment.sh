@@ -1125,13 +1125,44 @@ grep -q 'adb_publish_json "$pre" "$settings" --allow-empty' "$ROOT/install.sh" &
   || bad "the rollback must restore its pre-image with the empty-capable publish"
 
 # An `installed` receipt owns EVERY shipped leaf, because the fragment applies whole or not at all.
-grep -q 'return 1   # installed-rows-incomplete' "$ROOT/scripts/lib/common.sh" && ok \
-  || bad "an installed receipt that lost leaf rows must read as DIVERGED — checking only the survivors reports the surface current, and uninstall then strands the rows that are gone"
+grep -q 'return 23   # installed-rows-incomplete' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "an installed receipt that lost leaf rows must be reported as an ERROR and PRESERVED — 23, not 1: divergence sends it through the self-heal, which discards the rows it does list"
 # ...and the settings file's own error is not the receipt's.
 grep -q 'return 22 ;;   # settings-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unreadable or malformed settings.json must not be reported as a receipt error — repairing a valid receipt cannot unblock the update"
-[ "$(grep -c '20|21|22) adb_settings_unreadable_record' "$ROOT/bin/baseline")" -eq 2 ] && ok \
+[ "$(grep -c '20|21|22|23) adb_settings_unreadable_record' "$ROOT/bin/baseline")" -eq 2 ] && ok \
   || bad "...and both pending call sites must accept the settings-file code"
+
+# --- round 35: a release that lied, a signal dropped in the handoff, and a record not to reconcile -
+#
+# BEHAVIOURAL. An `owner` file we cannot READ is not somebody else's lock: treating it as a mismatch
+# dropped the token, reported a clean release and left the directory standing, after which every
+# settings operation is refused until the stale interval expires.
+_lt="$work/locktest"; rm -rf "$_lt"; mkdir -p "$_lt"
+_lrc=0
+bash -c '. "$1/scripts/lib/common.sh"; adb_update_lock "$2" || exit 9; chmod 000 "$2/owner"; adb_update_unlock "$2"' \
+  _ "$ROOT" "$_lt/lock" >/dev/null 2>&1 || _lrc=$?
+[ "$_lrc" -eq 1 ] && ok \
+  || bad "releasing a lock whose owner file cannot be read must FAIL (1), not report success — the wrappers trust that success and finish while the lock is still there (got $_lrc)"
+[ -d "$_lt/lock" ] && ok || bad "...and the lock directory must still be there, since nothing proved it was ours to remove"
+chmod 600 "$_lt/lock/owner" 2>/dev/null
+_arc=0; bash -c '. "$1/scripts/lib/common.sh"; adb_update_unlock "$2/nosuch"' _ "$ROOT" "$_lt" >/dev/null 2>&1 || _arc=$?
+[ "$_arc" -eq 0 ] && ok \
+  || bad "...but a lock that is ABSENT is released: the EXIT trap calls this after an ordinary release and must not report a failure (got $_arc)"
+grep -q 'return 1   # lock-owner-unreadable' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the owner read must be captured and checked, not collapsed into the token comparison"
+
+# The handlers are re-armed BEFORE the pending signal is read, or a signal arriving in the handoff
+# is written by the still-deferred handler and thrown away by the very next assignment.
+awk '/^adb_settings_lock_resume_signals\(\) \{/{f=1}
+     f && /^[[:space:]]*local pending=/{print "read-first"; exit}
+     f && /^[[:space:]]*_adb_arm_lock_traps/{print "armed-first"; exit}
+     f && /^}/{exit}' "$ROOT/scripts/lib/common.sh" | grep -q armed-first && ok \
+  || bad "resume must re-arm the handlers BEFORE it reads the pending signal — read first, and a Ctrl-C arriving in that window is stored by the deferred handler and cleared unseen, so the run continues into the writes that follow"
+
+# An incomplete `installed` receipt is reported and preserved, never reconciled.
+grep -q 'return 23 ;;  # receipt-incomplete' "$ROOT/bin/baseline" && ok \
+  || bad "the incomplete-receipt code must reach the caller intact, so the update fails loud instead of self-healing over it"
 
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
@@ -2621,8 +2652,9 @@ ln -s "$ROOT/agents/claude/CLAUDE.md" "$skipped/.claude/CLAUDE.md"
   adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s . | jq -c '.[1:]')" \
     | grep "^leaf$ADB_TAB"; } > "$skipped/.claude/.adb-settings-owned"
 cp "$PAYLOAD" "$skipped/.claude/settings.json"
-ask_pending "$skipped" && ok \
-  || bad "an installed receipt that does not own every shipped leaf must be PENDING — under D100 that record cannot come from the installer, and treating it as current lets uninstall strand the leaves it never recorded"
+_incrc=0; ask_pending "$skipped" || _incrc=$?
+[ "$_incrc" -eq 23 ] && ok \
+  || bad "an installed receipt that does not own every shipped leaf must answer 23 (report and preserve), not 0 (pending) and not 1 — the self-heal a pending answer triggers is what discards the rows it DOES list (got $_incrc)"
 
 # (c) a receipt predating the digest field is unknown, and unknown must mean pending ONCE.
 nodigest="$work/nodigesthome"; rm -rf "$nodigest"; mkdir -p "$nodigest/.claude"
@@ -2892,13 +2924,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
     'the container reader with it'
   check_mut 'an installed receipt need not own every shipped leaf' \
-    '      [ "$shipped" = "$recorded" ] || return 1   # installed-rows-incomplete' \
+    '      [ "$shipped" = "$recorded" ] || return 23   # installed-rows-incomplete' \
     '      :' \
-    'must read as DIVERGED'
+    'must be reported as an ERROR and PRESERVED'
   check_mut 'the empty-publish opt-in is ignored' \
     '  if [ "$allow_empty" != "--allow-empty" ]; then' \
     '  if true; then' \
     'must publish a zero-byte pre-image'
+  check_mut 'a failed owner read counts as somebody else holding the lock' \
+    '  [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable' \
+    '  :' \
+    'must FAIL (1), not report success'
+  # SINGLE LINE: check_mutate_literal matches within one record, so a two-line literal tests nothing.
+  check_mut 'the handlers are not re-armed before the pending read' \
+    '  _adb_arm_lock_traps   # armed-before-read' \
+    '  :   # armed-before-read' \
+    'must re-arm the handlers BEFORE it reads the pending signal'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3363,8 +3404,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '        2) : ;;' \
     'must not fall through to be decided on the payload digest'
   check_mut 'a pending call site reads an uninterpretable record as healthy' \
-    '      20|21|22) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
-    '      20|21|22) : ;;' \
+    '      20|21|22|23) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
+    '      20|21|22|23) : ;;' \
     'must fail loud on 20/21'
   check_mut 'a failed source search reads as no source at all' \
     '  [ "$_rsrc" -eq 20 ] && return 20   # source-unanswerable' \
@@ -3374,6 +3415,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '        2) return 22 ;;   # settings-unanswerable' \
     '        2) return 20 ;;' \
     'must not be reported as a receipt error'
+  check_mut 'the incomplete-receipt code is downgraded to not-pending' \
+    '        23) return 23 ;;  # receipt-incomplete' \
+    '        23) return 1 ;;' \
+    'must answer 23 (report and preserve)'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 
