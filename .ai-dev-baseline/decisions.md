@@ -7974,7 +7974,8 @@ survive is the part a later reader needs.
              (45 minutes) ran it too and was cancelled at 45m17s. Both are required checks, so the PR
              could not merge. Observed on run 34564598749 and on the two heads before it.
 - decision:  Owner decision 2026-09-11. `install-guard`'s timeout rises 15 -> 45 minutes, matching the
-             other harness-carrying jobs (`adopt`, `implement-gate`), and `selfcheck-macos` adds
+             other harness-carrying jobs (`adopt`, `implement-gate`) — CORRECTED to 120 the same day,
+             see the measurement below — and `selfcheck-macos` adds
              `settings-fragment-mutation` to its `--skip` — D87's rule applied a fourth time: it answers
              a logic question, not a platform one, and `install-guard` runs it on every relevant PR.
              `check-fact-drift.sh` pins that ubuntu invocation, now the harness's only per-PR
@@ -7986,6 +7987,12 @@ survive is the part a later reader needs.
              cost they remove. A new dedicated job was rejected because `required-drift` flags any job
              that is not a required check, so it needs a branch-protection change; pulling #468 into a
              PR past 30 review rounds was rejected as a substantial change to shared harness code. The
-             45-minute figure rests on an ESTIMATE of ~17-22 minutes at 148 rows, scaled from the
-             2026-09-05 series: re-measure from the first green run and adjust.
+             45-minute figure rested on an ESTIMATE of ~17-22 minutes at 148 rows, scaled from the
+             2026-09-05 series, and it was WRONG. On run 34652254652 the macOS skip worked — that leg
+             passed in 31m3s, against a cancellation at 45m17s before it — but the step ran **2640s**
+             in `install-guard` and was cancelled at the new 45. Scaling by row count is the error:
+             cost is rows x WHOLE SUITE, and the suite grew with the rows (420 -> 455 assertions), so
+             the two multiply. The timeout is now **120**, which is headroom rather than a
+             measurement: the step has never been observed completing above 118 rows, so the true
+             figure is still unknown and is >44 minutes. Re-measure from the first green run.
 - baseline-issue: n/a

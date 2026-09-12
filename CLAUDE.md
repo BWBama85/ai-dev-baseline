@@ -137,8 +137,9 @@ those. The rules below are specific to this repo's code.
    `implement-gate`, while its duplicate remained the sole unfinished macOS step when that job
    reached the same ceiling. On run 34564598749 (2026-09-11) the settings-fragment harness was
    cancelled in both jobs that ran it — at `install-guard`'s 15-minute ceiling and at the macOS
-   leg's 45 — having last completed in CI at 601s on 2026-09-05, so `install-guard`'s timeout rose
-   to 45 as well (D101). A plain local `bash scripts/selfcheck.sh` still *selects* the whole
+   leg's 45 — having last completed in CI at 601s on 2026-09-05. On the next run (34652254652) the
+   macOS leg passed in 31m3s with the skip, while the same step ran **2640s** in `install-guard` and
+   was cancelled at the 45 it had just been raised to, so that job now allows **120** (D101). A plain local `bash scripts/selfcheck.sh` still *selects* the whole
    registry — the `--skip`s are a CI-invocation choice, never a new default — and then applies the
    gate above to it.
 
