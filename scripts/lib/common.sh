@@ -722,10 +722,16 @@ adb_settings_lock_take() {
 # means no single-line mutation of any one of them can be observed failing — the guard covering
 # them would be unfalsifiable. Keeping them behind one call is what makes the row that deletes the
 # arming able to go red. (PR review)
+# HUP BELONGS WITH TERM AND INT. Losing the controlling terminal mid-transaction — a closed
+# window, a dropped ssh session — kills the shell between the settings write and its receipt, and
+# an EXIT trap that only releases the lock finishes neither the second write nor the rollback: the
+# keys are installed with no ownership evidence, or removed against a receipt that still claims
+# them. Armed, deferred, resumed and disarmed alongside the other two. (PR review)
 _adb_arm_lock_traps() {
   trap 'adb_settings_lock_drop' EXIT
   trap 'adb_settings_lock_drop; exit 143' TERM
   trap 'adb_settings_lock_drop; exit 130' INT
+  trap 'adb_settings_lock_drop; exit 129' HUP
 }
 
 # Hold a signal until the caller says it is safe to act on it, then act on it.
@@ -744,6 +750,7 @@ adb_settings_lock_defer_signals() {
   _ADB_SIGNAL_PENDING=""
   trap '_ADB_SIGNAL_PENDING=143' TERM
   trap '_ADB_SIGNAL_PENDING=130' INT
+  trap '_ADB_SIGNAL_PENDING=129' HUP
 }
 
 # Re-arm the immediate handlers and honour anything that arrived while they were deferred.
@@ -776,7 +783,7 @@ adb_settings_lock_drop() {
   local _lk="$_ADB_SETTINGS_LOCK" _urc=0
   adb_update_unlock "$_lk" || _urc=$?
   _ADB_SETTINGS_LOCK=""
-  trap - EXIT TERM INT
+  trap - EXIT TERM INT HUP
   # A FAILED RELEASE IS SAID, not swallowed. Every path calls this helper now, which was the point
   # of having one — but a helper that reports success for a lock still sitting on disk moves the
   # silence one level down rather than removing it. The operator is the only one who can clear it.
@@ -953,7 +960,18 @@ _adb_claude_settings_rows_complete() {
   [ -n "$payload" ] && [ -s "$payload" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
   disp="$(adb_claude_settings_disposition "$receipt")" || return 2
-  [ "$disp" = installed ] || return 0
+  # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED, not just `installed`. A skip preserves the
+  # previous install's ownership rows, so one lost while the digest is still current strands its key
+  # exactly as it does under `installed` — uninstall removes the survivors, deletes the receipt, and
+  # the omitted key stays applied with nothing recording it. The difference is the ROWLESS case: a
+  # first-time skip never installed anything and legitimately records nothing, while a rowless
+  # `installed` is the damaged record this check exists for. (PR review)
+  local _needs_rows
+  case "$disp" in
+    installed)                                             _needs_rows=1 ;;
+    skipped-optout|skipped-below-floor|skipped-unprobeable) _needs_rows=0 ;;
+    *) return 0 ;;
+  esac
   # ONLY WHILE THE RECORDED DIGEST IS THIS PAYLOAD. Set equality is the wrong question otherwise,
   # in BOTH directions: a receipt legitimately records leaves the payload no longer ships — those
   # are retirements, and pruning them is the merge's job — and a payload that gained a leaf makes
@@ -971,6 +989,8 @@ _adb_claude_settings_rows_complete() {
   # numeric-index descendants are not, and every recorded component is a string.
   shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
   recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 2
+  # A skip that never owned anything has nothing to be incomplete about.
+  [ "$_needs_rows" -eq 1 ] || [ "$recorded" != "[]" ] || return 0   # rowless-skip-ok
   # SUBSET, NOT EQUALITY: every leaf the payload ships must be recorded, and a row the payload no
   # longer ships is a RETIREMENT the merge prunes, not an inconsistency. Equality refused every
   # retirement fixture — the merge's own reason for existing — while catching nothing the subset

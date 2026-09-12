@@ -281,7 +281,17 @@ unwire_settings() {
   local settings="$HOME/.claude/settings.json" receipt payload result names tmp
   receipt="$(adb_claude_settings_receipt "$HOME")"
   payload="$(adb_claude_settings_payload "$REPO")"
-  [ -f "$receipt" ] || return 0
+  # ABSENT AND OCCUPIED ARE DIFFERENT. `-f` is false for a directory or any other non-regular node,
+  # so such a path read as "no receipt, nothing to remove": the outer script went on to print
+  # `Uninstalled` with every sandbox key still applied, and the node also stops a later installer
+  # from publishing a replacement receipt, so no future run can clean up either. (PR review)
+  if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then return 0; fi
+  if [ ! -f "$receipt" ]; then
+    adb_info "  ERROR  $receipt exists but is not a regular file, so the sandbox settings cannot be"
+    adb_info "         removed by it and no later install can replace it. NOTHING was removed —"
+    adb_info "         remove that path by hand, then re-run."
+    return 1   # receipt-not-regular
+  fi
   # NOT OURS, NOT OURS TO REMOVE. The receipt is global, so its mere existence proves only that
   # SOME clone installed these keys — and a second clone's install replaced both the links and the
   # receipt. Leaving them is the same answer `adb_unlink_if_ours` gives for a link pointing

@@ -1205,6 +1205,40 @@ grep -q 'return 1   # lock-owner-unreadable-break' "$ROOT/scripts/lib/common.sh"
 grep -q 'return 1   # buckets-unreadable' "$ROOT/install.sh" && ok \
   || bad "the wrote/pruned/kept lists must be read BEFORE the receipt is published — .kept is the only thing naming a retired leaf the operator edited, and the new receipt no longer records it"
 
+# --- round 37: skips own rows too, HUP is terminating, and an occupied path is not an absent one --
+#
+# BEHAVIOURAL. A skip PRESERVES the previous install's ownership rows, so one lost while the digest
+# is current strands its key exactly as under `installed`.
+_sk="$work/skipincomplete"; rm -rf "$_sk"; mkdir -p "$_sk"
+{ printf 'disposition skipped-optout\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")"
+  adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s . | jq -c '.[1:]')" \
+    | grep "^leaf$ADB_TAB"; } > "$_sk/r"
+_skrc=0; _adb_claude_settings_rows_complete "$_sk/r" "$PAYLOAD" || _skrc=$?
+[ "$_skrc" -eq 23 ] && ok \
+  || bad "an ownership-bearing skip that lost a leaf row must answer 23 — uninstall would remove the survivors, delete the receipt, and leave the omitted key applied with no owner (got $_skrc)"
+# ...but a first-time skip installed nothing and legitimately records nothing.
+printf 'disposition skipped-optout\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_sk/r0"
+_sk0=0; _adb_claude_settings_rows_complete "$_sk/r0" "$PAYLOAD" || _sk0=$?
+[ "$_sk0" -eq 0 ] && ok \
+  || bad "a ROWLESS skip must stay valid — it never installed anything, and refusing it would block every first-time opt-out and below-floor run (got $_sk0)"
+# ...and `installed` with no rows is still the damaged record, not a first-time anything.
+printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_sk/ri"
+_ski=0; _adb_claude_settings_rows_complete "$_sk/ri" "$PAYLOAD" || _ski=$?
+[ "$_ski" -eq 23 ] && ok \
+  || bad "a rowless INSTALLED receipt must still answer 23 — the rowless carve-out is for skips only (got $_ski)"
+
+# HUP is a terminating signal and must be armed, deferred and disarmed with the other two.
+grep -q "trap 'adb_settings_lock_drop; exit 129' HUP" "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "HUP must be armed alongside TERM and INT — a closed terminal kills the shell between the two writes of a transaction"
+grep -q "trap '_ADB_SIGNAL_PENDING=129' HUP" "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "...and DEFERRED with them, or the transaction it interrupts leaves keys with no ownership evidence"
+grep -q 'trap - EXIT TERM INT HUP' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "...and disarmed with them, or a released lock leaves a handler behind"
+
+# An occupied non-regular receipt path is not an absent receipt.
+grep -q 'return 1   # receipt-not-regular' "$ROOT/uninstall.sh" && ok \
+  || bad "a receipt path occupied by a directory must fail the uninstall — read as absent it prints Uninstalled with every key applied, and no later install can publish a replacement"
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -3000,6 +3034,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete' \
     '  case "$_orc" in 0) ;; *) return 2 ;; esac   # orc-complete' \
     'must keep its own code out of leaves_intact'
+  check_mut 'ownership-bearing skips are exempt from completeness' \
+    '    skipped-optout|skipped-below-floor|skipped-unprobeable) _needs_rows=0 ;;' \
+    '    skipped-optout|skipped-below-floor|skipped-unprobeable) return 0 ;;' \
+    'an ownership-bearing skip that lost a leaf row must answer 23'
+  check_mut 'a rowless first-time skip is called incomplete' \
+    '  [ "$_needs_rows" -eq 1 ] || [ "$recorded" != "[]" ] || return 0   # rowless-skip-ok' \
+    '  :' \
+    'a ROWLESS skip must stay valid'
+  check_mut 'HUP is not armed with the other terminating signals' \
+    "  trap 'adb_settings_lock_drop; exit 129' HUP" \
+    '  :' \
+    'HUP must be armed alongside TERM and INT'
+  check_mut 'HUP is not deferred across the transaction' \
+    "  trap '_ADB_SIGNAL_PENDING=129' HUP" \
+    '  :' \
+    'and DEFERRED with them'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3392,6 +3442,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '          rc=1   # hook-publish-failed' \
     '          :' \
     'must set the accumulated status'
+  check_mut 'a non-regular receipt path reads as an absent receipt' \
+    '    return 1   # receipt-not-regular' \
+    '    :' \
+    'must fail the uninstall'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
