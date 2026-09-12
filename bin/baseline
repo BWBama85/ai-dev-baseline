@@ -337,6 +337,7 @@ adb_settings_pending() {
       case $? in
         1) return 0 ;;
         2) return 22 ;;   # settings-unanswerable
+        20|21) return $? ;;   # receipt-unreadable / receipt-damaged, NOT a settings-file fault
         23) return 23 ;;  # receipt-incomplete
       esac ;;
   esac

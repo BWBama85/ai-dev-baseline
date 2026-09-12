@@ -621,7 +621,18 @@ adb_update_lock() {
   # Empty = unreadable or FUTURE-dated (clock skew). Never break a lock we cannot date.
   [ -n "$age" ] || return 1
   [ "$age" -gt "$_ADB_LOCK_STALE_SECS" ] || return 1
-  holder="$(cut -d' ' -f1 < "$lock/owner" 2>/dev/null)"
+  # A MISSING OWNER RECORD AND AN UNREADABLE ONE ARE DIFFERENT. Unchecked, the substitution was
+  # empty for both, and empty means "no live holder" — so a lock whose `owner` could not be read was
+  # broken while its process was still running, admitting a second updater to the `git pull` and the
+  # settings writes this lock exists to serialise. Age proves nothing about liveness; a read we
+  # could not perform proves less. (PR review)
+  local _hrc=0
+  if [ -e "$lock/owner" ]; then
+    holder="$(cut -d' ' -f1 < "$lock/owner" 2>/dev/null)"; _hrc=$?
+    [ "$_hrc" -eq 0 ] || return 1   # lock-owner-unreadable-break
+  else
+    holder=""
+  fi
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
   [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
 
@@ -925,6 +936,50 @@ adb_claude_settings_disposition() {
   esac
 }
 
+# Does an `installed` receipt list every leaf the payload ships?
+#
+# ONE home, because BOTH the currency question and the merge must ask it. It lived inside
+# `adb_claude_settings_leaves_intact`, which only `bin/baseline` calls — so `install.sh` and
+# `uninstall.sh`, which reach `adb_claude_settings_merge` directly, acted on an incomplete record
+# anyway: a reinstall reads the unlisted-but-installed leaf as an operator-owned blocker and
+# replaces all surviving ownership with a rowless refusal, and an uninstall removes the surviving
+# rows and deletes the receipt. Either way the rest is stranded for good. (PR review)
+#
+# 0 complete, or not an `installed` receipt, or no payload to compare against; 23 incomplete;
+# 20/21 the receipt could not be read or classified; 2 otherwise unanswerable.
+# Usage: _adb_claude_settings_rows_complete <receipt> <payload>
+_adb_claude_settings_rows_complete() {
+  local receipt="$1" payload="${2:-}" disp owned shipped recorded _orc
+  [ -n "$payload" ] && [ -s "$payload" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 2
+  disp="$(adb_claude_settings_disposition "$receipt")" || return 2
+  [ "$disp" = installed ] || return 0
+  # ONLY WHILE THE RECORDED DIGEST IS THIS PAYLOAD. Set equality is the wrong question otherwise,
+  # in BOTH directions: a receipt legitimately records leaves the payload no longer ships — those
+  # are retirements, and pruning them is the merge's job — and a payload that gained a leaf makes
+  # the record short of it, which is the ordinary pending case the digest already reports. Compared
+  # unconditionally, this refused every retirement and every pulled-in change. It is only when the
+  # digest still matches that `installed` claims to list exactly these leaves. (PR review)
+  local _rdig _pdig
+  _rdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || return 0
+  [ -n "$_rdig" ] || return 0
+  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 0
+  [ "$_rdig" = "$_pdig" ] || return 0
+  owned="$(_adb_claude_settings_owned_json "$receipt")"; _orc=$?
+  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete
+  # `adb_claude_settings_leaves` is the one definition of a leaf path: an ARRAY is a leaf, its
+  # numeric-index descendants are not, and every recorded component is a string.
+  shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
+  recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 2
+  # SUBSET, NOT EQUALITY: every leaf the payload ships must be recorded, and a row the payload no
+  # longer ships is a RETIREMENT the merge prunes, not an inconsistency. Equality refused every
+  # retirement fixture — the merge's own reason for existing — while catching nothing the subset
+  # test misses, because the defect reported is a row that went MISSING. (PR review)
+  [ "$(jq -n --argjson s "$shipped" --argjson r "$recorded" '($s - $r) | length' 2>/dev/null)" = "0" ] \
+    || return 23   # installed-rows-incomplete
+  return 0
+}
+
 # Does every leaf the receipt records still carry the value it records for it?
 #
 # The question `adb_settings_pending` could not ask from a digest alone: an operator who edits a
@@ -942,7 +997,13 @@ adb_claude_settings_disposition() {
 adb_claude_settings_leaves_intact() {
   local receipt="$1" settings="$2" payload="${3:-}" owned rc disp shipped recorded
   command -v jq >/dev/null 2>&1 || return 2
-  owned="$(_adb_claude_settings_owned_json "$receipt")" || return 2
+  # THE READER'S OWN CODES SURVIVE. `|| return 2` folded an unreadable (20) or damaged (21) receipt
+  # into "cannot read the settings file", which `adb_settings_pending` renders as 22 — telling the
+  # operator to repair a `settings.json` that is perfectly valid, while the receipt is the thing at
+  # fault. Following that remedy cannot unblock the update. (PR review)
+  local _orc
+  owned="$(_adb_claude_settings_owned_json "$receipt")"; _orc=$?
+  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-intact
   # AN `installed` RECEIPT MUST OWN EVERY SHIPPED LEAF, because the fragment applies WHOLE or not at
   # all (D100). A record that kept its disposition and its payload digest but lost or malformed leaf
   # rows was measured intact here on the SURVIVING rows — an empty set most of all, which returned 0
@@ -951,24 +1012,8 @@ adb_claude_settings_leaves_intact() {
   # no owner. Compared against the payload, not merely counted: the same count can be the wrong
   # paths. Without a payload argument the caller gets the old row-only question, which is all the
   # skip dispositions can answer. (PR review)
-  if [ -n "$payload" ] && [ -s "$payload" ]; then
-    disp="$(adb_claude_settings_disposition "$receipt")" || return 2
-    if [ "$disp" = installed ]; then
-      # `adb_claude_settings_leaves`, NOT a third copy of the expression. A leaf is any path whose
-      # value is not an object and whose components are all strings — so an ARRAY is a leaf and its
-      # numeric-index descendants are not. `paths(scalars)` returns those numeric paths, which no
-      # recorded row can ever equal (the receipt validates every component as a string), so every
-      # installed receipt read as diverged. Sorted, because set equality is the question. (PR review)
-      shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
-      recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 2
-      # 23, NOT 1. "Diverged" sends `baseline update` into the self-heal, and the installer then
-      # meets the still-applied leaf this receipt failed to list, reads it as operator-owned, and
-      # writes a ROWLESS `skipped-blocked` record — discarding ownership of every leaf the receipt
-      # did list, after which uninstall removes none of them. An objectively incomplete record is
-      # not a state to reconcile; it is one to report and preserve. (PR review)
-      [ "$shipped" = "$recorded" ] || return 23   # installed-rows-incomplete
-    fi
-  fi
+  _adb_claude_settings_rows_complete "$receipt" "$payload"; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   [ "$owned" != "[]" ] || return 0
   # PROVABLY GONE IS DIVERGED, NOT UNANSWERABLE. An absent or zero-byte settings.json is not a read
   # this run could not perform — it is a definite answer: every recorded leaf is gone. Reporting it
@@ -1226,6 +1271,16 @@ adb_claude_settings_merge() {
   # only path that can strand keys.
   owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
   created="$(_adb_claude_settings_created_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
+  # ASKED HERE, while `$payload` is still the fragment — the `--remove` swap below replaces it with
+  # an empty document — and NOT asked at all when removing. Removal ignores the payload entirely by
+  # contract, so that a fragment which exists but is truncated can never strand a receipt-owned key;
+  # consulting it here would reintroduce exactly that. The uninstaller asks the question itself,
+  # where it can refuse on an incomplete record without letting a malformed fragment block a
+  # removal. (PR review)
+  if [ "$mode" != "--remove" ]; then
+    _adb_claude_settings_rows_complete "$receipt" "$payload"; rc=$?
+    [ "$rc" -eq 0 ] || { _adb_merge_cleanup "$work_empty"; return "$rc"; }
+  fi
   if [ -n "$work_empty" ]; then
     payload="$work_empty"
   elif [ ! -s "$payload" ]; then

@@ -596,6 +596,21 @@ _adb_wire_settings_locked() {
   # leave the new sandbox values installed with no ownership record and skip the rollback below,
   # which is a worse outcome than the interruption it exists to handle. Deferred, not ignored: a
   # Ctrl-C is honoured the moment the pair is complete. (PR review)
+  # THE THREE LISTS ARE READ BEFORE THE TRANSACTION, not printed after it. `.kept` names a leaf the
+  # payload has RETIRED that the operator edited: the merge leaves that value active and the receipt
+  # about to be published no longer records it, so this line is the only thing that ever identifies
+  # it. Read afterwards, a failed `jq` returned success having named nothing, and neither a later
+  # update nor uninstall could tell the operator what to remove. Read here, the run refuses with
+  # nothing written and the OLD receipt — which still names the key — intact. (PR review)
+  local _b_wrote _b_pruned _b_kept
+  if ! _b_wrote="$(_adb_result_field "$result" -r '.wrote | map(join(".")) | join(", ")')" \
+     || ! _b_pruned="$(_adb_result_field "$result" -r '.pruned | map(join(".")) | join(", ")')" \
+     || ! _b_kept="$(_adb_result_field "$result" -r '.kept | map(join(".")) | join(", ")')"; then
+    rm -f "$tmp" "$rtmp" "$pre"
+    adb_info "  WARN   could not read back what the merge decided — sandbox settings NOT written."
+    adb_info "         The kept list is the only thing that names a retired key you have edited."
+    return 1   # buckets-unreadable
+  fi
   adb_settings_lock_defer_signals   # transaction: settings + ownership receipt
   if ! adb_publish_json "$tmp" "$settings"; then
     rm -f "$rtmp" "$pre"; adb_info "  WARN   sandbox settings NOT written"
@@ -643,9 +658,10 @@ _adb_wire_settings_locked() {
   # check: a `write` verdict means every shipped leaf was applied, because anything already there
   # would have refused the lot.
   adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
-  _adb_report_settings "$result" wrote   "wrote"
-  _adb_report_settings "$result" pruned  "pruned (no longer shipped)"
-  _adb_report_settings "$result" kept    "kept (no longer shipped, and you edited it since we wrote it)"
+  # Printed from what was captured before the transaction, not re-read here.
+  [ -n "$_b_wrote" ]  && [ "$_b_wrote" != null ]  && adb_info "           wrote: $_b_wrote"
+  [ -n "$_b_pruned" ] && [ "$_b_pruned" != null ] && adb_info "           pruned (no longer shipped): $_b_pruned"
+  [ -n "$_b_kept" ]   && [ "$_b_kept" != null ]   && adb_info "           kept (no longer shipped, and you edited it since we wrote it): $_b_kept"
   return 0
 }
 

@@ -247,10 +247,16 @@ EOF
         else
           rm -f "$settings.adb.$$.tmp"
           adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
+          # AND THE RUN IS INCOMPLETE. The manifest links are already gone, so leaving `rc` alone let
+          # a successful sandbox cleanup carry the whole uninstall to exit 0 and print `Uninstalled`
+          # while settings.json still holds hook commands pointing at scripts that no longer exist —
+          # Claude then runs them on every turn. (PR review)
+          rc=1   # hook-publish-failed
         fi
       else
         rm -f "$settings.adb.$$.tmp"
         adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
+        rc=1   # hook-filter-failed
       fi
     fi
   else
@@ -343,6 +349,19 @@ unwire_settings() {
     return 0
   fi
   local mrc _nochange
+  # AN INCOMPLETE `installed` RECORD IS NOT SAFE TO REMOVE BY. Removing only the rows it lists
+  # deletes the receipt and leaves the rest installed with no owner. Asked here rather than inside
+  # the merge because the merge must keep ignoring the payload on this path, and ONLY 23 refuses: a
+  # fragment that is missing or malformed answers "cannot tell", which must not block a removal.
+  # (PR review)
+  local _crc=0
+  _adb_claude_settings_rows_complete "$receipt" "$payload" || _crc=$?
+  if [ "$_crc" -eq 23 ]; then
+    adb_info "  WARN   $receipt does not record every sandbox key the fragment ships, so removing by"
+    adb_info "         it would delete the record and leave the rest installed with no owner."
+    adb_info "         NOTHING was removed. Remove the 'sandbox' block and that record by hand."
+    return 1   # remove-rows-incomplete
+  fi
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)"; mrc=$?
   if [ "$mrc" -eq 20 ]; then
     adb_info "  WARN   $receipt exists but could not be READ — sandbox settings NOT removed and the"

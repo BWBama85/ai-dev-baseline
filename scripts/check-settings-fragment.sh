@@ -1164,6 +1164,47 @@ awk '/^adb_settings_lock_resume_signals\(\) \{/{f=1}
 grep -q 'return 23 ;;  # receipt-incomplete' "$ROOT/bin/baseline" && ok \
   || bad "the incomplete-receipt code must reach the caller intact, so the update fails loud instead of self-healing over it"
 
+# --- round 36: the completeness question every mutator must ask, and three swallowed statuses -----
+#
+# BEHAVIOURAL. An `installed` receipt whose recorded digest IS this payload but which has lost a
+# shipped leaf must stop the MERGE, not just `bin/baseline` — install.sh and uninstall.sh reach the
+# merge directly, and acting on that record strands the leaves it does list.
+_ic="$work/incomplete"; rm -rf "$_ic"; mkdir -p "$_ic"
+{ printf 'disposition installed\nversion 9.9.9\nfloor %s\npayload %s\n' "$FLOOR" "$(adb_sha256 "$PAYLOAD")"
+  adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -c -s . | jq -c '.[1:]')" \
+    | grep "^leaf$ADB_TAB"; } > "$_ic/r"
+cp "$PAYLOAD" "$_ic/settings.json"
+_icrc=0; adb_claude_settings_merge "$_ic/settings.json" "$PAYLOAD" "$_ic/r" >/dev/null 2>&1 || _icrc=$?
+[ "$_icrc" -eq 23 ] && ok \
+  || bad "the merge itself must refuse an incomplete installed receipt (23) — install.sh and uninstall.sh call it directly and would otherwise replace all surviving ownership with a rowless refusal (got $_icrc)"
+# ...and `--remove` must STILL ignore the payload: that is what keeps a truncated fragment from
+# stranding a receipt-owned key. The uninstaller asks the question itself instead.
+_rmrc=0; adb_claude_settings_merge "$_ic/settings.json" "$PAYLOAD" "$_ic/r" --remove >/dev/null 2>&1 || _rmrc=$?
+[ "$_rmrc" -eq 0 ] && ok \
+  || bad "--remove must not consult the payload for completeness — a fragment that is missing or malformed must never block a removal (got $_rmrc)"
+grep -q 'return 1   # remove-rows-incomplete' "$ROOT/uninstall.sh" && ok \
+  || bad "...so the uninstaller must ask it before removing, refusing ONLY on 23"
+[ "$(grep -c '_adb_claude_settings_rows_complete' "$ROOT/scripts/lib/common.sh")" -ge 3 ] && ok \
+  || bad "the completeness question needs ONE home called by both the currency check and the merge"
+
+# A receipt fault is not a settings-file fault.
+[ "$(grep -c 'return "$_orc" ;; \*) return 2 ;; esac   # orc-' "$ROOT/scripts/lib/common.sh")" -eq 2 ] && ok \
+  || bad "an unreadable (20) or damaged (21) receipt must keep its own code out of leaves_intact — folded into 2 it is rendered as 22, which tells the operator to repair a settings.json that is fine"
+grep -q '20|21) return $? ;;' "$ROOT/bin/baseline" && ok \
+  || bad "...and the currency check must carry those codes out rather than absorbing them"
+
+# A lock we cannot read the owner of is never broken.
+grep -q 'return 1   # lock-owner-unreadable-break' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the stale-lock breaker must distinguish a missing owner record from an unreadable one — empty reads as 'no live holder', so it broke a lock whose process was still running"
+
+# A failed hook rewrite is an incomplete uninstall.
+[ "$(grep -c 'rc=1   # hook-\(publish\|filter\)-failed' "$ROOT/uninstall.sh")" -eq 2 ] && ok \
+  || bad "a hook rewrite that failed must set the accumulated status — the manifest links are already gone, so exit 0 prints Uninstalled while settings.json still runs commands that no longer exist"
+
+# The three bucket lists are read before the transaction.
+grep -q 'return 1   # buckets-unreadable' "$ROOT/install.sh" && ok \
+  || bad "the wrote/pruned/kept lists must be read BEFORE the receipt is published — .kept is the only thing naming a retired leaf the operator edited, and the new receipt no longer records it"
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -2923,10 +2964,6 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-containers' \
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
     'the container reader with it'
-  check_mut 'an installed receipt need not own every shipped leaf' \
-    '      [ "$shipped" = "$recorded" ] || return 23   # installed-rows-incomplete' \
-    '      :' \
-    'must be reported as an ERROR and PRESERVED'
   check_mut 'the empty-publish opt-in is ignored' \
     '  if [ "$allow_empty" != "--allow-empty" ]; then' \
     '  if true; then' \
@@ -2940,6 +2977,29 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _adb_arm_lock_traps   # armed-before-read' \
     '  :   # armed-before-read' \
     'must re-arm the handlers BEFORE it reads the pending signal'
+  check_mut 'the merge stops asking whether the record is complete' \
+    '  if [ "$mode" != "--remove" ]; then' \
+    '  if false; then' \
+    'the merge itself must refuse an incomplete installed receipt'
+  check_mut 'a missing shipped leaf is not noticed' \
+    '    || return 23   # installed-rows-incomplete' \
+    '    || :' \
+    'the merge itself must refuse an incomplete installed receipt'
+  check_mut 'the stale-lock breaker reads an unreadable owner as none' \
+    '    [ "$_hrc" -eq 0 ] || return 1   # lock-owner-unreadable-break' \
+    '    :' \
+    'must distinguish a missing owner record from an unreadable one'
+  # TWO copies of this line exist — the completeness helper's and leaves_intact's — so each row
+  # names its marker. Unmarked, the row mutated the first and the assertion was satisfied by the
+  # second, and it stayed GREEN. (PR review)
+  check_mut 'a receipt fault is folded into a settings-file fault (intactness)' \
+    '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-intact' \
+    '  case "$_orc" in 0) ;; *) return 2 ;; esac   # orc-intact' \
+    'must keep its own code out of leaves_intact'
+  check_mut 'a receipt fault is folded into a settings-file fault (completeness)' \
+    '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete' \
+    '  case "$_orc" in 0) ;; *) return 2 ;; esac   # orc-complete' \
+    'must keep its own code out of leaves_intact'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3191,6 +3251,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings" --allow-empty; } \' \
     '    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \' \
     'must restore its pre-image with the empty-capable publish'
+  check_mut 'the bucket lists are read after the receipt is published' \
+    '    return 1   # buckets-unreadable' \
+    '    :' \
+    'must be read BEFORE the receipt is published'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3320,6 +3384,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1   # noop-kept-unreadable' \
     '      adb_settings_lock_resume_signals; return 1   # noop-kept-unreadable' \
     'must come after the deferral'
+  check_mut 'the uninstaller removes by an incomplete record' \
+    '    return 1   # remove-rows-incomplete' \
+    '    :' \
+    'must ask it before removing'
+  check_mut 'a failed hook rewrite leaves the status clean' \
+    '          rc=1   # hook-publish-failed' \
+    '          :' \
+    'must set the accumulated status'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
