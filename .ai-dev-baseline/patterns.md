@@ -624,4 +624,9 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQye` PR #463 2026-09-12
 - `toctou` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQyf` PR #463 2026-09-12
 - `status-swallowed` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQyg` PR #463 2026-09-12
+- `partial-validation` `scripts/lib/common.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RA` PR #463 2026-09-12
+- `status-swallowed` `scripts/lib/common.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RB` PR #463 2026-09-12
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RC` PR #463 2026-09-12
+- `status-swallowed` `uninstall.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RD` PR #463 2026-09-12
+- `evidence-discarded` `install.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RE` PR #463 2026-09-12
 <!-- adb:hits:end -->
