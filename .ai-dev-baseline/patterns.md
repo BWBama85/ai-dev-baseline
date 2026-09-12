@@ -621,4 +621,7 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `scripts/lib/common.sh` `b165e64` `PRRT_kwDOTfywrM6hsHre` PR #463 2026-09-12
 - `consumer-contract-mismatch` `bin/baseline` `b165e64` `PRRT_kwDOTfywrM6hsHrg` PR #463 2026-09-12
 - `partial-validation` `scripts/lib/common.sh` `b165e64` `PRRT_kwDOTfywrM6hsHri` PR #463 2026-09-12
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQye` PR #463 2026-09-12
+- `toctou` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQyf` PR #463 2026-09-12
+- `status-swallowed` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQyg` PR #463 2026-09-12
 <!-- adb:hits:end -->
