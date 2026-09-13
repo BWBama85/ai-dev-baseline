@@ -1130,7 +1130,7 @@ grep -q 'return 23   # installed-rows-incomplete' "$ROOT/scripts/lib/common.sh" 
 # ...and the settings file's own error is not the receipt's.
 grep -q 'return 22 ;;   # settings-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unreadable or malformed settings.json must not be reported as a receipt error — repairing a valid receipt cannot unblock the update"
-[ "$(grep -c '20|21|22|23) adb_settings_unreadable_record' "$ROOT/bin/baseline")" -eq 2 ] && ok \
+[ "$(grep -c '2\[0-9\]) adb_settings_unreadable_record' "$ROOT/bin/baseline")" -eq 2 ] && ok \
   || bad "...and both pending call sites must accept the settings-file code"
 
 # --- round 35: a release that lied, a signal dropped in the handoff, and a record not to reconcile -
@@ -1285,6 +1285,54 @@ grep -qF 'adb_sha256 "$payload" 2>/dev/null || printf' "$ROOT/install.sh" && \
 # The post-heal classifiers fail loud on a receipt they cannot read.
 grep -q '# downgrade-read-failed' "$ROOT/bin/baseline" && grep -q '# refusal-read-failed' "$ROOT/bin/baseline" && ok \
   || bad "a receipt the heal published but this process cannot read must end the update loud — answering 'not downgraded' or 'not refused' loses exit 9 and exit 7"
+
+# --- round 39: completeness judged against the receipt itself, and three more unseen reads ------------
+#
+# BEHAVIOURAL. The receipt records how many leaf rows it wrote, IN ITS HEADER, so completeness no
+# longer depends on the payload that happens to be checked out — the digest gate that turned the
+# check off after every routine pull is no longer what decides it.
+_lc="$work/leafcount"; rm -rf "$_lc"; mkdir -p "$_lc"
+adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -cs .)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_lc/full"
+[ "$(adb_claude_settings_leaf_count "$_lc/full")" = "$(grep -c "^leaf$ADB_TAB" "$_lc/full")" ] && ok \
+  || bad "the rendered receipt must record in its header exactly how many leaf rows it wrote"
+awk -v n=0 '/^leaf\t/ && n==0 {n=1; next} {print}' "$_lc/full" \
+  | sed 's/^payload .*/payload 0000000000000000000000000000000000000000000000000000000000000000/' > "$_lc/lost_changed"
+_lcr=0; _adb_claude_settings_rows_complete "$_lc/lost_changed" "$PAYLOAD" || _lcr=$?
+[ "$_lcr" -eq 23 ] && ok \
+  || bad "a receipt that lost a leaf row must answer 23 EVEN WHEN THE PAYLOAD HAS SINCE CHANGED — gating on the digest let a routine pull switch the check off, and uninstall then stranded the missing key (got $_lcr)"
+{ cat "$_lc/full"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$_lc/extra"
+_lce=0; _adb_claude_settings_rows_complete "$_lc/extra" "$PAYLOAD" || _lce=$?
+[ "$_lce" -eq 0 ] && ok \
+  || bad "a row beyond the recorded count is a RETIREMENT, not incompleteness — only a shortfall answers 23 (got $_lce)"
+adb_claude_settings_leaf_rows "$PAYLOAD" '[]' \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_lc/installed_zero"
+_lcz=0; _adb_claude_settings_rows_complete "$_lc/installed_zero" "$PAYLOAD" || _lcz=$?
+[ "$_lcz" -eq 23 ] && ok || bad "an installed receipt recording 'leaves 0' must answer 23 — the installer never writes one (got $_lcz)"
+sed 's/^leaves .*/leaves 4x/' "$_lc/full" > "$_lc/malformed"
+_lcm=0; adb_claude_settings_leaf_count "$_lc/malformed" >/dev/null 2>&1 || _lcm=$?
+[ "$_lcm" -eq 21 ] && ok || bad "a malformed leaf count is DAMAGE (21), not a legacy receipt (got $_lcm)"
+cp "$_lc/full" "$_lc/unreadable"; chmod 000 "$_lc/unreadable"
+_lcu=0; adb_claude_settings_leaf_count "$_lc/unreadable" >/dev/null 2>&1 || _lcu=$?; chmod 600 "$_lc/unreadable"
+[ "$_lcu" -eq 20 ] && ok || bad "an unreadable receipt must make the count reader refuse (20), not read as having no count (got $_lcu)"
+grep -q 'return 2   # legacy-hash-unanswerable' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "on the legacy path a payload that cannot be hashed is UNANSWERABLE, not complete"
+
+# BEHAVIOURAL. A receipt PATH this run cannot resolve is not an absent receipt.
+_rp="$work/receiptpath"; rm -rf "$_rp"; mkdir -p "$_rp/locked"
+cp "$_lc/full" "$_rp/locked/r"; ln -s "$_rp/locked/r" "$_rp/inaccessible"; chmod 000 "$_rp/locked"
+_rpi=0; adb_claude_settings_disposition "$_rp/inaccessible" >/dev/null 2>&1 || _rpi=$?; chmod 700 "$_rp/locked"
+[ "$_rpi" -eq 20 ] && ok \
+  || bad "a receipt symlink whose target is inaccessible must answer 20, not 'none' — read as absent, a rowless refusal replaced the link and every installed key became unremovable (got $_rpi)"
+ln -s "$_rp/nowhere" "$_rp/dangling"
+_rpd=0; adb_claude_settings_disposition "$_rp/dangling" >/dev/null 2>&1 || _rpd=$?
+[ "$_rpd" -eq 20 ] && ok || bad "a dangling receipt link must answer 20, not 'none' (got $_rpd)"
+
+# The currency reader fails loud on a payload it cannot hash, and the rollback never loses a link.
+grep -q 'return 24   # payload-unhashable' "$ROOT/bin/baseline" && grep -q 'if \[ "$1" = "24" \]' "$ROOT/bin/baseline" && ok \
+  || bad "a payload that cannot be hashed must be 24 with its own remedy — 'not pending' reported stale protections as current"
+grep -q 'return 1   # link-target-unreadable' "$ROOT/install.sh" && ok \
+  || bad "a settings link whose target cannot be read must be refused before anything is published — the rollback would restore only the bytes behind it"
 
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
@@ -3110,6 +3158,38 @@ if [ "$MUTATION" -eq 1 ]; then
     '    *) return 2 ;;   # settings-inaccessible-intact' \
     '    *) return 1 ;;' \
     'is UNANSWERABLE, not provably gone'
+  check_mut 'a receipt that lost a row passes once the payload changes' \
+    '      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count' \
+    '      :' \
+    'EVEN WHEN THE PAYLOAD HAS SINCE CHANGED'
+  check_mut 'an installed receipt recording zero leaves is accepted' \
+    '        [ "$_want" -gt 0 ] || return 23   # installed-count-zero' \
+    '        :' \
+    'recording '"'"'leaves 0'"'"' must answer 23'
+  check_mut 'the renderer stops counting the leaf rows it writes' \
+    '"; count=$((count + 1)) ;;' \
+    '" ;;' \
+    'must record in its header exactly how many leaf rows it wrote'
+  check_mut 'an unreadable receipt reads as having no count' \
+    '  [ "$grc" -le 1 ] || return 20   # leaf-count-unreadable' \
+    '  :' \
+    'must make the count reader refuse (20)'
+  check_mut 'a malformed count reads as a legacy receipt' \
+    '  case "$line" in '"'"''"'"'|*[!0-9]*) return 21 ;; esac   # leaf-count-malformed' \
+    '  case "$line" in '"'"''"'"'|*[!0-9]*) return 1 ;; esac' \
+    'a malformed leaf count is DAMAGE (21)'
+  check_mut 'a legacy payload that cannot be hashed reads as complete' \
+    '  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 2   # legacy-hash-unanswerable' \
+    '  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 0' \
+    'is UNANSWERABLE, not complete'
+  check_mut 'the receipt precheck is dropped, so the run writes then undoes' \
+    '    *) return 20 ;;   # receipt-unresolvable' \
+    '    *) printf '"'"'none'"'"'; return 0 ;;' \
+    'must refuse BEFORE writing'
+  check_mut 'an inaccessible receipt link reads as no receipt' \
+    '    *) return 20 ;;   # receipt-unresolvable' \
+    '    *) printf '"'"'none'"'"'; return 0 ;;   # absent-by-mistake' \
+    'must answer 20, not '"'"'none'"'"''
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3146,10 +3226,6 @@ if [ "$MUTATION" -eq 1 ]; then
     'if [ "$WIRE_SETTINGS" -eq 0 ]; then' \
     'if false; then' \
     "must record disposition 'skipped-optout'"
-  check_mut 'the receipt precheck is dropped, so the run writes then undoes' \
-    'if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then' \
-    'if false; then' \
-    'must refuse BEFORE writing'
   check_mut 'a blocked refusal records the prior digest instead of the refused one' \
     '    if ! refused_digest="$(adb_sha256 "$payload" 2>/dev/null)" || [ -z "$refused_digest" ]; then' \
     '    refused_digest="-"; if false; then' \
@@ -3381,6 +3457,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1   # digest-unavailable-refusal' \
     '      :' \
     'must stop when the payload digest cannot be computed'
+  check_mut 'a settings link with an unreadable target is published anyway' \
+    '      return 1   # link-target-unreadable' \
+    '      :' \
+    'must be refused before anything is published'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3610,8 +3690,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '        2) : ;;' \
     'must not fall through to be decided on the payload digest'
   check_mut 'a pending call site reads an uninterpretable record as healthy' \
-    '      20|21|22|23) adb_settings_unreadable_record "$SPRC"; exit 1 ;;' \
-    '      20|21|22|23) : ;;' \
+    '      2[0-9]) adb_settings_unreadable_record "$SPRC"; exit 1 ;;   # pending-unanswerable-current' \
+    '      2[0-9]) : ;;' \
     'must fail loud on 20/21'
   check_mut 'a failed source search reads as no source at all' \
     '  [ "$_rsrc" -eq 20 ] && return 20   # source-unanswerable' \
@@ -3633,6 +3713,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '    20|21) adb_settings_unreadable_record "$_rdrc"; exit 1 ;;   # refusal-read-failed' \
     '    20|21) return 1 ;;' \
     'must end the update loud'
+  check_mut 'an unhashable payload reads as not pending' \
+    '      want="$(adb_sha256 "$payload")" || return 24   # payload-unhashable' \
+    '      want="$(adb_sha256 "$payload")" || return 1' \
+    'must be 24 with its own remedy'
+  check_mut 'the behind branch reads an uninterpretable record as healthy' \
+    '      2[0-9]) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;   # pending-unanswerable-behind' \
+    '      2[0-9]) : ;;' \
+    'must fail loud on 20/21'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

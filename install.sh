@@ -330,8 +330,20 @@ _adb_wire_settings_locked() {
   result="$(adb_claude_settings_merge "$cur_input" "$payload" "$receipt")"; _mrc=$?
   if [ "$_mrc" -eq 20 ]; then
     rm -f "$synth"
-    adb_info "  WARN   $receipt exists but could not be READ — sandbox settings NOT written. It is the"
-    adb_info "         only thing that can prove which keys are ours; fix its permissions and re-run."
+    # THE REFUSAL HAS ALREADY HAPPENED; this only chooses the right remedy. The disposition reader
+    # answers 20 for anything at the receipt path that is not a readable regular file, and "fix its
+    # permissions" is false for most of those — no chmod turns a directory into a receipt. Worded by
+    # the path's shape, not a second gate on it. (PR review)
+    if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then
+      adb_info "  WARN   $receipt is not a regular file — sandbox settings NOT written. Remove that"
+      adb_info "         path and re-run; no receipt can be published there, so no key would be removable."
+    elif [ -L "$receipt" ] && [ ! -e "$receipt" ]; then
+      adb_info "  WARN   $receipt is a link that cannot be resolved — sandbox settings NOT written. It may"
+      adb_info "         point at the only record of which keys are ours; restore its target and re-run."
+    else
+      adb_info "  WARN   $receipt exists but could not be READ — sandbox settings NOT written. It is the"
+      adb_info "         only thing that can prove which keys are ours; fix its permissions and re-run."
+    fi
     return 1   # merge-unreadable-receipt
   elif [ "$_mrc" -eq 21 ]; then
     rm -f "$synth"
@@ -358,15 +370,11 @@ _adb_wire_settings_locked() {
   # can prove are ours, and the NEXT install reads them as the operator's — writes an empty
   # ownership record — after which uninstall can never remove them. So a receipt this run cannot
   # render is a refusal, not a warning, and nothing is written at all. (PR review)
-  # The publishability of the receipt PATH is checked before anything is written, not just its
-  # rendering: `adb_publish_json` refuses a non-regular destination, but it does so at publish
-  # time — which is after the settings would already be durable. `precondition-ordering`: the
-  # guard has to run where the thing it guards has not happened yet.
-  if [ -e "$receipt" ] && [ ! -f "$receipt" ]; then
-    adb_info "  WARN   $receipt is not a regular file — sandbox settings NOT written"
-    adb_info "         (keys with no receipt could never be removed by uninstall, so none were applied)"
-    return 1
-  fi
+  # NO RECEIPT-PATH GUARD HERE, deliberately. There was one — `-e` and not `-f` refused a
+  # non-regular receipt before anything was written — and it could no longer be reached: the merge
+  # above reads the disposition first, and that reader now answers 20 for anything at the path that
+  # is not a readable regular file, including the inaccessible symlink this guard missed. Two
+  # mechanisms for one defect make each undetectable to a mutation row. (PR review)
   # ALL-OR-NOTHING: a refusal writes NO KEY. Either the whole fragment applies or the operator is
   # told exactly what is in the way, because a partial policy reports protection it does not have.
   local verdict blockers
@@ -612,7 +620,19 @@ _adb_wire_settings_locked() {
   rm -f "$pre"
   if [ -L "$settings" ]; then
     was_link=1
-    link_target="$(readlink -n "$settings"; printf x)"; link_target="${link_target%x}"
+    # `&&`, NOT `;`. The trailing `printf x` preserves a target that ends in a newline, but chained
+    # with `;` it also made the substitution SUCCEED when `readlink` failed — `was_link=1` with an
+    # empty target — so a failed receipt publish skipped the symlink branch below and wrote the
+    # dereferenced pre-image back as a REGULAR file while reporting a rollback, destroying the link
+    # the operator set up. A link whose target cannot be read is refused here, before anything is
+    # published. (PR review)
+    if ! link_target="$(readlink -n "$settings" && printf x)" || [ "$link_target" = x ]; then
+      rm -f "$tmp" "$rtmp" "$pre"
+      adb_info "  WARN   could not read where $settings points — sandbox settings NOT written"
+      adb_info "         (a rollback could restore only the bytes behind the link, not the link)"
+      return 1   # link-target-unreadable
+    fi
+    link_target="${link_target%x}"
   fi
   if [ -e "$settings" ]; then
     had_settings=1

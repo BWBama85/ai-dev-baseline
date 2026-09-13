@@ -912,7 +912,6 @@ adb_claude_settings_leaf_name() {
 # Usage: adb_claude_settings_disposition [receipt]
 adb_claude_settings_disposition() {
   local receipt="${1:-$(adb_claude_settings_receipt)}" line grc
-  [ -f "$receipt" ] || { printf 'none'; return 0; }
   # AN UNREADABLE RECEIPT IS NOT AN ABSENT ONE, and answering `none` for both was the benign answer
   # to a read that did not happen. `-f` is true for a file with mode 000 or a denying ACL, so a
   # receipt that exists and cannot be read reported "no receipt": the owned-rows readers then
@@ -924,7 +923,18 @@ adb_claude_settings_disposition() {
   # with no bytes carries no ownership rows, so treating it as `none` strands nothing and a fresh
   # install simply re-applies. The damaged case below is the opposite — rows present, disposition
   # missing or unrecognised — and answering `none` there is what deletes them.
-  [ -s "$receipt" ] || { printf 'none'; return 0; }
+  # ...AND A RECEIPT PATH THIS RUN CANNOT RESOLVE IS NOT ABSENT EITHER. `-f` and `-s` are both false
+  # for a symlink whose target is temporarily inaccessible, so such a receipt read as `none` for every
+  # consumer: the installer then published over it, the merge met the still-applied keys as
+  # apparently unowned and refused, and a rowless `skipped-blocked` REPLACED the link — disconnecting
+  # the valid ownership record and leaving every installed key unremovable. Classified once, by the
+  # shared helper: absent or empty is `none`; dangling or inaccessible is a read that did not
+  # happen. (PR review)
+  case "$(adb_settings_doc_state "$receipt")" in
+    absent|empty) printf 'none'; return 0 ;;
+    present) ;;
+    *) return 20 ;;   # receipt-unresolvable
+  esac
   line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)"; grc=$?
   [ "$grc" -le 1 ] || return 20
   # A RECEIPT THAT EXISTS BUT CANNOT BE CLASSIFIED IS DAMAGED, NOT ABSENT. `none` means "nobody has
@@ -989,7 +999,6 @@ adb_settings_doc_state() {
 # Usage: _adb_claude_settings_rows_complete <receipt> <payload>
 _adb_claude_settings_rows_complete() {
   local receipt="$1" payload="${2:-}" disp owned shipped recorded _orc
-  [ -n "$payload" ] && [ -s "$payload" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
   disp="$(adb_claude_settings_disposition "$receipt")" || return 2
   # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED, not just `installed`. A skip preserves the
@@ -1004,7 +1013,30 @@ _adb_claude_settings_rows_complete() {
     skipped-optout|skipped-below-floor|skipped-unprobeable) _needs_rows=0 ;;
     *) return 0 ;;
   esac
-  # ONLY WHILE THE RECORDED DIGEST IS THIS PAYLOAD. Set equality is the wrong question otherwise,
+  owned="$(_adb_claude_settings_owned_json "$receipt")"; _orc=$?
+  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete
+  # THE RECORDED COUNT ANSWERS FIRST, and needs no payload at all. A malformed row is skipped by the
+  # reader, so it shows up here as a shortfall exactly as a lost one does. (PR review)
+  local _want _wrc _have
+  _want="$(adb_claude_settings_leaf_count "$receipt")"; _wrc=$?
+  case "$_wrc" in
+    0)
+      _have="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 2
+      if [ "$_needs_rows" -eq 1 ]; then
+        [ "$_want" -gt 0 ] || return 23   # installed-count-zero
+      else
+        [ "$_want" -gt 0 ] || return 0    # count-rowless-skip-ok
+      fi
+      # AT LEAST, not exactly. A row the receipt carries beyond its count is a RETIREMENT the merge
+      # prunes, and requiring equality refused every such fixture — the round-36 subset lesson again.
+      # The defect reported is a row that went MISSING, and a shortfall is the narrowest test for it.
+      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
+      return 0 ;;
+    1) ;;   # no count recorded: judged below, against the payload, as before
+    *) return "$_wrc" ;;
+  esac
+  [ -n "$payload" ] && [ -s "$payload" ] || return 0
+  # LEGACY: ONLY WHILE THE RECORDED DIGEST IS THIS PAYLOAD. Set equality is the wrong question otherwise,
   # in BOTH directions: a receipt legitimately records leaves the payload no longer ships — those
   # are retirements, and pruning them is the merge's job — and a payload that gained a leaf makes
   # the record short of it, which is the ordinary pending case the digest already reports. Compared
@@ -1013,10 +1045,8 @@ _adb_claude_settings_rows_complete() {
   local _rdig _pdig
   _rdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || return 0
   [ -n "$_rdig" ] || return 0
-  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 0
+  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 2   # legacy-hash-unanswerable
   [ "$_rdig" = "$_pdig" ] || return 0
-  owned="$(_adb_claude_settings_owned_json "$receipt")"; _orc=$?
-  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete
   # `adb_claude_settings_leaves` is the one definition of a leaf path: an ARRAY is a leaf, its
   # numeric-index descendants are not, and every recorded component is a string.
   shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
@@ -1600,17 +1630,44 @@ EOF
 # changed. A digest answers both.
 # Usage: adb_claude_settings_receipt_render <disposition> <version|-> <floor> [payload-digest] < <leaf rows>
 adb_claude_settings_receipt_render() {
-  local disposition="$1" version="$2" floor="$3" digest="${4:--}" line tab
+  local disposition="$1" version="$2" floor="$3" digest="${4:--}" line tab rows="" count=0
   tab="$(printf '\t')"
+  # THE RECEIPT RECORDS HOW MANY LEAF ROWS IT WROTE, so its completeness can be judged against
+  # ITSELF rather than against whatever payload is checked out now. Judged against the payload, the
+  # check had to be switched off whenever a routine pull changed the fragment — and a receipt that
+  # had also lost a row then passed, so uninstall removed the survivors and stranded the rest.
+  # In the HEADER, not after the rows: a receipt truncated mid-write keeps the count and loses rows,
+  # which reads as incomplete; a trailing count would vanish with them and read as legacy. (PR review)
+  while IFS= read -r line; do
+    case "$line" in
+      "leaf$tab"*) rows="$rows$line
+"; count=$((count + 1)) ;;
+      "container$tab"*|"source$tab"*) rows="$rows$line
+" ;;
+    esac
+  done
   printf '# ai-dev-baseline settings fragment (#248) — written by install.sh; do not hand-edit.\n'
   printf '# `disposition` is what tells a key nobody chose to remove from one somebody did.\n'
   printf 'disposition %s\n' "$disposition"
   printf 'version %s\n' "$version"
   printf 'floor %s\n' "$floor"
   printf 'payload %s\n' "$digest"
-  while IFS= read -r line; do
-    case "$line" in "leaf$tab"*|"container$tab"*|"source$tab"*) printf '%s\n' "$line" ;; esac
-  done
+  printf 'leaves %s\n' "$count"
+  printf '%s' "$rows"
+}
+
+# The leaf-row count a receipt records, on stdout. 1 when it records none — a receipt written before
+# the field existed, judged the old way — 20 when it cannot be read, 21 when the count is malformed.
+# Usage: adb_claude_settings_leaf_count <receipt>
+adb_claude_settings_leaf_count() {
+  local receipt="$1" line grc
+  line="$(grep -m1 '^leaves[[:space:]]' "$receipt" 2>/dev/null)"; grc=$?
+  [ "$grc" -le 1 ] || return 20   # leaf-count-unreadable
+  [ "$grc" -eq 0 ] || return 1
+  line="${line#leaves}"; line="${line# }"; line="${line%% *}"
+  case "$line" in ''|*[!0-9]*) return 21 ;; esac   # leaf-count-malformed
+  [ "${#line}" -le 6 ] || return 21
+  printf '%s' "$line"
 }
 
 

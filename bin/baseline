@@ -281,10 +281,14 @@ adb_settings_refused_now() {
 # The one diagnostic for a record neither `adb_settings_pending` nor anything downstream can
 # interpret. Two remedies, because the two codes have different ones: 20 is a permission problem,
 # 21 is a damaged `disposition` line that no permission change will fix.
-# Usage: adb_settings_unreadable_record <20|21>
+# Usage: adb_settings_unreadable_record <20|21|22|23|24>
 adb_settings_unreadable_record() {
   local receipt; receipt="$(adb_claude_settings_receipt "$HOME")"
-  if [ "$1" = "23" ]; then
+  if [ "$1" = "24" ]; then
+    echo "baseline: the sandbox fragment in the install-source could not be hashed, so it is unknown" >&2
+    echo "          whether the installed policy matches it. Check that a SHA-256 tool is available" >&2
+    echo "          (shasum or sha256sum) and that the clone is readable, then re-run 'baseline update'." >&2
+  elif [ "$1" = "23" ]; then
     # NEITHER PERMISSIONS NOR JSON. The record parses and names this clone; it simply does not list
     # every key the fragment ships, which the installer cannot produce — so it is damaged, and the
     # self-heal must not run: reconciling it discards the rows it DOES list. (PR review)
@@ -380,7 +384,11 @@ adb_settings_pending() {
       # one more domain in `allowedDomains` — leaves the path set identical, so the update never
       # applies it. The receipt records the digest of the payload it applied; compare that.
       have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once
-      want="$(adb_sha256 "$payload")" || return 1
+      # 24, NOT 1. A payload that cannot be hashed — no SHA-256 backend, or a read that failed after a
+      # pull changed the fragment — was answered "not pending", so with healthy links the update
+      # exited 0 with "nothing to do" while it could not establish that the installed policy matched
+      # the payload at all. Stale protections reported as current. (PR review)
+      want="$(adb_sha256 "$payload")" || return 24   # payload-unhashable
       # A MATCHING DIGEST IS NOT THE WHOLE ANSWER. It says the payload has not changed; it says
       # nothing about the live file. An operator who edits a recorded leaf has taken the surface
       # over, and until the installer OBSERVES that it never records the ownership-free refusal —
@@ -829,7 +837,7 @@ case "$STATUS" in
     SETTINGS_PENDING=0; adb_settings_pending "$SRC"; SPRC=$?
     case "$SPRC" in
       0)     SETTINGS_PENDING=1 ;;
-      20|21|22|23) adb_settings_unreadable_record "$SPRC"; exit 1 ;;
+      2[0-9]) adb_settings_unreadable_record "$SPRC"; exit 1 ;;   # pending-unanswerable-current
     esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
@@ -908,7 +916,7 @@ case "$STATUS" in
     BEHIND_SETTINGS_PENDING=0; adb_settings_pending "$SRC"; BSPRC=$?
     case "$BSPRC" in
       0)     BEHIND_SETTINGS_PENDING=1 ;;
-      20|21|22|23) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;
+      2[0-9]) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;   # pending-unanswerable-behind
     esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"
     if adb_self_heal && adb_verify_links "$SRC"; then
