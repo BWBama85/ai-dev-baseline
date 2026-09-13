@@ -230,7 +230,9 @@ adb_settings_downgraded_now() {
   # an upgrade then meets keys nobody owns and refuses. Say which of the two happened. (PR review)
   echo "baseline: the sandbox protections are NOT being applied — the \`claude\` CLI no longer" >&2
   echo "          clears the version floor, or could not be probed (#248)." >&2
-  if [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ]; then
+  local _nowrows
+  _nowrows="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-failed
+  if [ "${2:-0}" -gt 0 ] && [ "$_nowrows" -lt "$2" ]; then
     echo "          Stale ownership was ALSO relinquished, so the keys still in the file are no" >&2
     echo "          longer ours: upgrading will not re-apply them, and an install will refuse" >&2
     echo "          while they are there. Remove them by hand, then re-run ./install.sh." >&2
@@ -250,14 +252,20 @@ adb_settings_downgraded_now() {
 # self-heal, both of which leave a skip disposition behind.
 # Outputs: the count on stdout; 0 when there is no readable receipt
 adb_settings_row_count() {
-  local r n; r="$(adb_claude_settings_receipt "$HOME")"
-  [ -f "$r" ] || { printf '0'; return 0; }
-  # `grep -c` PRINTS the count and EXITS 1 when that count is zero, so `|| printf 0` appended a
-  # second zero and this returned "0\n0" — which made the caller's arithmetic test say "integer
-  # expression expected" and fall through to the wrong classification. Keep grep's number and
-  # neutralise only its status. (PR review)
-  n="$(grep -c "^leaf$(printf '\t')" "$r" 2>/dev/null || true)"
-  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  local r n grc; r="$(adb_claude_settings_receipt "$HOME")"
+  # A PATH THIS RUN CANNOT RESOLVE IS NOT A RECEIPT WITH NO ROWS. `-f` was false for an inaccessible
+  # or dangling receipt link, and "0" then misread a downgrade as a relinquishment. (PR review)
+  case "$(adb_settings_doc_state "$r")" in
+    absent|empty) printf '0'; return 0 ;;
+    present) ;;
+    *) return 20 ;;   # row-count-unresolvable
+  esac
+  # `grep -c` exits 1 when the count is zero — a real answer — and 2 when the read failed, which is
+  # not. `|| true` absorbed both, so an operational failure became a fabricated zero or partial count:
+  # a downgrade self-heal then promised automatic re-application over a rowless receipt, or reported
+  # a relinquishment that never happened, and the operator got the wrong recovery. (PR review)
+  n="$(grep -c "^leaf$(printf '\t')" "$r" 2>/dev/null)"; grc=$?
+  [ "$grc" -le 1 ] || return 20   # row-count-read-failed
   printf '%s' "$n"
 }
 
@@ -839,7 +847,7 @@ case "$STATUS" in
       0)     SETTINGS_PENDING=1 ;;
       2[0-9]) adb_settings_unreadable_record "$SPRC"; exit 1 ;;   # pending-unanswerable-current
     esac
-    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"
+    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-current
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
@@ -918,7 +926,7 @@ case "$STATUS" in
       0)     BEHIND_SETTINGS_PENDING=1 ;;
       2[0-9]) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;   # pending-unanswerable-behind
     esac
-    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"
+    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind
     if adb_self_heal && adb_verify_links "$SRC"; then
       # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an
       # update that also refused the policy was rendered as a plain `updated` with the installer's

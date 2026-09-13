@@ -842,11 +842,21 @@ _adb_carry_rows() {
 # is "no matching line" and is a real answer; 2 and above are not. (PR review)
 _adb_owned_rows() {
   local rows grc
-  # ABSENT IS ZERO ROWS; UNREADABLE IS A REFUSAL. grep exits 2 for a missing file, for a directory
-  # and for a file it cannot open, and only the last of those has rows to lose — a receipt's rows
-  # can only live in a regular file. So `-f` is the test: no file, or a path occupied by something
-  # that is not one, is zero rows and the caller goes on to fail at the publish and SAY so; a
-  # regular file that will not open is the strand risk and refuses here.
+  # A LINK THAT DOES NOT RESOLVE IS A REFUSAL; OTHERWISE ABSENT OR NON-REGULAR IS ZERO ROWS. `-f`
+  # alone is false for a receipt SYMLINK whose target is missing or inaccessible, so `--no-sandbox`
+  # and the version-skip paths — which carry rows before any disposition read — saw zero rows and
+  # published a rowless skip receipt over the link, disconnecting a valid ownership record and
+  # leaving every installed key unremovable. That case now refuses, and every caller keeps the
+  # existing record on a non-zero status. (PR review)
+  #
+  # NARROWER THAN THE SHARED CLASSIFIER, deliberately. It calls a directory "inaccessible" too, and
+  # refusing one here replaced the accurate "the reason did not reach disk" at the publish with "could
+  # not be read" — false for a directory, which no permission change fixes. A directory still reaches
+  # the publish and fails there naming the real problem; a regular file that will not open still
+  # refuses below, on grep's exit 2.
+  if [ -L "$1" ] && [ ! -e "$1" ]; then
+    return 20   # owned-rows-unresolvable
+  fi
   [ -f "$1" ] || return 0
   rows="$(grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null)"; grc=$?
   [ "$grc" -le 1 ] || return 20

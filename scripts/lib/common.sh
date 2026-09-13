@@ -626,10 +626,13 @@ adb_update_lock() {
   # broken while its process was still running, admitting a second updater to the `git pull` and the
   # settings writes this lock exists to serialise. Age proves nothing about liveness; a read we
   # could not perform proves less. (PR review)
-  local _hrc=0
+  # THE WHOLE RECORD IS KEPT, not just its pid: it is also what proves, after the rename below, that
+  # the claim caught THIS lock rather than a fresh one taken in between.
+  local _hrc=0 _seen=""
   if [ -e "$lock/owner" ]; then
-    holder="$(cut -d' ' -f1 < "$lock/owner" 2>/dev/null)"; _hrc=$?
+    _seen="$(cat "$lock/owner" 2>/dev/null)"; _hrc=$?
     [ "$_hrc" -eq 0 ] || return 1   # lock-owner-unreadable-break
+    holder="${_seen%% *}"
   else
     holder=""
   fi
@@ -638,9 +641,19 @@ adb_update_lock() {
 
   # Claim the break by RENAMING rather than rmdir+mkdir. Two processes that both judge the same
   # lock stale would otherwise each remove it and each create it — both "holding" it. Rename
-  # succeeds for exactly one of them; the loser finds no source and stands down.
+  # succeeds for exactly one of them — but only for the SAME lock, which is checked below.
   stale="${lock:?}.stale.$$"
   mv "$lock" "$stale" 2>/dev/null || return 1
+  # ...AND THE RENAME MUST HAVE CLAIMED THE LOCK THAT WAS INSPECTED. "The loser finds no source" was
+  # false: two processes can judge the same stale lock, the first renames it, takes a FRESH lock at
+  # the same path and starts work, and the second's `mv`, a few lines behind, then renames that new
+  # live lock away and takes the path itself — both proceeding as owners, rewriting settings.json and
+  # its receipt concurrently. A fresh lock carries a different pid and timestamp, so the record read
+  # above tells them apart; on a mismatch the claim is put back untouched. (PR review)
+  if [ "$(cat "$stale/owner" 2>/dev/null)" != "$_seen" ]; then
+    mv "$stale" "$lock" 2>/dev/null
+    return 1   # stale-claim-mismatch
+  fi
   rm -rf "$stale" 2>/dev/null
   _adb_take_lock "$lock"
 }
@@ -1021,7 +1034,11 @@ _adb_claude_settings_rows_complete() {
   _want="$(adb_claude_settings_leaf_count "$receipt")"; _wrc=$?
   case "$_wrc" in
     0)
-      _have="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 2
+      # DISTINCT PATHS, not rows. Counting rows let a damaged receipt that REPLACED a missing leaf with a
+      # duplicate of another net out at the recorded count — every later check then examined the
+      # duplicated survivors, and uninstall removed them and deleted the receipt, stranding the key
+      # that was actually gone. (PR review)
+      _have="$(printf '%s' "$owned" | jq '[.[].p] | unique | length' 2>/dev/null)" || return 2   # distinct-leaf-paths
       if [ "$_needs_rows" -eq 1 ]; then
         [ "$_want" -gt 0 ] || return 23   # installed-count-zero
       else

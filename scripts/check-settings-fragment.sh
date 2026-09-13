@@ -1334,6 +1334,68 @@ grep -q 'return 24   # payload-unhashable' "$ROOT/bin/baseline" && grep -q 'if \
 grep -q 'return 1   # link-target-unreadable' "$ROOT/install.sh" && ok \
   || bad "a settings link whose target cannot be read must be refused before anything is published — the rollback would restore only the bytes behind it"
 
+# --- round 40: distinct paths, a row count that refuses, the carry path, and a stale-lock race ------
+#
+# BEHAVIOURAL. Rows net out at the count when a missing leaf is replaced by a duplicate; distinct
+# paths do not.
+_d1="$(grep -m1 "^leaf$ADB_TAB" "$_lc/full")"; _d2="$(grep "^leaf$ADB_TAB" "$_lc/full" | sed -n 2p)"
+awk -v a="$_d1" -v b="$_d2" '$0==a {print b; next} {print}' "$_lc/full" > "$_lc/dup"
+_dup=0; _adb_claude_settings_rows_complete "$_lc/dup" "$PAYLOAD" || _dup=$?
+[ "$_dup" -eq 23 ] && ok \
+  || bad "a missing row replaced by a duplicate of another must answer 23 — the rows net out at the count, the distinct paths do not (got $_dup)"
+
+# BEHAVIOURAL. A receipt link that does not resolve is not a receipt with no rows.
+_rl="$work/rowcountlink"; rm -rf "$_rl"; mkdir -p "$_rl/.claude" "$_rl/locked"
+cp "$_lc/full" "$_rl/locked/r"; ln -s "$_rl/locked/r" "$_rl/.claude/.adb-settings-owned"; chmod 000 "$_rl/locked"
+_rli=0; _rlo="$(HOME="$_rl" bash -c '. "$1/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "$1/bin/baseline")"; adb_settings_row_count' _ "$ROOT")" || _rli=$?
+chmod 700 "$_rl/locked"
+[ "$_rli" -eq 20 ] && ok \
+  || bad "an unresolvable receipt link must make the row count refuse (20), not read as zero rows (got rc=$_rli out='$_rlo')"
+[ "$(grep -c 'adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }' "$ROOT/bin/baseline")" -eq 3 ] && ok \
+  || bad "every caller of the row count must fail loud on its refusal — assigned inside a substitution, the status is otherwise simply lost"
+
+# BEHAVIOURAL. The carry path refuses an unresolved receipt link, and ONLY that: a directory must stay
+# zero rows so the publish fails and names the real problem, which "could not be read" would not.
+_or="$work/ownedrows"; rm -rf "$_or"; mkdir -p "$_or/a_dir"; ln -s "$_or/nowhere" "$_or/dangling"
+_orq() { bash -c '. "$1/scripts/lib/common.sh"; eval "$(sed -n "/^_adb_owned_rows() {/,/^}/p" "$1/install.sh")"; _adb_owned_rows "$2" >/dev/null' _ "$ROOT" "$1"; }
+_ord=0; _orq "$_or/dangling" || _ord=$?
+[ "$_ord" -eq 20 ] && ok \
+  || bad "an unresolved receipt link must refuse (20) on the carry path — read as zero rows, a skip published a rowless receipt over it (got $_ord)"
+_ora=0; _orq "$_or/a_dir" || _ora=$?
+[ "$_ora" -eq 0 ] && ok \
+  || bad "a directory at the receipt path must stay ZERO ROWS, so the publish fails and names the real problem (got $_ora)"
+
+# BEHAVIOURAL. A stale-lock claim must have caught the lock it inspected. The race is made to happen on
+# cue: `mv` is shadowed by a function that, at the claim, replaces the lock's owner exactly as a winner
+# that renamed the stale lock and took a fresh one would have.
+_bl="$work/breaker"; rm -rf "$_bl"; mkdir -p "$_bl"
+_mkstale() { rm -rf "$1" "$1".stale.*; mkdir "$1"; printf '999999 1\n' > "$1/owner"; touch -t 200001010000 "$1"; }
+_mkstale "$_bl/control"
+_ctl="$(bash -c '. "$1/scripts/lib/common.sh"; _ADB_LOCK_STALE_SECS=1; adb_update_lock "$2"; printf "%s|%s" "$?" "$_ADB_LOCK_TOKEN"' _ "$ROOT" "$_bl/control")"
+[ "${_ctl%%|*}" = 0 ] && [ -n "${_ctl#*|}" ] && ok \
+  || bad "a stale lock with a dead holder must still be broken and taken (got $_ctl)"
+_mkstale "$_bl/raced"
+_rcd="$(bash -c '. "$1/scripts/lib/common.sh"; _ADB_LOCK_STALE_SECS=1; L="$2"
+  mv() { if [ "$1" = "$L" ] && [ -z "${_raced:-}" ]; then _raced=1; printf "424242 %s\n" "$(date +%s)" > "$1/owner"; fi; command mv "$@"; }
+  adb_update_lock "$L"; printf "%s|%s" "$?" "$_ADB_LOCK_TOKEN"' _ "$ROOT" "$_bl/raced")"
+[ "${_rcd%%|*}" = 1 ] && [ -z "${_rcd#*|}" ] && [ "$(cut -d' ' -f1 < "$_bl/raced/owner" 2>/dev/null)" = 424242 ] \
+  && [ -z "$(ls -d "$_bl/raced".stale.* 2>/dev/null)" ] && ok \
+  || bad "a stale-lock claim that caught a FRESH lock must stand down and put it back — otherwise two processes both hold it (got $_rcd, owner $(cat "$_bl/raced/owner" 2>/dev/null))"
+
+# BEHAVIOURAL. The operational failure the finding names happens AFTER the receipt looked fine, so the
+# classifier cannot see it: the file is readable. `grep` is shadowed to fail exactly as an I/O error
+# would — the classifier does not use it — and the count must refuse rather than come back as a number.
+# Without this, the mode-000 fixture above was caught by the classifier first and the check on grep's
+# own status was never reached, so disabling it stayed GREEN.
+_gf="$work/grepfail"; rm -rf "$_gf"; mkdir -p "$_gf/.claude"; cp "$_lc/full" "$_gf/.claude/.adb-settings-owned"
+_gfr=0; _gfo="$(HOME="$_gf" bash -c '. "$1/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "$1/bin/baseline")"
+  grep() { return 2; }
+  adb_settings_row_count' _ "$ROOT")" || _gfr=$?
+[ "$_gfr" -eq 20 ] && [ -z "$_gfo" ] && ok \
+  || bad "a grep that fails on a readable receipt must make the row count refuse (20) — reached after the file looked fine, an absorbed failure became a fabricated count (got rc=$_gfr out='$_gfo')"
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -1539,11 +1601,15 @@ printf 'disposition installed\nleaf%s["a","b"]%strue\nleaf%s["c","d"]%s1\n' \
 # ...and when the receipt exists but cannot be READ at all, grep fails and prints nothing, so the
 # normalisation is what stands between that and an empty string reaching the caller's arithmetic.
 chmod 000 "$rc_home/.claude/.adb-settings-owned"
+_rcu=0
 rc_unread="$(HOME="$rc_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
   eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
-  adb_settings_row_count')"
+  adb_settings_row_count')" || _rcu=$?
 chmod 600 "$rc_home/.claude/.adb-settings-owned"
-case "$rc_unread" in ''|*[!0-9]*) bad "the row count must still be ONE integer when the receipt cannot be read — grep prints nothing there, and an empty string reaches an arithmetic test" ;; *) ok ;; esac
+# The count is NOT a number to print when the receipt cannot be read: a fabricated zero is what told a
+# downgrade from a relinquishment wrongly. It refuses, and every caller checks that before arithmetic.
+[ "$_rcu" -eq 20 ] && [ -z "$rc_unread" ] && ok \
+  || bad "an unreadable receipt must make the row count REFUSE (20, nothing on stdout) — a printed zero is a fabricated count (got rc=$_rcu out='$rc_unread')"
 
 # --- a malformed source row is not provenance -------------------------------------------------------
 #
@@ -1581,7 +1647,7 @@ awk '/^  behind\)/{f=1}
 # line had just announced, and the promise of automatic re-application went with it: an upgrade then
 # meets keys nobody owns and refuses. The follow-up text is conditional on whether the count fell.
 awk '/^adb_settings_downgraded_now\(\)/{f=1}
-     f && /\[ "\$\(adb_settings_row_count\)" -lt "\$2" \]/{print "ok"; exit}
+     f && /\[ "\$_nowrows" -lt "\$2" \]/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "the downgrade report must BRANCH on whether the row count fell — Stale ownership was ALSO relinquished is a different instruction to the operator than ownership being unchanged"
 awk '/^adb_settings_downgraded_now\(\)/{f=1}
@@ -3190,6 +3256,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '    *) return 20 ;;   # receipt-unresolvable' \
     '    *) printf '"'"'none'"'"'; return 0 ;;   # absent-by-mistake' \
     'must answer 20, not '"'"'none'"'"''
+  check_mut 'completeness counts rows instead of distinct paths' \
+    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 2   # distinct-leaf-paths' \
+    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'length'"'"' 2>/dev/null)" || return 2' \
+    'a missing row replaced by a duplicate of another must answer 23'
+  check_mut 'a stale-lock claim does not check what it caught' \
+    '  if [ "$(cat "$stale/owner" 2>/dev/null)" != "$_seen" ]; then' \
+    '  if false; then' \
+    'must stand down and put it back'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3461,6 +3535,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1   # link-target-unreadable' \
     '      :' \
     'must be refused before anything is published'
+  check_mut 'the carry path reads an unresolved receipt link as zero rows' \
+    '    return 20   # owned-rows-unresolvable' \
+    '    return 0' \
+    'an unresolved receipt link must refuse (20) on the carry path'
+  check_mut 'the carry path refuses a directory instead of reaching the publish' \
+    '  if [ -L "$1" ] && [ ! -e "$1" ]; then' \
+    '  if [ -L "$1" ] || [ ! -f "$1" ]; then' \
+    'a directory at the receipt path must stay ZERO ROWS'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3621,10 +3703,6 @@ if [ "$MUTATION" -eq 1 ]; then
     '    adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && {' \
     '    false && {' \
     'must run BEFORE the LINKS_OK gate'
-  check_mut 'the row count is emitted without normalising what grep produced' \
-    '  case "$n" in '"''"'|*[!0-9]*) n=0 ;; esac' \
-    '  :' \
-    'must still be ONE integer when the receipt cannot be read'
   check_mut 'the post-pull path never asks about a downgrade' \
     '      if adb_settings_downgraded_now "$BEHIND_SETTINGS_PENDING" "$BEHIND_ROWS_BEFORE"; then' \
     '      if false; then' \
@@ -3634,7 +3712,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ "${1:-0}" -eq 1 ] || return 1; [ "$(adb_settings_row_count)" -eq "$2" ] || return 1' \
     'must NOT require the row count unchanged'
   check_mut 'the downgrade claims ownership is unchanged after relinquishing it' \
-    '  if [ "${2:-0}" -gt 0 ] && [ "$(adb_settings_row_count)" -lt "$2" ]; then' \
+    '  if [ "${2:-0}" -gt 0 ] && [ "$_nowrows" -lt "$2" ]; then' \
     '  if false; then' \
     'Stale ownership was ALSO relinquished'
   check_mut 'a downgrade is reported as a relinquishment' \
@@ -3721,6 +3799,26 @@ if [ "$MUTATION" -eq 1 ]; then
     '      2[0-9]) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;   # pending-unanswerable-behind' \
     '      2[0-9]) : ;;' \
     'must fail loud on 20/21'
+  check_mut 'the row count fabricates a number from a failed read' \
+    '  [ "$grc" -le 1 ] || return 20   # row-count-read-failed' \
+    '  :' \
+    'a grep that fails on a readable receipt'
+  check_mut 'the row count reads an unresolvable receipt link as zero' \
+    '    *) return 20 ;;   # row-count-unresolvable' \
+    '    *) printf '"'"'0'"'"'; return 0 ;;' \
+    'an unresolvable receipt link must make the row count refuse'
+  check_mut 'the post-heal row count loses its refusal' \
+    '  _nowrows="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-failed' \
+    '  _nowrows="$(adb_settings_row_count)"' \
+    'every caller of the row count must fail loud'
+  check_mut 'the current-branch pre-heal row count loses its refusal' \
+    '    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-current' \
+    '    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"' \
+    'every caller of the row count must fail loud'
+  check_mut 'the behind-branch pre-heal row count loses its refusal' \
+    '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind' \
+    '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"' \
+    'every caller of the row count must fail loud'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

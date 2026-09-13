@@ -8001,4 +8001,10 @@ survive is the part a later reader needs.
              rows. For comparison the same step in a contended local full `selfcheck` took 7,478s
              (~125 min): CI and local are ~1.4x apart, not the ~10x an earlier comparison of a
              118-row CI run against larger local runs had suggested.
+             PER-ROW COST, 2026-09-13 (the `install-guard` harness step): f7dccab 168 rows / 90 min,
+             32bdddf 173 / 90, a5056c7 183 / 95, 2edef07 193 / 102 — flat at 0.52-0.54 min/row, so
+             the growth is row count alone, not a rising cost per row. The job runs ~2 minutes past
+             the step, which puts the 120-minute ceiling at ~222 rows; round 40's tree carries 201.
+             At 5-10 rows a round that is about two rounds of headroom: raise the ceiling again, or
+             land #468.
 - baseline-issue: n/a
