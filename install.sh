@@ -291,8 +291,19 @@ _adb_wire_settings_locked() {
   # rename-only. The merge reads a synthetic `{}` instead and the destination is touched once, by
   # the publish.
   local cur_input="$settings"
-  local synth=""
-  if [ ! -s "$settings" ]; then
+  local synth="" _docst
+  # SUBSTITUTED ONLY WHEN THE DOCUMENT IS PROVABLY ABSENT, EMPTY OR A DANGLING LINK. `[ ! -s ]` was
+  # also true for a symlink whose non-empty target could not be statted, so the merge read `{}`, the
+  # backup below was skipped (`-e` is false too), and the publish replaced the link with a new
+  # regular file — hiding every unrelated setting in the original target and losing its topology.
+  # A document this run cannot see is refused, not assumed empty. (PR review)
+  _docst="$(adb_settings_doc_state "$settings")"
+  if [ "$_docst" = inaccessible ]; then
+    adb_info "  WARN   ~/.claude/settings.json exists but cannot be inspected — sandbox settings NOT written."
+    adb_info "         Merging against an empty document would replace it with a file hiding what is in it."
+    return 1   # settings-inaccessible-install
+  fi
+  if [ "$_docst" != present ]; then
     synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }
     printf '{}\n' > "$synth"
     cur_input="$synth"
@@ -422,6 +433,16 @@ _adb_wire_settings_locked() {
     # between leaves the old receipt naming a leaf that is no longer there, and if the operator
     # recreates that value before the next successful install, uninstall deletes it as ours. Only
     # the normal write branch deferred; this one did its two writes in the open. (PR review)
+    # ASKED BEFORE THE TRANSACTION OPENS. Computed where the receipt is rendered, a failure could only
+    # be noticed after the retirement prune had already been published — too late to stop cleanly —
+    # and the `-` fallback it used instead loops `baseline update` exactly as the install path's did.
+    # (PR review)
+    local refused_digest
+    if ! refused_digest="$(adb_sha256 "$payload" 2>/dev/null)" || [ -z "$refused_digest" ]; then
+      adb_info "  WARN   could not compute the payload digest — the refusal was NOT recorded and nothing"
+      adb_info "         was written. A refusal with no digest would re-run the installer on every update."
+      return 1   # digest-unavailable-refusal
+    fi
     adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt
     # PROVE THE RECEIPT CAN BE REPLACED BEFORE ANYTHING IS PRUNED. Retirement rewrites the settings
     # first and publishes the refusal receipt second, so a receipt that can be neither replaced nor
@@ -492,8 +513,6 @@ _adb_wire_settings_locked() {
         return 1   # prune-abort
       fi
     fi
-    local refused_digest
-    refused_digest="$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')"
     if adb_claude_settings_source_row "$REPO" \
        | adb_claude_settings_receipt_render skipped-blocked "$version" "$floor" \
              "$refused_digest" > "$receipt.adb.$$.tmp" \
@@ -539,10 +558,22 @@ _adb_wire_settings_locked() {
     adb_info "         (an incomplete ownership record is worse than none: the keys could never be removed)"
     return 1
   fi
+  # THE DIGEST IS COMPUTED FIRST, and its absence stops the run. The `|| printf '-'` fallback rendered
+  # an `installed` receipt recording `payload -`, and `adb_settings_pending` deliberately reads an
+  # unknown digest as pending — so while no SHA-256 backend worked, every `baseline update` and every
+  # automatic currency visit re-ran the installer and reported a repair of an unchanged install.
+  # Nothing has been written yet at this point. (PR review)
+  local _paydig
+  if ! _paydig="$(adb_sha256 "$payload" 2>/dev/null)" || [ -z "$_paydig" ]; then
+    adb_info "  WARN   could not compute the payload digest — sandbox settings NOT written."
+    adb_info "         A receipt with no digest reads as pending, so every later update would re-run"
+    adb_info "         the installer and report a repair that changed nothing."
+    return 1   # digest-unavailable-install
+  fi
   if ! { adb_claude_settings_source_row "$REPO"
          adb_claude_settings_leaf_rows "$payload" "$wrote_json" "$created_json"; } \
        | adb_claude_settings_receipt_render installed "$version" "$floor" \
-             "$(adb_sha256 "$payload" 2>/dev/null || printf '%s' '-')" > "$rtmp" \
+             "$_paydig" > "$rtmp" \
      || [ ! -s "$rtmp" ]; then
     rm -f "$rtmp"
     adb_info "  WARN   could not render the ownership receipt $receipt — sandbox settings NOT written"
@@ -697,11 +728,20 @@ _adb_carry_rows() {
     printf '%s\n' "$rows"
     return 0
   fi
-  if [ ! -s "$live" ]; then
-    adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run" >&2
-    adb_info "           cannot prove those keys are still ours." >&2
-    return 0
-  fi
+  # RELINQUISHED ONLY WHEN THE DOCUMENT IS PROVABLY GONE. An inaccessible target is not gone: giving
+  # the rows up there is the stranding the removal path refuses — when access returns the keys are
+  # live and nothing records them. Every caller keeps the existing record on a non-zero status.
+  # (PR review)
+  case "$(adb_settings_doc_state "$live")" in
+    absent|empty|dangling)
+      adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run" >&2
+      adb_info "           cannot prove those keys are still ours." >&2
+      return 0 ;;
+    inaccessible)
+      adb_info "  sandbox  ownership neither proved nor given up — ~/.claude/settings.json exists but" >&2
+      adb_info "           cannot be inspected, so the existing record is kept and this run writes none." >&2
+      return 22 ;;   # carry-settings-inaccessible
+  esac
   # PROVED AGAINST THE RECEIPT, NOT AGAINST THE FRAGMENT. Asking the write path meant a clone whose
   # payload is missing or damaged dropped every row even when each live value still equalled the
   # one recorded for it — the keys stayed installed and became unremovable. Removal mode answers

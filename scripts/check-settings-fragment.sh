@@ -1239,6 +1239,53 @@ grep -q 'trap - EXIT TERM INT HUP' "$ROOT/scripts/lib/common.sh" && ok \
 grep -q 'return 1   # receipt-not-regular' "$ROOT/uninstall.sh" && ok \
   || bad "a receipt path occupied by a directory must fail the uninstall — read as absent it prints Uninstalled with every key applied, and no later install can publish a replacement"
 
+# --- round 38: a document the run cannot SEE is not a document that is not there ------------------
+#
+# BEHAVIOURAL. `-s` is false for a symlink whose non-empty target cannot be statted, exactly as for an
+# absent or empty file; every site that used it as "nothing there" acted on a document it could not
+# read. The classifier must keep the supported cases apart from the one to refuse.
+_ds="$work/docstate"; rm -rf "$_ds"; mkdir -p "$_ds/locked" "$_ds/open"
+printf '{"a":1}' > "$_ds/locked/s.json"; printf '{"a":1}' > "$_ds/open/s.json"; : > "$_ds/open/empty.json"
+printf '{"a":1}' > "$_ds/open/unr.json"; chmod 000 "$_ds/open/unr.json"; chmod 000 "$_ds/locked"
+ln -s "$_ds/locked/s.json" "$_ds/traversal_denied"; ln -s "$_ds/open/nowhere.json" "$_ds/dangling"
+ln -s "nowhere-rel.json" "$_ds/open/dangling_relative"; ln -s "$_ds/open/empty.json" "$_ds/empty_link"
+mkdir "$_ds/a_directory"; : > "$_ds/plain_empty"; printf '{"a":1}' > "$_ds/plain_present"
+_dsq() { adb_settings_doc_state "$_ds/$1"; }
+[ "$(_dsq traversal_denied)" = inaccessible ] && ok \
+  || bad "a link whose target cannot be statted must be INACCESSIBLE, not dangling — read as absent, the installer replaced it with a file hiding the original settings (got $(_dsq traversal_denied))"
+[ "$(_dsq dangling)" = dangling ] && ok \
+  || bad "a genuinely dangling link must stay DANGLING — the installer supports it by merging against {} (got $(_dsq dangling))"
+[ "$(_dsq open/dangling_relative)" = dangling ] && ok \
+  || bad "...including a RELATIVE one, resolved against the link's own directory (got $(_dsq open/dangling_relative))"
+[ "$(_dsq open/unr.json)" = inaccessible ] && ok \
+  || bad "an unreadable regular file must be INACCESSIBLE, not present (got $(_dsq open/unr.json))"
+[ "$(_dsq a_directory)" = inaccessible ] && ok || bad "a directory at the path must be INACCESSIBLE (got $(_dsq a_directory))"
+[ "$(_dsq empty_link)" = empty ] && [ "$(_dsq plain_empty)" = empty ] && ok || bad "a zero-byte document, linked or not, must be EMPTY"
+[ "$(_dsq plain_present)" = present ] && ok || bad "a readable non-empty document must be PRESENT"
+[ "$(_dsq no_such_path)" = absent ] && ok || bad "nothing at the path must be ABSENT"
+chmod 700 "$_ds/locked"; chmod 600 "$_ds/open/unr.json"
+
+# Every site that used `-s` as "nothing there" now refuses an unseeable document instead.
+grep -q 'return 1   # settings-inaccessible-install' "$ROOT/install.sh" && ok \
+  || bad "the installer must refuse an inaccessible settings.json rather than merge against {} and replace it"
+grep -q 'return 22 ;;   # carry-settings-inaccessible' "$ROOT/install.sh" && ok \
+  || bad "carrying ownership must not relinquish on an inaccessible document — the keys come back unowned when access returns"
+grep -q 'return 1 ;;   # settings-inaccessible-remove' "$ROOT/uninstall.sh" && ok \
+  || bad "uninstall must keep the receipt when the document cannot be inspected"
+grep -q 'return 2 ;;   # settings-inaccessible-intact' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "an unseeable document is UNANSWERABLE, not provably gone — diverged schedules a self-heal against a file nobody could read"
+
+# The payload digest is computed before anything is written, and never replaced by `-`.
+grep -q 'return 1   # digest-unavailable-install' "$ROOT/install.sh" && \
+  grep -q 'return 1   # digest-unavailable-refusal' "$ROOT/install.sh" && ok \
+  || bad "both receipt writers must stop when the payload digest cannot be computed — a '-' digest reads as pending and loops every update"
+grep -qF 'adb_sha256 "$payload" 2>/dev/null || printf' "$ROOT/install.sh" && \
+  bad "...and no '-' fallback for the payload digest may survive in install.sh" || ok
+
+# The post-heal classifiers fail loud on a receipt they cannot read.
+grep -q '# downgrade-read-failed' "$ROOT/bin/baseline" && grep -q '# refusal-read-failed' "$ROOT/bin/baseline" && ok \
+  || bad "a receipt the heal published but this process cannot read must end the update loud — answering 'not downgraded' or 'not refused' loses exit 9 and exit 7"
+
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -1565,7 +1612,8 @@ HOME="$blk" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-h
   || bad "premise: and must record skipped-blocked"
 jq -e '.sandbox.enabled == false' "$blk/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "premise: and must have applied nothing"
-grep -qF 'adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" = skipped-blocked' "$ROOT/bin/baseline" && ok \
+grep -qF '_rd="$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)"; _rdrc=$?' "$ROOT/bin/baseline" \
+  && grep -qF '[ "$_rd" = skipped-blocked ] || return 1' "$ROOT/bin/baseline" && ok \
   || bad "bin/baseline must re-read the receipt after self-heal — a successful installer run is not the same as a repair"
 # EVERY SELF-HEAL, not the one that repaired nothing else. Gating the refusal on \`LINKS_OK\` meant a
 # run that ALSO fixed a broken link fell through to "repaired." and exit 6, and the \`behind\` branch
@@ -2907,8 +2955,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if false; then' \
     'must fail the publication'
   check_mut 'an absent settings file reads as unanswerable' \
-    '  [ -s "$settings" ] || return 1' \
-    '  [ -s "$settings" ] || return 2' \
+    '    absent|empty|dangling) return 1 ;;' \
+    '    absent|empty|dangling) return 2 ;;' \
     'must read as DIVERGED'
   check_mut 'a row predicate treats a jq error as a malformed row' \
     '    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac' \
@@ -3050,6 +3098,18 @@ if [ "$MUTATION" -eq 1 ]; then
     "  trap '_ADB_SIGNAL_PENDING=129' HUP" \
     '  :' \
     'and DEFERRED with them'
+  check_mut 'a traversal-denied link is called dangling' \
+    "    if [ -d \"\$par\" ] && [ -x \"\$par\" ] && [ ! -L \"\$t\" ]; then printf 'dangling'; else printf 'inaccessible'; fi" \
+    "    printf 'dangling'" \
+    'must be INACCESSIBLE, not dangling'
+  check_mut 'an unreadable document is called present' \
+    "  if [ ! -f \"\$f\" ] || [ ! -r \"\$f\" ]; then printf 'inaccessible'; return 0; fi" \
+    "  if [ ! -f \"\$f\" ]; then printf 'inaccessible'; return 0; fi" \
+    'an unreadable regular file must be INACCESSIBLE'
+  check_mut 'an unseeable document is read as provably gone' \
+    '    *) return 2 ;;   # settings-inaccessible-intact' \
+    '    *) return 1 ;;' \
+    'is UNANSWERABLE, not provably gone'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3091,8 +3151,8 @@ if [ "$MUTATION" -eq 1 ]; then
     'if false; then' \
     'must refuse BEFORE writing'
   check_mut 'a blocked refusal records the prior digest instead of the refused one' \
-    '    refused_digest="$(adb_sha256 "$payload" 2>/dev/null || printf '"'"'%s'"'"' '"'"'-'"'"')"' \
-    '    refused_digest="-"' \
+    '    if ! refused_digest="$(adb_sha256 "$payload" 2>/dev/null)" || [ -z "$refused_digest" ]; then' \
+    '    refused_digest="-"; if false; then' \
     'must record the digest of the payload it REFUSED'
   check_mut 'a refusal is reported as an install' \
     '  if [ "$verdict" = refuse ]; then' \
@@ -3305,6 +3365,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # buckets-unreadable' \
     '    :' \
     'must be read BEFORE the receipt is published'
+  check_mut 'an inaccessible settings.json is merged against {}' \
+    '    return 1   # settings-inaccessible-install' \
+    '    :' \
+    'must refuse an inaccessible settings.json'
+  check_mut 'ownership is relinquished on an inaccessible document' \
+    '      return 22 ;;   # carry-settings-inaccessible' \
+    '      return 0 ;;' \
+    'must not relinquish on an inaccessible document'
+  check_mut 'the install proceeds without a payload digest' \
+    '    return 1   # digest-unavailable-install' \
+    '    :' \
+    'must stop when the payload digest cannot be computed'
+  check_mut 'the refusal proceeds without a payload digest' \
+    '      return 1   # digest-unavailable-refusal' \
+    '      :' \
+    'must stop when the payload digest cannot be computed'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3403,8 +3479,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends, for the same reason'
   check_mut 'uninstall drops the ownership record when the payload is missing' \
-    '  if [ ! -s "$settings" ]; then' \
-    '  if [ ! -s "$settings" ] || [ ! -s "$payload" ]; then' \
+    '  case "$(adb_settings_doc_state "$settings")" in' \
+    '  case "$( [ -s "$payload" ] && adb_settings_doc_state "$settings" || printf absent)" in' \
     'must not delete the ownership receipt while leaving the sandbox keys installed'
   check_mut 'the no-op branch deletes the receipt after an unreadable kept-list' \
     '      return 1   # noop-kept-unreadable' \
@@ -3446,6 +3522,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # receipt-not-regular' \
     '    :' \
     'must fail the uninstall'
+  check_mut 'uninstall drops the receipt over an unseeable document' \
+    '      return 1 ;;   # settings-inaccessible-remove' \
+    '      return 0 ;;' \
+    'must keep the receipt when the document cannot be inspected'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
@@ -3545,6 +3625,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '        23) return 23 ;;  # receipt-incomplete' \
     '        23) return 1 ;;' \
     'must answer 23 (report and preserve)'
+  check_mut 'an unread receipt is reported as not downgraded' \
+    '    20|21) adb_settings_unreadable_record "$_ddrc"; exit 1 ;;   # downgrade-read-failed' \
+    '    20|21) return 1 ;;' \
+    'must end the update loud'
+  check_mut 'an unread receipt is reported as not refused' \
+    '    20|21) adb_settings_unreadable_record "$_rdrc"; exit 1 ;;   # refusal-read-failed' \
+    '    20|21) return 1 ;;' \
+    'must end the update loud'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

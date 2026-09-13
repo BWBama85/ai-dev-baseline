@@ -351,13 +351,23 @@ unwire_settings() {
   # would destroy the only record of which keys are ours while leaving every one of them installed
   # — an uninstall that reports success and silently strands the sandbox settings for good.
   # (PR review)
-  if [ ! -s "$settings" ]; then
-    rm -f "$receipt" || {
-      adb_info "  WARN   could not remove $receipt — remove it by hand."
-      adb_info "         Until you do, a re-install reads its leaves as YOUR removals and will not restore them."
-      return 1; }
-    return 0
-  fi
+  # ONLY A PROVABLY MISSING OR EMPTY DOCUMENT releases the receipt. `[ ! -s ]` was also true for a
+  # settings.json symlink whose non-empty target could not be inspected, so the receipt was deleted
+  # and success reported without reading anything — and when access came back the sandbox keys were
+  # live with no ownership evidence: reinstall read them as the operator's, and uninstall could no
+  # longer remove them. An unseeable document keeps the record and fails. (PR review)
+  case "$(adb_settings_doc_state "$settings")" in
+    absent|empty|dangling)
+      rm -f "$receipt" || {
+        adb_info "  WARN   could not remove $receipt — remove it by hand."
+        adb_info "         Until you do, a re-install reads its leaves as YOUR removals and will not restore them."
+        return 1; }
+      return 0 ;;
+    inaccessible)
+      adb_info "  ERROR  ~/.claude/settings.json exists but cannot be inspected, so the sandbox settings in it"
+      adb_info "         cannot be removed and the ownership record was KEPT. Restore access and re-run."
+      return 1 ;;   # settings-inaccessible-remove
+  esac
   local mrc _nochange
   # AN INCOMPLETE `installed` RECORD IS NOT SAFE TO REMOVE BY. Removing only the rows it lists
   # deletes the receipt and leaves the rest installed with no owner. Asked here rather than inside

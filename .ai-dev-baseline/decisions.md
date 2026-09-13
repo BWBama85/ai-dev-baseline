@@ -7995,4 +7995,10 @@ survive is the part a later reader needs.
              the two multiply. The timeout is now **120**, which is headroom rather than a
              measurement: the step has never been observed completing above 118 rows, so the true
              figure is still unknown and is >44 minutes. Re-measure from the first green run.
+             MEASURED 2026-09-12: run 34707615872, on head f7dccab at ~168 rows, was that first
+             green run — `install-guard` completed in **92 minutes**, `selfcheck-macos` in 26 and
+             `pattern-ledger` in 49. At ~0.55 min/row the 120-minute ceiling covers roughly 218
+             rows. For comparison the same step in a contended local full `selfcheck` took 7,478s
+             (~125 min): CI and local are ~1.4x apart, not the ~10x an earlier comparison of a
+             118-row CI run against larger local runs had suggested.
 - baseline-issue: n/a

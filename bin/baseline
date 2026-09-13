@@ -200,7 +200,21 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # Returns: 0 when this run should report a downgrade rather than a reconciliation
 adb_settings_downgraded_now() {
   [ "${1:-0}" -eq 1 ] || return 1
-  case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
+  # THE READ IS CHECKED, and a failed one ends the run loud. Substituted straight into the `case`,
+  # a receipt the just-finished heal published but this process cannot READ (a directory default
+  # ACL permits the rename and denies the read) became the empty string and "not downgraded" — so
+  # both update branches fell through to a benign repaired/updated result instead of exit 9, and the
+  # currency wrapper that discards baseline's output suppressed the only warning. Exiting here
+  # covers every caller; answering "no" is the one thing this must never do on an unread record.
+  # (PR review)
+  local _dd _ddrc
+  _dd="$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)"; _ddrc=$?
+  case "$_ddrc" in
+    0) ;;
+    20|21) adb_settings_unreadable_record "$_ddrc"; exit 1 ;;   # downgrade-read-failed
+    *) return 1 ;;
+  esac
+  case "$_dd" in
     skipped-below-floor|skipped-unprobeable) ;;
     *) return 1 ;;
   esac
@@ -249,7 +263,15 @@ adb_settings_row_count() {
 
 adb_settings_refused_now() {
   [ "${1:-0}" -eq 1 ] || return 1
-  [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" = skipped-blocked ] || return 1
+  # The same read, the same failure, and exit 7 lost the same way — see adb_settings_downgraded_now.
+  local _rd _rdrc
+  _rd="$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)"; _rdrc=$?
+  case "$_rdrc" in
+    0) ;;
+    20|21) adb_settings_unreadable_record "$_rdrc"; exit 1 ;;   # refusal-read-failed
+    *) return 1 ;;
+  esac
+  [ "$_rd" = skipped-blocked ] || return 1
   echo "baseline: the least-privilege sandbox settings were NOT applied — you already own one of" >&2
   echo "          the keys they ship, so the whole policy was refused (#248). Run ./install.sh in" >&2
   echo "          $SRC to see which, then remove or rename those keys and re-run it." >&2

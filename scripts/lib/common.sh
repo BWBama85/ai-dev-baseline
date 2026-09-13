@@ -943,6 +943,38 @@ adb_claude_settings_disposition() {
   esac
 }
 
+# What is at a settings path — as a CLOSED answer, because `-s` cannot give one. A symlink whose
+# non-empty target cannot be statted (a directory with traversal denied) is `-s`-false exactly like
+# an absent or zero-byte file, so every site that used it as "nothing there" acted on a document it
+# could not see: the installer merged against a synthetic `{}` and replaced the link with a file
+# hiding the original settings; uninstall deleted the receipt, and the keys came back unowned when
+# access returned. Probed on macOS 2026-09-12: a dangling link and a traversal-denied one are both
+# `-L` true, `-e` false; they differ only in whether the TARGET'S PARENT is searchable. (PR review)
+#
+#   absent        nothing there — no file and no link
+#   empty         a readable regular file, possibly through a link, with zero bytes
+#   present       a readable, non-empty regular file, possibly through a link
+#   dangling      a symlink whose target provably does not exist (its parent is searchable)
+#   inaccessible  anything else: a target that cannot be statted or read, or a non-regular node
+#
+# `readlink -n`, one hop, and never `-f` — this file stays parseable below the bash floor (D30).
+# A target that is itself a link is called inaccessible rather than chased: a wrong `dangling` is a
+# write outside ~/.claude, a wrong `inaccessible` is only a refusal.
+# Usage: adb_settings_doc_state <path>
+adb_settings_doc_state() {
+  local f="$1" t par
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then printf 'absent'; return 0; fi
+  if [ -L "$f" ] && [ ! -e "$f" ]; then
+    t="$(readlink -n "$f" 2>/dev/null)" || { printf 'inaccessible'; return 0; }
+    case "$t" in /*) ;; *) t="$(dirname "$f")/$t" ;; esac
+    par="$(dirname "$t")"
+    if [ -d "$par" ] && [ -x "$par" ] && [ ! -L "$t" ]; then printf 'dangling'; else printf 'inaccessible'; fi
+    return 0
+  fi
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then printf 'inaccessible'; return 0; fi
+  if [ -s "$f" ]; then printf 'present'; else printf 'empty'; fi
+}
+
 # Does an `installed` receipt list every leaf the payload ships?
 #
 # ONE home, because BOTH the currency question and the merge must ask it. It lived inside
@@ -1041,7 +1073,14 @@ adb_claude_settings_leaves_intact() {
   # who deleted the file, let an update run, and later recreated the recorded values had them
   # deleted by uninstall as installer-owned. Asked AFTER the rowless check: with nothing recorded
   # there is nothing to diverge. (PR review)
-  [ -s "$settings" ] || return 1
+  # ...but a document this run cannot SEE is not provably gone. `[ -s ]` answered 1 for an
+  # inaccessible target too, and "diverged" schedules the self-heal against a file nobody could
+  # read. (PR review)
+  case "$(adb_settings_doc_state "$settings")" in
+    present) ;;
+    absent|empty|dangling) return 1 ;;
+    *) return 2 ;;   # settings-inaccessible-intact
+  esac
   # `try`, because `getpath` RAISES through a scalar: an operator who replaced an ancestor object
   # with `false` would otherwise take the whole predicate down rather than answering "diverged".
   # NO SECOND `def present`. The merge defines one, and a mutation row pins it — a duplicate here
