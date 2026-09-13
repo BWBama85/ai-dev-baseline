@@ -1055,7 +1055,9 @@ jobs:
   install-guard:
     name: install-guard
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # 120: this job carries settings-fragment-mutation. 15 was outgrown, and so was the 45 that
+    # replaced it — the step ran 2640s and was cancelled on run 34652254652 (D101).
+    timeout-minutes: 120
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1064,13 +1066,27 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 → the mutation gate below needs a merge-base against origin/<base>
+        # to decide whether this change touched the harness's declared inputs. It fails CLOSED
+        # without one, so a shallow clone would silently run every harness on every push.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
       - name: A missing manifest source must make install.sh fail loud (#48)
         run: bash scripts/check-install-guard.sh
+
+      # The installer's second settings surface (#248). It rides this job rather than a new one:
+      # a new job is a new check context, and branch protection would then see a context nobody
+      # made required (docs/repo-settings.md).
+      - name: The settings fragment must own only its own leaves (#248)
+        run: bash scripts/check-settings-fragment.sh
+
+      - name: ...and every one of those rules must be observed failing (#248)
+        run: bash scripts/mutation-gate.sh run settings-fragment-mutation -- bash scripts/check-settings-fragment.sh --mutation
 
   pinned-install:
     name: pinned-install
@@ -1501,14 +1517,14 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less THREE steps. shellcheck is installed above for a reason: selfcheck
+      # The offline suite, less FOUR steps. shellcheck is installed above for a reason: selfcheck
       # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
       # false in precisely the silent way this repo keeps writing guards against.
       #
-      # These three mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
+      # These four mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
       # jobs run each on every relevant PR, and check-fact-drift.sh pins those invocations because
       # they are each harness's ONLY per-PR execution after this skip. Their non-mutation halves
-      # still run here. Measurements and rationale: D87.
+      # still run here. Measurements and rationale: D87, D101.
       #
       # AND THE MUTATION GATE APPLIES HERE TOO (#441): the runner asks `scripts/mutation-gate.sh`
       # before dispatching any `*-mutation` step, against ADB_MUTATION_BASE (workflow `env:`), so an
@@ -1520,7 +1536,7 @@ jobs:
       - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent

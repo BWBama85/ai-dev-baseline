@@ -47,6 +47,7 @@ Sweep each of these before opening a pull request.
 - `stale-state-trusted` — Before acting on an entity a step resolved by name or read from stored state — a PR looked up by branch, a marker branch, a recorded URL — re-read the live state the action assumes in the same call (request the state field, compare HEAD to the branch) and require it; a name resolves to history as easily as to the live thing, and a stored value outlives the state it described. Grep the diff for gh reads whose consumers assume liveness without requesting state.
 - `consumer-contract-mismatch` — When one artifact serves two consumers or install modes — a prompt read by both a CLI agent and a native read-only subagent, a skill loaded from a global root and a pinned vendored copy — check every instruction and path in it against EACH consumer contract: grep the artifact for absolute paths and commanded side effects, then make mode-specific content conditional on the mode or mode-neutral (resolve relative to the loaded file; command only what every consumer can perform).
 - `reuse-missed` — Before hand-rolling a primitive-shaped read — a default-branch resolver, an mtime read, a bounded runner, a TOML read — grep scripts/lib/common.sh for an adb_* helper that already answers it and source that instead: both instances of this class re-inlined a portability decision the shared helper had already gotten right, and each broke exactly on the platform the helper handles.
+- `platform-divergent-test` — A test that passes locally has spoken for ONE platform. For every assertion in a new or edited suite, ask what it depends on that differs between the macOS and ubuntu legs — a regex dialect (BSD grep reads `\t` as a tab, GNU grep 3.11 as a literal `t`), a `stat`/`readlink`/`sed` flag whose meaning changes, or a binary the runner simply does not have (there is no `claude` on a CI runner, so a fixture driving the real installer takes the skip path and asserts nothing). Prefer a literal or a shared helper over a dialect-dependent spelling, and give a fixture the stub it needs rather than letting the path under test go unreached.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -469,4 +470,175 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/implement-lib.sh:2903` `a077772` `PRRT_kwDOTfywrM6eshVh` PR #452 2026-09-03 — open-pr opened the PR body by name at create time, after the push, so a body swapped after its early check became the PR body or blocked on a pipe; the body is copied once before the push into a held inode, re-validated and bounded, and gh reads it through --body-file -
 - `toctou` `scripts/lib/implement-lib.sh:2960` `a077772` `PRRT_kwDOTfywrM6eshVl` PR #452 2026-09-03 — open-pr's prUrl marker publisher closed its only descriptor before the rename with just the result's type checked, so a swapped stage was published and its substituted branch read the run as unrelated to its Stop gate; the rename is checked against a held stage descriptor
 - `toctou` `scripts/lib/implement-lib.sh:2695` `a077772` `PRRT_kwDOTfywrM6eshVq` PR #452 2026-09-03 — the prompt-only review publish fell back to cp through the shared name, following a symlink recreated there and truncating another slot's kept stage when the name was its hard link; the shared name is published by a separately created link and a rename proven to be this stage's inode
+- `platform-divergent-test` `scripts/check-settings-fragment.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJg0` PR #463 2026-09-03 — BRE backslash-t is a tab on BSD grep and a literal t on GNU grep, so three greps matched nothing on the ubuntu leg while passing locally
+- `platform-divergent-test` `scripts/check-install-migration.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJg6` PR #463 2026-09-03 — the fixture ran the real installer on a runner with no claude binary, so the path under test was never reached
+- `new-default-read-as-opt-out` `install.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJgp` PR #463 2026-09-03 — a skip receipt replaced an installed one with no owned leaves, disowning keys still present in settings.json
+- `stale-state-trusted` `bin/baseline` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJgm` PR #463 2026-09-03 — an installed receipt was treated as current without comparing its recorded leaf set to the shipped payload
+- `precondition-ordering` `install.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJg_` PR #463 2026-09-03 — the jq guard returned before the opt-out branch that needs no jq could record the choice
+- `stale-doc-claim` `docs/installation.md` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJgw` PR #463 2026-09-03 — the pinned bullet kept the vendor-scope claim the same commit's decision record had just corrected
+- `status-swallowed` `scripts/lib/common.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJhF` PR #463 2026-09-03 — an unparseable CLI on PATH fell through to fixed candidates, reporting a version from a binary no session runs
+- `exit-path-asymmetry` `install.sh` `3dcedf444ab29432ee6ae4ef6e7cccc13c681051` `PRRT_kwDOTfywrM6fEJhM` PR #463 2026-09-03 — the temp file was populated under the umask and restricted only at publish, leaving the merged settings readable during the window
+- `platform-divergent-test` `scripts/check-settings-fragment.sh` `cdecfae76924631eb8c640ad610f1e15ff9c07c1` `ci-install-guard-stat-mode` PR #463 2026-09-03 — the assertions verifying mode preservation kept a BSD-first stat idiom while the library they check had already been fixed to try GNU first
+- `partial-validation` `scripts/lib/common.sh` `4a86f67` `PRRT_kwDOTfywrM6fIocR` PR #463 2026-09-04 — all(.[]; ...) is vacuously true for an empty array, so a receipt row claiming the JSON root passed validation and delpaths nulled the whole settings document
+- `ledger-coverage-gap` `scripts/lib/common.sh` `4a86f67` `PRRT_kwDOTfywrM6fIocN` PR #463 2026-09-04 — the fix carried the prior rows into a skip receipt but the reader still discarded them by disposition, so the carry changed nothing a consumer could see
+- `metric-scope-mismatch` `bin/baseline` `4a86f67` `PRRT_kwDOTfywrM6fIocP` PR #463 2026-09-04 — owned leaf paths were used as the currency marker, which cannot see a changed value and reports pending forever for a leaf the operator already owned
+- `partial-validation` `scripts/lib/common.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU-7` PR #463 2026-09-04 — getpath cannot distinguish a missing path from one whose value is null, so an adopter's explicit null read as absent and was overwritten
+- `stale-state-trusted` `uninstall.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU_A` PR #463 2026-09-04 — the global receipt was treated as proof of ownership, so one clone's uninstaller removed another clone's live settings
+- `exit-path-asymmetry` `install.sh` `265b2c7` `PRRT_kwDOTfywrM6fJU_C` PR #463 2026-09-04 — the receipt publish could fail after the settings rename succeeded and only warned, leaving applied keys with no ownership record
+- `third-party-default` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhS` PR #463 2026-09-04 — stat without -L reports the symlink's own mode, so a symlinked settings.json would have had 755/777 stamped onto the file replacing it
+- `partial-validation` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhU` PR #463 2026-09-04 — the absence test asked only about the final key, so a null ANCESTOR made every descendant look absent
+- `partial-validation` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhW` PR #463 2026-09-04 — slurpfile reads a stream and taking element 0 discarded every later top-level value instead of refusing
+- `precondition-ordering` `scripts/lib/common.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhP` PR #463 2026-09-04 — stale owned leaves were pruned after the new paths were evaluated, so a leaf becoming a container left the replacement skipped and the old leaf gone
+- `exit-path-asymmetry` `uninstall.sh` `900bacb` `PRRT_kwDOTfywrM6fKMhH` PR #463 2026-09-04 — the install-side umask fix was not applied to its mirror, leaving the whole settings document world-readable while uninstall wrote it
+- `partial-validation` `scripts/lib/common.sh` `cf23972` `PRRT_kwDOTfywrM6fM7A6` PR #463 2026-09-04 — the // {} default is false for null and for false, so either settings root coerced to an empty object instead of being refused
+- `stale-doc-claim` `CHANGELOG.md` `cf23972` `PRRT_kwDOTfywrM6fM7BL` PR #463 2026-09-04 — the release note still carried the project-scope rationale the same change had already corrected in the decision log and the docs
+- `status-swallowed` `scripts/lib/common.sh` `cf23972` `PRRT_kwDOTfywrM6fM7BR` PR #463 2026-09-04 — getpath raises through a scalar ancestor, so an owned key replaced by false killed both merge passes instead of classifying the descendants
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `cf23972` `PRRT_kwDOTfywrM6fM7BV` PR #463 2026-09-04 — removal read the payload whenever the file was non-empty, contradicting the stated contract that removal depends only on the receipt
+- `stale-doc-claim` `scripts/lib/common.sh` `cf23972` `PRRT_kwDOTfywrM6fM7BZ` PR #463 2026-09-04 — the receipt-leaves header and D98 still named only two ownership-bearing dispositions after the fix made all four carry rows
+- `metric-scope-mismatch` `install.sh` `cf23972` `PRRT_kwDOTfywrM6fM7Bk` PR #463 2026-09-04 — the headline asked only whether sandboxing was on, so a skipped protection-bearing leaf was reported as full protection
+- `stale-doc-claim` `base/practices/untrusted-content.md` `cf23972` `PRRT_kwDOTfywrM6fM7Bu` PR #463 2026-09-04 — the practice stated an allowUnsandboxedCommands default that the same change's decision record explicitly refuses to state, and it renders into every agent root doc
+- `partial-validation` `scripts/lib/common.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjo` PR #463 2026-09-04 — uninstall derived container ownership from the pruned leaf paths, so an operator's pre-existing empty sandbox object was deleted
+- `new-default-read-as-opt-out` `install.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjs` PR #463 2026-09-04 — a removed leaf was recorded with the payload value, so an operator who re-added it by hand would have had it deleted as ours
+- `precondition-ordering` `install.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmjv` PR #463 2026-09-04 — the settings were written even when the root link failed, leaving keys that uninstall's own ownership check would then refuse to remove
+- `status-swallowed` `uninstall.sh` `f92fa2e` `PRRT_kwDOTfywrM6fOmj0` PR #463 2026-09-04 — the receipt's rm status was ignored, so a stale ownership record survived a reported-clean uninstall and made the next install refuse to restore protection
+- `metric-scope-mismatch` `install.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtg` PR #463 2026-09-04 — the blocked receipt carried the prior digest, so pending saw a mismatch forever and re-ran the installer on every update
+- `partial-validation` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtk` PR #463 2026-09-04 — the created-container cleanup read getpath unguarded, the sibling loop of the leaf reads that had already been fixed for it
+- `exit-path-asymmetry` `uninstall.sh` `31f0123` `PRRT_kwDOTfywrM6fZFtr` PR #463 2026-09-04 — uninstall returned success without jq after the link proving ownership had been removed, so the retry it advised could never complete
+- `new-default-read-as-opt-out` `scripts/lib/common.sh` `31f0123` `PRRT_kwDOTfywrM6fZFt2` PR #463 2026-09-04 — a blocked receipt still owned its carried rows, so a value the operator deleted and later re-added by hand would be removed as ours
+- `stale-state-trusted` `install.sh` `9aaa9a5` `PRRT_kwDOTfywrM6fbB7v` PR #463 2026-09-04 — the receipt carried the previous clone's source verbatim, so a second clone's own uninstall would refuse its own settings as another clone's
+- `evidence-discarded` `scripts/lib/pinned-install.sh` `9aaa9a5` `PRRT_kwDOTfywrM6fbB72` PR #463 2026-09-04 — the sandbox-omission notice sat inside the jq-success branch, so the security-relevant omission went unsaid exactly in the degraded environment
+- `partial-validation` `scripts/lib/common.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkJ` PR #463 2026-09-04 — the fragment was not validated like the settings, so a whitespace-only payload read as shipping nothing and retired every protection
+- `exit-path-asymmetry` `scripts/lib/common.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkO` PR #463 2026-09-04 — the refusal reset discarded a safe retirement, leaving the retired key installed with no ownership record to remove it by
+- `status-swallowed` `install.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkM` PR #463 2026-09-04 — a refusal whose own record could not be published returned success with the previous installed claim and its digest standing
+- `stale-state-trusted` `install.sh` `4b3abf2` `PRRT_kwDOTfywrM6fcQkI` PR #463 2026-09-04 — the no-jq path rendered no receipt, leaving provenance naming the previous clone while the root link named this one
+- `stale-state-trusted` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfY` PR #463 2026-09-04 — the opt-out carried its ownership rows without rechecking them against the live settings, so a leaf the operator had deleted stayed claimed
+- `exit-path-asymmetry` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfU` PR #463 2026-09-04 — a prune that could not be published was followed by an ownership-free receipt, leaving the retired key with nothing able to remove it
+- `toctou` `install.sh` `ee42d73` `PRRT_kwDOTfywrM6fdYfa` PR #463 2026-09-04 — initialising an empty settings.json wrote through a dangling symlink, creating a file outside the directory a rename-only publish path exists to protect
+- `stale-state-trusted` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUR` PR #463 2026-09-05 — the version-skip paths carried ownership rows without rechecking them, the opt-out fix one path over
+- `partial-validation` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUV` PR #463 2026-09-05 — the ownership probe was bypassed for absent, empty or unparseable settings, so those cases kept every stale row
+- `toctou` `install.sh` `03bf927` `PRRT_kwDOTfywrM6feTUX` PR #463 2026-09-05 — the settings and receipt renames were unserialized, so a concurrent opt-out could publish an ownership-free receipt over another run's applied keys
+- `toctou` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLVz` PR #463 2026-09-05 — the lock covered only the sandbox writer while wire_hooks writes the same file and uninstall took none
+- `consumer-contract-mismatch` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV1` PR #463 2026-09-05 — ownership was proved by asking the write path, so a damaged fragment dropped rows whose live values still matched
+- `partial-validation` `scripts/lib/common.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV5` PR #463 2026-09-05 — a container the retirement had just deleted was still carried as ours, so an operator object later created there would be removed
+- `exit-path-asymmetry` `install.sh` `8761c35` `PRRT_kwDOTfywrM6ffLV8` PR #463 2026-09-05 — the rollback pre-image held dereferenced bytes, so restoring over a replaced symlink destroyed the link topology
+- `toctou` `install.sh:559` `eab0b90` `PRRT_kwDOTfywrM6ff2-y` PR #463 2026-09-05 — the lock was taken after adb_link_manifest had already replaced the root-doc link that decides ownership
+- `exit-path-asymmetry` `uninstall.sh:58` `eab0b90` `PRRT_kwDOTfywrM6ff2-0` PR #463 2026-09-05 — the settings lock was released on the success path only; several early returns left it held
+- `stale-state-trusted` `install.sh:180` `eab0b90` `PRRT_kwDOTfywrM6ff2-1` PR #463 2026-09-05 — a skip whose receipt could not be published left the previous installed record asserting ownership the run had relinquished
+- `evidence-discarded` `install.sh:454` `eab0b90` `PRRT_kwDOTfywrM6ff2-3` PR #463 2026-09-05 — every diagnostic in a function whose stdout is its return value was captured into the caller and dropped
+- `reuse-missed` `install.sh:330` `eab0b90` `self-review-r13` PR #463 2026-09-05 — the blocked-refusal path hand-rolled a copy of the shared invalidator, which disarmed the mutation row pinning it
+- `status-swallowed` `install.sh:222` `f32318c` `PRRT_kwDOTfywrM6fgejF` PR #463 2026-09-05 — both version-skip branches discarded _adb_record_skip's status, so a failed ownership invalidation reported success
+- `exit-path-asymmetry` `scripts/lib/common.sh:627` `f32318c` `PRRT_kwDOTfywrM6fgejH` PR #463 2026-09-05 — a helper wrapper released the lock on every return but no signal, so a Ctrl-C stranded it
+- `precondition-ordering` `uninstall.sh:58` `f32318c` `PRRT_kwDOTfywrM6fgejI` PR #463 2026-09-05 — the lock lives inside the directory being removed, so a home that never had it read as contention
+- `false-guarantee` `scripts/lib/common.sh:634` `f32318c` `self-review-r14-traps` PR #463 2026-09-05 — three mutually-redundant traps made every single-line mutation of the arming unfalsifiable
+- `platform-divergent-test` `scripts/check-settings-fragment.sh:707` `f32318c` `self-review-r14-timing` PR #463 2026-09-05 — a fixed-delay signal fixture passed unloaded and failed under selfcheck's parallel load
+- `status-swallowed` `scripts/lib/common.sh:793` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1V` PR #463 2026-09-07 — an unreadable receipt reported disposition none, so uninstall deleted the record and stranded every key
+- `status-swallowed` `install.sh:181` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1W` PR #463 2026-09-07 — a first opt-out whose receipt could not be written exited 0 having recorded nothing
+- `stale-state-trusted` `scripts/lib/common.sh:1109` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1Y` PR #463 2026-09-07 — a container was carried on existence alone, claiming an object with no owned descendant
+- `stale-state-trusted` `bin/baseline:221` `dd5b2e4` `PRRT_kwDOTfywrM6fiP1Z` PR #463 2026-09-07 — currency compared only the payload digest and never looked at the live file
+- `reuse-missed` `scripts/lib/common.sh:800` `dd5b2e4` `self-review-r15-present` PR #463 2026-09-07 — a duplicate def present was matched first by the mutation row pinning the merge's, disarming it
+- `exit-path-asymmetry` `install.sh:428` `44099fe` `PRRT_kwDOTfywrM6fw0Bq` PR #463 2026-09-07 — a signal between the two publications skipped both the receipt write and the rollback
+- `status-swallowed` `install.sh:519` `44099fe` `PRRT_kwDOTfywrM6fw0Bt` PR #463 2026-09-07 — a grep that could not read answered zero rows, and zero rows is a legitimate answer
+- `status-swallowed` `uninstall.sh:238` `44099fe` `PRRT_kwDOTfywrM6fw0Bx` PR #463 2026-09-07 — a readable receipt with a damaged disposition mapped to none, discarding the rows it carried
+- `status-swallowed` `scripts/lib/common.sh:576` `44099fe` `PRRT_kwDOTfywrM6fw0B0` PR #463 2026-09-07 — the lock owner write was unchecked, so acquisition succeeded with no token and the lock could never be released
+- `evidence-discarded` `bin/baseline:666` `44099fe` `PRRT_kwDOTfywrM6fw0B2` PR #463 2026-09-07 — a refused sandbox install was reported as a repair, and the SessionStart flow hid the refusal entirely
+- `exit-path-asymmetry` `install.sh:340` `d5c0b08` `PRRT_kwDOTfywrM6fyO_L` PR #463 2026-09-07 — the refusal that prunes did its two durable writes outside the deferral
+- `exit-path-asymmetry` `uninstall.sh:243` `d5c0b08` `PRRT_kwDOTfywrM6fyO_Q` PR #463 2026-09-07 — the uninstall settings rewrite and receipt removal never deferred signals
+- `status-swallowed` `install.sh:230` `d5c0b08` `PRRT_kwDOTfywrM6fyO_U` PR #463 2026-09-07 — a provenance refresh that could not publish returned the tolerated no-jq skip
+- `exit-path-asymmetry` `install.sh:837` `d5c0b08` `self-review-r17-hooks` PR #463 2026-09-07 — the hook wiring and its receipt were a third undeferred pair, found by sweeping the class
+- `false-guarantee` `scripts/check-settings-fragment.sh:926` `d5c0b08` `self-review-r17-pins` PR #463 2026-09-07 — three guards pinned the comment above each deferral rather than the call itself
+- `status-swallowed` `scripts/lib/common.sh:628` `e66737f` `PRRT_kwDOTfywrM6f_L3z` PR #463 2026-09-07 — the lock token was cleared before removal, so a failed release reported success
+- `status-swallowed` `install.sh:382` `e66737f` `PRRT_kwDOTfywrM6f_L3l` PR #463 2026-09-07 — the blocked refusal returned the invalidator benign zero, reporting success having recorded nothing
+- `exit-path-asymmetry` `uninstall.sh:258` `e66737f` `PRRT_kwDOTfywrM6f_L3o` PR #463 2026-09-07 — the settings were rewritten before removability was known, leaving the receipt claiming values that were gone
+- `stale-state-trusted` `bin/baseline:205` `e66737f` `PRRT_kwDOTfywrM6f_L3s` PR #463 2026-09-07 — carried ownership rows were revalidated only inside the installer, so a divergence seen by an update was never observed
+- `evidence-discarded` `bin/baseline:703` `e66737f` `PRRT_kwDOTfywrM6f_L3e` PR #463 2026-09-07 — the refusal was gated on LINKS_OK and absent from the post-pull path, so a repair or update hid it
+- `status-swallowed` `install.sh:615` `e66737f` `self-review-r18-record-skip` PR #463 2026-09-07 — _adb_record_skip returned the same benign invalidator status, found by sweeping the callers
+- `false-guarantee` `scripts/check-settings-fragment.sh` `e66737f` `self-review-r18-countpin` PR #463 2026-09-07 — a grep -c pin counted the function definition and its comment, so deleting a call still cleared it
+- `exit-path-asymmetry` `uninstall.sh:258` `129730b` `PRRT_kwDOTfywrM6gBZ8K` PR #463 2026-09-07 — the removability probe was two renames sitting outside the deferral it protects
+- `status-swallowed` `install.sh:676` `129730b` `PRRT_kwDOTfywrM6gBZ8M` PR #463 2026-09-07 — both wrappers discarded the lock-release status the helper had just started reporting
+- `status-swallowed` `install.sh:544` `129730b` `PRRT_kwDOTfywrM6gBZ8P` PR #463 2026-09-07 — the caller folded the merge's new 20 and 21 into the relinquish path they were introduced to distinguish
+- `stale-state-trusted` `uninstall.sh:174` `129730b` `PRRT_kwDOTfywrM6gBZ8Q` PR #463 2026-09-07 — the root-doc link outranked a source row that explicitly named another clone
+- `false-guarantee` `scripts/check-settings-fragment.sh:1825` `129730b` `self-review-r19-moved-coverage` PR #463 2026-09-07 — preferring the source row moved coverage off the link fallback, leaving it unguarded while the guard still passed
+- `exit-path-asymmetry` `uninstall.sh:283` `e328e92` `PRRT_kwDOTfywrM6gDcLO` PR #463 2026-09-08 — the settings were republished when nothing was pruned, destroying the operator's symlink
+- `status-swallowed` `scripts/lib/common.sh:1092` `e328e92` `PRRT_kwDOTfywrM6gDcLI` PR #463 2026-09-08 — the early return added for 20/21 walked past the temp cleanup at the end of the function
+- `stale-state-trusted` `bin/baseline:216` `e328e92` `PRRT_kwDOTfywrM6gDcLH` PR #463 2026-09-08 — currency never compared the receipt's source, so a foreign record was reported healthy forever
+- `evidence-discarded` `bin/baseline:703` `e328e92` `PRRT_kwDOTfywrM6gDcLD` PR #463 2026-09-08 — a visit that only relinquished stale ownership was reported as a repair of links
+- `reuse-missed` `uninstall.sh:135` `e328e92` `self-review-r20-hooks-publish` PR #463 2026-09-08 — the hook removal republished unconditionally and through a bare mv rather than the shared publish
+- `false-guarantee` `scripts/check-settings-fragment.sh` `e328e92` `self-review-r20-handverified` PR #463 2026-09-08 — the symlink fix was verified by hand and never guarded, so two mutation rows pointed at an assertion that did not exist
+- `partial-validation` `uninstall.sh:287` `e6557af` `PRRT_kwDOTfywrM6gFbBF` PR #463 2026-09-08 — the change test counted pruned leaves while the removal also deletes owned containers
+- `stale-state-trusted` `bin/baseline:264` `e6557af` `PRRT_kwDOTfywrM6gFbBI` PR #463 2026-09-08 — an installed receipt was current forever without rechecking that the CLI still clears the floor
+- `exit-path-asymmetry` `install.sh:634` `e6557af` `PRRT_kwDOTfywrM6gFbBA` PR #463 2026-09-08 — a still-accurate ownership record was invalidated because its replacement could not be written
+- `exit-path-asymmetry` `install.sh:364` `e6557af` `PRRT_kwDOTfywrM6gFbBD` PR #463 2026-09-08 — retirement pruned the settings before the refusal receipt was known to be replaceable
+- `evidence-discarded` `uninstall.sh:208` `e6557af` `PRRT_kwDOTfywrM6gFbBL` PR #463 2026-09-08 — a legacy receipt lost its only proof of ownership when the link was removed before cleanup
+- `partial-validation` `uninstall.sh:210` `e6557af` `self-review-r21-stamp-truncation` PR #463 2026-09-08 — the provenance stamp wrote from an empty read, destroying every ownership row on an unreadable receipt
+- `status-swallowed` `install.sh:584` `c8621f8` `PRRT_kwDOTfywrM6gIqHH` PR #463 2026-09-08 — an operational read failure was treated as proved divergence and relinquished ownership
+- `exit-path-asymmetry` `uninstall.sh:120` `c8621f8` `PRRT_kwDOTfywrM6gIqHK` PR #463 2026-09-08 — a failed or impossible provenance stamp warned and carried on into the unlink that removes its proof
+- `platform-divergent-test` `scripts/check-settings-fragment.sh` `c8621f8` `self-review-r22-shared-tmp` PR #463 2026-09-08 — the leak guard counted a SHARED temp directory and failed under the parallel gate
+- `evidence-discarded` `scripts/check-settings-fragment.sh` `c8621f8` `self-review-r22-splice` PR #463 2026-09-08 — a positional text splice deleted two assertions, leaving their mutation rows pointing at nothing
+- `declared-inputs-incomplete` `scripts/selfcheck.sh:776` `b070924` `PRRT_kwDOTfywrM6gU1oW` PR #463 2026-09-08 — the suite grew pins on currency-lib and the gate's declared input set was not swept with them
+- `partial-validation` `scripts/lib/common.sh:1204` `b070924` `PRRT_kwDOTfywrM6gU1oO` PR #463 2026-09-08 — retirement pruned every recorded empty container, including one the operator had recreated
+- `evidence-discarded` `bin/baseline:736` `b070924` `PRRT_kwDOTfywrM6gU1oJ` PR #463 2026-09-08 — a CLI downgrade was reported as a relinquishment, hiding that the protections stopped being applied
+- `partial-validation` `install.sh:367` `b070924` `PRRT_kwDOTfywrM6gU1oE` PR #463 2026-09-08 — the blocked writer decided from retired leaves while the merge could also change containers
+- `false-guarantee` `scripts/check-settings-fragment.sh` `b070924` `self-review-r23-adjacent-token` PR #463 2026-09-08 — a structural pin watched a token adjacent to the one its mutation removed, so the row could not fire
+- `status-swallowed` `bin/baseline:207` `a0c2e69` `PRRT_kwDOTfywrM6gZze3` PR #463 2026-09-08 — grep -c prints its zero and exits 1, so the fallback appended a second value and broke the caller's arithmetic
+- `partial-validation` `uninstall.sh:123` `a0c2e69` `PRRT_kwDOTfywrM6gZze0` PR #463 2026-09-08 — the stamp asked whether a source ROW existed, while the reader requires a source VALUE
+- `evidence-discarded` `bin/baseline:798` `a0c2e69` `PRRT_kwDOTfywrM6gZzev` PR #463 2026-09-08 — the post-pull path never asked the downgrade question, so a lost protection read as a plain update
+- `partial-validation` `install.sh:360` `025b563` `PRRT_kwDOTfywrM6gc6xw` PR #463 2026-09-09 — the refusal compared its output against the real path when the merge had read a synthetic pre-image
+- `status-swallowed` `scripts/lib/common.sh:551` `025b563` `PRRT_kwDOTfywrM6gc6x1` PR #463 2026-09-09 — a failed chmod was ignored and the rename proceeded, publishing a restricted file at the umask default
+- `status-swallowed` `scripts/lib/common.sh:903` `6ef97ba` `PRRT_kwDOTfywrM6gexrQ` PR #463 2026-09-09 — a provably absent settings file was reported as unanswerable, so reconciliation was never scheduled
+- `exit-path-asymmetry` `uninstall.sh:336` `6ef97ba` `PRRT_kwDOTfywrM6gexrO` PR #463 2026-09-09 — the no-change branch returned without removing the temp it had already staged
+- `evidence-discarded` `bin/baseline:768` `6ef97ba` `PRRT_kwDOTfywrM6gexrM` PR #463 2026-09-09 — a downgrade was gated behind LINKS_OK, so a run that also repaired a link hid the lost protection
+- `status-swallowed` `install.sh:447` `7bc8d32` `PRRT_kwDOTfywrM6gjKzK` PR #463 2026-09-09 — a failed jq became an empty argument and the row writer reported success, publishing keys under a rowless receipt
+- `partial-validation` `install.sh:192` `7bc8d32` `PRRT_kwDOTfywrM6gjKzE` PR #463 2026-09-09 — the opt-out retention tested for rows when the record itself is the evidence of the choice
+- `partial-validation` `bin/baseline:208` `7bc8d32` `PRRT_kwDOTfywrM6gjKzH` PR #463 2026-09-09 — the downgrade was decided by row count, which cannot separate a mixed downgrade-plus-reconciliation
+- `false-guarantee` `scripts/check-settings-fragment.sh` `7bc8d32` `self-review-r27-one-of-two` PR #463 2026-09-09 — a pin asserted that an array check exists while the mutation deleted one of two, leaving half the reads uncovered
+- `status-swallowed` `scripts/lib/common.sh:1325` `41a865e` `PRRT_kwDOTfywrM6g20BV` PR #463 2026-09-10 — each leaf value was read through an unchecked command substitution, emitting an empty field on failure
+- `evidence-discarded` `install.sh:424` `41a865e` `PRRT_kwDOTfywrM6g20Bd` PR #463 2026-09-10 — the refusal never named the kept bucket, and the receipt it then wrote carried no rows
+- `false-guarantee` `bin/baseline:217` `41a865e` `PRRT_kwDOTfywrM6g20Ba` PR #463 2026-09-10 — the downgrade message claimed ownership was unchanged in the case where it had just been relinquished
+- `false-guarantee` `scripts/check-settings-fragment.sh` `41a865e` `self-review-r28-unreachable-string` PR #463 2026-09-10 — a pin grepped for message text that survives unreachable when its branch is disabled
+- `status-swallowed` `install.sh:330` `9ab187c` `PRRT_kwDOTfywrM6g6ivh` PR #463 2026-09-10 — an unchecked verdict read let a refusing merge fall through to the write path
+- `status-swallowed` `scripts/lib/common.sh:1336` `9ab187c` `PRRT_kwDOTfywrM6g6ivb` PR #463 2026-09-10 — both path enumerations discarded jq's status inside a heredoc, walking zero paths and returning 0
+- `status-swallowed` `uninstall.sh:247` `9ab187c` `PRRT_kwDOTfywrM6g6ivf` PR #463 2026-09-10 — an unreadable receipt became an empty source, so the run reported Uninstalled over settings it never touched
+- `partial-validation` `install.sh:230` `9ab187c` `PRRT_kwDOTfywrM6g6ivi` PR #463 2026-09-10 — the none sentinel was persisted into a present receipt, which no reader can classify
+- `false-guarantee` `scripts/check-settings-fragment.sh` `9ab187c` `self-review-r29-probe-error` PR #463 2026-09-10 — two verification probes errored and printed what looked like findings
+- `status-swallowed` `install.sh` `7cac833` `PRRT_kwDOTfywrM6hDn8w` PR #463 2026-09-10
+- `status-swallowed` `scripts/lib/common.sh` `7cac833` `PRRT_kwDOTfywrM6hDn81` PR #463 2026-09-10
+- `status-swallowed` `uninstall.sh` `7cac833` `PRRT_kwDOTfywrM6hDn89` PR #463 2026-09-10
+- `status-swallowed` `install.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9B` PR #463 2026-09-10
+- `false-guarantee` `scripts/lib/currency-lib.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9H` PR #463 2026-09-10
+- `status-swallowed` `uninstall.sh` `7cac833` `PRRT_kwDOTfywrM6hDn9N` PR #463 2026-09-10
+- `status-swallowed` `scripts/lib/common.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiJ` PR #463 2026-09-10
+- `consumer-contract-mismatch` `install.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNid` PR #463 2026-09-10
+- `status-swallowed` `install.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiQ` PR #463 2026-09-10
+- `status-swallowed` `uninstall.sh` `b3b5e9b` `PRRT_kwDOTfywrM6hMNiV` PR #463 2026-09-10
+- `status-swallowed` `install.sh` `31a9816` `PRRT_kwDOTfywrM6hRWGH` PR #463 2026-09-11
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `31a9816` `PRRT_kwDOTfywrM6hRWGO` PR #463 2026-09-11
+- `status-swallowed` `bin/baseline` `31a9816` `PRRT_kwDOTfywrM6hRWGT` PR #463 2026-09-11
+- `status-swallowed` `uninstall.sh` `cc09c25` `PRRT_kwDOTfywrM6hWRFr` PR #463 2026-09-11
+- `status-swallowed` `uninstall.sh` `cc09c25` `PRRT_kwDOTfywrM6hWRFs` PR #463 2026-09-11
+- `partial-validation` `uninstall.sh` `cc09c25` `PRRT_kwDOTfywrM6hWRFu` PR #463 2026-09-11
+- `precondition-ordering` `scripts/lib/common.sh` `cc09c25` `PRRT_kwDOTfywrM6hWRFw` PR #463 2026-09-11
+- `consumer-contract-mismatch` `install.sh` `b165e64` `PRRT_kwDOTfywrM6hsHrc` PR #463 2026-09-12
+- `status-swallowed` `scripts/lib/common.sh` `b165e64` `PRRT_kwDOTfywrM6hsHre` PR #463 2026-09-12
+- `consumer-contract-mismatch` `bin/baseline` `b165e64` `PRRT_kwDOTfywrM6hsHrg` PR #463 2026-09-12
+- `partial-validation` `scripts/lib/common.sh` `b165e64` `PRRT_kwDOTfywrM6hsHri` PR #463 2026-09-12
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQye` PR #463 2026-09-12
+- `toctou` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQyf` PR #463 2026-09-12
+- `status-swallowed` `scripts/lib/common.sh` `128d52e` `PRRT_kwDOTfywrM6huQyg` PR #463 2026-09-12
+- `partial-validation` `scripts/lib/common.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RA` PR #463 2026-09-12
+- `status-swallowed` `scripts/lib/common.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RB` PR #463 2026-09-12
+- `consumer-contract-mismatch` `scripts/lib/common.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RC` PR #463 2026-09-12
+- `status-swallowed` `uninstall.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RD` PR #463 2026-09-12
+- `evidence-discarded` `install.sh` `2a5b0c5` `PRRT_kwDOTfywrM6hv6RE` PR #463 2026-09-12
+- `partial-validation` `scripts/lib/common.sh` `23cbcf8` `PRRT_kwDOTfywrM6hyF0n` PR #463 2026-09-12
+- `exit-path-asymmetry` `scripts/lib/common.sh` `23cbcf8` `PRRT_kwDOTfywrM6hyF0r` PR #463 2026-09-12
+- `partial-validation` `uninstall.sh` `23cbcf8` `PRRT_kwDOTfywrM6hyF0u` PR #463 2026-09-12
+- `partial-validation` `install.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8un` PR #463 2026-09-13
+- `partial-validation` `uninstall.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8uo` PR #463 2026-09-13
+- `partial-validation` `uninstall.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8up` PR #463 2026-09-13
+- `status-swallowed` `bin/baseline` `36c31ff` `PRRT_kwDOTfywrM6hz8uq` PR #463 2026-09-13
+- `status-swallowed` `install.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8us` PR #463 2026-09-13
+- `partial-validation` `scripts/lib/common.sh` `4c818b0` `PRRT_kwDOTfywrM6h2I20` PR #463 2026-09-13
+- `status-swallowed` `bin/baseline` `4c818b0` `PRRT_kwDOTfywrM6h2I21` PR #463 2026-09-13
+- `status-swallowed` `install.sh` `4c818b0` `PRRT_kwDOTfywrM6h2I23` PR #463 2026-09-13
+- `partial-validation` `scripts/lib/common.sh` `4c818b0` `PRRT_kwDOTfywrM6h2I26` PR #463 2026-09-13
 <!-- adb:hits:end -->

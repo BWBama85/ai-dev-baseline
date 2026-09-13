@@ -1282,11 +1282,32 @@ call site.
 Say the boundary honestly, because a security posture that overstates itself is worse
 than none:
 
-- **This is prose, not a sandbox.** It constrains how an agent is asked to treat text.
-  It does not constrain what a dispatched CLI can read or reach — a cross-agent
-  dispatch runs with the workstation's own privileges, and any subagent shares the
-  parent session's configuration. Least-privilege enforcement is a separate,
-  agent-specific concern.
+- **This is prose, and the sandbox beside it is partial.** This file constrains how an
+  agent is asked to treat text; it constrains nothing about what a dispatched CLI can
+  read or reach. Since #248 the Claude installer *does* ship least-privilege settings —
+  `sandbox.enabled`, read denials on `~/.aws` and `~/.ssh`, a `GITHUB_TOKEN` scrub and a
+  network allowlist, written into `~/.claude/settings.json` — so the claim is no longer
+  "absent", but it is a long way from "enforced", and four gaps are load-bearing:
+
+  - **It is Claude-only and user-scoped.** `sandbox.*` is Claude Code configuration.
+    A `codex exec` or `agy -p` dispatch — the cross-agent path this file exists for —
+    runs with the workstation's own privileges exactly as before.
+  - **It is opt-out-able and version-gated.** `install.sh --no-sandbox` declines it, and
+    a CLI below the floor gets nothing at all (by design: an inert key would report
+    protection it never applied). Neither state is detectable from an agent's prose.
+  - **It bounds sandboxed Bash, not the agent.** In-process tools follow their permission
+    rules instead, and unless `allowUnsandboxedCommands` is set to `false` a blocked command can
+    be retried outside the sandbox, which then goes through the ordinary permission flow.
+  - **A subagent still shares the parent session's configuration**, so a dispatch inherits
+    whatever the parent had — including an opt-out.
+  - **It fails OPEN when the sandbox cannot start.** Per the vendor reference, if dependencies are
+    missing or the platform is unsupported, Claude Code warns and runs commands *without*
+    sandboxing; `failIfUnavailable` is what makes that a hard error, and the installer does not
+    ship it. On a Linux or WSL2 host missing the sandbox packages, neither the file denials nor the
+    environment scrub applies — and the visible signal is a warning, not a failure.
+
+  Treat it as a floor that removes the easiest credential reads on a host where the sandbox
+  actually starts, not as containment.
 - **The screening is advisory.** There is no classifier gating these reads. The
   reporting duty above is a duty on the agent doing the work, and an agent that has
   already been subverted will not discharge it.
