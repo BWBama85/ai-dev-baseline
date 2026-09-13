@@ -632,4 +632,9 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh` `23cbcf8` `PRRT_kwDOTfywrM6hyF0n` PR #463 2026-09-12
 - `exit-path-asymmetry` `scripts/lib/common.sh` `23cbcf8` `PRRT_kwDOTfywrM6hyF0r` PR #463 2026-09-12
 - `partial-validation` `uninstall.sh` `23cbcf8` `PRRT_kwDOTfywrM6hyF0u` PR #463 2026-09-12
+- `partial-validation` `install.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8un` PR #463 2026-09-13
+- `partial-validation` `uninstall.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8uo` PR #463 2026-09-13
+- `partial-validation` `uninstall.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8up` PR #463 2026-09-13
+- `status-swallowed` `bin/baseline` `36c31ff` `PRRT_kwDOTfywrM6hz8uq` PR #463 2026-09-13
+- `status-swallowed` `install.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8us` PR #463 2026-09-13
 <!-- adb:hits:end -->
