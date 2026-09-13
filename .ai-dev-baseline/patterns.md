@@ -637,4 +637,8 @@ One line per resolved review thread, newest last.
 - `partial-validation` `uninstall.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8up` PR #463 2026-09-13
 - `status-swallowed` `bin/baseline` `36c31ff` `PRRT_kwDOTfywrM6hz8uq` PR #463 2026-09-13
 - `status-swallowed` `install.sh` `36c31ff` `PRRT_kwDOTfywrM6hz8us` PR #463 2026-09-13
+- `partial-validation` `scripts/lib/common.sh` `4c818b0` `PRRT_kwDOTfywrM6h2I20` PR #463 2026-09-13
+- `status-swallowed` `bin/baseline` `4c818b0` `PRRT_kwDOTfywrM6h2I21` PR #463 2026-09-13
+- `status-swallowed` `install.sh` `4c818b0` `PRRT_kwDOTfywrM6h2I23` PR #463 2026-09-13
+- `partial-validation` `scripts/lib/common.sh` `4c818b0` `PRRT_kwDOTfywrM6h2I26` PR #463 2026-09-13
 <!-- adb:hits:end -->
