@@ -1049,7 +1049,7 @@ _adb_claude_settings_rows_complete() {
   case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete
   # THE RECORDED COUNT ANSWERS FIRST, and needs no payload at all. A malformed row is skipped by the
   # reader, so it shows up here as a shortfall exactly as a lost one does. (PR review)
-  local _want _wrc _have
+  local _want _wrc _have _nrow
   _want="$(adb_claude_settings_leaf_count "$receipt")"; _wrc=$?
   case "$_wrc" in
     0)
@@ -1063,11 +1063,14 @@ _adb_claude_settings_rows_complete() {
       else
         [ "$_want" -gt 0 ] || return 0    # count-rowless-skip-ok
       fi
-      # EXACTLY. The renderer counts every leaf row it writes, retired ones included, so no receipt it
-      # produced carries more distinct paths than its header. A shortfall is a lost row; a surplus is a
-      # row nobody wrote, and uninstall would delete whatever live value it names. (PR review)
+      # EXACTLY, counted both ways. The renderer writes each leaf once and counts every row it writes,
+      # retired ones included. Distinct paths short of the header are a lost row; validated ROWS beyond it
+      # are a row nobody wrote — a surplus path, or a duplicate whose value the removal's first-match
+      # lookup would trust over the real one — and uninstall would delete whatever live value it names.
+      # (PR review)
       [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
-      [ "$_have" -le "$_want" ] || return 21   # rows-beyond-count
+      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 2   # validated-row-count
+      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
       # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
       # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
       # a shipped key absent, uninstall removed the other three and deleted the receipt, and the omitted
@@ -1083,6 +1086,13 @@ _adb_claude_settings_rows_complete() {
           _crec="$(printf '%s' "$owned" | jq -c '[.[].p] | unique | sort' 2>/dev/null)" || return 2
           [ "$(jq -n --argjson s "$_cship" --argjson r "$_crec" '($s - $r) | length' 2>/dev/null)" = "0" ] \
             || return 23   # identity-short-of-payload
+          # ...AND EXACTLY ITS PATH/VALUE PAIRS. Paths alone let a receipt whose header was raised to match
+          # carry an unrelated live key, or record a value the payload never shipped — and removal deletes a
+          # live value precisely because it equals the RECORDED one. (PR review)
+          local _cpair
+          _cpair="$(jq -c '[paths(type != "object") as $p | select(all($p[]; type == "string")) | {p: $p, v: getpath($p)}] | unique' "$payload" 2>/dev/null)" || return 2
+          [ "$(printf '%s' "$owned" | jq -c --argjson s "$_cpair" '(map({p, v}) | unique) == $s' 2>/dev/null)" = "true" ] \
+            || return 21   # identity-pairs-differ
         fi
       fi
       return 0 ;;
@@ -1486,8 +1496,12 @@ adb_claude_settings_merge() {
               .settings = (.settings | delpaths([$p])) | .pruned += [$p]
             else .kept += [$p]
             end )
-      # ...then ONLY the containers this install recorded as created, deepest first.
-      | ( $created | sort_by(-length) ) as $mine
+      # ...then ONLY the containers this install recorded as created, and only as a proper ancestor of a
+      # leaf the receipt records: a container is ours as the parent of something ours. A row naming any
+      # other path is damage, and must not authorize deleting an operator object. Deepest first.
+      | ( $created   # remove-pass candidates
+          | map(. as $a | select( $ownedp | any( (length > ($a | length)) and (.[0:($a | length)] == $a) ) ))   # remove-pass anchored
+          | sort_by(-length) ) as $mine
       | reduce ($mine[]) as $a
           ( .;
             ( .settings | anc_ok($a) ) as $ok   # remove-pass container

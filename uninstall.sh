@@ -67,9 +67,18 @@ uninstall_claude() {
   # "Uninstall INCOMPLETE" over a home with no Claude state at all. Creating the directory to lock
   # it would be worse: an uninstall must not materialise the tree it exists to remove. (PR review)
   if [ ! -d "$HOME/.claude" ]; then
+    # ...BUT ONLY NOTHING IS ABSENT. A regular file, or a link whose target is missing or unreachable,
+    # also fails `-d`, and reporting it as nothing to remove told the operator the install was gone
+    # while every link, hook and setting reappeared once the target came back. (PR review)
+    if [ ! -e "$HOME/.claude" ] && [ ! -L "$HOME/.claude" ]; then
+      adb_info "claude"
+      adb_info "  nothing to remove — ~/.claude does not exist"
+      return 0
+    fi
     adb_info "claude"
-    adb_info "  nothing to remove — ~/.claude does not exist"
-    return 0
+    adb_info "  ERROR  ~/.claude exists but is not a directory this run can enter (a file, or a link that"
+    adb_info "         does not resolve) — NOTHING was removed. Restore it or remove it by hand, then re-run."
+    return 1   # claude-root-unusable
   fi
   if ! adb_settings_lock_take; then
     adb_info "claude"

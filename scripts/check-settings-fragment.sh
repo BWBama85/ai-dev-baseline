@@ -157,7 +157,7 @@ adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" "$
 # the rest applies. Resetting it looked tidy and orphaned the retired key permanently — a blocked
 # receipt carries no rows, so nothing could ever remove it afterwards.
 r2="$(printf '{"model":"opus","sandbox":{"enabled":false,"network":{"strictAllowlist":true}}}' > "$work/ref.json"
-      { cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' > "$work/ref-receipt"
+      { cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' | sed 's/^payload .*/payload 0000000000000000000000000000000000000000000000000000000000000000/' > "$work/ref-receipt"
       adb_claude_settings_merge "$work/ref.json" "$PAYLOAD" "$work/ref-receipt")"
 [ "$(verdict "$r2")" = refuse ] && ok || bad "precondition: that fixture should refuse"
 [ "$(printf '%s' "$r2" | jq -r '.wrote | length')" = 0 ] && ok \
@@ -187,7 +187,7 @@ r="$(m "$(jq -c '.sandbox.enabled = false' "$work/installed.json")" "$work/insta
 
 # RETIREMENT still runs, and is not a refusal: a leaf we recorded and no longer ship is pruned when
 # it still matches, and kept and named when the operator has edited it.
-{ cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' > "$work/retired-receipt"
+{ cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' | sed 's/^payload .*/payload 0000000000000000000000000000000000000000000000000000000000000000/' > "$work/retired-receipt"
 r="$(m "$(jq -c '.sandbox.network.strictAllowlist = true' "$work/installed.json")" "$work/retired-receipt")"
 [ "$(names "$r" pruned)" = "sandbox.network.strictAllowlist" ] && ok \
   || bad "a recorded leaf the payload no longer ships must be PRUNED; pruned: $(names "$r" pruned)"
@@ -648,7 +648,8 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/installed-receipt" --remove)" \
 # two-deep path it is itself safe; only the ancestor walk saves a THREE-deep container whose
 # grandparent is a scalar. Without that case the two guards cover each other and neither can be
 # shown to matter.
-{ cat "$work/installed-receipt"; printf 'container%s["sandbox","credentials","deep"]\n' "$ADB_TAB"; } > "$work/deep-receipt"
+{ cat "$work/installed-receipt"; printf 'leaf%s["sandbox","credentials","deep","x"]%s1\n' "$ADB_TAB" "$ADB_TAB"
+  printf 'container%s["sandbox","credentials","deep"]\n' "$ADB_TAB"; } > "$work/deep-receipt"
 r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
   && ok || bad "removal must not fail when a recorded container is DEEPER than the scalar that blocks the walk"
 [ "$(printf '%s' "$r" | jq -r '.settings.sandbox')" = false ] && ok \
@@ -1561,7 +1562,7 @@ stub "2.1.259 (Claude Code)"
 HOME="$kb" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 printf 'leaf%s["sandbox","retired"]%s"ours"\n' "$ADB_TAB" "$ADB_TAB" >> "$kb/.claude/.adb-settings-owned"
 # ...under the count the renderer would have written for it: a receipt never carries rows beyond its header.
-awk '/^leaves /{ $2 = $2 + 1 } {print}' "$kb/.claude/.adb-settings-owned" > "$work/kb.r" && mv "$work/kb.r" "$kb/.claude/.adb-settings-owned"
+awk '/^leaves /{ $2 = $2 + 1 } /^payload /{ $2 = "0000000000000000000000000000000000000000000000000000000000000000" } {print}' "$kb/.claude/.adb-settings-owned" > "$work/kb.r" && mv "$work/kb.r" "$kb/.claude/.adb-settings-owned"
 jq '.sandbox.retired = "EDITED" | .sandbox.enabled = false' "$kb/.claude/settings.json" > "$work/kb.tmp" \
   && mv "$work/kb.tmp" "$kb/.claude/settings.json"
 HOME="$kb" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/kb.log" 2>&1
@@ -2802,6 +2803,45 @@ _rc=0; HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _r
 [ "$_rc" -ne 0 ] && [ -e "$_h/$_r42r" ] && ok \
   || bad "uninstall must refuse a receipt whose leaf count is malformed, and keep it — removal never reads the header again, so a hidden lost row was stranded with the record deleted (got $_rc)"
 
+# --- round 43: rows counted both ways, exact pairs, anchored containers, an unusable ~/.claude ---------
+#
+# BEHAVIOURAL. A duplicate row keeps the header and the distinct paths intact; only the ROW count sees it.
+# Recorded under a changed digest, so the pair check cannot answer for it.
+_z=0000000000000000000000000000000000000000000000000000000000000000
+awk -v t="$ADB_TAB" '/^leaf\t/ && !d {d=1; print "leaf" t "[\"sandbox\",\"enabled\"]" t "false"} {print}' "$_lc/full" \
+  | sed "s/^payload .*/payload $_z/" > "$_lc/duprow"
+_dr=0; _adb_claude_settings_rows_complete "$_lc/duprow" "$PAYLOAD" || _dr=$?
+[ "$_dr" -eq 21 ] && ok \
+  || bad "a duplicate leaf row under an unchanged header is DAMAGE (21) — the removal trusts the first row, so a doctored duplicate made an operator edit look ours (got $_dr)"
+# While the digest is current the recorded pairs must EQUAL the payload's: no extra path under a raised
+# header, and no value the payload never shipped.
+{ cat "$_lc/full"; printf 'leaf%s["model"]%s"opus"\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' > "$_lc/raised"
+_pr=0; _adb_claude_settings_rows_complete "$_lc/raised" "$PAYLOAD" || _pr=$?
+[ "$_pr" -eq 21 ] && ok \
+  || bad "an extra path under a raised header must answer 21 while the digest is current — uninstall deleted the unrelated live key it named (got $_pr)"
+sed "s/^\(leaf${ADB_TAB}\[\"sandbox\",\"enabled\"\]${ADB_TAB}\)true$/\1false/" "$_lc/full" > "$_lc/revalued"
+[ "$(grep -c "${ADB_TAB}false$" "$_lc/revalued")" -eq 1 ] && ok || bad "precondition: the revalued receipt must record a changed value"
+_vr=0; _adb_claude_settings_rows_complete "$_lc/revalued" "$PAYLOAD" || _vr=$?
+[ "$_vr" -eq 21 ] && ok \
+  || bad "a recorded value the payload never shipped must answer 21 while the digest is current — removal deletes a live value because it equals the recorded one (got $_vr)"
+# A container row is ours only as the ancestor of a leaf the receipt records.
+_h="$work/r43-container"; rm -rf "$_h"; _r42 "$_h"
+{ cat "$_h/$_r42r"; printf 'container%s["operator_object"]\n' "$ADB_TAB"; } > "$work/r43.r" && mv "$work/r43.r" "$_h/$_r42r"
+jq '.operator_object = {}' "$_h/.claude/settings.json" > "$work/r43.s" && mv "$work/r43.s" "$_h/.claude/settings.json"
+HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+jq -e '.operator_object == {}' "$_h/.claude/settings.json" >/dev/null 2>&1 && ok \
+  || bad "a container row with no recorded leaf beneath it must not authorize a deletion — uninstall removed the operator's own empty object (got $(jq -c . "$_h/.claude/settings.json" 2>/dev/null))"
+# Only an ABSENT ~/.claude is nothing to remove.
+_h="$work/r43-root-file"; rm -rf "$_h"; mkdir -p "$_h"; echo x > "$_h/.claude"
+_rc=0; HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >"$work/r43-rf.log" 2>&1 || _rc=$?
+_h2="$work/r43-root-link"; rm -rf "$_h2"; mkdir -p "$_h2"; ln -s "$_h2/gone" "$_h2/.claude"
+_rc2=0; HOME="$_h2" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc2=$?
+[ "$_rc" -ne 0 ] && [ "$_rc2" -ne 0 ] && grep -q 'not a directory this run can enter' "$work/r43-rf.log" && ok \
+  || bad "an occupied ~/.claude that is not an enterable directory must fail — reported as nothing to remove, the install came back when the link target did (file $_rc, link $_rc2)"
+_h3="$work/r43-root-absent"; rm -rf "$_h3"; mkdir -p "$_h3"
+_rc3=0; HOME="$_h3" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc3=$?
+[ "$_rc3" -eq 0 ] && ok || bad "...while a ~/.claude that is truly absent is still nothing to remove (got $_rc3)"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3108,8 +3148,8 @@ if [ "$MUTATION" -eq 1 ]; then
       '            elif true then' \
       'must be KEPT on removal'
   check_mut 'removal prunes containers it never created' \
-      '      | ( $created | sort_by(-length) ) as $mine' \
-      '      | ( [ .settings | paths(type == "object") ] | sort_by(-length) ) as $mine' \
+      '      | ( $created   # remove-pass candidates' \
+      '      | ( [ .settings | paths(type == "object") ]   # remove-pass candidates' \
       "pre-existing empty container must survive"
   check_mut 'a transient skip stops owning the LEAVES it carried' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
@@ -3400,9 +3440,17 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ "$have" -le "$want" ] || :   # count-agrees-surplus' \
     'must answer 21 for rows beyond the recorded count'
   check_mut 'completeness accepts rows beyond the count' \
-    '      [ "$_have" -le "$_want" ] || return 21   # rows-beyond-count' \
+    '      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count' \
     '      :   # rows-beyond-count' \
-    'a row beyond the recorded count is DAMAGE (21)'
+    'a duplicate leaf row under an unchanged header is DAMAGE (21)'
+  check_mut 'the recorded pairs are not compared with the payload' \
+    '            || return 21   # identity-pairs-differ' \
+    '            || :   # identity-pairs-differ' \
+    'an extra path under a raised header must answer 21'
+  check_mut 'removal trusts a container with no recorded leaf beneath it' \
+    '          | map(. as $a | select( $ownedp | any( (length > ($a | length)) and (.[0:($a | length)] == $a) ) ))   # remove-pass anchored' \
+    '          | map(.)   # remove-pass anchored' \
+    'a container row with no recorded leaf beneath it must not authorize'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3851,6 +3899,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # remove-rows-damaged' \
     '    :   # remove-rows-damaged' \
     'whose leaf count is malformed, and keep it'
+  check_mut 'uninstall reads an unusable ~/.claude as absent' \
+    '    return 1   # claude-root-unusable' \
+    '    return 0   # claude-root-unusable' \
+    'an occupied ~/.claude that is not an enterable directory must fail'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
