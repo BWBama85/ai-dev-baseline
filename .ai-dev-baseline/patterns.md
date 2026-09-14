@@ -645,4 +645,7 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `bin/baseline` `039564f` `PRRT_kwDOTfywrM6h3s00` PR #463 2026-09-13
 - `partial-validation` `install.sh` `039564f` `PRRT_kwDOTfywrM6h3s01` PR #463 2026-09-13
 - `toctou` `scripts/lib/common.sh` `039564f` `PRRT_kwDOTfywrM6h3s02` PR #463 2026-09-13
+- `partial-validation` `scripts/lib/common.sh` `85b9490` `PRRT_kwDOTfywrM6h5mrx` PR #463 2026-09-14
+- `partial-validation` `install.sh` `85b9490` `PRRT_kwDOTfywrM6h5mrz` PR #463 2026-09-14
+- `toctou` `scripts/lib/common.sh` `85b9490` `PRRT_kwDOTfywrM6h5mr0` PR #463 2026-09-14
 <!-- adb:hits:end -->
