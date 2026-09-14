@@ -106,6 +106,15 @@ _uninstall_claude_locked() {
     # carries a source row, so we cannot tell whether removing the link destroys its only proof —
     # and the link is removed a few lines below, before the settings cleanup that would report the
     # problem. Refusing here costs a retry; continuing costs the ability to ever clean up.
+    # ...AND A RECEIPT LINK THAT DOES NOT RESOLVE IS NOT AN ABSENT RECEIPT. `-f` and `-s` are both false
+    # for it, so the link was removed first and the failure came later — and once the target was back,
+    # a legacy record with no source row could no longer be proved ours. (PR review)
+    if [ -L "$_lr" ] && [ ! -f "$_lr" ]; then
+      adb_info "  ERROR  $_lr is a link that does not resolve, so this run cannot tell whether the root-doc"
+      adb_info "         link is its only proof of ownership. NOTHING was unlinked — restore or remove"
+      adb_info "         that link and re-run."
+      return 1   # stamp-receipt-unresolved
+    fi
     if [ -f "$_lr" ] && ! cat "$_lr" >/dev/null 2>&1; then
       adb_info "  ERROR  $_lr exists but cannot be read, so this run cannot tell whether the root-doc"
       adb_info "         link is its only proof of ownership. NOTHING was unlinked — fix its"
@@ -371,8 +380,8 @@ unwire_settings() {
   local mrc _nochange
   # AN INCOMPLETE `installed` RECORD IS NOT SAFE TO REMOVE BY. Removing only the rows it lists
   # deletes the receipt and leaves the rest installed with no owner. Asked here rather than inside
-  # the merge because the merge must keep ignoring the payload on this path, and ONLY 23 refuses: a
-  # fragment that is missing or malformed answers "cannot tell", which must not block a removal.
+  # the merge because the merge must keep ignoring the payload on this path. 23 and 21 refuse; a
+  # fragment that is missing or malformed answers "cannot tell" (2), which must not block a removal.
   # (PR review)
   local _crc=0
   _adb_claude_settings_rows_complete "$receipt" "$payload" || _crc=$?
@@ -381,6 +390,14 @@ unwire_settings() {
     adb_info "         it would delete the record and leave the rest installed with no owner."
     adb_info "         NOTHING was removed. Remove the 'sandbox' block and that record by hand."
     return 1   # remove-rows-incomplete
+  fi
+  # A COUNT THAT IS MALFORMED, OR ROWS BEYOND IT, IS READ FROM THE RECEIPT — it is not "cannot tell".
+  # Removal never reads the header again, so a malformed count hid a lost row and the survivors were
+  # removed with the record. An unreadable receipt (20) is refused by the merge just below. (PR review)
+  if [ "$_crc" -eq 21 ]; then
+    adb_info "  WARN   $receipt has a leaf count that is malformed or does not match its rows, so it"
+    adb_info "         cannot show it records every key it owns. NOTHING was removed; the record was KEPT."
+    return 1   # remove-rows-damaged
   fi
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)"; mrc=$?
   if [ "$mrc" -eq 20 ]; then

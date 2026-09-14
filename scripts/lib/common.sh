@@ -1063,10 +1063,11 @@ _adb_claude_settings_rows_complete() {
       else
         [ "$_want" -gt 0 ] || return 0    # count-rowless-skip-ok
       fi
-      # AT LEAST, not exactly. A row the receipt carries beyond its count is a RETIREMENT the merge
-      # prunes, and requiring equality refused every such fixture — the round-36 subset lesson again.
-      # The defect reported is a row that went MISSING, and a shortfall is the narrowest test for it.
+      # EXACTLY. The renderer counts every leaf row it writes, retired ones included, so no receipt it
+      # produced carries more distinct paths than its header. A shortfall is a lost row; a surplus is a
+      # row nobody wrote, and uninstall would delete whatever live value it names. (PR review)
       [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
+      [ "$_have" -le "$_want" ] || return 21   # rows-beyond-count
       # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
       # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
       # a shipped key absent, uninstall removed the other three and deleted the receipt, and the omitted
@@ -1721,6 +1722,26 @@ adb_claude_settings_leaf_count() {
   case "$line" in ''|*[!0-9]*) return 21 ;; esac   # leaf-count-malformed
   [ "${#line}" -le 6 ] || return 21
   printf '%s' "$line"
+}
+
+# Whether a receipt's leaf rows agree with its `leaves` header, WITHOUT jq. The no-jq paths carry rows
+# they cannot validate, and re-rendering recounts them — so a record that lost or gained a row would be
+# republished under a header that agrees with the damage. Paths are compared as raw fields, so a
+# malformed row still counts as a row here.
+# Usage: adb_claude_settings_count_agrees <receipt>
+# Returns: 0 when they agree or no count is recorded (legacy); 23 fewer; 21 more, or a malformed count;
+#          20 unreadable.
+adb_claude_settings_count_agrees() {
+  local receipt="$1" want wrc body grc have tab
+  tab="$(printf '\t')"
+  want="$(adb_claude_settings_leaf_count "$receipt")"; wrc=$?
+  case "$wrc" in 0) ;; 1) return 0 ;; *) return "$wrc" ;; esac
+  body="$(grep "^leaf$tab" "$receipt" 2>/dev/null)"; grc=$?
+  [ "$grc" -lt 2 ] || return 20   # count-agrees-unreadable
+  have="$(printf '%s\n' "$body" | cut -f2 | sort -u | grep -c .)" || have=0
+  [ "$have" -ge "$want" ] || return 23   # count-agrees-short
+  [ "$have" -le "$want" ] || return 21   # count-agrees-surplus
+  return 0
 }
 
 

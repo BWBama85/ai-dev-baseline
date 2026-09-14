@@ -157,7 +157,7 @@ adb_claude_settings_leaf_rows "$PAYLOAD" "$(printf '%s' "$r" | jq -c .wrote)" "$
 # the rest applies. Resetting it looked tidy and orphaned the retired key permanently — a blocked
 # receipt carries no rows, so nothing could ever remove it afterwards.
 r2="$(printf '{"model":"opus","sandbox":{"enabled":false,"network":{"strictAllowlist":true}}}' > "$work/ref.json"
-      { cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/ref-receipt"
+      { cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' > "$work/ref-receipt"
       adb_claude_settings_merge "$work/ref.json" "$PAYLOAD" "$work/ref-receipt")"
 [ "$(verdict "$r2")" = refuse ] && ok || bad "precondition: that fixture should refuse"
 [ "$(printf '%s' "$r2" | jq -r '.wrote | length')" = 0 ] && ok \
@@ -187,7 +187,7 @@ r="$(m "$(jq -c '.sandbox.enabled = false' "$work/installed.json")" "$work/insta
 
 # RETIREMENT still runs, and is not a refusal: a leaf we recorded and no longer ship is pruned when
 # it still matches, and kept and named when the operator has edited it.
-{ cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/retired-receipt"
+{ cat "$work/installed-receipt"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } | awk '/^leaves /{ $2 = $2 + 1 } {print}' > "$work/retired-receipt"
 r="$(m "$(jq -c '.sandbox.network.strictAllowlist = true' "$work/installed.json")" "$work/retired-receipt")"
 [ "$(names "$r" pruned)" = "sandbox.network.strictAllowlist" ] && ok \
   || bad "a recorded leaf the payload no longer ships must be PRUNED; pruned: $(names "$r" pruned)"
@@ -1303,8 +1303,8 @@ _lcr=0; _adb_claude_settings_rows_complete "$_lc/lost_changed" "$PAYLOAD" || _lc
   || bad "a receipt that lost a leaf row must answer 23 EVEN WHEN THE PAYLOAD HAS SINCE CHANGED — gating on the digest let a routine pull switch the check off, and uninstall then stranded the missing key (got $_lcr)"
 { cat "$_lc/full"; printf 'leaf%s["sandbox","network","strictAllowlist"]%strue\n' "$ADB_TAB" "$ADB_TAB"; } > "$_lc/extra"
 _lce=0; _adb_claude_settings_rows_complete "$_lc/extra" "$PAYLOAD" || _lce=$?
-[ "$_lce" -eq 0 ] && ok \
-  || bad "a row beyond the recorded count is a RETIREMENT, not incompleteness — only a shortfall answers 23 (got $_lce)"
+[ "$_lce" -eq 21 ] && ok \
+  || bad "a row beyond the recorded count is DAMAGE (21) — the renderer counts every row it writes, so uninstall would delete whatever live value the surplus names (got $_lce)"
 # Recorded under a DIFFERENT digest: while it is current the identity check answers too, and the count is
 # then no longer the only thing that can catch this.
 adb_claude_settings_leaf_rows "$PAYLOAD" '[]' \
@@ -1560,6 +1560,8 @@ echo '{"model":"opus"}' > "$kb/.claude/settings.json"
 stub "2.1.259 (Claude Code)"
 HOME="$kb" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 printf 'leaf%s["sandbox","retired"]%s"ours"\n' "$ADB_TAB" "$ADB_TAB" >> "$kb/.claude/.adb-settings-owned"
+# ...under the count the renderer would have written for it: a receipt never carries rows beyond its header.
+awk '/^leaves /{ $2 = $2 + 1 } {print}' "$kb/.claude/.adb-settings-owned" > "$work/kb.r" && mv "$work/kb.r" "$kb/.claude/.adb-settings-owned"
 jq '.sandbox.retired = "EDITED" | .sandbox.enabled = false' "$kb/.claude/settings.json" > "$work/kb.tmp" \
   && mv "$work/kb.tmp" "$kb/.claude/settings.json"
 HOME="$kb" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/kb.log" 2>&1
@@ -2750,6 +2752,56 @@ else
     || bad "--no-sandbox must be recorded even when jq is absent — its receipt is plain text, and an unrecorded opt-out is overridden by the next update"
 fi
 
+# --- round 42: unresolved receipt links, counts without jq, and exact counts --------------------------
+#
+# BEHAVIOURAL, each through the real entry point in its own HOME.
+_r42() { mkdir -p "$1/.claude"; echo '{}' > "$1/.claude/settings.json"; stub "2.1.259 (Claude Code)"
+         HOME="$1" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1; }
+_r42r=.claude/.adb-settings-owned
+_r42nojq=1
+if PATH="$nojq_path" command -v jq >/dev/null 2>&1 || ! PATH="$nojq_path" command -v sed >/dev/null 2>&1; then
+  _r42nojq=0; printf 'NOTE: no usable jq-free PATH — skipping the round-42 no-jq cases\n' >&2
+fi
+# The jq-free count check answers the header, not the payload.
+_ca() { local r=0; adb_claude_settings_count_agrees "$1" || r=$?; printf '%s' "$r"; }
+{ cat "$_lc/full"; printf 'leaf%s["model"]%s"opus"\n' "$ADB_TAB" "$ADB_TAB"; } > "$_lc/surplus"
+[ "$(_ca "$_lc/full")" = 0 ] && ok || bad "the jq-free count check must accept a receipt whose rows match its header (got $(_ca "$_lc/full"))"
+[ "$(_ca "$_cr/lost")" = 23 ] && ok \
+  || bad "the jq-free count check must answer 23 for a receipt short of its own count (got $(_ca "$_cr/lost"))"
+[ "$(_ca "$_lc/surplus")" = 21 ] && ok \
+  || bad "the jq-free count check must answer 21 for rows beyond the recorded count (got $(_ca "$_lc/surplus"))"
+if [ "$_r42nojq" -eq 1 ]; then
+  # An unresolved receipt link stops the no-jq provenance refresh: it is not an absent receipt.
+  _h="$work/r42-unresolved-refresh"; rm -rf "$_h"; _r42 "$_h"
+  mv "$_h/$_r42r" "$_h/receipt-target"; ln -s "$_h/missing" "$_h/$_r42r"
+  _rc=0; HOME="$_h" PATH="$nojq_path" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/r42-ur.log" 2>&1 || _rc=$?
+  [ "$_rc" -ne 0 ] && grep -q 'does not resolve' "$work/r42-ur.log" && ok \
+    || bad "a no-jq run over a receipt link that does not resolve must fail and say so — skipped as absent, the record kept naming the previous clone (got $_rc)"
+  # The no-jq refresh re-renders, so a record short of its own count must not be refreshed.
+  _h="$work/r42-count-refresh"; rm -rf "$_h"; _r42 "$_h"
+  awk '/^leaf\t/ && !n {n=1; next} {print}' "$_h/$_r42r" > "$work/r42.r" && mv "$work/r42.r" "$_h/$_r42r"
+  _before="$(cat "$_h/$_r42r")"
+  _rc=0; HOME="$_h" PATH="$nojq_path" bash "$ROOT/install.sh" --agent claude --no-hooks >"$work/r42-cr.log" 2>&1 || _rc=$?
+  [ "$_rc" -ne 0 ] && [ "$(cat "$_h/$_r42r")" = "$_before" ] && ok \
+    || bad "a no-jq provenance refresh must refuse a receipt short of its own count and leave it untouched — re-rendered, the loss came back under a consistent header (got $_rc)"
+  # ...and the no-jq carry can count what it cannot validate.
+  _ncr=0; _nco="$(PATH="$nojq_path" _crq "$_cr/lost" "$_cr/settings.json" "$PAYLOAD" 2>/dev/null)" || _ncr=$?
+  [ "$_ncr" -eq 23 ] && [ -z "$_nco" ] && ok \
+    || bad "without jq, carrying ownership must refuse a record short of its own count and carry nothing — it cannot validate rows, but it can count them (got $_ncr)"
+fi
+# Uninstall refuses an unresolved receipt link BEFORE it unlinks the root doc.
+_h="$work/r42-unresolved-uninstall"; rm -rf "$_h"; _r42 "$_h"
+mv "$_h/$_r42r" "$_h/receipt-target"; ln -s "$_h/missing" "$_h/$_r42r"
+_rc=0; HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc=$?
+[ "$_rc" -ne 0 ] && [ -L "$_h/.claude/CLAUDE.md" ] && ok \
+  || bad "uninstall must refuse a receipt link that does not resolve BEFORE unlinking the root doc — once the target is back, a legacy record has nothing left to prove it ours (got $_rc)"
+# A malformed count is read from the receipt, so it blocks a removal.
+_h="$work/r42-malformed-count"; rm -rf "$_h"; _r42 "$_h"
+awk '/^leaf\t/ && !n {n=1; next} {print}' "$_h/$_r42r" | sed 's/^leaves .*/leaves 4x/' > "$work/r42.r" && mv "$work/r42.r" "$_h/$_r42r"
+_rc=0; HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc=$?
+[ "$_rc" -ne 0 ] && [ -e "$_h/$_r42r" ] && ok \
+  || bad "uninstall must refuse a receipt whose leaf count is malformed, and keep it — removal never reads the header again, so a hidden lost row was stranded with the record deleted (got $_rc)"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3339,6 +3391,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '            || return 23   # identity-short-of-payload' \
     '            || :   # identity-short-of-payload' \
     'records a path the payload does not ship in place of one it does'
+  check_mut 'the jq-free count check accepts a shortfall' \
+    '  [ "$have" -ge "$want" ] || return 23   # count-agrees-short' \
+    '  [ "$have" -ge "$want" ] || :   # count-agrees-short' \
+    'must answer 23 for a receipt short of its own count'
+  check_mut 'the jq-free count check accepts a surplus' \
+    '  [ "$have" -le "$want" ] || return 21   # count-agrees-surplus' \
+    '  [ "$have" -le "$want" ] || :   # count-agrees-surplus' \
+    'must answer 21 for rows beyond the recorded count'
+  check_mut 'completeness accepts rows beyond the count' \
+    '      [ "$_have" -le "$_want" ] || return 21   # rows-beyond-count' \
+    '      :   # rows-beyond-count' \
+    'a row beyond the recorded count is DAMAGE (21)'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3622,6 +3686,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return "$_comp"   # carry-rows-incomplete' \
     '    :   # carry-rows-incomplete' \
     'must refuse a record that has lost a leaf row'
+  check_mut 'the no-jq refresh reads an unresolved receipt link as absent' \
+    '    if [ -L "$receipt" ] && [ ! -f "$receipt" ]; then' \
+    '    if false; then' \
+    'over a receipt link that does not resolve must fail'
+  check_mut 'the no-jq refresh re-renders a record short of its count' \
+    '        return 1   # provenance-count-disagrees' \
+    '        :   # provenance-count-disagrees' \
+    'must refuse a receipt short of its own count and leave it untouched'
+  check_mut 'the no-jq carry ignores its own count' \
+    '      return "$_ncc"   # carry-nojq-count' \
+    '      :   # carry-nojq-count' \
+    'without jq, carrying ownership must refuse a record short of its own count'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -3767,6 +3843,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return 1 ;;   # settings-inaccessible-remove' \
     '      return 0 ;;' \
     'must keep the receipt when the document cannot be inspected'
+  check_mut 'uninstall unlinks before refusing an unresolved receipt link' \
+    '      return 1   # stamp-receipt-unresolved' \
+    '      :   # stamp-receipt-unresolved' \
+    'must refuse a receipt link that does not resolve BEFORE unlinking'
+  check_mut 'uninstall removes by a receipt with a malformed count' \
+    '    return 1   # remove-rows-damaged' \
+    '    :   # remove-rows-damaged' \
+    'whose leaf count is malformed, and keep it'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset

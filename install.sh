@@ -217,6 +217,14 @@ _adb_wire_settings_locked() {
     # receipt naming the PREVIOUS clone while the root-doc link now names this one, and an
     # uninstall from here that also lacks jq removes that link before failing: the retry it advises
     # then rejects the receipt as somebody else's and strands the settings for good.
+    # AN UNRESOLVED RECEIPT LINK IS NOT AN ABSENT RECEIPT. `-f` is false for a dangling or
+    # traversal-denied link, so a takeover skipped the refresh and returned the tolerated 3, and the
+    # record still named the previous clone once it was reachable again. (PR review)
+    if [ -L "$receipt" ] && [ ! -f "$receipt" ]; then
+      adb_info "  WARN   $receipt is a link that does not resolve, so its provenance was NOT refreshed."
+      adb_info "         Restore or remove that link, install jq, and re-run."
+      return 1   # provenance-receipt-unresolved
+    fi
     if [ -f "$receipt" ]; then
       local njrows njrc
       njrows="$(_adb_owned_rows "$receipt")"; njrc=$?
@@ -224,6 +232,15 @@ _adb_wire_settings_locked() {
         adb_info "  WARN   $receipt could not be read, so its provenance was NOT refreshed and the"
         adb_info "         record was left as it is. Install jq and re-run once it is readable."
         return 1
+      fi
+      # ...AND ONLY A RECORD THAT AGREES WITH ITS OWN COUNT. The render below recounts the rows, so a lost
+      # one would come back under a consistent header and the damage would be permanent. (PR review)
+      local njcnt=0
+      adb_claude_settings_count_agrees "$receipt" || njcnt=$?
+      if [ "$njcnt" -ne 0 ]; then
+        adb_info "  WARN   $receipt does not agree with its own leaf count, so its provenance was NOT"
+        adb_info "         refreshed and the record was left as it is. Install jq and re-run."
+        return 1   # provenance-count-disagrees
       fi
       # `none` IS A SENTINEL, NOT A DISPOSITION. It means "nobody has written a receipt", and the
       # reader refuses it in a receipt that exists — so persisting it here produces a record that
@@ -743,6 +760,14 @@ _adb_carry_rows() {
   [ "$orc" -eq 0 ] || return "$orc"
   [ -n "$rows" ] || return 0
   if ! command -v jq >/dev/null 2>&1; then
+    # Unverified, but never short of or beyond its own count: that needs no jq. (PR review)
+    local _ncc=0
+    adb_claude_settings_count_agrees "$receipt" || _ncc=$?
+    if [ "$_ncc" -ne 0 ]; then
+      adb_info "  sandbox  ownership NOT carried — $receipt does not agree with its own leaf count, so it" >&2
+      adb_info "           is kept exactly as it is and this run writes none." >&2
+      return "$_ncc"   # carry-nojq-count
+    fi
     adb_info "  sandbox  ownership carried UNVERIFIED (no jq): if you have changed these keys by" >&2
     adb_info "           hand, install jq and re-run so the claim can be rechecked." >&2
     printf '%s\n' "$rows"
