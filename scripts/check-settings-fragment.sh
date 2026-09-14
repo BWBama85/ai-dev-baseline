@@ -1305,8 +1305,10 @@ _lcr=0; _adb_claude_settings_rows_complete "$_lc/lost_changed" "$PAYLOAD" || _lc
 _lce=0; _adb_claude_settings_rows_complete "$_lc/extra" "$PAYLOAD" || _lce=$?
 [ "$_lce" -eq 0 ] && ok \
   || bad "a row beyond the recorded count is a RETIREMENT, not incompleteness — only a shortfall answers 23 (got $_lce)"
+# Recorded under a DIFFERENT digest: while it is current the identity check answers too, and the count is
+# then no longer the only thing that can catch this.
 adb_claude_settings_leaf_rows "$PAYLOAD" '[]' \
-  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_lc/installed_zero"
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" 0000000000000000000000000000000000000000000000000000000000000000 > "$_lc/installed_zero"
 _lcz=0; _adb_claude_settings_rows_complete "$_lc/installed_zero" "$PAYLOAD" || _lcz=$?
 [ "$_lcz" -eq 23 ] && ok || bad "an installed receipt recording 'leaves 0' must answer 23 — the installer never writes one (got $_lcz)"
 sed 's/^leaves .*/leaves 4x/' "$_lc/full" > "$_lc/malformed"
@@ -1339,7 +1341,8 @@ grep -q 'return 1   # link-target-unreadable' "$ROOT/install.sh" && ok \
 # BEHAVIOURAL. Rows net out at the count when a missing leaf is replaced by a duplicate; distinct
 # paths do not.
 _d1="$(grep -m1 "^leaf$ADB_TAB" "$_lc/full")"; _d2="$(grep "^leaf$ADB_TAB" "$_lc/full" | sed -n 2p)"
-awk -v a="$_d1" -v b="$_d2" '$0==a {print b; next} {print}' "$_lc/full" > "$_lc/dup"
+# Under a changed digest, for the same reason as installed_zero above.
+awk -v a="$_d1" -v b="$_d2" '$0==a {print b; next} {print}' "$_lc/full" | sed 's/^payload .*/payload 0000000000000000000000000000000000000000000000000000000000000000/' > "$_lc/dup"
 _dup=0; _adb_claude_settings_rows_complete "$_lc/dup" "$PAYLOAD" || _dup=$?
 [ "$_dup" -eq 23 ] && ok \
   || bad "a missing row replaced by a duplicate of another must answer 23 — the rows net out at the count, the distinct paths do not (got $_dup)"
@@ -1366,22 +1369,78 @@ _ora=0; _orq "$_or/a_dir" || _ora=$?
 [ "$_ora" -eq 0 ] && ok \
   || bad "a directory at the receipt path must stay ZERO ROWS, so the publish fails and names the real problem (got $_ora)"
 
-# BEHAVIOURAL. A stale-lock claim must have caught the lock it inspected. The race is made to happen on
-# cue: `mv` is shadowed by a function that, at the claim, replaces the lock's owner exactly as a winner
-# that renamed the stale lock and took a fresh one would have.
+# --- round 41: identity when the count holds, an incomplete record never carried, the lock in place --
+#
+# BEHAVIOURAL. Count and distinct paths can both hold while the receipt records the WRONG paths — one
+# shipped leaf replaced by a path the payload does not ship. While the recorded digest is this payload's
+# the identity is checkable, and a shipped leaf with no row answers 23.
+_s1="$(grep -m1 "^leaf$ADB_TAB" "$_lc/full")"
+awk -v a="$_s1" -v t="$ADB_TAB" '$0==a {print "leaf" t "[\"sandbox\",\"network\",\"strictAllowlist\"]" t "true"; next} {print}' \
+  "$_lc/full" > "$_lc/substituted"
+_sub=0; _adb_claude_settings_rows_complete "$_lc/substituted" "$PAYLOAD" || _sub=$?
+[ "$_sub" -eq 23 ] && ok \
+  || bad "a receipt whose count holds but which records a path the payload does not ship in place of one it does must answer 23 while the digest is current — uninstall strands the shipped key it omits (got $_sub)"
+
+# BEHAVIOURAL. An incomplete record is kept, never carried: carrying proves only the rows that survive,
+# and the new header then counts those, publishing the loss as a consistent receipt.
+_cr="$work/carryincomplete"; rm -rf "$_cr"; mkdir -p "$_cr"; cp "$PAYLOAD" "$_cr/settings.json"
+awk -v n=0 '/^leaf\t/ && n==0 {n=1; next} {print}' "$_lc/full" > "$_cr/lost"
+_crq() { bash -c '. "$1/scripts/lib/common.sh"
+  for fn in _adb_owned_rows _adb_carry_rows; do eval "$(sed -n "/^${fn}() {/,/^}/p" "$1/install.sh")"; done
+  _adb_carry_rows "$2" "$3" "$4"' _ "$ROOT" "$@"; }
+_crr=0; _cro="$(_crq "$_cr/lost" "$_cr/settings.json" "$PAYLOAD" 2>/dev/null)" || _crr=$?
+[ "$_crr" -eq 23 ] && [ -z "$_cro" ] && ok \
+  || bad "carrying ownership must refuse a record that has lost a leaf row (23) and carry nothing — carried, its survivors were republished under a header counting only them (got $_crr, $(printf '%s' "$_cro" | grep -c '^leaf') rows)"
+_cfo="$(_crq "$_lc/full" "$_cr/settings.json" "$PAYLOAD" 2>/dev/null)"
+[ "$(printf '%s\n' "$_cfo" | grep -c "^leaf$ADB_TAB")" = "$(grep -c "^leaf$ADB_TAB" "$_lc/full")" ] && ok \
+  || bad "...while a complete record still carries every row"
+# ...and live settings that DO NOT PARSE are an operational failure, not divergence. The merge probe is the
+# only check that reads them; the completeness question reads the receipt, and a receipt it cannot read
+# or classify is refused there too, so this is the case that proves the probe's refusal on its own.
+printf '{"sandbox": {"enabled": true,\n' > "$_cr/broken.json"
+_cbr=0; _cbo="$(_crq "$_lc/full" "$_cr/broken.json" "$PAYLOAD" 2>/dev/null)" || _cbr=$?
+[ "$_cbr" -ne 0 ] && [ -z "$_cbo" ] && ok \
+  || bad "carrying against live settings that do not parse must refuse and keep the record — relinquished, a skip publishes a rowless receipt while the keys stay installed (got $_cbr)"
+
+# BEHAVIOURAL. A stale-lock break happens IN PLACE under `$lock/.claim`, and every owner write — a fresh
+# take's included — holds that claim. Each interleaving is made to happen on cue by shadowing `mkdir` (or
+# `mv`) at the call that opens its window.
 _bl="$work/breaker"; rm -rf "$_bl"; mkdir -p "$_bl"
-_mkstale() { rm -rf "$1" "$1".stale.*; mkdir "$1"; printf '999999 1\n' > "$1/owner"; touch -t 200001010000 "$1"; }
+_mkstale() { rm -rf "$1"; mkdir "$1"; printf '999999 1\n' > "$1/owner"; touch -t 200001010000 "$1"; }
+_lkq() { bash -c '. "$1/scripts/lib/common.sh"; L="$2"; eval "$3"; printf "%s|%s" "$?" "$_ADB_LOCK_TOKEN"' _ "$ROOT" "$1" "$2"; }
 _mkstale "$_bl/control"
-_ctl="$(bash -c '. "$1/scripts/lib/common.sh"; _ADB_LOCK_STALE_SECS=1; adb_update_lock "$2"; printf "%s|%s" "$?" "$_ADB_LOCK_TOKEN"' _ "$ROOT" "$_bl/control")"
-[ "${_ctl%%|*}" = 0 ] && [ -n "${_ctl#*|}" ] && ok \
-  || bad "a stale lock with a dead holder must still be broken and taken (got $_ctl)"
+_ctl="$(_lkq "$_bl/control" '_ADB_LOCK_STALE_SECS=1; adb_update_lock "$L"')"
+[ "${_ctl%%|*}" = 0 ] && [ -n "${_ctl#*|}" ] && [ ! -e "$_bl/control/.claim" ] && ok \
+  || bad "a stale lock with a dead holder must still be broken and taken, its claim released (got $_ctl)"
+# Three contenders. B has judged the lock stale; before B's claim, A breaks the same lock and holds it;
+# C arrives next. Renamed away, the path stood vacant for C, and two owner records were live at once.
 _mkstale "$_bl/raced"
-_rcd="$(bash -c '. "$1/scripts/lib/common.sh"; _ADB_LOCK_STALE_SECS=1; L="$2"
-  mv() { if [ "$1" = "$L" ] && [ -z "${_raced:-}" ]; then _raced=1; printf "424242 %s\n" "$(date +%s)" > "$1/owner"; fi; command mv "$@"; }
-  adb_update_lock "$L"; printf "%s|%s" "$?" "$_ADB_LOCK_TOKEN"' _ "$ROOT" "$_bl/raced")"
-[ "${_rcd%%|*}" = 1 ] && [ -z "${_rcd#*|}" ] && [ "$(cut -d' ' -f1 < "$_bl/raced/owner" 2>/dev/null)" = 424242 ] \
-  && [ -z "$(ls -d "$_bl/raced".stale.* 2>/dev/null)" ] && ok \
-  || bad "a stale-lock claim that caught a FRESH lock must stand down and put it back — otherwise two processes both hold it (got $_rcd, owner $(cat "$_bl/raced/owner" 2>/dev/null))"
+_rcd="$(_lkq "$_bl/raced" '_ADB_LOCK_STALE_SECS=1
+  mkdir() { if [ "$1" = "$L/.claim" ] && [ -z "${_raced:-}" ]; then _raced=1; ( adb_update_lock "$L" ); fi; command mkdir "$@"; }
+  adb_update_lock "$L"')"
+_c3="$(_lkq "$_bl/raced" 'adb_update_lock "$L"')"
+_n3="$(find "$_bl/raced" -name owner | wc -l | tr -d ' ')"
+[ "${_rcd%%|*}" = 1 ] && [ -z "${_rcd#*|}" ] && [ "${_c3%%|*}" = 1 ] && [ "$_n3" = 1 ] \
+  && [ "$(cat "$_bl/raced/owner" 2>/dev/null)" != "999999 1" ] && ok \
+  || bad "a breaker must stand down when its claim finds another record than the one it judged stale, and the next contender must find the lock held — never two live owners (B $_rcd, C $_c3, owner records $_n3)"
+_mkstale "$_bl/held"; mkdir "$_bl/held/.claim"; touch -t 200001010000 "$_bl/held"
+_hld="$(_lkq "$_bl/held" '_ADB_LOCK_STALE_SECS=1; adb_update_lock "$L"')"
+[ "${_hld%%|*}" = 1 ] && [ -z "${_hld#*|}" ] && [ "$(cat "$_bl/held/owner" 2>/dev/null)" = "999999 1" ] && ok \
+  || bad "a stale lock another breaker has already claimed must be left to it — two breakers each writing an owner both proceed (got $_hld)"
+rm -rf "$_bl/fresh"
+_frs="$(_lkq "$_bl/fresh" 'mkdir() { command mkdir "$@" || return; if [ "$1" = "$L" ]; then command mkdir "$L/.claim"; fi; }
+  adb_update_lock "$L"')"
+[ "${_frs%%|*}" = 1 ] && [ -z "${_frs#*|}" ] && [ ! -e "$_bl/fresh/owner" ] && [ -d "$_bl/fresh/.claim" ] && ok \
+  || bad "a fresh take must not write an owner while a breaker holds the claim (got $_frs)"
+rm -rf "$_bl/over"
+_ovr="$(_lkq "$_bl/over" 'mkdir() { command mkdir "$@" || return; if [ "$1" = "$L" ]; then touch -t 200001010000 "$L"; ( _ADB_LOCK_STALE_SECS=1; adb_update_lock "$L" ); fi; }
+  adb_update_lock "$L"')"
+[ "${_ovr%%|*}" = 1 ] && [ -z "${_ovr#*|}" ] && [ "$(find "$_bl/over" -name owner | wc -l | tr -d ' ')" = 1 ] && [ ! -e "$_bl/over/.claim" ] && ok \
+  || bad "a fresh take must stand down when a breaker has already published an owner into its directory (got $_ovr)"
+rm -rf "$_bl/unpub"
+_unp="$(_lkq "$_bl/unpub" 'mv() { return 1; }; _adb_take_lock "$L"')"
+[ "${_unp%%|*}" = 1 ] && [ -z "${_unp#*|}" ] && [ ! -e "$_bl/unpub" ] && ok \
+  || bad "taking the lock must FAIL when its owner record cannot be published, leaving nothing behind — the token is the lock (got $_unp)"
 
 # BEHAVIOURAL. The operational failure the finding names happens AFTER the receipt looked fine, so the
 # classifier cannot see it: the file is readable. `grep` is shadowed to fail exactly as an I/O error
@@ -3093,7 +3152,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '    *) printf '"'"'none'"'"' ;;' \
     'must be REFUSED, not answered'
   check_mut 'the lock owner write is unchecked again' \
-    '  if ! ( printf '"'"'%s\n'"'"' "$token" > "$lock/owner" ) 2>/dev/null; then' \
+    '  if ! _adb_publish_owner "$lock" "$token"; then' \
     '  if false; then' \
     'the token is the lock'
   check_mut 'a signal is not deferred across the two publications' \
@@ -3261,9 +3320,25 @@ if [ "$MUTATION" -eq 1 ]; then
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'length'"'"' 2>/dev/null)" || return 2' \
     'a missing row replaced by a duplicate of another must answer 23'
   check_mut 'a stale-lock claim does not check what it caught' \
-    '  if [ "$(cat "$stale/owner" 2>/dev/null)" != "$_seen" ]; then' \
+    '  if [ "$_now" != "$_seen" ]; then' \
     '  if false; then' \
-    'must stand down and put it back'
+    'must stand down when its claim finds another record'
+  check_mut 'the stale-lock breaker writes without the claim' \
+    '  mkdir "$lock/.claim" 2>/dev/null || return 1   # break-claim-held' \
+    '  :   # break-claim-held' \
+    'must be left to it'
+  check_mut 'a fresh take writes without the claim' \
+    '  if ! mkdir "$lock/.claim" 2>/dev/null; then' \
+    '  if false; then' \
+    'must not write an owner while a breaker holds the claim'
+  check_mut 'a fresh take overwrites an owner a breaker published' \
+    '  if [ -e "$lock/owner" ]; then   # take-owner-present: a breaker claimed and published first' \
+    '  if false; then' \
+    'must stand down when a breaker has already published'
+  check_mut 'a substituted path passes while the digest is current' \
+    '            || return 23   # identity-short-of-payload' \
+    '            || :   # identity-short-of-payload' \
+    'records a path the payload does not ship in place of one it does'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3430,7 +3505,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_mut 'a receipt that could not be classified is read as unparseable settings' \
     '  if [ "$mrc" -ne 0 ]; then' \
     '  if false; then' \
-    'must fail, not publish an ownership-free replacement'
+    'carrying against live settings that do not parse must refuse'
   check_mut 'the wrapper discards a failed lock release' \
     '  adb_settings_lock_drop || icrc=1' \
     '  adb_settings_lock_drop' \
@@ -3543,6 +3618,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if [ -L "$1" ] && [ ! -e "$1" ]; then' \
     '  if [ -L "$1" ] || [ ! -f "$1" ]; then' \
     'a directory at the receipt path must stay ZERO ROWS'
+  check_mut 'an incomplete record is carried anyway' \
+    '    return "$_comp"   # carry-rows-incomplete' \
+    '    :   # carry-rows-incomplete' \
+    'must refuse a record that has lost a leaf row'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset

@@ -585,22 +585,40 @@ _ADB_LOCK_STALE_SECS="${ADB_UPDATE_LOCK_STALE_SECS:-600}"
 # while the second is still pulling.
 _ADB_LOCK_TOKEN=""
 
+# Publish <token> as the owner record of <lock>. The caller holds <lock>/.claim; the record is
+# written inside it and renamed into place, so `owner` is never observed half-written.
+_adb_publish_owner() {
+  if ( printf '%s\n' "$2" > "$1/.claim/owner" ) 2>/dev/null && mv -f "$1/.claim/owner" "$1/owner" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$1/.claim/owner" 2>/dev/null
+  return 1
+}
+
 # Create the lock and record ownership. Returns 0 only if we created it.
+# EVERY WRITE OF `owner` HOLDS `$lock/.claim` — this one and the stale-lock breaker's. Between the
+# mkdir and the write, a breaker that judged the PREVIOUS lock at this path stale can reach this
+# directory; without the claim both record themselves and both proceed. (PR review)
 _adb_take_lock() {
   local lock="$1" token
   mkdir "$lock" 2>/dev/null || return 1
+  if ! mkdir "$lock/.claim" 2>/dev/null; then
+    rmdir "$lock" 2>/dev/null   # a breaker's claim keeps the directory non-empty, so this removes only ours
+    return 1
+  fi
+  if [ -e "$lock/owner" ]; then   # take-owner-present: a breaker claimed and published first
+    rmdir "$lock/.claim" 2>/dev/null
+    return 1
+  fi
   token="$$ $(date +%s 2>/dev/null)"
-  # THE OWNER FILE IS THE LOCK, so a write that fails is an acquisition that failed. Unchecked,
-  # this returned success with no token on disk: `adb_update_unlock` then found nothing matching
-  # its token and deliberately left the DIRECTORY behind, so every later settings operation was
-  # refused until the stale interval elapsed or somebody removed it by hand. A full filesystem, a
-  # quota or an ACL is enough. The directory is empty at this point, so `rmdir` puts the tree back
-  # exactly as it was. (PR review)
-  if ! ( printf '%s\n' "$token" > "$lock/owner" ) 2>/dev/null; then
-    rm -f "$lock/owner" 2>/dev/null
+  # THE OWNER FILE IS THE LOCK, so a write that fails is an acquisition that failed; unchecked, the
+  # directory was left behind with no token and refused every later run. (PR review)
+  if ! _adb_publish_owner "$lock" "$token"; then
+    rmdir "$lock/.claim" 2>/dev/null
     rmdir "$lock" 2>/dev/null
     return 1
   fi
+  rmdir "$lock/.claim" 2>/dev/null
   _ADB_LOCK_TOKEN="$token"
   return 0
 }
@@ -610,7 +628,7 @@ _adb_take_lock() {
 # being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
 # can never collide with a real one.
 adb_update_lock() {
-  local lock="$1" age holder stale
+  local lock="$1" age holder
   _adb_take_lock "$lock" && return 0
 
   # Held. Breaking it is only safe when the holder is genuinely gone, and AGE ALONE DOES NOT
@@ -626,8 +644,8 @@ adb_update_lock() {
   # broken while its process was still running, admitting a second updater to the `git pull` and the
   # settings writes this lock exists to serialise. Age proves nothing about liveness; a read we
   # could not perform proves less. (PR review)
-  # THE WHOLE RECORD IS KEPT, not just its pid: it is also what proves, after the rename below, that
-  # the claim caught THIS lock rather than a fresh one taken in between.
+  # THE WHOLE RECORD IS KEPT, not just its pid: it is also what proves, under the claim below, that
+  # the break caught THIS lock rather than one taken in between.
   local _hrc=0 _seen=""
   if [ -e "$lock/owner" ]; then
     _seen="$(cat "$lock/owner" 2>/dev/null)"; _hrc=$?
@@ -639,23 +657,24 @@ adb_update_lock() {
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
   [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
 
-  # Claim the break by RENAMING rather than rmdir+mkdir. Two processes that both judge the same
-  # lock stale would otherwise each remove it and each create it — both "holding" it. Rename
-  # succeeds for exactly one of them — but only for the SAME lock, which is checked below.
-  stale="${lock:?}.stale.$$"
-  mv "$lock" "$stale" 2>/dev/null || return 1
-  # ...AND THE RENAME MUST HAVE CLAIMED THE LOCK THAT WAS INSPECTED. "The loser finds no source" was
-  # false: two processes can judge the same stale lock, the first renames it, takes a FRESH lock at
-  # the same path and starts work, and the second's `mv`, a few lines behind, then renames that new
-  # live lock away and takes the path itself — both proceeding as owners, rewriting settings.json and
-  # its receipt concurrently. A fresh lock carries a different pid and timestamp, so the record read
-  # above tells them apart; on a mismatch the claim is put back untouched. (PR review)
-  if [ "$(cat "$stale/owner" 2>/dev/null)" != "$_seen" ]; then
-    mv "$stale" "$lock" 2>/dev/null
+  # THE BREAK HAPPENS IN PLACE; THE DIRECTORY NEVER LEAVES ITS PATH. Renamed away, the path was
+  # vacant while the breaker was still deciding, and a third process took a fresh lock there: two
+  # live owner records, one nested inside the other. `.claim` admits one owner writer at a time and
+  # the record is re-read under it — anything but what was judged stale means someone got there
+  # first. A breaker killed while holding the claim leaves the lock refusing until it is removed,
+  # which the callers' refusal already names. (PR review)
+  mkdir "$lock/.claim" 2>/dev/null || return 1   # break-claim-held
+  local _now="" token
+  [ ! -e "$lock/owner" ] || _now="$(cat "$lock/owner" 2>/dev/null)" || _now=" unreadable"
+  if [ "$_now" != "$_seen" ]; then
+    rmdir "$lock/.claim" 2>/dev/null
     return 1   # stale-claim-mismatch
   fi
-  rm -rf "$stale" 2>/dev/null
-  _adb_take_lock "$lock"
+  token="$$ $(date +%s 2>/dev/null)"
+  _adb_publish_owner "$lock" "$token" || { rmdir "$lock/.claim" 2>/dev/null; return 1; }
+  rmdir "$lock/.claim" 2>/dev/null
+  _ADB_LOCK_TOKEN="$token"
+  return 0
 }
 
 # Release the lock ONLY if we still own it (see _ADB_LOCK_TOKEN). Safe to call more than once,
@@ -1048,6 +1067,23 @@ _adb_claude_settings_rows_complete() {
       # prunes, and requiring equality refused every such fixture — the round-36 subset lesson again.
       # The defect reported is a row that went MISSING, and a shortfall is the narrowest test for it.
       [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
+      # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
+      # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
+      # a shipped key absent, uninstall removed the other three and deleted the receipt, and the omitted
+      # key was stranded. Whenever the payload the receipt was recorded against is the one available, the
+      # recorded set can be checked; when the digest differs that payload is gone, and the count is all
+      # anyone can verify. An unhashable payload is "cannot verify" here, not an error. (PR review)
+      if [ -n "$payload" ] && [ -s "$payload" ]; then
+        local _crdig _cpdig _cship _crec
+        _crdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || _crdig=""
+        _cpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _cpdig=""
+        if [ -n "$_crdig" ] && [ "$_crdig" = "$_cpdig" ]; then
+          _cship="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
+          _crec="$(printf '%s' "$owned" | jq -c '[.[].p] | unique | sort' 2>/dev/null)" || return 2
+          [ "$(jq -n --argjson s "$_cship" --argjson r "$_crec" '($s - $r) | length' 2>/dev/null)" = "0" ] \
+            || return 23   # identity-short-of-payload
+        fi
+      fi
       return 0 ;;
     1) ;;   # no count recorded: judged below, against the payload, as before
     *) return "$_wrc" ;;

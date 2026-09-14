@@ -787,6 +787,24 @@ _adb_carry_rows() {
     adb_info "           given up — the existing record is kept and this run does not write one." >&2
     return "$mrc"
   fi
+  # AN INCOMPLETE RECORD IS KEPT, NOT CARRIED. Carrying proves only the SURVIVING rows, and the renderer
+  # then writes their count into the new header — so `leaves 4` with a row lost became a consistent-
+  # looking `leaves 3`, legitimising the damage, and a later uninstall stranded the omitted key.
+  # `--no-sandbox` and the below-floor and unprobeable skips all reach this before any other
+  # completeness check. Asked AFTER the no-jq branch, which cannot answer and says so, and after the
+  # merge probe, which already refuses a receipt it cannot read or classify. (PR review)
+  local _comp=0
+  _adb_claude_settings_rows_complete "$receipt" "$frag" || _comp=$?
+  if [ "$_comp" -ne 0 ]; then
+    if [ "$_comp" -eq 23 ]; then
+      adb_info "  sandbox  ownership NOT carried — $receipt does not record every key it owns, so it is" >&2
+      adb_info "           kept exactly as it is rather than rewritten with its damage made consistent." >&2
+    else
+      adb_info "  sandbox  ownership NOT carried — $receipt could not be checked for completeness, so it" >&2
+      adb_info "           is kept exactly as it is and this run writes none." >&2
+    fi
+    return "$_comp"   # carry-rows-incomplete
+  fi
   local recorded proved _rrows _rrrc
   # THE READER IS CAPTURED AND CHECKED BEFORE IT IS COUNTED. In a pipeline its status is the
   # `grep`'s, and `|| true` discarded even that — so a reader that failed while validating rows
