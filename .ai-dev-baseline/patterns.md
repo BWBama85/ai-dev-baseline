@@ -653,4 +653,9 @@ One line per resolved review thread, newest last.
 - `precondition-ordering` `uninstall.sh` `98c453c` `PRRT_kwDOTfywrM6iMrUo` PR #463 2026-09-14
 - `partial-validation` `scripts/lib/common.sh` `98c453c` `PRRT_kwDOTfywrM6iMrUs` PR #463 2026-09-14
 - `status-swallowed` `uninstall.sh` `98c453c` `PRRT_kwDOTfywrM6iMrUv` PR #463 2026-09-14
+- `partial-validation` `scripts/lib/common.sh` `6afce0f` `PRRT_kwDOTfywrM6iRrTwk` PR #463 2026-09-14
+- `partial-validation` `scripts/lib/common.sh` `6afce0f` `PRRT_kwDOTfywrM6iRrTwq` PR #463 2026-09-14
+- `partial-validation` `scripts/lib/common.sh` `6afce0f` `PRRT_kwDOTfywrM6iRrTwu` PR #463 2026-09-14
+- `partial-validation` `uninstall.sh` `6afce0f` `PRRT_kwDOTfywrM6iRrTw0` PR #463 2026-09-14
+- `partial-validation` `scripts/lib/common.sh` `6afce0f` `PRRT_kwDOTfywrM6iRrTw8` PR #463 2026-09-14
 <!-- adb:hits:end -->
