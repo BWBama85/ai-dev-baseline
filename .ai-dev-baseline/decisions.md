@@ -8007,4 +8007,11 @@ survive is the part a later reader needs.
              the step, which puts the 120-minute ceiling at ~222 rows; round 40's tree carries 201.
              At 5-10 rows a round that is about two rounds of headroom: raise the ceiling again, or
              land #468.
+             RAISED TO 180, 2026-09-15 (owner decision). The ceiling was reached sooner than the
+             per-row figure predicted, because runner speed varies more than per-row cost does. At
+             206-214 rows `install-guard` took 76 minutes (6fe1d9b, run 34869560066) and 101 minutes
+             (98c453c, run 34891976596), while 7f1c293 (run 34892155444) -- the same 214 rows, on a
+             runner working at the same time -- was cancelled at 120 ("The job has exceeded the
+             maximum execution time of 2h0m0s"). 180 is headroom over the slowest observation, not a
+             measurement; #468 is still the removal.
 - baseline-issue: n/a

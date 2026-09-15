@@ -335,7 +335,7 @@ remained the sole unfinished macOS step at that job's 45-minute ceiling), and `i
 the fourth (on run 34564598749 it was cancelled at that job's then 15-minute ceiling and at the
 macOS leg's 45, having last completed in CI at 601s on 2026-09-05; on run 34652254652 the macOS leg
 then passed in 31m3s while the step ran 2640s in `install-guard` and was cancelled at 45, so that
-job now allows 120 — D101). The registry is not
+job now allows 180 — D101). The registry is not
 smaller and the local suite is unchanged: these are per-invocation `--skip`s, the log names each
 twice, an unknown name is an error rather than a quiet no-op, and `check-fact-drift.sh` pins all
 four ubuntu invocations because those jobs are now each step's only per-PR execution. The
