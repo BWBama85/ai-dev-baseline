@@ -658,4 +658,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh` `6afce0f` `PRRT_kwDOTfywrM6iRTwu` PR #463 2026-09-14
 - `partial-validation` `uninstall.sh` `6afce0f` `PRRT_kwDOTfywrM6iRTw0` PR #463 2026-09-14
 - `partial-validation` `scripts/lib/common.sh` `6afce0f` `PRRT_kwDOTfywrM6iRTw8` PR #463 2026-09-14
+- `partial-validation` `scripts/lib/common.sh` `cde4dc1` `PRRT_kwDOTfywrM6ipzj3` PR #463 2026-09-15
+- `partial-validation` `install.sh` `cde4dc1` `PRRT_kwDOTfywrM6ipzkA` PR #463 2026-09-15
+- `toctou` `install.sh` `cde4dc1` `PRRT_kwDOTfywrM6ipzkI` PR #463 2026-09-15
 <!-- adb:hits:end -->
