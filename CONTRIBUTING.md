@@ -107,10 +107,10 @@ same installer writes and cost seconds, so isolating them is nearly free. Everyt
 temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
 declared places, and `--only` / `--skip` can leave any of them out.
 
-CI's macOS leg runs three steps fewer: it passes
-`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation`, which the
-ubuntu `adopt`, `pattern-ledger`, and `implement-gate` jobs already run on every relevant PR
-(#339, PR #429, PR #443). Your local run is unaffected in *coverage* — a plain
+CI's macOS leg runs four steps fewer: it passes
+`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation`,
+which the ubuntu `adopt`, `pattern-ledger`, `implement-gate` and `install-guard` jobs already run on
+every relevant PR (#339, PR #429, PR #443, PR #463). Your local run is unaffected in *coverage* — a plain
 `bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
 it does get **longer** when the gate lets everything through, because the six isolated steps no
 longer overlap with anything: about 90 seconds' worth, measured serially on a 10-core machine. The
