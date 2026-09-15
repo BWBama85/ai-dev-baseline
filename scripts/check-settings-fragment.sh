@@ -2842,6 +2842,51 @@ _h3="$work/r43-root-absent"; rm -rf "$_h3"; mkdir -p "$_h3"
 _rc3=0; HOME="$_h3" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc3=$?
 [ "$_rc3" -eq 0 ] && ok || bad "...while a ~/.claude that is truly absent is still nothing to remove (got $_rc3)"
 
+# --- round 44: exact pairs on the legacy branch, a disposition before a no-jq carry, one payload read ---
+#
+# BEHAVIOURAL. A legacy receipt (no `leaves` header) under a matching digest carries exactly the shipped
+# pairs, as a counted one does: an extra row is damage, not a retirement.
+{ grep -v '^leaves ' "$_lc/full"; printf 'leaf%s["operator"]%s"keep"\n' "$ADB_TAB" "$ADB_TAB"; } > "$_lc/legacy-extra"
+_le=0; _adb_claude_settings_rows_complete "$_lc/legacy-extra" "$PAYLOAD" || _le=$?
+[ "$_le" -eq 21 ] && ok \
+  || bad "a legacy receipt under a matching digest must carry exactly the shipped pairs — an extra row answered 0 and uninstall deleted the operator key it named (got $_le)"
+grep -v '^leaves ' "$_lc/full" > "$_lc/legacy-intact"
+_li=0; _adb_claude_settings_rows_complete "$_lc/legacy-intact" "$PAYLOAD" || _li=$?
+[ "$_li" -eq 0 ] && ok || bad "...while an intact legacy receipt still passes (got $_li)"
+if [ "$_r42nojq" -eq 1 ]; then
+  # Without jq, only a disposition that owns rows may carry them.
+  _h="$work/r44-blocked-optout"; rm -rf "$_h"; _r42 "$_h"
+  sed 's/^disposition .*/disposition skipped-blocked/' "$_h/$_r42r" > "$work/r44.r" && mv "$work/r44.r" "$_h/$_r42r"
+  HOME="$_h" PATH="$nojq_path" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+  _bn="$(grep -c "^leaf$ADB_TAB" "$_h/$_r42r" 2>/dev/null)"
+  [ "$_bn" = 0 ] && ok \
+    || bad "without jq, an opt-out over a record that owns nothing must carry nothing — a skipped-blocked receipt's rows became an ownership-bearing opt-out (got $_bn rows)"
+  _h="$work/r44-damaged-optout"; rm -rf "$_h"; _r42 "$_h"
+  grep -v '^disposition' "$_h/$_r42r" > "$work/r44.r" && mv "$work/r44.r" "$_h/$_r42r"; _before="$(cat "$_h/$_r42r")"
+  _rc=0; HOME="$_h" PATH="$nojq_path" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1 || _rc=$?
+  [ "$_rc" -ne 0 ] && [ "$(cat "$_h/$_r42r")" = "$_before" ] && ok \
+    || bad "without jq, an opt-out over a receipt whose disposition cannot be read must refuse and keep it unchanged (got $_rc)"
+fi
+# The install reads its payload ONCE: a clone that changes mid-run cannot split settings from their record.
+# The rewrite happens at the first hash call, where a pull landing between the merge and the digest would.
+_sc="$work/r44-snapshot-clone"; rm -rf "$_sc" "$work/r44wrap" "$work/r44.swapped"; mkdir -p "$_sc" "$work/r44wrap"
+( cd "$ROOT" && tar cf - --exclude .git . ) | ( cd "$_sc" && tar xf - )
+_sf="$_sc/agents/claude/settings.fragment.json"
+for _b in sha256sum shasum openssl; do
+  _real="$(command -v "$_b" 2>/dev/null)" || continue
+  printf '#!/bin/sh\nif [ ! -f "%s" ]; then : > "%s"; jq %s "%s" > "%s.v2" && cat "%s.v2" > "%s"; fi\nexec "%s" "$@"\n' \
+    "$work/r44.swapped" "$work/r44.swapped" "'.sandbox.network.allowedDomains |= .[0:2]'" "$_sf" "$_sf" "$_sf" "$_sf" "$_real" > "$work/r44wrap/$_b"
+  chmod +x "$work/r44wrap/$_b"
+done
+_h="$work/r44-snapshot-home"; rm -rf "$_h"; mkdir -p "$_h/.claude"; echo '{"model":"opus"}' > "$_h/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$_h" PATH="$work/r44wrap:$work/bin:$PATH" bash "$_sc/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -f "$work/r44.swapped" ] && ok || bad "precondition: the payload must have been rewritten during the install"
+_live="$(jq -c '.sandbox.network.allowedDomains' "$_h/.claude/settings.json" 2>/dev/null)"
+_rec="$(grep "^leaf$ADB_TAB\[\"sandbox\",\"network\",\"allowedDomains\"\]" "$_h/$_r42r" 2>/dev/null | cut -f3 | jq -c . 2>/dev/null)"
+[ -n "$_live" ] && [ "$_rec" = "$_live" ] && ok \
+  || bad "an install must read its payload once — a pull landing mid-run wrote settings from one payload and recorded ownership from another (live $_live, recorded $_rec)"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3444,13 +3489,21 @@ if [ "$MUTATION" -eq 1 ]; then
     '      :   # rows-beyond-count' \
     'a duplicate leaf row under an unchanged header is DAMAGE (21)'
   check_mut 'the recorded pairs are not compared with the payload' \
-    '            || return 21   # identity-pairs-differ' \
-    '            || :   # identity-pairs-differ' \
+    '    || return 21   # identity-pairs-differ' \
+    '    || :   # identity-pairs-differ' \
     'an extra path under a raised header must answer 21'
   check_mut 'removal trusts a container with no recorded leaf beneath it' \
     '          | map(. as $a | select( $ownedp | any( (length > ($a | length)) and (.[0:($a | length)] == $a) ) ))   # remove-pass anchored' \
     '          | map(.)   # remove-pass anchored' \
     'a container row with no recorded leaf beneath it must not authorize'
+  check_mut 'the counted branch stops asking for exact pairs' \
+    '          _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-counted' \
+    '          :   # pairs-counted' \
+    'an extra path under a raised header must answer 21'
+  check_mut 'the legacy branch stops asking for exact pairs' \
+    '  _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-legacy' \
+    '  :   # pairs-legacy' \
+    'a legacy receipt under a matching digest must carry exactly the shipped pairs'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3746,6 +3799,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '      return "$_ncc"   # carry-nojq-count' \
     '      :   # carry-nojq-count' \
     'without jq, carrying ownership must refuse a record short of its own count'
+  check_mut 'the no-jq carry ignores an unreadable disposition' \
+    '    [ "$_ndrc" -eq 0 ] || return "$_ndrc"   # carry-nojq-disposition' \
+    '    :   # carry-nojq-disposition' \
+    'whose disposition cannot be read must refuse and keep it unchanged'
+  check_mut 'the no-jq carry carries rows a record does not own' \
+    '      *) return 0 ;;   # carry-nojq-owns-nothing' \
+    '      *) ;;   # carry-nojq-owns-nothing' \
+    'an opt-out over a record that owns nothing must carry nothing'
+  check_mut 'the install reads its payload more than once' \
+    '  _adb_wire_settings_locked "$settings" "$receipt" "${snap:-$payload}" "$floor" || rc=$?   # payload-snapshot' \
+    '  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor" || rc=$?   # payload-snapshot' \
+    'an install must read its payload once'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset

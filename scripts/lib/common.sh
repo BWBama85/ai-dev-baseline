@@ -1089,10 +1089,7 @@ _adb_claude_settings_rows_complete() {
           # ...AND EXACTLY ITS PATH/VALUE PAIRS. Paths alone let a receipt whose header was raised to match
           # carry an unrelated live key, or record a value the payload never shipped — and removal deletes a
           # live value precisely because it equals the RECORDED one. (PR review)
-          local _cpair
-          _cpair="$(jq -c '[paths(type != "object") as $p | select(all($p[]; type == "string")) | {p: $p, v: getpath($p)}] | unique' "$payload" 2>/dev/null)" || return 2
-          [ "$(printf '%s' "$owned" | jq -c --argjson s "$_cpair" '(map({p, v}) | unique) == $s' 2>/dev/null)" = "true" ] \
-            || return 21   # identity-pairs-differ
+          _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-counted
         fi
       fi
       return 0 ;;
@@ -1123,6 +1120,23 @@ _adb_claude_settings_rows_complete() {
   # test misses, because the defect reported is a row that went MISSING. (PR review)
   [ "$(jq -n --argjson s "$shipped" --argjson r "$recorded" '($s - $r) | length' 2>/dev/null)" = "0" ] \
     || return 23   # installed-rows-incomplete
+  # ...AND EXACTLY THE PAIRS, as a counted receipt must. The subset rule above is about retirements, and
+  # a retirement cannot exist under THIS gate: the digest matching means the payload never changed. An
+  # extra row or an altered value here is damage, and removal would delete the live value it names.
+  # (PR review)
+  _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-legacy
+  return 0
+}
+
+# Whether the owned rows' path/value pairs equal the payload's exactly. Asked only while the receipt's
+# recorded digest names this payload, so no recorded row can legitimately be a retirement.
+# Usage: _adb_claude_settings_pairs_match <owned-json> <payload>
+# Returns: 0 equal; 21 different; 2 unanswerable.
+_adb_claude_settings_pairs_match() {
+  local owned="$1" payload="$2" ship
+  ship="$(jq -c '[paths(type != "object") as $p | select(all($p[]; type == "string")) | {p: $p, v: getpath($p)}] | unique' "$payload" 2>/dev/null)" || return 2
+  [ "$(printf '%s' "$owned" | jq -c --argjson s "$ship" '(map({p, v}) | unique) == $s' 2>/dev/null)" = "true" ] \
+    || return 21   # identity-pairs-differ
   return 0
 }
 

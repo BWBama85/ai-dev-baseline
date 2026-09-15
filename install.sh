@@ -151,7 +151,18 @@ wire_settings() {
   # settings.json, so a lock around the sandbox half alone let a delayed hook rename overwrite a
   # locked peer's keys — and the next merge then read that absence as operator divergence,
   # recorded `skipped-blocked`, and both installs exited successfully with the protections gone.
-  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor"
+  # ONE READ OF THE PAYLOAD PER RUN. The merge, the digest and the receipt rows each opened the file, and
+  # `bin/baseline` pulls under the clone's update lock, not this one — so a pull landing between them
+  # wrote settings from one payload and recorded ownership and a digest from another. An empty or missing
+  # payload is passed through as it is, so the refusal below still names the real path. (PR review)
+  local snap="" rc=0
+  if [ -s "$payload" ]; then
+    snap="$(mktemp "${TMPDIR:-/tmp}/adb-fragment.XXXXXX" 2>/dev/null)" && cat "$payload" > "$snap" 2>/dev/null \
+      || { rm -f "$snap"; adb_info "  WARN   could not copy $payload — sandbox settings NOT written"; return 1; }
+  fi
+  _adb_wire_settings_locked "$settings" "$receipt" "${snap:-$payload}" "$floor" || rc=$?   # payload-snapshot
+  [ -z "$snap" ] || rm -f "$snap"
+  return "$rc"
 }
 
 _adb_wire_settings_locked() {
@@ -760,6 +771,16 @@ _adb_carry_rows() {
   [ "$orc" -eq 0 ] || return "$orc"
   [ -n "$rows" ] || return 0
   if ! command -v jq >/dev/null 2>&1; then
+    # ONLY FROM A RECEIPT WHOSE DISPOSITION OWNS ROWS. The disposition needs no jq, and a
+    # `skipped-blocked` record's rows carried into the opt-out became an ownership-bearing receipt that a
+    # later uninstall trusted. A record that owns nothing carries nothing. (PR review)
+    local _ndisp _ndrc=0
+    _ndisp="$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" || _ndrc=$?
+    [ "$_ndrc" -eq 0 ] || return "$_ndrc"   # carry-nojq-disposition
+    case "$_ndisp" in
+      installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;
+      *) return 0 ;;   # carry-nojq-owns-nothing
+    esac
     # Unverified, but never short of or beyond its own count: that needs no jq. (PR review)
     local _ncc=0
     adb_claude_settings_count_agrees "$receipt" || _ncc=$?
