@@ -3004,6 +3004,29 @@ grep -q 'args+=(--optout-if-recorded)' "$ROOT/bin/baseline" && ok \
 [ "$(grep -c 'args+=(--no-sandbox)' "$ROOT/bin/baseline")" -eq 0 ] && ok \
   || bad "...and must not decide the opt-out itself from a read taken before the child acquires the settings lock"
 
+# --- round 48: a dangling link is unanswerable to the currency check, and a counted record's digest ----
+#
+# BEHAVIOURAL. Diverged schedules a self-heal that merges against `{}`; a link that does not resolve
+# must not reach that path.
+_h="$work/r48-dangling-intact"; rm -rf "$_h"; _r42 "$_h"
+mv "$_h/.claude/settings.json" "$_h/real.json"; ln -s "$_h/gone.json" "$_h/.claude/settings.json"
+_di=0; adb_claude_settings_leaves_intact "$_h/$_r42r" "$_h/.claude/settings.json" "$PAYLOAD" >/dev/null 2>&1 || _di=$?
+[ "$_di" -eq 2 ] && ok \
+  || bad "a dangling settings link must be unanswerable (2) to the currency check — read as diverged, the self-heal published a rowless skipped-blocked over the record (got $_di)"
+# A counted record's digest is part of the record: missing, malformed, or `-` under `installed` is damage.
+_cd() { local r=0; _adb_claude_settings_rows_complete "$1" "$PAYLOAD" || r=$?; printf '%s' "$r"; }
+grep -v '^payload' "$_lc/full" > "$_lc/counted-nodigest"
+[ "$(_cd "$_lc/counted-nodigest")" = 21 ] && ok \
+  || bad "a counted receipt with no payload line must answer 21 — read as unavailable, a substituted row that kept the count was trusted by uninstall (got $(_cd "$_lc/counted-nodigest"))"
+sed 's/^payload .*/payload 12zz/' "$_lc/full" > "$_lc/counted-baddigest"
+[ "$(_cd "$_lc/counted-baddigest")" = 21 ] && ok || bad "...and a malformed payload digest must answer 21 (got $(_cd "$_lc/counted-baddigest"))"
+sed 's/^payload .*/payload -/' "$_lc/full" > "$_lc/counted-dash-installed"
+[ "$(_cd "$_lc/counted-dash-installed")" = 21 ] && ok \
+  || bad "an installed counted receipt recording payload - must answer 21 — the installer always writes a real digest for it (got $(_cd "$_lc/counted-dash-installed"))"
+sed 's/^payload .*/payload -/; s/^disposition .*/disposition skipped-optout/' "$_lc/full" > "$_lc/counted-dash-skip"
+[ "$(_cd "$_lc/counted-dash-skip")" = 0 ] && ok \
+  || bad "...while a skip recording payload - still passes: that is the renderer's own sentinel (got $(_cd "$_lc/counted-dash-skip"))"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3210,6 +3233,10 @@ _incrc=0; ask_pending "$skipped" || _incrc=$?
 nodigest="$work/nodigesthome"; rm -rf "$nodigest"; mkdir -p "$nodigest/.claude"
 ln -s "$ROOT/agents/claude/CLAUDE.md" "$nodigest/.claude/CLAUDE.md"
 pending_receipt "$nodigest" "-"
+# ...and WITHOUT the `leaves` header, which postdates the digest. A counted `installed` receipt recording
+# `-` is not a pre-digest record but a damaged one — the installer only ever writes `installed` with a
+# real digest — so that shape is refused as 21 and is guarded with the other counted-digest cases.
+grep -v '^leaves ' "$nodigest/.claude/.adb-settings-owned" > "$work/nodigest.r" && mv "$work/nodigest.r" "$nodigest/.claude/.adb-settings-owned"
 ask_pending "$nodigest" && ok || bad "a receipt with no payload digest is UNKNOWN, and unknown must be pending — never trusted forever on no evidence"
 
 # ...unless its recorded leaf set no longer matches the payload. A plain `git pull` of the
@@ -3382,8 +3409,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if false; then' \
     'must fail the publication'
   check_mut 'an absent settings file reads as unanswerable' \
-    '    absent|empty|dangling) return 1 ;;' \
-    '    absent|empty|dangling) return 2 ;;' \
+    '    absent|empty) return 1 ;;' \
+    '    absent|empty) return 2 ;;' \
     'must read as DIVERGED'
   check_mut 'a row predicate treats a jq error as a malformed row' \
     '    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac' \
@@ -3633,6 +3660,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 25   # distinct-leaf-paths' \
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 2   # distinct-leaf-paths' \
     'must answer 25, not the 2 that means payload-only uncertainty'
+  check_mut 'the currency check reads a dangling link as divergence again' \
+    '    absent|empty) return 1 ;;' \
+    '    absent|empty|dangling) return 1 ;;' \
+    'a dangling settings link must be unanswerable (2) to the currency check'
+  check_mut 'an installed counted receipt may record no digest' \
+    '        -) [ "$disp" != installed ] || return 21 ;;   # counted-installed-no-digest' \
+    '        -) : ;;   # counted-installed-no-digest' \
+    'an installed counted receipt recording payload - must answer 21'
+  check_mut 'a counted receipt with a missing or malformed digest is accepted' \
+    '        *) adb_claude_settings_payload_digest "$receipt" >/dev/null 2>&1 || return 21 ;;   # counted-digest-malformed' \
+    '        *) : ;;   # counted-digest-malformed' \
+    'a counted receipt with no payload line must answer 21'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset

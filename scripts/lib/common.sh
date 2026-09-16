@@ -1074,6 +1074,18 @@ _adb_claude_settings_rows_complete() {
       [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
       _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # validated-row-count
       [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
+      # A COUNTED RECORD'S DIGEST IS PART OF THE RECORD. The renderer writes a real 64-hex digest for
+      # `installed` and either that or `-` for a skip, so a counted receipt whose `payload` line is missing,
+      # malformed, or `-` under `installed` is damaged — read as "unavailable", it skipped the exact pair
+      # check and a substituted row that kept the count was trusted by uninstall. (PR review)
+      local _rawdig _rgc
+      _rawdig="$(grep -m1 '^payload[[:space:]]' "$receipt" 2>/dev/null)"; _rgc=$?
+      [ "$_rgc" -le 1 ] || return 25   # counted-digest-unreadable
+      _rawdig="${_rawdig#payload}"; _rawdig="${_rawdig# }"; _rawdig="${_rawdig%% *}"
+      case "$_rawdig" in
+        -) [ "$disp" != installed ] || return 21 ;;   # counted-installed-no-digest
+        *) adb_claude_settings_payload_digest "$receipt" >/dev/null 2>&1 || return 21 ;;   # counted-digest-malformed
+      esac
       # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
       # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
       # a shipped key absent, uninstall removed the other three and deleted the receipt, and the omitted
@@ -1199,7 +1211,10 @@ adb_claude_settings_leaves_intact() {
   # read. (PR review)
   case "$(adb_settings_doc_state "$settings")" in
     present) ;;
-    absent|empty|dangling) return 1 ;;
+    absent|empty) return 1 ;;
+    # A LINK THAT DOES NOT RESOLVE IS UNANSWERABLE, NOT DIVERGED — the same rule the carry and remove
+    # paths now apply. Diverged scheduled a self-heal that merged against `{}` and published a rowless
+    # `skipped-blocked` over the record while the link stayed, and the keys came back unowned. (PR review)
     *) return 2 ;;   # settings-inaccessible-intact
   esac
   # `try`, because `getpath` RAISES through a scalar: an operator who replaced an ancestor object
