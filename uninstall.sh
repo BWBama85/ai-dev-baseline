@@ -403,10 +403,22 @@ unwire_settings() {
   # A COUNT THAT IS MALFORMED, OR ROWS BEYOND IT, IS READ FROM THE RECEIPT — it is not "cannot tell".
   # Removal never reads the header again, so a malformed count hid a lost row and the survivors were
   # removed with the record. An unreadable receipt (20) is refused by the merge just below. (PR review)
-  if [ "$_crc" -eq 21 ]; then
+  # ...BUT A DAMAGED `disposition` LINE IS THE MERGE'S 21, and it has its own remedy. Completeness
+  # answers 21 for both, so claiming a count problem for a record whose header was never reached sent
+  # the operator to repair the wrong line. Only speak for the count while the disposition reads; the
+  # merge below refuses the other case and names it. (PR review)
+  if [ "$_crc" -eq 21 ] && adb_claude_settings_disposition "$receipt" >/dev/null 2>&1; then
     adb_info "  WARN   $receipt has a leaf count that is malformed or does not match its rows, so it"
     adb_info "         cannot show it records every key it owns. NOTHING was removed; the record was KEPT."
     return 1   # remove-rows-damaged
+  fi
+  # 25 IS A RECEIPT-SIDE FAILURE, NOT PAYLOAD UNCERTAINTY. A jq that died while validating the rows
+  # answered the same 2 as a missing fragment, and removal proceeded on it: `--remove` skips
+  # completeness by design, so the survivors went and the record with them. Only 2 may pass. (PR review)
+  if [ "$_crc" -eq 25 ]; then
+    adb_info "  WARN   $receipt could not be checked for completeness — that check failed on the record"
+    adb_info "         itself, not on the fragment. NOTHING was removed; the record was KEPT. Re-run."
+    return 1   # remove-rows-uncheckable
   fi
   result="$(adb_claude_settings_merge "$settings" "$payload" "$receipt" --remove)"; mrc=$?
   if [ "$mrc" -eq 20 ]; then

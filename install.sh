@@ -160,6 +160,19 @@ wire_settings() {
     snap="$(mktemp "${TMPDIR:-/tmp}/adb-fragment.XXXXXX" 2>/dev/null)" && cat "$payload" > "$snap" 2>/dev/null \
       || { rm -f "$snap"; adb_info "  WARN   could not copy $payload — sandbox settings NOT written"; return 1; }
   fi
+  # ...AND THE GENERATION THE FLOOR CAME FROM. The floor is in the code this process sourced, and a pull
+  # can raise it between that sourcing and this copy — the newly pulled payload would then be applied
+  # against the old floor, writing keys the running CLI does not honour, and the updater's own installer
+  # carries those rows forward rather than undoing them. The clone is the authority for both. (PR review)
+  local _cfloor
+  _cfloor="$(sed -n "s/^adb_claude_settings_floor() { printf '\([0-9.]*\)'; }.*/\1/p" "$REPO/scripts/lib/common.sh" 2>/dev/null | head -1)"
+  if [ -z "$_cfloor" ] || [ "$_cfloor" != "$floor" ]; then
+    [ -z "$snap" ] || rm -f "$snap"
+    adb_info "  WARN   $REPO moved under this run — its sandbox floor reads '${_cfloor:-unreadable}' while this"
+    adb_info "         run holds '$floor', so the payload and the floor are different generations."
+    adb_info "         Sandbox settings NOT written; re-run ./install.sh."
+    return 1   # payload-generation-moved
+  fi
   _adb_wire_settings_locked "$settings" "$receipt" "${snap:-$payload}" "$floor" || rc=$?   # payload-snapshot
   [ -z "$snap" ] || rm -f "$snap"
   return "$rc"
@@ -799,11 +812,14 @@ _adb_carry_rows() {
   # live and nothing records them. Every caller keeps the existing record on a non-zero status.
   # (PR review)
   case "$(adb_settings_doc_state "$live")" in
-    absent|empty|dangling)
+    absent|empty)
       adb_info "  sandbox  ownership relinquished — the live settings cannot be read, so this run" >&2
       adb_info "           cannot prove those keys are still ours." >&2
       return 0 ;;
-    inaccessible)
+    # A LINK THAT DOES NOT RESOLVE IS NOT A DELETED DOCUMENT. Relinquishing there published a rowless
+    # record over a live one while the link stayed, and when its target came back the keys were there
+    # with nothing recording them. Treated as unreadable, like a target we cannot inspect. (PR review)
+    dangling|inaccessible)
       adb_info "  sandbox  ownership neither proved nor given up — ~/.claude/settings.json exists but" >&2
       adb_info "           cannot be inspected, so the existing record is kept and this run writes none." >&2
       return 22 ;;   # carry-settings-inaccessible

@@ -1027,12 +1027,15 @@ adb_settings_doc_state() {
 # rows and deletes the receipt. Either way the rest is stranded for good. (PR review)
 #
 # 0 complete, or not an `installed` receipt, or no payload to compare against; 23 incomplete;
-# 20/21 the receipt could not be read or classified; 2 otherwise unanswerable.
+# 20/21 the receipt could not be read or classified; 25 a check of the RECEIPT could not be performed;
+# 2 payload-only uncertainty (the caller may proceed on it).
 # Usage: _adb_claude_settings_rows_complete <receipt> <payload>
 _adb_claude_settings_rows_complete() {
   local receipt="$1" payload="${2:-}" disp owned shipped recorded _orc
   command -v jq >/dev/null 2>&1 || return 2
-  disp="$(adb_claude_settings_disposition "$receipt")" || return 2
+  local _drc
+  disp="$(adb_claude_settings_disposition "$receipt")"; _drc=$?
+  case "$_drc" in 0) ;; 20|21) return "$_drc" ;; *) return 25 ;; esac   # disp-check-failed
   # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED, not just `installed`. A skip preserves the
   # previous install's ownership rows, so one lost while the digest is still current strands its key
   # exactly as it does under `installed` — uninstall removes the survivors, deletes the receipt, and
@@ -1046,7 +1049,7 @@ _adb_claude_settings_rows_complete() {
     *) return 0 ;;
   esac
   owned="$(_adb_claude_settings_owned_json "$receipt")"; _orc=$?
-  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete
+  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 25 ;; esac   # orc-complete
   # THE RECORDED COUNT ANSWERS FIRST, and needs no payload at all. A malformed row is skipped by the
   # reader, so it shows up here as a shortfall exactly as a lost one does. (PR review)
   local _want _wrc _have _nrow
@@ -1057,7 +1060,7 @@ _adb_claude_settings_rows_complete() {
       # duplicate of another net out at the recorded count — every later check then examined the
       # duplicated survivors, and uninstall removed them and deleted the receipt, stranding the key
       # that was actually gone. (PR review)
-      _have="$(printf '%s' "$owned" | jq '[.[].p] | unique | length' 2>/dev/null)" || return 2   # distinct-leaf-paths
+      _have="$(printf '%s' "$owned" | jq '[.[].p] | unique | length' 2>/dev/null)" || return 25   # distinct-leaf-paths
       if [ "$_needs_rows" -eq 1 ]; then
         [ "$_want" -gt 0 ] || return 23   # installed-count-zero
       else
@@ -1069,7 +1072,7 @@ _adb_claude_settings_rows_complete() {
       # lookup would trust over the real one — and uninstall would delete whatever live value it names.
       # (PR review)
       [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
-      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 2   # validated-row-count
+      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # validated-row-count
       [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
       # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
       # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
@@ -1100,8 +1103,12 @@ _adb_claude_settings_rows_complete() {
   # path, and removal trusts the first — so a doctored duplicate made an operator edit look ours even
   # after a pull had moved the digest on. Only the pair comparison below needs this payload. (PR review)
   local _ldup
-  _ldup="$(printf '%s' "$owned" | jq '([.[].p] | length) == ([.[].p] | unique | length)' 2>/dev/null)" || return 2
+  _ldup="$(printf '%s' "$owned" | jq '([.[].p] | length) == ([.[].p] | unique | length)' 2>/dev/null)" || return 25   # legacy-dup-check-failed
   [ "$_ldup" = "true" ] || return 21   # legacy-duplicate-paths
+  # AN `installed` RECORD WITH NO ROWS IS DAMAGED WHATEVER THE DIGEST SAYS, and a receipt truncated
+  # before its headers arrives here with none — the digest gate below then answers "cannot verify" for
+  # exactly that receipt, and uninstall removed nothing, deleted it, and reported success. (PR review)
+  [ "$_needs_rows" -ne 1 ] || [ "$owned" != "[]" ] || return 23   # legacy-installed-rowless
   [ -n "$payload" ] && [ -s "$payload" ] || return 0
   # LEGACY: ONLY WHILE THE RECORDED DIGEST IS THIS PAYLOAD. Set equality is the wrong question otherwise,
   # in BOTH directions: a receipt legitimately records leaves the payload no longer ships — those
@@ -1117,7 +1124,7 @@ _adb_claude_settings_rows_complete() {
   # `adb_claude_settings_leaves` is the one definition of a leaf path: an ARRAY is a leaf, its
   # numeric-index descendants are not, and every recorded component is a string.
   shipped="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
-  recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 2
+  recorded="$(printf '%s' "$owned" | jq -c '[.[].p] | sort' 2>/dev/null)" || return 25   # legacy-recorded-read
   # A skip that never owned anything has nothing to be incomplete about.
   [ "$_needs_rows" -eq 1 ] || [ "$recorded" != "[]" ] || return 0   # rowless-skip-ok
   # SUBSET, NOT EQUALITY: every leaf the payload ships must be recorded, and a row the payload no

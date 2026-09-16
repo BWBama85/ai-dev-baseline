@@ -269,6 +269,25 @@ adb_settings_row_count() {
   printf '%s' "$n"
 }
 
+# The receipt as it stands, as one comparable value: a self-heal that rewrote it changes this, and that
+# is what makes the post-heal classification depend on THIS run rather than on a pre-heal snapshot.
+# Outputs: a digest, or `none` when there is no readable receipt.
+# Did THIS run leave a receipt worth classifying? The pre-heal answer alone was a stale precondition:
+# the heal runs an installer that takes the settings lock only then, so an overlapping direct install
+# or an operator edit can make it record a refusal — or a below-floor skip — that the earlier snapshot
+# could not have seen, and gating on that snapshot reported `repaired` over it. (PR review)
+# Usage: adb_settings_heal_touched <pending-before> <receipt-sig-before>
+# Outputs: 1 when the receipt should be classified, 0 when nothing here changed
+adb_settings_heal_touched() {
+  [ "${1:-0}" -eq 1 ] && { printf '1'; return 0; }
+  [ "$(adb_settings_receipt_sig)" = "${2:-none}" ] && { printf '0'; return 0; }
+  printf '1'   # heal-rewrote-receipt
+}
+
+adb_settings_receipt_sig() {
+  adb_sha256 "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null || printf 'none'
+}
+
 adb_settings_refused_now() {
   [ "${1:-0}" -eq 1 ] || return 1
   # The same read, the same failure, and exit 7 lost the same way — see adb_settings_downgraded_now.
@@ -296,6 +315,10 @@ adb_settings_unreadable_record() {
     echo "baseline: the sandbox fragment in the install-source could not be hashed, so it is unknown" >&2
     echo "          whether the installed policy matches it. Check that a SHA-256 tool is available" >&2
     echo "          (shasum or sha256sum) and that the clone is readable, then re-run 'baseline update'." >&2
+  elif [ "$1" = "25" ]; then
+    echo "baseline: a check of the sandbox ownership record could not be performed — the failure was on" >&2
+    echo "          the record, not on the fragment, so it is unknown whether it lists every key it" >&2
+    echo "          owns. Nothing was changed; re-run 'baseline update'." >&2
   elif [ "$1" = "23" ]; then
     # NEITHER PERMISSIONS NOR JSON. The record parses and names this clone; it simply does not list
     # every key the fragment ships, which the installer cannot produce — so it is damaged, and the
@@ -851,6 +874,7 @@ case "$STATUS" in
       2[0-9]) adb_settings_unreadable_record "$SPRC"; exit 1 ;;   # pending-unanswerable-current
     esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-current
+    SETTINGS_SIG_BEFORE="$(adb_settings_receipt_sig)"   # sig-before-current
     if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
@@ -873,7 +897,7 @@ case "$STATUS" in
     # — and the SessionStart caller suppresses the installer's own output, so the refusal vanished
     # behind a success line precisely when something else had gone wrong too. The refusal outranks
     # the repair in what it must tell the operator; the message carries both facts. (PR review)
-    if adb_settings_refused_now "$SETTINGS_PENDING"; then
+    if adb_settings_refused_now "$(adb_settings_heal_touched "$SETTINGS_PENDING" "$SETTINGS_SIG_BEFORE")"; then
       [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
       exit 7
     fi
@@ -889,7 +913,7 @@ case "$STATUS" in
     # is not: the protections have stopped being applied, and a run that also fixed a link would
     # have reported exit 6 and let the SessionStart wrapper render it as repaired links alone.
     # Same rule as the refusal above — a security-relevant fact does not wait its turn. (PR review)
-    adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && {
+    adb_settings_downgraded_now "$(adb_settings_heal_touched "$SETTINGS_PENDING" "$SETTINGS_SIG_BEFORE")" "$SETTINGS_ROWS_BEFORE" && {
       [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
       exit 9
     }
@@ -930,19 +954,20 @@ case "$STATUS" in
       2[0-9]) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;   # pending-unanswerable-behind
     esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind
+    BEHIND_SIG_BEFORE="$(adb_settings_receipt_sig)"   # sig-before-behind
     if adb_self_heal && adb_verify_links "$SRC"; then
       # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an
       # update that also refused the policy was rendered as a plain `updated` with the installer's
       # own output suppressed. The clone really did advance, and the message says so — but the
       # refusal is what the operator needs to see, so it chooses the code.
-      if adb_settings_refused_now "$BEHIND_SETTINGS_PENDING"; then
+      if adb_settings_refused_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")"; then
         echo "baseline: the clone WAS updated and every link resolves; only the settings were refused." >&2
         exit 7
       fi
       # AND THE DOWNGRADE, for the same reason the refusal is asked here: this branch exited 0 on
       # any successful heal, so an update that also lost the protections was rendered as a plain
       # `updated` with the installer's own warning suppressed.
-      if adb_settings_downgraded_now "$BEHIND_SETTINGS_PENDING" "$BEHIND_ROWS_BEFORE"; then
+      if adb_settings_downgraded_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")" "$BEHIND_ROWS_BEFORE"; then
         echo "baseline: the clone WAS updated and every link resolves." >&2
         exit 9
       fi

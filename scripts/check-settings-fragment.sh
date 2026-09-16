@@ -1189,7 +1189,7 @@ grep -q 'return 1   # remove-rows-incomplete' "$ROOT/uninstall.sh" && ok \
   || bad "the completeness question needs ONE home called by both the currency check and the merge"
 
 # A receipt fault is not a settings-file fault.
-[ "$(grep -c 'return "$_orc" ;; \*) return 2 ;; esac   # orc-' "$ROOT/scripts/lib/common.sh")" -eq 2 ] && ok \
+[ "$(grep -c 'case "$_orc" in 0) ;; 20|21) return "$_orc" ;;' "$ROOT/scripts/lib/common.sh")" -eq 2 ] && ok \
   || bad "an unreadable (20) or damaged (21) receipt must keep its own code out of leaves_intact — folded into 2 it is rendered as 22, which tells the operator to repair a settings.json that is fine"
 grep -q '20|21) return $? ;;' "$ROOT/bin/baseline" && ok \
   || bad "...and the currency check must carry those codes out rather than absorbing them"
@@ -2915,6 +2915,59 @@ _pf="$(_pq "$_h")"
 [ "$_pf" = 0 ] && ok \
   || bad "without jq, a receipt naming another clone must still be pending — returning first skipped the no-jq provenance refresh (got $_pf)"
 
+# --- round 46: one generation per run, a dangling link is not a deletion, receipt-side failures, ------
+# --- a rowless legacy record, and a post-heal classification that is not stale ------------------------
+#
+# BEHAVIOURAL. The payload and the floor must come from the same generation: the clone moves at the
+# lock's `date` call, which is after this process sourced its code and before it copies the fragment.
+_gc="$work/r46-gen-clone"; rm -rf "$_gc" "$work/r46wrap" "$work/r46.swapped"; mkdir -p "$_gc" "$work/r46wrap"
+( cd "$ROOT" && tar cf - --exclude .git . ) | ( cd "$_gc" && tar xf - )
+_gf="$_gc/agents/claude/settings.fragment.json"; _gl="$_gc/scripts/lib/common.sh"
+_realdate="$(command -v date)"
+{ printf '#!/bin/sh\n'
+  printf 'if [ ! -f "%s" ]; then : > "%s"\n' "$work/r46.swapped" "$work/r46.swapped"
+  printf '  sed "s/adb_claude_settings_floor() { printf '"'"'2.1.187'"'"'; }/adb_claude_settings_floor() { printf '"'"'9.9.9'"'"'; }/" "%s" > "%s.new" && cat "%s.new" > "%s"\n' "$_gl" "$_gl" "$_gl" "$_gl"
+  printf '  jq %s "%s" > "%s.new" && cat "%s.new" > "%s"\nfi\n' "'.sandbox.network.strictAllowlist = true'" "$_gf" "$_gf" "$_gf" "$_gf"
+  printf 'exec "%s" "$@"\n' "$_realdate"; } > "$work/r46wrap/date"
+chmod +x "$work/r46wrap/date"
+_h="$work/r46-gen-home"; rm -rf "$_h"; mkdir -p "$_h/.claude"; echo '{"model":"opus"}' > "$_h/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+_grc=0; HOME="$_h" PATH="$work/r46wrap:$work/bin:$PATH" bash "$_gc/install.sh" --agent claude --no-hooks >"$work/r46-gen.log" 2>&1 || _grc=$?
+[ -f "$work/r46.swapped" ] && ok || bad "precondition: the clone must have moved during the install"
+[ "$_grc" -ne 0 ] && [ "$(jq -c 'has("sandbox")' "$_h/.claude/settings.json" 2>/dev/null)" = false ] && ok \
+  || bad "an install must apply a payload only against the floor of its own generation — a pull mid-run wrote a key the running CLI does not honour (rc $_grc, settings $(jq -c '.sandbox // "none"' "$_h/.claude/settings.json" 2>/dev/null | cut -c1-40))"
+# A settings link that does not resolve is not a document the operator deleted.
+_h="$work/r46-dangling"; rm -rf "$_h"; _r42 "$_h"
+mv "$_h/.claude/settings.json" "$_h/real.json"; ln -s "$_h/gone.json" "$_h/.claude/settings.json"
+_drc=0; HOME="$_h" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1 || _drc=$?
+_drows="$(grep -c "^leaf$ADB_TAB" "$_h/$_r42r" 2>/dev/null)"
+[ "$_drc" -ne 0 ] && [ "$_drows" -gt 0 ] && ok \
+  || bad "a dangling settings link must keep the ownership record — relinquished there, the keys came back with nothing recording them when the target returned (rc $_drc, rows $_drows)"
+# A check that fails ON THE RECEIPT is not payload uncertainty: 25, and a removal refuses it.
+mkdir -p "$work/r46jq"; _realjq="$(command -v jq)"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in *"[.[].p] | unique | length"*) exit 5 ;; esac; done\nexec %s "$@"\n' "$_realjq" > "$work/r46jq/jq"
+chmod +x "$work/r46jq/jq"
+_h="$work/r46-recv-fail"; rm -rf "$_h"; _r42 "$_h"
+awk '/^leaf\t/ && !n {n=1; next} {print}' "$_h/$_r42r" > "$work/r46.r" && mv "$work/r46.r" "$_h/$_r42r"
+_rf=0; ( PATH="$work/r46jq:$PATH"; _adb_claude_settings_rows_complete "$_h/$_r42r" "$PAYLOAD" ) || _rf=$?
+[ "$_rf" -eq 25 ] && ok \
+  || bad "a jq that dies while validating the RECEIPT must answer 25, not the 2 that means payload-only uncertainty — removal proceeds on 2 and stranded the omitted key (got $_rf)"
+_urc=0; HOME="$_h" PATH="$work/r46jq:$work/bin:$PATH" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _urc=$?
+[ "$_urc" -ne 0 ] && [ -e "$_h/$_r42r" ] && ok \
+  || bad "...and uninstall must refuse it and keep the record (rc $_urc)"
+# A legacy `installed` record with no rows is damaged, whatever its digest says.
+grep -m1 '^disposition' "$_lc/full" > "$_lc/legacy-rowless"
+_lr=0; _adb_claude_settings_rows_complete "$_lc/legacy-rowless" "$PAYLOAD" || _lr=$?
+[ "$_lr" -eq 23 ] && ok \
+  || bad "a receipt truncated after 'disposition installed' must answer 23 — read as complete, uninstall removed nothing, deleted it, and left every key unowned (got $_lr)"
+# The post-heal classification asks about THIS run, not the pre-heal snapshot.
+_h="$work/r46-heal"; rm -rf "$_h"; _r42 "$_h"
+_ht="$(bash -c '. "$1/scripts/lib/common.sh"; eval "$(sed -n "/^adb_settings_receipt_sig() {/,/^}/p;/^adb_settings_heal_touched() {/,/^}/p" "$1/bin/baseline")"
+  HOME="$2"; s="$(adb_settings_receipt_sig)"; a="$(adb_settings_heal_touched 1 "$s")"; b="$(adb_settings_heal_touched 0 "$s")"
+  printf "x" >> "$2/.claude/.adb-settings-owned"; c="$(adb_settings_heal_touched 0 "$s")"; printf "%s%s%s" "$a" "$b" "$c"' _ "$ROOT" "$_h")"
+[ "$_ht" = "101" ] && ok \
+  || bad "a self-heal that rewrote the receipt must be classified whatever the pre-heal snapshot said — gating on it reported 'repaired' over a refusal the child installer had just recorded (pending/unchanged/rewritten = $_ht, want 101)"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3417,8 +3470,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '  case "$_orc" in 0) ;; *) return 2 ;; esac   # orc-intact' \
     'must keep its own code out of leaves_intact'
   check_mut 'a receipt fault is folded into a settings-file fault (completeness)' \
-    '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-complete' \
-    '  case "$_orc" in 0) ;; *) return 2 ;; esac   # orc-complete' \
+    '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 25 ;; esac   # orc-complete' \
+    '  case "$_orc" in 0) ;; *) return 25 ;; esac   # orc-complete' \
     'must keep its own code out of leaves_intact'
   check_mut 'ownership-bearing skips are exempt from completeness' \
     '    skipped-optout|skipped-below-floor|skipped-unprobeable) _needs_rows=0 ;;' \
@@ -3481,8 +3534,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '    *) printf '"'"'none'"'"'; return 0 ;;   # absent-by-mistake' \
     'must answer 20, not '"'"'none'"'"''
   check_mut 'completeness counts rows instead of distinct paths' \
-    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 2   # distinct-leaf-paths' \
-    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'length'"'"' 2>/dev/null)" || return 2' \
+    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 25   # distinct-leaf-paths' \
+    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'length'"'"' 2>/dev/null)" || return 25' \
     'a missing row replaced by a duplicate of another must answer 23'
   check_mut 'a stale-lock claim does not check what it caught' \
     '  if [ "$_now" != "$_seen" ]; then' \
@@ -3536,6 +3589,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ "$_ldup" = "true" ] || return 21   # legacy-duplicate-paths' \
     '  :   # legacy-duplicate-paths' \
     'a legacy receipt with a duplicate path must answer 21 whatever its digest'
+  check_mut 'a rowless legacy installed record is called complete' \
+    '  [ "$_needs_rows" -ne 1 ] || [ "$owned" != "[]" ] || return 23   # legacy-installed-rowless' \
+    '  :   # legacy-installed-rowless' \
+    'must answer 23 — read as complete, uninstall removed nothing'
+  check_mut 'a receipt-side check failure is reported as payload uncertainty' \
+    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 25   # distinct-leaf-paths' \
+    '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 2   # distinct-leaf-paths' \
+    'must answer 25, not the 2 that means payload-only uncertainty'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -3843,6 +3904,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _adb_wire_settings_locked "$settings" "$receipt" "${snap:-$payload}" "$floor" || rc=$?   # payload-snapshot' \
     '  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor" || rc=$?   # payload-snapshot' \
     'an install must read its payload once'
+  check_mut 'the payload and the floor may come from different generations' \
+    '  if [ -z "$_cfloor" ] || [ "$_cfloor" != "$floor" ]; then' \
+    '  if false; then' \
+    'must apply a payload only against the floor of its own generation'
+  check_mut 'a dangling settings link is read as a deletion again' \
+    '    absent|empty)' \
+    '    absent|empty|dangling)' \
+    'must keep the ownership record'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -4000,11 +4069,15 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # claude-root-unusable' \
     '    return 0   # claude-root-unusable' \
     'an occupied ~/.claude that is not an enterable directory must fail'
+  check_mut 'removal proceeds on a receipt it could not check' \
+    '    return 1   # remove-rows-uncheckable' \
+    '    :   # remove-rows-uncheckable' \
+    'and uninstall must refuse it and keep the record'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
   check_mut 'a blocked sandbox install is reported as a repair' \
-    '    if adb_settings_refused_now "$SETTINGS_PENDING"; then' \
+    '    if adb_settings_refused_now "$(adb_settings_heal_touched "$SETTINGS_PENDING" "$SETTINGS_SIG_BEFORE")"; then' \
     '    if false; then' \
     'same-HEAD repair path must ask'
   check_mut 'an installed surface stays current after a CLI downgrade' \
@@ -4012,11 +4085,11 @@ if [ "$MUTATION" -eq 1 ]; then
     '      if false; then' \
     'downgraded BELOW the floor must be pending once'
   check_mut 'the downgrade waits behind the LINKS_OK gate' \
-    '    adb_settings_downgraded_now "$SETTINGS_PENDING" "$SETTINGS_ROWS_BEFORE" && {' \
+    '    adb_settings_downgraded_now "$(adb_settings_heal_touched "$SETTINGS_PENDING" "$SETTINGS_SIG_BEFORE")" "$SETTINGS_ROWS_BEFORE" && {' \
     '    false && {' \
     'must run BEFORE the LINKS_OK gate'
   check_mut 'the post-pull path never asks about a downgrade' \
-    '      if adb_settings_downgraded_now "$BEHIND_SETTINGS_PENDING" "$BEHIND_ROWS_BEFORE"; then' \
+    '      if adb_settings_downgraded_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")" "$BEHIND_ROWS_BEFORE"; then' \
     '      if false; then' \
     'post-pull path must ask whether the protections were downgraded'
   check_mut 'the downgrade predicate requires the row count unchanged again' \
@@ -4044,7 +4117,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '    installed)' \
     'must be pending even though the CLI is STILL below the floor'
   check_mut 'the post-pull path never asks whether the policy was refused' \
-    '      if adb_settings_refused_now "$BEHIND_SETTINGS_PENDING"; then' \
+    '      if adb_settings_refused_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")"; then' \
     '      if false; then' \
     'post-pull path must ask before it reports the update complete'
   check_mut 'currency stops asking the live file once the digest matches' \
@@ -4135,6 +4208,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
     '  command -v jq >/dev/null 2>&1 || return 1; adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
     'without jq, the currency check must still refuse a receipt whose disposition cannot be read'
+  check_mut 'the post-heal classification trusts the pre-heal snapshot' \
+    '  [ "$(adb_settings_receipt_sig)" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \
+    '  [ "${2:-none}" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \
+    'must be classified whatever the pre-heal snapshot said'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 
