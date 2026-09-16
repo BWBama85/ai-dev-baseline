@@ -1057,7 +1057,7 @@ jobs:
     runs-on: ubuntu-26.04
     # 120: this job carries settings-fragment-mutation. 15 was outgrown, and so was the 45 that
     # replaced it — the step ran 2640s and was cancelled on run 34652254652 (D101).
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

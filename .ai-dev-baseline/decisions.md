@@ -8014,4 +8014,11 @@ survive is the part a later reader needs.
              runner working at the same time -- was cancelled at 120 ("The job has exceeded the
              maximum execution time of 2h0m0s"). 180 is headroom over the slowest observation, not a
              measurement; #468 is still the removal.
+             RAISED TO 240, 2026-09-16 (owner decision). The per-row cost did not stay flat: at 217 rows
+             the job took 133 minutes (fe290d0, run 35008251313), at 222 rows 114-140 (76bf811), at 224
+             rows 147 (8a34d1e and 0366944, runs 35039242998 and 35039310680) and at 230 rows 155-160
+             (3457fea and 0aedb8b, runs 35051453810 and 35051561996) -- roughly 0.53 min/row rising to
+             0.69, because every review round adds fixtures to the suite each row re-runs, not only
+             rows. 240 is headroom, not a measurement, and it buys a few rounds at most; #468 is the
+             removal, and it is now the only one left.
 - baseline-issue: n/a
