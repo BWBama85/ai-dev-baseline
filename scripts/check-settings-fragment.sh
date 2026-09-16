@@ -2887,6 +2887,34 @@ _rec="$(grep "^leaf$ADB_TAB\[\"sandbox\",\"network\",\"allowedDomains\"\]" "$_h/
 [ -n "$_live" ] && [ "$_rec" = "$_live" ] && ok \
   || bad "an install must read its payload once — a pull landing mid-run wrote settings from one payload and recorded ownership from another (live $_live, recorded $_rec)"
 
+# --- round 45: legacy duplicate paths whatever the digest, and the jq-free currency questions first ------
+#
+# BEHAVIOURAL. No payload change produces two rows for one path, so a legacy receipt carrying one is
+# damaged even after a pull moved its digest on.
+awk -v t="$ADB_TAB" '/^leaves /{next} /^payload /{print "payload 0000000000000000000000000000000000000000000000000000000000000000"; next} /^leaf\t/ && !d {d=1; print "leaf" t "[\"sandbox\",\"enabled\"]" t "false"} {print}' \
+  "$_lc/full" > "$_lc/legacy-dup"
+_ld=0; _adb_claude_settings_rows_complete "$_lc/legacy-dup" "$PAYLOAD" || _ld=$?
+[ "$_ld" -eq 21 ] && ok \
+  || bad "a legacy receipt with a duplicate path must answer 21 whatever its digest — removal trusts the first row, so a doctored duplicate made an operator edit look ours (got $_ld)"
+awk '/^leaves /{next} /^payload /{print "payload 0000000000000000000000000000000000000000000000000000000000000000"; next} {print}' "$_lc/full" > "$_lc/legacy-moved"
+_lm=0; _adb_claude_settings_rows_complete "$_lc/legacy-moved" "$PAYLOAD" || _lm=$?
+[ "$_lm" -eq 0 ] && ok || bad "...while a legacy receipt whose digest moved on, with no duplicate, still passes (got $_lm)"
+# `baseline update`'s currency check reads the source row and the disposition without jq, so it must ask
+# them before it gives up for want of jq.
+_pq() { bash -c '. "$1/scripts/lib/common.sh"; eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "$1/bin/baseline")"
+  command() { if [ "$1" = -v ] && [ "$2" = jq ]; then return 1; fi; builtin command "$@"; }
+  HOME="$2"; r=0; adb_settings_pending "$1" >/dev/null 2>&1 || r=$?; printf "%s" "$r"' _ "$ROOT" "$1"; }
+_h="$work/r45-pending-nodisp"; rm -rf "$_h"; _r42 "$_h"
+grep -v '^disposition' "$_h/$_r42r" > "$work/r45.r" && mv "$work/r45.r" "$_h/$_r42r"
+_pn="$(_pq "$_h")"
+[ "$_pn" = 21 ] && ok \
+  || bad "without jq, the currency check must still refuse a receipt whose disposition cannot be read (21) — returning first reported a damaged record as nothing to do (got $_pn)"
+_h="$work/r45-pending-foreign"; rm -rf "$_h"; _r42 "$_h"
+awk -v t="$ADB_TAB" '/^source\t/{print "source" t "/somewhere/else"; next} {print}' "$_h/$_r42r" > "$work/r45.r" && mv "$work/r45.r" "$_h/$_r42r"
+_pf="$(_pq "$_h")"
+[ "$_pf" = 0 ] && ok \
+  || bad "without jq, a receipt naming another clone must still be pending — returning first skipped the no-jq provenance refresh (got $_pf)"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3504,6 +3532,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-legacy' \
     '  :   # pairs-legacy' \
     'a legacy receipt under a matching digest must carry exactly the shipped pairs'
+  check_mut 'a legacy receipt with a duplicate path is accepted' \
+    '  [ "$_ldup" = "true" ] || return 21   # legacy-duplicate-paths' \
+    '  :   # legacy-duplicate-paths' \
+    'a legacy receipt with a duplicate path must answer 21 whatever its digest'
   check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
 
   check_mut_reset
@@ -4099,6 +4131,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind' \
     '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"' \
     'every caller of the row count must fail loud'
+  check_mut 'the currency check gives up for want of jq before the jq-free questions' \
+    '  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
+    '  command -v jq >/dev/null 2>&1 || return 1; adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
+    'without jq, the currency check must still refuse a receipt whose disposition cannot be read'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

@@ -1096,6 +1096,12 @@ _adb_claude_settings_rows_complete() {
     1) ;;   # no count recorded: judged below, against the payload, as before
     *) return "$_wrc" ;;
   esac
+  # A DUPLICATE PATH IS DAMAGE WHATEVER THE DIGEST. No change to the payload produces two rows for one
+  # path, and removal trusts the first — so a doctored duplicate made an operator edit look ours even
+  # after a pull had moved the digest on. Only the pair comparison below needs this payload. (PR review)
+  local _ldup
+  _ldup="$(printf '%s' "$owned" | jq '([.[].p] | length) == ([.[].p] | unique | length)' 2>/dev/null)" || return 2
+  [ "$_ldup" = "true" ] || return 21   # legacy-duplicate-paths
   [ -n "$payload" ] && [ -s "$payload" ] || return 0
   # LEGACY: ONLY WHILE THE RECORDED DIGEST IS THIS PAYLOAD. Set equality is the wrong question otherwise,
   # in BOTH directions: a receipt legitimately records leaves the payload no longer ships — those

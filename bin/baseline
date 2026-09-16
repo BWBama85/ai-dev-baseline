@@ -324,7 +324,6 @@ adb_settings_unreadable_record() {
 
 adb_settings_pending() {
   local src="$1" version receipt payload have want
-  command -v jq >/dev/null 2>&1 || return 1
   adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1
   payload="$(adb_claude_settings_payload "$src")"
   [ -s "$payload" ] || return 1
@@ -356,6 +355,10 @@ adb_settings_pending() {
     20|21) return "$_disprc" ;;   # pending-unanswerable
     *)     return 1 ;;
   esac
+  # jq IS NEEDED ONLY FROM HERE. The link, the payload, the source row and the disposition above are all
+  # read without it, and returning before them let a damaged record read as not pending and a record
+  # naming another clone skip the no-jq provenance refresh. (PR review)
+  command -v jq >/dev/null 2>&1 || return 1   # pending-no-jq
   # EVERY DISPOSITION THAT CARRIES ROWS IS ASKED THE LIVE QUESTION, not just `installed`. A skip and
   # an opt-out deliberately keep the previous install's ownership rows, and those rows were only
   # ever rechecked inside the installer — so an operator could edit an owned leaf, run the automatic
