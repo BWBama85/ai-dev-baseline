@@ -661,4 +661,6 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh` `cde4dc1` `PRRT_kwDOTfywrM6ipzj3` PR #463 2026-09-15
 - `partial-validation` `install.sh` `cde4dc1` `PRRT_kwDOTfywrM6ipzkA` PR #463 2026-09-15
 - `toctou` `install.sh` `cde4dc1` `PRRT_kwDOTfywrM6ipzkI` PR #463 2026-09-15
+- `precondition-ordering` `bin/baseline` `8a34d1e` `PRRT_kwDOTfywrM6itQ_d` PR #463 2026-09-15
+- `partial-validation` `scripts/lib/common.sh` `8a34d1e` `PRRT_kwDOTfywrM6itQ_i` PR #463 2026-09-15
 <!-- adb:hits:end -->
