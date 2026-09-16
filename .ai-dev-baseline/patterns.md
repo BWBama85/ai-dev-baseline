@@ -671,4 +671,6 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `bin/baseline` `a2974a8` `PRRT_kwDOTfywrM6ixtPV` PR #463 2026-09-16
 - `partial-validation` `uninstall.sh` `a2974a8` `PRRT_kwDOTfywrM6ixtPX` PR #463 2026-09-16
 - `toctou` `bin/baseline` `a2974a8` `PRRT_kwDOTfywrM6ixtPa` PR #463 2026-09-16
+- `partial-validation` `scripts/lib/common.sh` `d78a084` `PRRT_kwDOTfywrM6i9IIr` PR #463 2026-09-16
+- `partial-validation` `scripts/lib/common.sh` `d78a084` `PRRT_kwDOTfywrM6i9IIv` PR #463 2026-09-16
 <!-- adb:hits:end -->
