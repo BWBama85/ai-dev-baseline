@@ -668,4 +668,7 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `scripts/lib/common.sh` `3457fea` `PRRT_kwDOTfywrM6ivtTv` PR #463 2026-09-16
 - `stale-state-trusted` `bin/baseline` `3457fea` `PRRT_kwDOTfywrM6ivtTz` PR #463 2026-09-16
 - `partial-validation` `scripts/lib/common.sh` `3457fea` `PRRT_kwDOTfywrM6ivtT3` PR #463 2026-09-16
+- `consumer-contract-mismatch` `bin/baseline` `a2974a8` `PRRT_kwDOTfywrM6ixtPV` PR #463 2026-09-16
+- `partial-validation` `uninstall.sh` `a2974a8` `PRRT_kwDOTfywrM6ixtPX` PR #463 2026-09-16
+- `toctou` `bin/baseline` `a2974a8` `PRRT_kwDOTfywrM6ixtPa` PR #463 2026-09-16
 <!-- adb:hits:end -->
