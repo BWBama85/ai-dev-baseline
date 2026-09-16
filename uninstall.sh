@@ -375,13 +375,16 @@ unwire_settings() {
   # live with no ownership evidence: reinstall read them as the operator's, and uninstall could no
   # longer remove them. An unseeable document keeps the record and fails. (PR review)
   case "$(adb_settings_doc_state "$settings")" in
-    absent|empty|dangling)
+    absent|empty)
       rm -f "$receipt" || {
         adb_info "  WARN   could not remove $receipt — remove it by hand."
         adb_info "         Until you do, a re-install reads its leaves as YOUR removals and will not restore them."
         return 1; }
       return 0 ;;
-    inaccessible)
+    # A LINK THAT DOES NOT RESOLVE IS NOT A DOCUMENT THAT IS GONE, here as on the carry path: deleting
+    # the receipt over it left the keys to come back with nothing able to remove them, and the root-doc
+    # link had already gone. (PR review)
+    dangling|inaccessible)
       adb_info "  ERROR  ~/.claude/settings.json exists but cannot be inspected, so the sandbox settings in it"
       adb_info "         cannot be removed and the ownership record was KEPT. Restore access and re-run."
       return 1 ;;   # settings-inaccessible-remove

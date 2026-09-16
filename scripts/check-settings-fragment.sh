@@ -2968,6 +2968,42 @@ _ht="$(bash -c '. "$1/scripts/lib/common.sh"; eval "$(sed -n "/^adb_settings_rec
 [ "$_ht" = "101" ] && ok \
   || bad "a self-heal that rewrote the receipt must be classified whatever the pre-heal snapshot said — gating on it reported 'repaired' over a refusal the child installer had just recorded (pending/unchanged/rewritten = $_ht, want 101)"
 
+# --- round 47: 25 travels out of the currency check, a dangling link on the REMOVE path, and the -------
+# --- opt-out re-read under the lock -------------------------------------------------------------------
+#
+# BEHAVIOURAL. A check that failed on the RECORD must not read as "nothing to do".
+mkdir -p "$work/r47jq"; _r47jq="$(command -v jq)"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in *"[.[].p] | unique | length"*) exit 5 ;; esac; done\nexec %s "$@"\n' "$_r47jq" > "$work/r47jq/jq"
+chmod +x "$work/r47jq/jq"
+_h="$work/r47-pending"; rm -rf "$_h"; _r42 "$_h"
+_pr="$(bash -c '. "$1/scripts/lib/common.sh"; eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "$1/bin/baseline")"
+  PATH="$3:$PATH"; HOME="$2"; r=0; adb_settings_pending "$1" >/dev/null 2>&1 || r=$?; printf "%s" "$r"' _ "$ROOT" "$_h" "$work/r47jq")"
+[ "$_pr" = 25 ] && ok \
+  || bad "a receipt-side check failure must travel out of the currency check (25) — it fell through and the update reported nothing to do over a record it never validated (got $_pr)"
+# A settings link that does not resolve keeps the ownership record on the REMOVE path too.
+_h="$work/r47-dangling-remove"; rm -rf "$_h"; _r42 "$_h"
+mv "$_h/.claude/settings.json" "$_h/real.json"; ln -s "$_h/gone.json" "$_h/.claude/settings.json"
+_urc=0; HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _urc=$?
+[ "$_urc" -ne 0 ] && [ -e "$_h/$_r42r" ] && ok \
+  || bad "uninstall must keep the receipt when settings.json is a link that does not resolve — deleted there, the keys came back with nothing able to remove them (rc $_urc)"
+# The recorded opt-out is re-read by the installer, under the lock it holds.
+_h="$work/r47-optout"; rm -rf "$_h"; mkdir -p "$_h/.claude"; echo '{"model":"opus"}' > "$_h/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$_h" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(adb_claude_settings_disposition "$_h/$_r42r")" = skipped-optout ] && ok || bad "precondition: --no-sandbox must record the opt-out"
+HOME="$_h" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --optout-if-recorded >/dev/null 2>&1
+[ "$(adb_claude_settings_disposition "$_h/$_r42r")" = skipped-optout ] \
+  && [ "$(jq -c 'has("sandbox")' "$_h/.claude/settings.json" 2>/dev/null)" = false ] && ok \
+  || bad "--optout-if-recorded must honour a recorded opt-out read under the lock — decided before the child took it, a self-heal applied the fragment over a choice made in between (now $(adb_claude_settings_disposition "$_h/$_r42r"))"
+HOME="$_h" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ "$(adb_claude_settings_disposition "$_h/$_r42r")" = installed ] && ok \
+  || bad "...while a plain ./install.sh still re-applies the policy: running the installer by hand is the operator asking for it (now $(adb_claude_settings_disposition "$_h/$_r42r"))"
+# STRUCTURAL: the updater passes the question to the child rather than answering it before the lock.
+grep -q 'args+=(--optout-if-recorded)' "$ROOT/bin/baseline" && ok \
+  || bad "the updater must pass --optout-if-recorded so the installer decides under the lock"
+[ "$(grep -c 'args+=(--no-sandbox)' "$ROOT/bin/baseline")" -eq 0 ] && ok \
+  || bad "...and must not decide the opt-out itself from a read taken before the child acquires the settings lock"
+
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3912,6 +3948,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    absent|empty)' \
     '    absent|empty|dangling)' \
     'must keep the ownership record'
+  check_mut 'the installer ignores a recorded opt-out it was asked to honour' \
+    '    WIRE_SETTINGS=0   # optout-revalidated' \
+    '    :   # optout-revalidated' \
+    'must honour a recorded opt-out read under the lock'
   check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
 
   check_mut_reset
@@ -4073,6 +4113,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '    return 1   # remove-rows-uncheckable' \
     '    :   # remove-rows-uncheckable' \
     'and uninstall must refuse it and keep the record'
+  check_mut 'removal reads a dangling link as a deleted document again' \
+    '    absent|empty)' \
+    '    absent|empty|dangling)' \
+    'must keep the receipt when settings.json is a link that does not resolve'
   check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
 
   check_mut_reset
@@ -4212,6 +4256,14 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ "$(adb_settings_receipt_sig)" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \
     '  [ "${2:-none}" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \
     'must be classified whatever the pre-heal snapshot said'
+  check_mut 'a receipt-check failure is swallowed by the currency check' \
+    '        25) return 25 ;;  # receipt-check-failed: the check of the RECORD could not be performed' \
+    '        25) : ;;  # receipt-check-failed' \
+    'must travel out of the currency check (25)'
+  check_mut 'the updater decides the opt-out before the child holds the lock' \
+    '    args+=(--optout-if-recorded)   # optout-revalidated-by-child' \
+    '    :   # optout-revalidated-by-child' \
+    'must pass --optout-if-recorded so the installer decides under the lock'
   check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
 fi
 

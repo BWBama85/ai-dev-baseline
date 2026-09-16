@@ -16,6 +16,7 @@
 #   ./install.sh --agent claude --agent codex
 #   ./install.sh --agent claude --no-hooks
 #   ./install.sh --agent claude --no-sandbox
+#   --optout-if-recorded  honour a recorded opt-out (read under the settings lock; used by bin/baseline)
 #   ./install.sh --pinned --project DIR --version X.Y.Z [--agent claude|codex]...
 #   ./install.sh --pinned --project DIR --artifact FILE --sums FILE
 #
@@ -116,6 +117,9 @@ done
 BACKUP_DIR="${ADB_BACKUP_DIR:-$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)}"
 WIRE_HOOKS=1
 WIRE_SETTINGS=1
+# Set by `--optout-if-recorded`: honour a recorded `skipped-optout`, decided under the settings lock
+# rather than by the caller before this process takes it.
+OPTOUT_IF_RECORDED=0
 AGENTS=()
 
 while [ $# -gt 0 ]; do
@@ -123,6 +127,7 @@ while [ $# -gt 0 ]; do
     --agent) AGENTS+=("$2"); shift 2 ;;
     --no-hooks) WIRE_HOOKS=0; shift ;;
     --no-sandbox) WIRE_SETTINGS=0; shift ;;
+    --optout-if-recorded) OPTOUT_IF_RECORDED=1; shift ;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -191,6 +196,15 @@ _adb_wire_settings_locked() {
   # It also carries the previous run's `leaf` rows forward. Dropping them would orphan any key an
   # earlier install wrote: uninstall could no longer prove which keys were ours, and D95's
   # retirement prune would have nothing to prune.
+  # THE RECORDED OPT-OUT IS RE-READ HERE, UNDER THE LOCK THIS RUN HOLDS. `bin/baseline` chooses the
+  # installer's flags before this process acquires it, so a direct `--no-sandbox` landing in between was
+  # overwritten by the very self-heal meant to honour it. The updater passes `--optout-if-recorded` and
+  # the answer is taken here. A human running ./install.sh without it still re-applies the policy, which
+  # is what running the installer by hand means. (PR review)
+  if [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ] \
+     && [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then
+    WIRE_SETTINGS=0   # optout-revalidated
+  fi
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
     # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but only what it
     # can still PROVE — the shared rule, so the opt-out and the version skips cannot disagree.

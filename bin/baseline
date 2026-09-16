@@ -399,6 +399,7 @@ adb_settings_pending() {
         2) return 22 ;;   # settings-unanswerable
         20|21) return $? ;;   # receipt-unreadable / receipt-damaged, NOT a settings-file fault
         23) return 23 ;;  # receipt-incomplete
+        25) return 25 ;;  # receipt-check-failed: the check of the RECORD could not be performed
       esac ;;
   esac
   case "$disp" in
@@ -626,9 +627,12 @@ EOF
   # The settings opt-out is EXPLICIT, not inferred (D98): `--no-sandbox` recorded a disposition,
   # and re-passing the flag is what keeps honouring it. Absence of the keys is deliberately NOT
   # the signal — four different causes produce it, and only this one is a choice.
-  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC" \
-     && [ "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")")" = skipped-optout ]; then
-    args+=(--no-sandbox)
+  # ASKED BY THE CHILD, UNDER THE SETTINGS LOCK. Read here it is already stale by the time the installer
+  # acquires that lock: a direct `install.sh --no-sandbox` landing in between recorded the choice and
+  # this self-heal applied the fragment straight over it. The flag says "honour a recorded opt-out", and
+  # the installer re-reads the disposition once it holds the lock. (PR review)
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
+    args+=(--optout-if-recorded)   # optout-revalidated-by-child
   fi
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
