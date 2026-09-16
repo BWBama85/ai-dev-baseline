@@ -8022,3 +8022,29 @@ survive is the part a later reader needs.
              rows. 240 is headroom, not a measurement, and it buys a few rounds at most; #468 is the
              removal, and it is now the only one left.
 - baseline-issue: n/a
+
+## D102 — The settings ownership receipt guards against damage, not deliberate tampering
+- date:      2026-09-16
+- category:  project-delta
+- unknown:   PR #463's review loop spent rounds 36-48 largely on new variants of a HAND-EDITED
+             receipt slipping past field-by-field validation: duplicate rows, substituted paths,
+             altered recorded values, a raised `leaves` header, doctored `container` rows, a stripped
+             `payload` digest. Nothing recorded what the receipt's threat model is, so every variant
+             was fixed with another check and another mutation row, and the loop did not converge.
+- decision:  Owner decision 2026-09-16. The receipt (`~/.claude/.adb-settings-owned`) is protected
+             against ACCIDENTAL damage — truncation, a row lost or duplicated by an interrupted write,
+             an unreadable or unresolvable path, a malformed field — and against the installer's own
+             races. Deliberate hand-editing by someone able to write the file is OUT OF SCOPE: the same
+             user can edit `~/.claude/settings.json` directly, so a doctored receipt grants nothing a
+             direct edit would not. A review finding whose only trigger is a deliberately doctored
+             receipt is disputed citing this decision rather than fixed. The checks already shipped
+             stay; none is removed on the strength of this decision.
+- placement: .ai-dev-baseline/decisions.md; CLAUDE.md (the settings-fragment row)
+- reason:    Measured on PR #463 at the decision: 50 fix commits and 47 re-review requests over 13 days;
+             the two dominant ledger classes were status-swallowed (49 hits) and partial-validation
+             (47); the settings-fragment suite grew from 447 to 4,309 lines and from 20 to 237
+             mutation rows, and each local verification round cost 151-194 minutes. Every added check
+             was real hardening, but an editable file has no final variant — the only end state is
+             authenticating the file with a key the operator cannot recompute, which protects nothing
+             against a user who can already edit the settings the receipt describes.
+- baseline-issue: n/a
