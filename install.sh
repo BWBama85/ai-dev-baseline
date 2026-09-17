@@ -328,7 +328,7 @@ _adb_wire_settings_locked() {
     adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
     adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
     adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
-    return "$skiprc"
+    return "$skiprc"   # version-skip-return
   fi
   if ! adb_version_ge "$version" "$floor"; then
     skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?

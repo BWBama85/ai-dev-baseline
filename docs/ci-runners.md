@@ -317,6 +317,8 @@ with no `pull_request` trigger); a red one is reported in that job's summary and
 notification GitHub sends to whoever last edited the cron line — provided that account has Actions
 notifications enabled, a user setting this repository cannot read. GitHub documents that a
 `schedule` may be delayed or dropped under load, so this is a daily *attempt*, not a guarantee.
+It also sets `ADB_MUTATION_FULL_SUITE=1`, so a harness built on per-test rows (#468, D103) scores
+every row against the whole suite there, where a pull request scores it against its own block.
 `scripts/check-mutation-gate.sh` pins the wiring — every `--mutation` line in `ci.yml` gated, the
 nightly matrix equal to the registry, every declared input a path that exists — and its
 `--mutation` mode breaks every gate rule whose failure is a wrong SKIP in a copy — and un-gates a

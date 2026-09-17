@@ -199,7 +199,7 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # Usage: adb_settings_downgraded_now <were-the-settings-pending-before> <row-count-before>
 # Returns: 0 when this run should report a downgrade rather than a reconciliation
 adb_settings_downgraded_now() {
-  [ "${1:-0}" -eq 1 ] || return 1
+  [ "${1:-0}" -eq 1 ] || return 1   # downgrade-count-free
   # THE READ IS CHECKED, and a failed one ends the run loud. Substituted straight into the `case`,
   # a receipt the just-finished heal published but this process cannot READ (a directory default
   # ACL permits the rename and denies the read) became the empty string and "not downgraded" — so

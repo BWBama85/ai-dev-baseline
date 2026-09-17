@@ -8048,3 +8048,62 @@ survive is the part a later reader needs.
              authenticating the file with a key the operator cannot recompute, which protects nothing
              against a user who can already edit the settings the receipt describes.
 - baseline-issue: n/a
+
+## D103 — a mutation harness may score each row against its own block, and the schedule scores it against the whole suite
+- date:      2026-09-16
+- category:  project-delta
+- unknown:   `check_mutation_pool` runs the WHOLE suite once per mutant (D68). On PR #463 the
+             settings-fragment suite grew to 111 sections and 237 rows, and its harness cost
+             2.3-3.0 hours per local round and 160 minutes in CI (D101). Profiling showed the suite
+             is 74 s spread over 111 sections, 90 of them under a second, so almost all of each
+             mutant's run exercises assertions that cannot see its defect.
+- decision:  `check-lib.sh` gains blocks and per-test rows (#468), the technique Stryker calls
+             `perTest`. A suite declares `if check_block <id> [<dep>…]; then … fi` at the start of a
+             line and ends the last block with `check_blocks_done`; `ADB_CHECK_BLOCK` selects blocks
+             and their dependency closure. `check_row` names the file it mutates and the block(s)
+             that hold its witness, and `check_mutation_rows` scores them. Three rules replace the
+             safety a whole-suite run gave for free:
+             **1. Declarations are proven before anything runs.** A row whose literal is not in its
+             target exactly once, whose witness is absent from its block's source, or whose block is
+             undeclared is refused before any copy is built; the count is taken again on the copy.
+             **2. Dependencies are trusted only once measured.** One unmutated full run records each
+             block's assertion count, and each selection must pass unmutated with the same count, or
+             every row on it fails as "control failed". An under-declared dependency is a red, never
+             a GREEN.
+             **3. The schedule runs the old question.** `mutation-nightly.yml` sets
+             `ADB_MUTATION_FULL_SUITE=1`, scoring every row against the whole suite, which also
+             catches a dependency the control could not see (one that changes no count). Its timeout
+             is 240 minutes, D101's figure for this harness at full width.
+             This amends D68 only in WHERE a row runs: the verdict taxonomy is unchanged and now
+             lives in one scorer (`_check_mut_score`) shared by both pools. D91's gate is unchanged.
+             `check-settings-fragment.sh` is the first adopter: 111 blocks. Its dependencies were
+             derived statically (the functions and variables a block uses, and for each `$work` path
+             it reads, the nearest earlier block that WRITES that path) and then verified: every block
+             run alone passes with its full-run assertion count. Depending on the nearest earlier
+             MENTION of a path instead was also correct but chained readers to readers: 15.3 blocks
+             per row against 111, and 1h59m for the harness, where the writer rule took 21m34s for all
+             237 rows red on their own witness (2026-09-16, 10-core macOS, both runs under another
+             session's load at load average 16-26; round 48's selfcheck had spent 9710 s on the same
+             step). Adopting this also refused seven existing rows whose literal occurred more than
+             once in its target and had worked only because the first match was the intended one;
+             each now anchors on a marker comment. Other harnesses stay on `check_mutation_pool`
+             until one costs enough to convert.
+- placement: `scripts/check-lib.sh`, `scripts/check-block-rows.sh` (new), `scripts/check-settings-fragment.sh`,
+             `.github/workflows/mutation-nightly.yml`, `scripts/check-mutation-gate.sh`, `CONTRIBUTING.md`
+- reason:    The cost was structural (rows × suite), so no per-row tuning could fix it; a selection
+             whose correctness is measured rather than assumed keeps D68's "red on its own witness"
+             guarantee per PR, and the nightly keeps the whole-suite one.
+- baseline-issue: n/a
+
+## D104 — DEVIATION: #468 branches from #463's head, not from `main`
+- date:          2026-09-16
+- category:      deviation
+- baseline-rule: `git-and-prs.md` — "Branch off the default branch, not off the current feature branch."
+- conflict:      #468's first adopter and its measurement are PR #463's settings-fragment suite,
+                 which exists only on #463's branch; that PR's review loop is paused until the
+                 harness makes each round affordable.
+- scope:         branch `issue-468-mutation-harnesses-run-only-the-assertio`; its PR targets
+                 `issue-248-least-privilege-sandbox-settings`, and retargets to `main` once #463 merges.
+- reason:        Owner decision 2026-09-16 ("Full #468, stacked on #463"). Building on `main` would
+                 mean converting a suite that does not exist there, or re-doing the conversion after
+                 #463 merged, while #463's rounds kept costing ~3 hours each.
