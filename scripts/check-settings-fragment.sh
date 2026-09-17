@@ -1436,8 +1436,12 @@ _rli=0; _rlo="$(HOME="$_rl" bash -c '. "$1/scripts/lib/common.sh"
 chmod 700 "$_rl/locked"
 [ "$_rli" -eq 20 ] && ok \
   || bad "an unresolvable receipt link must make the row count refuse (20), not read as zero rows (got rc=$_rli out='$_rlo')"
-[ "$(grep -c 'adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }' "$ROOT/bin/baseline")" -eq 3 ] && ok \
-  || bad "every caller of the row count must fail loud on its refusal — assigned inside a substitution, the status is otherwise simply lost"
+# EVERY CALLER, not a fixed number of them: a count pinned here goes stale the first time a call site
+# is added, and the added one is exactly the unguarded one this rule exists to catch.
+_rcall="$(grep -c 'adb_settings_row_count)"' "$ROOT/bin/baseline")"
+_rguard="$(grep -c 'adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }' "$ROOT/bin/baseline")"
+[ "$_rcall" -gt 0 ] && [ "$_rcall" = "$_rguard" ] && ok \
+  || bad "every caller of the row count must fail loud on its refusal — assigned inside a substitution, the status is otherwise simply lost (guarded $_rguard of $_rcall)"
 
 # BEHAVIOURAL. The carry path refuses an unresolved receipt link, and ONLY that: a directory must stay
 # zero rows so the publish fails and names the real problem, which "could not be read" would not.
@@ -3532,6 +3536,64 @@ jq -e '.sandbox.enabled == true' "$legacy_home/.claude/settings.json" >/dev/null
   || bad "a receipt with NO source row must fall back to the link — and the link says this clone does not own ~/.claude, so its settings must NOT be removed"
 fi
 
+if check_block round-49-zero-owns-nothing-and-the-firs round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a; then
+# --- round 49: zero owns nothing, an unreadable header is a receipt failure, and the first CLI wins ---
+#
+# A `leaves 0` receipt owns nothing, so a row under it is damage whatever the disposition: the skip
+# branch used to accept a rowless skip on the header alone, and a damaged one carrying a live
+# operator path was trusted by `--remove`.
+_z="$work/r49"; rm -rf "$_z"; mkdir -p "$_z"
+_zc() { local r=0; _adb_claude_settings_rows_complete "$1" "${2-$PAYLOAD}" || r=$?; printf '%s' "$r"; }
+: | adb_claude_settings_receipt_render skipped-optout 9.9.9 "$FLOOR" - > "$_z/skip-zero"
+[ "$(_zc "$_z/skip-zero")" = 0 ] && ok \
+  || bad "a rowless zero-count skip is a first-time skip and must still pass (got $(_zc "$_z/skip-zero"))"
+{ cat "$_z/skip-zero"; printf 'leaf%s["operator"]%s"keep"\n' "$ADB_TAB" "$ADB_TAB"; } > "$_z/skip-zero-row"
+[ "$(_zc "$_z/skip-zero-row")" = 23 ] && ok \
+  || bad "a zero-count skip carrying a leaf row must answer 23 — accepted, uninstall deletes the live value that row names (got $(_zc "$_z/skip-zero-row"))"
+# ...and `installed` reaches zero only against the payload it names, once that payload ships nothing.
+printf '{}\n' > "$_z/empty-payload.json"
+: | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$_z/empty-payload.json")" > "$_z/installed-zero"
+[ "$(_zc "$_z/installed-zero" "$_z/empty-payload.json")" = 0 ] && ok \
+  || bad "an installed receipt recording leaves 0 must pass against a payload that ships no leaves — refused, the record every later run reads is permanently damaged (got $(_zc "$_z/installed-zero" "$_z/empty-payload.json"))"
+[ "$(_zc "$_z/installed-zero" "$PAYLOAD")" = 23 ] && ok \
+  || bad "...while an installed leaves 0 recorded against another payload stays 23 (got $(_zc "$_z/installed-zero" "$PAYLOAD"))"
+# ...and zero UNDER THIS PAYLOAD, while it still ships leaves, is the damaged record the rule is for.
+: | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_z/installed-zero-ships"
+[ "$(_zc "$_z/installed-zero-ships" "$PAYLOAD")" = 23 ] && ok \
+  || bad "an installed leaves 0 whose own payload DOES ship leaves must answer 23 (got $(_zc "$_z/installed-zero-ships" "$PAYLOAD"))"
+: | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" - > "$_z/installed-zero-nodigest"
+[ "$(_zc "$_z/installed-zero-nodigest" "$_z/empty-payload.json")" = 21 ] && ok \
+  || bad "an installed leaves 0 with no digest names no payload and must stay damaged (got $(_zc "$_z/installed-zero-nodigest" "$_z/empty-payload.json"))"
+# A `leaves` header this run could not READ is a receipt-side failure (25), never payload uncertainty:
+# uninstall proceeds on 20 because the removal merge refuses an unreadable receipt, and `--remove`
+# never reads the count.
+_zu="$( adb_claude_settings_leaf_count() { return 20; }
+        r=0; _adb_claude_settings_rows_complete "$_lc/full" "$PAYLOAD" || r=$?; printf '%s' "$r" )"
+[ "$_zu" = 25 ] && ok \
+  || bad "an unreadable leaves header must answer 25 — as 20, uninstall removes the rows it could read and deletes the record (got $_zu)"
+# THE FIRST FALLBACK CANDIDATE THAT EXISTS DECIDES, probeable or not — the same rule the PATH binary
+# already follows. Falling through applied the fragment on a version the resolved CLI never reported.
+_zb="$work/r49bin"; rm -rf "$_zb"; mkdir -p "$_zb/first" "$_zb/second" "$work/emptybin"
+printf '#!/bin/sh\nprintf "not a version\\n"\n' > "$_zb/first/claude"; chmod +x "$_zb/first/claude"
+printf '#!/bin/sh\nprintf "2.1.259 (Claude Code)\\n"\n' > "$_zb/second/claude"; chmod +x "$_zb/second/claude"
+_zv="$( adb_claude_cli_candidates() { printf '%s\n' "$_zb/first/claude" "$_zb/second/claude"; }
+        export PATH="$work/emptybin"
+        v="$(adb_claude_cli_version 2>/dev/null)"; printf '%s|%s' "$?" "$v" )"
+[ "$_zv" = "1|" ] && ok \
+  || bad "an existing but unprobeable higher-priority CLI must end the search — falling through applies the fragment on a lower-priority binary's version (got $_zv)"
+_zv2="$( adb_claude_cli_candidates() { printf '%s\n' "$_zb/missing/claude" "$_zb/second/claude"; }
+         export PATH="$work/emptybin"
+         v="$(adb_claude_cli_version 2>/dev/null)"; printf '%s|%s' "$?" "$v" )"
+[ "$_zv2" = "0|2.1.259" ] && ok \
+  || bad "...while a candidate that does not exist is still skipped, so a real lower-priority install is found (got $_zv2)"
+# RELINQUISHED MEANS ROWS DROPPED, in the message too. Structural, for the reason its siblings give:
+# driving the `current)` arm needs a clone, a network classification and the update lock.
+awk '/skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{f=1}
+     f && /SETTINGS_ROWS_AFTER.*adb_settings_row_count/{print "ok"; exit}
+     f && /relinquished stale sandbox ownership/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "the skip arm must compare ownership rows before claiming a relinquishment — a provenance-only refresh still owns every leaf it names"
+fi
+
 check_blocks_done
 
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
@@ -3787,8 +3849,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '      :' \
     'EVEN WHEN THE PAYLOAD HAS SINCE CHANGED'
   check_row 'an installed receipt recording zero leaves is accepted' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
-    '        [ "$_want" -gt 0 ] || return 23   # installed-count-zero' \
-    '        :' \
+    '      if [ "$_want" -eq 0 ]; then   # zero-count-branch' \
+    '      if false; then   # zero-count-branch' \
     'recording '"'"'leaves 0'"'"' must answer 23'
   check_row 'the renderer stops counting the leaf rows it writes' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '"; count=$((count + 1)) ;;' \
@@ -4506,6 +4568,30 @@ if [ "$MUTATION" -eq 1 ]; then
     '    args+=(--optout-if-recorded)   # optout-revalidated-by-child' \
     '    :   # optout-revalidated-by-child' \
     'must pass --optout-if-recorded so the installer decides under the lock'
+  check_row 'a zero-count receipt keeps the rows it cannot own' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '        [ "$_nrow" -eq 0 ] || return 23   # zero-count-has-rows' \
+    '        :   # zero-count-has-rows' \
+    'must answer 23 — accepted, uninstall deletes the live value that row names'
+  check_row 'an installed zero is accepted whatever the payload ships' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '          [ -z "$(printf '"'"'%s'"'"' "$_zship" | tr -d '"'"'[:space:]'"'"')" ] || return 23   # installed-zero-ships-leaves' \
+    '          :   # installed-zero-ships-leaves' \
+    'whose own payload DOES ship leaves must answer 23'
+  check_row 'a zero-count record is damaged whatever the payload' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '        return 0   # zero-count-complete' \
+    '        return 23   # zero-count-complete' \
+    'must pass against a payload that ships no leaves'
+  check_row 'an unreadable leaf count escapes as payload uncertainty' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '    20) return 25 ;;   # leaf-count-unreadable' \
+    '    20) return 20 ;;   # leaf-count-unreadable' \
+    'must answer 25'
+  check_row 'the CLI search runs past an unprobeable candidate' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '    return 1   # first-candidate-decides' \
+    '    :   # first-candidate-decides' \
+    'must end the search'
+  check_row 'the skip arm names a relinquishment it did not check' 'bin/baseline' 'round-49-zero-owns-nothing-and-the-firs' \
+    '          SETTINGS_ROWS_AFTER="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-heal' \
+    '          SETTINGS_ROWS_AFTER=0   # row-count-after-heal' \
+    'must compare ownership rows before claiming a relinquishment'
   check_mutation_rows "check-settings-fragment" "$work/mut" "scripts/check-settings-fragment.sh" prepare_root runner 6
 fi
 

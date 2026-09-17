@@ -925,7 +925,16 @@ case "$STATUS" in
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
-          echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
+          # RELINQUISHED MEANS ROWS DROPPED, which is the same question the downgrade classifier asks.
+          # A skip whose only change was the provenance row still owns every leaf it names, so
+          # reporting it as relinquished tells the operator protection was given up when none was.
+          # (PR review)
+          SETTINGS_ROWS_AFTER="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-heal
+          if [ "$SETTINGS_ROWS_AFTER" -lt "$SETTINGS_ROWS_BEFORE" ]; then
+            echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
+          else
+            echo "baseline: refreshed the sandbox ownership record; no link or setting was changed."
+          fi
           exit 8 ;;
       esac
     fi

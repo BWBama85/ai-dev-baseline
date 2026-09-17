@@ -893,7 +893,12 @@ adb_claude_cli_version() {
   fi
   while IFS= read -r bin; do
     [ -n "$bin" ] || continue
+    # THE FIRST CANDIDATE THAT EXISTS DECIDES, exactly as the PATH binary does above. Continuing past
+    # an existing-but-unprobeable candidate applied the fragment on a lower-priority binary's version,
+    # while the one a session resolves had reported nothing at all. (PR review)
+    [ -e "$bin" ] || [ -L "$bin" ] || continue
     _adb_claude_cli_probe "$bin" && return 0
+    return 1   # first-candidate-decides
   done <<EOF
 $(adb_claude_cli_candidates)
 EOF
@@ -1061,19 +1066,6 @@ _adb_claude_settings_rows_complete() {
       # duplicated survivors, and uninstall removed them and deleted the receipt, stranding the key
       # that was actually gone. (PR review)
       _have="$(printf '%s' "$owned" | jq '[.[].p] | unique | length' 2>/dev/null)" || return 25   # distinct-leaf-paths
-      if [ "$_needs_rows" -eq 1 ]; then
-        [ "$_want" -gt 0 ] || return 23   # installed-count-zero
-      else
-        [ "$_want" -gt 0 ] || return 0    # count-rowless-skip-ok
-      fi
-      # EXACTLY, counted both ways. The renderer writes each leaf once and counts every row it writes,
-      # retired ones included. Distinct paths short of the header are a lost row; validated ROWS beyond it
-      # are a row nobody wrote — a surplus path, or a duplicate whose value the removal's first-match
-      # lookup would trust over the real one — and uninstall would delete whatever live value it names.
-      # (PR review)
-      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
-      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # validated-row-count
-      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
       # A COUNTED RECORD'S DIGEST IS PART OF THE RECORD. The renderer writes a real 64-hex digest for
       # `installed` and either that or `-` for a skip, so a counted receipt whose `payload` line is missing,
       # malformed, or `-` under `installed` is damaged — read as "unavailable", it skipped the exact pair
@@ -1086,6 +1078,41 @@ _adb_claude_settings_rows_complete() {
         -) [ "$disp" != installed ] || return 21 ;;   # counted-installed-no-digest
         *) adb_claude_settings_payload_digest "$receipt" >/dev/null 2>&1 || return 21 ;;   # counted-digest-malformed
       esac
+      if [ "$_want" -eq 0 ]; then   # zero-count-branch
+        # ZERO OWNS NOTHING, AND THE ROWS MUST SAY SO. A row under `leaves 0` is damage whatever the
+        # disposition: completeness used to accept a rowless skip on the header alone, so a damaged
+        # receipt carrying `leaf ["operator"] "keep"` passed here and uninstall deleted that live
+        # operator setting on the strength of the row. (PR review)
+        _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # zero-count-row-count
+        [ "$_nrow" -eq 0 ] || return 23   # zero-count-has-rows
+        # ...AND AN `installed` ZERO IS ONLY LEGITIMATE AGAINST A PAYLOAD THAT SHIPS NO LEAVES — the
+        # retirement of the last one. Refusing it unconditionally would make that future record
+        # permanently damaged to every reader; accepting it without the payload would restore the
+        # rowless-installed hole this check exists for, so the digest must still name this payload.
+        # (PR review)
+        if [ "$_needs_rows" -eq 1 ]; then
+          [ -n "$payload" ] && [ -s "$payload" ] || return 23   # installed-zero-no-payload
+          local _zrdig _zpdig _zship _zsrc
+          _zrdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || _zrdig=""
+          _zpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _zpdig=""
+          [ -n "$_zrdig" ] && [ "$_zrdig" = "$_zpdig" ] || return 23   # installed-zero-other-payload
+          # A PAYLOAD THAT SHIPS NOTHING ANSWERS 1 WITH NO OUTPUT; only a reader that could not run
+          # at all (no jq) is uncertainty. Reading 1 as a failure refused the one record this arm
+          # exists to accept. (PR review)
+          _zship="$(adb_claude_settings_leaves "$payload" 2>/dev/null)"; _zsrc=$?
+          [ "$_zsrc" -le 1 ] || return 2   # installed-zero-payload-unreadable
+          [ -z "$(printf '%s' "$_zship" | tr -d '[:space:]')" ] || return 23   # installed-zero-ships-leaves
+        fi
+        return 0   # zero-count-complete
+      fi
+      # EXACTLY, counted both ways. The renderer writes each leaf once and counts every row it writes,
+      # retired ones included. Distinct paths short of the header are a lost row; validated ROWS beyond it
+      # are a row nobody wrote — a surplus path, or a duplicate whose value the removal's first-match
+      # lookup would trust over the real one — and uninstall would delete whatever live value it names.
+      # (PR review)
+      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
+      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # validated-row-count
+      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
       # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
       # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
       # a shipped key absent, uninstall removed the other three and deleted the receipt, and the omitted
@@ -1109,6 +1136,10 @@ _adb_claude_settings_rows_complete() {
       fi
       return 0 ;;
     1) ;;   # no count recorded: judged below, against the payload, as before
+    # A HEADER THIS RUN COULD NOT READ IS 25, NOT 20. `unwire_settings` proceeds on 20 because the
+    # removal merge refuses an unreadable receipt — but `--remove` never reads the leaf count, so it
+    # removed the rows it could read and deleted the record, stranding whatever it could not. (PR review)
+    20) return 25 ;;   # leaf-count-unreadable
     *) return "$_wrc" ;;
   esac
   # A DUPLICATE PATH IS DAMAGE WHATEVER THE DIGEST. No change to the payload produces two rows for one
