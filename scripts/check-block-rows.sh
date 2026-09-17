@@ -116,6 +116,11 @@ has "$out" "no 'check_blocks_done' line" "missing terminator named"
 variant bad-id 's/^if check_block empty; then/if check_block Empty; then/'
 out="$(suite "$work/bad-id")"; eq "$?" 2 "an id outside [a-z0-9-] exits 2"
 
+out="$(suite "$fix" ADB_CHECK_BLOCK=base,base)"; eq "$?" 2 "a block named twice in a selection exits 2"
+has "$out" "names 'base' twice" "repeated selection named"
+out="$(suite "$fix" ADB_CHECK_BLOCK=base,,mult)"; eq "$?" 2 "an empty selection element exits 2"
+has "$out" "has an empty element" "empty selection element named"
+
 # 3. a selection that proves nothing
 out="$(suite "$fix" ADB_CHECK_BLOCK=empty)"; eq "$?" 1 "a zero-assertion selection exits 1"
 has "$out" "ran NO assertions" "zero-assertion selection named"
@@ -182,6 +187,15 @@ has "$out" "row 'same': its replacement equals its literal" "no-op row named"
 has "$out" "target 'nope.sh' is missing or unreadable" "missing target named"
 has "$out" "6 row declaration(s) are invalid — nothing was built or run" "preflight total"
 if [ -e "$work/prep-pre.log" ]; then bad "preflight: the prepare callback ran before the declarations were valid"; else ok; fi
+
+# 4b. an overlapping literal is two places a first-match rewrite could apply, and a used workdir is refused
+printf 'T_C=aaa\n' >> "$fix/lib.sh"
+rows overlap "check_row overlap lib.sh base 'aa' 'X' 'add-sum'"
+has "$out" "row 'overlap': its literal occurs 2 times" "overlapping occurrences counted"
+mkdir -p "$work/wd-reused"; : > "$work/wd-reused/control.counts"
+rows reused "$good_rows"
+eq "$rc" 1 "a non-empty workdir fails"
+has "$out" "is not empty" "non-empty workdir named"
 
 # 5. an undeclared dependency fails its control
 variant nodep 's/^if check_block uses-helper mult; then/if check_block uses-helper base; then/'

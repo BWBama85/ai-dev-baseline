@@ -8073,7 +8073,8 @@ survive is the part a later reader needs.
              **3. The schedule runs the old question.** `mutation-nightly.yml` sets
              `ADB_MUTATION_FULL_SUITE=1`, scoring every row against the whole suite, which also
              catches a dependency the control could not see (one that changes no count). Its timeout
-             is 240 minutes, D101's figure for this harness at full width.
+             is 240 minutes: D101 observed 155-160 minutes for 230 rows at full width, and 240 is
+             that figure plus headroom, not a measurement.
              This amends D68 only in WHERE a row runs: the verdict taxonomy is unchanged and now
              lives in one scorer (`_check_mut_score`) shared by both pools. D91's gate is unchanged.
              `check-settings-fragment.sh` is the first adopter: 111 blocks. Its dependencies were
@@ -8088,6 +8089,10 @@ survive is the part a later reader needs.
              once in its target and had worked only because the first match was the intended one;
              each now anchors on a marker comment. Other harnesses stay on `check_mutation_pool`
              until one costs enough to convert.
+             #468 asked for an order-of-magnitude cut, and that is NOT demonstrated: 21m34s standalone
+             against 9710 s inside a contended selfcheck is about 7.5x on unlike conditions, and a
+             whole selfcheck went from 177m37s to 82m02s (2.2x), bounded now by the unconverted
+             `pattern-ledger-mutation` and `session-context-mutation`.
 - placement: `scripts/check-lib.sh`, `scripts/check-block-rows.sh` (new), `scripts/check-settings-fragment.sh`,
              `.github/workflows/mutation-nightly.yml`, `scripts/check-mutation-gate.sh`, `CONTRIBUTING.md`
 - reason:    The cost was structural (rows × suite), so no per-row tuning could fix it; a selection
@@ -8102,7 +8107,7 @@ survive is the part a later reader needs.
 - conflict:      #468's first adopter and its measurement are PR #463's settings-fragment suite,
                  which exists only on #463's branch; that PR's review loop is paused until the
                  harness makes each round affordable.
-- scope:         branch `issue-468-mutation-harnesses-run-only-the-assertio`; its PR targets
+- scope:         branch `issue-468-mutation-harnesses-run-only-the-assertio`; its PR is opened against
                  `issue-248-least-privilege-sandbox-settings`, and retargets to `main` once #463 merges.
 - reason:        Owner decision 2026-09-16 ("Full #468, stacked on #463"). Building on `main` would
                  mean converting a suite that does not exist there, or re-doing the conversion after

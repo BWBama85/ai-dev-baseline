@@ -471,7 +471,13 @@ check_blocks_init() {
   CHECK_BLOCK_SEL_N=0
   [ -n "$CHECK_BLOCK_SEL" ] || return 0
   local want found
+  case ",$CHECK_BLOCK_SEL," in
+    *,,*) printf "check-blocks: ADB_CHECK_BLOCK '%s' has an empty element\n" "$CHECK_BLOCK_SEL" >&2; exit 2 ;;
+  esac
   for want in ${CHECK_BLOCK_SEL//,/ }; do
+    case "$CHECK_BLOCK_SELSET" in
+      *" $want "*) printf "check-blocks: ADB_CHECK_BLOCK names '%s' twice\n" "$want" >&2; exit 2 ;;
+    esac
     found=-1
     for (( i = 0; i < ${#CHECK_BLOCK_IDS[@]}; i++ )); do [ "${CHECK_BLOCK_IDS[$i]}" = "$want" ] && found=$i; done
     if [ "$found" -lt 0 ]; then
@@ -555,14 +561,14 @@ check_row() {
   CHECK_ROW_OLD+=("$4"); CHECK_ROW_NEW+=("$5"); CHECK_ROW_WIT+=("$6")
 }
 
-# _check_literal_count <file> <literal> — print how many times <literal> OCCURS in <file>, counting
-# every occurrence (two on one line are two), which is what makes "exactly once" mean what a first-
-# match rewrite needs. Returns 2 for a missing or unreadable file, 3 when the scan itself failed.
+# _check_literal_count <file> <literal> — print how many positions <literal> STARTS at in <file>,
+# overlapping starts included (`aa` in `aaa` is two), which is what makes "exactly once" mean that a
+# first-match rewrite has only one place it could apply. Returns 2 for a missing or unreadable file, 3 when the scan itself failed.
 _check_literal_count() {
   [ -f "$1" ] && [ -r "$1" ] || return 2
   ADB_MUT_OLD="$2" awk '
     BEGIN { o = ENVIRON["ADB_MUT_OLD"]; n = 0 }
-    { s = $0; while ((i = index(s, o)) > 0) { n++; s = substr(s, i + length(o)) } }
+    { s = $0; while ((i = index(s, o)) > 0) { n++; s = substr(s, i + 1) } }
     END { print n }
   ' "$1" 2>/dev/null || return 3
 }
@@ -595,10 +601,13 @@ _check_row_one() {
   return 0
 }
 
-# _check_block_ctl <workdir> <root> <run-fn> <block> — prove one selection, unmutated: it must pass and
-# run exactly the assertions the full control counted for that block. Writes `ok` or `bad|<why>`.
+# _check_block_ctl <workdir> <prepare-fn> <run-fn> <block> — prove one selection, unmutated, on its own tree
+# copy (a runner may write inside its root, so no two runs share one): it must pass and run exactly the assertions the full control counted for that block. Writes `ok` or `bad|<why>`.
 _check_block_ctl() {
-  local wd="$1" root="$2" run="$3" b="$4" key="${4//,/+}" out src want got
+  local wd="$1" prep="$2" run="$3" b="$4" key="${4//,/+}" root out src want got
+  if ! root="$("$prep" "$wd/ctl-$key")" || [ -z "$root" ]; then
+    printf 'bad|its control tree copy could not be built\n' > "$wd/ctl-$key.verdict"; return 0
+  fi
   out="$(ADB_CHECK_BLOCK="$b" ADB_CHECK_BLOCK_COUNTS="$wd/ctl-$key.counts" "$run" "$root" 2>&1)"; src=$?
   want="$(awk -F '\t' -v bs=",$b," 'index(bs, "," $1 ",") { s += $2; hit = 1 } END { if (hit) print s }' "$wd/control.counts" 2>/dev/null)"
   got="$(awk -F '\t' -v bs=",$b," 'index(bs, "," $1 ",") { s += $2; hit = 1 } END { if (hit) print s }' "$wd/ctl-$key.counts" 2>/dev/null)"
@@ -635,6 +644,10 @@ check_mutation_rows() {
   fi
   [ "${ADB_MUTATION_FULL_SUITE:-0}" = 1 ] && full=1
   pool="$(adb_pool_size "$cap")"
+  # A FRESH workdir: counts and verdicts are read back by name, so a previous run's files would be scored.
+  if [ -e "$wd" ] && [ -n "$(ls -A "$wd" 2>/dev/null)" ]; then
+    bad "$label --mutation: workdir '$wd' is not empty — a previous run's counts or verdicts would be scored"; return 1
+  fi
   mkdir -p "$wd"
 
   # 1. declarations, against the pristine tree
@@ -702,7 +715,7 @@ check_mutation_rows() {
   if [ "$full" -eq 0 ]; then
     running=0
     for b in $blocks; do
-      _check_block_ctl "$wd" "$root" "$run" "$b" &
+      _check_block_ctl "$wd" "$prep" "$run" "$b" &
       running=$((running + 1))
       if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
     done
