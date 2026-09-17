@@ -2658,6 +2658,29 @@ adb_age_secs() {
   printf '%s' "$age"
 }
 
+# adb_mkdir_excl <dir> — create <dir> as a mutex. Returns 0 only for the ONE caller that now holds it.
+# `mkdir` alone does not promise that: Ubuntu 26.04's uutils mkdir reports success to more than one
+# of several processes creating the same path at once (D105). The exclusive step is therefore a
+# noclobber (O_EXCL) open that bash performs itself, of $ADB_EXCL_MARK inside the new directory. The
+# marker stays while the mutex is held; release with adb_rmdir_excl once everything else is removed.
+# A marker that cannot be written and does not exist means no caller holds the directory, so it is
+# removed rather than left empty, where a later take would find it held forever.
+ADB_EXCL_MARK=".adb-excl"
+adb_mkdir_excl() {
+  mkdir "$1" 2>/dev/null || return 1   # adb-allow: bare-mkdir
+  ( set -C; : > "$1/$ADB_EXCL_MARK" ) 2>/dev/null && return 0
+  [ -e "$1/$ADB_EXCL_MARK" ] || rmdir "$1" 2>/dev/null
+  return 1
+}
+
+# adb_rmdir_excl <dir> — remove a mutex directory taken with adb_mkdir_excl. The marker goes LAST, so
+# no second caller can take the path while the holder's other contents are still inside. Returns
+# rmdir's status: non-zero when the directory still holds something, including a successor's marker.
+adb_rmdir_excl() {
+  rm -f "$1/$ADB_EXCL_MARK" 2>/dev/null
+  rmdir "$1" 2>/dev/null
+}
+
 # --- untrusted third-party text (#214) ---------------------------------------
 #
 # Wrap text that came from OUTSIDE the run — an issue body, a review thread, a CI log, a vendor

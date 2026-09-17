@@ -437,6 +437,17 @@ _check_exit_guard() {
 # Dropping `.git` is for speed (this repo's is ~27 MB), and it means the copy is NOT a git repo:
 # code under test that shells out to git must tolerate that. Returns non-zero WITHOUT exiting so a
 # `set -u` caller can guard it.
+# check_mkdir_shim <dir> — write a `mkdir` into <dir> that reports success for a directory that
+# already exists, which is what Ubuntu 26.04's uutils mkdir does to all but one of several concurrent
+# callers (D105). Prepend <dir> to PATH to make that race deterministic. Options pass through.
+check_mkdir_shim() {
+  local real
+  real="$(command -v mkdir)" || return 1
+  mkdir -p "$1" || return 1
+  printf '#!/bin/sh\nfor a in "$@"; do case "$a" in -*) exec '"'"'%s'"'"' "$@" ;; esac; done\nfor a in "$@"; do [ -d "$a" ] || exec '"'"'%s'"'"' "$@"; done\nexit 0\n' "$real" "$real" > "$1/mkdir" \
+    && chmod +x "$1/mkdir"
+}
+
 check_copy_worktree() {
   mkdir -p "$2" || return 1
   ( cd "$1" && cp -R . "$2" ) || return 1

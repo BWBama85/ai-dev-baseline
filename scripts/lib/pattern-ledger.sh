@@ -119,7 +119,8 @@
 # one outcome it must not have, so the guarantee is now real rather than asserted.
 # Reported by the declared reviewer on PR #429.
 #
-# `mkdir` is the lock: it is atomic on every POSIX filesystem, needs no helper, and leaves a
+# A directory is the lock, taken with `adb_mkdir_excl` rather than a bare `mkdir`, whose success is
+# not exclusive on every platform (D105). It needs no helper and leaves a
 # directory a human can see and remove. The wait is bounded and the failure is loud — a caller that
 # cannot take the lock is told, never left to write anyway. A lock older than the stale age is
 # broken with a note, so a killed writer cannot block the ledger forever.
@@ -700,7 +701,7 @@ _adb_pl_owner_gone() {
 _adb_pl_lock() {
   local dir="$1.lock" waited=0 age tomb owner_seen="" owner_now
   _ADB_PL_LOCK_TOKEN="$$.$RANDOM.$RANDOM"
-  while ! mkdir "$dir" 2>/dev/null; do
+  while ! adb_mkdir_excl "$dir"; do
     # THE BOUND IS A HANG BACKSTOP, NOT A QUEUE QUOTA: it counts time during which the lock made
     # NO PROGRESS. A queue of healthy writers each holding the lock for a fraction of a second
     # still drains in more than the bound on a slow two-core runner (25 first-time writers took
@@ -777,14 +778,14 @@ _adb_pl_lock() {
   # A FAILURE HERE MEANS THE PARENT WAS YANKED between our winning `mkdir` and this one — a
   # stale-breaker renaming it away. We never held the lock, so there is nothing to release: start
   # the whole acquisition again rather than returning success over a lock we do not have.
-  if ! mkdir "$dir/$_ADB_PL_LOCK_TOKEN" 2>/dev/null; then
+  if ! mkdir "$dir/$_ADB_PL_LOCK_TOKEN" 2>/dev/null; then   # adb-allow: bare-mkdir (a unique name nobody else creates)
     # …OR THE CREATE FAILED FOR ANY OTHER REASON while the directory is still the one this
     # process made: retrying then waits on its own empty, meta-less lock — which nothing can ever
     # prove abandoned — until the bound refuses, and every later writer inherits the wedge. An
     # empty directory of ours is released first; a yanked one is already gone and the rmdir is
     # a harmless no-op. (`|| :`, not the release's `|| true`: the mutation harness rewrites the
     # release's exact line, and a textual twin here would take that rewrite instead.)
-    rmdir "$dir" 2>/dev/null || :
+    adb_rmdir_excl "$dir" || :
     _adb_pl_lock "$1"
     return $?
   fi
@@ -812,7 +813,7 @@ _adb_pl_unlock() {
   # and gives up. Removing it is safe precisely here: the `rmdir` above succeeding proves this was
   # our lock, and nobody can create `$dir` while it still exists.
   rm -f "$dir/meta" 2>/dev/null
-  rmdir "$dir" 2>/dev/null || true
+  adb_rmdir_excl "$dir" || true
 }
 
 _adb_pl_insert() {
