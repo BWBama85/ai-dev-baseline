@@ -439,7 +439,8 @@ EOF
 # The mutating path (pull + prune + install.sh) must not run twice at once. That was already
 # possible by hand (two terminals), and the SessionStart hook makes it LIKELY: several sessions
 # can start within the same second and each would race the others through `git pull` and a
-# settings.json rewrite. `mkdir` is the portable atomic test-and-set (macOS has no flock(1)).
+# settings.json rewrite. A directory is the portable test-and-set (macOS has no flock(1)), taken with `adb_mkdir_excl`
+# because a bare `mkdir` is not exclusive under uutils (D105).
 #
 # Stale-lock recovery is by AGE, not by liveness: a pid check cannot distinguish "that pid died"
 # from "that pid was recycled", and the failure we are protecting against is a killed updater
@@ -456,7 +457,7 @@ _ADB_LOCK_TOKEN=""
 # Create the lock and record ownership. Returns 0 only if we created it.
 _adb_take_lock() {
   local lock="$1" token
-  mkdir "$lock" 2>/dev/null || return 1
+  adb_mkdir_excl "$lock" || return 1
   token="$$ $(date +%s 2>/dev/null)"
   printf '%s\n' "$token" > "$lock/owner" 2>/dev/null
   _ADB_LOCK_TOKEN="$token"
@@ -500,7 +501,7 @@ adb_update_unlock() {
   [ "$(cat "$lock/owner" 2>/dev/null)" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
   _ADB_LOCK_TOKEN=""
   rm -f "$lock/owner" 2>/dev/null
-  rmdir "$lock" 2>/dev/null
+  adb_rmdir_excl "$lock"
 }
 
 # --- argument parsing --------------------------------------------------------
