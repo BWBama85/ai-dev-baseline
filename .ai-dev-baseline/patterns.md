@@ -680,4 +680,7 @@ One line per resolved review thread, newest last.
 - `event-inferred-from-state` `bin/baseline:929` `f41ea30` `PRRT_kwDOTfywrM6jfWTY` PR #463 2026-09-17 — a provenance-only refresh was reported as relinquished ownership because the disposition label was read as the event
 - `consumer-contract-mismatch` `scripts/lib/common.sh:897` `f41ea30` `PRRT_kwDOTfywrM6jfWTe` PR #463 2026-09-17 — the CLI search read a version from a lower-priority binary after the one a session resolves failed its probe
 - `rerun-not-idempotent` `scripts/lib/common.sh:1065` `f41ea30` `PRRT_kwDOTfywrM6jfWTm` PR #463 2026-09-17 — a legitimately generated zero-leaf installed receipt was refused as damaged by every later reader
+- `status-swallowed` `install.sh:205` `cb4221d` `PRRT_kwDOTfywrM6jho7V` PR #463 2026-09-17 — the opt-out re-read discarded its status, so a receipt this run could not classify read as no opt-out recorded
+- `status-swallowed` `scripts/lib/common.sh:1128` `cb4221d` `PRRT_kwDOTfywrM6jho7W` PR #463 2026-09-17 — a failed read of the recorded paths answered payload uncertainty, which the removal path proceeds past
+- `partial-validation` `install.sh:362` `cb4221d` `PRRT_kwDOTfywrM6jho7Z` PR #463 2026-09-17 — the direct install sent a dangling settings link through the synthetic empty document instead of refusing it
 <!-- adb:hits:end -->
