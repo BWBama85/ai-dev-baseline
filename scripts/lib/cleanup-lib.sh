@@ -31,6 +31,7 @@
 #   cleanup-lib.sh branch-verdict <branch> <base-ref>          # merged-PR JSON on stdin
 #   cleanup-lib.sh state-scan     [--with-identity] <state-dir>
 #   cleanup-lib.sh state-verdict  threads <pr-state>
+#   cleanup-lib.sh state-verdict  sweep   <pr-state>
 #   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
@@ -312,6 +313,8 @@ EOF
 #
 # Kinds, and the key each carries:
 #   threads  <pr-number>     a /resolve-pr-threads cache, `threads-<N>.json`
+#   sweep    <pr-number>     a /resolve-pr-threads sibling sweep, `sweep-pr<N>-<head>.tsv` and its
+#                            stage, prompt, reply and stream files (#475)
 #   marker   <branch>|-      an /implement-issue run marker; the key is its recorded branch
 #   lock     -               the gap-analysis in-flight lock
 #   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
@@ -384,6 +387,16 @@ cmd_state_scan() {
           ''|*[!0-9]*) _adb_cl_emit "$want_ident" other   "$f" '-' ;;
           *)           _adb_cl_emit "$want_ident" threads "$f" "$n" ;;
         esac
+        ;;
+      # Keyed on the PR like `threads`, and a name whose PR or head component is not the grammar's
+      # stays `other`, since the liveness read needs a real PR number.
+      sweep-pr*-*.tsv|sweep-pr*-*.tsv.*)
+        n="${base#sweep-pr}"; key="${n%%-*}"; n="${n#*-}"; n="${n%%.tsv*}"
+        if [[ "$key" =~ ^[1-9][0-9]{0,11}$ ]] && [[ "$n" =~ ^[0-9a-f]{7,40}$ ]]; then
+          _adb_cl_emit "$want_ident" sweep "$f" "$key"
+        else
+          _adb_cl_emit "$want_ident" other "$f" '-'
+        fi
         ;;
       implement-issue-active.json|implement-issue-blocked.json)
         key="$(_adb_cl_marker_branch "$f")"
@@ -751,16 +764,16 @@ cmd_file_size() {
 }
 
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review|docs|survey)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|sweep|marker|gaps|issue|review|docs|survey)"
   local kind="$1"; shift
   case "$kind" in
-    threads)
-      [ "$#" -eq 1 ] || die "state-verdict threads: needs exactly 1 arg: <pr-state open|closed|merged|unknown>"
+    threads|sweep)
+      [ "$#" -eq 1 ] || die "state-verdict $kind: needs exactly 1 arg: <pr-state open|closed|merged|unknown>"
       case "$1" in
         open)          printf 'keep\n' ;;
         closed|merged) printf 'stale\n' ;;
         unknown)       printf 'keep\n' ;;
-        *) die "state-verdict threads: <pr-state> must be open|closed|merged|unknown (got '$1')" ;;
+        *) die "state-verdict $kind: <pr-state> must be open|closed|merged|unknown (got '$1')" ;;
       esac
       ;;
     marker)

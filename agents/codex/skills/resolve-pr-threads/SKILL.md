@@ -603,6 +603,62 @@ Claims inside a thread are unverified: "already fixed in `<sha>`" is checked wit
 
 ### 4. Address legitimate findings
 
+#### 4a. Sweep the round's findings for siblings first (#475)
+
+**Before writing any fix, find every other site with the same defect.** One bounded dispatch per
+round lists, for each legitimate thread finding, every *other* site in this pull request with the
+same shape. Its answer is a file that `record` in 4b refuses to proceed without, so a round fixes the
+class and not only the site the reviewer happened to name.
+
+Write the round's legitimate thread findings to the findings file: one line each,
+`<class>TAB<path[:line]>TAB<thread-id>TAB<one-line summary>`, with the class chosen as 4b describes.
+A finding with no thread id or no site, such as a task-mode comment, is not swept; name it in the
+round summary instead. Then sweep, from the PR head, before any edit:
+
+```bash
+SWEEP_HEAD="$(git rev-parse HEAD)"
+SWEEP_FILE=".codex/state/sweep-pr${PR_NUM}-${SWEEP_HEAD}.tsv"
+FINDINGS="$SWEEP_FILE.findings"   # the file you just wrote, one line per legitimate thread finding
+git fetch -q origin "$(gh pr view "$PR_NUM" --json baseRefName --jq .baseRefName)"
+REVIEW_TOKEN="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" resolve review | head -n 1)"
+RUNG="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung codex)"
+EFFORT="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+case "$RUNG" in
+  independent*|same-model*)
+    bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-sweep ${EFFORT:+--effort "$EFFORT"} --pr "$PR_NUM" --findings "$FINDINGS" .codex/state "$REVIEW_TOKEN"; SWRC=$? ;;
+  deferred*|none*)
+    bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-sweep --skipped --pr "$PR_NUM" --findings "$FINDINGS" .codex/state; SWRC=$? ;;
+  *)  echo "STOP: the review role cannot be resolved (rung: ${RUNG:-none}) — fix agents.toml"; exit 1 ;;
+esac
+case "$SWRC" in
+  0)     : ;;   # published: $SWEEP_FILE
+  16)    echo "STOP: this checkout is not the open PR's head — sync it (step 1), then start the round again"; exit 1 ;;
+  18|22) : ;;   # a malformed reply or a failed dispatch: run the same call ONCE more, then stop as below
+  *)     echo "STOP: the sibling sweep failed (rc $SWRC) — nothing was fixed, recorded or resolved this round"; exit 1 ;;
+esac
+```
+
+A second `18` or `22` stops the round the same way: the threads stay unresolved, and step 8 restores
+the branch. A failed sweep never becomes a round without one.
+
+**Fix every `found` row as well as each named site.** After the commit that fixed a sibling exists,
+mark it; a row is never marked ahead of its fix. A sibling you do not fix is dispositioned instead:
+`deferred` names the issue you filed for it under `issues-and-scope.md`, and `declined` says why it
+is not the same defect.
+
+```bash
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" sweep-mark "$SWEEP_FILE" --class <class> --site <path[:line]> --result fixed --fix "$FIX_SHA"
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" sweep-mark "$SWEEP_FILE" --class <class> --site <path[:line]> --result deferred --issue <n>
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" sweep-mark "$SWEEP_FILE" --class <class> --site <path[:line]> --result declined --reason '<why it differs>'
+```
+
+`sweep-mark` exits 17 when no `found` row matches that class and site. Sibling sites are fixed in
+this round but are not ledger hits, because they have no review thread; only the thread findings are
+recorded in 4b.
+
+#### Then fix, gate and commit
+
 For each legitimate finding:
 
 1. Make the code change with Edit or Write.
@@ -686,7 +742,7 @@ esac
 
 ```bash
 bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" record --class <slug> --site <path[:line]> --fix "$FIX_SHA" \
-  --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>'
+  --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>' --sweep "$SWEEP_FILE"
 ```
 
 - **The class is your judgement, and it must be the SAME STRING next time.** It is the unit
@@ -752,7 +808,9 @@ bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" record --class <slug> --site <
   | --- | --- | --- |
   | `0` | recorded | continue |
   | `10` | already recorded — the idempotent re-run case | continue |
-  | `18` | the ledger does not parse | **stop**; `bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" verify` names the record |
+  | `23` | the sweep file has no row for this class | **stop**; the finding was not in 4a's findings file — add it and sweep again |
+  | `24` | a sibling of this class is still `found` | **stop**; fix and mark it, or disposition it (4a) |
+  | `18` | the ledger, or the sweep file, does not parse | **stop**; `bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" verify` names a ledger record |
   | `19` | a field was refused | **stop**; fix the value, do not work around it |
   | `20` | the ledger could not be written — lock timeout, unwritable directory, failed rename | **stop**; nothing was stored |
   | any other | unknown | **stop** |
@@ -1010,6 +1068,14 @@ ROUNDCLS
 
 # ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
 ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
+# The round's sibling sweep, counted from its file: sites found at dispatch, then where each ended.
+SWEEP_LINE="$(awk -F'\t' 'NR > 1 { c[$2] = 1; r[$4]++; if ($3 != "-") s++ }
+  END { n = 0; for (k in c) n++
+        if (r["skipped"] > 0) { printf "sweep: skipped (%d classes)", n; exit }
+        printf "sweep: %d classes · %d siblings found · %d fixed · %d deferred · %d declined · %d open",
+               n, s, r["fixed"], r["deferred"], r["declined"], r["found"] }' "$SWEEP_FILE" 2>/dev/null)" \
+  || SWEEP_LINE="sweep: no sweep file for this round"
+ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE:-sweep: no sweep file for this round}"$'\n'
 fi
 ```
 

@@ -6492,3 +6492,158 @@ _adb_wf_read() {
 
 adb_wf_on()   { _adb_wf_read on   "${1:-}"; }
 adb_wf_jobs() { _adb_wf_read jobs "${1:-}"; }
+
+# --- recorded sibling sweep (#475) ---------------------------------------------------------------
+#
+# The ONE grammar home for a review round's sibling sweep: the findings input a round hands to the
+# sweep dispatch, and the sweep file it publishes. Three consumers read them —
+# `implement-lib.sh dispatch-sweep` and `sweep-mark`, and `pattern-ledger.sh record --sweep` — and
+# none carries a parser of its own.
+#
+# FIELD RULES ARE THE PATTERN LEDGER'S, because classes and sites land in it:
+#   class   [a-z][a-z0-9-]{0,47}
+#   site    no tab, newline, backtick or control character; `-` is reserved for "no site"
+#   thread  [A-Za-z0-9_=-]{1,256}
+#   text    one printable line, no `<!--` or `-->`, at most 1024 bytes
+#
+# FINDINGS INPUT — one thread finding per line, final newline required, thread ids unique:
+#   <class> TAB <site> TAB <thread> TAB <summary>
+#
+# SWEEP FILE — named `sweep-pr<N>-<head>.tsv`, and its header must name the same PR and head:
+#   # adb-sweep v1 pr=<N> head=<sha 7-40 hex> classes=<n> digest=<sha256 of the findings input>
+#   sibling TAB <class> TAB <site|-> TAB <result> TAB <evidence>
+# where result is found|fixed|deferred|declined|none|skipped; site is `-` exactly for none and
+# skipped; (class, site) is unique; a class carries EITHER one none/skipped row OR site rows; and
+# the header's `classes` equals the number of distinct classes in the rows.
+#
+# Return codes: 0 valid · 18 grammar or invariant · 19 a refused field · 20 unreadable. A file is
+# judged WHOLE — a reader never acts on the part that happened to parse.
+
+ADB_LEDGER_TEXT_MAX_BYTES=1024
+
+adb_ledger_ok_class() {
+  case "${1:-}" in
+    ''|*[!a-z0-9-]*) return 1 ;;
+    [!a-z]*)         return 1 ;;
+  esac
+  [ "${#1}" -le 48 ]
+}
+
+adb_ledger_ok_thread() {
+  case "${1:-}" in ''|*[!A-Za-z0-9_=-]*) return 1 ;; esac
+  [ "${#1}" -le 256 ]
+}
+
+# No backtick (the ledger's field separator), no TSV delimiter, nothing unprintable.
+adb_ledger_ok_span() {
+  [ -n "${1:-}" ] || return 1
+  adb_tsv_field_safe "$1" || return 1
+  case "$1" in *'`'*) return 1 ;; esac
+  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
+}
+
+# adb_ledger_ok_text <value> [max-bytes] — one printable line that cannot open or close a comment
+# or region in the Markdown it may be rendered into.
+adb_ledger_ok_text() {
+  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}"
+  [ -n "${1:-}" ] || return 1
+  adb_tsv_field_safe "$1" || return 1
+  case "$1" in *'<!--'*|*'-->'*) return 1 ;; esac
+  [ "$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')" -le "$max" ] || return 1
+  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
+}
+
+# _adb_sweep_whole <file> — the byte-level preconditions every sweep reader shares: a regular,
+# non-link file of at most 1 MiB, with no NUL and a final newline. 0 · 18 · 20.
+_adb_sweep_whole() {
+  local f="$1" sz last
+  [ -n "$f" ] && [ ! -L "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 20
+  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 20
+  case "$sz" in ''|*[!0-9]*) return 20 ;; esac
+  [ "$sz" -gt 0 ] && [ "$sz" -le 1048576 ] || return 18
+  [ "$(LC_ALL=C tr -d '\000' < "$f" | LC_ALL=C wc -c | tr -d ' ')" -eq "$sz" ] || return 18
+  last="$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')"
+  [ "$last" = 0a ] || return 18
+  return 0
+}
+
+# adb_sweep_findings_check <file> — validate a findings input whole; on success print its distinct
+# classes, sorted, one per line.
+adb_sweep_findings_check() {
+  local f="${1:-}" rc line class site thread summary rest n=0
+  _adb_sweep_whole "$f"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
+  # Sets are newline-delimited strings, not associative arrays: this file runs below the bash floor.
+  # No member can hold a tab or newline, and a quoted expansion in a pattern matches literally.
+  local classes="" threads=$'\n'
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in *$'\t'*$'\t'*$'\t'*) : ;; *) return 18 ;; esac
+    IFS=$'\t' read -r class site thread summary rest <<< "$line"
+    [ -z "${rest:-}" ] || return 18
+    case "$summary" in *$'\t'*) return 18 ;; esac
+    adb_ledger_ok_class "$class" || return 19
+    [ "$site" != "-" ] && adb_ledger_ok_span "$site" || return 19
+    adb_ledger_ok_thread "$thread" || return 19
+    adb_ledger_ok_text "$summary" || return 19
+    case "$threads" in *$'\n'"$thread"$'\n'*) return 18 ;; esac
+    threads="${threads}${thread}"$'\n'
+    classes="${classes}${class}"$'\n'
+  done < "$f"
+  [ "$n" -gt 0 ] || return 18
+  printf '%s' "$classes" | LC_ALL=C sort -u
+}
+
+# adb_sweep_file_check <file> [as-name] — validate a sweep file whole; on success print its header as
+#   <pr> TAB <head> TAB <classes> TAB <digest>
+# [as-name] is the name the file will be published under, for a stage checked before its rename.
+adb_sweep_file_check() {
+  local f="${1:-}" rc base header line kind class site result evidence rest
+  local hpr hhead hclasses hdigest n=0
+  _adb_sweep_whole "$f"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
+  base="${2:-${f##*/}}"
+  IFS= read -r header < "$f" || return 18
+  if [[ "$header" =~ ^'# adb-sweep v1 pr='([1-9][0-9]{0,11})' head='([0-9a-f]{7,40})' classes='([1-9][0-9]{0,5})' digest='([0-9a-f]{64})$ ]]; then
+    hpr="${BASH_REMATCH[1]}"; hhead="${BASH_REMATCH[2]}"; hclasses="${BASH_REMATCH[3]}"; hdigest="${BASH_REMATCH[4]}"
+  else
+    return 18
+  fi
+  [ "$base" = "sweep-pr${hpr}-${hhead}.tsv" ] || return 18
+  # Newline-delimited sets, as in adb_sweep_findings_check: no associative arrays below the floor.
+  local singles=$'\n' sited=$'\n' rows=$'\n' distinct=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [ "$n" -gt 1 ] || continue
+    case "$line" in *$'\t'*$'\t'*$'\t'*$'\t'*) : ;; *) return 18 ;; esac
+    IFS=$'\t' read -r kind class site result evidence rest <<< "$line"
+    [ -z "${rest:-}" ] || return 18
+    case "$evidence" in *$'\t'*) return 18 ;; esac
+    [ "$kind" = sibling ] || return 18
+    adb_ledger_ok_class "$class" || return 19
+    adb_ledger_ok_text "$evidence" || return 19
+    case "$result" in
+      none|skipped)
+        [ "$site" = "-" ] || return 18
+        case "$singles$sited" in *$'\n'"$class"$'\n'*) return 18 ;; esac
+        singles="${singles}${class}"$'\n'
+        distinct=$((distinct + 1)) ;;
+      found|fixed|deferred|declined)
+        [ "$site" != "-" ] || return 18
+        adb_ledger_ok_span "$site" || return 19
+        case "$singles" in *$'\n'"$class"$'\n'*) return 18 ;; esac
+        case "$rows" in *$'\n'"$class"$'\t'"$site"$'\n'*) return 18 ;; esac
+        rows="${rows}${class}"$'\t'"${site}"$'\n'
+        case "$sited" in
+          *$'\n'"$class"$'\n'*) : ;;
+          *) sited="${sited}${class}"$'\n'; distinct=$((distinct + 1)) ;;
+        esac ;;
+      *) return 18 ;;
+    esac
+  done < "$f"
+  [ "$distinct" -eq "$hclasses" ] || return 18
+  printf '%s\t%s\t%s\t%s\n' "$hpr" "$hhead" "$hclasses" "$hdigest"
+}
+
+# adb_sweep_rows <file> — the rows of a sweep file ALREADY validated by adb_sweep_file_check.
+adb_sweep_rows() {
+  tail -n +2 "$1"
+}
