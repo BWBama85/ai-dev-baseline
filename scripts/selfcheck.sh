@@ -602,7 +602,7 @@ add pattern-ledger      bash scripts/check-pattern-ledger.sh
 # coverage it claims to describe. `--mutation` prints the live count on every run; that output is
 # current where a number written here is only as current as its last edit.
 add pattern-ledger-mutation bash scripts/check-pattern-ledger.sh --mutation
-inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh
+inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh base/workflows/resolve-pr-threads.md base/workflows/implement-issue.md base/workflows/cleanup.md
 
 # Unit tests for the vendor-documentation duty (scripts/lib/docs-lib.sh, #422): `[mcp] required`
 # finally has a consumer, and its dangerous direction is a CLEAN verdict nobody earned. Drives the
@@ -761,6 +761,19 @@ add session-context     bash scripts/check-session-context.sh
 # the injected fields, the REQUIRED count, and the workflow snippet's history append.
 add session-context-mutation bash scripts/check-session-context.sh --mutation
 inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md
+
+# The installer's SECOND settings surface (#248): which leaves of ~/.claude/settings.json does it
+# own, and what does it do to one it does not? Drives the merge's five verdicts, the receipt's four
+# dispositions, the version probe against a stub CLI, and the real install.sh/uninstall.sh over a
+# fake HOME.
+add settings-fragment   bash scripts/check-settings-fragment.sh
+
+# ...and every one of those rules is a guard over a file the operator also writes, so the failure
+# mode is a settings.json that looks right and has quietly eaten somebody's own key. Each rule is
+# broken in a COPY — of the library, of the payload, of install.sh — and required RED on its own
+# witness.
+add settings-fragment-mutation bash scripts/check-settings-fragment.sh --mutation
+inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).

@@ -1545,10 +1545,14 @@ fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutat
 # `implement-gate` job is the session-context harness's only per-PR execution after the skip.
 fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# The fourth step `selfcheck-macos` skips by name (D101): the ubuntu `install-guard` job is the
+# settings-fragment harness's only per-PR execution after the skip.
+fact settings-fragment-mutation-wired 'regex:^[^#]*check-settings-fragment\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
 # Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
 # copy of a whole-suite-per-mutation harness to the 45-minute job.
 fact macos-logic-mutations-skipped \
-  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation' -- \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation' -- \
   .github/workflows/ci.yml
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
@@ -2080,6 +2084,53 @@ fact roll-boundary-no-changelog \
 # used verbatim in both files, so the claim cannot drift into two different wordings.
 fact roll-declares-its-boundary 'fixed:milestone bookkeeping only' -- \
   scripts/lib/release-convention.sh docs/release-goal-convention.md
+
+# --- the settings-writer classes, pinned tree-wide (#248) --------------------
+#
+# These three exist because the PROSE rule did not hold. `debugging.md` says grep for the CLASS,
+# and the pattern ledger's promoted checklist says the same in as many words — both were loaded,
+# and #248 still shipped the leaf-null fix without the ancestor case, the install-side umask
+# without its uninstall mirror, and a mode read that was corrected in the library while two
+# assertions kept the old spelling. A rule an agent is asked to remember is not a mechanism; an
+# `absent:` pin that scans every listed file and is required to go RED under `--mutation` is.
+#
+# STRICTLY THE SPELLINGS WITH A SIGNATURE. Classes that need judgement — "did this check walk the
+# ancestors as well as the final key" — have no grep form and stay review-side; claiming otherwise
+# here would be the overstatement these files keep warning about.
+
+# `stat` WITHOUT `-L` ANSWERS ABOUT THE SYMLINK, not its target — measured 755 for a link to a 600
+# file on macOS and 777 on Linux. Publishing a settings.json that is a symlink would then stamp
+# that mode onto the regular file replacing it: world-readable, and on Linux world-WRITABLE, over
+# a file that can hold an `env` block.
+#
+# The pattern keys on the QUOTED-FORMAT spelling, so the three comments that deliberately name the
+# anti-pattern (`a naive stat -f %m || stat -c %Y`) are not caught by a rule about live code.
+# `scripts/check-settings-fragment.sh` is deliberately NOT listed: its mutation rows must be able
+# to write the defect down in order to inject it.
+fact stat-mode-dereferences "absent:stat -[cf] '%" \
+  "fires:  m=\"\$(stat -c '%a' \"\$f\" 2>/dev/null)\" || m=\"\"" \
+  "fires:    m=\"\$(stat -f '%Lp' \"\$f\" 2>/dev/null)\" || m=\"\"" -- \
+  scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh \
+  scripts/lib/pinned-install.sh scripts/lib/adopt-lib.sh \
+  install.sh uninstall.sh bin/baseline bin/agent-init
+
+# ABSENCE IS NOT "EQUALS null". `getpath` answers null for a path that is missing AND for one whose
+# value the operator deliberately set to null, so the merge overwrote a chosen null and recorded it
+# as installer-owned. `present`/`anc_ok` ask with `has`; this pin is what stops the cheaper
+# spelling coming back.
+fact merge-absence-uses-has 'absent:\$now == null' \
+  'fires:        | if $now == null and $rec == null then' \
+  'fires:        | if $now == null then .' -- \
+  scripts/lib/common.sh
+
+# THE SETTINGS TEMP IS CREATED RESTRICTED, IN BOTH WRITERS. It holds the WHOLE document — every
+# unrelated key, an `env` block among them — so creating it under the caller's umask leaves a
+# predictable, PID-named, world-readable file for the length of the write. A positive pin rather
+# than an `absent:` one, because what must be true is the presence of the guard: the install side
+# was fixed for this and its mirror in `uninstall.sh` was missed, which is the whole reason the
+# rule names BOTH files rather than the one that was under discussion.
+fact settings-temp-created-restricted 'fixed:( umask 077; : > "$tmp" )' -- \
+  install.sh uninstall.sh
 
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other

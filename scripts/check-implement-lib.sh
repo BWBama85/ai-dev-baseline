@@ -2979,6 +2979,122 @@ if [ -L "$RPP/.claude/state/review-prompt.txt" ]; then bad "45 …and the plant 
 if grep -q 'cp "\$pft" "\$pf"' "$IL"; then bad "45 …the cp fallback is gone"; else ok; fi
 if [ "$PP_RC" -eq 0 ] && has "$(cat "$RPP/$(printf '%s' "$PP_OUT" | sed 's/^prompt-ready //')" 2>/dev/null)" 'diff --git a/seed' "45 …and the kept stage still carries the prompt"; then :; fi
 
+# ================= 46. dispatch-sweep and sweep-mark (#475) =====================================
+# The resolver's sibling sweep: bound to the open PR's head, a reply refused whole unless every line
+# is in the grammar and every class answered, nothing published on any failure, and a sibling moved
+# out of `found` only through sweep-mark.
+swbin="$work/swbin"; mkdir -p "$swbin"
+SWR="$work/swrepo"; mkdir -p "$SWR"
+( cd "$SWR" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && printf 'a\n' > f.sh && git add f.sh && git commit -qm base && git update-ref refs/remotes/origin/main HEAD \
+  && git switch -qc feat && printf 'b\n' >> f.sh && git commit -qam change \
+  && git remote add origin https://github.com/o/r.git && mkdir -p .claude/state ) >/dev/null 2>&1
+SWH="$(git -C "$SWR" rev-parse HEAD)"
+cat > "$swbin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '{"state":"%s","headRefOid":"%s","baseRefName":"main"}\n' "${SW_STATE:-OPEN}" "${SW_HEAD:-}"
+SH
+cat > "$swbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+if [ -n "${SW_PROMPT_COPY:-}" ]; then cat > "$SW_PROMPT_COPY"; else cat > /dev/null; fi
+[ "${SW_FAIL:-0}" = 1 ] && exit 3
+[ -n "$last" ] && printf '%s\n' "${SW_REPLY:-}" > "$last"
+exit 0
+SH
+cat > "$swbin/git" <<SH
+#!/usr/bin/env bash
+[ "\$1" = fetch ] && exit "\${SW_FETCH_RC:-0}"
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$swbin/gh" "$swbin/codex" "$swbin/git"
+T=$'\t'
+printf 'alpha-class\tf.sh:2\tPRRT_a1\tan unquoted "} expansion\nbeta-class\tf.sh:1\tPRRT_b2\ta missing guard\n' > "$SWR/.claude/state/findings.tsv"
+SWF="$SWR/.claude/state/sweep-pr7-$SWH.tsv"
+sweep() { ( cd "$SWR" && env PATH="$swbin:$PATH" SW_HEAD="${SW_HEAD:-$SWH}" bash "$IL" dispatch-sweep "$@" ) >/dev/null 2>&1; echo "$?"; }
+
+rm -f "$SWF"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}same shape"$'\n'"beta-class${T}-${T}none${T}no other site" \
+      SW_PROMPT_COPY="$work/sw-prompt.txt" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 0 \
+   "46 dispatch-sweep publishes a sweep of the open PR's head"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_file_check "$SWF" >/dev/null ); echo "$?" )" 0 "46 …and the published file validates"
+eq "$(tail -n +2 "$SWF" 2>/dev/null | awk -F'\t' '$4 == "found"' | wc -l | tr -d ' ')" 1 "46 …carrying the sibling as found"
+has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" '"untrusted":true' "46 the reviewer findings reach the agent inside the untrusted envelope"
+has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" 'an unquoted \"} expansion' "46 …JSON-encoded, so no delimiter in them survives raw"
+hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and no reply or prompt stage outlives the dispatch"
+eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) 2>/dev/null )" \
+   "sweep: 2 classes · 1 siblings found · 0 fixed · 0 deferred · 0 declined · 1 open" "46 sweep-report counts a valid sweep file"
+eq "$(SW_REPLY="beta-class${T}-${T}none${T}x" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 17 \
+   "46 a head already swept is never swept again (17)"
+eq "$(tail -n +2 "$SWF" | awk -F'\t' '$4 == "found"' | wc -l | tr -d ' ')" 1 "46 …and its rows are left as they were"
+printf 'junk\n' >> "$SWF"
+eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) >/dev/null 2>&1; echo "$?" )" 18 "46 sweep-report refuses a file that does not validate, with no counts"
+
+rm -f "$SWF"
+eq "$(SW_FETCH_RC=1 SW_REPLY="beta-class${T}-${T}none${T}x" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 20 \
+   "46 a base branch that cannot be fetched is refused (20), never a stale merge base"
+eq "$(SW_REPLY="alpha-class${T}${T}lib/x.sh:9${T}found${T}x"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply line with a doubled tab is refused (18)"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}x${T}"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply line with a trailing empty field is refused (18)"
+eq "$(SW_REPLY="$(printf 'alpha-class\tlib/x.sh:9\tfound\tx\001\nbeta-class\t-\tnone\tx')" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 a control byte in a reply field is refused (19)"
+if [ -e "$SWF" ]; then bad "46 …and none of those published a file"; else ok; fi
+eq "$(SW_REPLY='```'$'\r\n'"alpha-class${T}lib/x.sh:9${T}found${T}x"$'\r\n\n'"beta-class${T}-${T}none${T}x"$'\r\n''```' \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 0 \
+   "46 the documented tolerance: CRLF endings, blank lines and code fences around the reply are ignored"
+rm -f "$SWF"
+cat > "$swbin/codex-nul" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+cat > /dev/null
+[ -n "$last" ] && printf 'alpha-class\tlib/x.sh:9\tfound\tx\000y\nbeta-class\t-\tnone\tx\n' > "$last"
+exit 0
+SH
+chmod +x "$swbin/codex-nul"; cp "$swbin/codex" "$work/codex-saved"; cp "$swbin/codex-nul" "$swbin/codex"
+eq "$(sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply carrying a NUL is refused whole (18)"
+cp "$work/codex-saved" "$swbin/codex"
+if [ -e "$SWF" ]; then bad "46 …and published nothing"; else ok; fi
+printf 'alpha-class\t\tPRRT_a1\tsummary\n' > "$SWR/.claude/state/empty-field.tsv"
+eq "$(sweep --pr 7 --findings .claude/state/empty-field.tsv .claude/state codex)" 19 "46 a findings line with an empty site is refused before any read"
+printf 'alpha-class\tf.sh\tPRRT_a1\tsummary\t\n' > "$SWR/.claude/state/extra-field.tsv"
+eq "$(sweep --pr 7 --findings .claude/state/extra-field.tsv .claude/state codex)" 18 "46 …and one with a trailing empty field"
+
+rm -f "$SWF"
+eq "$(SW_HEAD=ffffffffffffffffffffffffffffffffffffffff SW_REPLY="beta-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 16 "46 a checkout that is not the PR head is refused (16)"
+eq "$(SW_STATE=MERGED sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 16 "46 …and so is a PR that is not OPEN"
+eq "$(SW_REPLY="alpha-class lib/x.sh:9 found spaces-not-tabs" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 \
+   "46 a reply line outside the grammar is refused whole (18)"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}x" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 \
+   "46 a reply that leaves a class unanswered is refused (18)"
+eq "$(SW_REPLY="alpha-class${T}-${T}none${T}x"$'\n'"beta-class${T}-${T}none${T}x"$'\n'"gamma-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply naming a class not in the findings is refused (18)"
+eq "$(SW_REPLY="alpha-class${T}lib/\`x\`.sh${T}found${T}x"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 a reply site outside the ledger charset is refused (19)"
+eq "$(SW_FAIL=1 sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 22 "46 a failed dispatch is 22"
+if [ -e "$SWF" ]; then bad "46 …and no refused or failed sweep published a file"; else ok; fi
+printf 'alpha-class\tf.sh:2\tPRRT_a1\n' > "$SWR/.claude/state/bad-findings.tsv"
+eq "$(sweep --pr 7 --findings .claude/state/bad-findings.tsv .claude/state codex)" 18 "46 a findings input outside the grammar is refused before any read"
+eq "$(SW_FAIL=1 sweep --skipped --pr 7 --findings .claude/state/findings.tsv .claude/state)" 0 "46 --skipped publishes without dispatching"
+eq "$(tail -n +2 "$SWF" 2>/dev/null | awk -F'\t' '$4 == "skipped"' | wc -l | tr -d ' ')" 2 "46 …one skipped row per class"
+
+rm -f "$SWF"
+SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}same shape"$'\n'"beta-class${T}-${T}none${T}no other site" \
+  sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex >/dev/null
+mark() { ( cd "$SWR" && bash "$IL" sweep-mark "$SWF" "$@" ) >/dev/null 2>&1; echo "$?"; }
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix 0000000)" 19 "46 sweep-mark refuses a fix commit that is not on the branch"
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result declined --reason 'hides <!-- this')" 19 "46 …and a reason that could open a Markdown comment"
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result deferred)" 2 "46 …and a deferral with no issue"
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix "${SWH:0:7}")" 0 "46 sweep-mark moves one found sibling to fixed"
+eq "$(tail -n +2 "$SWF" | awk -F'\t' '$3 == "lib/x.sh:9" { print $4 }')" fixed "46 …and the file records it"
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix "${SWH:0:7}")" 17 "46 …once: a row no longer found is 17"
+cp "$SWF" "$work/sw-before"; printf 'junk\n' >> "$SWF"
+eq "$(mark --class beta-class --site - --result declined --reason x)" 18 "46 a sweep file that does not parse is refused by sweep-mark"
+if tail -n 1 "$SWF" | grep -qx junk; then ok; else bad "46 …and left exactly as it was"; fi
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"

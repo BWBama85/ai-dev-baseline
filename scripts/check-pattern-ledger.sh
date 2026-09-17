@@ -140,10 +140,6 @@ if [ "$MODE" = mutation ]; then
 
   # Region-marker injection accepted: a summary could close the hits region and truncate every
   # record after it.
-  check_mut marker-injection-allowed \
-    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
-    "  case \"\$1\" in *'ZZQQ-never-appears'*) return 1 ;; esac" \
-    'a region marker in a summary is refused'
 
   # A malformed declared threshold silently becomes the built-in: the operator's configured number
   # is then a fiction, and nothing says so.
@@ -341,10 +337,6 @@ if [ "$MODE" = mutation ]; then
     'a repeated [patterns] table header is refused'
 
   # THE STRUCTURAL-MARKUP REFUSAL (PR #429). Restores the narrower `<!-- adb:` ban that shipped.
-  check_mut markup-in-summary \
-    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
-    "  case \"\$1\" in *'<!-- adb:'*) return 1 ;; esac" \
-    'a summary opening an HTML comment is refused'
 
   # THE READERS' SUMMARY VALIDATION (PR #429). The raw parser used to discard the summary, so no
   # reader could apply the writer's predicate to it; a hand-edited `<!--` then hid every later
@@ -390,10 +382,6 @@ if [ "$MODE" = mutation ]; then
     'an impossible date (2026-02-30) is refused, not accepted on shape'
 
   # THE PER-TEXT BOUND (PR #429).
-  check_mut rule-bound-removed \
-    "  [ \"\$(printf '%s' \"\$1\" | LC_ALL=C wc -c | tr -d ' ')\" -le \"\$_ADB_PL_TEXT_MAX_BYTES\" ] || return 1" \
-    "  :" \
-    'a 1025-byte rule is refused by the per-text bound'
 
   # THE AGGREGATE BOUND AT THE WRITE (PR #429).
   check_mut promote-aggregate-unchecked \
@@ -414,6 +402,20 @@ if [ "$MODE" = mutation ]; then
     '    if [ -n "$age" ]; then   # the writers'"'"' own proof' \
     'reclaim leaves a LIVE owner'"'"'s lock alone (22)'
 
+  # THE SIBLING SWEEP'S THREE REFUSALS (#475): an unswept class, an open sibling, a foreign PR.
+  check_mut sweep-unswept-accepted \
+    '    [ -n "$_rows" ] || {' \
+    '    true || {' \
+    'record --sweep refuses a class the sweep file has no row for (23)'
+  check_mut sweep-open-sibling-accepted \
+    "    if printf '%s\\n' \"\$_rows\" | grep -qx found; then" \
+    '    if false; then' \
+    'record --sweep refuses a class whose sibling is still found (24)'
+  check_mut sweep-foreign-pr-accepted \
+    "    [ \"\${_sh%%\$'\\t'*}\" = \"\$OPT_PR\" ] || {" \
+    '    true || {' \
+    'record --sweep refuses a sweep file that belongs to another PR (19)'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -421,6 +423,43 @@ if [ "$MODE" = mutation ]; then
   runner() { ( cd "$1/tree" && bash scripts/check-pattern-ledger.sh 2>&1 ); }
 
   check_mutation_pool check-pattern-ledger "$work" prep runner 6
+
+  # The text rules live in common.sh (#475), shared with the sibling-sweep grammar: a second pool
+  # mutates that file, and this suite's own assertions are still the witnesses.
+  check_mut_reset
+  # Region-marker injection accepted: a summary could close the hits region and truncate every
+  # record after it.
+  check_mut marker-injection-allowed \
+    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
+    "  case \"\$1\" in *'ZZQQ-never-appears'*) return 1 ;; esac" \
+    'a region marker in a summary is refused'
+  check_mut markup-in-summary \
+    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
+    "  case \"\$1\" in *'<!-- adb:'*) return 1 ;; esac" \
+    'a summary opening an HTML comment is refused'
+  check_mut rule-bound-removed \
+    "  [ \"\$(printf '%s' \"\$1\" | LC_ALL=C wc -c | tr -d ' ')\" -le \"\$max\" ] || return 1" \
+    "  :" \
+    'a 1025-byte rule is refused by the per-text bound'
+  # The sweep grammar's whole-file refusals and its name binding (#475).
+  check_mut sweep-final-newline-unchecked \
+    '  [ "$last" = 0a ] || return 18' \
+    '  :' \
+    '11 a sweep file with no final newline is refused'
+  check_mut sweep-nul-unchecked \
+    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$f\" | LC_ALL=C wc -c | tr -d ' ')\" -eq \"\$sz\" ] || return 18" \
+    '  :' \
+    '11 a sweep file carrying a NUL is refused'
+  check_mut sweep-name-unbound \
+    '  [ "$base" = "sweep-pr${hpr}-${hhead}.tsv" ] || return 18' \
+    '  :' \
+    '11 a sweep file whose name does not match its header is refused'
+  prep_common() {
+    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1/tree/scripts/lib/common.sh"
+  }
+  mkdir -p "$work/common"
+  check_mutation_pool check-pattern-ledger-common "$work/common" prep_common runner 6
   check_summary check-pattern-ledger
   exit 0
 fi
@@ -1638,6 +1677,96 @@ has "$IMPTXT2" 'over budget' "…and step 8 still says what rc 21 means"
 # enumerates files under the state directory.
 hasnt "$(cat base/workflows/cleanup.md)" 'patterns.md' \
   "/cleanup does not sweep the pattern ledger — it is project history, not run state"
+
+# =============================== 11. the recorded sibling sweep (#475) ===========================
+# A hit is stored only for a class somebody swept for siblings, and never while a sibling is still
+# open. The sweep file's grammar has one home (common.sh); these read it through that home.
+SW="$work/sweep"; mkdir -p "$SW"
+SWHEAD=0123456789abcdef0123456789abcdef01234567
+SWDIG=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+mksweep() {   # <pr> <classes> <row-lines…> — prints the path
+  local pr="$1" n="$2" f; shift 2
+  f="$SW/sweep-pr${pr}-${SWHEAD}.tsv"
+  { printf '# adb-sweep v1 pr=%s head=%s classes=%s digest=%s\n' "$pr" "$SWHEAD" "$n" "$SWDIG"
+    for r in "$@"; do printf '%s\n' "$r"; done; } > "$f"
+  printf '%s' "$f"
+}
+swcheck() { ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_file_check "$@" >/dev/null 2>&1 ); echo "$?"; }
+T=$'\t'
+
+F="$(mksweep 7 2 "sibling${T}alpha-class${T}a.sh:3${T}found${T}same shape" "sibling${T}beta-class${T}-${T}none${T}no other site")"
+eq "$(swcheck "$F")" 0 "11 a well-formed sweep file validates"
+F2="$SW/copy.tsv"; cp "$F" "$F2"
+eq "$(swcheck "$F2")" 18 "11 a sweep file whose name does not match its header is refused"
+eq "$(swcheck "$F2" "${F##*/}")" 0 "11 …unless checked as the name it will be published under"
+ln -s "$F" "$SW/link.tsv"
+eq "$(swcheck "$SW/link.tsv" "${F##*/}")" 20 "11 a symlinked sweep file is unreadable, never followed"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x" "sibling${T}alpha-class${T}a.sh:3${T}fixed${T}y")"
+eq "$(swcheck "$F")" 18 "11 a duplicate class and site is refused whole"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}-${T}none${T}x" "sibling${T}alpha-class${T}a.sh:3${T}found${T}y")"
+eq "$(swcheck "$F")" 18 "11 a class with both a none row and a site row is refused"
+F="$(mksweep 7 2 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x")"
+eq "$(swcheck "$F")" 18 "11 a header class count that disagrees with the rows is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}-${T}found${T}x")"
+eq "$(swcheck "$F")" 18 "11 a found row with no site is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}maybe${T}x")"
+eq "$(swcheck "$F")" 18 "11 an unknown result is refused"
+F="$(mksweep 7 1 "sibling${T}Alpha${T}a.sh:3${T}found${T}x")"
+eq "$(swcheck "$F")" 19 "11 a class outside the ledger charset is refused as a field"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}opens <!-- a comment")"
+eq "$(swcheck "$F")" 19 "11 evidence that could open a Markdown comment is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x")"
+printf '%s' "$(cat "$F")" > "$F"
+eq "$(swcheck "$F")" 18 "11 a sweep file with no final newline is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x")"
+printf 'sibling\talpha-class\tb.sh\tfound\tx\000y\n' >> "$F"
+eq "$(swcheck "$F")" 18 "11 a sweep file carrying a NUL is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}${T}a.sh:3${T}found${T}x")"
+eq "$(swcheck "$F")" 18 "11 a row with a doubled tab is refused, never folded into the next field"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x${T}")"
+eq "$(swcheck "$F")" 18 "11 a row with a trailing empty field is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}")"
+eq "$(swcheck "$F")" 19 "11 a row with empty evidence is refused as a field"
+printf 'alpha-class\tf.sh\tT1\tsummary\t\n' > "$SW/findings-extra.tsv"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_findings_check "$SW/findings-extra.tsv" >/dev/null 2>&1 ); echo "$?" )" 18 \
+   "11 a findings line with a trailing empty field is refused"
+F="$(mksweep 9 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}opens <!-- a comment")"
+bash "$PL" record --ledger "$work/l11b.md" --class alpha-class --site a.sh:1 --fix abc1234 --pr 9 --thread T-sw-9 --sweep "$F" >/dev/null 2>&1
+eq "$?" 19 "11 record --sweep keeps a refused field as 19, not 18"
+
+L11="$work/l11.md"
+F="$(mksweep 7 2 "sibling${T}alpha-class${T}a.sh:3${T}found${T}same shape" "sibling${T}beta-class${T}-${T}none${T}no other site")"
+bash "$PL" record --ledger "$L11" --class alpha-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-1 --sweep "$F" >/dev/null 2>&1
+eq "$?" 24 "11 record --sweep refuses a class whose sibling is still found (24)"
+bash "$PL" record --ledger "$L11" --class gamma-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-2 --sweep "$F" >/dev/null 2>&1
+eq "$?" 23 "11 record --sweep refuses a class the sweep file has no row for (23)"
+bash "$PL" record --ledger "$L11" --class beta-class --site a.sh:1 --fix abc1234 --pr 8 --thread T-sw-3 --sweep "$F" >/dev/null 2>&1
+eq "$?" 19 "11 record --sweep refuses a sweep file that belongs to another PR (19)"
+if [ -f "$L11" ] && grep -q 'T-sw-' "$L11"; then bad "11 …and no refused hit reached the ledger"; else ok; fi
+bash "$PL" record --ledger "$L11" --class beta-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-4 --sweep "$F" >/dev/null 2>&1
+eq "$?" 0 "11 record --sweep stores a hit for a class swept with no sibling"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}fixed${T}fixed in abc1234")"
+bash "$PL" record --ledger "$L11" --class alpha-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-1 --sweep "$F" >/dev/null 2>&1
+eq "$?" 0 "11 …and for a class whose every sibling was dispositioned"
+bash "$PL" record --ledger "$L11" --class alpha-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-1 --sweep "$SW/missing.tsv" >/dev/null 2>&1
+eq "$?" 10 "11 a re-run over a recorded thread stays the no-op 10, ahead of the sweep read"
+bash "$PL" record --ledger "$L11" --class delta-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-5 --sweep "$SW/missing.tsv" >/dev/null 2>&1
+eq "$?" 20 "11 an unreadable sweep file records nothing (20)"
+bash "$PL" record --ledger "$L11" --class delta-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-6 >/dev/null 2>&1
+eq "$?" 0 "11 record without --sweep is unchanged"
+
+# The resolver sweeps before it fixes, and records through the sweep.
+has "$RESTXT" '{{IMPLEMENT_LIB}} dispatch-sweep' "11 the resolver dispatches the sibling sweep"
+has "$RESTXT" '{{IMPLEMENT_LIB}} sweep-mark' "11 …marks each sibling it fixes or dispositions"
+has "$RESTXT" '--sweep "$SWEEP_FILE"' "11 …and records every hit through the sweep file"
+has "$RESTXT" '{{IMPLEMENT_LIB}} sweep-report "$SWEEP_FILE"' "11 …and reports the sweep in the round summary through the validating reader"
+has "$RESTXT" 'case "$SWRC" in 18|22) sweep_once; SWRC=$? ;; esac' "11 a malformed reply or failed dispatch is retried exactly once"
+has "$RESTXT" '| `23` | the sweep file has no row for this class |' "11 the record table says what 23 means"
+has "$RESTXT" '| `24` | a sibling of this class is still `found` |' "11 …and what 24 means"
+sw_at="$(grep -n '{{IMPLEMENT_LIB}} dispatch-sweep' "$RES" | head -n 1 | cut -d: -f1)"
+gate_at="$(grep -n '{{GATE_RUNNER}} run' "$RES" | head -n 1 | cut -d: -f1)"
+if [ -n "$sw_at" ] && [ -n "$gate_at" ] && [ "$sw_at" -lt "$gate_at" ]; then ok; else
+  bad "11 …and sweeps before the round's first gate run and commit (sweep@${sw_at:-?} gate@${gate_at:-?})"; fi
 
 # …and adoption must SEE it. A file nobody names in the scan is not classified `other`, it is
 # invisible, which satisfies neither reading of #421's acceptance criterion.

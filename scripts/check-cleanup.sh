@@ -403,10 +403,27 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/.marker.tmp"
 : > "$S/.artifact.w48123"
 : > "$S/gaps-held.w48123p"
+: > "$S/sweep-pr41-0123abc.tsv"
+: > "$S/sweep-pr41-0123abc.tsv.findings"
+: > "$S/sweep-pr41-0123abc.tsv.stage.123"
+: > "$S/sweep-pr0-0123abc.tsv"
+: > "$S/sweep-prx-0123abc.tsv"
+: > "$S/sweep-pr41-NOTHEX.tsv"
 printf '{"branch":"issue-9-thing","issue":"9","phase":"pushed"}' > "$S/implement-issue-active.json"
 scan="$(bash "$CL" state-scan "$S")"
 kindof() { printf '%s\n' "$scan" | awk -F'\t' -v b="$1" '{n=split($2,p,"/"); if (p[n]==b) print $1}'; }
 
+eq "${ kindof sweep-pr41-0123abc.tsv; }"          "sweep" "3 a resolver sibling sweep is classified (#475)"
+eq "${ kindof sweep-pr41-0123abc.tsv.findings; }" "sweep" "3 …with its findings input"
+eq "${ kindof sweep-pr41-0123abc.tsv.stage.123; }" "sweep" "3 …and a stage a killed writer left"
+eq "${ printf '%s\n' "$scan" | awk -F'\t' '$2 ~ /sweep-pr41-0123abc\.tsv$/ {print $3}'; }" "41" "3 …keyed on its PR number"
+eq "${ kindof sweep-pr0-0123abc.tsv; }"   "other" "3 a sweep name whose PR is not a positive number is not ours to delete"
+eq "${ kindof sweep-prx-0123abc.tsv; }"   "other" "3 …nor one with no PR number"
+eq "${ kindof sweep-pr41-NOTHEX.tsv; }"   "other" "3 …nor one whose head is not a commit sha"
+eq "${ bash "$CL" state-verdict sweep open; }"    "keep"  "3 a sweep of an OPEN PR is kept"
+eq "${ bash "$CL" state-verdict sweep merged; }"  "stale" "3 …a merged PR's sweep is stale"
+eq "${ bash "$CL" state-verdict sweep closed; }"  "stale" "3 …and a closed PR's"
+eq "${ bash "$CL" state-verdict sweep unknown; }" "keep"  "3 …and an unreadable PR state keeps it"
 eq "${ kindof threads-41.json; }"              "threads" "3 a numbered thread cache is classified"
 eq "${ kindof threads-9.json; }"               "threads" "3 …including a single-digit PR number"
 eq "${ kindof threads-notanumber.json; }"      "other"   "3 a thread-shaped name with no PR number is NOT ours to delete"
@@ -1151,8 +1168,8 @@ else
       }
     }' ; }"
   if [ -n "$sweeparms" ]; then
-    eq "$sweeparms" "gaps survey issue review docs threads " \
-       "6 the sweep loop's delete arms are EXACTLY gaps/issue/review/docs/threads — no default arm, so 'unsafe' cannot be deleted"
+    eq "$sweeparms" "gaps survey issue review docs threads sweep " \
+       "6 the sweep loop's delete arms are EXACTLY gaps/survey/issue/review/docs/threads/sweep — no default arm, so 'unsafe' cannot be deleted"
   else
     bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
   fi
@@ -1838,11 +1855,11 @@ eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'state-scan --with-identity'; }" "1
 # really a checksum.
 has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
 # EVERY deleting arm, not just the one this issue was reported against.
-for arm in gaps survey issue review docs threads; do
+for arm in gaps survey issue review docs threads sweep; do
   has "$SW_SNIPPET" "    $arm)" "8d the $arm arm is present in the sweep"
 done
-eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "6" \
-   "8d …and all six pass the judged identity to the delete"
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "7" \
+   "8d …and all seven pass the judged identity to the delete"
 hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
 ' "8d no arm still deletes by pathname alone"
 
