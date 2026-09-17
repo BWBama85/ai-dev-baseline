@@ -1125,8 +1125,14 @@ _adb_claude_settings_rows_complete() {
         _cpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _cpdig=""
         if [ -n "$_crdig" ] && [ "$_crdig" = "$_cpdig" ]; then
           _cship="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
-          _crec="$(printf '%s' "$owned" | jq -c '[.[].p] | unique | sort' 2>/dev/null)" || return 2
-          [ "$(jq -n --argjson s "$_cship" --argjson r "$_crec" '($s - $r) | length' 2>/dev/null)" = "0" ] \
+          # THE RECORDED HALF IS RECEIPT-SIDE, so a jq failure reading it is 25. As 2 it was payload
+          # uncertainty, which `unwire_settings` proceeds on — and removal then deleted the surviving
+          # rows and the receipt while this check had answered nothing. (PR review)
+          _crec="$(printf '%s' "$owned" | jq -c '[.[].p] | unique | sort' 2>/dev/null)" || return 25   # recorded-paths-unreadable
+          local _cdiff _cdrc
+          _cdiff="$(jq -n --argjson s "$_cship" --argjson r "$_crec" '($s - $r) | length' 2>/dev/null)"; _cdrc=$?
+          [ "$_cdrc" -eq 0 ] || return 25   # identity-diff-unreadable
+          [ "$_cdiff" = "0" ] \
             || return 23   # identity-short-of-payload
           # ...AND EXACTLY ITS PATH/VALUE PAIRS. Paths alone let a receipt whose header was raised to match
           # carry an unrelated live key, or record a value the payload never shipped — and removal deletes a

@@ -1343,7 +1343,7 @@ _dsq() { adb_settings_doc_state "$_ds/$1"; }
 chmod 700 "$_ds/locked"; chmod 600 "$_ds/open/unr.json"
 
 # Every site that used `-s` as "nothing there" now refuses an unseeable document instead.
-grep -q 'return 1   # settings-inaccessible-install' "$ROOT/install.sh" && ok \
+grep -q 'return 1 ;;   # settings-inaccessible-install' "$ROOT/install.sh" && ok \
   || bad "the installer must refuse an inaccessible settings.json rather than merge against {} and replace it"
 grep -q 'return 22 ;;   # carry-settings-inaccessible' "$ROOT/install.sh" && ok \
   || bad "carrying ownership must not relinquish on an inaccessible document — the keys come back unowned when access returns"
@@ -2787,6 +2787,14 @@ if check_block an-empty-or-absent-settings-json-is-subs the-version-probe-three-
 sym_home="$work/symhome"; rm -rf "$sym_home"; mkdir -p "$sym_home/.claude"
 ln -s "$sym_home/outside-target.json" "$sym_home/.claude/settings.json"
 HOME="$sym_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+# A LINK TO AN EMPTY TARGET IS THE CASE THE SUBSTITUTION STILL HANDLES. Since round 50 a DANGLING link
+# is refused before this path, so the in-place write is only reachable through `empty` — where it
+# follows the link out of ~/.claude exactly as it used to.
+sym_e="$work/symempty"; rm -rf "$sym_e"; mkdir -p "$sym_e/.claude"
+: > "$sym_e/outside-empty.json"
+ln -s "$sym_e/outside-empty.json" "$sym_e/.claude/settings.json"
+HOME="$sym_e" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -s "$sym_e/outside-empty.json" ] && bad "an empty settings target reached through a link must not be written in place — the publish is rename-only for exactly this reason" || ok
 [ -e "$sym_home/outside-target.json" ] && bad "a dangling settings symlink must not have its target created — the publish is rename-only for exactly this reason" || ok
 # ...and a HOME with no settings.json at all still installs.
 none_home="$work/nonehome"; rm -rf "$none_home"; mkdir -p "$none_home/.claude"
@@ -3594,6 +3602,48 @@ awk '/skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{f=1}
   || bad "the skip arm must compare ownership rows before claiming a relinquishment — a provenance-only refresh still owns every leaf it names"
 fi
 
+if check_block round-50-an-unreadable-opt-out-refuses round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
+# --- round 50: an unreadable opt-out refuses, and a dangling link never reaches the merge ---------
+#
+# BEHAVIOURAL. `--optout-if-recorded` re-reads the recorded choice under the lock; substituted bare,
+# a receipt this run cannot classify made the comparison false and the fragment was applied over the
+# very `--no-sandbox` the re-read exists to honour.
+_o5="$work/r50-optout"; rm -rf "$_o5"; mkdir -p "$_o5/.claude"; printf '{}\n' > "$_o5/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$_o5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+sed 's/^disposition .*/disposition wat/' "$_o5/$_r42r" > "$_o5/r.tmp" && mv "$_o5/r.tmp" "$_o5/$_r42r"
+_o5out="$(HOME="$_o5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --optout-if-recorded 2>&1)"
+case "$_o5out" in
+  *"disposition could not be read"*) ok ;;
+  *) bad "an unclassifiable receipt must SAY it stopped --optout-if-recorded — silent, the operator sees a normal install over their recorded --no-sandbox choice" ;;
+esac
+# STRUCTURAL, and the reason is the finding's own shape: the damage needs a TRANSIENT failure — this
+# read fails, the later receipt reads succeed — and a fixture can only make it permanent, where the
+# receipt validation refuses anyway. What is checkable is that this read refuses rather than falling
+# through, which is the one thing a transient failure would otherwise slip past.
+grep -q 'return 1 ;;   # optout-unreadable' "$ROOT/install.sh" && ok \
+  || bad "a disposition read this run could not classify must stop --optout-if-recorded, not fall through to the merge that overwrites the recorded --no-sandbox choice"
+# BEHAVIOURAL. A dangling link refuses the direct install too: through the synthetic {} it published a
+# rowless skipped-blocked over the record and left the link, so the keys came back unowned.
+_d5="$work/r50-dangling"; rm -rf "$_d5"; _r42 "$_d5"
+_d5rows="$(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r")"
+mv "$_d5/.claude/settings.json" "$_d5/real.json"; ln -s "$_d5/gone.json" "$_d5/.claude/settings.json"
+_d5out="$(HOME="$_d5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+case "$_d5out" in
+  *"does not resolve to a readable file"*) ok ;;
+  *) bad "a dangling settings link must refuse the install rather than merge against {} — the record is replaced by a rowless refusal while the link stays" ;;
+esac
+[ "$(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r")" = "$_d5rows" ] && ok \
+  || bad "...and the established receipt keeps its ownership rows (had $_d5rows, now $(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r"))"
+[ -L "$_d5/.claude/settings.json" ] && ok || bad "...and the link itself is left alone"
+# A RECEIPT-SIDE READ THAT FAILS IS 25, NOT PAYLOAD UNCERTAINTY. Structural, like its siblings: making
+# one jq invocation fail in place is not reachable from a fixture.
+grep -q 'return 25   # recorded-paths-unreadable' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "reading the RECORDED paths is a receipt-side check: a jq failure there must answer 25, which uninstall refuses on, not the 2 it proceeds on"
+grep -q 'return 25   # identity-diff-unreadable' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the identity comparison's own failure must answer 25 too — as an empty result it read as a shortfall and reported damage it never established"
+fi
+
 check_blocks_done
 
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
@@ -4021,7 +4071,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_row 'the settings file is initialised in place again' 'install.sh' 'an-empty-or-absent-settings-json-is-subs' \
     '    synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }' \
     '    echo "{}" > "$settings"; synth=""' \
-    'must not have its target created'
+    'must not be written in place'
   check_row 'a failed prune still replaces the receipt' 'install.sh' 'a-failed-retirement-prune-must-not-be-fo' \
     '        return 1   # prune-abort' \
     '        :   # prune-abort' \
@@ -4198,7 +4248,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '    :' \
     'must be read BEFORE the receipt is published'
   check_row 'an inaccessible settings.json is merged against {}' 'install.sh' 'round-38-a-document-the-run-cannot-see-i' \
-    '    return 1   # settings-inaccessible-install' \
+    '      return 1 ;;   # settings-inaccessible-install' \
     '    :' \
     'must refuse an inaccessible settings.json'
   check_row 'ownership is relinquished on an inaccessible document' 'install.sh' 'round-38-a-document-the-run-cannot-see-i' \
@@ -4262,8 +4312,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '    absent|empty|dangling)' \
     'must keep the ownership record'
   check_row 'the installer ignores a recorded opt-out it was asked to honour' 'install.sh' 'round-47-25-travels-out-of-the-currency' \
-    '    WIRE_SETTINGS=0   # optout-revalidated' \
-    '    :   # optout-revalidated' \
+    '      0) [ "$_odisp" != skipped-optout ] || WIRE_SETTINGS=0 ;;   # optout-revalidated' \
+    '      0) :   # optout-revalidated' \
     'must honour a recorded opt-out read under the lock'
   check_row 'the pinned sandbox omission moves inside the jq branch' 'scripts/lib/pinned-install.sh' 'the-pinned-model-says-what-it-omitted-on' \
     '    _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"' \
@@ -4592,6 +4642,26 @@ if [ "$MUTATION" -eq 1 ]; then
     '          SETTINGS_ROWS_AFTER="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-heal' \
     '          SETTINGS_ROWS_AFTER=0   # row-count-after-heal' \
     'must compare ownership rows before claiming a relinquishment'
+  check_row 'an unclassifiable opt-out receipt is applied over in silence' 'install.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '      *) adb_info "  WARN   the recorded settings disposition could not be read — sandbox settings NOT written."' \
+    '      *) :' \
+    'must SAY it stopped --optout-if-recorded'
+  check_row 'an unclassifiable opt-out receipt is read as no opt-out' 'install.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '         return 1 ;;   # optout-unreadable' \
+    '         : ;;   # optout-unreadable' \
+    'must stop --optout-if-recorded, not fall through'
+  check_row 'a dangling link reaches the install merge' 'install.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '    inaccessible|dangling)' \
+    '    inaccessible)' \
+    'must refuse the install rather than merge against'
+  check_row 'the recorded-path read reports payload uncertainty' 'scripts/lib/common.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '          _crec="$(printf '"'"'%s'"'"' "$owned" | jq -c '"'"'[.[].p] | unique | sort'"'"' 2>/dev/null)" || return 25   # recorded-paths-unreadable' \
+    '          _crec="$(printf '"'"'%s'"'"' "$owned" | jq -c '"'"'[.[].p] | unique | sort'"'"' 2>/dev/null)" || return 2' \
+    'must answer 25, which uninstall refuses on'
+  check_row 'the identity comparison swallows its own failure' 'scripts/lib/common.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '          [ "$_cdrc" -eq 0 ] || return 25   # identity-diff-unreadable' \
+    '          :   # identity-diff-unreadable' \
+    "the identity comparison's own failure must answer 25"
   check_mutation_rows "check-settings-fragment" "$work/mut" "scripts/check-settings-fragment.sh" prepare_root runner 6
 fi
 

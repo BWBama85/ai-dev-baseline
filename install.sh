@@ -201,9 +201,18 @@ _adb_wire_settings_locked() {
   # overwritten by the very self-heal meant to honour it. The updater passes `--optout-if-recorded` and
   # the answer is taken here. A human running ./install.sh without it still re-applies the policy, which
   # is what running the installer by hand means. (PR review)
-  if [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ] \
-     && [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then
-    WIRE_SETTINGS=0   # optout-revalidated
+  # ...AND THE READ'S STATUS DECIDES WITH IT. Substituted bare, an unreadable or unclassifiable
+  # receipt made the comparison simply false, so the run carried on and applied the fragment over the
+  # very `--no-sandbox` choice this re-read exists to honour. (PR review)
+  if [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ]; then
+    local _odisp _odrc
+    _odisp="$(adb_claude_settings_disposition "$receipt" 2>/dev/null)"; _odrc=$?
+    case "$_odrc" in
+      0) [ "$_odisp" != skipped-optout ] || WIRE_SETTINGS=0 ;;   # optout-revalidated
+      *) adb_info "  WARN   the recorded settings disposition could not be read — sandbox settings NOT written."
+         adb_info "         A recorded --no-sandbox choice cannot be honoured from a receipt this run cannot classify."
+         return 1 ;;   # optout-unreadable
+    esac
   fi
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
     # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but only what it
@@ -353,11 +362,17 @@ _adb_wire_settings_locked() {
   # regular file — hiding every unrelated setting in the original target and losing its topology.
   # A document this run cannot see is refused, not assumed empty. (PR review)
   _docst="$(adb_settings_doc_state "$settings")"
-  if [ "$_docst" = inaccessible ]; then
-    adb_info "  WARN   ~/.claude/settings.json exists but cannot be inspected — sandbox settings NOT written."
-    adb_info "         Merging against an empty document would replace it with a file hiding what is in it."
-    return 1   # settings-inaccessible-install
-  fi
+  # A DANGLING LINK REFUSES HERE TOO, as it now does on the carry, currency and remove paths. Sent
+  # through the synthetic `{}` below, an established install read every recorded leaf as missing,
+  # published a rowless `skipped-blocked` over the record and left the link — so when its target came
+  # back the installed keys were live with nothing recording them. (PR review)
+  case "$_docst" in
+    inaccessible|dangling)
+      adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — sandbox settings NOT written."
+      adb_info "         Merging against an empty document would replace it with a file hiding what is in it,"
+      adb_info "         and a link whose target returns brings back keys nothing records."
+      return 1 ;;   # settings-inaccessible-install
+  esac
   if [ "$_docst" != present ]; then
     synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }
     printf '{}\n' > "$synth"
