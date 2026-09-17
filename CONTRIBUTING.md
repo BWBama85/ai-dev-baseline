@@ -124,6 +124,16 @@ and `.github/workflows/mutation-nightly.yml` runs every `*-mutation` step uncond
 dropped) at catching what a wrong input set hides. `check-mutation-gate.sh` pins
 both: every `--mutation` line in `ci.yml` is gated, and the nightly matrix equals the registry.
 
+A suite whose harness runs the whole suite per mutant can instead declare **blocks** and **per-test
+rows** (#468, D103): `if check_block <id> [<dep>…]; then … fi` at the start of a line, a
+`check_blocks_done` line after the last block, and `check_row <name> <target> <block> <old> <new>
+<witness>` scored by `check_mutation_rows`. Each mutant then runs only its block plus that block's
+declared dependencies. The harness refuses a row before building anything when its literal is not
+in its target exactly once or its witness is not in its block's source, and it runs each selected
+block unmutated first to require the assertion count a full pass gives it. So a missing dependency
+is a red control, not a quiet GREEN. The nightly sets `ADB_MUTATION_FULL_SUITE=1`, which scores every
+row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a suite by hand.
+
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335
 counted it. Read it for what these checks are *for*; ask `--list` for what runs.

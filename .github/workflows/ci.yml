@@ -379,6 +379,9 @@ jobs:
       - name: Unit-test the shared shell primitives (incl. adb_repo_shape, #23)
         run: bash scripts/check-common-lib.sh
 
+      - name: Test the mutation harness's blocks and per-test rows (#468)
+        run: bash scripts/check-block-rows.sh
+
       # ...and the install-manifest guards are guards, so every rule is injected with its own defect
       # and must make the suite go red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is
       # not evidence — and a mutation whose edit silently fails to apply reports itself observed

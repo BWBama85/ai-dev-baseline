@@ -532,6 +532,11 @@ add common-lib          bash scripts/check-common-lib.sh
 add common-lib-mutation bash scripts/check-common-lib.sh --mutation
 inputs common-lib-mutation      scripts/check-common-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/role-dispatch.sh install.sh uninstall.sh bin/agent-init bin/baseline
 
+# The shared mutation harness's blocks and per-test rows (#468): selection and its dependency closure,
+# every declaration refusal, preflight before any copy is built, each block's unmutated control, and
+# the verdict taxonomy, all driven over a throwaway fixture suite.
+add block-rows          bash scripts/check-block-rows.sh
+
 # Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
 # untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
 add agent-init          bash scripts/check-agent-init.sh

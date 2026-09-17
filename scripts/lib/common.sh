@@ -742,7 +742,7 @@ _ADB_SIGNAL_PENDING="${_ADB_SIGNAL_PENDING:-}"
 adb_settings_lock_take() {
   _ADB_SETTINGS_LOCK="$(adb_settings_lock_path "$HOME")"
   adb_update_lock "$_ADB_SETTINGS_LOCK" || { _ADB_SETTINGS_LOCK=""; return 1; }
-  _adb_arm_lock_traps
+  _adb_arm_lock_traps   # lock-traps-armed
   return 0
 }
 
@@ -968,7 +968,7 @@ adb_claude_settings_disposition() {
     *) return 20 ;;   # receipt-unresolvable
   esac
   line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)"; grc=$?
-  [ "$grc" -le 1 ] || return 20
+  [ "$grc" -le 1 ] || return 20   # receipt-read-status
   # A RECEIPT THAT EXISTS BUT CANNOT BE CLASSIFIED IS DAMAGED, NOT ABSENT. `none` means "nobody has
   # written one", and mapping a missing or unrecognised `disposition` line onto it had the same
   # ending as the unreadable case: the row readers answered `[]`, uninstall pruned nothing,
@@ -1334,7 +1334,7 @@ adb_claude_settings_receipt_leaves() {
     # uninstall left the live key in place, and the receipt was deleted anyway. Skip a row the
     # predicate rejects; refuse the whole read when the predicate could not be evaluated.
     printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
+    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac   # row-predicate-status
     # `type`, NOT `.` — the filter's own output is the `-e` predicate, so decoding the value and
     # testing IT makes a legitimate `false` or `null` leaf indistinguishable from a malformed row.
     # Probed on jq-1.7.1: `printf false | jq -e .` exits **1**, exactly like a rejected row. The
@@ -1464,7 +1464,7 @@ adb_claude_settings_merge() {
   # 20, NOT 1: an unreadable RECEIPT and an unparseable SETTINGS file are different failures with
   # different remedies, and one message for both sent the operator to edit the wrong file on the
   # only path that can strand keys.
-  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }   # merge-owned-rows
   created="$(_adb_claude_settings_created_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
   # ASKED HERE, while `$payload` is still the fragment — the `--remove` swap below replaces it with
   # an empty document — and NOT asked at all when removing. Removal ignores the payload entirely by
@@ -1534,7 +1534,7 @@ adb_claude_settings_merge() {
           | ( .settings | anc_ok($p) ) as $ok
           | if ($ok | not) then .
             elif ( .settings | present($p) | not ) then .
-            elif ( .settings | getpath($p) ) == $rec.v then
+            elif ( .settings | getpath($p) ) == $rec.v then   # remove-pass-value-match
               .settings = (.settings | delpaths([$p])) | .pruned += [$p]
             else .kept += [$p]
             end )
