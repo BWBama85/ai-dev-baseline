@@ -6567,6 +6567,21 @@ _adb_sweep_whole() {
   return 0
 }
 
+# adb_sweep_split <line> <field-count> — split on EVERY tab into the array ADB_SWEEP_F, keeping
+# empty fields; false unless the line has exactly <field-count> fields. `IFS=$'\t' read` would fold
+# consecutive tabs and drop a trailing empty field, so a malformed line could pass as well formed.
+adb_sweep_split() {
+  local s="$1"
+  ADB_SWEEP_F=()
+  while :; do
+    case "$s" in
+      *$'\t'*) ADB_SWEEP_F+=("${s%%$'\t'*}"); s="${s#*$'\t'}" ;;
+      *)       ADB_SWEEP_F+=("$s"); break ;;
+    esac
+  done
+  [ "${#ADB_SWEEP_F[@]}" -eq "$2" ]
+}
+
 # adb_sweep_findings_check <file> — validate a findings input whole; on success print its distinct
 # classes, sorted, one per line.
 adb_sweep_findings_check() {
@@ -6577,10 +6592,8 @@ adb_sweep_findings_check() {
   local classes="" threads=$'\n'
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
-    case "$line" in *$'\t'*$'\t'*$'\t'*) : ;; *) return 18 ;; esac
-    IFS=$'\t' read -r class site thread summary rest <<< "$line"
-    [ -z "${rest:-}" ] || return 18
-    case "$summary" in *$'\t'*) return 18 ;; esac
+    adb_sweep_split "$line" 4 || return 18
+    class="${ADB_SWEEP_F[0]}"; site="${ADB_SWEEP_F[1]}"; thread="${ADB_SWEEP_F[2]}"; summary="${ADB_SWEEP_F[3]}"
     adb_ledger_ok_class "$class" || return 19
     [ "$site" != "-" ] && adb_ledger_ok_span "$site" || return 19
     adb_ledger_ok_thread "$thread" || return 19
@@ -6613,10 +6626,9 @@ adb_sweep_file_check() {
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     [ "$n" -gt 1 ] || continue
-    case "$line" in *$'\t'*$'\t'*$'\t'*$'\t'*) : ;; *) return 18 ;; esac
-    IFS=$'\t' read -r kind class site result evidence rest <<< "$line"
-    [ -z "${rest:-}" ] || return 18
-    case "$evidence" in *$'\t'*) return 18 ;; esac
+    adb_sweep_split "$line" 5 || return 18
+    kind="${ADB_SWEEP_F[0]}"; class="${ADB_SWEEP_F[1]}"; site="${ADB_SWEEP_F[2]}"
+    result="${ADB_SWEEP_F[3]}"; evidence="${ADB_SWEEP_F[4]}"
     [ "$kind" = sibling ] || return 18
     adb_ledger_ok_class "$class" || return 19
     adb_ledger_ok_text "$evidence" || return 19

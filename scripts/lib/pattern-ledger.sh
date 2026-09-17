@@ -939,6 +939,7 @@ cmd_record() {
     case "$_src" in
       0)  : ;;
       20) printf 'pattern-ledger: sweep file %s could not be read — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" >&2; exit 20 ;;
+      19) printf 'pattern-ledger: sweep file %s carries a refused field — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" >&2; exit 19 ;;
       *)  printf 'pattern-ledger: sweep file %s does not parse (rc %s) — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" "$_src" >&2; exit 18 ;;
     esac
     [ "${_sh%%$'\t'*}" = "$OPT_PR" ] || {

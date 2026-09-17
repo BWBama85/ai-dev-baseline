@@ -147,6 +147,7 @@
 #                                           # /resolve-pr-threads step 4: the round's sibling sweep
 #   implement-lib.sh sweep-mark <sweep-file> --class C --site S --result fixed|deferred|declined …
 #                                           # move one found sibling out of `found` (#475)
+#   implement-lib.sh sweep-report <sweep-file>  # validate, then the round's sweep summary line
 #   implement-lib.sh open-pr <state-dir> --title <t> --body-file <f> [--closes n,m]
 #                                           # step 10: push, create, PROVE closing links, guard, arm
 #   implement-lib.sh -h | --help
@@ -2782,12 +2783,19 @@ cmd_dispatch_review() {
 # refuses a hit whose class has no row there, or whose sibling is still `found`.
 #
 # dispatch-sweep [--effort E] [--skipped] --pr <n> --findings <file> <state-dir> [<agent-token>]
-#   Bound to the reviewed head: the PR is read live, repository-scoped, and must be OPEN, and the
-#   local HEAD must be its head commit. `--skipped` publishes one `skipped` row per class without a
-#   dispatch, for a review role with no usable agent. Nothing is published on a non-zero exit:
-#     0 published · 2 usage · 16 PR not open, or HEAD is not its head · 18 findings or reply
-#     grammar · 19 a refused field · 20 unreadable, unwritable, or the PR read failed ·
-#     22 the dispatch failed
+#   Bound to the reviewed head: the PR is read live, repository-scoped, and must be OPEN, the local
+#   HEAD must be its head commit, and its base branch is fetched before the diff is taken.
+#   `--skipped` publishes one `skipped` row per class without a dispatch, for a review role with no
+#   usable agent. A head already swept is never swept again: its marks are evidence. The agent's
+#   reply may carry CRLF endings, blank lines, code-fence lines and an unterminated last line, all
+#   ignored; every other line must be exactly four TAB-separated fields. Nothing is published on a
+#   non-zero exit:
+#     0 published · 2 usage · 16 PR not open, or HEAD is not its head · 17 this head is already
+#     swept · 18 findings or reply grammar · 19 a refused field · 20 unreadable, unwritable, the PR
+#     read or the base fetch failed · 22 the dispatch failed
+#
+# sweep-report <sweep-file> — validate the file whole, then print the round's one summary line.
+#   Exit 0 · 18 · 19 · 20, printing nothing unless the file validates.
 #
 # sweep-mark <sweep-file> --class <c> --site <s> --result fixed|deferred|declined
 #            (--fix <sha> | --issue <n> | --reason <text>)
@@ -2796,8 +2804,8 @@ cmd_dispatch_review() {
 #   18 the file does not parse · 19 a refused value · 20 unreadable or unwritable.
 #
 # Publication and marks hold a per-file lock; the dispatch itself does not, because the mutex is
-# stale-broken after 60 s. Two sweeps of one head publish whole files, and a republish can only
-# return rows to `found`, which `record --sweep` refuses.
+# stale-broken after 60 s. Publication is create-only under that lock, so a second sweep of one head
+# cannot replace marked rows, and `record --sweep` reads a file that only ever changes by one mark.
 
 _il_sweep_lock_name() { printf '%s.lock' "${1%.tsv}"; }   # <sweep-file basename>
 
@@ -2857,6 +2865,9 @@ cmd_dispatch_sweep() {
 
   local name out digest nclasses stage sfd=""
   name="sweep-pr${pr}-${head}.tsv"; out="$dir/$name"
+  if [ -e "$out" ] || [ -L "$out" ]; then
+    printf 'implement-lib: dispatch-sweep: %s already exists — this head is swept; reuse it\n' "$out" >&2; return 17
+  fi
   digest="$(adb_sha256 "$findings")" \
     || { echo "implement-lib: dispatch-sweep: could not digest the findings input" >&2; return 20; }
   nclasses="$(printf '%s\n' "$classes" | awk 'NF' | wc -l | tr -d ' ')"
@@ -2898,6 +2909,8 @@ cmd_dispatch_sweep() {
         || { _sweep_abort "could not envelope a finding"; return 20; }
     done < "$findings"
     printf '\n%s\n' 'The DIFF of the pull request follows (first-party).' 1>&"$pfd"
+    git fetch -q origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>/dev/null \
+      || { _sweep_abort "could not fetch the base branch $base_ref — the diff would be taken from a stale merge base"; return 20; }
     mb="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null)" \
       || { _sweep_abort "git merge-base origin/$base_ref HEAD failed — fetch the base branch"; return 20; }
     dbefore="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
@@ -2934,11 +2947,12 @@ cmd_dispatch_sweep() {
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line%$'\r'}"
       case "$line" in ''|'```'*) continue ;; esac
-      case "$line" in *$'\t'*$'\t'*$'\t'*) : ;; *)
-        exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a reply line is not in the sweep grammar — refused whole" >&2; return 18 ;; esac
-      IFS=$'\t' read -r c s r ev rest <<< "$line"
-      if [ -n "${rest:-}" ] || [ -z "${want[$c]:-}" ]; then
-        exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a reply line has extra fields or names a class not in the findings — refused whole" >&2; return 18
+      if ! adb_sweep_split "$line" 4; then
+        exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a reply line is not four TAB-separated fields — refused whole" >&2; return 18
+      fi
+      c="${ADB_SWEEP_F[0]}"; s="${ADB_SWEEP_F[1]}"; r="${ADB_SWEEP_F[2]}"; ev="${ADB_SWEEP_F[3]}"
+      if [ -z "$c" ] || [ -z "${want[$c]:-}" ]; then
+        exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a reply line names a class not in the findings — refused whole" >&2; return 18
       fi
       case "$r" in
         found) if [ "$s" = "-" ] || ! adb_ledger_ok_span "$s"; then
@@ -2969,8 +2983,11 @@ cmd_dispatch_sweep() {
   fi
   _il_claim_mutex_take "$dir" "$(_il_sweep_lock_name "$name")" \
     || { rm -f "$stage"; echo "implement-lib: dispatch-sweep: the sweep file is locked by another writer" >&2; return 20; }
-  rm -rf "$out"
-  if ! mv -f "$stage" "$out" 2>/dev/null; then
+  if [ -e "$out" ] || [ -L "$out" ]; then
+    _il_claim_mutex_drop "$dir" "$(_il_sweep_lock_name "$name")"
+    rm -f "$stage"; printf 'implement-lib: dispatch-sweep: %s was published by another sweep meanwhile — kept\n' "$out" >&2; return 17
+  fi
+  if ! mv "$stage" "$out" 2>/dev/null; then
     _il_claim_mutex_drop "$dir" "$(_il_sweep_lock_name "$name")"
     rm -f "$stage"; printf 'implement-lib: dispatch-sweep: could not publish %s\n' "$out" >&2; return 20
   fi
@@ -2978,6 +2995,21 @@ cmd_dispatch_sweep() {
   printf 'sweep published %s classes=%s found=%s\n' "$out" "$nclasses" \
     "$(adb_sweep_rows "$out" | awk -F'\t' '$4 == "found"' | wc -l | tr -d ' ')"
   return 0
+}
+
+cmd_sweep_report() {
+  [ "$#" -eq 1 ] || { echo "implement-lib: sweep-report needs <sweep-file>" >&2; exit 2; }
+  local rc
+  adb_sweep_file_check "$1" >/dev/null; rc=$?
+  [ "$rc" -eq 0 ] || { printf 'implement-lib: sweep-report: %s does not validate (rc %s)\n' "$(adb_display_value "$1")" "$rc" >&2; return "$rc"; }
+  adb_sweep_rows "$1" | awk -F'\t' '
+    { c[$2] = 1; r[$4]++; if ($3 != "-") s++ }
+    END {
+      n = 0; for (k in c) n++
+      if (r["skipped"] > 0) { printf "sweep: skipped (%d classes)\n", n; exit }
+      printf "sweep: %d classes · %d siblings found · %d fixed · %d deferred · %d declined · %d open\n",
+             n, s, r["fixed"], r["deferred"], r["declined"], r["found"]
+    }'
 }
 
 cmd_sweep_mark() {
@@ -3405,6 +3437,7 @@ case "$SUB" in
   dispatch-review)  cmd_dispatch_review "$@" ;;
   dispatch-sweep)   cmd_dispatch_sweep "$@" ;;
   sweep-mark)       cmd_sweep_mark "$@" ;;
+  sweep-report)     cmd_sweep_report "$@" ;;
   open-pr)          cmd_open_pr "$@" ;;
   -h|--help) usage; exit 0 ;;
   *) echo "implement-lib: unknown subcommand '$SUB' (see --help)" >&2; usage >&2; exit 2 ;;

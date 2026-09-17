@@ -3003,7 +3003,12 @@ if [ -n "${SW_PROMPT_COPY:-}" ]; then cat > "$SW_PROMPT_COPY"; else cat > /dev/n
 [ -n "$last" ] && printf '%s\n' "${SW_REPLY:-}" > "$last"
 exit 0
 SH
-chmod +x "$swbin/gh" "$swbin/codex"
+cat > "$swbin/git" <<SH
+#!/usr/bin/env bash
+[ "\$1" = fetch ] && exit "\${SW_FETCH_RC:-0}"
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$swbin/gh" "$swbin/codex" "$swbin/git"
 T=$'\t'
 printf 'alpha-class\tf.sh:2\tPRRT_a1\tan unquoted "} expansion\nbeta-class\tf.sh:1\tPRRT_b2\ta missing guard\n' > "$SWR/.claude/state/findings.tsv"
 SWF="$SWR/.claude/state/sweep-pr7-$SWH.tsv"
@@ -3018,6 +3023,44 @@ eq "$(tail -n +2 "$SWF" 2>/dev/null | awk -F'\t' '$4 == "found"' | wc -l | tr -d
 has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" '"untrusted":true' "46 the reviewer findings reach the agent inside the untrusted envelope"
 has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" 'an unquoted \"} expansion' "46 …JSON-encoded, so no delimiter in them survives raw"
 hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and no reply or prompt stage outlives the dispatch"
+eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) 2>/dev/null )" \
+   "sweep: 2 classes · 1 siblings found · 0 fixed · 0 deferred · 0 declined · 1 open" "46 sweep-report counts a valid sweep file"
+eq "$(SW_REPLY="beta-class${T}-${T}none${T}x" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 17 \
+   "46 a head already swept is never swept again (17)"
+eq "$(tail -n +2 "$SWF" | awk -F'\t' '$4 == "found"' | wc -l | tr -d ' ')" 1 "46 …and its rows are left as they were"
+printf 'junk\n' >> "$SWF"
+eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) >/dev/null 2>&1; echo "$?" )" 18 "46 sweep-report refuses a file that does not validate, with no counts"
+
+rm -f "$SWF"
+eq "$(SW_FETCH_RC=1 SW_REPLY="beta-class${T}-${T}none${T}x" sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 20 \
+   "46 a base branch that cannot be fetched is refused (20), never a stale merge base"
+eq "$(SW_REPLY="alpha-class${T}${T}lib/x.sh:9${T}found${T}x"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply line with a doubled tab is refused (18)"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}x${T}"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply line with a trailing empty field is refused (18)"
+eq "$(SW_REPLY="$(printf 'alpha-class\tlib/x.sh:9\tfound\tx\001\nbeta-class\t-\tnone\tx')" \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 a control byte in a reply field is refused (19)"
+if [ -e "$SWF" ]; then bad "46 …and none of those published a file"; else ok; fi
+eq "$(SW_REPLY='```'$'\r\n'"alpha-class${T}lib/x.sh:9${T}found${T}x"$'\r\n\n'"beta-class${T}-${T}none${T}x"$'\r\n''```' \
+      sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 0 \
+   "46 the documented tolerance: CRLF endings, blank lines and code fences around the reply are ignored"
+rm -f "$SWF"
+cat > "$swbin/codex-nul" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+cat > /dev/null
+[ -n "$last" ] && printf 'alpha-class\tlib/x.sh:9\tfound\tx\000y\nbeta-class\t-\tnone\tx\n' > "$last"
+exit 0
+SH
+chmod +x "$swbin/codex-nul"; cp "$swbin/codex" "$work/codex-saved"; cp "$swbin/codex-nul" "$swbin/codex"
+eq "$(sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply carrying a NUL is refused whole (18)"
+cp "$work/codex-saved" "$swbin/codex"
+if [ -e "$SWF" ]; then bad "46 …and published nothing"; else ok; fi
+printf 'alpha-class\t\tPRRT_a1\tsummary\n' > "$SWR/.claude/state/empty-field.tsv"
+eq "$(sweep --pr 7 --findings .claude/state/empty-field.tsv .claude/state codex)" 19 "46 a findings line with an empty site is refused before any read"
+printf 'alpha-class\tf.sh\tPRRT_a1\tsummary\t\n' > "$SWR/.claude/state/extra-field.tsv"
+eq "$(sweep --pr 7 --findings .claude/state/extra-field.tsv .claude/state codex)" 18 "46 …and one with a trailing empty field"
 
 rm -f "$SWF"
 eq "$(SW_HEAD=ffffffffffffffffffffffffffffffffffffffff SW_REPLY="beta-class${T}-${T}none${T}x" \

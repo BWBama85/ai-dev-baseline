@@ -617,28 +617,32 @@ round summary instead. Then sweep, from the PR head, before any edit:
 SWEEP_HEAD="$(git rev-parse HEAD)"
 SWEEP_FILE="{{STATE_DIR}}/sweep-pr${PR_NUM}-${SWEEP_HEAD}.tsv"
 FINDINGS="$SWEEP_FILE.findings"   # the file you just wrote, one line per legitimate thread finding
-git fetch -q origin "$(gh pr view "$PR_NUM" --json baseRefName --jq .baseRefName)"
 REVIEW_TOKEN="$({{ROLE_DISPATCH}} resolve review | head -n 1)"
 RUNG="$({{ROLE_DISPATCH}} review-rung {{CURRENT_AGENT}})"
 EFFORT="$({{ROLE_DISPATCH}} effort review)"; ERC=$?
 case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
-case "$RUNG" in
-  independent*|same-model*)
-    {{IMPLEMENT_LIB}} dispatch-sweep ${EFFORT:+--effort "$EFFORT"} --pr "$PR_NUM" --findings "$FINDINGS" {{STATE_DIR}} "$REVIEW_TOKEN"; SWRC=$? ;;
-  deferred*|none*)
-    {{IMPLEMENT_LIB}} dispatch-sweep --skipped --pr "$PR_NUM" --findings "$FINDINGS" {{STATE_DIR}}; SWRC=$? ;;
-  *)  echo "STOP: the review role cannot be resolved (rung: ${RUNG:-none}) — fix agents.toml"; exit 1 ;;
-esac
+sweep_once() {
+  case "$RUNG" in
+    independent*|same-model*)
+      {{IMPLEMENT_LIB}} dispatch-sweep ${EFFORT:+--effort "$EFFORT"} --pr "$PR_NUM" --findings "$FINDINGS" {{STATE_DIR}} "$REVIEW_TOKEN" ;;
+    deferred*|none*)
+      {{IMPLEMENT_LIB}} dispatch-sweep --skipped --pr "$PR_NUM" --findings "$FINDINGS" {{STATE_DIR}} ;;
+    *)  echo "the review role cannot be resolved (rung: ${RUNG:-none}) — fix agents.toml" >&2; return 2 ;;
+  esac
+}
+sweep_once; SWRC=$?
+# ONE retry, for a malformed reply or a failed dispatch only.
+case "$SWRC" in 18|22) sweep_once; SWRC=$? ;; esac
 case "$SWRC" in
-  0)     : ;;   # published: $SWEEP_FILE
-  16)    echo "STOP: this checkout is not the open PR's head — sync it (step 1), then start the round again"; exit 1 ;;
-  18|22) : ;;   # a malformed reply or a failed dispatch: run the same call ONCE more, then stop as below
-  *)     echo "STOP: the sibling sweep failed (rc $SWRC) — nothing was fixed, recorded or resolved this round"; exit 1 ;;
+  0)  : ;;   # published: $SWEEP_FILE
+  17) : ;;   # this head was already swept (a re-run of the round): reuse $SWEEP_FILE and its marks
+  16) echo "STOP: this checkout is not the open PR's head — sync it (step 1), then start the round again"; exit 1 ;;
+  *)  echo "STOP: the sibling sweep failed (rc $SWRC) — nothing was fixed, recorded or resolved this round"; exit 1 ;;
 esac
 ```
 
-A second `18` or `22` stops the round the same way: the threads stay unresolved, and step 8 restores
-the branch. A failed sweep never becomes a round without one.
+Any stop leaves the threads unresolved, and step 8 restores the branch. A failed sweep never becomes a
+round without one.
 
 **Fix every `found` row as well as each named site.** After the commit that fixed a sibling exists,
 mark it; a row is never marked ahead of its fix. A sibling you do not fix is dispositioned instead:
@@ -1066,14 +1070,10 @@ ROUNDCLS
 
 # ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
 ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
-# The round's sibling sweep, counted from its file: sites found at dispatch, then where each ended.
-SWEEP_LINE="$(awk -F'\t' 'NR > 1 { c[$2] = 1; r[$4]++; if ($3 != "-") s++ }
-  END { n = 0; for (k in c) n++
-        if (r["skipped"] > 0) { printf "sweep: skipped (%d classes)", n; exit }
-        printf "sweep: %d classes · %d siblings found · %d fixed · %d deferred · %d declined · %d open",
-               n, s, r["fixed"], r["deferred"], r["declined"], r["found"] }' "$SWEEP_FILE" 2>/dev/null)" \
-  || SWEEP_LINE="sweep: no sweep file for this round"
-ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE:-sweep: no sweep file for this round}"$'\n'
+# The round's sibling sweep, counted only from a file that validates whole.
+SWEEP_LINE="$({{IMPLEMENT_LIB}} sweep-report "$SWEEP_FILE" 2>/dev/null)" \
+  || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
+ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"$'\n'
 fi
 ```
 

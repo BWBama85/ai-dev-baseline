@@ -18,9 +18,11 @@ only by a published release, which is what these entries are the notes for.
 
   `/resolve-pr-threads` step 4a writes the round's thread findings to a file. `implement-lib.sh
   dispatch-sweep` then sends them, enveloped as untrusted text, with the pull request's diff to the
-  `review` role's first slot in one bounded call. The answer is refused whole unless every line is
-  in the grammar and every class is answered, and it is published as `sweep-pr<N>-<head>.tsv`,
-  bound to the open PR's head. Each sibling is fixed and marked with `sweep-mark`, only once its fix
+  `review` role's first slot in one bounded call. The base branch is fetched first, so the diff never
+  comes from a stale merge base. The answer is refused whole unless every line is exactly four
+  TAB-separated fields in the grammar and every class is answered; CRLF endings, blank lines and
+  code-fence lines are ignored. It is published create-only as `sweep-pr<N>-<head>.tsv`, bound to the
+  open PR's head, so a re-run reuses the marks rather than replacing them. Each sibling is fixed and marked with `sweep-mark`, only once its fix
   commit is on the branch, or dispositioned as deferred (with an issue) or declined (with a reason).
 
   `pattern-ledger.sh record --sweep` refuses a hit whose class has no row (23), or whose sibling is

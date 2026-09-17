@@ -441,6 +441,19 @@ if [ "$MODE" = mutation ]; then
     "  [ \"\$(printf '%s' \"\$1\" | LC_ALL=C wc -c | tr -d ' ')\" -le \"\$max\" ] || return 1" \
     "  :" \
     'a 1025-byte rule is refused by the per-text bound'
+  # The sweep grammar's whole-file refusals and its name binding (#475).
+  check_mut sweep-final-newline-unchecked \
+    '  [ "$last" = 0a ] || return 18' \
+    '  :' \
+    '11 a sweep file with no final newline is refused'
+  check_mut sweep-nul-unchecked \
+    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$f\" | LC_ALL=C wc -c | tr -d ' ')\" -eq \"\$sz\" ] || return 18" \
+    '  :' \
+    '11 a sweep file carrying a NUL is refused'
+  check_mut sweep-name-unbound \
+    '  [ "$base" = "sweep-pr${hpr}-${hhead}.tsv" ] || return 18' \
+    '  :' \
+    '11 a sweep file whose name does not match its header is refused'
   prep_common() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/common.sh"
@@ -1708,6 +1721,18 @@ eq "$(swcheck "$F")" 18 "11 a sweep file with no final newline is refused"
 F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x")"
 printf 'sibling\talpha-class\tb.sh\tfound\tx\000y\n' >> "$F"
 eq "$(swcheck "$F")" 18 "11 a sweep file carrying a NUL is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}${T}a.sh:3${T}found${T}x")"
+eq "$(swcheck "$F")" 18 "11 a row with a doubled tab is refused, never folded into the next field"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x${T}")"
+eq "$(swcheck "$F")" 18 "11 a row with a trailing empty field is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}")"
+eq "$(swcheck "$F")" 19 "11 a row with empty evidence is refused as a field"
+printf 'alpha-class\tf.sh\tT1\tsummary\t\n' > "$SW/findings-extra.tsv"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_findings_check "$SW/findings-extra.tsv" >/dev/null 2>&1 ); echo "$?" )" 18 \
+   "11 a findings line with a trailing empty field is refused"
+F="$(mksweep 9 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}opens <!-- a comment")"
+bash "$PL" record --ledger "$work/l11b.md" --class alpha-class --site a.sh:1 --fix abc1234 --pr 9 --thread T-sw-9 --sweep "$F" >/dev/null 2>&1
+eq "$?" 19 "11 record --sweep keeps a refused field as 19, not 18"
 
 L11="$work/l11.md"
 F="$(mksweep 7 2 "sibling${T}alpha-class${T}a.sh:3${T}found${T}same shape" "sibling${T}beta-class${T}-${T}none${T}no other site")"
@@ -1734,7 +1759,10 @@ eq "$?" 0 "11 record without --sweep is unchanged"
 has "$RESTXT" '{{IMPLEMENT_LIB}} dispatch-sweep' "11 the resolver dispatches the sibling sweep"
 has "$RESTXT" '{{IMPLEMENT_LIB}} sweep-mark' "11 …marks each sibling it fixes or dispositions"
 has "$RESTXT" '--sweep "$SWEEP_FILE"' "11 …and records every hit through the sweep file"
-has "$RESTXT" 'SWEEP_LINE' "11 …and reports the sweep in the round summary"
+has "$RESTXT" '{{IMPLEMENT_LIB}} sweep-report "$SWEEP_FILE"' "11 …and reports the sweep in the round summary through the validating reader"
+has "$RESTXT" 'case "$SWRC" in 18|22) sweep_once; SWRC=$? ;; esac' "11 a malformed reply or failed dispatch is retried exactly once"
+has "$RESTXT" '| `23` | the sweep file has no row for this class |' "11 the record table says what 23 means"
+has "$RESTXT" '| `24` | a sibling of this class is still `found` |' "11 …and what 24 means"
 sw_at="$(grep -n '{{IMPLEMENT_LIB}} dispatch-sweep' "$RES" | head -n 1 | cut -d: -f1)"
 gate_at="$(grep -n '{{GATE_RUNNER}} run' "$RES" | head -n 1 | cut -d: -f1)"
 if [ -n "$sw_at" ] && [ -n "$gate_at" ] && [ "$sw_at" -lt "$gate_at" ]; then ok; else
