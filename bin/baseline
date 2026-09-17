@@ -716,7 +716,8 @@ EOF
 # The mutating path (pull + prune + install.sh) must not run twice at once. That was already
 # possible by hand (two terminals), and the SessionStart hook makes it LIKELY: several sessions
 # can start within the same second and each would race the others through `git pull` and a
-# settings.json rewrite. `mkdir` is the portable atomic test-and-set (macOS has no flock(1)).
+# settings.json rewrite. A directory is the portable test-and-set (macOS has no flock(1)), taken with `adb_mkdir_excl`
+# because a bare `mkdir` is not exclusive under uutils (D105).
 #
 # Stale-lock recovery is by AGE, not by liveness: a pid check cannot distinguish "that pid died"
 # from "that pid was recycled", and the failure we are protecting against is a killed updater

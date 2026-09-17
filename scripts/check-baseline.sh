@@ -197,6 +197,16 @@ eq "$(git -C "$src" rev-parse HEAD)" "$head_locked" "a locked-out update changes
 rmdir "$gitdir/adb-update.lock"
 eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "the update proceeds once the lock is released"
 if [ -d "$gitdir/adb-update.lock" ]; then bad "the lock must be released on exit"; else ok; fi
+# …and a held lock still refuses when `mkdir` reports success for it, as Ubuntu 26.04's uutils mkdir
+# does under contention (#473, D105).
+reset_src
+advance_origin "lock-uutils"
+adb_mkdir_excl "$gitdir/adb-update.lock" || bad "fixture: could not take the update lock"
+check_mkdir_shim "$work/uutils-shim" || bad "fixture: the non-exclusive mkdir shim could not be written"
+head_locked="$(git -C "$src" rev-parse HEAD)"
+eq "${ PATH="$work/uutils-shim:$PATH" run_update "$src/bin/baseline" "$fh"; }" "5" "a held update lock exits 5 behind a non-exclusive mkdir"
+eq "$(git -C "$src" rev-parse HEAD)" "$head_locked" "…and changes nothing"
+adb_rmdir_excl "$gitdir/adb-update.lock"
 
 # A STALE lock (older than the bound) whose holder is GONE is broken rather than blocking
 # forever — a killed updater must not lock every future session out. Aged with `touch` rather

@@ -8048,3 +8048,33 @@ survive is the part a later reader needs.
              authenticating the file with a key the operator cannot recompute, which protects nothing
              against a user who can already edit the settings the receipt describes.
 - baseline-issue: n/a
+
+## D105 — `mkdir` is not a mutex on Ubuntu 26.04; every directory lock takes `adb_mkdir_excl`
+- date:      2026-09-17
+- category:  project-delta
+- unknown:   #473: the pattern ledger's 25-writer and 20-writer contention cases failed intermittently
+             on the `ubuntu-26.04` CI runner with rc 21 (a writer's row missing after its own insert
+             under a held lock), and never reproduced on macOS (160 local runs, 0 failures). Every lock in
+             this repo that guards a critical section with a directory assumed `mkdir` succeeds for
+             exactly one caller.
+- decision:  Root cause, probed on the `ubuntu:26.04` image (the runner's), whose coreutils are
+             uutils 0.8.0 (`coreutils-from-uutils`): with 40 processes running `mkdir` on one path,
+             more than one reported success in 7 of 50 rounds; GNU `gnumkdir` in the same container
+             did so in 0 of 50, and so did `ln`, a `mv` rename contest and bash's noclobber open. The
+             reproducer (25 first-time ledger writers, 2 CPUs) lost rows in 30 of 30 runs there.
+             Uutils `mkdir` still refuses a directory that already exists; only concurrent creation
+             is affected.
+             The shared primitive `adb_mkdir_excl` (`common.sh`) keeps the directory but makes the
+             take a noclobber (O_EXCL) open of a marker inside it, which bash performs itself;
+             `adb_rmdir_excl` removes the marker last. Every directory mutex on `main` uses it: the
+             pattern ledger's write lock, `implement-lib.sh`'s admission lock and claim mutex, and
+             `bin/baseline`'s update lock. `check_mkdir_shim` (`check-lib.sh`) writes a `mkdir` that
+             reports success for an existing directory, which makes the race certain on any host, and
+             each site has a case run behind it.
+             Numbered D105 because D95-D104 are taken by decisions on the unmerged branches of PR
+             #463 and PR #476.
+- placement: `scripts/lib/common.sh`, `scripts/lib/pattern-ledger.sh`, `scripts/lib/implement-lib.sh`,
+             `bin/baseline`, `scripts/check-lib.sh`, and the suites for each
+- reason:    One primitive for one defect class; the directory form, its visible failure and every
+             lock's existing release and stale-break logic are unchanged.
+- baseline-issue: #473

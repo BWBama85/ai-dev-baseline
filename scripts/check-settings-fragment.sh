@@ -3605,11 +3605,11 @@ if [ "$MUTATION" -eq 1 ]; then
     '  if false; then' \
     'must stand down when its claim finds another record'
   check_mut 'the stale-lock breaker writes without the claim' \
-    '  mkdir "$lock/.claim" 2>/dev/null || return 1   # break-claim-held' \
+    '  adb_mkdir_excl "$lock/.claim" || return 1   # break-claim-held' \
     '  :   # break-claim-held' \
     'must be left to it'
   check_mut 'a fresh take writes without the claim' \
-    '  if ! mkdir "$lock/.claim" 2>/dev/null; then' \
+    '  if ! adb_mkdir_excl "$lock/.claim"; then' \
     '  if false; then' \
     'must not write an owner while a breaker holds the claim'
   check_mut 'a fresh take overwrites an owner a breaker published' \

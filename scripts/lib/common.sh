@@ -601,24 +601,24 @@ _adb_publish_owner() {
 # directory; without the claim both record themselves and both proceed. (PR review)
 _adb_take_lock() {
   local lock="$1" token
-  mkdir "$lock" 2>/dev/null || return 1
-  if ! mkdir "$lock/.claim" 2>/dev/null; then
-    rmdir "$lock" 2>/dev/null   # a breaker's claim keeps the directory non-empty, so this removes only ours
+  adb_mkdir_excl "$lock" || return 1
+  if ! adb_mkdir_excl "$lock/.claim"; then
+    adb_rmdir_excl "$lock"   # a breaker's claim keeps the directory non-empty, so this removes only ours
     return 1
   fi
   if [ -e "$lock/owner" ]; then   # take-owner-present: a breaker claimed and published first
-    rmdir "$lock/.claim" 2>/dev/null
+    adb_rmdir_excl "$lock/.claim"
     return 1
   fi
   token="$$ $(date +%s 2>/dev/null)"
   # THE OWNER FILE IS THE LOCK, so a write that fails is an acquisition that failed; unchecked, the
   # directory was left behind with no token and refused every later run. (PR review)
   if ! _adb_publish_owner "$lock" "$token"; then
-    rmdir "$lock/.claim" 2>/dev/null
-    rmdir "$lock" 2>/dev/null
+    adb_rmdir_excl "$lock/.claim"
+    adb_rmdir_excl "$lock"
     return 1
   fi
-  rmdir "$lock/.claim" 2>/dev/null
+  adb_rmdir_excl "$lock/.claim"
   _ADB_LOCK_TOKEN="$token"
   return 0
 }
@@ -663,16 +663,16 @@ adb_update_lock() {
   # the record is re-read under it — anything but what was judged stale means someone got there
   # first. A breaker killed while holding the claim leaves the lock refusing until it is removed,
   # which the callers' refusal already names. (PR review)
-  mkdir "$lock/.claim" 2>/dev/null || return 1   # break-claim-held
+  adb_mkdir_excl "$lock/.claim" || return 1   # break-claim-held
   local _now="" token
   [ ! -e "$lock/owner" ] || _now="$(cat "$lock/owner" 2>/dev/null)" || _now=" unreadable"
   if [ "$_now" != "$_seen" ]; then
-    rmdir "$lock/.claim" 2>/dev/null
+    adb_rmdir_excl "$lock/.claim"
     return 1   # stale-claim-mismatch
   fi
   token="$$ $(date +%s 2>/dev/null)"
-  _adb_publish_owner "$lock" "$token" || { rmdir "$lock/.claim" 2>/dev/null; return 1; }
-  rmdir "$lock/.claim" 2>/dev/null
+  _adb_publish_owner "$lock" "$token" || { adb_rmdir_excl "$lock/.claim"; return 1; }
+  adb_rmdir_excl "$lock/.claim"
   _ADB_LOCK_TOKEN="$token"
   return 0
 }
@@ -695,7 +695,7 @@ adb_update_unlock() {
   [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable
   [ "$_owner" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
   rm -f "$lock/owner" 2>/dev/null
-  rmdir "$lock" 2>/dev/null
+  adb_rmdir_excl "$lock"
   # THE TOKEN IS CLEARED ONLY WHEN THE LOCK IS ACTUALLY GONE. It used to be cleared FIRST, so a
   # removal defeated by an ACL or an immutable flag left the directory standing while the run
   # reported a clean release — and every later install and uninstall was refused until the stale
@@ -3962,6 +3962,29 @@ adb_age_secs() {
   age="$((now - m))"
   [ "$age" -lt 0 ] && return 0
   printf '%s' "$age"
+}
+
+# adb_mkdir_excl <dir> — create <dir> as a mutex. Returns 0 only for the ONE caller that now holds it.
+# `mkdir` alone does not promise that: Ubuntu 26.04's uutils mkdir reports success to more than one
+# of several processes creating the same path at once (D105). The exclusive step is therefore a
+# noclobber (O_EXCL) open that bash performs itself, of $ADB_EXCL_MARK inside the new directory. The
+# marker stays while the mutex is held; release with adb_rmdir_excl once everything else is removed.
+# A marker that cannot be written and does not exist means no caller holds the directory, so it is
+# removed rather than left empty, where a later take would find it held forever.
+ADB_EXCL_MARK=".adb-excl"
+adb_mkdir_excl() {
+  mkdir "$1" 2>/dev/null || return 1   # adb-allow: bare-mkdir
+  ( set -C; : > "$1/$ADB_EXCL_MARK" ) 2>/dev/null && return 0
+  [ -e "$1/$ADB_EXCL_MARK" ] || rmdir "$1" 2>/dev/null
+  return 1
+}
+
+# adb_rmdir_excl <dir> — remove a mutex directory taken with adb_mkdir_excl. The marker goes LAST, so
+# no second caller can take the path while the holder's other contents are still inside. Returns
+# rmdir's status: non-zero when the directory still holds something, including a successor's marker.
+adb_rmdir_excl() {
+  rm -f "$1/$ADB_EXCL_MARK" 2>/dev/null
+  rmdir "$1" 2>/dev/null
 }
 
 # --- untrusted third-party text (#214) ---------------------------------------
