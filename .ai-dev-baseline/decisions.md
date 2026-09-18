@@ -8142,3 +8142,28 @@ survive is the part a later reader needs.
 - reason:    One primitive for one defect class; the directory form, its visible failure and every
              lock's existing release and stale-break logic are unchanged.
 - baseline-issue: #473
+
+## D106 — A read that fails while the reads around it succeed is outside the receipt's threat model
+- date:      2026-09-18
+- category:  project-delta
+- unknown:   PR #463's review rounds 49-51 were driven by one class, `status-swallowed`: 7 of their 10
+             findings had the same trigger — a read of the ownership receipt that FAILS at one point
+             in a run while the reads before and after it SUCCEED. Each was fixed and swept, and the
+             next round found another site of it; three of the resulting tests could only be pinned by
+             inspection, because a fixture can make a failure permanent but not transient. Nothing
+             recorded whether the receipt is meant to withstand that, so the class had no end state —
+             the shape D102 recorded for deliberate tampering.
+- decision:  Owner decision 2026-09-18. A TRANSIENT read failure — one read of the receipt, the
+             settings document or the payload failing between successful reads of the same file within
+             one run — is out of scope. A review finding whose only trigger is that premise is declined
+             citing this decision rather than fixed. PERSISTENT failures stay fully in scope and keep every
+             check already shipped: an unreadable file, an unresolvable link, a malformed or damaged
+             record, a missing `jq`, and any failure a fixture can reproduce by making it permanent. The
+             transient-read fixes already merged in rounds 49-51 stay; this decision stops the class, it
+             does not unwind it.
+- placement: this entry, and the pointer in `CLAUDE.md` beside D102's
+- reason:    The receipt's reads happen microseconds apart in one process over a file only this installer
+             writes under its own lock; a failure that vanishes between them is not an event this design
+             can observe, and each fix for it only moved the window. Persistent failures are observable,
+             testable, and are where every real incident in this history came from.
+- baseline-issue: n/a
