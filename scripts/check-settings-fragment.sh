@@ -3703,6 +3703,53 @@ grep -q 'return 25   # zero-digest-reread-failed' "$ROOT/scripts/lib/common.sh" 
   || bad "the zero branch's digest re-read must refuse on failure too — as an empty string it reported damage it never established"
 fi
 
+if check_block round-52-the-record-is-named-a-recreat round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
+# --- round 52: the record is named, and no promise outlives the ownership it depends on ----------
+#
+# BEHAVIOURAL. An incomplete record refuses a reinstall; the message must name the RECORD. Sending the
+# operator to restore settings.json changes nothing, because the unchanged record refuses again.
+_m5="$work/r52-incomplete"; rm -rf "$_m5"; _r42 "$_m5"
+awk -v n=0 '/^leaf\t/ && n==0 {n=1; next} {print}' "$_m5/$_r42r" > "$_m5/r.tmp" && mv "$_m5/r.tmp" "$_m5/$_r42r"
+_m5out="$(HOME="$_m5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+case "$_m5out" in
+  *"cannot show it records every key it owns"*) ok ;;
+  *) bad "an incomplete ownership record must be named as the thing to repair — reported as invalid settings.json, the operator restores a backup and stays blocked" ;;
+esac
+case "$_m5out" in
+  *"could not be read as a single JSON value"*) bad "...and must not blame settings.json, which is valid" ;;
+  *) ok ;;
+esac
+# BEHAVIOURAL. A skip that drops ownership must not promise re-application: the keys are no longer ours,
+# so an upgrade reads them as the operator's and refuses.
+_s5="$work/r52-skip"; rm -rf "$_s5"; _r42 "$_s5"
+jq '.sandbox.enabled = false' "$_s5/.claude/settings.json" > "$_s5/s.tmp" && mv "$_s5/s.tmp" "$_s5/.claude/settings.json"
+stub "2.1.100 (Claude Code)"
+_s5out="$(HOME="$_s5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+stub "2.1.259 (Claude Code)"
+case "$_s5out" in
+  *"upgrading will NOT re-apply them"*) ok ;;
+  *) bad "a below-floor skip that relinquished ownership must say an upgrade will NOT re-apply the keys — the promised self-heal refuses instead" ;;
+esac
+_u5b="$work/r52-skip-unprobeable"; rm -rf "$_u5b"; _r42 "$_u5b"
+jq '.sandbox.enabled = false' "$_u5b/.claude/settings.json" > "$_u5b/s.tmp" && mv "$_u5b/s.tmp" "$_u5b/.claude/settings.json"
+stub "not a version"
+_u5bout="$(HOME="$_u5b" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+stub "2.1.259 (Claude Code)"
+case "$_u5bout" in
+  *"refuse them: remove them by hand"*) ok ;;
+  *) bad "an unprobeable skip that relinquished ownership must say a re-run will refuse the keys, not promise to apply them" ;;
+esac
+# ...while a skip that KEPT ownership still makes the promise, which is true there.
+_k5b="$work/r52-skip-kept"; rm -rf "$_k5b"; _r42 "$_k5b"
+stub "2.1.100 (Claude Code)"
+_k5bout="$(HOME="$_k5b" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+stub "2.1.259 (Claude Code)"
+case "$_k5bout" in
+  *"applies them by itself"*) ok ;;
+  *) bad "a below-floor skip that kept ownership must still say the next update applies the keys by itself" ;;
+esac
+fi
+
 check_blocks_done
 
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
@@ -4737,6 +4784,18 @@ if [ "$MUTATION" -eq 1 ]; then
     '          [ "$_zrdrc" -eq 0 ] || return 25   # zero-digest-reread-failed' \
     '          :   # zero-digest-reread-failed' \
     "zero branch's digest re-read must refuse on failure too"
+  check_row 'an incomplete record is blamed on settings.json' 'install.sh' 'round-52-the-record-is-named-a-recreat' \
+    '  elif [ "$_mrc" -eq 23 ] || [ "$_mrc" -eq 25 ]; then' \
+    '  elif false; then' \
+    'must be named as the thing to repair'
+  check_row 'a skip that dropped ownership still promises re-application' 'install.sh' 'round-52-the-record-is-named-a-recreat' \
+    '    _ADB_SKIP_DROPPED=1   # skip-dropped-ownership' \
+    '    :   # skip-dropped-ownership' \
+    'must say an upgrade will NOT re-apply the keys'
+  check_row 'the unprobeable skip promises re-application after dropping ownership' 'install.sh' 'round-52-the-record-is-named-a-recreat' \
+    '      adb_info "           refuse them: remove them by hand, then put \`claude\` on PATH and re-run."   # unprobeable-dropped' \
+    '      :   # unprobeable-dropped' \
+    'must say a re-run will refuse the keys'
   check_mutation_rows "check-settings-fragment" "$work/mut" "scripts/check-settings-fragment.sh" prepare_root runner 6
 fi
 

@@ -345,15 +345,26 @@ _adb_wire_settings_locked() {
     skiprc=0; _adb_record_skip skipped-unprobeable "-" "$floor" "$receipt" || skiprc=$?
     adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
     adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
-    adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
+    if [ "${_ADB_SKIP_DROPPED:-0}" -eq 1 ]; then
+      adb_info "           The keys already in settings.json are no longer recorded as ours, so a re-run will"
+      adb_info "           refuse them: remove them by hand, then put \`claude\` on PATH and re-run."   # unprobeable-dropped
+    else
+      adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
+    fi
     return "$skiprc"   # version-skip-return
   fi
   if ! adb_version_ge "$version" "$floor"; then
     skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?
     adb_info "  sandbox  SKIPPED — claude v$version is below the v$floor floor for \`sandbox.credentials\`."
     adb_info "           NOT applied: sandbox isolation, the ~/.aws and ~/.ssh read denials, the"
-    adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
-    adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
+    if [ "${_ADB_SKIP_DROPPED:-0}" -eq 1 ]; then
+      adb_info "           GITHUB_TOKEN scrub, and the network allowlist. The keys already in settings.json are"
+      adb_info "           no longer recorded as ours, so upgrading will NOT re-apply them: remove them by hand,"
+      adb_info "           then upgrade the CLI and re-run ./install.sh."   # below-floor-dropped
+    else
+      adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
+      adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
+    fi
     return "$skiprc"
   fi
 
@@ -430,6 +441,15 @@ _adb_wire_settings_locked() {
     adb_info "         it cannot be classified — sandbox settings NOT written. No permission change will"
     adb_info "         help; repair that line and re-run."
     return 1   # merge-damaged-receipt
+  elif [ "$_mrc" -eq 23 ] || [ "$_mrc" -eq 25 ]; then
+    # THE RECORD, NOT THE DOCUMENT. Under the catch-all below these told the operator settings.json was
+    # invalid and to restore its backup — a remedy that changes nothing, since the unchanged record
+    # refuses every later install too. (PR review)
+    rm -f "$synth"
+    adb_info "  WARN   $receipt cannot show it records every key it owns (a row is missing, or the check"
+    adb_info "         of the record could not be performed) — sandbox settings NOT written. settings.json is"
+    adb_info "         not the problem; repair or remove that record and re-run."
+    return 1   # merge-incomplete-receipt
   elif [ "$_mrc" -ne 0 ]; then
     rm -f "$synth"
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
@@ -995,6 +1015,15 @@ _adb_record_skip() {
     adb_info "  WARN   $receipt exists but could not be read — the skip stands, and the existing"
     adb_info "         ownership record was KEPT rather than replaced with an ownership-free one."
     return 1
+  fi
+  # WHETHER THIS SKIP GIVES OWNERSHIP UP, for the caller's message. A prior record that owned leaves and
+  # a carry that kept none means the live keys are no longer ours: an upgrade then reads them as the
+  # operator's and refuses, so promising that the next update re-applies them is false. (PR review)
+  _ADB_SKIP_DROPPED=0
+  local _prior
+  _prior="$(_adb_owned_rows "$receipt" 2>/dev/null)" || _prior=""
+  if printf '%s\n' "$_prior" | grep -q "^leaf$(printf '\t')" && [ -z "$carried" ]; then
+    _ADB_SKIP_DROPPED=1   # skip-dropped-ownership
   fi
   # THE PRIOR DIGEST IS CARRIED TOO, for the same reason as the rows: a skip applied no payload, so
   # it must not claim to have applied THIS one — but neither may it erase the record of the payload
