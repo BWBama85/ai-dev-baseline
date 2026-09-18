@@ -410,9 +410,17 @@ unwire_settings() {
   # answers 21 for both, so claiming a count problem for a record whose header was never reached sent
   # the operator to repair the wrong line. Only speak for the count while the disposition reads; the
   # merge below refuses the other case and names it. (PR review)
-  if [ "$_crc" -eq 21 ] && adb_claude_settings_disposition "$receipt" >/dev/null 2>&1; then
-    adb_info "  WARN   $receipt has a leaf count that is malformed or does not match its rows, so it"
-    adb_info "         cannot show it records every key it owns. NOTHING was removed; the record was KEPT."
+  # ...AND THE DIAGNOSTIC READ ONLY CHOOSES THE WORDS. Folded into the condition, a read that failed
+  # made the whole test false and removal CONTINUED on a record completeness had already called
+  # damaged — `--remove` never re-reads the count, so the damaged rows were trusted. (PR review)
+  if [ "$_crc" -eq 21 ]; then
+    if adb_claude_settings_disposition "$receipt" >/dev/null 2>&1; then
+      adb_info "  WARN   $receipt has a leaf count that is malformed or does not match its rows, so it"
+      adb_info "         cannot show it records every key it owns. NOTHING was removed; the record was KEPT."
+    else
+      adb_info "  WARN   $receipt is damaged: its disposition line does not parse, so the line to"
+      adb_info "         repair cannot be named. NOTHING was removed; the record was KEPT."
+    fi
     return 1   # remove-rows-damaged
   fi
   # 25 IS A RECEIPT-SIDE FAILURE, NOT PAYLOAD UNCERTAINTY. A jq that died while validating the rows

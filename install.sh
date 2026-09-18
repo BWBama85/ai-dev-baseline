@@ -146,7 +146,7 @@ done
 # reason: an unconditional success line was the recorded defect (#242).
 wire_settings() {
   local settings="$HOME/.claude/settings.json"
-  local receipt payload floor version tmp result
+  local receipt payload floor version tmp result _keep_disp
   payload="$(adb_claude_settings_payload "$REPO")"
   receipt="$(adb_claude_settings_receipt "$HOME")"
   floor="$(adb_claude_settings_floor)"
@@ -241,8 +241,17 @@ _adb_wire_settings_locked() {
       # the whole evidence of that choice — deleting it because the replacement could not be written
       # makes the next update read `none` and apply the policy over an explicit decision. Keep an
       # existing record that is either still accurate OR already records this same choice.
-      if [ -n "$optout_rows" ] \
-         || [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then
+      # A READ THAT FAILED IS NOT "IT RECORDS SOMETHING ELSE". Substituted bare, an unreadable or
+      # unclassifiable receipt made this false and the existing record of an explicit `--no-sandbox`
+      # was invalidated below — the next update then reads `none` and applies the policy over it.
+      # (PR review)
+      _keep_disp="$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" || _keep_disp=""
+      # A RECORD THAT IS THERE AND UNCLASSIFIABLE IS KEPT; NOTHING AT THE PATH IS NOT A RECORD. The
+      # read's failure alone cannot answer this: a directory occupying the path is a FIRST opt-out
+      # that could not be written, and claiming a previous choice still stands there would report a
+      # record nobody wrote. Only a present receipt whose read failed is the transient case. (PR review)
+      if [ -n "$optout_rows" ] || [ "$_keep_disp" = skipped-optout ] \
+         || { [ -z "$_keep_disp" ] && [ "$(adb_settings_doc_state "$receipt")" = present ]; }; then
         adb_info "  WARN   --no-sandbox was honoured for this run but could NOT be recorded, and the"
         adb_info "         previous record still stands for that choice so it was KEPT. Re-run once"
         adb_info "         $receipt is writable."

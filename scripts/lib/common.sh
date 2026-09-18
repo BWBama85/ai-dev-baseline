@@ -1092,8 +1092,13 @@ _adb_claude_settings_rows_complete() {
         # (PR review)
         if [ "$_needs_rows" -eq 1 ]; then
           [ -n "$payload" ] && [ -s "$payload" ] || return 23   # installed-zero-no-payload
-          local _zrdig _zpdig _zship _zsrc
-          _zrdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || _zrdig=""
+          # THE SAME RE-READ RULE AS THE COUNTED BRANCH BELOW: the shape check above already proved an
+          # `installed` receipt carries a real digest, so a failed read here is this run's failure and
+          # answers 25 — as an empty string it read as "recorded against another payload" and reported
+          # damage it never established. (PR review)
+          local _zrdig _zpdig _zship _zsrc _zrdrc
+          _zrdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)"; _zrdrc=$?
+          [ "$_zrdrc" -eq 0 ] || return 25   # zero-digest-reread-failed
           _zpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _zpdig=""
           [ -n "$_zrdig" ] && [ "$_zrdig" = "$_zpdig" ] || return 23   # installed-zero-other-payload
           # A PAYLOAD THAT SHIPS NOTHING ANSWERS 1 WITH NO OUTPUT; only a reader that could not run
@@ -1120,8 +1125,17 @@ _adb_claude_settings_rows_complete() {
       # recorded set can be checked; when the digest differs that payload is gone, and the count is all
       # anyone can verify. An unhashable payload is "cannot verify" here, not an error. (PR review)
       if [ -n "$payload" ] && [ -s "$payload" ]; then
-        local _crdig _cpdig _cship _crec
-        _crdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || _crdig=""
+        local _crdig _cpdig _cship _crec _crdrc
+        # THE DIGEST WAS ALREADY PROVED PRESENT AND WELL-FORMED ABOVE, so a FAILED re-read here is this
+        # run's failure, not a receipt without a digest. Left as empty, it skipped the pair comparison
+        # and a substituted path/value under the right count passed as complete. `-` is the renderer's
+        # own sentinel for a skip that names no payload, and is the one legitimate empty. (PR review)
+        if [ "$_rawdig" = "-" ]; then
+          _crdig=""
+        else
+          _crdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)"; _crdrc=$?
+          [ "$_crdrc" -eq 0 ] || return 25   # counted-digest-reread-failed
+        fi
         _cpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _cpdig=""
         if [ -n "$_crdig" ] && [ "$_crdig" = "$_cpdig" ]; then
           _cship="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2

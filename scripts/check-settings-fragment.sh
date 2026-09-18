@@ -908,6 +908,20 @@ grep -qi "disposition" "$work/dd.log" && ok \
   || bad "...and must name the damaged disposition line, not send the operator to fix permissions"
 grep -qi "could not be READ" "$work/dd.log" && \
   bad "...and must not report a readable-but-damaged receipt as unreadable" || ok
+# THE DISTINCTION IS THE MERGE'S, so it is asked of the merge. Since round 51 the removal path refuses a
+# damaged count before reaching it, which is a second route to the same message — and a rule whose only
+# witness is a message another guard also prints cannot be observed failing.
+_mm="$work/mergestatus"; rm -rf "$_mm"; mkdir -p "$_mm"
+adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -cs .)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_mm/receipt"
+chmod 000 "$_mm/receipt"
+printf '{"model":"opus"}\n' > "$_mm/settings.json"
+_mmr=0; adb_claude_settings_merge "$_mm/settings.json" "$PAYLOAD" "$_mm/receipt" --remove >/dev/null 2>&1 || _mmr=$?
+chmod 600 "$_mm/receipt"
+printf 'not json\n' > "$_mm/bad.json"
+_mms=0; adb_claude_settings_merge "$_mm/bad.json" "$PAYLOAD" "$_mm/receipt" --remove >/dev/null 2>&1 || _mms=$?
+[ "$_mmr" = 20 ] && [ "$_mms" = 2 ] && ok \
+  || bad "the merge must answer an unreadable RECEIPT 20 and unparseable SETTINGS 2 — collapsed to one status, no caller can name the damaged disposition line (receipt $_mmr, settings $_mms)"
 grep -qi "cannot be read" "$work/unread.log" && ok \
   || bad "...while a genuinely unreadable one must still say exactly that"
 fi
@@ -3644,6 +3658,51 @@ grep -q 'return 25   # identity-diff-unreadable' "$ROOT/scripts/lib/common.sh" &
   || bad "the identity comparison's own failure must answer 25 too — as an empty result it read as a shortfall and reported damage it never established"
 fi
 
+if check_block round-51-a-second-read-that-fails-refu round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
+# --- round 51: a second read that fails refuses, it does not fall through ------------------------
+#
+# BEHAVIOURAL. Completeness has already called this record damaged (21); the disposition read here only
+# picks the wording. Folded into the condition, a read that failed made the whole test false and
+# removal CONTINUED on the damaged rows.
+_u5="$work/r51-remove"; rm -rf "$_u5"; _r42 "$_u5"
+sed 's/^leaves .*/leaves 4x/; s/^disposition .*/disposition wat/' "$_u5/$_r42r" > "$_u5/r.tmp" && mv "$_u5/r.tmp" "$_u5/$_r42r"
+_u5out="$(HOME="$_u5" PATH="$work/bin:$PATH" bash "$ROOT/uninstall.sh" --agent claude 2>&1)"
+[ -f "$_u5/$_r42r" ] && ok \
+  || bad "a receipt completeness called damaged must be KEPT by removal even when the diagnostic read fails — the rows it could read are otherwise removed with the record"
+case "$_u5out" in
+  *"NOTHING was removed"*) ok ;;
+  *) bad "...and removal must say it kept the record rather than reporting a clean removal" ;;
+esac
+grep -q '"sandbox"' "$_u5/.claude/settings.json" && ok \
+  || bad "...and the installed keys must still be there, since nothing was removed"
+# BEHAVIOURAL. `--no-sandbox` whose replacement receipt cannot be written keeps an existing record of
+# that same choice. A read that failed is not "it records something else": invalidated, the next
+# update reads `none` and applies the policy over an explicit decision.
+_k5="$work/r51-keep"; rm -rf "$_k5"; mkdir -p "$_k5/.claude"; printf '{}\n' > "$_k5/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$_k5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+# A DIRECTORY AT THE RECEIPT PATH is both halves of the case at once: the replacement cannot be
+# published over it, and it cannot be classified either. A read-only ~/.claude would not do — the
+# LOCK is taken there, so the run never reaches this decision at all.
+rm -f "$_k5/$_r42r"; mkdir -p "$_k5/$_r42r/x"
+_k5out="$(HOME="$_k5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox 2>&1)"
+case "$_k5out" in
+  *"could NOT be recorded"*) ok ;;
+  *) bad "nothing at the receipt path is a FIRST opt-out that could not be written, not a record that still stands — the run must fail and say so" ;;
+esac
+# STRUCTURAL, for the reason round 50's opt-out pin gives: the case needs a PRESENT receipt whose read
+# fails while the replacement cannot be published, and the lock lives in the same directory, so a
+# fixture cannot hold both at once.
+grep -qF 'adb_settings_doc_state "$receipt")" = present' "$ROOT/install.sh" && ok \
+  || bad "a present receipt whose disposition read failed must be KEPT — invalidated, the recorded --no-sandbox choice is gone and the next update applies the policy over it"
+# STRUCTURAL, for the reason round 50's opt-out pin gives: the damage needs a read that fails while the
+# reads around it succeed, which a fixture cannot produce.
+grep -q 'return 25   # counted-digest-reread-failed' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "a counted receipt's digest re-read must refuse on failure — as an empty string it skipped the exact path/value comparison and a substituted row passed as complete"
+grep -q 'return 25   # zero-digest-reread-failed' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the zero branch's digest re-read must refuse on failure too — as an empty string it reported damage it never established"
+fi
+
 check_blocks_done
 
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
@@ -3781,7 +3840,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_row 'the merge cannot tell an unreadable receipt from unparseable settings' 'scripts/lib/common.sh' 'a-damaged-disposition-is-not-none-either' \
     '{ rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }   # merge-owned-rows' \
     '{ _adb_merge_cleanup "$work_empty"; return 1; }   # merge-owned-rows' \
-    'must name the damaged disposition line'
+    'must answer an unreadable RECEIPT 20'
   check_row 'the live-leaf predicate answers intact for a divergence' 'scripts/lib/common.sh' 'currency-asks-the-live-file-too-not-only' \
     '        | all( . as $r' \
     '        | any( . as $r' \
@@ -4100,15 +4159,15 @@ if [ "$MUTATION" -eq 1 ]; then
     '     || false \' \
     'BOTH must be VALIDATED as arrays'
   check_row 'a rowless opt-out record is discarded when the replacement fails' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
-    '         || [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then' \
-    '         || false; then' \
+    '      if [ -n "$optout_rows" ] || [ "$_keep_disp" = skipped-optout ] \' \
+    '      if [ -n "$optout_rows" ] \' \
     'must keep an existing opt-out record even when it carries no rows'
   check_row 'a still-accurate record is invalidated when its replacement fails' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
     '  if [ -n "$carried" ]; then' \
     '  if false; then' \
     'must KEEP a still-accurate record'
   check_row 'the opt-out sibling invalidates a still-accurate record' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
-    '      if [ -n "$optout_rows" ] \' \
+    '      if [ -n "$optout_rows" ] || [ "$_keep_disp" = skipped-optout ] \' \
     '      if false \' \
     'sibling must do the same'
   check_row 'the retirement prunes before proving the receipt replaceable' 'install.sh' 'nothing-is-pruned-until-the-receipt-is-k' \
@@ -4662,6 +4721,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '          [ "$_cdrc" -eq 0 ] || return 25   # identity-diff-unreadable' \
     '          :   # identity-diff-unreadable' \
     "the identity comparison's own failure must answer 25"
+  check_row 'a damaged count is removed past when the diagnostic read fails' 'uninstall.sh' 'round-51-a-second-read-that-fails-refu' \
+    '  if [ "$_crc" -eq 21 ]; then' \
+    '  if [ "$_crc" -eq 21 ] && adb_claude_settings_disposition "$receipt" >/dev/null 2>&1; then' \
+    'removal must say it kept the record rather than reporting a clean removal'
+  check_row 'an unclassifiable opt-out record is invalidated anyway' 'install.sh' 'round-51-a-second-read-that-fails-refu' \
+    '         || { [ -z "$_keep_disp" ] && [ "$(adb_settings_doc_state "$receipt")" = present ]; }; then' \
+    '         || false; then' \
+    'a present receipt whose disposition read failed must be KEPT'
+  check_row 'the counted digest re-read falls back to empty' 'scripts/lib/common.sh' 'round-51-a-second-read-that-fails-refu' \
+    '          [ "$_crdrc" -eq 0 ] || return 25   # counted-digest-reread-failed' \
+    '          :   # counted-digest-reread-failed' \
+    "digest re-read must refuse on failure"
+  check_row 'the zero-branch digest re-read falls back to empty' 'scripts/lib/common.sh' 'round-51-a-second-read-that-fails-refu' \
+    '          [ "$_zrdrc" -eq 0 ] || return 25   # zero-digest-reread-failed' \
+    '          :   # zero-digest-reread-failed' \
+    "zero branch's digest re-read must refuse on failure too"
   check_mutation_rows "check-settings-fragment" "$work/mut" "scripts/check-settings-fragment.sh" prepare_root runner 6
 fi
 
