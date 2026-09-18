@@ -119,6 +119,45 @@ done
 # at print the same two green lines otherwise (self-review.md).
 printf 'install-migration: retirement register — %d row(s) checked\n' "$retired_rows" >&2
 
+# --- the settings surface's retirement obligation (#248, D95) ----------------
+# The same rule this file already enforces for symlinks, one surface over. A payload that STOPS
+# shipping a leaf cannot leave it behind: `~/.claude/settings.json` is the operator's file, so an
+# orphaned key sits there forever with nobody owning it and nothing that would ever remove it —
+# the settings analogue of a dangling link, and invisible in exactly the same way.
+#
+# History-free, like the compat-shim check above, and for the same reason: the obligation is a
+# statement about HEAD's installer, not about any particular pair of commits. It is driven by
+# planting a leaf in the RECEIPT that HEAD's payload does not declare, which is precisely the
+# state a real retirement produces in an already-installed home.
+if command -v jq >/dev/null 2>&1 && [ -s "$ROOT/agents/claude/settings.fragment.json" ]; then
+  sw="$(mktemp -d)"; sh_home="$sw/home"; mkdir -p "$sh_home/.claude"
+  printf '{"model":"opus","sandbox":{"network":{"strictAllowlist":true}}}\n' > "$sh_home/.claude/settings.json"
+  {
+    printf 'disposition installed\n'
+    printf 'version 9.9.9\n'
+    printf 'floor %s\n' "$(adb_claude_settings_floor)"
+    printf 'leaf\t["sandbox","network","strictAllowlist"]\ttrue\n'
+  } > "$sh_home/.claude/.adb-settings-owned"
+  # A PROBEABLE CLI IS PART OF THE FIXTURE. The retirement prune happens on the WRITE path, and
+  # the CI runner has no `claude` at all — without a stub the installer takes `skipped-unprobeable`
+  # and the assertion below fails having exercised nothing. The stub reports a version above the
+  # floor so the path under test is the one that actually runs. (PR review)
+  mkdir -p "$sw/bin"
+  printf '#!/bin/sh\nprintf "%%s\\n" "9.9.9 (Claude Code)"\n' > "$sw/bin/claude"
+  chmod +x "$sw/bin/claude"
+  if HOME="$sh_home" PATH="$sw/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >"$sw/install.log" 2>&1; then
+    if jq -e '.sandbox.network.strictAllowlist == null' "$sh_home/.claude/settings.json" >/dev/null 2>&1; then ok
+    else bad "install.sh must PRUNE a settings leaf its payload no longer ships (#248) — an orphaned key in the operator's settings.json is a dangling link by another name"; fi
+    jq -e '.model == "opus"' "$sh_home/.claude/settings.json" >/dev/null 2>&1 && ok \
+      || bad "the retirement prune must not disturb unrelated settings"
+  else
+    bad "install.sh failed over a home carrying a retired settings leaf (see below)"; sed 's/^/  /' "$sw/install.log" >&2
+  fi
+  rm -rf "$sw"
+else
+  printf 'NOTE: jq or the settings payload is unavailable — skipping the settings retirement check\n' >&2
+fi
+
 # --- history-aware pull simulation -------------------------------------------
 default="$(adb_default_branch .)"
 base=""
