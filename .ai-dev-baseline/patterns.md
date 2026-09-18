@@ -683,4 +683,8 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `install.sh:205` `cb4221d` `PRRT_kwDOTfywrM6jho7V` PR #463 2026-09-17 — the opt-out re-read discarded its status, so a receipt this run could not classify read as no opt-out recorded
 - `status-swallowed` `scripts/lib/common.sh:1128` `cb4221d` `PRRT_kwDOTfywrM6jho7W` PR #463 2026-09-17 — a failed read of the recorded paths answered payload uncertainty, which the removal path proceeds past
 - `partial-validation` `install.sh:362` `cb4221d` `PRRT_kwDOTfywrM6jho7Z` PR #463 2026-09-17 — the direct install sent a dangling settings link through the synthetic empty document instead of refusing it
+- `status-swallowed` `scripts/lib/common.sh:1124` `c5429bd` `PRRT_kwDOTfywrM6jjV2w` PR #463 2026-09-18 — a failed digest re-read left the variable empty, which skipped the exact path/value comparison
+- `status-swallowed` `uninstall.sh:413` `c5429bd` `PRRT_kwDOTfywrM6jjV2z` PR #463 2026-09-18 — a diagnostic read folded into the refusal condition let removal continue when that read failed
+- `status-swallowed` `install.sh:436` `f85ce95` `PRRT_kwDOTfywrM6jpFkT` PR #463 2026-09-18 — receipt-completeness statuses fell into a catch-all that blamed settings.json and named the wrong remedy
+- `event-inferred-from-state` `install.sh:356` `f85ce95` `PRRT_kwDOTfywrM6jpFka` PR #463 2026-09-18 — a skip message promised re-application from the disposition alone, after the skip had given ownership up
 <!-- adb:hits:end -->
