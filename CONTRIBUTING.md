@@ -87,6 +87,12 @@ each was compared on. `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the 
 every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
 the step. The decision is `scripts/mutation-gate.sh`'s — the same one CI asks per job.
 
+Since #470 the same question is also asked **per row** for a harness built on per-test rows: a row
+runs when your change touches the file that row mutates, or an input no row targets at all, and is
+otherwise gated — never built, never scored, and named in the harness's tally. The same override
+and the same fail-closed rules apply, and the nightly runs every row regardless, which is what
+bounds a target set that turns out to be too narrow.
+
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you

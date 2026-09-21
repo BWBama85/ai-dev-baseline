@@ -1359,50 +1359,57 @@ adb_claude_settings_payload_digest() {
 # not remove.
 # Usage: adb_claude_settings_receipt_leaves <receipt>
 adb_claude_settings_receipt_leaves() {
-  local receipt="$1" line rest p v tab
-  tab="$(printf '\t')"
+  local receipt="$1" _rbody _jrows _jrc
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
-  # THE OPEN IS CHECKED; THE LOOP'S OWN STATUS IS NOT. `done < "$receipt" || true` absorbed both,
-  # so a receipt that could not be OPENED ran the body zero times and still returned success — this
-  # reader answered "no rows", the merge then uninstalled with no owned leaves and deleted the
-  # receipt, and every matching sandbox key stayed installed with nothing recording it. The
-  # `|| true` is still required for the loop itself, since `read` reports non-zero at EOF, so the
-  # two are separated rather than merged. (PR review)
+  # THE OPEN IS CHECKED; a read that failed must never arrive as "no rows". `done < "$receipt"
+  # || true` absorbed both, so a receipt that could not be OPENED ran the body zero times and still
+  # returned success — this reader answered "no rows", the merge then uninstalled with no owned
+  # leaves and deleted the receipt, and every matching sandbox key stayed installed with nothing
+  # recording it. (PR review)
   _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-leaves
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "leaf$tab"*) ;; *) continue ;; esac
-    rest="${line#leaf$tab}"
-    p="${rest%%$tab*}"
-    v="${rest#*$tab}"
-    [ "$p" != "$rest" ] || continue
-    # `length > 0` IS LOAD-BEARING, not defensive tidiness: `all(.[]; …)` is vacuously TRUE for an
-    # empty array, so a hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as
-    # ownership of the JSON ROOT, and `delpaths([[]])` replaced the entire settings document with
-    # `null` — destroying every unrelated key during an ordinary uninstall.
-    # `jq -e` RETURNS 1 FOR FALSE AND 5 FOR AN ERROR, and treating both as "malformed row" silently
-    # dropped a perfectly good row when jq died transiently — the merge then owned fewer leaves,
-    # uninstall left the live key in place, and the receipt was deleted anyway. Skip a row the
-    # predicate rejects; refuse the whole read when the predicate could not be evaluated.
-    printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac   # row-predicate-status
-    # `type`, NOT `.` — the filter's own output is the `-e` predicate, so decoding the value and
-    # testing IT makes a legitimate `false` or `null` leaf indistinguishable from a malformed row.
-    # Probed on jq-1.7.1: `printf false | jq -e .` exits **1**, exactly like a rejected row. The
-    # row was then discarded, uninstall left that installer-written key in place while deleting the
-    # receipt, and the ownership evidence was gone for good. `type` returns a non-empty string for
-    # every JSON value, so it is truthy for all of them and 1 cannot arise; 5 still means the text
-    # did not parse. (PR review)
-    printf '%s' "$v" | jq -e 'type' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
-    printf '%s\t%s\n' "$p" "$v"
-    # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`
-    # returns non-zero on that last partial line WITHOUT running the body — silently dropping the
-    # leaf, so uninstall would leave a key it owns behind and the retirement prune would never see
-    # it. The validation above still governs whether the partial line is usable.
-  done <<EOF || true
-$_rbody
-EOF
+  # ONE jq FOR THE WHOLE RECEIPT, not two or three per row (#471). The loop this replaced spent
+  # ~6 ms of process startup per predicate, and the suites drive it hundreds of times per run; the
+  # filter below is the same three tests in the same order, moved inside one process. Every rule it
+  # encodes was paid for:
+  #
+  #   * `length > 0` IS LOAD-BEARING: `all(.[]; …)` is vacuously TRUE for an empty array, so a
+  #     hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as ownership of the
+  #     JSON ROOT, and `delpaths([[]])` replaced the entire settings document with `null`.
+  #   * A ROW THE PREDICATE REJECTS IS SKIPPED (`select`); A ROW IT CANNOT EVALUATE REFUSES THE
+  #     WHOLE READ (`error`, which leaves jq non-zero and is caught below). `jq -e` spelled that as
+  #     1-versus-5 per row; here it is `select` versus `error`, and conflating them once already
+  #     dropped a perfectly good row, so the merge owned fewer leaves and uninstall left the live
+  #     key in place while deleting the receipt.
+  #   * THE VALUE IS PARSED, NOT TESTED FOR TRUTH. Decoding it and testing IT makes a legitimate
+  #     `false` or `null` leaf indistinguishable from a malformed row — probed on jq-1.7.1,
+  #     `printf false | jq -e .` exits 1 exactly like a rejected row. Parsing it and discarding the
+  #     result keeps "is this JSON at all" as the only question asked. (PR review)
+  #   * THE PATH IS CHECKED BEFORE THE VALUE, as the loop did: a row whose path fails the predicate
+  #     is skipped without the value ever being looked at.
+  #
+  # `-n` WITH `[inputs][]` IS LOAD-BEARING, and buys two separate things. Without BOTH, jq
+  # evaluates the program once PER INPUT LINE and its exit status reports only the LAST one —
+  # probed on jq-1.7.1: `printf 'a\nb\n' | jq -R -r 'if . == "a" then error("boom") else . end'`
+  # prints the error to stderr and still exits **0**, so an unparseable row followed by a good row
+  # is swallowed exactly as the conflated `|| continue` spelling swallowed it. And without `-n`
+  # alone, the FIRST line arrives as `.` rather than through `inputs`, so a receipt that opens with
+  # a row instead of a header silently loses that row. Both are asserted, each on its own witness.
+  _jrows="$(printf '%s\n' "$_rbody" | jq -R -n -r '[inputs][]   # leaf-one-evaluation
+      | select(startswith("leaf\t"))
+      | ltrimstr("leaf\t") as $rest
+      | ($rest | index("\t")) as $i
+      | select($i != null)
+      | $rest[:$i] as $p
+      | $rest[$i+1:] as $v
+      | (try ($p | fromjson) catch error("receipt: leaf path is not JSON")) as $pj
+      | select(($pj | type) == "array" and ($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # leaf-path-predicate
+      | (try ($v | fromjson) catch error("receipt: leaf value is not JSON"))
+      | ($p + "\t" + $v)
+    ' 2>/dev/null)"; _jrc=$?
+  [ "$_jrc" -eq 0 ] || return 20   # row-predicate-status
+  [ -n "$_jrows" ] || return 0
+  printf '%s\n' "$_jrows"
 }
 
 # The CONTAINER paths a receipt records — the objects this install had to create on its way to a
@@ -1412,27 +1419,24 @@ EOF
 # document root, and `delpaths([[]])` replaces the whole settings file with null.
 # Usage: adb_claude_settings_receipt_containers <receipt>
 adb_claude_settings_receipt_containers() {
-  local receipt="$1" line rest tab _rbody
-  tab="$(printf '\t')"
+  local receipt="$1" _rbody _jrows _jrc
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
-  # THE OPEN IS CHECKED; THE LOOP'S OWN STATUS IS NOT. `done < "$receipt" || true` absorbed both,
-  # so a receipt that could not be OPENED ran the body zero times and still returned success — this
-  # reader answered "no rows", the merge then uninstalled with no owned leaves and deleted the
-  # receipt, and every matching sandbox key stayed installed with nothing recording it. The
-  # `|| true` is still required for the loop itself, since `read` reports non-zero at EOF, so the
-  # two are separated rather than merged. (PR review)
   _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-containers
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "container$tab"*) ;; *) continue ;; esac
-    rest="${line#container$tab}"
-    rest="${rest%%$tab*}"
-    printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
-    printf '%s\n' "$rest"
-  done <<EOF || true
-$_rbody
-EOF
+  # One jq for the whole receipt, and the same predicate, the same skip-versus-refuse split and the
+  # same empty-path reason as the leaf reader above (#471). A container row carries no value field,
+  # so a row with no second tab is the whole path rather than a malformed row.
+  _jrows="$(printf '%s\n' "$_rbody" | jq -R -n -r '[inputs][]   # container-one-evaluation
+      | select(startswith("container\t"))
+      | ltrimstr("container\t") as $rest
+      | (($rest | index("\t")) as $i | if $i == null then $rest else $rest[:$i] end) as $p
+      | (try ($p | fromjson) catch error("receipt: container path is not JSON")) as $pj
+      | select(($pj | type) == "array" and ($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate
+      | $p
+    ' 2>/dev/null)"; _jrc=$?
+  [ "$_jrc" -eq 0 ] || return 20   # container-predicate-status
+  [ -n "$_jrows" ] || return 0
+  printf '%s\n' "$_jrows"
 }
 
 _adb_claude_settings_created_json() {

@@ -8167,3 +8167,105 @@ survive is the part a later reader needs.
              can observe, and each fix for it only moved the window. Persistent failures are observable,
              testable, and are where every real incident in this history came from.
 - baseline-issue: n/a
+
+## D107 — The fixture copier omits `.git` instead of copying and deleting it
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   #469. `check_copy_worktree` built every mutation fixture with `cp -R .` followed by
+             `rm -rf "$2/.git"`, copying the repository's whole history and discarding it on
+             arrival. Measured 2026-09-21 on the maintainer's macOS machine: `.git` is 23 MB of a
+             33 MB tree, and a copy cost 0.57-0.65s against 0.20-0.23s without it. A mutation
+             harness pays that once per row, plus once per block control. The issue proposed
+             `git worktree add`, which the copier's own contract forbids.
+- decision:  The copy iterates the source's top-level entries and skips the one named `.git`,
+             with the same `cp -R` invocation per entry, so dotfiles, symlinks and modes copy
+             exactly as before on BSD and GNU. `git worktree add` and `git archive` are both
+             REFUSED: they serve a commit, so they lose the uncommitted and untracked content
+             these fixtures exist to test; they leave the copy a repository, which the contract
+             says it must not be; `git worktree` writes admin state into the tracked repo every
+             suite here promises not to touch; and several call sites copy a source that is not
+             a repository at all (`check-fact-drift.sh` copies its own pristine copy).
+             The trailing `rm -rf` is REMOVED rather than kept as a belt: a second defence that
+             cleaned up after a broken skip would make the skip unobservable, and the guard's
+             whole value is that it can be seen failing.
+- placement: `scripts/check-lib.sh`; assertions in `scripts/check-block-rows.sh`
+- reason:    One mechanism per defect, and it is the mechanism the acceptance criterion names.
+- baseline-issue: #469
+
+## D108 — A mutation row is gated on its own target, and the nightly is what makes that safe
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   #470. `mutation-gate.sh` answered "has this harness anything new to say?" only at
+             STEP granularity, so a change to one line of `install.sh` re-ran all 257
+             `check-settings-fragment` rows, including the 95 that only mutate `common.sh` and
+             the 37 that only mutate `bin/baseline`. The issue did not say where the per-row
+             input mapping lives, nor what a row's input set is beyond "its target file".
+- decision:  A row's input set is its own target PLUS every declared input of the step that NO
+             row targets. The registry (`selfcheck.sh --list`, field 5) stays the one home; the
+             row axis only subdivides the inputs rows actually discriminate, and a shared input —
+             the suite, `check-lib.sh`, a library no row mutates — still runs every row. The
+             decision is `mutation-gate.sh rows`, asked ONCE for the whole table.
+             THIS IS AN APPROXIMATION, deliberately the same one the step-level gate already
+             makes: a row whose block EXECUTES another row's target can have its verdict changed
+             by a diff that gates it out. `.github/workflows/mutation-nightly.yml` is the backstop
+             for exactly that class and runs every row unconditionally against `main` with
+             `ADB_MUTATION_RUN_ALL=1`, which is what #470's own acceptance criterion names.
+             A row whose target is NOT among the step's declared inputs means the declaration is
+             narrower than the harness (`declared-inputs-incomplete`), so gating is refused for
+             the WHOLE step and every row runs, naming the target.
+- placement: `scripts/mutation-gate.sh` (`rows`, `gate_registry_inputs`), `scripts/check-lib.sh`
+             (`check_mutation_rows`); guards in `scripts/check-mutation-gate.sh` and
+             `scripts/check-block-rows.sh`
+- reason:    Any narrower rule is unsound without per-block input declarations, which nothing has;
+             any wider rule gates nothing. The imprecision is bounded, stated, and already has a
+             backstop the repo runs daily.
+- baseline-issue: #470
+
+## D109 — DEVIATION-free rejection of a second JSON engine; batching is the whole of #471
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   #471 asked for three things and left the third explicitly open: batch adjacent `jq`
+             calls, drop subshells from hot validators, and EVALUATE `gojq`/`jaq`, noting a second
+             JSON engine is a new third-party dependency for every adopter and "may be rejected on
+             those grounds alone".
+- decision:  `gojq` and `jaq` are REJECTED, on compatibility rather than on dependency grounds
+             alone — the dependency objection stands on its own and did not need to be the reason.
+             * gojq: its README (fetched 2026-09-21; context7 has no gojq entry) states "gojq does
+               not keep the order of object keys" and lists `--sort-keys, -S` among unsupported
+               flags. This repo uses `jq -S` at `scripts/check-settings-fragment.sh:428` and
+               `:3302`, and `adb_claude_settings_merge` writes an operator-readable
+               `~/.claude/settings.json` whose key order an operator diffs.
+             * jaq: its manual (fetched 2026-09-21) documents semantics diverging from jq for
+               division by zero, NaN rendering, slicing `null`, multi-file slurping and
+               `reduce`/`foreach` over multi-output filters, and claims compatibility "in most
+               cases" — which is not a drop-in guarantee for 1,132 call sites.
+             Neither is installed on this machine, so neither claim rests on a probe; both rest on
+             current vendor documentation, and that is stated rather than implied.
+             What SHIPPED for #471 is the batching: the two receipt readers went from one to three
+             `jq` processes PER ROW to one per call.
+- placement: this entry; `scripts/lib/common.sh`
+- reason:    A drop-in replacement that is not drop-in is a defect surface across every filter in
+             the repo, and the two documented incompatibilities are load-bearing here rather than
+             theoretical.
+- baseline-issue: #471
+
+## D110 — `jq`'s exit status reports only its LAST input, so a batched validator must use `-n`
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   Batching the per-row receipt validators into one `jq` (#471) needs a row the filter
+             cannot evaluate to refuse the WHOLE read, which the per-row loop did with `jq -e`'s
+             5-versus-1. The first cut relied on jq's exit status for that and was wrong.
+- decision:  Probed on jq-1.7.1 (2026-09-21):
+             `printf 'a\nb\n' | jq -R -r 'if . == "a" then error("boom") else . end'` prints the
+             error to stderr and exits **0** — without `-n`, jq evaluates the program once per
+             input and its status reports only the last one. Both readers therefore use
+             `jq -R -n -r '[inputs][] | …'`, which makes the whole receipt ONE evaluation so any
+             row's `error` aborts it and jq exits 5. The batched readers also emit NOTHING on the
+             refusal path, where the per-row loop left already-accepted rows on stdout beside a
+             failure code; every caller in this repo checks the status, so that is a tightening,
+             and it is asserted so it stays one.
+- placement: `scripts/lib/common.sh`; assertions in `scripts/check-settings-fragment.sh`
+- reason:    The defect was invisible to every existing assertion and to a differential test that
+             did not vary the position of the bad row. It is recorded because the next batching of
+             a per-item validator will meet it again.
+- baseline-issue: #471

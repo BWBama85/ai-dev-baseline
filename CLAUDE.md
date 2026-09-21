@@ -79,6 +79,14 @@ those. The rules below are specific to this repo's code.
      **fails closed**: no repository, an unresolvable base or no merge-base means the step runs and
      the line says why. `ADB_MUTATION_RUN_ALL=1` runs everything; `ADB_MUTATION_BASE=<ref>` moves
      the base. `--list`'s **fifth** field is the input set (`-` for a step that always runs).
+   - **…and the same question one axis finer, PER ROW** (#470, D108) — a harness built on per-test
+     rows (#468) runs a row only when the change touches **that row's target file**, or an input
+     **no row targets** (the suite, `check-lib.sh`, a library no row mutates). Asked once for the
+     whole table through `mutation-gate.sh rows <suite>`; gated rows are never built, never scored
+     and named in the harness's own tally (`N row(s) gated (targets unchanged: …)`). It is an
+     approximation with a stated bound — a row whose block *executes* another row's target can be
+     gated out — and `mutation-nightly.yml` is the backstop that runs every row unconditionally.
+     A row target the step does not declare refuses gating for the whole step and says which.
    - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),
      **`--skip a,b`** runs everything except them (same unknown-name contract, and the skipped
      names are printed — twice, since #339 — because a step dropped in silence is indistinguishable

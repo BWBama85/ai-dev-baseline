@@ -222,6 +222,13 @@ add() {
 # ONE HOME. `scripts/mutation-gate.sh` reads this through `--list` (field 5); `scripts/check-mutation-gate.sh`
 # pins that every `*-mutation` step declares inputs naming its own harness plus the two shared
 # files, that every declared path exists, and that the nightly matrix names every step here.
+#
+# AND ONE HOME FOR THE PER-ROW GATE TOO (#470, D108). A harness built on per-test rows asks the
+# same question once more per row, and it asks it of THIS set: a row's inputs are the file that
+# row mutates plus every declared input NO row targets. Nothing new is declared here for that —
+# adding a sixth `--list` field would break the pin that `--list` carries exactly five — so a step
+# whose rows mutate a file it does not declare here refuses gating altogether and names the file,
+# which is what keeps this list, rather than the row table, the place the answer comes from.
 declare -A STEP_INPUTS=()
 
 inputs() {
@@ -778,7 +785,7 @@ add settings-fragment   bash scripts/check-settings-fragment.sh
 # broken in a COPY — of the library, of the payload, of install.sh — and required RED on its own
 # witness.
 add settings-fragment-mutation bash scripts/check-settings-fragment.sh --mutation
-inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh
+inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).

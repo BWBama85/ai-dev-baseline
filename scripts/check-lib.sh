@@ -629,14 +629,25 @@ _check_block_ctl() {
 #      present and readable, literal non-empty, single-line, different from its replacement and
 #      present EXACTLY once, block declared, witness present in that block's source. Any failure
 #      stops the pool with every problem named.
+#   1b. Rows whose TARGET the diff does not touch are GATED (#470): `mutation-gate.sh rows` is asked
+#      once for the whole table — once, not once per row, or the gate would cost more git than it
+#      saves suite — and a gated row is never built, never mutated and never run. Gating is decided
+#      AFTER the declaration pass on purpose: a row whose literal has drifted is a defect in the
+#      table itself, and a gate that skipped it would hide that until the nightly. Every fail-closed
+#      answer, and every answer this function cannot parse, runs the whole table and says so.
+#      When every row is gated the control is not run either — there is nothing left to control.
 #   2. One full unmutated run must pass; it records each block's assertion count.
 #   3. Each selected block's unmutated control must reproduce that count (skipped in full-suite mode).
 #   4. Each row runs only its block and that block's dependencies — or the whole suite when
 #      ADB_MUTATION_FULL_SUITE=1, the nightly's mode, which also catches a witness that has drifted.
+#      ADB_MUTATION_FULL_SUITE governs BREADTH per mutant and gating governs WHICH mutants; they are
+#      independent, and the nightly turns gating off with ADB_MUTATION_RUN_ALL rather than with this.
 check_mutation_rows() {
   local label="$1" wd="$2" suite="$3" prep="$4" run="$5" cap="$6"
   local n i j pool running=0 errs=0 cnt rc b bi text wit full=0 root blocks=" " nblocks=0
   local applied=0 red=0 scored=0 verdict why
+  local gate_out gate_rc gate_line gi gd gated=0 gated_tgts=""
+  local -a gate_dec=()
   n="${#CHECK_ROW_NAMES[@]}"
   if [ "$n" -eq 0 ]; then bad "$label --mutation: the row table is EMPTY — this harness proves nothing"; return 1; fi
   if ! command -v adb_pool_size >/dev/null 2>&1; then
@@ -695,11 +706,64 @@ check_mutation_rows() {
       *"$wit"*) ;;
       *) bad "row '$nm': witness '$wit' does not appear in block(s) '$b' — selecting them could never show it"; errs=$((errs + 1)); continue ;;
     esac
-    case "$blocks" in *" $b "*) ;; *) blocks="$blocks$b "; nblocks=$((nblocks + 1)) ;; esac
   done
   if [ "$errs" -gt 0 ]; then
     bad "$label --mutation: $errs row declaration(s) are invalid — nothing was built or run"; return 1
   fi
+
+  # 1b. per-row gating (#470) — ONE call for the whole table, after the declaration pass.
+  # EMPTY, not `run`: every RUN-ALL path below fills the table explicitly, so an empty slot means
+  # the gate owed a decision and did not send one. Defaulting to `run` here would be fail-closed
+  # and silent, and the gap check below could never fire.
+  for (( i = 0; i < n; i++ )); do gate_dec+=("") ; done
+  gate_out="$(for (( i = 0; i < n; i++ )); do printf '%s\t%s\n' "$i" "${CHECK_ROW_TGT[$i]}"; done \
+    | bash "$ROOT/scripts/mutation-gate.sh" rows "$suite" 2>&1)"; gate_rc=$?
+  gate_line="$(printf '%s\n' "$gate_out" | head -1)"
+  case "$gate_rc" in
+    0)
+      # PARSED, NOT TRUSTED: a decision this function cannot read is a broken gate, and running the
+      # table is the only answer that cannot lose coverage. It is said out loud either way.
+      while IFS="$(printf '\t')" read -r gi gd; do
+        case "$gi" in ''|*[!0-9]*) continue ;; esac
+        [ "$gi" -lt "$n" ] || continue
+        case "$gd" in run|skip) gate_dec[$gi]="$gd" ;; *) gate_dec[$gi]="" ;; esac
+      done <<< "$(printf '%s\n' "$gate_out" | tail -n +2)"
+      for (( i = 0; i < n; i++ )); do
+        if [ -z "${gate_dec[$i]}" ]; then
+          printf '%s --mutation: NOTE — the row gate returned no usable decision for row %s; every row runs (fail-closed)\n' "$label" "$i"
+          for (( j = 0; j < n; j++ )); do gate_dec[$j]=run; done
+          gate_line="RUN-ALL: $suite — the gate's per-row answer could not be read (fail-closed)"
+          break
+        fi
+      done ;;
+    11|12)
+      # Both are RUN-ALL and the gate said so on its own line; fill the table to match it.
+      for (( i = 0; i < n; i++ )); do gate_dec[$i]=run; done ;;
+    *)
+      printf '%s --mutation: NOTE — the row gate failed (rc %s); every row runs (fail-closed)\n' "$label" "$gate_rc"
+      for (( i = 0; i < n; i++ )); do gate_dec[$i]=run; done
+      gate_line="RUN-ALL: $suite — the row gate failed with rc $gate_rc (fail-closed)" ;;
+  esac
+  printf '%s\n' "$gate_line"
+  for (( i = 0; i < n; i++ )); do
+    [ "${gate_dec[$i]}" = skip ] || continue
+    gated=$((gated + 1))
+    case "$gated_tgts" in *" ${CHECK_ROW_TGT[$i]} "*) ;; *) gated_tgts="$gated_tgts ${CHECK_ROW_TGT[$i]} " ;; esac
+  done
+  if [ "$gated" -eq "$n" ]; then
+    # NO CONTROL EITHER: it exists to give the rows a green baseline, and there are no rows.
+    printf '\n%s --mutation: 0/%d row(s) run — every row gated (targets:%s)\n' \
+      "$label" "$n" "${gated_tgts% }"
+    return 0
+  fi
+
+  # The block set is built from the rows that will RUN: a control for a block only gated rows
+  # select is a suite run nothing consumes.
+  for (( i = 0; i < n; i++ )); do
+    [ "${gate_dec[$i]}" = run ] || continue
+    b="${CHECK_ROW_BLOCK[$i]}"
+    case "$blocks" in *" $b "*) ;; *) blocks="$blocks$b "; nblocks=$((nblocks + 1)) ;; esac
+  done
 
   # 2. one full, unmutated control
   if ! root="$("$prep" "$wd/control")" || [ -z "$root" ]; then
@@ -727,6 +791,10 @@ check_mutation_rows() {
   for (( i = 0; i < n; i++ )); do
     mkdir -p "$wd/row-$i"
     b="${CHECK_ROW_BLOCK[$i]}"
+    if [ "${gate_dec[$i]}" = skip ]; then
+      printf 'gated|its target %s is unchanged\n' "${CHECK_ROW_TGT[$i]}" > "$wd/row-$i/verdict"
+      continue
+    fi
     if [ "$full" -eq 0 ] && [ "$(cat "$wd/ctl-${b//,/+}.verdict" 2>/dev/null)" != ok ]; then
       printf 'bad|control failed for block %s: %s\n' "$b" "$(cut -d'|' -f2- "$wd/ctl-${b//,/+}.verdict" 2>/dev/null)" > "$wd/row-$i/verdict"
       continue
@@ -745,6 +813,10 @@ check_mutation_rows() {
     IFS='|' read -r verdict why < "$wd/row-$i/verdict"
     if [ "$verdict" = ok ]; then
       ok; red=$((red + 1)); applied=$((applied + 1))
+    elif [ "$verdict" = gated ]; then
+      # NEITHER ok NOR bad: a gated row made no claim, so counting it as a passing assertion would
+      # manufacture the evidence the gate exists to defer. It is counted, named and reported.
+      :
     else
       bad "mutation '${CHECK_ROW_NAMES[$i]}': $why"
       case "$why" in
@@ -754,12 +826,17 @@ check_mutation_rows() {
     fi
   done
   [ "$scored" -eq "$n" ] || bad "$label --mutation: scored $scored of $n row(s)"
+  local ran=$((n - gated)) gatedsuffix=""
+  [ "$gated" -gt 0 ] && gatedsuffix="; $gated row(s) gated (targets unchanged:${gated_tgts% })"
   if [ "$full" -eq 1 ]; then
-    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; full suite per mutant)\n' "$label" "$applied" "$n" "$red" "$pool"
+    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; full suite per mutant%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$gatedsuffix"
   else
-    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; per-block, %d block(s) controlled)\n' "$label" "$applied" "$n" "$red" "$pool" "$nblocks"
+    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; per-block, %d block(s) controlled%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$nblocks" "$gatedsuffix"
   fi
-  [ "$applied" -eq "$n" ] || bad "$label --mutation: only $applied of $n mutations actually applied — the rest tested nothing"
+  # AGAINST THE ROWS THAT RAN, not the table: a gated row was never meant to apply, and comparing
+  # to `n` would turn every gated run red. `scored -eq n` above is what still proves no row was
+  # silently dropped — gating removes a row from the POOL, never from the scoring.
+  [ "$applied" -eq "$ran" ] || bad "$label --mutation: only $applied of $ran mutations actually applied — the rest tested nothing"
 }
 
 # check_summary <name> — emit the terminal "<name>: N passed, M failed" line, then exit 1 if any
@@ -820,18 +897,6 @@ _check_exit_guard() {
 # same "bare origin + local repo wired to it" scaffold. Centralize only the BOILERPLATE; each
 # test keeps its own topology (branch names, origin/HEAD form, merge shape, push sequence).
 
-# check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
-# creating it, then drop the copied `.git`. The ONE home for the throwaway-tree-copy move, now that
-# three suites need it: the installer fail-loud test, the fact-drift mutation mode, and its guard
-# suite. A fourth open-coded copy is how the "faithful copier" details drift — `cp -R .` from
-# inside <src> is deliberate (it takes the CONTENTS, dotfiles included, and preserves symlinks and
-# modes on both BSD and GNU), and `git ls-files | cp` is deliberately NOT used: it needs `-z`,
-# per-file `mkdir -p`, and a policy for tracked-but-deleted paths, and it silently misses anything
-# uncommitted — which is the whole reason these suites copy the tree instead of cloning HEAD.
-#
-# Dropping `.git` is for speed (this repo's is ~27 MB), and it means the copy is NOT a git repo:
-# code under test that shells out to git must tolerate that. Returns non-zero WITHOUT exiting so a
-# `set -u` caller can guard it.
 # check_mkdir_shim <dir> — write a `mkdir` into <dir> that reports success for a directory that
 # already exists, which is what Ubuntu 26.04's uutils mkdir does to all but one of several concurrent
 # callers (D105). Prepend <dir> to PATH to make that race deterministic. Options pass through.
@@ -843,21 +908,50 @@ check_mkdir_shim() {
     && chmod +x "$1/mkdir"
 }
 
+# check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
+# creating it, and NEVER copying `.git`. The ONE home for the throwaway-tree-copy move, now that
+# several suites need it: a fourth open-coded copy is how the "faithful copier" details drift.
+# `cp -RP` of each top-level entry is deliberate, and the `-P` is not decoration: the old form's
+# symlinks were all ENCOUNTERED DURING TRAVERSAL of `.`, where POSIX says `-R` alone preserves
+# them, while an entry named directly is a command-line OPERAND, a case `-H` and `-L` exist to
+# change. GNU's manual documents `-H` as following a link that "is a command-line argument", so
+# the default already preserves it on both platforms — and a default observed on one machine is
+# not a contract (`third-party-default`), so it is stated rather than inherited. Modes survive as
+# before. `git ls-files | cp` is deliberately NOT used: it needs `-z`, per-file `mkdir -p`, and a
+# policy for tracked-but-deleted paths, and it silently misses anything uncommitted — which is the
+# whole reason these suites copy the tree instead of cloning HEAD. The same rules out
+# `git worktree add` and `git archive`: both serve a COMMIT, both leave the copy a repository, and
+# `git worktree` writes admin state into the tracked repo every suite here promises not to touch.
+#
+# THE ENTRY LOOP IS THE MECHANISM, not tidiness. This used to be `cp -R .` followed by
+# `rm -rf "$2/.git"`, which copied the repository's whole history and deleted it on arrival: `.git`
+# is the majority of this tree by bytes, and a mutation harness pays the copy once per row. The
+# `rm` is GONE rather than kept as a belt: a second defence that cleans up after a broken skip
+# would make the skip unobservable, and one mechanism that can be seen failing beats two that
+# cannot. `./$e`, so an entry whose name begins with `-` arrives as a path and not as an option.
+#
+# The copy is therefore NOT a git repo: code under test that shells out to git must tolerate that.
+# Returns non-zero WITHOUT exiting so a `set -u` caller can guard it.
 check_copy_worktree() {
   mkdir -p "$2" || return 1
-  ( cd "$1" && cp -R . "$2" ) || return 1
-  rm -rf "$2/.git"
+  ( cd "$1" || exit 1
+    for e in .* *; do
+      case "$e" in .|..|.git) continue ;; esac
+      [ -e "$e" ] || [ -L "$e" ] || continue
+      cp -RP "./$e" "$2/" || exit 1
+    done )
 }
 
 # check_copy_subtrees <src> <dst> <dir>… — the same throwaway copy, restricted to named top-level
 # directories. Use it when a suite's whole mutation surface is a known set of subtrees; use
 # check_copy_worktree when it is not, or when the code under test needs the repo's root files.
 #
-# THE COST IS THE REASON, and it is measured rather than assumed. `check_copy_worktree` copies the
-# repo CONTENTS — including `.git`, which on this repo is ~66 MB — and then deletes it. One copy is
-# unnoticeable; a mutation harness doing it a dozen times spends most of its wall clock in the
-# kernel moving a directory it is about to throw away. `check-tmp-paths.sh` ran 63s that way and
-# 6s copying only its four scanned roots (4.4 MB), which is the same fixture for its purposes.
+# THE COST IS THE REASON, and it is measured rather than assumed. Since #469 `check_copy_worktree`
+# no longer copies `.git`, so the gap between the two is smaller than it was — but it is still the
+# whole tree against a named few directories, and a mutation harness pays it once per row.
+# `check-tmp-paths.sh` ran 63s copying the tree WITH its history and 6s copying only its four
+# scanned roots (4.4 MB), which is the same fixture for its purposes; that 63s figure is what the
+# old copier cost and is kept as history, not as a current benchmark.
 #
 # Same faithful-copier details as above (`cp -R` of the CONTENTS, so dotfiles, symlinks and modes
 # survive), and the same contract: the result is NOT a git repo, and a failure returns non-zero
