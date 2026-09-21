@@ -135,7 +135,6 @@ gate_mb() {
 #   --no-renames            a declared file renamed away is reported as a DELETION of that path,
 #                           not folded into its destination — its removal counts as touching it;
 #   -c core.quotePath=false belt and braces for the same quoting rule on the untracked read.
-# Found by the declared reviewer with a probe on `scripts/lib/café.sh` and a `git mv`.
 declare -a GATE_CHANGED=()
 GATE_ERR=""
 gate_changed() {
@@ -298,9 +297,21 @@ gate_rows() {
       return 11
     fi
   done
+  # THE UNIVERSALLY-SOURCED FILES ARE SHARED EVEN WHEN ROWS MUTATE THEM. Subtracting every row
+  # target from the declared inputs removes `scripts/lib/common.sh` — which rows do mutate, and
+  # which every other target SOURCES — so a change to it would run only its own rows and gate the
+  # `bin/baseline` and `install.sh` rows whose blocks execute it. That is not the bounded
+  # approximation this gate accepts; it is systematic, because these files are under everything.
+  # The set is not a table this file invented: `check-mutation-gate.sh` already pins that every
+  # `*-mutation` step declares its own harness, `scripts/check-lib.sh` and `scripts/lib/common.sh`
+  # — "the two files every harness sources" — so it is that pinned fact, read here.
+  local -a always=("$suite" "scripts/check-lib.sh" "scripts/lib/common.sh")
   for q in "${inarr[@]}"; do
     is_target=0
     for p in "${targets[@]+"${targets[@]}"}"; do [ "$q" = "$p" ] && is_target=1 && break; done
+    if [ "$is_target" -eq 1 ]; then
+      for p in "${always[@]}"; do [ "$q" = "$p" ] && is_target=0 && break; done
+    fi
     [ "$is_target" -eq 0 ] && sharedarr+=("$q")
   done
   shared="$(printf '%s, ' "${sharedarr[@]+"${sharedarr[@]}"}")"; shared="${shared%, }"

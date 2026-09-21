@@ -1368,33 +1368,17 @@ adb_claude_settings_receipt_leaves() {
   # leaves and deleted the receipt, and every matching sandbox key stayed installed with nothing
   # recording it. (PR review)
   _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-leaves
-  # ONE jq FOR THE WHOLE RECEIPT, not two or three per row (#471). The loop this replaced spent
-  # ~6 ms of process startup per predicate, and the suites drive it hundreds of times per run; the
-  # filter below is the same three tests in the same order, moved inside one process. Every rule it
-  # encodes was paid for:
-  #
-  #   * `length > 0` IS LOAD-BEARING: `all(.[]; …)` is vacuously TRUE for an empty array, so a
-  #     hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as ownership of the
-  #     JSON ROOT, and `delpaths([[]])` replaced the entire settings document with `null`.
-  #   * A ROW THE PREDICATE REJECTS IS SKIPPED (`select`); A ROW IT CANNOT EVALUATE REFUSES THE
-  #     WHOLE READ (`error`, which leaves jq non-zero and is caught below). `jq -e` spelled that as
-  #     1-versus-5 per row; here it is `select` versus `error`, and conflating them once already
-  #     dropped a perfectly good row, so the merge owned fewer leaves and uninstall left the live
-  #     key in place while deleting the receipt.
-  #   * THE VALUE IS PARSED, NOT TESTED FOR TRUTH. Decoding it and testing IT makes a legitimate
-  #     `false` or `null` leaf indistinguishable from a malformed row — probed on jq-1.7.1,
-  #     `printf false | jq -e .` exits 1 exactly like a rejected row. Parsing it and discarding the
-  #     result keeps "is this JSON at all" as the only question asked. (PR review)
-  #   * THE PATH IS CHECKED BEFORE THE VALUE, as the loop did: a row whose path fails the predicate
-  #     is skipped without the value ever being looked at.
-  #
-  # `-n` WITH `[inputs][]` IS LOAD-BEARING, and buys two separate things. Without BOTH, jq
-  # evaluates the program once PER INPUT LINE and its exit status reports only the LAST one —
-  # probed on jq-1.7.1: `printf 'a\nb\n' | jq -R -r 'if . == "a" then error("boom") else . end'`
-  # prints the error to stderr and still exits **0**, so an unparseable row followed by a good row
-  # is swallowed exactly as the conflated `|| continue` spelling swallowed it. And without `-n`
-  # alone, the FIRST line arrives as `.` rather than through `inputs`, so a receipt that opens with
-  # a row instead of a header silently loses that row. Both are asserted, each on its own witness.
+  # ONE jq FOR THE WHOLE RECEIPT, not two or three per row (#471). Same three tests, same order.
+  # Four rules, each load-bearing:
+  #   * `-n` with `[inputs][]` — without BOTH, jq evaluates once per input line and its status
+  #     reports only the LAST, so an unparseable row followed by a good one is swallowed; without
+  #     `-n` alone the first line never reaches `inputs`. D110.
+  #   * `length > 0` — `all(.[]; …)` is vacuously true for `[]`, and `delpaths([[]])` replaces the
+  #     whole settings document with `null`.
+  #   * `select` for a row the predicate REJECTS, `error` for one it cannot EVALUATE: the first is
+  #     skipped, the second refuses the whole read.
+  #   * the value is PARSED and discarded, never tested for truth — `false` and `null` are legal
+  #     leaf values, and `jq -e .` exits 1 on both, exactly like a rejected row.
   _jrows="$(printf '%s\n' "$_rbody" | jq -R -n -r '[inputs][]   # leaf-one-evaluation
       | select(startswith("leaf\t"))
       | ltrimstr("leaf\t") as $rest

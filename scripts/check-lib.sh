@@ -646,7 +646,7 @@ check_mutation_rows() {
   local label="$1" wd="$2" suite="$3" prep="$4" run="$5" cap="$6"
   local n i j pool running=0 errs=0 cnt rc b bi text wit full=0 root blocks=" " nblocks=0
   local applied=0 red=0 scored=0 verdict why
-  local gate_out gate_rc gate_line gi gd gated=0 gated_tgts=""
+  local gate_out gate_rc gate_line gi gd gate_bad=0 gated=0 gated_tgts=""
   local -a gate_dec=()
   n="${#CHECK_ROW_NAMES[@]}"
   if [ "$n" -eq 0 ]; then bad "$label --mutation: the row table is EMPTY — this harness proves nothing"; return 1; fi
@@ -723,11 +723,18 @@ check_mutation_rows() {
     0)
       # PARSED, NOT TRUSTED: a decision this function cannot read is a broken gate, and running the
       # table is the only answer that cannot lose coverage. It is said out loud either way.
-      while IFS="$(printf '\t')" read -r gi gd; do
-        case "$gi" in ''|*[!0-9]*) continue ;; esac
-        [ "$gi" -lt "$n" ] || continue
-        case "$gd" in run|skip) gate_dec[$gi]="$gd" ;; *) gate_dec[$gi]="" ;; esac
+      # EXACTLY ONCE PER INDEX, and no line outside the grammar. Ignoring a malformed extra line,
+      # an out-of-range id or a duplicate let a reply that was partly corrupt still gate every row
+      # — the opposite of what the comment above claims. Anything unexpected voids the whole reply.
+      gate_bad=0
+      while IFS="$(printf '\t')" read -r gi gd || [ -n "$gi" ]; do
+        [ -n "$gi" ] || continue
+        case "$gi" in *[!0-9]*) gate_bad=1; break ;; esac
+        [ "$gi" -lt "$n" ] || { gate_bad=1; break ; }
+        [ -z "${gate_dec[$gi]}" ] || { gate_bad=1; break ; }   # answered twice
+        case "$gd" in run|skip) gate_dec[$gi]="$gd" ;; *) gate_bad=1; break ;; esac
       done <<< "$(printf '%s\n' "$gate_out" | tail -n +2)"
+      if [ "$gate_bad" -eq 1 ]; then for (( i = 0; i < n; i++ )); do gate_dec[$i]=""; done; fi
       for (( i = 0; i < n; i++ )); do
         if [ -z "${gate_dec[$i]}" ]; then
           printf '%s --mutation: NOTE — the row gate returned no usable decision for row %s; every row runs (fail-closed)\n' "$label" "$i"
@@ -909,31 +916,28 @@ check_mkdir_shim() {
 }
 
 # check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
-# creating it, and NEVER copying `.git`. The ONE home for the throwaway-tree-copy move, now that
-# several suites need it: a fourth open-coded copy is how the "faithful copier" details drift.
-# `cp -RP` of each top-level entry is deliberate, and the `-P` is not decoration: the old form's
-# symlinks were all ENCOUNTERED DURING TRAVERSAL of `.`, where POSIX says `-R` alone preserves
-# them, while an entry named directly is a command-line OPERAND, a case `-H` and `-L` exist to
-# change. GNU's manual documents `-H` as following a link that "is a command-line argument", so
-# the default already preserves it on both platforms — and a default observed on one machine is
-# not a contract (`third-party-default`), so it is stated rather than inherited. Modes survive as
-# before. `git ls-files | cp` is deliberately NOT used: it needs `-z`, per-file `mkdir -p`, and a
-# policy for tracked-but-deleted paths, and it silently misses anything uncommitted — which is the
-# whole reason these suites copy the tree instead of cloning HEAD. The same rules out
-# `git worktree add` and `git archive`: both serve a COMMIT, both leave the copy a repository, and
-# `git worktree` writes admin state into the tracked repo every suite here promises not to touch.
+# creating it, and NEVER copying `.git`. The ONE home for the throwaway-tree-copy move.
 #
-# THE ENTRY LOOP IS THE MECHANISM, not tidiness. This used to be `cp -R .` followed by
-# `rm -rf "$2/.git"`, which copied the repository's whole history and deleted it on arrival: `.git`
-# is the majority of this tree by bytes, and a mutation harness pays the copy once per row. The
-# `rm` is GONE rather than kept as a belt: a second defence that cleans up after a broken skip
-# would make the skip unobservable, and one mechanism that can be seen failing beats two that
-# cannot. `./$e`, so an entry whose name begins with `-` arrives as a path and not as an option.
+# Contract:
+#   * the copy carries UNCOMMITTED and UNTRACKED content — several suites exist to test the code
+#     you just edited, not the code at HEAD;
+#   * <src> need not be a repository at all (`check-fact-drift.sh` copies its own pristine copy);
+#   * the result is NOT a git repo, so code under test that shells out to git must tolerate that.
+#     A <dest> that already contains `.git` is refused rather than cleaned up;
+#   * a failure returns non-zero WITHOUT exiting, so a `set -u` caller can guard it.
 #
-# The copy is therefore NOT a git repo: code under test that shells out to git must tolerate that.
-# Returns non-zero WITHOUT exiting so a `set -u` caller can guard it.
+# `cp -RP` per top-level entry. The `-P` is load-bearing and not decoration: the entries are named
+# as command-line OPERANDS, which is the case `-H`/`-L` exist to change, where the old `cp -R .`
+# met every symlink during TRAVERSAL. Both preserve links by default; this pins it.
+# Why `.git` is skipped rather than copied-then-deleted, and why `git worktree`, `git archive` and
+# `git ls-files` are each rejected: D107.
 check_copy_worktree() {
   mkdir -p "$2" || return 1
+  # REFUSED, not cleaned up. The old `rm -rf "$2/.git"` made the not-a-repository contract hold
+  # for a destination that already held one; deleting a `.git` this function did not create is a
+  # worse answer than declining. Checked BEFORE the copy, so it can never mask a broken skip —
+  # that failure puts `.git` there afterwards, where the suite's own assertion catches it.
+  [ ! -e "$2/.git" ] || { printf 'check_copy_worktree: %s already contains .git — refusing to copy into a destination that is already a repository\n' "$2" >&2; return 1; }
   ( cd "$1" || exit 1
     for e in .* *; do
       case "$e" in .|..|.git) continue ;; esac

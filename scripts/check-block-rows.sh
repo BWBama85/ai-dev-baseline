@@ -107,6 +107,8 @@ case "${ADB_T_GATE:-}" in
   runall12) echo "RUN-ALL: stub — override";    for i in "${ids[@]}"; do echo "$i	run"; done; exit 12 ;;
   garbage)  echo "GATED: stub — unreadable";    for i in "${ids[@]}"; do echo "$i	maybe"; done; exit 0 ;;
   short)    echo "GATED: stub — short";         for i in "${ids[@]:1}"; do echo "$i	run"; done; exit 0 ;;
+  dup)      echo "GATED: stub — duplicate id";  for i in "${ids[@]}"; do echo "$i	skip"; done; echo "${ids[0]}	skip"; exit 0 ;;
+  oor)      echo "GATED: stub — out of range";  for i in "${ids[@]}"; do echo "$i	skip"; done; echo "99	skip"; exit 0 ;;
   crash)    echo "stub gate: exploded" >&2; exit 9 ;;
 esac
 skip=",${ADB_T_GATE_SKIP:-},"
@@ -332,6 +334,14 @@ rows g-say "$three" ADB_T_GATE=garbage
 has "$out" "the row gate returned no usable decision" "an unreadable decision is named"
 rows g-missing "$three" ADB_T_GATE=short
 has "$out" "the row gate returned no usable decision for row 0" "a MISSING decision is named, and says which row owed it"
+# ...and a reply that is partly WELL-FORMED is not partly believed: a duplicate id, an id out of
+# range, or an unreadable decision voids the whole reply, or a corrupt answer carrying a full set
+# of `skip`s would still gate everything. Reported by the declared reviewer.
+for _g in dup oor; do
+  rows "g-$_g" "$three" "ADB_T_GATE=$_g" "ADB_T_GATE_SKIP=0,1,2"
+  has "$out" "3/3 mutation(s) applied, 3 observed RED" "a '$_g' reply gates nothing, despite carrying a full set of skips"
+  has "$out" "the row gate returned no usable decision" "…and says the reply was unusable"
+done
 
 # --- 8. check_copy_worktree: the working tree, never `.git` (#469) --------------------------------
 #
@@ -371,6 +381,14 @@ git -C "$cw/dst" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 [ -x "$cw/dst/exec.sh" ] && ok || bad "the executable mode must survive the copy"
 [ -L "$cw/dst/link" ] && ok || bad "a symlink must stay a symlink"
 cmp -s "$cw/src/plain.txt" "$cw/dst/plain.txt" && ok || bad "the copied bytes must match"
+
+# A DESTINATION THAT IS ALREADY A REPOSITORY IS REFUSED, not cleaned up: the contract says the
+# result is not a git repo, and the old `rm -rf "$dst/.git"` used to make that hold here too.
+mkdir -p "$cw/dirty-dst"
+check_git "$cw/dirty-dst" init -q 2>/dev/null || git -C "$cw/dirty-dst" init -q
+check_copy_worktree "$cw/src" "$cw/dirty-dst" 2>/dev/null; [ "$?" -ne 0 ] && ok \
+  || bad "a destination that already contains .git must be REFUSED — the copier must never delete a repository it did not create"
+[ -e "$cw/dirty-dst/.git" ] && ok || bad "...and the refusal must leave that .git alone"
 
 # An EMPTY source is a copy of nothing, not a failure: `.* *` leaves a literal `*` behind when the
 # glob matches nothing, and an unguarded loop would try to copy it and return 1.

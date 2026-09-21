@@ -1044,14 +1044,16 @@ awk '/^_adb_report_settings\(\)/{f=1}
      f && /if ! names="\$\(printf/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the bucket reporter must distinguish an empty bucket from a failed read — on the refusal path its `kept` line is the last thing that ever names an edited obsolete key"
-# THE ROW PREDICATES, ASSERTED BEHAVIOURALLY (#471). This was two greps — a count of three
-# `case $? in 0) ;; 1) continue ;; *) return 20 ;; esac` predicates and a count of zero bare
-# `|| continue` spellings — and both pinned a SPELLING that the per-row `jq -e` loop had. The
-# readers now ask one jq for the whole receipt, so neither string can occur: as greps they would
-# be guards that scan nothing and report exactly what a clean run reports. What they stood for is
-# the semantics, so the semantics is what is checked here, on both readers and in both
-# directions. That is strictly stronger — a spelling pin cannot see a rewrite that keeps the
-# spelling and breaks the meaning.
+# THE ROW PREDICATES, ASSERTED BEHAVIOURALLY (#471). This was two greps — a count of THREE
+# `case $? in 0) ;; 1) continue ;; *) return 20 ;; esac` predicates and a count of ZERO bare
+# `|| continue` spellings — and both pinned a SPELLING the per-row `jq -e` loop had. The readers
+# now ask one jq for the whole receipt, so neither string can occur, and the two greps fail in
+# OPPOSITE ways: the count-of-three would go red (0 != 3) and send the reader to look for a
+# predicate that no longer exists, while the count-of-zero would go green forever, scanning for a
+# string nothing can write. Neither is a check of the property. What they stood for is the
+# semantics, so the semantics is what is checked here, on both readers and in both directions —
+# strictly stronger, because a spelling pin cannot see a rewrite that keeps the spelling and
+# breaks the meaning.
 _rp="$work/rowpred"; rm -rf "$_rp"; mkdir -p "$_rp"
 # A row the predicate REJECTS is skipped, and the rows around it survive.
 printf 'disposition\tinstalled\nleaf\t["sandbox",1]\ttrue\nleaf\t["sandbox","enabled"]\ttrue\n' > "$_rp/r"
@@ -1087,6 +1089,21 @@ printf 'container\t["first"]\ncontainer\t["second"]\n' > "$_rp/r"
 _rpout="$(adb_claude_settings_receipt_containers "$_rp/r")"; _rprc=$?
 [ "$_rprc" -eq 0 ] && [ "$(printf '%s\n' "$_rpout" | wc -l | tr -d ' ')" = 2 ] && ok \
   || bad "a container row on the receipt's FIRST line must be read even as the first line (rc $_rprc)"
+
+# A FIELD HOLDING TWO JSON VALUES IS REFUSED, NOT SKIPPED (#471, D110). The per-row `jq -e` form
+# fed each field to jq as a STREAM, so `["a"] []` was two values and the predicate's verdict was
+# the LAST one — and a leaf VALUE of `true false` was accepted outright, recording a row whose
+# value no reader can reproduce. `fromjson` takes one value, so both now refuse the read. This is
+# a behaviour change on malformed input and is deliberate: a field we cannot read as one value is
+# one we cannot prove we own.
+printf 'disposition\tinstalled\ncontainer\t["a"] []\ncontainer\t["ok"]\n' > "$_rp/r"
+adb_claude_settings_receipt_containers "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a container path holding TWO JSON values must refuse the read (20) — as a stream its verdict was the last value's, which is not a verdict on the row (rc $_rprc)"
+printf 'disposition\tinstalled\nleaf\t["a"]\ttrue false\n' > "$_rp/r"
+adb_claude_settings_receipt_leaves "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a leaf VALUE holding two JSON values must refuse the read (20) — it used to be ACCEPTED, recording ownership of a value no reader can reproduce (rc $_rprc)"
 
 # A REFUSED READ EMITS NO ROWS AT ALL. The per-row loop printed each good row as it went, so a
 # refusal that fired on row 5 still left rows 1-4 on stdout — a truncated answer beside a failure
