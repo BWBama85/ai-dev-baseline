@@ -982,6 +982,10 @@ statbin="$work/statbin"; mkdir -p "$statbin"
 # A GNU-flavored stat: -c works; -f prints a multi-line report to STDOUT and fails.
 cat > "$statbin/stat" <<'SH'
 #!/usr/bin/env bash
+# `-L` is consumed the way a real stat consumes it: adb_mtime dereferences, so a stub that did not
+# accept the flag would fail the call for a reason that has nothing to do with the flavour split
+# this case exists to test.
+[ "$1" = "-L" ] && shift
 case "$1" in
   -c) printf '1700000000\n' ;;
   -f) printf 'stat: cannot read file system information\n  File: "x"\n    ID: 1 Namelen: 255\n'; exit 1 ;;
@@ -992,6 +996,7 @@ eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "1700000000" "adb_mtime: GNU-f
 # A BSD-flavored stat: -c is rejected outright; -f is the one that works.
 cat > "$statbin/stat" <<'SH'
 #!/usr/bin/env bash
+[ "$1" = "-L" ] && shift
 case "$1" in
   -c) printf 'stat: illegal option -- c\n' >&2; exit 1 ;;
   -f) printf '1700000001\n' ;;

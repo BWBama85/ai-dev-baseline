@@ -183,6 +183,10 @@ if [ "$MODE" = mutation ]; then
     'forces every harness'
   # Two leading spaces: the header comment mentions `schedule:` too, and the FIRST hit is the one
   # that is edited — the trigger line is the only one indented exactly so.
+  check_mut nightly-per-block \
+    "ADB_MUTATION_FULL_SUITE: '1'" \
+    "ADB_MUTATION_FULL_SUITE: '0'" \
+    'runs every mutant against the full suite'
   check_mut nightly-unscheduled \
     '  schedule:' \
     '  schedul3:' \
@@ -488,6 +492,9 @@ NIGHTLY="$ROOT/.github/workflows/mutation-nightly.yml"
 [ -f "$NIGHTLY" ] && ok || bad "the scheduled workflow $NIGHTLY is missing"
 if [ -f "$NIGHTLY" ]; then
   has "$(cat "$NIGHTLY")" "ADB_MUTATION_RUN_ALL: '1'" "the scheduled workflow forces every harness (ADB_MUTATION_RUN_ALL)"
+  # Per-PR runs score a per-test row against its own block (#468); the schedule is the one run that
+  # scores every row against the whole suite, which is what catches a block that under-declares.
+  has "$(cat "$NIGHTLY")" "ADB_MUTATION_FULL_SUITE: '1'" "the scheduled workflow runs every mutant against the full suite (ADB_MUTATION_FULL_SUITE)"
   grep -qE '^[[:space:]]*schedule:' "$NIGHTLY" && ok || bad "the scheduled workflow has no schedule: trigger"
   grep -qE '^[[:space:]]*pull_request' "$NIGHTLY" && bad "the scheduled workflow must not carry a pull_request trigger (it would become a discoverable required context)" || ok
   # THE MATRIX ITSELF — `strategy.matrix.step` by indentation — not every `- name` in the file: a

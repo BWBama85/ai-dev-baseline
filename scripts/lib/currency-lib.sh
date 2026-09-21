@@ -34,6 +34,8 @@
 #   silent    nothing happened worth reporting (already current)      message empty
 #   updated   the clone advanced; installed payload changed
 #   repaired  same HEAD, but a broken installed link was restored
+#             (a same-HEAD run whose only pending item was the sandbox settings, and whose
+#              settings the installer REFUSED, reports `refused` instead — nothing was applied)
 #   behind    notify mode: the clone IS behind and was left alone
 #   refused   `baseline` refused for safety; message names the clone state
 #   offline   the remote was unreachable / unresolvable
@@ -363,6 +365,47 @@ cmd_check() {
       # A same-HEAD repair: already current, but a broken installed link was restored. HEAD did
       # not move, so a caller inferring "something changed" from the delta would miss it entirely.
       _adb_cu_emit repaired "repaired the installed links (clone already current)."
+      ;;
+    7)
+      # The SANDBOX SETTINGS were pending and the installer refused them, because the operator
+      # already owns one of the shipped keys. Nothing of the policy was applied, so this is neither
+      # `repaired` nor `silent`; reporting either would hide a security-relevant refusal behind a
+      # success line, which is the whole reason this arm exists rather than letting 7 fall through
+      # to `failed` and be described as a failure it is not.
+      #
+      # It is emitted whatever ELSE the run did. A repair or a pull in the same run may well have
+      # succeeded — the message says so — because gating the refusal on "nothing else happened"
+      # is what made it vanish exactly when something else had gone wrong too.
+      _adb_cu_emit refused \
+        "the least-privilege sandbox settings were refused — you already own one of the keys they ship; run './install.sh' in the install-source to see which. Any clone update or link repair in the same run DID complete."
+      ;;
+    8)
+      # The settings were pending because ownership rows had DIVERGED under a skip or an opt-out,
+      # and the visit relinquished them without applying any policy key. Something changed — the
+      # ownership record — so this is not `silent`; no link and no setting was repaired, so it is
+      # not the plain `repaired` line either, and saying so is the whole point of the distinct code.
+      _adb_cu_emit repaired "relinquished stale sandbox ownership rows; no link or setting was changed."
+      ;;
+    9)
+      # The CLI stopped clearing the version floor, or stopped being probeable, while the keys it
+      # applied are still owned and still in the file. Nothing was relinquished and nothing was
+      # repaired — what changed is that the protections are no longer being applied, which is the
+      # security-relevant half and the one the installer's own warning would have carried if this
+      # flow did not suppress it.
+      # THE PROMISE MUST HOLD IN BOTH CASES, because this wrapper cannot tell them apart. When a
+      # downgrade coincides with an edited or deleted owned leaf the self-heal ALSO drops every
+      # ownership row, so the keys still in the file are no longer ours: upgrading does not
+      # re-apply them and an all-or-nothing install refuses while they are there. An unconditional
+      # "upgrade and they come back" is therefore false in that case.
+      #
+      # It is not detectable from here, and deliberately so: step 8 runs `baseline update` with its
+      # output discarded and reads the outcome from the EXIT CODE, never by parsing prose — "prose
+      # is free to change, the contract is not". Distinguishing the two would need its own exit
+      # code, which is a contract change every consumer inherits. The message covers both instead:
+      # upgrade, and if the keys survive that, they are unowned and must be removed by hand.
+      # (PR review)
+      _adb_cu_emit refused \
+        "the sandbox protections are NOT being applied — the 'claude' CLI no longer clears the version floor or could not be probed. Upgrade it; if the sandbox keys are still in settings.json afterwards they are no longer owned, so remove them by hand and re-run './install.sh'."
       ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \

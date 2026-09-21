@@ -29,6 +29,8 @@ permissions:
 env:
   # The whole point of this file: the gate is overridden and every harness runs.
   ADB_MUTATION_RUN_ALL: '1'
+  # ...and every per-test row is scored against the WHOLE suite, not only its declared block (#468).
+  ADB_MUTATION_FULL_SUITE: '1'
 
 jobs:
   mutation-nightly:
@@ -36,10 +38,10 @@ jobs:
     runs-on: ubuntu-26.04
     # UPSTREAM ONLY, as `wsl-smoke.yml`: a fork that enables Actions would otherwise run this daily.
     if: github.repository == 'BWBama85/ai-dev-baseline'
-    # Sized for the largest harness on a hosted runner (`pattern-ledger-mutation`: 37m25s on run
-    # 32923514377), not for the median. A job that times out is a red that says nothing about the
-    # harness, which is the class of defect #394 is about.
-    timeout-minutes: 60
+    # Sized for the largest harness on a hosted runner, not for the median: full-suite
+    # `settings-fragment-mutation` took 160 minutes for 230 rows in `install-guard` (D101). A job
+    # that times out is a red that says nothing about the harness, the class of defect #394 is about.
+    timeout-minutes: 240
     strategy:
       # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
       # the others were about to give.
@@ -58,6 +60,7 @@ jobs:
           - selfcheck-guard-mutation
           - mutation-gate-mutation
           - session-context-mutation
+          - settings-fragment-mutation
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

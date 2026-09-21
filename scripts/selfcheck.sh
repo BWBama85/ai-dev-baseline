@@ -532,6 +532,11 @@ add common-lib          bash scripts/check-common-lib.sh
 add common-lib-mutation bash scripts/check-common-lib.sh --mutation
 inputs common-lib-mutation      scripts/check-common-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/role-dispatch.sh install.sh uninstall.sh bin/agent-init bin/baseline
 
+# The shared mutation harness's blocks and per-test rows (#468): selection and its dependency closure,
+# every declaration refusal, preflight before any copy is built, each block's unmutated control, and
+# the verdict taxonomy, all driven over a throwaway fixture suite.
+add block-rows          bash scripts/check-block-rows.sh
+
 # Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
 # untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
 add agent-init          bash scripts/check-agent-init.sh
@@ -761,6 +766,19 @@ add session-context     bash scripts/check-session-context.sh
 # the injected fields, the REQUIRED count, and the workflow snippet's history append.
 add session-context-mutation bash scripts/check-session-context.sh --mutation
 inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md
+
+# The installer's SECOND settings surface (#248): which leaves of ~/.claude/settings.json does it
+# own, and what does it do to one it does not? Drives the merge's five verdicts, the receipt's four
+# dispositions, the version probe against a stub CLI, and the real install.sh/uninstall.sh over a
+# fake HOME.
+add settings-fragment   bash scripts/check-settings-fragment.sh
+
+# ...and every one of those rules is a guard over a file the operator also writes, so the failure
+# mode is a settings.json that looks right and has quietly eaten somebody's own key. Each rule is
+# broken in a COPY — of the library, of the payload, of install.sh — and required RED on its own
+# witness.
+add settings-fragment-mutation bash scripts/check-settings-fragment.sh --mutation
+inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
