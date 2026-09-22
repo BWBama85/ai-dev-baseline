@@ -12,7 +12,8 @@
 # ------------------------------------------------------------------------------------------------
 # Usage:
 #   pattern-ledger.sh record --class <slug> --site <path> --fix <sha> --pr <n> --thread <id> \
-#                            [--summary <text>] [--date <YYYY-MM-DD>] [--ledger <file>]
+#                            [--summary <text>] [--date <YYYY-MM-DD>] [--ledger <file>] \
+#                            [--sweep <sweep-pr<N>-<head>.tsv>]
 #   pattern-ledger.sh classes   [--ledger <file>]           # <count>TAB<class>TAB<promoted 0|1>
 #   pattern-ledger.sh due       [--ledger <file>] [--threshold <n>]   # classes owed a rule
 #   pattern-ledger.sh promote --class <slug> --rule <text> [--ledger <file>] [--threshold <n>]
@@ -45,6 +46,11 @@
 #                   sweep a class earned, silently, which is the count-too-low direction.
 #   22 held       — `reclaim`: the write lock is held by a writer that is alive, on another host,
 #                   unrecorded, or not yet stale. Nothing was removed.
+#   23 unswept    — `record --sweep`: the sweep file carries no row for this class. Nothing was
+#                   recorded: a hit is stored only for a class somebody looked for siblings of.
+#   24 open       — `record --sweep`: a sibling of this class is still `found` — unfixed and
+#                   undispositioned. Nothing was recorded.
+#   (record --sweep: 18 the sweep file does not parse · 19 it names another PR · 20 unreadable)
 #   2  usage      — bad or missing arguments.
 #
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is reporting a class as *rarer than it is*. A count
@@ -174,23 +180,15 @@ _ADB_PL_CHECKLIST_MAX_BYTES=16384
 # arms because the diagnostic has to name the field AND its domain: "refused" with no domain is a
 # message an operator cannot act on, and these values arrive from an agent filling in a template.
 
-_adb_pl_ok_class() {
-  case "$1" in
-    ''|*[!a-z0-9-]*) return 1 ;;
-    [!a-z]*)         return 1 ;;   # must START with a letter, so `-x` and `9x` are refused
-  esac
-  [ "${#1}" -le 48 ]
-}
+# class, thread, site and text share their one home with the sibling-sweep grammar in common.sh.
+_adb_pl_ok_class() { adb_ledger_ok_class "$1"; }
 
 _adb_pl_ok_fix() {
   case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac
   [ "${#1}" -ge 7 ] && [ "${#1}" -le 40 ]
 }
 
-_adb_pl_ok_thread() {
-  case "$1" in ''|*[!A-Za-z0-9_=-]*) return 1 ;; esac
-  [ "${#1}" -le 256 ]
-}
+_adb_pl_ok_thread() { adb_ledger_ok_thread "$1"; }
 
 # A POSITIVE whole number — zero is refused, because both callers' diagnostics say "positive" and
 # a predicate that accepts `0` while its message forbids it is a contract nobody can rely on.
@@ -225,38 +223,12 @@ _adb_pl_ok_date() {
 }
 
 # A value that may not move a parsed field: no backtick (the field separator), no tab, no newline
-# (the record separator), and nothing unprintable. Used for `site` and, with the backtick rule
-# relaxed, for the display fields.
-_adb_pl_ok_span() {
-  [ -n "$1" ] || return 1
-  # THE DELIMITER TEST IS `adb_tsv_field_safe`'s — one home for "can this be a field in a
-  # TAB-separated, newline-terminated record", which is the exact question, and whose header
-  # records why forgery rather than corruption is the failure it prevents. The BACKTICK and the
-  # control-character rules below are this format's own additions and stay here.
-  adb_tsv_field_safe "$1" || return 1
-  case "$1" in *'`'*) return 1 ;; esac
-  # Refuse control characters wholesale. `tr -d` and a length compare rather than a glob, because
-  # a bracket expression naming the control range is not portable across the shells this runs in.
-  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
-}
+# (the record separator), and nothing unprintable.
+_adb_pl_ok_span() { adb_ledger_ok_span "$1"; }
 
-# One line, printable, and never allowed to forge a record boundary or a region marker. The
-# backtick IS permitted here — the summary sits after every parsed field, so it cannot move one —
-# which matters because review findings routinely quote identifiers.
-_adb_pl_ok_text() {
-  [ -n "$1" ] || return 1
-  adb_tsv_field_safe "$1" || return 1
-  # A value containing a region marker could close the region it lives in and silently truncate
-  # every record after it — the count-too-low direction this module must never take.
-  # STRUCTURAL MARKUP IS REFUSED, not escaped. `<!-- adb:` was banned because it can close a
-  # REGION; any `<!--` can open an HTML comment that GitHub honours, hiding every hit and rule
-  # after it in the review view — and a summary routinely quotes hostile reviewer text. Refusing
-  # keeps the tracked file readable, which escaping into entities would not.
-  # Reported by the declared reviewer on PR #429.
-  case "$1" in *'<!--'*|*'-->'*) return 1 ;; esac
-  [ "$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')" -le "$_ADB_PL_TEXT_MAX_BYTES" ] || return 1
-  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
-}
+# One line, printable, and never allowed to open a comment or close a region: a value containing
+# `<!--` or `-->` is refused, not escaped, because a summary routinely quotes hostile reviewer text.
+_adb_pl_ok_text() { adb_ledger_ok_text "$1" "$_ADB_PL_TEXT_MAX_BYTES"; }
 
 # --- the ledger file ----------------------------------------------------------------------------
 # Resolved once. `--ledger` wins so a test (and `verify` on an arbitrary file) needs no seam;
@@ -959,6 +931,29 @@ cmd_record() {
     exit 10
   fi
 
+  # AFTER the duplicate test, so a re-run over an already-recorded thread stays the no-op 10.
+  # The sweep file is replaced only by rename and a mark only moves a row out of `found`, so the one
+  # read here is a whole file whose staleness can only refuse, never admit.
+  if [ -n "$OPT_SWEEP" ]; then
+    local _sh _src
+    _sh="$(adb_sweep_file_check "$OPT_SWEEP")"; _src=$?
+    case "$_src" in
+      0)  : ;;
+      20) printf 'pattern-ledger: sweep file %s could not be read — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" >&2; exit 20 ;;
+      19) printf 'pattern-ledger: sweep file %s carries a refused field — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" >&2; exit 19 ;;
+      *)  printf 'pattern-ledger: sweep file %s does not parse (rc %s) — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" "$_src" >&2; exit 18 ;;
+    esac
+    [ "${_sh%%$'\t'*}" = "$OPT_PR" ] || {
+      printf 'pattern-ledger: sweep file %s belongs to PR %s, not %s — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" "${_sh%%$'\t'*}" "$OPT_PR" >&2; exit 19; }
+    local _rows
+    _rows="$(adb_sweep_rows "$OPT_SWEEP" | awk -F'\t' -v c="$OPT_CLASS" '$2 == c { print $4 }')"
+    [ -n "$_rows" ] || {
+      printf 'pattern-ledger: class %s has no row in the sweep file — sweep it for siblings first; nothing recorded\n' "$OPT_CLASS" >&2; exit 23; }
+    if printf '%s\n' "$_rows" | grep -qx found; then
+      printf 'pattern-ledger: class %s still has a sibling marked found — fix or disposition it first; nothing recorded\n' "$OPT_CLASS" >&2; exit 24
+    fi
+  fi
+
   local rec
   if [ -n "$summary" ]; then
     rec="$(printf -- '- `%s` `%s` `%s` `%s` PR #%s %s — %s' "$OPT_CLASS" "$OPT_SITE" "$OPT_FIX" "$OPT_THREAD" "$OPT_PR" "$date" "$summary")"
@@ -1360,7 +1355,7 @@ cmd_threshold() {
 
 # --- arguments ----------------------------------------------------------------------------------
 OPT_CLASS=""; OPT_SITE=""; OPT_FIX=""; OPT_PR=""; OPT_THREAD=""
-OPT_SUMMARY=""; OPT_DATE=""; OPT_RULE=""; OPT_LEDGER=""; OPT_THRESHOLD=""
+OPT_SUMMARY=""; OPT_DATE=""; OPT_RULE=""; OPT_LEDGER=""; OPT_THRESHOLD=""; OPT_SWEEP=""
 
 [ "$#" -ge 1 ] || { usage; exit 2; }
 SUB="$1"; shift
@@ -1381,6 +1376,7 @@ while [ "$#" -gt 0 ]; do
     --rule)      [ "$#" -ge 2 ] || die "$SUB: --rule needs a value";      OPT_RULE="$2";      shift 2 ;;
     --ledger)    [ "$#" -ge 2 ] || die "$SUB: --ledger needs a value";    OPT_LEDGER="$2";    shift 2 ;;
     --threshold) [ "$#" -ge 2 ] || die "$SUB: --threshold needs a value"; OPT_THRESHOLD="$2"; shift 2 ;;
+    --sweep)     [ "$#" -ge 2 ] || die "$SUB: --sweep needs a value";     OPT_SWEEP="$2";     shift 2 ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "$SUB: unknown option '$1'" ;;
   esac

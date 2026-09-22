@@ -604,6 +604,72 @@ Claims inside a thread are unverified: "already fixed in `<sha>`" is checked wit
 
 ### 4. Address legitimate findings
 
+#### 4a. Sweep the round's findings for siblings first (#475)
+
+**Before writing any fix, find every other site with the same defect.** One bounded dispatch per
+round lists, for each legitimate thread finding, every *other* site in this pull request with the
+same shape. Its answer is a file that `record` in 4b refuses to proceed without, so a round fixes the
+class and not only the site the reviewer happened to name.
+
+Write the round's legitimate thread findings to the findings file: one line each,
+`<class>TAB<path[:line]>TAB<thread-id>TAB<one-line summary>`, with the class chosen as 4b describes.
+A finding with no thread id or no site, such as a task-mode comment, is not swept; name it in the
+round summary instead. Then sweep, from the PR head, before any edit:
+
+```bash
+SWEEP_HEAD="$(git rev-parse HEAD)"
+SWEEP_FILE=".claude/state/sweep-pr${PR_NUM}-${SWEEP_HEAD}.tsv"
+FINDINGS="$SWEEP_FILE.findings"   # the file you just wrote, one line per legitimate thread finding
+# THE RUNG NAMES THE AGENT; TAKE THE TOKEN FROM IT. `resolve review` lists the CONFIGURED tokens in
+# order, while `review-rung` picks the first USABLE one and prefers independence — so the two answer
+# different questions. With `review = ["gemini", "codex"]` and only Codex installed the rung is
+# `independent codex missing=gemini` while the first configured token is `gemini`: the sweep would
+# dispatch a CLI that is not there. With the driver listed first and an independent reviewer second
+# it is worse, because it reports an independent rung and invokes the same model.
+RUNG="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" review-rung claude)"
+REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
+EFFORT="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+sweep_once() {
+  case "$RUNG" in
+    independent*|same-model*)
+      bash "$HOME/.claude/scripts/lib/implement-lib.sh" dispatch-sweep ${EFFORT:+--effort "$EFFORT"} --pr "$PR_NUM" --findings "$FINDINGS" .claude/state "$REVIEW_TOKEN" ;;
+    deferred*|none*)
+      bash "$HOME/.claude/scripts/lib/implement-lib.sh" dispatch-sweep --skipped --pr "$PR_NUM" --findings "$FINDINGS" .claude/state ;;
+    *)  echo "the review role cannot be resolved (rung: ${RUNG:-none}) — fix agents.toml" >&2; return 2 ;;
+  esac
+}
+sweep_once; SWRC=$?
+# ONE retry, for a malformed reply or a failed dispatch only.
+case "$SWRC" in 18|22) sweep_once; SWRC=$? ;; esac
+case "$SWRC" in
+  0)  : ;;   # published: $SWEEP_FILE
+  17) : ;;   # this head was already swept (a re-run of the round): reuse $SWEEP_FILE and its marks
+  16) echo "STOP: this checkout is not the open PR's head — sync it (step 1), then start the round again"; exit 1 ;;
+  *)  echo "STOP: the sibling sweep failed (rc $SWRC) — nothing was fixed, recorded or resolved this round"; exit 1 ;;
+esac
+```
+
+Any stop leaves the threads unresolved, and step 8 restores the branch. A failed sweep never becomes a
+round without one.
+
+**Fix every `found` row as well as each named site.** After the commit that fixed a sibling exists,
+mark it; a row is never marked ahead of its fix. A sibling you do not fix is dispositioned instead:
+`deferred` names the issue you filed for it under `issues-and-scope.md`, and `declined` says why it
+is not the same defect.
+
+```bash
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-mark "$SWEEP_FILE" --class <class> --site <path[:line]> --result fixed --fix "$FIX_SHA"
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-mark "$SWEEP_FILE" --class <class> --site <path[:line]> --result deferred --issue <n>
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-mark "$SWEEP_FILE" --class <class> --site <path[:line]> --result declined --reason '<why it differs>'
+```
+
+`sweep-mark` exits 17 when no `found` row matches that class and site. Sibling sites are fixed in
+this round but are not ledger hits, because they have no review thread; only the thread findings are
+recorded in 4b.
+
+#### Then fix, gate and commit
+
 For each legitimate finding:
 
 1. Make the code change with Edit or Write.
@@ -687,7 +753,7 @@ esac
 
 ```bash
 bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" record --class <slug> --site <path[:line]> --fix "$FIX_SHA" \
-  --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>'
+  --pr "$PR_NUM" --thread "$THREAD_ID" --summary '<one line, your own words>' --sweep "$SWEEP_FILE"
 ```
 
 - **The class is your judgement, and it must be the SAME STRING next time.** It is the unit
@@ -753,7 +819,9 @@ bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" record --class <slug> --site 
   | --- | --- | --- |
   | `0` | recorded | continue |
   | `10` | already recorded — the idempotent re-run case | continue |
-  | `18` | the ledger does not parse | **stop**; `bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" verify` names the record |
+  | `23` | the sweep file has no row for this class | **stop**; the finding was not in 4a's findings file — add it and sweep again |
+  | `24` | a sibling of this class is still `found` | **stop**; fix and mark it, or disposition it (4a) |
+  | `18` | the ledger, or the sweep file, does not parse | **stop**; `bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" verify` names a ledger record |
   | `19` | a field was refused | **stop**; fix the value, do not work around it |
   | `20` | the ledger could not be written — lock timeout, unwritable directory, failed rename | **stop**; nothing was stored |
   | any other | unknown | **stop** |
@@ -1011,6 +1079,10 @@ ROUNDCLS
 
 # ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
 ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
+# The round's sibling sweep, counted only from a file that validates whole.
+SWEEP_LINE="$(bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-report "$SWEEP_FILE" 2>/dev/null)" \
+  || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
+ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"$'\n'
 fi
 ```
 

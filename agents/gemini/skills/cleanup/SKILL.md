@@ -1053,6 +1053,13 @@ while IFS="$TABC" read -r kind sfile key ident; do
       # collapse survives — `threads-{41,47,51}.json [PR merged]` rather than three separate pieces.
       sweep_file "$sfile" "$ident" "PR $PRST"
       ;;
+    sweep)
+      # A resolver round's sibling sweep (#475): PR-scoped like `threads`, with the same captured proof.
+      PRST="$(pr_state "$key")"
+      WV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict sweep "$PRST")" || continue
+      [ "$WV" = stale ] || continue
+      sweep_file "$sfile" "$ident" "PR $PRST"
+      ;;
   esac
 done <<EOF
 $SCAN

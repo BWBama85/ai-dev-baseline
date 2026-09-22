@@ -18,7 +18,7 @@ who executes each step moves.
 imposes. A role only takes effect where some workflow explicitly resolves it
 (via `role-dispatch.sh`, below). Today `/implement-issue` consumes
 `survey` + `gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
-`[reviewers]` bot allowlist. `debug`, `issue_author`, and `release` are
+`[reviewers]` bot allowlist plus `review`'s first slot, for each round's sibling sweep (#475). `debug`, `issue_author`, and `release` are
 **declared but not yet consumed** by any shipped workflow — they resolve
 correctly and are there for your own skills to honor. This matters most for
 `release`, which the baseline never implements at all (see below): a

@@ -10,6 +10,25 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **Every resolver round sweeps for the siblings of what the reviewer found, and the ledger will not
+  record a hit without that sweep (#475, a slice of #465).** A review round used to fix the one site
+  a finding named, so the next round named the next sibling. About a third of findings on the large
+  PRs measured in #465 cited an earlier fix. D99 records that the prose rule to grep for the class
+  was loaded, quoted, and did not change the outcome.
+
+  `/resolve-pr-threads` step 4a writes the round's thread findings to a file. `implement-lib.sh
+  dispatch-sweep` then sends them, enveloped as untrusted text, with the pull request's diff to the
+  `review` role's first slot in one bounded call. The base branch is fetched first, so the diff never
+  comes from a stale merge base. The answer is refused whole unless every line is exactly four
+  TAB-separated fields in the grammar and every class is answered; CRLF endings, blank lines and
+  code-fence lines are ignored. It is published create-only as `sweep-pr<N>-<head>.tsv`, bound to the
+  open PR's head, so a re-run reuses the marks rather than replacing them. Each sibling is fixed and marked with `sweep-mark`, only once its fix
+  commit is on the branch, or dispositioned as deferred (with an issue) or declined (with a reason).
+
+  `pattern-ledger.sh record --sweep` refuses a hit whose class has no row (23), or whose sibling is
+  still `found` (24). The grammar and the ledger's field rules now have one home in `common.sh`.
+  `/cleanup` sweeps these files by PR state, like the thread cache. The round summary gains one line
+  counting classes, siblings found, and how each ended.
 - **The installer can write settings that are not hooks, and the first thing it writes with it is
   least privilege (#248).** `install.sh` could reach `~/.claude/settings.json` only under `.hooks`
   — `wire_hooks` nests every top-level group of `agents/claude/settings.hooks.json` beneath it, so

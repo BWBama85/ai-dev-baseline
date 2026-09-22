@@ -227,7 +227,8 @@ A repo overrides any subset by dropping its own `agents.toml`
 ## Review: in-session agents vs. async external bots
 
 The `review` role lists **in-session** reviewers — agent tokens invoked via their CLI while the
-run is live. A repo may *also* be reviewed by an **async external bot**: a GitHub App that posts
+run is live. `/resolve-pr-threads` also dispatches its first slot once per round, with its effort,
+for the sibling sweep (#475). A slot whose rung is `deferred` or `none` records the sweep as skipped. A repo may *also* be reviewed by an **async external bot**: a GitHub App that posts
 review threads *after* the PR opens (e.g. the Codex connector `chatgpt-codex-connector`, or a
 `…[bot]` reviewer). That is a different kind of reviewer — no CLI to invoke, it arrives later and
 is cleared by `/resolve-pr-threads` — so it has its own manifest home, `[reviewers]`:
