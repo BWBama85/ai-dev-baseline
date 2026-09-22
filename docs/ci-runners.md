@@ -319,6 +319,16 @@ notifications enabled, a user setting this repository cannot read. GitHub docume
 `schedule` may be delayed or dropped under load, so this is a daily *attempt*, not a guarantee.
 It also sets `ADB_MUTATION_FULL_SUITE=1`, so a harness built on per-test rows (#468, D103) scores
 every row against the whole suite there, where a pull request scores it against its own block.
+
+That daily re-run is what makes the **per-row** gate (#470, D108) tolerable — a detection
+opportunity rather than a bound, for the reason stated just above: a `schedule` may be delayed or
+dropped, so nothing here guarantees when a wrongly-gated row is noticed. A row is
+gated when the change touches neither the file that row mutates nor any declared input no row
+targets; `ADB_MUTATION_RUN_ALL=1` turns it off, so the nightly runs every row of every harness.
+The residual imprecision is named rather than denied: a row whose block *executes* another row's
+target can have its verdict changed by a diff that gates it out, and the nightly is the only thing
+that catches it. `ADB_MUTATION_FULL_SUITE` governs breadth per mutant and the gate governs which
+mutants — they are independent, and the nightly turns gating off with `RUN_ALL`, not with this.
 `scripts/check-mutation-gate.sh` pins the wiring — every `--mutation` line in `ci.yml` gated, the
 nightly matrix equal to the registry, every declared input a path that exists — and its
 `--mutation` mode breaks every gate rule whose failure is a wrong SKIP in a copy — and un-gates a

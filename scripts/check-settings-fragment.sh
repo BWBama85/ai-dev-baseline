@@ -1044,13 +1044,81 @@ awk '/^_adb_report_settings\(\)/{f=1}
      f && /if ! names="\$\(printf/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the bucket reporter must distinguish an empty bucket from a failed read — on the refusal path its `kept` line is the last thing that ever names an edited obsolete key"
-# ALL THREE ROW PREDICATES — two in the leaves reader, one in the containers reader. The third was
-# missed on the first pass and found only because this count is over the file rather than over one
-# function.
-[ "$(grep -c 'case $? in 0) ;; 1) continue ;; \*) return 20 ;; esac' "$ROOT/scripts/lib/common.sh")" -eq 3 ] && ok \
-  || bad "every row predicate must treat jq's 1 (false) and its 5 (error) differently — conflating them drops a valid row, so the merge owns fewer leaves and uninstall leaves the live key behind"
-[ "$(grep -c "jq -e 'type == \"array\" and length > 0 and all(.\[\]; type == \"string\")' >/dev/null 2>&1 || continue" "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
-  || bad "...and none may still be spelled with a bare \`|| continue\`, which is the conflation itself"
+# THE ROW PREDICATES, ASSERTED BEHAVIOURALLY (#471). This was two greps — a count of THREE
+# `case $? in 0) ;; 1) continue ;; *) return 20 ;; esac` predicates and a count of ZERO bare
+# `|| continue` spellings — and both pinned a SPELLING the per-row `jq -e` loop had. The readers
+# now ask one jq for the whole receipt, so neither string can occur, and the two greps fail in
+# OPPOSITE ways: the count-of-three would go red (0 != 3) and send the reader to look for a
+# predicate that no longer exists, while the count-of-zero would go green forever, scanning for a
+# string nothing can write. Neither is a check of the property. What they stood for is the
+# semantics, so the semantics is what is checked here, on both readers and in both directions —
+# strictly stronger, because a spelling pin cannot see a rewrite that keeps the spelling and
+# breaks the meaning.
+_rp="$work/rowpred"; rm -rf "$_rp"; mkdir -p "$_rp"
+# A row the predicate REJECTS is skipped, and the rows around it survive.
+printf 'disposition\tinstalled\nleaf\t["sandbox",1]\ttrue\nleaf\t["sandbox","enabled"]\ttrue\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$_rpout" = "$(printf '["sandbox","enabled"]\ttrue')" ] && ok \
+  || bad "a leaf row the predicate REJECTS must be skipped while its neighbours survive — dropping the read instead loses every leaf after it (rc $_rprc)"
+# A row the predicate CANNOT EVALUATE refuses the whole read: a leaf we cannot prove is ours is one
+# we must not silently stop owning.
+printf 'disposition\tinstalled\nleaf\tnot-json\ttrue\nleaf\t["sandbox","enabled"]\ttrue\n' > "$_rp/r"
+adb_claude_settings_receipt_leaves "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a leaf row the predicate could not EVALUATE must refuse the whole read (20), not read as a rejected row — conflating them drops a valid row, so the merge owns fewer leaves and uninstall leaves the live key behind (rc $_rprc)"
+# ...and the container reader splits the two the same way, which is the predicate the first pass missed.
+printf 'disposition\tinstalled\ncontainer\t[]\ncontainer\t["sandbox"]\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_containers "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$_rpout" = '["sandbox"]' ] && ok \
+  || bad "a container row the predicate REJECTS must be skipped while its neighbours survive (rc $_rprc)"
+# A GOOD ROW AFTER THE BAD ONE, deliberately: with the bad row last, a reader that evaluates
+# per line still exits 5 on its final input and the refusal looks correct. The defect only shows
+# when a later row succeeds after an earlier one errored.
+printf 'disposition\tinstalled\ncontainer\tnot-json\ncontainer\t["ok"]\n' > "$_rp/r"
+adb_claude_settings_receipt_containers "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a container row the predicate could not EVALUATE must refuse the whole read (20) — the same masking, the same consequence for a container this install created (rc $_rprc)"
+# A ROW ON THE FIRST LINE IS STILL A ROW. Real receipts open with `disposition`, so every fixture
+# here has a header and none of them would notice a reader that silently dropped line 1 — which is
+# exactly what `-n` prevents, and what a reader without it does.
+printf 'leaf\t["first"]\t1\nleaf\t["second"]\t2\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$(printf '%s\n' "$_rpout" | wc -l | tr -d ' ')" = 2 ] && ok \
+  || bad "a leaf row on the receipt's FIRST line must be read, not lost because it is the first line (rc $_rprc)"
+printf 'container\t["first"]\ncontainer\t["second"]\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_containers "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$(printf '%s\n' "$_rpout" | wc -l | tr -d ' ')" = 2 ] && ok \
+  || bad "a container row on the receipt's FIRST line must be read even as the first line (rc $_rprc)"
+
+# A FIELD HOLDING TWO JSON VALUES IS REFUSED, NOT SKIPPED (#471, D110). The per-row `jq -e` form
+# fed each field to jq as a STREAM, so `["a"] []` was two values and the predicate's verdict was
+# the LAST one — and a leaf VALUE of `true false` was accepted outright, recording a row whose
+# value no reader can reproduce. `fromjson` takes one value, so both now refuse the read. This is
+# a behaviour change on malformed input and is deliberate: a field we cannot read as one value is
+# one we cannot prove we own.
+printf 'disposition\tinstalled\ncontainer\t["a"] []\ncontainer\t["ok"]\n' > "$_rp/r"
+adb_claude_settings_receipt_containers "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a container path holding TWO JSON values must refuse the read (20) — as a stream its verdict was the last value's, which is not a verdict on the row (rc $_rprc)"
+printf 'disposition\tinstalled\nleaf\t["a"]\ttrue false\n' > "$_rp/r"
+adb_claude_settings_receipt_leaves "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a leaf VALUE holding two JSON values must refuse the read (20) — it used to be ACCEPTED, recording ownership of a value no reader can reproduce (rc $_rprc)"
+
+# A REFUSED READ EMITS NO ROWS AT ALL. The per-row loop printed each good row as it went, so a
+# refusal that fired on row 5 still left rows 1-4 on stdout — a truncated answer beside a failure
+# code, which is the one shape a caller that forgets the status acts on. Every caller in this repo
+# does check it, so this is a tightening rather than a fix; it is asserted so it stays one.
+printf 'disposition\tinstalled\nleaf\t["ok"]\t1\nleaf\tnot-json\ttrue\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r" 2>/dev/null)"; _rprc=$?
+[ "$_rprc" -eq 20 ] && [ -z "$_rpout" ] && ok \
+  || bad "a refused leaf read must emit NOTHING, not the rows it had already accepted — a partial prefix beside a refusal is a truncated answer (rc $_rprc, out [$_rpout])"
+# ...and the PATH is judged before the VALUE, so a row that fails the path predicate is skipped
+# without its unparseable value ever being reached.
+printf 'disposition\tinstalled\nleaf\t["a",1]\t{{{\nleaf\t["ok"]\t1\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$_rpout" = "$(printf '["ok"]\t1')" ] && ok \
+  || bad "a row rejected on its PATH must never be refused on its VALUE — the order decides whether a bad neighbour costs one row or the whole receipt (rc $_rprc)"
 awk '/^unwire_settings\(\)/{f=1}
      f && /\[ "\$_nochange" -gt 1 \]/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
@@ -1114,7 +1182,18 @@ if check_block a-predicate-whose-own-output-is-the-answ; then
 # conflates a legitimate falsey leaf with a rejected row: probed on jq-1.7.1, `printf false | jq -e .`
 # exits 1, exactly like a malformed path. `type` is a non-empty string for every JSON value, so it
 # is truthy for all of them and 1 cannot arise.
-grep -q "printf '%s' \"\$v\" | jq -e 'type' >/dev/null 2>&1" "$ROOT/scripts/lib/common.sh" && ok \
+# BEHAVIOURAL since #471. This grepped for the per-row `printf '%s' "$v" | jq -e 'type'` spelling,
+# and the per-row loop is gone — a grep for a string that cannot occur is a guard that scans
+# nothing and reports exactly what a clean run reports. The property is unchanged, so it is the
+# property that is checked: every falsey JSON value is a legitimate leaf and must survive.
+_pv="$work/predval"; rm -rf "$_pv"; mkdir -p "$_pv"
+{ printf 'disposition\tinstalled\n'
+  printf 'leaf\t["a"]\tfalse\n'
+  printf 'leaf\t["b"]\tnull\n'
+  printf 'leaf\t["c"]\t0\n'
+  printf 'leaf\t["d"]\t""\n'; } > "$_pv/r"
+_pvout="$(adb_claude_settings_receipt_leaves "$_pv/r")"; _pvrc=$?
+[ "$_pvrc" -eq 0 ] && [ "$(printf '%s\n' "$_pvout" | wc -l | tr -d ' ')" = 4 ] && ok \
   || bad "the recorded-value check must validate PARSEABILITY, not truthiness — a leaf of false or null is valid JSON, and discarding its row loses the ownership evidence for a key uninstall then leaves in place"
 [ "$(grep -c "jq -e \. >/dev/null" "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
   || bad "...and no bare \`jq -e .\` may survive there, which is the conflation itself"
@@ -3848,10 +3927,38 @@ if [ "$MUTATION" -eq 1 ]; then
     '    absent|empty) return 1 ;;' \
     '    absent|empty) return 2 ;;' \
     'must read as DIVERGED'
-  check_row 'a row predicate treats a jq error as a malformed row' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
-    '    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac   # row-predicate-status' \
-    '    case $? in 0) ;; *) continue ;; esac   # row-predicate-status' \
-    'must treat jq'"'"'s 1 (false) and its 5 (error) differently'
+  check_row 'a leaf row predicate treats a jq error as a rejected row' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    '  [ "$_jrc" -eq 0 ] || return 20   # row-predicate-status' \
+    '  [ "$_jrc" -eq 0 ] || return 0   # row-predicate-status' \
+    'must refuse the whole read (20), not read as a rejected row'
+  check_row 'the leaf reader evaluates per line, so jq reports only its LAST input' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # leaf-one-evaluation" \
+    "| jq -R -r '.   # leaf-one-evaluation" \
+    'must refuse the whole read (20), not read as a rejected row'
+  check_row 'the container reader evaluates per line, so jq reports only its LAST input' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # container-one-evaluation" \
+    "| jq -R -r '.   # container-one-evaluation" \
+    'must refuse the whole read (20) — the same masking'
+  check_row 'the leaf reader drops -n, so its first line never reaches inputs' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # leaf-one-evaluation" \
+    "| jq -R -r '[inputs][]   # leaf-one-evaluation" \
+    'must be read, not lost because it is the first line'
+  check_row 'the container reader drops -n, so its first line never reaches inputs' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # container-one-evaluation" \
+    "| jq -R -r '[inputs][]   # container-one-evaluation" \
+    'must be read even as the first line'
+  check_row 'a container row predicate treats a jq error as a rejected row' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    '  [ "$_jrc" -eq 0 ] || return 20   # container-predicate-status' \
+    '  [ "$_jrc" -eq 0 ] || return 0   # container-predicate-status' \
+    'must refuse the whole read (20) — the same masking'
+  check_row 'the leaf path predicate loses its non-empty test' 'scripts/lib/common.sh' 'the-receipt-four-dispositions-and-only-o' \
+    '($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # leaf-path-predicate' \
+    '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # leaf-path-predicate' \
+    'must be refused — it reads as ownership of the document root'
+  check_row 'the container path predicate loses its non-empty test' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    '($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
+    '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
+    'must be skipped while its neighbours survive'
   check_row 'the path enumerations are not checked' 'scripts/lib/common.sh' 'the-merge-result-is-read-through-one-che' \
     '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)" || return 1' \
     '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)"' \
@@ -3913,8 +4020,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '$(adb_claude_settings_receipt_containers "$receipt")' \
     'no receipt reader may be substituted directly inside a heredoc'
   check_row 'the recorded-value check tests truthiness again' 'scripts/lib/common.sh' 'a-predicate-whose-own-output-is-the-answ' \
-    '    printf '"'"'%s'"'"' "$v" | jq -e '"'"'type'"'"' >/dev/null 2>&1' \
-    '    printf '"'"'%s'"'"' "$v" | jq -e . >/dev/null 2>&1' \
+    '      | (try ($v | fromjson) catch error("receipt: leaf value is not JSON"))' \
+    '      | (try ($v | fromjson | select(.)) catch error("receipt: leaf value is not JSON"))' \
     'must validate PARSEABILITY, not truthiness'
   check_row 'the deferred-signal global is not defined at load' 'scripts/lib/common.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '_ADB_SIGNAL_PENDING="${_ADB_SIGNAL_PENDING:-}"' \
