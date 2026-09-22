@@ -623,11 +623,20 @@ attributed to a commit it did not read. That is the same predicate `dispatch-swe
 steps down, and it means this cannot review a fix diff you have committed but not pushed — that is
 the local convergence loop's job (#491), deliberately not this one's.
 
-Order matters: run it **before 4a**, so its findings can join the round's findings file and be
-swept for siblings like any other. Codes: `16` as above · `22` the state dir is not gitignored ·
-`29` the linked-issue read failed (**not** "no linked issues", which is a stated NOTE at rc `0`) ·
-`28` the reply carries no usable verdict trailer. An unavailable reviewer is not a failure here —
-skip the step and say so in the round summary.
+**Its findings carry no thread id, so they do NOT enter the findings file.** 4a's grammar is
+`<class>TAB<path[:line]>TAB<thread-id>TAB<summary>` and a finding with no thread id is explicitly
+not swept — the same rule a task-mode comment already falls under. Treat these findings exactly
+that way: address the legitimate ones in 4b alongside the thread fixes, and **name them in the
+round summary** rather than inventing a thread id the sweep grammar would then carry into the
+ledger. Nothing about this step changes what 4a sweeps.
+
+Run it **before 4a** all the same, so anything it finds is fixed in the same round rather than
+waiting for the reviewer to find it next time.
+
+Codes: `16` as above · `22` the state dir is not gitignored · `29` the linked-issue read failed
+(**not** "no linked issues", which is a stated NOTE at rc `0`) · `28` the reply carries no usable
+verdict trailer. An unavailable reviewer is not a failure here — skip the step and say so in the
+round summary.
 
 #### 4a. Sweep the round's findings for siblings first (#475)
 

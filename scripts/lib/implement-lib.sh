@@ -2507,15 +2507,35 @@ _il_verdict_read() {
   [ "$rc" -eq 0 ] || return "$rc"
   # EXACTLY ONE sentinel line in the whole reply. A quoted or fenced copy beside a real trailer is
   # a duplicate, and which one is the verdict cannot be decided — guessing is the false-converged
-  # direction, so the whole result refuses. -F and ^: a literal prefix, never a pattern.
+  # direction, so the whole result refuses.
+  # A BRE, anchored — NOT `grep -F`, which cannot honour the `^`. The sentinel is a fixed literal
+  # of `[A-Z-]` only, so it carries no regex metacharacter; that is a property of the constant, and
+  # it is why this is safe rather than an accident of the current spelling.
   nsent="$(LC_ALL=C grep -c "^$_IL_VERDICT_SENTINEL" "$f" 2>/dev/null)"; rc=$?
   case "$rc" in 0|1) : ;; *) return 20 ;; esac
   nsent="${nsent//[[:space:]]/}"
   case "$nsent" in ''|*[!0-9]*) return 20 ;; esac
   [ "$nsent" -eq 1 ] || return 19
-  # …and it is the LAST NON-BLANK line. This is what refuses a trailer inside a fenced block: the
-  # fence CLOSE is then the last non-blank line, so position alone catches it with no fence parser.
-  last="$(LC_ALL=C awk 'NF { l = $0 } END { print l }' "$f" 2>/dev/null)" || return 20
+  # …and it is the LAST NON-BLANK line, AND it is not inside a fenced block.
+  #
+  # POSITION ALONE IS NOT ENOUGH, and the first draft of this reader shipped believing it was: a
+  # CLOSED fence puts its closer last, so position caught that one — but an UNCLOSED fence leaves
+  # the trailer itself as the last non-blank line, and the reader returned a clean `0 0` for it.
+  # Found by the independent review, with a reproduction.
+  # THE FENCE RULE IS common.sh's SHARED CommonMark PASS, never a second detector: `adb_md_block`
+  # already handles tilde fences, longer runs, info strings and list-nested fences, and #131/#136
+  # exist because a hand-rolled ``` toggle beside it had already drifted. `md_fence_len` is the
+  # in-a-fence flag; it is read BEFORE the call (a content line is already inside) and OR-ed with
+  # the call's own answer (a delimiter line is part of its fence).
+  local _vrc
+  last="$(LC_ALL=C awk "$_ADB_MD_AWK"'
+      { _b = md_fence_len; _d = adb_md_block($0); if (NF) { l = $0; inf = (_b || _d) } }
+      END { if (inf) exit 3; print l }' "$f" 2>/dev/null)"; _vrc=$?
+  case "$_vrc" in
+    0) : ;;
+    3) return 19 ;;   # the last non-blank line sits in a fence — open or closed
+    *) return 20 ;;
+  esac
   last="${last%$'\r'}"
   case "$last" in "$_IL_VERDICT_SENTINEL"*) : ;; *) return 19 ;; esac
   re="^${_IL_VERDICT_SENTINEL} v1 required=([0-9]{1,4}) optional=([0-9]{1,4})\$"
@@ -2744,6 +2764,15 @@ cmd_dispatch_review() {
       || { printf 'implement-lib: dispatch-review: PR %s'"'"'s linked-issue entries are malformed — refusing rather than reviewing against a partial criteria set\n' "$crit_pr" >&2; return 29; }
     local _cn
     for _cn in $_clinks; do crit_nums+=( "$_cn" ); done
+    # THE CAP IS FAIL-CLOSED, not merely noted. `gh` fetches closingIssuesReferences with
+    # `first: 100` and its JSON export drops pageInfo (probed via context7 against cli/cli
+    # api/query_builder.go and api/export_pr.go), so at exactly 100 entries completeness cannot be
+    # established from the response. Reviewing against a criteria set that MIGHT be short while
+    # reporting success is the same silent-partial this path refuses everywhere else.
+    if [ "$(printf '%s' "$pjson" | jq '.closingIssuesReferences | length')" -ge 100 ]; then
+      printf 'implement-lib: dispatch-review: PR %s reports 100 linked issues, which is the page gh requests and the point past which its response cannot be shown complete — refusing rather than reviewing against a possibly-partial criteria set\n' "$crit_pr" >&2
+      return 29
+    fi
     # THE PR'S OWN BASE, not origin/<default>: a PR may target another branch — a stack layer
     # especially — and diffing against the default branch reviews the wrong diff entirely.
     git fetch -q origin "refs/heads/$crit_base:refs/remotes/origin/$crit_base" 2>/dev/null \
@@ -2802,11 +2831,13 @@ cmd_dispatch_review() {
     # THE SENTENCE MUST DESCRIBE THE PROMPT THAT IS ACTUALLY BUILT. An unlinked PR carries no
     # criteria (#489), and promising them anyway tells the reviewer to check the diff against
     # segments that never arrive — the prompt asserting its own layout wrongly.
-    # THE REVIEWED COMMIT IS NAMED IN THE PROMPT. The head check proves the checkout IS the PR
-    # head at build time; saying which commit that was makes the resulting findings
-    # self-describing, so a reply cannot later be attributed to a different one.
+    # THE REVIEWED COMMIT IS NAMED — ACCURATELY. The head check proves the checkout was at the PR
+    # head when the prompt was built, but the diff below is deliberately worktree-inclusive, so a
+    # dirty checkout carries content that commit does not contain. Saying "at commit <sha>" full
+    # stop would present those bytes as the commit's, which is the attribution this check exists
+    # to protect. Name the commit AND the inclusion.
     if [ -n "$crit_pr" ]; then
-      printf '\n%s\n' "This review is of pull request #$crit_pr at commit $lhead, against its base branch $crit_base."
+      printf '\n%s\n' "This review is of pull request #$crit_pr, whose head commit is $lhead, against its base branch $crit_base. The diff below is taken from the merge-base and is WORKTREE-INCLUSIVE: it carries staged and unstaged changes too, so it may contain work that is not in $lhead."
     fi
     if [ -n "$crit_pr" ] && [ "${#crit_nums[@]}" -eq 0 ]; then
       printf '\n%s\n' 'The DIFF follows first (first-party). No acceptance criteria follow it: this pull request links no issue in this repository, so review the diff on the six lenses above.'
@@ -2972,22 +3003,37 @@ cmd_dispatch_review() {
       # opaque-suffix grammar that whitelist pins.
       local _cj="$dir/review-prompt-stage.w$$c" _ca="$dir/review-prompt-stage.w$$a"
       local _cfail=0
+      local _cjfd="" _cafd=""
       for n in "${crit_nums[@]}"; do
-        rm -f "$_cj" "$_ca"
+        # EXCLUSIVE CREATES WITH THE DESCRIPTOR HELD, like every other stage in this file. A plain
+        # `> "$name"` redirect follows a symlink a surviving dispatch descendant planted (writing
+        # through to its target) and blocks forever on a planted FIFO, outside every bound; `rm -f`
+        # immediately before narrows that window without closing it.
+        _il_excl_create "$_cj" _cjfd \
+          || { printf 'implement-lib: dispatch-review: could not stage linked issue #%s exclusively\n' "$n" >&2; _cfail=1; break; }
         # A LINKED ISSUE IS FETCHED WHATEVER ITS STATE. `snapshot-issues` refuses a non-OPEN issue
         # (21) on purpose — a run must not silently reopen shipped work — but a pull request
         # legitimately closes issues that are already closed by the time the resolver runs, so
         # that guard is not reused here rather than relaxed for one caller.
         if ! adb_run_bounded 600 10 gh issue view "$n" -R "$crit_slug" \
-             --json number,title,body,labels,author,comments,milestone,state > "$_cj" 2>/dev/null; then
+             --json number,title,body,labels,author,comments,milestone,state 1>&"$_cjfd" 2>/dev/null; then
+          exec {_cjfd}>&-
           printf 'implement-lib: dispatch-review: could not read linked issue #%s — refusing rather than dispatching a PARTIAL criteria set\n' "$n" >&2
           _cfail=1; break
         fi
+        exec {_cjfd}>&-
         # THE PROVENANCE LABEL IS NOT OPTIONAL: the envelope builder refuses without it, and an
         # unattributed body is never dispatched.
-        if ! adb_run_bounded 600 10 gh api --hostname "${crit_slug%%/*}" "repos/$crit_ipath/issues/$n" --jq '.author_association' > "$_ca" 2>/dev/null \
-           || [ ! -s "$_ca" ]; then
+        _il_excl_create "$_ca" _cafd \
+          || { printf 'implement-lib: dispatch-review: could not stage #%s'"'"'s provenance label exclusively\n' "$n" >&2; _cfail=1; break; }
+        if ! adb_run_bounded 600 10 gh api --hostname "${crit_slug%%/*}" "repos/$crit_ipath/issues/$n" --jq '.author_association' 1>&"$_cafd" 2>/dev/null; then
+          exec {_cafd}>&-
           printf 'implement-lib: dispatch-review: could not read linked issue #%s'"'"'s author association — refusing rather than dispatching an unattributed body\n' "$n" >&2
+          _cfail=1; break
+        fi
+        exec {_cafd}>&-
+        if [ ! -s "$_ca" ]; then
+          printf 'implement-lib: dispatch-review: linked issue #%s'"'"'s author association came back EMPTY — refusing rather than dispatching an unattributed body\n' "$n" >&2
           _cfail=1; break
         fi
         if ! _il_append_one_envelope "$_cj" "$_ca" "$_rpfd" "$n" " — acceptance criteria, linked by PR #$crit_pr"; then

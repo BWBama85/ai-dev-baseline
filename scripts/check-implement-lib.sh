@@ -3271,6 +3271,128 @@ eq "$( ( cd "$CN" && env PATH="$CB:$PATH" CF_HEAD="$CNH" CF_LINKS='[{"number":11
 eq "$( ( cd "$CR" && bash "$IL" dispatch-review --criteria-from-pr 0 .claude/state codex ) >/dev/null 2>&1; echo "$?")" 2 \
    "49 --criteria-from-pr rejects a non-PR-number argument"
 
+# ================= 50. #487 behaviourally: the checklist REACHES the review prompt ==============
+# The call-site count in check-pattern-ledger is structural; these are the acceptance criteria.
+# A ledger seam exists for exactly this: `checklist` resolves --ledger, then ADB_PATTERN_LEDGER,
+# then <repo-root>/.ai-dev-baseline/patterns.md.
+read -r _ CKR <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$CKR/.claude/state" "$CKR/.ai-dev-baseline"; seed_snap "$CKR"
+# THE STATE DIR MUST BE GITIGNORED, as it is in every real checkout (`snapshot-issues` refuses a
+# run otherwise). Untracked, it lands in dispatch-review's worktree-inclusive diff — so run (a)'s
+# published prompt becomes part of run (b)'s DIFF, and a grep for the checklist heading then finds
+# (a)'s copy quoted inside (b). That is a fixture artefact, and it made (b) report a checklist the
+# helper had correctly not emitted.
+( cd "$CKR" && printf '.claude/state/\n' > .gitignore && git add .gitignore && git commit -qm ignore ) >/dev/null 2>&1
+( cd "$CKR" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+CKP="$CKR/.claude/state/review-prompt.txt"
+ck_prompt() { ( cd "$CKR" && env ADB_PATTERN_LEDGER="$1" bash "$IL" dispatch-review --prompt-only .claude/state codex ) 2>&1; }
+
+# (a) A POPULATED ledger reaches the review prompt.
+# THE REAL GRAMMAR — both marker regions. A ledger carrying only one is "half readable" and
+# `checklist` refuses it with 18, which would have made these cases assert the rc-18 path while
+# claiming to test the populated one.
+cat > "$CKR/.ai-dev-baseline/patterns.md" <<'LEDGER'
+# Pattern ledger
+
+## Promoted checklist
+
+<!-- adb:checklist:begin -->
+- `sentinel-class` — SENTINEL-RULE-TEXT for the review prompt witness.
+<!-- adb:checklist:end -->
+
+## Hits
+
+<!-- adb:hits:begin -->
+- `sentinel-class` `scripts/lib/x.sh:1` `abc1234` `PRRT_seed1` PR #1 2026-01-01 — seed hit one
+- `sentinel-class` `scripts/lib/x.sh:2` `abc1234` `PRRT_seed2` PR #1 2026-01-01 — seed hit two
+<!-- adb:hits:end -->
+LEDGER
+# THE LEDGER FIXTURES LIVE OUTSIDE THE CHECKOUT. Written under .ai-dev-baseline/ they are
+# UNTRACKED files, so dispatch-review's untracked-file diff carries their text into the prompt —
+# and a grep for the sentinel would then match the DIFF rather than the checklist, passing for
+# exactly the wrong reason (observed: the sentinel appeared after the diff sentence, not before).
+CKLD="$work/ledgers"; mkdir -p "$CKLD"
+mv "$CKR/.ai-dev-baseline/patterns.md" "$CKLD/patterns.md"
+rmdir "$CKR/.ai-dev-baseline" 2>/dev/null || true
+CK_OUT="$(ck_prompt "$CKLD/patterns.md")"
+has "$(cat "$CKP" 2>/dev/null)" 'SENTINEL-RULE-TEXT' "50 the promoted checklist REACHES the review prompt (#487's acceptance, not just a call-site count)"
+has "$(cat "$CKP" 2>/dev/null)" 'ledger of review-finding classes' "50 …under the helper's own heading, the same one the survey and gap prompts carry"
+hasnt "$CK_OUT" 'NOTE' "50 …and a healthy ledger emits no NOTE noise"
+# …and it lands BEFORE the diff sentence, which promises the diff follows immediately.
+CK_RULE="$(grep -n 'SENTINEL-RULE-TEXT' "$CKP" | head -1 | cut -d: -f1)"
+CK_DIFF="$(grep -n 'The DIFF follows first' "$CKP" | head -1 | cut -d: -f1)"
+if [ -n "$CK_RULE" ] && [ -n "$CK_DIFF" ] && [ "$CK_RULE" -lt "$CK_DIFF" ]; then ok; else
+  bad "50 …placed BEFORE the sentence promising the diff follows immediately (rule@$CK_RULE diff@$CK_DIFF)"; fi
+
+# (b) NO LEDGER AT ALL: clean dispatch, no NOTE noise, no checklist block.
+CK_OUT="$(ck_prompt "$CKLD/absent.md")"
+hasnt "$CK_OUT" 'NOTE' "50 an absent ledger dispatches cleanly with NO NOTE noise (#487's third criterion)"
+hasnt "$(cat "$CKP" 2>/dev/null)" 'ledger of review-finding classes' "50 …and the prompt carries no checklist block"
+
+# (c) rc 18 — an UNPARSEABLE ledger NOTEs and the dispatch still succeeds.
+printf 'not a ledger at all\n' > "$CKLD/broken.md"
+CK_OUT="$(ck_prompt "$CKLD/broken.md")"
+eq "$?" 0 "50 an unparseable ledger (rc 18) does NOT fail the review dispatch"
+has "$CK_OUT" 'NOTE' "50 …and says so on stderr, exactly as the survey and gap call sites do"
+has "$CK_OUT" 'the code review' "50 …naming the code review as the consumer that lost it"
+
+# (d) rc 21 — an OVER-BUDGET checklist NOTEs, emits nothing, and the dispatch still succeeds.
+{ printf '# Pattern ledger\n\n## Promoted checklist\n\n<!-- adb:checklist:begin -->\n'
+  i=0; while [ "$i" -lt 400 ]; do
+    printf -- '- `bulk-class-%s` — %s\n' "$i" "$(awk 'BEGIN{while(n++<60)printf "padding-text "}')"
+    i=$((i + 1))
+  done
+  printf '<!-- adb:checklist:end -->\n\n## Hits\n\n<!-- adb:hits:begin -->\n'
+  printf -- '- `bulk-class-0` `scripts/lib/x.sh:1` `abc1234` `PRRT_h1` PR #1 2026-01-01 — one\n'
+  printf -- '- `bulk-class-0` `scripts/lib/x.sh:2` `abc1234` `PRRT_h2` PR #1 2026-01-01 — two\n'
+  printf '<!-- adb:hits:end -->\n'; } > "$CKLD/huge.md"
+CK_OUT="$(ck_prompt "$CKLD/huge.md")"
+eq "$?" 0 "50 an over-budget checklist (rc 21) does NOT fail the review dispatch"
+has "$CK_OUT" 'prompt budget' "50 …and the NOTE names the budget, never a bare wildcard"
+hasnt "$(cat "$CKP" 2>/dev/null)" 'bulk-class-0' "50 …and nothing from the over-budget checklist reaches the prompt"
+
+# (e) --prompt-only PARITY: the kept per-invocation stage carries the same checklist as the
+# published prompt, because the native Claude review path reads that file and not this one.
+ck_prompt "$CKLD/patterns.md" > "$work/ck-po.txt" 2>&1
+CK_STAGE="$(sed -n 's/^prompt-ready //p' "$work/ck-po.txt" | head -1)"
+if [ -n "$CK_STAGE" ] && [ -f "$CKR/$CK_STAGE" ]; then
+  has "$(cat "$CKR/$CK_STAGE")" 'SENTINEL-RULE-TEXT' "50 --prompt-only's kept stage carries the checklist too (the native path reads THAT file)"
+  if cmp -s "$CKR/$CK_STAGE" "$CKP"; then ok; else bad "50 …byte-identical to the published prompt"; fi
+else
+  bad "50 --prompt-only printed a usable prompt-ready path"
+fi
+
+# ================= 51. rc 28 is observed FROM dispatch-review (#488) ============================
+# Section 47 drives the READER. #488's acceptance is about the DISPATCH returning a distinct code,
+# which no reader witness can establish.
+mkdir -p "$work/rcbin"
+cat > "$work/rcbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+cat > /dev/null
+[ -n "$last" ] && printf '%b' "${RC_REPLY:-x\n}" > "$last"
+exit 0
+SH
+chmod +x "$work/rcbin/codex"
+read -r _ RCR <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RCR/.claude/state"; seed_snap "$RCR"
+( cd "$RCR" && printf '.claude/state/\n' > .gitignore && git add .gitignore && git commit -qm ignore ) >/dev/null 2>&1
+( cd "$RCR" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+rcdisp() { ( cd "$RCR" && env PATH="$work/rcbin:$PATH" RC_REPLY="$1" bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1; echo "$?"; }
+eq "$(rcdisp 'a REQUIRED finding\n\nADB-REVIEW-VERDICT v1 required=1 optional=0\n')" 0 "51 a dispatched reply WITH a valid trailer completes at 0"
+eq "$(rcdisp 'prose with no trailer at all\n')" 28 "51 a dispatched reply with NO trailer is 28 — not 0, and not the 20 dispatch-failure family"
+eq "$(rcdisp 'x\n```\nADB-REVIEW-VERDICT v1 required=0 optional=0\n')" 28 "51 …and so is one whose trailer hides in an unclosed fence"
+eq "$(rcdisp 'ADB-REVIEW-VERDICT v1 required=0 optional=0\ny\nADB-REVIEW-VERDICT v1 required=9 optional=0\n')" 28 "51 …and a duplicated trailer"
+# A NUL IN THE TRAILER LINE ITSELF, which is what #488's acceptance names — section 47's witness
+# puts its NUL on a later line and therefore tests only the whole-file rule.
+eq "$(rcdisp 'finding\nADB-REVIEW-VERDICT v1 required=\0000 optional=0\n')" 28 "51 …and a NUL inside the trailer line itself"
+eq "$(rcdisp 'finding one\nfinding two, cut off mid-')" 28 "51 …and a truncated reply, which must never read as a smaller count"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
