@@ -8315,3 +8315,33 @@ survive is the part a later reader needs.
              selection and cut it by an order of magnitude. Until that lands, every ceiling is
              temporary.
 - baseline-issue: n/a
+
+## D112 — Sweep state guards against damage, not against an adversary inside the state directory
+- date:      2026-09-22
+- category:  project-delta
+- unknown:   PR #477's round 3 raised one `toctou` finding against the sweep readers, and the sibling
+             sweep it triggered found ELEVEN more: every reader validates a sweep, findings or reply
+             file and then RE-OPENS that pathname by name — `adb_sweep_rows`, the header read, the row
+             loop, the findings digest, prompt assembly, the reply sizing and parse, `sweep-report`,
+             `sweep-mark`'s count and rewrite, and `record --sweep`'s disposition read. A FIFO planted
+             between a check and a re-open blocks the shell outside any bound; a substituted file
+             changes the bytes a validated decision was taken on. Nothing recorded what these files'
+             threat model is, so each site was a separate finding and the class had no end state.
+- decision:  Owner decision 2026-09-22. Sweep state under `.claude/state/` — `sweep-pr<N>-<head>.tsv`,
+             its `.findings` input and the dispatch reply — is protected against ACCIDENTAL damage:
+             a truncated or interrupted write, a malformed row, an oversized or NUL-bearing reply, a
+             path that is not a regular file, a stale file from an earlier head. Deliberate
+             substitution by someone able to write that directory is OUT OF SCOPE, for D102's reason
+             one directory over: the same actor can write the sweep file's CONTENTS directly, so
+             swapping the inode grants nothing that editing the file would not. A review finding whose
+             only trigger is an inode substituted mid-run is declined citing this decision rather than
+             fixed. Every check already shipped stays; none is removed on the strength of this.
+- placement: this entry; the declined rows in the PR #477 round-3 sweep file
+- reason:    D102 recorded the same shape for the settings receipt after PR #463 spent rounds 36-48 on
+             variants of a hand-edited file, and measured the cost: 50 fix commits, 47 re-review
+             requests, 13 days. This class arrived at twelve sites in one round on a pull request that
+             is already +9,719 lines. An editable file has no final variant, and the boundary is the
+             only end state. What is NOT covered by this decision, and was fixed rather than declined,
+             is content that arrives from OUTSIDE the run: a finding site is a path from the diff, so a
+             pull request author chooses it, and that reaches a prompt — see the same round's P1.
+- baseline-issue: n/a
