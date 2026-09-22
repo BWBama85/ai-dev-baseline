@@ -6616,19 +6616,29 @@ adb_ledger_ok_text() {
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
 }
 
-# _adb_sweep_whole <file> — the byte-level preconditions every sweep reader shares: a regular,
-# non-link file of at most 1 MiB, with no NUL and a final newline. 0 · 18 · 20.
-_adb_sweep_whole() {
-  local f="$1" sz last
+# adb_bytes_whole <file> <max-bytes> — the byte-level preconditions every whole-file reader
+# shares: a regular, readable, non-link file of 1..<max-bytes> with no NUL and a final newline.
+# 0 · 18 (a byte rule) · 20 (not readable as a regular file).
+#
+# THE BOUND IS A PARAMETER because its two callers legitimately disagree. A sweep file is 1 MiB;
+# a code-review reply is 8 MiB, the size `dispatch-review` and `read-artifact` already permit.
+# Reusing one constant for both would silently tighten the review contract and start refusing
+# large-diff reviews that are legal today (#488) — so the RULES are shared and the LIMIT is not.
+adb_bytes_whole() {
+  local f="$1" max="$2" sz last
   [ -n "$f" ] && [ ! -L "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 20
+  case "$max" in ''|*[!0-9]*) return 20 ;; esac
   sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 20
   case "$sz" in ''|*[!0-9]*) return 20 ;; esac
-  [ "$sz" -gt 0 ] && [ "$sz" -le 1048576 ] || return 18
+  [ "$sz" -gt 0 ] && [ "$sz" -le "$max" ] || return 18
   [ "$(LC_ALL=C tr -d '\000' < "$f" | LC_ALL=C wc -c | tr -d ' ')" -eq "$sz" ] || return 18
   last="$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')"
   [ "$last" = 0a ] || return 18
   return 0
 }
+
+# _adb_sweep_whole <file> — the sweep readers' own bound over those rules. 1 MiB, unchanged.
+_adb_sweep_whole() { adb_bytes_whole "$1" 1048576; }
 
 # adb_sweep_split <line> <field-count> — split on EVERY tab into the array ADB_SWEEP_F, keeping
 # empty fields; false unless the line has exactly <field-count> fields. `IFS=$'\t' read` would fold

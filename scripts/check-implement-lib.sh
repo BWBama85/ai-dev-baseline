@@ -2601,7 +2601,10 @@ cat > "$shimbin/codex" <<'SH'
 last=""; prev=""
 for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
 if grep -q 'diff --git a/seed'; then out='SAW-PROMPT'; else out='NO-PROMPT'; fi
-[ -n "$last" ] && printf '%s\n' "$out" > "$last"
+# A VALID TRAILER (#488), so this case still tests what it was written to test — which prompt the
+# slot received — rather than turning into a verdict-grammar failure. The first line still carries
+# the discriminator, and the assertion below reads exactly that line.
+[ -n "$last" ] && printf '%s\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' "$out" > "$last"
 exit 0
 SH
 chmod +x "$shimbin/codex"
@@ -2613,7 +2616,7 @@ mkdir -p "$RVS/.claude/state"; seed_snap "$RVS"
 ( cd "$RVS" && env PATH="$work/mvswap:$PATH" bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1
 SL_RC=$?
 eq "$SL_RC" "0" "39 a slot whose published prompt name vanishes right after its publish still completes"
-eq "$(cat "$RVS/.claude/state/review.md" 2>/dev/null)" "SAW-PROMPT" "39 …and the reviewer received THIS slot's prompt from the held stage inode"
+eq "$(head -n1 "$RVS/.claude/state/review.md" 2>/dev/null)" "SAW-PROMPT" "39 …and the reviewer received THIS slot's prompt from the held stage inode"
 rm -f "$shimbin/codex"
 eq "$(grep -c 'cat <&"\$_prfd"' "$IL")" "2" "39 both slot arms read the held stage descriptor"
 if grep -q '2700 5 cat "\$pf"' "$IL"; then bad "39 a slot arm reopens the published prompt name"; else ok; fi
@@ -3102,6 +3105,171 @@ eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix "${SWH:0:7
 cp "$SWF" "$work/sw-before"; printf 'junk\n' >> "$SWF"
 eq "$(mark --class beta-class --site - --result declined --reason x)" 18 "46 a sweep file that does not parse is refused by sweep-mark"
 if tail -n 1 "$SWF" | grep -qx junk; then ok; else bad "46 …and left exactly as it was"; fi
+
+# _stage_count <dir> [suffix-glob] — how many `review-prompt-stage.<suffix>` entries exist.
+# A GLOB, never `ls | grep`: an unmatched glob stays literal and `[ -e ]` filters it, while a
+# pipeline through ls mis-handles any name carrying a space or a glob character.
+_stage_count() {
+  local d="$1" pat="${2:-*}" f n=0
+  for f in "$d"/review-prompt-stage.$pat; do [ -e "$f" ] || [ -L "$f" ] && n=$((n + 1)); done
+  printf '%s\n' "$n"
+}
+
+# ================= 47. the review verdict trailer (#488) ========================================
+# The grammar is what an automated decision reads, so every refusal gets its OWN witness: a reader
+# that answered "0 findings" for a malformed reply would push fix code no review ever read.
+VD="$work/verdict"; mkdir -p "$VD"
+vd() { printf '%b' "$2" > "$VD/$1"; ( bash "$IL" review-verdict "$VD/$1" ) 2>/dev/null; }
+vdrc() { printf '%b' "$2" > "$VD/$1"; ( bash "$IL" review-verdict "$VD/$1" ) >/dev/null 2>&1; echo "$?"; }
+eq "$(vd ok 'a REQUIRED finding\n\nADB-REVIEW-VERDICT v1 required=2 optional=3\n')" "2 3" \
+   "47 a well-formed verdict parses to its two counts"
+eq "$(vd z 'no REQUIRED findings\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n')" "0 0" \
+   "47 …and the sentence 'no REQUIRED findings' with a valid zero verdict parses as zero, not as one finding"
+eq "$(vdrc nov 'plenty of prose and a REQUIRED word, but no trailer\n')" 19 \
+   "47 a reply with NO verdict is refused, never guessed at zero"
+eq "$(vdrc dup 'ADB-REVIEW-VERDICT v1 required=9 optional=0\nx\nADB-REVIEW-VERDICT v1 required=0 optional=0\n')" 19 \
+   "47 a trailer present TWICE is refused — which one is the verdict cannot be decided"
+eq "$(vdrc fenced 'x\n```\nADB-REVIEW-VERDICT v1 required=0 optional=0\n```\n')" 19 \
+   "47 a trailer inside a fenced block is refused (the fence close is the last non-blank line)"
+eq "$(vdrc nonnum 'x\nADB-REVIEW-VERDICT v1 required=x optional=0\n')" 19 "47 a non-numeric count is refused"
+eq "$(vdrc noct 'x\nADB-REVIEW-VERDICT v1 optional=0\n')" 19 "47 an ABSENT count is refused, never inferred as zero"
+eq "$(vdrc lead0 'x\nADB-REVIEW-VERDICT v1 required=01 optional=0\n')" 19 "47 a leading zero is a second spelling and is refused"
+eq "$(vdrc indent 'x\n  ADB-REVIEW-VERDICT v1 required=0 optional=0\n')" 19 "47 an indented trailer is refused"
+eq "$(vdrc nonl 'x\nADB-REVIEW-VERDICT v1 required=1 optional=0')" 18 "47 a missing final newline is a byte refusal"
+eq "$(vdrc trunc 'finding one REQUIRED\nfinding two REQ')" 18 \
+   "47 a TRUNCATED reply is refused, never read as a smaller finding count"
+eq "$(vd crlf 'x\r\nADB-REVIEW-VERDICT v1 required=4 optional=1\r\n')" "4 1" "47 a CRLF reply is tolerated, as the sweep grammar tolerates it"
+printf 'x\nADB-REVIEW-VERDICT v1 required=1 optional=0\na\000b\n' > "$VD/nul"
+( bash "$IL" review-verdict "$VD/nul" ) >/dev/null 2>&1; eq "$?" 18 "47 a NUL anywhere in the reply refuses it whole"
+( bash "$IL" review-verdict "$VD/absent" ) >/dev/null 2>&1; eq "$?" 20 "47 an absent reply is 20, not a byte refusal"
+ln -s /etc/hosts "$VD/link" 2>/dev/null
+( bash "$IL" review-verdict "$VD/link" ) >/dev/null 2>&1; eq "$?" 20 "47 a symlink is never read as a review reply"
+# THE REVIEW BOUND IS 8 MiB, NOT the sweep's 1 MiB: reusing _adb_sweep_whole unchanged would have
+# silently started refusing large-diff reviews that are legal today.
+{ head -c 2000000 /dev/zero | tr '\0' 'x'; printf '\nADB-REVIEW-VERDICT v1 required=0 optional=0\n'; } > "$VD/big"
+( bash "$IL" review-verdict "$VD/big" ) >/dev/null 2>&1; eq "$?" 0 "47 a 2 MiB reply is accepted — past the sweep bound, inside the review bound"
+# …and the sweep's own bound is UNCHANGED by the factoring.
+{ head -c 2000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$VD/bigsweep"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; _adb_sweep_whole "$VD/bigsweep" ); echo "$?" )" 18 \
+   "47 …while _adb_sweep_whole still refuses the same file at its own 1 MiB bound"
+
+# ================= 48. publish-review: the native path's publisher (#488) =======================
+# --prompt-only returns BEFORE any dispatch, so the native Claude slot produces no review.md at
+# all; without this the trailer would be required in a prompt and validated nowhere.
+PV="$work/pubrev"; mkdir -p "$PV/state"
+pv() { printf '%b' "$1" | ( bash "$IL" publish-review ${2:+--slot} ${2:-} "$PV/state" ) >/dev/null 2>&1; echo "$?"; }
+eq "$(pv 'a REQUIRED thing\n\nADB-REVIEW-VERDICT v1 required=1 optional=2\n')" 0 "48 a valid native reply publishes"
+if [ -f "$PV/state/review.md" ]; then ok; else bad "48 …to review.md"; fi
+eq "$(pv 'clean\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' 2)" 0 "48 --slot N publishes review-N.md (slot parity with the dispatched path)"
+if [ -f "$PV/state/review-2.md" ]; then ok; else bad "48 …at review-2.md"; fi
+eq "$(pv 'no trailer at all\n')" 19 "48 a reply with no verdict is refused, and nothing is published"
+# A REFUSED PASS MUST NOT LEAVE AN EARLIER PASS'S VERDICT READABLE AS THIS ONE'S — that stale
+# `required=0` is exactly the false clean pass this grammar exists to prevent.
+pv 'first pass\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' 3 >/dev/null
+if [ -f "$PV/state/review-3.md" ]; then ok; else bad "48 a first pass publishes at slot 3"; fi
+eq "$(pv 'second pass, malformed\n' 3)" 19 "48 …a later malformed pass at the same slot refuses"
+if [ -e "$PV/state/review-3.md" ]; then bad "48 …and REMOVES the earlier verdict rather than leaving it readable as this pass's"; else ok; fi
+eq "$(pv 'x\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' 12345)" 2 "48 a slot outside the 1-4 digit family grammar is a usage error"
+{ head -c 8388700 /dev/zero | tr '\0' 'x'; printf '\nADB-REVIEW-VERDICT v1 required=0 optional=0\n'; } \
+  | ( bash "$IL" publish-review --slot 9 "$PV/state" ) >/dev/null 2>&1
+eq "$?" 18 "48 an oversize reply is REFUSED, not truncated — publish-survey shortens, a review must keep its trailer"
+if [ -e "$PV/state/review-9.md" ]; then bad "48 …and publishes nothing"; else ok; fi
+# A SUCCESSFUL publish leaves no stage; a REFUSED one KEEPS the reply and names it, because the
+# failure path is exactly where the operator needs something to read. Both directions, or the
+# assertion pins only whichever one happens to be true.
+PV2="$work/pubrev2"; mkdir -p "$PV2/state"
+printf 'clean\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' | ( bash "$IL" publish-review "$PV2/state" ) >/dev/null 2>&1
+eq "$(_stage_count "$PV2/state")" 0 "48 a SUCCESSFUL publish leaves no stage behind"
+PV3="$work/pubrev3"; mkdir -p "$PV3/state"
+PV3_OUT="$(printf 'malformed, no trailer\n' | ( bash "$IL" publish-review "$PV3/state" ) 2>&1)"
+eq "$(_stage_count "$PV3/state")" 1 "48 a REFUSED publish KEEPS the reply — the failure path is where the evidence matters"
+has "$PV3_OUT" "kept for inspection" "48 …and says where it kept it"
+if [ -e "$PV3/state/review.md" ]; then bad "48 …while publishing nothing as a result"; else ok; fi
+
+# ================= 49. dispatch-review --criteria-from-pr (#489) ================================
+# The resolver has no run marker and no snapshots, so dispatch-review refused (20) and a local
+# review was impossible there. These witnesses pin the three outcomes that must stay DISTINCT:
+# criteria built, a stated NOTE with no criteria, and a FAILED link read.
+CB="$work/cfbin"; mkdir -p "$CB"
+CR="$work/cfrepo"; mkdir -p "$CR"
+( cd "$CR" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && printf 'a\n' > f.sh && git add f.sh && printf '.claude/state/\n' > .gitignore && git add .gitignore \
+  && git commit -qm base && git update-ref refs/remotes/origin/main HEAD \
+  && git switch -qc stack-1 && printf 'LAYER-ONE\n' >> f.sh && git commit -qam l1 \
+  && git update-ref refs/remotes/origin/stack-1 HEAD \
+  && git switch -qc feat && printf 'LAYER-TWO\n' >> f.sh && git commit -qam l2 \
+  && git remote add origin https://github.com/o/r.git && mkdir -p .claude/state ) >/dev/null 2>&1
+CFH="$(git -C "$CR" rev-parse HEAD)"
+cat > "$CB/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view") [ "${CF_PR_FAIL:-0}" = 1 ] && { echo "gh: could not resolve" >&2; exit 1; }
+    printf '{"state":"%s","headRefOid":"%s","baseRefName":"%s","closingIssuesReferences":%s}\n' \
+      "${CF_STATE:-OPEN}" "${CF_HEAD:-}" "${CF_BASE:-main}" "${CF_LINKS:-[]}" ;;
+  "issue view") [ "${CF_ISSUE_FAIL:-0}" = 1 ] && { echo "gh: no issue" >&2; exit 1; }
+    printf '{"number":%s,"title":"t","body":"CRITERIA-FOR-%s","state":"OPEN","labels":[],"author":{"login":"o"},"comments":[]}\n' "$3" "$3" ;;
+  "api --hostname") printf 'OWNER\n' ;;
+  *) echo "cf-shim unhandled: $*" >&2; exit 3 ;;
+esac
+SH
+cat > "$CB/git" <<SH
+#!/usr/bin/env bash
+[ "\$1" = fetch ] && exit "\${CF_FETCH_RC:-0}"
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$CB/gh" "$CB/git"
+CFP="$CR/.claude/state/review-prompt.txt"
+cf() { ( cd "$CR" && env PATH="$CB:$PATH" CF_HEAD="$CFH" "$@" bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1; echo "$?"; }
+CFL2='[{"number":11,"repository":{"name":"r","owner":{"login":"o"}}},{"number":12,"repository":{"name":"r","owner":{"login":"o"}}}]'
+
+eq "$(cf CF_LINKS="$CFL2")" 0 "49 a PR with two linked issues builds a prompt"
+eq "$(grep -c 'github-issue #1[12] — acceptance criteria, linked by PR #7' "$CFP")" 2 \
+   "49 …one contained, PR-attributed envelope per linked issue"
+eq "$(cf CF_LINKS='[]')" 0 "49 a PR with NO linked issue still dispatches — an unlinked PR is a normal PR"
+has "$(cat "$CFP")" 'No acceptance criteria follow it' \
+   "49 …and the prompt SAYS so rather than promising criteria that never arrive"
+hasnt "$(cat "$CFP")" 'github-issue #' "49 …with no criteria envelope at all"
+eq "$(cf CF_PR_FAIL=1)" 29 "49 a FAILED linked-issue read is 29 — never the rc-0 no-linked-issues path"
+eq "$(cf CF_LINKS='null')" 29 "49 …and so is a malformed closingIssuesReferences (absent/null/not an array)"
+eq "$(cf CF_LINKS='[{"number":"x","repository":{"name":"r","owner":{"login":"o"}}}]')" 29 \
+   "49 …and a non-integer issue number in an otherwise valid response"
+eq "$(cf CF_LINKS="$CFL2" CF_ISSUE_FAIL=1)" 20 \
+   "49 one unreadable linked issue refuses the whole dispatch — never a PARTIAL criteria set"
+# THE DIFF COMES FROM THE PR'S OWN BASE. A stack layer targets another branch, and diffing from
+# origin/<default> reviews the layer below as if it were this PR's work.
+cf CF_LINKS="$CFL2" CF_BASE=stack-1 >/dev/null
+eq "$(grep -cE '^\+LAYER' "$CFP")" 1 "49 the diff is taken against the PR's OWN base ref"
+has "$(grep -E '^\+LAYER' "$CFP")" 'LAYER-TWO' "49 …so only this layer's change is reviewed"
+cf CF_LINKS="$CFL2" CF_BASE=main >/dev/null
+eq "$(grep -cE '^\+LAYER' "$CFP")" 2 "49 …and against the default branch it would carry both layers (the witness for the line above)"
+eq "$(cf CF_LINKS="$CFL2" CF_HEAD=ffffffffffffffffffffffffffffffffffffffff)" 16 \
+   "49 a checkout whose HEAD is not the live PR head is refused — on --prompt-only too"
+eq "$(cf CF_LINKS="$CFL2" CF_STATE=MERGED)" 16 "49 …and so is a PR that is not OPEN"
+eq "$(cf CF_LINKS="$CFL2" CF_FETCH_RC=1)" 20 "49 a base branch that cannot be fetched refuses, never a stale merge base"
+# A CROSS-REPO LINK IS NOT THIS REPO'S #11: fetched unqualified it would supply a DIFFERENT
+# issue's criteria under the same number.
+cf CF_LINKS='[{"number":11,"repository":{"name":"other","owner":{"login":"elsewhere"}}}]' >/dev/null
+has "$(cat "$CFP")" 'No acceptance criteria follow it' "49 a linked issue in ANOTHER repository is filtered out, not fetched from this one"
+# EXPLICIT PRECEDENCE over any snapshot that happens to be lying in the state dir.
+printf '{"number":99,"title":"t","body":"STALE-SNAPSHOT-CRITERIA","state":"OPEN","labels":[],"author":{"login":"o"},"comments":[]}' > "$CR/.claude/state/issue-99.json"
+printf 'OWNER' > "$CR/.claude/state/issue-99.assoc"
+cf CF_LINKS='[{"number":11,"repository":{"name":"r","owner":{"login":"o"}}}]' >/dev/null
+has   "$(cat "$CFP")" 'CRITERIA-FOR-11'        "49 --criteria-from-pr supplies the criteria"
+hasnt "$(cat "$CFP")" 'STALE-SNAPSHOT-CRITERIA' "49 …and a stale unrelated snapshot never does"
+eq "$(_stage_count "$CR/.claude/state" '*c')" 0 "49 …and the criteria stage never outlives the call"
+# THE GITIGNORE PROBE, which only snapshot-issues used to perform. Untrusted linked-issue text
+# written under an UNIGNORED state dir lands in this very worktree-inclusive diff.
+CN="$work/cfnoign"; mkdir -p "$CN"
+( cd "$CN" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && printf 'a\n' > f.sh && git add f.sh && git commit -qm base && git update-ref refs/remotes/origin/main HEAD \
+  && git switch -qc feat && printf 'b\n' >> f.sh && git commit -qam c \
+  && git remote add origin https://github.com/o/r.git && mkdir -p .claude/state ) >/dev/null 2>&1
+CNH="$(git -C "$CN" rev-parse HEAD)"
+eq "$( ( cd "$CN" && env PATH="$CB:$PATH" CF_HEAD="$CNH" CF_LINKS='[{"number":11,"repository":{"name":"r","owner":{"login":"o"}}}]' \
+        bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1; echo "$?")" 22 \
+   "49 an UNIGNORED state dir refuses (22) before any linked-issue text is written into the diff"
+eq "$( ( cd "$CR" && bash "$IL" dispatch-review --criteria-from-pr 0 .claude/state codex ) >/dev/null 2>&1; echo "$?")" 2 \
+   "49 --criteria-from-pr rejects a non-PR-number argument"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

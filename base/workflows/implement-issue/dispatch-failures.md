@@ -75,6 +75,10 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `23` | `open-pr` | the closing keywords did not register: GitHub's link set ≠ `--closes`. Fix the body with `gh pr edit` NOW — after the merge the auto-close can never fire |
 | `24` / `25` | `open-pr` | the push / `gh pr create` failed |
 | `26` | `open-pr` | the run marker is unreadable, or HEAD is not on its branch |
+| `22` | `dispatch-review --criteria-from-pr` | the state dir is not gitignored — and this path is about to write linked-issue text under it, which the worktree-inclusive diff would then carry into the review prompt as first-party code. Fix `.gitignore` and re-run |
+| `28` | `dispatch-review` | the slot RAN and its reply carries no usable verdict trailer. **Not a clean pass and not a dispatch failure** — the agent answered in a shape nobody can read. Treat the slot as failed: retry once, then per the role's policy. Never read it as zero findings |
+| `29` | `dispatch-review --criteria-from-pr` | the linked-issue read FAILED, or the PR returned a malformed `closingIssuesReferences`. Distinct from the rc `0` an empty-but-valid link set takes, so an API failure can never quietly degrade the review to lens-only and still report success |
+| `16` | `dispatch-review --criteria-from-pr` | the PR is not OPEN, or the checkout's HEAD is not its head commit. This review runs at the **start of a round, on the pushed head** — a review is never attributed to a commit it did not read. Sync the branch and re-run |
 | `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 
 ## Every documented stop, in one place
