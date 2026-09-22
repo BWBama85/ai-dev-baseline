@@ -688,4 +688,5 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `install.sh:436` `f85ce95` `PRRT_kwDOTfywrM6jpFkT` PR #463 2026-09-18 — receipt-completeness statuses fell into a catch-all that blamed settings.json and named the wrong remedy
 - `event-inferred-from-state` `install.sh:356` `f85ce95` `PRRT_kwDOTfywrM6jpFka` PR #463 2026-09-18 — a skip message promised re-application from the disposition alone, after the skip had given ownership up
 - `stale-doc-claim` `scripts/mutation-gate.sh:367` `977f191` `PRRT_kwDOTfywrM6kkNfI` PR #480 2026-09-22 — a new subcommand was added to the dispatch but not to usage(), so an invalid invocation printed help omitting it
+- `status-swallowed` `install.sh:581` `98a267c` `PRRT_kwDOTfywrM6jMG1Z` PR #477 2026-09-22 — a refusal caused by a newly shipped leaf discards ownership of every leaf the install already wrote
 <!-- adb:hits:end -->
