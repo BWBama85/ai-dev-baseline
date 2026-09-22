@@ -569,6 +569,27 @@ eq "$RC_" "2" "rows: no rows on stdin is USAGE (2), never a decision"
 OUT="$(cd "$R" && printf '%s\n' "$ROWS_IN" | bash scripts/mutation-gate.sh rows 2>&1)"; RC_=$?
 eq "$RC_" "2" "rows: a missing suite argument is usage"
 
+# EVERY DISPATCH ARM IS IN THE USAGE TEXT. `rows` was not: an invocation with no suite, or with a
+# bad option, called `usage` — and the text it printed listed only the three older subcommands, so
+# the one message whose whole job is to show the correct syntax omitted the syntax being corrected.
+# Derived from the `case` arms rather than from a list here, so a fifth subcommand is covered the
+# day it is added.
+USAGE_TEXT="$(cd "$ROOT" && bash scripts/mutation-gate.sh 2>&1)"
+ARMS="$(awk '/^case "\$sub" in/,/^esac/' "$ROOT/scripts/mutation-gate.sh" | grep -oE '^  [a-z-]+\)' | tr -d ' )')"
+[ -n "$ARMS" ] && ok || bad "the dispatch-arm scan matched nothing — this pin would check no subcommand at all"
+n_arms=0
+while IFS= read -r _arm; do
+  [ -n "$_arm" ] || continue
+  n_arms=$((n_arms + 1))
+  case "$USAGE_TEXT" in
+    *"mutation-gate.sh $_arm"*) ok ;;
+    *) bad "the '$_arm' subcommand is missing from the usage text — an invalid invocation of it prints help that omits the syntax needed to fix it" ;;
+  esac
+done <<ARMSEOF
+$ARMS
+ARMSEOF
+[ "$n_arms" -ge 4 ] && ok || bad "only $n_arms dispatch arm(s) were checked against the usage text — the scan is reading the wrong block"
+
 # ============================== 5. the shipped registry =========================================
 LIST="$(bash "$ROOT/scripts/selfcheck.sh" --list)" || bad "the shipped registry could not be listed"
 # A suite that drives `check_mutation_rows` EXECUTES `scripts/mutation-gate.sh` (#470), which in

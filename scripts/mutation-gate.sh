@@ -92,6 +92,7 @@ usage() {
   cat >&2 <<EOF
 usage: bash scripts/$ME should-run <step> [--base <ref>] -- <input-path>...
        bash scripts/$ME run <step> -- <command>...
+       bash scripts/$ME rows <suite-path> [--base <ref>]   < <row-id><TAB><target> lines
        bash scripts/$ME base [--base <ref>]
 EOF
   exit 2
