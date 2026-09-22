@@ -1283,7 +1283,14 @@ jobs:
     # ONLY per-PR execution, and is why check-fact-drift.sh pins the invocation. The ceiling is
     # sized for the harness on a hosted runner's core count, not inherited from a job that runs
     # no harness.
-    timeout-minutes: 60
+    #
+    # 60 -> 120 (D111). The harness re-runs the whole suite once per row, and the rows grow with
+    # every review round this project records — so its duration climbs on its own, with no change
+    # to the code under test. Measured: 1932s when this job was created (run 32889697083),
+    # 43m07s green on `main` (run 35623007068, 2026-09-21), and cancelled at this ceiling on the
+    # very next pull request (run 35667001548, 56m55s into the step). A 23% margin did not survive
+    # ordinary runner variance. This is the same shape D101 recorded for `install-guard` twice.
+    timeout-minutes: 120
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

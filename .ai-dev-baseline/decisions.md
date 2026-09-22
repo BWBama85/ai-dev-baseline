@@ -8290,3 +8290,29 @@ survive is the part a later reader needs.
              did not vary the position of the bad row. It is recorded because the next batching of
              a per-item validator will meet it again.
 - baseline-issue: #471
+
+## D111 — `pattern-ledger`'s ceiling rises to 120; the harness grows without its code changing
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   PR #480's `pattern-ledger` job was cancelled at its 60-minute ceiling (run
+             35667001548), 56m55s into the mutation step. The pull request touches
+             `scripts/check-lib.sh` and `scripts/lib/common.sh`, so the harness ran — but it
+             touches NONE of the code that harness exercises: `check-pattern-ledger.sh` drives
+             `check_mutation_pool`, and the diff changed only `check_mutation_rows` and
+             `check_copy_worktree`, neither of which that suite reaches (it copies with
+             `check_copy_subtrees`). So the red carried no information about the diff, and
+             re-running it would have been the lucky-green this baseline forbids.
+- decision:  `timeout-minutes` rises 60 -> 120 for the `pattern-ledger` job. The root cause is
+             that this harness's duration is a function of the LEDGER's row count, which grows
+             every time the resolver records a finding — so the job gets slower with no change to
+             the code it tests. Measured: 1932s when the job was split out (run 32889697083),
+             43m07s green on `main` the previous day (run 35623007068), 56m55s+ on the next pull
+             request. A 23% margin is not a margin for a quantity that rose 32% in a day.
+             This is the third instance of the shape D101 records for `install-guard`.
+- placement: `.github/workflows/ci.yml`
+- reason:    Raising the ceiling is the fix for THIS failure, and it is explicitly not the fix for
+             the growth. That is filed separately (#481): `check-pattern-ledger.sh` still runs the
+             WHOLE suite per mutant, where #468/D103 gave `check-settings-fragment` per-block
+             selection and cut it by an order of magnitude. Until that lands, every ceiling is
+             temporary.
+- baseline-issue: n/a
