@@ -2809,6 +2809,38 @@ cmd_dispatch_review() {
 
 _il_sweep_lock_name() { printf '%s.lock' "${1%.tsv}"; }   # <sweep-file basename>
 
+# _il_sweep_reusable <file> <as-name> <findings-digest> — may an EXISTING sweep file stand in for the
+# one this round would write? Prints nothing on yes; on no, says which and returns:
+#   18  the file does not parse, so nothing can be concluded from it
+#   20  it could not be read
+#   21  it parses but was written for DIFFERENT findings
+#
+# THE NAME IS NOT THE ANSWER. The file is named for the pull request and head, and both are the same
+# on a retry after another review thread arrives — so existence alone reports a sweep of the PREVIOUS
+# findings as this round's, the fixes go in, and only `record --sweep` notices, by refusing the new
+# class with 23 after the edits are already made. The header records the findings digest precisely so
+# this question can be answered before any of that.
+#
+# A MISMATCH IS REFUSED, NOT SILENTLY REFRESHED: the existing file carries marks for siblings already
+# fixed, and rewriting it would discard them. The operator reconciles, which is why the code is
+# distinct from "this head is swept".
+_il_sweep_reusable() {
+  local f="$1" as="$2" want="$3" hdr rc
+  hdr="$(adb_sweep_file_check "$f" "$as")"; rc=$?
+  case "$rc" in
+    0)  ;;
+    20) printf 'implement-lib: dispatch-sweep: the existing sweep %s could not be read\n' "$f" >&2; return 20 ;;
+    *)  printf 'implement-lib: dispatch-sweep: the existing sweep %s does not parse (rc %s) — it cannot be reused, and it is not overwritten\n' "$f" "$rc" >&2; return 18 ;;
+  esac
+  # field 4 of `<pr> TAB <head> TAB <classes> TAB <digest>`
+  local have="${hdr##*$'\t'}"
+  [ "$have" = "$want" ] && return 0
+  printf 'implement-lib: dispatch-sweep: %s was written for a DIFFERENT findings set (recorded %s, current %s).\n' \
+    "$f" "${have:0:12}" "${want:0:12}" >&2
+  printf 'implement-lib: dispatch-sweep: it is kept, marks and all. Reconcile it — or move it aside — and sweep again.\n' >&2
+  return 21
+}
+
 cmd_dispatch_sweep() {
   local effort="" skipped=0 pr="" findings="" dir token="" classes rc
   while [ "$#" -gt 0 ]; do
@@ -2865,11 +2897,15 @@ cmd_dispatch_sweep() {
 
   local name out digest nclasses stage sfd=""
   name="sweep-pr${pr}-${head}.tsv"; out="$dir/$name"
-  if [ -e "$out" ] || [ -L "$out" ]; then
-    printf 'implement-lib: dispatch-sweep: %s already exists — this head is swept; reuse it\n' "$out" >&2; return 17
-  fi
+  # THE DIGEST IS COMPUTED BEFORE THE REUSE CHECK, because the check needs it: a file named for this
+  # head can have been written for a DIFFERENT findings set, which is what happens when another
+  # thread arrives and the round is retried at the same head.
   digest="$(adb_sha256 "$findings")" \
     || { echo "implement-lib: dispatch-sweep: could not digest the findings input" >&2; return 20; }
+  if [ -e "$out" ] || [ -L "$out" ]; then
+    _il_sweep_reusable "$out" "$name" "$digest" || return $?
+    printf 'implement-lib: dispatch-sweep: %s already exists — this head is swept; reuse it\n' "$out" >&2; return 17
+  fi
   nclasses="$(printf '%s\n' "$classes" | awk 'NF' | wc -l | tr -d ' ')"
   stage="$dir/$name.stage.$$"
   _il_excl_create "$stage" sfd \
@@ -2944,6 +2980,16 @@ cmd_dispatch_sweep() {
     local -A want=() got=()
     local s r ev rest
     while IFS= read -r c; do [ -n "$c" ] && want[$c]=1; done <<< "$classes"
+    # THE ORIGINAL SITES, so a reply cannot hand back what it was given. The prompt asks for OTHER
+    # sites; echoing a named one is the easy failure mode, and nothing downstream could tell the
+    # difference — the row is well-formed, the ordinary fix for the named thread marks it fixed,
+    # and the round reports a sibling that was never searched for. Keyed on class AND site, because
+    # the same site legitimately appears under a different class.
+    local -A orig=()
+    local _oc _os
+    while IFS="$(printf '\t')" read -r _oc _os _ _ || [ -n "$_oc" ]; do
+      [ -n "$_oc" ] && [ -n "$_os" ] && orig["$_oc"$'\t'"$_os"]=1
+    done < "$findings"
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line%$'\r'}"
       case "$line" in ''|'```'*) continue ;; esac
@@ -2957,6 +3003,11 @@ cmd_dispatch_sweep() {
       case "$r" in
         found) if [ "$s" = "-" ] || ! adb_ledger_ok_span "$s"; then
                  exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a reply site was refused — refused whole" >&2; return 19
+               fi
+               if [ -n "${orig["$c"$'\t'"$s"]:-}" ]; then
+                 exec {sfd}>&-; rm -f "$stage" "$reply"
+                 printf 'implement-lib: dispatch-sweep: a reply reports %s as a SIBLING of class %s, but that is one of the sites the findings named — refused whole\n' "$s" "$c" >&2
+                 return 18
                fi ;;
         none)  [ "$s" = "-" ] || { exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a none row names a site — refused whole" >&2; return 18; } ;;
         *)     exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: a reply result is not found or none — refused whole" >&2; return 18 ;;
@@ -2984,8 +3035,14 @@ cmd_dispatch_sweep() {
   _il_claim_mutex_take "$dir" "$(_il_sweep_lock_name "$name")" \
     || { rm -f "$stage"; echo "implement-lib: dispatch-sweep: the sweep file is locked by another writer" >&2; return 20; }
   if [ -e "$out" ] || [ -L "$out" ]; then
+    # THE WINNER IS CHECKED, NOT ASSUMED. A racing sweep may have been dispatched for a different
+    # findings set; reporting it reusable would hand this round somebody else's answer.
+    local _rrc=0
+    _il_sweep_reusable "$out" "$name" "$digest" || _rrc=$?
     _il_claim_mutex_drop "$dir" "$(_il_sweep_lock_name "$name")"
-    rm -f "$stage"; printf 'implement-lib: dispatch-sweep: %s was published by another sweep meanwhile — kept\n' "$out" >&2; return 17
+    rm -f "$stage"
+    [ "$_rrc" -eq 0 ] || return "$_rrc"
+    printf 'implement-lib: dispatch-sweep: %s was published by another sweep meanwhile — kept\n' "$out" >&2; return 17
   fi
   if ! mv "$stage" "$out" 2>/dev/null; then
     _il_claim_mutex_drop "$dir" "$(_il_sweep_lock_name "$name")"

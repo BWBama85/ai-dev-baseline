@@ -619,8 +619,14 @@ round summary instead. Then sweep, from the PR head, before any edit:
 SWEEP_HEAD="$(git rev-parse HEAD)"
 SWEEP_FILE=".codex/state/sweep-pr${PR_NUM}-${SWEEP_HEAD}.tsv"
 FINDINGS="$SWEEP_FILE.findings"   # the file you just wrote, one line per legitimate thread finding
-REVIEW_TOKEN="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" resolve review | head -n 1)"
+# THE RUNG NAMES THE AGENT; TAKE THE TOKEN FROM IT. `resolve review` lists the CONFIGURED tokens in
+# order, while `review-rung` picks the first USABLE one and prefers independence — so the two answer
+# different questions. With `review = ["gemini", "codex"]` and only Codex installed the rung is
+# `independent codex missing=gemini` while the first configured token is `gemini`: the sweep would
+# dispatch a CLI that is not there. With the driver listed first and an independent reviewer second
+# it is worse, because it reports an independent rung and invokes the same model.
 RUNG="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung codex)"
+REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
 EFFORT="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
 case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
 sweep_once() {
