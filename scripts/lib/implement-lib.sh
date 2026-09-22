@@ -250,8 +250,8 @@ _il_claim_expiry() {
 
 _IL_CLAIM_MUTEX=".claim-mutex"
 # Serialize the two writers of a claim that may be LIVE — lease renewal, and admit's
-# expired-claim reap — so neither acts on a read the other has invalidated. mkdir is the atomic
-# take, rmdir the drop. A holder that died (or a machine that slept) is not honored forever:
+# expired-claim reap — so neither acts on a read the other has invalidated. adb_mkdir_excl is the
+# atomic take (D105), adb_rmdir_excl the drop. A holder that died (or a machine that slept) is not honored forever:
 # both critical sections are milliseconds, so a mutex older than 60s is stale-broken. The wait
 # is bounded (~2s) and callers FAIL CLOSED on it — refusing beats acting unserialized. The
 # residual, stated: a holder suspended >60s inside its microseconds-long critical section can
@@ -259,14 +259,14 @@ _IL_CLAIM_MUTEX=".claim-mutex"
 _il_claim_mutex_take() {   # <state-dir> [lock-name, default the run claim's]
   local dir="$1" mx="${2:-$_IL_CLAIM_MUTEX}" m now grave gm
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    if mkdir "$dir/$mx" 2>/dev/null; then
+    if adb_mkdir_excl "$dir/$mx"; then
       # An OWNER MARK inside the instance binds the later drop to it: a displaced holder whose
       # instance was misgrabbed must not rmdir whatever successor now occupies the pathname.
       # A MARK THAT CANNOT BE WRITTEN IS NOT A TAKE: the drop finds no mark and leaves the
       # directory standing, so every later take waits out the stale age — the instance is
       # released here instead, and the caller fails closed.
       if ! : > "$dir/$mx/.owner.$$" 2>/dev/null; then
-        rmdir "$dir/$mx" 2>/dev/null || :
+        adb_rmdir_excl "$dir/$mx" || :
         return 1
       fi
       return 0
@@ -311,7 +311,7 @@ _il_claim_mutex_drop() {   # <state-dir> [lock-name] — releases only THIS proc
   local mx="${2:-$_IL_CLAIM_MUTEX}"
   [ -e "$1/$mx/.owner.$$" ] || return 0
   rm -f "$1/$mx/.owner.$$" 2>/dev/null
-  rmdir "$1/$mx" 2>/dev/null || :
+  adb_rmdir_excl "$1/$mx" || :
 }
 
 # Take the claim, or fail because someone else holds it.
@@ -463,8 +463,8 @@ _il_drop() {   # <claim-path> <token>
 }
 
 # --- the admission lock ---------------------------------------------------------------------------
-# `mkdir` is the one create-or-fail primitive POSIX gives us for a DIRECTORY, and unlike every
-# file-level trick it needs no second operation to be safe. Admission runs inside it, so the whole
+# A directory is the one create-or-fail lock POSIX gives us, taken through `adb_mkdir_excl` because a
+# bare `mkdir` is not exclusive under uutils (D105). Admission runs inside it, so the whole
 # read-judge-break-acquire-clear sequence is single-threaded per state directory.
 #
 # WHY THIS EXISTS RATHER THAN MORE CARE IN `_il_break`. Verifying the operand made the break refuse
@@ -483,12 +483,12 @@ _il_drop() {   # <claim-path> <token>
 _IL_ADMIT_LOCK=.admit.lock
 _il_admit_lock() {   # <state-dir>
   local lock="$1/$_IL_ADMIT_LOCK"
-  mkdir "$lock" 2>/dev/null && return 0
+  adb_mkdir_excl "$lock" && return 0
   # Stale? `find -mmin` is understood by both BSD and GNU find, which is the whole platform set.
   if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ]; then
     echo "implement-lib: NOTE — breaking an abandoned admission lock (>5 min old): $lock" >&2
     rm -rf "$lock" 2>/dev/null
-    mkdir "$lock" 2>/dev/null && return 0
+    adb_mkdir_excl "$lock" && return 0
   fi
   return 1
 }

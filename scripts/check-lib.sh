@@ -12,6 +12,8 @@
 #   4. PR payload builders (§ further down) — check_pr_*_json, check_pr_json, check_declare_bots.
 #   5. mutation harness (§ with check_mutate_line) — check_mutate_literal, check_mut,
 #      check_mutation_pool: a defect per row into a tree COPY, require RED (family 2's counters).
+#   6. blocks and per-test rows (§ #468) — check_blocks_init, check_block, check_row,
+#      check_mutation_rows: a mutant runs only the block that witnesses it, plus its dependencies.
 #
 # Sourced, never executed. Lives OUTSIDE scripts/lib/ on purpose: install.sh symlinks the whole
 # scripts/lib dir into ~/.<agent>/scripts/lib, and check/test code must not ship into a user's
@@ -291,21 +293,29 @@ _check_mut_one() {   # <index> <workdir> <prepare-fn> <run-fn>
   # The status AND the witness: matching printed text alone accepts a child that prints the expected
   # line and then exits 0. Exactly 1 is a failed assertion; anything else is the suite dying. (D68)
   out="$("$run" "$copy" 2>&1)"; src=$?
+  _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_MUT_WIT[$i]}"
+  return 0
+}
+
+# _check_mut_score <verdict-file> <output> <status> <witness> — the ONE verdict taxonomy, shared by
+# both pools. Status exactly 1 AND a `FAIL:` line carrying the witness is the only green-for-the-row
+# answer; everything else is named. (D68)
+_check_mut_score() {
+  local vf="$1" out="$2" src="$3" wit="$4"
   case "$src" in
     1)
-      if _check_mut_witness "$out" "${CHECK_MUT_WIT[$i]}"; then
-        printf 'ok|applied\n' > "$copy/verdict"
+      if _check_mut_witness "$out" "$wit"; then
+        printf 'ok|applied\n' > "$vf"
       else
         case "$out" in
           *"FAIL:"*) printf 'bad|went red, but NOT on its witness [%s] — caught by accident, not by the assertion that claims to cover it\n' \
-                       "${CHECK_MUT_WIT[$i]}" > "$copy/verdict" ;;
-          *)         printf 'bad|exited 1 with no FAIL: line at all — it aborted, it did not fail an assertion\n' > "$copy/verdict" ;;
+                       "$wit" > "$vf" ;;
+          *)         printf 'bad|exited 1 with no FAIL: line at all — it aborted, it did not fail an assertion\n' > "$vf" ;;
         esac
       fi ;;
-    0) printf 'bad|stayed GREEN (exit 0) — nothing here can detect this defect\n' > "$copy/verdict" ;;
-    *) printf 'bad|exited %s, not 1 — the suite ABORTED rather than failing its assertion\n' "$src" > "$copy/verdict" ;;
+    0) printf 'bad|stayed GREEN (exit 0) — nothing here can detect this defect\n' > "$vf" ;;
+    *) printf 'bad|exited %s, not 1 — the suite ABORTED rather than failing its assertion\n' "$src" > "$vf" ;;
   esac
-  return 0
 }
 
 # check_mutation_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run every table row
@@ -368,11 +378,480 @@ check_mutation_pool() {
   [ "$applied" -eq "$n" ] || bad "$label --mutation: only $applied of $n mutations actually applied — the rest tested nothing"
 }
 
+# --- blocks and per-test mutation rows (#468) --------------------------------------------------
+# A suite that declares BLOCKS lets a mutant run only the block its witness lives in, plus the blocks
+# that one declares it needs, instead of the whole suite — the technique Stryker calls `perTest`.
+# A block is written, at the start of a line, exactly as
+#
+#     if check_block <id> [<dep-id>...]; then
+#       ...
+#     fi
+#
+# and the last block is followed, at the start of a line, by `check_blocks_done`. That terminator is
+# what bounds the last block's source: a suite's own sections hold top-level `if … fi` of their own, so
+# no `fi` can mark where a block ends. `check_blocks_init <suite-file>` reads those lines from the suite's own SOURCE before any block
+# runs, which is what lets a selected block's dependency closure be known when the earlier blocks are
+# reached. Ids are [a-z0-9-] and unique; a dependency must be declared earlier in the file.
+#   ADB_CHECK_BLOCK=<id>[,<id>...] run the prelude, the named block(s) and their dependency closure; skip the rest
+#   ADB_CHECK_BLOCK_COUNTS=<file>  append `<id><TAB><assertions>` for every block that ran
+# A malformed, duplicate, out-of-order or unknown declaration exits 2 — never 1, which is a failed
+# assertion, and never 0. Declared dependencies are TRUSTED ONLY ONCE PROVEN: `check_mutation_rows`
+# requires each selected block, unmutated, to run exactly the assertions it runs in a full pass.
+
+CHECK_BLOCK_IDS=(); CHECK_BLOCK_DEPS=(); CHECK_BLOCK_LINES=()
+CHECK_BLOCK_SEL=""; CHECK_BLOCK_SELSET=" "; CHECK_BLOCK_RUNSET=" "; CHECK_BLOCK_NEXT=0
+CHECK_BLOCK_CUR=""; CHECK_BLOCK_CUR_P0=0; CHECK_BLOCK_SEL_N=0; CHECK_BLOCK_ERR=""
+CHECK_PB_IDS=(); CHECK_PB_DEPS=(); CHECK_PB_LINES=(); CHECK_PB_END=0
+
+# _check_blocks_parse <suite-file> — fill CHECK_PB_IDS / CHECK_PB_DEPS / CHECK_PB_LINES from the
+# declarations. Returns 0, or 2 with the first problem in CHECK_BLOCK_ERR. A declaration spelled any
+# other way (indented, trailing text) is refused rather than skipped: an unscanned block could never
+# be selected, and every row naming it would be refused for a reason nobody could see.
+_check_blocks_parse() {
+  local f="$1" ln=0 line rest id dep i known
+  local -a parts
+  CHECK_PB_IDS=(); CHECK_PB_DEPS=(); CHECK_PB_LINES=(); CHECK_PB_END=0; CHECK_BLOCK_ERR=""
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then CHECK_BLOCK_ERR="check-blocks: cannot read $f"; return 2; fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    ln=$((ln + 1))
+    case "$line" in
+      "check_blocks_done")
+        if [ "$CHECK_PB_END" -ne 0 ]; then CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln repeats check_blocks_done"; return 2; fi
+        CHECK_PB_END="$ln"; continue ;;
+      "if check_block "*)
+        if [ "$CHECK_PB_END" -ne 0 ]; then CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln declares a block after check_blocks_done"; return 2; fi ;;
+      [[:space:]]*"if check_block "*)
+        CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln declares a block that is not at the start of the line"; return 2 ;;
+      *) continue ;;
+    esac
+    case "$line" in
+      *"; then") ;;
+      *) CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln is not in the form 'if check_block <id> [<dep>...]; then'"; return 2 ;;
+    esac
+    rest="${line#if check_block }"; rest="${rest%; then}"
+    read -r -a parts <<< "$rest"
+    if [ "${#parts[@]}" -eq 0 ]; then CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln names no block id"; return 2; fi
+    id="${parts[0]}"
+    for dep in "${parts[@]}"; do
+      case "$dep" in
+        ''|*[!a-z0-9-]*) CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln has an id outside [a-z0-9-]: '$dep'"; return 2 ;;
+      esac
+    done
+    for (( i = 0; i < ${#CHECK_PB_IDS[@]}; i++ )); do
+      if [ "${CHECK_PB_IDS[$i]}" = "$id" ]; then
+        CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln declares block '$id' twice (first at line ${CHECK_PB_LINES[$i]})"; return 2
+      fi
+    done
+    for (( i = 1; i < ${#parts[@]}; i++ )); do
+      known=0
+      for dep in ${CHECK_PB_IDS[@]+"${CHECK_PB_IDS[@]}"}; do [ "$dep" = "${parts[$i]}" ] && known=1; done
+      if [ "$known" -eq 0 ]; then
+        CHECK_BLOCK_ERR="check-blocks: ${f##*/}:$ln block '$id' needs '${parts[$i]}', which is not declared EARLIER"; return 2
+      fi
+    done
+    CHECK_PB_IDS+=("$id"); CHECK_PB_LINES+=("$ln"); CHECK_PB_DEPS+=("${parts[*]:1}")
+  done < "$f"
+  if [ "${#CHECK_PB_IDS[@]}" -gt 0 ] && [ "$CHECK_PB_END" -eq 0 ]; then
+    CHECK_BLOCK_ERR="check-blocks: ${f##*/} declares blocks but no 'check_blocks_done' line after the last one"; return 2
+  fi
+  return 0
+}
+
+# check_blocks_init <suite-file> — scan the declarations and resolve ADB_CHECK_BLOCK. Call once, after
+# sourcing this file and before the first block. Exits 2 on any declaration problem or unknown id.
+# Globals: CHECK_BLOCK_* (written).
+check_blocks_init() {
+  local i sel=-1 id dep
+  if ! _check_blocks_parse "$1"; then printf '%s\n' "$CHECK_BLOCK_ERR" >&2; exit 2; fi
+  CHECK_BLOCK_IDS=(); CHECK_BLOCK_DEPS=(); CHECK_BLOCK_LINES=()
+  for (( i = 0; i < ${#CHECK_PB_IDS[@]}; i++ )); do
+    CHECK_BLOCK_IDS+=("${CHECK_PB_IDS[$i]}"); CHECK_BLOCK_DEPS+=("${CHECK_PB_DEPS[$i]}"); CHECK_BLOCK_LINES+=("${CHECK_PB_LINES[$i]}")
+  done
+  CHECK_BLOCK_SEL="${ADB_CHECK_BLOCK:-}"; CHECK_BLOCK_SELSET=" "; CHECK_BLOCK_RUNSET=" "; CHECK_BLOCK_NEXT=0
+  CHECK_BLOCK_SEL_N=0
+  [ -n "$CHECK_BLOCK_SEL" ] || return 0
+  local want found
+  case ",$CHECK_BLOCK_SEL," in
+    *,,*) printf "check-blocks: ADB_CHECK_BLOCK '%s' has an empty element\n" "$CHECK_BLOCK_SEL" >&2; exit 2 ;;
+  esac
+  for want in ${CHECK_BLOCK_SEL//,/ }; do
+    case "$CHECK_BLOCK_SELSET" in
+      *" $want "*) printf "check-blocks: ADB_CHECK_BLOCK names '%s' twice\n" "$want" >&2; exit 2 ;;
+    esac
+    found=-1
+    for (( i = 0; i < ${#CHECK_BLOCK_IDS[@]}; i++ )); do [ "${CHECK_BLOCK_IDS[$i]}" = "$want" ] && found=$i; done
+    if [ "$found" -lt 0 ]; then
+      printf "check-blocks: ADB_CHECK_BLOCK names '%s', which is not a declared block in %s\n" "$want" "${1##*/}" >&2; exit 2
+    fi
+    [ "$found" -gt "$sel" ] && sel=$found
+    CHECK_BLOCK_SELSET="$CHECK_BLOCK_SELSET$want "
+  done
+  # Dependencies are always EARLIER, so one pass from the last selected block backwards closes the set.
+  CHECK_BLOCK_RUNSET="$CHECK_BLOCK_SELSET"
+  for (( i = sel; i >= 0; i-- )); do
+    id="${CHECK_BLOCK_IDS[$i]}"
+    case "$CHECK_BLOCK_RUNSET" in
+      *" $id "*) for dep in ${CHECK_BLOCK_DEPS[$i]}; do
+                   case "$CHECK_BLOCK_RUNSET" in *" $dep "*) ;; *) CHECK_BLOCK_RUNSET="$CHECK_BLOCK_RUNSET$dep " ;; esac
+                 done ;;
+    esac
+  done
+  return 0
+}
+
+# check_block <id> [<dep-id>...] — the condition of a block's `if`. Returns 0 to run the block, 1 to
+# skip it. Exits 2 when blocks are reached out of declaration order, which is how a declaration the
+# scan did not see — or a block nested inside a conditional — is caught instead of silently skipped.
+check_block() {
+  local id="$1" idx="$CHECK_BLOCK_NEXT"
+  _check_block_close
+  if [ "$idx" -ge "${#CHECK_BLOCK_IDS[@]}" ] || [ "${CHECK_BLOCK_IDS[$idx]}" != "$id" ]; then
+    printf "check-blocks: block '%s' was reached out of declaration order (expected '%s') — call check_blocks_init, and declare every block at the start of a line\n" \
+      "$id" "${CHECK_BLOCK_IDS[$idx]:-none}" >&2
+    exit 2
+  fi
+  CHECK_BLOCK_NEXT=$((idx + 1))
+  if [ -n "$CHECK_BLOCK_SEL" ]; then
+    case "$CHECK_BLOCK_RUNSET" in *" $id "*) ;; *) return 1 ;; esac
+  fi
+  CHECK_BLOCK_CUR="$id"; CHECK_BLOCK_CUR_P0=$((pass + fail))
+  return 0
+}
+
+# check_blocks_done — the line after the last block. Closes its count and requires that every declared
+# block was reached, so a suite that stopped early cannot pass as a complete one.
+check_blocks_done() {
+  _check_block_close
+  [ "$CHECK_BLOCK_NEXT" -eq "${#CHECK_BLOCK_IDS[@]}" ] \
+    || bad "check-blocks: only $CHECK_BLOCK_NEXT of ${#CHECK_BLOCK_IDS[@]} declared blocks were reached before check_blocks_done"
+}
+
+# _check_block_close — attribute the assertions counted since the running block began to it.
+_check_block_close() {
+  [ -n "$CHECK_BLOCK_CUR" ] || return 0
+  local n=$(( pass + fail - CHECK_BLOCK_CUR_P0 ))
+  [ -z "${ADB_CHECK_BLOCK_COUNTS:-}" ] || printf '%s\t%s\n' "$CHECK_BLOCK_CUR" "$n" >> "$ADB_CHECK_BLOCK_COUNTS"
+  case "$CHECK_BLOCK_SELSET" in *" $CHECK_BLOCK_CUR "*) CHECK_BLOCK_SEL_N=$((CHECK_BLOCK_SEL_N + n)) ;; esac
+  CHECK_BLOCK_CUR=""
+}
+
+# _check_blocks_finish — called by check_summary. Reports a selection and refuses one that proved
+# nothing, and refuses a full run that did not reach every declared block.
+_check_blocks_finish() {
+  _check_block_close
+  [ "${#CHECK_BLOCK_IDS[@]}" -gt 0 ] || return 0
+  if [ -n "$CHECK_BLOCK_SEL" ]; then
+    printf "check-blocks: ran selected block(s) '%s' with %d dependency block(s); %d assertion(s) in the selection\n" \
+      "$CHECK_BLOCK_SEL" "$(( $(printf '%s' "$CHECK_BLOCK_RUNSET" | wc -w) - $(printf '%s' "$CHECK_BLOCK_SELSET" | wc -w) ))" "$CHECK_BLOCK_SEL_N"
+    [ "$CHECK_BLOCK_SEL_N" -gt 0 ] \
+      || bad "check-blocks: the selection '$CHECK_BLOCK_SEL' ran NO assertions — a selection that proves nothing"
+  fi
+  [ "$CHECK_BLOCK_NEXT" -eq "${#CHECK_BLOCK_IDS[@]}" ] \
+    || bad "check-blocks: only $CHECK_BLOCK_NEXT of ${#CHECK_BLOCK_IDS[@]} declared blocks were reached — the suite ended early"
+}
+
+# check_row <name> <target> <block> <old-literal> <new-literal> <witness> — append one PER-TEST row.
+# <target> is the file to mutate, relative to the tree root; <block> is the declared block — or a
+# comma-separated list of blocks — whose assertions must catch the defect; <witness> is the FAIL: text
+# that proves they did. Name several blocks only when the witness text genuinely lives in each. Fixed
+# strings.
+CHECK_ROW_NAMES=(); CHECK_ROW_TGT=(); CHECK_ROW_BLOCK=(); CHECK_ROW_OLD=(); CHECK_ROW_NEW=(); CHECK_ROW_WIT=()
+check_row() {
+  CHECK_ROW_NAMES+=("$1"); CHECK_ROW_TGT+=("$2"); CHECK_ROW_BLOCK+=("$3")
+  CHECK_ROW_OLD+=("$4"); CHECK_ROW_NEW+=("$5"); CHECK_ROW_WIT+=("$6")
+}
+
+# _check_literal_count <file> <literal> — print how many positions <literal> STARTS at in <file>,
+# overlapping starts included (`aa` in `aaa` is two), which is what makes "exactly once" mean that a
+# first-match rewrite has only one place it could apply. Returns 2 for a missing or unreadable file, 3 when the scan itself failed.
+_check_literal_count() {
+  [ -f "$1" ] && [ -r "$1" ] || return 2
+  ADB_MUT_OLD="$2" awk '
+    BEGIN { o = ENVIRON["ADB_MUT_OLD"]; n = 0 }
+    { s = $0; while ((i = index(s, o)) > 0) { n++; s = substr(s, i + 1) } }
+    END { print n }
+  ' "$1" 2>/dev/null || return 3
+}
+
+# _check_row_one <index> <workdir> <prepare-fn> <run-fn> <full> — one per-test row, start to verdict.
+_check_row_one() {
+  local i="$1" copy="$2/row-$1" prep="$3" run="$4" full="$5" root tgt out src cnt rc
+  if ! root="$("$prep" "$copy")" || [ -z "$root" ]; then
+    printf 'bad|could not build the tree copy\n' > "$copy/verdict" 2>/dev/null; return 0
+  fi
+  tgt="$root/${CHECK_ROW_TGT[$i]}"
+  # CHECKED AGAIN ON THE COPY, immediately before the rewrite: the preflight read the pristine tree,
+  # and a prepare step that transforms what it copies must not turn "exactly once" into "first of two".
+  cnt="$(_check_literal_count "$tgt" "${CHECK_ROW_OLD[$i]}")"; rc=$?
+  if [ "$rc" -ne 0 ] || [ "$cnt" != 1 ]; then
+    printf 'bad|the injection did not apply — the copied target holds the literal %s time(s), so this row tests NOTHING\n' "${cnt:-?}" > "$copy/verdict"; return 0
+  fi
+  check_mutate_literal "$tgt" "${CHECK_ROW_OLD[$i]}" "${CHECK_ROW_NEW[$i]}"; rc=$?
+  case "$rc" in
+    0) ;;
+    2) printf 'bad|the injection did not apply — this row tests NOTHING\n' > "$copy/verdict"; return 0 ;;
+    *) printf 'bad|the rewrite failed\n' > "$copy/verdict"; return 0 ;;
+  esac
+  if [ "$full" -eq 1 ]; then
+    out="$(ADB_CHECK_BLOCK="" "$run" "$root" 2>&1)"; src=$?
+  else
+    out="$(ADB_CHECK_BLOCK="${CHECK_ROW_BLOCK[$i]}" "$run" "$root" 2>&1)"; src=$?
+  fi
+  _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_ROW_WIT[$i]}"
+  return 0
+}
+
+# _check_block_ctl <workdir> <prepare-fn> <run-fn> <block> — prove one selection, unmutated, on its own tree
+# copy (a runner may write inside its root, so no two runs share one): it must pass and run exactly the assertions the full control counted for that block. Writes `ok` or `bad|<why>`.
+_check_block_ctl() {
+  local wd="$1" prep="$2" run="$3" b="$4" key="${4//,/+}" root out src want got
+  if ! root="$("$prep" "$wd/ctl-$key")" || [ -z "$root" ]; then
+    printf 'bad|its control tree copy could not be built\n' > "$wd/ctl-$key.verdict"; return 0
+  fi
+  out="$(ADB_CHECK_BLOCK="$b" ADB_CHECK_BLOCK_COUNTS="$wd/ctl-$key.counts" "$run" "$root" 2>&1)"; src=$?
+  want="$(awk -F '\t' -v bs=",$b," 'index(bs, "," $1 ",") { s += $2; hit = 1 } END { if (hit) print s }' "$wd/control.counts" 2>/dev/null)"
+  got="$(awk -F '\t' -v bs=",$b," 'index(bs, "," $1 ",") { s += $2; hit = 1 } END { if (hit) print s }' "$wd/ctl-$key.counts" 2>/dev/null)"
+  if [ "$src" -ne 0 ]; then
+    printf 'bad|its unmutated control failed (rc %s) — a dependency is undeclared, or the block is red on its own\n' "$src" > "$wd/ctl-$key.verdict"
+  elif [ -z "$want" ] || [ "$want" != "$got" ]; then
+    printf 'bad|its unmutated control ran %s assertion(s) where the full suite runs %s — the selection does not reproduce the block\n' "${got:-no}" "${want:-none}" > "$wd/ctl-$key.verdict"
+  else
+    printf 'ok\n' > "$wd/ctl-$key.verdict"
+  fi
+  return 0
+}
+
+# check_mutation_rows <label> <workdir> <suite-path> <prepare-fn> <run-fn> <pool-cap> — run every
+# per-test row through a bounded pool. <suite-path> is the suite's path relative to the tree root.
+# Callbacks: <prepare-fn> <copy-dir> builds a tree copy and PRINTS ITS ROOT; <run-fn> <root> runs the
+# suite there, and its output and status are the verdict.
+#   1. Every row's declaration is checked against the PRISTINE tree before anything is built: target
+#      present and readable, literal non-empty, single-line, different from its replacement and
+#      present EXACTLY once, block declared, witness present in that block's source. Any failure
+#      stops the pool with every problem named.
+#   1b. Rows whose TARGET the diff does not touch are GATED (#470): `mutation-gate.sh rows` is asked
+#      once for the whole table — once, not once per row, or the gate would cost more git than it
+#      saves suite — and a gated row is never built, never mutated and never run. Gating is decided
+#      AFTER the declaration pass on purpose: a row whose literal has drifted is a defect in the
+#      table itself, and a gate that skipped it would hide that until the nightly. Every fail-closed
+#      answer, and every answer this function cannot parse, runs the whole table and says so.
+#      When every row is gated the control is not run either — there is nothing left to control.
+#   2. One full unmutated run must pass; it records each block's assertion count.
+#   3. Each selected block's unmutated control must reproduce that count (skipped in full-suite mode).
+#   4. Each row runs only its block and that block's dependencies — or the whole suite when
+#      ADB_MUTATION_FULL_SUITE=1, the nightly's mode, which also catches a witness that has drifted.
+#      ADB_MUTATION_FULL_SUITE governs BREADTH per mutant and gating governs WHICH mutants; they are
+#      independent, and the nightly turns gating off with ADB_MUTATION_RUN_ALL rather than with this.
+check_mutation_rows() {
+  local label="$1" wd="$2" suite="$3" prep="$4" run="$5" cap="$6"
+  local n i j pool running=0 errs=0 cnt rc b bi text wit full=0 root blocks=" " nblocks=0
+  local applied=0 red=0 scored=0 verdict why
+  local gate_out gate_rc gate_line gi gd gate_bad=0 gated=0 gated_tgts=""
+  local -a gate_dec=()
+  n="${#CHECK_ROW_NAMES[@]}"
+  if [ "$n" -eq 0 ]; then bad "$label --mutation: the row table is EMPTY — this harness proves nothing"; return 1; fi
+  if ! command -v adb_pool_size >/dev/null 2>&1; then
+    bad "$label --mutation: adb_pool_size is unavailable — source scripts/lib/common.sh before check-lib.sh"; return 1
+  fi
+  [ "${ADB_MUTATION_FULL_SUITE:-0}" = 1 ] && full=1
+  pool="$(adb_pool_size "$cap")"
+  # A FRESH workdir: counts and verdicts are read back by name, so a previous run's files would be scored.
+  if [ -e "$wd" ] && [ -n "$(ls -A "$wd" 2>/dev/null)" ]; then
+    bad "$label --mutation: workdir '$wd' is not empty — a previous run's counts or verdicts would be scored"; return 1
+  fi
+  mkdir -p "$wd"
+
+  # 1. declarations, against the pristine tree
+  if ! _check_blocks_parse "$ROOT/$suite"; then
+    bad "$label --mutation: $CHECK_BLOCK_ERR"; return 1
+  fi
+  for (( i = 0; i < n; i++ )); do
+    local nm="${CHECK_ROW_NAMES[$i]}" tg="${CHECK_ROW_TGT[$i]}" old="${CHECK_ROW_OLD[$i]}"
+    wit="${CHECK_ROW_WIT[$i]}"; b="${CHECK_ROW_BLOCK[$i]}"
+    if [ -z "$old" ] || [ -z "$wit" ]; then
+      bad "row '$nm': its literal or its witness is EMPTY"; errs=$((errs + 1)); continue
+    fi
+    case "$old" in *$'\n'*) bad "row '$nm': its literal spans lines, and a line-wise rewrite can never apply it"; errs=$((errs + 1)); continue ;; esac
+    if [ "$old" = "${CHECK_ROW_NEW[$i]}" ]; then
+      bad "row '$nm': its replacement equals its literal — it injects no defect"; errs=$((errs + 1)); continue
+    fi
+    cnt="$(_check_literal_count "$ROOT/$tg" "$old")"; rc=$?
+    case "$rc" in
+      0) ;;
+      2) bad "row '$nm': target '$tg' is missing or unreadable (witness: $wit)"; errs=$((errs + 1)); continue ;;
+      *) bad "row '$nm': target '$tg' could not be scanned (witness: $wit)"; errs=$((errs + 1)); continue ;;
+    esac
+    if [ "$cnt" -eq 0 ]; then
+      bad "row '$nm': its literal is ABSENT from '$tg' — the code moved under it (witness: $wit)"; errs=$((errs + 1)); continue
+    elif [ "$cnt" -gt 1 ]; then
+      bad "row '$nm': its literal occurs $cnt times in '$tg' — a first-match rewrite could mutate the wrong one (witness: $wit)"; errs=$((errs + 1)); continue
+    fi
+    local one undeclared="" seen=0
+    text=""
+    for one in ${b//,/ }; do
+      bi=-1
+      for (( j = 0; j < ${#CHECK_PB_IDS[@]}; j++ )); do [ "${CHECK_PB_IDS[$j]}" = "$one" ] && bi=$j; done
+      if [ "$bi" -lt 0 ]; then undeclared="$one"; break; fi
+      if [ $((bi + 1)) -lt "${#CHECK_PB_IDS[@]}" ]; then
+        text="$text$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_LINES[bi + 1] - 1 ))p" "$ROOT/$suite")"
+      else
+        text="$text$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_END - 1 ))p" "$ROOT/$suite")"
+      fi
+      seen=$((seen + 1))
+    done
+    if [ -n "$undeclared" ] || [ "$seen" -eq 0 ]; then
+      bad "row '$nm': block '${undeclared:-$b}' is not declared in $suite"; errs=$((errs + 1)); continue
+    fi
+    case "$text" in
+      *"$wit"*) ;;
+      *) bad "row '$nm': witness '$wit' does not appear in block(s) '$b' — selecting them could never show it"; errs=$((errs + 1)); continue ;;
+    esac
+  done
+  if [ "$errs" -gt 0 ]; then
+    bad "$label --mutation: $errs row declaration(s) are invalid — nothing was built or run"; return 1
+  fi
+
+  # 1b. per-row gating (#470) — ONE call for the whole table, after the declaration pass.
+  # EMPTY, not `run`: every RUN-ALL path below fills the table explicitly, so an empty slot means
+  # the gate owed a decision and did not send one. Defaulting to `run` here would be fail-closed
+  # and silent, and the gap check below could never fire.
+  for (( i = 0; i < n; i++ )); do gate_dec+=("") ; done
+  gate_out="$(for (( i = 0; i < n; i++ )); do printf '%s\t%s\n' "$i" "${CHECK_ROW_TGT[$i]}"; done \
+    | bash "$ROOT/scripts/mutation-gate.sh" rows "$suite" 2>&1)"; gate_rc=$?
+  gate_line="$(printf '%s\n' "$gate_out" | head -1)"
+  case "$gate_rc" in
+    0)
+      # PARSED, NOT TRUSTED: a decision this function cannot read is a broken gate, and running the
+      # table is the only answer that cannot lose coverage. It is said out loud either way.
+      # EXACTLY ONCE PER INDEX, and no line outside the grammar. Ignoring a malformed extra line,
+      # an out-of-range id or a duplicate let a reply that was partly corrupt still gate every row
+      # — the opposite of what the comment above claims. Anything unexpected voids the whole reply.
+      gate_bad=0
+      while IFS="$(printf '\t')" read -r gi gd || [ -n "$gi" ]; do
+        [ -n "$gi" ] || continue
+        case "$gi" in *[!0-9]*) gate_bad=1; break ;; esac
+        [ "$gi" -lt "$n" ] || { gate_bad=1; break ; }
+        [ -z "${gate_dec[$gi]}" ] || { gate_bad=1; break ; }   # answered twice
+        case "$gd" in run|skip) gate_dec[$gi]="$gd" ;; *) gate_bad=1; break ;; esac
+      done <<< "$(printf '%s\n' "$gate_out" | tail -n +2)"
+      if [ "$gate_bad" -eq 1 ]; then for (( i = 0; i < n; i++ )); do gate_dec[$i]=""; done; fi
+      for (( i = 0; i < n; i++ )); do
+        if [ -z "${gate_dec[$i]}" ]; then
+          printf '%s --mutation: NOTE — the row gate returned no usable decision for row %s; every row runs (fail-closed)\n' "$label" "$i"
+          for (( j = 0; j < n; j++ )); do gate_dec[$j]=run; done
+          gate_line="RUN-ALL: $suite — the gate's per-row answer could not be read (fail-closed)"
+          break
+        fi
+      done ;;
+    11|12)
+      # Both are RUN-ALL and the gate said so on its own line; fill the table to match it.
+      for (( i = 0; i < n; i++ )); do gate_dec[$i]=run; done ;;
+    *)
+      printf '%s --mutation: NOTE — the row gate failed (rc %s); every row runs (fail-closed)\n' "$label" "$gate_rc"
+      for (( i = 0; i < n; i++ )); do gate_dec[$i]=run; done
+      gate_line="RUN-ALL: $suite — the row gate failed with rc $gate_rc (fail-closed)" ;;
+  esac
+  printf '%s\n' "$gate_line"
+  for (( i = 0; i < n; i++ )); do
+    [ "${gate_dec[$i]}" = skip ] || continue
+    gated=$((gated + 1))
+    case "$gated_tgts" in *" ${CHECK_ROW_TGT[$i]} "*) ;; *) gated_tgts="$gated_tgts ${CHECK_ROW_TGT[$i]} " ;; esac
+  done
+  if [ "$gated" -eq "$n" ]; then
+    # NO CONTROL EITHER: it exists to give the rows a green baseline, and there are no rows.
+    printf '\n%s --mutation: 0/%d row(s) run — every row gated (targets:%s)\n' \
+      "$label" "$n" "${gated_tgts% }"
+    return 0
+  fi
+
+  # The block set is built from the rows that will RUN: a control for a block only gated rows
+  # select is a suite run nothing consumes.
+  for (( i = 0; i < n; i++ )); do
+    [ "${gate_dec[$i]}" = run ] || continue
+    b="${CHECK_ROW_BLOCK[$i]}"
+    case "$blocks" in *" $b "*) ;; *) blocks="$blocks$b "; nblocks=$((nblocks + 1)) ;; esac
+  done
+
+  # 2. one full, unmutated control
+  if ! root="$("$prep" "$wd/control")" || [ -z "$root" ]; then
+    bad "$label --mutation: the control tree copy could not be built"; return 1
+  fi
+  : > "$wd/control.counts"
+  ADB_CHECK_BLOCK="" ADB_CHECK_BLOCK_COUNTS="$wd/control.counts" "$run" "$root" > "$wd/control.out" 2>&1; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    bad "$label --mutation: the UNMUTATED suite failed (rc $rc) — no row can be scored against a red baseline"; return 1
+  fi
+
+  # 3. each selected block, unmutated, must reproduce its own count
+  if [ "$full" -eq 0 ]; then
+    running=0
+    for b in $blocks; do
+      _check_block_ctl "$wd" "$prep" "$run" "$b" &
+      running=$((running + 1))
+      if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
+    done
+    wait
+  fi
+
+  # 4. the rows
+  running=0
+  for (( i = 0; i < n; i++ )); do
+    mkdir -p "$wd/row-$i"
+    b="${CHECK_ROW_BLOCK[$i]}"
+    if [ "${gate_dec[$i]}" = skip ]; then
+      printf 'gated|its target %s is unchanged\n' "${CHECK_ROW_TGT[$i]}" > "$wd/row-$i/verdict"
+      continue
+    fi
+    if [ "$full" -eq 0 ] && [ "$(cat "$wd/ctl-${b//,/+}.verdict" 2>/dev/null)" != ok ]; then
+      printf 'bad|control failed for block %s: %s\n' "$b" "$(cut -d'|' -f2- "$wd/ctl-${b//,/+}.verdict" 2>/dev/null)" > "$wd/row-$i/verdict"
+      continue
+    fi
+    _check_row_one "$i" "$wd" "$prep" "$run" "$full" &
+    running=$((running + 1))
+    if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
+  done
+  wait
+
+  for (( i = 0; i < n; i++ )); do
+    scored=$((scored + 1))
+    if [ ! -f "$wd/row-$i/verdict" ]; then
+      bad "mutation '${CHECK_ROW_NAMES[$i]}': produced NO verdict — its worker died without reporting"; continue
+    fi
+    IFS='|' read -r verdict why < "$wd/row-$i/verdict"
+    if [ "$verdict" = ok ]; then
+      ok; red=$((red + 1)); applied=$((applied + 1))
+    elif [ "$verdict" = gated ]; then
+      # NEITHER ok NOR bad: a gated row made no claim, so counting it as a passing assertion would
+      # manufacture the evidence the gate exists to defer. It is counted, named and reported.
+      :
+    else
+      bad "mutation '${CHECK_ROW_NAMES[$i]}': $why"
+      case "$why" in
+        *"did not apply"*|*"could not build"*|*"rewrite failed"*|"control failed"*) : ;;
+        *) applied=$((applied + 1)) ;;
+      esac
+    fi
+  done
+  [ "$scored" -eq "$n" ] || bad "$label --mutation: scored $scored of $n row(s)"
+  local ran=$((n - gated)) gatedsuffix=""
+  [ "$gated" -gt 0 ] && gatedsuffix="; $gated row(s) gated (targets unchanged:${gated_tgts% })"
+  if [ "$full" -eq 1 ]; then
+    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; full suite per mutant%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$gatedsuffix"
+  else
+    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; per-block, %d block(s) controlled%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$nblocks" "$gatedsuffix"
+  fi
+  # AGAINST THE ROWS THAT RAN, not the table: a gated row was never meant to apply, and comparing
+  # to `n` would turn every gated run red. `scored -eq n` above is what still proves no row was
+  # silently dropped — gating removes a row from the POOL, never from the scoring.
+  [ "$applied" -eq "$ran" ] || bad "$label --mutation: only $applied of $ran mutations actually applied — the rest tested nothing"
+}
+
 # check_summary <name> — emit the terminal "<name>: N passed, M failed" line, then exit 1 if any
 # assertion failed, else print "<name>: PASS". Callers end with this instead of re-reading
 # $pass/$fail (which would trip SC2154, since ShellCheck does not follow the sourced file).
 check_summary() {
   CHECK_SUMMARY_RAN=1
+  _check_blocks_finish
   printf '\n%s: %d passed, %d failed\n' "$1" "$pass" "$fail"
   # ZERO ASSERTIONS IS NOT A PASS (#213). `fail -eq 0` alone reports PASS for a suite that ran
   # nothing at all — a file truncated by a bad merge, an early `exit` or `return`, a case block
@@ -425,33 +904,58 @@ _check_exit_guard() {
 # same "bare origin + local repo wired to it" scaffold. Centralize only the BOILERPLATE; each
 # test keeps its own topology (branch names, origin/HEAD form, merge shape, push sequence).
 
+# check_mkdir_shim <dir> — write a `mkdir` into <dir> that reports success for a directory that
+# already exists, which is what Ubuntu 26.04's uutils mkdir does to all but one of several concurrent
+# callers (D105). Prepend <dir> to PATH to make that race deterministic. Options pass through.
+check_mkdir_shim() {
+  local real
+  real="$(command -v mkdir)" || return 1
+  mkdir -p "$1" || return 1
+  printf '#!/bin/sh\nfor a in "$@"; do case "$a" in -*) exec '"'"'%s'"'"' "$@" ;; esac; done\nfor a in "$@"; do [ -d "$a" ] || exec '"'"'%s'"'"' "$@"; done\nexit 0\n' "$real" "$real" > "$1/mkdir" \
+    && chmod +x "$1/mkdir"
+}
+
 # check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
-# creating it, then drop the copied `.git`. The ONE home for the throwaway-tree-copy move, now that
-# three suites need it: the installer fail-loud test, the fact-drift mutation mode, and its guard
-# suite. A fourth open-coded copy is how the "faithful copier" details drift — `cp -R .` from
-# inside <src> is deliberate (it takes the CONTENTS, dotfiles included, and preserves symlinks and
-# modes on both BSD and GNU), and `git ls-files | cp` is deliberately NOT used: it needs `-z`,
-# per-file `mkdir -p`, and a policy for tracked-but-deleted paths, and it silently misses anything
-# uncommitted — which is the whole reason these suites copy the tree instead of cloning HEAD.
+# creating it, and NEVER copying `.git`. The ONE home for the throwaway-tree-copy move.
 #
-# Dropping `.git` is for speed (this repo's is ~27 MB), and it means the copy is NOT a git repo:
-# code under test that shells out to git must tolerate that. Returns non-zero WITHOUT exiting so a
-# `set -u` caller can guard it.
+# Contract:
+#   * the copy carries UNCOMMITTED and UNTRACKED content — several suites exist to test the code
+#     you just edited, not the code at HEAD;
+#   * <src> need not be a repository at all (`check-fact-drift.sh` copies its own pristine copy);
+#   * the result is NOT a git repo, so code under test that shells out to git must tolerate that.
+#     A <dest> that already contains `.git` is refused rather than cleaned up;
+#   * a failure returns non-zero WITHOUT exiting, so a `set -u` caller can guard it.
+#
+# `cp -RP` per top-level entry. The `-P` is load-bearing and not decoration: the entries are named
+# as command-line OPERANDS, which is the case `-H`/`-L` exist to change, where the old `cp -R .`
+# met every symlink during TRAVERSAL. Both preserve links by default; this pins it.
+# Why `.git` is skipped rather than copied-then-deleted, and why `git worktree`, `git archive` and
+# `git ls-files` are each rejected: D107.
 check_copy_worktree() {
   mkdir -p "$2" || return 1
-  ( cd "$1" && cp -R . "$2" ) || return 1
-  rm -rf "$2/.git"
+  # REFUSED, not cleaned up. The old `rm -rf "$2/.git"` made the not-a-repository contract hold
+  # for a destination that already held one; deleting a `.git` this function did not create is a
+  # worse answer than declining. Checked BEFORE the copy, so it can never mask a broken skip —
+  # that failure puts `.git` there afterwards, where the suite's own assertion catches it.
+  [ ! -e "$2/.git" ] || { printf 'check_copy_worktree: %s already contains .git — refusing to copy into a destination that is already a repository\n' "$2" >&2; return 1; }
+  ( cd "$1" || exit 1
+    for e in .* *; do
+      case "$e" in .|..|.git) continue ;; esac
+      [ -e "$e" ] || [ -L "$e" ] || continue
+      cp -RP "./$e" "$2/" || exit 1
+    done )
 }
 
 # check_copy_subtrees <src> <dst> <dir>… — the same throwaway copy, restricted to named top-level
 # directories. Use it when a suite's whole mutation surface is a known set of subtrees; use
 # check_copy_worktree when it is not, or when the code under test needs the repo's root files.
 #
-# THE COST IS THE REASON, and it is measured rather than assumed. `check_copy_worktree` copies the
-# repo CONTENTS — including `.git`, which on this repo is ~66 MB — and then deletes it. One copy is
-# unnoticeable; a mutation harness doing it a dozen times spends most of its wall clock in the
-# kernel moving a directory it is about to throw away. `check-tmp-paths.sh` ran 63s that way and
-# 6s copying only its four scanned roots (4.4 MB), which is the same fixture for its purposes.
+# THE COST IS THE REASON, and it is measured rather than assumed. Since #469 `check_copy_worktree`
+# no longer copies `.git`, so the gap between the two is smaller than it was — but it is still the
+# whole tree against a named few directories, and a mutation harness pays it once per row.
+# `check-tmp-paths.sh` ran 63s copying the tree WITH its history and 6s copying only its four
+# scanned roots (4.4 MB), which is the same fixture for its purposes; that 63s figure is what the
+# old copier cost and is kept as history, not as a current benchmark.
 #
 # Same faithful-copier details as above (`cp -R` of the CONTENTS, so dotfiles, symlinks and modes
 # survive), and the same contract: the result is NOT a git repo, and a failure returns non-zero

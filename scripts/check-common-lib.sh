@@ -2765,6 +2765,42 @@ for _wf in .github/workflows/*.yml; do
      "real tree: the shared reader and an independent 2-space counter agree on $_wf"
 done
 
+# --- adb_mkdir_excl: a mutex whose take is exclusive even when mkdir's success is not (D105) ------
+xl="$work/excl"; mkdir -p "$xl"
+adb_mkdir_excl "$xl/m"; eq "$?" 0 "mkdir-excl: the first take succeeds"
+[ -f "$xl/m/$ADB_EXCL_MARK" ] && ok || bad "mkdir-excl: the winner's directory carries the marker"
+adb_mkdir_excl "$xl/m"; eq "$?" 1 "mkdir-excl: a second take of a held path fails"
+check_mkdir_shim "$xl/shim" || bad "mkdir-excl: the non-exclusive mkdir shim could not be written"
+( PATH="$xl/shim:$PATH"; mkdir "$xl/m" ); eq "$?" 0 "mkdir-excl: the shim reports success for an existing directory, like uutils"
+( PATH="$xl/shim:$PATH"; adb_mkdir_excl "$xl/m" ); eq "$?" 1 "mkdir-excl: …and a take through it still fails while the path is held"
+rm -rf "$xl/race"; mkdir -p "$xl/race"
+for i in $(seq 1 30); do ( PATH="$xl/shim:$PATH"; adb_mkdir_excl "$xl/race/m" && : > "$xl/race/won.$i" ) & done; wait
+eq "$(find "$xl/race" -maxdepth 1 -name 'won.*' | wc -l | tr -d ' ')" 1 "mkdir-excl: 30 concurrent takes through the shim produce exactly one holder"
+: > "$xl/m/owner"
+adb_rmdir_excl "$xl/m"; eq "$?" 1 "mkdir-excl: release refuses while the holder's own contents remain"
+rm -f "$xl/m/owner"
+adb_rmdir_excl "$xl/m"; eq "$?" 0 "mkdir-excl: release removes the marker last and then the directory"
+[ ! -e "$xl/m" ] && ok || bad "mkdir-excl: …and the path is free again"
+if [ "$(id -u)" -eq 0 ]; then
+  printf 'SKIP: mkdir-excl unwritable-marker case cannot fire as root\n'
+else
+  _xrc="$( mkdir() { command mkdir "$@" && chmod 555 "${@: -1}"; }; adb_mkdir_excl "$xl/ro"; printf '%s' "$?" )"
+  eq "$_xrc" 1 "mkdir-excl: a take whose marker cannot be written fails"
+  [ ! -e "$xl/ro" ] && ok || bad "mkdir-excl: …and removes the empty directory rather than wedging later takes"
+  chmod 755 "$xl/ro" 2>/dev/null; rm -rf "$xl/ro"
+fi
+
+# NO BARE `mkdir` DECIDES A MUTEX (D105). A `mkdir` whose status is branched on is a take; outside
+# adb_mkdir_excl it must carry `# adb-allow: bare-mkdir` naming why no second caller creates that path.
+bare_mkdir_scan() {   # <file>... — print every unmarked branched-on mkdir as file:line
+  grep -nE '(^|[;&|({[:space:]!])mkdir[[:space:]]+[^-[:space:]][^;#]*(\|\||&&)|(if|while|until)[[:space:]!]+mkdir[[:space:]]+[^-]' "$@" 2>/dev/null \
+    | grep -v '# adb-allow: bare-mkdir'
+}
+_bm_files=(scripts/lib/*.sh bin/* agents/*/scripts/*.sh install.sh uninstall.sh scripts/selfcheck.sh scripts/mutation-gate.sh)
+eq "$(bare_mkdir_scan "${_bm_files[@]}")" "" "no branched-on bare mkdir outside adb_mkdir_excl (scanned ${#_bm_files[@]} files)"
+printf 'lock() {\n  while ! mkdir "$d" 2>/dev/null; do sleep 1; done\n  mkdir "$e" 2>/dev/null && return 0\n  if mkdir "$f"; then :; fi\n  mkdir -p "$g" || exit 1\n}\n' > "$work/bare-mkdir.sh"
+eq "$(bare_mkdir_scan "$work/bare-mkdir.sh" | wc -l | tr -d ' ')" 3 "the bare-mkdir scan fires on while, && and if takes, and not on mkdir -p"
+
 # --- --mutation: the manifest guards must be OBSERVED failing (#324) ----------------------------
 #
 # A guard's failure mode is silence: one that scans nothing, matches nothing, or refuses nothing

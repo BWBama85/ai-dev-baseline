@@ -222,6 +222,13 @@ add() {
 # ONE HOME. `scripts/mutation-gate.sh` reads this through `--list` (field 5); `scripts/check-mutation-gate.sh`
 # pins that every `*-mutation` step declares inputs naming its own harness plus the two shared
 # files, that every declared path exists, and that the nightly matrix names every step here.
+#
+# AND ONE HOME FOR THE PER-ROW GATE TOO (#470, D108). A harness built on per-test rows asks the
+# same question once more per row, and it asks it of THIS set: a row's inputs are the file that
+# row mutates plus every declared input NO row targets. Nothing new is declared here for that —
+# adding a sixth `--list` field would break the pin that `--list` carries exactly five — so a step
+# whose rows mutate a file it does not declare here refuses gating altogether and names the file,
+# which is what keeps this list, rather than the row table, the place the answer comes from.
 declare -A STEP_INPUTS=()
 
 inputs() {
@@ -532,6 +539,11 @@ add common-lib          bash scripts/check-common-lib.sh
 add common-lib-mutation bash scripts/check-common-lib.sh --mutation
 inputs common-lib-mutation      scripts/check-common-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/role-dispatch.sh install.sh uninstall.sh bin/agent-init bin/baseline
 
+# The shared mutation harness's blocks and per-test rows (#468): selection and its dependency closure,
+# every declaration refusal, preflight before any copy is built, each block's unmutated control, and
+# the verdict taxonomy, all driven over a throwaway fixture suite.
+add block-rows          bash scripts/check-block-rows.sh
+
 # Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
 # untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
 add agent-init          bash scripts/check-agent-init.sh
@@ -602,7 +614,7 @@ add pattern-ledger      bash scripts/check-pattern-ledger.sh
 # coverage it claims to describe. `--mutation` prints the live count on every run; that output is
 # current where a number written here is only as current as its last edit.
 add pattern-ledger-mutation bash scripts/check-pattern-ledger.sh --mutation
-inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh base/workflows/resolve-pr-threads.md base/workflows/implement-issue.md base/workflows/cleanup.md
+inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh
 
 # Unit tests for the vendor-documentation duty (scripts/lib/docs-lib.sh, #422): `[mcp] required`
 # finally has a consumer, and its dangerous direction is a CLEAN verdict nobody earned. Drives the
@@ -773,7 +785,7 @@ add settings-fragment   bash scripts/check-settings-fragment.sh
 # broken in a COPY — of the library, of the payload, of install.sh — and required RED on its own
 # witness.
 add settings-fragment-mutation bash scripts/check-settings-fragment.sh --mutation
-inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh
+inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).

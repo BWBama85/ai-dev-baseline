@@ -33,6 +33,7 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
+check_blocks_init "$ROOT/scripts/check-settings-fragment.sh"
 
 MUTATION=0
 [ "${1:-}" = "--mutation" ] && MUTATION=1
@@ -49,6 +50,7 @@ FLOOR="$(adb_claude_settings_floor)"
 # that reads it fails for a reason unrelated to what it tests.
 ADB_TAB="$(printf '\t')"
 
+if check_block the-payload-itself; then
 # --- the payload itself ------------------------------------------------------------------------
 #
 # D96 decided the key set by resolving what "all of them" referred to, and D98 pinned the floor to
@@ -103,7 +105,9 @@ else bad "the fragment must ship no null value — the merge reads null as ABSEN
 # The floor is the HIGHEST floor among the shipped keys. sandbox.credentials is v2.1.187 (vendor
 # reference, 2026-09-03); if a key with a higher floor joins, this must move with it.
 [ "$FLOOR" = "2.1.187" ] && ok || bad "the shipped floor is $FLOOR; D98 pinned it to sandbox.credentials' v2.1.187 — raise it deliberately when a higher-floor key joins the payload"
+fi
 
+if check_block the-merge-s-verdicts-under-the-all-or-no; then
 # --- the merge's verdicts, under the ALL-OR-NOTHING contract -------------------------------------
 #
 # The earlier contract applied per leaf and had to answer, for each key independently, whether it
@@ -215,7 +219,9 @@ r="$(m "$(cat "$work/pre-sandbox.json")" "$work/pre-sandbox-receipt" --remove)"
 [ "$(printf '%s' "$r" | jq -c '.settings.sandbox')" = '{}' ] && ok \
   || bad "an operator's pre-existing empty container must survive uninstall; got $(printf '%s' "$r" | jq -c '.settings.sandbox')"
 [ "$(printf '%s' "$r" | jq -r '.settings.model')" = opus ] && ok || bad "removal must not disturb unrelated keys"
+fi
 
+if check_block the-receipt-four-dispositions-and-only-o the-merge-s-verdicts-under-the-all-or-no; then
 # --- the receipt: four dispositions, and only one of them is a choice ---------------------------
 
 for d in installed skipped-optout skipped-below-floor skipped-unprobeable; do
@@ -297,7 +303,9 @@ r="$(m "$(cat "$work/installed.json")" "$work/rootpath-receipt" --remove)"
   printf 'leaf\t["sandbox",1]\ttrue\n'
   printf 'garbage\n'; } > "$work/bad-receipt"
 [ -z "$(adb_claude_settings_receipt_leaves "$work/bad-receipt")" ] && ok || bad "every malformed receipt row must be dropped by the reader"
+fi
 
+if check_block the-version-probe-three-outcomes-driven; then
 # --- the version probe: three outcomes, driven with a stub ---------------------------------------
 
 mkdir -p "$work/bin"
@@ -338,7 +346,9 @@ stub "2.1.259 (Claude Code)"
 printf 'not executable\n' > "$work/bin/noexec"
 if adb_claude_cli_version "$work/bin/noexec" >/dev/null 2>&1; then bad "the probe must refuse a non-executable path"; else ok; fi
 if adb_claude_cli_version "$work/bin/nothing-here" >/dev/null 2>&1; then bad "the probe must refuse a missing binary"; else ok; fi
+fi
 
+if check_block end-to-end-against-the-real-installer-an the-version-probe-three-outcomes-driven; then
 # --- end to end, against the REAL installer and a fake HOME --------------------------------------
 #
 # The unit assertions above all pass against a build whose install.sh never calls wire_settings at
@@ -417,7 +427,9 @@ HOME="$naive_home" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 # rewrites this file through jq, so its FORMATTING is expected to change and its CONTENT is not.
 if diff -q <(jq -S . "$naive_home/.claude/settings.json") <(jq -S . "$work/naive-pristine.json") >/dev/null 2>&1
 then ok; else bad "with no receipt, uninstall must not touch sandbox keys it cannot prove it wrote"; fi
+fi
 
+if check_block an-uninstall-must-never-trade-the-owners the-merge-s-verdicts-under-the-all-or-no; then
 # --- an uninstall must never trade the ownership record for nothing ------------------------------
 #
 # The receipt is the ONLY proof of which `sandbox` keys are ours. Deleting it while the keys stay
@@ -437,7 +449,9 @@ HOME="$lost_home" bash "$lost_repo/uninstall.sh" --agent claude >"$work/lost.log
 if jq -e '.sandbox.credentials == null and .sandbox.network == null' "$lost_home/.claude/settings.json" >/dev/null 2>&1; then ok
 elif [ -f "$lost_home/.claude/.adb-settings-owned" ]; then ok   # kept the record instead: also correct
 else bad "uninstall must not delete the ownership receipt while leaving the sandbox keys installed — they could never be removed again"; fi
+fi
 
+if check_block publishing-a-settings-file-a-directory-m the-version-probe-three-outcomes-driven; then
 # --- publishing a settings file: a directory must not read as success, and the mode must survive -
 pub_dir="$work/pub"; mkdir -p "$pub_dir/dest.json"
 printf '{"a":1}\n' > "$pub_dir/tmp.json"
@@ -509,7 +523,9 @@ stub "2.1.259 (Claude Code)"
 HOME="$mode_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 emode="$(adb_file_mode "$mode_home/.claude/settings.json")"
 [ "$emode" = "600" ] && ok || bad "install.sh must not relax a restricted ~/.claude/settings.json to the umask default; got $emode"
+fi
 
+if check_block the-headline-cannot-overstate-because-th the-merge-s-verdicts-under-the-all-or-no the-version-probe-three-outcomes-driven; then
 # --- the headline cannot overstate, because the contract will not let it ------------------------
 #
 # Under all-or-nothing a `write` verdict means every shipped leaf was applied — anything already
@@ -538,7 +554,9 @@ case "$(headline "$(jq -c . "$PAYLOAD")")" in
   *"NOT written"*) ok ;;
   *) bad "an operator who already set our exact values owns them; the install must refuse rather than claim them" ;;
 esac
+fi
 
+if check_block the-ownership-receipt-is-a-precondition the-version-probe-three-outcomes-driven; then
 # --- the ownership receipt is a precondition, not an afterthought --------------------------------
 # Settings without a receipt are keys nobody can prove are ours; the next install reads them as the
 # operator's and records nothing, after which uninstall can never remove them. So a receipt that
@@ -555,7 +573,9 @@ jq -e '.sandbox == null' "$ro_home/.claude/settings.json" >/dev/null 2>&1 && ok 
 grep -qi "not a regular file" "$work/ro.log" && ok \
   || bad "an unpublishable receipt PATH must be refused up front, naming the reason"
 grep -qi "ROLLED BACK" "$work/ro.log" && bad "the receipt precheck must refuse BEFORE writing, not write and roll back" || ok
+fi
 
+if check_block an-explicit-null-and-a-non-object-ancest the-merge-s-verdicts-under-the-all-or-no; then
 # --- an EXPLICIT null, and a non-object ANCESTOR, BLOCK the install ------------------------------
 #
 # `getpath` answers null for a missing path AND for one whose value really is null, and it RAISES
@@ -575,7 +595,9 @@ done
 # ...and removal classifies the same shapes instead of failing.
 r="$(m '{"sandbox":{"credentials":false}}' "$work/installed-receipt" --remove)" \
   && ok || bad "removal must not fail on a non-object ancestor"
+fi
 
+if check_block the-settings-root-must-be-an-object-not the-merge-s-verdicts-under-the-all-or-no; then
 # --- the settings root must be an OBJECT, not merely valid JSON ---------------------------------
 #
 # `// {}` is false for `null` AND for `false`, so either root coerced to an empty object and the
@@ -586,7 +608,9 @@ for root in 'null' 'false' '"a string"' '[1,2]' '42'; do
   then bad "a settings root of $root must be REFUSED — it is valid JSON and is not an object"
   else ok; fi
 done
+fi
 
+if check_block removal-ignores-the-payload-entirely-not the-merge-s-verdicts-under-the-all-or-no; then
 # --- removal ignores the payload ENTIRELY, not just a missing one --------------------------------
 #
 # Ownership lives in the receipt and `--remove` writes nothing, so a payload that exists but is
@@ -596,7 +620,9 @@ r="$(adb_claude_settings_merge "$work/installed.json" "$work/truncated-payload.j
   && ok || bad "removal must ignore an unparseable payload — ownership is the receipt's, and removal writes nothing"
 [ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 4 ] && ok \
   || bad "removal with an unparseable payload must still remove every receipt-owned leaf"
+fi
 
+if check_block settings-json-must-hold-exactly-one-top the-merge-s-verdicts-under-the-all-or-no; then
 # --- settings.json must hold EXACTLY ONE top-level value -----------------------------------------
 #
 # `--slurpfile` reads a STREAM, so an object followed by an appended one slurps two and `$cur[0]`
@@ -605,7 +631,9 @@ printf '{"model":"opus"}{"appended":1}\n' > "$work/multi.json"
 if adb_claude_settings_merge "$work/multi.json" "$PAYLOAD" "$work/empty-receipt" >/dev/null 2>&1
 then bad "a settings.json holding more than one top-level JSON value must be REFUSED, not silently truncated to the first"
 else ok; fi
+fi
 
+if check_block a-stale-leaf-is-reconciled-before-the-ne; then
 # --- a stale leaf is reconciled BEFORE the new paths are evaluated -------------------------------
 #
 # When a payload turns an owned leaf into a container or back, evaluating the new paths first sees
@@ -623,7 +651,9 @@ r="$(adb_claude_settings_merge "$work/typechange.json" "$work/typechange-payload
 [ "$(printf '%s' "$r" | jq -r '.settings.x')" = 5 ] && ok \
   || bad "an owned leaf whose ancestor becomes a scalar must be reconciled first, so the replacement is written; got $(printf '%s' "$r" | jq -c '.settings')"
 [ "$(printf '%s' "$r" | jq -r '.settings.keep')" = "mine" ] && ok || bad "the reconciliation must not disturb an unrelated sibling"
+fi
 
+if check_block a-refusal-relinquishes-the-surface-a-blo the-merge-s-verdicts-under-the-all-or-no; then
 # --- a REFUSAL relinquishes the surface: a blocked receipt owns NOTHING --------------------------
 #
 # Under all-or-nothing a divergence means the operator has taken the keys over. Carrying the rows
@@ -634,7 +664,9 @@ r="$(adb_claude_settings_merge "$work/typechange.json" "$work/typechange-payload
 r="$(m "$(cat "$work/installed.json")" "$work/blocked-receipt" --remove)"
 [ "$(printf '%s' "$r" | jq -r '.pruned | length')" = 0 ] && ok \
   || bad "a blocked receipt must own NOTHING — a refusal relinquishes the surface, and claiming it lets uninstall delete a value the operator re-added"
+fi
 
+if check_block the-created-container-cleanup-is-guarded the-merge-s-verdicts-under-the-all-or-no; then
 # --- the created-container cleanup is guarded like the leaf reads --------------------------------
 #
 # `getpath` raises through a scalar, and this loop is the sibling of the leaf reads that learned it
@@ -654,7 +686,9 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
   && ok || bad "removal must not fail when a recorded container is DEEPER than the scalar that blocks the walk"
 [ "$(printf '%s' "$r" | jq -r '.settings.sandbox')" = false ] && ok \
   || bad "the operator's scalar must survive the deep-container removal untouched"
+fi
 
+if check_block provenance-survives-the-root-doc-unlink; then
 # --- provenance survives the root-doc unlink ----------------------------------------------------
 #
 # `uninstall_claude` removes the root-doc link BEFORE the settings cleanup can fail, so a cleanup
@@ -664,7 +698,9 @@ r="$(m '{"model":"opus","sandbox":false}' "$work/deep-receipt" --remove)" \
 [ -z "$(adb_claude_settings_source_row "$(printf '/a\tb')")" ] && ok || bad "a source path containing a TAB must be refused — the receipt is tab-delimited"
 [ -z "$(adb_claude_settings_source_row "$(printf '/a\nb')")" ] && ok \
   || bad "a source path containing a NEWLINE must be refused — a truncated path resolves to a real sibling"
+fi
 
+if check_block one-run-at-a-time-per-home-across-the-wh the-merge-s-verdicts-under-the-all-or-no the-version-probe-three-outcomes-driven; then
 # --- one run at a time per HOME, across the whole read-to-publish window -------------------------
 #
 # The settings and the receipt are published by two separate renames, and distinct temp names do
@@ -690,7 +726,9 @@ for arg in "--no-sandbox" ""; do
 done
 HOME="$lk_home" PATH="/usr/bin:/bin" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 [ -e "$lk_home/.claude/.adb-settings.lock" ] && bad "the settings lock must be released after an unprobeable-CLI skip" || ok
+fi
 
+if check_block the-lock-covers-every-writer-of-settings the-version-probe-three-outcomes-driven; then
 # --- the lock covers EVERY writer of settings.json, not just the sandbox half --------------------
 #
 # `wire_hooks` writes the same file. A lock around the sandbox half alone let a delayed hook rename
@@ -715,7 +753,9 @@ HOME="$lk2" bash "$ROOT/uninstall.sh" --agent claude >"$work/unlockall.log" 2>&1
 jq -e '.sandbox.enabled == true' "$lk2/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "uninstall must take the same lock and remove nothing while an install holds it"
 rm -rf "$(adb_settings_lock_path "$lk2")"
+fi
 
+if check_block the-lock-precedes-the-relink-and-is-rele the-version-probe-three-outcomes-driven; then
 # --- the lock precedes the RELINK, and is released on every exit ---------------------------------
 #
 # Ownership of the settings surface is decided by the root-doc link, and `adb_link_manifest`
@@ -746,7 +786,9 @@ HOME="$rel_home" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 nl_home="$work/nlrelease"$'\n'"shadow"; rm -rf "$nl_home"; mkdir -p "$nl_home/.claude"
 HOME="$nl_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
 [ -e "$(adb_settings_lock_path "$nl_home")" ] && bad "the lock must be released when the manifest itself is refused" || ok
+fi
 
+if check_block the-carry-diagnostics-reach-the-operator the-version-probe-three-outcomes-driven; then
 # --- the carry diagnostics reach the OPERATOR, not the row capture -------------------------------
 #
 # `_adb_carry_rows` returns its rows on stdout and is called inside `$( )`, so an `adb_info` line
@@ -768,7 +810,9 @@ grep -qi "relinquish" "$work/diag.log" && ok \
 [ "$(awk '/^_adb_carry_rows\(\) \{/{i=1} i && /adb_info/ && !/>&2$/{n++} i && /^}/{exit} END{print n+0}' \
      "$ROOT/install.sh")" -eq 0 ] && ok \
   || bad "every adb_info inside _adb_carry_rows must redirect to stderr — its stdout is its return value, so a diagnostic there is captured into the caller's rows and dropped"
+fi
 
+if check_block the-merge-s-absence-rule-has-exactly-one; then
 # --- the merge's absence rule has exactly ONE spelling ---------------------------------------------
 #
 # `def present` is pinned by a mutation row. A second copy defined EARLIER in common.sh was matched
@@ -776,7 +820,9 @@ grep -qi "relinquish" "$work/diag.log" && ok \
 # disarmed by a duplicate, not by an edit to the thing it guards.
 [ "$(grep -c 'def present(\$p)' "$ROOT/scripts/lib/common.sh")" -eq 1 ] && ok \
   || bad "common.sh must define \`present\` exactly once — a second copy is matched first by the mutation row pinning the merge's, disarming it"
+fi
 
+if check_block an-unreadable-receipt-is-not-an-absent-o the-version-probe-three-outcomes-driven; then
 # --- an UNREADABLE receipt is not an absent one ---------------------------------------------------
 #
 # `-f` is true for a file with mode 000 or a denying ACL, so a receipt that exists and cannot be
@@ -810,7 +856,9 @@ HOME="$unread" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 && ok \
   || bad "the retry must succeed once the receipt is readable"
 jq -e '.sandbox == null' "$unread/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and must then remove the keys it held on to"
+fi
 
+if check_block an-unreadable-receipt-is-refused-by-the the-version-probe-three-outcomes-driven; then
 # --- an unreadable receipt is refused by the ROW reader too, not only by the disposition ----------
 #
 # `_adb_owned_rows` answered zero rows for a receipt it could not open, and zero rows is a
@@ -834,7 +882,9 @@ chmod 600 "$ur/.claude/.adb-settings-owned"
   || bad "...and every owned row must survive both attempts"
 # ...while a receipt that is merely ABSENT, or a path occupied by something that is not a file, is
 # zero rows and goes on to fail at the publish and SAY so. Only a regular file can hold rows.
+fi
 
+if check_block a-damaged-disposition-is-not-none-either the-version-probe-three-outcomes-driven an-unreadable-receipt-is-not-an-absent-o; then
 # --- a damaged disposition is not `none` either ---------------------------------------------------
 #
 # The unreadable case had a twin: a receipt that reads fine but whose `disposition` line is missing
@@ -858,9 +908,25 @@ grep -qi "disposition" "$work/dd.log" && ok \
   || bad "...and must name the damaged disposition line, not send the operator to fix permissions"
 grep -qi "could not be READ" "$work/dd.log" && \
   bad "...and must not report a readable-but-damaged receipt as unreadable" || ok
+# THE DISTINCTION IS THE MERGE'S, so it is asked of the merge. Since round 51 the removal path refuses a
+# damaged count before reaching it, which is a second route to the same message — and a rule whose only
+# witness is a message another guard also prints cannot be observed failing.
+_mm="$work/mergestatus"; rm -rf "$_mm"; mkdir -p "$_mm"
+adb_claude_settings_leaf_rows "$PAYLOAD" "$(adb_claude_settings_leaves "$PAYLOAD" | jq -cs .)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_mm/receipt"
+chmod 000 "$_mm/receipt"
+printf '{"model":"opus"}\n' > "$_mm/settings.json"
+_mmr=0; adb_claude_settings_merge "$_mm/settings.json" "$PAYLOAD" "$_mm/receipt" --remove >/dev/null 2>&1 || _mmr=$?
+chmod 600 "$_mm/receipt"
+printf 'not json\n' > "$_mm/bad.json"
+_mms=0; adb_claude_settings_merge "$_mm/bad.json" "$PAYLOAD" "$_mm/receipt" --remove >/dev/null 2>&1 || _mms=$?
+[ "$_mmr" = 20 ] && [ "$_mms" = 2 ] && ok \
+  || bad "the merge must answer an unreadable RECEIPT 20 and unparseable SETTINGS 2 — collapsed to one status, no caller can name the damaged disposition line (receipt $_mmr, settings $_mms)"
 grep -qi "cannot be read" "$work/unread.log" && ok \
   || bad "...while a genuinely unreadable one must still say exactly that"
+fi
 
+if check_block the-lock-is-the-owner-file-so-a-write-th; then
 # --- the lock is the OWNER FILE, so a write that fails is an acquisition that failed --------------
 #
 # `mkdir` succeeded and the owner write did not, and the unchecked redirection returned success:
@@ -873,7 +939,9 @@ lo="$work/lockowner"; rm -rf "$lo"; mkdir -p "$lo"
   bad "taking the lock must FAIL when its owner file cannot be written — the token is the lock" || ok
 [ -e "$lo/lk" ] && \
   bad "...and must not leave the directory behind: it can never be released, so it refuses every later run" || ok
+fi
 
+if check_block a-signal-may-not-land-between-the-two-pu; then
 # --- a signal may not land BETWEEN the two publications -------------------------------------------
 #
 # The settings and the receipt are published separately. The armed handlers release the lock and
@@ -899,7 +967,9 @@ sd_rc=$?
 [ "$sd_rc" -eq 143 ] && ok || bad "...and must exit with the signal's own status (got $sd_rc)"
 [ -e "$(adb_settings_lock_path "$sd")" ] && \
   bad "...and must still release the lock on its way out" || ok
+fi
 
+if check_block a-no-jq-provenance-refresh-that-could-no the-merge-s-verdicts-under-the-all-or-no; then
 # --- a no-jq provenance refresh that could not publish is not a tolerated skip --------------------
 #
 # 3 means "no jq, nothing was written, come back later", which is true of the settings and false of
@@ -918,7 +988,9 @@ awk '/uninstall from that clone instead/{f=1} f && /^        return 1   # proven
   || bad "a provenance refresh that could not be published must FAIL, not return the tolerated no-jq skip — the root link names this clone while the receipt names another, and that pairing is what a later uninstall depends on"
 grep -qF 'NOT THE TOLERATED SKIP' "$ROOT/install.sh" && ok \
   || bad "...and must say why it is not the ordinary no-jq case"
+fi
 
+if check_block the-other-transactions-defer-too; then
 # --- the OTHER transactions defer too --------------------------------------------------------------
 #
 # Three more pairs of durable writes were outside the deferral the write path got: the refusal that
@@ -953,7 +1025,9 @@ awk '/^wire_hooks\(\)/{f=1}
 awk '/return 1   # prune-abort/{if (prev !~ /^[[:space:]]*adb_settings_lock_resume_signals/) {print "leaked"; exit}} {prev=$0}' \
   "$ROOT/install.sh" | grep -q leaked && \
   bad "the prune-abort return sits inside the deferral — it must resume on the way out or the signal is held for the rest of the run" || ok
+fi
 
+if check_block an-operational-failure-is-never-a-semant; then
 # --- an OPERATIONAL failure is never a semantic answer ------------------------------------------------
 #
 # The class this suite has now met at nine sites: a command substitution or a predicate whose
@@ -970,13 +1044,81 @@ awk '/^_adb_report_settings\(\)/{f=1}
      f && /if ! names="\$\(printf/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the bucket reporter must distinguish an empty bucket from a failed read — on the refusal path its `kept` line is the last thing that ever names an edited obsolete key"
-# ALL THREE ROW PREDICATES — two in the leaves reader, one in the containers reader. The third was
-# missed on the first pass and found only because this count is over the file rather than over one
-# function.
-[ "$(grep -c 'case $? in 0) ;; 1) continue ;; \*) return 20 ;; esac' "$ROOT/scripts/lib/common.sh")" -eq 3 ] && ok \
-  || bad "every row predicate must treat jq's 1 (false) and its 5 (error) differently — conflating them drops a valid row, so the merge owns fewer leaves and uninstall leaves the live key behind"
-[ "$(grep -c "jq -e 'type == \"array\" and length > 0 and all(.\[\]; type == \"string\")' >/dev/null 2>&1 || continue" "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
-  || bad "...and none may still be spelled with a bare \`|| continue\`, which is the conflation itself"
+# THE ROW PREDICATES, ASSERTED BEHAVIOURALLY (#471). This was two greps — a count of THREE
+# `case $? in 0) ;; 1) continue ;; *) return 20 ;; esac` predicates and a count of ZERO bare
+# `|| continue` spellings — and both pinned a SPELLING the per-row `jq -e` loop had. The readers
+# now ask one jq for the whole receipt, so neither string can occur, and the two greps fail in
+# OPPOSITE ways: the count-of-three would go red (0 != 3) and send the reader to look for a
+# predicate that no longer exists, while the count-of-zero would go green forever, scanning for a
+# string nothing can write. Neither is a check of the property. What they stood for is the
+# semantics, so the semantics is what is checked here, on both readers and in both directions —
+# strictly stronger, because a spelling pin cannot see a rewrite that keeps the spelling and
+# breaks the meaning.
+_rp="$work/rowpred"; rm -rf "$_rp"; mkdir -p "$_rp"
+# A row the predicate REJECTS is skipped, and the rows around it survive.
+printf 'disposition\tinstalled\nleaf\t["sandbox",1]\ttrue\nleaf\t["sandbox","enabled"]\ttrue\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$_rpout" = "$(printf '["sandbox","enabled"]\ttrue')" ] && ok \
+  || bad "a leaf row the predicate REJECTS must be skipped while its neighbours survive — dropping the read instead loses every leaf after it (rc $_rprc)"
+# A row the predicate CANNOT EVALUATE refuses the whole read: a leaf we cannot prove is ours is one
+# we must not silently stop owning.
+printf 'disposition\tinstalled\nleaf\tnot-json\ttrue\nleaf\t["sandbox","enabled"]\ttrue\n' > "$_rp/r"
+adb_claude_settings_receipt_leaves "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a leaf row the predicate could not EVALUATE must refuse the whole read (20), not read as a rejected row — conflating them drops a valid row, so the merge owns fewer leaves and uninstall leaves the live key behind (rc $_rprc)"
+# ...and the container reader splits the two the same way, which is the predicate the first pass missed.
+printf 'disposition\tinstalled\ncontainer\t[]\ncontainer\t["sandbox"]\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_containers "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$_rpout" = '["sandbox"]' ] && ok \
+  || bad "a container row the predicate REJECTS must be skipped while its neighbours survive (rc $_rprc)"
+# A GOOD ROW AFTER THE BAD ONE, deliberately: with the bad row last, a reader that evaluates
+# per line still exits 5 on its final input and the refusal looks correct. The defect only shows
+# when a later row succeeds after an earlier one errored.
+printf 'disposition\tinstalled\ncontainer\tnot-json\ncontainer\t["ok"]\n' > "$_rp/r"
+adb_claude_settings_receipt_containers "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a container row the predicate could not EVALUATE must refuse the whole read (20) — the same masking, the same consequence for a container this install created (rc $_rprc)"
+# A ROW ON THE FIRST LINE IS STILL A ROW. Real receipts open with `disposition`, so every fixture
+# here has a header and none of them would notice a reader that silently dropped line 1 — which is
+# exactly what `-n` prevents, and what a reader without it does.
+printf 'leaf\t["first"]\t1\nleaf\t["second"]\t2\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$(printf '%s\n' "$_rpout" | wc -l | tr -d ' ')" = 2 ] && ok \
+  || bad "a leaf row on the receipt's FIRST line must be read, not lost because it is the first line (rc $_rprc)"
+printf 'container\t["first"]\ncontainer\t["second"]\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_containers "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$(printf '%s\n' "$_rpout" | wc -l | tr -d ' ')" = 2 ] && ok \
+  || bad "a container row on the receipt's FIRST line must be read even as the first line (rc $_rprc)"
+
+# A FIELD HOLDING TWO JSON VALUES IS REFUSED, NOT SKIPPED (#471, D110). The per-row `jq -e` form
+# fed each field to jq as a STREAM, so `["a"] []` was two values and the predicate's verdict was
+# the LAST one — and a leaf VALUE of `true false` was accepted outright, recording a row whose
+# value no reader can reproduce. `fromjson` takes one value, so both now refuse the read. This is
+# a behaviour change on malformed input and is deliberate: a field we cannot read as one value is
+# one we cannot prove we own.
+printf 'disposition\tinstalled\ncontainer\t["a"] []\ncontainer\t["ok"]\n' > "$_rp/r"
+adb_claude_settings_receipt_containers "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a container path holding TWO JSON values must refuse the read (20) — as a stream its verdict was the last value's, which is not a verdict on the row (rc $_rprc)"
+printf 'disposition\tinstalled\nleaf\t["a"]\ttrue false\n' > "$_rp/r"
+adb_claude_settings_receipt_leaves "$_rp/r" >/dev/null 2>&1; _rprc=$?
+[ "$_rprc" -eq 20 ] && ok \
+  || bad "a leaf VALUE holding two JSON values must refuse the read (20) — it used to be ACCEPTED, recording ownership of a value no reader can reproduce (rc $_rprc)"
+
+# A REFUSED READ EMITS NO ROWS AT ALL. The per-row loop printed each good row as it went, so a
+# refusal that fired on row 5 still left rows 1-4 on stdout — a truncated answer beside a failure
+# code, which is the one shape a caller that forgets the status acts on. Every caller in this repo
+# does check it, so this is a tightening rather than a fix; it is asserted so it stays one.
+printf 'disposition\tinstalled\nleaf\t["ok"]\t1\nleaf\tnot-json\ttrue\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r" 2>/dev/null)"; _rprc=$?
+[ "$_rprc" -eq 20 ] && [ -z "$_rpout" ] && ok \
+  || bad "a refused leaf read must emit NOTHING, not the rows it had already accepted — a partial prefix beside a refusal is a truncated answer (rc $_rprc, out [$_rpout])"
+# ...and the PATH is judged before the VALUE, so a row that fails the path predicate is skipped
+# without its unparseable value ever being reached.
+printf 'disposition\tinstalled\nleaf\t["a",1]\t{{{\nleaf\t["ok"]\t1\n' > "$_rp/r"
+_rpout="$(adb_claude_settings_receipt_leaves "$_rp/r")"; _rprc=$?
+[ "$_rprc" -eq 0 ] && [ "$_rpout" = "$(printf '["ok"]\t1')" ] && ok \
+  || bad "a row rejected on its PATH must never be refused on its VALUE — the order decides whether a bad neighbour costs one row or the whole receipt (rc $_rprc)"
 awk '/^unwire_settings\(\)/{f=1}
      f && /\[ "\$_nochange" -gt 1 \]/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
@@ -993,7 +1135,9 @@ grep -q "if the sandbox keys are still in settings.json afterwards they are no l
 awk '/^    9\)/{f=1} f && /\$out/{print "bad"; exit} f && /^    5\)/{exit}' \
   "$ROOT/scripts/lib/currency-lib.sh" | grep -q bad && \
   bad "...and must not reach for baseline's prose to find out: the outcome contract here is the EXIT CODE, and \$out is not in scope in that arm" || ok
+fi
 
+if check_block and-a-caller-that-ignores-the-status-is; then
 # --- ...and a CALLER that ignores the status is the same defect one level out ----------------------
 #
 # Round 30 gave three of these functions a non-zero return. Round 31's findings are the callers that
@@ -1029,14 +1173,27 @@ grep -q 'return 1   # published-kept-unreadable' "$ROOT/uninstall.sh" && ok \
 [ "$(grep -c '^[[:space:]]*names="\$(printf' "$ROOT/uninstall.sh")" -eq 0 ] && \
   [ "$(grep -c 'if ! names="\$(printf' "$ROOT/uninstall.sh")" -eq 3 ] && ok \
   || bad "all three bucket reads in uninstall must be checked, and none may still be spelled bare — the bare form is the masking itself"
+fi
 
+if check_block a-predicate-whose-own-output-is-the-answ; then
 # --- a PREDICATE whose own output is the answer, and the readers behind it -------------------------
 #
 # `jq -e` takes the FILTER'S OUTPUT as its predicate. Decoding a value and testing IT therefore
 # conflates a legitimate falsey leaf with a rejected row: probed on jq-1.7.1, `printf false | jq -e .`
 # exits 1, exactly like a malformed path. `type` is a non-empty string for every JSON value, so it
 # is truthy for all of them and 1 cannot arise.
-grep -q "printf '%s' \"\$v\" | jq -e 'type' >/dev/null 2>&1" "$ROOT/scripts/lib/common.sh" && ok \
+# BEHAVIOURAL since #471. This grepped for the per-row `printf '%s' "$v" | jq -e 'type'` spelling,
+# and the per-row loop is gone — a grep for a string that cannot occur is a guard that scans
+# nothing and reports exactly what a clean run reports. The property is unchanged, so it is the
+# property that is checked: every falsey JSON value is a legitimate leaf and must survive.
+_pv="$work/predval"; rm -rf "$_pv"; mkdir -p "$_pv"
+{ printf 'disposition\tinstalled\n'
+  printf 'leaf\t["a"]\tfalse\n'
+  printf 'leaf\t["b"]\tnull\n'
+  printf 'leaf\t["c"]\t0\n'
+  printf 'leaf\t["d"]\t""\n'; } > "$_pv/r"
+_pvout="$(adb_claude_settings_receipt_leaves "$_pv/r")"; _pvrc=$?
+[ "$_pvrc" -eq 0 ] && [ "$(printf '%s\n' "$_pvout" | wc -l | tr -d ' ')" = 4 ] && ok \
   || bad "the recorded-value check must validate PARSEABILITY, not truthiness — a leaf of false or null is valid JSON, and discarding its row loses the ownership evidence for a key uninstall then leaves in place"
 [ "$(grep -c "jq -e \. >/dev/null" "$ROOT/scripts/lib/common.sh")" -eq 0 ] && ok \
   || bad "...and no bare \`jq -e .\` may survive there, which is the conflation itself"
@@ -1057,7 +1214,9 @@ grep -q 'return 22 ;;   # settings-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unanswerable intactness comparison must not fall through to be decided on the payload digest, which cannot speak for rows nobody could compare"
 [ "$(grep -c 'adb_settings_unreadable_record "\$[A-Z]*SPRC"; exit 1' "$ROOT/bin/baseline")" -eq 2 ] && ok \
   || bad "both adb_settings_pending call sites must fail loud on 20/21 — reporting a healthy install over a record nothing could interpret is the defect"
+fi
 
+if check_block a-guard-that-kills-the-shell-and-a-reade; then
 # --- a GUARD THAT KILLS THE SHELL, and a reader that cannot say why it found nothing ---------------
 #
 # BEHAVIOURAL, not a grep. Both globals are assigned on exactly one path, every entry point runs
@@ -1086,7 +1245,9 @@ grep -q 'if \[ -s "\$_lr" \] && _lrbody=' "$ROOT/uninstall.sh" && ok \
 # The HOOK half of the no-op comparison, which the settings half was fixed for and this was not.
 grep -q 'elif \[ "\$_hkrc" -gt 1 \]; then' "$ROOT/uninstall.sh" && ok \
   || bad "the hook removal's comparison must tell an execution error from a difference — an elif chain published the staged document on a failed compare, reformatting a file we did not change and replacing a settings.json symlink with a regular file"
+fi
 
+if check_block round-34-an-open-that-failed-a-publisher; then
 # --- round 34: an OPEN that failed, a publisher that deletes, and two answers wearing one code -----
 #
 # BEHAVIOURAL. A receipt that cannot be OPENED must refuse, not report "no rows": the merge would
@@ -1133,7 +1294,9 @@ grep -q 'return 22 ;;   # settings-unanswerable' "$ROOT/bin/baseline" && ok \
   || bad "an unreadable or malformed settings.json must not be reported as a receipt error — repairing a valid receipt cannot unblock the update"
 [ "$(grep -c '2\[0-9\]) adb_settings_unreadable_record' "$ROOT/bin/baseline")" -eq 2 ] && ok \
   || bad "...and both pending call sites must accept the settings-file code"
+fi
 
+if check_block round-35-a-release-that-lied-a-signal-dr; then
 # --- round 35: a release that lied, a signal dropped in the handoff, and a record not to reconcile -
 #
 # BEHAVIOURAL. An `owner` file we cannot READ is not somebody else's lock: treating it as a mismatch
@@ -1164,7 +1327,9 @@ awk '/^adb_settings_lock_resume_signals\(\) \{/{f=1}
 # An incomplete `installed` receipt is reported and preserved, never reconciled.
 grep -q 'return 23 ;;  # receipt-incomplete' "$ROOT/bin/baseline" && ok \
   || bad "the incomplete-receipt code must reach the caller intact, so the update fails loud instead of self-healing over it"
+fi
 
+if check_block round-36-the-completeness-question-every round-34-an-open-that-failed-a-publisher; then
 # --- round 36: the completeness question every mutator must ask, and three swallowed statuses -----
 #
 # BEHAVIOURAL. An `installed` receipt whose recorded digest IS this payload but which has lost a
@@ -1205,7 +1370,9 @@ grep -q 'return 1   # lock-owner-unreadable-break' "$ROOT/scripts/lib/common.sh"
 # The three bucket lists are read before the transaction.
 grep -q 'return 1   # buckets-unreadable' "$ROOT/install.sh" && ok \
   || bad "the wrote/pruned/kept lists must be read BEFORE the receipt is published — .kept is the only thing naming a retired leaf the operator edited, and the new receipt no longer records it"
+fi
 
+if check_block round-37-skips-own-rows-too-hup-is-termi; then
 # --- round 37: skips own rows too, HUP is terminating, and an occupied path is not an absent one --
 #
 # BEHAVIOURAL. A skip PRESERVES the previous install's ownership rows, so one lost while the digest
@@ -1239,7 +1406,9 @@ grep -q 'trap - EXIT TERM INT HUP' "$ROOT/scripts/lib/common.sh" && ok \
 # An occupied non-regular receipt path is not an absent receipt.
 grep -q 'return 1   # receipt-not-regular' "$ROOT/uninstall.sh" && ok \
   || bad "a receipt path occupied by a directory must fail the uninstall — read as absent it prints Uninstalled with every key applied, and no later install can publish a replacement"
+fi
 
+if check_block round-38-a-document-the-run-cannot-see-i round-35-a-release-that-lied-a-signal-dr; then
 # --- round 38: a document the run cannot SEE is not a document that is not there ------------------
 #
 # BEHAVIOURAL. `-s` is false for a symlink whose non-empty target cannot be statted, exactly as for an
@@ -1267,7 +1436,7 @@ _dsq() { adb_settings_doc_state "$_ds/$1"; }
 chmod 700 "$_ds/locked"; chmod 600 "$_ds/open/unr.json"
 
 # Every site that used `-s` as "nothing there" now refuses an unseeable document instead.
-grep -q 'return 1   # settings-inaccessible-install' "$ROOT/install.sh" && ok \
+grep -q 'return 1 ;;   # settings-inaccessible-install' "$ROOT/install.sh" && ok \
   || bad "the installer must refuse an inaccessible settings.json rather than merge against {} and replace it"
 grep -q 'return 22 ;;   # carry-settings-inaccessible' "$ROOT/install.sh" && ok \
   || bad "carrying ownership must not relinquish on an inaccessible document — the keys come back unowned when access returns"
@@ -1286,7 +1455,9 @@ grep -qF 'adb_sha256 "$payload" 2>/dev/null || printf' "$ROOT/install.sh" && \
 # The post-heal classifiers fail loud on a receipt they cannot read.
 grep -q '# downgrade-read-failed' "$ROOT/bin/baseline" && grep -q '# refusal-read-failed' "$ROOT/bin/baseline" && ok \
   || bad "a receipt the heal published but this process cannot read must end the update loud — answering 'not downgraded' or 'not refused' loses exit 9 and exit 7"
+fi
 
+if check_block round-39-completeness-judged-against-the and-a-caller-that-ignores-the-status-is round-35-a-release-that-lied-a-signal-dr; then
 # --- round 39: completeness judged against the receipt itself, and three more unseen reads ------------
 #
 # BEHAVIOURAL. The receipt records how many leaf rows it wrote, IN ITS HEADER, so completeness no
@@ -1336,7 +1507,9 @@ grep -q 'return 24   # payload-unhashable' "$ROOT/bin/baseline" && grep -q 'if \
   || bad "a payload that cannot be hashed must be 24 with its own remedy — 'not pending' reported stale protections as current"
 grep -q 'return 1   # link-target-unreadable' "$ROOT/install.sh" && ok \
   || bad "a settings link whose target cannot be read must be refused before anything is published — the rollback would restore only the bytes behind it"
+fi
 
+if check_block round-40-distinct-paths-a-row-count-that and-a-caller-that-ignores-the-status-is round-39-completeness-judged-against-the; then
 # --- round 40: distinct paths, a row count that refuses, the carry path, and a stale-lock race ------
 #
 # BEHAVIOURAL. Rows net out at the count when a missing leaf is replaced by a duplicate; distinct
@@ -1356,8 +1529,12 @@ _rli=0; _rlo="$(HOME="$_rl" bash -c '. "$1/scripts/lib/common.sh"
 chmod 700 "$_rl/locked"
 [ "$_rli" -eq 20 ] && ok \
   || bad "an unresolvable receipt link must make the row count refuse (20), not read as zero rows (got rc=$_rli out='$_rlo')"
-[ "$(grep -c 'adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }' "$ROOT/bin/baseline")" -eq 3 ] && ok \
-  || bad "every caller of the row count must fail loud on its refusal — assigned inside a substitution, the status is otherwise simply lost"
+# EVERY CALLER, not a fixed number of them: a count pinned here goes stale the first time a call site
+# is added, and the added one is exactly the unguarded one this rule exists to catch.
+_rcall="$(grep -c 'adb_settings_row_count)"' "$ROOT/bin/baseline")"
+_rguard="$(grep -c 'adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }' "$ROOT/bin/baseline")"
+[ "$_rcall" -gt 0 ] && [ "$_rcall" = "$_rguard" ] && ok \
+  || bad "every caller of the row count must fail loud on its refusal — assigned inside a substitution, the status is otherwise simply lost (guarded $_rguard of $_rcall)"
 
 # BEHAVIOURAL. The carry path refuses an unresolved receipt link, and ONLY that: a directory must stay
 # zero rows so the publish fails and names the real problem, which "could not be read" would not.
@@ -1369,7 +1546,9 @@ _ord=0; _orq "$_or/dangling" || _ord=$?
 _ora=0; _orq "$_or/a_dir" || _ora=$?
 [ "$_ora" -eq 0 ] && ok \
   || bad "a directory at the receipt path must stay ZERO ROWS, so the publish fails and names the real problem (got $_ora)"
+fi
 
+if check_block round-41-identity-when-the-count-holds-a and-a-caller-that-ignores-the-status-is round-39-completeness-judged-against-the; then
 # --- round 41: identity when the count holds, an incomplete record never carried, the lock in place --
 #
 # BEHAVIOURAL. Count and distinct paths can both hold while the receipt records the WRONG paths — one
@@ -1455,7 +1634,9 @@ _gfr=0; _gfo="$(HOME="$_gf" bash -c '. "$1/scripts/lib/common.sh"
   adb_settings_row_count' _ "$ROOT")" || _gfr=$?
 [ "$_gfr" -eq 20 ] && [ -z "$_gfo" ] && ok \
   || bad "a grep that fails on a readable receipt must make the row count refuse (20) — reached after the file looked fine, an absorbed failure became a fabricated count (got rc=$_gfr out='$_gfo')"
+fi
 
+if check_block the-merge-result-is-read-through-one-che the-merge-s-verdicts-under-the-all-or-no and-a-caller-that-ignores-the-status-is round-41-identity-when-the-count-holds-a; then
 # --- the merge result is read through ONE checked reader --------------------------------------------
 #
 # Every field here decides something: the verdict picks the branch, the counts gate messages, the
@@ -1483,7 +1664,9 @@ awk '/verdict="\$\(_adb_result_field/{f=1}
 [ "$(awk '/^adb_claude_settings_leaf_rows\(\)/{f=1} f && /_paths="\$\(printf/ && /\|\| return 1/{n++} f && /^}/{exit} END{print n+0}' \
      "$ROOT/scripts/lib/common.sh")" -eq 2 ] && ok \
   || bad "both leaf-row enumerations must be captured AND checked before any row is printed — inside the heredoc a failed jq walks zero paths and the writer still returns 0"
+fi
 
+if check_block and-so-is-each-leaf-value-one-level-down round-41-identity-when-the-count-holds-a; then
 # --- and so is EACH LEAF VALUE, one level down -------------------------------------------------------
 #
 # The arrays were fixed one level up; each value inside them was still extracted by an unchecked
@@ -1509,7 +1692,9 @@ awk '/^adb_claude_settings_leaf_rows\(\)/{f=1}
      f && /\[ -z "\$v" \]/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/scripts/lib/common.sh" | grep -q ok && ok \
   || bad "...and an empty extraction must fail the writer, since that is exactly what the failure looks like"
+fi
 
+if check_block the-merge-s-decision-is-read-back-and-ch round-41-identity-when-the-count-holds-a; then
 # --- the merge's decision is read back and CHECKED before anything is published ----------------------
 #
 # `.wrote` and `.created` were extracted inline, so a `jq` that failed became an EMPTY argument:
@@ -1525,7 +1710,9 @@ awk '/local rtmp=/{f=1}
 # same empty string, so one check covers one of them and nothing covers the other.
 [ "$(grep -c 'type == "array"' "$ROOT/install.sh")" -eq 2 ] && ok \
   || bad "...and BOTH must be VALIDATED as arrays: an empty string is what either failure looks like, and it renders as a receipt with no rows"
+fi
 
+if check_block a-no-op-uninstall-stages-nothing-it-leav the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a no-op uninstall stages nothing it leaves behind ------------------------------------------------
 #
 # The staged file is created before the "nothing of ours is here" comparison, so every cycle that
@@ -1537,7 +1724,9 @@ HOME="$nz" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-ho
 HOME="$nz" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 [ "$(find "$nz/.claude" -name 'settings.json.adb.*' | wc -l | tr -d ' ')" -eq 0 ] && ok \
   || bad "an uninstall that removed nothing must not leave its staged temp behind — one per cycle accumulates in ~/.claude"
+fi
 
+if check_block a-downgrade-outranks-a-link-repair round-41-identity-when-the-count-holds-a; then
 # --- a downgrade outranks a link repair ---------------------------------------------------------------
 #
 # The reconciliation report is gated on `LINKS_OK` because with a broken link there really was a
@@ -1549,7 +1738,9 @@ awk '/adb_self_heal && adb_verify_links/{f=1}
      f && /\[ "\$SETTINGS_PENDING" -eq 1 \] && \[ "\$LINKS_OK" -eq 1 \]/{exit}' \
   "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "the downgrade classification must run BEFORE the LINKS_OK gate — a run that also repaired a link would otherwise report the repair and drop the downgrade"
+fi
 
+if check_block a-refusal-names-what-it-is-about-to-stop the-version-probe-three-outcomes-driven and-a-caller-that-ignores-the-status-is round-41-identity-when-the-count-holds-a; then
 # --- a refusal names what it is about to stop owning --------------------------------------------------
 #
 # A leaf we no longer ship that the operator has edited lands in `.kept`. The refusal then writes a
@@ -1570,7 +1761,9 @@ grep -qi "NOT written" "$work/kb.log" && ok \
   || bad "precondition: an edited shipped leaf must make this a refusal"
 grep -qi "kept (no longer shipped" "$work/kb.log" && ok \
   || bad "a refusal must NAME the retired leaf it kept — the blocked receipt it is about to write carries no rows, so this line is the last chance anything identifies that key"
+fi
 
+if check_block a-refusal-over-a-synthetic-pre-image-wri the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a refusal over a SYNTHETIC pre-image writes nothing --------------------------------------------
 #
 # When settings.json is absent or empty the merge reads a synthetic `{}` — deleting a managed leaf
@@ -1613,7 +1806,9 @@ HOME="$syl" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-h
   || bad "...and must leave a dangling settings symlink as a symlink rather than replacing it with a regular file"
 [ -e "$syl/.claude/nowhere.json" ] && \
   bad "...and must not create the link's missing target either" || ok
+fi
 
+if check_block a-mode-we-read-and-could-not-set-is-a-pu round-41-identity-when-the-count-holds-a; then
 # --- a mode we READ and could not SET is a publication failure ---------------------------------------
 #
 # The hook writers build their temp under the caller's ordinary umask, so publishing anyway replaces
@@ -1635,7 +1830,9 @@ chmod +x "$pm/bin/chmod"
   bad "...and the temp must be removed rather than left behind" || ok
 grep -qi "could not preserve" "$work/pm.log" && ok \
   || bad "...and the refusal must say what it could not preserve"
+fi
 
+if check_block the-row-count-is-one-integer-whatever-th round-41-identity-when-the-count-holds-a; then
 # --- the row count is ONE integer, whatever the receipt holds ---------------------------------------
 #
 # `grep -c` PRINTS the count and EXITS 1 when it is zero, so a `|| printf 0` fallback appended a
@@ -1672,7 +1869,9 @@ chmod 600 "$rc_home/.claude/.adb-settings-owned"
 # downgrade from a relinquishment wrongly. It refuses, and every caller checks that before arithmetic.
 [ "$_rcu" -eq 20 ] && [ -z "$rc_unread" ] && ok \
   || bad "an unreadable receipt must make the row count REFUSE (20, nothing on stdout) — a printed zero is a fabricated count (got rc=$_rcu out='$rc_unread')"
+fi
 
+if check_block a-malformed-source-row-is-not-provenance the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a malformed source row is not provenance -------------------------------------------------------
 #
 # `source<TAB>` with nothing after it satisfies a raw grep for the row and is REJECTED by the reader,
@@ -1690,7 +1889,9 @@ HOME="$ms" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
   || bad "a receipt whose source row is malformed must be stamped like one that has none — a row is not a value, and the link is about to be removed"
 [ "$(grep -c "^source$ADB_TAB" "$ms/.claude/.adb-settings-owned")" -eq 1 ] && ok \
   || bad "...and the malformed row must be REPLACED, not left to outrank the good one appended after it"
+fi
 
+if check_block the-post-pull-path-asks-both-questions round-41-identity-when-the-count-holds-a; then
 # --- the post-pull path asks both questions ---------------------------------------------------------
 #
 # It exited 0 on any successful heal, so an update that also lost the protections was rendered as a
@@ -1701,7 +1902,9 @@ awk '/^  behind\)/{f=1}
   || bad "the post-pull path must ask whether the protections were downgraded before it reports the update complete"
 [ "$(grep -c 'adb_settings_downgraded_now' "$ROOT/bin/baseline")" -ge 3 ] && ok \
   || bad "...through the shared predicate both self-heal paths use, not a second copy of the question"
+fi
 
+if check_block the-downgrade-message-does-not-contradic round-41-identity-when-the-count-holds-a; then
 # --- the downgrade message does not contradict itself ------------------------------------------------
 #
 # When a reconciliation runs alongside the downgrade the rows really are dropped — so the trailing
@@ -1716,7 +1919,9 @@ awk '/^adb_settings_downgraded_now\(\)/{f=1}
      f && /Remove them by hand, then re-run/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "...and when ownership WAS relinquished it must not promise automatic re-application: an upgrade meets keys nobody owns and refuses"
+fi
 
+if check_block a-downgrade-is-not-a-reconciliation-eith round-41-identity-when-the-count-holds-a; then
 # --- a DOWNGRADE is not a reconciliation either -----------------------------------------------------
 #
 # Both leave a skip disposition behind, and classifying them by that label printed "relinquished
@@ -1750,7 +1955,9 @@ grep -qE '^\s*9\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
 awk '/^    9\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit} f && /^    5\)/{exit}' \
   "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
   || bad "...and must report it as REFUSED: nothing was relinquished and nothing was repaired, what changed is that the protections stopped being applied"
+fi
 
+if check_block a-reconciliation-is-not-a-repair round-35-a-release-that-lied-a-signal-dr round-41-identity-when-the-count-holds-a; then
 # --- a reconciliation is not a repair --------------------------------------------------------------
 #
 # Divergent rows under a skip or an opt-out make the settings pending so the installer can
@@ -1766,7 +1973,9 @@ awk '/adb_self_heal && adb_verify_links/{f=1}
   || bad "a visit that only relinquished stale ownership must not report a repair — no link and no setting was changed"
 grep -qE '^\s*8\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
   || bad "currency-lib.sh must classify that code explicitly rather than letting it fall through to the catch-all as a failure"
+fi
 
+if check_block a-refused-sandbox-install-is-not-a-repai the-version-probe-three-outcomes-driven round-35-a-release-that-lied-a-signal-dr round-41-identity-when-the-count-holds-a; then
 # --- a refused sandbox install is not a "repair" ---------------------------------------------------
 #
 # When the settings were what was pending and the operator already owns one of the shipped keys,
@@ -1811,7 +2020,9 @@ grep -qE '^\s*7\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
   || bad "currency-lib.sh must classify that code explicitly — falling through to the catch-all reports it as a failure it is not"
 awk '/^    7\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit}' "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
   || bad "...and must report it as REFUSED, never as repaired or silent — a security-relevant omission may not read as success"
+fi
 
+if check_block the-publish-transaction-defers-signals-a round-35-a-release-that-lied-a-signal-dr round-41-identity-when-the-count-holds-a the-merge-s-decision-is-read-back-and-ch; then
 # --- the publish transaction defers signals, and resumes on EVERY way out --------------------------
 #
 # One deferral, and a resume on each exit from the pair — the rollback included. A resume placed at
@@ -1841,7 +2052,9 @@ awk '/^    7\)/{f=1} f && /_adb_cu_emit refused/{print "ok"; exit}' "$ROOT/scrip
 awk '/if ! adb_publish_json "\$rtmp" "\$receipt"; then/{getline; if ($0 ~ /^[[:space:]]*adb_settings_lock_resume_signals/) {print "early"; exit}}' \
   "$ROOT/install.sh" | grep -q early && \
   bad "the rollback runs INSIDE the transaction — resuming at the top of the failure branch lets a pending signal exit before the settings are put back" || ok
+fi
 
+if check_block an-opt-out-that-could-not-be-recorded-is round-41-identity-when-the-count-holds-a; then
 # --- an opt-out that could not be RECORDED is a failed install ------------------------------------
 #
 # `_adb_invalidate_stale_receipt` answers "is a stale claim still standing", and on a FIRST opt-out
@@ -1860,7 +2073,9 @@ HOME="$oo" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/
   || bad "an opt-out that CAN be recorded must still succeed"
 [ "$(adb_claude_settings_disposition "$oo/.claude/.adb-settings-owned")" = "skipped-optout" ] && ok \
   || bad "...and must record skipped-optout"
+fi
 
+if check_block a-container-is-owned-only-while-it-still round-41-identity-when-the-count-holds-a; then
 # --- a container is owned only while it still holds a leaf we own ----------------------------------
 #
 # Existence alone was not enough. When a payload retires the last owned leaf under a container we
@@ -1883,7 +2098,9 @@ echo '{"x":{"y":"ours"}}' > "$cw/s2.json"
 echo '{"x":{"y":"ours","z":"new"}}' > "$cw/f2.json"
 [ "$(adb_claude_settings_merge "$cw/s2.json" "$cw/f2.json" "$cw/receipt" | jq -c '.created')" = '[["x"]]' ] && ok \
   || bad "a container that still holds an owned leaf must be retained"
+fi
 
+if check_block currency-asks-the-live-file-too-not-only the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- currency asks the LIVE file too, not only the payload digest ----------------------------------
 #
 # The digest says the payload has not changed; it says nothing about what is in settings.json. An
@@ -1924,7 +2141,9 @@ adb_claude_settings_leaves_intact "$li_r" "$li_s"; [ $? -eq 1 ] && ok \
 rm -f "$li_s"
 adb_claude_settings_leaves_intact "$work/li-rowless" "$li_s"; [ $? -eq 0 ] && ok \
   || bad "a rowless receipt must read as intact whatever the settings file is — the absence check has to come after the rowless one"
+fi
 
+if check_block a-signal-releases-the-lock-too-not-only the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a signal releases the lock too, not only an ordinary return ---------------------------------
 #
 # A helper wrapper covers every `return`; it covers no signal. A TERM or INT while the body runs
@@ -1972,7 +2191,9 @@ unset ADB_SIG_READY ADB_SIG_GO
 [ "$sig_rc" -eq 143 ] && ok || bad "a TERM must terminate the install as a TERM (143), not be swallowed (got $sig_rc)"
 [ -e "$(adb_settings_lock_path "$sig_home")" ] && \
   bad "a TERM mid-install must not leave the settings lock behind — it refuses every later run" || ok
+fi
 
+if check_block the-wrapper-s-result-carries-a-failed-re round-41-identity-when-the-count-holds-a; then
 # --- the wrapper's result carries a failed release ------------------------------------------------
 #
 # The helper reports it; a wrapper that discards the status still exits 0, and a self-heal
@@ -1984,7 +2205,9 @@ awk '/^install_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| icrc=1/{print 
 awk '/^uninstall_claude\(\)/{f=1} f && /adb_settings_lock_drop \|\| ucrc=1/{print "ok"; exit} f && /^}/{exit}' \
   "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "uninstall_claude must do the same"
+fi
 
+if check_block an-unreadable-receipt-is-not-one-without the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- an unreadable receipt is not one WITHOUT a source ------------------------------------------------
 #
 # With the root-doc link already gone, `|| true` turned a failed read into an empty source, which
@@ -2003,7 +2226,9 @@ grep -qiE '^Uninstalled' "$work/us2.log" && \
   bad "...and must not print Uninstalled over settings it never touched" || ok
 jq -e '.sandbox.enabled == true' "$us2/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and the keys must still be there, since nothing proved they were ours to remove"
+fi
 
+if check_block none-is-a-sentinel-and-is-never-persiste round-41-identity-when-the-count-holds-a; then
 # --- `none` is a sentinel and is never persisted ------------------------------------------------------
 #
 # It means "nobody has written a receipt", and the reader refuses it in a receipt that EXISTS — so
@@ -2016,7 +2241,9 @@ awk '/njdisp="\$\(adb_claude_settings_disposition/{f=1}
      f && /= none \]/{print "ok"; exit}
      f && /receipt_render/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "...and must refuse specifically when it reads `none`, which is what an empty receipt produces"
+fi
 
+if check_block an-unstamped-legacy-install-is-not-unlin round-41-identity-when-the-count-holds-a; then
 # --- an unstamped legacy install is not unlinked ----------------------------------------------------
 #
 # A stamp that failed used to warn and carry on into `adb_unlink_manifest`, which removes the only
@@ -2036,7 +2263,9 @@ awk '/^_uninstall_claude_locked\(\)/{f=1}
      f && /could not record provenance on this legacy/{print "ok"; exit}
      f && /^  adb_unlink_manifest "\$REPO"/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "...and that refusal must come BEFORE adb_unlink_manifest, or the proof is already gone when it fires"
+fi
 
+if check_block a-legacy-receipt-gains-durable-provenanc the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a legacy receipt gains durable provenance before the link that proves it is removed ------------
 #
 # `adb_unlink_manifest` runs before `unwire_settings`, so a receipt with no `source` row whose
@@ -2071,7 +2300,9 @@ HOME="$lu" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 chmod 600 "$lu/.claude/.adb-settings-owned"
 [ "$(grep -c "^leaf$ADB_TAB" "$lu/.claude/.adb-settings-owned")" -eq "$lu_rows" ] && ok \
   || bad "an unreadable receipt must be left untouched by the provenance stamp — writing from an empty read destroys every ownership row"
+fi
 
+if check_block every-file-this-suite-reads-is-declared; then
 # --- every file this suite READS is declared as a gate input ---------------------------------------
 #
 # `mutation-gate.sh` dispatches the harness only when the change touches its declared inputs, so a
@@ -2087,7 +2318,9 @@ for _f in scripts/lib/common.sh install.sh uninstall.sh bin/baseline scripts/lib
     *) bad "settings-fragment-mutation must declare $_f as an input — this suite reads it, and a PR touching only that file would skip the harness" ;;
   esac
 done
+fi
 
+if check_block a-container-the-operator-recreated-survi the-merge-s-verdicts-under-the-all-or-no round-41-identity-when-the-count-holds-a; then
 # --- a container the OPERATOR recreated survives a mixed refusal --------------------------------------
 #
 # The retirement pass used to walk every container the receipt records and delete any that was
@@ -2109,7 +2342,9 @@ printf '%s' "$mx_out" | jq -e '.settings | has("a") | not' >/dev/null 2>&1 && ok
   || bad "a container THIS run emptied by retiring its last owned leaf must be removed with it"
 printf '%s' "$mx_out" | jq -e '.settings.b == {}' >/dev/null 2>&1 && ok \
   || bad "...but an empty object at a path the operator has taken over must SURVIVE — we cannot tell it from one of ours, so we must not delete it"
+fi
 
+if check_block and-the-coupling-that-makes-the-blocked a-container-the-operator-recreated-survi; then
 # --- and the coupling that makes the blocked writer's condition exact -------------------------------
 #
 # The blocked path asks whether the DOCUMENT changed, as the uninstall side does. Given the rule
@@ -2125,7 +2360,9 @@ else
   [ "$(printf '%s' "$cp_out" | jq -r '.pruned | length')" -gt 0 ] && ok \
     || bad "a refusal that CHANGED the document must have pruned a leaf — if a container can move on its own, the blocked writer's \$retired guard is no longer exact"
 fi
+fi
 
+if check_block an-owned-container-is-still-something-of the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- an owned CONTAINER is still something of ours ---------------------------------------------------
 #
 # "Did the file change" was asked of `.pruned`, which counts LEAVES — and the removal also deletes
@@ -2144,7 +2381,9 @@ jq -e 'has("sandbox") | not' "$oc/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "an empty container this install created must still be removed — a zero LEAF count is not proof that nothing of ours is left"
 jq -e '.model == "opus"' "$oc/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and the operator's own keys must survive that removal"
+fi
 
+if check_block an-accurate-ownership-record-is-never-de round-41-identity-when-the-count-holds-a; then
 # --- an ACCURATE ownership record is never destroyed because its replacement failed -----------------
 #
 # `_adb_carry_rows` returns rows only when every recorded leaf still carries its recorded value, so
@@ -2173,7 +2412,9 @@ awk '/optout_rows="\$\(_adb_carry_rows/{f=1}
      f && /= skipped-optout/{print "ok"; exit}
      f && /_adb_invalidate_stale_receipt/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "...and must keep an existing opt-out record even when it carries no rows — the record IS the evidence of the choice"
+fi
 
+if check_block nothing-is-pruned-until-the-receipt-is-k round-41-identity-when-the-count-holds-a; then
 # --- nothing is pruned until the receipt is known to be replaceable ---------------------------------
 #
 # Retirement rewrites the settings first and publishes the refusal receipt second, so a receipt that
@@ -2183,7 +2424,9 @@ awk '/transaction: retirement prune \+ refusal receipt/{f=1}
      f && /mv "\$receipt" "\$_bprobe"/{print "ok"; exit}
      f && /adb_publish_json "\$rtmp2" "\$settings"/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "the retirement prune must prove the receipt is replaceable BEFORE it rewrites settings.json"
+fi
 
+if check_block nothing-of-ours-in-the-file-means-the-fi the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- nothing of ours in the file means the file is not touched -------------------------------------
 #
 # A rowless receipt — a first blocked refusal, a below-floor skip — or one whose every owned leaf
@@ -2220,7 +2463,9 @@ jq -e '.hooks != null and .sandbox.enabled == true' "$rt/.claude/settings.json" 
 HOME="$rt" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 jq -e '(.hooks | length) == 0 and .sandbox == null' "$rt/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and an uninstall that DOES own things must still remove them from both surfaces"
+fi
 
+if check_block a-refused-removal-leaves-no-temp-file-be the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a refused removal leaves no temp file behind ---------------------------------------------------
 #
 # `--remove` mode creates its synthetic empty payload BEFORE the receipt is parsed, so the early
@@ -2251,7 +2496,9 @@ echo '{"sandbox":{"enabled":true}}' > "$tl/s.json"; echo '{}' > "$tl/f.json"
 ( PATH="$tl/bin:$PATH"; adb_claude_settings_merge "$tl/s.json" "$tl/f.json" "$tl/receipt" >/dev/null 2>&1 ) || true
 mktemp_probe="$(PATH="$tl/bin:$PATH" mktemp)"; case "$mktemp_probe" in "$tl/spool/"*) ok ;; *) bad "the mktemp stub was not on PATH, so the leak count above proved nothing" ;; esac
 rm -f "$mktemp_probe"
+fi
 
+if check_block the-reader-still-tells-unreadable-from-d round-41-identity-when-the-count-holds-a; then
 # --- the reader still tells UNREADABLE from DAMAGED, even though uninstall now refuses earlier ------
 #
 # `unwire_settings` prints a different message for each, and that was their only behavioural
@@ -2266,7 +2513,9 @@ awk '/^unwire_settings\(\)/{f=1}
      f && /elif \[ "\$mrc" -eq 21 \]; then/{print "ok"; exit}
      f && /^}/{exit}' "$ROOT/uninstall.sh" | grep -q ok && ok \
   || bad "...and unwire_settings must keep a distinct arm for each, or the remedies collapse into one wrong message"
+fi
 
+if check_block a-receipt-that-could-not-be-classified-i the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a receipt that could not be CLASSIFIED is not an unparseable live file -------------------------
 #
 # The merge answers 20 and 21 for a receipt it could not read or classify — the rows are still there
@@ -2287,7 +2536,9 @@ HOME="$dm" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-ho
   || bad "...and every owned row must survive"
 jq -e '.sandbox.enabled == true' "$dm/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "...and the keys it could not prove ownership of must be left alone"
+fi
 
+if check_block a-present-source-row-decides-and-the-lin the-version-probe-three-outcomes-driven and-a-caller-that-ignores-the-status-is round-41-identity-when-the-count-holds-a; then
 # --- a present source row decides, and the link is only the fallback --------------------------------
 #
 # The failed-takeover state is reachable: clone B replaces the root-doc link and then fails before
@@ -2308,7 +2559,9 @@ jq -e '.sandbox.enabled == true' "$ft/.claude/settings.json" >/dev/null 2>&1 && 
   || bad "...and its record must survive, since the clone that owns it still needs it"
 grep -qi "names another clone" "$work/ft.log" && ok \
   || bad "...and the run must say whose it is, so the operator knows where to uninstall from"
+fi
 
+if check_block a-release-that-did-not-release-is-report round-41-identity-when-the-count-holds-a; then
 # --- a release that did not release is reported, not reported as success ---------------------------
 #
 # The token used to be cleared BEFORE the removal, so an `rm`/`rmdir` defeated by an ACL or a
@@ -2329,7 +2582,9 @@ HOME="$ur2" bash -c '
 grep -qi "could not be released" "$work/unrelease.log" && ok \
   || bad "...and must say so, naming the path, because the operator is the only one who can clear it"
 rm -rf "$(adb_settings_lock_path "$ur2")" 2>/dev/null
+fi
 
+if check_block a-record-that-was-not-written-is-not-a-s round-41-identity-when-the-count-holds-a; then
 # --- a record that was not written is not a success, whoever asks ----------------------------------
 #
 # `_adb_invalidate_stale_receipt` answers "does a stale claim still survive". On a FIRST refusal or
@@ -2351,7 +2606,9 @@ awk '/_adb_invalidate_stale_receipt "\$receipt" "the skip stands/{f=1}
   || bad "...and a skip whose receipt was not published must do the same"
 [ "$(grep -c 'return \$?' "$ROOT/install.sh")" -eq 0 ] && ok \
   || bad "no path may hand the invalidator's benign status back as its own — that is the defect, and it is spelled the same way each time"
+fi
 
+if check_block the-receipt-must-be-proved-removable-bef the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- the receipt must be PROVED removable before the settings are rewritten ------------------------
 #
 # Deferring signals closed the interruption window and did nothing for an ordinary I/O failure
@@ -2399,7 +2656,9 @@ if command -v chflags >/dev/null 2>&1; then
 else
   echo "SKIP: no chflags on this platform — the immutable-receipt case is pinned structurally above"
 fi
+fi
 
+if check_block arming-is-what-makes-an-un-deferred-sign round-41-identity-when-the-count-holds-a; then
 # --- arming is what makes an un-deferred signal release the lock --------------------------------
 #
 # Asserted at the LIBRARY, with no transaction in the way, and that is the point. Driven through
@@ -2422,7 +2681,9 @@ ad_rc=$?
   || bad "...and must exit with the signal's own status, which is what the armed handler adds over bash's default (got $ad_rc)"
 [ -e "$(adb_settings_lock_path "$ad")" ] && \
   bad "...and must release the lock on its way out — without the armed handler bash dies with the lock still held" || ok
+fi
 
+if check_block the-lock-is-released-when-the-phase-ends round-41-identity-when-the-count-holds-a; then
 # --- the lock is released WHEN THE PHASE ENDS, not merely when the process does -------------------
 #
 # A STRUCTURAL PIN, and the reason it has to be one is worth stating: the EXIT trap releases the
@@ -2438,7 +2699,9 @@ ad_rc=$?
   || bad "install.sh must release the settings lock explicitly when the Claude phase ends — the EXIT trap covers a crash, not a phase boundary"
 [ "$(grep -c 'adb_settings_lock_drop' "$ROOT/uninstall.sh")" -eq 1 ] && ok \
   || bad "uninstall.sh must release the settings lock explicitly when the Claude phase ends, for the same reason"
+fi
 
+if check_block an-uninstall-with-no-claude-state-is-don round-41-identity-when-the-count-holds-a; then
 # --- an uninstall with no Claude state is DONE, not blocked ---------------------------------------
 #
 # The lock directory is nested inside ~/.claude, so on a home that never had one — a clean machine,
@@ -2454,7 +2717,9 @@ grep -qi "an install is writing" "$work/bare.log" && \
   bad "...and must not blame a concurrent install for an absent directory" || ok
 [ -e "$bare_home/.claude" ] && \
   bad "...and must not CREATE ~/.claude in order to lock it — an uninstall may not materialise the tree it removes" || ok
+fi
 
+if check_block a-version-skip-returns-the-record-s-stat the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a version skip returns the RECORD's status ----------------------------------------------------
 #
 # `_adb_record_skip` returns non-zero only when it could neither publish the replacement receipt nor
@@ -2475,7 +2740,9 @@ okskip="$work/okskip"; rm -rf "$okskip"; mkdir -p "$okskip/.claude"
 stub "2.1.100 (Claude Code)"
 HOME="$okskip" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1 && ok \
   || bad "a below-floor skip whose receipt WAS written must still succeed"
+fi
 
+if check_block a-skip-whose-record-could-not-be-written the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a skip whose RECORD could not be written says so, on both non-writing paths -----------------
 #
 # The receipt is the entire reason a skip is retried rather than frozen into a permanent absence
@@ -2499,7 +2766,9 @@ HOME="$inv_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude -
 grep -qi "\-\-no-sandbox was honoured" "$work/inv2.log" && ok \
   || bad "...and the opt-out path must say the same — it reaches the identical invalidator"
 rm -rf "$inv_home/.claude/.adb-settings-owned"
+fi
 
+if check_block ownership-is-proved-against-the-receipt the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- ownership is proved against the RECEIPT, never against the fragment -------------------------
 #
 # Asking the write path meant a clone whose payload is missing or damaged dropped every row even
@@ -2514,7 +2783,9 @@ printf '{"sandbox":' > "$dmg_clone/agents/claude/settings.fragment.json"
 HOME="$dmg" PATH="$work/bin:$PATH" bash "$dmg_clone/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
 [ "$(grep -c "^leaf$ADB_TAB" "$dmg/.claude/.adb-settings-owned" || true)" -eq 4 ] && ok \
   || bad "a damaged FRAGMENT must not cost ownership — every live value still equals its recorded one, and the keys would otherwise stay installed and unremovable"
+fi
 
+if check_block a-container-retirement-deletes-is-no-lon the-merge-s-verdicts-under-the-all-or-no and-a-caller-that-ignores-the-status-is; then
 # --- a container retirement deletes is no longer ours --------------------------------------------
 #
 # Carrying it forward would claim an empty object the operator later creates at that path.
@@ -2526,11 +2797,15 @@ jq 'del(.sandbox.network)' "$PAYLOAD" > "$work/cret-payload.json"
 r="$(adb_claude_settings_merge "$work/cret.json" "$work/cret-payload.json" "$work/cret-receipt")"
 [ "$(names "$r" created)" = "sandbox,sandbox.credentials" ] && ok \
   || bad "a container retirement emptied must be dropped from ownership; created: $(names "$r" created)"
+fi
 
+if check_block a-rollback-restores-the-symlink-not-the round-41-identity-when-the-count-holds-a; then
 # --- a rollback restores the SYMLINK, not the bytes behind it ------------------------------------
 grep -qF 'ln -s "$link_target" "$settings"' "$ROOT/install.sh" && ok \
   || bad "the rollback must restore a symlink destination as a symlink — the pre-image is dereferenced bytes, and writing them back loses the topology permanently"
+fi
 
+if check_block the-opt-out-rechecks-what-it-carries the-version-probe-three-outcomes-driven an-unreadable-receipt-is-not-an-absent-o round-41-identity-when-the-count-holds-a; then
 # --- the opt-out rechecks what it carries --------------------------------------------------------
 #
 # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but carrying it BLINDLY
@@ -2595,7 +2870,9 @@ HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --
   || bad "--no-sandbox over a DIVERGED install must relinquish ownership, or a value the operator recreates by hand is later deleted as ours"
 [ "$(adb_claude_settings_disposition "$oo_home/.claude/.adb-settings-owned")" = skipped-optout ] && ok \
   || bad "...and must still record the opt-out itself"
+fi
 
+if check_block an-empty-or-absent-settings-json-is-subs the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- an empty or absent settings.json is SUBSTITUTED, never created in place ---------------------
 #
 # `echo '{}' > "$settings"` follows a symlink, so a dangling link had its target created before the
@@ -2603,13 +2880,23 @@ HOME="$oo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --
 sym_home="$work/symhome"; rm -rf "$sym_home"; mkdir -p "$sym_home/.claude"
 ln -s "$sym_home/outside-target.json" "$sym_home/.claude/settings.json"
 HOME="$sym_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+# A LINK TO AN EMPTY TARGET IS THE CASE THE SUBSTITUTION STILL HANDLES. Since round 50 a DANGLING link
+# is refused before this path, so the in-place write is only reachable through `empty` — where it
+# follows the link out of ~/.claude exactly as it used to.
+sym_e="$work/symempty"; rm -rf "$sym_e"; mkdir -p "$sym_e/.claude"
+: > "$sym_e/outside-empty.json"
+ln -s "$sym_e/outside-empty.json" "$sym_e/.claude/settings.json"
+HOME="$sym_e" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+[ -s "$sym_e/outside-empty.json" ] && bad "an empty settings target reached through a link must not be written in place — the publish is rename-only for exactly this reason" || ok
 [ -e "$sym_home/outside-target.json" ] && bad "a dangling settings symlink must not have its target created — the publish is rename-only for exactly this reason" || ok
 # ...and a HOME with no settings.json at all still installs.
 none_home="$work/nonehome"; rm -rf "$none_home"; mkdir -p "$none_home/.claude"
 HOME="$none_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 jq -e '.sandbox.enabled == true' "$none_home/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "an absent settings.json must still receive the fragment"
+fi
 
+if check_block a-failed-retirement-prune-must-not-be-fo round-41-identity-when-the-count-holds-a; then
 # --- a failed retirement prune must not be followed by an ownership-free receipt -----------------
 #
 # A `skipped-blocked` receipt carries no rows, so writing one after a prune that could not be
@@ -2620,7 +2907,9 @@ jq -e '.sandbox.enabled == true' "$none_home/.claude/settings.json" >/dev/null 2
 # stays green while the `return` it describes is removed.
 grep -qF 'return 1   # prune-abort' "$ROOT/install.sh" && ok \
   || bad "a prune that could not be published must abort before replacing the receipt, not leave the retired key unrecorded"
+fi
 
+if check_block a-damaged-fragment-is-refused-not-read-a the-merge-s-verdicts-under-the-all-or-no; then
 # --- a damaged FRAGMENT is refused, not read as "ships nothing" ----------------------------------
 #
 # A payload that is non-empty but holds only whitespace slurps to `[]`, and the old `// {}` turned
@@ -2636,7 +2925,9 @@ done
 # ...and removal is unaffected, because it never reads the payload at all.
 adb_claude_settings_merge "$work/installed.json" "$work/badfrag.json" "$work/installed-receipt" --remove >/dev/null 2>&1 \
   && ok || bad "removal must still ignore the payload entirely"
+fi
 
+if check_block provenance-names-the-clone-that-last-wro the-version-probe-three-outcomes-driven and-a-caller-that-ignores-the-status-is round-41-identity-when-the-count-holds-a; then
 # --- provenance names the clone that LAST WROTE the receipt --------------------------------------
 #
 # `source` is not ownership and must not be carried forward: a receipt that kept naming clone A
@@ -2664,7 +2955,9 @@ HOME="$prov_home" PATH="$work/bin:$PATH" bash "$clone_b2/install.sh" --agent cla
 # failing, so the retry it advises rejects the receipt as somebody else's.
 grep -qF 'PROVENANCE IS STILL REFRESHED' "$ROOT/install.sh" && ok \
   || bad "the no-jq path must refresh the receipt source — none of that render needs jq"
+fi
 
+if check_block a-refusal-that-cannot-be-recorded-must-n round-41-identity-when-the-count-holds-a; then
 # --- a refusal that cannot be recorded must not leave the old claim standing ---------------------
 #
 # Returning success left the previous `installed` receipt in place with a matching digest, so the
@@ -2684,7 +2977,9 @@ grep -qF 'PROVENANCE IS STILL REFRESHED' "$ROOT/install.sh" && ok \
   || bad "a refusal whose record could not be published must remove the previous ownership record through the ONE shared invalidator — a second copy disarms the pin below"
 awk '/stale ownership record could not be/{print "loud"; exit}' "$ROOT/install.sh" | grep -q loud && ok \
   || bad "...and must fail loudly when even that removal is impossible"
+fi
 
+if check_block the-pinned-model-says-what-it-omitted-on round-41-identity-when-the-count-holds-a; then
 # --- the pinned model says what it omitted, on EVERY path ----------------------------------------
 #
 # The omission is security-relevant, and the branch that lacks jq is precisely where going unsaid
@@ -2697,7 +2992,9 @@ grep -qE '^    _pi_say "  sandbox  NOT written' "$ROOT/scripts/lib/pinned-instal
   || bad "the pinned sandbox omission must sit at the loop body level, not inside the jq-success branch — the degraded path is where an unsaid omission matters most"
 grep -qE '^      _pi_say "  sandbox  NOT written' "$ROOT/scripts/lib/pinned-install.sh" && \
   bad "the pinned sandbox omission is indented inside a branch — it will not print without jq" || ok
+fi
 
+if check_block a-skip-must-never-discard-ownership-of-k the-merge-s-verdicts-under-the-all-or-no the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- a SKIP must never discard ownership of keys already written ---------------------------------
 #
 # "Write no new keys" is not "forget the ones already there". A CLI that becomes unprobeable, or is
@@ -2722,7 +3019,9 @@ for d in unprobeable belowfloor; do
   esac
 done
 stub "2.1.259 (Claude Code)"
+fi
 
+if check_block no-sandbox-is-recorded-even-without-jq round-41-identity-when-the-count-holds-a a-skip-must-never-discard-ownership-of-k; then
 # --- --no-sandbox is recorded even without jq ----------------------------------------------------
 # A missing jq is a supported degraded environment, and the opt-out receipt is plain text. If the
 # flag went unrecorded there, the first update after jq arrived would apply the fragment over a
@@ -2752,7 +3051,9 @@ else
   [ "$(adb_claude_settings_disposition "$nojq_home/.claude/.adb-settings-owned")" = skipped-optout ] && ok \
     || bad "--no-sandbox must be recorded even when jq is absent — its receipt is plain text, and an unrecorded opt-out is overridden by the next update"
 fi
+fi
 
+if check_block round-42-unresolved-receipt-links-counts the-version-probe-three-outcomes-driven round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a no-sandbox-is-recorded-even-without-jq; then
 # --- round 42: unresolved receipt links, counts without jq, and exact counts --------------------------
 #
 # BEHAVIOURAL, each through the real entry point in its own HOME.
@@ -2802,7 +3103,9 @@ awk '/^leaf\t/ && !n {n=1; next} {print}' "$_h/$_r42r" | sed 's/^leaves .*/leave
 _rc=0; HOME="$_h" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc=$?
 [ "$_rc" -ne 0 ] && [ -e "$_h/$_r42r" ] && ok \
   || bad "uninstall must refuse a receipt whose leaf count is malformed, and keep it — removal never reads the header again, so a hidden lost row was stranded with the record deleted (got $_rc)"
+fi
 
+if check_block round-43-rows-counted-both-ways-exact-pa round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
 # --- round 43: rows counted both ways, exact pairs, anchored containers, an unusable ~/.claude ---------
 #
 # BEHAVIOURAL. A duplicate row keeps the header and the distinct paths intact; only the ROW count sees it.
@@ -2841,7 +3144,9 @@ _rc2=0; HOME="$_h2" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || 
 _h3="$work/r43-root-absent"; rm -rf "$_h3"; mkdir -p "$_h3"
 _rc3=0; HOME="$_h3" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1 || _rc3=$?
 [ "$_rc3" -eq 0 ] && ok || bad "...while a ~/.claude that is truly absent is still nothing to remove (got $_rc3)"
+fi
 
+if check_block round-44-exact-pairs-on-the-legacy-branc the-version-probe-three-outcomes-driven round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a no-sandbox-is-recorded-even-without-jq round-42-unresolved-receipt-links-counts; then
 # --- round 44: exact pairs on the legacy branch, a disposition before a no-jq carry, one payload read ---
 #
 # BEHAVIOURAL. A legacy receipt (no `leaves` header) under a matching digest carries exactly the shipped
@@ -2886,7 +3191,9 @@ _live="$(jq -c '.sandbox.network.allowedDomains' "$_h/.claude/settings.json" 2>/
 _rec="$(grep "^leaf$ADB_TAB\[\"sandbox\",\"network\",\"allowedDomains\"\]" "$_h/$_r42r" 2>/dev/null | cut -f3 | jq -c . 2>/dev/null)"
 [ -n "$_live" ] && [ "$_rec" = "$_live" ] && ok \
   || bad "an install must read its payload once — a pull landing mid-run wrote settings from one payload and recorded ownership from another (live $_live, recorded $_rec)"
+fi
 
+if check_block round-45-legacy-duplicate-paths-whatever round-35-a-release-that-lied-a-signal-dr round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
 # --- round 45: legacy duplicate paths whatever the digest, and the jq-free currency questions first ------
 #
 # BEHAVIOURAL. No payload change produces two rows for one path, so a legacy receipt carrying one is
@@ -2914,7 +3221,9 @@ awk -v t="$ADB_TAB" '/^source\t/{print "source" t "/somewhere/else"; next} {prin
 _pf="$(_pq "$_h")"
 [ "$_pf" = 0 ] && ok \
   || bad "without jq, a receipt naming another clone must still be pending — returning first skipped the no-jq provenance refresh (got $_pf)"
+fi
 
+if check_block round-46-one-generation-per-run-a-dangli the-version-probe-three-outcomes-driven round-35-a-release-that-lied-a-signal-dr round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts round-45-legacy-duplicate-paths-whatever; then
 # --- round 46: one generation per run, a dangling link is not a deletion, receipt-side failures, ------
 # --- a rowless legacy record, and a post-heal classification that is not stale ------------------------
 #
@@ -2967,7 +3276,9 @@ _ht="$(bash -c '. "$1/scripts/lib/common.sh"; eval "$(sed -n "/^adb_settings_rec
   printf "x" >> "$2/.claude/.adb-settings-owned"; c="$(adb_settings_heal_touched 0 "$s")"; printf "%s%s%s" "$a" "$b" "$c"' _ "$ROOT" "$_h")"
 [ "$_ht" = "101" ] && ok \
   || bad "a self-heal that rewrote the receipt must be classified whatever the pre-heal snapshot said — gating on it reported 'repaired' over a refusal the child installer had just recorded (pending/unchanged/rewritten = $_ht, want 101)"
+fi
 
+if check_block round-47-25-travels-out-of-the-currency the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts round-45-legacy-duplicate-paths-whatever round-46-one-generation-per-run-a-dangli; then
 # --- round 47: 25 travels out of the currency check, a dangling link on the REMOVE path, and the -------
 # --- opt-out re-read under the lock -------------------------------------------------------------------
 #
@@ -3003,7 +3314,9 @@ grep -q 'args+=(--optout-if-recorded)' "$ROOT/bin/baseline" && ok \
   || bad "the updater must pass --optout-if-recorded so the installer decides under the lock"
 [ "$(grep -c 'args+=(--no-sandbox)' "$ROOT/bin/baseline")" -eq 0 ] && ok \
   || bad "...and must not decide the opt-out itself from a read taken before the child acquires the settings lock"
+fi
 
+if check_block round-48-a-dangling-link-is-unanswerable round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
 # --- round 48: a dangling link is unanswerable to the currency check, and a counted record's digest ----
 #
 # BEHAVIOURAL. Diverged schedules a self-heal that merges against `{}`; a link that does not resolve
@@ -3026,7 +3339,9 @@ sed 's/^payload .*/payload -/' "$_lc/full" > "$_lc/counted-dash-installed"
 sed 's/^payload .*/payload -/; s/^disposition .*/disposition skipped-optout/' "$_lc/full" > "$_lc/counted-dash-skip"
 [ "$(_cd "$_lc/counted-dash-skip")" = 0 ] && ok \
   || bad "...while a skip recording payload - still passes: that is the renderer's own sentinel (got $(_cd "$_lc/counted-dash-skip"))"
+fi
 
+if check_block the-settings-temp-file-is-never-world-re round-41-identity-when-the-count-holds-a; then
 # --- the settings temp file is never world-readable, even for an instant -------------------------
 # It holds the WHOLE merged settings, unrelated `env` entries included, and a predictable PID-named
 # file under a traversable ~/.claude is readable by another user for as long as that window lasts.
@@ -3038,7 +3353,9 @@ grep -qF '( umask 077; : > "$tmp" )' "$ROOT/install.sh" && ok \
   || bad "the settings temp file must be created restricted BEFORE it is populated, not chmod'd after the write"
 grep -qF '( umask 077; : > "$tmp" )' "$ROOT/uninstall.sh" && ok \
   || bad "uninstall's settings temp file must be created restricted too — it holds the same whole document"
+fi
 
+if check_block a-receipt-that-cannot-be-published-rolls the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a the-merge-s-decision-is-read-back-and-ch; then
 # --- a receipt that cannot be published ROLLS THE SETTINGS BACK ----------------------------------
 #
 # The receipt is checked and rendered before anything is published, but publishing it can still
@@ -3064,7 +3381,9 @@ HOME="$rb_home" PATH="$work/bin:$PATH" bash "$rb_repo/install.sh" --agent claude
 if diff -q <(jq -S . "$rb_home/.claude/settings.json") <(jq -S . "$work/rollback-pristine.json") >/dev/null 2>&1; then ok
 else bad "a receipt that cannot be published must ROLL BACK the settings — applied keys with no ownership record can never be removed"; fi
 grep -qi "ROLLED BACK" "$work/rollback.log" && ok || bad "the rollback must be reported, not silent"
+fi
 
+if check_block baseline-update-must-notice-a-pending-su the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a round-45-legacy-duplicate-paths-whatever; then
 # --- `baseline update` must NOTICE a pending surface (bin/baseline) ------------------------------
 #
 # The `current` + links-OK path exits "nothing to do" without consulting the settings at all, so
@@ -3140,7 +3459,9 @@ pending installed "2.1.259 (Claude Code)" "$PAYLOAD" && \
 
 pending installed "2.1.259 (Claude Code)" "$work/pend-broken.json" && \
   bad "an unreadable settings file must NOT read as divergence — 'cannot tell' becomes a repair loop that re-runs the installer every session" || ok
+fi
 
+if check_block and-every-disposition-that-carries-rows baseline-update-must-notice-a-pending-su; then
 # --- and EVERY disposition that carries rows is asked the same question -----------------------------
 #
 # A skip and an opt-out deliberately keep the previous install's ownership rows, and those rows were
@@ -3159,7 +3480,9 @@ pending skipped-unprobeable "2.1.100 (Claude Code)" "$work/pend-edited.json" car
   || bad "an unprobeable skip whose carried rows have diverged must be pending for the same reason"
 pending skipped-below-floor "2.1.100 (Claude Code)" "$PAYLOAD" carry && \
   bad "...but a below-floor skip whose rows all still match must stay not-pending while the CLI is below the floor" || ok
+fi
 
+if check_block a-receipt-naming-another-clone-is-never the-version-probe-three-outcomes-driven and-a-caller-that-ignores-the-status-is round-41-identity-when-the-count-holds-a baseline-update-must-notice-a-pending-su; then
 # --- a receipt naming ANOTHER clone is never current -----------------------------------------------
 #
 # The failed-takeover state leaves this clone's root link paired with the previous clone's record.
@@ -3249,7 +3572,9 @@ pending_receipt "$current_home" "$(adb_sha256 "$PAYLOAD")"
 ask_pending "$current_home" && bad "a receipt recording THIS payload's digest must not be pending" || ok
 pending skipped-below-floor "2.1.100 (Claude Code)" && bad "a below-floor skip must stay put while the CLI is STILL below the floor" || ok
 stub "2.1.259 (Claude Code)"
+fi
 
+if check_block a-blocked-refusal-records-the-payload-it the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a baseline-update-must-notice-a-pending-su; then
 # --- a blocked refusal records the payload it refused, so it is not retried forever --------------
 #
 # Carrying the PRIOR digest (or `-` on a first install) leaves `adb_settings_pending` seeing an
@@ -3271,7 +3596,9 @@ if HOME="$blk_home" PATH="$work/bin:$PATH" bash -c '
     eval "$(sed -n "/^adb_settings_pending() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
     adb_settings_pending "'"$ROOT"'"'
 then bad "a blocked receipt recording THIS payload must not be pending — that is the repair loop"; else ok; fi
+fi
 
+if check_block an-uninstall-from-another-clone-must-not the-version-probe-three-outcomes-driven round-41-identity-when-the-count-holds-a; then
 # --- an uninstall from ANOTHER clone must not consume this one's settings ------------------------
 #
 # Two clones can each install globally: the second overwrites the first's links and its receipt.
@@ -3308,732 +3635,936 @@ grep -v "^source$ADB_TAB" "$legacy_home/.claude/.adb-settings-owned" > "$work/le
 HOME="$legacy_home" bash "$ROOT/uninstall.sh" --agent claude >"$work/legacy.log" 2>&1
 jq -e '.sandbox.enabled == true' "$legacy_home/.claude/settings.json" >/dev/null 2>&1 && ok \
   || bad "a receipt with NO source row must fall back to the link — and the link says this clone does not own ~/.claude, so its settings must NOT be removed"
+fi
+
+if check_block round-49-zero-owns-nothing-and-the-firs round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a; then
+# --- round 49: zero owns nothing, an unreadable header is a receipt failure, and the first CLI wins ---
+#
+# A `leaves 0` receipt owns nothing, so a row under it is damage whatever the disposition: the skip
+# branch used to accept a rowless skip on the header alone, and a damaged one carrying a live
+# operator path was trusted by `--remove`.
+_z="$work/r49"; rm -rf "$_z"; mkdir -p "$_z"
+_zc() { local r=0; _adb_claude_settings_rows_complete "$1" "${2-$PAYLOAD}" || r=$?; printf '%s' "$r"; }
+: | adb_claude_settings_receipt_render skipped-optout 9.9.9 "$FLOOR" - > "$_z/skip-zero"
+[ "$(_zc "$_z/skip-zero")" = 0 ] && ok \
+  || bad "a rowless zero-count skip is a first-time skip and must still pass (got $(_zc "$_z/skip-zero"))"
+{ cat "$_z/skip-zero"; printf 'leaf%s["operator"]%s"keep"\n' "$ADB_TAB" "$ADB_TAB"; } > "$_z/skip-zero-row"
+[ "$(_zc "$_z/skip-zero-row")" = 23 ] && ok \
+  || bad "a zero-count skip carrying a leaf row must answer 23 — accepted, uninstall deletes the live value that row names (got $(_zc "$_z/skip-zero-row"))"
+# ...and `installed` reaches zero only against the payload it names, once that payload ships nothing.
+printf '{}\n' > "$_z/empty-payload.json"
+: | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$_z/empty-payload.json")" > "$_z/installed-zero"
+[ "$(_zc "$_z/installed-zero" "$_z/empty-payload.json")" = 0 ] && ok \
+  || bad "an installed receipt recording leaves 0 must pass against a payload that ships no leaves — refused, the record every later run reads is permanently damaged (got $(_zc "$_z/installed-zero" "$_z/empty-payload.json"))"
+[ "$(_zc "$_z/installed-zero" "$PAYLOAD")" = 23 ] && ok \
+  || bad "...while an installed leaves 0 recorded against another payload stays 23 (got $(_zc "$_z/installed-zero" "$PAYLOAD"))"
+# ...and zero UNDER THIS PAYLOAD, while it still ships leaves, is the damaged record the rule is for.
+: | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$_z/installed-zero-ships"
+[ "$(_zc "$_z/installed-zero-ships" "$PAYLOAD")" = 23 ] && ok \
+  || bad "an installed leaves 0 whose own payload DOES ship leaves must answer 23 (got $(_zc "$_z/installed-zero-ships" "$PAYLOAD"))"
+: | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" - > "$_z/installed-zero-nodigest"
+[ "$(_zc "$_z/installed-zero-nodigest" "$_z/empty-payload.json")" = 21 ] && ok \
+  || bad "an installed leaves 0 with no digest names no payload and must stay damaged (got $(_zc "$_z/installed-zero-nodigest" "$_z/empty-payload.json"))"
+# A `leaves` header this run could not READ is a receipt-side failure (25), never payload uncertainty:
+# uninstall proceeds on 20 because the removal merge refuses an unreadable receipt, and `--remove`
+# never reads the count.
+_zu="$( adb_claude_settings_leaf_count() { return 20; }
+        r=0; _adb_claude_settings_rows_complete "$_lc/full" "$PAYLOAD" || r=$?; printf '%s' "$r" )"
+[ "$_zu" = 25 ] && ok \
+  || bad "an unreadable leaves header must answer 25 — as 20, uninstall removes the rows it could read and deletes the record (got $_zu)"
+# THE FIRST FALLBACK CANDIDATE THAT EXISTS DECIDES, probeable or not — the same rule the PATH binary
+# already follows. Falling through applied the fragment on a version the resolved CLI never reported.
+_zb="$work/r49bin"; rm -rf "$_zb"; mkdir -p "$_zb/first" "$_zb/second" "$work/emptybin"
+printf '#!/bin/sh\nprintf "not a version\\n"\n' > "$_zb/first/claude"; chmod +x "$_zb/first/claude"
+printf '#!/bin/sh\nprintf "2.1.259 (Claude Code)\\n"\n' > "$_zb/second/claude"; chmod +x "$_zb/second/claude"
+_zv="$( adb_claude_cli_candidates() { printf '%s\n' "$_zb/first/claude" "$_zb/second/claude"; }
+        export PATH="$work/emptybin"
+        v="$(adb_claude_cli_version 2>/dev/null)"; printf '%s|%s' "$?" "$v" )"
+[ "$_zv" = "1|" ] && ok \
+  || bad "an existing but unprobeable higher-priority CLI must end the search — falling through applies the fragment on a lower-priority binary's version (got $_zv)"
+_zv2="$( adb_claude_cli_candidates() { printf '%s\n' "$_zb/missing/claude" "$_zb/second/claude"; }
+         export PATH="$work/emptybin"
+         v="$(adb_claude_cli_version 2>/dev/null)"; printf '%s|%s' "$?" "$v" )"
+[ "$_zv2" = "0|2.1.259" ] && ok \
+  || bad "...while a candidate that does not exist is still skipped, so a real lower-priority install is found (got $_zv2)"
+# RELINQUISHED MEANS ROWS DROPPED, in the message too. Structural, for the reason its siblings give:
+# driving the `current)` arm needs a clone, a network classification and the update lock.
+awk '/skipped-optout\|skipped-below-floor\|skipped-unprobeable\)/{f=1}
+     f && /SETTINGS_ROWS_AFTER.*adb_settings_row_count/{print "ok"; exit}
+     f && /relinquished stale sandbox ownership/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "the skip arm must compare ownership rows before claiming a relinquishment — a provenance-only refresh still owns every leaf it names"
+fi
+
+if check_block round-50-an-unreadable-opt-out-refuses round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
+# --- round 50: an unreadable opt-out refuses, and a dangling link never reaches the merge ---------
+#
+# BEHAVIOURAL. `--optout-if-recorded` re-reads the recorded choice under the lock; substituted bare,
+# a receipt this run cannot classify made the comparison false and the fragment was applied over the
+# very `--no-sandbox` the re-read exists to honour.
+_o5="$work/r50-optout"; rm -rf "$_o5"; mkdir -p "$_o5/.claude"; printf '{}\n' > "$_o5/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$_o5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+sed 's/^disposition .*/disposition wat/' "$_o5/$_r42r" > "$_o5/r.tmp" && mv "$_o5/r.tmp" "$_o5/$_r42r"
+_o5out="$(HOME="$_o5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --optout-if-recorded 2>&1)"
+case "$_o5out" in
+  *"disposition could not be read"*) ok ;;
+  *) bad "an unclassifiable receipt must SAY it stopped --optout-if-recorded — silent, the operator sees a normal install over their recorded --no-sandbox choice" ;;
+esac
+# STRUCTURAL, and the reason is the finding's own shape: the damage needs a TRANSIENT failure — this
+# read fails, the later receipt reads succeed — and a fixture can only make it permanent, where the
+# receipt validation refuses anyway. What is checkable is that this read refuses rather than falling
+# through, which is the one thing a transient failure would otherwise slip past.
+grep -q 'return 1 ;;   # optout-unreadable' "$ROOT/install.sh" && ok \
+  || bad "a disposition read this run could not classify must stop --optout-if-recorded, not fall through to the merge that overwrites the recorded --no-sandbox choice"
+# BEHAVIOURAL. A dangling link refuses the direct install too: through the synthetic {} it published a
+# rowless skipped-blocked over the record and left the link, so the keys came back unowned.
+_d5="$work/r50-dangling"; rm -rf "$_d5"; _r42 "$_d5"
+_d5rows="$(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r")"
+mv "$_d5/.claude/settings.json" "$_d5/real.json"; ln -s "$_d5/gone.json" "$_d5/.claude/settings.json"
+_d5out="$(HOME="$_d5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+case "$_d5out" in
+  *"does not resolve to a readable file"*) ok ;;
+  *) bad "a dangling settings link must refuse the install rather than merge against {} — the record is replaced by a rowless refusal while the link stays" ;;
+esac
+[ "$(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r")" = "$_d5rows" ] && ok \
+  || bad "...and the established receipt keeps its ownership rows (had $_d5rows, now $(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r"))"
+[ -L "$_d5/.claude/settings.json" ] && ok || bad "...and the link itself is left alone"
+# A RECEIPT-SIDE READ THAT FAILS IS 25, NOT PAYLOAD UNCERTAINTY. Structural, like its siblings: making
+# one jq invocation fail in place is not reachable from a fixture.
+grep -q 'return 25   # recorded-paths-unreadable' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "reading the RECORDED paths is a receipt-side check: a jq failure there must answer 25, which uninstall refuses on, not the 2 it proceeds on"
+grep -q 'return 25   # identity-diff-unreadable' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the identity comparison's own failure must answer 25 too — as an empty result it read as a shortfall and reported damage it never established"
+fi
+
+if check_block round-51-a-second-read-that-fails-refu round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
+# --- round 51: a second read that fails refuses, it does not fall through ------------------------
+#
+# BEHAVIOURAL. Completeness has already called this record damaged (21); the disposition read here only
+# picks the wording. Folded into the condition, a read that failed made the whole test false and
+# removal CONTINUED on the damaged rows.
+_u5="$work/r51-remove"; rm -rf "$_u5"; _r42 "$_u5"
+sed 's/^leaves .*/leaves 4x/; s/^disposition .*/disposition wat/' "$_u5/$_r42r" > "$_u5/r.tmp" && mv "$_u5/r.tmp" "$_u5/$_r42r"
+_u5out="$(HOME="$_u5" PATH="$work/bin:$PATH" bash "$ROOT/uninstall.sh" --agent claude 2>&1)"
+[ -f "$_u5/$_r42r" ] && ok \
+  || bad "a receipt completeness called damaged must be KEPT by removal even when the diagnostic read fails — the rows it could read are otherwise removed with the record"
+case "$_u5out" in
+  *"NOTHING was removed"*) ok ;;
+  *) bad "...and removal must say it kept the record rather than reporting a clean removal" ;;
+esac
+grep -q '"sandbox"' "$_u5/.claude/settings.json" && ok \
+  || bad "...and the installed keys must still be there, since nothing was removed"
+# BEHAVIOURAL. `--no-sandbox` whose replacement receipt cannot be written keeps an existing record of
+# that same choice. A read that failed is not "it records something else": invalidated, the next
+# update reads `none` and applies the policy over an explicit decision.
+_k5="$work/r51-keep"; rm -rf "$_k5"; mkdir -p "$_k5/.claude"; printf '{}\n' > "$_k5/.claude/settings.json"
+stub "2.1.259 (Claude Code)"
+HOME="$_k5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+# A DIRECTORY AT THE RECEIPT PATH is both halves of the case at once: the replacement cannot be
+# published over it, and it cannot be classified either. A read-only ~/.claude would not do — the
+# LOCK is taken there, so the run never reaches this decision at all.
+rm -f "$_k5/$_r42r"; mkdir -p "$_k5/$_r42r/x"
+_k5out="$(HOME="$_k5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox 2>&1)"
+case "$_k5out" in
+  *"could NOT be recorded"*) ok ;;
+  *) bad "nothing at the receipt path is a FIRST opt-out that could not be written, not a record that still stands — the run must fail and say so" ;;
+esac
+# STRUCTURAL, for the reason round 50's opt-out pin gives: the case needs a PRESENT receipt whose read
+# fails while the replacement cannot be published, and the lock lives in the same directory, so a
+# fixture cannot hold both at once.
+grep -qF 'adb_settings_doc_state "$receipt")" = present' "$ROOT/install.sh" && ok \
+  || bad "a present receipt whose disposition read failed must be KEPT — invalidated, the recorded --no-sandbox choice is gone and the next update applies the policy over it"
+# STRUCTURAL, for the reason round 50's opt-out pin gives: the damage needs a read that fails while the
+# reads around it succeed, which a fixture cannot produce.
+grep -q 'return 25   # counted-digest-reread-failed' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "a counted receipt's digest re-read must refuse on failure — as an empty string it skipped the exact path/value comparison and a substituted row passed as complete"
+grep -q 'return 25   # zero-digest-reread-failed' "$ROOT/scripts/lib/common.sh" && ok \
+  || bad "the zero branch's digest re-read must refuse on failure too — as an empty string it reported damage it never established"
+fi
+
+if check_block round-52-the-record-is-named-a-recreat round-39-completeness-judged-against-the round-41-identity-when-the-count-holds-a round-42-unresolved-receipt-links-counts; then
+# --- round 52: the record is named, and no promise outlives the ownership it depends on ----------
+#
+# BEHAVIOURAL. An incomplete record refuses a reinstall; the message must name the RECORD. Sending the
+# operator to restore settings.json changes nothing, because the unchanged record refuses again.
+_m5="$work/r52-incomplete"; rm -rf "$_m5"; _r42 "$_m5"
+awk -v n=0 '/^leaf\t/ && n==0 {n=1; next} {print}' "$_m5/$_r42r" > "$_m5/r.tmp" && mv "$_m5/r.tmp" "$_m5/$_r42r"
+_m5out="$(HOME="$_m5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+case "$_m5out" in
+  *"cannot show it records every key it owns"*) ok ;;
+  *) bad "an incomplete ownership record must be named as the thing to repair — reported as invalid settings.json, the operator restores a backup and stays blocked" ;;
+esac
+case "$_m5out" in
+  *"could not be read as a single JSON value"*) bad "...and must not blame settings.json, which is valid" ;;
+  *) ok ;;
+esac
+# BEHAVIOURAL. A skip that drops ownership must not promise re-application: the keys are no longer ours,
+# so an upgrade reads them as the operator's and refuses.
+_s5="$work/r52-skip"; rm -rf "$_s5"; _r42 "$_s5"
+jq '.sandbox.enabled = false' "$_s5/.claude/settings.json" > "$_s5/s.tmp" && mv "$_s5/s.tmp" "$_s5/.claude/settings.json"
+stub "2.1.100 (Claude Code)"
+_s5out="$(HOME="$_s5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+stub "2.1.259 (Claude Code)"
+case "$_s5out" in
+  *"upgrading will NOT re-apply them"*) ok ;;
+  *) bad "a below-floor skip that relinquished ownership must say an upgrade will NOT re-apply the keys — the promised self-heal refuses instead" ;;
+esac
+_u5b="$work/r52-skip-unprobeable"; rm -rf "$_u5b"; _r42 "$_u5b"
+jq '.sandbox.enabled = false' "$_u5b/.claude/settings.json" > "$_u5b/s.tmp" && mv "$_u5b/s.tmp" "$_u5b/.claude/settings.json"
+stub "not a version"
+_u5bout="$(HOME="$_u5b" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+stub "2.1.259 (Claude Code)"
+case "$_u5bout" in
+  *"refuse them: remove them by hand"*) ok ;;
+  *) bad "an unprobeable skip that relinquished ownership must say a re-run will refuse the keys, not promise to apply them" ;;
+esac
+# ...while a skip that KEPT ownership still makes the promise, which is true there.
+_k5b="$work/r52-skip-kept"; rm -rf "$_k5b"; _r42 "$_k5b"
+stub "2.1.100 (Claude Code)"
+_k5bout="$(HOME="$_k5b" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+stub "2.1.259 (Claude Code)"
+case "$_k5bout" in
+  *"applies them by itself"*) ok ;;
+  *) bad "a below-floor skip that kept ownership must still say the next update applies the keys by itself" ;;
+esac
+fi
+
+check_blocks_done
 
 # --- mutation: every rule above, broken in a copy, required RED on its own witness ---------------
 
 if [ "$MUTATION" -eq 1 ]; then
-  prepare() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/scripts/lib/common.sh"; }
-  prepare_payload() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/agents/claude/settings.fragment.json"; }
-  prepare_install() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/install.sh"; }
-  prepare_uninstall() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/uninstall.sh"; }
-  prepare_pinned() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/scripts/lib/pinned-install.sh"; }
-  prepare_baseline() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo/bin/baseline"; }
-  runner() { bash "$1/repo/scripts/check-settings-fragment.sh" 2>&1; }
+  prepare_root() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo"; }
+  runner() { bash "$1/scripts/check-settings-fragment.sh" 2>&1; }
 
-  # Each row breaks ONE rule, and its witness is the assertion that claims to cover it. A row that
-  # goes red elsewhere is scored as caught by accident, which is not evidence.
   # Each row breaks ONE rule of the all-or-nothing contract, and its witness is the assertion that
   # claims to cover it. A row that goes red elsewhere is scored as caught by accident.
-  check_mut 'a leaf already present no longer blocks the install' \
+  check_row 'a leaf already present no longer blocks the install' 'scripts/lib/common.sh' 'the-merge-s-verdicts-under-the-all-or-no' \
       '          | map(. as $p | select( ( $settings | anc_ok($p) | not ) or ( $settings | present($p) ) )) ) as $blocked' \
       '          | map(. as $p | select( false )) ) as $blocked' \
       'must refuse the whole fragment'
-  check_mut 'a diverged owned leaf is rewritten instead of refused' \
+  check_row 'a diverged owned leaf is rewritten instead of refused' 'scripts/lib/common.sh' 'the-merge-s-verdicts-under-the-all-or-no' \
       '                        or ( ($settings | getpath($r.p)) != $r.v ) ))' \
       '                        or false ))' \
       'an edited owned leaf must refuse the update'
-  check_mut 'removal deletes a leaf the operator edited' \
-      '            elif ( .settings | getpath($p) ) == $rec.v then' \
-      '            elif true then' \
+  check_row 'removal deletes a leaf the operator edited' 'scripts/lib/common.sh' 'the-merge-s-verdicts-under-the-all-or-no' \
+      '            elif ( .settings | getpath($p) ) == $rec.v then   # remove-pass-value-match' \
+      '            elif true then   # remove-pass-value-match' \
       'must be KEPT on removal'
-  check_mut 'removal prunes containers it never created' \
+  check_row 'removal prunes containers it never created' 'scripts/lib/common.sh' 'the-merge-s-verdicts-under-the-all-or-no' \
       '      | ( $created   # remove-pass candidates' \
       '      | ( [ .settings | paths(type == "object") ]   # remove-pass candidates' \
       "pre-existing empty container must survive"
-  check_mut 'a transient skip stops owning the LEAVES it carried' \
+  check_row 'a transient skip stops owning the LEAVES it carried' 'scripts/lib/common.sh' 'the-receipt-four-dispositions-and-only-o' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
       '    installed|skipped-optout) ;;   # leaf ownership' \
       'must still OWN the rows it carried forward'
-  check_mut 'a transient skip stops owning the CONTAINERS it carried' \
+  check_row 'a transient skip stops owning the CONTAINERS it carried' 'scripts/lib/common.sh' 'the-merge-s-verdicts-under-the-all-or-no,the-receipt-four-dispositions-and-only-o' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # container ownership' \
       '    installed|skipped-optout) ;;   # container ownership' \
       'must take the containers it created'
-  check_mut 'absence is decided by comparing to null again' \
+  check_row 'absence is decided by comparing to null again' 'scripts/lib/common.sh' 'an-explicit-null-and-a-non-object-ancest' \
       '    def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));' \
       '    def present($p): (getpath($p) != null);' \
       'must block the install'
-  check_mut 'a non-object ancestor is treated as traversable' \
+  check_row 'a non-object ancestor is treated as traversable' 'scripts/lib/common.sh' 'an-explicit-null-and-a-non-object-ancest' \
       '                elif ($doc | getpath($a) | type) == "object" then "cont"' \
       '                elif true then "cont"' \
       'must not fail the merge'
-  check_mut 'a blocked receipt is treated as ownership-bearing' \
+  check_row 'a blocked receipt is treated as ownership-bearing' 'scripts/lib/common.sh' 'a-refusal-relinquishes-the-surface-a-blo' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership' \
       'a blocked receipt must own NOTHING'
-  check_mut 'the remove-pass container cleanup skips its ancestor walk' \
+  check_row 'the remove-pass container cleanup skips its ancestor walk' 'scripts/lib/common.sh' 'the-created-container-cleanup-is-guarded' \
       '            ( .settings | anc_ok($a) ) as $ok   # remove-pass container' \
       '            true as $ok   # remove-pass container' \
       'must not fail when a recorded container is DEEPER than the scalar'
-  check_mut 'the source guard captures its newline instead of quoting it' \
+  check_row 'the source guard captures its newline instead of quoting it' 'scripts/lib/common.sh' 'provenance-survives-the-root-doc-unlink' \
       "  local _nl=\$'\\n'" \
       '  local _nl; _nl="$(printf '"'"'\\n'"'"')"' \
       'NEWLINE must be refused'
-  check_mut 'a damaged fragment is read as shipping nothing' \
+  check_row 'a damaged fragment is read as shipping nothing' 'scripts/lib/common.sh' 'a-damaged-fragment-is-refused-not-read-a' \
       '  | ( if ($frag | length) != 1 then error("the fragment must hold exactly one JSON value") else . end )' \
       '  | ( . )' \
       'must be REFUSED, never read as shipping nothing'
-  check_mut 'a non-object fragment coerces to an empty one' \
+  check_row 'a non-object fragment coerces to an empty one' 'scripts/lib/common.sh' 'a-damaged-fragment-is-refused-not-read-a' \
       '  | ( if ($frag[0] | type) != "object" then error("the fragment must hold a JSON object") else . end )' \
       '  | ( . )' \
       'must be REFUSED, never read as shipping nothing'
-  check_mut 'a refusal discards the retirement it already made' \
+  check_row 'a refusal discards the retirement it already made' 'scripts/lib/common.sh' 'the-merge-s-verdicts-under-the-all-or-no' \
       '          | .wrote = [] | .created = []' \
       '          | .settings = ($cur[0]) | .pruned = [] | .kept = [] | .wrote = [] | .created = []' \
       'must still PRUNE a retired key'
-  check_mut 'a prior container is carried without an owned descendant' \
+  check_row 'a prior container is carried without an owned descendant' 'scripts/lib/common.sh' 'a-container-retirement-deletes-is-no-lon' \
       '                               | select($owns) ) )' \
       '                               | select(true) ) )' \
       'container retirement emptied must be dropped from ownership'
-  check_mut 'the release is a no-op, on every path at once' \
+  check_row 'the release is a no-op, on every path at once' 'scripts/lib/common.sh' 'one-run-at-a-time-per-home-across-the-wh' \
     '  adb_update_unlock "$_lk" || _urc=$?' \
     '  :' \
     'lock must be released on the success path'
-  check_mut 'the lock token is cleared before the lock is actually gone' \
+  check_row 'the lock token is cleared before the lock is actually gone' 'scripts/lib/common.sh' 'a-release-that-did-not-release-is-report' \
     '  if [ -e "$lock" ]; then' \
     '  if false; then' \
     'must NOT report a clean release'
-  check_mut 'a failed release is not reported to the operator' \
+  check_row 'a failed release is not reported to the operator' 'scripts/lib/common.sh' 'a-release-that-did-not-release-is-report' \
     '  if [ "$_urc" -ne 0 ]; then' \
     '  if false; then' \
     'must say so, naming the path'
-  check_mut 'a refused removal leaks its synthetic payload' \
+  check_row 'a refused removal leaks its synthetic payload' 'scripts/lib/common.sh' 'a-refused-removal-leaves-no-temp-file-be' \
     '  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }' \
     '  owned="$(_adb_claude_settings_owned_json "$receipt")" || return $?' \
     'must not leak its synthetic payload'
-  check_mut 'retirement prunes every recorded container, not the ones it emptied' \
+  check_row 'retirement prunes every recorded container, not the ones it emptied' 'scripts/lib/common.sh' 'a-container-the-operator-recreated-survi' \
     '          | map(. as $a | select( $justpruned' \
     '          | map(. as $a | select( true or $justpruned' \
     'must SURVIVE'
-  check_mut 'a failed chmod still publishes' \
+  check_row 'a failed chmod still publishes' 'scripts/lib/common.sh' 'a-mode-we-read-and-could-not-set-is-a-pu' \
     '  if [ -n "$mode" ] && ! chmod "$mode" "$tmp" 2>/dev/null; then' \
     '  if false; then' \
     'must fail the publication'
-  check_mut 'an absent settings file reads as unanswerable' \
+  check_row 'an absent settings file reads as unanswerable' 'scripts/lib/common.sh' 'currency-asks-the-live-file-too-not-only' \
     '    absent|empty) return 1 ;;' \
     '    absent|empty) return 2 ;;' \
     'must read as DIVERGED'
-  check_mut 'a row predicate treats a jq error as a malformed row' \
-    '    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac' \
-    '    case $? in 0) ;; *) continue ;; esac' \
-    'must treat jq'"'"'s 1 (false) and its 5 (error) differently'
-  check_mut 'the path enumerations are not checked' \
+  check_row 'a leaf row predicate treats a jq error as a rejected row' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    '  [ "$_jrc" -eq 0 ] || return 20   # row-predicate-status' \
+    '  [ "$_jrc" -eq 0 ] || return 0   # row-predicate-status' \
+    'must refuse the whole read (20), not read as a rejected row'
+  check_row 'the leaf reader evaluates per line, so jq reports only its LAST input' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # leaf-one-evaluation" \
+    "| jq -R -r '.   # leaf-one-evaluation" \
+    'must refuse the whole read (20), not read as a rejected row'
+  check_row 'the container reader evaluates per line, so jq reports only its LAST input' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # container-one-evaluation" \
+    "| jq -R -r '.   # container-one-evaluation" \
+    'must refuse the whole read (20) — the same masking'
+  check_row 'the leaf reader drops -n, so its first line never reaches inputs' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # leaf-one-evaluation" \
+    "| jq -R -r '[inputs][]   # leaf-one-evaluation" \
+    'must be read, not lost because it is the first line'
+  check_row 'the container reader drops -n, so its first line never reaches inputs' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    "| jq -R -n -r '[inputs][]   # container-one-evaluation" \
+    "| jq -R -r '[inputs][]   # container-one-evaluation" \
+    'must be read even as the first line'
+  check_row 'a container row predicate treats a jq error as a rejected row' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    '  [ "$_jrc" -eq 0 ] || return 20   # container-predicate-status' \
+    '  [ "$_jrc" -eq 0 ] || return 0   # container-predicate-status' \
+    'must refuse the whole read (20) — the same masking'
+  check_row 'the leaf path predicate loses its non-empty test' 'scripts/lib/common.sh' 'the-receipt-four-dispositions-and-only-o' \
+    '($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # leaf-path-predicate' \
+    '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # leaf-path-predicate' \
+    'must be refused — it reads as ownership of the document root'
+  check_row 'the container path predicate loses its non-empty test' 'scripts/lib/common.sh' 'an-operational-failure-is-never-a-semant' \
+    '($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
+    '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
+    'must be skipped while its neighbours survive'
+  check_row 'the path enumerations are not checked' 'scripts/lib/common.sh' 'the-merge-result-is-read-through-one-che' \
     '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)" || return 1' \
     '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)"' \
     'must be captured AND checked before any row is printed'
-  check_mut 'a per-leaf extraction failure becomes an empty value' \
+  check_row 'a per-leaf extraction failure becomes an empty value' 'scripts/lib/common.sh' 'and-so-is-each-leaf-value-one-level-down' \
     '    if ! v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)" || [ -z "$v" ]; then' \
     '    v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)"; if false; then' \
     'empty extraction must fail the writer'
-  check_mut 'a damaged disposition reads as an absent receipt' \
+  check_row 'a damaged disposition reads as an absent receipt' 'scripts/lib/common.sh' 'an-unreadable-receipt-is-not-an-absent-o,a-damaged-disposition-is-not-none-either' \
     '  [ "$grc" -eq 0 ] || return 21' \
     '  [ "$grc" -eq 0 ] || { printf '"'"'none'"'"'; return 0; }' \
     'must FAIL, not report success'
-  check_mut 'an unrecognised disposition word is answered instead of refused' \
+  check_row 'an unrecognised disposition word is answered instead of refused' 'scripts/lib/common.sh' 'the-receipt-four-dispositions-and-only-o' \
     '    *) return 21 ;;' \
     '    *) printf '"'"'none'"'"' ;;' \
     'must be REFUSED, not answered'
-  check_mut 'the lock owner write is unchecked again' \
+  check_row 'the lock owner write is unchecked again' 'scripts/lib/common.sh' 'the-lock-is-the-owner-file-so-a-write-th,round-41-identity-when-the-count-holds-a' \
     '  if ! _adb_publish_owner "$lock" "$token"; then' \
     '  if false; then' \
     'the token is the lock'
-  check_mut 'a signal is not deferred across the two publications' \
+  check_row 'a signal is not deferred across the two publications' 'scripts/lib/common.sh' 'a-signal-may-not-land-between-the-two-pu' \
     "  trap '_ADB_SIGNAL_PENDING=143' TERM" \
     '  :' \
     'must be DEFERRED'
-  check_mut 'a deferred signal is swallowed rather than honoured' \
+  check_row 'a deferred signal is swallowed rather than honoured' 'scripts/lib/common.sh' 'a-signal-may-not-land-between-the-two-pu' \
     '  [ -n "$pending" ] || return 0' \
     '  return 0' \
     'must then be honoured, not swallowed'
-  check_mut 'an unreadable receipt is reported as a damaged one' \
-    '  [ "$grc" -le 1 ] || return 20' \
-    '  :' \
+  check_row 'an unreadable receipt is reported as a damaged one' 'scripts/lib/common.sh' 'the-reader-still-tells-unreadable-from-d' \
+    '  [ "$grc" -le 1 ] || return 20   # receipt-read-status' \
+    '  :   # receipt-read-status' \
     'must still answer 20 for a receipt it could not READ'
-  check_mut 'the merge cannot tell an unreadable receipt from unparseable settings' \
-    '{ rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }' \
-    '{ _adb_merge_cleanup "$work_empty"; return 1; }' \
-    'must name the damaged disposition line'
-  check_mut 'the live-leaf predicate answers intact for a divergence' \
+  check_row 'the merge cannot tell an unreadable receipt from unparseable settings' 'scripts/lib/common.sh' 'a-damaged-disposition-is-not-none-either' \
+    '{ rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }   # merge-owned-rows' \
+    '{ _adb_merge_cleanup "$work_empty"; return 1; }   # merge-owned-rows' \
+    'must answer an unreadable RECEIPT 20'
+  check_row 'the live-leaf predicate answers intact for a divergence' 'scripts/lib/common.sh' 'currency-asks-the-live-file-too-not-only' \
     '        | all( . as $r' \
     '        | any( . as $r' \
     'must read as DIVERGED'
-  check_mut 'a signal is not trapped, so the lock outlives the run' \
-    '  _adb_arm_lock_traps' \
-    '  :' \
+  check_row 'a signal is not trapped, so the lock outlives the run' 'scripts/lib/common.sh' 'arming-is-what-makes-an-un-deferred-sign' \
+    '  _adb_arm_lock_traps   # lock-traps-armed' \
+    '  :   # lock-traps-armed' \
     'must release the lock on its way out'
-  check_mut 'the leaves reader status is discarded again' \
+  check_row 'the leaves reader status is discarded again' 'scripts/lib/common.sh' 'and-a-caller-that-ignores-the-status-is' \
     '  [ "$_rrc" -eq 0 ] || return "$_rrc"   # leaves-reader-status' \
     '  :   # leaves-reader-status' \
     "the leaves reader's status must be captured and checked"
-  check_mut 'the containers reader status is discarded again' \
+  check_row 'the containers reader status is discarded again' 'scripts/lib/common.sh' 'and-a-caller-that-ignores-the-status-is' \
     '  [ "$_crrc" -eq 0 ] || return "$_crrc"   # containers-reader-status' \
     '  :   # containers-reader-status' \
     "the containers reader's status must be captured and checked"
-  check_mut 'the leaves reader is substituted straight into the heredoc' \
+  check_row 'the leaves reader is substituted straight into the heredoc' 'scripts/lib/common.sh' 'and-a-caller-that-ignores-the-status-is' \
     '$_rows' \
     '$(adb_claude_settings_receipt_leaves "$receipt")' \
     'no receipt reader may be substituted directly inside a heredoc'
-  check_mut 'the containers reader is substituted straight into the heredoc' \
+  check_row 'the containers reader is substituted straight into the heredoc' 'scripts/lib/common.sh' 'and-a-caller-that-ignores-the-status-is' \
     '$_crows' \
     '$(adb_claude_settings_receipt_containers "$receipt")' \
     'no receipt reader may be substituted directly inside a heredoc'
-  check_mut 'the recorded-value check tests truthiness again' \
-    '    printf '"'"'%s'"'"' "$v" | jq -e '"'"'type'"'"' >/dev/null 2>&1' \
-    '    printf '"'"'%s'"'"' "$v" | jq -e . >/dev/null 2>&1' \
+  check_row 'the recorded-value check tests truthiness again' 'scripts/lib/common.sh' 'a-predicate-whose-own-output-is-the-answ' \
+    '      | (try ($v | fromjson) catch error("receipt: leaf value is not JSON"))' \
+    '      | (try ($v | fromjson | select(.)) catch error("receipt: leaf value is not JSON"))' \
     'must validate PARSEABILITY, not truthiness'
-  check_mut 'the deferred-signal global is not defined at load' \
+  check_row 'the deferred-signal global is not defined at load' 'scripts/lib/common.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '_ADB_SIGNAL_PENDING="${_ADB_SIGNAL_PENDING:-}"' \
     ':' \
     'must RETURN, not terminate the shell'
-  check_mut 'the lock global is not defined at load' \
+  check_row 'the lock global is not defined at load' 'scripts/lib/common.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '_ADB_SETTINGS_LOCK="${_ADB_SETTINGS_LOCK:-}"' \
     ':' \
     'must RETURN, not terminate the shell'
-  check_mut 'the source reader collapses a failed search into an absent row' \
+  check_row 'the source reader collapses a failed search into an absent row' 'scripts/lib/common.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '  [ "$grc" -le 1 ] || return 20   # source-search-failed' \
     '  :' \
     'must tell a failed search from an absent row'
-  check_mut 'the leaf reader masks a failed open again' \
+  check_row 'the leaf reader masks a failed open again' 'scripts/lib/common.sh' 'round-34-an-open-that-failed-a-publisher' \
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-leaves' \
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
     'must make the leaf reader refuse (20)'
-  check_mut 'the container reader masks a failed open again' \
+  check_row 'the container reader masks a failed open again' 'scripts/lib/common.sh' 'round-34-an-open-that-failed-a-publisher' \
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-containers' \
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
     'the container reader with it'
-  check_mut 'the empty-publish opt-in is ignored' \
+  check_row 'the empty-publish opt-in is ignored' 'scripts/lib/common.sh' 'round-34-an-open-that-failed-a-publisher' \
     '  if [ "$allow_empty" != "--allow-empty" ]; then' \
     '  if true; then' \
     'must publish a zero-byte pre-image'
-  check_mut 'a failed owner read counts as somebody else holding the lock' \
+  check_row 'a failed owner read counts as somebody else holding the lock' 'scripts/lib/common.sh' 'round-35-a-release-that-lied-a-signal-dr' \
     '  [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable' \
     '  :' \
     'must FAIL (1), not report success'
   # SINGLE LINE: check_mutate_literal matches within one record, so a two-line literal tests nothing.
-  check_mut 'the handlers are not re-armed before the pending read' \
+  check_row 'the handlers are not re-armed before the pending read' 'scripts/lib/common.sh' 'round-35-a-release-that-lied-a-signal-dr' \
     '  _adb_arm_lock_traps   # armed-before-read' \
     '  :   # armed-before-read' \
     'must re-arm the handlers BEFORE it reads the pending signal'
-  check_mut 'the merge stops asking whether the record is complete' \
+  check_row 'the merge stops asking whether the record is complete' 'scripts/lib/common.sh' 'round-36-the-completeness-question-every' \
     '  if [ "$mode" != "--remove" ]; then' \
     '  if false; then' \
     'the merge itself must refuse an incomplete installed receipt'
-  check_mut 'a missing shipped leaf is not noticed' \
+  check_row 'a missing shipped leaf is not noticed' 'scripts/lib/common.sh' 'round-36-the-completeness-question-every' \
     '    || return 23   # installed-rows-incomplete' \
     '    || :' \
     'the merge itself must refuse an incomplete installed receipt'
-  check_mut 'the stale-lock breaker reads an unreadable owner as none' \
+  check_row 'the stale-lock breaker reads an unreadable owner as none' 'scripts/lib/common.sh' 'round-36-the-completeness-question-every' \
     '    [ "$_hrc" -eq 0 ] || return 1   # lock-owner-unreadable-break' \
     '    :' \
     'must distinguish a missing owner record from an unreadable one'
   # TWO copies of this line exist — the completeness helper's and leaves_intact's — so each row
   # names its marker. Unmarked, the row mutated the first and the assertion was satisfied by the
   # second, and it stayed GREEN. (PR review)
-  check_mut 'a receipt fault is folded into a settings-file fault (intactness)' \
+  check_row 'a receipt fault is folded into a settings-file fault (intactness)' 'scripts/lib/common.sh' 'round-36-the-completeness-question-every' \
     '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 2 ;; esac   # orc-intact' \
     '  case "$_orc" in 0) ;; *) return 2 ;; esac   # orc-intact' \
     'must keep its own code out of leaves_intact'
-  check_mut 'a receipt fault is folded into a settings-file fault (completeness)' \
+  check_row 'a receipt fault is folded into a settings-file fault (completeness)' 'scripts/lib/common.sh' 'round-36-the-completeness-question-every' \
     '  case "$_orc" in 0) ;; 20|21) return "$_orc" ;; *) return 25 ;; esac   # orc-complete' \
     '  case "$_orc" in 0) ;; *) return 25 ;; esac   # orc-complete' \
     'must keep its own code out of leaves_intact'
-  check_mut 'ownership-bearing skips are exempt from completeness' \
+  check_row 'ownership-bearing skips are exempt from completeness' 'scripts/lib/common.sh' 'round-37-skips-own-rows-too-hup-is-termi' \
     '    skipped-optout|skipped-below-floor|skipped-unprobeable) _needs_rows=0 ;;' \
     '    skipped-optout|skipped-below-floor|skipped-unprobeable) return 0 ;;' \
     'an ownership-bearing skip that lost a leaf row must answer 23'
-  check_mut 'a rowless first-time skip is called incomplete' \
+  check_row 'a rowless first-time skip is called incomplete' 'scripts/lib/common.sh' 'round-37-skips-own-rows-too-hup-is-termi' \
     '  [ "$_needs_rows" -eq 1 ] || [ "$recorded" != "[]" ] || return 0   # rowless-skip-ok' \
     '  :' \
     'a ROWLESS skip must stay valid'
-  check_mut 'HUP is not armed with the other terminating signals' \
+  check_row 'HUP is not armed with the other terminating signals' 'scripts/lib/common.sh' 'round-37-skips-own-rows-too-hup-is-termi' \
     "  trap 'adb_settings_lock_drop; exit 129' HUP" \
     '  :' \
     'HUP must be armed alongside TERM and INT'
-  check_mut 'HUP is not deferred across the transaction' \
+  check_row 'HUP is not deferred across the transaction' 'scripts/lib/common.sh' 'round-37-skips-own-rows-too-hup-is-termi' \
     "  trap '_ADB_SIGNAL_PENDING=129' HUP" \
     '  :' \
     'and DEFERRED with them'
-  check_mut 'a traversal-denied link is called dangling' \
+  check_row 'a traversal-denied link is called dangling' 'scripts/lib/common.sh' 'round-38-a-document-the-run-cannot-see-i' \
     "    if [ -d \"\$par\" ] && [ -x \"\$par\" ] && [ ! -L \"\$t\" ]; then printf 'dangling'; else printf 'inaccessible'; fi" \
     "    printf 'dangling'" \
     'must be INACCESSIBLE, not dangling'
-  check_mut 'an unreadable document is called present' \
+  check_row 'an unreadable document is called present' 'scripts/lib/common.sh' 'round-38-a-document-the-run-cannot-see-i' \
     "  if [ ! -f \"\$f\" ] || [ ! -r \"\$f\" ]; then printf 'inaccessible'; return 0; fi" \
     "  if [ ! -f \"\$f\" ]; then printf 'inaccessible'; return 0; fi" \
     'an unreadable regular file must be INACCESSIBLE'
-  check_mut 'an unseeable document is read as provably gone' \
+  check_row 'an unseeable document is read as provably gone' 'scripts/lib/common.sh' 'round-38-a-document-the-run-cannot-see-i' \
     '    *) return 2 ;;   # settings-inaccessible-intact' \
     '    *) return 1 ;;' \
     'is UNANSWERABLE, not provably gone'
-  check_mut 'a receipt that lost a row passes once the payload changes' \
+  check_row 'a receipt that lost a row passes once the payload changes' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count' \
     '      :' \
     'EVEN WHEN THE PAYLOAD HAS SINCE CHANGED'
-  check_mut 'an installed receipt recording zero leaves is accepted' \
-    '        [ "$_want" -gt 0 ] || return 23   # installed-count-zero' \
-    '        :' \
+  check_row 'an installed receipt recording zero leaves is accepted' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
+    '      if [ "$_want" -eq 0 ]; then   # zero-count-branch' \
+    '      if false; then   # zero-count-branch' \
     'recording '"'"'leaves 0'"'"' must answer 23'
-  check_mut 'the renderer stops counting the leaf rows it writes' \
+  check_row 'the renderer stops counting the leaf rows it writes' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '"; count=$((count + 1)) ;;' \
     '" ;;' \
     'must record in its header exactly how many leaf rows it wrote'
-  check_mut 'an unreadable receipt reads as having no count' \
+  check_row 'an unreadable receipt reads as having no count' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '  [ "$grc" -le 1 ] || return 20   # leaf-count-unreadable' \
     '  :' \
     'must make the count reader refuse (20)'
-  check_mut 'a malformed count reads as a legacy receipt' \
+  check_row 'a malformed count reads as a legacy receipt' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '  case "$line" in '"'"''"'"'|*[!0-9]*) return 21 ;; esac   # leaf-count-malformed' \
     '  case "$line" in '"'"''"'"'|*[!0-9]*) return 1 ;; esac' \
     'a malformed leaf count is DAMAGE (21)'
-  check_mut 'a legacy payload that cannot be hashed reads as complete' \
+  check_row 'a legacy payload that cannot be hashed reads as complete' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 2   # legacy-hash-unanswerable' \
     '  _pdig="$(adb_sha256 "$payload" 2>/dev/null)" || return 0' \
     'is UNANSWERABLE, not complete'
-  check_mut 'the receipt precheck is dropped, so the run writes then undoes' \
+  check_row 'the receipt precheck is dropped, so the run writes then undoes' 'scripts/lib/common.sh' 'the-ownership-receipt-is-a-precondition' \
     '    *) return 20 ;;   # receipt-unresolvable' \
     '    *) printf '"'"'none'"'"'; return 0 ;;' \
     'must refuse BEFORE writing'
-  check_mut 'an inaccessible receipt link reads as no receipt' \
+  check_row 'an inaccessible receipt link reads as no receipt' 'scripts/lib/common.sh' 'round-39-completeness-judged-against-the' \
     '    *) return 20 ;;   # receipt-unresolvable' \
     '    *) printf '"'"'none'"'"'; return 0 ;;   # absent-by-mistake' \
     'must answer 20, not '"'"'none'"'"''
-  check_mut 'completeness counts rows instead of distinct paths' \
+  check_row 'completeness counts rows instead of distinct paths' 'scripts/lib/common.sh' 'round-40-distinct-paths-a-row-count-that' \
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 25   # distinct-leaf-paths' \
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'length'"'"' 2>/dev/null)" || return 25' \
     'a missing row replaced by a duplicate of another must answer 23'
-  check_mut 'a stale-lock claim does not check what it caught' \
+  check_row 'a stale-lock claim does not check what it caught' 'scripts/lib/common.sh' 'round-41-identity-when-the-count-holds-a' \
     '  if [ "$_now" != "$_seen" ]; then' \
     '  if false; then' \
     'must stand down when its claim finds another record'
-  check_mut 'the stale-lock breaker writes without the claim' \
-    '  mkdir "$lock/.claim" 2>/dev/null || return 1   # break-claim-held' \
+  check_row 'the stale-lock breaker writes without the claim' 'scripts/lib/common.sh' 'round-41-identity-when-the-count-holds-a' \
+    '  adb_mkdir_excl "$lock/.claim" || return 1   # break-claim-held' \
     '  :   # break-claim-held' \
     'must be left to it'
-  check_mut 'a fresh take writes without the claim' \
-    '  if ! mkdir "$lock/.claim" 2>/dev/null; then' \
+  check_row 'a fresh take writes without the claim' 'scripts/lib/common.sh' 'round-41-identity-when-the-count-holds-a' \
+    '  if ! adb_mkdir_excl "$lock/.claim"; then' \
     '  if false; then' \
     'must not write an owner while a breaker holds the claim'
-  check_mut 'a fresh take overwrites an owner a breaker published' \
+  check_row 'a fresh take overwrites an owner a breaker published' 'scripts/lib/common.sh' 'round-41-identity-when-the-count-holds-a' \
     '  if [ -e "$lock/owner" ]; then   # take-owner-present: a breaker claimed and published first' \
     '  if false; then' \
     'must stand down when a breaker has already published'
-  check_mut 'a substituted path passes while the digest is current' \
+  check_row 'a substituted path passes while the digest is current' 'scripts/lib/common.sh' 'round-41-identity-when-the-count-holds-a' \
     '            || return 23   # identity-short-of-payload' \
     '            || :   # identity-short-of-payload' \
     'records a path the payload does not ship in place of one it does'
-  check_mut 'the jq-free count check accepts a shortfall' \
+  check_row 'the jq-free count check accepts a shortfall' 'scripts/lib/common.sh' 'round-42-unresolved-receipt-links-counts' \
     '  [ "$have" -ge "$want" ] || return 23   # count-agrees-short' \
     '  [ "$have" -ge "$want" ] || :   # count-agrees-short' \
     'must answer 23 for a receipt short of its own count'
-  check_mut 'the jq-free count check accepts a surplus' \
+  check_row 'the jq-free count check accepts a surplus' 'scripts/lib/common.sh' 'round-42-unresolved-receipt-links-counts' \
     '  [ "$have" -le "$want" ] || return 21   # count-agrees-surplus' \
     '  [ "$have" -le "$want" ] || :   # count-agrees-surplus' \
     'must answer 21 for rows beyond the recorded count'
-  check_mut 'completeness accepts rows beyond the count' \
+  check_row 'completeness accepts rows beyond the count' 'scripts/lib/common.sh' 'round-43-rows-counted-both-ways-exact-pa' \
     '      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count' \
     '      :   # rows-beyond-count' \
     'a duplicate leaf row under an unchanged header is DAMAGE (21)'
-  check_mut 'the recorded pairs are not compared with the payload' \
+  check_row 'the recorded pairs are not compared with the payload' 'scripts/lib/common.sh' 'round-43-rows-counted-both-ways-exact-pa' \
     '    || return 21   # identity-pairs-differ' \
     '    || :   # identity-pairs-differ' \
     'an extra path under a raised header must answer 21'
-  check_mut 'removal trusts a container with no recorded leaf beneath it' \
+  check_row 'removal trusts a container with no recorded leaf beneath it' 'scripts/lib/common.sh' 'round-43-rows-counted-both-ways-exact-pa' \
     '          | map(. as $a | select( $ownedp | any( (length > ($a | length)) and (.[0:($a | length)] == $a) ) ))   # remove-pass anchored' \
     '          | map(.)   # remove-pass anchored' \
     'a container row with no recorded leaf beneath it must not authorize'
-  check_mut 'the counted branch stops asking for exact pairs' \
+  check_row 'the counted branch stops asking for exact pairs' 'scripts/lib/common.sh' 'round-43-rows-counted-both-ways-exact-pa' \
     '          _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-counted' \
     '          :   # pairs-counted' \
     'an extra path under a raised header must answer 21'
-  check_mut 'the legacy branch stops asking for exact pairs' \
+  check_row 'the legacy branch stops asking for exact pairs' 'scripts/lib/common.sh' 'round-44-exact-pairs-on-the-legacy-branc' \
     '  _adb_claude_settings_pairs_match "$owned" "$payload" || return $?   # pairs-legacy' \
     '  :   # pairs-legacy' \
     'a legacy receipt under a matching digest must carry exactly the shipped pairs'
-  check_mut 'a legacy receipt with a duplicate path is accepted' \
+  check_row 'a legacy receipt with a duplicate path is accepted' 'scripts/lib/common.sh' 'round-45-legacy-duplicate-paths-whatever' \
     '  [ "$_ldup" = "true" ] || return 21   # legacy-duplicate-paths' \
     '  :   # legacy-duplicate-paths' \
     'a legacy receipt with a duplicate path must answer 21 whatever its digest'
-  check_mut 'a rowless legacy installed record is called complete' \
+  check_row 'a rowless legacy installed record is called complete' 'scripts/lib/common.sh' 'round-46-one-generation-per-run-a-dangli' \
     '  [ "$_needs_rows" -ne 1 ] || [ "$owned" != "[]" ] || return 23   # legacy-installed-rowless' \
     '  :   # legacy-installed-rowless' \
     'must answer 23 — read as complete, uninstall removed nothing'
-  check_mut 'a receipt-side check failure is reported as payload uncertainty' \
+  check_row 'a receipt-side check failure is reported as payload uncertainty' 'scripts/lib/common.sh' 'round-46-one-generation-per-run-a-dangli' \
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 25   # distinct-leaf-paths' \
     '      _have="$(printf '"'"'%s'"'"' "$owned" | jq '"'"'[.[].p] | unique | length'"'"' 2>/dev/null)" || return 2   # distinct-leaf-paths' \
     'must answer 25, not the 2 that means payload-only uncertainty'
-  check_mut 'the currency check reads a dangling link as divergence again' \
+  check_row 'the currency check reads a dangling link as divergence again' 'scripts/lib/common.sh' 'round-48-a-dangling-link-is-unanswerable' \
     '    absent|empty) return 1 ;;' \
     '    absent|empty|dangling) return 1 ;;' \
     'a dangling settings link must be unanswerable (2) to the currency check'
-  check_mut 'an installed counted receipt may record no digest' \
+  check_row 'an installed counted receipt may record no digest' 'scripts/lib/common.sh' 'round-48-a-dangling-link-is-unanswerable' \
     '        -) [ "$disp" != installed ] || return 21 ;;   # counted-installed-no-digest' \
     '        -) : ;;   # counted-installed-no-digest' \
     'an installed counted receipt recording payload - must answer 21'
-  check_mut 'a counted receipt with a missing or malformed digest is accepted' \
+  check_row 'a counted receipt with a missing or malformed digest is accepted' 'scripts/lib/common.sh' 'round-48-a-dangling-link-is-unanswerable' \
     '        *) adb_claude_settings_payload_digest "$receipt" >/dev/null 2>&1 || return 21 ;;   # counted-digest-malformed' \
     '        *) : ;;   # counted-digest-malformed' \
     'a counted receipt with no payload line must answer 21'
-  check_mutation_pool "check-settings-fragment" "$work/mut-lib" prepare runner 6
-
-  check_mut_reset
-  check_mut 'the payload ships filesystem.disabled as if it were hardening' \
+  check_row 'the payload ships filesystem.disabled as if it were hardening' 'agents/claude/settings.fragment.json' 'the-payload-itself' \
     '"enabled": true,' \
     '"enabled": true,
     "filesystem": { "disabled": true },' \
     'must NOT ship sandbox.filesystem.disabled'
-  check_mut 'the payload ships strictAllowlist' \
+  check_row 'the payload ships strictAllowlist' 'agents/claude/settings.fragment.json' 'the-payload-itself' \
     '"allowedDomains": [' \
     '"strictAllowlist": true,
       "allowedDomains": [' \
     'must NOT ship sandbox.network.strictAllowlist'
-  check_mut 'a credential entry silently becomes mask' \
+  check_row 'a credential entry silently becomes mask' 'agents/claude/settings.fragment.json' 'the-payload-itself' \
     '{ "path": "~/.ssh", "mode": "deny" }' \
     '{ "path": "~/.ssh", "mode": "mask" }' \
     'must use mode'
-  check_mut 'the credential lists become the object map a summariser described' \
+  check_row 'the credential lists become the object map a summariser described' 'agents/claude/settings.fragment.json' 'the-payload-itself' \
     '"files": [' \
     '"files_UNUSED": [' \
     'must be an ARRAY'
-  check_mutation_pool "check-settings-fragment(payload)" "$work/mut-payload" prepare_payload runner 6
-
-  check_mut_reset
-  check_mut 'the installer stops writing the fragment at all' \
+  check_row 'the installer stops writing the fragment at all' 'install.sh' 'end-to-end-against-the-real-installer-an' \
     'wire_settings || src=$?' \
     'src=0' \
     'must write sandbox.enabled into the user settings'
-  check_mut 'a below-floor CLI is written to anyway' \
+  check_row 'a below-floor CLI is written to anyway' 'install.sh' 'end-to-end-against-the-real-installer-an,the-ownership-receipt-is-a-precondition' \
     'if ! adb_version_ge "$version" "$floor"; then' \
     'if false; then' \
     'must write NO sandbox key'
-  check_mut '--no-sandbox stops recording the choice' \
+  check_row '--no-sandbox stops recording the choice' 'install.sh' 'end-to-end-against-the-real-installer-an' \
     'if [ "$WIRE_SETTINGS" -eq 0 ]; then' \
     'if false; then' \
     "must record disposition 'skipped-optout'"
-  check_mut 'a blocked refusal records the prior digest instead of the refused one' \
+  check_row 'a blocked refusal records the prior digest instead of the refused one' 'install.sh' 'a-blocked-refusal-records-the-payload-it' \
     '    if ! refused_digest="$(adb_sha256 "$payload" 2>/dev/null)" || [ -z "$refused_digest" ]; then' \
     '    refused_digest="-"; if false; then' \
     'must record the digest of the payload it REFUSED'
-  check_mut 'a refusal is reported as an install' \
+  check_row 'a refusal is reported as an install' 'install.sh' 'the-headline-cannot-overstate-because-th' \
     '  if [ "$verdict" = refuse ]; then' \
     '  if false; then' \
     'must be reported as NOT written and named'
-  check_mut 'a skip discards the ownership it inherited' \
+  check_row 'a skip discards the ownership it inherited' 'install.sh' 'end-to-end-against-the-real-installer-an,a-skip-must-never-discard-ownership-of-k' \
     '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
     '  carried=""' \
     "must carry the previous receipt's leaf rows forward"
-  check_mut 'the settings temp file is world-readable while it is written' \
+  check_row 'the settings temp file is world-readable while it is written' 'install.sh' 'the-settings-temp-file-is-never-world-re' \
     '  ( umask 077; : > "$tmp" ) ||' \
     '  ( : > "$tmp" ) ||' \
     'must be created restricted BEFORE it is populated'
-  check_mut 'a receipt that cannot be published only warns' \
+  check_row 'a receipt that cannot be published only warns' 'install.sh' 'a-receipt-that-cannot-be-published-rolls' \
     '    had_settings=1' \
     '    had_settings=0' \
     'must ROLL BACK the settings'
-  check_mut 'the source row is carried forward instead of refreshed' \
+  check_row 'the source row is carried forward instead of refreshed' 'install.sh' 'provenance-names-the-clone-that-last-wro' \
     '"^(leaf|container)$(printf' \
     '"^(leaf|container|source)$(printf' \
     'must carry exactly one source row'
-  check_mut 'the refusal returns success with the stale record standing' \
+  check_row 'the refusal returns success with the stale record standing' 'install.sh' 'a-refusal-that-cannot-be-recorded-must-n' \
     '  if rm -f "$receipt"; then' \
     '  if false; then' \
     'must remove the previous ownership record through the ONE shared invalidator'
-  check_mut 'the no-jq path stops refreshing provenance' \
+  check_row 'the no-jq path stops refreshing provenance' 'install.sh' 'provenance-names-the-clone-that-last-wro' \
     '    # PROVENANCE IS STILL REFRESHED, because none of it needs jq — the render, the ownership rows' \
     '    # provenance is not refreshed here' \
     'no-jq path must refresh the receipt source'
-  check_mut 'the opt-out carries its rows without rechecking them' \
+  check_row 'the opt-out carries its rows without rechecking them' 'install.sh' 'the-opt-out-rechecks-what-it-carries' \
     '    optout_rows="$(_adb_carry_rows "$receipt" "$settings" "$payload")"' \
     '    optout_rows="$(_adb_owned_rows "$receipt")"' \
     'must relinquish ownership'
-  check_mut 'the settings file is initialised in place again' \
+  check_row 'the settings file is initialised in place again' 'install.sh' 'an-empty-or-absent-settings-json-is-subs' \
     '    synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }' \
     '    echo "{}" > "$settings"; synth=""' \
-    'must not have its target created'
-  check_mut 'a failed prune still replaces the receipt' \
+    'must not be written in place'
+  check_row 'a failed prune still replaces the receipt' 'install.sh' 'a-failed-retirement-prune-must-not-be-fo' \
     '        return 1   # prune-abort' \
     '        :   # prune-abort' \
     'must abort before replacing the receipt'
-  check_mut 'the settings window is not serialized' \
+  check_row 'the settings window is not serialized' 'install.sh' 'the-lock-covers-every-writer-of-settings' \
     '  if ! adb_settings_lock_take; then' \
     '  if false; then' \
     'must block the HOOK writer too'
-  check_mut 'the rollback writes bytes over a symlink destination' \
+  check_row 'the rollback writes bytes over a symlink destination' 'install.sh' 'a-rollback-restores-the-symlink-not-the' \
     '      if rm -f "$settings" && ln -s "$link_target" "$settings"; then' \
     '      if false; then' \
     'must restore a symlink destination as a symlink'
   # NO ROW for the empty-probe branch: since ownership is proved by COUNTING the rows that came
   # back `pruned`, an unparseable probe yields zero and relinquishes anyway. That branch exists for
   # its message, not for the outcome, and a row that cannot fail is worse than no row.
-  check_mut 'ownership is proved against the fragment again' \
+  check_row 'ownership is proved against the fragment again' 'install.sh' 'end-to-end-against-the-real-installer-an,a-skip-must-never-discard-ownership-of-k' \
     '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" --remove 2>/dev/null)"; mrc=$?' \
     '  probe="$(adb_claude_settings_merge "$live" "$frag" "$receipt" 2>/dev/null)"; mrc=$?' \
     'must carry the previous receipt'"'"'s leaf rows forward'
-  check_mut 'the lock is never released' \
+  check_row 'the lock is never released' 'install.sh' 'the-lock-is-released-when-the-phase-ends' \
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends'
-  check_mut 'the merge decision is rendered without being read back' \
+  check_row 'the merge decision is rendered without being read back' 'install.sh' 'the-merge-s-decision-is-read-back-and-ch' \
     '     || ! printf '"'"'%s'"'"' "$wrote_json" | jq -e '"'"'type == "array"'"'"' >/dev/null 2>&1 \' \
     '     || false \' \
     'BOTH must be VALIDATED as arrays'
-  check_mut 'a rowless opt-out record is discarded when the replacement fails' \
-    '         || [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then' \
-    '         || false; then' \
+  check_row 'a rowless opt-out record is discarded when the replacement fails' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
+    '      if [ -n "$optout_rows" ] || [ "$_keep_disp" = skipped-optout ] \' \
+    '      if [ -n "$optout_rows" ] \' \
     'must keep an existing opt-out record even when it carries no rows'
-  check_mut 'a still-accurate record is invalidated when its replacement fails' \
+  check_row 'a still-accurate record is invalidated when its replacement fails' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
     '  if [ -n "$carried" ]; then' \
     '  if false; then' \
     'must KEEP a still-accurate record'
-  check_mut 'the opt-out sibling invalidates a still-accurate record' \
-    '      if [ -n "$optout_rows" ] \' \
+  check_row 'the opt-out sibling invalidates a still-accurate record' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
+    '      if [ -n "$optout_rows" ] || [ "$_keep_disp" = skipped-optout ] \' \
     '      if false \' \
     'sibling must do the same'
-  check_mut 'the retirement prunes before proving the receipt replaceable' \
+  check_row 'the retirement prunes before proving the receipt replaceable' 'install.sh' 'nothing-is-pruned-until-the-receipt-is-k' \
     '      if ! mv "$receipt" "$_bprobe" 2>/dev/null; then' \
     '      if false; then' \
     'must prove the receipt is replaceable BEFORE it rewrites'
-  check_mut 'a blocked refusal hands back the invalidator benign status' \
+  check_row 'a blocked refusal hands back the invalidator benign status' 'install.sh' 'a-record-that-was-not-written-is-not-a-s' \
     '    return 1   # blocked-not-recorded' \
     '    return 0' \
     'must return non-zero — the invalidator'"'"'s 0 means only that no stale claim survives'
-  check_mut 'a skip hands back the invalidator benign status' \
+  check_row 'a skip hands back the invalidator benign status' 'install.sh' 'a-record-that-was-not-written-is-not-a-s' \
     '  return 1   # skip-relinquished' \
     '  return 0' \
     'skip whose receipt was not published must do the same'
-  check_mut 'a kept-record skip reports success' \
+  check_row 'a kept-record skip reports success' 'install.sh' 'an-accurate-ownership-record-is-never-de' \
     '    return 1   # skip-not-recorded-kept' \
     '    return 0' \
     'kept-record branch must still FAIL the run'
-  check_mut 'an unknown verdict falls through to the write path' \
+  check_row 'an unknown verdict falls through to the write path' 'install.sh' 'the-merge-result-is-read-through-one-che' \
     '    write|refuse|remove) ;;' \
     '    write|refuse|remove|"") ;;' \
     'verdict must be one of the KNOWN values'
-  check_mut 'the no-jq path persists the none sentinel' \
+  check_row 'the no-jq path persists the none sentinel' 'install.sh' 'none-is-a-sentinel-and-is-never-persiste' \
     '      if [ -z "$njdisp" ] || [ "$njdisp" = none ]; then' \
     '      if false; then' \
     'must refuse specifically when it reads'
-  check_mut 'a refusal returns without naming what it kept' \
+  check_row 'a refusal returns without naming what it kept' 'install.sh' 'a-refusal-names-what-it-is-about-to-stop' \
     '    if ! _adb_report_settings "$result" kept "kept (no longer shipped, and you edited it since we wrote it)"; then' \
     '    if false; then' \
     'must NAME the retired leaf it kept'
-  check_mut 'a refusal compares against the real path it never read' \
+  check_row 'a refusal compares against the real path it never read' 'install.sh' 'a-refusal-over-a-synthetic-pre-image-wri' \
     '    if [ "$used_synth" -eq 1 ]; then' \
     '    if false; then' \
     'must compare against the synthetic {} it actually read'
-  check_mut 'the retirement-and-refusal pair publishes outside the deferral' \
+  check_row 'the retirement-and-refusal pair publishes outside the deferral' 'install.sh' 'the-other-transactions-defer-too' \
     '    adb_settings_lock_defer_signals   # transaction: retirement prune + refusal receipt' \
     '    :' \
     'must defer signals BEFORE it publishes the pruned settings'
-  check_mut 'the hook wiring publishes outside the deferral' \
+  check_row 'the hook wiring publishes outside the deferral' 'install.sh' 'the-other-transactions-defer-too' \
     '  adb_settings_lock_defer_signals   # transaction: hook entries + wiring receipt' \
     '  :' \
     'must defer signals BEFORE it publishes settings.json'
-  check_mut 'a broken provenance refresh reports the tolerated no-jq skip' \
+  check_row 'a broken provenance refresh reports the tolerated no-jq skip' 'install.sh' 'a-no-jq-provenance-refresh-that-could-no' \
     '        return 1   # provenance-broken' \
     '        :' \
     'must FAIL, not return the tolerated no-jq skip'
-  check_mut 'an unreadable live file is treated as a relinquishment' \
+  check_row 'an unreadable live file is treated as a relinquishment' 'install.sh' 'the-opt-out-rechecks-what-it-carries' \
     '  if [ "$mrc" -ne 0 ]; then' \
     '  if false; then' \
     'must keep every carried row'
-  check_mut 'a receipt that could not be classified is read as unparseable settings' \
+  check_row 'a receipt that could not be classified is read as unparseable settings' 'install.sh' 'round-41-identity-when-the-count-holds-a' \
     '  if [ "$mrc" -ne 0 ]; then' \
     '  if false; then' \
     'carrying against live settings that do not parse must refuse'
-  check_mut 'the wrapper discards a failed lock release' \
+  check_row 'the wrapper discards a failed lock release' 'install.sh' 'the-wrapper-s-result-carries-a-failed-re' \
     '  adb_settings_lock_drop || icrc=1' \
     '  adb_settings_lock_drop' \
     'must fold a failed lock release into its own status'
-  check_mut 'the pruned count is normalised before it is checked' \
+  check_row 'the pruned count is normalised before it is checked' 'install.sh' 'an-operational-failure-is-never-a-semant' \
     '  if ! proved="$(printf '"'"'%s'"'"' "$probe" | jq -r '"'"'.pruned | length'"'"' 2>/dev/null)"; then' \
     '  proved="$(printf '"'"'%s'"'"' "$probe" | jq -r '"'"'.pruned | length'"'"' 2>/dev/null)"; if false; then' \
     'must be checked before it is normalised'
-  check_mut 'the bucket reporter masks a failed read' \
+  check_row 'the bucket reporter masks a failed read' 'install.sh' 'an-operational-failure-is-never-a-semant' \
     '  if ! names="$(printf '"'"'%s'"'"' "$result" | jq -r --arg b "$bucket" '"'"'.[$b] | map(join(".")) | join(", ")'"'"' 2>/dev/null)"; then' \
     '  names="$(printf '"'"'%s'"'"' "$result" | jq -r --arg b "$bucket" '"'"'.[$b] | map(join(".")) | join(", ")'"'"' 2>/dev/null)"; if false; then' \
     'must distinguish an empty bucket from a failed read'
-  check_mut 'the row reader answers zero rows for a receipt it could not read' \
+  check_row 'the row reader answers zero rows for a receipt it could not read' 'install.sh' 'an-unreadable-receipt-is-refused-by-the,a-receipt-that-could-not-be-classified-i' \
     '  [ "$grc" -le 1 ] || return 20' \
     '  :' \
     'must fail, not publish an ownership-free replacement'
-  check_mut 'the opt-out publishes over a receipt it could not read' \
+  check_row 'the opt-out publishes over a receipt it could not read' 'install.sh' 'an-unreadable-receipt-is-refused-by-the,a-receipt-that-could-not-be-classified-i' \
     '    if [ "$ocrc" -ne 0 ]; then' \
     '    if false; then' \
     'must fail, not publish an ownership-free replacement'
-  check_mut 'a version skip publishes over a receipt it could not read' \
+  check_row 'a version skip publishes over a receipt it could not read' 'install.sh' 'an-unreadable-receipt-is-refused-by-the' \
     '  if [ "$crc" -ne 0 ]; then' \
     '  if false; then' \
     'version skip over an unreadable receipt must fail'
-  check_mut 'an unrecorded opt-out still reports a successful install' \
+  check_row 'an unrecorded opt-out still reports a successful install' 'install.sh' 'an-opt-out-that-could-not-be-recorded-is' \
     '      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured" || true' \
     '      return 0' \
     'must FAIL — an unrecorded opt-out is silently overridden'
-  check_mut 'a version skip discards the record status' \
+  check_row 'a version skip discards the record status' 'install.sh' 'a-version-skip-returns-the-record-s-stat' \
     '    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?' \
     '    skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt"' \
     'must capture _adb_record_skip'"'"'s status'
-  check_mut 'a version skip captures the record status and never returns it' \
-    '    return "$skiprc"' \
-    '    return 0' \
+  check_row 'a version skip captures the record status and never returns it' 'install.sh' 'a-version-skip-returns-the-record-s-stat' \
+    '    return "$skiprc"   # version-skip-return' \
+    '    return 0   # version-skip-return' \
     'must RETURN it'
-  check_mut 'the links are replaced before the settings lock is taken' \
+  check_row 'the links are replaced before the settings lock is taken' 'install.sh' 'the-lock-precedes-the-relink-and-is-rele' \
     '    adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."' \
     '    adb_info "  WARN   another install or uninstall is writing ~/.claude — nothing was changed."; adb_link_manifest "$BACKUP_DIR" <<< "$(adb_agent_manifest claude "$REPO" "$HOME")" >/dev/null 2>&1' \
     'must be taken BEFORE the links are replaced'
-  check_mut 'the carry diagnostics are captured into the row list instead of reaching the operator' \
+  check_row 'the carry diagnostics are captured into the row list instead of reaching the operator' 'install.sh' 'the-carry-diagnostics-reach-the-operator' \
     '    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2' \
     '    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)"' \
     'must be TOLD that ownership was relinquished'
-  check_mut 'a carry diagnostic the fixtures do not reach loses its redirect' \
+  check_row 'a carry diagnostic the fixtures do not reach loses its redirect' 'install.sh' 'the-carry-diagnostics-reach-the-operator' \
     '    adb_info "  sandbox  the live settings could not be read, so ownership was neither proved nor" >&2' \
     '    adb_info "  sandbox  the live settings could not be read, so ownership was neither proved nor"' \
     'must redirect to stderr'
-  check_mut 'a skip whose record could not be published stays silent' \
+  check_row 'a skip whose record could not be published stays silent' 'install.sh' 'a-skip-whose-record-could-not-be-written' \
     '  _adb_invalidate_stale_receipt "$receipt" "the skip stands, but its REASON is not recorded"' \
     '  :' \
     'must say the reason did not reach disk'
-  check_mut 'the opt-out leaves its unpublished record unmentioned' \
+  check_row 'the opt-out leaves its unpublished record unmentioned' 'install.sh' 'a-skip-whose-record-could-not-be-written' \
     '      _adb_invalidate_stale_receipt "$receipt" "--no-sandbox was honoured"' \
     '      :' \
     'opt-out path must say the same'
-  check_mut 'a version skip carries its rows unchecked' \
+  check_row 'a version skip carries its rows unchecked' 'install.sh' 'the-opt-out-rechecks-what-it-carries' \
     '  carried="$(_adb_carry_rows "$receipt" "$HOME/.claude/settings.json" "$(adb_claude_settings_payload "$REPO")")"' \
     '  carried="$(_adb_owned_rows "$receipt")"' \
     'below-floor skip over a DIVERGED install must relinquish ownership'
-  check_mut 'the merge classification is collapsed again' \
+  check_row 'the merge classification is collapsed again' 'install.sh' 'and-a-caller-that-ignores-the-status-is' \
     '    return 1   # merge-unreadable-receipt' \
     '    :' \
     'must report an unreadable receipt (20) and a damaged one (21) as themselves'
-  check_mut 'a refusal proceeds past a kept-list it could not read' \
+  check_row 'a refusal proceeds past a kept-list it could not read' 'install.sh' 'and-a-caller-that-ignores-the-status-is' \
     '      return 1   # refusal-kept-unreadable' \
     '      :' \
     'must stop with the existing record untouched'
-  check_mut 'the carried-row reader status is discarded again' \
+  check_row 'the carried-row reader status is discarded again' 'install.sh' 'a-predicate-whose-own-output-is-the-answ' \
     '    return "$_rrrc"   # carry-rows-reader-status' \
     '    :' \
     'must check the reader before counting it'
-  check_mut 'the blocked comparison counts an execution error as a difference' \
+  check_row 'the blocked comparison counts an execution error as a difference' 'install.sh' 'a-predicate-whose-own-output-is-the-answ,a-guard-that-kills-the-shell-and-a-reade' \
     '      return 1   # blocked-compare-unanswerable' \
     '      :' \
     "must tell an execution error from a difference"
-  check_mut 'the rollback restores its pre-image through the nonempty guard' \
+  check_row 'the rollback restores its pre-image through the nonempty guard' 'install.sh' 'round-34-an-open-that-failed-a-publisher' \
     '    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings" --allow-empty; } \' \
     '    if { [ "$had_settings" -eq 1 ] && adb_publish_json "$pre" "$settings"; } \' \
     'must restore its pre-image with the empty-capable publish'
-  check_mut 'the bucket lists are read after the receipt is published' \
+  check_row 'the bucket lists are read after the receipt is published' 'install.sh' 'round-36-the-completeness-question-every' \
     '    return 1   # buckets-unreadable' \
     '    :' \
     'must be read BEFORE the receipt is published'
-  check_mut 'an inaccessible settings.json is merged against {}' \
-    '    return 1   # settings-inaccessible-install' \
+  check_row 'an inaccessible settings.json is merged against {}' 'install.sh' 'round-38-a-document-the-run-cannot-see-i' \
+    '      return 1 ;;   # settings-inaccessible-install' \
     '    :' \
     'must refuse an inaccessible settings.json'
-  check_mut 'ownership is relinquished on an inaccessible document' \
+  check_row 'ownership is relinquished on an inaccessible document' 'install.sh' 'round-38-a-document-the-run-cannot-see-i' \
     '      return 22 ;;   # carry-settings-inaccessible' \
     '      return 0 ;;' \
     'must not relinquish on an inaccessible document'
-  check_mut 'the install proceeds without a payload digest' \
+  check_row 'the install proceeds without a payload digest' 'install.sh' 'round-38-a-document-the-run-cannot-see-i' \
     '    return 1   # digest-unavailable-install' \
     '    :' \
     'must stop when the payload digest cannot be computed'
-  check_mut 'the refusal proceeds without a payload digest' \
+  check_row 'the refusal proceeds without a payload digest' 'install.sh' 'round-38-a-document-the-run-cannot-see-i' \
     '      return 1   # digest-unavailable-refusal' \
     '      :' \
     'must stop when the payload digest cannot be computed'
-  check_mut 'a settings link with an unreadable target is published anyway' \
+  check_row 'a settings link with an unreadable target is published anyway' 'install.sh' 'round-39-completeness-judged-against-the' \
     '      return 1   # link-target-unreadable' \
     '      :' \
     'must be refused before anything is published'
-  check_mut 'the carry path reads an unresolved receipt link as zero rows' \
+  check_row 'the carry path reads an unresolved receipt link as zero rows' 'install.sh' 'round-40-distinct-paths-a-row-count-that' \
     '    return 20   # owned-rows-unresolvable' \
     '    return 0' \
     'an unresolved receipt link must refuse (20) on the carry path'
-  check_mut 'the carry path refuses a directory instead of reaching the publish' \
+  check_row 'the carry path refuses a directory instead of reaching the publish' 'install.sh' 'round-40-distinct-paths-a-row-count-that' \
     '  if [ -L "$1" ] && [ ! -e "$1" ]; then' \
     '  if [ -L "$1" ] || [ ! -f "$1" ]; then' \
     'a directory at the receipt path must stay ZERO ROWS'
-  check_mut 'an incomplete record is carried anyway' \
+  check_row 'an incomplete record is carried anyway' 'install.sh' 'round-41-identity-when-the-count-holds-a' \
     '    return "$_comp"   # carry-rows-incomplete' \
     '    :   # carry-rows-incomplete' \
     'must refuse a record that has lost a leaf row'
-  check_mut 'the no-jq refresh reads an unresolved receipt link as absent' \
+  check_row 'the no-jq refresh reads an unresolved receipt link as absent' 'install.sh' 'round-42-unresolved-receipt-links-counts' \
     '    if [ -L "$receipt" ] && [ ! -f "$receipt" ]; then' \
     '    if false; then' \
     'over a receipt link that does not resolve must fail'
-  check_mut 'the no-jq refresh re-renders a record short of its count' \
+  check_row 'the no-jq refresh re-renders a record short of its count' 'install.sh' 'round-42-unresolved-receipt-links-counts' \
     '        return 1   # provenance-count-disagrees' \
     '        :   # provenance-count-disagrees' \
     'must refuse a receipt short of its own count and leave it untouched'
-  check_mut 'the no-jq carry ignores its own count' \
+  check_row 'the no-jq carry ignores its own count' 'install.sh' 'round-42-unresolved-receipt-links-counts' \
     '      return "$_ncc"   # carry-nojq-count' \
     '      :   # carry-nojq-count' \
     'without jq, carrying ownership must refuse a record short of its own count'
-  check_mut 'the no-jq carry ignores an unreadable disposition' \
+  check_row 'the no-jq carry ignores an unreadable disposition' 'install.sh' 'round-44-exact-pairs-on-the-legacy-branc' \
     '    [ "$_ndrc" -eq 0 ] || return "$_ndrc"   # carry-nojq-disposition' \
     '    :   # carry-nojq-disposition' \
     'whose disposition cannot be read must refuse and keep it unchanged'
-  check_mut 'the no-jq carry carries rows a record does not own' \
+  check_row 'the no-jq carry carries rows a record does not own' 'install.sh' 'round-44-exact-pairs-on-the-legacy-branc' \
     '      *) return 0 ;;   # carry-nojq-owns-nothing' \
     '      *) ;;   # carry-nojq-owns-nothing' \
     'an opt-out over a record that owns nothing must carry nothing'
-  check_mut 'the install reads its payload more than once' \
+  check_row 'the install reads its payload more than once' 'install.sh' 'round-44-exact-pairs-on-the-legacy-branc' \
     '  _adb_wire_settings_locked "$settings" "$receipt" "${snap:-$payload}" "$floor" || rc=$?   # payload-snapshot' \
     '  _adb_wire_settings_locked "$settings" "$receipt" "$payload" "$floor" || rc=$?   # payload-snapshot' \
     'an install must read its payload once'
-  check_mut 'the payload and the floor may come from different generations' \
+  check_row 'the payload and the floor may come from different generations' 'install.sh' 'round-46-one-generation-per-run-a-dangli' \
     '  if [ -z "$_cfloor" ] || [ "$_cfloor" != "$floor" ]; then' \
     '  if false; then' \
     'must apply a payload only against the floor of its own generation'
-  check_mut 'a dangling settings link is read as a deletion again' \
+  check_row 'a dangling settings link is read as a deletion again' 'install.sh' 'round-46-one-generation-per-run-a-dangli' \
     '    absent|empty)' \
     '    absent|empty|dangling)' \
     'must keep the ownership record'
-  check_mut 'the installer ignores a recorded opt-out it was asked to honour' \
-    '    WIRE_SETTINGS=0   # optout-revalidated' \
-    '    :   # optout-revalidated' \
+  check_row 'the installer ignores a recorded opt-out it was asked to honour' 'install.sh' 'round-47-25-travels-out-of-the-currency' \
+    '      0) [ "$_odisp" != skipped-optout ] || WIRE_SETTINGS=0 ;;   # optout-revalidated' \
+    '      0) :   # optout-revalidated' \
     'must honour a recorded opt-out read under the lock'
-  check_mutation_pool "check-settings-fragment(install)" "$work/mut-install" prepare_install runner 4
-
-  check_mut_reset
-  check_mut 'the pinned sandbox omission moves inside the jq branch' \
+  check_row 'the pinned sandbox omission moves inside the jq branch' 'scripts/lib/pinned-install.sh' 'the-pinned-model-says-what-it-omitted-on' \
     '    _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"' \
     '      _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"' \
     'must sit at the loop body level'
-  check_mutation_pool "check-settings-fragment(pinned)" "$work/mut-pinned" prepare_pinned runner 2
-
-  check_mut_reset
-  check_mut "uninstall's settings temp file is world-readable while it is written" \
+  check_row "uninstall's settings temp file is world-readable while it is written" 'uninstall.sh' 'the-settings-temp-file-is-never-world-re' \
     '  ( umask 077; : > "$tmp" ) || {' \
     '  ( : > "$tmp" ) || {' \
     "uninstall's settings temp file must be created restricted"
-  check_mut 'uninstall consumes a receipt belonging to another clone' \
+  check_row 'uninstall consumes a receipt belonging to another clone' 'uninstall.sh' 'a-present-source-row-decides-and-the-lin' \
     '  if [ -n "$recorded" ]; then' \
     '  if false; then' \
     'must be left alone even when the root-doc link says this one'
-  check_mut 'a legacy receipt with no source row skips the link fallback' \
+  check_row 'a legacy receipt with no source row skips the link fallback' 'uninstall.sh' 'an-uninstall-from-another-clone-must-not' \
     '  elif [ "$ours" != "1" ]; then' \
     '  elif false; then' \
     'must fall back to the link'
-  check_mut 'uninstall rewrites settings.json when nothing of ours was pruned' \
+  check_row 'uninstall rewrites settings.json when nothing of ours was pruned' 'uninstall.sh' 'nothing-of-ours-in-the-file-means-the-fi' \
     '  if [ "$_nochange" -eq 0 ]; then' \
     '  if false; then' \
     'must leave settings.json alone'
-  check_mut 'a zero leaf count is taken as proof that nothing of ours is left' \
+  check_row 'a zero leaf count is taken as proof that nothing of ours is left' 'uninstall.sh' 'an-owned-container-is-still-something-of' \
     '  if [ "$_nochange" -eq 0 ]; then' \
     "  if [ \"\$(printf '%s' \"\$result\" | jq -r '.pruned | length')\" -eq 0 ]; then" \
     'empty container this install created must still be removed'
-  check_mut 'an execution error counts as a document difference' \
+  check_row 'an execution error counts as a document difference' 'uninstall.sh' 'an-operational-failure-is-never-a-semant' \
     '  if [ "$_nochange" -gt 1 ]; then' \
     '  if false; then' \
     'must tell an execution error from an inequality'
-  check_mut 'the legacy filter status is discarded again' \
+  check_row 'the legacy filter status is discarded again' 'uninstall.sh' 'an-operational-failure-is-never-a-semant' \
     '      if [ "$_grc" -gt 1 ]; then' \
     '      if false; then' \
     'must be run and checked on its own'
-  check_mut 'an unreadable legacy receipt is unlinked anyway' \
+  check_row 'an unreadable legacy receipt is unlinked anyway' 'uninstall.sh' 'an-unreadable-receipt-is-not-an-absent-o' \
     '    if [ -f "$_lr" ] && ! cat "$_lr" >/dev/null 2>&1; then' \
     '    if false; then' \
     'must unlink NOTHING'
-  check_mut 'a failed stamp warns and carries on' \
+  check_row 'a failed stamp warns and carries on' 'uninstall.sh' 'an-unstamped-legacy-install-is-not-unlin' \
     '        return 1   # stamp-failed' \
     '        return 0' \
     'must FAIL rather than unlink the proof it depends on'
@@ -4044,266 +4575,335 @@ if [ "$MUTATION" -eq 1 ]; then
   # accident. Taking the decision without asking the reader at all is the same defect with no
   # platform in it — broader, since the stamp is then skipped for every receipt, so the two
   # neighbouring stamp assertions fail with the witness. (PR review)
-  check_mut 'the source decision is taken without asking the reader' \
+  check_row 'the source decision is taken without asking the reader' 'uninstall.sh' 'a-malformed-source-row-is-not-provenance' \
     '      adb_claude_settings_receipt_source "$_lr" >/dev/null 2>&1; _srcrc=$?' \
     '      _srcrc=0' \
     'must be stamped like one that has none'
-  check_mut 'the legacy provenance stamp is skipped' \
+  check_row 'the legacy provenance stamp is skipped' 'uninstall.sh' 'a-legacy-receipt-gains-durable-provenanc' \
     '    if [ "$_srcrc" -eq 1 ]; then' \
     '    if false; then' \
     'must be stamped with this clone as its source'
-  check_mut 'the hook removal republishes a document it did not change' \
+  check_row 'the hook removal republishes a document it did not change' 'uninstall.sh' 'nothing-of-ours-in-the-file-means-the-fi' \
     '        if [ "$_hkrc" -eq 0 ]; then' \
     '        if false; then' \
     'must leave settings.json alone'
-  check_mut 'uninstall discards a failed lock release' \
+  check_row 'uninstall discards a failed lock release' 'uninstall.sh' 'the-wrapper-s-result-carries-a-failed-re' \
     '  adb_settings_lock_drop || ucrc=1' \
     '  adb_settings_lock_drop' \
     'uninstall_claude must do the same'
-  check_mut 'the probe renames run outside the deferral' \
+  check_row 'the probe renames run outside the deferral' 'uninstall.sh' 'the-receipt-must-be-proved-removable-bef' \
     '  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal' \
     '  :' \
     'signals must already be deferred when the first one runs'
-  check_mut 'the link outranks a source row that names another clone' \
+  check_row 'the link outranks a source row that names another clone' 'uninstall.sh' 'a-present-source-row-decides-and-the-lin' \
     '    if [ "$recorded" != "$REPO" ]; then' \
     '    if false; then' \
     'must be left alone even when the root-doc link says this one'
-  check_mut 'uninstall rewrites the settings before proving the receipt removable' \
+  check_row 'uninstall rewrites the settings before proving the receipt removable' 'uninstall.sh' 'the-receipt-must-be-proved-removable-bef' \
     '  if ! mv "$receipt" "$_rprobe" 2>/dev/null; then' \
     '  if false; then' \
     'must prove the receipt can be removed BEFORE it rewrites'
-  check_mut 'a no-op uninstall leaves its staged temp behind' \
+  check_row 'a no-op uninstall leaves its staged temp behind' 'uninstall.sh' 'a-no-op-uninstall-stages-nothing-it-leav' \
     '    rm -f "$tmp"   # no-op-stage' \
     '    :' \
     'must not leave its staged temp behind'
-  check_mut 'the uninstall pair publishes outside the deferral' \
+  check_row 'the uninstall pair publishes outside the deferral' 'uninstall.sh' 'the-other-transactions-defer-too' \
     '  adb_settings_lock_defer_signals   # transaction: settings rewrite + receipt removal' \
     '  :' \
     'must defer signals BEFORE it publishes the rewritten settings'
-  check_mut 'uninstall locks a home that has no Claude directory' \
+  check_row 'uninstall locks a home that has no Claude directory' 'uninstall.sh' 'an-uninstall-with-no-claude-state-is-don' \
     '  if [ ! -d "$HOME/.claude" ]; then' \
     '  if false; then' \
     'must succeed — there is nothing to remove'
-  check_mut 'uninstall never releases the settings lock' \
+  check_row 'uninstall never releases the settings lock' 'uninstall.sh' 'the-lock-is-released-when-the-phase-ends' \
     '  adb_settings_lock_drop' \
     '  :' \
     'must release the settings lock explicitly when the Claude phase ends, for the same reason'
-  check_mut 'uninstall drops the ownership record when the payload is missing' \
+  check_row 'uninstall drops the ownership record when the payload is missing' 'uninstall.sh' 'an-uninstall-must-never-trade-the-owners' \
     '  case "$(adb_settings_doc_state "$settings")" in' \
     '  case "$( [ -s "$payload" ] && adb_settings_doc_state "$settings" || printf absent)" in' \
     'must not delete the ownership receipt while leaving the sandbox keys installed'
-  check_mut 'the no-op branch deletes the receipt after an unreadable kept-list' \
+  check_row 'the no-op branch deletes the receipt after an unreadable kept-list' 'uninstall.sh' 'and-a-caller-that-ignores-the-status-is' \
     '      return 1   # noop-kept-unreadable' \
     '      :' \
     'an unreadable kept-list must keep the receipt'
-  check_mut 'the published branch drops the receipt after an unreadable kept-list' \
+  check_row 'the published branch drops the receipt after an unreadable kept-list' 'uninstall.sh' 'and-a-caller-that-ignores-the-status-is' \
     '      return 1   # published-kept-unreadable' \
     '      :' \
     'must still keep the receipt'
-  check_mut 'a zero-byte receipt is stamped as a legacy record' \
+  check_row 'a zero-byte receipt is stamped as a legacy record' 'uninstall.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '    if [ -s "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)"; then' \
     '    if [ -f "$_lr" ] && _lrbody="$(cat "$_lr" 2>/dev/null)"; then' \
     'must be treated as absent, not stamped'
-  check_mut 'the stamp proceeds over a receipt it could not search' \
+  check_row 'the stamp proceeds over a receipt it could not search' 'uninstall.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '      return 1   # stamp-source-unreadable' \
     '      :' \
     'must stop when the receipt could not be searched'
-  check_mut 'cleanup proceeds over a receipt it could not search' \
+  check_row 'cleanup proceeds over a receipt it could not search' 'uninstall.sh' 'a-guard-that-kills-the-shell-and-a-reade' \
     '    return 1   # cleanup-source-unreadable' \
     '    :' \
     'must stop when the receipt could not be searched, rather than falling back'
-  check_mut 'the hook comparison counts an execution error as a difference' \
+  check_row 'the hook comparison counts an execution error as a difference' 'uninstall.sh' 'a-predicate-whose-own-output-is-the-answ,a-guard-that-kills-the-shell-and-a-reade' \
     '        elif [ "$_hkrc" -gt 1 ]; then' \
     '        elif false; then' \
     "must tell an execution error from a difference"
-  check_mut 'a resume is placed before the deferral it belongs to' \
+  check_row 'a resume is placed before the deferral it belongs to' 'uninstall.sh' 'the-receipt-must-be-proved-removable-bef' \
     '      return 1   # noop-kept-unreadable' \
     '      adb_settings_lock_resume_signals; return 1   # noop-kept-unreadable' \
     'must come after the deferral'
-  check_mut 'the uninstaller removes by an incomplete record' \
+  check_row 'the uninstaller removes by an incomplete record' 'uninstall.sh' 'round-36-the-completeness-question-every' \
     '    return 1   # remove-rows-incomplete' \
     '    :' \
     'must ask it before removing'
-  check_mut 'a failed hook rewrite leaves the status clean' \
+  check_row 'a failed hook rewrite leaves the status clean' 'uninstall.sh' 'round-36-the-completeness-question-every' \
     '          rc=1   # hook-publish-failed' \
     '          :' \
     'must set the accumulated status'
-  check_mut 'a non-regular receipt path reads as an absent receipt' \
+  check_row 'a non-regular receipt path reads as an absent receipt' 'uninstall.sh' 'round-37-skips-own-rows-too-hup-is-termi' \
     '    return 1   # receipt-not-regular' \
     '    :' \
     'must fail the uninstall'
-  check_mut 'uninstall drops the receipt over an unseeable document' \
+  check_row 'uninstall drops the receipt over an unseeable document' 'uninstall.sh' 'round-38-a-document-the-run-cannot-see-i' \
     '      return 1 ;;   # settings-inaccessible-remove' \
     '      return 0 ;;' \
     'must keep the receipt when the document cannot be inspected'
-  check_mut 'uninstall unlinks before refusing an unresolved receipt link' \
+  check_row 'uninstall unlinks before refusing an unresolved receipt link' 'uninstall.sh' 'round-42-unresolved-receipt-links-counts' \
     '      return 1   # stamp-receipt-unresolved' \
     '      :   # stamp-receipt-unresolved' \
     'must refuse a receipt link that does not resolve BEFORE unlinking'
-  check_mut 'uninstall removes by a receipt with a malformed count' \
+  check_row 'uninstall removes by a receipt with a malformed count' 'uninstall.sh' 'round-42-unresolved-receipt-links-counts' \
     '    return 1   # remove-rows-damaged' \
     '    :   # remove-rows-damaged' \
     'whose leaf count is malformed, and keep it'
-  check_mut 'uninstall reads an unusable ~/.claude as absent' \
+  check_row 'uninstall reads an unusable ~/.claude as absent' 'uninstall.sh' 'round-43-rows-counted-both-ways-exact-pa' \
     '    return 1   # claude-root-unusable' \
     '    return 0   # claude-root-unusable' \
     'an occupied ~/.claude that is not an enterable directory must fail'
-  check_mut 'removal proceeds on a receipt it could not check' \
+  check_row 'removal proceeds on a receipt it could not check' 'uninstall.sh' 'round-46-one-generation-per-run-a-dangli' \
     '    return 1   # remove-rows-uncheckable' \
     '    :   # remove-rows-uncheckable' \
     'and uninstall must refuse it and keep the record'
-  check_mut 'removal reads a dangling link as a deleted document again' \
+  check_row 'removal reads a dangling link as a deleted document again' 'uninstall.sh' 'round-47-25-travels-out-of-the-currency' \
     '    absent|empty)' \
     '    absent|empty|dangling)' \
     'must keep the receipt when settings.json is a link that does not resolve'
-  check_mutation_pool "check-settings-fragment(uninstall)" "$work/mut-uninstall" prepare_uninstall runner 4
-
-  check_mut_reset
-  check_mut 'a blocked sandbox install is reported as a repair' \
+  check_row 'a blocked sandbox install is reported as a repair' 'bin/baseline' 'a-refused-sandbox-install-is-not-a-repai' \
     '    if adb_settings_refused_now "$(adb_settings_heal_touched "$SETTINGS_PENDING" "$SETTINGS_SIG_BEFORE")"; then' \
     '    if false; then' \
     'same-HEAD repair path must ask'
-  check_mut 'an installed surface stays current after a CLI downgrade' \
+  check_row 'an installed surface stays current after a CLI downgrade' 'bin/baseline' 'baseline-update-must-notice-a-pending-su' \
     '      if [ "$disp" = installed ]; then' \
     '      if false; then' \
     'downgraded BELOW the floor must be pending once'
-  check_mut 'the downgrade waits behind the LINKS_OK gate' \
+  check_row 'the downgrade waits behind the LINKS_OK gate' 'bin/baseline' 'a-downgrade-outranks-a-link-repair' \
     '    adb_settings_downgraded_now "$(adb_settings_heal_touched "$SETTINGS_PENDING" "$SETTINGS_SIG_BEFORE")" "$SETTINGS_ROWS_BEFORE" && {' \
     '    false && {' \
     'must run BEFORE the LINKS_OK gate'
-  check_mut 'the post-pull path never asks about a downgrade' \
+  check_row 'the post-pull path never asks about a downgrade' 'bin/baseline' 'the-post-pull-path-asks-both-questions' \
     '      if adb_settings_downgraded_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")" "$BEHIND_ROWS_BEFORE"; then' \
     '      if false; then' \
     'post-pull path must ask whether the protections were downgraded'
-  check_mut 'the downgrade predicate requires the row count unchanged again' \
-    '  [ "${1:-0}" -eq 1 ] || return 1' \
-    '  [ "${1:-0}" -eq 1 ] || return 1; [ "$(adb_settings_row_count)" -eq "$2" ] || return 1' \
+  check_row 'the downgrade predicate requires the row count unchanged again' 'bin/baseline' 'a-downgrade-is-not-a-reconciliation-eith' \
+    '  [ "${1:-0}" -eq 1 ] || return 1   # downgrade-count-free' \
+    '  [ "${1:-0}" -eq 1 ] || return 1; [ "$(adb_settings_row_count)" -eq "$2" ] || return 1   # downgrade-count-free' \
     'must NOT require the row count unchanged'
-  check_mut 'the downgrade claims ownership is unchanged after relinquishing it' \
+  check_row 'the downgrade claims ownership is unchanged after relinquishing it' 'bin/baseline' 'the-downgrade-message-does-not-contradic' \
     '  if [ "${2:-0}" -gt 0 ] && [ "$_nowrows" -lt "$2" ]; then' \
     '  if false; then' \
     'Stale ownership was ALSO relinquished'
-  check_mut 'a downgrade is reported as a relinquishment' \
+  check_row 'a downgrade is reported as a relinquishment' 'bin/baseline' 'a-downgrade-is-not-a-reconciliation-eith' \
     '    skipped-below-floor|skipped-unprobeable) ;;' \
     '    no-such-disposition) ;;' \
     'must decide on the DISPOSITION left behind by the heal'
-  check_mut 'a receipt naming another clone is treated as current' \
+  check_row 'a receipt naming another clone is treated as current' 'bin/baseline' 'baseline-update-must-notice-a-pending-su,a-receipt-naming-another-clone-is-never' \
     '  [ -n "$rsource" ] && [ "$rsource" != "$src" ] && return 0' \
     '  :' \
     'must be PENDING'
-  check_mut 'a reconciliation is reported as a repair' \
+  check_row 'a reconciliation is reported as a repair' 'bin/baseline' 'a-reconciliation-is-not-a-repair' \
     '        skipped-optout|skipped-below-floor|skipped-unprobeable)' \
     '        no-such-disposition)' \
     'must not report a repair'
-  check_mut 'only an installed receipt is asked the live question' \
+  check_row 'only an installed receipt is asked the live question' 'bin/baseline' 'and-every-disposition-that-carries-rows' \
     '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable)' \
     '    installed)' \
     'must be pending even though the CLI is STILL below the floor'
-  check_mut 'the post-pull path never asks whether the policy was refused' \
+  check_row 'the post-pull path never asks whether the policy was refused' 'bin/baseline' 'a-refused-sandbox-install-is-not-a-repai' \
     '      if adb_settings_refused_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")"; then' \
     '      if false; then' \
     'post-pull path must ask before it reports the update complete'
-  check_mut 'currency stops asking the live file once the digest matches' \
+  check_row 'currency stops asking the live file once the digest matches' 'bin/baseline' 'baseline-update-must-notice-a-pending-su' \
     '        1) return 0 ;;' \
     '        99) return 0 ;;' \
     'must be pending once, so the installer can observe the divergence'
-  check_mut 'the updater overrules an explicit --no-sandbox opt-out' \
+  check_row 'the updater overrules an explicit --no-sandbox opt-out' 'bin/baseline' 'baseline-update-must-notice-a-pending-su' \
     'none|skipped-below-floor|skipped-unprobeable) ;;' \
     'none|skipped-below-floor|skipped-unprobeable|skipped-optout) ;;' \
     'must NEVER be pending'
-  check_mut 'the updater stops noticing a below-floor skip once the CLI is upgraded' \
+  check_row 'the updater stops noticing a below-floor skip once the CLI is upgraded' 'bin/baseline' 'baseline-update-must-notice-a-pending-su' \
     'none|skipped-below-floor|skipped-unprobeable) ;;' \
     'none) ;;' \
     'must become PENDING once the CLI clears the floor'
-  check_mut 'the updater treats a still-below-floor CLI as pending' \
+  check_row 'the updater treats a still-below-floor CLI as pending' 'bin/baseline' 'a-receipt-naming-another-clone-is-never' \
     'adb_version_ge "$version" "$(adb_claude_settings_floor)"' \
     'true' \
     'must stay put while the CLI is STILL below the floor'
-  check_mut 'an installed receipt is trusted without comparing payloads' \
+  check_row 'an installed receipt is trusted without comparing payloads' 'bin/baseline' 'baseline-update-must-notice-a-pending-su,a-receipt-naming-another-clone-is-never' \
     '      [ "$have" = "$want" ] || return 0' \
     '      :' \
     'must be PENDING'
-  check_mut 'currency is decided by the owned leaf PATHS again' \
+  check_row 'currency is decided by the owned leaf PATHS again' 'bin/baseline' 'baseline-update-must-notice-a-pending-su,a-receipt-naming-another-clone-is-never' \
     '      have="$(adb_claude_settings_payload_digest "$receipt")" || return 0   # unknown -> pending once' \
     '      have="$(adb_claude_settings_receipt_leaves "$receipt" | cut -f1 | LC_ALL=C sort)"; want="$(adb_claude_settings_leaves "$payload" | LC_ALL=C sort)"; [ "$have" = "$want" ] && return 1; return 0' \
     'must be PENDING'
-  check_mut 'an uninterpretable receipt collapses into not-pending' \
+  check_row 'an uninterpretable receipt collapses into not-pending' 'bin/baseline' 'a-predicate-whose-own-output-is-the-answ' \
     '    20|21) return "$_disprc" ;;   # pending-unanswerable' \
     '    20|21) return 1 ;;' \
     'must travel out of adb_settings_pending'
-  check_mut 'an unanswerable intactness check falls through to the digest' \
+  check_row 'an unanswerable intactness check falls through to the digest' 'bin/baseline' 'a-predicate-whose-own-output-is-the-answ' \
     '        2) return 22 ;;   # settings-unanswerable' \
     '        2) : ;;' \
     'must not fall through to be decided on the payload digest'
-  check_mut 'a pending call site reads an uninterpretable record as healthy' \
+  check_row 'a pending call site reads an uninterpretable record as healthy' 'bin/baseline' 'a-predicate-whose-own-output-is-the-answ' \
     '      2[0-9]) adb_settings_unreadable_record "$SPRC"; exit 1 ;;   # pending-unanswerable-current' \
     '      2[0-9]) : ;;' \
     'must fail loud on 20/21'
-  check_mut 'a failed source search reads as no source at all' \
+  check_row 'a failed source search reads as no source at all' 'bin/baseline' 'a-guard-that-kills-the-shell-and-a-reade' \
     '  [ "$_rsrc" -eq 20 ] && return 20   # source-unanswerable' \
     '  :' \
     "must not read a failed source search as 'no source'"
-  check_mut 'a settings-file error is reported as a receipt error' \
+  check_row 'a settings-file error is reported as a receipt error' 'bin/baseline' 'round-34-an-open-that-failed-a-publisher' \
     '        2) return 22 ;;   # settings-unanswerable' \
     '        2) return 20 ;;' \
     'must not be reported as a receipt error'
-  check_mut 'the incomplete-receipt code is downgraded to not-pending' \
+  check_row 'the incomplete-receipt code is downgraded to not-pending' 'bin/baseline' 'a-receipt-naming-another-clone-is-never' \
     '        23) return 23 ;;  # receipt-incomplete' \
     '        23) return 1 ;;' \
     'must answer 23 (report and preserve)'
-  check_mut 'an unread receipt is reported as not downgraded' \
+  check_row 'an unread receipt is reported as not downgraded' 'bin/baseline' 'round-38-a-document-the-run-cannot-see-i' \
     '    20|21) adb_settings_unreadable_record "$_ddrc"; exit 1 ;;   # downgrade-read-failed' \
     '    20|21) return 1 ;;' \
     'must end the update loud'
-  check_mut 'an unread receipt is reported as not refused' \
+  check_row 'an unread receipt is reported as not refused' 'bin/baseline' 'round-38-a-document-the-run-cannot-see-i' \
     '    20|21) adb_settings_unreadable_record "$_rdrc"; exit 1 ;;   # refusal-read-failed' \
     '    20|21) return 1 ;;' \
     'must end the update loud'
-  check_mut 'an unhashable payload reads as not pending' \
+  check_row 'an unhashable payload reads as not pending' 'bin/baseline' 'round-39-completeness-judged-against-the' \
     '      want="$(adb_sha256 "$payload")" || return 24   # payload-unhashable' \
     '      want="$(adb_sha256 "$payload")" || return 1' \
     'must be 24 with its own remedy'
-  check_mut 'the behind branch reads an uninterpretable record as healthy' \
+  check_row 'the behind branch reads an uninterpretable record as healthy' 'bin/baseline' 'a-predicate-whose-own-output-is-the-answ' \
     '      2[0-9]) adb_settings_unreadable_record "$BSPRC"; exit 1 ;;   # pending-unanswerable-behind' \
     '      2[0-9]) : ;;' \
     'must fail loud on 20/21'
-  check_mut 'the row count fabricates a number from a failed read' \
+  check_row 'the row count fabricates a number from a failed read' 'bin/baseline' 'round-41-identity-when-the-count-holds-a' \
     '  [ "$grc" -le 1 ] || return 20   # row-count-read-failed' \
     '  :' \
     'a grep that fails on a readable receipt'
-  check_mut 'the row count reads an unresolvable receipt link as zero' \
+  check_row 'the row count reads an unresolvable receipt link as zero' 'bin/baseline' 'round-40-distinct-paths-a-row-count-that' \
     '    *) return 20 ;;   # row-count-unresolvable' \
     '    *) printf '"'"'0'"'"'; return 0 ;;' \
     'an unresolvable receipt link must make the row count refuse'
-  check_mut 'the post-heal row count loses its refusal' \
+  check_row 'the post-heal row count loses its refusal' 'bin/baseline' 'round-40-distinct-paths-a-row-count-that' \
     '  _nowrows="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-failed' \
     '  _nowrows="$(adb_settings_row_count)"' \
     'every caller of the row count must fail loud'
-  check_mut 'the current-branch pre-heal row count loses its refusal' \
+  check_row 'the current-branch pre-heal row count loses its refusal' 'bin/baseline' 'round-40-distinct-paths-a-row-count-that' \
     '    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-current' \
     '    SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)"' \
     'every caller of the row count must fail loud'
-  check_mut 'the behind-branch pre-heal row count loses its refusal' \
+  check_row 'the behind-branch pre-heal row count loses its refusal' 'bin/baseline' 'round-40-distinct-paths-a-row-count-that' \
     '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind' \
     '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"' \
     'every caller of the row count must fail loud'
-  check_mut 'the currency check gives up for want of jq before the jq-free questions' \
+  check_row 'the currency check gives up for want of jq before the jq-free questions' 'bin/baseline' 'round-45-legacy-duplicate-paths-whatever' \
     '  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
     '  command -v jq >/dev/null 2>&1 || return 1; adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
     'without jq, the currency check must still refuse a receipt whose disposition cannot be read'
-  check_mut 'the post-heal classification trusts the pre-heal snapshot' \
+  check_row 'the post-heal classification trusts the pre-heal snapshot' 'bin/baseline' 'round-46-one-generation-per-run-a-dangli' \
     '  [ "$(adb_settings_receipt_sig)" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \
     '  [ "${2:-none}" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \
     'must be classified whatever the pre-heal snapshot said'
-  check_mut 'a receipt-check failure is swallowed by the currency check' \
+  check_row 'a receipt-check failure is swallowed by the currency check' 'bin/baseline' 'round-47-25-travels-out-of-the-currency' \
     '        25) return 25 ;;  # receipt-check-failed: the check of the RECORD could not be performed' \
     '        25) : ;;  # receipt-check-failed' \
     'must travel out of the currency check (25)'
-  check_mut 'the updater decides the opt-out before the child holds the lock' \
+  check_row 'the updater decides the opt-out before the child holds the lock' 'bin/baseline' 'round-47-25-travels-out-of-the-currency' \
     '    args+=(--optout-if-recorded)   # optout-revalidated-by-child' \
     '    :   # optout-revalidated-by-child' \
     'must pass --optout-if-recorded so the installer decides under the lock'
-  check_mutation_pool "check-settings-fragment(baseline)" "$work/mut-baseline" prepare_baseline runner 4
+  check_row 'a zero-count receipt keeps the rows it cannot own' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '        [ "$_nrow" -eq 0 ] || return 23   # zero-count-has-rows' \
+    '        :   # zero-count-has-rows' \
+    'must answer 23 — accepted, uninstall deletes the live value that row names'
+  check_row 'an installed zero is accepted whatever the payload ships' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '          [ -z "$(printf '"'"'%s'"'"' "$_zship" | tr -d '"'"'[:space:]'"'"')" ] || return 23   # installed-zero-ships-leaves' \
+    '          :   # installed-zero-ships-leaves' \
+    'whose own payload DOES ship leaves must answer 23'
+  check_row 'a zero-count record is damaged whatever the payload' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '        return 0   # zero-count-complete' \
+    '        return 23   # zero-count-complete' \
+    'must pass against a payload that ships no leaves'
+  check_row 'an unreadable leaf count escapes as payload uncertainty' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '    20) return 25 ;;   # leaf-count-unreadable' \
+    '    20) return 20 ;;   # leaf-count-unreadable' \
+    'must answer 25'
+  check_row 'the CLI search runs past an unprobeable candidate' 'scripts/lib/common.sh' 'round-49-zero-owns-nothing-and-the-firs' \
+    '    return 1   # first-candidate-decides' \
+    '    :   # first-candidate-decides' \
+    'must end the search'
+  check_row 'the skip arm names a relinquishment it did not check' 'bin/baseline' 'round-49-zero-owns-nothing-and-the-firs' \
+    '          SETTINGS_ROWS_AFTER="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-heal' \
+    '          SETTINGS_ROWS_AFTER=0   # row-count-after-heal' \
+    'must compare ownership rows before claiming a relinquishment'
+  check_row 'an unclassifiable opt-out receipt is applied over in silence' 'install.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '      *) adb_info "  WARN   the recorded settings disposition could not be read — sandbox settings NOT written."' \
+    '      *) :' \
+    'must SAY it stopped --optout-if-recorded'
+  check_row 'an unclassifiable opt-out receipt is read as no opt-out' 'install.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '         return 1 ;;   # optout-unreadable' \
+    '         : ;;   # optout-unreadable' \
+    'must stop --optout-if-recorded, not fall through'
+  check_row 'a dangling link reaches the install merge' 'install.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '    inaccessible|dangling)' \
+    '    inaccessible)' \
+    'must refuse the install rather than merge against'
+  check_row 'the recorded-path read reports payload uncertainty' 'scripts/lib/common.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '          _crec="$(printf '"'"'%s'"'"' "$owned" | jq -c '"'"'[.[].p] | unique | sort'"'"' 2>/dev/null)" || return 25   # recorded-paths-unreadable' \
+    '          _crec="$(printf '"'"'%s'"'"' "$owned" | jq -c '"'"'[.[].p] | unique | sort'"'"' 2>/dev/null)" || return 2' \
+    'must answer 25, which uninstall refuses on'
+  check_row 'the identity comparison swallows its own failure' 'scripts/lib/common.sh' 'round-50-an-unreadable-opt-out-refuses' \
+    '          [ "$_cdrc" -eq 0 ] || return 25   # identity-diff-unreadable' \
+    '          :   # identity-diff-unreadable' \
+    "the identity comparison's own failure must answer 25"
+  check_row 'a damaged count is removed past when the diagnostic read fails' 'uninstall.sh' 'round-51-a-second-read-that-fails-refu' \
+    '  if [ "$_crc" -eq 21 ]; then' \
+    '  if [ "$_crc" -eq 21 ] && adb_claude_settings_disposition "$receipt" >/dev/null 2>&1; then' \
+    'removal must say it kept the record rather than reporting a clean removal'
+  check_row 'an unclassifiable opt-out record is invalidated anyway' 'install.sh' 'round-51-a-second-read-that-fails-refu' \
+    '         || { [ -z "$_keep_disp" ] && [ "$(adb_settings_doc_state "$receipt")" = present ]; }; then' \
+    '         || false; then' \
+    'a present receipt whose disposition read failed must be KEPT'
+  check_row 'the counted digest re-read falls back to empty' 'scripts/lib/common.sh' 'round-51-a-second-read-that-fails-refu' \
+    '          [ "$_crdrc" -eq 0 ] || return 25   # counted-digest-reread-failed' \
+    '          :   # counted-digest-reread-failed' \
+    "digest re-read must refuse on failure"
+  check_row 'the zero-branch digest re-read falls back to empty' 'scripts/lib/common.sh' 'round-51-a-second-read-that-fails-refu' \
+    '          [ "$_zrdrc" -eq 0 ] || return 25   # zero-digest-reread-failed' \
+    '          :   # zero-digest-reread-failed' \
+    "zero branch's digest re-read must refuse on failure too"
+  check_row 'an incomplete record is blamed on settings.json' 'install.sh' 'round-52-the-record-is-named-a-recreat' \
+    '  elif [ "$_mrc" -eq 23 ] || [ "$_mrc" -eq 25 ]; then' \
+    '  elif false; then' \
+    'must be named as the thing to repair'
+  check_row 'a skip that dropped ownership still promises re-application' 'install.sh' 'round-52-the-record-is-named-a-recreat' \
+    '    _ADB_SKIP_DROPPED=1   # skip-dropped-ownership' \
+    '    :   # skip-dropped-ownership' \
+    'must say an upgrade will NOT re-apply the keys'
+  check_row 'the unprobeable skip promises re-application after dropping ownership' 'install.sh' 'round-52-the-record-is-named-a-recreat' \
+    '      adb_info "           refuse them: remove them by hand, then put \`claude\` on PATH and re-run."   # unprobeable-dropped' \
+    '      :   # unprobeable-dropped' \
+    'must say a re-run will refuse the keys'
+  check_mutation_rows "check-settings-fragment" "$work/mut" "scripts/check-settings-fragment.sh" prepare_root runner 6
 fi
 
 check_summary "settings-fragment"

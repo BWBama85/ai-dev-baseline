@@ -87,6 +87,12 @@ each was compared on. `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the 
 every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
 the step. The decision is `scripts/mutation-gate.sh`'s — the same one CI asks per job.
 
+Since #470 the same question is also asked **per row** for a harness built on per-test rows: a row
+runs when your change touches the file that row mutates, or an input no row targets at all, and is
+otherwise gated — never built, never scored, and named in the harness's tally. The same override
+and the same fail-closed rules apply, and the nightly runs every row regardless, which is what
+bounds a target set that turns out to be too narrow.
+
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
@@ -123,6 +129,16 @@ and `.github/workflows/mutation-nightly.yml` runs every `*-mutation` step uncond
 `main` on a daily schedule — a daily attempt (GitHub documents that a `schedule` may be delayed or
 dropped) at catching what a wrong input set hides. `check-mutation-gate.sh` pins
 both: every `--mutation` line in `ci.yml` is gated, and the nightly matrix equals the registry.
+
+A suite whose harness runs the whole suite per mutant can instead declare **blocks** and **per-test
+rows** (#468, D103): `if check_block <id> [<dep>…]; then … fi` at the start of a line, a
+`check_blocks_done` line after the last block, and `check_row <name> <target> <block> <old> <new>
+<witness>` scored by `check_mutation_rows`. Each mutant then runs only its block plus that block's
+declared dependencies. The harness refuses a row before building anything when its literal is not
+in its target exactly once or its witness is not in its block's source, and it runs each selected
+block unmutated first to require the assertion count a full pass gives it. So a missing dependency
+is a red control, not a quiet GREEN. The nightly sets `ADB_MUTATION_FULL_SUITE=1`, which scores every
+row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a suite by hand.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335

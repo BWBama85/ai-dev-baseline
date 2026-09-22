@@ -199,7 +199,7 @@ adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" 
 # Usage: adb_settings_downgraded_now <were-the-settings-pending-before> <row-count-before>
 # Returns: 0 when this run should report a downgrade rather than a reconciliation
 adb_settings_downgraded_now() {
-  [ "${1:-0}" -eq 1 ] || return 1
+  [ "${1:-0}" -eq 1 ] || return 1   # downgrade-count-free
   # THE READ IS CHECKED, and a failed one ends the run loud. Substituted straight into the `case`,
   # a receipt the just-finished heal published but this process cannot READ (a directory default
   # ACL permits the rename and denies the read) became the empty string and "not downgraded" — so
@@ -716,7 +716,8 @@ EOF
 # The mutating path (pull + prune + install.sh) must not run twice at once. That was already
 # possible by hand (two terminals), and the SessionStart hook makes it LIKELY: several sessions
 # can start within the same second and each would race the others through `git pull` and a
-# settings.json rewrite. `mkdir` is the portable atomic test-and-set (macOS has no flock(1)).
+# settings.json rewrite. A directory is the portable test-and-set (macOS has no flock(1)), taken with `adb_mkdir_excl`
+# because a bare `mkdir` is not exclusive under uutils (D105).
 #
 # Stale-lock recovery is by AGE, not by liveness: a pid check cannot distinguish "that pid died"
 # from "that pid was recycled", and the failure we are protecting against is a killed updater
@@ -924,7 +925,16 @@ case "$STATUS" in
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
-          echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
+          # RELINQUISHED MEANS ROWS DROPPED, which is the same question the downgrade classifier asks.
+          # A skip whose only change was the provenance row still owns every leaf it names, so
+          # reporting it as relinquished tells the operator protection was given up when none was.
+          # (PR review)
+          SETTINGS_ROWS_AFTER="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-after-heal
+          if [ "$SETTINGS_ROWS_AFTER" -lt "$SETTINGS_ROWS_BEFORE" ]; then
+            echo "baseline: relinquished stale sandbox ownership; no link or setting was changed."
+          else
+            echo "baseline: refreshed the sandbox ownership record; no link or setting was changed."
+          fi
           exit 8 ;;
       esac
     fi

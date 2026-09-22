@@ -201,6 +201,14 @@ d="$(new_repo)"; admit "$d" CLAUDE_CODE_SESSION_ID=
 eq "$(jq -r '.owner // "absent"' "$d/.claude/state/gap-analysis.lock")" "absent" \
    "1 …and omits the key entirely when the harness exposes no id, rather than writing an empty one"
 
+# A HELD ADMISSION LOCK REFUSES EVEN WHEN `mkdir` REPORTS SUCCESS FOR IT (#473, D105): the uutils
+# mkdir on Ubuntu 26.04 does that under contention, and a bare `mkdir` take then admitted two runs.
+d="$(new_repo)"; mkdir -p "$d/.claude/state"
+adb_mkdir_excl "$d/.claude/state/.admit.lock" || bad "fixture: could not take the admission lock"
+check_mkdir_shim "$d/.shim" || bad "fixture: the non-exclusive mkdir shim could not be written"
+admit "$d" PATH="$d/.shim:$PATH"
+eq "$AD_RC" "13" "1 a held admission lock refuses a second admission behind a non-exclusive mkdir"
+
 # ================= 2. concurrency: the acquire is atomic ========================================
 d="$(new_repo)"
 admit "$d" CLAUDE_CODE_SESSION_ID=sess-A

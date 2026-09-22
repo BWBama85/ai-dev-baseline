@@ -146,7 +146,7 @@ done
 # reason: an unconditional success line was the recorded defect (#242).
 wire_settings() {
   local settings="$HOME/.claude/settings.json"
-  local receipt payload floor version tmp result
+  local receipt payload floor version tmp result _keep_disp
   payload="$(adb_claude_settings_payload "$REPO")"
   receipt="$(adb_claude_settings_receipt "$HOME")"
   floor="$(adb_claude_settings_floor)"
@@ -201,9 +201,18 @@ _adb_wire_settings_locked() {
   # overwritten by the very self-heal meant to honour it. The updater passes `--optout-if-recorded` and
   # the answer is taken here. A human running ./install.sh without it still re-applies the policy, which
   # is what running the installer by hand means. (PR review)
-  if [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ] \
-     && [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then
-    WIRE_SETTINGS=0   # optout-revalidated
+  # ...AND THE READ'S STATUS DECIDES WITH IT. Substituted bare, an unreadable or unclassifiable
+  # receipt made the comparison simply false, so the run carried on and applied the fragment over the
+  # very `--no-sandbox` choice this re-read exists to honour. (PR review)
+  if [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ]; then
+    local _odisp _odrc
+    _odisp="$(adb_claude_settings_disposition "$receipt" 2>/dev/null)"; _odrc=$?
+    case "$_odrc" in
+      0) [ "$_odisp" != skipped-optout ] || WIRE_SETTINGS=0 ;;   # optout-revalidated
+      *) adb_info "  WARN   the recorded settings disposition could not be read — sandbox settings NOT written."
+         adb_info "         A recorded --no-sandbox choice cannot be honoured from a receipt this run cannot classify."
+         return 1 ;;   # optout-unreadable
+    esac
   fi
   if [ "$WIRE_SETTINGS" -eq 0 ]; then
     # `--no-sandbox` preserves ownership so an earlier install is not orphaned, but only what it
@@ -232,8 +241,17 @@ _adb_wire_settings_locked() {
       # the whole evidence of that choice — deleting it because the replacement could not be written
       # makes the next update read `none` and apply the policy over an explicit decision. Keep an
       # existing record that is either still accurate OR already records this same choice.
-      if [ -n "$optout_rows" ] \
-         || [ "$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" = skipped-optout ]; then
+      # A READ THAT FAILED IS NOT "IT RECORDS SOMETHING ELSE". Substituted bare, an unreadable or
+      # unclassifiable receipt made this false and the existing record of an explicit `--no-sandbox`
+      # was invalidated below — the next update then reads `none` and applies the policy over it.
+      # (PR review)
+      _keep_disp="$(adb_claude_settings_disposition "$receipt" 2>/dev/null)" || _keep_disp=""
+      # A RECORD THAT IS THERE AND UNCLASSIFIABLE IS KEPT; NOTHING AT THE PATH IS NOT A RECORD. The
+      # read's failure alone cannot answer this: a directory occupying the path is a FIRST opt-out
+      # that could not be written, and claiming a previous choice still stands there would report a
+      # record nobody wrote. Only a present receipt whose read failed is the transient case. (PR review)
+      if [ -n "$optout_rows" ] || [ "$_keep_disp" = skipped-optout ] \
+         || { [ -z "$_keep_disp" ] && [ "$(adb_settings_doc_state "$receipt")" = present ]; }; then
         adb_info "  WARN   --no-sandbox was honoured for this run but could NOT be recorded, and the"
         adb_info "         previous record still stands for that choice so it was KEPT. Re-run once"
         adb_info "         $receipt is writable."
@@ -327,15 +345,26 @@ _adb_wire_settings_locked() {
     skiprc=0; _adb_record_skip skipped-unprobeable "-" "$floor" "$receipt" || skiprc=$?
     adb_info "  sandbox  SKIPPED — no \`claude\` binary could be version-probed, so nothing was written."
     adb_info "           The sandbox keys need v$floor+; an unread version is not evidence they would be honoured."
-    adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
-    return "$skiprc"
+    if [ "${_ADB_SKIP_DROPPED:-0}" -eq 1 ]; then
+      adb_info "           The keys already in settings.json are no longer recorded as ours, so a re-run will"
+      adb_info "           refuse them: remove them by hand, then put \`claude\` on PATH and re-run."   # unprobeable-dropped
+    else
+      adb_info "           Put \`claude\` on PATH and re-run ./install.sh to apply them."
+    fi
+    return "$skiprc"   # version-skip-return
   fi
   if ! adb_version_ge "$version" "$floor"; then
     skiprc=0; _adb_record_skip skipped-below-floor "$version" "$floor" "$receipt" || skiprc=$?
     adb_info "  sandbox  SKIPPED — claude v$version is below the v$floor floor for \`sandbox.credentials\`."
     adb_info "           NOT applied: sandbox isolation, the ~/.aws and ~/.ssh read denials, the"
-    adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
-    adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
+    if [ "${_ADB_SKIP_DROPPED:-0}" -eq 1 ]; then
+      adb_info "           GITHUB_TOKEN scrub, and the network allowlist. The keys already in settings.json are"
+      adb_info "           no longer recorded as ours, so upgrading will NOT re-apply them: remove them by hand,"
+      adb_info "           then upgrade the CLI and re-run ./install.sh."   # below-floor-dropped
+    else
+      adb_info "           GITHUB_TOKEN scrub, and the network allowlist. Upgrade the CLI; the next"
+      adb_info "           \`baseline update\` applies them by itself (a skip is never read as a choice)."
+    fi
     return "$skiprc"
   fi
 
@@ -353,11 +382,17 @@ _adb_wire_settings_locked() {
   # regular file — hiding every unrelated setting in the original target and losing its topology.
   # A document this run cannot see is refused, not assumed empty. (PR review)
   _docst="$(adb_settings_doc_state "$settings")"
-  if [ "$_docst" = inaccessible ]; then
-    adb_info "  WARN   ~/.claude/settings.json exists but cannot be inspected — sandbox settings NOT written."
-    adb_info "         Merging against an empty document would replace it with a file hiding what is in it."
-    return 1   # settings-inaccessible-install
-  fi
+  # A DANGLING LINK REFUSES HERE TOO, as it now does on the carry, currency and remove paths. Sent
+  # through the synthetic `{}` below, an established install read every recorded leaf as missing,
+  # published a rowless `skipped-blocked` over the record and left the link — so when its target came
+  # back the installed keys were live with nothing recording them. (PR review)
+  case "$_docst" in
+    inaccessible|dangling)
+      adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — sandbox settings NOT written."
+      adb_info "         Merging against an empty document would replace it with a file hiding what is in it,"
+      adb_info "         and a link whose target returns brings back keys nothing records."
+      return 1 ;;   # settings-inaccessible-install
+  esac
   if [ "$_docst" != present ]; then
     synth="$(mktemp)" || { adb_info "  WARN   could not stage the settings input — sandbox settings NOT written"; return 1; }
     printf '{}\n' > "$synth"
@@ -406,6 +441,15 @@ _adb_wire_settings_locked() {
     adb_info "         it cannot be classified — sandbox settings NOT written. No permission change will"
     adb_info "         help; repair that line and re-run."
     return 1   # merge-damaged-receipt
+  elif [ "$_mrc" -eq 23 ] || [ "$_mrc" -eq 25 ]; then
+    # THE RECORD, NOT THE DOCUMENT. Under the catch-all below these told the operator settings.json was
+    # invalid and to restore its backup — a remedy that changes nothing, since the unchanged record
+    # refuses every later install too. (PR review)
+    rm -f "$synth"
+    adb_info "  WARN   $receipt cannot show it records every key it owns (a row is missing, or the check"
+    adb_info "         of the record could not be performed) — sandbox settings NOT written. settings.json is"
+    adb_info "         not the problem; repair or remove that record and re-run."
+    return 1   # merge-incomplete-receipt
   elif [ "$_mrc" -ne 0 ]; then
     rm -f "$synth"
     adb_info "  WARN   ~/.claude/settings.json could not be read as a single JSON value — sandbox"
@@ -971,6 +1015,15 @@ _adb_record_skip() {
     adb_info "  WARN   $receipt exists but could not be read — the skip stands, and the existing"
     adb_info "         ownership record was KEPT rather than replaced with an ownership-free one."
     return 1
+  fi
+  # WHETHER THIS SKIP GIVES OWNERSHIP UP, for the caller's message. A prior record that owned leaves and
+  # a carry that kept none means the live keys are no longer ours: an upgrade then reads them as the
+  # operator's and refuses, so promising that the next update re-applies them is false. (PR review)
+  _ADB_SKIP_DROPPED=0
+  local _prior
+  _prior="$(_adb_owned_rows "$receipt" 2>/dev/null)" || _prior=""
+  if printf '%s\n' "$_prior" | grep -q "^leaf$(printf '\t')" && [ -z "$carried" ]; then
+    _ADB_SKIP_DROPPED=1   # skip-dropped-ownership
   fi
   # THE PRIOR DIGEST IS CARRIED TOO, for the same reason as the rows: a skip applied no payload, so
   # it must not claim to have applied THIS one — but neither may it erase the record of the payload

@@ -601,24 +601,24 @@ _adb_publish_owner() {
 # directory; without the claim both record themselves and both proceed. (PR review)
 _adb_take_lock() {
   local lock="$1" token
-  mkdir "$lock" 2>/dev/null || return 1
-  if ! mkdir "$lock/.claim" 2>/dev/null; then
-    rmdir "$lock" 2>/dev/null   # a breaker's claim keeps the directory non-empty, so this removes only ours
+  adb_mkdir_excl "$lock" || return 1
+  if ! adb_mkdir_excl "$lock/.claim"; then
+    adb_rmdir_excl "$lock"   # a breaker's claim keeps the directory non-empty, so this removes only ours
     return 1
   fi
   if [ -e "$lock/owner" ]; then   # take-owner-present: a breaker claimed and published first
-    rmdir "$lock/.claim" 2>/dev/null
+    adb_rmdir_excl "$lock/.claim"
     return 1
   fi
   token="$$ $(date +%s 2>/dev/null)"
   # THE OWNER FILE IS THE LOCK, so a write that fails is an acquisition that failed; unchecked, the
   # directory was left behind with no token and refused every later run. (PR review)
   if ! _adb_publish_owner "$lock" "$token"; then
-    rmdir "$lock/.claim" 2>/dev/null
-    rmdir "$lock" 2>/dev/null
+    adb_rmdir_excl "$lock/.claim"
+    adb_rmdir_excl "$lock"
     return 1
   fi
-  rmdir "$lock/.claim" 2>/dev/null
+  adb_rmdir_excl "$lock/.claim"
   _ADB_LOCK_TOKEN="$token"
   return 0
 }
@@ -663,16 +663,16 @@ adb_update_lock() {
   # the record is re-read under it — anything but what was judged stale means someone got there
   # first. A breaker killed while holding the claim leaves the lock refusing until it is removed,
   # which the callers' refusal already names. (PR review)
-  mkdir "$lock/.claim" 2>/dev/null || return 1   # break-claim-held
+  adb_mkdir_excl "$lock/.claim" || return 1   # break-claim-held
   local _now="" token
   [ ! -e "$lock/owner" ] || _now="$(cat "$lock/owner" 2>/dev/null)" || _now=" unreadable"
   if [ "$_now" != "$_seen" ]; then
-    rmdir "$lock/.claim" 2>/dev/null
+    adb_rmdir_excl "$lock/.claim"
     return 1   # stale-claim-mismatch
   fi
   token="$$ $(date +%s 2>/dev/null)"
-  _adb_publish_owner "$lock" "$token" || { rmdir "$lock/.claim" 2>/dev/null; return 1; }
-  rmdir "$lock/.claim" 2>/dev/null
+  _adb_publish_owner "$lock" "$token" || { adb_rmdir_excl "$lock/.claim"; return 1; }
+  adb_rmdir_excl "$lock/.claim"
   _ADB_LOCK_TOKEN="$token"
   return 0
 }
@@ -695,7 +695,7 @@ adb_update_unlock() {
   [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable
   [ "$_owner" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
   rm -f "$lock/owner" 2>/dev/null
-  rmdir "$lock" 2>/dev/null
+  adb_rmdir_excl "$lock"
   # THE TOKEN IS CLEARED ONLY WHEN THE LOCK IS ACTUALLY GONE. It used to be cleared FIRST, so a
   # removal defeated by an ACL or an immutable flag left the directory standing while the run
   # reported a clean release — and every later install and uninstall was refused until the stale
@@ -742,7 +742,7 @@ _ADB_SIGNAL_PENDING="${_ADB_SIGNAL_PENDING:-}"
 adb_settings_lock_take() {
   _ADB_SETTINGS_LOCK="$(adb_settings_lock_path "$HOME")"
   adb_update_lock "$_ADB_SETTINGS_LOCK" || { _ADB_SETTINGS_LOCK=""; return 1; }
-  _adb_arm_lock_traps
+  _adb_arm_lock_traps   # lock-traps-armed
   return 0
 }
 
@@ -893,7 +893,12 @@ adb_claude_cli_version() {
   fi
   while IFS= read -r bin; do
     [ -n "$bin" ] || continue
+    # THE FIRST CANDIDATE THAT EXISTS DECIDES, exactly as the PATH binary does above. Continuing past
+    # an existing-but-unprobeable candidate applied the fragment on a lower-priority binary's version,
+    # while the one a session resolves had reported nothing at all. (PR review)
+    [ -e "$bin" ] || [ -L "$bin" ] || continue
     _adb_claude_cli_probe "$bin" && return 0
+    return 1   # first-candidate-decides
   done <<EOF
 $(adb_claude_cli_candidates)
 EOF
@@ -968,7 +973,7 @@ adb_claude_settings_disposition() {
     *) return 20 ;;   # receipt-unresolvable
   esac
   line="$(grep -m1 '^disposition[[:space:]]' "$receipt" 2>/dev/null)"; grc=$?
-  [ "$grc" -le 1 ] || return 20
+  [ "$grc" -le 1 ] || return 20   # receipt-read-status
   # A RECEIPT THAT EXISTS BUT CANNOT BE CLASSIFIED IS DAMAGED, NOT ABSENT. `none` means "nobody has
   # written one", and mapping a missing or unrecognised `disposition` line onto it had the same
   # ending as the unreadable case: the row readers answered `[]`, uninstall pruned nothing,
@@ -1061,19 +1066,7 @@ _adb_claude_settings_rows_complete() {
       # duplicated survivors, and uninstall removed them and deleted the receipt, stranding the key
       # that was actually gone. (PR review)
       _have="$(printf '%s' "$owned" | jq '[.[].p] | unique | length' 2>/dev/null)" || return 25   # distinct-leaf-paths
-      if [ "$_needs_rows" -eq 1 ]; then
-        [ "$_want" -gt 0 ] || return 23   # installed-count-zero
-      else
-        [ "$_want" -gt 0 ] || return 0    # count-rowless-skip-ok
-      fi
-      # EXACTLY, counted both ways. The renderer writes each leaf once and counts every row it writes,
-      # retired ones included. Distinct paths short of the header are a lost row; validated ROWS beyond it
-      # are a row nobody wrote — a surplus path, or a duplicate whose value the removal's first-match
-      # lookup would trust over the real one — and uninstall would delete whatever live value it names.
-      # (PR review)
-      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
-      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # validated-row-count
-      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
+
       # A COUNTED RECORD'S DIGEST IS PART OF THE RECORD. The renderer writes a real 64-hex digest for
       # `installed` and either that or `-` for a skip, so a counted receipt whose `payload` line is missing,
       # malformed, or `-` under `installed` is damaged — read as "unavailable", it skipped the exact pair
@@ -1086,6 +1079,46 @@ _adb_claude_settings_rows_complete() {
         -) [ "$disp" != installed ] || return 21 ;;   # counted-installed-no-digest
         *) adb_claude_settings_payload_digest "$receipt" >/dev/null 2>&1 || return 21 ;;   # counted-digest-malformed
       esac
+      if [ "$_want" -eq 0 ]; then   # zero-count-branch
+        # ZERO OWNS NOTHING, AND THE ROWS MUST SAY SO. A row under `leaves 0` is damage whatever the
+        # disposition: completeness used to accept a rowless skip on the header alone, so a damaged
+        # receipt carrying `leaf ["operator"] "keep"` passed here and uninstall deleted that live
+        # operator setting on the strength of the row. (PR review)
+        _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # zero-count-row-count
+        [ "$_nrow" -eq 0 ] || return 23   # zero-count-has-rows
+        # ...AND AN `installed` ZERO IS ONLY LEGITIMATE AGAINST A PAYLOAD THAT SHIPS NO LEAVES — the
+        # retirement of the last one. Refusing it unconditionally would make that future record
+        # permanently damaged to every reader; accepting it without the payload would restore the
+        # rowless-installed hole this check exists for, so the digest must still name this payload.
+        # (PR review)
+        if [ "$_needs_rows" -eq 1 ]; then
+          [ -n "$payload" ] && [ -s "$payload" ] || return 23   # installed-zero-no-payload
+          # THE SAME RE-READ RULE AS THE COUNTED BRANCH BELOW: the shape check above already proved an
+          # `installed` receipt carries a real digest, so a failed read here is this run's failure and
+          # answers 25 — as an empty string it read as "recorded against another payload" and reported
+          # damage it never established. (PR review)
+          local _zrdig _zpdig _zship _zsrc _zrdrc
+          _zrdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)"; _zrdrc=$?
+          [ "$_zrdrc" -eq 0 ] || return 25   # zero-digest-reread-failed
+          _zpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _zpdig=""
+          [ -n "$_zrdig" ] && [ "$_zrdig" = "$_zpdig" ] || return 23   # installed-zero-other-payload
+          # A PAYLOAD THAT SHIPS NOTHING ANSWERS 1 WITH NO OUTPUT; only a reader that could not run
+          # at all (no jq) is uncertainty. Reading 1 as a failure refused the one record this arm
+          # exists to accept. (PR review)
+          _zship="$(adb_claude_settings_leaves "$payload" 2>/dev/null)"; _zsrc=$?
+          [ "$_zsrc" -le 1 ] || return 2   # installed-zero-payload-unreadable
+          [ -z "$(printf '%s' "$_zship" | tr -d '[:space:]')" ] || return 23   # installed-zero-ships-leaves
+        fi
+        return 0   # zero-count-complete
+      fi
+      # EXACTLY, counted both ways. The renderer writes each leaf once and counts every row it writes,
+      # retired ones included. Distinct paths short of the header are a lost row; validated ROWS beyond it
+      # are a row nobody wrote — a surplus path, or a duplicate whose value the removal's first-match
+      # lookup would trust over the real one — and uninstall would delete whatever live value it names.
+      # (PR review)
+      [ "$_have" -ge "$_want" ] || return 23   # rows-short-of-count
+      _nrow="$(printf '%s' "$owned" | jq 'length' 2>/dev/null)" || return 25   # validated-row-count
+      [ "$_nrow" -le "$_want" ] || return 21   # rows-beyond-count
       # ...AND, WHILE THE DIGEST STILL NAMES THIS PAYLOAD, THE RIGHT PATHS. A count cannot tell a missing
       # leaf from one replaced by a different valid path: four distinct rows under `leaves 4` passed with
       # a shipped key absent, uninstall removed the other three and deleted the receipt, and the omitted
@@ -1093,13 +1126,28 @@ _adb_claude_settings_rows_complete() {
       # recorded set can be checked; when the digest differs that payload is gone, and the count is all
       # anyone can verify. An unhashable payload is "cannot verify" here, not an error. (PR review)
       if [ -n "$payload" ] && [ -s "$payload" ]; then
-        local _crdig _cpdig _cship _crec
-        _crdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)" || _crdig=""
+        local _crdig _cpdig _cship _crec _crdrc
+        # THE DIGEST WAS ALREADY PROVED PRESENT AND WELL-FORMED ABOVE, so a FAILED re-read here is this
+        # run's failure, not a receipt without a digest. Left as empty, it skipped the pair comparison
+        # and a substituted path/value under the right count passed as complete. `-` is the renderer's
+        # own sentinel for a skip that names no payload, and is the one legitimate empty. (PR review)
+        if [ "$_rawdig" = "-" ]; then
+          _crdig=""
+        else
+          _crdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)"; _crdrc=$?
+          [ "$_crdrc" -eq 0 ] || return 25   # counted-digest-reread-failed
+        fi
         _cpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _cpdig=""
         if [ -n "$_crdig" ] && [ "$_crdig" = "$_cpdig" ]; then
           _cship="$(adb_claude_settings_leaves "$payload" | jq -cs 'sort' 2>/dev/null)" || return 2
-          _crec="$(printf '%s' "$owned" | jq -c '[.[].p] | unique | sort' 2>/dev/null)" || return 2
-          [ "$(jq -n --argjson s "$_cship" --argjson r "$_crec" '($s - $r) | length' 2>/dev/null)" = "0" ] \
+          # THE RECORDED HALF IS RECEIPT-SIDE, so a jq failure reading it is 25. As 2 it was payload
+          # uncertainty, which `unwire_settings` proceeds on — and removal then deleted the surviving
+          # rows and the receipt while this check had answered nothing. (PR review)
+          _crec="$(printf '%s' "$owned" | jq -c '[.[].p] | unique | sort' 2>/dev/null)" || return 25   # recorded-paths-unreadable
+          local _cdiff _cdrc
+          _cdiff="$(jq -n --argjson s "$_cship" --argjson r "$_crec" '($s - $r) | length' 2>/dev/null)"; _cdrc=$?
+          [ "$_cdrc" -eq 0 ] || return 25   # identity-diff-unreadable
+          [ "$_cdiff" = "0" ] \
             || return 23   # identity-short-of-payload
           # ...AND EXACTLY ITS PATH/VALUE PAIRS. Paths alone let a receipt whose header was raised to match
           # carry an unrelated live key, or record a value the payload never shipped — and removal deletes a
@@ -1109,6 +1157,10 @@ _adb_claude_settings_rows_complete() {
       fi
       return 0 ;;
     1) ;;   # no count recorded: judged below, against the payload, as before
+    # A HEADER THIS RUN COULD NOT READ IS 25, NOT 20. `unwire_settings` proceeds on 20 because the
+    # removal merge refuses an unreadable receipt — but `--remove` never reads the leaf count, so it
+    # removed the rows it could read and deleted the record, stranding whatever it could not. (PR review)
+    20) return 25 ;;   # leaf-count-unreadable
     *) return "$_wrc" ;;
   esac
   # A DUPLICATE PATH IS DAMAGE WHATEVER THE DIGEST. No change to the payload produces two rows for one
@@ -1308,50 +1360,41 @@ adb_claude_settings_payload_digest() {
 # not remove.
 # Usage: adb_claude_settings_receipt_leaves <receipt>
 adb_claude_settings_receipt_leaves() {
-  local receipt="$1" line rest p v tab
-  tab="$(printf '\t')"
+  local receipt="$1" _rbody _jrows _jrc
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
-  # THE OPEN IS CHECKED; THE LOOP'S OWN STATUS IS NOT. `done < "$receipt" || true` absorbed both,
-  # so a receipt that could not be OPENED ran the body zero times and still returned success — this
-  # reader answered "no rows", the merge then uninstalled with no owned leaves and deleted the
-  # receipt, and every matching sandbox key stayed installed with nothing recording it. The
-  # `|| true` is still required for the loop itself, since `read` reports non-zero at EOF, so the
-  # two are separated rather than merged. (PR review)
+  # THE OPEN IS CHECKED; a read that failed must never arrive as "no rows". `done < "$receipt"
+  # || true` absorbed both, so a receipt that could not be OPENED ran the body zero times and still
+  # returned success — this reader answered "no rows", the merge then uninstalled with no owned
+  # leaves and deleted the receipt, and every matching sandbox key stayed installed with nothing
+  # recording it. (PR review)
   _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-leaves
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "leaf$tab"*) ;; *) continue ;; esac
-    rest="${line#leaf$tab}"
-    p="${rest%%$tab*}"
-    v="${rest#*$tab}"
-    [ "$p" != "$rest" ] || continue
-    # `length > 0` IS LOAD-BEARING, not defensive tidiness: `all(.[]; …)` is vacuously TRUE for an
-    # empty array, so a hand-edited `leaf<TAB>[]<TAB>…` row passed validation, the merge read it as
-    # ownership of the JSON ROOT, and `delpaths([[]])` replaced the entire settings document with
-    # `null` — destroying every unrelated key during an ordinary uninstall.
-    # `jq -e` RETURNS 1 FOR FALSE AND 5 FOR AN ERROR, and treating both as "malformed row" silently
-    # dropped a perfectly good row when jq died transiently — the merge then owned fewer leaves,
-    # uninstall left the live key in place, and the receipt was deleted anyway. Skip a row the
-    # predicate rejects; refuse the whole read when the predicate could not be evaluated.
-    printf '%s' "$p" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
-    # `type`, NOT `.` — the filter's own output is the `-e` predicate, so decoding the value and
-    # testing IT makes a legitimate `false` or `null` leaf indistinguishable from a malformed row.
-    # Probed on jq-1.7.1: `printf false | jq -e .` exits **1**, exactly like a rejected row. The
-    # row was then discarded, uninstall left that installer-written key in place while deleting the
-    # receipt, and the ownership evidence was gone for good. `type` returns a non-empty string for
-    # every JSON value, so it is truthy for all of them and 1 cannot arise; 5 still means the text
-    # did not parse. (PR review)
-    printf '%s' "$v" | jq -e 'type' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
-    printf '%s\t%s\n' "$p" "$v"
-    # `|| [ -n "$line" ]`: a receipt truncated mid-write has no final newline, and a bare `read`
-    # returns non-zero on that last partial line WITHOUT running the body — silently dropping the
-    # leaf, so uninstall would leave a key it owns behind and the retirement prune would never see
-    # it. The validation above still governs whether the partial line is usable.
-  done <<EOF || true
-$_rbody
-EOF
+  # ONE jq FOR THE WHOLE RECEIPT, not two or three per row (#471). Same three tests, same order.
+  # Four rules, each load-bearing:
+  #   * `-n` with `[inputs][]` — without BOTH, jq evaluates once per input line and its status
+  #     reports only the LAST, so an unparseable row followed by a good one is swallowed; without
+  #     `-n` alone the first line never reaches `inputs`. D110.
+  #   * `length > 0` — `all(.[]; …)` is vacuously true for `[]`, and `delpaths([[]])` replaces the
+  #     whole settings document with `null`.
+  #   * `select` for a row the predicate REJECTS, `error` for one it cannot EVALUATE: the first is
+  #     skipped, the second refuses the whole read.
+  #   * the value is PARSED and discarded, never tested for truth — `false` and `null` are legal
+  #     leaf values, and `jq -e .` exits 1 on both, exactly like a rejected row.
+  _jrows="$(printf '%s\n' "$_rbody" | jq -R -n -r '[inputs][]   # leaf-one-evaluation
+      | select(startswith("leaf\t"))
+      | ltrimstr("leaf\t") as $rest
+      | ($rest | index("\t")) as $i
+      | select($i != null)
+      | $rest[:$i] as $p
+      | $rest[$i+1:] as $v
+      | (try ($p | fromjson) catch error("receipt: leaf path is not JSON")) as $pj
+      | select(($pj | type) == "array" and ($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # leaf-path-predicate
+      | (try ($v | fromjson) catch error("receipt: leaf value is not JSON"))
+      | ($p + "\t" + $v)
+    ' 2>/dev/null)"; _jrc=$?
+  [ "$_jrc" -eq 0 ] || return 20   # row-predicate-status
+  [ -n "$_jrows" ] || return 0
+  printf '%s\n' "$_jrows"
 }
 
 # The CONTAINER paths a receipt records — the objects this install had to create on its way to a
@@ -1361,27 +1404,24 @@ EOF
 # document root, and `delpaths([[]])` replaces the whole settings file with null.
 # Usage: adb_claude_settings_receipt_containers <receipt>
 adb_claude_settings_receipt_containers() {
-  local receipt="$1" line rest tab _rbody
-  tab="$(printf '\t')"
+  local receipt="$1" _rbody _jrows _jrc
   [ -f "$receipt" ] || return 0
   command -v jq >/dev/null 2>&1 || return 2
-  # THE OPEN IS CHECKED; THE LOOP'S OWN STATUS IS NOT. `done < "$receipt" || true` absorbed both,
-  # so a receipt that could not be OPENED ran the body zero times and still returned success — this
-  # reader answered "no rows", the merge then uninstalled with no owned leaves and deleted the
-  # receipt, and every matching sandbox key stayed installed with nothing recording it. The
-  # `|| true` is still required for the loop itself, since `read` reports non-zero at EOF, so the
-  # two are separated rather than merged. (PR review)
   _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-containers
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in "container$tab"*) ;; *) continue ;; esac
-    rest="${line#container$tab}"
-    rest="${rest%%$tab*}"
-    printf '%s' "$rest" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1
-    case $? in 0) ;; 1) continue ;; *) return 20 ;; esac
-    printf '%s\n' "$rest"
-  done <<EOF || true
-$_rbody
-EOF
+  # One jq for the whole receipt, and the same predicate, the same skip-versus-refuse split and the
+  # same empty-path reason as the leaf reader above (#471). A container row carries no value field,
+  # so a row with no second tab is the whole path rather than a malformed row.
+  _jrows="$(printf '%s\n' "$_rbody" | jq -R -n -r '[inputs][]   # container-one-evaluation
+      | select(startswith("container\t"))
+      | ltrimstr("container\t") as $rest
+      | (($rest | index("\t")) as $i | if $i == null then $rest else $rest[:$i] end) as $p
+      | (try ($p | fromjson) catch error("receipt: container path is not JSON")) as $pj
+      | select(($pj | type) == "array" and ($pj | length) > 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate
+      | $p
+    ' 2>/dev/null)"; _jrc=$?
+  [ "$_jrc" -eq 0 ] || return 20   # container-predicate-status
+  [ -n "$_jrows" ] || return 0
+  printf '%s\n' "$_jrows"
 }
 
 _adb_claude_settings_created_json() {
@@ -1464,7 +1504,7 @@ adb_claude_settings_merge() {
   # 20, NOT 1: an unreadable RECEIPT and an unparseable SETTINGS file are different failures with
   # different remedies, and one message for both sent the operator to edit the wrong file on the
   # only path that can strand keys.
-  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
+  owned="$(_adb_claude_settings_owned_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }   # merge-owned-rows
   created="$(_adb_claude_settings_created_json "$receipt")" || { rc=$?; _adb_merge_cleanup "$work_empty"; return "$rc"; }
   # ASKED HERE, while `$payload` is still the fragment — the `--remove` swap below replaces it with
   # an empty document — and NOT asked at all when removing. Removal ignores the payload entirely by
@@ -1534,7 +1574,7 @@ adb_claude_settings_merge() {
           | ( .settings | anc_ok($p) ) as $ok
           | if ($ok | not) then .
             elif ( .settings | present($p) | not ) then .
-            elif ( .settings | getpath($p) ) == $rec.v then
+            elif ( .settings | getpath($p) ) == $rec.v then   # remove-pass-value-match
               .settings = (.settings | delpaths([$p])) | .pruned += [$p]
             else .kept += [$p]
             end )
@@ -3962,6 +4002,29 @@ adb_age_secs() {
   age="$((now - m))"
   [ "$age" -lt 0 ] && return 0
   printf '%s' "$age"
+}
+
+# adb_mkdir_excl <dir> — create <dir> as a mutex. Returns 0 only for the ONE caller that now holds it.
+# `mkdir` alone does not promise that: Ubuntu 26.04's uutils mkdir reports success to more than one
+# of several processes creating the same path at once (D105). The exclusive step is therefore a
+# noclobber (O_EXCL) open that bash performs itself, of $ADB_EXCL_MARK inside the new directory. The
+# marker stays while the mutex is held; release with adb_rmdir_excl once everything else is removed.
+# A marker that cannot be written and does not exist means no caller holds the directory, so it is
+# removed rather than left empty, where a later take would find it held forever.
+ADB_EXCL_MARK=".adb-excl"
+adb_mkdir_excl() {
+  mkdir "$1" 2>/dev/null || return 1   # adb-allow: bare-mkdir
+  ( set -C; : > "$1/$ADB_EXCL_MARK" ) 2>/dev/null && return 0
+  [ -e "$1/$ADB_EXCL_MARK" ] || rmdir "$1" 2>/dev/null
+  return 1
+}
+
+# adb_rmdir_excl <dir> — remove a mutex directory taken with adb_mkdir_excl. The marker goes LAST, so
+# no second caller can take the path while the holder's other contents are still inside. Returns
+# rmdir's status: non-zero when the directory still holds something, including a successor's marker.
+adb_rmdir_excl() {
+  rm -f "$1/$ADB_EXCL_MARK" 2>/dev/null
+  rmdir "$1" 2>/dev/null
 }
 
 # --- untrusted third-party text (#214) ---------------------------------------

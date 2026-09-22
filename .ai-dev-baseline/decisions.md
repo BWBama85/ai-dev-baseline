@@ -8048,3 +8048,270 @@ survive is the part a later reader needs.
              authenticating the file with a key the operator cannot recompute, which protects nothing
              against a user who can already edit the settings the receipt describes.
 - baseline-issue: n/a
+## D103 — a mutation harness may score each row against its own block, and the schedule scores it against the whole suite
+- date:      2026-09-16
+- category:  project-delta
+- unknown:   `check_mutation_pool` runs the WHOLE suite once per mutant (D68). On PR #463 the
+             settings-fragment suite grew to 111 sections and 237 rows, and its harness cost
+             2.3-3.0 hours per local round and 160 minutes in CI (D101). Profiling showed the suite
+             is 74 s spread over 111 sections, 90 of them under a second, so almost all of each
+             mutant's run exercises assertions that cannot see its defect.
+- decision:  `check-lib.sh` gains blocks and per-test rows (#468), the technique Stryker calls
+             `perTest`. A suite declares `if check_block <id> [<dep>…]; then … fi` at the start of a
+             line and ends the last block with `check_blocks_done`; `ADB_CHECK_BLOCK` selects blocks
+             and their dependency closure. `check_row` names the file it mutates and the block(s)
+             that hold its witness, and `check_mutation_rows` scores them. Three rules replace the
+             safety a whole-suite run gave for free:
+             **1. Declarations are proven before anything runs.** A row whose literal is not in its
+             target exactly once, whose witness is absent from its block's source, or whose block is
+             undeclared is refused before any copy is built; the count is taken again on the copy.
+             **2. Dependencies are trusted only once measured.** One unmutated full run records each
+             block's assertion count, and each selection must pass unmutated with the same count, or
+             every row on it fails as "control failed". An under-declared dependency is a red, never
+             a GREEN.
+             **3. The schedule runs the old question.** `mutation-nightly.yml` sets
+             `ADB_MUTATION_FULL_SUITE=1`, scoring every row against the whole suite, which also
+             catches a dependency the control could not see (one that changes no count). Its timeout
+             is 240 minutes: D101 observed 155-160 minutes for 230 rows at full width, and 240 is
+             that figure plus headroom, not a measurement.
+             This amends D68 only in WHERE a row runs: the verdict taxonomy is unchanged and now
+             lives in one scorer (`_check_mut_score`) shared by both pools. D91's gate is unchanged.
+             `check-settings-fragment.sh` is the first adopter: 111 blocks. Its dependencies were
+             derived statically (the functions and variables a block uses, and for each `$work` path
+             it reads, the nearest earlier block that WRITES that path) and then verified: every block
+             run alone passes with its full-run assertion count. Depending on the nearest earlier
+             MENTION of a path instead was also correct but chained readers to readers: 15.3 blocks
+             per row against 111, and 1h59m for the harness, where the writer rule took 21m34s for all
+             237 rows red on their own witness (2026-09-16, 10-core macOS, both runs under another
+             session's load at load average 16-26; round 48's selfcheck had spent 9710 s on the same
+             step). Adopting this also refused seven existing rows whose literal occurred more than
+             once in its target and had worked only because the first match was the intended one;
+             each now anchors on a marker comment. Other harnesses stay on `check_mutation_pool`
+             until one costs enough to convert.
+             #468 asked for an order-of-magnitude cut, and that is NOT demonstrated: 21m34s standalone
+             against 9710 s inside a contended selfcheck is about 7.5x on unlike conditions, and a
+             whole selfcheck went from 177m37s to 82m02s (2.2x), bounded now by the unconverted
+             `pattern-ledger-mutation` and `session-context-mutation`.
+- placement: `scripts/check-lib.sh`, `scripts/check-block-rows.sh` (new), `scripts/check-settings-fragment.sh`,
+             `.github/workflows/mutation-nightly.yml`, `scripts/check-mutation-gate.sh`, `CONTRIBUTING.md`
+- reason:    The cost was structural (rows × suite), so no per-row tuning could fix it; a selection
+             whose correctness is measured rather than assumed keeps D68's "red on its own witness"
+             guarantee per PR, and the nightly keeps the whole-suite one.
+- baseline-issue: n/a
+
+## D104 — DEVIATION: #468 branches from #463's head, not from `main`
+- date:          2026-09-16
+- category:      deviation
+- baseline-rule: `git-and-prs.md` — "Branch off the default branch, not off the current feature branch."
+- conflict:      #468's first adopter and its measurement are PR #463's settings-fragment suite,
+                 which exists only on #463's branch; that PR's review loop is paused until the
+                 harness makes each round affordable.
+- scope:         branch `issue-468-mutation-harnesses-run-only-the-assertio`; its PR is opened against
+                 `issue-248-least-privilege-sandbox-settings`, and retargets to `main` once #463 merges.
+- reason:        Owner decision 2026-09-16 ("Full #468, stacked on #463"). Building on `main` would
+                 mean converting a suite that does not exist there, or re-doing the conversion after
+                 #463 merged, while #463's rounds kept costing ~3 hours each.
+
+## D105 — `mkdir` is not a mutex on Ubuntu 26.04; every directory lock takes `adb_mkdir_excl`
+- date:      2026-09-17
+- category:  project-delta
+- unknown:   #473: the pattern ledger's 25-writer and 20-writer contention cases failed intermittently
+             on the `ubuntu-26.04` CI runner with rc 21 (a writer's row missing after its own insert
+             under a held lock), and never reproduced on macOS (160 local runs, 0 failures). Every lock in
+             this repo that guards a critical section with a directory assumed `mkdir` succeeds for
+             exactly one caller.
+- decision:  Root cause, probed on the `ubuntu:26.04` image (the runner's), whose coreutils are
+             uutils 0.8.0 (`coreutils-from-uutils`): with 40 processes running `mkdir` on one path,
+             more than one reported success in 7 of 50 rounds; GNU `gnumkdir` in the same container
+             did so in 0 of 50, and so did `ln`, a `mv` rename contest and bash's noclobber open. The
+             reproducer (25 first-time ledger writers, 2 CPUs) lost rows in 30 of 30 runs there.
+             Uutils `mkdir` still refuses a directory that already exists; only concurrent creation
+             is affected.
+             The shared primitive `adb_mkdir_excl` (`common.sh`) keeps the directory but makes the
+             take a noclobber (O_EXCL) open of a marker inside it, which bash performs itself;
+             `adb_rmdir_excl` removes the marker last. Every directory mutex on `main` uses it: the
+             pattern ledger's write lock, `implement-lib.sh`'s admission lock and claim mutex, and
+             `bin/baseline`'s update lock. `check_mkdir_shim` (`check-lib.sh`) writes a `mkdir` that
+             reports success for an existing directory, which makes the race certain on any host, and
+             each site has a case run behind it.
+             Numbered D105 because D95-D104 are taken by decisions on the unmerged branches of PR
+             #463 and PR #476.
+- placement: `scripts/lib/common.sh`, `scripts/lib/pattern-ledger.sh`, `scripts/lib/implement-lib.sh`,
+             `bin/baseline`, `scripts/check-lib.sh`, and the suites for each
+- reason:    One primitive for one defect class; the directory form, its visible failure and every
+             lock's existing release and stale-break logic are unchanged.
+- baseline-issue: #473
+
+## D106 — A read that fails while the reads around it succeed is outside the receipt's threat model
+- date:      2026-09-18
+- category:  project-delta
+- unknown:   PR #463's review rounds 49-51 were driven by one class, `status-swallowed`: 7 of their 10
+             findings had the same trigger — a read of the ownership receipt that FAILS at one point
+             in a run while the reads before and after it SUCCEED. Each was fixed and swept, and the
+             next round found another site of it; three of the resulting tests could only be pinned by
+             inspection, because a fixture can make a failure permanent but not transient. Nothing
+             recorded whether the receipt is meant to withstand that, so the class had no end state —
+             the shape D102 recorded for deliberate tampering.
+- decision:  Owner decision 2026-09-18. A TRANSIENT read failure — one read of the receipt, the
+             settings document or the payload failing between successful reads of the same file within
+             one run — is out of scope. A review finding whose only trigger is that premise is declined
+             citing this decision rather than fixed. PERSISTENT failures stay fully in scope and keep every
+             check already shipped: an unreadable file, an unresolvable link, a malformed or damaged
+             record, a missing `jq`, and any failure a fixture can reproduce by making it permanent. The
+             transient-read fixes already merged in rounds 49-51 stay; this decision stops the class, it
+             does not unwind it.
+- placement: this entry, and the pointer in `CLAUDE.md` beside D102's
+- reason:    The receipt's reads happen microseconds apart in one process over a file only this installer
+             writes under its own lock; a failure that vanishes between them is not an event this design
+             can observe, and each fix for it only moved the window. Persistent failures are observable,
+             testable, and are where every real incident in this history came from.
+- baseline-issue: n/a
+
+## D107 — The fixture copier omits `.git` instead of copying and deleting it
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   #469. `check_copy_worktree` built every mutation fixture with `cp -R .` followed by
+             `rm -rf "$2/.git"`, copying the repository's whole history and discarding it on
+             arrival. Measured 2026-09-21 on the maintainer's macOS machine: `.git` is 23 MB of a
+             33 MB tree, and a copy cost 0.57-0.65s against 0.20-0.23s without it. A mutation
+             harness pays that once per row, plus once per block control. The issue proposed
+             `git worktree add`, which the copier's own contract forbids.
+- decision:  The copy iterates the source's top-level entries and skips the one named `.git`,
+             with the same `cp -R` invocation per entry, so dotfiles, symlinks and modes copy
+             exactly as before on BSD and GNU. `git worktree add` and `git archive` are both
+             REFUSED, for reasons that are NOT the same and must not be merged. BOTH serve a
+             COMMIT, so both lose the uncommitted and untracked content these fixtures exist to
+             test, and several call sites copy a source that is not a repository at all
+             (`check-fact-drift.sh` copies its own pristine copy). Only `git worktree` ALSO leaves
+             the copy a repository and writes admin state into the tracked repo every suite here
+             promises not to touch. An extracted `git archive` does NOT become a repository —
+             probed 2026-09-21: `git archive HEAD | tar -x` yields no `.git` and `git rev-parse`
+             exits 128. An earlier draft of this entry, and of the copier's header, claimed
+             otherwise; the declared reviewer caught it.
+             The trailing `rm -rf` is REMOVED rather than kept as a belt: a second defence that
+             cleaned up after a broken skip would make the skip unobservable, and the guard's
+             whole value is that it can be seen failing.
+- placement: `scripts/check-lib.sh`; assertions in `scripts/check-block-rows.sh`
+- reason:    One mechanism per defect, and it is the mechanism the acceptance criterion names.
+- baseline-issue: #469
+
+## D108 — A mutation row is gated on its own target, and the nightly is what makes that safe
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   #470. `mutation-gate.sh` answered "has this harness anything new to say?" only at
+             STEP granularity, so a change to one line of `install.sh` re-ran all 255
+             `check-settings-fragment` rows (the count at the parent commit; this change takes it
+             to 262), including the 95 that only mutate `common.sh` and the 37 that only mutate
+             `bin/baseline`. The issue did not say where the per-row
+             input mapping lives, nor what a row's input set is beyond "its target file".
+- decision:  A row's input set is its own target PLUS every declared input of the step that NO
+             row targets. The registry (`selfcheck.sh --list`, field 5) stays the one home; the
+             row axis only subdivides the inputs rows actually discriminate, and a shared input —
+             the suite, `check-lib.sh`, a library no row mutates — still runs every row. The
+             decision is `mutation-gate.sh rows`, asked ONCE for the whole table.
+             THIS IS AN APPROXIMATION, deliberately the same one the step-level gate already
+             makes: a row whose block EXECUTES another row's target can have its verdict changed
+             by a diff that gates it out. `.github/workflows/mutation-nightly.yml` is the backstop
+             for exactly that class and runs every row unconditionally against `main` with
+             `ADB_MUTATION_RUN_ALL=1`, which is what #470's own acceptance criterion names.
+             A row whose target is NOT among the step's declared inputs means the declaration is
+             narrower than the harness (`declared-inputs-incomplete`), so gating is refused for
+             the WHOLE step and every row runs, naming the target.
+             CORRECTED AFTER REVIEW: subtracting every row target from the declared inputs also
+             removed `scripts/lib/common.sh`, which rows mutate AND every other target SOURCES —
+             so a change to it ran only its own rows and gated the `bin/baseline` and `install.sh`
+             rows whose blocks execute it. That is not the bounded approximation above; it is
+             systematic. The suite, `scripts/check-lib.sh` and `scripts/lib/common.sh` are
+             therefore shared even when rows target them — not a new table, but the set
+             `check-mutation-gate.sh` already pins as "the two files every harness sources", plus
+             the harness itself.
+- placement: `scripts/mutation-gate.sh` (`rows`, `gate_registry_inputs`), `scripts/check-lib.sh`
+             (`check_mutation_rows`); guards in `scripts/check-mutation-gate.sh` and
+             `scripts/check-block-rows.sh`
+- reason:    Any narrower rule is unsound without per-block input declarations, which nothing has;
+             any wider rule gates nothing. The imprecision is bounded, stated, and already has a
+             backstop the repo runs daily.
+- baseline-issue: #470
+
+## D109 — DEVIATION-free rejection of a second JSON engine; batching is the whole of #471
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   #471 asked for three things and left the third explicitly open: batch adjacent `jq`
+             calls, drop subshells from hot validators, and EVALUATE `gojq`/`jaq`, noting a second
+             JSON engine is a new third-party dependency for every adopter and "may be rejected on
+             those grounds alone".
+- decision:  `gojq` and `jaq` are REJECTED, on compatibility rather than on dependency grounds
+             alone — the dependency objection stands on its own and did not need to be the reason.
+             * gojq: its README (fetched 2026-09-21; context7 has no gojq entry) states "gojq does
+               not keep the order of object keys" and lists `--sort-keys, -S` among unsupported
+               flags. This repo uses `jq -S` at `scripts/check-settings-fragment.sh:428` and
+               `:3379` (line numbers as of this commit), and `adb_claude_settings_merge` writes an operator-readable
+               `~/.claude/settings.json` whose key order an operator diffs.
+             * jaq: its manual (fetched 2026-09-21) documents semantics diverging from jq for
+               division by zero, NaN rendering, slicing `null`, multi-file slurping and
+               `reduce`/`foreach` over multi-output filters, and claims compatibility "in most
+               cases" — which is not a drop-in guarantee for 1,132 call sites.
+             Neither is installed on this machine, so neither claim rests on a probe; both rest on
+             current vendor documentation, and that is stated rather than implied.
+             What SHIPPED for #471 is the batching. Exactly: the leaf reader ran the path predicate
+             on every `leaf` row and the value predicate on every row that passed it — two `jq` per
+             accepted row, one per rejected one — and the container reader ran one per `container`
+             row. Each is now ONE `jq` per call, whatever the row count.
+- placement: this entry; `scripts/lib/common.sh`
+- reason:    A drop-in replacement that is not drop-in is a defect surface across every filter in
+             the repo, and the two documented incompatibilities are load-bearing here rather than
+             theoretical.
+- baseline-issue: #471
+
+## D110 — `jq`'s exit status reports only its LAST input, so a batched validator must use `-n`
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   Batching the per-row receipt validators into one `jq` (#471) needs a row the filter
+             cannot evaluate to refuse the WHOLE read, which the per-row loop did with `jq -e`'s
+             5-versus-1. The first cut relied on jq's exit status for that and was wrong.
+- decision:  Probed on jq-1.7.1 (2026-09-21):
+             `printf 'a\nb\n' | jq -R -r 'if . == "a" then error("boom") else . end'` prints the
+             error to stderr and exits **0** — without `-n`, jq evaluates the program once per
+             input and its status reports only the last one. Both readers therefore use
+             `jq -R -n -r '[inputs][] | …'`, which makes the whole receipt ONE evaluation so any
+             row's `error` aborts it and jq exits 5. TWO further behaviour changes on malformed
+             input came with `fromjson`, both found in review and both KEPT deliberately: the
+             batched readers emit NOTHING on the refusal path, where the per-row loop left
+             already-accepted rows on stdout beside a failure code (every caller checks the status,
+             so no caller sees a difference); and a field holding TWO JSON values is refused rather
+             than read as a stream — `["a"] []` used to take its verdict from the LAST value, and a
+             leaf VALUE of `true false` was ACCEPTED outright, recording ownership of a value no
+             reader can reproduce. Both are asserted so they stay deliberate. #471 asks for
+             unchanged behaviour; these are changes, they are on malformed input only, and they are
+             named rather than folded into "performance".
+- placement: `scripts/lib/common.sh`; assertions in `scripts/check-settings-fragment.sh`
+- reason:    The defect was invisible to every existing assertion and to a differential test that
+             did not vary the position of the bad row. It is recorded because the next batching of
+             a per-item validator will meet it again.
+- baseline-issue: #471
+
+## D111 — `pattern-ledger`'s ceiling rises to 120; the harness grows without its code changing
+- date:      2026-09-21
+- category:  project-delta
+- unknown:   PR #480's `pattern-ledger` job was cancelled at its 60-minute ceiling (run
+             35667001548), 56m55s into the mutation step. The pull request touches
+             `scripts/check-lib.sh` and `scripts/lib/common.sh`, so the harness ran — but it
+             touches NONE of the code that harness exercises: `check-pattern-ledger.sh` drives
+             `check_mutation_pool`, and the diff changed only `check_mutation_rows` and
+             `check_copy_worktree`, neither of which that suite reaches (it copies with
+             `check_copy_subtrees`). So the red carried no information about the diff, and
+             re-running it would have been the lucky-green this baseline forbids.
+- decision:  `timeout-minutes` rises 60 -> 120 for the `pattern-ledger` job. The root cause is
+             that this harness's duration is a function of the LEDGER's row count, which grows
+             every time the resolver records a finding — so the job gets slower with no change to
+             the code it tests. Measured: 1932s when the job was split out (run 32889697083),
+             43m07s green on `main` the previous day (run 35623007068), 56m55s+ on the next pull
+             request. A 23% margin is not a margin for a quantity that rose 32% in a day.
+             This is the third instance of the shape D101 records for `install-guard`.
+- placement: `.github/workflows/ci.yml`
+- reason:    Raising the ceiling is the fix for THIS failure, and it is explicitly not the fix for
+             the growth. That is filed separately (#481): `check-pattern-ledger.sh` still runs the
+             WHOLE suite per mutant, where #468/D103 gave `check-settings-fragment` per-block
+             selection and cut it by an order of magnitude. Until that lands, every ceiling is
+             temporary.
+- baseline-issue: n/a

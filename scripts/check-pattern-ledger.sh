@@ -273,7 +273,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE ATOMIC RELEASE (PR #429). Restores the read-then-delete form that shipped.
   check_mut unlock-check-then-act \
-    '  rmdir "$dir" 2>/dev/null || true' \
+    '  adb_rmdir_excl "$dir" || true' \
     '  rm -rf "$dir" 2>/dev/null || true' \
     "release removed a co-resident marker"
 
@@ -1115,6 +1115,26 @@ if [ "$_landed" != 25 ]; then
 fi
 eq "$_landed" 25 \
    "25 concurrent writers creating the ledger for the FIRST time all land"
+
+# THE LOCK HOLDS WHEN `mkdir` REPORTS SUCCESS TO MORE THAN ONE CALLER (#473, D105). Ubuntu 26.04's
+# uutils mkdir does that under contention, which let several writers into the critical section; the
+# shim makes the race certain, so this fails on every run if the take is a bare `mkdir`.
+L7u="$work/uutils/first.md"
+check_mkdir_shim "$work/uutils-shim" || bad "fixture: the non-exclusive mkdir shim could not be written"
+rm -rf "$work/l7u-rc"; mkdir -p "$work/l7u-rc"
+for i in $(seq 1 25); do
+  { PATH="$work/uutils-shim:$PATH" bash "$PL" record --ledger "$L7u" --class uutilsc --site "s$i.sh" \
+      --fix "$(printf 'abce%03d' "$i")" --pr 1 --thread "U$i" >/dev/null 2>"$work/l7u-rc/err.$i"; echo "$?" > "$work/l7u-rc/rc.$i"; } &
+done
+wait
+_nz7u=""
+for i in $(seq 1 25); do
+  _r="$(cat "$work/l7u-rc/rc.$i" 2>/dev/null)"
+  [ "$_r" = 0 ] || _nz7u="${_nz7u}writer U$i rc ${_r:-?}; "
+done
+eq "$_nz7u" "" "25 first-time writers behind a non-exclusive mkdir: every writer exits 0"
+eq "$(bash "$PL" classes --ledger "$L7u" 2>/dev/null | awk -F'\t' '$2=="uutilsc"{print $1}')" 25 \
+   "25 first-time writers behind a non-exclusive mkdir all land"
 
 # THE WAIT BOUND COUNTS TIME WITHOUT PROGRESS, NOT QUEUE TIME (#449). A healthy queue drains
 # through the lock in more than the bound on a slow runner (25 first-time writers took over 30s

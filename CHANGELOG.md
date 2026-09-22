@@ -29,7 +29,6 @@ only by a published release, which is what these entries are the notes for.
   still `found` (24). The grammar and the ledger's field rules now have one home in `common.sh`.
   `/cleanup` sweeps these files by PR state, like the thread cache. The round summary gains one line
   counting classes, siblings found, and how each ended.
-
 - **The installer can write settings that are not hooks, and the first thing it writes with it is
   least privilege (#248).** `install.sh` could reach `~/.claude/settings.json` only under `.hooks`
   — `wire_hooks` nests every top-level group of `agents/claude/settings.hooks.json` beneath it, so

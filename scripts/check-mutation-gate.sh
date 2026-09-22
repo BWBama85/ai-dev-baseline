@@ -20,6 +20,12 @@
 #   4. `run`: an unknown step, a step with no inputs, and a command that is not the registry's own
 #      are each REFUSED (2) — never silently run and never silently skipped; a command that runs
 #      passes its exit status through; a SKIP exits 0 and lands in GITHUB_STEP_SUMMARY when set;
+#   4b. `rows` (#470): the same decision one axis finer. An untouched tree gates every row; a change
+#      on one target runs exactly the rows that mutate it and gates the rest; a change to an input
+#      NO row targets gates nothing. Every fail-closed shape — an unregistered suite, a row target
+#      the step does not declare, no repository, an unresolvable base — runs the whole table and
+#      says why, and empty stdin is usage rather than a decision. Every row gets a decision line on
+#      every path, so a caller can never read a missing line as an answer;
 #   5. the shipped registry: every `*-mutation` step declares inputs, and each declares its own
 #      harness script, `scripts/check-lib.sh` and `scripts/lib/common.sh` — the two files every
 #      harness sources — so a change to the shared scaffold can never be gated away;
@@ -143,6 +149,38 @@ if [ "$MODE" = mutation ]; then
     '"$p"|"$p"/*) printf' \
     '"$p"|"$p"*) printf' \
     'a sibling that merely shares a FILE input'"'"'s prefix'
+
+  # --- the PER-ROW decision (#470). Every one of these is a wrong SKIP or a lost fail-closed
+  # answer — the direction that costs coverage rather than minutes — and each is anchored on a
+  # `# row-*` marker so it names one site regardless of what is added above it.
+  check_mut rows-gate-everything \
+    'then decisions+=(run); run=$((run + 1))   # row-match' \
+    'then decisions+=(skip); run=$((run + 1))   # row-match' \
+    'the rows that mutate the changed file run'
+  check_mut rows-never-gate \
+    'else decisions+=(skip); skip=$((skip + 1)); fi' \
+    'else decisions+=(run); skip=$((skip + 1)); fi' \
+    'and a row mutating an untouched file is gated'
+  check_mut rows-shared-input-ignored \
+    'if [ -n "$hits" ]; then   # row-shared' \
+    'if false; then   # row-shared' \
+    'names the shared input that forced it'
+  check_mut rows-undeclared-target-allowed \
+    'if [ "$is_target" -eq 0 ]; then   # row-target-undeclared' \
+    'if false; then   # row-target-undeclared' \
+    'a row target outside the declared inputs fails closed'
+  check_mut rows-unregistered-suite-gated \
+    'if ! inputs="$(gate_registry_inputs "$suite" suite 2>&1)"; then   # row-registry' \
+    'if inputs="$(gate_registry_inputs "$suite" suite 2>&1)"; then   # row-registry' \
+    'naming the registry as the reason'
+  check_mut rows-override-ignored \
+    'if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-override' \
+    'if false; then   # row-override' \
+    'ADB_MUTATION_RUN_ALL → exit 12'
+  check_mut rows-empty-stdin-decides \
+    'if [ "$n" -eq 0 ]; then   # row-usage' \
+    'if false; then   # row-usage' \
+    'no rows on stdin is USAGE (2), never a decision'
   check_mutation_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
 
   # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
@@ -183,6 +221,10 @@ if [ "$MODE" = mutation ]; then
     'forces every harness'
   # Two leading spaces: the header comment mentions `schedule:` too, and the FIRST hit is the one
   # that is edited — the trigger line is the only one indented exactly so.
+  check_mut nightly-per-block \
+    "ADB_MUTATION_FULL_SUITE: '1'" \
+    "ADB_MUTATION_FULL_SUITE: '0'" \
+    'runs every mutant against the full suite'
   check_mut nightly-unscheduled \
     '  schedule:' \
     '  schedul3:' \
@@ -371,9 +413,14 @@ cp "$ROOT/scripts/selfcheck.sh" "$R/scripts/selfcheck.sh"
 # Register a stub step WITH inputs and one WITHOUT, by editing the COPY.
 printf '#!/usr/bin/env bash\necho gated-ran; exit "${STUB_RC:-0}"\n' > "$R/scripts/check-gated.sh"
 printf '#!/usr/bin/env bash\necho bare-ran\n' > "$R/scripts/check-bare.sh"
+# A ROW HARNESS too (#470): its rows mutate stub.sh and other.sh, so `check-rows.sh`,
+# `check-lib.sh` and `common.sh` are the inputs no row targets — the shared set.
+printf '#!/usr/bin/env bash\necho rows-ran\n' > "$R/scripts/check-rows.sh"
 { printf '\n'
   printf 'add gated-mutation      bash scripts/check-gated.sh --mutation\n'
   printf 'inputs gated-mutation   scripts/check-gated.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/stub.sh\n'
+  printf 'add rows-mutation       bash scripts/check-rows.sh --mutation\n'
+  printf 'inputs rows-mutation    scripts/check-rows.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/stub.sh scripts/lib/other.sh\n'
   printf 'add bare                bash scripts/check-bare.sh\n'; } > "$work/reg.frag"
 awk -v frag="$work/reg.frag" '
   /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
@@ -430,8 +477,141 @@ eq "$(cat "$work/summary.md")" "" "…and a RUN is NOT (its line names files fro
 has "$OUT" "RUN: gated-mutation" "…while the RUN line still reaches the log"
 check_git "$R" checkout -q -- scripts/lib/stub.sh
 
+# ============================== 4b. `rows` — the per-row decision (#470) ========================
+# One axis finer than `should-run`, and the same failure mode: a row wrongly gated is invisible,
+# because the step is green, the harness is green, and the mutant that would have gone red never
+# ran. So every path is driven to its answer, and every fail-closed shape is required to RUN.
+#
+# The fixture's row table mutates `scripts/lib/stub.sh` and `scripts/lib/other.sh`; the step also
+# declares `check-rows.sh`, `check-lib.sh` and `common.sh`, which NO row targets — that is the
+# shared set a change to which can gate nothing.
+ROWS_IN="$(printf 'r0\tscripts/lib/stub.sh\nr1\tscripts/lib/other.sh\nr2\tscripts/lib/stub.sh\n')"
+rowsgate() {   # <repo> [ENV=v…] — feed the row table to the COPIED gate; sets OUT/RC_
+  local d="$1"; shift
+  OUT="$(cd "$d" && printf '%s\n' "$ROWS_IN" | env "$@" bash scripts/mutation-gate.sh rows scripts/check-rows.sh 2>&1)"; RC_=$?
+}
+dec() { printf '%s\n' "$OUT" | awk -F'\t' -v r="$1" '$1 == r { print $2; exit }'; }
+
+rowsgate "$R"
+eq "$RC_" "0" "rows: an untouched tree decides, and says so"
+has "$OUT" "GATED: scripts/check-rows.sh — 0 of 3 row(s) run, 3 gated against origin/main" "…naming how many ran and how many were gated"
+has "$OUT" "shared inputs: scripts/check-rows.sh, scripts/check-lib.sh, scripts/lib/common.sh" \
+  "…and naming the inputs no row targets, which is what makes a gate possible at all"
+has "$OUT" "changed file(s) compared" "…and saying what it compared"
+eq "$(dec r0)" "skip" "…row r0 is gated"
+eq "$(dec r1)" "skip" "…row r1 is gated"
+eq "$(dec r2)" "skip" "…row r2 is gated"
+
+# A change on ONE target runs exactly the rows that mutate it. This is #470's whole acceptance.
+printf 'dirty\n' >> "$R/scripts/lib/stub.sh"
+rowsgate "$R"
+eq "$RC_" "0" "rows: a change on one target decides"
+has "$OUT" "2 of 3 row(s) run, 1 gated" "…and the tally names both halves"
+eq "$(dec r0)" "run"  "…the rows that mutate the changed file run"
+eq "$(dec r2)" "run"  "…all of them, not just the first"
+eq "$(dec r1)" "skip" "…and a row mutating an untouched file is gated"
+check_git "$R" checkout -q -- scripts/lib/stub.sh
+
+# An UNTRACKED file on a target path counts as touching it, exactly as the step-level gate reads it.
+printf 'new\n' > "$R/scripts/lib/other.sh.new"
+rowsgate "$R"
+eq "$(dec r1)" "skip" "rows: an untracked SIBLING of a target does not touch it"
+rm -f "$R/scripts/lib/other.sh.new"
+
+# A shared input changed — nothing can be gated, and the line says which file decided it.
+printf 'dirty\n' >> "$R/scripts/check-lib.sh"
+rowsgate "$R"
+eq "$RC_" "0" "rows: a shared-input change decides"
+has "$OUT" "RUN-ALL: scripts/check-rows.sh — no row can be gated; the change touches 1 shared input(s) of every row: scripts/check-lib.sh" \
+  "…and names the shared input that forced it, and how many there were"
+eq "$(dec r0)$(dec r1)$(dec r2)" "runrunrun" "…and every row runs"
+check_git "$R" checkout -q -- scripts/check-lib.sh
+
+# The override.
+rowsgate "$R" ADB_MUTATION_RUN_ALL=1
+eq "$RC_" "12" "rows: ADB_MUTATION_RUN_ALL → exit 12"
+has "$OUT" "RUN-ALL: scripts/check-rows.sh — ADB_MUTATION_RUN_ALL is set" "…saying the override fired"
+eq "$(dec r0)$(dec r1)$(dec r2)" "runrunrun" "…and every row runs"
+
+# FAIL CLOSED. Each of these must RUN the whole table and say why — the cost of a wrong gate is
+# minutes of CI, and the cost of a wrong SKIP is a defect that ships.
+OUT="$(cd "$R" && printf '%s\n' "$ROWS_IN" | bash scripts/mutation-gate.sh rows scripts/check-nope.sh 2>&1)"; RC_=$?
+eq "$RC_" "11" "rows: an UNREGISTERED suite fails closed"
+has "$OUT" "not a registered selfcheck step" "…naming the registry as the reason"
+eq "$(dec r0)$(dec r1)$(dec r2)" "runrunrun" "…and every row runs"
+
+# A row whose target the step does not declare: the declaration is narrower than the harness
+# (`declared-inputs-incomplete`), so gating is refused for the WHOLE step, not just that row.
+OUT="$(cd "$R" && printf 'r0\tscripts/lib/stub.sh\nr1\tREADME.md\n' | bash scripts/mutation-gate.sh rows scripts/check-rows.sh 2>&1)"; RC_=$?
+eq "$RC_" "11" "rows: a row target outside the declared inputs fails closed"
+has "$OUT" "a row mutates 'README.md', which the step does not declare as an input" "…naming the undeclared target"
+eq "$(dec r0)$(dec r1)" "runrun" "…and EVERY row runs, not merely the undeclared one"
+
+# A tree with the registry but NO git: the registry lookup must succeed so that the *repository*
+# is what this case actually tests — a copy without one fails closed a step earlier, for a
+# different reason, and would pass this assertion while proving nothing about git.
+NR="$work/rows-norepo"; mkdir -p "$NR/scripts/lib"
+cp "$R/scripts/mutation-gate.sh" "$R/scripts/selfcheck.sh" "$R/scripts/check-rows.sh" "$NR/scripts/"
+cp "$R/scripts/lib/common.sh" "$NR/scripts/lib/"
+OUT="$(cd "$NR" && printf '%s\n' "$ROWS_IN" | bash scripts/mutation-gate.sh rows scripts/check-rows.sh 2>&1)"; RC_=$?
+eq "$RC_" "11" "rows: outside a repository fails closed"
+has "$OUT" "not a git repository" "…naming the reason, not some earlier refusal"
+eq "$(dec r0)$(dec r1)$(dec r2)" "runrunrun" "…and every row runs"
+
+OUT="$(cd "$R" && printf '%s\n' "$ROWS_IN" | bash scripts/mutation-gate.sh rows scripts/check-rows.sh --base no/such/ref 2>&1)"; RC_=$?
+eq "$RC_" "11" "rows: a base that does not resolve fails closed"
+has "$OUT" "does not resolve to a commit" "…naming the unresolvable base"
+eq "$(dec r0)$(dec r1)$(dec r2)" "runrunrun" "…and every row runs"
+
+OUT="$(cd "$R" && printf '' | bash scripts/mutation-gate.sh rows scripts/check-rows.sh 2>&1)"; RC_=$?
+eq "$RC_" "2" "rows: no rows on stdin is USAGE (2), never a decision"
+
+OUT="$(cd "$R" && printf '%s\n' "$ROWS_IN" | bash scripts/mutation-gate.sh rows 2>&1)"; RC_=$?
+eq "$RC_" "2" "rows: a missing suite argument is usage"
+
+# EVERY DISPATCH ARM IS IN THE USAGE TEXT. `rows` was not: an invocation with no suite, or with a
+# bad option, called `usage` — and the text it printed listed only the three older subcommands, so
+# the one message whose whole job is to show the correct syntax omitted the syntax being corrected.
+# Derived from the `case` arms rather than from a list here, so a fifth subcommand is covered the
+# day it is added.
+USAGE_TEXT="$(cd "$ROOT" && bash scripts/mutation-gate.sh 2>&1)"
+ARMS="$(awk '/^case "\$sub" in/,/^esac/' "$ROOT/scripts/mutation-gate.sh" | grep -oE '^  [a-z-]+\)' | tr -d ' )')"
+[ -n "$ARMS" ] && ok || bad "the dispatch-arm scan matched nothing — this pin would check no subcommand at all"
+n_arms=0
+while IFS= read -r _arm; do
+  [ -n "$_arm" ] || continue
+  n_arms=$((n_arms + 1))
+  case "$USAGE_TEXT" in
+    *"mutation-gate.sh $_arm"*) ok ;;
+    *) bad "the '$_arm' subcommand is missing from the usage text — an invalid invocation of it prints help that omits the syntax needed to fix it" ;;
+  esac
+done <<ARMSEOF
+$ARMS
+ARMSEOF
+[ "$n_arms" -ge 4 ] && ok || bad "only $n_arms dispatch arm(s) were checked against the usage text — the scan is reading the wrong block"
+
 # ============================== 5. the shipped registry =========================================
 LIST="$(bash "$ROOT/scripts/selfcheck.sh" --list)" || bad "the shipped registry could not be listed"
+# A suite that drives `check_mutation_rows` EXECUTES `scripts/mutation-gate.sh` (#470), which in
+# turn reads `scripts/selfcheck.sh --list`. Both therefore belong in that step's declared inputs —
+# a harness gated on a set that omits its own gate skips exactly the run that would have caught a
+# change to it (`declared-inputs-incomplete`). Derived from the suites, never from a list here.
+_rowsteps=0
+while IFS="$(printf '\t')" read -r _s _cmd _ _ _in; do
+  [ -n "$_s" ] || continue
+  [ "$_in" != "-" ] || continue
+  _suite="$(printf '%s' "$_cmd" | awk '{print $2}')"
+  [ -f "$ROOT/$_suite" ] || continue
+  grep -q '^[[:space:]]*check_mutation_rows ' "$ROOT/$_suite" || continue
+  _rowsteps=$((_rowsteps + 1))
+  case ",$_in," in *,scripts/mutation-gate.sh,*) ok ;; *) bad "$_s drives check_mutation_rows, so its verdict depends on scripts/mutation-gate.sh — it must declare it as an input" ;; esac
+  case ",$_in," in *,scripts/selfcheck.sh,*) ok ;; *) bad "$_s drives check_mutation_rows, whose gate reads the registry — it must declare scripts/selfcheck.sh as an input" ;; esac
+done <<< "$LIST"
+# SAY WHAT IT CHECKED. With no matching step this loop asserts nothing and prints what a clean run
+# prints — the silent-guard shape. One row-driving suite exists today; zero means the grep stopped
+# matching, not that the rule stopped applying.
+[ "$_rowsteps" -ge 1 ] && ok   || bad "no registered step was found driving check_mutation_rows — this pin scanned nothing, which is indistinguishable from it passing"
+
 MUT_STEPS="$(printf '%s\n' "$LIST" | awk -F'\t' '$1 ~ /-mutation$/ {print $1}')"
 [ -n "$MUT_STEPS" ] && ok || bad "the shipped registry names no *-mutation step (the scan matched nothing)"
 n_mut=0
@@ -488,6 +668,9 @@ NIGHTLY="$ROOT/.github/workflows/mutation-nightly.yml"
 [ -f "$NIGHTLY" ] && ok || bad "the scheduled workflow $NIGHTLY is missing"
 if [ -f "$NIGHTLY" ]; then
   has "$(cat "$NIGHTLY")" "ADB_MUTATION_RUN_ALL: '1'" "the scheduled workflow forces every harness (ADB_MUTATION_RUN_ALL)"
+  # Per-PR runs score a per-test row against its own block (#468); the schedule is the one run that
+  # scores every row against the whole suite, which is what catches a block that under-declares.
+  has "$(cat "$NIGHTLY")" "ADB_MUTATION_FULL_SUITE: '1'" "the scheduled workflow runs every mutant against the full suite (ADB_MUTATION_FULL_SUITE)"
   grep -qE '^[[:space:]]*schedule:' "$NIGHTLY" && ok || bad "the scheduled workflow has no schedule: trigger"
   grep -qE '^[[:space:]]*pull_request' "$NIGHTLY" && bad "the scheduled workflow must not carry a pull_request trigger (it would become a discoverable required context)" || ok
   # THE MATRIX ITSELF — `strategy.matrix.step` by indentation — not every `- name` in the file: a
