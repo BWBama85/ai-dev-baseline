@@ -692,4 +692,6 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `scripts/lib/implement-lib.sh:2869` `33012c2` `PRRT_kwDOTfywrM6kl7Z7` PR #477 2026-09-22 — a sweep file was reported reusable because a file of that name existed, without validating it or comparing its recorded findings digest
 - `partial-validation` `scripts/lib/implement-lib.sh:2960` `33012c2` `PRRT_kwDOTfywrM6kl7Z-` PR #477 2026-09-22 — the reply parser checked grammar but never that a found site was not one of the sites the findings named
 - `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:621` `33012c2` `PRRT_kwDOTfywrM6kl7aA` PR #477 2026-09-22 — the rung selects the first usable reviewer while the token took the first configured one, so the two could name different agents
+- `markup-injection` `scripts/lib/implement-lib.sh:2944` `afe9310` `PRRT_kwDOTfywrM6kmQ9G` PR #477 2026-09-22 — the finding site and thread id were concatenated into the review prompt while only the summary was enveloped, so a pathname from the diff reached the model as top-level text
+- `ledger-coverage-gap` `scripts/lib/implement-lib.sh:2810` `afe9310` `PRRT_kwDOTfywrM6kmQ9F` PR #477 2026-09-22 — abandoned sweep lock directories are invisible to the cleanup scan, which filters through -f, so they leak permanently once the PR closes
 <!-- adb:hits:end -->
