@@ -687,4 +687,5 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `uninstall.sh:413` `c5429bd` `PRRT_kwDOTfywrM6jjV2z` PR #463 2026-09-18 — a diagnostic read folded into the refusal condition let removal continue when that read failed
 - `status-swallowed` `install.sh:436` `f85ce95` `PRRT_kwDOTfywrM6jpFkT` PR #463 2026-09-18 — receipt-completeness statuses fell into a catch-all that blamed settings.json and named the wrong remedy
 - `event-inferred-from-state` `install.sh:356` `f85ce95` `PRRT_kwDOTfywrM6jpFka` PR #463 2026-09-18 — a skip message promised re-application from the disposition alone, after the skip had given ownership up
+- `stale-doc-claim` `scripts/mutation-gate.sh:367` `977f191` `PRRT_kwDOTfywrM6kkNfI` PR #480 2026-09-22 — a new subcommand was added to the dispatch but not to usage(), so an invalid invocation printed help omitting it
 <!-- adb:hits:end -->
