@@ -689,4 +689,7 @@ One line per resolved review thread, newest last.
 - `event-inferred-from-state` `install.sh:356` `f85ce95` `PRRT_kwDOTfywrM6jpFka` PR #463 2026-09-18 — a skip message promised re-application from the disposition alone, after the skip had given ownership up
 - `stale-doc-claim` `scripts/mutation-gate.sh:367` `977f191` `PRRT_kwDOTfywrM6kkNfI` PR #480 2026-09-22 — a new subcommand was added to the dispatch but not to usage(), so an invalid invocation printed help omitting it
 - `status-swallowed` `install.sh:581` `98a267c` `PRRT_kwDOTfywrM6jMG1Z` PR #477 2026-09-22 — a refusal caused by a newly shipped leaf discards ownership of every leaf the install already wrote
+- `stale-state-trusted` `scripts/lib/implement-lib.sh:2869` `33012c2` `PRRT_kwDOTfywrM6kl7Z7` PR #477 2026-09-22 — a sweep file was reported reusable because a file of that name existed, without validating it or comparing its recorded findings digest
+- `partial-validation` `scripts/lib/implement-lib.sh:2960` `33012c2` `PRRT_kwDOTfywrM6kl7Z-` PR #477 2026-09-22 — the reply parser checked grammar but never that a found site was not one of the sites the findings named
+- `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:621` `33012c2` `PRRT_kwDOTfywrM6kl7aA` PR #477 2026-09-22 — the rung selects the first usable reviewer while the token took the first configured one, so the two could name different agents
 <!-- adb:hits:end -->
