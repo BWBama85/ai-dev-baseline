@@ -23,6 +23,11 @@ only by a published release, which is what these entries are the notes for.
   the review existed. It is now ignored, so a watch keeps waiting until the real review arrives. Its
   body is read one comment at a time, and only while it is fresh. D113 records the scope decision.
 
+- **A dispatched codex review is no longer refused for lacking a final newline.** codex's
+  `--output-last-message` ends the final message without one, and the review reply's byte rule
+  (#488) refused that shape, so every codex review slot returned 28. `dispatch-review` now
+  terminates an otherwise-whole reply before validating it. Every other byte rule still applies.
+
 ### Added
 
 - **Every resolver round sweeps for the siblings of what the reviewer found, and the ledger will not

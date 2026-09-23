@@ -3397,6 +3397,9 @@ eq "$(rcdisp 'ADB-REVIEW-VERDICT v1 required=0 optional=0\ny\nADB-REVIEW-VERDICT
 # puts its NUL on a later line and therefore tests only the whole-file rule.
 eq "$(rcdisp 'finding\nADB-REVIEW-VERDICT v1 required=\0000 optional=0\n')" 28 "51 …and a NUL inside the trailer line itself"
 eq "$(rcdisp 'finding one\nfinding two, cut off mid-')" 28 "51 …and a truncated reply, which must never read as a smaller count"
+# THE CLI's OWN SHAPE: codex's --output-last-message ends the final message without a newline.
+eq "$(rcdisp 'a REQUIRED finding\n\nADB-REVIEW-VERDICT v1 required=1 optional=0')" 0 \
+   "51 a dispatched reply whose trailer lacks only the final newline completes at 0"
 
 # ================= 52. PR #494 round 1: the reviewer's seven findings, each on its own witness ===
 # CRLF: a CR-only blank line after a CRLF trailer is BLANK, not a displaced last line.

@@ -3268,6 +3268,12 @@ cmd_dispatch_review() {
   # shape nobody can read" is neither a clean pass nor a dispatch failure, and collapsing it into
   # either is how an unparseable reply gets read as zero findings.
   local _vout=""
+  # An agent CLI's final message may carry no trailing newline (codex's --output-last-message does),
+  # so an otherwise-whole reply is terminated here rather than refused by the byte rule. The size
+  # bound above already rules out truncation; every other byte rule still applies.
+  if [ "$rc" -eq 0 ] && [ -n "$(tail -c 1 "$out" 2>/dev/null)" ]; then
+    printf '\n' >> "$out" || rc=20
+  fi
   if [ "$rc" -eq 0 ]; then
     _vout="$(_il_verdict_read "$out")"; local _vrc=$?
     if [ "$_vrc" -ne 0 ]; then
