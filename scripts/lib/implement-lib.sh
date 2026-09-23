@@ -3213,11 +3213,17 @@ cmd_dispatch_review() {
     return 0
   fi
   mv -f "$pft" "$pf" || { rm -f "$pft"; printf 'implement-lib: could not publish %s\n' "$pf" >&2; return 20; }
-  local _rofd="" _refd=""
+  local _rofd="" _refd="" _rrfd=""
   _il_excl_create "$out" _rofd \
     || { exec {_prfd}<&-; printf 'implement-lib: could not create %s exclusively\n' "$out" >&2; return 20; }
+  # A READ descriptor on the same inode, held from creation, so the reply's last byte is read and
+  # its newline appended without reopening the name a surviving descendant can swap.
+  if ! { exec {_rrfd}<"$out"; } 2>/dev/null || [ ! "/dev/fd/$_rofd" -ef "/dev/fd/$_rrfd" ]; then
+    exec {_rofd}>&-; [ -n "$_rrfd" ] && exec {_rrfd}<&-; exec {_prfd}<&-; rm -f "$out"
+    printf 'implement-lib: could not hold %s for reading\n' "$out" >&2; return 20
+  fi
   _il_excl_create "$errf" _refd \
-    || { exec {_rofd}>&-; exec {_prfd}<&-; rm -f "$out"; printf 'implement-lib: could not create %s exclusively\n' "$errf" >&2; return 20; }
+    || { exec {_rofd}>&-; exec {_rrfd}<&-; exec {_prfd}<&-; rm -f "$out"; printf 'implement-lib: could not create %s exclusively\n' "$errf" >&2; return 20; }
   # THIS slot's prompt, from the descriptor held on its own stage since creation — never the
   # published name, which a concurrent slot's publish can remove or replace between this slot's
   # rename and its read. A proven-regular inode cannot hang, so no bound on the read.
@@ -3232,7 +3238,6 @@ cmd_dispatch_review() {
   fi
   rc=$?
   exec {_prfd}<&-
-  exec {_rofd}>&-
   exec {_refd}>&-
   # The result path must STILL be a regular file when the dispatch returns: a reviewer with repo
   # tools processing third-party criteria can swap its output for a symlink after writing, and
@@ -3267,25 +3272,45 @@ cmd_dispatch_review() {
   # A DISTINCT CODE, deliberately not folded into the 20 family: "the agent ran and answered in a
   # shape nobody can read" is neither a clean pass nor a dispatch failure, and collapsing it into
   # either is how an unparseable reply gets read as zero findings.
-  local _vout=""
+  local _vout="" _last
+  if [ "$rc" -eq 0 ] && ! _il_same_inode "$out" "$_rrfd"; then
+    printf 'implement-lib: the review output at %s was replaced after dispatch — treating the slot as failed\n' "$out" >&2
+    rc=20
+  fi
   # An agent CLI's final message may carry no trailing newline (codex's --output-last-message does),
   # so an otherwise-whole reply is terminated here rather than refused by the byte rule. The size
-  # bound above already rules out truncation; every other byte rule still applies.
-  if [ "$rc" -eq 0 ] && [ -n "$(tail -c 1 "$out" 2>/dev/null)" ]; then
-    if [ "$_rsz" -ge 8388608 ]; then
-      printf 'implement-lib: the review output at %s needs a final newline, which would take it past the 8388608-byte result bound — treating the slot as failed\n' "$out" >&2
+  # bound above already rules out truncation; every other byte rule still applies. Both the read
+  # and the append go through the descriptors held on the created inode, never the name.
+  if [ "$rc" -eq 0 ]; then
+    _last="$(tail -c 1 <&"$_rrfd" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    if [ "$_last" != 0a ]; then
+      if [ "$_rsz" -ge 8388608 ]; then
+        printf 'implement-lib: the review output at %s needs a final newline, which would take it past the 8388608-byte result bound — treating the slot as failed\n' "$out" >&2
+        rc=20
+      else
+        printf '\n' 1>&"$_rofd" || rc=20
+      fi
+    fi
+  fi
+  exec {_rofd}>&-
+  # The verdict reader opens the NAME, so it is bracketed by the held inode on both sides, as
+  # read-artifact and publish-review bracket theirs.
+  if [ "$rc" -eq 0 ]; then
+    if ! _il_same_inode "$out" "$_rrfd"; then
+      printf 'implement-lib: the review output at %s was replaced before validation — treating the slot as failed\n' "$out" >&2
       rc=20
     else
-      printf '\n' >> "$out" || rc=20
+      _vout="$(_il_verdict_read "$out")"; local _vrc=$?
+      if ! _il_same_inode "$out" "$_rrfd"; then
+        printf 'implement-lib: the review output at %s was replaced during validation — treating the slot as failed\n' "$out" >&2
+        _vout=""; rc=20
+      elif [ "$_vrc" -ne 0 ]; then
+        _il_verdict_say "$_vrc" "the review reply at $out"
+        rc=28
+      fi
     fi
   fi
-  if [ "$rc" -eq 0 ]; then
-    _vout="$(_il_verdict_read "$out")"; local _vrc=$?
-    if [ "$_vrc" -ne 0 ]; then
-      _il_verdict_say "$_vrc" "the review reply at $out"
-      rc=28
-    fi
-  fi
+  exec {_rrfd}<&-
   case "$rc" in
     0)  printf 'review %s ok -> %s (verdict %s)\n' "$token" "$out" "$_vout" ;;
     28) printf 'review %s dispatched, but its verdict does not parse -> %s\n' "$token" "$out" ;;
