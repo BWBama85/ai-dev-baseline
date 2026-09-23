@@ -156,6 +156,9 @@ printf '%s\n' "$url" >> "$S/calls"
 # its own STUB_EMPTY_* knob.
 emit() { if [ -f "$1" ]; then cat "$1"; else printf '[]\n'; fi; }
 case "$url" in
+STUB
+check_pr_comment_stub_body
+cat <<'STUB'
   */reviews*)
     [ "${STUB_FAIL_REVIEWS:-0}" = "1" ] && exit 1
     [ "${STUB_EMPTY_REVIEWS:-0}" = "1" ] && exit 0
@@ -210,6 +213,8 @@ HEAD_REF="feature"
 ARRIVED_AT="2026-07-25T04:42:15Z"
 AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR #88
 BEFORE_AT="2026-07-25T04:40:00Z"
+ARRIVED_PLUS1_AT="2026-07-25T04:44:00Z"   # fresh, and older than AFTER_AT
+LATER_AT="2026-07-25T04:46:00Z"           # fresh, and newer than AFTER_AT
 
 # pr_fx [--sha X] [--base-slug X] [--head-slug X] [--head-ref X] [--state X] [--merged-at X]
 # A defaults wrapper over `check_pr_json`, which holds the fixture shape (D68). Last flag wins, so
@@ -224,6 +229,7 @@ pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 # has nowhere single to be made. What stays local is the PR object and the reset, which differ.
 review_fx()   { check_pr_reviews_json   "$S/reviews.json"   "$@"; rm -f "$S/reviews2.json"; }
 comment_fx()  { check_pr_comments_json  "$S/comments.json"  "$@"; }
+status_fx()   { check_pr_status_comment_json "$S/comments.json" "$@"; }
 reaction_fx() { check_pr_reactions_json "$S/reactions.json" "$@"; }
 activity_fx() { check_pr_activity_json  "$S/activity.json"  "$@"; }
 called()      { check_pr_called "$S/calls" "$1"; }
@@ -552,11 +558,76 @@ has "$OUT" "attention required" "21 names the outcome"
 gout gate --pr 7
 eq "$OUT" "" "#167 §3: the comment path prints NO head SHA — it must not authorize an arm"
 
-# A COMMENT OUTRANKS A `+1` from the same reviewer: it has something to say about this head.
+# #447: A FRESH `+1` NOT OLDER THAN THE SAME REVIEWER'S FRESH COMMENT IS A CLEAN PASS. The connector
+# reports a clean pass as a `+1` and a same-second comment (PR #446 at 4dde0f4). Every neighbour of
+# that shape must keep withholding the arm.
 reset_fx
 comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
 reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
-g gate --pr 7;  eq "$RC_" "21" "#167: a fresh comment outranks a fresh '+1' (attention > clean)"
+gout gate --pr 7
+eq "$RC_" "0" "#447: a fresh '+1' and a same-second fresh comment -> 0 (the arm is reachable)"
+eq "$OUT" "$HEAD_SHA" "#447: the paired clean pass emits the witnessed head SHA"
+g gate --pr 7
+has "$OUT" "+1 at $AFTER_AT and a comment at $AFTER_AT" "#447: the verdict names both signals it folded"
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$ARRIVED_PLUS1_AT"
+g gate --pr 7;  eq "$RC_" "21" "#447: a comment NEWER than the '+1' is the reviewer speaking again -> 21"
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$ARRIVED_PLUS1_AT" "chatgpt-codex-connector[bot]" "$LATER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "21" "#447: the '+1' must not be older than the NEWEST fresh comment -> 21"
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$BEFORE_AT"
+g gate --pr 7;  eq "$RC_" "21" "#447: a STALE '+1' beside a fresh comment stays 21 (#167 unchanged)"
+reset_fx
+review_fx   "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "21" "#447: a COMMENTED review at the head still wins over a paired '+1' -> 21"
+reset_fx
+review_fx   "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "19" "#447: CHANGES_REQUESTED beside a paired '+1' -> 19"
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"content":"+1","created_at":""}]' > "$S/reactions.json"
+g gate --pr 7;  eq "$RC_" "21" "#447: an undatable '+1' cannot pair with a fresh comment -> 21, never 0"
+
+# #447: THE CONNECTOR'S REVIEW-STATUS COMMENT IS A PROGRESS MARKER, NOT A REVIEW. Created when a
+# review starts (`Running`), it used to read as a finished review with findings.
+reset_fx
+status_fx "chatgpt-codex-connector[bot]" "$AFTER_AT" "Running"
+g gate --pr 7
+eq "$RC_" "16" "#447: a fresh Running status comment alone -> 16 awaiting, not 21"
+has "$OUT" "review-status marker" "#447: the ignored status comment is named"
+reset_fx
+status_fx   "chatgpt-codex-connector[bot]" "$AFTER_AT" "Completed"
+reaction_fx "chatgpt-codex-connector" "+1" "$LATER_AT"
+gout gate --pr 7;  eq "$RC_" "0" "#447: a Completed status comment and a later '+1' -> 0"
+reset_fx
+status_fx   "chatgpt-codex-connector[bot]" "$AFTER_AT" "Running"
+review_fx   "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+g gate --pr 7;  eq "$RC_" "21" "#447: the real review beside an ignored status comment still -> 21"
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+status_fx   "chatgpt-codex-connector[bot]" "$AFTER_AT" "Running"
+g gate --pr 7;  eq "$RC_" "21" "#447: an ordinary comment beside the status comment still -> 21"
+reset_fx
+status_fx "chatgpt-codex-connector[bot]" "$AFTER_AT" "Running"
+STUB_FAIL_COMMENT_READ=1 g gate --pr 7
+eq "$RC_" "20" "#447: an unreadable status-comment body -> 20, never a guess"
+reset_fx
+status_fx "chatgpt-codex-connector[bot]" "$BEFORE_AT" "Running"
+g gate --pr 7
+eq "$RC_" "16" "#447: a stale status comment is not read at all"
+if check_pr_called "$S/calls" "issues/comments/"; then bad "#447: a stale comment's body must not be read"; else ok; fi
+reset_fx
+comment_fx "somebody" "$AFTER_AT"
+g gate --pr 7
+if check_pr_called "$S/calls" "issues/comments/"; then bad "#447: an undeclared login's comment body must not be read"; else ok; fi
 
 # A REVIEW AT THE HEAD OUTRANKS A REACTION, and a rejection outranks everything.
 reset_fx

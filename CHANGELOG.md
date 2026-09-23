@@ -8,6 +8,21 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Codex clean pass that arrives with a comment is clean, and the connector's review-status
+  comment no longer reads as a finished review (#447).** The connector reports a clean pass as a
+  `+1` and a same-second comment. The shared classifier ranked the comment above the `+1`, so
+  `pr-watch.sh` returned 10 and `pr-review.sh gate` returned 21, and neither the resolver's clean
+  exit nor the auto-merge arm could be reached. A reviewer's fresh `+1` that is not older than its
+  newest fresh comment now reads as clean, and one stderr line names both instants. A comment newer
+  than the `+1`, or one beside a stale `+1`, still reads as attention.
+
+  The connector's status comment (`<!-- codex-pull-request-review-summary -->`) is created when a
+  review starts and edited in place. On every freshly opened PR it ended the watch minutes before
+  the review existed. It is now ignored, so a watch keeps waiting until the real review arrives. Its
+  body is read one comment at a time, and only while it is fresh. D113 records the scope decision.
+
 ### Added
 
 - **Every resolver round sweeps for the siblings of what the reviewer found, and the ledger will not

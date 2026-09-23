@@ -553,12 +553,12 @@ pr-review.sh gate --pr <number|url>    # prints the witnessed head SHA on 0
 
 | Code | Meaning |
 |---|---|
-| `0` | every **declared** reviewer signalled a **clean pass** for the current head SHA — an `APPROVED` review at this SHA, or a `+1` proved newer than the moment this head arrived — or `bots = []` (no async reviewer). STDOUT is the head SHA |
+| `0` | every **declared** reviewer signalled a **clean pass** for the current head SHA — an `APPROVED` review at this SHA, or a `+1` proved newer than the moment this head arrived and not older than that reviewer's newest fresh comment (#447) — or `bots = []` (no async reviewer). STDOUT is the head SHA |
 | `16` | a declared reviewer has **not spoken** about this head SHA yet — do not arm; the operator merges after review. Note this is *silence*, not *dissatisfaction*: a reviewer that reviewed and was unhappy is `19` or `21` |
 | `17` | the repo declares no `[reviewers] bots` — unknowable, **fail closed**. Declare them, or `bots = []` |
 | `18` | `[reviewers] bots` is present but malformed — fix `agents.toml` |
 | `19` | a declared reviewer left **`CHANGES_REQUESTED`** on this head SHA — address it and push |
-| `21` | **review complete, attention required** — a declared reviewer left a `COMMENTED` review at this head, or a fresh issue comment. It has reviewed and is **not satisfied**; read what it said. There may be **no inline threads at all** |
+| `21` | **review complete, attention required** — a declared reviewer left a `COMMENTED` review at this head, or a fresh issue comment with no `+1` at least as new beside it. The connector's review-status comment (`<!-- codex-pull-request-review-summary -->`) is a progress marker and never counts (#447). It has reviewed and is **not satisfied**; read what it said. There may be **no inline threads at all** |
 | `20` | live state unreadable — **fail closed**, never assume reviewed |
 
 Three properties are doing the real work:

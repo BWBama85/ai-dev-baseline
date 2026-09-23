@@ -8345,3 +8345,35 @@ survive is the part a later reader needs.
              is content that arrives from OUTSIDE the run: a finding site is a path from the diff, so a
              pull request author chooses it, and that reaches a prompt — see the same round's P1.
 - baseline-issue: n/a
+
+## D113 — A `+1` pairs with its reviewer's comment, and the connector's review-status comment is not a review
+- date:      2026-09-23
+- category:  project-delta
+- unknown:   #447. The within-reviewer order (#167 §4) folded a fresh issue comment to `attention` and
+             ranked it above a fresh `+1`'s `clean`, so the Codex connector's clean pass — a `+1` and a
+             same-second "Didn't find any major issues" comment — read as findings (`pr-watch` 10,
+             `pr-review` 21). A second shape, recorded in owner comments on #447 and #427 and in the
+             roadmap's `release-order:#447` row, fired on every freshly opened PR: the connector's
+             review-status comment (`<!-- codex-pull-request-review-summary -->`, `Running` then edited
+             to `Completed`) read as a finished review before any review existed. #447's body placed
+             reading comment text out of scope; its later owner comments asked for the status comment
+             to be ignored, and the gap analysis marked the conflict BLOCKING.
+- decision:  (1) Per reviewer, a fresh comment is `attention` unless that reviewer's newest fresh `+1`
+             is not older than its newest fresh comment; equal seconds pair. Comment `created_at` is
+             the instant compared, as for every date-scoped signal. A stale, undatable or absent `+1`
+             never pairs, and review objects are untouched. (2) A declared reviewer's fresh comment
+             whose body begins with a known status marker is dropped before classification. Its body
+             is read one comment at a time, over REST, only while such a comment is fresh; the snapshot
+             still carries no bodies. An unreadable body is unreadable (20), and a comment with no id
+             is kept.
+- placement: `scripts/lib/common.sh` (`adb_reviewer_classes`, `adb_drop_status_comments`,
+             `ADB_REVIEW_STATUS_MARKERS`); tests in `check-pr-review.sh`, `check-pr-watch.sh` (with three
+             `--mutation` rows) and `check-common-lib.sh`
+- reason:    The body's exclusion exists so that third-party text cannot grant merge authority. Neither
+             rule does: (1) reads no text, and (2) only removes a signal and adds none, so a reviewer
+             reads `clean` afterwards only on a fresh `+1` or `APPROVED` of its own. The owner's comments (OWNER association) and the roadmap row
+             name the status-comment shape as why #447 ships first, and "keep it not-clean" (the
+             2026-08-31 comment) is still met, because `pending` is not clean. Bodies are fetched per
+             comment rather than added to the snapshot, because the snapshot is read on every poll and
+             pr-watch.sh records that bodies are the one field the classification path must not pay for.
+- baseline-issue: n/a
