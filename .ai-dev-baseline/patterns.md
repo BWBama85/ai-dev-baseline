@@ -701,4 +701,7 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:630` `9ef56f2` `PRRT_kwDOTfywrM6k8V6I` PR #494 2026-09-23 — resolver dispatched the local review but never read its artifact before triaging
 - `toctou` `scripts/lib/implement-lib.sh:2577` `9ef56f2` `PRRT_kwDOTfywrM6k8V6P` PR #494 2026-09-23 — verdict checked at publication only; read-artifact consumed review.md later without revalidating
 - `consumer-contract-mismatch` `base/workflows/implement-issue.md:422` `9ef56f2` `PRRT_kwDOTfywrM6k8V6Q` PR #494 2026-09-23 — native publish-review omitted --slot N, so a later slot overwrote the first review.md
+- `reuse-missed` `scripts/lib/implement-lib.sh:2842` `3069d54` `PRRT_kwDOTfywrM6k_q-s` PR #494 2026-09-23 — PR repository resolved via adb_pr_query_slug but its base still fetched from the origin remote, the fork
+- `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:612` `3069d54` `PRRT_kwDOTfywrM6k_q-y` PR #494 2026-09-23 — local review dispatched a bare token with no rung resolution and no manifest effort
+- `toctou` `scripts/lib/implement-lib.sh:1933` `3069d54` `PRRT_kwDOTfywrM6k_q-4` PR #494 2026-09-23 — read-artifact validated its private copy by name but emitted the held descriptor
 <!-- adb:hits:end -->
