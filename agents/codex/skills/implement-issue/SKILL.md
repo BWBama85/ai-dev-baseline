@@ -419,8 +419,11 @@ bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-review --effort "$EFFO
 (Omit `--effort` when empty. Effort is accepted-and-ignored for `agy`.) For a **`claude` slot
 with Claude driving**: `/simplify`, re-gate if it edited, then a synchronous `general-purpose`
 subagent bug review over `dispatch-review --prompt-only`'s file, and publish its reply with
-`bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-review .codex/state` — never consume it straight from the transcript,
-or nothing validates its verdict, and never model-invoke `/code-review` (`review-prompt.md`).
+`bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-review --slot N .codex/state` — **the same slot number the
+dispatched path would use** (omit `--slot` only for the first slot), or a Claude slot configured
+second overwrites the first slot's `review.md`. Never consume the reply straight from the
+transcript, or nothing validates its verdict, and never model-invoke `/code-review`
+(`review-prompt.md`).
 
 **`28` is its own outcome: the slot RAN and answered in a shape nobody can read.** It is neither
 a clean pass nor a dispatch failure — treat it as a failed slot (retry once, then the role's

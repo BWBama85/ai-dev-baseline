@@ -2383,10 +2383,13 @@ has "$OP_OUT" "not a recognizable forge remote" "32 …with the fallback NOTEd, 
 # --slot N writes review-N.md and the workflow forbids direct opens — without a numbered arm in
 # read-artifact, later reviewers' findings were unreadable through the one permitted reader.
 d="$(new_repo)"
-printf 'slot two findings\n' > "$d/.claude/state/review-2.md"
+# A VALID TRAILER (#488): read-artifact now revalidates a review's verdict at consumption, so a
+# fixture reply must be one the grammar accepts. The first line still carries the content this
+# case asserts on.
+printf 'slot two findings\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "$d/.claude/state/review-2.md"
 RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" review-2 2>/dev/null )"; RA_RC=$?
 eq "$RA_RC" "0" "33 a numbered review slot reads clean"
-eq "$RA_OUT" "slot two findings" "33 …emitting its content"
+eq "$(printf '%s\n' "$RA_OUT" | head -n1)" "slot two findings" "33 …emitting its content"
 bash "$IL" read-artifact "$d/.claude/state" review-x >/dev/null 2>&1
 eq "$?" "2" "33 a non-numeric slot suffix is a usage error"
 bash "$IL" read-artifact "$d/.claude/state" review-12345 >/dev/null 2>&1
@@ -3208,7 +3211,9 @@ case "$1 $2" in
       "${CF_STATE:-OPEN}" "${CF_HEAD:-}" "${CF_BASE:-main}" "${CF_LINKS:-[]}" ;;
   "issue view") [ "${CF_ISSUE_FAIL:-0}" = 1 ] && { echo "gh: no issue" >&2; exit 1; }
     printf '{"number":%s,"title":"t","body":"CRITERIA-FOR-%s","state":"OPEN","labels":[],"author":{"login":"o"},"comments":[]}\n' "$3" "$3" ;;
-  "api --hostname") printf 'OWNER\n' ;;
+  # The provenance read addresses `repos/<owner>/<repo>/issues/<n>` on gh's default host, since
+  # the PR's repository now comes from adb_pr_query_slug as `owner/repo`.
+  "api repos/"*) printf 'OWNER\n' ;;
   *) echo "cf-shim unhandled: $*" >&2; exit 3 ;;
 esac
 SH
@@ -3392,6 +3397,67 @@ eq "$(rcdisp 'ADB-REVIEW-VERDICT v1 required=0 optional=0\ny\nADB-REVIEW-VERDICT
 # puts its NUL on a later line and therefore tests only the whole-file rule.
 eq "$(rcdisp 'finding\nADB-REVIEW-VERDICT v1 required=\0000 optional=0\n')" 28 "51 …and a NUL inside the trailer line itself"
 eq "$(rcdisp 'finding one\nfinding two, cut off mid-')" 28 "51 …and a truncated reply, which must never read as a smaller count"
+
+# ================= 52. PR #494 round 1: the reviewer's seven findings, each on its own witness ===
+# CRLF: a CR-only blank line after a CRLF trailer is BLANK, not a displaced last line.
+printf 'x\r\nADB-REVIEW-VERDICT v1 required=4 optional=1\r\n\r\n' > "$VD/crlfblank"
+eq "$( ( bash "$IL" review-verdict "$VD/crlfblank" ) 2>/dev/null)" "4 1" \
+   "52 a CRLF blank line after a CRLF trailer is blank — the trailer is still the last non-blank line"
+
+# CONSUMPTION-TIME REVALIDATION: read-artifact re-checks a review's verdict on its staged copy.
+RA="$work/ra494"; mkdir -p "$RA"
+printf 'finding\nADB-REVIEW-VERDICT v1 required=1 optional=0\n' > "$RA/review.md"
+( bash "$IL" read-artifact "$RA" review ) >/dev/null 2>&1; eq "$?" 0 "52 read-artifact emits a review whose verdict validates"
+printf 'finding one\nfinding two, cut off mid-' > "$RA/review.md"
+RA_OUT="$( ( bash "$IL" read-artifact "$RA" review ) 2>/dev/null)"; RA_RC=$?
+eq "$RA_RC" 18 "52 a review TRUNCATED after publication is refused at consumption (18)"
+eq "$RA_OUT" "" "52 …emitting NOTHING — a partial review read as a whole one is the failure itself"
+if [ -f "$RA/review.md" ]; then ok; else bad "52 …and the refused reply is left in place to inspect"; fi
+printf 'replaced, no trailer\n' > "$RA/review-2.md"
+( bash "$IL" read-artifact "$RA" review-2 ) >/dev/null 2>&1; eq "$?" 19 "52 a numbered slot is revalidated too (19)"
+printf 'gap findings carry no trailer\n' > "$RA/gaps.md"
+( bash "$IL" read-artifact "$RA" gaps ) >/dev/null 2>&1; eq "$?" 0 "52 …while gaps, which have no verdict grammar, are unaffected"
+
+# LINKED ISSUES: one home, case-insensitive, and a missing field is malformed.
+eq "$(cf CF_LINKS='[{"number":11,"repository":{"name":"R","owner":{"login":"O"}}}]')" 0 \
+   "52 a linked issue whose owner/repo casing differs from origin's is still THIS repository's"
+has "$(cat "$CFP")" 'github-issue #11' "52 …so its criteria are enveloped, not silently dropped as foreign"
+eq "$(cf CF_LINKS='[{"number":11,"repository":{"name":"r"}}]')" 29 \
+   "52 an entry missing its owner is MALFORMED (29), not quietly treated as another repository"
+eq "$(grep -c '_il_linked_issues "' "$IL")" 2 "52 dispatch-review AND open-pr parse the link set through the one helper"
+
+# FORCED BASE REFRESH: a rewritten (force-pushed) base must not be refused as non-fast-forward.
+cat > "$CB/git" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = fetch ]; then printf '%s\n' "\$*" >> "\${CF_FETCH_LOG:-/dev/null}"; exit "\${CF_FETCH_RC:-0}"; fi
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$CB/git"
+: > "$work/cf-fetch.log"
+cf CF_LINKS="$CFL2" CF_BASE=stack-1 CF_FETCH_LOG="$work/cf-fetch.log" >/dev/null
+has "$(cat "$work/cf-fetch.log")" '+refs/heads/stack-1:refs/remotes/origin/stack-1' \
+   "52 the PR base is fetched with a FORCED refspec, so a force-pushed stack base still refreshes"
+eq "$(grep -c 'git fetch -q origin "+refs/heads/' "$IL")" 2 "52 …and so is dispatch-sweep's, the sibling the sweep found"
+
+# THE PR'S REPOSITORY, NOT ORIGIN: in a fork checkout origin is the fork.
+FK="$work/cffork"; cp -R "$CR" "$FK"
+( cd "$FK" && git remote set-url origin https://github.com/contrib/r.git \
+  && git remote add upstream https://github.com/o/r.git ) >/dev/null 2>&1
+cat > "$CB/gh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CF_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$CF_ARGS_LOG"
+case "$1 $2" in
+  "repo view") printf 'o/r\n' ;;
+  "pr view") printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main","closingIssuesReferences":[]}\n' "${CF_HEAD:-}" ;;
+  *) echo "cf-shim unhandled: $*" >&2; exit 3 ;;
+esac
+SH
+: > "$work/cf-args.log"
+( cd "$FK" && env PATH="$CB:$PATH" CF_HEAD="$CFH" CF_ARGS_LOG="$work/cf-args.log" \
+    bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1
+eq "$?" 0 "52 a fork checkout (origin = the fork, upstream = the parent) reviews the PR"
+has "$(grep '^pr view' "$work/cf-args.log")" '-R o/r' "52 …read from the PR's repository through adb_pr_query_slug, not from origin's fork"
+hasnt "$(grep '^pr view' "$work/cf-args.log")" 'contrib/r' "52 …and never asks the fork for a PR number it does not own"
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

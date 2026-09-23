@@ -1837,7 +1837,11 @@ _il_cap_trace() {   # <state-dir> <max-bytes> [quiet]
 # non-link, sized within a bound, emitted through a byte-capped bounded child. A post-check swap
 # can still substitute CONTENT (the dispatched agent's own words are unverifiable anyway); what
 # can no longer happen is an unbounded hang or a by-reference read.
+# A REVIEW (`review`, `review-N`) must ALSO carry a valid verdict trailer on the staged copy
+# (#488): a reply truncated or replaced after publication is refused rather than triaged whole.
 #   0 content on stdout · 10 absent (a skipped optional artifact) · 20 refused · 2 usage
+#   18 · 19  review family only — the staged reply breaks a byte rule / has no usable trailer;
+#            nothing is emitted, and the source file is left in place to be inspected
 cmd_read_artifact() {
   [ "$#" -eq 2 ] || { echo "implement-lib: read-artifact needs <state-dir> <gaps|survey|review>" >&2; exit 2; }
   local dir="$1" which="$2" f sz
@@ -1917,6 +1921,23 @@ cmd_read_artifact() {
     printf 'implement-lib: %s exceeds the 8388608-byte result bound — refusing to read it\n' "$f" >&2
     return 20
   fi
+  # A REVIEW IS REVALIDATED AT CONSUMPTION, on the private copy this call already staged and
+  # proved. The verdict was checked when the reply was published, but the public name stays
+  # agent-writable afterwards, so a reply truncated or replaced in between would otherwise be
+  # triaged as a completed review — the invariant bypassed at the one reader that acts on it.
+  # NOTHING IS EMITTED ON A REFUSAL: a partial review read as a whole one is the failure itself.
+  # The source file is left where it is, so the refused reply stays inspectable at its path.
+  case "$which" in
+    review|review-*)
+      local _vrc
+      _il_verdict_read "$_cp" >/dev/null; _vrc=$?
+      if [ "$_vrc" -ne 0 ]; then
+        exec {_rfd2}<&-
+        rm -f "$_cp"
+        _il_verdict_say "$_vrc" "the review reply at $f"
+        return "$_vrc"
+      fi ;;
+  esac
   cat 0<&"$_rfd2"
   sz=$?
   exec {_rfd2}<&-
@@ -2527,9 +2548,13 @@ _il_verdict_read() {
   # exist because a hand-rolled ``` toggle beside it had already drifted. `md_fence_len` is the
   # in-a-fence flag; it is read BEFORE the call (a content line is already inside) and OR-ed with
   # the call's own answer (a delimiter line is part of its fence).
+  # THE CR IS STRIPPED PER RECORD, BEFORE ANYTHING READS IT. CRLF is tolerated, so a blank line
+  # after the trailer arrives as a lone "\r" — one field, NF 1 — and would displace the real
+  # trailer as "the last non-blank line". Stripping only the captured trailer honoured the
+  # tolerance on one line and broke it on every other.
   local _vrc
   last="$(LC_ALL=C awk "$_ADB_MD_AWK"'
-      { _b = md_fence_len; _d = adb_md_block($0); if (NF) { l = $0; inf = (_b || _d) } }
+      { sub(/\r$/, ""); _b = md_fence_len; _d = adb_md_block($0); if (NF) { l = $0; inf = (_b || _d) } }
       END { if (inf) exit 3; print l }' "$f" 2>/dev/null)"; _vrc=$?
   case "$_vrc" in
     0) : ;;
@@ -2559,6 +2584,42 @@ _il_verdict_say() {   # <rc> <subject>
     19) printf 'implement-lib: %s carries no usable `%s v1 required=<N> optional=<M>` trailer as its last non-blank line (missing, duplicated, fenced, or malformed) — refused whole rather than guessed\n' "$2" "$_IL_VERDICT_SENTINEL" >&2 ;;
     *)  printf 'implement-lib: %s could not be read as a regular file\n' "$2" >&2 ;;
   esac
+}
+
+# _il_linked_issues <closing-refs-json> <owner/repo> — the linked issues that belong to THIS
+# repository, as space-separated numbers. 0 · 18 (a malformed entry, or not an array).
+#
+# ONE HOME FOR TWO CALLERS: `dispatch-review --criteria-from-pr` reads the criteria through it and
+# `open-pr` proves its closing keywords through it. Both used to filter inline, by EXACT string —
+# and a remote URL's owner/repo casing need not match GitHub's canonical casing, so a casing
+# difference dropped every same-repository issue. `dispatch-review` then reported a clean "no
+# linked issue" review; `open-pr` reported keywords that had in fact registered as missing.
+# The comparison is `adb_slug_eq`, the shared case-insensitive answer, never a second fold.
+# A MISSING FIELD IS MALFORMED, never "another repository": an entry with no owner or name used to
+# fail the equality and vanish, which is the same silent drop in a second spelling.
+_il_linked_issues() {
+  local json="$1" repo="$2" rows eo en num out=""
+  rows="$(printf '%s' "$json" | jq -er '
+      .closingIssuesReferences
+      | if type != "array" then error("not an array") else . end
+      | .[]
+      | if ((.repository.owner.login | type) == "string" and (.repository.name | type) == "string"
+            and (.number | type) == "number" and .number > 0 and .number == (.number | floor))
+        then "\(.repository.owner.login)\t\(.repository.name)\t\(.number)"
+        else error("malformed entry") end' 2>/dev/null)"
+  case "$?" in
+    0) : ;;
+    # jq -e exits 4 when the program produced NO output — an empty array, which is a valid answer.
+    4) printf '%s' "$json" | jq -e '.closingIssuesReferences | arrays | length == 0' >/dev/null 2>&1 || return 18
+       return 0 ;;
+    *) return 18 ;;
+  esac
+  while IFS=$'\t' read -r eo en num; do
+    [ -n "$num" ] || continue
+    adb_slug_eq "$eo/$en" "$repo" && out="${out:+$out }$num"
+  done <<< "$rows"
+  printf '%s' "$out"
+  return 0
 }
 
 # --- review-verdict / publish-review (#488) -------------------------------------------------------
@@ -2725,9 +2786,13 @@ cmd_dispatch_review() {
       return 22
     fi
     command -v gh >/dev/null 2>&1 || { echo "implement-lib: dispatch-review: gh is required for --criteria-from-pr" >&2; return 20; }
-    crit_slug="$(_il_origin_slug)" \
-      || { echo "implement-lib: dispatch-review: origin is not a forge repository, so the PR cannot be read" >&2; return 20; }
-    crit_ipath="${crit_slug#*/}"
+    # THE SHARED PR-REPOSITORY RESOLVER, not `origin`. In a fork checkout `origin` is the FORK and
+    # the pull request lives on the parent, so an origin-only read asks for PR N in the wrong
+    # repository: it refuses a valid PR, or reads an unrelated same-number one. `adb_pr_query_slug`
+    # is what pr-review, pr-watch and pr-threads already ask; it returns `owner/repo`.
+    crit_slug="$(adb_pr_query_slug implement-lib "$crit_pr")" \
+      || { echo "implement-lib: dispatch-review: could not resolve which repository PR $crit_pr lives in" >&2; return 20; }
+    crit_ipath="$crit_slug"
     local pjson pstate phead
     # ONE read for all four facts. A FAILED READ IS NOT "no linked issues" (#489): it returns 29,
     # distinct from the rc 0 the empty-but-valid link set takes, so an API failure can never
@@ -2756,11 +2821,7 @@ cmd_dispatch_review() {
     # otherwise be fetched from THIS one and silently supply a different issue's criteria.
     # Every surviving entry must carry a positive integer number, or the response is malformed.
     local _clinks
-    _clinks="$(printf '%s' "$pjson" | jq -er --arg repo "$crit_ipath" '
-        [ .closingIssuesReferences[]
-          | select(((.repository.owner.login // "") + "/" + (.repository.name // "")) == $repo)
-          | .number ]
-        | if all(type == "number" and . > 0 and . == floor) then (map(tostring) | join(" ")) else error("bad") end' 2>/dev/null)" \
+    _clinks="$(_il_linked_issues "$pjson" "$crit_ipath")" \
       || { printf 'implement-lib: dispatch-review: PR %s'"'"'s linked-issue entries are malformed — refusing rather than reviewing against a partial criteria set\n' "$crit_pr" >&2; return 29; }
     local _cn
     for _cn in $_clinks; do crit_nums+=( "$_cn" ); done
@@ -2775,7 +2836,10 @@ cmd_dispatch_review() {
     fi
     # THE PR'S OWN BASE, not origin/<default>: a PR may target another branch — a stack layer
     # especially — and diffing against the default branch reviews the wrong diff entirely.
-    git fetch -q origin "refs/heads/$crit_base:refs/remotes/origin/$crit_base" 2>/dev/null \
+    # FORCED (`+`): a remote-tracking ref is a mirror, and a stacked base is exactly the branch that
+    # gets rewritten. Without the `+` git refuses the non-fast-forward update and the review fails
+    # on a base that merely moved (git-fetch(1): "an optional leading + to a refspec").
+    git fetch -q origin "+refs/heads/$crit_base:refs/remotes/origin/$crit_base" 2>/dev/null \
       || { printf 'implement-lib: dispatch-review: could not fetch PR %s'"'"'s base branch %s — the diff would be taken from a stale merge base\n' "$crit_pr" "$crit_base" >&2; return 20; }
     db="$crit_base"
     # closingIssuesReferences is fetched with `first: 100` by gh (probed via context7 against
@@ -3026,7 +3090,7 @@ cmd_dispatch_review() {
         # unattributed body is never dispatched.
         _il_excl_create "$_ca" _cafd \
           || { printf 'implement-lib: dispatch-review: could not stage #%s'"'"'s provenance label exclusively\n' "$n" >&2; _cfail=1; break; }
-        if ! adb_run_bounded 600 10 gh api --hostname "${crit_slug%%/*}" "repos/$crit_ipath/issues/$n" --jq '.author_association' 1>&"$_cafd" 2>/dev/null; then
+        if ! adb_run_bounded 600 10 gh api "repos/$crit_ipath/issues/$n" --jq '.author_association' 1>&"$_cafd" 2>/dev/null; then
           exec {_cafd}>&-
           printf 'implement-lib: dispatch-review: could not read linked issue #%s'"'"'s author association — refusing rather than dispatching an unattributed body\n' "$n" >&2
           _cfail=1; break
@@ -3289,8 +3353,8 @@ cmd_dispatch_sweep() {
   esac
 
   local slug pjson state head base_ref local_head
-  slug="$(_il_origin_slug)" \
-    || { echo "implement-lib: dispatch-sweep: origin is not a forge repository, so the PR cannot be read" >&2; return 20; }
+  slug="$(adb_pr_query_slug implement-lib "$pr")" \
+    || { echo "implement-lib: dispatch-sweep: could not resolve which repository PR $pr lives in" >&2; return 20; }
   pjson="$(gh pr view "$pr" -R "$slug" --json state,headRefOid,baseRefName 2>/dev/null)" \
     || { printf 'implement-lib: dispatch-sweep: could not read PR %s in %s\n' "$pr" "$slug" >&2; return 20; }
   state="$(printf '%s' "$pjson" | jq -er '.state | strings' 2>/dev/null)" || state=""
@@ -3364,7 +3428,7 @@ cmd_dispatch_sweep() {
         || { _sweep_abort "could not envelope a finding"; return 20; }
     done < "$findings"
     printf '\n%s\n' 'The DIFF of the pull request follows (first-party).' 1>&"$pfd"
-    git fetch -q origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>/dev/null \
+    git fetch -q origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>/dev/null \
       || { _sweep_abort "could not fetch the base branch $base_ref — the diff would be taken from a stale merge base"; return 20; }
     mb="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null)" \
       || { _sweep_abort "git merge-base origin/$base_ref HEAD failed — fetch the base branch"; return 20; }
@@ -3827,11 +3891,9 @@ cmd_open_pr() {
   for _try in 1 2 3 4 5; do
     refs_json="$(gh pr view "$pr" --json closingIssuesReferences)" \
       || { printf 'implement-lib: could not read the closing-issue link set — fix or verify by hand BEFORE merging\n' >&2; return 20; }
-    linked="$(printf '%s' "$refs_json" | jq -r --arg slug "$slug" \
-                '[.closingIssuesReferences[]
-                  | select((.repository.owner.login + "/" + .repository.name) == $slug)
-                  | .number] | sort | join(",")')" \
+    linked="$(_il_linked_issues "$refs_json" "$slug")" \
       || { printf 'implement-lib: could not parse the closing-issue link set\n' >&2; return 20; }
+    linked="$(printf '%s' "$linked" | tr ' ' '\n' | sed '/^$/d' | sort -nu | paste -sd, -)"
     [ "$linked" = "$want" ] && break
     [ "$_try" = 5 ] || sleep 2
   done

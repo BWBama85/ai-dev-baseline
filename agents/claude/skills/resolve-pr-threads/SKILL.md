@@ -626,6 +626,17 @@ attributed to a commit it did not read. That is the same predicate `dispatch-swe
 steps down, and it means this cannot review a fix diff you have committed but not pushed — that is
 the local convergence loop's job (#491), deliberately not this one's.
 
+**Then read what it found — `dispatch-review` prints only a status and a path.** Read the reply
+through the validating reader, exactly as `/implement-issue` step 9 does, and never by opening
+`review.md` yourself:
+
+```bash
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" read-artifact .claude/state review
+```
+
+`18`/`19` mean the reply on disk no longer carries a usable verdict: it is left in place to inspect,
+nothing is emitted, and the local review is treated as not having completed.
+
 **Its findings carry no thread id, so they do NOT enter the findings file.** 4a's grammar is
 `<class>TAB<path[:line]>TAB<thread-id>TAB<summary>` and a finding with no thread id is explicitly
 not swept — the same rule a task-mode comment already falls under. Treat these findings exactly

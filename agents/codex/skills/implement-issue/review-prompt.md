@@ -131,6 +131,10 @@ independent reviewer):
    bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-review [--slot N] .codex/state   # the subagent's reply on stdin
    ```
 
+   **Pass `--slot N` whenever this is not the first review slot** — the same number the dispatched
+   path writes `review-N.md` under. Without it the publisher writes `review.md`, and a refused
+   or later publication at that name removes the first slot's result.
+
    `--prompt-only` returns *before* any dispatch, so this path produces no `review.md` at all and
    a trailer required in the prompt would be validated nowhere — the grammar would cover dispatched
    slots only, which is the unvalidated second shape #488 exists to close. The publisher validates
