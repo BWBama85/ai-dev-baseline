@@ -2522,6 +2522,30 @@ EOF
   printf '%s' "$out" | LC_ALL=C sort -u
 }
 
+# adb_git_remote_for_slug <owner/repo> — the NAME of this checkout's git remote that points at that
+# repository, compared with adb_slug_eq. `origin` wins when it is one of them (several remotes naming
+# one repository are interchangeable, so this is a preference, not a guess); otherwise the first
+# match in git's own config order. Prints the name; 1 when no remote points there.
+# The fetch-side partner of adb_pr_query_slug: once a PR's repository is resolved, its base must be
+# fetched from THAT repository — in a fork checkout `origin` is the fork, and a base fetched from it
+# is absent, stale or divergent, so the merge base is taken against the wrong history.
+adb_git_remote_for_slug() {
+  local want="${1:-}" line key name url slug first=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%% *}"; url="${line#* }"
+    name="${key#remote.}"; name="${name%.url}"
+    slug="$(_adb_remote_url_slug "$url")" || continue
+    adb_slug_eq "$slug" "$want" || continue
+    if [ "$name" = origin ]; then printf '%s' origin; return 0; fi
+    [ -n "$first" ] || first="$name"
+  done <<EOF
+$(git config --get-regexp '^remote\..*\.url$' 2>/dev/null)
+EOF
+  [ -n "$first" ] || return 1
+  printf '%s' "$first"
+}
+
 # adb_git_origin_slug — ONE `owner/repo` for this checkout, for a caller that must name a single
 # repository (`gh --repo <slug>`). `origin` when it resolves, else the sole GitHub remote when there
 # is exactly one; non-zero when neither holds, because picking arbitrarily from several is a guess.

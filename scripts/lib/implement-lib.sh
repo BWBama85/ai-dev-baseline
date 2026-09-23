@@ -1929,8 +1929,23 @@ cmd_read_artifact() {
   # The source file is left where it is, so the refused reply stays inspectable at its path.
   case "$which" in
     review|review-*)
+      # THE VALIDATED BYTES MUST BE THE EMITTED BYTES. `_il_verdict_read` reads a NAME; the
+      # emission below reads the DESCRIPTOR held on the private copy since creation. So the name
+      # is proven to be that inode immediately before AND after validation: a replacement that
+      # carried a valid trailer can no longer vouch for a malformed original. A swap installed and
+      # removed entirely inside the validation window is the same stated residual as the copy step.
       local _vrc
+      if ! _il_same_inode "$_cp" "$_rfd2"; then
+        exec {_rfd2}<&-; rm -f "$_cp"
+        printf 'implement-lib: the staged copy of %s was replaced before validation — refusing\n' "$f" >&2
+        return 20
+      fi
       _il_verdict_read "$_cp" >/dev/null; _vrc=$?
+      if [ "$_vrc" -eq 0 ] && ! _il_same_inode "$_cp" "$_rfd2"; then
+        exec {_rfd2}<&-; rm -f "$_cp"
+        printf 'implement-lib: the staged copy of %s was replaced during validation — refusing\n' "$f" >&2
+        return 20
+      fi
       if [ "$_vrc" -ne 0 ]; then
         exec {_rfd2}<&-
         rm -f "$_cp"
@@ -2519,6 +2534,10 @@ _IL_REVIEW_MAX_BYTES=8388608
 
 # _il_verdict_read <file> — validate a review reply whole, then its trailer. On success prints
 # `<required> <optional>`; prints nothing otherwise.
+# IT READS THE NAME, SEVERAL TIMES. Its byte rules, sentinel count and last-line read are separate
+# opens, so it validates whatever sits at <file> during each. A caller that acts on a HELD
+# DESCRIPTOR must prove the name is that descriptor's inode immediately before and after the call
+# (`_il_same_inode`); read-artifact and publish-review both do.
 #   0 parsed · 18 a byte rule (empty, oversize, NUL, no final newline) · 19 the trailer grammar
 #   · 20 not readable as a regular file
 _il_verdict_read() {
@@ -2691,6 +2710,14 @@ cmd_publish_review() {
     return 20
   fi
   vout="$(_il_verdict_read "$stage")"; rc=$?
+  # …and again AFTER validation: the check above binds the name to the held inode only up to the
+  # moment the validator opens it. A stage swapped during validation is refused here rather than
+  # left for the post-rename identity check, which cannot see a swap that was put back.
+  if [ "$rc" -eq 0 ] && ! _il_same_inode "$stage" "$_srfd"; then
+    exec {_srfd}<&-; rm -f "$stage"
+    printf 'implement-lib: the review reply stage was replaced during validation — refusing\n' >&2
+    return 20
+  fi
   if [ "$rc" -ne 0 ]; then
     exec {_srfd}<&-
     _il_verdict_say "$rc" "the native review reply"
@@ -2775,7 +2802,7 @@ cmd_dispatch_review() {
   # must never be attributed to a commit it did not read. Reviewing a round's own FIX diff before
   # it is pushed is a different question and belongs to the local convergence loop (#491).
   local -a crit_nums=()
-  local crit_slug="" crit_ipath="" crit_base=""
+  local crit_slug="" crit_ipath="" crit_base="" db_remote=origin
   if [ -n "$crit_pr" ]; then
     # THE GITIGNORE PROBE, which only `snapshot-issues` used to perform — and this path skips it.
     # It is not ceremony here: the criteria are written UNDER the state directory, and the diff
@@ -2839,8 +2866,13 @@ cmd_dispatch_review() {
     # FORCED (`+`): a remote-tracking ref is a mirror, and a stacked base is exactly the branch that
     # gets rewritten. Without the `+` git refuses the non-fast-forward update and the review fails
     # on a base that merely moved (git-fetch(1): "an optional leading + to a refspec").
-    git fetch -q origin "+refs/heads/$crit_base:refs/remotes/origin/$crit_base" 2>/dev/null \
-      || { printf 'implement-lib: dispatch-review: could not fetch PR %s'"'"'s base branch %s — the diff would be taken from a stale merge base\n' "$crit_pr" "$crit_base" >&2; return 20; }
+    # …FROM THE PR'S OWN REPOSITORY. Resolving the PR through adb_pr_query_slug and then fetching
+    # its base from `origin` split one question across two repositories: in a fork checkout origin
+    # is the fork, whose copy of the base is absent, stale or divergent.
+    db_remote="$(adb_git_remote_for_slug "$crit_slug")" \
+      || { printf 'implement-lib: dispatch-review: no git remote of this checkout points at %s, where PR %s lives — add it as a remote so its base can be fetched\n' "$crit_slug" "$crit_pr" >&2; return 20; }
+    git fetch -q "$db_remote" "+refs/heads/$crit_base:refs/remotes/$db_remote/$crit_base" 2>/dev/null \
+      || { printf 'implement-lib: dispatch-review: could not fetch PR %s'"'"'s base branch %s from %s — the diff would be taken from a stale merge base\n' "$crit_pr" "$crit_base" "$db_remote" >&2; return 20; }
     db="$crit_base"
     # closingIssuesReferences is fetched with `first: 100` by gh (probed via context7 against
     # cli/cli api/query_builder.go) and the JSON export drops pageInfo, so a PR closing more than
@@ -2914,8 +2946,8 @@ cmd_dispatch_review() {
   # pre-edit code. `git diff <merge-base>` covers committed, staged and unstaged changes, and the
   # merge-base keeps upstream drift out — the three-dot form's whole point, kept.
   local mb
-  mb="$(git merge-base "origin/$db" HEAD 2>/dev/null)" \
-    || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git merge-base origin/%s HEAD failed\n' "$db" >&2; return 20; }
+  mb="$(git merge-base "$db_remote/$db" HEAD 2>/dev/null)" \
+    || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git merge-base %s/%s HEAD failed\n' "$db_remote" "$db" >&2; return 20; }
   # Capped in-stream at one past the result bound: a review prompt past it is unreadable by any
   # slot anyway, and an uncapped diff could fill the state filesystem before any bound applied.
   # THE BYTES DECIDE, never the producer's status: a diff of exactly one past the bound exits 0,
@@ -2929,7 +2961,7 @@ cmd_dispatch_review() {
   git diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
   case "$?" in
     0|141) : ;;
-    *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the origin/%s merge-base failed\n' "$db" >&2; return 20 ;;
+    *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the %s/%s merge-base failed\n' "$db_remote" "$db" >&2; return 20 ;;
   esac
   _dafter="$(_il_fd_size "$_rpfd")" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
@@ -3428,10 +3460,13 @@ cmd_dispatch_sweep() {
         || { _sweep_abort "could not envelope a finding"; return 20; }
     done < "$findings"
     printf '\n%s\n' 'The DIFF of the pull request follows (first-party).' 1>&"$pfd"
-    git fetch -q origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>/dev/null \
-      || { _sweep_abort "could not fetch the base branch $base_ref — the diff would be taken from a stale merge base"; return 20; }
-    mb="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null)" \
-      || { _sweep_abort "git merge-base origin/$base_ref HEAD failed — fetch the base branch"; return 20; }
+    local sw_remote
+    sw_remote="$(adb_git_remote_for_slug "$slug")" \
+      || { _sweep_abort "no git remote of this checkout points at $slug, where PR $pr lives — add it so its base can be fetched"; return 20; }
+    git fetch -q "$sw_remote" "+refs/heads/$base_ref:refs/remotes/$sw_remote/$base_ref" 2>/dev/null \
+      || { _sweep_abort "could not fetch the base branch $base_ref from $sw_remote — the diff would be taken from a stale merge base"; return 20; }
+    mb="$(git merge-base "$sw_remote/$base_ref" HEAD 2>/dev/null)" \
+      || { _sweep_abort "git merge-base $sw_remote/$base_ref HEAD failed — fetch the base branch"; return 20; }
     dbefore="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
     git diff "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
     case "$?" in 0|141) : ;; *) _sweep_abort "git diff against the merge-base failed"; return 20 ;; esac

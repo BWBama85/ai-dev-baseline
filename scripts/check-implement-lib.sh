@@ -3437,12 +3437,13 @@ chmod +x "$CB/git"
 cf CF_LINKS="$CFL2" CF_BASE=stack-1 CF_FETCH_LOG="$work/cf-fetch.log" >/dev/null
 has "$(cat "$work/cf-fetch.log")" '+refs/heads/stack-1:refs/remotes/origin/stack-1' \
    "52 the PR base is fetched with a FORCED refspec, so a force-pushed stack base still refreshes"
-eq "$(grep -c 'git fetch -q origin "+refs/heads/' "$IL")" 2 "52 …and so is dispatch-sweep's, the sibling the sweep found"
+eq "$(grep -c 'git fetch -q "\$[a-z_]*remote" "+refs/heads/' "$IL")" 2 "52 …and so is dispatch-sweep's, the sibling the sweep found"
 
 # THE PR'S REPOSITORY, NOT ORIGIN: in a fork checkout origin is the fork.
 FK="$work/cffork"; cp -R "$CR" "$FK"
 ( cd "$FK" && git remote set-url origin https://github.com/contrib/r.git \
-  && git remote add upstream https://github.com/o/r.git ) >/dev/null 2>&1
+  && git remote add upstream https://github.com/o/r.git \
+  && git update-ref refs/remotes/upstream/main refs/remotes/origin/main ) >/dev/null 2>&1
 cat > "$CB/gh" <<'SH'
 #!/usr/bin/env bash
 [ -n "${CF_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$CF_ARGS_LOG"
@@ -3458,6 +3459,73 @@ SH
 eq "$?" 0 "52 a fork checkout (origin = the fork, upstream = the parent) reviews the PR"
 has "$(grep '^pr view' "$work/cf-args.log")" '-R o/r' "52 …read from the PR's repository through adb_pr_query_slug, not from origin's fork"
 hasnt "$(grep '^pr view' "$work/cf-args.log")" 'contrib/r' "52 …and never asks the fork for a PR number it does not own"
+
+# ================= 53. PR #494 round 2: one repository, one inode ===============================
+# THE BASE COMES FROM THE PR'S REPOSITORY. Round 1 moved the PR read off `origin`; the base fetch
+# still named it, so a fork checkout diffed against the FORK's copy of the base.
+: > "$work/cf-fetch2.log"
+( cd "$FK" && env PATH="$CB:$PATH" CF_HEAD="$CFH" CF_FETCH_LOG="$work/cf-fetch2.log" \
+    bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1
+eq "$?" 0 "53 a fork checkout's review completes against the parent's base"
+has "$(cat "$work/cf-fetch2.log")" 'upstream +refs/heads/main:refs/remotes/upstream/main' \
+   "53 …fetched from the remote that points at the PR's repository (upstream), not origin"
+hasnt "$(cat "$work/cf-fetch2.log")" 'fetch -q origin' "53 …and never from the fork"
+NR="$work/cfnoremote"; cp -R "$CR" "$NR"
+( cd "$NR" && git remote set-url origin https://github.com/contrib/r.git ) >/dev/null 2>&1
+cat > "$CB/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "repo view") printf 'o/r\n' ;;
+  "pr view") printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main","closingIssuesReferences":[]}\n' "${CF_HEAD:-}" ;;
+  *) exit 3 ;;
+esac
+SH
+( cd "$NR" && git remote add other https://github.com/x/y.git ) >/dev/null 2>&1
+( cd "$NR" && env PATH="$CB:$PATH" CF_HEAD="$CFH" bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1
+eq "$?" 20 "53 no remote pointing at the PR's repository refuses (20) — never a fallback to origin"
+( . "$ROOT/scripts/lib/common.sh"; cd "$FK" && adb_git_remote_for_slug O/R ) > "$work/rfs.out" 2>&1
+eq "$(cat "$work/rfs.out")" upstream "53 adb_git_remote_for_slug compares case-insensitively"
+
+# VALIDATE THE INODE YOU EMIT. A shim replaces the private copy exactly once, at the named point,
+# with a NEW inode carrying a VALID trailer; the original is MALFORMED. Without the brackets the
+# replacement would vouch for the original, which is what the emission actually reads.
+SWB="$work/swapbin"; mkdir -p "$SWB"
+mk_swap() {   # <command-to-shim>
+  cat > "$SWB/$1" <<SH
+#!/usr/bin/env bash
+if [ -n "\${SWAP_DIR:-}" ] && [ ! -e "\$SWAP_DIR/.swapped" ]; then
+  for f in "\$SWAP_DIR"/.artifact.* "\$SWAP_DIR"/review-prompt-stage.*; do
+    [ -f "\$f" ] || continue
+    : > "\$SWAP_DIR/.swapped"
+    rm -f "\$f"; printf 'forged\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "\$f"
+  done
+fi
+exec "$(command -v "$1")" "\$@"
+SH
+  chmod +x "$SWB/$1"
+}
+SW="$work/swapstate"; mkdir -p "$SW"
+# (a) swapped at the SIZE step, before validation begins — the pre-validation bracket.
+rm -f "$SWB"/*; mk_swap wc
+printf 'finding\nADB-REVIEW-VERDICT v1 required=3\n' > "$SW/review.md"; rm -f "$SW/.swapped"
+SWO="$( ( env PATH="$SWB:$PATH" SWAP_DIR="$SW" bash "$IL" read-artifact "$SW" review ) 2>&1)"; SWR=$?
+eq "$SWR" 20 "53 a private copy replaced BEFORE validation is refused (20), not validated in its place"
+has "$SWO" 'replaced before validation' "53 …and says which moment"
+hasnt "$SWO" 'forged' "53 …emitting nothing"
+# (b) swapped DURING validation, at its last-line read — the post-validation bracket.
+rm -f "$SWB"/*; mk_swap awk
+printf 'finding\nADB-REVIEW-VERDICT v1 required=3 optional=0\n' > "$SW/review.md"; rm -f "$SW/.swapped"
+SWO="$( ( env PATH="$SWB:$PATH" SWAP_DIR="$SW" bash "$IL" read-artifact "$SW" review ) 2>&1)"; SWR=$?
+eq "$SWR" 20 "53 a private copy replaced DURING validation is refused (20)"
+has "$SWO" 'replaced during validation' "53 …and says which moment"
+# (c) publish-review's stage, swapped during validation.
+rm -f "$SWB"/*; mk_swap awk
+PS="$work/swappub"; mkdir -p "$PS"; rm -f "$PS/.swapped"
+SWO="$(printf 'native reply\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' \
+        | ( env PATH="$SWB:$PATH" SWAP_DIR="$PS" bash "$IL" publish-review "$PS" ) 2>&1)"; SWR=$?
+eq "$SWR" 20 "53 publish-review refuses a stage replaced during validation (20)"
+if [ -e "$PS/review.md" ]; then bad "53 …and publishes nothing"; else ok; fi
+rm -f "$SWB"/*
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

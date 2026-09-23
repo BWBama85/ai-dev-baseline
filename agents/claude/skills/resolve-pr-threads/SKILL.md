@@ -611,7 +611,19 @@ a second, local opinion on the same pushed head — useful on a PR you did not w
 declared reviewer is slow or unavailable. Skip it and the round proceeds exactly as before.
 
 ```bash
-bash "$HOME/.claude/scripts/lib/implement-lib.sh" dispatch-review --criteria-from-pr "$PR_NUM" .claude/state <token>
+# THE RUNG NAMES THE AGENT, and the manifest names the effort — resolved HERE, not borrowed from 4a,
+# because this dispatch runs first. A bare token carries no role, so without these the review would
+# invoke the first CONFIGURED token (possibly one that is not installed) at the workstation's
+# default effort rather than the one agents.toml declares.
+RUNG="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" review-rung claude)"
+REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
+EFFORT="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+case "$RUNG" in
+  independent*|same-model*)
+    bash "$HOME/.claude/scripts/lib/implement-lib.sh" dispatch-review ${EFFORT:+--effort "$EFFORT"} --criteria-from-pr "$PR_NUM" .claude/state "$REVIEW_TOKEN" ;;
+  *)  echo "local review skipped: no usable in-session reviewer (rung: ${RUNG:-none})" ;;
+esac
 ```
 
 The resolver has no run marker and no issue snapshots, so `dispatch-review` used to refuse (20)
