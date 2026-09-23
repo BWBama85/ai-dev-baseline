@@ -1789,6 +1789,11 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 printf '%s\n' '{"comments":{"totalCount":1,"nodes":[{"body":"@codex review"}]}}' > "$S/receipts-raw.json"
 w request-review --pr 1;  rc 20 "request-review: a receipt with no createdAt refuses to ask"
 rm -f "$S/receipts-raw.json"
+reset_fx; declare_bots "[\"$CODEX\"]"
+printf '%s\n' '{"comments":{"totalCount":1,"nodes":[{"createdAt":"'"$AFTER_AT"'","body":null}]}}' > "$S/receipts-raw.json"
+w request-review --pr 1;  rc 20 "request-review: a receipt with a null body refuses to ask"
+if [ -f "$S/posted" ]; then bad "request-review: nothing may be posted over a receipt with no body"; else ok; fi
+rm -f "$S/receipts-raw.json"
 
 # More than 100 comments means the receipt cannot be proved absent -> refuse, never re-ask.
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx

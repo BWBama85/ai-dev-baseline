@@ -630,6 +630,12 @@ status_fx "chatgpt-codex-connector[bot]" "$AFTER_AT" "Running"
 STUB_FAIL_COMMENT_READ=1 g gate --pr 7
 eq "$RC_" "20" "#447: an unreadable status-comment body -> 20, never a guess"
 reset_fx
+printf '%s\n' '[{"id":5454357194,"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"'"$AFTER_AT"'","body":null}]' > "$S/comments.json"
+g gate --pr 7;  eq "$RC_" "20" "#447: a fresh reviewer comment whose body reads null -> 20, never an ordinary comment"
+reset_fx
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"'"$AFTER_AT"'","body":"x"}]' > "$S/comments.json"
+g gate --pr 7;  eq "$RC_" "20" "#447: a fresh reviewer comment with no id -> 20, never an ordinary comment"
+reset_fx
 status_fx "chatgpt-codex-connector[bot]" "$BEFORE_AT" "Running"
 g gate --pr 7
 eq "$RC_" "16" "#447: a stale status comment is not read at all"
@@ -878,7 +884,7 @@ gout gate --pr 7;  eq "$RC_" "0" "a TRUNCATED reactions connection falls back to
 g gate --pr 7;     has "$OUT" "more than 100 thumbs-up reactions" "the fallback says which surface overflowed"
 reset_fx
 printf '%s\n' '[{"user":{"login":"a-human"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments.json"
-printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments2.json"
+printf '%s\n' '[{"id":2001,"user":{"login":"chatgpt-codex-connector"},"created_at":"'"$AFTER_AT"'","body":"x"}]' > "$S/comments2.json"
 printf '101\n' > "$S/comments-total.txt"
 g gate --pr 7;  eq "$RC_" "21" "a TRUNCATED comments connection falls back to the paginated read"
 # THE FALLBACK MUST ADDRESS THE SAME REPOSITORY THE SNAPSHOT DID. It first spelled

@@ -935,13 +935,16 @@ adb_pw_receipts() {
       # honoured as a receipt nor dismissed as absent — refuse, rather than let it read as absence.
       | if any($cm.nodes[]; ((.createdAt | type) != "string") or ((.createdAt // "") | length) == 0)
         then error("a comment carries no usable createdAt") else . end
+      # ...and one with no string body cannot be read as a trigger or as not one.
+      | if any($cm.nodes[]; (.body | type) != "string")
+        then error("a comment carries no body") else . end
       | { head_sha:  ($p.headRefOid // ""),
           head_ref:  ($p.headRefName // ""),
           head_slug: ($p.headRepository.nameWithOwner // ""),
           base_slug: ($p.baseRepository.nameWithOwner // ""),
           state:     (if ($p.state // "") == "MERGED" then "closed"
                       else ($p.state // "" | ascii_downcase) end),
-          comments:  [ $cm.nodes[] | {created_at:.createdAt, body:(.body // "")} ] }' \
+          comments:  [ $cm.nodes[] | {created_at:.createdAt, body:.body} ] }' \
       2>/dev/null)" \
     || { echo "$label: could not parse the comments of PR #$n (errors, an unexpected shape, or more than 100 comments)" >&2
          return 2; }

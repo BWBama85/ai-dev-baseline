@@ -3563,9 +3563,10 @@ ADB_REVIEW_STATUS_MARKERS='<!-- codex-pull-request-review-summary -->'
 #
 # Bodies are read one comment at a time, and only for a declared reviewer's comment newer than
 # <anchor>: the snapshot deliberately carries no bodies, so this costs a read only while such a
-# comment exists. A comment with no numeric id cannot be looked up and is kept, which keeps today's
-# `attention` rather than guessing. Dropping a status comment removes a signal and adds none, so a
-# reviewer reads `clean` afterwards only on a fresh `+1` or `APPROVED` of its own.
+# comment exists. Such a comment with no numeric id, or whose body is not a string, cannot be
+# classified and is unreadable (2), never kept as an ordinary comment. Dropping a status comment
+# removes a signal and adds none, so a reviewer reads `clean` afterwards only on a fresh `+1` or
+# `APPROVED` of its own.
 adb_drop_status_comments() {
   local label="$1" n="$2" who="$3" comments="$4" anchor="$5" slug="$6"
   local match ids id raw status drop="[]"
@@ -3573,14 +3574,16 @@ adb_drop_status_comments() {
   ids="$(printf '%s' "$comments" | jq -r --arg who "$who" --arg a "$anchor" "$match"'
       ($who | split("\n") | map(select(length > 0))) as $w
       | .[] | select((.user.login // "") | adb_declared_reviewer($w))
-      | select((.created_at // "") > $a) | select((.id | type) == "number") | .id' 2>/dev/null)" \
-    || { echo "$label: could not select the reviewer comments of PR #$n" >&2; return 2; }
+      | select((.created_at // "") > $a)
+      | if (.id | type) == "number" then .id else error("a fresh reviewer comment carries no id") end' 2>/dev/null)" \
+    || { echo "$label: could not select the reviewer comments of PR #$n (a fresh one carries no usable id?)" >&2; return 2; }
   for id in $ids; do
     raw="$(gh api "repos/$slug/issues/comments/$id" 2>/dev/null)" \
       || { echo "$label: could not read comment $id on PR #$n" >&2; return 2; }
     status="$(printf '%s' "$raw" | jq -r --arg m "$ADB_REVIEW_STATUS_MARKERS" '
         if type != "object" then error("not a comment") else . end
-        | (.body // "") as $b
+        | if (.body | type) != "string" then error("no body") else . end
+        | .body as $b
         | [$m | split("\n")[] | select(length > 0) | . as $p | $b | startswith($p)]
         | any' 2>/dev/null)" \
       || { echo "$label: could not parse comment $id on PR #$n" >&2; return 2; }
