@@ -8364,8 +8364,9 @@ survive is the part a later reader needs.
              never pairs, and review objects are untouched. (2) A declared reviewer's fresh comment
              whose body begins with a known status marker is dropped before classification. Its body
              is read one comment at a time, over REST, only while such a comment is fresh; the snapshot
-             still carries no bodies. An unreadable body is unreadable (20), and a comment with no id
-             is kept.
+             still carries no bodies. A fresh reviewer comment with no numeric id, or whose body is not
+             a string, is unreadable (20). A comment whose timestamp is not a valid instant is never
+             dropped; the classifier refuses it.
 - placement: `scripts/lib/common.sh` (`adb_reviewer_classes`, `adb_drop_status_comments`,
              `ADB_REVIEW_STATUS_MARKERS`); tests in `check-pr-review.sh`, `check-pr-watch.sh` (with three
              `--mutation` rows) and `check-common-lib.sh`
