@@ -704,4 +704,6 @@ One line per resolved review thread, newest last.
 - `reuse-missed` `scripts/lib/implement-lib.sh:2842` `3069d54` `PRRT_kwDOTfywrM6k_q-s` PR #494 2026-09-23 — PR repository resolved via adb_pr_query_slug but its base still fetched from the origin remote, the fork
 - `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:612` `3069d54` `PRRT_kwDOTfywrM6k_q-y` PR #494 2026-09-23 — local review dispatched a bare token with no rung resolution and no manifest effort
 - `toctou` `scripts/lib/implement-lib.sh:1933` `3069d54` `PRRT_kwDOTfywrM6k_q-4` PR #494 2026-09-23 — read-artifact validated its private copy by name but emitted the held descriptor
+- `partial-validation` `scripts/lib/common.sh:3580` `7fe611e` `PRRT_kwDOTfywrM6lE9_E` PR #501 2026-09-23 — a status-comment read with a null body was treated as an ordinary comment instead of unreadable
+- `partial-validation` `scripts/lib/implement-lib.sh:3275` `0fb9607` `PRRT_kwDOTfywrM6lE9_I` PR #501 2026-09-23 — the reply size was checked before the synthesized newline, so an at-bound reply was refused as a verdict error
 <!-- adb:hits:end -->
