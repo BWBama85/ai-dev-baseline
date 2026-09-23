@@ -3272,7 +3272,12 @@ cmd_dispatch_review() {
   # so an otherwise-whole reply is terminated here rather than refused by the byte rule. The size
   # bound above already rules out truncation; every other byte rule still applies.
   if [ "$rc" -eq 0 ] && [ -n "$(tail -c 1 "$out" 2>/dev/null)" ]; then
-    printf '\n' >> "$out" || rc=20
+    if [ "$_rsz" -ge 8388608 ]; then
+      printf 'implement-lib: the review output at %s needs a final newline, which would take it past the 8388608-byte result bound — treating the slot as failed\n' "$out" >&2
+      rc=20
+    else
+      printf '\n' >> "$out" || rc=20
+    fi
   fi
   if [ "$rc" -eq 0 ]; then
     _vout="$(_il_verdict_read "$out")"; local _vrc=$?

@@ -3378,7 +3378,8 @@ cat > "$work/rcbin/codex" <<'SH'
 last=""; prev=""
 for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
 cat > /dev/null
-[ -n "$last" ] && printf '%b' "${RC_REPLY:-x\n}" > "$last"
+if [ -n "$last" ] && [ -n "${RC_REPLY_FILE:-}" ]; then cat "$RC_REPLY_FILE" > "$last"
+elif [ -n "$last" ]; then printf '%b' "${RC_REPLY:-x\n}" > "$last"; fi
 exit 0
 SH
 chmod +x "$work/rcbin/codex"
@@ -3400,6 +3401,11 @@ eq "$(rcdisp 'finding one\nfinding two, cut off mid-')" 28 "51 …and a truncate
 # THE CLI's OWN SHAPE: codex's --output-last-message ends the final message without a newline.
 eq "$(rcdisp 'a REQUIRED finding\n\nADB-REVIEW-VERDICT v1 required=1 optional=0')" 0 \
    "51 a dispatched reply whose trailer lacks only the final newline completes at 0"
+# ...but one ALREADY at the bound cannot take the newline: that is the result bound, not a verdict.
+_tr='ADB-REVIEW-VERDICT v1 required=0 optional=0'
+{ head -c $(( 8388608 - ${#_tr} - 1 )) /dev/zero | tr '\0' 'x'; printf '\n%s' "$_tr"; } > "$work/at-bound"
+eq "$( ( cd "$RCR" && env PATH="$work/rcbin:$PATH" RC_REPLY_FILE="$work/at-bound" bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1; echo "$?")" 20 \
+   "51 an unterminated reply already at the 8388608-byte bound is the result bound (20), not a verdict error (28)"
 
 # ================= 52. PR #494 round 1: the reviewer's seven findings, each on its own witness ===
 # CRLF: a CR-only blank line after a CRLF trailer is BLANK, not a displaced last line.
