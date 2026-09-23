@@ -3316,7 +3316,7 @@ adb_reviewer_evidence() {
 # THE CLASSIFICATION (#167 §4), and it is deliberately neutral — no exit codes, no verdict:
 #
 #   CHANGES_REQUESTED at this head              → rejected
-#   COMMENTED at this head, or a FRESH comment   → attention
+#   COMMENTED at this head, or a FRESH comment   → attention (unless paired with a `+1`, below)
 #   APPROVED at this head, or a FRESH `+1`       → clean
 #   stale / PENDING / DISMISSED / nothing        → none
 #   unrecognized state, or an undatable record   → unknown
@@ -3569,15 +3569,22 @@ ADB_REVIEW_STATUS_MARKERS='<!-- codex-pull-request-review-summary -->'
 # `APPROVED` of its own.
 adb_drop_status_comments() {
   local label="$1" n="$2" who="$3" comments="$4" anchor="$5" slug="$6"
-  local match ids id raw status drop="[]"
+  local match rows at id raw status drop="[]" tab
+  tab="$(printf '\t')"
   match="$(adb_reviewer_match_jq)"
-  ids="$(printf '%s' "$comments" | jq -r --arg who "$who" --arg a "$anchor" "$match"'
+  rows="$(printf '%s' "$comments" | jq -r --arg who "$who" "$match"'
       ($who | split("\n") | map(select(length > 0))) as $w
       | .[] | select((.user.login // "") | adb_declared_reviewer($w))
-      | select((.created_at // "") > $a)
-      | if (.id | type) == "number" then .id else error("a fresh reviewer comment carries no id") end' 2>/dev/null)" \
-    || { echo "$label: could not select the reviewer comments of PR #$n (a fresh one carries no usable id?)" >&2; return 2; }
-  for id in $ids; do
+      | "\(.created_at // "")\t\(if (.id | type) == "number" then .id else "" end)"' 2>/dev/null)" \
+    || { echo "$label: could not select the reviewer comments of PR #$n" >&2; return 2; }
+  while IFS="$tab" read -r at id; do
+    # ONLY A VALID, FRESH INSTANT IS A CANDIDATE. A malformed timestamp is left in the evidence for
+    # adb_reviewer_classes to refuse; dropping it here would hide it from that check.
+    adb_is_utc_instant "$at" || continue
+    [ "$at" \> "$anchor" ] || continue
+    case "$id" in
+      ''|*[!0-9]*) echo "$label: a fresh reviewer comment on PR #$n carries no usable id" >&2; return 2 ;;
+    esac
     raw="$(gh api "repos/$slug/issues/comments/$id" 2>/dev/null)" \
       || { echo "$label: could not read comment $id on PR #$n" >&2; return 2; }
     status="$(printf '%s' "$raw" | jq -r --arg m "$ADB_REVIEW_STATUS_MARKERS" '
@@ -3591,7 +3598,9 @@ adb_drop_status_comments() {
       echo "$label: comment $id on PR #$n is a review-status marker, not a review — ignored" >&2
       drop="$(printf '%s' "$drop" | jq -c --argjson id "$id" '. + [$id]')" || return 2
     fi
-  done
+  done <<EOF
+$rows
+EOF
   printf '%s' "$comments" | jq -c --argjson drop "$drop" \
     'map(select(.id as $i | ($drop | any(. == $i)) | not))' 2>/dev/null \
     || { echo "$label: could not filter the reviewer comments of PR #$n" >&2; return 2; }

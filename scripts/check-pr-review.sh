@@ -636,6 +636,10 @@ reset_fx
 printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"'"$AFTER_AT"'","body":"x"}]' > "$S/comments.json"
 g gate --pr 7;  eq "$RC_" "20" "#447: a fresh reviewer comment with no id -> 20, never an ordinary comment"
 reset_fx
+printf '%s\n' '[{"id":5454357194,"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"zz","body":"<!-- codex-pull-request-review-summary -->"}]' > "$S/comments.json"
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "20" "#447: a status comment with a malformed timestamp is never dropped — the classifier refuses it -> 20, never 0"
+reset_fx
 status_fx "chatgpt-codex-connector[bot]" "$BEFORE_AT" "Running"
 g gate --pr 7
 eq "$RC_" "16" "#447: a stale status comment is not read at all"
