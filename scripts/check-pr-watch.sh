@@ -33,7 +33,8 @@
 #   3. THERE ARE THREE SURFACES, AND THEY ARE ORDERED. The connector has two operating modes and
 #      the repo does not pick which it gets: WITHOUT a Codex Cloud environment it posts a review
 #      object (+ inline threads) for findings and a bare `+1` reaction for a clean pass; WITH one it
-#      runs as a task and posts a single ISSUE COMMENT — no review, no threads, no reaction. Both
+#      runs as a task and posts findings as a single ISSUE COMMENT — no review, no threads, no
+#      reaction — and a clean pass as a `+1` plus a same-second comment, which pairs clean. Both
 #      shapes were observed on this repo the same day (PR #166 at 08:01 vs PR #178 at 19:30, after
 #      an environment was created). Reading only reviews wedges at `pending` forever on the second.
 #      Findings outrank clean; a review at the head outranks a comment.
@@ -105,13 +106,15 @@ check_exit_guard "check-pr-watch" "rm -rf \"$work\""
 # thing the section claims to catch, runs the WHOLE suite against the broken copy, and requires it
 # back at exit 1 carrying THAT CASE'S OWN witness (#213's `fires:` contract).
 #
-# SCOPED TO SECTION 11, said plainly so nobody reads it as more: it proves the BOUNDED-WAIT cases
-# can fire. It is not a mutation suite for `pr-watch.sh` at large, and the classification sections
-# above are covered by their own assertions and by nothing here.
+# SCOPED TO SECTION 11 AND #447's PAIR RULE, said plainly so nobody reads it as more: it proves the
+# BOUNDED-WAIT cases and the `+1`/comment pairing and status-comment filter can fire. It is not a
+# mutation suite for `pr-watch.sh` at large; the other classification sections are covered by their
+# own assertions and by nothing here.
 #
-# TWO POOLS, because `check_mutation_pool` builds one target path per call and these witnesses live
-# in two files — the wait loop's own reporting (`pr-watch.sh`) and the staleness rule it delegates
-# to (`common.sh`). That is the harness's shape, not a judgement about the rows.
+# THREE POOLS, because `check_mutation_pool` builds one target path per call and these witnesses
+# live in two files — the wait loop's own reporting (`pr-watch.sh`), and the staleness rule and
+# #447's pair rule it delegates to (`common.sh`). That is the harness's shape, not a judgement about
+# the rows.
 #
 # THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. Every row below reads a
 # FAILURE, and `_check_mut_witness` only asks whether SOME `FAIL:` line carries the row's witness —
@@ -223,6 +226,25 @@ if [ "$MODE" = mutation ]; then
     'wait: says WHY the previous era'
   check_mutation_pool "pr-watch-staleness" "$work/ms" mut_prep_common mut_run 4
 
+  # --- the #447 pair rule and status-comment filter ---------------------------------------------
+  check_mut_reset
+  # The `+1` no longer has to be as new as the comment, so a reviewer speaking again reads clean.
+  check_mut "pair-ignores-order" \
+    'if [ -n "$pnew" ] && ! [ "$cnew" \> "$pnew" ]; then' \
+    'if [ -n "$pnew" ]; then' \
+    'pair: a comment NEWER than the'
+  # The `+1` is no longer required at all, so a lone task-mode comment stops reading as findings.
+  check_mut "pair-without-plus1" \
+    'if [ -n "$pnew" ] && ! [ "$cnew" \> "$pnew" ]; then' \
+    'if :; then' \
+    'task mode: an issue comment from the reviewer, newer than the head -> findings'
+  # The status marker is recognised and then kept, so a Running review reads as findings again.
+  check_mut "status-comment-kept" \
+    'if [ "$status" = "true" ]; then' \
+    'if false; then' \
+    'status: a fresh Running status comment alone is pending'
+  check_mutation_pool "pr-watch-pair" "$work/mp" mut_prep_common mut_run 3
+
   check_summary "pr-watch-mutation"
   exit 0
 fi
@@ -246,6 +268,8 @@ HEAD_REF="feature"
 ARRIVED_AT="2026-07-25T04:42:15Z"
 AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR #88
 BEFORE_AT="2026-07-25T04:40:00Z"
+LATER_AT="2026-07-25T04:46:00Z"    # fresh, and newer than AFTER_AT
+AFTER_PLUS1S_AT="2026-07-25T04:45:24Z"   # one second after AFTER_AT
 # A committer date deliberately EARLIER than every reaction below. Under the pre-#175 rule this
 # alone produced `clean`; it is served by the stub's (now unused) commit route purely so the tests
 # can prove the module never asks for it.
@@ -342,6 +366,9 @@ fx() {
   return 0
 }
 case "$url" in
+STUB
+check_pr_comment_stub_body
+cat <<'STUB'
   */reviews*)
     [ "${STUB_FAIL_REVIEWS:-0}" = "1" ] && exit 1
     [ "${STUB_EMPTY_REVIEWS:-0}" = "1" ] && exit 0
@@ -483,6 +510,7 @@ called()          { check_pr_called "$S/calls" "$1"; }
 review_fx()       { check_pr_reviews_json   "$S/reviews.json"   "$@"; }
 _reviews_into()   { check_pr_reviews_json   "$@"; }
 comment_fx()      { check_pr_comments_json  "$S/comments.json"  "$@"; }
+status_fx()       { check_pr_status_comment_json "$S/comments.json" "$@"; }
 _comments_into()  { check_pr_comments_json  "$@"; }
 reaction_fx()     { check_pr_reactions_json "$S/reactions.json" "$@"; }
 _reactions_into() { check_pr_reactions_json "$@"; }
@@ -827,8 +855,67 @@ STUB_GRAPHQL_FAIL=1 w observe --pr 1; rc 20 "unreadable: a failed single-read ->
 # say, even if a `+1` from an earlier pass is still sitting there.
 reset_fx; declare_bots "[\"$CODEX\"]"
 comment_fx "${CODEX}[bot]" "$AFTER_AT"
+reaction_fx "$CODEX" "+1" "$BEFORE_AT"
+w observe --pr 1;  rc 10 "precedence: a fresh comment outranks a STALE '+1'"
+
+# #447: A FRESH `+1` NOT OLDER THAN THE SAME REVIEWER'S NEWEST FRESH COMMENT IS A CLEAN PASS — the
+# connector's clean-pass shape is a `+1` and a same-second comment.
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
-w observe --pr 1;  rc 10 "precedence: a fresh comment outranks a fresh '+1'"
+wout observe --pr 1; rc 0 "pair: a fresh '+1' and a same-second fresh comment are a clean pass"
+eq "$OUT" "clean $HEAD_SHA" "pair: the paired clean pass prints the clean verdict"
+w observe --pr 1
+has "$OUT" "+1 at $AFTER_AT and a comment at $AFTER_AT" "pair: the verdict names both signals it folded"
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$LATER_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 10 "pair: a comment NEWER than the '+1' is findings"
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_PLUS1S_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 10 "pair: a comment ONE SECOND newer than the '+1' is findings"
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_AT" "${CODEX}[bot]" "$LATER_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 10 "pair: the '+1' must not be older than the NEWEST fresh comment"
+reset_fx; declare_bots "[\"$CODEX\"]"
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 10 "pair: a COMMENTED review at the head still wins over a paired '+1'"
+# Across reviewers the pair is still one reviewer's pass, never the set's (#185).
+reset_fx; declare_bots "[\"$CODEX\", \"gemini-code-assist[bot]\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "pair: one paired reviewer beside a silent one is still pending (#185)"
+
+# #447: THE CONNECTOR'S REVIEW-STATUS COMMENT IS A PROGRESS MARKER, NOT A REVIEW. It is created when
+# a review starts (`Running`) and edited in place, so a watch must wait through it.
+reset_fx; declare_bots "[\"$CODEX\"]"
+status_fx "${CODEX}[bot]" "$AFTER_AT" "Running"
+w observe --pr 1;  rc 11 "status: a fresh Running status comment alone is pending, not findings"
+has "$OUT" "review-status marker" "status: the ignored status comment is named"
+reset_fx; declare_bots "[\"$CODEX\"]"
+status_fx "${CODEX}[bot]" "$AFTER_AT" "Completed"
+reaction_fx "$CODEX" "+1" "$LATER_AT"
+w observe --pr 1;  rc 0 "status: a Completed status comment and a later '+1' are a clean pass"
+reset_fx; declare_bots "[\"$CODEX\"]"
+status_fx "${CODEX}[bot]" "$AFTER_AT" "Running"
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+w observe --pr 1;  rc 10 "status: the real review beside an ignored status comment is findings"
+reset_fx; declare_bots "[\"$CODEX\"]"
+status_fx "${CODEX}[bot]" "$AFTER_AT" "Running"
+STUB_FAIL_COMMENT_READ=1 w observe --pr 1
+rc 20 "status: an unreadable status-comment body is unreadable, never a guess"
+# The Running scaffold, then the real review on a later poll: the watch waits through the first.
+reset_fx; declare_bots "[\"$CODEX\"]"
+status_fx "${CODEX}[bot]" "$AFTER_AT" "Running"
+cp "$S/comments.json" "$S/comments.1.json"
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+cp "$S/reviews.json" "$S/reviews.2.json"; printf '[]\n' > "$S/reviews.json"
+w wait --pr 1 --interval 1 --max-secs 60
+rc 10 "status: wait sits through a Running status comment and returns the real review"
 
 # ...and a review at the head still outranks a comment (the commit-scoped claim is strongest).
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -1021,7 +1108,7 @@ for broken in '"reviews":null' '"reviews":{"totalCount":0}' '"reviews":{"totalCo
   eq "$OUT" "" "...and prints no verdict line ($broken)"
 done
 reset_fx; declare_bots "[\"$CODEX\"]"
-comment_fx  "${CODEX}[bot]" "$AFTER_AT"
+comment_fx  "${CODEX}[bot]" "$LATER_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1; rc 10 "control: the task-mode comment is seen when the comments surface reads normally"
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -1701,6 +1788,11 @@ done
 reset_fx; declare_bots "[\"$CODEX\"]"
 printf '%s\n' '{"comments":{"totalCount":1,"nodes":[{"body":"@codex review"}]}}' > "$S/receipts-raw.json"
 w request-review --pr 1;  rc 20 "request-review: a receipt with no createdAt refuses to ask"
+rm -f "$S/receipts-raw.json"
+reset_fx; declare_bots "[\"$CODEX\"]"
+printf '%s\n' '{"comments":{"totalCount":1,"nodes":[{"createdAt":"'"$AFTER_AT"'","body":null}]}}' > "$S/receipts-raw.json"
+w request-review --pr 1;  rc 20 "request-review: a receipt with a null body refuses to ask"
+if [ -f "$S/posted" ]; then bad "request-review: nothing may be posted over a receipt with no body"; else ok; fi
 rm -f "$S/receipts-raw.json"
 
 # More than 100 comments means the receipt cannot be proved absent -> refuse, never re-ask.

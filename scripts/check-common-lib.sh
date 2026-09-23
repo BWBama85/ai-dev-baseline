@@ -2104,6 +2104,28 @@ eq "${ cls a "${ printf '[{"user":{"login":"a"},"state":"WEIRD","commit_id":"%s"
 eq "${ cls a "${ rv a APPROVED; }" "$N" "${ rx a +1 "$STALE"; }"; }" "clean" \
    "within-reviewer: a STALE '+1' beside that reviewer's APPROVED is still clean"
 
+# #447: A FRESH `+1` NOT OLDER THAN THE SAME REVIEWER'S NEWEST FRESH COMMENT IS CLEAN; every
+# neighbour of that shape keeps its old class.
+LATER="2026-07-25T04:46:00Z"
+eq "${ cls a "$N" "${ cm a "$FRESH"; }" "${ rx a +1 "$FRESH"; }"; }" "clean" \
+   "pair: a fresh '+1' and a same-second fresh comment -> clean"
+eq "${ cls a "$N" "${ cm a "$FRESH"; }" "${ rx a +1 "$LATER"; }"; }" "clean" \
+   "pair: a '+1' newer than the comment -> clean"
+eq "${ cls a "$N" "${ cm a "$LATER"; }" "${ rx a +1 "$FRESH"; }"; }" "attention" \
+   "pair: a comment newer than the '+1' -> attention"
+eq "${ cls a "$N" "${ cm a "$FRESH"; }" "${ rx a +1 "$STALE"; }"; }" "attention" \
+   "pair: a STALE '+1' cannot pair with a fresh comment -> attention"
+eq "${ cls a "$N" "${ cm a "$STALE"; }" "${ rx a +1 "$FRESH"; }"; }" "clean" \
+   "pair: a stale comment beside a fresh '+1' is simply the '+1' -> clean"
+eq "${ cls a "${ rv a COMMENTED; }" "${ cm a "$FRESH"; }" "${ rx a +1 "$FRESH"; }"; }" "attention" \
+   "pair: a COMMENTED review at the head is not outvoted by a paired '+1'"
+eq "${ cls a "$N" "${ cm a "$FRESH"; }" "${ rx b +1 "$FRESH"; }"; }" "attention" \
+   "pair: another login's '+1' does not pair with this reviewer's comment"
+eq "${ cls a "$N" "${ printf '[{"user":{"login":"a"},"created_at":"%s"},{"user":{"login":"a"},"created_at":"%s"}]' "$FRESH" "$LATER"; }" "${ rx a +1 "$FRESH"; }"; }" "attention" \
+   "pair: the '+1' is compared with the NEWEST fresh comment"
+eq "${ cls a "$N" "${ cm a ""; }" "${ rx a +1 "$FRESH"; }"; }" "unknown" \
+   "pair: an undatable comment beside a fresh '+1' still fails closed -> unknown"
+
 # THE ACROSS-REVIEWER ORDER IS NOT THE SAME ORDER, and the swapped pair IS #185: `none` outranks
 # `clean`, so a pass requires EVERY declared reviewer. Reusing the within-reviewer order here is
 # exactly the shipped bug — one fast `+1` reporting a clean pass for a set that had not looked.

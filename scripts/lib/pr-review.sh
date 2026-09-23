@@ -30,9 +30,10 @@
 # `pending`, and returned 16 forever. Unattended arming was off on precisely the cleanest PRs.
 #
 # And there is a wider shape. With a Codex Cloud environment the connector runs as a TASK and posts
-# a SINGLE ISSUE COMMENT — no review, no threads, no reaction. On a repo configured that way this
-# guard returned 16 on EVERY PR, so #87/#134's unattended arming was silently dead, disabled by a
-# vendor-side setting nobody in the repo changed.
+# its findings as a SINGLE ISSUE COMMENT — no review, no threads, no reaction. On a repo configured
+# that way this guard returned 16 on EVERY PR, so #87/#134's unattended arming was silently dead,
+# disabled by a vendor-side setting nobody in the repo changed. Its clean pass is a `+1` plus a
+# same-second comment, which the shared classifier reads as clean (#447).
 #
 # Both shapes were observed live on this repo, and they are disjoint: PRs #53/#54/#66/#83/#88 carry
 # a `+1` and zero reviews; #127/#137/#145/#146/#154/#166 carry a review and zero reactions; PR #184
@@ -66,7 +67,8 @@
 #   19 rejected — a declared reviewer left CHANGES_REQUESTED on this head SHA. Distinct from 16:
 #                the work exists and is described, rather than being waited for.
 #   21 attention — REVIEW COMPLETE, ATTENTION REQUIRED (#167 §3). A declared reviewer left a
-#                `COMMENTED` review at this head, or a fresh issue comment. The reviewer HAS spoken
+#                `COMMENTED` review at this head, or a fresh issue comment with no `+1` at least as
+#                new beside it (a `+1` that is makes the pair a clean pass, #447). The reviewer HAS spoken
 #                and is NOT satisfied, so the arm is withheld and the operator reads what it said.
 #                THIS IS DELIBERATELY NOT 0, and the distinction is the whole point: "the reviewer
 #                has spoken" is not the same claim as "the reviewer is satisfied", and only the

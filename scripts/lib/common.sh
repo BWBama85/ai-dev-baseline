@@ -3156,7 +3156,9 @@ adb_pr_snapshot() {
           reviews:   [ $rv.nodes[]
                        | {user:{login:(.author|actor)}, state:(.state // ""), commit_id:(.commit.oid)} ],
           comments:  [ $cm.nodes[]
-                       | {user:{login:(.author|actor)}, created_at:(.createdAt // "")} ],
+                       | {user:{login:(.author|actor)}, created_at:(.createdAt // ""),
+                          id:((.fullDatabaseId // null)
+                              | if type == "string" and test("^[0-9]{1,15}$") then tonumber else null end)} ],
           reactions: [ $rx.nodes[]
                        | {user:{login:(.user|actor)}, content:"+1", created_at:(.createdAt // "")} ] }' \
       2>/dev/null)" \
@@ -3184,7 +3186,7 @@ adb_pr_snapshot_query() {
 'state merged mergedAt headRefOid headRefName ' \
 'baseRepository{nameWithOwner} headRepository{nameWithOwner} ' \
 'reviews(last:100){totalCount nodes{author{login __typename} state commit{oid}}} ' \
-'comments(last:100){totalCount nodes{author{login __typename} createdAt}} ' \
+'comments(last:100){totalCount nodes{author{login __typename} createdAt fullDatabaseId}} ' \
 'reactions(content:THUMBS_UP,last:100){totalCount nodes{createdAt user{login __typename}}}' \
 '}}}'
 }
@@ -3314,10 +3316,17 @@ adb_reviewer_evidence() {
 # THE CLASSIFICATION (#167 §4), and it is deliberately neutral — no exit codes, no verdict:
 #
 #   CHANGES_REQUESTED at this head              → rejected
-#   COMMENTED at this head, or a FRESH comment   → attention
+#   COMMENTED at this head, or a FRESH comment   → attention (unless paired with a `+1`, below)
 #   APPROVED at this head, or a FRESH `+1`       → clean
 #   stale / PENDING / DISMISSED / nothing        → none
 #   unrecognized state, or an undatable record   → unknown
+#
+# ONE PAIR IS READ TOGETHER (#447): a fresh comment is NOT attention when the same reviewer's
+# newest fresh `+1` is not older than its newest fresh comment. The Codex connector reports a clean
+# pass as a `+1` plus a same-second comment, and the `+1` is its documented clean signal; a comment
+# NEWER than the `+1` is the reviewer speaking again and stays attention, as does a comment beside a
+# stale `+1` (the #167 case). Equal seconds count as paired. No comment body is read to decide this.
+# When it applies, one stderr line names both instants so the verdict is auditable.
 #
 # THE WITHIN-REVIEWER ORDER IS `rejected > attention > unknown > clean > none` — the STRONGEST
 # thing this one reviewer produced. Two positions in it are load-bearing:
@@ -3337,7 +3346,7 @@ adb_reviewer_evidence() {
 # Reusing one order for both is precisely the bug — it makes a single fast `+1` speak for the set.
 adb_reviewer_classes() {
   local label="$1" who="$2" evidence="$3" anchor="$4"
-  local w lw kind val cls best bestrank rank tab staled
+  local w lw kind val cls best bestrank rank tab staled cnew pnew
   tab="$(printf '\t')"
   # One pass per declared reviewer over the evidence. The set is small (a repo declares a handful of
   # bots) and so is the evidence, so the readable shape wins over a single-pass associative array —
@@ -3345,7 +3354,7 @@ adb_reviewer_classes() {
   # that enforces it and must stay parseable below it, so it keeps writing 3.2-safe shell; D30.)
   while IFS= read -r w; do
     [ -n "$w" ] || continue
-    best="none"; bestrank=0; staled=0
+    best="none"; bestrank=0; staled=0; cnew=""; pnew=""
     # `read` does the field splitting on the tab, rather than three parameter expansions unpicking a
     # space-delimited line by hand. `val` absorbs the remainder, so a value containing a tab (which
     # none of the three kinds can produce) degrades to an unrecognized one rather than a shifted field.
@@ -3389,7 +3398,13 @@ adb_reviewer_classes() {
             # `[ ]` is a REDIRECTION: the test would silently become `[ "$val" ]` (true for any
             # non-empty string) while creating a file named after the anchor, so EVERY signal would
             # read as fresh and the staleness rule would be gone with no error anywhere.
-            if [ "$kind" = "comment" ]; then cls="attention"; else cls="clean"; fi
+            # A fresh comment is folded AFTER the loop, once the newest `+1` is known (#447).
+            if [ "$kind" = "comment" ]; then
+              if [ -z "$cnew" ] || [ "$val" \> "$cnew" ]; then cnew="$val"; fi
+            else
+              cls="clean"
+              if [ -z "$pnew" ] || [ "$val" \> "$pnew" ]; then pnew="$val"; fi
+            fi
           elif [ "$staled" -eq 0 ]; then
             # The signal predates this head's arrival: it reviewed an earlier commit, so it is not
             # evidence about THIS one — `none`, never `clean`. Said out loud rather than dropped
@@ -3413,6 +3428,16 @@ adb_reviewer_classes() {
     done <<EOF
 $evidence
 EOF
+    if [ -n "$cnew" ]; then
+      if [ -n "$pnew" ] && ! [ "$cnew" \> "$pnew" ]; then
+        if [ "$best" = "clean" ]; then
+          echo "$label: '$w' left a +1 at $pnew and a comment at $cnew — the +1 is not older, so the pair reads as a clean pass" >&2
+        fi
+      else
+        rank="$(_adb_class_rank attention)"
+        if [ "$rank" -gt "$bestrank" ]; then best="attention"; bestrank="$rank"; fi
+      fi
+    fi
     printf '%s\t%s\n' "$w" "$best"
   done <<EOF
 $who
@@ -3515,7 +3540,70 @@ adb_reviewer_classes_for_pr() {
       esac ;;
   esac
 
+  if [ "$anchor" != "$ADB_NO_ANCHOR" ]; then
+    case "$evidence" in
+      *"${tab}comment${tab}"*)
+        comments="$(adb_drop_status_comments "$label" "$n" "$who" "$comments" "$anchor" "$qslug")" \
+          || return 2
+        evidence="$(adb_reviewer_evidence "$who" "$reviews" "$comments" "$reacts" "$head")" \
+          || { echo "$label: could not evaluate the reviewer signals of PR #$n" >&2; return 2; } ;;
+    esac
+  fi
+
   adb_reviewer_classes "$label" "$who" "$evidence" "$anchor" || return 2
+}
+
+# The body prefixes that mark a reviewer's review-STATUS comment: a progress marker the Codex
+# connector creates when a review starts and edits in place, never a review (#447). One per line.
+ADB_REVIEW_STATUS_MARKERS='<!-- codex-pull-request-review-summary -->'
+
+# adb_drop_status_comments <label> <pr-number> <who-list> <comments-json> <anchor> <slug>
+# — the comments JSON minus every declared reviewer's FRESH status comment. Prints the array;
+# returns 2 when a body cannot be read (the caller's unreadable code).
+#
+# Bodies are read one comment at a time, and only for a declared reviewer's comment newer than
+# <anchor>: the snapshot deliberately carries no bodies, so this costs a read only while such a
+# comment exists. Such a comment with no numeric id, or whose body is not a string, cannot be
+# classified and is unreadable (2), never kept as an ordinary comment. Dropping a status comment
+# removes a signal and adds none, so a reviewer reads `clean` afterwards only on a fresh `+1` or
+# `APPROVED` of its own.
+adb_drop_status_comments() {
+  local label="$1" n="$2" who="$3" comments="$4" anchor="$5" slug="$6"
+  local match rows at id raw status drop="[]" tab
+  tab="$(printf '\t')"
+  match="$(adb_reviewer_match_jq)"
+  rows="$(printf '%s' "$comments" | jq -r --arg who "$who" "$match"'
+      ($who | split("\n") | map(select(length > 0))) as $w
+      | .[] | select((.user.login // "") | adb_declared_reviewer($w))
+      | "\(.created_at // "")\t\(if (.id | type) == "number" then .id else "" end)"' 2>/dev/null)" \
+    || { echo "$label: could not select the reviewer comments of PR #$n" >&2; return 2; }
+  while IFS="$tab" read -r at id; do
+    # ONLY A VALID, FRESH INSTANT IS A CANDIDATE. A malformed timestamp is left in the evidence for
+    # adb_reviewer_classes to refuse; dropping it here would hide it from that check.
+    adb_is_utc_instant "$at" || continue
+    [ "$at" \> "$anchor" ] || continue
+    case "$id" in
+      ''|*[!0-9]*) echo "$label: a fresh reviewer comment on PR #$n carries no usable id" >&2; return 2 ;;
+    esac
+    raw="$(gh api "repos/$slug/issues/comments/$id" 2>/dev/null)" \
+      || { echo "$label: could not read comment $id on PR #$n" >&2; return 2; }
+    status="$(printf '%s' "$raw" | jq -r --arg m "$ADB_REVIEW_STATUS_MARKERS" '
+        if type != "object" then error("not a comment") else . end
+        | if (.body | type) != "string" then error("no body") else . end
+        | .body as $b
+        | [$m | split("\n")[] | select(length > 0) | . as $p | $b | startswith($p)]
+        | any' 2>/dev/null)" \
+      || { echo "$label: could not parse comment $id on PR #$n" >&2; return 2; }
+    if [ "$status" = "true" ]; then
+      echo "$label: comment $id on PR #$n is a review-status marker, not a review — ignored" >&2
+      drop="$(printf '%s' "$drop" | jq -c --argjson id "$id" '. + [$id]')" || return 2
+    fi
+  done <<EOF
+$rows
+EOF
+  printf '%s' "$comments" | jq -c --argjson drop "$drop" \
+    'map(select(.id as $i | ($drop | any(. == $i)) | not))' 2>/dev/null \
+    || { echo "$label: could not filter the reviewer comments of PR #$n" >&2; return 2; }
 }
 
 # The WITHIN-reviewer order, in its one home: the strongest evidence this one reviewer produced.

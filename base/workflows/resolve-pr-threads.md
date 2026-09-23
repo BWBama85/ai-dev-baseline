@@ -248,8 +248,8 @@ answer this skill reports and exits on, because there is nothing to resolve:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `10` | a declared reviewer reviewed **this head** and is **not satisfied** — a `CHANGES_REQUESTED` or `COMMENTED` review, or a fresh issue comment | **continue to step 1** (but note there may be **no threads**: a task-mode comment creates none, so read the comment) |
-| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA — **or** the repo declares `bots = []` | **reconcile due promotions first** (below), then report "reviewed clean — nothing to resolve" and **exit 0** |
+| `10` | a declared reviewer reviewed **this head** and is **not satisfied** — a `CHANGES_REQUESTED` or `COMMENTED` review, or a fresh issue comment with no `+1` at least as new beside it | **continue to step 1** (but note there may be **no threads**: a task-mode comment creates none, so read the comment) |
+| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA and not older than that reviewer's newest fresh comment (#447) — **or** the repo declares `bots = []` | **reconcile due promotions first** (below), then report "reviewed clean — nothing to resolve" and **exit 0** |
 | `11` | the bound expired with **at least one** declared reviewer still silent — see the note below on a second way to reach it | report that the wait timed out and hand back to the operator; **exit** |
 | `12` | the PR is no longer OPEN (merged or closed) | report it and **exit** |
 | `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
@@ -343,7 +343,11 @@ The reviewer has **two output shapes**, and the repo does not choose which it ge
 | Codex Cloud environment | findings arrive as | clean pass |
 | --- | --- | --- |
 | **not** configured | a review object **+ inline threads** | a `+1` reaction |
-| configured | **one issue comment** — no review, no threads, no reaction | (not yet observed) |
+| configured | **one issue comment** — no review, no threads, no reaction | a `+1` reaction **and** a same-second comment ("Didn't find any major issues") — read as clean (#447) |
+
+The connector's **review-status comment** — the one carrying `<!-- codex-pull-request-review-summary -->`,
+created when a review starts (`Running`) and edited in place — is a progress marker, not a review,
+and is ignored; a watch started while it reads `Running` keeps waiting (#447).
 
 Both were seen on this repo *the same day* (PR #166 → review + 3 threads; PR #178 → one comment,
 zero threads). So on a `10` verdict:

@@ -1092,10 +1092,23 @@ check_pr_comments_json() {
   local acc="[]"
   while [ "$#" -ge 2 ]; do
     acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg at "$2" \
-            '. + [{user:{login:$l},created_at:$at,body:"### Summary"}]')"
+            '. + [{id:(1000 + length),user:{login:$l},created_at:$at,body:"### Summary"}]')"
     shift 2
   done
   printf '%s\n' "$acc" > "$out"
+}
+
+# check_pr_status_comment_json <out> <login> <created_at> <status> — APPEND the Codex connector's
+# review-STATUS comment (#447) to <out>: the marker-led summary table it creates when a review starts
+# (<status> `Running`) and edits in place (`Completed`). Ids sit past 2^32, as real ones do, so the
+# BigInt id path is exercised, and never collide with check_pr_comments_json's.
+check_pr_status_comment_json() {
+  local out="$1" acc="[]"
+  [ -f "$out" ] && acc="$(cat "$out")"
+  printf '%s' "$acc" | jq -c --arg l "$2" --arg at "$3" --arg st "$4" \
+    '. + [{id:(5454357194 + length),user:{login:$l},created_at:$at,
+           body:("<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n| Review | Status |\n| --- | --- |\n| Code Review | " + $st + " |")}]' \
+    > "$out.tmp" && mv "$out.tmp" "$out"
 }
 
 # check_pr_reactions_json <out> <login> <content> <created_at> [...] — one reaction per triple.
@@ -1218,13 +1231,32 @@ def tc($given; $nodes): if ($given|length) > 0 then ($given|tonumber) else ($nod
                                                    else {oid: .commit_id} end)} ] },
         comments: { totalCount: tc($cmtotal; $comments),
                     nodes: [ $comments[] | {author: actor(.user.login; (.gqlbot // false)),
-                                            createdAt: .created_at} ] },
+                                            createdAt: .created_at,
+                                            fullDatabaseId: (if .id == null then null else (.id | tostring) end)} ] },
         reactions: { totalCount: tc($rxtotal; ($reactions | map(select(.content == "+1")))),
                      nodes: [ $reactions[] | select(.content == "+1")
                               | {createdAt: .created_at,
                                  user: actor(.user.login; (.gqlbot // false))} ] }
       } end ) } } }
 JQPROG
+}
+
+# check_pr_comment_stub_body — the `case` arm the `gh` stubs answer a single-comment read with
+# (`repos/<slug>/issues/comments/<id>`, #447): the matching record from this poll's comments
+# fixtures, or a failed read when none matches (the real API 404s). Expects `$url` and `$S`.
+# `STUB_FAIL_COMMENT_READ=1` fails every such read.
+check_pr_comment_stub_body() {
+  cat <<'BODY'
+  */issues/comments/*)
+    [ "${STUB_FAIL_COMMENT_READ:-0}" = "1" ] && exit 1
+    _id="${url##*/}"
+    _n=0; [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
+    _cf="$S/comments.json"; [ -f "$S/comments.$_n.json" ] && _cf="$S/comments.$_n.json"
+    { [ -f "$_cf" ] && cat "$_cf"; [ -f "$S/comments2.json" ] && cat "$S/comments2.json"; } \
+      | jq -s -c --argjson id "$_id" '[.[][] | select(.id == $id)] | first // error("no such comment")' \
+      || exit 1
+    exit 0 ;;
+BODY
 }
 
 # check_pr_graphql_stub_body — the shell the `gh` stubs run for a `gh api graphql` call. Emitted as

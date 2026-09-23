@@ -43,7 +43,13 @@
 #
 #   a Cloud environment exists → TASK mode
 #       findings → ONE ISSUE COMMENT summarising what it found or changed; NO review object,
-#                  NO inline threads, and (so far) no reaction either
+#                  NO inline threads, and no reaction
+#       clean    → a `+1` reaction AND a same-second comment; the `+1` not older than the
+#                  comment makes the pair clean (#447, PR #446 at 4dde0f4)
+#
+# Either mode may also post a REVIEW-STATUS comment (`<!-- codex-pull-request-review-summary -->`)
+# when a review starts, edited in place when it ends. It is a progress marker, not a review, and
+# the shared classifier drops it (#447).
 #
 # All of this was observed live on this repo INSIDE ONE DAY, which is the whole argument for
 # reading every surface rather than the documented one:
@@ -152,8 +158,9 @@
 #
 #   0  clean      — a declared reviewer signalled a clean pass for the CURRENT head, or the repo
 #                   declared `[reviewers] bots = []` (nothing is coming). STDOUT: "clean <sha>".
-#   10 findings   — a declared reviewer submitted a review attached to the CURRENT head SHA. The
-#                   caller should run the resolve flow. STDOUT: "findings <sha>".
+#   10 findings   — a declared reviewer submitted a review attached to the CURRENT head SHA, or left
+#                   a fresh comment with no `+1` at least as new beside it. The caller should run
+#                   the resolve flow. STDOUT: "findings <sha>".
 #   11 pending    — no terminal signal yet, OR a signal exists whose freshness cannot be PROVED
 #                   because the head's arrival could not be established (#175). Those two share a
 #                   code but not a remedy — the first means wait longer, the second means this
@@ -928,13 +935,16 @@ adb_pw_receipts() {
       # honoured as a receipt nor dismissed as absent — refuse, rather than let it read as absence.
       | if any($cm.nodes[]; ((.createdAt | type) != "string") or ((.createdAt // "") | length) == 0)
         then error("a comment carries no usable createdAt") else . end
+      # ...and one with no string body cannot be read as a trigger or as not one.
+      | if any($cm.nodes[]; (.body | type) != "string")
+        then error("a comment carries no body") else . end
       | { head_sha:  ($p.headRefOid // ""),
           head_ref:  ($p.headRefName // ""),
           head_slug: ($p.headRepository.nameWithOwner // ""),
           base_slug: ($p.baseRepository.nameWithOwner // ""),
           state:     (if ($p.state // "") == "MERGED" then "closed"
                       else ($p.state // "" | ascii_downcase) end),
-          comments:  [ $cm.nodes[] | {created_at:.createdAt, body:(.body // "")} ] }' \
+          comments:  [ $cm.nodes[] | {created_at:.createdAt, body:.body} ] }' \
       2>/dev/null)" \
     || { echo "$label: could not parse the comments of PR #$n (errors, an unexpected shape, or more than 100 comments)" >&2
          return 2; }

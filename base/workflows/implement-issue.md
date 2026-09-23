@@ -495,7 +495,8 @@ may clear on its own. Review gate (`{{PR_REVIEW_LIB}} gate`): 16 the declared
 reviewer has not spoken about this head — **expected on a bot-reviewed repo** (this runs seconds
 after creation; the arm is deliberately withheld until the review lands) · 17 no
 `[reviewers] bots` declared (declare it, or `bots = []`) · 18 malformed · 19 changes requested ·
-**21** review complete, attention required — it HAS reviewed this head and is not satisfied;
+**21** review complete, attention required — it HAS reviewed this head and is not satisfied
+(a `COMMENTED` review, or a fresh comment with no `+1` at least as new beside it, #447);
 there may be no inline threads at all, so read the comment yourself · 20 unreadable. A required
 check that is RED rather than missing: ask whether it *ran* before reading it as a statement
 about this diff (`ci-discipline.md`) —

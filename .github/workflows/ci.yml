@@ -510,7 +510,7 @@ jobs:
       # split does not earn one. It runs HERE and not only inside `selfcheck-macos`, because that
       # aggregate job is macOS: without this step every witness could regress on Linux unseen.
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: ...and those cases must be able to fail — 7 mutations, each observed RED (#394)
+      - name: ...and those cases must be able to fail — 10 mutations, each observed RED (#394, #447)
         run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation
 
       # Rides this job rather than adding one: a second job is a second required status context for
