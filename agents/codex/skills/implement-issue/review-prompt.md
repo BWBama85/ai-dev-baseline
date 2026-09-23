@@ -27,6 +27,36 @@ REQUIRED/OPTIONAL mark. The six lenses:
 6. **Claim integrity** — does every factual assertion the diff *adds* hold? A lint can prove
    `#N` resolves; only reading the diff proves the reference is *apt*.
 
+Since #487 the prompt also carries **the pattern ledger's promoted checklist** — the classes this
+project has already paid a review round for. It reaches the survey and the gap analysis through
+`_il_append_checklist`, and the reviewer was the one dispatched agent that never saw it: the one
+whose whole job is finding those classes. Same helper, same NOTE-never-fatal contract (a ledger
+that does not parse, or a checklist over budget, notes and proceeds — a ledger problem never fails
+a dispatch).
+
+## The verdict trailer (#488)
+
+A review reply must **end** with one machine-readable line:
+
+```
+ADB-REVIEW-VERDICT v1 required=<N> optional=<M>
+```
+
+It is the last non-blank line and the only line in the reply that begins with the sentinel;
+`<N>`/`<M>` are plain integers with no leading zeros, and an explicit `0` is required rather than
+omitted. `bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-verdict <file>` is the one reader; `dispatch-review` calls it
+after every dispatch and returns **28** when it refuses.
+
+**Why a grammar rather than counting the word REQUIRED.** That count misreads at least three ways
+— a finding that *quotes* an earlier one, a reply *truncated* mid-file, and the sentence "no
+REQUIRED findings" which contains the token it denies — and every one errs toward **fewer**
+findings, i.e. toward a false clean pass that pushes fix code no review ever read.
+
+**What it does not prove**, so nobody reads more into it: a terminal trailer detects *suffix*
+truncation, because truncation removes or damages it. It cannot prove the prose above it is
+complete, nor that the declared counts match the findings actually written. Proving either needs
+the prose parser this grammar exists to replace.
+
 **The prompt asks for everything and filters nothing** — no "only high-severity", no "be
 conservative": asked to be conservative, a model reports less, and the misses are silent.
 Severity filtering has a home — step 9 triages. A finding you discard costs one line of reading;
@@ -91,10 +121,32 @@ independent reviewer):
    the slot.
 2. **Adversarial bug review** — a Claude subagent (Agent tool, `general-purpose`) over the fresh
    diff (`dispatch-review --prompt-only` builds the same contained prompt for it), run
-   synchronously; consume its returned findings. Hand the subagent the path the subcommand's
-   `prompt-ready` line prints — this invocation's own kept stage — never the shared
-   `review-prompt.txt`, which a concurrent slot's publish can remove or replace before the
-   subagent opens it.
+   synchronously. Hand the subagent the path the subcommand's `prompt-ready` line prints — this
+   invocation's own kept stage — never the shared `review-prompt.txt`, which a concurrent slot's
+   publish can remove or replace before the subagent opens it.
+
+   **Then publish its reply — do not consume it directly** (#488):
+
+   ```bash
+   bash "$HOME/.codex/scripts/lib/implement-lib.sh" publish-review [--slot N] .codex/state   # the subagent's reply on stdin
+   ```
+
+   **Pass `--slot N` whenever this is not the first review slot** — the same number the dispatched
+   path writes `review-N.md` under. Without it the publisher writes `review.md`, and a refused
+   or later publication at that name removes the first slot's result.
+
+   `--prompt-only` returns *before* any dispatch, so this path produces no `review.md` at all and
+   a trailer required in the prompt would be validated nowhere — the grammar would cover dispatched
+   slots only, which is the unvalidated second shape #488 exists to close. The publisher validates
+   the reply whole and its trailer, then publishes `review[-N].md` through the same bounded path
+   the dispatched slots write, so both paths produce one artifact with one contract. It is
+   architecturally `publish-survey`; it deliberately does **not** truncate the way that one does —
+   a review keeps its trailer through the full 8 MiB, and an oversize reply is refused instead.
+
+   **The slot is not complete until `publish-review` accepts the reply.** A refusal (18/19) is the
+   same terminal state as a refused dispatched slot, and it **removes** any earlier result at that
+   slot: a previous pass's `required=0` left readable as this pass's verdict is exactly the false
+   clean pass the grammar exists to prevent.
 
 **Never model-invoke `/code-review`** (user-only, `disable-model-invocation`) — it is an optional
 step the owner runs after the PR.

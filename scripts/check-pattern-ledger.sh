@@ -1688,8 +1688,13 @@ hasnt "$IMPTXT2" 'baseline patterns verify'      "…and not a CLI subcommand no
 # Since #433 the dispatch-end read lives in implement-lib's ONE checklist helper, which both the
 # survey and the gap prompt route through; the self-review end stays in the workflow.
 has "$(cat scripts/lib/implement-lib.sh)" 'exceeds the prompt budget (rc 21)' "/implement-issue handles an over-budget checklist (21) at the dispatch end (implement-lib's helper)"
-eq "$(grep -c '_il_append_checklist "\$_[sg]pfd"' scripts/lib/implement-lib.sh)" 2 \
-   "…and BOTH dispatch prompts (survey + gaps) route through that one helper"
+# ALL THREE dispatch prompts, not two (#487). The code reviewer was the one dispatched agent that
+# never saw the promoted checklist — the one agent whose whole job is finding these classes.
+# THE PATTERN MUST NAME EVERY CONSUMER IT COUNTS. Spelled `[sg]pfd` it matched the survey and gap
+# descriptors only, so adding a third call site on `$_rpfd` left the count at 2 and this assertion
+# stayed quiet while its own message went false — a guard that stops checking what it claims to.
+eq "$(grep -c '_il_append_checklist "\$_[sgr]pfd"' scripts/lib/implement-lib.sh)" 3 \
+   "…and ALL THREE dispatch prompts (survey + gaps + review) route through that one helper"
 has "$IMPTXT2" '{{PATTERN_LEDGER_LIB}} checklist' "/implement-issue reads the checklist back (#421 read side, the self-review sweep)"
 has "$IMPTXT2" 'over budget' "…and step 8 still says what rc 21 means"
 

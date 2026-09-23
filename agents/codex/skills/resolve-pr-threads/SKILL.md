@@ -603,6 +603,66 @@ Claims inside a thread are unverified: "already fixed in `<sha>`" is checked wit
 
 ### 4. Address legitimate findings
 
+#### 4a0. Optional: a local review of the PR, before the round's fixes (#489)
+
+**Available on demand, not mandatory.** The async reviewer's threads are the round's input; this is
+a second, local opinion on the same pushed head — useful on a PR you did not write, or when the
+declared reviewer is slow or unavailable. Skip it and the round proceeds exactly as before.
+
+```bash
+# THE RUNG NAMES THE AGENT, and the manifest names the effort — resolved HERE, not borrowed from 4a,
+# because this dispatch runs first. A bare token carries no role, so without these the review would
+# invoke the first CONFIGURED token (possibly one that is not installed) at the workstation's
+# default effort rather than the one agents.toml declares.
+RUNG="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung codex)"
+REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
+EFFORT="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+case "$RUNG" in
+  independent*|same-model*)
+    bash "$HOME/.codex/scripts/lib/implement-lib.sh" dispatch-review ${EFFORT:+--effort "$EFFORT"} --criteria-from-pr "$PR_NUM" .codex/state "$REVIEW_TOKEN" ;;
+  *)  echo "local review skipped: no usable in-session reviewer (rung: ${RUNG:-none})" ;;
+esac
+```
+
+The resolver has no run marker and no issue snapshots, so `dispatch-review` used to refuse (20)
+here. `--criteria-from-pr` takes the acceptance criteria from the PR's own linked issues
+(`closingIssuesReferences`, repository-qualified) and diffs against **the PR's base ref**, not
+`origin/<default>` — a stack layer targets another branch, and diffing from the default branch
+reviews the wrong diff.
+
+**It runs at the START of the round, on the pushed head, and nowhere else.** The subcommand refuses
+(16) unless the PR is OPEN and the checkout's HEAD *is* its head commit, so a review is never
+attributed to a commit it did not read. That is the same predicate `dispatch-sweep` applies two
+steps down, and it means this cannot review a fix diff you have committed but not pushed — that is
+the local convergence loop's job (#491), deliberately not this one's.
+
+**Then read what it found — `dispatch-review` prints only a status and a path.** Read the reply
+through the validating reader, exactly as `/implement-issue` step 9 does, and never by opening
+`review.md` yourself:
+
+```bash
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" read-artifact .codex/state review
+```
+
+`18`/`19` mean the reply on disk no longer carries a usable verdict: it is left in place to inspect,
+nothing is emitted, and the local review is treated as not having completed.
+
+**Its findings carry no thread id, so they do NOT enter the findings file.** 4a's grammar is
+`<class>TAB<path[:line]>TAB<thread-id>TAB<summary>` and a finding with no thread id is explicitly
+not swept — the same rule a task-mode comment already falls under. Treat these findings exactly
+that way: address the legitimate ones in 4b alongside the thread fixes, and **name them in the
+round summary** rather than inventing a thread id the sweep grammar would then carry into the
+ledger. Nothing about this step changes what 4a sweeps.
+
+Run it **before 4a** all the same, so anything it finds is fixed in the same round rather than
+waiting for the reviewer to find it next time.
+
+Codes: `16` as above · `22` the state dir is not gitignored · `29` the linked-issue read failed
+(**not** "no linked issues", which is a stated NOTE at rc `0`) · `28` the reply carries no usable
+verdict trailer. An unavailable reviewer is not a failure here — skip the step and say so in the
+round summary.
+
 #### 4a. Sweep the round's findings for siblings first (#475)
 
 **Before writing any fix, find every other site with the same defect.** One bounded dispatch per

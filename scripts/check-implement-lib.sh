@@ -2383,10 +2383,13 @@ has "$OP_OUT" "not a recognizable forge remote" "32 …with the fallback NOTEd, 
 # --slot N writes review-N.md and the workflow forbids direct opens — without a numbered arm in
 # read-artifact, later reviewers' findings were unreadable through the one permitted reader.
 d="$(new_repo)"
-printf 'slot two findings\n' > "$d/.claude/state/review-2.md"
+# A VALID TRAILER (#488): read-artifact now revalidates a review's verdict at consumption, so a
+# fixture reply must be one the grammar accepts. The first line still carries the content this
+# case asserts on.
+printf 'slot two findings\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "$d/.claude/state/review-2.md"
 RA_OUT="$( bash "$IL" read-artifact "$d/.claude/state" review-2 2>/dev/null )"; RA_RC=$?
 eq "$RA_RC" "0" "33 a numbered review slot reads clean"
-eq "$RA_OUT" "slot two findings" "33 …emitting its content"
+eq "$(printf '%s\n' "$RA_OUT" | head -n1)" "slot two findings" "33 …emitting its content"
 bash "$IL" read-artifact "$d/.claude/state" review-x >/dev/null 2>&1
 eq "$?" "2" "33 a non-numeric slot suffix is a usage error"
 bash "$IL" read-artifact "$d/.claude/state" review-12345 >/dev/null 2>&1
@@ -2601,7 +2604,10 @@ cat > "$shimbin/codex" <<'SH'
 last=""; prev=""
 for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
 if grep -q 'diff --git a/seed'; then out='SAW-PROMPT'; else out='NO-PROMPT'; fi
-[ -n "$last" ] && printf '%s\n' "$out" > "$last"
+# A VALID TRAILER (#488), so this case still tests what it was written to test — which prompt the
+# slot received — rather than turning into a verdict-grammar failure. The first line still carries
+# the discriminator, and the assertion below reads exactly that line.
+[ -n "$last" ] && printf '%s\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' "$out" > "$last"
 exit 0
 SH
 chmod +x "$shimbin/codex"
@@ -2613,7 +2619,7 @@ mkdir -p "$RVS/.claude/state"; seed_snap "$RVS"
 ( cd "$RVS" && env PATH="$work/mvswap:$PATH" bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1
 SL_RC=$?
 eq "$SL_RC" "0" "39 a slot whose published prompt name vanishes right after its publish still completes"
-eq "$(cat "$RVS/.claude/state/review.md" 2>/dev/null)" "SAW-PROMPT" "39 …and the reviewer received THIS slot's prompt from the held stage inode"
+eq "$(head -n1 "$RVS/.claude/state/review.md" 2>/dev/null)" "SAW-PROMPT" "39 …and the reviewer received THIS slot's prompt from the held stage inode"
 rm -f "$shimbin/codex"
 eq "$(grep -c 'cat <&"\$_prfd"' "$IL")" "2" "39 both slot arms read the held stage descriptor"
 if grep -q '2700 5 cat "\$pf"' "$IL"; then bad "39 a slot arm reopens the published prompt name"; else ok; fi
@@ -3102,6 +3108,424 @@ eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix "${SWH:0:7
 cp "$SWF" "$work/sw-before"; printf 'junk\n' >> "$SWF"
 eq "$(mark --class beta-class --site - --result declined --reason x)" 18 "46 a sweep file that does not parse is refused by sweep-mark"
 if tail -n 1 "$SWF" | grep -qx junk; then ok; else bad "46 …and left exactly as it was"; fi
+
+# _stage_count <dir> [suffix-glob] — how many `review-prompt-stage.<suffix>` entries exist.
+# A GLOB, never `ls | grep`: an unmatched glob stays literal and `[ -e ]` filters it, while a
+# pipeline through ls mis-handles any name carrying a space or a glob character.
+_stage_count() {
+  local d="$1" pat="${2:-*}" f n=0
+  for f in "$d"/review-prompt-stage.$pat; do [ -e "$f" ] || [ -L "$f" ] && n=$((n + 1)); done
+  printf '%s\n' "$n"
+}
+
+# ================= 47. the review verdict trailer (#488) ========================================
+# The grammar is what an automated decision reads, so every refusal gets its OWN witness: a reader
+# that answered "0 findings" for a malformed reply would push fix code no review ever read.
+VD="$work/verdict"; mkdir -p "$VD"
+vd() { printf '%b' "$2" > "$VD/$1"; ( bash "$IL" review-verdict "$VD/$1" ) 2>/dev/null; }
+vdrc() { printf '%b' "$2" > "$VD/$1"; ( bash "$IL" review-verdict "$VD/$1" ) >/dev/null 2>&1; echo "$?"; }
+eq "$(vd ok 'a REQUIRED finding\n\nADB-REVIEW-VERDICT v1 required=2 optional=3\n')" "2 3" \
+   "47 a well-formed verdict parses to its two counts"
+eq "$(vd z 'no REQUIRED findings\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n')" "0 0" \
+   "47 …and the sentence 'no REQUIRED findings' with a valid zero verdict parses as zero, not as one finding"
+eq "$(vdrc nov 'plenty of prose and a REQUIRED word, but no trailer\n')" 19 \
+   "47 a reply with NO verdict is refused, never guessed at zero"
+eq "$(vdrc dup 'ADB-REVIEW-VERDICT v1 required=9 optional=0\nx\nADB-REVIEW-VERDICT v1 required=0 optional=0\n')" 19 \
+   "47 a trailer present TWICE is refused — which one is the verdict cannot be decided"
+eq "$(vdrc fenced 'x\n```\nADB-REVIEW-VERDICT v1 required=0 optional=0\n```\n')" 19 \
+   "47 a trailer inside a fenced block is refused (the fence close is the last non-blank line)"
+eq "$(vdrc nonnum 'x\nADB-REVIEW-VERDICT v1 required=x optional=0\n')" 19 "47 a non-numeric count is refused"
+eq "$(vdrc noct 'x\nADB-REVIEW-VERDICT v1 optional=0\n')" 19 "47 an ABSENT count is refused, never inferred as zero"
+eq "$(vdrc lead0 'x\nADB-REVIEW-VERDICT v1 required=01 optional=0\n')" 19 "47 a leading zero is a second spelling and is refused"
+eq "$(vdrc indent 'x\n  ADB-REVIEW-VERDICT v1 required=0 optional=0\n')" 19 "47 an indented trailer is refused"
+eq "$(vdrc nonl 'x\nADB-REVIEW-VERDICT v1 required=1 optional=0')" 18 "47 a missing final newline is a byte refusal"
+eq "$(vdrc trunc 'finding one REQUIRED\nfinding two REQ')" 18 \
+   "47 a TRUNCATED reply is refused, never read as a smaller finding count"
+eq "$(vd crlf 'x\r\nADB-REVIEW-VERDICT v1 required=4 optional=1\r\n')" "4 1" "47 a CRLF reply is tolerated, as the sweep grammar tolerates it"
+printf 'x\nADB-REVIEW-VERDICT v1 required=1 optional=0\na\000b\n' > "$VD/nul"
+( bash "$IL" review-verdict "$VD/nul" ) >/dev/null 2>&1; eq "$?" 18 "47 a NUL anywhere in the reply refuses it whole"
+( bash "$IL" review-verdict "$VD/absent" ) >/dev/null 2>&1; eq "$?" 20 "47 an absent reply is 20, not a byte refusal"
+ln -s /etc/hosts "$VD/link" 2>/dev/null
+( bash "$IL" review-verdict "$VD/link" ) >/dev/null 2>&1; eq "$?" 20 "47 a symlink is never read as a review reply"
+# THE REVIEW BOUND IS 8 MiB, NOT the sweep's 1 MiB: reusing _adb_sweep_whole unchanged would have
+# silently started refusing large-diff reviews that are legal today.
+{ head -c 2000000 /dev/zero | tr '\0' 'x'; printf '\nADB-REVIEW-VERDICT v1 required=0 optional=0\n'; } > "$VD/big"
+( bash "$IL" review-verdict "$VD/big" ) >/dev/null 2>&1; eq "$?" 0 "47 a 2 MiB reply is accepted — past the sweep bound, inside the review bound"
+# …and the sweep's own bound is UNCHANGED by the factoring.
+{ head -c 2000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$VD/bigsweep"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; _adb_sweep_whole "$VD/bigsweep" ); echo "$?" )" 18 \
+   "47 …while _adb_sweep_whole still refuses the same file at its own 1 MiB bound"
+
+# ================= 48. publish-review: the native path's publisher (#488) =======================
+# --prompt-only returns BEFORE any dispatch, so the native Claude slot produces no review.md at
+# all; without this the trailer would be required in a prompt and validated nowhere.
+PV="$work/pubrev"; mkdir -p "$PV/state"
+pv() { printf '%b' "$1" | ( bash "$IL" publish-review ${2:+--slot} ${2:-} "$PV/state" ) >/dev/null 2>&1; echo "$?"; }
+eq "$(pv 'a REQUIRED thing\n\nADB-REVIEW-VERDICT v1 required=1 optional=2\n')" 0 "48 a valid native reply publishes"
+if [ -f "$PV/state/review.md" ]; then ok; else bad "48 …to review.md"; fi
+eq "$(pv 'clean\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' 2)" 0 "48 --slot N publishes review-N.md (slot parity with the dispatched path)"
+if [ -f "$PV/state/review-2.md" ]; then ok; else bad "48 …at review-2.md"; fi
+eq "$(pv 'no trailer at all\n')" 19 "48 a reply with no verdict is refused, and nothing is published"
+# A REFUSED PASS MUST NOT LEAVE AN EARLIER PASS'S VERDICT READABLE AS THIS ONE'S — that stale
+# `required=0` is exactly the false clean pass this grammar exists to prevent.
+pv 'first pass\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' 3 >/dev/null
+if [ -f "$PV/state/review-3.md" ]; then ok; else bad "48 a first pass publishes at slot 3"; fi
+eq "$(pv 'second pass, malformed\n' 3)" 19 "48 …a later malformed pass at the same slot refuses"
+if [ -e "$PV/state/review-3.md" ]; then bad "48 …and REMOVES the earlier verdict rather than leaving it readable as this pass's"; else ok; fi
+eq "$(pv 'x\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' 12345)" 2 "48 a slot outside the 1-4 digit family grammar is a usage error"
+{ head -c 8388700 /dev/zero | tr '\0' 'x'; printf '\nADB-REVIEW-VERDICT v1 required=0 optional=0\n'; } \
+  | ( bash "$IL" publish-review --slot 9 "$PV/state" ) >/dev/null 2>&1
+eq "$?" 18 "48 an oversize reply is REFUSED, not truncated — publish-survey shortens, a review must keep its trailer"
+if [ -e "$PV/state/review-9.md" ]; then bad "48 …and publishes nothing"; else ok; fi
+# A SUCCESSFUL publish leaves no stage; a REFUSED one KEEPS the reply and names it, because the
+# failure path is exactly where the operator needs something to read. Both directions, or the
+# assertion pins only whichever one happens to be true.
+PV2="$work/pubrev2"; mkdir -p "$PV2/state"
+printf 'clean\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' | ( bash "$IL" publish-review "$PV2/state" ) >/dev/null 2>&1
+eq "$(_stage_count "$PV2/state")" 0 "48 a SUCCESSFUL publish leaves no stage behind"
+PV3="$work/pubrev3"; mkdir -p "$PV3/state"
+PV3_OUT="$(printf 'malformed, no trailer\n' | ( bash "$IL" publish-review "$PV3/state" ) 2>&1)"
+eq "$(_stage_count "$PV3/state")" 1 "48 a REFUSED publish KEEPS the reply — the failure path is where the evidence matters"
+has "$PV3_OUT" "kept for inspection" "48 …and says where it kept it"
+if [ -e "$PV3/state/review.md" ]; then bad "48 …while publishing nothing as a result"; else ok; fi
+
+# ================= 49. dispatch-review --criteria-from-pr (#489) ================================
+# The resolver has no run marker and no snapshots, so dispatch-review refused (20) and a local
+# review was impossible there. These witnesses pin the three outcomes that must stay DISTINCT:
+# criteria built, a stated NOTE with no criteria, and a FAILED link read.
+CB="$work/cfbin"; mkdir -p "$CB"
+CR="$work/cfrepo"; mkdir -p "$CR"
+( cd "$CR" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && printf 'a\n' > f.sh && git add f.sh && printf '.claude/state/\n' > .gitignore && git add .gitignore \
+  && git commit -qm base && git update-ref refs/remotes/origin/main HEAD \
+  && git switch -qc stack-1 && printf 'LAYER-ONE\n' >> f.sh && git commit -qam l1 \
+  && git update-ref refs/remotes/origin/stack-1 HEAD \
+  && git switch -qc feat && printf 'LAYER-TWO\n' >> f.sh && git commit -qam l2 \
+  && git remote add origin https://github.com/o/r.git && mkdir -p .claude/state ) >/dev/null 2>&1
+CFH="$(git -C "$CR" rev-parse HEAD)"
+cat > "$CB/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view") [ "${CF_PR_FAIL:-0}" = 1 ] && { echo "gh: could not resolve" >&2; exit 1; }
+    printf '{"state":"%s","headRefOid":"%s","baseRefName":"%s","closingIssuesReferences":%s}\n' \
+      "${CF_STATE:-OPEN}" "${CF_HEAD:-}" "${CF_BASE:-main}" "${CF_LINKS:-[]}" ;;
+  "issue view") [ "${CF_ISSUE_FAIL:-0}" = 1 ] && { echo "gh: no issue" >&2; exit 1; }
+    printf '{"number":%s,"title":"t","body":"CRITERIA-FOR-%s","state":"OPEN","labels":[],"author":{"login":"o"},"comments":[]}\n' "$3" "$3" ;;
+  # The provenance read addresses `repos/<owner>/<repo>/issues/<n>` on gh's default host, since
+  # the PR's repository now comes from adb_pr_query_slug as `owner/repo`.
+  "api repos/"*) printf 'OWNER\n' ;;
+  *) echo "cf-shim unhandled: $*" >&2; exit 3 ;;
+esac
+SH
+cat > "$CB/git" <<SH
+#!/usr/bin/env bash
+[ "\$1" = fetch ] && exit "\${CF_FETCH_RC:-0}"
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$CB/gh" "$CB/git"
+CFP="$CR/.claude/state/review-prompt.txt"
+cf() { ( cd "$CR" && env PATH="$CB:$PATH" CF_HEAD="$CFH" "$@" bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1; echo "$?"; }
+CFL2='[{"number":11,"repository":{"name":"r","owner":{"login":"o"}}},{"number":12,"repository":{"name":"r","owner":{"login":"o"}}}]'
+
+eq "$(cf CF_LINKS="$CFL2")" 0 "49 a PR with two linked issues builds a prompt"
+eq "$(grep -c 'github-issue #1[12] — acceptance criteria, linked by PR #7' "$CFP")" 2 \
+   "49 …one contained, PR-attributed envelope per linked issue"
+eq "$(cf CF_LINKS='[]')" 0 "49 a PR with NO linked issue still dispatches — an unlinked PR is a normal PR"
+has "$(cat "$CFP")" 'No acceptance criteria follow it' \
+   "49 …and the prompt SAYS so rather than promising criteria that never arrive"
+hasnt "$(cat "$CFP")" 'github-issue #' "49 …with no criteria envelope at all"
+eq "$(cf CF_PR_FAIL=1)" 29 "49 a FAILED linked-issue read is 29 — never the rc-0 no-linked-issues path"
+eq "$(cf CF_LINKS='null')" 29 "49 …and so is a malformed closingIssuesReferences (absent/null/not an array)"
+eq "$(cf CF_LINKS='[{"number":"x","repository":{"name":"r","owner":{"login":"o"}}}]')" 29 \
+   "49 …and a non-integer issue number in an otherwise valid response"
+eq "$(cf CF_LINKS="$CFL2" CF_ISSUE_FAIL=1)" 20 \
+   "49 one unreadable linked issue refuses the whole dispatch — never a PARTIAL criteria set"
+# THE DIFF COMES FROM THE PR'S OWN BASE. A stack layer targets another branch, and diffing from
+# origin/<default> reviews the layer below as if it were this PR's work.
+cf CF_LINKS="$CFL2" CF_BASE=stack-1 >/dev/null
+eq "$(grep -cE '^\+LAYER' "$CFP")" 1 "49 the diff is taken against the PR's OWN base ref"
+has "$(grep -E '^\+LAYER' "$CFP")" 'LAYER-TWO' "49 …so only this layer's change is reviewed"
+cf CF_LINKS="$CFL2" CF_BASE=main >/dev/null
+eq "$(grep -cE '^\+LAYER' "$CFP")" 2 "49 …and against the default branch it would carry both layers (the witness for the line above)"
+eq "$(cf CF_LINKS="$CFL2" CF_HEAD=ffffffffffffffffffffffffffffffffffffffff)" 16 \
+   "49 a checkout whose HEAD is not the live PR head is refused — on --prompt-only too"
+eq "$(cf CF_LINKS="$CFL2" CF_STATE=MERGED)" 16 "49 …and so is a PR that is not OPEN"
+eq "$(cf CF_LINKS="$CFL2" CF_FETCH_RC=1)" 20 "49 a base branch that cannot be fetched refuses, never a stale merge base"
+# A CROSS-REPO LINK IS NOT THIS REPO'S #11: fetched unqualified it would supply a DIFFERENT
+# issue's criteria under the same number.
+cf CF_LINKS='[{"number":11,"repository":{"name":"other","owner":{"login":"elsewhere"}}}]' >/dev/null
+has "$(cat "$CFP")" 'No acceptance criteria follow it' "49 a linked issue in ANOTHER repository is filtered out, not fetched from this one"
+# EXPLICIT PRECEDENCE over any snapshot that happens to be lying in the state dir.
+printf '{"number":99,"title":"t","body":"STALE-SNAPSHOT-CRITERIA","state":"OPEN","labels":[],"author":{"login":"o"},"comments":[]}' > "$CR/.claude/state/issue-99.json"
+printf 'OWNER' > "$CR/.claude/state/issue-99.assoc"
+cf CF_LINKS='[{"number":11,"repository":{"name":"r","owner":{"login":"o"}}}]' >/dev/null
+has   "$(cat "$CFP")" 'CRITERIA-FOR-11'        "49 --criteria-from-pr supplies the criteria"
+hasnt "$(cat "$CFP")" 'STALE-SNAPSHOT-CRITERIA' "49 …and a stale unrelated snapshot never does"
+eq "$(_stage_count "$CR/.claude/state" '*c')" 0 "49 …and the criteria stage never outlives the call"
+# THE GITIGNORE PROBE, which only snapshot-issues used to perform. Untrusted linked-issue text
+# written under an UNIGNORED state dir lands in this very worktree-inclusive diff.
+CN="$work/cfnoign"; mkdir -p "$CN"
+( cd "$CN" && git init -q -b main && git config user.email t@t && git config user.name t \
+  && printf 'a\n' > f.sh && git add f.sh && git commit -qm base && git update-ref refs/remotes/origin/main HEAD \
+  && git switch -qc feat && printf 'b\n' >> f.sh && git commit -qam c \
+  && git remote add origin https://github.com/o/r.git && mkdir -p .claude/state ) >/dev/null 2>&1
+CNH="$(git -C "$CN" rev-parse HEAD)"
+eq "$( ( cd "$CN" && env PATH="$CB:$PATH" CF_HEAD="$CNH" CF_LINKS='[{"number":11,"repository":{"name":"r","owner":{"login":"o"}}}]' \
+        bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1; echo "$?")" 22 \
+   "49 an UNIGNORED state dir refuses (22) before any linked-issue text is written into the diff"
+eq "$( ( cd "$CR" && bash "$IL" dispatch-review --criteria-from-pr 0 .claude/state codex ) >/dev/null 2>&1; echo "$?")" 2 \
+   "49 --criteria-from-pr rejects a non-PR-number argument"
+
+# ================= 50. #487 behaviourally: the checklist REACHES the review prompt ==============
+# The call-site count in check-pattern-ledger is structural; these are the acceptance criteria.
+# A ledger seam exists for exactly this: `checklist` resolves --ledger, then ADB_PATTERN_LEDGER,
+# then <repo-root>/.ai-dev-baseline/patterns.md.
+read -r _ CKR <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$CKR/.claude/state" "$CKR/.ai-dev-baseline"; seed_snap "$CKR"
+# THE STATE DIR MUST BE GITIGNORED, as it is in every real checkout (`snapshot-issues` refuses a
+# run otherwise). Untracked, it lands in dispatch-review's worktree-inclusive diff — so run (a)'s
+# published prompt becomes part of run (b)'s DIFF, and a grep for the checklist heading then finds
+# (a)'s copy quoted inside (b). That is a fixture artefact, and it made (b) report a checklist the
+# helper had correctly not emitted.
+( cd "$CKR" && printf '.claude/state/\n' > .gitignore && git add .gitignore && git commit -qm ignore ) >/dev/null 2>&1
+( cd "$CKR" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+CKP="$CKR/.claude/state/review-prompt.txt"
+ck_prompt() { ( cd "$CKR" && env ADB_PATTERN_LEDGER="$1" bash "$IL" dispatch-review --prompt-only .claude/state codex ) 2>&1; }
+
+# (a) A POPULATED ledger reaches the review prompt.
+# THE REAL GRAMMAR — both marker regions. A ledger carrying only one is "half readable" and
+# `checklist` refuses it with 18, which would have made these cases assert the rc-18 path while
+# claiming to test the populated one.
+cat > "$CKR/.ai-dev-baseline/patterns.md" <<'LEDGER'
+# Pattern ledger
+
+## Promoted checklist
+
+<!-- adb:checklist:begin -->
+- `sentinel-class` — SENTINEL-RULE-TEXT for the review prompt witness.
+<!-- adb:checklist:end -->
+
+## Hits
+
+<!-- adb:hits:begin -->
+- `sentinel-class` `scripts/lib/x.sh:1` `abc1234` `PRRT_seed1` PR #1 2026-01-01 — seed hit one
+- `sentinel-class` `scripts/lib/x.sh:2` `abc1234` `PRRT_seed2` PR #1 2026-01-01 — seed hit two
+<!-- adb:hits:end -->
+LEDGER
+# THE LEDGER FIXTURES LIVE OUTSIDE THE CHECKOUT. Written under .ai-dev-baseline/ they are
+# UNTRACKED files, so dispatch-review's untracked-file diff carries their text into the prompt —
+# and a grep for the sentinel would then match the DIFF rather than the checklist, passing for
+# exactly the wrong reason (observed: the sentinel appeared after the diff sentence, not before).
+CKLD="$work/ledgers"; mkdir -p "$CKLD"
+mv "$CKR/.ai-dev-baseline/patterns.md" "$CKLD/patterns.md"
+rmdir "$CKR/.ai-dev-baseline" 2>/dev/null || true
+CK_OUT="$(ck_prompt "$CKLD/patterns.md")"
+has "$(cat "$CKP" 2>/dev/null)" 'SENTINEL-RULE-TEXT' "50 the promoted checklist REACHES the review prompt (#487's acceptance, not just a call-site count)"
+has "$(cat "$CKP" 2>/dev/null)" 'ledger of review-finding classes' "50 …under the helper's own heading, the same one the survey and gap prompts carry"
+hasnt "$CK_OUT" 'NOTE' "50 …and a healthy ledger emits no NOTE noise"
+# …and it lands BEFORE the diff sentence, which promises the diff follows immediately.
+CK_RULE="$(grep -n 'SENTINEL-RULE-TEXT' "$CKP" | head -1 | cut -d: -f1)"
+CK_DIFF="$(grep -n 'The DIFF follows first' "$CKP" | head -1 | cut -d: -f1)"
+if [ -n "$CK_RULE" ] && [ -n "$CK_DIFF" ] && [ "$CK_RULE" -lt "$CK_DIFF" ]; then ok; else
+  bad "50 …placed BEFORE the sentence promising the diff follows immediately (rule@$CK_RULE diff@$CK_DIFF)"; fi
+
+# (b) NO LEDGER AT ALL: clean dispatch, no NOTE noise, no checklist block.
+CK_OUT="$(ck_prompt "$CKLD/absent.md")"
+hasnt "$CK_OUT" 'NOTE' "50 an absent ledger dispatches cleanly with NO NOTE noise (#487's third criterion)"
+hasnt "$(cat "$CKP" 2>/dev/null)" 'ledger of review-finding classes' "50 …and the prompt carries no checklist block"
+
+# (c) rc 18 — an UNPARSEABLE ledger NOTEs and the dispatch still succeeds.
+printf 'not a ledger at all\n' > "$CKLD/broken.md"
+CK_OUT="$(ck_prompt "$CKLD/broken.md")"
+eq "$?" 0 "50 an unparseable ledger (rc 18) does NOT fail the review dispatch"
+has "$CK_OUT" 'NOTE' "50 …and says so on stderr, exactly as the survey and gap call sites do"
+has "$CK_OUT" 'the code review' "50 …naming the code review as the consumer that lost it"
+
+# (d) rc 21 — an OVER-BUDGET checklist NOTEs, emits nothing, and the dispatch still succeeds.
+{ printf '# Pattern ledger\n\n## Promoted checklist\n\n<!-- adb:checklist:begin -->\n'
+  i=0; while [ "$i" -lt 400 ]; do
+    printf -- '- `bulk-class-%s` — %s\n' "$i" "$(awk 'BEGIN{while(n++<60)printf "padding-text "}')"
+    i=$((i + 1))
+  done
+  printf '<!-- adb:checklist:end -->\n\n## Hits\n\n<!-- adb:hits:begin -->\n'
+  printf -- '- `bulk-class-0` `scripts/lib/x.sh:1` `abc1234` `PRRT_h1` PR #1 2026-01-01 — one\n'
+  printf -- '- `bulk-class-0` `scripts/lib/x.sh:2` `abc1234` `PRRT_h2` PR #1 2026-01-01 — two\n'
+  printf '<!-- adb:hits:end -->\n'; } > "$CKLD/huge.md"
+CK_OUT="$(ck_prompt "$CKLD/huge.md")"
+eq "$?" 0 "50 an over-budget checklist (rc 21) does NOT fail the review dispatch"
+has "$CK_OUT" 'prompt budget' "50 …and the NOTE names the budget, never a bare wildcard"
+hasnt "$(cat "$CKP" 2>/dev/null)" 'bulk-class-0' "50 …and nothing from the over-budget checklist reaches the prompt"
+
+# (e) --prompt-only PARITY: the kept per-invocation stage carries the same checklist as the
+# published prompt, because the native Claude review path reads that file and not this one.
+ck_prompt "$CKLD/patterns.md" > "$work/ck-po.txt" 2>&1
+CK_STAGE="$(sed -n 's/^prompt-ready //p' "$work/ck-po.txt" | head -1)"
+if [ -n "$CK_STAGE" ] && [ -f "$CKR/$CK_STAGE" ]; then
+  has "$(cat "$CKR/$CK_STAGE")" 'SENTINEL-RULE-TEXT' "50 --prompt-only's kept stage carries the checklist too (the native path reads THAT file)"
+  if cmp -s "$CKR/$CK_STAGE" "$CKP"; then ok; else bad "50 …byte-identical to the published prompt"; fi
+else
+  bad "50 --prompt-only printed a usable prompt-ready path"
+fi
+
+# ================= 51. rc 28 is observed FROM dispatch-review (#488) ============================
+# Section 47 drives the READER. #488's acceptance is about the DISPATCH returning a distinct code,
+# which no reader witness can establish.
+mkdir -p "$work/rcbin"
+cat > "$work/rcbin/codex" <<'SH'
+#!/usr/bin/env bash
+last=""; prev=""
+for a in "$@"; do [ "$prev" = "--output-last-message" ] && last="$a"; prev="$a"; done
+cat > /dev/null
+[ -n "$last" ] && printf '%b' "${RC_REPLY:-x\n}" > "$last"
+exit 0
+SH
+chmod +x "$work/rcbin/codex"
+read -r _ RCR <<EOF
+${ remote_pair; }
+EOF
+mkdir -p "$RCR/.claude/state"; seed_snap "$RCR"
+( cd "$RCR" && printf '.claude/state/\n' > .gitignore && git add .gitignore && git commit -qm ignore ) >/dev/null 2>&1
+( cd "$RCR" && git switch -q -c issue-7-t && printf 'x\n' >> seed && git add seed && git commit -qm change ) >/dev/null 2>&1
+rcdisp() { ( cd "$RCR" && env PATH="$work/rcbin:$PATH" RC_REPLY="$1" bash "$IL" dispatch-review .claude/state codex ) >/dev/null 2>&1; echo "$?"; }
+eq "$(rcdisp 'a REQUIRED finding\n\nADB-REVIEW-VERDICT v1 required=1 optional=0\n')" 0 "51 a dispatched reply WITH a valid trailer completes at 0"
+eq "$(rcdisp 'prose with no trailer at all\n')" 28 "51 a dispatched reply with NO trailer is 28 — not 0, and not the 20 dispatch-failure family"
+eq "$(rcdisp 'x\n```\nADB-REVIEW-VERDICT v1 required=0 optional=0\n')" 28 "51 …and so is one whose trailer hides in an unclosed fence"
+eq "$(rcdisp 'ADB-REVIEW-VERDICT v1 required=0 optional=0\ny\nADB-REVIEW-VERDICT v1 required=9 optional=0\n')" 28 "51 …and a duplicated trailer"
+# A NUL IN THE TRAILER LINE ITSELF, which is what #488's acceptance names — section 47's witness
+# puts its NUL on a later line and therefore tests only the whole-file rule.
+eq "$(rcdisp 'finding\nADB-REVIEW-VERDICT v1 required=\0000 optional=0\n')" 28 "51 …and a NUL inside the trailer line itself"
+eq "$(rcdisp 'finding one\nfinding two, cut off mid-')" 28 "51 …and a truncated reply, which must never read as a smaller count"
+
+# ================= 52. PR #494 round 1: the reviewer's seven findings, each on its own witness ===
+# CRLF: a CR-only blank line after a CRLF trailer is BLANK, not a displaced last line.
+printf 'x\r\nADB-REVIEW-VERDICT v1 required=4 optional=1\r\n\r\n' > "$VD/crlfblank"
+eq "$( ( bash "$IL" review-verdict "$VD/crlfblank" ) 2>/dev/null)" "4 1" \
+   "52 a CRLF blank line after a CRLF trailer is blank — the trailer is still the last non-blank line"
+
+# CONSUMPTION-TIME REVALIDATION: read-artifact re-checks a review's verdict on its staged copy.
+RA="$work/ra494"; mkdir -p "$RA"
+printf 'finding\nADB-REVIEW-VERDICT v1 required=1 optional=0\n' > "$RA/review.md"
+( bash "$IL" read-artifact "$RA" review ) >/dev/null 2>&1; eq "$?" 0 "52 read-artifact emits a review whose verdict validates"
+printf 'finding one\nfinding two, cut off mid-' > "$RA/review.md"
+RA_OUT="$( ( bash "$IL" read-artifact "$RA" review ) 2>/dev/null)"; RA_RC=$?
+eq "$RA_RC" 18 "52 a review TRUNCATED after publication is refused at consumption (18)"
+eq "$RA_OUT" "" "52 …emitting NOTHING — a partial review read as a whole one is the failure itself"
+if [ -f "$RA/review.md" ]; then ok; else bad "52 …and the refused reply is left in place to inspect"; fi
+printf 'replaced, no trailer\n' > "$RA/review-2.md"
+( bash "$IL" read-artifact "$RA" review-2 ) >/dev/null 2>&1; eq "$?" 19 "52 a numbered slot is revalidated too (19)"
+printf 'gap findings carry no trailer\n' > "$RA/gaps.md"
+( bash "$IL" read-artifact "$RA" gaps ) >/dev/null 2>&1; eq "$?" 0 "52 …while gaps, which have no verdict grammar, are unaffected"
+
+# LINKED ISSUES: one home, case-insensitive, and a missing field is malformed.
+eq "$(cf CF_LINKS='[{"number":11,"repository":{"name":"R","owner":{"login":"O"}}}]')" 0 \
+   "52 a linked issue whose owner/repo casing differs from origin's is still THIS repository's"
+has "$(cat "$CFP")" 'github-issue #11' "52 …so its criteria are enveloped, not silently dropped as foreign"
+eq "$(cf CF_LINKS='[{"number":11,"repository":{"name":"r"}}]')" 29 \
+   "52 an entry missing its owner is MALFORMED (29), not quietly treated as another repository"
+eq "$(grep -c '_il_linked_issues "' "$IL")" 2 "52 dispatch-review AND open-pr parse the link set through the one helper"
+
+# FORCED BASE REFRESH: a rewritten (force-pushed) base must not be refused as non-fast-forward.
+cat > "$CB/git" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = fetch ]; then printf '%s\n' "\$*" >> "\${CF_FETCH_LOG:-/dev/null}"; exit "\${CF_FETCH_RC:-0}"; fi
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$CB/git"
+: > "$work/cf-fetch.log"
+cf CF_LINKS="$CFL2" CF_BASE=stack-1 CF_FETCH_LOG="$work/cf-fetch.log" >/dev/null
+has "$(cat "$work/cf-fetch.log")" '+refs/heads/stack-1:refs/remotes/origin/stack-1' \
+   "52 the PR base is fetched with a FORCED refspec, so a force-pushed stack base still refreshes"
+eq "$(grep -c 'git fetch -q "\$[a-z_]*remote" "+refs/heads/' "$IL")" 2 "52 …and so is dispatch-sweep's, the sibling the sweep found"
+
+# THE PR'S REPOSITORY, NOT ORIGIN: in a fork checkout origin is the fork.
+FK="$work/cffork"; cp -R "$CR" "$FK"
+( cd "$FK" && git remote set-url origin https://github.com/contrib/r.git \
+  && git remote add upstream https://github.com/o/r.git \
+  && git update-ref refs/remotes/upstream/main refs/remotes/origin/main ) >/dev/null 2>&1
+cat > "$CB/gh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CF_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$CF_ARGS_LOG"
+case "$1 $2" in
+  "repo view") printf 'o/r\n' ;;
+  "pr view") printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main","closingIssuesReferences":[]}\n' "${CF_HEAD:-}" ;;
+  *) echo "cf-shim unhandled: $*" >&2; exit 3 ;;
+esac
+SH
+: > "$work/cf-args.log"
+( cd "$FK" && env PATH="$CB:$PATH" CF_HEAD="$CFH" CF_ARGS_LOG="$work/cf-args.log" \
+    bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1
+eq "$?" 0 "52 a fork checkout (origin = the fork, upstream = the parent) reviews the PR"
+has "$(grep '^pr view' "$work/cf-args.log")" '-R o/r' "52 …read from the PR's repository through adb_pr_query_slug, not from origin's fork"
+hasnt "$(grep '^pr view' "$work/cf-args.log")" 'contrib/r' "52 …and never asks the fork for a PR number it does not own"
+
+# ================= 53. PR #494 round 2: one repository, one inode ===============================
+# THE BASE COMES FROM THE PR'S REPOSITORY. Round 1 moved the PR read off `origin`; the base fetch
+# still named it, so a fork checkout diffed against the FORK's copy of the base.
+: > "$work/cf-fetch2.log"
+( cd "$FK" && env PATH="$CB:$PATH" CF_HEAD="$CFH" CF_FETCH_LOG="$work/cf-fetch2.log" \
+    bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1
+eq "$?" 0 "53 a fork checkout's review completes against the parent's base"
+has "$(cat "$work/cf-fetch2.log")" 'upstream +refs/heads/main:refs/remotes/upstream/main' \
+   "53 …fetched from the remote that points at the PR's repository (upstream), not origin"
+hasnt "$(cat "$work/cf-fetch2.log")" 'fetch -q origin' "53 …and never from the fork"
+NR="$work/cfnoremote"; cp -R "$CR" "$NR"
+( cd "$NR" && git remote set-url origin https://github.com/contrib/r.git ) >/dev/null 2>&1
+cat > "$CB/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "repo view") printf 'o/r\n' ;;
+  "pr view") printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main","closingIssuesReferences":[]}\n' "${CF_HEAD:-}" ;;
+  *) exit 3 ;;
+esac
+SH
+( cd "$NR" && git remote add other https://github.com/x/y.git ) >/dev/null 2>&1
+( cd "$NR" && env PATH="$CB:$PATH" CF_HEAD="$CFH" bash "$IL" dispatch-review --prompt-only --criteria-from-pr 7 .claude/state codex ) >/dev/null 2>&1
+eq "$?" 20 "53 no remote pointing at the PR's repository refuses (20) — never a fallback to origin"
+( . "$ROOT/scripts/lib/common.sh"; cd "$FK" && adb_git_remote_for_slug O/R ) > "$work/rfs.out" 2>&1
+eq "$(cat "$work/rfs.out")" upstream "53 adb_git_remote_for_slug compares case-insensitively"
+
+# VALIDATE THE INODE YOU EMIT. A shim replaces the private copy exactly once, at the named point,
+# with a NEW inode carrying a VALID trailer; the original is MALFORMED. Without the brackets the
+# replacement would vouch for the original, which is what the emission actually reads.
+SWB="$work/swapbin"; mkdir -p "$SWB"
+mk_swap() {   # <command-to-shim>
+  cat > "$SWB/$1" <<SH
+#!/usr/bin/env bash
+if [ -n "\${SWAP_DIR:-}" ] && [ ! -e "\$SWAP_DIR/.swapped" ]; then
+  for f in "\$SWAP_DIR"/.artifact.* "\$SWAP_DIR"/review-prompt-stage.*; do
+    [ -f "\$f" ] || continue
+    : > "\$SWAP_DIR/.swapped"
+    rm -f "\$f"; printf 'forged\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "\$f"
+  done
+fi
+exec "$(command -v "$1")" "\$@"
+SH
+  chmod +x "$SWB/$1"
+}
+SW="$work/swapstate"; mkdir -p "$SW"
+# (a) swapped at the SIZE step, before validation begins — the pre-validation bracket.
+rm -f "$SWB"/*; mk_swap wc
+printf 'finding\nADB-REVIEW-VERDICT v1 required=3\n' > "$SW/review.md"; rm -f "$SW/.swapped"
+SWO="$( ( env PATH="$SWB:$PATH" SWAP_DIR="$SW" bash "$IL" read-artifact "$SW" review ) 2>&1)"; SWR=$?
+eq "$SWR" 20 "53 a private copy replaced BEFORE validation is refused (20), not validated in its place"
+has "$SWO" 'replaced before validation' "53 …and says which moment"
+hasnt "$SWO" 'forged' "53 …emitting nothing"
+# (b) swapped DURING validation, at its last-line read — the post-validation bracket.
+rm -f "$SWB"/*; mk_swap awk
+printf 'finding\nADB-REVIEW-VERDICT v1 required=3 optional=0\n' > "$SW/review.md"; rm -f "$SW/.swapped"
+SWO="$( ( env PATH="$SWB:$PATH" SWAP_DIR="$SW" bash "$IL" read-artifact "$SW" review ) 2>&1)"; SWR=$?
+eq "$SWR" 20 "53 a private copy replaced DURING validation is refused (20)"
+has "$SWO" 'replaced during validation' "53 …and says which moment"
+# (c) publish-review's stage, swapped during validation.
+rm -f "$SWB"/*; mk_swap awk
+PS="$work/swappub"; mkdir -p "$PS"; rm -f "$PS/.swapped"
+SWO="$(printf 'native reply\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' \
+        | ( env PATH="$SWB:$PATH" SWAP_DIR="$PS" bash "$IL" publish-review "$PS" ) 2>&1)"; SWR=$?
+eq "$SWR" 20 "53 publish-review refuses a stage replaced during validation (20)"
+if [ -e "$PS/review.md" ]; then bad "53 …and publishes nothing"; else ok; fi
+rm -f "$SWB"/*
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

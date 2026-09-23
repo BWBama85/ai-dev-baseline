@@ -694,4 +694,14 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:621` `33012c2` `PRRT_kwDOTfywrM6kl7aA` PR #477 2026-09-22 — the rung selects the first usable reviewer while the token took the first configured one, so the two could name different agents
 - `markup-injection` `scripts/lib/implement-lib.sh:2944` `afe9310` `PRRT_kwDOTfywrM6kmQ9G` PR #477 2026-09-22 — the finding site and thread id were concatenated into the review prompt while only the summary was enveloped, so a pathname from the diff reached the model as top-level text
 - `ledger-coverage-gap` `scripts/lib/implement-lib.sh:2810` `afe9310` `PRRT_kwDOTfywrM6kmQ9F` PR #477 2026-09-22 — abandoned sweep lock directories are invisible to the cleanup scan, which filters through -f, so they leak permanently once the PR closes
+- `third-party-default` `scripts/lib/implement-lib.sh:2778` `9ef56f2` `PRRT_kwDOTfywrM6k8V56` PR #494 2026-09-23 — base-ref fetch refspec lacked a plus, so a force-pushed stack base was refused as non-fast-forward
+- `partial-validation` `scripts/lib/implement-lib.sh:2533` `9ef56f2` `PRRT_kwDOTfywrM6k8V59` PR #494 2026-09-23 — CRLF tolerated on the trailer line only; a CR-only blank record after it displaced the trailer
+- `reuse-missed` `scripts/lib/implement-lib.sh:2728` `9ef56f2` `PRRT_kwDOTfywrM6k8V6C` PR #494 2026-09-23 — PR read addressed the origin slug, the fork in a fork checkout, instead of adb_pr_query_slug
+- `reuse-missed` `scripts/lib/implement-lib.sh:2762` `9ef56f2` `PRRT_kwDOTfywrM6k8V6F` PR #494 2026-09-23 — linked-issue repo compared by exact string instead of adb_slug_eq; a casing difference dropped every criterion
+- `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:630` `9ef56f2` `PRRT_kwDOTfywrM6k8V6I` PR #494 2026-09-23 — resolver dispatched the local review but never read its artifact before triaging
+- `toctou` `scripts/lib/implement-lib.sh:2577` `9ef56f2` `PRRT_kwDOTfywrM6k8V6P` PR #494 2026-09-23 — verdict checked at publication only; read-artifact consumed review.md later without revalidating
+- `consumer-contract-mismatch` `base/workflows/implement-issue.md:422` `9ef56f2` `PRRT_kwDOTfywrM6k8V6Q` PR #494 2026-09-23 — native publish-review omitted --slot N, so a later slot overwrote the first review.md
+- `reuse-missed` `scripts/lib/implement-lib.sh:2842` `3069d54` `PRRT_kwDOTfywrM6k_q-s` PR #494 2026-09-23 — PR repository resolved via adb_pr_query_slug but its base still fetched from the origin remote, the fork
+- `consumer-contract-mismatch` `base/workflows/resolve-pr-threads.md:612` `3069d54` `PRRT_kwDOTfywrM6k_q-y` PR #494 2026-09-23 — local review dispatched a bare token with no rung resolution and no manifest effort
+- `toctou` `scripts/lib/implement-lib.sh:1933` `3069d54` `PRRT_kwDOTfywrM6k_q-4` PR #494 2026-09-23 — read-artifact validated its private copy by name but emitted the held descriptor
 <!-- adb:hits:end -->
