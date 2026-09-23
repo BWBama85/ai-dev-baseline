@@ -3157,7 +3157,8 @@ adb_pr_snapshot() {
                        | {user:{login:(.author|actor)}, state:(.state // ""), commit_id:(.commit.oid)} ],
           comments:  [ $cm.nodes[]
                        | {user:{login:(.author|actor)}, created_at:(.createdAt // ""),
-                          id:(.databaseId // null)} ],
+                          id:((.fullDatabaseId // null)
+                              | if type == "string" and test("^[0-9]{1,15}$") then tonumber else null end)} ],
           reactions: [ $rx.nodes[]
                        | {user:{login:(.user|actor)}, content:"+1", created_at:(.createdAt // "")} ] }' \
       2>/dev/null)" \
@@ -3185,7 +3186,7 @@ adb_pr_snapshot_query() {
 'state merged mergedAt headRefOid headRefName ' \
 'baseRepository{nameWithOwner} headRepository{nameWithOwner} ' \
 'reviews(last:100){totalCount nodes{author{login __typename} state commit{oid}}} ' \
-'comments(last:100){totalCount nodes{author{login __typename} createdAt databaseId}} ' \
+'comments(last:100){totalCount nodes{author{login __typename} createdAt fullDatabaseId}} ' \
 'reactions(content:THUMBS_UP,last:100){totalCount nodes{createdAt user{login __typename}}}' \
 '}}}'
 }

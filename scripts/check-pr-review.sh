@@ -215,6 +215,7 @@ AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR
 BEFORE_AT="2026-07-25T04:40:00Z"
 ARRIVED_PLUS1_AT="2026-07-25T04:44:00Z"   # fresh, and older than AFTER_AT
 LATER_AT="2026-07-25T04:46:00Z"           # fresh, and newer than AFTER_AT
+AFTER_PLUS1S_AT="2026-07-25T04:45:24Z"    # one second after AFTER_AT
 
 # pr_fx [--sha X] [--base-slug X] [--head-slug X] [--head-ref X] [--state X] [--merged-at X]
 # A defaults wrapper over `check_pr_json`, which holds the fixture shape (D68). Last flag wins, so
@@ -558,9 +559,9 @@ has "$OUT" "attention required" "21 names the outcome"
 gout gate --pr 7
 eq "$OUT" "" "#167 §3: the comment path prints NO head SHA — it must not authorize an arm"
 
-# #447: A FRESH `+1` NOT OLDER THAN THE SAME REVIEWER'S FRESH COMMENT IS A CLEAN PASS. The connector
-# reports a clean pass as a `+1` and a same-second comment (PR #446 at 4dde0f4). Every neighbour of
-# that shape must keep withholding the arm.
+# #447: A FRESH `+1` NOT OLDER THAN THE SAME REVIEWER'S FRESH COMMENT IS A CLEAN PASS — the
+# connector's clean-pass shape is a `+1` and a same-second comment. Every neighbour of that shape
+# must keep withholding the arm.
 reset_fx
 comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
 reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
@@ -573,6 +574,15 @@ reset_fx
 comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
 reaction_fx "chatgpt-codex-connector"      "+1" "$ARRIVED_PLUS1_AT"
 g gate --pr 7;  eq "$RC_" "21" "#447: a comment NEWER than the '+1' is the reviewer speaking again -> 21"
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_PLUS1S_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "21" "#447: a comment ONE SECOND newer than the '+1' -> 21"
+reset_fx; declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "16" "#447: one reviewer clean by the pair beside a silent one -> 16 (#185)"
+declare_bots '["chatgpt-codex-connector"]'
 reset_fx
 comment_fx  "chatgpt-codex-connector[bot]" "$ARRIVED_PLUS1_AT" "chatgpt-codex-connector[bot]" "$LATER_AT"
 reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
@@ -596,8 +606,8 @@ comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
 printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"content":"+1","created_at":""}]' > "$S/reactions.json"
 g gate --pr 7;  eq "$RC_" "21" "#447: an undatable '+1' cannot pair with a fresh comment -> 21, never 0"
 
-# #447: THE CONNECTOR'S REVIEW-STATUS COMMENT IS A PROGRESS MARKER, NOT A REVIEW. Created when a
-# review starts (`Running`), it used to read as a finished review with findings.
+# #447: THE CONNECTOR'S REVIEW-STATUS COMMENT IS A PROGRESS MARKER, NOT A REVIEW. It is created when
+# a review starts (`Running`) and edited in place.
 reset_fx
 status_fx "chatgpt-codex-connector[bot]" "$AFTER_AT" "Running"
 g gate --pr 7

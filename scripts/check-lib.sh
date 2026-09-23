@@ -1100,13 +1100,13 @@ check_pr_comments_json() {
 
 # check_pr_status_comment_json <out> <login> <created_at> <status> — APPEND the Codex connector's
 # review-STATUS comment (#447) to <out>: the marker-led summary table it creates when a review starts
-# (<status> `Running`) and edits in place (`Completed`). Ids start at 9000 so they never collide with
-# check_pr_comments_json's.
+# (<status> `Running`) and edits in place (`Completed`). Ids sit past 2^32, as real ones do, so the
+# BigInt id path is exercised, and never collide with check_pr_comments_json's.
 check_pr_status_comment_json() {
   local out="$1" acc="[]"
   [ -f "$out" ] && acc="$(cat "$out")"
   printf '%s' "$acc" | jq -c --arg l "$2" --arg at "$3" --arg st "$4" \
-    '. + [{id:(9000 + length),user:{login:$l},created_at:$at,
+    '. + [{id:(5454357194 + length),user:{login:$l},created_at:$at,
            body:("<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n| Review | Status |\n| --- | --- |\n| Code Review | " + $st + " |")}]' \
     > "$out.tmp" && mv "$out.tmp" "$out"
 }
@@ -1232,7 +1232,7 @@ def tc($given; $nodes): if ($given|length) > 0 then ($given|tonumber) else ($nod
         comments: { totalCount: tc($cmtotal; $comments),
                     nodes: [ $comments[] | {author: actor(.user.login; (.gqlbot // false)),
                                             createdAt: .created_at,
-                                            databaseId: (.id // null)} ] },
+                                            fullDatabaseId: (if .id == null then null else (.id | tostring) end)} ] },
         reactions: { totalCount: tc($rxtotal; ($reactions | map(select(.content == "+1")))),
                      nodes: [ $reactions[] | select(.content == "+1")
                               | {createdAt: .created_at,

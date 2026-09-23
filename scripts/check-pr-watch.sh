@@ -33,7 +33,8 @@
 #   3. THERE ARE THREE SURFACES, AND THEY ARE ORDERED. The connector has two operating modes and
 #      the repo does not pick which it gets: WITHOUT a Codex Cloud environment it posts a review
 #      object (+ inline threads) for findings and a bare `+1` reaction for a clean pass; WITH one it
-#      runs as a task and posts a single ISSUE COMMENT — no review, no threads, no reaction. Both
+#      runs as a task and posts findings as a single ISSUE COMMENT — no review, no threads, no
+#      reaction — and a clean pass as a `+1` plus a same-second comment, which pairs clean. Both
 #      shapes were observed on this repo the same day (PR #166 at 08:01 vs PR #178 at 19:30, after
 #      an environment was created). Reading only reviews wedges at `pending` forever on the second.
 #      Findings outrank clean; a review at the head outranks a comment.
@@ -268,6 +269,7 @@ ARRIVED_AT="2026-07-25T04:42:15Z"
 AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR #88
 BEFORE_AT="2026-07-25T04:40:00Z"
 LATER_AT="2026-07-25T04:46:00Z"    # fresh, and newer than AFTER_AT
+AFTER_PLUS1S_AT="2026-07-25T04:45:24Z"   # one second after AFTER_AT
 # A committer date deliberately EARLIER than every reaction below. Under the pre-#175 rule this
 # alone produced `clean`; it is served by the stub's (now unused) commit route purely so the tests
 # can prove the module never asks for it.
@@ -857,7 +859,7 @@ reaction_fx "$CODEX" "+1" "$BEFORE_AT"
 w observe --pr 1;  rc 10 "precedence: a fresh comment outranks a STALE '+1'"
 
 # #447: A FRESH `+1` NOT OLDER THAN THE SAME REVIEWER'S NEWEST FRESH COMMENT IS A CLEAN PASS — the
-# connector's clean-pass shape (a `+1` and a same-second comment, PR #446 at 4dde0f4).
+# connector's clean-pass shape is a `+1` and a same-second comment.
 reset_fx; declare_bots "[\"$CODEX\"]"
 comment_fx "${CODEX}[bot]" "$AFTER_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
@@ -869,6 +871,10 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 comment_fx "${CODEX}[bot]" "$LATER_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1;  rc 10 "pair: a comment NEWER than the '+1' is findings"
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_PLUS1S_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 10 "pair: a comment ONE SECOND newer than the '+1' is findings"
 reset_fx; declare_bots "[\"$CODEX\"]"
 comment_fx "${CODEX}[bot]" "$AFTER_AT" "${CODEX}[bot]" "$LATER_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
@@ -885,8 +891,7 @@ reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1;  rc 11 "pair: one paired reviewer beside a silent one is still pending (#185)"
 
 # #447: THE CONNECTOR'S REVIEW-STATUS COMMENT IS A PROGRESS MARKER, NOT A REVIEW. It is created when
-# a review starts (`Running`) and edited in place; read as findings, it ended the watch minutes
-# before any review existed (BWBama85/support-site-doctor PR #11).
+# a review starts (`Running`) and edited in place, so a watch must wait through it.
 reset_fx; declare_bots "[\"$CODEX\"]"
 status_fx "${CODEX}[bot]" "$AFTER_AT" "Running"
 w observe --pr 1;  rc 11 "status: a fresh Running status comment alone is pending, not findings"

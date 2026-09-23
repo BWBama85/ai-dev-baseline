@@ -30,10 +30,10 @@
 # `pending`, and returned 16 forever. Unattended arming was off on precisely the cleanest PRs.
 #
 # And there is a wider shape. With a Codex Cloud environment the connector runs as a TASK and posts
-# a SINGLE ISSUE COMMENT — no review, no threads, no reaction. On a repo configured that way this
-# guard returned 16 on EVERY PR, so #87/#134's unattended arming was silently dead, disabled by a
-# vendor-side setting nobody in the repo changed. Its clean pass is a `+1` plus a same-second
-# comment, which the shared classifier reads as clean (#447).
+# its findings as a SINGLE ISSUE COMMENT — no review, no threads, no reaction. On a repo configured
+# that way this guard returned 16 on EVERY PR, so #87/#134's unattended arming was silently dead,
+# disabled by a vendor-side setting nobody in the repo changed. Its clean pass is a `+1` plus a
+# same-second comment, which the shared classifier reads as clean (#447).
 #
 # Both shapes were observed live on this repo, and they are disjoint: PRs #53/#54/#66/#83/#88 carry
 # a `+1` and zero reviews; #127/#137/#145/#146/#154/#166 carry a review and zero reactions; PR #184
