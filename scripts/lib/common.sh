@@ -156,7 +156,10 @@ adb_link() {
     return 1
   fi
   if [ -L "$dest" ]; then
-    if [ "$(readlink "$dest")" = "$src" ]; then
+    # SENTINEL CAPTURE: `$(…)` strips trailing newlines, so a link to `<src><NL>` compared equal to
+    # `<src>` and was reported as already correct. `readlink -n` so GNU and BSD emit the same bytes.
+    local _lt; _lt="$(readlink -n "$dest" 2>/dev/null; printf x)"; _lt="${_lt%x}"
+    if [ "$_lt" = "$src" ]; then
       adb_info "  ok     ${dest/#$HOME/~}"
       return
     fi
@@ -1012,7 +1015,9 @@ adb_settings_doc_state() {
   local f="$1" t par
   if [ ! -e "$f" ] && [ ! -L "$f" ]; then printf 'absent'; return 0; fi
   if [ -L "$f" ] && [ ! -e "$f" ]; then
-    t="$(readlink -n "$f" 2>/dev/null)" || { printf 'inaccessible'; return 0; }
+    # SENTINEL CAPTURE, so a target ending in a newline is judged as the path it really names.
+    t="$(readlink -n "$f" 2>/dev/null && printf x)" || { printf 'inaccessible'; return 0; }
+    t="${t%x}"
     case "$t" in /*) ;; *) t="$(dirname "$f")/$t" ;; esac
     par="$(dirname "$t")"
     if [ -d "$par" ] && [ -x "$par" ] && [ ! -L "$t" ]; then printf 'dangling'; else printf 'inaccessible'; fi
@@ -2095,7 +2100,7 @@ EOF
 # are safe — or when a removal FAILED (the link remains; stderr names it), so a read-only
 # destination cannot read as a successful prune. Usage: adb_prune_retired_manifest  (stdin)
 adb_prune_retired_manifest() {
-  local tab validated line src dest rc
+  local tab validated line src dest rc _plt
   tab="$(printf '\t')"
   validated="$(_adb_manifest_slurp adb_prune_retired_manifest)" || return 1
   rc=0
@@ -2103,7 +2108,10 @@ adb_prune_retired_manifest() {
     [ -n "$line" ] || continue
     src="${line%%"$tab"*}"
     dest="${line#*"$tab"}"
-    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ] && [ ! -e "$dest" ]; then
+    # SENTINEL CAPTURE: a dangling link to `<src><NL>` is not ours, and `$(…)` would strip the
+    # newline and prune it as though it were.
+    _plt=""; [ -L "$dest" ] && { _plt="$(readlink -n "$dest" 2>/dev/null; printf x)"; _plt="${_plt%x}"; }
+    if [ -L "$dest" ] && [ "$_plt" = "$src" ] && [ ! -e "$dest" ]; then
       if rm -f "$dest" 2>/dev/null && [ ! -L "$dest" ]; then
         adb_info "  prune  ${dest/#$HOME/~} (retired — source removed upstream)"
       else
@@ -6859,20 +6867,26 @@ adb_sweep_rows() {
 # removes the need for a lock instead of arguing that the writer happens to be sequential
 # (pattern-ledger.sh's header records what that argument cost the last time it was made).
 
-# adb_md_escape <value> — neutralize a stored value against MARKDOWN/HTML structure.
+# adb_md_escape <value> — neutralize a stored value for display in MARKDOWN / HTML.
 #
 # Every field these modules store is validated as one printable line at write time, which stops it
-# forging a RECORD. It does not stop it forging MARKUP: a site of `x.sh:1 <!-- hide` opens an HTML
-# comment that GitHub honours, hiding the evidence and everything after it in a pull-request body
-# — and a rendered report is often the only surviving copy, because the run state it came from is
-# swept. Escaping is the RENDERER's job, not the validator's: the storage rules govern the file,
-# this governs the display.
+# forging a RECORD. It does not stop it forging MARKUP, and a rendered report is often the only
+# surviving copy because the run state it came from is swept. Escaping is the RENDERER's job: the
+# storage rules govern the file, this governs the display.
 #
-# One home, because the rule is one rule. `docs-lib.sh` carries its own `_adb_dl_md` and an inlined
-# awk `md()` predating this; they are deliberately left alone here rather than migrated in a diff
-# about something else, but nothing new should add a fourth copy.
+# WHAT IS NEUTRALIZED, exactly: HTML (`&`, `<`, `>` — so `<!--` cannot hide what follows it), and
+# Markdown's LINK and IMAGE syntax (`[`, `]`, and the backslash that could pre-escape them) — so a
+# stored `![x](https://host/pixel)` renders as text and never makes the reader's client fetch
+# anything. Emphasis, code spans and headings are deliberately NOT escaped: they change how a value
+# LOOKS, not what it does, and escaping them would put a backslash in every path that contains an
+# underscore. A bare URL is still autolinked by GitHub; that is the text of a URL, not markup.
+#
+# One home: `docs-lib.sh` and `pattern-ledger.sh` both render through this.
 adb_md_escape() {
-  printf '%s' "${1:-}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+  # THE BACKSLASH FIRST, so an escape this function adds is never itself re-escaped, and a stored
+  # `\[` cannot arrive pre-escaped and turn the `\[` below back into a live bracket.
+  printf '%s' "${1:-}" | sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/]/\\]/g' \
+    -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
 ADB_RULE_SWEEP_FIELD_MAX=512
@@ -6970,7 +6984,12 @@ adb_rule_sweep_check() {
   # `[ ! -L ]` FIRST: `-f` follows a symlink, so without it a `rule-sweep.tsv` linked to an empty
   # file took this shortcut and was reported as "no rows", ahead of `adb_bytes_whole`'s non-link
   # rule. A link is never this module's record, whatever it points at.
-  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then printf '0\t0\t0\n'; return 0; fi
+  # `-r` TOO: `-s` is a stat and answers for a file this process cannot read, so without it an
+  # unreadable empty record read as "no rows" rather than as the 20 every other unreadable record is.
+  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then
+    [ -r "$f" ] || return 20
+    printf '0\t0\t0\n'; return 0
+  fi
   adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
   # Newline-delimited sets, not associative arrays: this file stays parseable below the bash
   # floor (D30/D35/D65). No member can hold a tab or a newline, so a quoted expansion in a

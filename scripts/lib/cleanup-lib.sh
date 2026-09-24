@@ -37,6 +37,7 @@
 #   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  docs    <run keep|stale|none>
+#   cleanup-lib.sh state-verdict  rules   <run keep|stale|none>
 #   cleanup-lib.sh run-live       <state-dir>                  # 0 claim/marker present NOW, 10 none
 #   cleanup-lib.sh file-size      <path>                       # bytes via a bounded open; loud on failure
 #   cleanup-lib.sh marker-branch   <marker-path>
@@ -780,7 +781,7 @@ cmd_file_size() {
 }
 
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|sweep|marker|gaps|issue|review|docs|survey)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|sweep|marker|gaps|issue|review|docs|survey|rules)"
   local kind="$1"; shift
   case "$kind" in
     threads|sweep)
@@ -900,7 +901,19 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs|survey)" ;;
+    rules)
+      [ "$#" -eq 1 ] || die "state-verdict rules: needs exactly 1 arg: <run keep|stale|none>"
+      case "$1" in keep|stale|none) : ;;
+        *) die "state-verdict rules: <run> must be keep|stale|none (got '$1')" ;; esac
+      # THE LEARNED-CHECKLIST SWEEP RECORD (#490), with the docs record's lifecycle: written at the
+      # end of step 9, after the marker exists, and read back at steps 10 and 11 — so the marker is
+      # the in-flight signal. Its own arm, like `docs`, so a future divergence stays visible.
+      case "$1" in
+        keep) printf 'keep\n' ;;
+        *)    printf 'stale\n' ;;
+      esac
+      ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|sweep|marker|gaps|issue|review|docs|survey|rules)" ;;
   esac
 }
 

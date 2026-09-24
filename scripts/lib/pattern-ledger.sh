@@ -1403,7 +1403,7 @@ _adb_pl_rs_md() { adb_md_escape "$1"; }
 # the spelling #490 specifies; the value is validated with the class predicate, so a text rule
 # passed here is refused rather than silently stored.
 cmd_rule_sweep() {
-  local f d row
+  local f d row _grc
   [ -n "$OPT_RUN" ]    || die "rule-sweep: --run is required (the run identity; see implement-lib.sh sweep-identity)"
   [ -n "$OPT_TREE" ]   || die "rule-sweep: --tree is required (the reviewed-tree digest; see implement-lib.sh sweep-identity)"
   [ -n "$OPT_RULE" ]   || die "rule-sweep: --rule is required (the promoted class this row is about)"
@@ -1420,30 +1420,55 @@ cmd_rule_sweep() {
   f="$(_adb_pl_rs_file)" || exit 20
   d="$(dirname "$f")"
   [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'pattern-ledger: cannot create %s\n' "$d" >&2; exit 20; }
-  # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Recording is a sequence
-  # of separate appends, so a run interrupted midway and retried re-offers rows it already wrote;
-  # the READER refuses a repeated (class, site) whole, so the retry path has to live here. This is
-  # a read before a write, which the first cut avoided — but the alternative was a reader that
-  # silently collapsed duplicates, and that contradicts the acceptance this issue states.
-  if [ -f "$f" ] && [ -r "$f" ] && LC_ALL=C grep -qxF -- "$row" "$f" 2>/dev/null; then
-    printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"
-    exit 10
+  # THE CHECK, THE SIZE AND THE APPEND ARE ONE OPERATION, under the ledger's own lock primitive
+  # (`<record>.lock` beside the record). Without it two concurrent retries of one row both passed the
+  # duplicate test before either appended, and the reader then refused the doubled row whole — and
+  # two appends could each pass the size test and together exceed the bound. The primitive's
+  # owner-proven reclaim is what keeps a killed writer from wedging the record.
+  _adb_pl_lock "$f" || { printf 'pattern-ledger: rule-sweep: could not take the lock on %s — nothing was written\n' "$f" >&2; exit 20; }
+  _ADB_PL_LOCKED_FILE="$f"
+  trap '_adb_pl_unlock "$_ADB_PL_LOCKED_FILE"' EXIT
+  # A LINK OR A NON-FILE IS NEVER THIS MODULE'S RECORD. Every read and the append below follow a
+  # symlink, so without this the writer modified whatever the link pointed at and reported success,
+  # while the reader — which refuses links — then stranded the close-out. Checked inside the lock,
+  # immediately before the first read.
+  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+    printf 'pattern-ledger: rule-sweep: %s is not a regular file (a symlink or another type) — refusing to read or write it\n' "$f" >&2
+    exit 20
   fi
-  # AND THE FILE BOUND, BEFORE THE APPEND. Every row is individually bounded, but enough legitimate
-  # rows still take the file past the reader's own limit — and then the write succeeds and every
-  # later report refuses the record, a state no run can clear. Refuse the append instead, while the
-  # operator still has a record they can read.
-  local cursz=0
-  if [ -f "$f" ]; then cursz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || cursz=0; fi
-  case "$cursz" in ''|*[!0-9]*) cursz=0 ;; esac
-  if [ "$(( cursz + ${#row} + 1 ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
+  if [ -e "$f" ] && [ ! -r "$f" ]; then
+    printf 'pattern-ledger: rule-sweep: %s exists but cannot be read — refusing to append blind\n' "$f" >&2
+    exit 20
+  fi
+  # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Recording is a sequence of
+  # separate appends, so a run interrupted midway and retried re-offers rows it already wrote; the
+  # READER refuses a repeated (class, site) whole, so the retry path lives here.
+  if [ -f "$f" ]; then
+    LC_ALL=C grep -qxF -- "$row" "$f"; _grc=$?
+    case "$_grc" in
+      0) printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"; exit 10 ;;
+      1) : ;;
+      *) printf 'pattern-ledger: rule-sweep: could not search %s (grep rc %s) — nothing was written\n' "$f" "$_grc" >&2; exit 20 ;;
+    esac
+  fi
+  # THE FILE BOUND, IN BYTES ON BOTH SIDES, BEFORE THE APPEND. `${#row}` counts characters in the
+  # caller's locale while the file size and the reader's bound are bytes, so a multibyte site near
+  # the limit slipped past. And a size that cannot be read is a refusal, never zero: zero is the
+  # answer that lets the append through.
+  local cursz=0 rowsz
+  if [ -f "$f" ]; then
+    cursz="$(LC_ALL=C wc -c < "$f" | tr -d ' ')" \
+      || { printf 'pattern-ledger: rule-sweep: could not measure %s — nothing was written\n' "$f" >&2; exit 20; }
+  fi
+  rowsz="$(printf '%s\n' "$row" | LC_ALL=C wc -c | tr -d ' ')"
+  case "$cursz$rowsz" in ''|*[!0-9]*)
+    printf 'pattern-ledger: rule-sweep: could not measure the record or the row — nothing was written\n' >&2; exit 20 ;;
+  esac
+  if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
     printf 'pattern-ledger: rule-sweep: %s would exceed the %s-byte record bound its reader enforces. Nothing was written; the existing record is still readable.\n' \
       "$f" "$ADB_RULE_SWEEP_FILE_MAX" >&2
     exit 19
   fi
-  # ONE append of one bounded record, no lock. The bound keeps the whole record inside a single
-  # stdio buffer, which is what stops two appenders interleaving halves of two rows; it is the
-  # same bound and the same reasoning docs-lib.sh states for its own record file.
   printf '%s\n' "$row" >> "$f" || { printf 'pattern-ledger: cannot write %s\n' "$f" >&2; exit 20; }
   printf 'rule-sweep %s %s\n' "$OPT_RULE" "$OPT_RESULT"
 }
@@ -1499,6 +1524,12 @@ cmd_rule_sweep_report() {
 
   # --- N, from the rows ----------------------------------------------------------------------
   f="$(_adb_pl_rs_file)" || exit 20
+  # A LINK IS REFUSED BEFORE THE ABSENCE TEST. `-e` follows a symlink, so a DANGLING one read as
+  # "no record" — and then as "nothing recorded" (11) or a clean zero-rule sweep.
+  if [ -L "$f" ]; then
+    printf 'pattern-ledger: %s is a symlink — this module reads only its own regular record\n' "$f" >&2
+    exit 20
+  fi
   if [ ! -e "$f" ]; then
     # ABSENT IS NOT UNREADABLE. `-f` is false for a file inside a directory this process cannot
     # search, and a state directory we cannot enter must not read as "nothing recorded" — that is

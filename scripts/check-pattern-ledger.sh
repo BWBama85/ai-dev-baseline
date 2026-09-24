@@ -488,6 +488,27 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     '12 an append that would outgrow the reader'"'"'s file bound is refused at write time'
 
+  # The writer's link refusal: without it the append follows a symlink into whatever it names.
+  check_mut rule-sweep-writer-follows-link \
+    '  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then' \
+    '  if false; then' \
+    '12 the writer refuses a symlinked record (20)'
+  # The writer's lock: without it the duplicate check and the append are two operations again.
+  check_mut rule-sweep-writer-unlocked \
+    '  _adb_pl_lock "$f" || {' \
+    '  true || {' \
+    '12 a writer blocked by a live lock holder refuses (20)'
+  # The row measured in CHARACTERS instead of bytes.
+  check_mut rule-sweep-bound-in-characters \
+    '  if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
+    '  if [ "$(( cursz + ${#row} + 1 ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
+    '12 a multibyte row that would push the record past its BYTE bound is refused'
+  # The report's link refusal: without it a dangling link reads as "no record".
+  check_mut rule-sweep-report-dangling-link \
+    '  if [ -L "$f" ]; then' \
+    '  if false; then' \
+    '12 a dangling symlinked record is refused (20), never read as absent'
+
   # The evidence limit dropped: "2 of 2" then reads as a claim about which files were scanned,
   # which these rows cannot support.
   check_mut rule-sweep-limit-unstated \
@@ -580,6 +601,17 @@ if [ "$MODE" = mutation ]; then
     '  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then' \
     '  if [ -f "$f" ] && [ ! -s "$f" ]; then' \
     '12 a symlinked record is refused as unreadable (20), never read as empty'
+
+  # Link and image syntax left live: HTML-only escaping, the first cut.
+  check_mut rule-sweep-md-link-live \
+    '  printf '"'"'%s'"'"' "${1:-}" | sed -e '"'"'s/\\/\\\\/g'"'"' -e '"'"'s/\[/\\[/g'"'"' -e '"'"'s/]/\\]/g'"'"' \' \
+    '  printf '"'"'%s'"'"' "${1:-}" | sed -e '"'"'s/\\/\\\\/g'"'"' \' \
+    '12 a site carrying image syntax is rendered as text'
+  # An unreadable EMPTY record read as "no rows" rather than as unreadable.
+  check_mut rule-sweep-empty-unreadable-accepted \
+    '    [ -r "$f" ] || return 20' \
+    '    :' \
+    '12 an unreadable empty record is refused (20), never read as no rows'
 
   # The contradiction guard: a class recorded both clean and fired is a count nobody can reconcile.
   check_mut rule-sweep-contradiction-allowed \
@@ -2164,6 +2196,13 @@ bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12H" --run "$RS_RUN" --
 # one says the record is not ours to read, the other says this run swept nothing.
 eq "$?" 20 "12 a symlinked record is refused as unreadable (20), never read as empty"
 
+# AN UNREADABLE EMPTY RECORD IS UNREADABLE (20). `-s` is a stat and answers for a file this process
+# cannot read, so the zero-byte shortcut used to read it as "no rows".
+ST12Q="$work/st12q"; mkdir -p "$ST12Q"; : > "$ST12Q/rule-sweep.tsv"; chmod 000 "$ST12Q/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Q" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSQ=$?; chmod 600 "$ST12Q/rule-sweep.tsv"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSQ" 20 "12 an unreadable empty record is refused (20), never read as no rows"; fi
+
 # A MALFORMED ARGUMENT IS USAGE, NOT A CORRUPT FILE (self-review, `status-swallowed`). The reader
 # refuses a bad run/tree with 19 exactly as it refuses a stored field, and reporting that as "the
 # file holds a field this module would not have written" sends the operator to inspect a record
@@ -2172,6 +2211,77 @@ bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$(printf 'a 
 eq "$?" 2 "12 a malformed --run is usage (2), not a report about the file"
 bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "not-hex" >/dev/null 2>&1
 eq "$?" 2 "12 ...and so is a malformed --tree"
+
+# THE WRITER REFUSES A LINKED RECORD BEFORE ANY READ OR WRITE (reported by the declared reviewer on
+# PR #502). Every read and the append follow a symlink, so the writer modified the link's target and
+# reported success, while the reader — which refuses links — then stranded the close-out.
+ST12J="$work/st12j"; mkdir -p "$ST12J"; printf 'untouched\n' > "$work/rs-link-target"
+ln -s "$work/rs-link-target" "$ST12J/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12J" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 20 "12 the writer refuses a symlinked record (20)"
+eq "$(cat "$work/rs-link-target")" "untouched" "12 ...and the link's target was never written"
+
+# A DANGLING LINK IS REFUSED BY THE REPORT, not read as "no record". `-e` follows a link, so a
+# dangling one read as absent and then as nothing recorded (11) or a clean zero-rule sweep.
+ST12K="$work/st12k"; mkdir -p "$ST12K"; ln -s "$work/rs-nowhere" "$ST12K/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12K" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 20 "12 a dangling symlinked record is refused (20), never read as absent"
+
+# THE CHECK AND THE APPEND ARE ONE OPERATION. Twenty concurrent retries of one row: every one passed
+# the duplicate test before any appended, and the reader then refused the doubled row whole.
+ST12L="$work/st12l"; mkdir -p "$ST12L"
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  bash "$PL" rule-sweep --state "$ST12L" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site 'x.sh:1' --result fired >/dev/null 2>&1 &
+done
+wait
+eq "$(wc -l < "$ST12L/rule-sweep.tsv" | tr -d ' ')" "1" "12 twenty concurrent identical retries append exactly one row"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12L" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 ...so the record still reads"
+if [ -e "$ST12L/rule-sweep.tsv.lock" ]; then bad "12 the record lock was left behind"; else ok; fi
+
+# …AND THE WRITER REALLY TAKES THE LOCK — the deterministic witness the concurrency test above
+# cannot be (a race that happens to serialize would leave it green). A live holder that makes no
+# progress must make `rule-sweep` refuse at the bound, having written nothing.
+ST12P="$work/st12p"; mkdir -p "$ST12P"
+mkdir -p "$ST12P/rule-sweep.tsv.lock/LIVETOKEN"
+printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$ST12P/rule-sweep.tsv.lock/meta"
+ADB_PATTERN_LOCK_WAIT_SECS=1 bash "$PL" rule-sweep --state "$ST12P" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 20 "12 a writer blocked by a live lock holder refuses (20)"
+if [ -e "$ST12P/rule-sweep.tsv" ]; then bad "12 ...but it wrote the record anyway — the append ran outside the lock"; else ok; fi
+rm -rf "$ST12P/rule-sweep.tsv.lock"
+
+# THE FILE BOUND IS BYTES ON BOTH SIDES. `${#row}` counted characters in the caller's locale while
+# the file size and the reader's bound are bytes, so a multibyte site near the limit slipped past.
+ST12M="$work/st12m"; mkdir -p "$ST12M"
+# A UTF-8 LOCALE THE HOST HAS, or the fixture proves nothing: under `C` a character IS a byte, and
+# the defect is unreachable. Ubuntu runners carry `C.UTF-8`; macOS carries `en_US.UTF-8`.
+RS_U8=""
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if locale -a 2>/dev/null | grep -qx "$_l"; then RS_U8="$_l"; break; fi
+done
+if [ -z "$RS_U8" ]; then
+  bad "12 fixture: no UTF-8 locale on this host — the byte-bound check asserted NOTHING"
+else
+  RS_MB_SITE="$(printf 'é%.0s' $(seq 1 200))"   # 200 characters, 400 bytes
+  rs_row_bytes="$(printf 'rule\t%s\t%s\talpha-one\t%s\tfired\n' "$RS_RUN" "$RS_TREE" "$RS_MB_SITE" | LC_ALL=C wc -c | tr -d ' ')"
+  # Fill to within (bound - rowbytes + 70, bound - rowbytes + 190]: past the bound when the row is
+  # counted in BYTES, under it when counted in CHARACTERS (200 fewer). Each filler row is < 120 bytes.
+  rs_hi=$(( 1048576 - rs_row_bytes + 190 ))
+  awk -v n="$rs_hi" -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN {
+    out = 0; i = 0
+    while (1) { s = "rule\t" r "\t" t "\tpad-class\tp/" i ".sh:1\tfired\n"; if (out + length(s) > n) break; printf "%s", s; out += length(s); i++ }
+  }' > "$ST12M/rule-sweep.tsv"
+  LC_ALL="$RS_U8" bash "$PL" rule-sweep --state "$ST12M" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_MB_SITE" --result fired >/dev/null 2>&1
+  eq "$?" 19 "12 a multibyte row that would push the record past its BYTE bound is refused"
+fi
+
+# MARKDOWN LINK AND IMAGE SYNTAX IS NEUTRALIZED, not only HTML (reported by the declared reviewer on
+# PR #502). A site of `![x](https://host/p)` rendered as an image in the pull-request body.
+ST12N="$work/st12n"
+bash "$PL" rule-sweep --state "$ST12N" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site '![x](https://example.invalid/p)' --result fired >/dev/null 2>&1
+RSN="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12N" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+has "$RSN" '!\[x\](https://example.invalid/p)' "12 a site carrying image syntax is rendered as text"
+hasnt "$RSN" '![x](' "12 ...and the live image syntax never reaches the block"
 
 # The subcommands are reachable and self-describing.
 has "$(bash "$PL" --help 2>&1)" "rule-sweep --state" "12 --help documents the writer"

@@ -210,6 +210,20 @@ if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then ok; else bad "adb_
 # idempotent: second run is a no-op, no backup created
 out="$(adb_link "$src" "$dest" "$backup")"
 case "$out" in *"ok "*) ok ;; *) bad "adb_link idempotent no-op (got: $out)" ;; esac
+# A LINK TO `<src><NL>` IS NOT OURS. `$(readlink …)` strips trailing newlines, so it compared equal
+# to `<src>`, was reported "ok", and was left pointing somewhere else (#490 sibling sweep, PR #502).
+nl_dest="$work/linkdest-nl"
+ln -s "$src
+" "$nl_dest"
+adb_link "$src" "$nl_dest" "$backup" >/dev/null 2>&1
+nl_now="$(readlink -n "$nl_dest" 2>/dev/null; printf x)"; nl_now="${nl_now%x}"
+eq "$nl_now" "$src" "adb_link repoints a link whose target is the source plus a trailing newline"
+
+# adb_md_escape — HTML, and Markdown's link/image syntax, and nothing cosmetic.
+eq "$(adb_md_escape '<!-- a & b -->')" '&lt;!-- a &amp; b --&gt;' "adb_md_escape neutralizes HTML"
+eq "$(adb_md_escape '![x](https://h/p) [y](z)')" '!\[x\](https://h/p) \[y\](z)' "adb_md_escape neutralizes link and image syntax"
+eq "$(adb_md_escape 'a\[b')" 'a\\\[b' "adb_md_escape escapes a pre-escaped bracket so it cannot come back live"
+eq "$(adb_md_escape 'lib/check_mut.sh:12 *x*')" 'lib/check_mut.sh:12 *x*' "adb_md_escape leaves paths and emphasis readable"
 
 # real file at dest gets backed up (mirrored absolute path under backup dir)
 dest2="$work/real.txt"; echo preexisting > "$dest2"

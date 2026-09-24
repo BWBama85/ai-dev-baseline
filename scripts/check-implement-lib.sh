@@ -3656,6 +3656,31 @@ SI_X="$( cd "$d" && PATH="$gitstub:$PATH" bash "$IL" sweep-identity .claude/stat
 has "$SI_X" "rc=20" "54 a failed material assembly returns 20, and the process survives to return it"
 hasnt "$SI_X" $'\t' "54 ...and no partial identity is printed"
 
+# A FAILED ENUMERATION IS A FAILURE, not an empty one. The untracked listing ends in a `while`, so
+# without pipefail a failing `git ls-files` contributed no entries and hashed to a confident, wrong
+# identity (#490, reported on PR #502).
+cat > "$gitstub/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in -C) continue ;; ls-files) exit 1 ;; esac
+done
+exec "$realgit" "\$@"
+STUB
+chmod +x "$gitstub/git"
+SI_Y="$( cd "$d" && PATH="$gitstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_Y" "rc=20" "54 a failed untracked enumeration returns 20, never a digest of nothing"
+
+# A SYMLINK TARGET IS HASHED AS BYTES. Captured through `$(…)` it lost a trailing newline, so targets
+# `t` and `t<NL>` gave one identity (#490, reported on PR #502).
+ln -s t "$d/lnk-nl"
+SI_T1="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+rm -f "$d/lnk-nl"; ln -s "t
+" "$d/lnk-nl"
+SI_T2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+rm -f "$d/lnk-nl"
+if [ -n "$SI_T1" ] && [ "$SI_T1" != "$SI_T2" ]; then ok; else
+  bad "54 a symlink target ending in a newline must not share the identity of the one without it"; fi
+
 # THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what
 # sweep-identity emits is exactly what rule-sweep accepts.
 PLIB="$ROOT/scripts/lib/pattern-ledger.sh"

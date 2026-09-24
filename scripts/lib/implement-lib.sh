@@ -4096,6 +4096,10 @@ cmd_sweep_identity() {
   # documents — and every caller branching on 20 would never see it. In `( … )` the exit belongs to
   # the subshell and arrives as its status. Observed: a brace group ended the whole script.
   (
+    # PIPEFAIL, so a failed `git ls-files` or `sort` below fails the subshell instead of being
+    # hidden behind the `while` that ends the pipeline — an enumeration that failed would
+    # otherwise contribute NO untracked entries and hash to a confident, wrong identity.
+    set -o pipefail
     printf 'adb-rule-sweep-identity v1\n'
     printf 'merge-base %s\n' "$mb"
     printf 'diff\n'
@@ -4121,7 +4125,11 @@ cmd_sweep_identity() {
           # addition that contributes no content, and a SYMLINK's identity is its target — hashing
           # what it dereferences to would leave a relinked pointer invisible.
           if [ -L "$root/$u" ]; then
-            printf '%s\0l\0%s\0' "$u" "$(readlink -n "$root/$u" 2>/dev/null || printf '?')"
+            # STREAMED, never captured: `$(…)` strips a trailing newline, so targets `t` and
+            # `t<NL>` would hash identically. The bytes go straight into the material.
+            printf '%s\0l\0' "$u"
+            readlink -n "$root/$u" 2>/dev/null || exit 1
+            printf '\0'
           elif [ -d "$root/$u" ]; then
             printf '%s\0d\0\0' "$u"
           elif [ -f "$root/$u" ]; then
@@ -4136,7 +4144,7 @@ cmd_sweep_identity() {
             # A socket, fifo or device that `ls-files` reported: named, typed, not hashed.
             printf '%s\0o\0\0' "$u"
           fi
-        done
+        done || exit 1
   ) > "$material" 2>/dev/null
   rc=$?
   if [ "$rc" -ne 0 ]; then
