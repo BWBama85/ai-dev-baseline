@@ -478,13 +478,13 @@ if [ "$MODE" = mutation ]; then
   # The writer's idempotency: without it a retry appends a second identical row, which the reader
   # then refuses — the wedge the retry path exists to prevent.
   check_mut rule-sweep-writer-not-idempotent \
-    '  if [ -f "$f" ] && [ -r "$f" ] && LC_ALL=C grep -qxF -- "$row" "$f" 2>/dev/null; then' \
-    '  if false; then' \
+    '      0) printf '"'"'rule-sweep %s %s (already recorded)\n'"'"' "$OPT_RULE" "$OPT_RESULT"; exit 10 ;;' \
+    '      0) : ;;' \
     '12 re-recording an identical row is a no-op (10) — this is the retry path'
   # The write-time file bound: without it a legitimate append makes the record permanently
   # unreadable, which no later run can clear.
   check_mut rule-sweep-file-bound-dropped \
-    '  if [ "$(( cursz + ${#row} + 1 ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
+    '  if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
     '  if false; then' \
     '12 an append that would outgrow the reader'"'"'s file bound is refused at write time'
 
@@ -600,7 +600,7 @@ if [ "$MODE" = mutation ]; then
   check_mut rule-sweep-empty-symlink-accepted \
     '  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then' \
     '  if [ -f "$f" ] && [ ! -s "$f" ]; then' \
-    '12 a symlinked record is refused as unreadable (20), never read as empty'
+    '12 the reader itself refuses a symlink to an empty record (20)'
 
   # Link and image syntax left live: HTML-only escaping, the first cut.
   check_mut rule-sweep-md-link-live \
@@ -2202,6 +2202,16 @@ ST12Q="$work/st12q"; mkdir -p "$ST12Q"; : > "$ST12Q/rule-sweep.tsv"; chmod 000 "
 bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Q" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
 RSQ=$?; chmod 600 "$ST12Q/rule-sweep.tsv"
 if [ "$(id -u)" = "0" ]; then ok; else eq "$RSQ" 20 "12 an unreadable empty record is refused (20), never read as no rows"; fi
+
+# THE READER'S OWN LINK CONTRACT, asked of the library directly. The report now refuses a link
+# before it calls the reader, which is right — and which also means no report-level fixture can see
+# the reader's own guard. The library states "a link is never this module's record" for every
+# caller, so it is held to that on its own witness.
+ST12R="$work/st12r"; mkdir -p "$ST12R"; : > "$work/rs-empty-target2"
+ln -s "$work/rs-empty-target2" "$ST12R/rule-sweep.tsv"
+bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
+  "$ROOT" "$ST12R/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
+eq "$?" 20 "12 the reader itself refuses a symlink to an empty record (20)"
 
 # A MALFORMED ARGUMENT IS USAGE, NOT A CORRUPT FILE (self-review, `status-swallowed`). The reader
 # refuses a bad run/tree with 19 exactly as it refuses a stored field, and reporting that as "the
