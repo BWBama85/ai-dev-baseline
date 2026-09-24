@@ -4532,7 +4532,9 @@ adb_install_source() {
   local home="${1:-$HOME}" link target root
   for link in "$home/.claude/CLAUDE.md" "$home/.codex/AGENTS.md" "$home/.gemini/GEMINI.md"; do
     [ -L "$link" ] || continue
-    target="$(readlink "$link")"
+    # SENTINEL CAPTURE: `$(…)` strips a trailing newline, so a link to `<clone>/…<NL>` resolved to a
+    # different, shorter path than the one it names.
+    target="$(readlink -n "$link" 2>/dev/null; printf x)"; target="${target%x}"
     case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
     # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this the
     # same flavor as the recorded symlink targets so prefix-matching them stays stable; callers
@@ -6860,12 +6862,10 @@ adb_sweep_rows() {
 # SHAPE and nothing else — a row here must never satisfy `record --sweep`, and does not, because
 # the two readers take different files and different grammars.
 #
-# Identity is PER ROW rather than in a header, and that is what keeps the writer a pure append.
-# A header binding one (run, tree) would have to be created-or-verified, which is a read before a
-# write — the read-modify-write this file's own lock exists to serialize. A single write() under
-# the record bound is atomic on an O_APPEND descriptor, so carrying the identity on every row
-# removes the need for a lock instead of arguing that the writer happens to be sequential
-# (pattern-ledger.sh's header records what that argument cost the last time it was made).
+# Identity is PER ROW rather than in a header, so no reader has to trust a header written by an
+# earlier process. That is NOT a reason the writer can go unlocked: `rule-sweep` still checks for
+# a duplicate row and for the file bound before it appends, and both checks race without the lock
+# it takes around them (see `cmd_rule_sweep`).
 
 # adb_md_escape <value> — neutralize a stored value for display in MARKDOWN / HTML.
 #
@@ -6957,12 +6957,10 @@ adb_rule_sweep_row() {
 # more `fired` rows at distinct sites. A class carrying both is a contradiction and refuses the
 # read (18) — this module never reports a partial count.
 #
-# AN EXACT REPEAT OF A ROW IS A NO-OP, NOT A REFUSAL, and that is the retry path. Recording is a
-# sequence of separate appends, so a run interrupted midway through and retried re-offers rows it
-# already wrote; refusing them would wedge the record with no way out but deleting it by hand. An
-# identical row carries no new information and cannot move any count, which is exactly why it is
-# safe to collapse — while a CONTRADICTING row still refuses. `record`'s own rc 10 makes the same
-# judgement for the same reason.
+# A REPEATED (class, site) REFUSES THE READ WHOLE (18), exact repeats included. The retry path is
+# the WRITER's: `rule-sweep` is idempotent on an identical row (rc 10) and never appends it twice,
+# so a duplicate that reaches this reader came from a hand edit or a merge — the case "never a
+# partial count" exists for. Do not read an 18 here as a successful retry.
 #
 # Outputs on success:
 #   line 1:    <emitted> TAB <stale> TAB 0   (the third field is retained for output-shape

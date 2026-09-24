@@ -1481,7 +1481,7 @@ cmd_rule_sweep() {
 # project's own ledger. So M is the LIVE promoted set and the unswept rules are named.
 cmd_rule_sweep_report() {
   local ledger lst region emitted_sz f out rc
-  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts stale dup
+  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts stale
 
   [ -n "$OPT_RUN" ]  || die "rule-sweep-report: --run is required"
   [ -n "$OPT_TREE" ] || die "rule-sweep-report: --tree is required"
@@ -1539,7 +1539,7 @@ cmd_rule_sweep_report() {
       printf 'pattern-ledger: %s could not be read (its directory is not searchable) — refusing to report as if nothing were recorded\n' "$f" >&2
       exit 20
     fi
-    stale=0; dup=0; out=""
+    stale=0; out=""
   else
     out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?
     case "$rc" in
@@ -1550,7 +1550,6 @@ cmd_rule_sweep_report() {
     esac
     counts="$(printf '%s\n' "$out" | sed -n '1p')"
     stale="$(printf '%s' "$counts" | cut -f2)"
-    dup="$(printf '%s' "$counts" | cut -f3)"
     out="$(printf '%s\n' "$out" | tail -n +2)"
   fi
 
@@ -1562,7 +1561,10 @@ cmd_rule_sweep_report() {
   # membership test written against the raw value matched no class at all and every recorded rule
   # read as off-set — a report that credited nothing and returned 11 on a correct sweep.
   local pset=$'\n'"$promoted"$'\n'
-  local class site result off_set=""
+  # `off_set` IS SEEDED WITH ITS DELIMITER, like `swept`: the membership test below needs a newline
+  # on both sides, so an empty seed never matched its first entry and a class with two off-set rows
+  # was listed twice.
+  local class site result off_set=$'\n'
   while IFS="$TAB" read -r class site result; do
     [ -n "$class" ] || continue
     case "$pset" in
@@ -1617,7 +1619,7 @@ ROWS
   # THE EVIDENCE LIMIT, STATED. These rows record which RULES were swept and what each one found;
   # they do not enumerate the files scanned, and a reader must not infer that they do.
   printf -- '- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\n'
-  if [ -n "$off_set" ]; then
+  if [ -n "${off_set//$'\n'/}" ]; then
     printf -- '- recorded but NOT a promoted rule (not counted as coverage):\n'
     printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | while IFS= read -r class; do
       [ -n "$class" ] || continue
@@ -1625,7 +1627,6 @@ ROWS
     done
   fi
   [ "${stale:-0}" -gt 0 ] && printf -- '- %s row(s) from an earlier run or an earlier tree were ignored.\n' "$stale"
-  [ "${dup:-0}" -gt 0 ]   && printf -- '- %s repeated row(s) collapsed.\n' "$dup"
   return 0
 }
 

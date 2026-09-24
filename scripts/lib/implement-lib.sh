@@ -952,6 +952,13 @@ _il_clear() {   # <state-dir>
   # then makes it read as THIS run's coverage, which is the one claim in the close-out that
   # nothing else can contradict.
   targets+=( "$dir"/rule-sweep-*.tsv )
+  # ...AND ITS LOCK. A `rule-sweep` killed between creating `rule-sweep.tsv.lock` and writing its
+  # owner record leaves a lock the reclaimer can never prove dead — deliberately, since age is not
+  # death — and `state-scan` enumerates files, not directories, so /cleanup never sees it. Every
+  # later writer then waited out its bound and refused. Admission is the one point that has
+  # established the previous run is over, so the lock and any tombstones die here — the loop
+  # below already removes a directory, and verifies it is gone.
+  targets+=( "$dir/rule-sweep.tsv.lock" "$dir"/rule-sweep.tsv.lock.stale.* )
   local cand base num
   for cand in "$dir"/issue-*.json "$dir"/issue-*.assoc; do
     base="${cand##*/}"
@@ -4040,6 +4047,21 @@ cmd_open_pr() {
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 SUB="$1"; shift
+# _il_nul_sort — order a NUL-delimited stream in byte order, or pass it through unchanged.
+#
+# `sort -z` IS NOT POSIX, so it is PROBED — on its OUTPUT, not its exit status, because an
+# implementation that accepted `-z` and did something else would pass a status check. Without it
+# the stream keeps `git ls-files`' own order, which is stable run to run on one host: the digest
+# only has to agree between the recorder and the reporter of ONE run, never across machines.
+# `check-tmp-paths.sh`'s `_tmp_nul_sort` is the same probe.
+_il_nul_sort() {
+  if [ -z "${_IL_SORT_Z:-}" ]; then
+    if [ "$(printf 'b\0a\0' | LC_ALL=C sort -z 2>/dev/null | tr '\0' ',')" = "a,b," ]
+    then _IL_SORT_Z=1; else _IL_SORT_Z=0; fi
+  fi
+  if [ "$_IL_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
+}
+
 # cmd_sweep_identity <state-dir> — the run identity and reviewed-tree digest, as <run>TAB<tree>.
 #
 # ONE CALL, BOTH VALUES, so the step that RECORDS a checklist sweep and the step that REPORTS it
@@ -4071,17 +4093,25 @@ cmd_sweep_identity() {
     || { printf 'implement-lib: sweep-identity: could not read %s\n' "$marker" >&2; return 20; }
   adb_rule_sweep_ok_run "$run" \
     || { printf 'implement-lib: sweep-identity: the marker carries no usable startedAt\n' >&2; return 20; }
-  root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  # SENTINEL CAPTURE, as `adb_repo_shape` does: `$(…)` strips trailing newlines, so a checkout whose
+  # directory name ends in one resolved to a SHORTER path — and if that sibling is itself a
+  # repository, every `git -C "$root"` below hashed the wrong tree. `git` terminates the path with
+  # exactly one newline; strip that one and nothing else.
+  root="$(git rev-parse --show-toplevel 2>/dev/null && printf X)" \
     || { echo "implement-lib: sweep-identity: not inside a git repository" >&2; return 20; }
+  root="${root%X}"; root="${root%$'\n'}"
+  [ -n "$root" ] || { echo "implement-lib: sweep-identity: not inside a git repository" >&2; return 20; }
   base="$(adb_default_branch "$root")"
-  # The REMOTE default branch, not the local one: a clone can disagree, and the diff this run is
-  # reviewed against is the one the pull request will show.
-  mb="$(git -C "$root" merge-base "origin/$base" HEAD 2>/dev/null)"
-  if [ -z "$mb" ]; then
-    mb="$(git -C "$root" merge-base "$base" HEAD 2>/dev/null)" \
-      || { printf 'implement-lib: sweep-identity: no merge-base with %s (shallow clone?)\n' "$base" >&2; return 20; }
-  fi
-  [ -n "$mb" ] || { printf 'implement-lib: sweep-identity: no merge-base with %s\n' "$base" >&2; return 20; }
+  # THE REMOTE-TRACKING BASE, AND NO FALLBACK. The diff this run attests to must be the one the
+  # pull request shows, and a local branch can hold unpushed or divergent commits that narrow it —
+  # so a missing or unusable `origin/<default>` is a refusal naming the repair, never a quiet switch
+  # to the local branch. (`adb_default_branch` may itself fall back to a local NAME; that is only a
+  # name, and requiring `origin/<name>` here is what keeps it from becoming a local BASE.)
+  git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$base^{commit}" >/dev/null \
+    || { printf 'implement-lib: sweep-identity: origin/%s is not available — fetch it (git fetch origin %s) and retry\n' "$base" "$base" >&2; return 20; }
+  mb="$(git -C "$root" merge-base "origin/$base" HEAD 2>/dev/null)" \
+    || { printf 'implement-lib: sweep-identity: no merge-base with origin/%s (shallow clone?)\n' "$base" >&2; return 20; }
+  [ -n "$mb" ] || { printf 'implement-lib: sweep-identity: no merge-base with origin/%s\n' "$base" >&2; return 20; }
   # A private staging file for the digest material, under TMPDIR and NOT under the state
   # directory: nothing else reads it, it must not join a swept family, and it is removed on every
   # path below. THE RESULT IS CHECKED — an unchecked `mktemp` leaves an empty name, and the
@@ -4118,7 +4148,7 @@ cmd_sweep_identity() {
     # material is hashed, never read, so legibility costs nothing.
     # LC_ALL=C sort -z gives byte order on every platform rather than the locale's.
     git -C "$root" ls-files --others --exclude-standard -z \
-      | LC_ALL=C sort -z \
+      | _il_nul_sort \
       | while IFS= read -r -d '' u; do
           # THE PATH, THE TYPE AND THE SIZE, not only a content digest: two untracked trees holding
           # the same bytes under different names are different trees, an empty file is a real

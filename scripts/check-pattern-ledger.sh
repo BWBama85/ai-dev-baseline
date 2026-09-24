@@ -509,6 +509,12 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     '12 a dangling symlinked record is refused (20), never read as absent'
 
+  # The off-set set seeded without its delimiter: its first entry never matches, so it repeats.
+  check_mut rule-sweep-offset-unseeded \
+    '  local class site result off_set=$'"'"'\n'"'"'' \
+    '  local class site result off_set=""' \
+    '12 an off-set class with two rows is listed once'
+
   # The evidence limit dropped: "2 of 2" then reads as a claim about which files were scanned,
   # which these rows cannot support.
   check_mut rule-sweep-limit-unstated \
@@ -2129,6 +2135,13 @@ bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule 
 RSE="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
 has "$RSE" "swept 1 of 2" "12 ...and the off-set row is still not counted once a real one exists"
 has "$RSE" "NOT a promoted rule" "12 ...but it IS reported, never silently dropped"
+has "$RSE" 'ghost-only' "12 ...naming the off-set class itself, not only the heading"
+# AN OFF-SET CLASS WITH SEVERAL ROWS IS LISTED ONCE (reported on PR #502). The set was seeded without
+# its delimiter, so its first entry never matched the membership test and the class repeated.
+bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'a.sh:1' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'b.sh:2' --result fired >/dev/null 2>&1
+RSE2="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+eq "$(printf '%s\n' "$RSE2" | grep -c '`ghost-two`')" "1" "12 an off-set class with two rows is listed once"
 
 # THE READER REFUSES WHAT THE WRITER REFUSES — the byte bounds, not only the printable shape.
 ST12F="$work/st12f"; mkdir -p "$ST12F"

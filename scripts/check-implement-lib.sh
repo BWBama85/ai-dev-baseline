@@ -3572,7 +3572,12 @@ rm -f "$SWB"/*
 # ================= 54. sweep-identity: one call, both values (#490) =============================
 # The recorder (step 9) and the reporter (step 11) must not derive the run identity or the tree
 # digest separately, or the close-out can attest to a tree nobody swept. This is the one call.
-d="$(new_repo)"; git -C "$d" checkout -q -b issue-490-x
+d="$(new_repo)"
+# THE REMOTE-TRACKING BASE THE DIGEST REQUIRES. `sweep-identity` refuses to fall back to a local
+# branch, so the fixture carries `origin/<its default>` exactly as a real clone would.
+si_origin() { git -C "$1" update-ref "refs/remotes/origin/$(git -C "$1" symbolic-ref --short HEAD)" HEAD; }
+si_origin "$d"
+git -C "$d" checkout -q -b issue-490-x
 jq -n '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
   > "$d/.claude/state/implement-issue-active.json"
 SI_OUT="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>&1 )"; SI_RC=$?
@@ -3680,6 +3685,61 @@ SI_T2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -
 rm -f "$d/lnk-nl"
 if [ -n "$SI_T1" ] && [ "$SI_T1" != "$SI_T2" ]; then ok; else
   bad "54 a symlink target ending in a newline must not share the identity of the one without it"; fi
+
+# NO FALLBACK TO A LOCAL BASE (reported on PR #502). A local default branch can hold unpushed or
+# divergent commits, so a digest taken against it can certify a diff the pull request never shows.
+d3="$(new_repo)"; git -C "$d3" checkout -q -b issue-490-y
+jq -n '{branch:"issue-490-y", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d3/.claude/state/implement-issue-active.json"
+SI_Z="$( cd "$d3" && bash "$IL" sweep-identity .claude/state 2>&1; printf 'rc=%s' "$?" )"
+has "$SI_Z" "rc=20" "54 no origin/<default> is 20, never a digest against the local branch"
+has "$SI_Z" "fetch it" "54 ...and the refusal names the repair"
+
+# A ROOT WHOSE NAME ENDS IN A NEWLINE IS THE ROOT (reported on PR #502). Captured through `$(…)` it
+# lost the newline — and a sibling repository at the shorter name was hashed instead, so edits in
+# the real checkout never moved the digest.
+tnp="$work/tn"; mkdir -p "$tnp"
+tn_real="$tnp/r
+"
+( cd "$tnp" && git init -q r && git -C r config user.email t@e.com && git -C r config user.name t \
+    && : > r/seed && git -C r add seed && git -C r commit -qm seed ) >/dev/null 2>&1
+git init -q "$tn_real" >/dev/null 2>&1
+git -C "$tn_real" config user.email t@e.com; git -C "$tn_real" config user.name t
+: > "$tn_real/seed"; git -C "$tn_real" add seed; git -C "$tn_real" commit -qm seed >/dev/null 2>&1
+mkdir -p "$tn_real/.claude/state"; printf '.claude/\n' > "$tn_real/.gitignore"
+git -C "$tn_real" add .gitignore; git -C "$tn_real" commit -qm ig >/dev/null 2>&1
+si_origin "$tn_real"; si_origin "$tnp/r"
+jq -n '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$tn_real/.claude/state/implement-issue-active.json"
+TN_A="$( cd "$tn_real" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+printf 'edited\n' > "$tn_real/seed"
+TN_B="$( cd "$tn_real" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$TN_A" ] && [ "$TN_A" != "$TN_B" ]; then ok; else
+  bad "54 an edit in a checkout whose root ends in a newline must move its digest [$TN_A] [$TN_B]"; fi
+
+# `sort -z` IS PROBED, NOT ASSUMED (reported on PR #502). On a host whose `sort` lacks it, pipefail
+# made every call fail; the stream now keeps git's own order, which is stable on one host.
+sortstub="$work/sortstub"; mkdir -p "$sortstub"; realsort="$(command -v sort)"
+cat > "$sortstub/sort" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in -z) echo "sort: invalid option -- z" >&2; exit 2 ;; esac; done
+exec "$realsort" "\$@"
+STUB
+chmod +x "$sortstub/sort"
+SI_S1="$( cd "$d" && PATH="$sortstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_S1" "rc=0" "54 a host whose sort lacks -z still yields an identity"
+SI_S2="$( cd "$d" && PATH="$sortstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null )"
+eq "$SI_S2" "${SI_S1%$'\n'rc=0}" "54 ...and the same one on a second call"
+
+# ADMISSION CLEARS AN ABANDONED rule-sweep LOCK (reported on PR #502). A writer killed between the
+# lock's mkdir and its owner record leaves a lock the reclaimer can never prove dead, and state-scan
+# does not enumerate directories — so every later writer waited out its bound and refused.
+d4="$(new_repo)"
+mkdir -p "$d4/.claude/state/rule-sweep.tsv.lock" "$d4/.claude/state/rule-sweep.tsv.lock.stale.1.2/x"
+admit "$d4"
+eq "$AD_RC" 0 "54 admission succeeds over an abandoned rule-sweep lock"
+if [ -e "$d4/.claude/state/rule-sweep.tsv.lock" ] || [ -e "$d4/.claude/state/rule-sweep.tsv.lock.stale.1.2" ]; then
+  bad "54 admission left the abandoned rule-sweep lock (or its tombstone) behind"; else ok; fi
 
 # THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what
 # sweep-identity emits is exactly what rule-sweep accepts.

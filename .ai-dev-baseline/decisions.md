@@ -8394,8 +8394,12 @@ survive is the part a later reader needs.
              and — the internal contradiction — recording at step 8 while step 9 commits fixes made
              an ordinary successful triage invalidate every row before the close-out rendered.
 - decision:  (1) Rows live at `<state>/rule-sweep.tsv`, appended `O_APPEND` under a whole-record
-             byte bound, NO lock: identity rides on every row rather than in a header, so there is
-             no read-before-write to serialize. The Scope line naming `_adb_pl_insert` is withdrawn.
+             byte bound, with identity on every row rather than in a header. The writer takes
+             `_adb_pl_lock` on `<record>.lock` around its duplicate check, its size check and the
+             append — those are reads before a write, and without the lock concurrent retries
+             doubled a row and concurrent appends could pass the bound together. Admission clears
+             the lock, because an ownerless one can never be proven dead. The Scope line naming
+             `_adb_pl_insert` is withdrawn: that writes the tracked ledger, not this record.
              (2) `implement-lib.sh sweep-identity` emits `<run>TAB<tree>` in ONE call, so the
              recorder and the reporter derive them the same way. `run` is the marker's `startedAt`
              — never `owner`, which is re-stamped on pickup. `tree` digests `git diff --full-index
@@ -8428,7 +8432,10 @@ survive is the part a later reader needs.
              same refusal to assert a guarantee the code does not provide: `pattern-ledger.sh`'s own
              header records what "the writer is sequential by construction" cost the last time it
              was argued, and a header binding one identity would have needed exactly that argument
-             back. The retry path went through one revision worth recording: the first cut had the
+             back. The first cut was also unlocked, on the argument that per-row identity leaves
+             the writer nothing to read first; review showed that argument was false once the writer
+             checked for duplicates and for the bound, and the lock was added. The retry path went
+             through one revision worth recording: the first cut had the
              READER collapse an exact repeat, which kept the writer free of a read — but it
              contradicted the acceptance criterion that a duplicate is refused whole, and the
              independent reviewer was right to call it. Moving the idempotency to the writer costs
