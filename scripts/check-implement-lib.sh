@@ -3636,6 +3636,26 @@ jq -n '{branch:"issue-490-x", issue:"490", phase:"branched"}' > "$d2/.claude/sta
   "54 a marker carrying no startedAt is 20, never a made-up identity"
 ( cd "$d2" && bash "$IL" sweep-identity >/dev/null 2>&1 ); eq "$?" 2 "54 sweep-identity needs a state dir"
 
+# A FAILURE ASSEMBLING THE MATERIAL RETURNS 20 — it does not END THE PROCESS. The digest is built
+# inside a subshell for exactly this reason: `exit 1` in a brace group exits the SHELL, so a failed
+# `git diff` terminated implement-lib.sh with status 1 and no caller branching on 20 ever saw it.
+# Driven by a `git` stub that passes everything through except `diff`, which is the one command
+# whose failure the group swallowed. The marker `echo` after the call is what proves the process
+# survived: with the brace group it never ran.
+gitstub="$work/gitstub"; mkdir -p "$gitstub"
+realgit="$(command -v git)"
+cat > "$gitstub/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in -C) continue ;; diff) exit 1 ;; esac
+done
+exec "$realgit" "\$@"
+STUB
+chmod +x "$gitstub/git"
+SI_X="$( cd "$d" && PATH="$gitstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_X" "rc=20" "54 a failed material assembly returns 20, and the process survives to return it"
+hasnt "$SI_X" $'\t' "54 ...and no partial identity is printed"
+
 # THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what
 # sweep-identity emits is exactly what rule-sweep accepts.
 PLIB="$ROOT/scripts/lib/pattern-ledger.sh"

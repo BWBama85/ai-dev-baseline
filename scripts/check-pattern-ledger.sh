@@ -463,6 +463,12 @@ if [ "$MODE" = mutation ]; then
     "  printf '%s' \"\$1\"" \
     '12 a site that would open an HTML comment is escaped in the report'
 
+  # The argument validation removed: a caller's typo is then reported as a damaged record.
+  check_mut rule-sweep-args-unvalidated \
+    '  adb_rule_sweep_ok_run "$OPT_RUN" \\' \
+    '  true "$OPT_RUN" \\' \
+    '12 a malformed --run is usage (2), not a report about the file'
+
   # The evidence limit dropped: "2 of 2" then reads as a claim about which files were scanned,
   # which these rows cannot support.
   check_mut rule-sweep-limit-unstated \
@@ -1914,8 +1920,11 @@ has "$(bash "$ROOT/scripts/lib/adopt-lib.sh" classify patterns yes same yes | cu
 # while the other twenty went unchecked.
 L12="$work/l12.md"; ST12="$work/st12"
 RS_RUN="2026-09-24T03:34:07Z"
-RS_TREE="$(printf 'tree' | shasum -a 256 | awk '{print $1}')"
-RS_TREE2="$(printf 'other' | shasum -a 256 | awk '{print $1}')"
+# FIXED LITERALS, not a `shasum` call: the only property these need is the writer's domain (64
+# lowercase hex), and a fixture that shells out to a digest tool asserts nothing extra while
+# depending on which of sha256sum/shasum/openssl the runner happens to carry.
+RS_TREE="$(printf 'a%.0s' $(seq 1 64))"
+RS_TREE2="$(printf 'b%.0s' $(seq 1 64))"
 rs()   { bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" "$@" >/dev/null 2>&1; }
 rrep() { bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null; }
 rrc()  { bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1; echo $?; }
@@ -2053,6 +2062,22 @@ bash "$PL" checklist --ledger "$L12B" >/dev/null 2>&1
 eq "$?" 21 "12 fixture: the inflated checklist is over budget"
 bash "$PL" rule-sweep-report --ledger "$L12B" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
 eq "$?" 21 "12 ...and the report refuses it too, rather than reporting coverage nobody was given"
+
+# AN EMPTY RECORD IS NO ROWS, NOT DAMAGE (self-review, `rerun-not-idempotent`). A crash between
+# create and first write leaves a zero-byte file; refusing it would return 18 from every later
+# report, a state no run can clear without deleting the file by hand.
+ST12D="$work/st12d"; mkdir -p "$ST12D"; : > "$ST12D/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$work/none12.md" --state "$ST12D" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 a zero-byte record reads as no rows, never as damage"
+
+# A MALFORMED ARGUMENT IS USAGE, NOT A CORRUPT FILE (self-review, `status-swallowed`). The reader
+# refuses a bad run/tree with 19 exactly as it refuses a stored field, and reporting that as "the
+# file holds a field this module would not have written" sends the operator to inspect a record
+# that is fine.
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$(printf 'a b')" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 2 "12 a malformed --run is usage (2), not a report about the file"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "not-hex" >/dev/null 2>&1
+eq "$?" 2 "12 ...and so is a malformed --tree"
 
 # The subcommands are reachable and self-describing.
 has "$(bash "$PL" --help 2>&1)" "rule-sweep --state" "12 --help documents the writer"

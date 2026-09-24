@@ -6859,6 +6859,22 @@ adb_sweep_rows() {
 # removes the need for a lock instead of arguing that the writer happens to be sequential
 # (pattern-ledger.sh's header records what that argument cost the last time it was made).
 
+# adb_md_escape <value> — neutralize a stored value against MARKDOWN/HTML structure.
+#
+# Every field these modules store is validated as one printable line at write time, which stops it
+# forging a RECORD. It does not stop it forging MARKUP: a site of `x.sh:1 <!-- hide` opens an HTML
+# comment that GitHub honours, hiding the evidence and everything after it in a pull-request body
+# — and a rendered report is often the only surviving copy, because the run state it came from is
+# swept. Escaping is the RENDERER's job, not the validator's: the storage rules govern the file,
+# this governs the display.
+#
+# One home, because the rule is one rule. `docs-lib.sh` carries its own `_adb_dl_md` and an inlined
+# awk `md()` predating this; they are deliberately left alone here rather than migrated in a diff
+# about something else, but nothing new should add a fourth copy.
+adb_md_escape() {
+  printf '%s' "${1:-}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 ADB_RULE_SWEEP_FIELD_MAX=512
 # One whole record inside one stdio buffer, so two appenders cannot interleave halves of two rows.
 # docs-lib.sh's constant and its reasoning; the number is restated, not shared, because that
@@ -6945,6 +6961,12 @@ adb_rule_sweep_check() {
   local emitted=0 stale=0 dup=0 out=""
   adb_rule_sweep_ok_run  "$want_run"  || return 19
   adb_rule_sweep_ok_tree "$want_tree" || return 19
+  # A ZERO-BYTE FILE IS NO ROWS, NOT DAMAGE. `adb_bytes_whole` refuses an empty file (18), which is
+  # right for a sweep file carrying a mandatory header and wrong here: this record has no header,
+  # the writer only ever creates it by appending a row, and an empty one — left by a crash between
+  # create and write, or by a truncating editor — would otherwise return 18 from every later
+  # report, a state no run can clear without deleting the file by hand.
+  if [ -f "$f" ] && [ ! -s "$f" ]; then printf '0\t0\t0\n'; return 0; fi
   adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
   # Newline-delimited sets, not associative arrays: this file stays parseable below the bash
   # floor (D30/D35/D65). No member can hold a tab or a newline, so a quoted expansion in a

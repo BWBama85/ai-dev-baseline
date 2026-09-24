@@ -1392,13 +1392,8 @@ _adb_pl_rs_file() {
   printf '%s/%s\n' "$d" "$_ADB_PL_RS_FILE"
 }
 
-# Render a stored field into Markdown. Every field is validated as one printable line at write
-# time, which stops it forging a ROW; it does not stop it forging MARKUP, and this report is the
-# only surviving copy of the sweep once /cleanup removes the state directory. `docs-lib.sh`'s
-# `_adb_dl_md`, and the same reasoning.
-_adb_pl_rs_md() {
-  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
-}
+# Render a stored field into Markdown. The rule and its reasoning live in `adb_md_escape`.
+_adb_pl_rs_md() { adb_md_escape "$1"; }
 
 # `rule-sweep` — record ONE rule's disposition against the diff this run is about to ship.
 #
@@ -1438,10 +1433,18 @@ cmd_rule_sweep() {
 # project's own ledger. So M is the LIVE promoted set and the unswept rules are named.
 cmd_rule_sweep_report() {
   local ledger lst region emitted_sz f out rc
-  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts emitted stale dup
+  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts stale dup
 
   [ -n "$OPT_RUN" ]  || die "rule-sweep-report: --run is required"
   [ -n "$OPT_TREE" ] || die "rule-sweep-report: --tree is required"
+  # VALIDATED HERE, AS USAGE. The reader refuses these two with 19 exactly as it refuses a stored
+  # field, and mapping that to "the file holds a field this module would not have written" sends
+  # the operator to inspect a record that is perfectly fine. A bad argument is the caller's, not
+  # the file's.
+  adb_rule_sweep_ok_run "$OPT_RUN" \
+    || die "rule-sweep-report: --run must be 1-64 chars of [A-Za-z0-9:._-], got $(adb_display_value "$OPT_RUN")"
+  adb_rule_sweep_ok_tree "$OPT_TREE" \
+    || die "rule-sweep-report: --tree must be 64 lowercase hex, got $(adb_display_value "$OPT_TREE")"
 
   # --- M, from the live checklist -----------------------------------------------------------
   ledger="$(_adb_pl_resolve_ledger)" || exit 20
@@ -1482,7 +1485,7 @@ cmd_rule_sweep_report() {
       printf 'pattern-ledger: %s could not be read (its directory is not searchable) — refusing to report as if nothing were recorded\n' "$f" >&2
       exit 20
     fi
-    emitted=0; stale=0; dup=0; out=""
+    stale=0; dup=0; out=""
   else
     out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?
     case "$rc" in
@@ -1492,7 +1495,6 @@ cmd_rule_sweep_report() {
       *)  printf 'pattern-ledger: %s does not parse, or records a class both clean and fired — refusing a partial count\n' "$f" >&2; exit 18 ;;
     esac
     counts="$(printf '%s\n' "$out" | sed -n '1p')"
-    emitted="$(printf '%s' "$counts" | cut -f1)"
     stale="$(printf '%s' "$counts" | cut -f2)"
     dup="$(printf '%s' "$counts" | cut -f3)"
     out="$(printf '%s\n' "$out" | tail -n +2)"

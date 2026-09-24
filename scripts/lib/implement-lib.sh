@@ -4091,21 +4091,29 @@ cmd_sweep_identity() {
     || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
   [ -n "$material" ] && [ -f "$material" ] \
     || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
-  {
+  # A SUBSHELL, NOT A BRACE GROUP. `exit 1` inside `{ … }` exits the SHELL, so a failed `git diff`
+  # here would terminate implement-lib.sh with status 1 instead of returning the 20 this function
+  # documents — and every caller branching on 20 would never see it. In `( … )` the exit belongs to
+  # the subshell and arrives as its status. Observed: a brace group ended the whole script.
+  (
     printf 'adb-rule-sweep-identity v1\n'
     printf 'merge-base %s\n' "$mb"
     printf 'diff\n'
     git -C "$root" diff "$mb" || exit 1
     printf 'untracked\n'
-    # LC_ALL=C sort, so the order is the byte order on every platform rather than the locale's.
+    # LC_ALL=C sort -z, so the order is the byte order on every platform rather than the locale's,
+    # and a newline in a filename cannot re-partition the list.
     git -C "$root" ls-files --others --exclude-standard -z \
       | LC_ALL=C sort -z \
       | while IFS= read -r -d '' u; do
+          # THE PATH AND THE SIZE, not only the content digest: two untracked trees holding the
+          # same bytes under different names are different trees, and an empty file is a real
+          # addition that contributes no content at all.
           printf '%s\t%s\t%s\n' "$u" \
             "$(LC_ALL=C wc -c < "$root/$u" 2>/dev/null | tr -d ' ')" \
             "$(adb_sha256 "$root/$u" 2>/dev/null || printf 'unreadable')"
         done
-  } > "$material" 2>/dev/null
+  ) > "$material" 2>/dev/null
   rc=$?
   if [ "$rc" -ne 0 ]; then
     rm -f "$material"
