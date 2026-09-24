@@ -709,4 +709,10 @@ One line per resolved review thread, newest last.
 - `precondition-ordering` `scripts/lib/common.sh:3577` `93aa845` `PRRT_kwDOTfywrM6lNMPL` PR #501 2026-09-23 — a status comment was dropped on an unvalidated timestamp before the classifier could refuse it
 - `toctou` `scripts/lib/implement-lib.sh:3279` `dd298af` `PRRT_kwDOTfywrM6lNMPS` PR #501 2026-09-23 — the review output was reopened by name for its newline after the post-dispatch checks
 - `stale-doc-claim` `.ai-dev-baseline/decisions.md:8368` `b27dd1a` `PRRT_kwDOTfywrM6lNMPY` PR #501 2026-09-23 — D113 said a comment with no id is kept after the code made it unreadable
+- `partial-validation` `scripts/lib/pattern-ledger.sh:1447` `f439682` `PRRT_kwDOTfywrM6lmjC-` PR #502 2026-09-24 — rule-sweep followed a symlinked record the reader refuses, writing to its target
+- `toctou` `scripts/lib/pattern-ledger.sh:1428` `f439682` `PRRT_kwDOTfywrM6lmjDI` PR #502 2026-09-24 — rule-sweep duplicate check and append were two operations; concurrent retries doubled a row
+- `trailing-newline-stripped` `scripts/lib/implement-lib.sh:4124` `f439682` `PRRT_kwDOTfywrM6lmjDS` PR #502 2026-09-24 — sweep-identity captured a symlink target through command substitution and lost a trailing newline
+- `partial-validation` `scripts/lib/pattern-ledger.sh:1439` `f439682` `PRRT_kwDOTfywrM6lmjDb` PR #502 2026-09-24 — rule-sweep file bound added a character count to a byte count
+- `markup-injection` `scripts/lib/common.sh:6875` `f439682` `PRRT_kwDOTfywrM6lmjDj` PR #502 2026-09-24 — adb_md_escape escaped HTML but left Markdown link and image syntax live
+- `ledger-coverage-gap` `scripts/lib/cleanup-lib.sh:456` `f439682` `PRRT_kwDOTfywrM6lmjDp` PR #502 2026-09-24 — state-scan classified the rules kind but /cleanup had no verdict or delete arm for it
 <!-- adb:hits:end -->
