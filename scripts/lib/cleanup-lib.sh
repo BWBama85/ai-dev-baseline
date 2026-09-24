@@ -321,6 +321,9 @@ EOF
 #   review   -               a code-review artifact (prompt, findings, captured stream)
 #   issue    -               an /implement-issue issue SNAPSHOT, `issue-<n>.json` / `issue-<n>.assoc`
 #   docs     -               an /implement-issue DOCS-DUTY record, `docs-consulted.tsv` (#422)
+#   survey   -               an /implement-issue SURVEY artifact (prompt, summary, trace, stream)
+#   rules    -               an /implement-issue LEARNED-CHECKLIST SWEEP record, `rule-sweep.tsv`
+#                            (#490) — which promoted rules the run swept the diff for
 #   unsafe   -               a file whose NAME cannot be serialized (see #273 below); the path
 #                            field is a `%q`-ENCODED rendering, never a usable path
 #   other    -               ANYTHING ELSE
@@ -438,6 +441,19 @@ cmd_state_scan() {
       # and here that file is the one asserting which documentation this run consulted.
       docs-consulted.tsv|docs-consulted-*.tsv)
         _adb_cl_emit "$want_ident" docs "$f" '-'
+        ;;
+      # /implement-issue step 9's learned-checklist sweep record (#490): one row per promoted rule
+      # this run swept the final diff for. Run evidence with exactly the same lifecycle as the
+      # docs record above — the durable half is the ledger under .ai-dev-baseline/, which is
+      # deliberately not under this directory at all.
+      #
+      # A FAMILY for the same reason the three above are: one fixed name today, and a per-slot or
+      # per-round `rule-sweep-<n>.tsv` is the obvious next shape. Kept identical to the PREFLIGHT
+      # set in `_il_clear` — a name this arm can sweep but `admit` cannot clear is a stale file a
+      # fresh run's marker makes read as live, and here that file is the one asserting which of
+      # this project's learned rules the run actually checked.
+      rule-sweep.tsv|rule-sweep-*.tsv)
+        _adb_cl_emit "$want_ident" rules "$f" '-'
         ;;
       # /implement-issue's survey artifacts (#435): the survey prompt, the bounded summary the
       # dispatched surveyor returns (`survey.md`), its trace (`survey-trace.md`) and the dispatch

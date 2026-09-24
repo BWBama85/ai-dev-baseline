@@ -828,6 +828,14 @@ class forward from the pull request that discovered it to the one that would rep
 never fired since promotion is a fact worth seeing, because it is either a class that stopped
 recurring or a rule that no longer matches anything.
 
+**And name it in a RECORD, not a sentence.** "Swept all 21 promoted rules, four fired" is a claim
+with nothing behind it: no file says which rules ran, so a real sweep and a plausible sentence are
+indistinguishable to every later reader. Where the project keeps a ledger, each rule's disposition
+is recorded as it is swept and the close-out renders the result — coverage counted against the
+**live** promoted set, so recording one rule cannot render a clean report while the other twenty
+went unchecked. The rendered report states its own limit: it records which rules were swept and
+what each found, not which files were read.
+
 A project without a ledger simply does the open-ended pass; there is nothing to skip and no gate
 here.
 

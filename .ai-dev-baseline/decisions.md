@@ -8378,3 +8378,51 @@ survive is the part a later reader needs.
              comment rather than added to the snapshot, because the snapshot is read on every poll and
              pr-watch.sh records that bodies are the one field the classification path must not pay for.
 - baseline-issue: n/a
+
+## D114 — The learned-checklist sweep is a record, keyed to the tree that ships
+- date:      2026-09-24
+- category:  project-delta
+- unknown:   #490 (slice of #465, item 3). `self-review.md` requires a run to sweep the promoted
+             checklist and name what it swept; that was a sentence in a PR body with no file behind
+             it, so a real sweep and a plausible sentence were indistinguishable. #465's BLOCKING #4
+             recorded why the obvious record does not fix it: `--rule --site --result` alone cannot
+             establish coverage, because one recorded rule renders a clean report while the other
+             twenty were never checked — the `partial-validation` class from this project's own
+             ledger. Four further gaps were BLOCKING on #490's own gap analysis: the identity
+             fields had no source, the Scope named ledger-bound writer primitives for a
+             state-directory file, one `--site` could not carry a rule that fired at several sites,
+             and — the internal contradiction — recording at step 8 while step 9 commits fixes made
+             an ordinary successful triage invalidate every row before the close-out rendered.
+- decision:  (1) Rows live at `<state>/rule-sweep.tsv`, appended `O_APPEND` under a whole-record
+             byte bound, NO lock: identity rides on every row rather than in a header, so there is
+             no read-before-write to serialize. The Scope line naming `_adb_pl_insert` is withdrawn.
+             (2) `implement-lib.sh sweep-identity` emits `<run>TAB<tree>` in ONE call, so the
+             recorder and the reporter cannot derive them separately. `run` is the marker's
+             `startedAt` — never `owner`, which is re-stamped on pickup. `tree` digests the branch
+             diff against the merge-base plus every untracked path with its size and content digest.
+             (3) The sweep is re-performed over the FINAL diff and recorded at the end of step 9,
+             after the last triage commit. (4) Coverage is `N of M` against the LIVE promoted set
+             with the unswept rules named; duplicates are refused on `(class, site)` so several
+             fired sites are representable; an EXACT repeat of a row collapses rather than refusing,
+             which is the retry path for an interrupted recording, while a class recorded both clean
+             and fired still refuses the read whole.
+- placement: `scripts/lib/common.sh` (`adb_rule_sweep_row`, `adb_rule_sweep_check`),
+             `scripts/lib/pattern-ledger.sh` (`rule-sweep`, `rule-sweep-report`),
+             `scripts/lib/implement-lib.sh` (`sweep-identity`, `_il_clear`),
+             `scripts/lib/cleanup-lib.sh` (`state-scan` `rules` arm), `scripts/lib/run-state.sh`
+             (whitelist + kind), `base/workflows/implement-issue.md` steps 8/9/11,
+             `base/practices/self-review.md`; tests in `check-pattern-ledger.sh` section 12 with
+             `--mutation` rows, and the containment arms in `check-cleanup.sh`
+- reason:    The contradiction is the load-bearing part. A digest is only worth taking if it names
+             the tree a reader can go and look at, and the tree a reader looks at is the one that
+             merged — so the record has to be taken after the last fix, and the sweep has to have
+             seen that fix. Recording earlier and stamping it with the final digest would have
+             produced a record that passes every validator and attests to a tree nobody swept,
+             which is worse than the sentence it replaced. The per-row identity follows from the
+             same refusal to assert a guarantee the code does not provide: `pattern-ledger.sh`'s own
+             header records what "the writer is sequential by construction" cost the last time it
+             was argued, and a header binding one identity would have needed exactly that argument
+             back. The exact-repeat collapse is `record`'s rc 10 judgement applied to the same
+             problem — a repeat cannot move a count, so refusing it buys nothing and wedges the
+             record — while the contradiction refusal keeps "never a partial count" intact.
+- baseline-issue: n/a

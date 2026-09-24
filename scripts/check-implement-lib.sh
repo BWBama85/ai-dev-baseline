@@ -3569,6 +3569,81 @@ eq "$SWR" 20 "53 publish-review refuses a stage replaced during validation (20)"
 if [ -e "$PS/review.md" ]; then bad "53 …and publishes nothing"; else ok; fi
 rm -f "$SWB"/*
 
+# ================= 54. sweep-identity: one call, both values (#490) =============================
+# The recorder (step 9) and the reporter (step 11) must not derive the run identity or the tree
+# digest separately, or the close-out can attest to a tree nobody swept. This is the one call.
+d="$(new_repo)"; git -C "$d" checkout -q -b issue-490-x
+jq -n '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d/.claude/state/implement-issue-active.json"
+SI_OUT="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>&1 )"; SI_RC=$?
+eq "$SI_RC" 0 "54 sweep-identity succeeds on a run with a marker"
+eq "$(printf '%s' "$SI_OUT" | cut -f1)" "2026-09-24T03:34:07Z" \
+   "54 the run identity is the marker's startedAt"
+SI_TREE="$(printf '%s' "$SI_OUT" | cut -f2)"
+case "$SI_TREE" in
+  *[!0-9a-f]*|'') bad "54 the tree digest is 64 lowercase hex [got $SI_TREE]" ;;
+  *) if [ "${#SI_TREE}" -eq 64 ]; then ok; else bad "54 the tree digest is 64 hex [len ${#SI_TREE}]"; fi ;;
+esac
+
+# DETERMINISM over an unchanged tree — #490's acceptance turns on it: a digest that moved on its
+# own would make every recorded row stale by the time the report ran.
+SI_B="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null )"
+eq "$SI_B" "$SI_OUT" "54 ...and it is identical on a second call over an unchanged tree"
+
+# A TRACKED EDIT moves it.
+printf 'changed\n' > "$d/seed"
+SI_C="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_C" != "$SI_TREE" ]; then ok; else bad "54 a tracked edit must move the tree digest"; fi
+: > "$d/seed"
+
+# AN UNTRACKED FILE moves it — the reviewed tree is what ships, not only what git tracks.
+printf 'new\n' > "$d/untracked.txt"
+SI_D="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_D" != "$SI_TREE" ]; then ok; else bad "54 an untracked file must move the tree digest"; fi
+
+# ...AND SO DOES ITS PATH. Content alone cannot distinguish two untracked trees holding the same
+# bytes under different names, which is why the digest carries the path.
+mv "$d/untracked.txt" "$d/renamed.txt"
+SI_E="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_E" != "$SI_D" ]; then ok; else bad "54 renaming an untracked file must move the tree digest"; fi
+rm -f "$d/renamed.txt"
+
+# AN EMPTY UNTRACKED FILE IS A REAL ADDITION and contributes no content at all, so a
+# contents-only digest would miss it entirely.
+: > "$d/empty.txt"
+SI_F="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_F" != "$SI_TREE" ]; then ok; else bad "54 an EMPTY untracked file must move the tree digest"; fi
+rm -f "$d/empty.txt"
+
+# A GITIGNORED file must NOT move it: it is not part of the reviewed tree, and the run's own state
+# directory lives there — a digest that moved as the run wrote its own artifacts could never match
+# between the record and the report.
+printf 'ignored.txt\n.claude/\n' > "$d/.gitignore"
+git -C "$d" add .gitignore >/dev/null 2>&1; git -C "$d" commit -qm ignore >/dev/null 2>&1
+SI_G="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+printf 'noise\n' > "$d/ignored.txt"
+printf 'noise\n' > "$d/.claude/state/scratch.tmp"
+SI_H="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+eq "$SI_H" "$SI_G" "54 a gitignored file — including the run's own state — never moves the digest"
+rm -f "$d/ignored.txt" "$d/.claude/state/scratch.tmp"
+
+# NO MARKER IS 20, not a fabricated identity: without a run there is nothing to attest to.
+d2="$(new_repo)"
+( cd "$d2" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 \
+  "54 no run marker is 20"
+jq -n '{branch:"issue-490-x", issue:"490", phase:"branched"}' > "$d2/.claude/state/implement-issue-active.json"
+( cd "$d2" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 \
+  "54 a marker carrying no startedAt is 20, never a made-up identity"
+( cd "$d2" && bash "$IL" sweep-identity >/dev/null 2>&1 ); eq "$?" 2 "54 sweep-identity needs a state dir"
+
+# THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what
+# sweep-identity emits is exactly what rule-sweep accepts.
+PLIB="$ROOT/scripts/lib/pattern-ledger.sh"
+SI_RUN="$(printf '%s' "$SI_OUT" | cut -f1)"
+( cd "$d" && bash "$PLIB" rule-sweep --state .claude/state --run "$SI_RUN" --tree "$SI_TREE" \
+    --rule some-class --result clean >/dev/null 2>&1 ); eq "$?" 0 \
+  "54 rule-sweep accepts the identity sweep-identity emits"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"

@@ -615,7 +615,7 @@ add pattern-ledger      bash scripts/check-pattern-ledger.sh
 # coverage it claims to describe. `--mutation` prints the live count on every run; that output is
 # current where a number written here is only as current as its last edit.
 add pattern-ledger-mutation bash scripts/check-pattern-ledger.sh --mutation
-inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh
+inputs pattern-ledger-mutation  scripts/check-pattern-ledger.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pattern-ledger.sh scripts/lib/adopt-lib.sh scripts/lib/implement-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md
 
 # Unit tests for the vendor-documentation duty (scripts/lib/docs-lib.sh, #422): `[mcp] required`
 # finally has a consumer, and its dangerous direction is a CLEAN verdict nobody earned. Drives the

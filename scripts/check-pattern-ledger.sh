@@ -416,6 +416,60 @@ if [ "$MODE" = mutation ]; then
     '    true || {' \
     'record --sweep refuses a sweep file that belongs to another PR (19)'
 
+  # --- the learned-checklist rule sweep's REPORT side (#490) -----------------------------------
+  # `rule-sweep-report`'s failure mode is a CLEAN REPORT NOBODY EARNED, which is exactly what a
+  # clean run prints. Each row below removes one thing standing between a run that swept nothing
+  # and a close-out block that says it did.
+
+  # The unstated disposition silently becomes a rendered report: an agent that never swept would
+  # get a block saying "swept 0 of 21" instead of the 11 that sends it back to step 9.
+  check_mut rule-sweep-empty-not-11 \
+    '  if [ "$n" -eq 0 ] && [ "$m" -gt 0 ]; then' \
+    '  if false; then' \
+    '12 nothing recorded while promoted rules exist is 11'
+
+  # COVERAGE FROM THE ROWS INSTEAD OF THE AUTHORITY — #465's BLOCKING #4 itself. With M taken from
+  # what was recorded, one swept rule renders "1 of 1" and the twenty unchecked ones vanish.
+  check_mut rule-sweep-coverage-from-rows \
+    '      m="$(printf '"'"'%s'"'"' "$promoted" | awk '"'"'NF { n++ } END { print n + 0 }'"'"')" ;;' \
+    '      m="$n" ;;' \
+    '12 ...as COVERAGE against the live checklist, not as a clean sweep'
+
+  # The unswept rules counted but not named: "19 of 21" with the two unnamed is the report a
+  # reader cannot act on, and naming them is the whole reason this is a command and not a sentence.
+  check_mut rule-sweep-unswept-unnamed \
+    "        printf -- '  - \`%s\`\\n' \"\$(_adb_pl_rs_md \"\$class\")\"" \
+    '        :' \
+    '12 ...and the unswept rule is NAMED, not merely counted'
+
+  # The prompt budget ignored: coverage reported against a checklist `checklist` refuses to emit,
+  # so no run was ever handed the rules the block claims were swept.
+  check_mut rule-sweep-budget-ignored \
+    '      if [ "$emitted_sz" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
+    '      if false; then' \
+    '12 ...and the report refuses it too, rather than reporting coverage nobody was given'
+
+  # An unsearchable state directory read as "nothing recorded": 11 and 20 hand the operator
+  # opposite repairs, and this is the direction that hides a sweep it cannot see.
+  check_mut rule-sweep-unreadable-as-empty \
+    '    if [ -d "$d" ] && [ ! -x "$d" ]; then' \
+    '    if false; then' \
+    '12 an unsearchable state directory is 20, never 11'
+
+  # The renderer's escaping removed: a site opening an HTML comment hides the sweep and everything
+  # after it in the pull-request body, and this report is the only surviving copy.
+  check_mut rule-sweep-md-unescaped \
+    "  printf '%s' \"\$1\" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'" \
+    "  printf '%s' \"\$1\"" \
+    '12 a site that would open an HTML comment is escaped in the report'
+
+  # The evidence limit dropped: "2 of 2" then reads as a claim about which files were scanned,
+  # which these rows cannot support.
+  check_mut rule-sweep-limit-unstated \
+    "  printf -- '- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\\n'" \
+    '  :' \
+    '12 the report states its own evidence limit'
+
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
@@ -454,6 +508,60 @@ if [ "$MODE" = mutation ]; then
     '  [ "$base" = "sweep-pr${hpr}-${hhead}.tsv" ] || return 18' \
     '  :' \
     '11 a sweep file whose name does not match its header is refused'
+  # --- the learned-checklist rule sweep's RECORD grammar (#490) --------------------------------
+  # Same failure mode as the sweep grammar above: a validator that stops checking prints exactly
+  # what a clean file prints.
+  check_mut rule-sweep-arity-unchecked \
+    '    adb_sweep_split "$line" 6 || return 18' \
+    '    adb_sweep_split "$line" 6 || true' \
+    '12 a seven-field row is refused on arity too'
+  check_mut rule-sweep-kind-unchecked \
+    '    [ "$kind" = rule ] || return 18' \
+    '    :' \
+    '12 a row of another kind is refused — a sibling-sweep row is not a checklist row'
+  check_mut rule-sweep-clean-site-unchecked \
+    '      clean) [ "$site" = "-" ] || return 18 ;;' \
+    '      clean) : ;;' \
+    '12 a clean row carrying a site is refused — - is the only clean site'
+  # The ALIGNED spelling, which is unique to `adb_rule_sweep_check`: three other functions carry
+  # the unaligned one, and the applier replaces the first line containing the string — so the
+  # unaligned literal mutated `adb_sweep_findings_check` instead and this row tested nothing.
+  check_mut rule-sweep-class-unchecked \
+    '    adb_ledger_ok_class    "$class" || return 19' \
+    '    :' \
+    '12 a class outside the slug charset is refused in the CURRENT group too'
+  # THE ORDER: validate the whole file, THEN filter. Hoisting the staleness `continue` above the
+  # grammar checks lets a damaged row that carries another identity be skipped instead of refused,
+  # so a corrupt record renders a clean count — the `partial-validation` class exactly.
+  check_mut rule-sweep-filters-before-validating \
+    '    [ "$kind" = rule ] || return 18' \
+    '    if [ "$run" != "$want_run" ] || [ "$tree" != "$want_tree" ]; then stale=$((stale + 1)); continue; fi
+    [ "$kind" = rule ] || return 18' \
+    '12 a malformed row is refused even when it belongs to ANOTHER run'
+  # The contradiction guard: a class recorded both clean and fired is a count nobody can reconcile.
+  check_mut rule-sweep-contradiction-allowed \
+    '      case "$sited" in *$'"'"'\n'"'"'"$class"$'"'"'\n'"'"'*) return 18 ;; esac' \
+    '      :' \
+    '12 a class recorded both clean and fired refuses the read whole'
+  # The whole-file byte rules, reached through the shared primitive.
+  check_mut rule-sweep-bytes-unchecked \
+    '  adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"' \
+    '  adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 20 ] && return 20' \
+    '12 a row with no final newline is refused'
+  # The writer half of the one grammar: a writer that stops refusing produces rows the reader then
+  # refuses, which is a wedged record rather than a caught mistake.
+  # SINGLE-LINE literals, and the ORDER of the two definitions is load-bearing: the applier
+  # replaces the FIRST line containing the string, and `adb_rule_sweep_row` is defined above
+  # `adb_rule_sweep_check`, whose own copy of this test is indented one level deeper.
+  check_mut rule-sweep-writer-tree-unchecked \
+    '  adb_rule_sweep_ok_tree "$tree" || return 19' \
+    '  :' \
+    '12 the writer refuses a tree digest that is not 64 hex'
+  check_mut rule-sweep-writer-result-unchecked \
+    '    *) return 19 ;;' \
+    '    *) : ;;' \
+    '12 the writer refuses a result outside fired|clean'
+
   prep_common() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/common.sh"
@@ -1799,5 +1907,176 @@ eq "$(bash "$ROOT/scripts/lib/adopt-lib.sh" prescribed patterns patterns.md >/de
    "/adopt knows the pattern ledger is a prescribed home"
 has "$(bash "$ROOT/scripts/lib/adopt-lib.sh" classify patterns yes same yes | cut -f1)" keep \
    "…and classifies it keep, never proposing an adopting project delete its own learned classes"
+
+# =============================== 12. the learned-checklist rule sweep (#490) =====================
+# The question this section guards is the one #465's BLOCKING #4 named: the report must establish
+# COVERAGE against the live promoted set, so recording ONE rule can never render a clean sweep
+# while the other twenty went unchecked.
+L12="$work/l12.md"; ST12="$work/st12"
+RS_RUN="2026-09-24T03:34:07Z"
+RS_TREE="$(printf 'tree' | shasum -a 256 | awk '{print $1}')"
+RS_TREE2="$(printf 'other' | shasum -a 256 | awk '{print $1}')"
+rs()   { bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" "$@" >/dev/null 2>&1; }
+rrep() { bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null; }
+rrc()  { bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1; echo $?; }
+
+# A project with NO promoted rules is a valid ZERO-RULE sweep, not a defect. Asserted FIRST,
+# because it is the state every adopting project starts in and the one a naive "nothing recorded"
+# rule would fail forever.
+eq "$(rrc)" 0 "12 no promoted rules at all is a valid zero-rule sweep"
+has "$(rrep)" "zero-rule sweep" "12 ...and the report says so rather than rendering 0 of 0"
+
+seed "$L12" alpha-one 2 || bad "12 fixture: could not seed alpha-one"
+seed "$L12" beta-two  2 || bad "12 fixture: could not seed beta-two"
+bash "$PL" promote --ledger "$L12" --class alpha-one --rule "sweep alpha" >/dev/null 2>&1
+bash "$PL" promote --ledger "$L12" --class beta-two  --rule "sweep beta"  >/dev/null 2>&1
+
+# NOTHING RECORDED WHILE RULES EXIST IS 11 — docs-lib.sh's code and its reasoning: an unstated
+# disposition is indistinguishable from a run that never considered the question.
+eq "$(rrc)" 11 "12 nothing recorded while promoted rules exist is 11"
+
+rs --rule alpha-one --result clean
+eq "$(rrc)" 0 "12 one recorded rule renders"
+has "$(rrep)" "swept 1 of 2"  "12 ...as COVERAGE against the live checklist, not as a clean sweep"
+has "$(rrep)" 'beta-two'      "12 ...and the unswept rule is NAMED, not merely counted"
+
+rs --rule beta-two --site 'lib/x.sh:12' --result fired
+rs --rule beta-two --site 'lib/y.sh:4'  --result fired
+eq "$(rrc)" 0 "12 a rule that fired at two sites is representable"
+has "$(rrep)" "swept 2 of 2" "12 ...and completes the coverage"
+has "$(rrep)" 'lib/x.sh:12'  "12 ...naming the first site"
+has "$(rrep)" 'lib/y.sh:4'   "12 ...and the second"
+
+# DETERMINISM: the same record renders identically twice (#490's acceptance).
+eq "$(rrep)" "$(rrep)" "12 the report is deterministic across two runs"
+
+# THE RETRY PATH. Recording is a sequence of appends; a run interrupted midway and retried
+# re-offers rows it already wrote. An EXACT repeat cannot move a count, so it collapses — refusing
+# it would wedge the record with no way out but deleting it by hand.
+rs --rule beta-two --site 'lib/y.sh:4' --result fired
+eq "$(rrc)" 0 "12 an exact repeat of a row is a no-op, not a refusal — this is the retry path"
+has "$(rrep)" "repeated row(s) collapsed" "12 ...and the report says it collapsed one"
+
+# A CONTRADICTION still refuses, whole. This is the line the collapse above must not cross.
+printf 'rule\t%s\t%s\tbeta-two\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a class recorded both clean and fired refuses the read whole"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+
+# STALE ROWS ARE IGNORED AND SAID, never counted and never fatal: a previous run in this same
+# checkout must not be able to credit this one.
+printf 'rule\t2020-01-01T00:00:00Z\t%s\tghost-class\t-\tclean\n' "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\tghost-two\t-\tclean\n' "$RS_RUN" "$RS_TREE2" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 0 "12 rows from an earlier run or an earlier tree do not break the read"
+has "$(rrep)" "earlier run or an earlier tree were ignored" "12 ...and the report says it ignored them"
+hasnt "$(rrep)" "ghost-class" "12 ...and a stale row never credits a sweep"
+hasnt "$(rrep)" "ghost-two"   "12 ...including one from the same run against an earlier tree"
+
+# THE WHOLE FILE IS VALIDATED BEFORE FILTERING. Filtering first would let a damaged row that
+# happens to carry another identity be skipped instead of refused, so a corrupt record could
+# render a clean count.
+printf 'rule\t2020-01-01T00:00:00Z\t%s\tBadClass\t-\tclean\n' "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a malformed row is refused even when it belongs to ANOTHER run"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+# ...and the same class check, on a row of THIS run: the two witnesses are different defects.
+# Without this one, deleting the class predicate is invisible here — every bad-class row in the
+# suite belonged to another run, so it was skipped as stale before the check could have fired.
+printf 'rule\t%s\t%s\tBadClass\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a class outside the slug charset is refused in the CURRENT group too"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+
+# The byte rules, each on its own witness.
+cp "$ST12/rule-sweep.tsv" "$work/rs-good.tsv"
+printf 'rule\t%s\t%s\tzz-class\t-\tclean' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a row with no final newline is refused"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\tq\000q\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a NUL byte is refused on the raw bytes"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\talpha-one\t-\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a five-field row is refused on arity, before any shell read folds the tabs"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\textra\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a seven-field row is refused on arity too"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'sibling\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a row of another kind is refused — a sibling-sweep row is not a checklist row"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\talpha-one\tx.sh:1\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a clean row carrying a site is refused — - is the only clean site"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+
+# The WRITER refuses what the reader would refuse — one grammar, two halves.
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site - --result fired >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses fired with no site"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "${RS_TREE:0:63}" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a tree digest that is not 64 hex"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule 'Not A Class' --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a class outside the slug charset"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result maybe >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a result outside fired|clean"
+bash "$PL" rule-sweep --state "$ST12" --run "$(printf 'a\tb')" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a run identity carrying the field separator"
+
+# MARKUP IS ESCAPED BY THE RENDERER. The record file is swept, so this report is the only
+# surviving copy of the sweep — a site that opens an HTML comment would hide it and everything
+# after it in a pull-request body.
+ST12B="$work/st12b"
+bash "$PL" rule-sweep --state "$ST12B" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site 'x.sh:1 <!-- hide' --result fired >/dev/null 2>&1
+RSB="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12B" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+has "$RSB" '&lt;!--' "12 a site that would open an HTML comment is escaped in the report"
+hasnt "$RSB" 'x.sh:1 <!-- hide' "12 ...and the raw form does not reach the rendered block"
+
+# THE EVIDENCE LIMIT IS STATED, so nobody reads "2 of 2" as a claim about files scanned.
+has "$(rrep)" "does not enumerate the files scanned" "12 the report states its own evidence limit"
+
+# A CHECKLIST ROW MUST NOT SATISFY `record --sweep` — the two families are separate on purpose.
+bash "$PL" record --ledger "$L12" --class alpha-one --site a.sh:1 --fix abc1234 --pr 7 \
+  --thread T-rs-1 --sweep "$ST12/rule-sweep.tsv" >/dev/null 2>&1
+eq "$?" 18 "12 a rule-sweep record is not a sibling-sweep file — record --sweep still refuses it"
+
+# An unsearchable state directory is UNREADABLE (20), never "nothing recorded" (11): the two hand
+# the operator opposite repairs.
+ST12C="$work/st12c"; mkdir -p "$ST12C"; printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12C/rule-sweep.tsv"
+chmod 600 "$ST12C"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12C" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSC=$?; chmod 700 "$ST12C"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSC" 20 "12 an unsearchable state directory is 20, never 11"; fi
+
+# THE PROMPT BUDGET. Over it, `checklist` emits NOTHING — so no run was ever handed these rules,
+# and "N of M" would be a claim about a sweep nobody could have performed.
+L12B="$work/l12b.md"; seed "$L12B" big-class 2 >/dev/null 2>&1
+bash "$PL" promote --ledger "$L12B" --class big-class --rule "r" >/dev/null 2>&1
+awk -v end='<!-- adb:checklist:end -->' '
+  $0 == end { for (i = 0; i < 20; i++) { printf "- `bulk-%d` — ", i; for (j = 0; j < 90; j++) printf "0123456789"; printf "\n" } }
+  { print }' "$L12B" > "$L12B.new" && mv "$L12B.new" "$L12B"
+bash "$PL" checklist --ledger "$L12B" >/dev/null 2>&1
+eq "$?" 21 "12 fixture: the inflated checklist is over budget"
+bash "$PL" rule-sweep-report --ledger "$L12B" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 21 "12 ...and the report refuses it too, rather than reporting coverage nobody was given"
+
+# The subcommands are reachable and self-describing.
+has "$(bash "$PL" --help 2>&1)" "rule-sweep --state" "12 --help documents the writer"
+has "$(bash "$PL" --help 2>&1)" "rule-sweep-report --state" "12 ...and the reporter"
+bash "$PL" rule-sweeps --state "$ST12" >/dev/null 2>&1
+eq "$?" 2 "12 a near-miss subcommand name is usage, not a silent no-op"
+
+# THE FOUR CONSUMERS, asserted together (#490's containment criterion).
+has "$(bash "$ROOT/scripts/lib/cleanup-lib.sh" state-scan "$ST12" 2>/dev/null)" "rules" \
+   "12 state-scan classifies the family"
+if grep -q 'rule-sweep\.tsv' "$ROOT/scripts/lib/implement-lib.sh"; then ok; else bad "12 _il_clear clears the fixed name"; fi
+if grep -q 'rule-sweep-\*\.tsv' "$ROOT/scripts/lib/implement-lib.sh"; then ok; else bad "12 _il_clear clears the family glob"; fi
+if grep -q 'rule-sweep(-\[0-9\]{1,4})?' "$ROOT/scripts/lib/run-state.sh"; then ok; else bad "12 run-state whitelists the opaque name"; fi
+if grep -q 'gaps|review|docs|survey|rules)' "$ROOT/scripts/lib/run-state.sh"; then ok; else bad "12 run-state classifies the kind"; fi
+
+# The workflow records AFTER the last triage commit and renders in the close-out.
+ILW="$ROOT/base/workflows/implement-issue.md"; ILTXT="$(cat "$ILW")"
+has "$ILTXT" '{{IMPLEMENT_LIB}} sweep-identity {{STATE_DIR}}' "12 step 9 resolves the run identity from one call"
+has "$ILTXT" '{{PATTERN_LEDGER_LIB}} rule-sweep --state {{STATE_DIR}}' "12 ...and records each rule"
+has "$ILTXT" '{{PATTERN_LEDGER_LIB}} rule-sweep-report --state {{STATE_DIR}}' "12 step 11 renders the report"
+rs_at="$(grep -n '{{PATTERN_LEDGER_LIB}} rule-sweep --state' "$ILW" | head -n 1 | cut -d: -f1)"
+rep_at="$(grep -n '{{PATTERN_LEDGER_LIB}} rule-sweep-report' "$ILW" | head -n 1 | cut -d: -f1)"
+ck_at="$(grep -n '{{PATTERN_LEDGER_LIB}} checklist' "$ILW" | head -n 1 | cut -d: -f1)"
+if [ -n "$rs_at" ] && [ -n "$rep_at" ] && [ -n "$ck_at" ] && [ "$ck_at" -lt "$rs_at" ] && [ "$rs_at" -lt "$rep_at" ]; then ok; else
+  bad "12 the workflow sweeps, then records, then reports (checklist@${ck_at:-?} record@${rs_at:-?} report@${rep_at:-?})"; fi
 
 check_summary check-pattern-ledger

@@ -6844,3 +6844,146 @@ adb_sweep_file_check() {
 adb_sweep_rows() {
   tail -n +2 "$1"
 }
+
+# --- the learned-checklist RULE SWEEP record (#490) ----------------------------------------------
+# A DIFFERENT QUESTION from the sibling sweep above, and a deliberately separate family: that one
+# asks "did this round look for siblings of the class it just fixed?", this one asks "which of the
+# promoted checklist rules did this run actually sweep the diff for?". They share the validation
+# SHAPE and nothing else — a row here must never satisfy `record --sweep`, and does not, because
+# the two readers take different files and different grammars.
+#
+# Identity is PER ROW rather than in a header, and that is what keeps the writer a pure append.
+# A header binding one (run, tree) would have to be created-or-verified, which is a read before a
+# write — the read-modify-write this file's own lock exists to serialize. A single write() under
+# the record bound is atomic on an O_APPEND descriptor, so carrying the identity on every row
+# removes the need for a lock instead of arguing that the writer happens to be sequential
+# (pattern-ledger.sh's header records what that argument cost the last time it was made).
+
+ADB_RULE_SWEEP_FIELD_MAX=512
+# One whole record inside one stdio buffer, so two appenders cannot interleave halves of two rows.
+# docs-lib.sh's constant and its reasoning; the number is restated, not shared, because that
+# module's bound governs a different file.
+ADB_RULE_SWEEP_RECORD_MAX=2048
+# 1 MiB, the sibling sweep's bound: this file is one short row per promoted rule per run.
+ADB_RULE_SWEEP_FILE_MAX=1048576
+
+# adb_rule_sweep_ok_run <value> — a run identity. The /implement-issue marker's `startedAt`, which
+# is fixed for the run's life; the marker's `owner` is deliberately NOT used, because it is
+# re-stamped on pickup and a transferable value cannot tell two runs apart.
+adb_rule_sweep_ok_run() {
+  case "${1:-}" in ''|*[!A-Za-z0-9:._-]*) return 1 ;; esac
+  [ "${#1}" -le 64 ]
+}
+
+# adb_rule_sweep_ok_tree <value> — a reviewed-tree digest: exactly one lowercase SHA-256.
+adb_rule_sweep_ok_tree() {
+  case "${1:-}" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#1}" -eq 64 ]
+}
+
+# adb_rule_sweep_row <run> <tree> <class> <site> <result> — validate one row and print it.
+#
+# THE WRITER'S HALF OF THE ONE GRAMMAR. `adb_rule_sweep_check` validates through these same
+# predicates, so a reader cannot drift from what the writer will actually produce — the rule
+# docs-lib.sh states for its own record file, applied here.
+#
+# Returns 0 (row on stdout, no trailing newline) · 19 (a field this module will not store, or a
+# record over the append bound).
+adb_rule_sweep_row() {
+  local run="${1:-}" tree="${2:-}" class="${3:-}" site="${4:-}" result="${5:-}" row
+  adb_rule_sweep_ok_run  "$run"  || return 19
+  adb_rule_sweep_ok_tree "$tree" || return 19
+  adb_ledger_ok_class "$class" || return 19
+  case "$result" in
+    clean) [ "$site" = "-" ] || return 19 ;;
+    fired)
+      [ "$site" != "-" ] || return 19
+      adb_ledger_ok_span "$site" || return 19
+      # The per-field bound, in BYTES. `${#var}` counts characters in the caller's locale, and the
+      # atomic-append guarantee is about bytes.
+      [ "$(printf '%s' "$site" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
+    *) return 19 ;;
+  esac
+  row="$(printf 'rule\t%s\t%s\t%s\t%s\t%s' "$run" "$tree" "$class" "$site" "$result")"
+  # THE WHOLE RECORD, not only its fields. Bounding each field is necessary and not sufficient:
+  # bounded fields plus their separators still add up, and it is the assembled record that has to
+  # reach the file in one write.
+  [ "$(printf '%s' "$row" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_RECORD_MAX" ] || return 19
+  printf '%s' "$row"
+}
+
+# adb_rule_sweep_check <file> <run> <tree> — validate the record WHOLE, then report the rows that
+# belong to this (run, tree).
+#
+# Row grammar, six TAB-separated fields:
+#   rule <TAB> <run> <TAB> <tree> <TAB> <class> <TAB> <site> <TAB> <result>
+#
+# THE WHOLE FILE IS VALIDATED BEFORE ANY FILTERING, and the order matters: filtering first would
+# let a damaged row that happens to carry another run's identity be skipped instead of refused,
+# so a corrupt record could render a clean count. Every row is held to the grammar; only then is
+# the current group selected.
+#
+# Within the current group, per class: EITHER exactly one `clean` row with `site=-`, OR one or
+# more `fired` rows at distinct sites. A class carrying both is a contradiction and refuses the
+# read (18) — this module never reports a partial count.
+#
+# AN EXACT REPEAT OF A ROW IS A NO-OP, NOT A REFUSAL, and that is the retry path. Recording is a
+# sequence of separate appends, so a run interrupted midway through and retried re-offers rows it
+# already wrote; refusing them would wedge the record with no way out but deleting it by hand. An
+# identical row carries no new information and cannot move any count, which is exactly why it is
+# safe to collapse — while a CONTRADICTING row still refuses. `record`'s own rc 10 makes the same
+# judgement for the same reason.
+#
+# Outputs on success:
+#   line 1:    <emitted> TAB <stale> TAB <duplicate>
+#   lines 2..: <class> TAB <site> TAB <result>   (one per emitted row, in file order)
+# Returns 0 · 18 (a byte rule, the grammar, or a contradiction) · 19 (a field this module will not
+# store) · 20 (not readable as a regular file).
+adb_rule_sweep_check() {
+  local f="${1:-}" want_run="${2:-}" want_tree="${3:-}" rc line
+  local kind run tree class site result
+  local emitted=0 stale=0 dup=0 out=""
+  adb_rule_sweep_ok_run  "$want_run"  || return 19
+  adb_rule_sweep_ok_tree "$want_tree" || return 19
+  adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
+  # Newline-delimited sets, not associative arrays: this file stays parseable below the bash
+  # floor (D30/D35/D65). No member can hold a tab or a newline, so a quoted expansion in a
+  # pattern matches literally.
+  local singles=$'\n' sited=$'\n' rows=$'\n'
+  while IFS= read -r line || [ -n "$line" ]; do
+    adb_sweep_split "$line" 6 || return 18
+    kind="${ADB_SWEEP_F[0]}"; run="${ADB_SWEEP_F[1]}"; tree="${ADB_SWEEP_F[2]}"
+    class="${ADB_SWEEP_F[3]}"; site="${ADB_SWEEP_F[4]}"; result="${ADB_SWEEP_F[5]}"
+    [ "$kind" = rule ] || return 18
+    adb_rule_sweep_ok_run  "$run"  || return 19
+    adb_rule_sweep_ok_tree "$tree" || return 19
+    adb_ledger_ok_class    "$class" || return 19
+    case "$result" in
+      clean) [ "$site" = "-" ] || return 18 ;;
+      fired) [ "$site" != "-" ] || return 18; adb_ledger_ok_span "$site" || return 19 ;;
+      *)     return 18 ;;
+    esac
+    # EVERY row is held to the grammar above; only rows of THIS (run, tree) reach the discipline
+    # and the output. A row from another run or another tree is stale — counted so the report can
+    # say it ignored them, never silently dropped and never allowed to move a count.
+    if [ "$run" != "$want_run" ] || [ "$tree" != "$want_tree" ]; then
+      stale=$((stale + 1)); continue
+    fi
+    case "$rows" in
+      *$'\n'"$class"$'\t'"$site"$'\t'"$result"$'\n'*) dup=$((dup + 1)); continue ;;
+    esac
+    if [ "$result" = clean ]; then
+      case "$sited" in *$'\n'"$class"$'\n'*) return 18 ;; esac
+      singles="${singles}${class}"$'\n'
+    else
+      case "$singles" in *$'\n'"$class"$'\n'*) return 18 ;; esac
+      sited="${sited}${class}"$'\n'
+    fi
+    rows="${rows}${class}"$'\t'"${site}"$'\t'"${result}"$'\n'
+    out="${out}${class}"$'\t'"${site}"$'\t'"${result}"$'\n'
+    emitted=$((emitted + 1))
+  done < "$f"
+  printf '%s\t%s\t%s\n' "$emitted" "$stale" "$dup"
+  [ -n "$out" ] && printf '%s' "$out"
+  return 0
+}

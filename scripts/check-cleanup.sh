@@ -1278,7 +1278,11 @@ else
   # it consulted. Same obligation as the three older families: whatever /cleanup can sweep, `admit`
   # must be able to clear, or a previous run's stated disposition survives into a fresh run whose
   # marker makes it read as current.
-  for armname in gaps issue review docs; do
+  # `rules` joins them for #490 — the learned-checklist sweep record, which carries which of this
+  # project's promoted rules the run actually swept the shipped diff for. `survey` was emitting
+  # from `state-scan` since #435 and was never in this list, so the one family whose containment
+  # nothing asserted is now asserted too.
+  for armname in gaps issue review docs survey rules; do
     # Anchored on the arm's BODY (`printf 'gaps\t…`), not on its label: the gaps arm's label starts
     # with `gap-prompt.txt` and the review arm's with `review-prompt.txt`, so neither begins with
     # the kind it emits. Matching the emit line and reporting the label above it reads the pairing
@@ -1345,7 +1349,7 @@ else
       bad "6 the $armname arm exposes no family glob — the symlink agreement check asserted NOTHING"
     fi
   done
-  eq "$ilarms" "4" "6 all four artifact families (gaps, issue, review, docs) were actually read from state-scan"
+  eq "$ilarms" "6" "6 all six artifact families (gaps, issue, review, docs, survey, rules) were actually read from state-scan"
 
   # A failure to clear must REFUSE and release, never report success over artifacts it did not
   # remove. A read-only state dir (mode 500) is the reproducible form of that.

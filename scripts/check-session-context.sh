@@ -293,8 +293,8 @@ if [ "$MODE" = mutation ]; then
   # now stand in front of grep, so no fixture reaches it with a failing status — the arm is
   # belt-and-braces for an I/O error nothing can stage.
   check_mut artifacts-open-set \
-    '      gaps|review|docs|survey)' \
-    '      gaps|review|docs|survey|other)' \
+    '      gaps|review|docs|survey|rules)' \
+    '      gaps|review|docs|survey|rules|other)' \
     'only the records state-scan classifies are named'
   check_mut live-branch-held-to-output-grammar \
     '  case "$(jq -rn --arg d "$dir" --arg s "$sid" "$_RS_UNSAFE_JQ"'"'"' if (($d|unsafe_path) or ($s|unsafe)) then "bad" else "ok" end'"'"')" in' \
@@ -321,7 +321,7 @@ if [ "$MODE" = mutation ]; then
     '      elif false then "unsafe\t-"' \
     'outside the workflow'"'"'s name grammar'
   check_mut opaque-grammar-dropped \
-    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace-full\\.md|survey-held\\.[A-Za-z0-9]{1,10}|survey-trace\\.md|gaps-held\\.[A-Za-z0-9]{1,10}|\\.artifact\\.[A-Za-z0-9]{1,10})$") | not) then "unnamed\t-"' \
+    '      elif (.[0] == "gaps" or .[0] == "review" or .[0] == "docs" or .[0] == "survey" or .[0] == "rules") and ((.[1] | split("/") | last) | test("^(gap-prompt\\.txt|gaps(-[0-9]{1,4})?\\.(md|err)|review-prompt\\.txt|review-prompt-stage\\.[A-Za-z0-9]{1,10}|review(-[0-9]{1,4})?\\.(md|err)|docs-consulted(-[0-9]{1,4})?\\.tsv|rule-sweep(-[0-9]{1,4})?\\.tsv|survey-prompt\\.txt|survey(-[0-9]{1,4})?\\.(md|err)|survey-stage\\.md|survey-overflow\\.md|survey-trace-cap\\.md|survey-trace-full\\.md|survey-held\\.[A-Za-z0-9]{1,10}|survey-trace\\.md|gaps-held\\.[A-Za-z0-9]{1,10}|\\.artifact\\.[A-Za-z0-9]{1,10})$") | not) then "unnamed\t-"' \
     '      elif false then "unnamed\t-"' \
     'a prose-bearing family name'
   check_mut scheme-only-url-accepted \
@@ -525,6 +525,10 @@ printf 'INJECT-ME finding\n' > "$d/gaps.md"
 printf 'retry\n' > "$d/gaps-retry.md"
 printf -- '- [REQUIRED] one INJECT-ME\n- [OPTIONAL] two\n- REQUIRED three\n- REQUIREDish four\n' > "$d/review.md"
 printf 'x\n' > "$d/evil.md"
+# The learned-checklist sweep record (#490): a fourth artifact family, named like the three above
+# and counted by the same arm. Without a fixture here the family's whitelist entry and its `case`
+# arm are two edits nothing behavioural covers.
+printf 'rule\tR\tT\tc\t-\tclean\n' > "$d/rule-sweep.tsv"
 summary "$d" "$SID_A"
 eq "$RC" 0 "1b live marker: exit 0"
 has "$OUT" "run-state: /implement-issue run in progress — source <state>/implement-issue-active.json" "1b header names the marker"
@@ -535,7 +539,7 @@ hasnt "$OUT" "branch: issue-431-x" "1b ...so the slug itself is not rendered"
 has "$OUT" $'\nissues: #431' "1b issue number"
 has "$OUT" $'\npr: #9' "1b prUrl is rendered as its number"
 hasnt "$OUT" "github.com" "1b ...and never as the URL: host, owner and repository are names somebody chose"
-has "$OUT" "artifacts: <state>/gap-prompt.txt, <state>/gaps.md, <state>/review.md" "1b artifacts are named by path, every OPAQUE family member, sorted"
+has "$OUT" "artifacts: <state>/gap-prompt.txt, <state>/gaps.md, <state>/review.md, <state>/rule-sweep.tsv" "1b artifacts are named by path, every OPAQUE family member, sorted"
 hasnt "$OUT" "gaps-retry" "1b a family member outside the opaque grammar (gaps-retry.md: state-scan's debris glob) is never named..."
 has "$OUT" $'\nunnamed-artifacts: 1' "1b ...but is counted, so the resumed session knows a record exists that it was not shown"
 hasnt "$OUT" "evil.md" "1b only the records state-scan classifies are named"

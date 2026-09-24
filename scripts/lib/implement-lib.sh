@@ -905,6 +905,7 @@ _il_clear() {   # <state-dir>
     "$dir/gap-prompt.txt"     "$dir/gaps.md"    "$dir/gaps.err"
     "$dir/review-prompt.txt"  "$dir/review.md"  "$dir/review.err"
     "$dir/docs-consulted.tsv"
+    "$dir/rule-sweep.tsv"
     "$dir/survey-prompt.txt"  "$dir/survey.md"  "$dir/survey.err"  "$dir/survey-trace.md"
   )
   # The family globs, expanded with `nullglob` so an unmatched pattern contributes NOTHING rather
@@ -945,6 +946,12 @@ _il_clear() {   # <state-dir>
   # run's marker then makes it read as THIS run's stated disposition, which is the one claim in
   # the report that nothing else can contradict.
   targets+=( "$dir"/docs-consulted-*.tsv )
+  # The LEARNED-CHECKLIST SWEEP family (#490). Same containment rule again: `state-scan`
+  # classifies `rule-sweep.tsv` and `rule-sweep-*.tsv` as `rules`, so a name /cleanup can sweep
+  # that this cannot clear would leave a previous run's sweep in place — and a fresh run's marker
+  # then makes it read as THIS run's coverage, which is the one claim in the close-out that
+  # nothing else can contradict.
+  targets+=( "$dir"/rule-sweep-*.tsv )
   local cand base num
   for cand in "$dir"/issue-*.json "$dir"/issue-*.assoc; do
     base="${cand##*/}"
@@ -4033,6 +4040,83 @@ cmd_open_pr() {
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 SUB="$1"; shift
+# cmd_sweep_identity <state-dir> — the run identity and reviewed-tree digest, as <run>TAB<tree>.
+#
+# ONE CALL, BOTH VALUES, so the step that RECORDS a checklist sweep and the step that REPORTS it
+# cannot disagree about which run or which tree they mean. Two separate derivations is exactly how
+# a report ends up attesting to a tree nobody swept.
+#
+# `run` is the marker's `startedAt`. Deliberately NOT `owner`: that field is re-stamped when a
+# session picks a run up, so a transferable value cannot tell two runs apart.
+#
+# `tree` is a SHA-256 over the reviewed material, and it is built to be deterministic across two
+# runs over an unchanged tree:
+#   * the whole branch diff against the merge-base with the remote default branch — one command,
+#     so staged, unstaged and already-committed changes are all in it;
+#   * every untracked, non-ignored path, with its SIZE and its own content digest.
+# PATHS AND SIZES, not contents alone: two untracked trees holding the same bytes at different
+# names are different trees, and an empty file is a real addition that contributes no content at
+# all. Enumerated with `git ls-files --others --exclude-standard -z` — `--exclude-standard`
+# applies the same exclude rules Porcelain does, and `-z` emits byte-safe pathnames with no
+# quoting or backslash-escaping (git docs, via context7, this run), so a newline in a filename
+# cannot forge an entry.
+#
+# 0 · 20 (no marker, no `startedAt`, or a git read failed).
+cmd_sweep_identity() {
+  local dir="${1:-}" marker run mb base root material sum rc
+  [ -n "$dir" ] || { echo "implement-lib: sweep-identity needs <state-dir>" >&2; exit 2; }
+  marker="$dir/$_IL_MARKER"
+  [ -f "$marker" ] || { printf 'implement-lib: sweep-identity: no run marker at %s\n' "$marker" >&2; return 20; }
+  run="$(jq -r '.startedAt // ""' "$marker" 2>/dev/null)" \
+    || { printf 'implement-lib: sweep-identity: could not read %s\n' "$marker" >&2; return 20; }
+  adb_rule_sweep_ok_run "$run" \
+    || { printf 'implement-lib: sweep-identity: the marker carries no usable startedAt\n' >&2; return 20; }
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "implement-lib: sweep-identity: not inside a git repository" >&2; return 20; }
+  base="$(adb_default_branch "$root")"
+  # The REMOTE default branch, not the local one: a clone can disagree, and the diff this run is
+  # reviewed against is the one the pull request will show.
+  mb="$(git -C "$root" merge-base "origin/$base" HEAD 2>/dev/null)"
+  if [ -z "$mb" ]; then
+    mb="$(git -C "$root" merge-base "$base" HEAD 2>/dev/null)" \
+      || { printf 'implement-lib: sweep-identity: no merge-base with %s (shallow clone?)\n' "$base" >&2; return 20; }
+  fi
+  [ -n "$mb" ] || { printf 'implement-lib: sweep-identity: no merge-base with %s\n' "$base" >&2; return 20; }
+  # A private staging file for the digest material, under TMPDIR and NOT under the state
+  # directory: nothing else reads it, it must not join a swept family, and it is removed on every
+  # path below. THE RESULT IS CHECKED — an unchecked `mktemp` leaves an empty name, and the
+  # redirection below would then write to the current directory (this is #497's shape, observed
+  # live in this repo while implementing this issue).
+  material="$(mktemp "${TMPDIR:-/tmp}/adb-sweepid.XXXXXX" 2>/dev/null)" \
+    || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
+  [ -n "$material" ] && [ -f "$material" ] \
+    || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
+  {
+    printf 'adb-rule-sweep-identity v1\n'
+    printf 'merge-base %s\n' "$mb"
+    printf 'diff\n'
+    git -C "$root" diff "$mb" || exit 1
+    printf 'untracked\n'
+    # LC_ALL=C sort, so the order is the byte order on every platform rather than the locale's.
+    git -C "$root" ls-files --others --exclude-standard -z \
+      | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' u; do
+          printf '%s\t%s\t%s\n' "$u" \
+            "$(LC_ALL=C wc -c < "$root/$u" 2>/dev/null | tr -d ' ')" \
+            "$(adb_sha256 "$root/$u" 2>/dev/null || printf 'unreadable')"
+        done
+  } > "$material" 2>/dev/null
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$material"
+    echo "implement-lib: sweep-identity: could not assemble the reviewed-tree material" >&2
+    return 20
+  fi
+  sum="$(adb_sha256 "$material")" || { rm -f "$material"; echo "implement-lib: sweep-identity: could not digest the reviewed tree" >&2; return 20; }
+  rm -f "$material"
+  printf '%s\t%s\n' "$run" "$sum"
+}
+
 case "$SUB" in
   admit)            cmd_admit "$@" ;;
   sync-default)     cmd_sync_default "$@" ;;
@@ -4049,6 +4133,7 @@ case "$SUB" in
   dispatch-sweep)   cmd_dispatch_sweep "$@" ;;
   sweep-mark)       cmd_sweep_mark "$@" ;;
   sweep-report)     cmd_sweep_report "$@" ;;
+  sweep-identity)   cmd_sweep_identity "$@" ;;
   open-pr)          cmd_open_pr "$@" ;;
   -h|--help) usage; exit 0 ;;
   *) echo "implement-lib: unknown subcommand '$SUB' (see --help)" >&2; usage >&2; exit 2 ;;

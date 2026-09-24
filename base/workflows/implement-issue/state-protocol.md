@@ -123,15 +123,16 @@ mktemp before the rename publish, `review.md`, `review.err`,
 `review-*.{md,err}`, and `.artifact.*` — read-artifact's private copy, orphaned only by a
 killed read), the survey family (`survey-prompt.txt`, `survey.md`, `survey-trace.md`,
 `survey.err`, `survey-*.{md,err}` — #435), the issue snapshots (`issue-<digits>.json/.assoc`)
-and the documentation-duty records (`docs-consulted.tsv`, `docs-consulted-*.tsv`). They are
+the documentation-duty records (`docs-consulted.tsv`, `docs-consulted-*.tsv`) and the
+learned-checklist sweep records (`rule-sweep.tsv`, `rule-sweep-*.tsv` — #490). They are
 per-run data with one later reader — the compaction summary, which names their PATHS and never
 their contents — and the most sensitive files this workflow writes: the prompts and snapshots
 carry issue and private-repo context, and the `.err` files are an agent's whole exploration
 stream. Left in place they outlive their run and a later pass reads them as its own.
 
-That set must **contain** the `gaps`, `survey`, `review` and `issue` arms of `cleanup-lib.sh
-state-scan`: a name `/cleanup` can sweep but preflight cannot clear is a stale artifact that a
-fresh run's marker makes read as live. Containment, not equality — `state-scan` refuses names
+That set must **contain** the `gaps`, `survey`, `review`, `issue`, `docs` and `rules` arms of
+`cleanup-lib.sh state-scan`: a name `/cleanup` can sweep but preflight cannot clear is a stale
+artifact that a fresh run's marker makes read as live. Containment, not equality — `state-scan` refuses names
 holding a tab or newline, so `/cleanup` may sweep strictly fewer names, which is harmless.
 
 (Growth *within* a run is bounded at the source: `role-dispatch.sh` caps a dispatched agent's

@@ -8,6 +8,29 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Added
+
+- **The learned-checklist sweep is a record, not a sentence (#490).** `self-review.md` asks a run
+  to sweep the promoted checklist and name what it swept; that was prose in a pull-request body
+  with no file behind it, so a real sweep and a plausible sentence read the same. `pattern-ledger.sh`
+  gains `rule-sweep` (one row per rule: the class, the site it fired at or `-`, and `fired`/`clean`)
+  and `rule-sweep-report`, which renders the close-out block.
+
+  Coverage is counted against the **live** promoted checklist and the unswept rules are **named**,
+  so recording one rule cannot render a clean report while the other twenty went unchecked. Rows
+  carry the run identity and a digest of the reviewed tree, both from one `implement-lib.sh
+  sweep-identity` call, so the recorder and the reporter cannot disagree about which tree they
+  mean; rows from an earlier run or an earlier tree are ignored and counted rather than credited.
+  The sweep is recorded at the end of step 9, after the last triage commit, so the digest names the
+  tree that actually ships. A rule that fired at several sites takes one row per site; an exact
+  repeat of a row collapses, which is the retry path for an interrupted recording, while a class
+  recorded both clean and fired refuses the read whole. A project with no promoted rules renders a
+  valid zero-rule sweep; a run that recorded nothing while rules exist returns 11, the same
+  unstated-disposition code the documentation duty uses. D114 records the design decisions.
+
+  `implement-lib.sh sweep-report` (the sibling sweep, #475) is untouched — the name collision #465
+  flagged is why this family is `rule-sweep`.
+
 ### Fixed
 
 - **A Codex clean pass that arrives with a comment is clean, and the connector's review-status
