@@ -54,8 +54,10 @@
 #   24 open       — `record --sweep`: a sibling of this class is still `found` — unfixed and
 #                   undispositioned. Nothing was recorded.
 #   (record --sweep: 18 the sweep file does not parse · 19 it names another PR · 20 unreadable)
-#   (rule-sweep: 19 a field that will not be stored, or a record over the append bound · 20 the
-#    record could not be written)
+#   (rule-sweep: 10 this exact row is already recorded — a NO-OP, not a failure, so an interrupted
+#    recording can be retried · 19 a field that will not be stored, a record over the append bound,
+#    or an append that would take the file past the bound its reader enforces · 20 the record could
+#    not be written)
 #   (rule-sweep-report: 11 NOTHING was recorded while promoted rules exist — the unstated
 #    disposition, docs-lib.sh's rc 11 and its reasoning · 18 the rows do not parse, or a class is
 #    recorded both clean and fired · 20 the record could not be read · 21 the promoted checklist is
@@ -1418,9 +1420,30 @@ cmd_rule_sweep() {
   f="$(_adb_pl_rs_file)" || exit 20
   d="$(dirname "$f")"
   [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'pattern-ledger: cannot create %s\n' "$d" >&2; exit 20; }
-  # ONE append of one bounded record. No lock and no read: a single write() under the record bound
-  # is atomic on an O_APPEND descriptor, and the identity rides on the row rather than in a header
-  # that would have to be read before it could be written.
+  # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Recording is a sequence
+  # of separate appends, so a run interrupted midway and retried re-offers rows it already wrote;
+  # the READER refuses a repeated (class, site) whole, so the retry path has to live here. This is
+  # a read before a write, which the first cut avoided — but the alternative was a reader that
+  # silently collapsed duplicates, and that contradicts the acceptance this issue states.
+  if [ -f "$f" ] && [ -r "$f" ] && LC_ALL=C grep -qxF -- "$row" "$f" 2>/dev/null; then
+    printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"
+    exit 10
+  fi
+  # AND THE FILE BOUND, BEFORE THE APPEND. Every row is individually bounded, but enough legitimate
+  # rows still take the file past the reader's own limit — and then the write succeeds and every
+  # later report refuses the record, a state no run can clear. Refuse the append instead, while the
+  # operator still has a record they can read.
+  local cursz=0
+  if [ -f "$f" ]; then cursz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || cursz=0; fi
+  case "$cursz" in ''|*[!0-9]*) cursz=0 ;; esac
+  if [ "$(( cursz + ${#row} + 1 ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
+    printf 'pattern-ledger: rule-sweep: %s would exceed the %s-byte record bound its reader enforces. Nothing was written; the existing record is still readable.\n' \
+      "$f" "$ADB_RULE_SWEEP_FILE_MAX" >&2
+    exit 19
+  fi
+  # ONE append of one bounded record, no lock. The bound keeps the whole record inside a single
+  # stdio buffer, which is what stops two appenders interleaving halves of two rows; it is the
+  # same bound and the same reasoning docs-lib.sh states for its own record file.
   printf '%s\n' "$row" >> "$f" || { printf 'pattern-ledger: cannot write %s\n' "$f" >&2; exit 20; }
   printf 'rule-sweep %s %s\n' "$OPT_RULE" "$OPT_RESULT"
 }
@@ -1500,11 +1523,24 @@ cmd_rule_sweep_report() {
     out="$(printf '%s\n' "$out" | tail -n +2)"
   fi
 
-  local class site result
+  # COVERAGE IS MEMBERSHIP IN THE LIVE SET, not a count of what happens to be recorded. Counting
+  # every recorded class let a row for a class that is not a promoted rule — a retired rule, a
+  # typo, a row from a ledger since edited — render "swept 1 of 21" while naming all 21 as
+  # unswept. A recorded class outside the set is REPORTED, never credited.
+  # NEWLINE-WRAPPED ONCE. `$(…)` strips the trailing newline off `_adb_pl_promoted`'s output, so a
+  # membership test written against the raw value matched no class at all and every recorded rule
+  # read as off-set — a report that credited nothing and returned 11 on a correct sweep.
+  local pset=$'\n'"$promoted"$'\n'
+  local class site result off_set=""
   while IFS="$TAB" read -r class site result; do
     [ -n "$class" ] || continue
-    case "$swept" in *$'\n'"$class"$'\n'*) ;; *) swept="${swept}${class}"$'\n'; n=$((n + 1)) ;; esac
-    [ "$result" = fired ] && fired="${fired}${class}"$'\t'"${site}"$'\n'
+    case "$pset" in
+      *$'\n'"$class"$'\n'*)
+        case "$swept" in *$'\n'"$class"$'\n'*) ;; *) swept="${swept}${class}"$'\n'; n=$((n + 1)) ;; esac
+        [ "$result" = fired ] && fired="${fired}${class}"$'\t'"${site}"$'\n' ;;
+      *)
+        case "$off_set" in *$'\n'"$class"$'\n'*) ;; *) off_set="${off_set}${class}"$'\n' ;; esac ;;
+    esac
   done <<ROWS
 $out
 ROWS
@@ -1550,6 +1586,13 @@ ROWS
   # THE EVIDENCE LIMIT, STATED. These rows record which RULES were swept and what each one found;
   # they do not enumerate the files scanned, and a reader must not infer that they do.
   printf -- '- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\n'
+  if [ -n "$off_set" ]; then
+    printf -- '- recorded but NOT a promoted rule (not counted as coverage):\n'
+    printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | while IFS= read -r class; do
+      [ -n "$class" ] || continue
+      printf -- '  - `%s`\n' "$(_adb_pl_rs_md "$class")"
+    done
+  fi
   [ "${stale:-0}" -gt 0 ] && printf -- '- %s row(s) from an earlier run or an earlier tree were ignored.\n' "$stale"
   [ "${dup:-0}" -gt 0 ]   && printf -- '- %s repeated row(s) collapsed.\n' "$dup"
   return 0

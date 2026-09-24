@@ -19,12 +19,15 @@ only by a published release, which is what these entries are the notes for.
   Coverage is counted against the **live** promoted checklist and the unswept rules are **named**,
   so recording one rule cannot render a clean report while the other twenty went unchecked. Rows
   carry the run identity and a digest of the reviewed tree, both from one `implement-lib.sh
-  sweep-identity` call, so the recorder and the reporter cannot disagree about which tree they
-  mean; rows from an earlier run or an earlier tree are ignored and counted rather than credited.
+  sweep-identity` call, so the recorder and the reporter derive them the same way — a tree that
+  changes between them still changes the digest, and that is precisely what the report then
+  detects: rows from an earlier run or an earlier tree are ignored and counted, never credited.
   The sweep is recorded at the end of step 9, after the last triage commit, so the digest names the
-  tree that actually ships. A rule that fired at several sites takes one row per site; an exact
-  repeat of a row collapses, which is the retry path for an interrupted recording, while a class
-  recorded both clean and fired refuses the read whole. A project with no promoted rules renders a
+  tree that actually ships. A rule that fired at several sites takes one row per site; a duplicate
+  `(class, site)` refuses the read whole, and the retry path is the writer's — re-recording an
+  identical row is a no-op (10) that appends nothing, so an interrupted recording is safe to
+  resume. A class recorded both clean and fired refuses the read too, and a recorded class that is
+  not a promoted rule is reported but never credited as coverage. A project with no promoted rules renders a
   valid zero-rule sweep; a run that recorded nothing while rules exist returns 11, the same
   unstated-disposition code the documentation duty uses. D114 records the design decisions.
 

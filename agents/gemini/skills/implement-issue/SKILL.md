@@ -473,10 +473,13 @@ bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" rule-sweep --state .gemini/st
   --rule <class> --site <path:line|-> --result <fired|clean>
 ```
 
-`19` = a field that will not be stored (check `--rule` is a class slug, and that `--site` is `-`
-only with `--result clean`) · `20` = the record could not be written. Carry `$RS_RUN`/`$RS_TREE`
-to step 11 — they are shell variables and die with their block, so re-run `sweep-identity` there
-rather than remembering them.
+`10` = this exact row is already recorded, a **no-op** — that is the retry path, so an interrupted
+recording is safe to resume · `19` = a field that will not be stored (check `--rule` is a class
+slug, and that `--site` is `-` only with `--result clean`), or an append that would take the record
+past the bound its reader enforces · `20` = the record could not be written.
+
+`$RS_RUN`/`$RS_TREE` are shell variables and die with their block: step 11 re-runs
+`sweep-identity` rather than carrying them.
 
 **A number you have not filed is a number you must not write.** Review-discovered deferrals are
 decided *now*, before step 10, so the PR body cites real numbers — and "decided" applies the bar
@@ -487,9 +490,14 @@ commit message or changelog entry must resolve *now* (`gh issue view <n>` is one
 
 ### 10. Push + open PR
 
-Write the PR body to a file first: summary; gap findings + how addressed; the survey line;
-self-review + reviewer findings + dispositions (table); the **Docs consulted** block; test plan
-(skeleton: `examples.md`). Render the docs block — never from memory:
+Write the PR body to a file first — **outside the reviewed tree** (`"${TMPDIR:-/tmp}"`, never the
+checkout): an untracked file inside it changes the tree digest step 9 recorded, and step 11's
+report would then read every row as stale on a run that edited no code. Content: summary; gap
+findings + how addressed; the survey line; self-review + reviewer findings + dispositions (table);
+the **Docs consulted** block; the **Learned-checklist sweep** block; test plan (skeleton:
+`examples.md`). Render both blocks — never from memory. The sweep block goes in the body *and* the
+close-out: the record it comes from is run state that /cleanup sweeps, so the PR body is the only
+place it survives for a later reader.
 
 ```bash
 bash "$HOME/.gemini/scripts/lib/docs-lib.sh" report --state .gemini/state
@@ -546,7 +554,14 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   the prose this command replaced:
 
   ```bash
-  bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" rule-sweep-report --state .gemini/state --run "$RS_RUN" --tree "$RS_TREE"
+  # RESOLVED AGAIN HERE. `$RS_RUN`/`$RS_TREE` were shell variables in step 9's block and died with
+  # it; a fresh shell would pass two empty strings and the command would refuse as usage. The call
+  # is cheap and returns the same pair while the tree is unchanged — which is exactly the property
+  # the report is checking.
+  IDENT="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" sweep-identity .gemini/state)" \
+    || { echo "ERROR: could not resolve the run identity — hard stop"; exit 1; }
+  bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" rule-sweep-report --state .gemini/state \
+    --run "$(printf '%s' "$IDENT" | cut -f1)" --tree "$(printf '%s' "$IDENT" | cut -f2)"
   ```
 
   `0` = paste the block (a project with no promoted rules renders a valid **zero-rule** sweep, and

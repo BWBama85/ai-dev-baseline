@@ -4099,19 +4099,43 @@ cmd_sweep_identity() {
     printf 'adb-rule-sweep-identity v1\n'
     printf 'merge-base %s\n' "$mb"
     printf 'diff\n'
-    git -C "$root" diff "$mb" || exit 1
+    # `--full-index --binary`, NOT a bare `git diff`. The default abbreviates blob names to the
+    # first handful of characters and omits binary content entirely, so two different binary blobs
+    # sharing a short prefix produce byte-identical patches — and therefore the same sweep
+    # identity. `--full-index` prints the whole pre- and post-image names and `--binary` adds the
+    # binary patch (and implies `--full-index`); both are named explicitly rather than relying on
+    # that implication. (git-diff-index OPTIONS, via context7, this run.)
+    git -C "$root" diff --full-index --binary "$mb" || exit 1
     printf 'untracked\n'
-    # LC_ALL=C sort -z, so the order is the byte order on every platform rather than the locale's,
-    # and a newline in a filename cannot re-partition the list.
+    # NUL-DELIMITED THROUGHOUT, never tab-and-newline. A filename may legally contain both, so
+    # printing `name<TAB>size<TAB>digest<NL>` lets a crafted name forge a whole record and two
+    # different untracked trees collide on one digest — reproduced by the independent reviewer.
+    # NUL is the one byte a pathname cannot hold, so it is the only safe delimiter here; the
+    # material is hashed, never read, so legibility costs nothing.
+    # LC_ALL=C sort -z gives byte order on every platform rather than the locale's.
     git -C "$root" ls-files --others --exclude-standard -z \
       | LC_ALL=C sort -z \
       | while IFS= read -r -d '' u; do
-          # THE PATH AND THE SIZE, not only the content digest: two untracked trees holding the
-          # same bytes under different names are different trees, and an empty file is a real
-          # addition that contributes no content at all.
-          printf '%s\t%s\t%s\n' "$u" \
-            "$(LC_ALL=C wc -c < "$root/$u" 2>/dev/null | tr -d ' ')" \
-            "$(adb_sha256 "$root/$u" 2>/dev/null || printf 'unreadable')"
+          # THE PATH, THE TYPE AND THE SIZE, not only a content digest: two untracked trees holding
+          # the same bytes under different names are different trees, an empty file is a real
+          # addition that contributes no content, and a SYMLINK's identity is its target — hashing
+          # what it dereferences to would leave a relinked pointer invisible.
+          if [ -L "$root/$u" ]; then
+            printf '%s\0l\0%s\0' "$u" "$(readlink -n "$root/$u" 2>/dev/null || printf '?')"
+          elif [ -d "$root/$u" ]; then
+            printf '%s\0d\0\0' "$u"
+          elif [ -f "$root/$u" ]; then
+            # FAIL CLOSED on a regular file we cannot measure or hash. Substituting a literal and
+            # carrying on returned a confident identity for a tree this command could not actually
+            # read — and an identity nobody can reproduce is worse than no identity.
+            _usz="$(LC_ALL=C wc -c < "$root/$u" 2>/dev/null | tr -d ' ')" || exit 1
+            case "$_usz" in ''|*[!0-9]*) exit 1 ;; esac
+            _udg="$(adb_sha256 "$root/$u")" || exit 1
+            printf '%s\0f\0%s\0%s\0' "$u" "$_usz" "$_udg"
+          else
+            # A socket, fifo or device that `ls-files` reported: named, typed, not hashed.
+            printf '%s\0o\0\0' "$u"
+          fi
         done
   ) > "$material" 2>/dev/null
   rc=$?

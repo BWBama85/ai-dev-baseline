@@ -6951,7 +6951,8 @@ adb_rule_sweep_row() {
 # judgement for the same reason.
 #
 # Outputs on success:
-#   line 1:    <emitted> TAB <stale> TAB <duplicate>
+#   line 1:    <emitted> TAB <stale> TAB 0   (the third field is retained for output-shape
+#              stability; a duplicate now refuses the read rather than being counted)
 #   lines 2..: <class> TAB <site> TAB <result>   (one per emitted row, in file order)
 # Returns 0 · 18 (a byte rule, the grammar, or a contradiction) · 19 (a field this module will not
 # store) · 20 (not readable as a regular file).
@@ -6966,7 +6967,10 @@ adb_rule_sweep_check() {
   # the writer only ever creates it by appending a row, and an empty one — left by a crash between
   # create and write, or by a truncating editor — would otherwise return 18 from every later
   # report, a state no run can clear without deleting the file by hand.
-  if [ -f "$f" ] && [ ! -s "$f" ]; then printf '0\t0\t0\n'; return 0; fi
+  # `[ ! -L ]` FIRST: `-f` follows a symlink, so without it a `rule-sweep.tsv` linked to an empty
+  # file took this shortcut and was reported as "no rows", ahead of `adb_bytes_whole`'s non-link
+  # rule. A link is never this module's record, whatever it points at.
+  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then printf '0\t0\t0\n'; return 0; fi
   adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
   # Newline-delimited sets, not associative arrays: this file stays parseable below the bash
   # floor (D30/D35/D65). No member can hold a tab or a newline, so a quoted expansion in a
@@ -6977,12 +6981,23 @@ adb_rule_sweep_check() {
     kind="${ADB_SWEEP_F[0]}"; run="${ADB_SWEEP_F[1]}"; tree="${ADB_SWEEP_F[2]}"
     class="${ADB_SWEEP_F[3]}"; site="${ADB_SWEEP_F[4]}"; result="${ADB_SWEEP_F[5]}"
     [ "$kind" = rule ] || return 18
+    # NO WHOLE-RECORD BOUND HERE, deliberately. The writer bounds the assembled record before it
+    # appends, but on the read side that check cannot fire: kind, run, tree, class, site and
+    # result are each bounded below, and their sum with five tabs is nowhere near the record
+    # bound. The site bound further down is the one that does the work; an unreachable second
+    # check would report a safety it never performs, and no mutation witness could go red on it.
     adb_rule_sweep_ok_run  "$run"  || return 19
     adb_rule_sweep_ok_tree "$tree" || return 19
     adb_ledger_ok_class    "$class" || return 19
     case "$result" in
       clean) [ "$site" = "-" ] || return 18 ;;
-      fired) [ "$site" != "-" ] || return 18; adb_ledger_ok_span "$site" || return 19 ;;
+      fired)
+        [ "$site" != "-" ] || return 18
+        adb_ledger_ok_span "$site" || return 19
+        # THE WRITER'S BYTE BOUND TOO. Validating only the printable shape let a hand-edited
+        # oversized site be credited as valid, which is the reader accepting a row the writer
+        # would have refused — the one thing "one grammar, two halves" must not allow.
+        [ "$(printf '%s' "$site" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
       *)     return 18 ;;
     esac
     # EVERY row is held to the grammar above; only rows of THIS (run, tree) reach the discipline
@@ -6991,8 +7006,13 @@ adb_rule_sweep_check() {
     if [ "$run" != "$want_run" ] || [ "$tree" != "$want_tree" ]; then
       stale=$((stale + 1)); continue
     fi
+    # A REPEATED (class, site) REFUSES THE READ, whole. The retry path lives in the WRITER, which
+    # is idempotent on an identical row (rc 10, `record`'s code and meaning) and never appends a
+    # second one — so a duplicate reaching this reader is a hand edit or a merge, and this module
+    # never reports a partial or doubled count. Collapsing it here instead was the first cut, and
+    # the independent reviewer was right that it contradicts the stated acceptance.
     case "$rows" in
-      *$'\n'"$class"$'\t'"$site"$'\t'"$result"$'\n'*) dup=$((dup + 1)); continue ;;
+      *$'\n'"$class"$'\t'"$site"$'\n'*) return 18 ;;
     esac
     if [ "$result" = clean ]; then
       case "$sited" in *$'\n'"$class"$'\n'*) return 18 ;; esac
@@ -7001,7 +7021,7 @@ adb_rule_sweep_check() {
       case "$singles" in *$'\n'"$class"$'\n'*) return 18 ;; esac
       sited="${sited}${class}"$'\n'
     fi
-    rows="${rows}${class}"$'\t'"${site}"$'\t'"${result}"$'\n'
+    rows="${rows}${class}"$'\t'"${site}"$'\n'
     out="${out}${class}"$'\t'"${site}"$'\t'"${result}"$'\n'
     emitted=$((emitted + 1))
   done < "$f"

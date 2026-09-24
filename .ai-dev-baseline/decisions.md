@@ -8397,15 +8397,21 @@ survive is the part a later reader needs.
              byte bound, NO lock: identity rides on every row rather than in a header, so there is
              no read-before-write to serialize. The Scope line naming `_adb_pl_insert` is withdrawn.
              (2) `implement-lib.sh sweep-identity` emits `<run>TAB<tree>` in ONE call, so the
-             recorder and the reporter cannot derive them separately. `run` is the marker's
-             `startedAt` — never `owner`, which is re-stamped on pickup. `tree` digests the branch
-             diff against the merge-base plus every untracked path with its size and content digest.
+             recorder and the reporter derive them the same way. `run` is the marker's `startedAt`
+             — never `owner`, which is re-stamped on pickup. `tree` digests `git diff --full-index
+             --binary` against the merge-base (the default abbreviates blob names and omits binary
+             content, so two binaries sharing a short prefix produced identical patches) plus every
+             untracked entry as NUL-DELIMITED path/type/size/digest records — a pathname may hold a
+             tab or a newline, so a tab-delimited record let a crafted filename forge an entry and
+             two different trees collide. A symlink contributes its TARGET, not what it
+             dereferences to; a regular file that cannot be read fails the whole call closed.
              (3) The sweep is re-performed over the FINAL diff and recorded at the end of step 9,
              after the last triage commit. (4) Coverage is `N of M` against the LIVE promoted set
-             with the unswept rules named; duplicates are refused on `(class, site)` so several
-             fired sites are representable; an EXACT repeat of a row collapses rather than refusing,
-             which is the retry path for an interrupted recording, while a class recorded both clean
-             and fired still refuses the read whole.
+             with the unswept rules named, and membership in that set is what counts — a recorded
+             class that is not a promoted rule is reported but never credited. Duplicates are
+             refused on `(class, site)` so several fired sites are representable; the retry path
+             lives in the WRITER, which is idempotent on an identical row (rc 10, `record`'s code)
+             and appends nothing, so the reader stays free to refuse a real duplicate whole.
 - placement: `scripts/lib/common.sh` (`adb_rule_sweep_row`, `adb_rule_sweep_check`),
              `scripts/lib/pattern-ledger.sh` (`rule-sweep`, `rule-sweep-report`),
              `scripts/lib/implement-lib.sh` (`sweep-identity`, `_il_clear`),
@@ -8422,7 +8428,11 @@ survive is the part a later reader needs.
              same refusal to assert a guarantee the code does not provide: `pattern-ledger.sh`'s own
              header records what "the writer is sequential by construction" cost the last time it
              was argued, and a header binding one identity would have needed exactly that argument
-             back. The exact-repeat collapse is `record`'s rc 10 judgement applied to the same
-             problem — a repeat cannot move a count, so refusing it buys nothing and wedges the
-             record — while the contradiction refusal keeps "never a partial count" intact.
+             back. The retry path went through one revision worth recording: the first cut had the
+             READER collapse an exact repeat, which kept the writer free of a read — but it
+             contradicted the acceptance criterion that a duplicate is refused whole, and the
+             independent reviewer was right to call it. Moving the idempotency to the writer costs
+             one read before the write and satisfies both: a retry appends nothing, and any
+             duplicate that does reach the reader is a hand edit or a merge, which is exactly the
+             case "never a partial count" exists for.
 - baseline-issue: n/a
