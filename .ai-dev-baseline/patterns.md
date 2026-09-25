@@ -726,4 +726,9 @@ One line per resolved review thread, newest last.
 - `precondition-ordering` `base/workflows/implement-issue.md:500` `1bc4893` `PRRT_kwDOTfywrM6l2Ce8` PR #502 2026-09-25 — step 10 required the sweep block in the PR body but it was first rendered in step 11, after the PR opened
 - `toctou` `scripts/lib/pattern-ledger.sh:1472` `1bc4893` `PRRT_kwDOTfywrM6l2Ce-` PR #502 2026-09-25 — rule-sweep type-checked the record then re-opened it by path for the append
 - `stale-doc-claim` `scripts/lib/implement-lib.sh:4206` `1bc4893` `PRRT_kwDOTfywrM6l2CfE` PR #502 2026-09-25 — sweep-identity was dispatched but absent from the usage block --help prints
+- `third-party-default` `scripts/lib/implement-lib.sh:4149` `2aedaea` `PRRT_kwDOTfywrM6l4ok5` PR #502 2026-09-25 — diff.ignoreSubmodules=all hid a submodule update from the tree digest
+- `rerun-not-idempotent` `scripts/lib/pattern-ledger.sh:1505` `2aedaea` `PRRT_kwDOTfywrM6l4ok8` PR #502 2026-09-25 — rule-sweep published a clean/fired contradiction the reader then refused, with no way to correct it
+- `partial-validation` `scripts/lib/pattern-ledger.sh:1490` `2aedaea` `PRRT_kwDOTfywrM6l4olF` PR #502 2026-09-25 — an exact duplicate returned 10 before the file bound was checked on an oversized record
+- `status-swallowed` `scripts/lib/common.sh:6889` `2aedaea` `PRRT_kwDOTfywrM6l4olL` PR #502 2026-09-25 — BSD sed failed on a non-UTF-8 byte under a UTF-8 locale and the enclosing printf still returned 0
+- `stale-doc-claim` `.ai-dev-baseline/decisions.md:8400` `2aedaea` `PRRT_kwDOTfywrM6l4olN` PR #502 2026-09-25 — D114 still described an O_APPEND writer after the rename-publish rewrite
 <!-- adb:hits:end -->
