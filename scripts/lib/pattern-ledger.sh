@@ -23,7 +23,8 @@
 #   pattern-ledger.sh threshold [--ledger <file>]           # the effective threshold + its source
 #   pattern-ledger.sh reclaim   [--ledger <file>]           # remove an abandoned write lock (22 = held)
 #   pattern-ledger.sh rule-sweep --state <dir> --run <id> --tree <digest> \
-#                                --rule <class> --site <path|-> --result <fired|clean>
+#                                --rule <class> [--site <path|->] --result <fired|clean>
+#                                # --site defaults to `-`, which is only valid with --result clean
 #   pattern-ledger.sh rule-sweep-report --state <dir> --run <id> --tree <digest>
 #   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
 #    the lock; nothing is reported as recorded that the ledger does not hold)
@@ -1428,10 +1429,7 @@ cmd_rule_sweep() {
   _adb_pl_lock "$f" || { printf 'pattern-ledger: rule-sweep: could not take the lock on %s — nothing was written\n' "$f" >&2; exit 20; }
   _ADB_PL_LOCKED_FILE="$f"
   trap '_adb_pl_unlock "$_ADB_PL_LOCKED_FILE"' EXIT
-  # A LINK OR A NON-FILE IS NEVER THIS MODULE'S RECORD. Every read and the append below follow a
-  # symlink, so without this the writer modified whatever the link pointed at and reported success,
-  # while the reader — which refuses links — then stranded the close-out. Checked inside the lock,
-  # immediately before the first read.
+  # A LINK OR A NON-FILE IS NEVER THIS MODULE'S RECORD — refused before anything is read.
   if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
     printf 'pattern-ledger: rule-sweep: %s is not a regular file (a symlink or another type) — refusing to read or write it\n' "$f" >&2
     exit 20
@@ -1440,36 +1438,71 @@ cmd_rule_sweep() {
     printf 'pattern-ledger: rule-sweep: %s exists but cannot be read — refusing to append blind\n' "$f" >&2
     exit 20
   fi
-  # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Recording is a sequence of
-  # separate appends, so a run interrupted midway and retried re-offers rows it already wrote; the
-  # READER refuses a repeated (class, site) whole, so the retry path lives here.
+  # NO WRITE EVER GOES THROUGH A PATH THIS WRITER DID NOT CREATE EXCLUSIVELY — the ledger's own rule
+  # (`_adb_pl_insert`), applied here. The lock excludes cooperating writers only; a process that
+  # swaps the record for a symlink after the test above (a surviving dispatched agent runs as this
+  # same user) made an append by pathname write into whatever the link named. So the new record is
+  # assembled in a file created O_EXCL with its descriptor held, written only through that
+  # descriptor, and published by rename — which replaces whatever sits at the path and never
+  # follows it. What a concurrent swap can still do is make the COPY below read the wrong bytes;
+  # the result is then a record the reader refuses whole, never a write outside it.
+  #
+  # THE STAGE IS A MEMBER OF THE FAMILY (`rule-sweep-<n>.tsv`), so one orphaned by a kill is swept by
+  # /cleanup and cleared by admission rather than left as debris nothing owns.
+  local stage wfd="" _had_c=0 cursz rowsz dup
+  stage="$(dirname "$f")/rule-sweep-$$${RANDOM}.tsv"
+  case "$-" in *C*) _had_c=1 ;; esac
+  set -C
+  if ! { exec {wfd}>"$stage"; } 2>/dev/null; then
+    [ "$_had_c" -eq 1 ] || set +C
+    printf 'pattern-ledger: rule-sweep: could not create a private stage beside %s — nothing was written\n' "$f" >&2
+    exit 20
+  fi
+  [ "$_had_c" -eq 1 ] || set +C
+  # THE COPY IS BYTE-EXACT (`cat`), never re-emitted line by line: awk would add a final newline and
+  # may drop a NUL, so a damaged record could be REPAIRED into one the reader accepts — a truncated
+  # site credited as a different, valid site. Copied exactly, damage survives into the published
+  # record and the reader refuses it whole. The duplicate test and the size are a second read; a
+  # concurrent swap between the two can make them disagree with the copy, and every such
+  # disagreement publishes a record the reader refuses (a doubled row, or one past the bound) —
+  # never a silent credit. `ENVIRON`, never `-v`: `-v` interprets backslash escapes, and a site may
+  # carry a backslash.
+  dup=0; cursz=0
   if [ -f "$f" ]; then
-    LC_ALL=C grep -qxF -- "$row" "$f"; _grc=$?
-    case "$_grc" in
-      0) printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"; exit 10 ;;
-      1) : ;;
-      *) printf 'pattern-ledger: rule-sweep: could not search %s (grep rc %s) — nothing was written\n' "$f" "$_grc" >&2; exit 20 ;;
+    cat -- "$f" >&"$wfd" \
+      || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not read %s — nothing was written\n' "$f" >&2; exit 20; }
+    local summary
+    summary="$(LC_ALL=C ADB_PL_ROW="$row" awk '
+        BEGIN { r = ENVIRON["ADB_PL_ROW"]; n = 0 }
+        { n += length($0) + 1; if ($0 == r) d = 1 }
+        END { printf "%d %d\n", d + 0, n }' < "$f")" \
+      || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not read %s — nothing was written\n' "$f" >&2; exit 20; }
+    read -r dup cursz <<<"$summary"
+    case "$dup$cursz" in ''|*[!0-9]*)
+      exec {wfd}>&-; rm -f "$stage"
+      printf 'pattern-ledger: rule-sweep: could not measure %s — nothing was written\n' "$f" >&2; exit 20 ;;
     esac
   fi
-  # THE FILE BOUND, IN BYTES ON BOTH SIDES, BEFORE THE APPEND. `${#row}` counts characters in the
-  # caller's locale while the file size and the reader's bound are bytes, so a multibyte site near
-  # the limit slipped past. And a size that cannot be read is a refusal, never zero: zero is the
-  # answer that lets the append through.
-  local cursz=0 rowsz
-  if [ -f "$f" ]; then
-    cursz="$(LC_ALL=C wc -c < "$f" | tr -d ' ')" \
-      || { printf 'pattern-ledger: rule-sweep: could not measure %s — nothing was written\n' "$f" >&2; exit 20; }
+  # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Nothing is published.
+  if [ "$dup" = 1 ]; then
+    exec {wfd}>&-; rm -f "$stage"
+    printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"
+    exit 10
   fi
+  # THE FILE BOUND, IN BYTES ON BOTH SIDES. `length($0) + 1` under `LC_ALL=C` counts bytes, and a
+  # newline for an unterminated last line too — an over-estimate, which errs toward refusing.
   rowsz="$(printf '%s\n' "$row" | LC_ALL=C wc -c | tr -d ' ')"
-  case "$cursz$rowsz" in ''|*[!0-9]*)
-    printf 'pattern-ledger: rule-sweep: could not measure the record or the row — nothing was written\n' >&2; exit 20 ;;
-  esac
+  case "$rowsz" in ''|*[!0-9]*) exec {wfd}>&-; rm -f "$stage"
+    printf 'pattern-ledger: rule-sweep: could not measure the row — nothing was written\n' >&2; exit 20 ;; esac
   if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
+    exec {wfd}>&-; rm -f "$stage"
     printf 'pattern-ledger: rule-sweep: %s would exceed the %s-byte record bound its reader enforces. Nothing was written; the existing record is still readable.\n' \
       "$f" "$ADB_RULE_SWEEP_FILE_MAX" >&2
     exit 19
   fi
-  printf '%s\n' "$row" >> "$f" || { printf 'pattern-ledger: cannot write %s\n' "$f" >&2; exit 20; }
+  printf '%s\n' "$row" >&"$wfd" || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: cannot write %s\n' "$stage" >&2; exit 20; }
+  exec {wfd}>&-
+  mv -f -- "$stage" "$f" || { rm -f "$stage"; printf 'pattern-ledger: cannot publish %s\n' "$f" >&2; exit 20; }
   printf 'rule-sweep %s %s\n' "$OPT_RULE" "$OPT_RESULT"
 }
 
@@ -1541,7 +1574,26 @@ cmd_rule_sweep_report() {
     fi
     stale=0; out=""
   else
-    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?
+    # A PRIVATE SNAPSHOT, validated and parsed as ONE observation. The reader checks the file's
+    # bytes and then re-opens it to parse the rows, and this command checked the pathname before
+    # that — three opens of a path a same-user process can swap between them, so the rows parsed
+    # need not be the bytes validated. Copied once, byte-exact, into a file created O_EXCL under
+    # TMPDIR (never the state directory, where it would join a swept family), then validated and
+    # parsed there. `read-artifact`'s private copy is the same answer to the same question.
+    local snap sfd="" _had_c=0
+    snap="${TMPDIR:-/tmp}/adb-rule-sweep-snap.$$.$RANDOM"
+    case "$-" in *C*) _had_c=1 ;; esac
+    set -C
+    if ! { exec {sfd}>"$snap"; } 2>/dev/null; then
+      [ "$_had_c" -eq 1 ] || set +C
+      printf 'pattern-ledger: could not create a private snapshot of %s\n' "$f" >&2; exit 20
+    fi
+    [ "$_had_c" -eq 1 ] || set +C
+    _ADB_PL_SNAP="$snap"
+    trap 'rm -f "$_ADB_PL_SNAP"' EXIT
+    cat -- "$f" >&"$sfd" || { exec {sfd}>&-; printf 'pattern-ledger: %s could not be read\n' "$f" >&2; exit 20; }
+    exec {sfd}>&-
+    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?
     case "$rc" in
       0) ;;
       20) printf 'pattern-ledger: %s exists but could not be read — refusing to report as if nothing were recorded\n' "$f" >&2; exit 20 ;;

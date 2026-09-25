@@ -515,6 +515,17 @@ if [ "$MODE" = mutation ]; then
     '  local class site result off_set=""' \
     '12 an off-set class with two rows is listed once'
 
+  # Publish by rename reverted to an append through the pathname.
+  check_mut rule-sweep-append-by-path \
+    '  mv -f -- "$stage" "$f" ||' \
+    '  cat -- "$stage" >> "$f" && rm -f "$stage" ||' \
+    '12 rule-sweep publishes by rename: the record'"'"'s inode changes on every write'
+  # The report validating the pathname instead of its snapshot.
+  check_mut rule-sweep-report-no-snapshot \
+    '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
+    '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
+    '12 the report validates and parses ONE snapshot — a swap mid-read is never parsed'
+
   # The evidence limit dropped: "2 of 2" then reads as a claim about which files were scanned,
   # which these rows cannot support.
   check_mut rule-sweep-limit-unstated \
@@ -2277,6 +2288,42 @@ eq "$?" 20 "12 a writer blocked by a live lock holder refuses (20)"
 if [ -e "$ST12P/rule-sweep.tsv" ]; then bad "12 ...but it wrote the record anyway — the append ran outside the lock"; else ok; fi
 rm -rf "$ST12P/rule-sweep.tsv.lock"
 
+# THE WRITER PUBLISHES BY RENAME (reported on PR #502). An append by pathname follows a symlink a
+# same-user process swapped in after the type check. A new inode on every write is the observable
+# property of rename-publish: an in-place append keeps the inode, a rename replaces it.
+ST12T="$work/st12t"
+bash "$PL" rule-sweep --state "$ST12T" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+rs_i1="$(ls -i "$ST12T/rule-sweep.tsv" | awk '{print $1}')"
+bash "$PL" rule-sweep --state "$ST12T" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1
+rs_i2="$(ls -i "$ST12T/rule-sweep.tsv" | awk '{print $1}')"
+if [ -n "$rs_i1" ] && [ "$rs_i1" != "$rs_i2" ]; then ok; else
+  bad "12 rule-sweep publishes by rename: the record's inode changes on every write [$rs_i1] [$rs_i2]"; fi
+eq "$(wc -l < "$ST12T/rule-sweep.tsv" | tr -d ' ')" "2" "12 ...and the published record holds both rows"
+eq "$(find "$ST12T" -name 'rule-sweep-*.tsv' | wc -l | tr -d ' ')" "0" "12 ...and no stage is left behind"
+
+# THE REPORT VALIDATES AND PARSES ONE SNAPSHOT (reported on PR #502). The reader checks the bytes and
+# then re-opens the path to parse, so a swap between the two parsed rows nobody validated. Driven by
+# an `od` stub — the reader calls it on the final byte, between its byte rules and its row parse —
+# that replaces the record at its pathname with one carrying a contradiction. A report reading the
+# snapshot never sees the swap.
+ST12U="$work/st12u"; mkdir -p "$ST12U"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12U/rule-sweep.tsv"
+odstub="$work/odstub"; mkdir -p "$odstub"; realod="$(command -v od)"
+cat > "$odstub/od" <<STUB
+#!/bin/sh
+if [ -n "\${RS_SWAP:-}" ] && [ ! -e "\$RS_SWAP.done" ]; then
+  : > "\$RS_SWAP.done"
+  { cat "\$RS_SWAP"; printf 'rule\t%s\t%s\talpha-one\tx.sh:1\tfired\n' "$RS_RUN" "$RS_TREE"; } > "\$RS_SWAP.new"
+  mv -f "\$RS_SWAP.new" "\$RS_SWAP"
+fi
+exec "$realod" "\$@"
+STUB
+chmod +x "$odstub/od"
+RS_SWAP="$ST12U/rule-sweep.tsv" PATH="$odstub:$PATH" \
+  bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12U" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 the report validates and parses ONE snapshot — a swap mid-read is never parsed"
+if [ -e "$ST12U/rule-sweep.tsv.done" ]; then ok; else bad "12 fixture: the od stub never ran — the snapshot check asserted NOTHING"; fi
+
 # THE FILE BOUND IS BYTES ON BOTH SIDES. `${#row}` counted characters in the caller's locale while
 # the file size and the reader's bound are bytes, so a multibyte site near the limit slipped past.
 ST12M="$work/st12m"; mkdir -p "$ST12M"
@@ -2334,5 +2381,10 @@ rep_at="$(grep -n '{{PATTERN_LEDGER_LIB}} rule-sweep-report' "$ILW" | head -n 1 
 ck_at="$(grep -n '{{PATTERN_LEDGER_LIB}} checklist' "$ILW" | head -n 1 | cut -d: -f1)"
 if [ -n "$rs_at" ] && [ -n "$rep_at" ] && [ -n "$ck_at" ] && [ "$ck_at" -lt "$rs_at" ] && [ "$rs_at" -lt "$rep_at" ]; then ok; else
   bad "12 the workflow sweeps, then records, then reports (checklist@${ck_at:-?} record@${rs_at:-?} report@${rep_at:-?})"; fi
+# ...AND THE FIRST RENDER PRECEDES THE PR (reported on PR #502): step 10 requires the block in the
+# body, and the body is written once — a render that first appears in step 11 has nowhere to go.
+pr_at="$(grep -n '{{IMPLEMENT_LIB}} open-pr' "$ILW" | head -n 1 | cut -d: -f1)"
+if [ -n "$rep_at" ] && [ -n "$pr_at" ] && [ "$rep_at" -lt "$pr_at" ]; then ok; else
+  bad "12 the sweep block is rendered before the PR is opened (report@${rep_at:-?} open-pr@${pr_at:-?})"; fi
 
 check_summary check-pattern-ledger

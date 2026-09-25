@@ -3741,6 +3741,30 @@ eq "$AD_RC" 0 "54 admission succeeds over an abandoned rule-sweep lock"
 if [ -e "$d4/.claude/state/rule-sweep.tsv.lock" ] || [ -e "$d4/.claude/state/rule-sweep.tsv.lock.stale.1.2" ]; then
   bad "54 admission left the abandoned rule-sweep lock (or its tombstone) behind"; else ok; fi
 
+# THE DIGEST IS OF THE BYTES, NOT OF A DIFF DRIVER'S RENDERING (reported on PR #502). Porcelain
+# `git diff` applies a `.gitattributes` textconv filter by default, so with a converter that emits a
+# constant, a tracked change produced an unchanged patch and the identity never moved.
+# The file must exist AT THE MERGE BASE: a file new on the branch diffs with an `index 0000000..<sha>`
+# line that moves with its content whatever textconv does, and the fixture would then prove nothing.
+d5="$(new_repo)"
+printf '*.dat diff=const\n' > "$d5/.gitattributes"; printf '.claude/\n' > "$d5/.gitignore"
+printf 'one\n' > "$d5/f.dat"
+git -C "$d5" add .gitattributes .gitignore f.dat; git -C "$d5" commit -qm dat >/dev/null 2>&1
+si_origin "$d5"; git -C "$d5" checkout -q -b issue-490-z
+git -C "$d5" config diff.const.textconv 'sh -c "echo constant"'
+jq -n '{branch:"issue-490-z", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d5/.claude/state/implement-issue-active.json"
+printf 'two\n' > "$d5/f.dat"
+TC_A="$( cd "$d5" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+printf 'three\n' > "$d5/f.dat"
+TC_B="$( cd "$d5" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$TC_A" ] && [ "$TC_A" != "$TC_B" ]; then ok; else
+  bad "54 a change a textconv driver normalizes still moves the digest [$TC_A] [$TC_B]"; fi
+# The review and sibling-sweep prompts carry the same flags: a reviewer must see the bytes too.
+eq "$(grep -c 'git diff --no-textconv --no-ext-diff' "$IL")" "2" \
+   "54 the review and sweep prompt diffs disable textconv and external diff drivers"
+has "$(bash "$IL" --help 2>&1)" "sweep-identity <state-dir>" "54 --help documents sweep-identity"
+
 # THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what
 # sweep-identity emits is exactly what rule-sweep accepts.
 PLIB="$ROOT/scripts/lib/pattern-ledger.sh"

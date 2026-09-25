@@ -172,6 +172,8 @@
 #   implement-lib.sh sweep-mark <sweep-file> --class C --site S --result fixed|deferred|declined …
 #                                           # move one found sibling out of `found` (#475)
 #   implement-lib.sh sweep-report <sweep-file>  # validate, then the round's sweep summary line
+#   implement-lib.sh sweep-identity <state-dir>  # <run>TAB<tree>: the run's startedAt and a digest of
+#                                                # the tree that ships, for pattern-ledger rule-sweep
 #   implement-lib.sh open-pr <state-dir> --title <t> --body-file <f> [--closes n,m]
 #                                           # step 10: push, create, PROVE closing links, guard, arm
 #   implement-lib.sh -h | --help
@@ -2972,7 +2974,9 @@ cmd_dispatch_review() {
   local _dbefore _dafter
   _dbefore="$(_il_fd_size "$_rpfd")" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
-  git diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
+  # `--no-textconv --no-ext-diff`: a reviewer must see the committed bytes, not what a project's
+  # diff driver renders them as — a normalizing converter hid tracked changes from the review.
+  git diff --no-textconv --no-ext-diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
   case "$?" in
     0|141) : ;;
     *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the %s/%s merge-base failed\n' "$db_remote" "$db" >&2; return 20 ;;
@@ -3518,7 +3522,7 @@ cmd_dispatch_sweep() {
     mb="$(git merge-base "$sw_remote/$base_ref" HEAD 2>/dev/null)" \
       || { _sweep_abort "git merge-base $sw_remote/$base_ref HEAD failed — fetch the base branch"; return 20; }
     dbefore="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
-    git diff "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
+    git diff --no-textconv --no-ext-diff "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
     case "$?" in 0|141) : ;; *) _sweep_abort "git diff against the merge-base failed"; return 20 ;; esac
     dafter="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
     [ $((dafter - dbefore)) -lt 8388609 ] \
@@ -4139,7 +4143,10 @@ cmd_sweep_identity() {
     # identity. `--full-index` prints the whole pre- and post-image names and `--binary` adds the
     # binary patch (and implies `--full-index`); both are named explicitly rather than relying on
     # that implication. (git-diff-index OPTIONS, via context7, this run.)
-    git -C "$root" diff --full-index --binary "$mb" || exit 1
+    # `--no-textconv --no-ext-diff` TOO: porcelain `git diff` applies a `.gitattributes` textconv
+    # filter by default, so a tracked byte change the converter normalizes produced an unchanged
+    # patch — and the digest attested to a tree that had moved. The identity is of the BYTES.
+    git -C "$root" diff --no-textconv --no-ext-diff --full-index --binary "$mb" || exit 1
     printf 'untracked\n'
     # NUL-DELIMITED THROUGHOUT, never tab-and-newline. A filename may legally contain both, so
     # printing `name<TAB>size<TAB>digest<NL>` lets a crafted name forge a whole record and two

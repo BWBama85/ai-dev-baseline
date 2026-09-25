@@ -505,6 +505,21 @@ case "$?" in
 esac
 ```
 
+And the sweep block, rendered HERE — before `open-pr` — because the body is written once and the
+record behind it is swept later:
+
+```bash
+IDENT="$(bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-identity .claude/state)" \
+  || { echo "ERROR: could not resolve the run identity — hard stop"; exit 1; }
+bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" rule-sweep-report --state .claude/state \
+  --run "$(printf '%s' "$IDENT" | cut -f1)" --tree "$(printf '%s' "$IDENT" | cut -f2)"
+case "$?" in
+  0)  : ;;   # paste the block into the PR body
+  11) echo "STOP: no checklist sweep was recorded while promoted rules exist — go back to step 9, sweep, record, then re-render"; exit 1 ;;
+  *)  : ;;   # 18/20/21 -> the codes step 11 lists; report it, the block cannot be rendered
+esac
+```
+
 Write each closing keyword as **bare prose** — a code span or fence suppresses the close
 silently (`git-and-prs.md`). Then one call pushes, opens, **proves**, and guards:
 

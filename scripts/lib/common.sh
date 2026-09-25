@@ -6945,6 +6945,10 @@ adb_rule_sweep_row() {
 # adb_rule_sweep_check <file> <run> <tree> — validate the record WHOLE, then report the rows that
 # belong to this (run, tree).
 #
+# PASS A PRIVATE COPY. This function opens <file> more than once — the byte rules, then the row
+# parse — so on a path another process can replace, the rows parsed need not be the bytes
+# validated. `rule-sweep-report` hands it a snapshot it created exclusively for exactly that reason.
+#
 # Row grammar, six TAB-separated fields:
 #   rule <TAB> <run> <TAB> <tree> <TAB> <class> <TAB> <site> <TAB> <result>
 #
