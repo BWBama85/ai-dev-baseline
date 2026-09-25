@@ -611,7 +611,10 @@ cmd_report() {
   if [ "$n_consulted" -gt 0 ]; then
     while IFS="$TAB" read -r _k _a _b _c; do
       [ "$_k" = consulted ] || continue
-      printf -- '- %s — rung %s: %s\n' "$(_adb_dl_md "$_a")" "$_b" "$(_adb_dl_md "$_c")"
+      # CAPTURED, THEN PRINTED: a failure inside `printf`'s arguments printed an empty field.
+      _a="$(_adb_dl_md "$_a")" && _c="$(_adb_dl_md "$_c")" \
+        || { printf 'docs-lib: could not render a consulted row\n' >&2; return 20; }
+      printf -- '- %s — rung %s: %s\n' "$_a" "$_b" "$_c"
     done <<SNAP
 $_ADB_DL_SNAPSHOT
 SNAP
@@ -619,7 +622,8 @@ SNAP
   if [ "$n_none" -gt 0 ]; then
     while IFS="$TAB" read -r _k _a _b _c; do
       [ "$_k" = none-needed ] || continue
-      printf -- '- none needed: %s\n' "$(_adb_dl_md "$_a")"
+      _a="$(_adb_dl_md "$_a")" || { printf 'docs-lib: could not render a none-needed row\n' >&2; return 20; }
+      printf -- '- none needed: %s\n' "$_a"
     done <<SNAP
 $_ADB_DL_SNAPSHOT
 SNAP
@@ -653,8 +657,10 @@ SNAP
       printf -- '- MCP preflight: every required server answered a real query.\n'
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
-        printf -- '  - `%s` — %s\n' "$_srv" \
-          "$(_adb_dl_md "$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')")"
+        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')" \
+          && _ev="$(_adb_dl_md "$_ev")" \
+          || { printf 'docs-lib: could not render the probe evidence for %s\n' "$_srv" >&2; return 20; }
+        printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
       done <<SERVERS
 $required
 SERVERS
@@ -668,7 +674,9 @@ SERVERS
       # Reported by the declared reviewer on PR #429.
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
-        _ev="$(_adb_dl_md "$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')")"
+        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')" \
+          && _ev="$(_adb_dl_md "$_ev")" \
+          || { printf 'docs-lib: could not render the probe evidence for %s\n' "$_srv" >&2; return 20; }
         [ -n "$_ev" ] || _ev='(no probe was recorded for this server)'
         printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
       done <<SERVERS

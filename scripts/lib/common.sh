@@ -6885,14 +6885,17 @@ adb_sweep_rows() {
 adb_md_escape() {
   # THE BACKSLASH FIRST, so an escape this function adds is never itself re-escaped, and a stored
   # `\[` cannot arrive pre-escaped and turn the `\[` below back into a live bracket.
-  printf '%s' "${1:-}" | sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/]/\\]/g' \
+  # `LC_ALL=C`: the validators admit any byte that is not a control character, so a stored value can
+  # carry bytes that are not UTF-8 (a filename is bytes). Under a UTF-8 locale BSD sed fails on
+  # those with "illegal byte sequence" and the field vanished from a report that still returned 0.
+  # Every rule here is about ASCII punctuation, so byte semantics are exact.
+  printf '%s' "${1:-}" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/]/\\]/g' \
     -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
 ADB_RULE_SWEEP_FIELD_MAX=512
-# One whole record inside one stdio buffer, so two appenders cannot interleave halves of two rows.
-# docs-lib.sh's constant and its reasoning; the number is restated, not shared, because that
-# module's bound governs a different file.
+# The per-record bound. `rule-sweep` publishes by rename rather than appending, so this is no longer
+# an interleaving guard; it keeps one row a line a human can read and a grammar a reader can bound.
 ADB_RULE_SWEEP_RECORD_MAX=2048
 # 1 MiB, the sibling sweep's bound: this file is one short row per promoted rule per run.
 ADB_RULE_SWEEP_FILE_MAX=1048576
@@ -6930,14 +6933,12 @@ adb_rule_sweep_row() {
       [ "$site" != "-" ] || return 19
       adb_ledger_ok_span "$site" || return 19
       # The per-field bound, in BYTES. `${#var}` counts characters in the caller's locale, and the
-      # atomic-append guarantee is about bytes.
+      # reader's bounds are bytes.
       [ "$(printf '%s' "$site" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
     *) return 19 ;;
   esac
   row="$(printf 'rule\t%s\t%s\t%s\t%s\t%s' "$run" "$tree" "$class" "$site" "$result")"
-  # THE WHOLE RECORD, not only its fields. Bounding each field is necessary and not sufficient:
-  # bounded fields plus their separators still add up, and it is the assembled record that has to
-  # reach the file in one write.
+  # THE WHOLE RECORD, not only its fields: bounded fields plus their separators still add up.
   [ "$(printf '%s' "$row" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_RECORD_MAX" ] || return 19
   printf '%s' "$row"
 }
@@ -6952,10 +6953,12 @@ adb_rule_sweep_row() {
 # Row grammar, six TAB-separated fields:
 #   rule <TAB> <run> <TAB> <tree> <TAB> <class> <TAB> <site> <TAB> <result>
 #
-# THE WHOLE FILE IS VALIDATED BEFORE ANY FILTERING, and the order matters: filtering first would
-# let a damaged row that happens to carry another run's identity be skipped instead of refused,
-# so a corrupt record could render a clean count. Every row is held to the grammar; only then is
-# the current group selected.
+# EVERY ROW IS HELD TO THE ROW GRAMMAR BEFORE ANY FILTERING, and the order matters: filtering first
+# would let a damaged row that happens to carry another run's identity be skipped instead of
+# refused, so a corrupt record could render a clean count. The CROSS-ROW discipline below — no
+# duplicate (class, site), no class both clean and fired — is per (run, tree) group, and applies to
+# the current group only: an earlier run's rows are not counted, and may legitimately name the
+# same classes again.
 #
 # Within the current group, per class: EITHER exactly one `clean` row with `site=-`, OR one or
 # more `fired` rows at distinct sites. A class carrying both is a contradiction and refuses the

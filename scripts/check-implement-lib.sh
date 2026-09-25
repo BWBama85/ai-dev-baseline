@@ -3761,8 +3761,28 @@ TC_B="$( cd "$d5" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -
 if [ -n "$TC_A" ] && [ "$TC_A" != "$TC_B" ]; then ok; else
   bad "54 a change a textconv driver normalizes still moves the digest [$TC_A] [$TC_B]"; fi
 # The review and sibling-sweep prompts carry the same flags: a reviewer must see the bytes too.
-eq "$(grep -c 'git diff --no-textconv --no-ext-diff' "$IL")" "2" \
-   "54 the review and sweep prompt diffs disable textconv and external diff drivers"
+eq "$(grep -c 'git diff --no-textconv --no-ext-diff --ignore-submodules=none' "$IL")" "2" \
+   "54 the review and sweep prompt diffs disable textconv, external drivers and submodule hiding"
+
+# A GITLINK CHANGE MOVES THE DIGEST WHATEVER `diff.ignoreSubmodules` SAYS (reported on PR #502).
+# `all` hid the update entirely. The submodule is an EMBEDDED REPOSITORY with a checkout, which is
+# the real shape: with no checkout a gitlink diffs as "deleted" whatever the index names, and the
+# fixture would prove nothing. No `submodule add`, so no file-protocol allowance is needed.
+d6="$(new_repo)"; printf '.claude/\n' > "$d6/.gitignore"
+git -C "$d6" add .gitignore; git -C "$d6" commit -qm ig >/dev/null 2>&1
+git init -q "$d6/sub"; git -C "$d6/sub" config user.email t@e.com; git -C "$d6/sub" config user.name t
+: > "$d6/sub/a"; git -C "$d6/sub" add a; git -C "$d6/sub" commit -qm a >/dev/null 2>&1
+git -C "$d6" add sub >/dev/null 2>&1; git -C "$d6" commit -qm sub >/dev/null 2>&1
+si_origin "$d6"; git -C "$d6" checkout -q -b issue-490-s
+git -C "$d6" config diff.ignoreSubmodules all
+jq -n '{branch:"issue-490-s", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d6/.claude/state/implement-issue-active.json"
+SM_A="$( cd "$d6" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+: > "$d6/sub/b"; git -C "$d6/sub" add b; git -C "$d6/sub" commit -qm b >/dev/null 2>&1
+git -C "$d6" add sub >/dev/null 2>&1
+SM_B="$( cd "$d6" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$SM_A" ] && [ "$SM_A" != "$SM_B" ]; then ok; else
+  bad "54 a submodule update moves the digest under diff.ignoreSubmodules=all [$SM_A] [$SM_B]"; fi
 has "$(bash "$IL" --help 2>&1)" "sweep-identity <state-dir>" "54 --help documents sweep-identity"
 
 # THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what

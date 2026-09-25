@@ -8393,13 +8393,18 @@ survive is the part a later reader needs.
              state-directory file, one `--site` could not carry a rule that fired at several sites,
              and — the internal contradiction — recording at step 8 while step 9 commits fixes made
              an ordinary successful triage invalidate every row before the close-out rendered.
-- decision:  (1) Rows live at `<state>/rule-sweep.tsv`, appended `O_APPEND` under a whole-record
-             byte bound, with identity on every row rather than in a header. The writer takes
-             `_adb_pl_lock` on `<record>.lock` around its duplicate check, its size check and the
-             append — those are reads before a write, and without the lock concurrent retries
-             doubled a row and concurrent appends could pass the bound together. Admission clears
-             the lock, because an ownerless one can never be proven dead. The Scope line naming
-             `_adb_pl_insert` is withdrawn: that writes the tracked ledger, not this record.
+- decision:  (1) Rows live at `<state>/rule-sweep.tsv`, one per line, with identity on every row
+             rather than in a header. The writer takes `_adb_pl_lock` on `<record>.lock`, copies the
+             record byte-exact into a stage it created O_EXCL (a `rule-sweep-*.tsv` family member),
+             decides the duplicate, contradiction and size questions on that stage through the
+             reader's own validator, appends through the held descriptor and publishes by rename —
+             so it never writes through a path it did not create, and never reports success over a
+             record the reader would refuse. Admission clears the lock, because an ownerless one can
+             never be proven dead. The Scope line naming `_adb_pl_insert` is withdrawn: that writes
+             the tracked ledger, not this record, though this writer follows its publish rule.
+             A same-user process that swaps the record mid-operation can change which rows are
+             read; it is not defended against, because the same access lets it write the rows
+             directly — binding an inode would cross no boundary.
              (2) `implement-lib.sh sweep-identity` emits `<run>TAB<tree>` in ONE call, so the
              recorder and the reporter derive them the same way. `run` is the marker's `startedAt`
              — never `owner`, which is re-stamped on pickup. `tree` digests `git diff --full-index
@@ -8432,9 +8437,9 @@ survive is the part a later reader needs.
              same refusal to assert a guarantee the code does not provide: `pattern-ledger.sh`'s own
              header records what "the writer is sequential by construction" cost the last time it
              was argued, and a header binding one identity would have needed exactly that argument
-             back. The first cut was also unlocked, on the argument that per-row identity leaves
-             the writer nothing to read first; review showed that argument was false once the writer
-             checked for duplicates and for the bound, and the lock was added. The retry path went
+             back. The first cut was also unlocked and appended by pathname; review showed the lock
+             was needed once the writer checked for duplicates and for the bound, and then that an
+             append by pathname follows a swapped-in symlink, so the write became rename-publish. The retry path went
              through one revision worth recording: the first cut had the
              READER collapse an exact repeat, which kept the writer free of a read — but it
              contradicted the acceptance criterion that a duplicate is refused whole, and the

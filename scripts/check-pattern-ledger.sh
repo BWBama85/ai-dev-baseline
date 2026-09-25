@@ -478,8 +478,8 @@ if [ "$MODE" = mutation ]; then
   # The writer's idempotency: without it a retry appends a second identical row, which the reader
   # then refuses — the wedge the retry path exists to prevent.
   check_mut rule-sweep-writer-not-idempotent \
-    '  if [ "$dup" = 1 ]; then' \
-    '  if false; then' \
+    '    if printf '"'"'%s\n'"'"' "$cur" | LC_ALL=C grep -qxF -- "${OPT_RULE}${TAB}${OPT_SITE}${TAB}${OPT_RESULT}"; then' \
+    '    if false; then' \
     '12 re-recording an identical row is a no-op (10) — this is the retry path'
   # The write-time file bound: without it a legitimate append makes the record permanently
   # unreadable, which no later run can clear.
@@ -525,6 +525,17 @@ if [ "$MODE" = mutation ]; then
     '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
     '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
     '12 the report validates and parses ONE snapshot — a swap mid-read is never parsed'
+
+  # The writer publishing a contradiction the reader will refuse, with no way to correct it.
+  check_mut rule-sweep-writer-contradiction-published \
+    '    if printf '"'"'%s\n'"'"' "$cur" | awk -F'"'"'\t'"'"' -v c="$OPT_RULE" -v r="$OPT_RESULT" '"'"'$1 == c && $3 != r { f = 1 } END { exit !f }'"'"'; then' \
+    '    if false; then' \
+    '12 the writer refuses to record a class as fired after recording it clean'
+  # The writer ignoring the reader's verdict on the existing record.
+  check_mut rule-sweep-writer-damaged-accepted \
+    '    cur="$(adb_rule_sweep_check "$stage" "$OPT_RUN" "$OPT_TREE")"; crc=$?' \
+    '    cur="$(adb_rule_sweep_check "$stage" "$OPT_RUN" "$OPT_TREE")"; crc=0' \
+    '12 an exact duplicate over a DAMAGED record is refused (18), never an idempotent 10'
 
   # The evidence limit dropped: "2 of 2" then reads as a claim about which files were scanned,
   # which these rows cannot support.
@@ -2172,7 +2183,12 @@ eq "$?" 19 "12 ...and the writer would never have produced it"
 # reader's limit — and then the write succeeds and every later report refuses it, a state no run
 # can clear. Reported by the declared reviewer.
 ST12G="$work/st12g"; mkdir -p "$ST12G"
-awk -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN { for (i = 0; i < 12000; i++) printf "rule\t%s\t%s\tbulk-class\tp/%d.sh:1\tfired\n", r, t, i }' > "$ST12G/rule-sweep.tsv"
+# Filled to just UNDER the bound, so the existing record is valid and it is the APPEND that would
+# cross it; a record already past the bound is refused as damaged (18) before this check is reached.
+awk -v n=$(( 1048576 - 40 )) -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN {
+  out = 0; i = 0
+  while (1) { s = "rule\t" r "\t" t "\tbulk-class\tp/" i ".sh:1\tfired\n"; if (out + length(s) > n) break; printf "%s", s; out += length(s); i++ }
+}' > "$ST12G/rule-sweep.tsv"
 bash "$PL" rule-sweep --state "$ST12G" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
 eq "$?" 19 "12 an append that would outgrow the reader's file bound is refused at write time"
 
@@ -2333,6 +2349,29 @@ RS_SWAP="$ST12U/rule-sweep.tsv" PATH="$odstub:$PATH" \
 eq "$?" 0 "12 the report validates and parses ONE snapshot — a swap mid-read is never parsed"
 if [ -e "$ST12U/rule-sweep.tsv.done" ]; then ok; else bad "12 fixture: the od stub never ran — the snapshot check asserted NOTHING"; fi
 
+# THE WRITER DECIDES ON ITS COPY, THROUGH THE READER'S VALIDATOR (reported on PR #502): it can no
+# longer report success — or an idempotent 10 — over a record the report would refuse whole.
+ST12W="$work/st12w"; mkdir -p "$ST12W"
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site 'x.sh:1' --result fired >/dev/null 2>&1
+eq "$?" 18 "12 the writer refuses to record a class as fired after recording it clean"
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --site 'y.sh:2' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1
+eq "$?" 18 "12 ...and clean after fired"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 ...so the record the slip would have stranded still reports"
+# A damaged record is refused before anything is added — including an exact duplicate's 10.
+ST12X="$work/st12x"; mkdir -p "$ST12X"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12X/rule-sweep.tsv"
+printf 'rule\t%s\t%s\tBadClass\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12X/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12X" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 18 "12 an exact duplicate over a DAMAGED record is refused (18), never an idempotent 10"
+# An existing record already past the bound: refused, never a 10.
+ST12Y="$work/st12y"; mkdir -p "$ST12Y"
+awk -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN { for (i = 0; i < 9500; i++) printf "rule\t%s\t%s\tbulk-class\tp/%d.sh:1\tfired\n", r, t, i }' > "$ST12Y/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12Y" --run "$RS_RUN" --tree "$RS_TREE" --rule bulk-class --site 'p/0.sh:1' --result fired >/dev/null 2>&1
+eq "$?" 18 "12 an exact duplicate over a record already past its bound is refused, never an idempotent 10"
+
 # THE FILE BOUND IS BYTES ON BOTH SIDES. `${#row}` counted characters in the caller's locale while
 # the file size and the reader's bound are bytes, so a multibyte site near the limit slipped past.
 ST12M="$work/st12m"; mkdir -p "$ST12M"
@@ -2357,6 +2396,21 @@ else
   LC_ALL="$RS_U8" bash "$PL" rule-sweep --state "$ST12M" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_MB_SITE" --result fired >/dev/null 2>&1
   eq "$?" 19 "12 a multibyte row that would push the record past its BYTE bound is refused"
 fi
+
+# A NON-UTF-8 BYTE RENDERS UNDER A UTF-8 LOCALE (reported on PR #502). BSD sed failed on it there,
+# the field vanished and the report still returned 0.
+# NO MUTATION ROW: the failure is BSD-sed-only, and the mutation harness runs on the ubuntu leg, where
+# GNU sed accepts the byte with or without `LC_ALL=C` — a row would stay green there and assert
+# nothing. This unit is what speaks for macOS, on the macOS leg.
+if [ -z "${RS_U8:-}" ]; then
+  bad "12 fixture: no UTF-8 locale on this host — the non-UTF-8 rendering check asserted NOTHING"
+else
+  ST12Z="$work/st12z"
+  bash "$PL" rule-sweep --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$(printf 'lat\xe9n.sh:3')" --result fired >/dev/null 2>&1
+  RSZ="$(LC_ALL="$RS_U8" bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+  has "$RSZ" "$(printf 'lat\xe9n.sh:3')" "12 a site carrying a non-UTF-8 byte is rendered under a UTF-8 locale, not dropped"
+fi
+
 
 # MARKDOWN LINK AND IMAGE SYNTAX IS NEUTRALIZED, not only HTML (reported by the declared reviewer on
 # PR #502). A site of `![x](https://host/p)` rendered as an image in the pull-request body.

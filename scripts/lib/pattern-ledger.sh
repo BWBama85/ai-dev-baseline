@@ -56,7 +56,8 @@
 #                   undispositioned. Nothing was recorded.
 #   (record --sweep: 18 the sweep file does not parse · 19 it names another PR · 20 unreadable)
 #   (rule-sweep: 10 this exact row is already recorded — a NO-OP, not a failure, so an interrupted
-#    recording can be retried · 19 a field that will not be stored, a record over the append bound,
+#    recording can be retried · 18 the existing record is damaged, or this row contradicts one already
+#    recorded for the run (a class both clean and fired) · 19 a field that will not be stored, a record over the append bound,
 #    or an append that would take the file past the bound its reader enforces · 20 the record could
 #    not be written)
 #   (rule-sweep-report: 11 NOTHING was recorded while promoted rules exist — the unstated
@@ -1444,12 +1445,18 @@ cmd_rule_sweep() {
   # same user) made an append by pathname write into whatever the link named. So the new record is
   # assembled in a file created O_EXCL with its descriptor held, written only through that
   # descriptor, and published by rename — which replaces whatever sits at the path and never
-  # follows it. What a concurrent swap can still do is make the COPY below read the wrong bytes;
-  # the result is then a record the reader refuses whole, never a write outside it.
+  # follows it.
+  #
+  # THE LIMIT, STATED: a process that swaps the record between the type test and the copy below
+  # makes the copy read whatever the path then names. What gets published is those bytes plus this
+  # row, validated whole on the stage first — so never a write outside the record, and never a
+  # record the reader refuses. It can be a record with different rows; a process with that access
+  # could equally write rows into the record itself, so no boundary is crossed that binding an inode
+  # here would restore.
   #
   # THE STAGE IS A MEMBER OF THE FAMILY (`rule-sweep-<n>.tsv`), so one orphaned by a kill is swept by
   # /cleanup and cleared by admission rather than left as debris nothing owns.
-  local stage wfd="" _had_c=0 cursz rowsz dup
+  local stage wfd="" _had_c=0
   stage="$(dirname "$f")/rule-sweep-$$${RANDOM}.tsv"
   case "$-" in *C*) _had_c=1 ;; esac
   set -C
@@ -1459,41 +1466,51 @@ cmd_rule_sweep() {
     exit 20
   fi
   [ "$_had_c" -eq 1 ] || set +C
-  # THE COPY IS BYTE-EXACT (`cat`), never re-emitted line by line: awk would add a final newline and
-  # may drop a NUL, so a damaged record could be REPAIRED into one the reader accepts — a truncated
-  # site credited as a different, valid site. Copied exactly, damage survives into the published
-  # record and the reader refuses it whole. The duplicate test and the size are a second read; a
-  # concurrent swap between the two can make them disagree with the copy, and every such
-  # disagreement publishes a record the reader refuses (a doubled row, or one past the bound) —
-  # never a silent credit. `ENVIRON`, never `-v`: `-v` interprets backslash escapes, and a site may
-  # carry a backslash.
-  dup=0; cursz=0
+  # ONE READ OF THE RECORD, AND EVERY DECISION MADE ON THE COPY. The record is copied byte-exact
+  # (`cat`, never re-emitted line by line, which would add a final newline or drop a NUL and could
+  # REPAIR a damaged record into one the reader accepts) into the stage this writer created, and
+  # then the stage — not the record's pathname — is what the duplicate test, the contradiction
+  # test and the size are asked of, through the READER's own validator. So the checks describe
+  # exactly the bytes about to be published, and the writer refuses exactly what the reader
+  # refuses: it can never report a successful write, or an idempotent 10, over a record whose
+  # report would then fail.
   if [ -f "$f" ]; then
     cat -- "$f" >&"$wfd" \
       || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not read %s — nothing was written\n' "$f" >&2; exit 20; }
-    local summary
-    summary="$(LC_ALL=C ADB_PL_ROW="$row" awk '
-        BEGIN { r = ENVIRON["ADB_PL_ROW"]; n = 0 }
-        { n += length($0) + 1; if ($0 == r) d = 1 }
-        END { printf "%d %d\n", d + 0, n }' < "$f")" \
-      || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not read %s — nothing was written\n' "$f" >&2; exit 20; }
-    read -r dup cursz <<<"$summary"
-    case "$dup$cursz" in ''|*[!0-9]*)
-      exec {wfd}>&-; rm -f "$stage"
-      printf 'pattern-ledger: rule-sweep: could not measure %s — nothing was written\n' "$f" >&2; exit 20 ;;
+  fi
+  local cur crc cursz rowsz
+  if [ -s "$stage" ]; then
+    cur="$(adb_rule_sweep_check "$stage" "$OPT_RUN" "$OPT_TREE")"; crc=$?
+    case "$crc" in
+      0)  : ;;
+      20) exec {wfd}>&-; rm -f "$stage"
+          printf 'pattern-ledger: rule-sweep: could not read back the copy of %s — nothing was written\n' "$f" >&2; exit 20 ;;
+      *)  exec {wfd}>&-; rm -f "$stage"
+          printf 'pattern-ledger: rule-sweep: %s is damaged (it does not parse, or is past its bound) — refusing to add to a record the report would refuse whole\n' "$f" >&2
+          exit 18 ;;
     esac
+    cur="$(printf '%s\n' "$cur" | tail -n +2)"
+    # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Nothing is published.
+    if printf '%s\n' "$cur" | LC_ALL=C grep -qxF -- "${OPT_RULE}${TAB}${OPT_SITE}${TAB}${OPT_RESULT}"; then
+      exec {wfd}>&-; rm -f "$stage"
+      printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"
+      exit 10
+    fi
+    # A CONTRADICTION IS REFUSED BEFORE IT IS PUBLISHED. A class this run recorded `clean` cannot also
+    # have fired, and the reverse; the reader refuses such a record whole, and this CLI has no
+    # correction operation — so publishing it would strand the close-out on an ordinary slip.
+    if printf '%s\n' "$cur" | awk -F'\t' -v c="$OPT_RULE" -v r="$OPT_RESULT" '$1 == c && $3 != r { f = 1 } END { exit !f }'; then
+      exec {wfd}>&-; rm -f "$stage"
+      printf 'pattern-ledger: rule-sweep: %s is already recorded as %s for this run and tree — a class is either clean or fired, never both. Nothing was written.\n' \
+        "$OPT_RULE" "$( [ "$OPT_RESULT" = clean ] && echo fired || echo clean )" >&2
+      exit 18
+    fi
   fi
-  # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Nothing is published.
-  if [ "$dup" = 1 ]; then
-    exec {wfd}>&-; rm -f "$stage"
-    printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"
-    exit 10
-  fi
-  # THE FILE BOUND, IN BYTES ON BOTH SIDES. `length($0) + 1` under `LC_ALL=C` counts bytes, and a
-  # newline for an unterminated last line too — an over-estimate, which errs toward refusing.
+  # THE FILE BOUND, IN BYTES ON BOTH SIDES, measured on the stage.
+  cursz="$(LC_ALL=C wc -c < "$stage" | tr -d ' ')"
   rowsz="$(printf '%s\n' "$row" | LC_ALL=C wc -c | tr -d ' ')"
-  case "$rowsz" in ''|*[!0-9]*) exec {wfd}>&-; rm -f "$stage"
-    printf 'pattern-ledger: rule-sweep: could not measure the row — nothing was written\n' >&2; exit 20 ;; esac
+  case "$cursz$rowsz" in ''|*[!0-9]*) exec {wfd}>&-; rm -f "$stage"
+    printf 'pattern-ledger: rule-sweep: could not measure the record or the row — nothing was written\n' >&2; exit 20 ;; esac
   if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
     exec {wfd}>&-; rm -f "$stage"
     printf 'pattern-ledger: rule-sweep: %s would exceed the %s-byte record bound its reader enforces. Nothing was written; the existing record is still readable.\n' \
@@ -1514,7 +1531,7 @@ cmd_rule_sweep() {
 # project's own ledger. So M is the LIVE promoted set and the unswept rules are named.
 cmd_rule_sweep_report() {
   local ledger lst region emitted_sz f out rc
-  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts stale
+  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts stale _mc _ms
 
   [ -n "$OPT_RUN" ]  || die "rule-sweep-report: --run is required"
   [ -n "$OPT_TREE" ] || die "rule-sweep-report: --tree is required"
@@ -1650,8 +1667,12 @@ ROWS
       printf -- '- fired:\n'
       printf '%s' "$fired" | LC_ALL=C sort | while IFS="$TAB" read -r class site; do
         [ -n "$class" ] || continue
-        printf -- '  - `%s` — %s\n' "$(_adb_pl_rs_md "$class")" "$(_adb_pl_rs_md "$site")"
-      done
+        # CAPTURED, THEN PRINTED: an escaper that failed inside `printf`'s arguments printed an
+        # empty field and the report still returned 0. A failure here is a report that cannot be
+        # rendered, and it says so.
+        _mc="$(_adb_pl_rs_md "$class")" && _ms="$(_adb_pl_rs_md "$site")" || exit 20
+        printf -- '  - `%s` — %s\n' "$_mc" "$_ms"
+      done || { printf 'pattern-ledger: could not render the fired rows\n' >&2; exit 20; }
     else
       printf -- '- fired: none — every swept rule came back clean.\n'
     fi
@@ -1664,8 +1685,9 @@ ROWS
       printf -- '- NOT swept:\n'
       printf '%s\n' "$unswept" | while IFS= read -r class; do
         [ -n "$class" ] || continue
-        printf -- '  - `%s`\n' "$(_adb_pl_rs_md "$class")"
-      done
+        _mc="$(_adb_pl_rs_md "$class")" || exit 20
+        printf -- '  - `%s`\n' "$_mc"
+      done || { printf 'pattern-ledger: could not render the unswept rules\n' >&2; exit 20; }
     fi
   fi
   # THE EVIDENCE LIMIT, STATED. These rows record which RULES were swept and what each one found;
@@ -1675,8 +1697,9 @@ ROWS
     printf -- '- recorded but NOT a promoted rule (not counted as coverage):\n'
     printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | while IFS= read -r class; do
       [ -n "$class" ] || continue
-      printf -- '  - `%s`\n' "$(_adb_pl_rs_md "$class")"
-    done
+      _mc="$(_adb_pl_rs_md "$class")" || exit 20
+      printf -- '  - `%s`\n' "$_mc"
+    done || { printf 'pattern-ledger: could not render the off-set classes\n' >&2; exit 20; }
   fi
   [ "${stale:-0}" -gt 0 ] && printf -- '- %s row(s) from an earlier run or an earlier tree were ignored.\n' "$stale"
   return 0
