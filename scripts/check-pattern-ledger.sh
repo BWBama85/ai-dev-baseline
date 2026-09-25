@@ -2138,9 +2138,13 @@ has "$RSE" "NOT a promoted rule" "12 ...but it IS reported, never silently dropp
 has "$RSE" 'ghost-only' "12 ...naming the off-set class itself, not only the heading"
 # AN OFF-SET CLASS WITH SEVERAL ROWS IS LISTED ONCE (reported on PR #502). The set was seeded without
 # its delimiter, so its first entry never matched the membership test and the class repeated.
-bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'a.sh:1' --result fired >/dev/null 2>&1
-bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'b.sh:2' --result fired >/dev/null 2>&1
-RSE2="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+# A FRESH RECORD WHERE THAT CLASS IS THE FIRST ROW: with an empty seed only the FIRST off-set entry
+# misses the membership test, so a class recorded after another off-set class never shows the defect.
+ST12S="$work/st12s"
+bash "$PL" rule-sweep --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'a.sh:1' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'b.sh:2' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+RSE2="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
 eq "$(printf '%s\n' "$RSE2" | grep -c '`ghost-two`')" "1" "12 an off-set class with two rows is listed once"
 
 # THE READER REFUSES WHAT THE WRITER REFUSES — the byte bounds, not only the printable shape.
