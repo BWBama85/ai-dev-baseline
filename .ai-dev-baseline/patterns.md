@@ -722,4 +722,8 @@ One line per resolved review thread, newest last.
 - `stale-doc-claim` `scripts/lib/common.sh:6964` `0e9abc9` `PRRT_kwDOTfywrM6lzu9x` PR #502 2026-09-25 — the reader header still said an exact duplicate collapses while the code refuses it
 - `stale-state-trusted` `scripts/lib/implement-lib.sh:4082` `0e9abc9` `PRRT_kwDOTfywrM6lzu92` PR #502 2026-09-25 — the tree digest fell back to the local default branch when the remote base was missing
 - `third-party-default` `scripts/lib/implement-lib.sh:4121` `0e9abc9` `PRRT_kwDOTfywrM6lzu9-` PR #502 2026-09-25 — sort -z is non-POSIX and was used without a capability probe
+- `third-party-default` `scripts/lib/implement-lib.sh:4142` `1bc4893` `PRRT_kwDOTfywrM6l2Ce4` PR #502 2026-09-25 — git diff applied a textconv driver by default, so a normalized change left the tree digest unchanged
+- `precondition-ordering` `base/workflows/implement-issue.md:500` `1bc4893` `PRRT_kwDOTfywrM6l2Ce8` PR #502 2026-09-25 — step 10 required the sweep block in the PR body but it was first rendered in step 11, after the PR opened
+- `toctou` `scripts/lib/pattern-ledger.sh:1472` `1bc4893` `PRRT_kwDOTfywrM6l2Ce-` PR #502 2026-09-25 — rule-sweep type-checked the record then re-opened it by path for the append
+- `stale-doc-claim` `scripts/lib/implement-lib.sh:4206` `1bc4893` `PRRT_kwDOTfywrM6l2CfE` PR #502 2026-09-25 — sweep-identity was dispatched but absent from the usage block --help prints
 <!-- adb:hits:end -->
