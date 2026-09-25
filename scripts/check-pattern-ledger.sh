@@ -478,8 +478,8 @@ if [ "$MODE" = mutation ]; then
   # The writer's idempotency: without it a retry appends a second identical row, which the reader
   # then refuses — the wedge the retry path exists to prevent.
   check_mut rule-sweep-writer-not-idempotent \
-    '      0) printf '"'"'rule-sweep %s %s (already recorded)\n'"'"' "$OPT_RULE" "$OPT_RESULT"; exit 10 ;;' \
-    '      0) : ;;' \
+    '  if [ "$dup" = 1 ]; then' \
+    '  if false; then' \
     '12 re-recording an identical row is a no-op (10) — this is the retry path'
   # The write-time file bound: without it a legitimate append makes the record permanently
   # unreadable, which no later run can clear.
@@ -628,7 +628,7 @@ if [ "$MODE" = mutation ]; then
   check_mut rule-sweep-empty-unreadable-accepted \
     '    [ -r "$f" ] || return 20' \
     '    :' \
-    '12 an unreadable empty record is refused (20), never read as no rows'
+    '12 the reader itself refuses an unreadable empty record (20)'
 
   # The contradiction guard: a class recorded both clean and fired is a count nobody can reconcile.
   check_mut rule-sweep-contradiction-allowed \
@@ -2240,6 +2240,15 @@ ln -s "$work/rs-empty-target2" "$ST12R/rule-sweep.tsv"
 bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
   "$ROOT" "$ST12R/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
 eq "$?" 20 "12 the reader itself refuses a symlink to an empty record (20)"
+
+# ...AND THE READER HOLDS THAT ON ITS OWN. The report now snapshots the record first, and an
+# unreadable one fails that copy before the reader runs — which is right, and which also means no
+# report-level fixture can see the reader's own guard. Asked of the library directly.
+ST12V="$work/st12v"; mkdir -p "$ST12V"; : > "$ST12V/rule-sweep.tsv"; chmod 000 "$ST12V/rule-sweep.tsv"
+bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
+  "$ROOT" "$ST12V/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
+RSV=$?; chmod 600 "$ST12V/rule-sweep.tsv"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSV" 20 "12 the reader itself refuses an unreadable empty record (20)"; fi
 
 # A MALFORMED ARGUMENT IS USAGE, NOT A CORRUPT FILE (self-review, `status-swallowed`). The reader
 # refuses a bad run/tree with 19 exactly as it refuses a stored field, and reporting that as "the
