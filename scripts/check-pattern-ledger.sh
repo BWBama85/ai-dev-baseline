@@ -438,7 +438,7 @@ if [ "$MODE" = mutation ]; then
   # The unswept rules counted but not named: "19 of 21" with the two unnamed is the report a
   # reader cannot act on, and naming them is the whole reason this is a command and not a sentence.
   check_mut rule-sweep-unswept-unnamed \
-    "        printf -- '  - \`%s\`\\n' \"\$(_adb_pl_rs_md \"\$class\")\"" \
+    '        printf -- '"'"'  - `%s`\n'"'"' "$_mc"' \
     '        :' \
     '12 ...and the unswept rule is NAMED, not merely counted'
 
@@ -632,8 +632,8 @@ if [ "$MODE" = mutation ]; then
 
   # Link and image syntax left live: HTML-only escaping, the first cut.
   check_mut rule-sweep-md-link-live \
-    '  printf '"'"'%s'"'"' "${1:-}" | sed -e '"'"'s/\\/\\\\/g'"'"' -e '"'"'s/\[/\\[/g'"'"' -e '"'"'s/]/\\]/g'"'"' \' \
-    '  printf '"'"'%s'"'"' "${1:-}" | sed -e '"'"'s/\\/\\\\/g'"'"' \' \
+    '  printf '"'"'%s'"'"' "${1:-}" | LC_ALL=C sed -e '"'"'s/\\/\\\\/g'"'"' -e '"'"'s/\[/\\[/g'"'"' -e '"'"'s/]/\\]/g'"'"' \' \
+    '  printf '"'"'%s'"'"' "${1:-}" | LC_ALL=C sed -e '"'"'s/\\/\\\\/g'"'"' \' \
     '12 a site carrying image syntax is rendered as text'
   # An unreadable EMPTY record read as "no rows" rather than as unreadable.
   check_mut rule-sweep-empty-unreadable-accepted \
