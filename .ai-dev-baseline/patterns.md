@@ -734,4 +734,6 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/pattern-ledger.sh:1611` `378937c` `PRRT_kwDOTfywrM6mOwCq` PR #502 2026-09-26 — the report copied the record before checking its type or bounding its size; a FIFO blocked and a huge file was copied whole
 - `stale-state-trusted` `base/workflows/implement-issue.md:500` `378937c` `PRRT_kwDOTfywrM6mOwCr` PR #502 2026-09-26 — the PR-body sweep block was rendered once and went stale after review-round pushes
 - `trailing-newline-stripped` `scripts/lib/pattern-ledger.sh:1395` `378937c` `PRRT_kwDOTfywrM6mOwCs` PR #502 2026-09-26 — an explicit --state path lost a trailing newline through command substitution and resolved a sibling
+- `rerun-not-idempotent` `scripts/lib/docs-lib.sh:221` `b0697cd` `PRRT_kwDOTfywrM6mS7Hv` PR #502 2026-09-26 — the docs reader refused a size its writer never checks, so ordinary appends could strand the run
+- `evidence-discarded` `scripts/lib/pattern-ledger.sh:1664` `b0697cd` `PRRT_kwDOTfywrM6mS7Hx` PR #502 2026-09-26 — the nothing-recorded refusal exited before the stale count, reporting tree drift as a sweep that never happened
 <!-- adb:hits:end -->
