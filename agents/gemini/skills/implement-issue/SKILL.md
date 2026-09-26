@@ -509,7 +509,8 @@ esac
 ```
 
 And the sweep block, rendered HERE — before `open-pr` — because the body is written once and the
-record behind it is swept later:
+record behind it is swept later. It names the tree it attests to; a later review-round push makes
+it stale, and re-sweeping after `/resolve-pr-threads` pushes is #503:
 
 ```bash
 IDENT="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" sweep-identity .gemini/state)" \

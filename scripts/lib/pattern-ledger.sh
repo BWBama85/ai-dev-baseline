@@ -709,7 +709,7 @@ _adb_pl_lock() {
     # stale copy over the successor's work. The tokenized release stops it deleting their LOCK; it
     # cannot stop that write. So the owner must be PROVEN GONE before anything is reclaimed.
     # Reported by the declared reviewer on PR #429.
-    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then
+    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then   # lock-reclaim-needs-proof
       # RENAME TO A TOMBSTONE, THEN DELETE — never `rmdir` the observed directory. Two writers can
       # see the same stale lock: with a bare removal the first deletes it and takes a FRESH lock,
       # and the second then deletes the first writer's live lock and takes one too, so both enter
@@ -896,7 +896,7 @@ cmd_record() {
   # duplicate that every reader refuses. Measured by the reviewer: 30 parallel `record` calls for
   # one thread produced 30 rows. Taking the lock HERE, not inside `_adb_pl_insert`, is what makes
   # the check and the act one operation. Reported by the declared reviewer on PR #429.
-  _adb_pl_lock "$ledger" || exit 20
+  _adb_pl_lock "$ledger" || exit 20   # record-takes-lock
   export _ADB_PL_LOCK_HELD="$ledger"
   # THE TRAP TEXT IS FIXED; the path travels in a VARIABLE. `trap "… '$ledger'" EXIT` interpolates
   # the path into shell source that `trap` evaluates later — so a ledger under a directory named
@@ -1384,8 +1384,8 @@ cmd_threshold() {
 _ADB_PL_RS_FILE="rule-sweep.tsv"
 
 _adb_pl_rs_dir() {
-  if [ -n "${OPT_STATE:-}" ]; then printf '%s\n' "$OPT_STATE"; return 0; fi
-  if [ -n "${ADB_PATTERN_SWEEP_STATE:-}" ]; then printf '%s\n' "$ADB_PATTERN_SWEEP_STATE"; return 0; fi
+  local _sd="${OPT_STATE:-${ADB_PATTERN_SWEEP_STATE:-}}"
+  if [ -n "$_sd" ]; then printf '%s\n' "$_sd"; return 0; fi
   local root; root="$(adb_repo_root 2>/dev/null)" || root=""
   [ -n "$root" ] || { printf 'pattern-ledger: not inside a git repository and no --state given\n' >&2; return 1; }
   printf '%s/.%s/state\n' "$root" "${ADB_AGENT:-claude}"
@@ -1475,7 +1475,9 @@ cmd_rule_sweep() {
   # refuses: it can never report a successful write, or an idempotent 10, over a record whose
   # report would then fail.
   if [ -f "$f" ]; then
-    cat -- "$f" >&"$wfd" \
+    # BOUNDED: one byte past the reader's limit is enough to prove the record is too large, and
+    # copying the rest of an oversized file would only fill the disk before the refusal.
+    head -c "$(( ADB_RULE_SWEEP_FILE_MAX + 1 ))" -- "$f" >&"$wfd" \
       || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not read %s — nothing was written\n' "$f" >&2; exit 20; }
   fi
   local cur crc cursz rowsz
@@ -1608,7 +1610,14 @@ cmd_rule_sweep_report() {
     [ "$_had_c" -eq 1 ] || set +C
     _ADB_PL_SNAP="$snap"
     trap 'rm -f "$_ADB_PL_SNAP"' EXIT
-    cat -- "$f" >&"$sfd" || { exec {sfd}>&-; printf 'pattern-ledger: %s could not be read\n' "$f" >&2; exit 20; }
+    # A REGULAR FILE, AND A BOUNDED COPY. A FIFO at this path blocked the copy — and the close-out —
+    # forever, and an oversized file was copied whole into TMPDIR before the reader refused it.
+    if [ ! -f "$f" ]; then
+      exec {sfd}>&-
+      printf 'pattern-ledger: %s is not a regular file — this module reads only its own record\n' "$f" >&2; exit 20
+    fi
+    head -c "$(( ADB_RULE_SWEEP_FILE_MAX + 1 ))" -- "$f" >&"$sfd" \
+      || { exec {sfd}>&-; printf 'pattern-ledger: %s could not be read\n' "$f" >&2; exit 20; }
     exec {sfd}>&-
     out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?
     case "$rc" in
@@ -1690,6 +1699,11 @@ ROWS
       done || { printf 'pattern-ledger: could not render the unswept rules\n' >&2; exit 20; }
     fi
   fi
+  # THE TREE IT ATTESTS TO, NAMED. This block is pasted into a pull-request body once, and a later
+  # push changes the tree without changing the block — so it says which tree it describes, and a
+  # reader can see when the two have parted.
+  printf -- '- attests to tree `%s` (run `%s`); a later change to the tree makes this block stale.\n' \
+    "${OPT_TREE:0:12}" "$(_adb_pl_rs_md "$OPT_RUN")"
   # THE EVIDENCE LIMIT, STATED. These rows record which RULES were swept and what each one found;
   # they do not enumerate the files scanned, and a reader must not infer that they do.
   printf -- '- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\n'
@@ -1738,6 +1752,15 @@ while [ "$#" -gt 0 ]; do
     *)           die "$SUB: unknown option '$1'" ;;
   esac
 done
+
+# A STATE PATH CARRYING A CONTROL BYTE IS REFUSED HERE, in the main shell, as usage. Every reader of
+# it captures it through `$(…)`, which strips a trailing newline — so `--state '<dir><NL>'` resolved
+# to a sibling directory and wrote another run's record — and a refusal raised inside that capture
+# could only ever surface as the caller's 20. The project refuses such paths for the checkout itself
+# (#278); an explicit state path is held to the same rule.
+case "${OPT_STATE:-${ADB_PATTERN_SWEEP_STATE:-}}" in
+  *[[:cntrl:]]*) die "--state (or ADB_PATTERN_SWEEP_STATE) carries a control character — refused" ;;
+esac
 
 case "$SUB" in
   record)    cmd_record ;;

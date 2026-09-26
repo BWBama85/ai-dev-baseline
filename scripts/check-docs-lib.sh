@@ -251,6 +251,12 @@ if [ "$MODE" = mutation ]; then
     '_adb_dl_md() { printf '"'"'%s'"'"' "$1"; }' \
     'the rendered report contains no raw HTML comment opener'
 
+  # THE REGULAR-FILE GUARD (#490): without it a FIFO blocks the report forever.
+  check_mut docs-fifo-read \
+    '  [ -f "$f" ] && [ ! -L "$f" ] || return 2' \
+    '  :' \
+    "a FIFO at the docs record's path is refused (20), never read"
+
   # THE NUL SCAN (PR #429).
   check_mut nul-normalized \
     "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$f\" | wc -c | tr -d ' ')\" -eq \"\$(wc -c < \"\$f\" | tr -d ' ')\" ] || return 1" \
@@ -919,6 +925,18 @@ R28b="$(dl report --state "$D28b/state" 2>/dev/null)"
 has   "$R28b" '!\[x\](https://example.invalid/p)' "a source carrying image syntax is rendered as text"
 hasnt "$R28b" '![x](' "…and the live image syntax never reaches the report"
 has   "$R28b" 'see \[docs\](https://example.invalid)' "…nor does a surface's link syntax"
+
+# A FIFO OR AN OVERSIZED RECORD IS REFUSED BEFORE IT IS READ WHOLE (#490, reported on PR #502).
+D29="$work/d29"; mkdir -p "$D29/state"; mkfifo "$D29/state/docs-consulted.tsv"
+( timeout 20 env HOME="$FHOME" bash "$DL" report --state "$D29/state" >/dev/null 2>&1 ); eq "$?" 20 \
+  "a FIFO at the docs record's path is refused (20), never read"
+rm -f "$D29/state/docs-consulted.tsv"
+head -c 2097152 /dev/zero | tr '\0' 'x' > "$D29/state/docs-consulted.tsv"
+dl report --state "$D29/state" >/dev/null 2>&1; eq "$?" 18 "an oversized docs record is refused (18)"
+# A LITERAL newline: building the path with `$(printf …)` would strip it — the defect under test.
+dl none-needed --state "$D29/state
+" --justification x >/dev/null 2>&1; eq "$?" 2 \
+  "a docs --state path carrying a newline is refused as usage"
 
 
 # A KEY DECLARED TWICE IS INVALID TOML (PR #429). `adb_toml_get` stops at the first match, so the

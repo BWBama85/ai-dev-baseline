@@ -158,8 +158,8 @@ _adb_dl_ok_server() {
 _adb_dl_md() { adb_md_escape "$1"; }
 
 _adb_dl_state_dir() {
-  if [ -n "${OPT_STATE:-}" ]; then printf '%s\n' "$OPT_STATE"; return 0; fi
-  if [ -n "${ADB_DOCS_STATE:-}" ]; then printf '%s\n' "$ADB_DOCS_STATE"; return 0; fi
+  local _sd="${OPT_STATE:-${ADB_DOCS_STATE:-}}"
+  if [ -n "$_sd" ]; then printf '%s\n' "$_sd"; return 0; fi
   local root; root="$(adb_repo_root 2>/dev/null)" || root=""
   [ -n "$root" ] || { printf 'docs-lib: not inside a git repository and no --state given\n' >&2; return 1; }
   printf '%s/.%s/state\n' "$root" "${ADB_AGENT:-claude}"
@@ -215,6 +215,10 @@ _adb_dl_records() {
     return 0
   fi
   [ -r "$f" ] || return 2
+  # A REGULAR FILE, AND BOUNDED, before anything reads it whole: a FIFO here blocked the report
+  # forever, and an unbounded file was read into memory. 1 MiB is far past any real record.
+  [ -f "$f" ] && [ ! -L "$f" ] || return 2
+  [ "$(LC_ALL=C wc -c < "$f" | tr -d ' ')" -le 1048576 ] || return 1
   # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
   # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
@@ -730,6 +734,13 @@ while [ "$#" -gt 0 ]; do
     *)               die "$SUB: unknown option '$1'" ;;
   esac
 done
+
+# A STATE PATH CARRYING A CONTROL BYTE IS REFUSED HERE, in the main shell, as usage: every reader
+# captures it through `$(…)`, which strips a trailing newline and would resolve a sibling directory,
+# and a refusal raised inside that capture could only surface as the caller's 20 (#278's rule).
+case "${OPT_STATE:-${ADB_DOCS_STATE:-}}" in
+  *[[:cntrl:]]*) die "--state (or ADB_DOCS_STATE) carries a control character — refused" ;;
+esac
 
 case "$SUB" in
   mcp-required) cmd_mcp_required ;;
