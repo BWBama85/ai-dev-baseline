@@ -215,10 +215,11 @@ _adb_dl_records() {
     return 0
   fi
   [ -r "$f" ] || return 2
-  # A REGULAR FILE, AND BOUNDED, before anything reads it whole: a FIFO here blocked the report
-  # forever, and an unbounded file was read into memory. 1 MiB is far past any real record.
+  # A REGULAR FILE before anything reads it: a FIFO here blocked the report forever.
+  # NO SIZE BOUND, deliberately: `_adb_dl_append` enforces none, and a reader that refuses what its
+  # writer produces strands the run with no correction operation. Every record is bounded where it
+  # is written, and the file grows only by those appends.
   [ -f "$f" ] && [ ! -L "$f" ] || return 2
-  [ "$(LC_ALL=C wc -c < "$f" | tr -d ' ')" -le 1048576 ] || return 1
   # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
   # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
@@ -593,7 +594,10 @@ cmd_report() {
   # verdict and evidence disagreed. Reported by the declared reviewer on PR #429.
   _ADB_DL_SNAPSHOT=""
   [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"
-  export _ADB_DL_SNAPSHOT
+  # NOT EXPORTED. Every reader is this shell or a subshell of it, which inherits the variable
+  # anyway — and the environment counts against the OS argument limit (1 MiB on macOS), so an
+  # exported snapshot near that size made every later command fail "Argument list too long" and
+  # the report blamed a NUL byte in agents.toml.
   if [ -n "$_ADB_DL_SNAPSHOT" ]; then
     n_consulted="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "consulted"'   | wc -l | tr -d ' ')"
     n_none="$(printf '%s\n'      "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "none-needed"' | wc -l | tr -d ' ')"

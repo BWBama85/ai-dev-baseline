@@ -251,6 +251,13 @@ if [ "$MODE" = mutation ]; then
     '_adb_dl_md() { printf '"'"'%s'"'"' "$1"; }' \
     'the rendered report contains no raw HTML comment opener'
 
+  # THE SNAPSHOT EXPORTED again: the environment counts against the OS argument limit, so a large
+  # record made every command the report runs fail.
+  check_mut docs-snapshot-exported \
+    '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"' \
+    '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"; export _ADB_DL_SNAPSHOT' \
+    'a large record of valid appends still reports its last record'
+
   # THE REGULAR-FILE GUARD (#490): without it a FIFO blocks the report forever.
   check_mut docs-fifo-read \
     '  [ -f "$f" ] && [ ! -L "$f" ] || return 2' \
@@ -931,8 +938,17 @@ D29="$work/d29"; mkdir -p "$D29/state"; mkfifo "$D29/state/docs-consulted.tsv"
 ( timeout 20 env HOME="$FHOME" bash "$DL" report --state "$D29/state" >/dev/null 2>&1 ); eq "$?" 20 \
   "a FIFO at the docs record's path is refused (20), never read"
 rm -f "$D29/state/docs-consulted.tsv"
-head -c 2097152 /dev/zero | tr '\0' 'x' > "$D29/state/docs-consulted.tsv"
-dl report --state "$D29/state" >/dev/null 2>&1; eq "$?" 18 "an oversized docs record is refused (18)"
+# NO SIZE BOUND ON THE READER (reported on PR #502): its writer enforces none, so a bound here would
+# refuse a file ordinary appends produced. 2200 valid records (each field under the 512-byte bound),
+# past the 1 MiB a bound once used —
+# must still report.
+awk 'BEGIN { for (i = 0; i < 2200; i++) { printf "none-needed\t"; for (j = 0; j < 50; j++) printf "abcdefghij"; printf " %d\n", i } }' \
+  > "$D29/state/docs-consulted.tsv"
+R29="$(dl report --state "$D29/state" 2>/dev/null)"; eq "$?" 0 "a large record of valid appends still reports — the reader refuses nothing its writer produces"
+# ...AND RENDERS ITS RECORDS. The exit code alone is not the witness: with the snapshot exported, every
+# command the report runs fails "Argument list too long", and in a tree with no agents.toml the report
+# then printed an empty block and still returned 0.
+has "$R29" "abcdefghij 2199" "a large record of valid appends still reports its last record"
 # A LITERAL newline: building the path with `$(printf …)` would strip it — the defect under test.
 dl none-needed --state "$D29/state
 " --justification x >/dev/null 2>&1; eq "$?" 2 \

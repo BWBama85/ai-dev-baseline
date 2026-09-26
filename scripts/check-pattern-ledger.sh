@@ -1893,6 +1893,14 @@ bash "$PL" rule-sweep --state "$work/st12nl
 eq "$?" 2 "12 a --state path carrying a newline is refused as usage"
 if [ -e "$work/st12nl/rule-sweep.tsv" ]; then bad "12 ...and nothing was written to the sibling it would have resolved to"; else ok; fi
 
+# A SWEEP THE TREE OUTLIVED IS NOT "NEVER SWEPT" (reported on PR #502, round 7). Every row stale and
+# none current used to print the nothing-recorded diagnosis; it now names the stale rows.
+ST12D2="$work/st12drift"
+bash "$PL" rule-sweep --state "$ST12D2" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+RSD_ERR="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12D2" --run "$RS_RUN" --tree "$RS_TREE2" 2>&1 >/dev/null)"; RSD=$?
+eq "$RSD" 11 "12 a sweep recorded only for an earlier tree is still 11 for this one"
+has "$RSD_ERR" "the tree changed after the sweep" "12 ...but names the stale rows rather than reporting a sweep that never happened"
+
 # The subcommands are reachable and self-describing.
 has "$(bash "$PL" --help 2>&1)" "rule-sweep --state" "12 --help documents the writer"
 has "$(bash "$PL" --help 2>&1)" "rule-sweep-report --state" "12 ...and the reporter"
@@ -2280,6 +2288,10 @@ if [ "$MODE" = mutation ]; then
       '  printf -- '"'"'- attests to tree `%s` (run `%s`); a later change to the tree makes this block stale.\n'"'"' \' \
       '  : \' \
       '12 the block names the tree it attests to'
+  check_row 'a sweep the tree outlived reads as never swept' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ "${stale:-0}" -gt 0 ]; then' \
+      '    if false; then' \
+      '12 ...but names the stale rows rather than reporting a sweep that never happened'
   check_mutation_rows "check-pattern-ledger" "$work/mut" "scripts/check-pattern-ledger.sh" prepare_root runner 6
 fi
 

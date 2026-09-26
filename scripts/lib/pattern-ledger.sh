@@ -1661,6 +1661,13 @@ ROWS
   # said so by there being nothing to say, and reporting that as a defect would make every
   # ledger-less project fail its own close-out.
   if [ "$n" -eq 0 ] && [ "$m" -gt 0 ]; then
+    # STALE ROWS ARE NAMED HERE TOO. A tree that changed after the sweep leaves every row stale and
+    # n at 0, and exiting before the stale count reported "never swept" for a sweep the tree simply
+    # outlived — the drift the per-row digest exists to expose. Same code, different diagnosis.
+    if [ "${stale:-0}" -gt 0 ]; then
+      printf 'pattern-ledger: %s row(s) were recorded for an earlier run or an earlier tree, and none for this one — the tree changed after the sweep. Re-sweep it and record again.\n' "$stale" >&2
+      exit 11
+    fi
     printf 'pattern-ledger: nothing recorded — this run has stated NO checklist-sweep disposition.\n' >&2
     printf 'pattern-ledger: sweep the %s promoted rule(s) against the diff and record each with\n' "$m" >&2
     printf 'pattern-ledger: `rule-sweep --rule <class> --site <path|-> --result <fired|clean>`.\n' >&2
