@@ -586,42 +586,41 @@ if [ "$MODE" = mutation ]; then
   # Same failure mode as the sweep grammar above: a validator that stops checking prints exactly
   # what a clean file prints.
   check_mut rule-sweep-arity-unchecked \
-    '    adb_sweep_split "$line" 6 || return 18' \
-    '    adb_sweep_split "$line" 6 || true' \
+    '      if (NF != 6)          fail(18)' \
+    '      if (0)          fail(18)' \
     '12 a seven-field row is refused on arity too'
   check_mut rule-sweep-kind-unchecked \
-    '    [ "$kind" = rule ] || return 18' \
-    '    :' \
+    '      if ($1 != "rule")     fail(18)' \
+    '      if (0)     fail(18)' \
     '12 a row of another kind is refused — a sibling-sweep row is not a checklist row'
   check_mut rule-sweep-clean-site-unchecked \
-    '      clean) [ "$site" = "-" ] || return 18 ;;' \
-    '      clean) : ;;' \
+    '        if (site != "-") fail(18)' \
+    '        if (0) fail(18)' \
     '12 a clean row carrying a site is refused — - is the only clean site'
   # The ALIGNED spelling, which is unique to `adb_rule_sweep_check`: three other functions carry
   # the unaligned one, and the applier replaces the first line containing the string — so the
   # unaligned literal mutated `adb_sweep_findings_check` instead and this row tested nothing.
   check_mut rule-sweep-class-unchecked \
-    '    adb_ledger_ok_class    "$class" || return 19' \
-    '    :' \
+    '      if (length(class) > 48 || class !~ /^[a-z][a-z0-9-]*$/)                  fail(19)' \
+    '      if (0)                  fail(19)' \
     '12 a class outside the slug charset is refused in the CURRENT group too'
   # THE ORDER: validate the whole file, THEN filter. Hoisting the staleness `continue` above the
   # grammar checks lets a damaged row that carries another identity be skipped instead of refused,
   # so a corrupt record renders a clean count — the `partial-validation` class exactly.
   check_mut rule-sweep-filters-before-validating \
-    '    [ "$kind" = rule ] || return 18' \
-    '    if [ "$run" != "$want_run" ] || [ "$tree" != "$want_tree" ]; then stale=$((stale + 1)); continue; fi
-    [ "$kind" = rule ] || return 18' \
+    '      if (NF != 6)          fail(18)' \
+    '      if ($2 != wr || $3 != wt) { stale++; next }; if (NF != 6) fail(18)' \
     '12 a malformed row is refused even when it belongs to ANOTHER run'
   # The DUPLICATE (class, site) refusal. Without a row here, reverting the reader to the collapse
   # that shipped in the first cut would be invisible to every assertion except by accident.
   check_mut rule-sweep-duplicate-collapsed \
-    "      *\$'\\n'\"\$class\"\$'\\t'\"\$site\"\$'\\n'*) return 18 ;;" \
-    "      *\$'\\n'\"\$class\"\$'\\t'\"\$site\"\$'\\n'*) continue ;;" \
+    '      if (k in seen) fail(18)' \
+    '      if (k in seen) next' \
     '12 a hand-edited duplicate (class, site) refuses the read whole'
   # The reader's site BYTE bound — the half that is not the printable-shape test.
   check_mut rule-sweep-reader-site-bound-dropped \
-    '        [ "$(printf '"'"'%s'"'"' "$site" | LC_ALL=C wc -c | tr -d '"'"' '"'"')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;' \
-    '        : ;;' \
+    '        if (site == "" || index(site, "`") || site ~ /[[:cntrl:]]/ || length(site) > 512) fail(19)' \
+    '        if (site == "" || index(site, "`") || site ~ /[[:cntrl:]]/) fail(19)' \
     '12 a hand-edited site over the writer'"'"'s byte bound is refused by the reader too'
   # The non-link guard on the zero-byte shortcut: `-f` follows a symlink, so without `! -L` a
   # record linked to an empty file was reported as "no rows".
@@ -643,8 +642,8 @@ if [ "$MODE" = mutation ]; then
 
   # The contradiction guard: a class recorded both clean and fired is a count nobody can reconcile.
   check_mut rule-sweep-contradiction-allowed \
-    '      case "$sited" in *$'"'"'\n'"'"'"$class"$'"'"'\n'"'"'*) return 18 ;; esac' \
-    '      :' \
+    '      if (result == "clean") { if (class in sited) fail(18); single[class] = 1 }' \
+    '      if (result == "clean") { single[class] = 1 }' \
     '12 a class recorded both clean and fired refuses the read whole'
   # The whole-file byte rules, reached through the shared primitive.
   check_mut rule-sweep-bytes-unchecked \

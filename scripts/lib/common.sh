@@ -6976,9 +6976,7 @@ adb_rule_sweep_row() {
 # Returns 0 · 18 (a byte rule, the grammar, or a contradiction) · 19 (a field this module will not
 # store) · 20 (not readable as a regular file).
 adb_rule_sweep_check() {
-  local f="${1:-}" want_run="${2:-}" want_tree="${3:-}" rc line
-  local kind run tree class site result
-  local emitted=0 stale=0 dup=0 out=""
+  local f="${1:-}" want_run="${2:-}" want_tree="${3:-}" rc
   adb_rule_sweep_ok_run  "$want_run"  || return 19
   adb_rule_sweep_ok_tree "$want_tree" || return 19
   # A ZERO-BYTE FILE IS NO ROWS, NOT DAMAGE. `adb_bytes_whole` refuses an empty file (18), which is
@@ -6996,60 +6994,58 @@ adb_rule_sweep_check() {
     printf '0\t0\t0\n'; return 0
   fi
   adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
-  # Newline-delimited sets, not associative arrays: this file stays parseable below the bash
-  # floor (D30/D35/D65). No member can hold a tab or a newline, so a quoted expansion in a
-  # pattern matches literally.
-  local singles=$'\n' sited=$'\n' rows=$'\n'
-  while IFS= read -r line || [ -n "$line" ]; do
-    adb_sweep_split "$line" 6 || return 18
-    kind="${ADB_SWEEP_F[0]}"; run="${ADB_SWEEP_F[1]}"; tree="${ADB_SWEEP_F[2]}"
-    class="${ADB_SWEEP_F[3]}"; site="${ADB_SWEEP_F[4]}"; result="${ADB_SWEEP_F[5]}"
-    [ "$kind" = rule ] || return 18
-    # NO WHOLE-RECORD BOUND HERE, deliberately. The writer bounds the assembled record before it
-    # appends, but on the read side that check cannot fire: kind, run, tree, class, site and
-    # result are each bounded below, and their sum with five tabs is nowhere near the record
-    # bound. The site bound further down is the one that does the work; an unreachable second
-    # check would report a safety it never performs, and no mutation witness could go red on it.
-    adb_rule_sweep_ok_run  "$run"  || return 19
-    adb_rule_sweep_ok_tree "$tree" || return 19
-    adb_ledger_ok_class    "$class" || return 19
-    case "$result" in
-      clean) [ "$site" = "-" ] || return 18 ;;
-      fired)
-        [ "$site" != "-" ] || return 18
-        adb_ledger_ok_span "$site" || return 19
-        # THE WRITER'S BYTE BOUND TOO. Validating only the printable shape let a hand-edited
-        # oversized site be credited as valid, which is the reader accepting a row the writer
-        # would have refused — the one thing "one grammar, two halves" must not allow.
-        [ "$(printf '%s' "$site" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
-      *)     return 18 ;;
-    esac
-    # EVERY row is held to the grammar above; only rows of THIS (run, tree) reach the discipline
-    # and the output. A row from another run or another tree is stale — counted so the report can
-    # say it ignored them, never silently dropped and never allowed to move a count.
-    if [ "$run" != "$want_run" ] || [ "$tree" != "$want_tree" ]; then
-      stale=$((stale + 1)); continue
-    fi
-    # A REPEATED (class, site) REFUSES THE READ, whole. The retry path lives in the WRITER, which
-    # is idempotent on an identical row (rc 10, `record`'s code and meaning) and never appends a
-    # second one — so a duplicate reaching this reader is a hand edit or a merge, and this module
-    # never reports a partial or doubled count. Collapsing it here instead was the first cut, and
-    # the independent reviewer was right that it contradicts the stated acceptance.
-    case "$rows" in
-      *$'\n'"$class"$'\t'"$site"$'\n'*) return 18 ;;
-    esac
-    if [ "$result" = clean ]; then
-      case "$sited" in *$'\n'"$class"$'\n'*) return 18 ;; esac
-      singles="${singles}${class}"$'\n'
-    else
-      case "$singles" in *$'\n'"$class"$'\n'*) return 18 ;; esac
-      sited="${sited}${class}"$'\n'
-    fi
-    rows="${rows}${class}"$'\t'"${site}"$'\n'
-    out="${out}${class}"$'\t'"${site}"$'\t'"${result}"$'\n'
-    emitted=$((emitted + 1))
-  done < "$f"
-  printf '%s\t%s\t%s\n' "$emitted" "$stale" "$dup"
-  [ -n "$out" ] && printf '%s' "$out"
+  # ONE awk PASS, LINEAR IN THE RECORD. The first cut validated each row in a shell loop through the
+  # writer's own predicates, and those fork: about four processes per row, plus a duplicate test
+  # that rescanned every earlier row. A record at its own 1 MiB bound took 72 seconds to read, and
+  # because the writer asks this reader about the copy it is about to publish, so did every write
+  # near the bound. awk is POSIX, parses below the bash floor, and needs no associative arrays in
+  # the shell (D30/D35/D65).
+  #
+  # THE GRAMMAR IS RESTATED HERE, rule for rule, from the writer's predicates (`adb_rule_sweep_row`,
+  # `adb_rule_sweep_ok_run`/`_tree`, `adb_ledger_ok_class`/`_span`) — the one place it has two homes,
+  # traded for a reader that is linear. Each rule has its own mutation witness, so a drift between
+  # the halves is caught rather than argued away. Under `LC_ALL=C`, `length` counts BYTES, which is
+  # what the bounds are. No regex interval (`{0,47}`): mawk and older BSD awk disagree about them,
+  # so every length is tested separately. awk's `exit` still runs END, hence the `bad` flag.
+  #
+  # Exit codes are the function's own: 18 a structural rule (arity, kind, the clean/fired site rule,
+  # a duplicate, a contradiction) · 19 a field this module would not have written.
+  local out
+  out="$(LC_ALL=C awk -F'\t' -v wr="$want_run" -v wt="$want_tree" '
+    function fail(code) { bad = code; exit }
+    {
+      if (NF != 6)          fail(18)
+      if ($1 != "rule")     fail(18)
+      run = $2; tree = $3; class = $4; site = $5; result = $6
+      if (length(run) < 1 || length(run) > 64 || run !~ /^[A-Za-z0-9:._-]+$/)  fail(19)
+      if (length(tree) != 64 || tree !~ /^[0-9a-f]+$/)                         fail(19)
+      if (length(class) > 48 || class !~ /^[a-z][a-z0-9-]*$/)                  fail(19)
+      if (result == "clean") {
+        if (site != "-") fail(18)
+      } else if (result == "fired") {
+        if (site == "-") fail(18)
+        # adb_ledger_ok_span: non-empty, no backtick, no control byte — and the writer'"'"'s byte bound.
+        if (site == "" || index(site, "`") || site ~ /[[:cntrl:]]/ || length(site) > 512) fail(19)
+      } else fail(18)
+      # EVERY row is held to the grammar above; only rows of THIS (run, tree) reach the discipline
+      # and the output. A stale row is counted so the report can say it ignored it.
+      if (run != wr || tree != wt) { stale++; next }
+      # A REPEATED (class, site) REFUSES THE READ, whole: the writer is idempotent on an identical
+      # row and never appends one twice, so a duplicate here is a hand edit or a merge.
+      k = class SUBSEP site
+      if (k in seen) fail(18)
+      seen[k] = 1
+      # A class is EITHER clean once OR fired at one or more sites, never both.
+      if (result == "clean") { if (class in sited) fail(18); single[class] = 1 }
+      else                   { if (class in single) fail(18); sited[class] = 1 }
+      rows[++n] = class "\t" site "\t" result
+    }
+    END {
+      if (bad) exit bad
+      printf "%d\t%d\t0\n", n, stale
+      for (i = 1; i <= n; i++) print rows[i]
+    }' "$f")"; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '%s\n' "$out"
   return 0
 }
