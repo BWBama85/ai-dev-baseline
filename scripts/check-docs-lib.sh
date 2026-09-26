@@ -243,9 +243,12 @@ if [ "$MODE" = mutation ]; then
   # THE MARKDOWN ESCAPING (PR #429).
   # SINGLE-LINE, for the reason the sibling suite records: a two-line literal matches nothing.
   # Turning the escaper into a pass-through is the whole defect in one line.
+  # RETARGETED when the report stopped inlining its own awk `md()` and began rendering through the
+  # shared `adb_md_escape` (#490): the delegation is this module's half of the escaping, so turning
+  # it into a pass-through is the same defect in one line.
   check_mut evidence-not-escaped \
-    '      function md(v) { gsub(/&/, "\\&amp;", v); gsub(/</, "\\&lt;", v); gsub(/>/, "\\&gt;", v); return v }' \
-    '      function md(v) { return v }' \
+    '_adb_dl_md() { adb_md_escape "$1"; }' \
+    '_adb_dl_md() { printf '"'"'%s'"'"' "$1"; }' \
     'the rendered report contains no raw HTML comment opener'
 
   # THE NUL SCAN (PR #429).
@@ -908,6 +911,15 @@ hasnt "$R28" '<!--'      "the rendered report contains no raw HTML comment opene
 hasnt "$R28" '<script>'  "…and no raw tag"
 has   "$R28" '&lt;!--'   "…the evidence is escaped rather than dropped, so it stays readable"
 has   "$R28" '&lt;script&gt;' "…including in the probe evidence"
+# …AND MARKDOWN LINK/IMAGE SYNTAX. The two awk renderers escaped HTML only, so a stored source of
+# `![x](https://host/p)` became an image in the pull-request body (#490, reported on PR #502).
+D28b="$work/d28b"; mkdir -p "$D28b/state"
+dl consulted --state "$D28b/state" --surface 'see [docs](https://example.invalid)' --rung 2 --source '![x](https://example.invalid/p)' >/dev/null 2>&1
+R28b="$(dl report --state "$D28b/state" 2>/dev/null)"
+has   "$R28b" '!\[x\](https://example.invalid/p)' "a source carrying image syntax is rendered as text"
+hasnt "$R28b" '![x](' "…and the live image syntax never reaches the report"
+has   "$R28b" 'see \[docs\](https://example.invalid)' "…nor does a surface's link syntax"
+
 
 # A KEY DECLARED TWICE IS INVALID TOML (PR #429). `adb_toml_get` stops at the first match, so the
 # first array was accepted and a probe for only those servers could earn a clean verdict on a file

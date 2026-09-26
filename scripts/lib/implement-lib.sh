@@ -172,6 +172,8 @@
 #   implement-lib.sh sweep-mark <sweep-file> --class C --site S --result fixed|deferred|declined …
 #                                           # move one found sibling out of `found` (#475)
 #   implement-lib.sh sweep-report <sweep-file>  # validate, then the round's sweep summary line
+#   implement-lib.sh sweep-identity <state-dir>  # <run>TAB<tree>: the run's startedAt and a digest of
+#                                                # the tree that ships, for pattern-ledger rule-sweep
 #   implement-lib.sh open-pr <state-dir> --title <t> --body-file <f> [--closes n,m]
 #                                           # step 10: push, create, PROVE closing links, guard, arm
 #   implement-lib.sh -h | --help
@@ -905,6 +907,7 @@ _il_clear() {   # <state-dir>
     "$dir/gap-prompt.txt"     "$dir/gaps.md"    "$dir/gaps.err"
     "$dir/review-prompt.txt"  "$dir/review.md"  "$dir/review.err"
     "$dir/docs-consulted.tsv"
+    "$dir/rule-sweep.tsv"
     "$dir/survey-prompt.txt"  "$dir/survey.md"  "$dir/survey.err"  "$dir/survey-trace.md"
   )
   # The family globs, expanded with `nullglob` so an unmatched pattern contributes NOTHING rather
@@ -945,6 +948,19 @@ _il_clear() {   # <state-dir>
   # run's marker then makes it read as THIS run's stated disposition, which is the one claim in
   # the report that nothing else can contradict.
   targets+=( "$dir"/docs-consulted-*.tsv )
+  # The LEARNED-CHECKLIST SWEEP family (#490). Same containment rule again: `state-scan`
+  # classifies `rule-sweep.tsv` and `rule-sweep-*.tsv` as `rules`, so a name /cleanup can sweep
+  # that this cannot clear would leave a previous run's sweep in place — and a fresh run's marker
+  # then makes it read as THIS run's coverage, which is the one claim in the close-out that
+  # nothing else can contradict.
+  targets+=( "$dir"/rule-sweep-*.tsv )
+  # ...AND ITS LOCK. A `rule-sweep` killed between creating `rule-sweep.tsv.lock` and writing its
+  # owner record leaves a lock the reclaimer can never prove dead — deliberately, since age is not
+  # death — and `state-scan` enumerates files, not directories, so /cleanup never sees it. Every
+  # later writer then waited out its bound and refused. Admission is the one point that has
+  # established the previous run is over, so the lock and any tombstones die here — the loop
+  # below already removes a directory, and verifies it is gone.
+  targets+=( "$dir/rule-sweep.tsv.lock" "$dir"/rule-sweep.tsv.lock.stale.* )
   local cand base num
   for cand in "$dir"/issue-*.json "$dir"/issue-*.assoc; do
     base="${cand##*/}"
@@ -2958,7 +2974,9 @@ cmd_dispatch_review() {
   local _dbefore _dafter
   _dbefore="$(_il_fd_size "$_rpfd")" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
-  git diff "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
+  # `--no-textconv --no-ext-diff --ignore-submodules=none`: a reviewer must see the committed bytes
+  # and every gitlink change, not what a project's diff driver or submodule setting renders.
+  git diff --no-textconv --no-ext-diff --ignore-submodules=none "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
   case "$?" in
     0|141) : ;;
     *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the %s/%s merge-base failed\n' "$db_remote" "$db" >&2; return 20 ;;
@@ -3504,7 +3522,7 @@ cmd_dispatch_sweep() {
     mb="$(git merge-base "$sw_remote/$base_ref" HEAD 2>/dev/null)" \
       || { _sweep_abort "git merge-base $sw_remote/$base_ref HEAD failed — fetch the base branch"; return 20; }
     dbefore="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
-    git diff "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
+    git diff --no-textconv --no-ext-diff --ignore-submodules=none "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
     case "$?" in 0|141) : ;; *) _sweep_abort "git diff against the merge-base failed"; return 20 ;; esac
     dafter="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
     [ $((dafter - dbefore)) -lt 8388609 ] \
@@ -4033,6 +4051,151 @@ cmd_open_pr() {
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 SUB="$1"; shift
+# _il_nul_sort — order a NUL-delimited stream in byte order, or pass it through unchanged.
+#
+# `sort -z` IS NOT POSIX, so it is PROBED — on its OUTPUT, not its exit status, because an
+# implementation that accepted `-z` and did something else would pass a status check. Without it
+# the stream keeps `git ls-files`' own order, which is stable run to run on one host: the digest
+# only has to agree between the recorder and the reporter of ONE run, never across machines.
+# `check-tmp-paths.sh`'s `_tmp_nul_sort` is the same probe.
+_il_nul_sort() {
+  if [ -z "${_IL_SORT_Z:-}" ]; then
+    if [ "$(printf 'b\0a\0' | LC_ALL=C sort -z 2>/dev/null | tr '\0' ',')" = "a,b," ]
+    then _IL_SORT_Z=1; else _IL_SORT_Z=0; fi
+  fi
+  if [ "$_IL_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
+}
+
+# cmd_sweep_identity <state-dir> — the run identity and reviewed-tree digest, as <run>TAB<tree>.
+#
+# ONE CALL, BOTH VALUES, so the step that RECORDS a checklist sweep and the step that REPORTS it
+# cannot disagree about which run or which tree they mean. Two separate derivations is exactly how
+# a report ends up attesting to a tree nobody swept.
+#
+# `run` is the marker's `startedAt`. Deliberately NOT `owner`: that field is re-stamped when a
+# session picks a run up, so a transferable value cannot tell two runs apart.
+#
+# `tree` is a SHA-256 over the reviewed material, and it is built to be deterministic across two
+# runs over an unchanged tree:
+#   * the whole branch diff against the merge-base with the remote default branch — one command,
+#     so staged, unstaged and already-committed changes are all in it;
+#   * every untracked, non-ignored path, with its SIZE and its own content digest.
+# PATHS AND SIZES, not contents alone: two untracked trees holding the same bytes at different
+# names are different trees, and an empty file is a real addition that contributes no content at
+# all. Enumerated with `git ls-files --others --exclude-standard -z` — `--exclude-standard`
+# applies the same exclude rules Porcelain does, and `-z` emits byte-safe pathnames with no
+# quoting or backslash-escaping (git docs, via context7, this run), so a newline in a filename
+# cannot forge an entry.
+#
+# 0 · 20 (no marker, no `startedAt`, or a git read failed).
+cmd_sweep_identity() {
+  local dir="${1:-}" marker run mb base root material sum rc
+  [ -n "$dir" ] || { echo "implement-lib: sweep-identity needs <state-dir>" >&2; exit 2; }
+  marker="$dir/$_IL_MARKER"
+  [ -f "$marker" ] || { printf 'implement-lib: sweep-identity: no run marker at %s\n' "$marker" >&2; return 20; }
+  run="$(jq -r '.startedAt // ""' "$marker" 2>/dev/null)" \
+    || { printf 'implement-lib: sweep-identity: could not read %s\n' "$marker" >&2; return 20; }
+  adb_rule_sweep_ok_run "$run" \
+    || { printf 'implement-lib: sweep-identity: the marker carries no usable startedAt\n' >&2; return 20; }
+  # SENTINEL CAPTURE, as `adb_repo_shape` does: `$(…)` strips trailing newlines, so a checkout whose
+  # directory name ends in one resolved to a SHORTER path — and if that sibling is itself a
+  # repository, every `git -C "$root"` below hashed the wrong tree. `git` terminates the path with
+  # exactly one newline; strip that one and nothing else.
+  root="$(git rev-parse --show-toplevel 2>/dev/null && printf X)" \
+    || { echo "implement-lib: sweep-identity: not inside a git repository" >&2; return 20; }
+  root="${root%X}"; root="${root%$'\n'}"
+  [ -n "$root" ] || { echo "implement-lib: sweep-identity: not inside a git repository" >&2; return 20; }
+  base="$(adb_default_branch "$root")"
+  # THE REMOTE-TRACKING BASE, AND NO FALLBACK. The diff this run attests to must be the one the
+  # pull request shows, and a local branch can hold unpushed or divergent commits that narrow it —
+  # so a missing or unusable `origin/<default>` is a refusal naming the repair, never a quiet switch
+  # to the local branch. (`adb_default_branch` may itself fall back to a local NAME; that is only a
+  # name, and requiring `origin/<name>` here is what keeps it from becoming a local BASE.)
+  git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$base^{commit}" >/dev/null \
+    || { printf 'implement-lib: sweep-identity: origin/%s is not available — fetch it (git fetch origin %s) and retry\n' "$base" "$base" >&2; return 20; }
+  mb="$(git -C "$root" merge-base "origin/$base" HEAD 2>/dev/null)" \
+    || { printf 'implement-lib: sweep-identity: no merge-base with origin/%s (shallow clone?)\n' "$base" >&2; return 20; }
+  [ -n "$mb" ] || { printf 'implement-lib: sweep-identity: no merge-base with origin/%s\n' "$base" >&2; return 20; }
+  # A private staging file for the digest material, under TMPDIR and NOT under the state
+  # directory: nothing else reads it, it must not join a swept family, and it is removed on every
+  # path below. THE RESULT IS CHECKED — an unchecked `mktemp` leaves an empty name, and the
+  # redirection below would then write to the current directory (this is #497's shape, observed
+  # live in this repo while implementing this issue).
+  material="$(mktemp "${TMPDIR:-/tmp}/adb-sweepid.XXXXXX" 2>/dev/null)" \
+    || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
+  [ -n "$material" ] && [ -f "$material" ] \
+    || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
+  # A SUBSHELL, NOT A BRACE GROUP. `exit 1` inside `{ … }` exits the SHELL, so a failed `git diff`
+  # here would terminate implement-lib.sh with status 1 instead of returning the 20 this function
+  # documents — and every caller branching on 20 would never see it. In `( … )` the exit belongs to
+  # the subshell and arrives as its status. Observed: a brace group ended the whole script.
+  (
+    # PIPEFAIL, so a failed `git ls-files` or `sort` below fails the subshell instead of being
+    # hidden behind the `while` that ends the pipeline — an enumeration that failed would
+    # otherwise contribute NO untracked entries and hash to a confident, wrong identity.
+    set -o pipefail
+    printf 'adb-rule-sweep-identity v1\n'
+    printf 'merge-base %s\n' "$mb"
+    printf 'diff\n'
+    # `--full-index --binary`, NOT a bare `git diff`. The default abbreviates blob names to the
+    # first handful of characters and omits binary content entirely, so two different binary blobs
+    # sharing a short prefix produce byte-identical patches — and therefore the same sweep
+    # identity. `--full-index` prints the whole pre- and post-image names and `--binary` adds the
+    # binary patch (and implies `--full-index`); both are named explicitly rather than relying on
+    # that implication. (git-diff-index OPTIONS, via context7, this run.)
+    # `--no-textconv --no-ext-diff` TOO: porcelain `git diff` applies a `.gitattributes` textconv
+    # filter by default, so a tracked byte change the converter normalizes produced an unchanged
+    # patch — and the digest attested to a tree that had moved. The identity is of the BYTES.
+    # `--ignore-submodules=none`: `diff.ignoreSubmodules=all` in a repository's config hides a
+    # gitlink update entirely, and the digest then stays put while the tree that ships has moved.
+    git -C "$root" diff --no-textconv --no-ext-diff --ignore-submodules=none --full-index --binary "$mb" || exit 1
+    printf 'untracked\n'
+    # NUL-DELIMITED THROUGHOUT, never tab-and-newline. A filename may legally contain both, so
+    # printing `name<TAB>size<TAB>digest<NL>` lets a crafted name forge a whole record and two
+    # different untracked trees collide on one digest — reproduced by the independent reviewer.
+    # NUL is the one byte a pathname cannot hold, so it is the only safe delimiter here; the
+    # material is hashed, never read, so legibility costs nothing.
+    # LC_ALL=C sort -z gives byte order on every platform rather than the locale's.
+    git -C "$root" ls-files --others --exclude-standard -z \
+      | _il_nul_sort \
+      | while IFS= read -r -d '' u; do
+          # THE PATH, THE TYPE AND THE SIZE, not only a content digest: two untracked trees holding
+          # the same bytes under different names are different trees, an empty file is a real
+          # addition that contributes no content, and a SYMLINK's identity is its target — hashing
+          # what it dereferences to would leave a relinked pointer invisible.
+          if [ -L "$root/$u" ]; then
+            # STREAMED, never captured: `$(…)` strips a trailing newline, so targets `t` and
+            # `t<NL>` would hash identically. The bytes go straight into the material.
+            printf '%s\0l\0' "$u"
+            readlink -n "$root/$u" 2>/dev/null || exit 1
+            printf '\0'
+          elif [ -d "$root/$u" ]; then
+            printf '%s\0d\0\0' "$u"
+          elif [ -f "$root/$u" ]; then
+            # FAIL CLOSED on a regular file we cannot measure or hash. Substituting a literal and
+            # carrying on returned a confident identity for a tree this command could not actually
+            # read — and an identity nobody can reproduce is worse than no identity.
+            _usz="$(LC_ALL=C wc -c < "$root/$u" 2>/dev/null | tr -d ' ')" || exit 1
+            case "$_usz" in ''|*[!0-9]*) exit 1 ;; esac
+            _udg="$(adb_sha256 "$root/$u")" || exit 1
+            printf '%s\0f\0%s\0%s\0' "$u" "$_usz" "$_udg"
+          else
+            # A socket, fifo or device that `ls-files` reported: named, typed, not hashed.
+            printf '%s\0o\0\0' "$u"
+          fi
+        done || exit 1
+  ) > "$material" 2>/dev/null
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$material"
+    echo "implement-lib: sweep-identity: could not assemble the reviewed-tree material" >&2
+    return 20
+  fi
+  sum="$(adb_sha256 "$material")" || { rm -f "$material"; echo "implement-lib: sweep-identity: could not digest the reviewed tree" >&2; return 20; }
+  rm -f "$material"
+  printf '%s\t%s\n' "$run" "$sum"
+}
+
 case "$SUB" in
   admit)            cmd_admit "$@" ;;
   sync-default)     cmd_sync_default "$@" ;;
@@ -4049,6 +4212,7 @@ case "$SUB" in
   dispatch-sweep)   cmd_dispatch_sweep "$@" ;;
   sweep-mark)       cmd_sweep_mark "$@" ;;
   sweep-report)     cmd_sweep_report "$@" ;;
+  sweep-identity)   cmd_sweep_identity "$@" ;;
   open-pr)          cmd_open_pr "$@" ;;
   -h|--help) usage; exit 0 ;;
   *) echo "implement-lib: unknown subcommand '$SUB' (see --help)" >&2; usage >&2; exit 2 ;;

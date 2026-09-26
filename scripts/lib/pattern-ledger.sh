@@ -22,6 +22,10 @@
 #   pattern-ledger.sh verify    [--ledger <file>]
 #   pattern-ledger.sh threshold [--ledger <file>]           # the effective threshold + its source
 #   pattern-ledger.sh reclaim   [--ledger <file>]           # remove an abandoned write lock (22 = held)
+#   pattern-ledger.sh rule-sweep --state <dir> --run <id> --tree <digest> \
+#                                --rule <class> [--site <path|->] --result <fired|clean>
+#                                # --site defaults to `-`, which is only valid with --result clean
+#   pattern-ledger.sh rule-sweep-report --state <dir> --run <id> --tree <digest>
 #   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
 #    the lock; nothing is reported as recorded that the ledger does not hold)
 #   pattern-ledger.sh -h | --help
@@ -51,6 +55,16 @@
 #   24 open       — `record --sweep`: a sibling of this class is still `found` — unfixed and
 #                   undispositioned. Nothing was recorded.
 #   (record --sweep: 18 the sweep file does not parse · 19 it names another PR · 20 unreadable)
+#   (rule-sweep: 10 this exact row is already recorded — a NO-OP, not a failure, so an interrupted
+#    recording can be retried · 18 the existing record is damaged, or this row contradicts one already
+#    recorded for the run (a class both clean and fired) · 19 a field that will not be stored, a record over the append bound,
+#    or an append that would take the file past the bound its reader enforces · 20 the record could
+#    not be written)
+#   (rule-sweep-report: 11 NOTHING was recorded while promoted rules exist — the unstated
+#    disposition, docs-lib.sh's rc 11 and its reasoning · 18 the rows do not parse, or a class is
+#    recorded both clean and fired · 20 the record could not be read · 21 the promoted checklist is
+#    over the prompt budget, so `checklist` emitted NOTHING and no agent was ever given the rules
+#    this report would otherwise claim coverage against)
 #   2  usage      — bad or missing arguments.
 #
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is reporting a class as *rarer than it is*. A count
@@ -1353,9 +1367,348 @@ cmd_threshold() {
   printf '%s %s\n' "$t" "$src"
 }
 
+# --- the learned-checklist rule sweep (#490) -----------------------------------------------------
+# `self-review.md` requires a run to sweep the promoted checklist and NAME what it swept, "nothing"
+# included. Until now that was a sentence an agent typed into a pull-request body, with no file
+# behind it: nothing distinguished a real sweep from a plausible sentence. These two subcommands
+# are the record and its report, on the shape `docs-lib.sh` already established for the
+# vendor-documentation duty — including its rc 11, because an unstated disposition is
+# indistinguishable from an agent that never considered the question.
+#
+# THE ROWS ARE RUN EVIDENCE AND LIVE IN THE STATE DIRECTORY, not in the ledger. The ledger under
+# .ai-dev-baseline/ is durable project history that /cleanup deliberately never sweeps; a per-run
+# sweep record is exactly the debris that directory exists to hold, and the issue's own acceptance
+# requires this family to be swept by `state-scan`, cleared by `_il_clear` and counted by
+# `run-state.sh` — all of which are the state directory. (Owner decision on #490, 2026-09-23,
+# which withdrew the "write through _adb_pl_insert" line from that issue's Scope for this reason.)
+_ADB_PL_RS_FILE="rule-sweep.tsv"
+
+_adb_pl_rs_dir() {
+  if [ -n "${OPT_STATE:-}" ]; then printf '%s\n' "$OPT_STATE"; return 0; fi
+  if [ -n "${ADB_PATTERN_SWEEP_STATE:-}" ]; then printf '%s\n' "$ADB_PATTERN_SWEEP_STATE"; return 0; fi
+  local root; root="$(adb_repo_root 2>/dev/null)" || root=""
+  [ -n "$root" ] || { printf 'pattern-ledger: not inside a git repository and no --state given\n' >&2; return 1; }
+  printf '%s/.%s/state\n' "$root" "${ADB_AGENT:-claude}"
+}
+
+_adb_pl_rs_file() {
+  local d; d="$(_adb_pl_rs_dir)" || return 1
+  printf '%s/%s\n' "$d" "$_ADB_PL_RS_FILE"
+}
+
+# Render a stored field into Markdown. The rule and its reasoning live in `adb_md_escape`.
+_adb_pl_rs_md() { adb_md_escape "$1"; }
+
+# `rule-sweep` — record ONE rule's disposition against the diff this run is about to ship.
+#
+# `--rule` names a CLASS here, not a rule's text. That overloads `promote`'s `--rule`, and it is
+# the spelling #490 specifies; the value is validated with the class predicate, so a text rule
+# passed here is refused rather than silently stored.
+cmd_rule_sweep() {
+  local f d row _grc
+  [ -n "$OPT_RUN" ]    || die "rule-sweep: --run is required (the run identity; see implement-lib.sh sweep-identity)"
+  [ -n "$OPT_TREE" ]   || die "rule-sweep: --tree is required (the reviewed-tree digest; see implement-lib.sh sweep-identity)"
+  [ -n "$OPT_RULE" ]   || die "rule-sweep: --rule is required (the promoted class this row is about)"
+  [ -n "$OPT_RESULT" ] || die "rule-sweep: --result is required (fired|clean)"
+  # `--site` defaults to `-`, the representable "swept, nothing matched" that #490 asks for. It is
+  # distinct from "not swept", which is the ABSENCE of a row and is what the report's coverage
+  # line reports.
+  [ -n "$OPT_SITE" ] || OPT_SITE="-"
+  row="$(adb_rule_sweep_row "$OPT_RUN" "$OPT_TREE" "$OPT_RULE" "$OPT_SITE" "$OPT_RESULT")" || {
+    printf 'pattern-ledger: rule-sweep: refusing this row — check --run (%s), --tree (64 hex), --rule (a class slug), --site (a path, or - only with --result clean) and --result (fired|clean).\n' \
+      '[A-Za-z0-9:._-]{1,64}' >&2
+    exit 19
+  }
+  f="$(_adb_pl_rs_file)" || exit 20
+  d="$(dirname "$f")"
+  [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'pattern-ledger: cannot create %s\n' "$d" >&2; exit 20; }
+  # THE CHECK, THE SIZE AND THE APPEND ARE ONE OPERATION, under the ledger's own lock primitive
+  # (`<record>.lock` beside the record). Without it two concurrent retries of one row both passed the
+  # duplicate test before either appended, and the reader then refused the doubled row whole — and
+  # two appends could each pass the size test and together exceed the bound. The primitive's
+  # owner-proven reclaim is what keeps a killed writer from wedging the record.
+  _adb_pl_lock "$f" || { printf 'pattern-ledger: rule-sweep: could not take the lock on %s — nothing was written\n' "$f" >&2; exit 20; }
+  _ADB_PL_LOCKED_FILE="$f"
+  trap '_adb_pl_unlock "$_ADB_PL_LOCKED_FILE"' EXIT
+  # A LINK OR A NON-FILE IS NEVER THIS MODULE'S RECORD — refused before anything is read.
+  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+    printf 'pattern-ledger: rule-sweep: %s is not a regular file (a symlink or another type) — refusing to read or write it\n' "$f" >&2
+    exit 20
+  fi
+  if [ -e "$f" ] && [ ! -r "$f" ]; then
+    printf 'pattern-ledger: rule-sweep: %s exists but cannot be read — refusing to append blind\n' "$f" >&2
+    exit 20
+  fi
+  # NO WRITE EVER GOES THROUGH A PATH THIS WRITER DID NOT CREATE EXCLUSIVELY — the ledger's own rule
+  # (`_adb_pl_insert`), applied here. The lock excludes cooperating writers only; a process that
+  # swaps the record for a symlink after the test above (a surviving dispatched agent runs as this
+  # same user) made an append by pathname write into whatever the link named. So the new record is
+  # assembled in a file created O_EXCL with its descriptor held, written only through that
+  # descriptor, and published by rename — which replaces whatever sits at the path and never
+  # follows it.
+  #
+  # THE LIMIT, STATED: a process that swaps the record between the type test and the copy below
+  # makes the copy read whatever the path then names. What gets published is those bytes plus this
+  # row, validated whole on the stage first — so never a write outside the record, and never a
+  # record the reader refuses. It can be a record with different rows; a process with that access
+  # could equally write rows into the record itself, so no boundary is crossed that binding an inode
+  # here would restore.
+  #
+  # THE STAGE IS A MEMBER OF THE FAMILY (`rule-sweep-<n>.tsv`), so one orphaned by a kill is swept by
+  # /cleanup and cleared by admission rather than left as debris nothing owns.
+  local stage wfd="" _had_c=0
+  stage="$(dirname "$f")/rule-sweep-$$${RANDOM}.tsv"
+  case "$-" in *C*) _had_c=1 ;; esac
+  set -C
+  if ! { exec {wfd}>"$stage"; } 2>/dev/null; then
+    [ "$_had_c" -eq 1 ] || set +C
+    printf 'pattern-ledger: rule-sweep: could not create a private stage beside %s — nothing was written\n' "$f" >&2
+    exit 20
+  fi
+  [ "$_had_c" -eq 1 ] || set +C
+  # ONE READ OF THE RECORD, AND EVERY DECISION MADE ON THE COPY. The record is copied byte-exact
+  # (`cat`, never re-emitted line by line, which would add a final newline or drop a NUL and could
+  # REPAIR a damaged record into one the reader accepts) into the stage this writer created, and
+  # then the stage — not the record's pathname — is what the duplicate test, the contradiction
+  # test and the size are asked of, through the READER's own validator. So the checks describe
+  # exactly the bytes about to be published, and the writer refuses exactly what the reader
+  # refuses: it can never report a successful write, or an idempotent 10, over a record whose
+  # report would then fail.
+  if [ -f "$f" ]; then
+    cat -- "$f" >&"$wfd" \
+      || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not read %s — nothing was written\n' "$f" >&2; exit 20; }
+  fi
+  local cur crc cursz rowsz
+  if [ -s "$stage" ]; then
+    cur="$(adb_rule_sweep_check "$stage" "$OPT_RUN" "$OPT_TREE")"; crc=$?
+    case "$crc" in
+      0)  : ;;
+      20) exec {wfd}>&-; rm -f "$stage"
+          printf 'pattern-ledger: rule-sweep: could not read back the copy of %s — nothing was written\n' "$f" >&2; exit 20 ;;
+      *)  exec {wfd}>&-; rm -f "$stage"
+          printf 'pattern-ledger: rule-sweep: %s is damaged (it does not parse, or is past its bound) — refusing to add to a record the report would refuse whole\n' "$f" >&2
+          exit 18 ;;
+    esac
+    cur="$(printf '%s\n' "$cur" | tail -n +2)"
+    # IDEMPOTENT ON AN IDENTICAL ROW — 10, `record`'s code and its meaning. Nothing is published.
+    if printf '%s\n' "$cur" | LC_ALL=C grep -qxF -- "${OPT_RULE}${TAB}${OPT_SITE}${TAB}${OPT_RESULT}"; then
+      exec {wfd}>&-; rm -f "$stage"
+      printf 'rule-sweep %s %s (already recorded)\n' "$OPT_RULE" "$OPT_RESULT"
+      exit 10
+    fi
+    # A CONTRADICTION IS REFUSED BEFORE IT IS PUBLISHED. A class this run recorded `clean` cannot also
+    # have fired, and the reverse; the reader refuses such a record whole, and this CLI has no
+    # correction operation — so publishing it would strand the close-out on an ordinary slip.
+    if printf '%s\n' "$cur" | awk -F'\t' -v c="$OPT_RULE" -v r="$OPT_RESULT" '$1 == c && $3 != r { f = 1 } END { exit !f }'; then
+      exec {wfd}>&-; rm -f "$stage"
+      printf 'pattern-ledger: rule-sweep: %s is already recorded as %s for this run and tree — a class is either clean or fired, never both. Nothing was written.\n' \
+        "$OPT_RULE" "$( [ "$OPT_RESULT" = clean ] && echo fired || echo clean )" >&2
+      exit 18
+    fi
+  fi
+  # THE FILE BOUND, IN BYTES ON BOTH SIDES, measured on the stage.
+  cursz="$(LC_ALL=C wc -c < "$stage" | tr -d ' ')"
+  rowsz="$(printf '%s\n' "$row" | LC_ALL=C wc -c | tr -d ' ')"
+  case "$cursz$rowsz" in ''|*[!0-9]*) exec {wfd}>&-; rm -f "$stage"
+    printf 'pattern-ledger: rule-sweep: could not measure the record or the row — nothing was written\n' >&2; exit 20 ;; esac
+  if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
+    exec {wfd}>&-; rm -f "$stage"
+    printf 'pattern-ledger: rule-sweep: %s would exceed the %s-byte record bound its reader enforces. Nothing was written; the existing record is still readable.\n' \
+      "$f" "$ADB_RULE_SWEEP_FILE_MAX" >&2
+    exit 19
+  fi
+  printf '%s\n' "$row" >&"$wfd" || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: cannot write %s\n' "$stage" >&2; exit 20; }
+  exec {wfd}>&-
+  mv -f -- "$stage" "$f" || { rm -f "$stage"; printf 'pattern-ledger: cannot publish %s\n' "$f" >&2; exit 20; }
+  printf 'rule-sweep %s %s\n' "$OPT_RULE" "$OPT_RESULT"
+}
+
+# `rule-sweep-report` — the close-out line: which promoted rules this run swept, out of how many.
+#
+# COVERAGE IS DERIVED FROM THE AUTHORITY, NEVER FROM THE ROWS. #465's BLOCKING #4 is that
+# `--rule --site --result` alone cannot establish coverage: one recorded rule renders a clean
+# report while the other twenty were never checked — the `partial-validation` class from this
+# project's own ledger. So M is the LIVE promoted set and the unswept rules are named.
+cmd_rule_sweep_report() {
+  local ledger lst region emitted_sz f out rc
+  local promoted="" m=0 n=0 swept=$'\n' fired="" unswept="" counts stale _mc _ms
+
+  [ -n "$OPT_RUN" ]  || die "rule-sweep-report: --run is required"
+  [ -n "$OPT_TREE" ] || die "rule-sweep-report: --tree is required"
+  # VALIDATED HERE, AS USAGE. The reader refuses these two with 19 exactly as it refuses a stored
+  # field, and mapping that to "the file holds a field this module would not have written" sends
+  # the operator to inspect a record that is perfectly fine. A bad argument is the caller's, not
+  # the file's.
+  adb_rule_sweep_ok_run "$OPT_RUN" \
+    || die "rule-sweep-report: --run must be 1-64 chars of [A-Za-z0-9:._-], got $(adb_display_value "$OPT_RUN")"
+  adb_rule_sweep_ok_tree "$OPT_TREE" \
+    || die "rule-sweep-report: --tree must be 64 lowercase hex, got $(adb_display_value "$OPT_TREE")"
+
+  # --- M, from the live checklist -----------------------------------------------------------
+  ledger="$(_adb_pl_resolve_ledger)" || exit 20
+  _adb_pl_ledger_state "$ledger"; lst=$?
+  case "$lst" in
+    2) _adb_pl_inaccessible "$ledger"; exit 20 ;;
+    1) promoted=""; m=0 ;;
+    *)
+      # BOTH REGIONS, exactly as `checklist` does: this module refuses a ledger it cannot parse
+      # WHOLE rather than reading it in part, and the denominator below comes from that file.
+      _adb_pl_hits "$ledger" >/dev/null \
+        || { printf 'pattern-ledger: %s does not parse (the hits region) — refusing to report coverage against a half-readable ledger\n' "$ledger" >&2; exit 18; }
+      region="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" \
+        || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
+      # THE PROMPT BUDGET, AND WHY IT IS AN ERROR HERE TOO. Over the bound, `checklist` emits
+      # NOTHING (21) — so no agent was ever handed these rules, and "N of M" would be a claim
+      # about a sweep nobody could have performed. Refuse rather than report coverage against a
+      # checklist the consumer never received.
+      emitted_sz="$(printf '%s\n' "$region" | awk 'NF { print }' | LC_ALL=C wc -c | tr -d ' ')"
+      if [ "$emitted_sz" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
+        printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — `checklist` emits nothing, so no run was given these rules and coverage cannot be reported. Retire or tighten rules in %s.\n' \
+          "$emitted_sz" "$_ADB_PL_CHECKLIST_MAX_BYTES" "$ledger" >&2
+        exit 21
+      fi
+      promoted="$(_adb_pl_promoted "$ledger")" \
+        || { printf 'pattern-ledger: %s does not parse (a checklist rule is not in the grammar)\n' "$ledger" >&2; exit 18; }
+      m="$(printf '%s' "$promoted" | awk 'NF { n++ } END { print n + 0 }')" ;;
+  esac
+
+  # --- N, from the rows ----------------------------------------------------------------------
+  f="$(_adb_pl_rs_file)" || exit 20
+  # A LINK IS REFUSED BEFORE THE ABSENCE TEST. `-e` follows a symlink, so a DANGLING one read as
+  # "no record" — and then as "nothing recorded" (11) or a clean zero-rule sweep.
+  if [ -L "$f" ]; then
+    printf 'pattern-ledger: %s is a symlink — this module reads only its own regular record\n' "$f" >&2
+    exit 20
+  fi
+  if [ ! -e "$f" ]; then
+    # ABSENT IS NOT UNREADABLE. `-f` is false for a file inside a directory this process cannot
+    # search, and a state directory we cannot enter must not read as "nothing recorded" — that is
+    # the direction that renders a clean report over a sweep nobody can see. docs-lib.sh's rule.
+    d="$(dirname "$f")"
+    if [ -d "$d" ] && [ ! -x "$d" ]; then
+      printf 'pattern-ledger: %s could not be read (its directory is not searchable) — refusing to report as if nothing were recorded\n' "$f" >&2
+      exit 20
+    fi
+    stale=0; out=""
+  else
+    # A PRIVATE SNAPSHOT, validated and parsed as ONE observation. The reader checks the file's
+    # bytes and then re-opens it to parse the rows, and this command checked the pathname before
+    # that — three opens of a path a same-user process can swap between them, so the rows parsed
+    # need not be the bytes validated. Copied once, byte-exact, into a file created O_EXCL under
+    # TMPDIR (never the state directory, where it would join a swept family), then validated and
+    # parsed there. `read-artifact`'s private copy is the same answer to the same question.
+    local snap sfd="" _had_c=0
+    snap="${TMPDIR:-/tmp}/adb-rule-sweep-snap.$$.$RANDOM"
+    case "$-" in *C*) _had_c=1 ;; esac
+    set -C
+    if ! { exec {sfd}>"$snap"; } 2>/dev/null; then
+      [ "$_had_c" -eq 1 ] || set +C
+      printf 'pattern-ledger: could not create a private snapshot of %s\n' "$f" >&2; exit 20
+    fi
+    [ "$_had_c" -eq 1 ] || set +C
+    _ADB_PL_SNAP="$snap"
+    trap 'rm -f "$_ADB_PL_SNAP"' EXIT
+    cat -- "$f" >&"$sfd" || { exec {sfd}>&-; printf 'pattern-ledger: %s could not be read\n' "$f" >&2; exit 20; }
+    exec {sfd}>&-
+    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?
+    case "$rc" in
+      0) ;;
+      20) printf 'pattern-ledger: %s exists but could not be read — refusing to report as if nothing were recorded\n' "$f" >&2; exit 20 ;;
+      19) printf 'pattern-ledger: %s holds a field this module would not have written — refusing to report from it\n' "$f" >&2; exit 18 ;;
+      *)  printf 'pattern-ledger: %s does not parse, or records a class both clean and fired — refusing a partial count\n' "$f" >&2; exit 18 ;;
+    esac
+    counts="$(printf '%s\n' "$out" | sed -n '1p')"
+    stale="$(printf '%s' "$counts" | cut -f2)"
+    out="$(printf '%s\n' "$out" | tail -n +2)"
+  fi
+
+  # COVERAGE IS MEMBERSHIP IN THE LIVE SET, not a count of what happens to be recorded. Counting
+  # every recorded class let a row for a class that is not a promoted rule — a retired rule, a
+  # typo, a row from a ledger since edited — render "swept 1 of 21" while naming all 21 as
+  # unswept. A recorded class outside the set is REPORTED, never credited.
+  # NEWLINE-WRAPPED ONCE. `$(…)` strips the trailing newline off `_adb_pl_promoted`'s output, so a
+  # membership test written against the raw value matched no class at all and every recorded rule
+  # read as off-set — a report that credited nothing and returned 11 on a correct sweep.
+  local pset=$'\n'"$promoted"$'\n'
+  # `off_set` IS SEEDED WITH ITS DELIMITER, like `swept`: the membership test below needs a newline
+  # on both sides, so an empty seed never matched its first entry and a class with two off-set rows
+  # was listed twice.
+  local class site result off_set=$'\n'
+  while IFS="$TAB" read -r class site result; do
+    [ -n "$class" ] || continue
+    case "$pset" in
+      *$'\n'"$class"$'\n'*)
+        case "$swept" in *$'\n'"$class"$'\n'*) ;; *) swept="${swept}${class}"$'\n'; n=$((n + 1)) ;; esac
+        [ "$result" = fired ] && fired="${fired}${class}"$'\t'"${site}"$'\n' ;;
+      *)
+        case "$off_set" in *$'\n'"$class"$'\n'*) ;; *) off_set="${off_set}${class}"$'\n' ;; esac ;;
+    esac
+  done <<ROWS
+$out
+ROWS
+
+  # NOTHING RECORDED WHILE RULES EXIST IS 11 — the unstated disposition, and the whole mechanism.
+  # Zero promoted rules is a DIFFERENT fact and a valid sweep: there was nothing to sweep, the run
+  # said so by there being nothing to say, and reporting that as a defect would make every
+  # ledger-less project fail its own close-out.
+  if [ "$n" -eq 0 ] && [ "$m" -gt 0 ]; then
+    printf 'pattern-ledger: nothing recorded — this run has stated NO checklist-sweep disposition.\n' >&2
+    printf 'pattern-ledger: sweep the %s promoted rule(s) against the diff and record each with\n' "$m" >&2
+    printf 'pattern-ledger: `rule-sweep --rule <class> --site <path|-> --result <fired|clean>`.\n' >&2
+    exit 11
+  fi
+
+  printf '**Learned-checklist sweep**\n\n'
+  if [ "$m" -eq 0 ]; then
+    printf -- '- no promoted rules in this project'"'"'s ledger — a valid zero-rule sweep.\n'
+  else
+    printf -- '- swept %s of %s promoted rule(s).\n' "$n" "$m"
+    if [ -n "$fired" ]; then
+      printf -- '- fired:\n'
+      printf '%s' "$fired" | LC_ALL=C sort | while IFS="$TAB" read -r class site; do
+        [ -n "$class" ] || continue
+        # CAPTURED, THEN PRINTED: an escaper that failed inside `printf`'s arguments printed an
+        # empty field and the report still returned 0. A failure here is a report that cannot be
+        # rendered, and it says so.
+        _mc="$(_adb_pl_rs_md "$class")" && _ms="$(_adb_pl_rs_md "$site")" || exit 20
+        printf -- '  - `%s` — %s\n' "$_mc" "$_ms"
+      done || { printf 'pattern-ledger: could not render the fired rows\n' >&2; exit 20; }
+    else
+      printf -- '- fired: none — every swept rule came back clean.\n'
+    fi
+    # NAMED, NOT COUNTED. "19 of 21" with the two unnamed is the report a reader cannot act on,
+    # and the coverage gap is the entire reason this command exists rather than a sentence.
+    unswept="$(printf '%s' "$promoted" | awk 'NF { print }' | while IFS= read -r class; do
+        case "$swept" in *$'\n'"$class"$'\n'*) ;; *) printf '%s\n' "$class" ;; esac
+      done | LC_ALL=C sort)"
+    if [ -n "$unswept" ]; then
+      printf -- '- NOT swept:\n'
+      printf '%s\n' "$unswept" | while IFS= read -r class; do
+        [ -n "$class" ] || continue
+        _mc="$(_adb_pl_rs_md "$class")" || exit 20
+        printf -- '  - `%s`\n' "$_mc"
+      done || { printf 'pattern-ledger: could not render the unswept rules\n' >&2; exit 20; }
+    fi
+  fi
+  # THE EVIDENCE LIMIT, STATED. These rows record which RULES were swept and what each one found;
+  # they do not enumerate the files scanned, and a reader must not infer that they do.
+  printf -- '- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\n'
+  if [ -n "${off_set//$'\n'/}" ]; then
+    printf -- '- recorded but NOT a promoted rule (not counted as coverage):\n'
+    printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | while IFS= read -r class; do
+      [ -n "$class" ] || continue
+      _mc="$(_adb_pl_rs_md "$class")" || exit 20
+      printf -- '  - `%s`\n' "$_mc"
+    done || { printf 'pattern-ledger: could not render the off-set classes\n' >&2; exit 20; }
+  fi
+  [ "${stale:-0}" -gt 0 ] && printf -- '- %s row(s) from an earlier run or an earlier tree were ignored.\n' "$stale"
+  return 0
+}
+
 # --- arguments ----------------------------------------------------------------------------------
 OPT_CLASS=""; OPT_SITE=""; OPT_FIX=""; OPT_PR=""; OPT_THREAD=""
 OPT_SUMMARY=""; OPT_DATE=""; OPT_RULE=""; OPT_LEDGER=""; OPT_THRESHOLD=""; OPT_SWEEP=""
+OPT_STATE=""; OPT_RUN=""; OPT_TREE=""; OPT_RESULT=""
 
 [ "$#" -ge 1 ] || { usage; exit 2; }
 SUB="$1"; shift
@@ -1377,6 +1730,10 @@ while [ "$#" -gt 0 ]; do
     --ledger)    [ "$#" -ge 2 ] || die "$SUB: --ledger needs a value";    OPT_LEDGER="$2";    shift 2 ;;
     --threshold) [ "$#" -ge 2 ] || die "$SUB: --threshold needs a value"; OPT_THRESHOLD="$2"; shift 2 ;;
     --sweep)     [ "$#" -ge 2 ] || die "$SUB: --sweep needs a value";     OPT_SWEEP="$2";     shift 2 ;;
+    --state)     [ "$#" -ge 2 ] || die "$SUB: --state needs a value";     OPT_STATE="$2";     shift 2 ;;
+    --run)       [ "$#" -ge 2 ] || die "$SUB: --run needs a value";       OPT_RUN="$2";       shift 2 ;;
+    --tree)      [ "$#" -ge 2 ] || die "$SUB: --tree needs a value";      OPT_TREE="$2";      shift 2 ;;
+    --result)    [ "$#" -ge 2 ] || die "$SUB: --result needs a value";    OPT_RESULT="$2";    shift 2 ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "$SUB: unknown option '$1'" ;;
   esac
@@ -1392,5 +1749,7 @@ case "$SUB" in
   verify)    cmd_verify ;;
   threshold) cmd_threshold ;;
   reclaim)   cmd_reclaim ;;
-  *)         die "unknown subcommand '$SUB' (record|classes|due|promote|checklist|stats|verify|threshold|reclaim)" ;;
+  rule-sweep)        cmd_rule_sweep ;;
+  rule-sweep-report) cmd_rule_sweep_report ;;
+  *)         die "unknown subcommand '$SUB' (record|classes|due|promote|checklist|stats|verify|threshold|reclaim|rule-sweep|rule-sweep-report)" ;;
 esac

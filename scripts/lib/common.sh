@@ -156,7 +156,10 @@ adb_link() {
     return 1
   fi
   if [ -L "$dest" ]; then
-    if [ "$(readlink "$dest")" = "$src" ]; then
+    # SENTINEL CAPTURE: `$(…)` strips trailing newlines, so a link to `<src><NL>` compared equal to
+    # `<src>` and was reported as already correct. `readlink -n` so GNU and BSD emit the same bytes.
+    local _lt; _lt="$(readlink -n "$dest" 2>/dev/null; printf x)"; _lt="${_lt%x}"
+    if [ "$_lt" = "$src" ]; then
       adb_info "  ok     ${dest/#$HOME/~}"
       return
     fi
@@ -1012,7 +1015,9 @@ adb_settings_doc_state() {
   local f="$1" t par
   if [ ! -e "$f" ] && [ ! -L "$f" ]; then printf 'absent'; return 0; fi
   if [ -L "$f" ] && [ ! -e "$f" ]; then
-    t="$(readlink -n "$f" 2>/dev/null)" || { printf 'inaccessible'; return 0; }
+    # SENTINEL CAPTURE, so a target ending in a newline is judged as the path it really names.
+    t="$(readlink -n "$f" 2>/dev/null && printf x)" || { printf 'inaccessible'; return 0; }
+    t="${t%x}"
     case "$t" in /*) ;; *) t="$(dirname "$f")/$t" ;; esac
     par="$(dirname "$t")"
     if [ -d "$par" ] && [ -x "$par" ] && [ ! -L "$t" ]; then printf 'dangling'; else printf 'inaccessible'; fi
@@ -2095,7 +2100,7 @@ EOF
 # are safe — or when a removal FAILED (the link remains; stderr names it), so a read-only
 # destination cannot read as a successful prune. Usage: adb_prune_retired_manifest  (stdin)
 adb_prune_retired_manifest() {
-  local tab validated line src dest rc
+  local tab validated line src dest rc _plt
   tab="$(printf '\t')"
   validated="$(_adb_manifest_slurp adb_prune_retired_manifest)" || return 1
   rc=0
@@ -2103,7 +2108,10 @@ adb_prune_retired_manifest() {
     [ -n "$line" ] || continue
     src="${line%%"$tab"*}"
     dest="${line#*"$tab"}"
-    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ] && [ ! -e "$dest" ]; then
+    # SENTINEL CAPTURE: a dangling link to `<src><NL>` is not ours, and `$(…)` would strip the
+    # newline and prune it as though it were.
+    _plt=""; [ -L "$dest" ] && { _plt="$(readlink -n "$dest" 2>/dev/null; printf x)"; _plt="${_plt%x}"; }
+    if [ -L "$dest" ] && [ "$_plt" = "$src" ] && [ ! -e "$dest" ]; then
       if rm -f "$dest" 2>/dev/null && [ ! -L "$dest" ]; then
         adb_info "  prune  ${dest/#$HOME/~} (retired — source removed upstream)"
       else
@@ -4524,7 +4532,9 @@ adb_install_source() {
   local home="${1:-$HOME}" link target root
   for link in "$home/.claude/CLAUDE.md" "$home/.codex/AGENTS.md" "$home/.gemini/GEMINI.md"; do
     [ -L "$link" ] || continue
-    target="$(readlink "$link")"
+    # SENTINEL CAPTURE: `$(…)` strips a trailing newline, so a link to `<clone>/…<NL>` resolved to a
+    # different, shorter path than the one it names.
+    target="$(readlink -n "$link" 2>/dev/null; printf x)"; target="${target%x}"
     case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
     # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this the
     # same flavor as the recorded symlink targets so prefix-matching them stays stable; callers
@@ -6843,4 +6853,199 @@ adb_sweep_file_check() {
 # adb_sweep_rows <file> — the rows of a sweep file ALREADY validated by adb_sweep_file_check.
 adb_sweep_rows() {
   tail -n +2 "$1"
+}
+
+# --- the learned-checklist RULE SWEEP record (#490) ----------------------------------------------
+# A DIFFERENT QUESTION from the sibling sweep above, and a deliberately separate family: that one
+# asks "did this round look for siblings of the class it just fixed?", this one asks "which of the
+# promoted checklist rules did this run actually sweep the diff for?". They share the validation
+# SHAPE and nothing else — a row here must never satisfy `record --sweep`, and does not, because
+# the two readers take different files and different grammars.
+#
+# Identity is PER ROW rather than in a header, so no reader has to trust a header written by an
+# earlier process. That is NOT a reason the writer can go unlocked: `rule-sweep` still checks for
+# a duplicate row and for the file bound before it appends, and both checks race without the lock
+# it takes around them (see `cmd_rule_sweep`).
+
+# adb_md_escape <value> — neutralize a stored value for display in MARKDOWN / HTML.
+#
+# Every field these modules store is validated as one printable line at write time, which stops it
+# forging a RECORD. It does not stop it forging MARKUP, and a rendered report is often the only
+# surviving copy because the run state it came from is swept. Escaping is the RENDERER's job: the
+# storage rules govern the file, this governs the display.
+#
+# WHAT IS NEUTRALIZED, exactly: HTML (`&`, `<`, `>` — so `<!--` cannot hide what follows it), and
+# Markdown's LINK and IMAGE syntax (`[`, `]`, and the backslash that could pre-escape them) — so a
+# stored `![x](https://host/pixel)` renders as text and never makes the reader's client fetch
+# anything. Emphasis, code spans and headings are deliberately NOT escaped: they change how a value
+# LOOKS, not what it does, and escaping them would put a backslash in every path that contains an
+# underscore. A bare URL is still autolinked by GitHub; that is the text of a URL, not markup.
+#
+# One home: `docs-lib.sh` and `pattern-ledger.sh` both render through this.
+adb_md_escape() {
+  # THE BACKSLASH FIRST, so an escape this function adds is never itself re-escaped, and a stored
+  # `\[` cannot arrive pre-escaped and turn the `\[` below back into a live bracket.
+  # `LC_ALL=C`: the validators admit any byte that is not a control character, so a stored value can
+  # carry bytes that are not UTF-8 (a filename is bytes). Under a UTF-8 locale BSD sed fails on
+  # those with "illegal byte sequence" and the field vanished from a report that still returned 0.
+  # Every rule here is about ASCII punctuation, so byte semantics are exact.
+  printf '%s' "${1:-}" | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/\[/\\[/g' -e 's/]/\\]/g' \
+    -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+ADB_RULE_SWEEP_FIELD_MAX=512
+# The per-record bound. `rule-sweep` publishes by rename rather than appending, so this is no longer
+# an interleaving guard; it keeps one row a line a human can read and a grammar a reader can bound.
+ADB_RULE_SWEEP_RECORD_MAX=2048
+# 1 MiB, the sibling sweep's bound: this file is one short row per promoted rule per run.
+ADB_RULE_SWEEP_FILE_MAX=1048576
+
+# adb_rule_sweep_ok_run <value> — a run identity. The /implement-issue marker's `startedAt`, which
+# is fixed for the run's life; the marker's `owner` is deliberately NOT used, because it is
+# re-stamped on pickup and a transferable value cannot tell two runs apart.
+adb_rule_sweep_ok_run() {
+  case "${1:-}" in ''|*[!A-Za-z0-9:._-]*) return 1 ;; esac
+  [ "${#1}" -le 64 ]
+}
+
+# adb_rule_sweep_ok_tree <value> — a reviewed-tree digest: exactly one lowercase SHA-256.
+adb_rule_sweep_ok_tree() {
+  case "${1:-}" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#1}" -eq 64 ]
+}
+
+# adb_rule_sweep_row <run> <tree> <class> <site> <result> — validate one row and print it.
+#
+# THE WRITER'S HALF OF THE ONE GRAMMAR. `adb_rule_sweep_check` validates through these same
+# predicates, so a reader cannot drift from what the writer will actually produce — the rule
+# docs-lib.sh states for its own record file, applied here.
+#
+# Returns 0 (row on stdout, no trailing newline) · 19 (a field this module will not store, or a
+# record over the append bound).
+adb_rule_sweep_row() {
+  local run="${1:-}" tree="${2:-}" class="${3:-}" site="${4:-}" result="${5:-}" row
+  adb_rule_sweep_ok_run  "$run"  || return 19
+  adb_rule_sweep_ok_tree "$tree" || return 19
+  adb_ledger_ok_class "$class" || return 19
+  case "$result" in
+    clean) [ "$site" = "-" ] || return 19 ;;
+    fired)
+      [ "$site" != "-" ] || return 19
+      adb_ledger_ok_span "$site" || return 19
+      # The per-field bound, in BYTES. `${#var}` counts characters in the caller's locale, and the
+      # reader's bounds are bytes.
+      [ "$(printf '%s' "$site" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
+    *) return 19 ;;
+  esac
+  row="$(printf 'rule\t%s\t%s\t%s\t%s\t%s' "$run" "$tree" "$class" "$site" "$result")"
+  # THE WHOLE RECORD, not only its fields: bounded fields plus their separators still add up.
+  [ "$(printf '%s' "$row" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_RECORD_MAX" ] || return 19
+  printf '%s' "$row"
+}
+
+# adb_rule_sweep_check <file> <run> <tree> — validate the record WHOLE, then report the rows that
+# belong to this (run, tree).
+#
+# PASS A PRIVATE COPY. This function opens <file> more than once — the byte rules, then the row
+# parse — so on a path another process can replace, the rows parsed need not be the bytes
+# validated. `rule-sweep-report` hands it a snapshot it created exclusively for exactly that reason.
+#
+# Row grammar, six TAB-separated fields:
+#   rule <TAB> <run> <TAB> <tree> <TAB> <class> <TAB> <site> <TAB> <result>
+#
+# EVERY ROW IS HELD TO THE ROW GRAMMAR BEFORE ANY FILTERING, and the order matters: filtering first
+# would let a damaged row that happens to carry another run's identity be skipped instead of
+# refused, so a corrupt record could render a clean count. The CROSS-ROW discipline below — no
+# duplicate (class, site), no class both clean and fired — is per (run, tree) group, and applies to
+# the current group only: an earlier run's rows are not counted, and may legitimately name the
+# same classes again.
+#
+# Within the current group, per class: EITHER exactly one `clean` row with `site=-`, OR one or
+# more `fired` rows at distinct sites. A class carrying both is a contradiction and refuses the
+# read (18) — this module never reports a partial count.
+#
+# A REPEATED (class, site) REFUSES THE READ WHOLE (18), exact repeats included. The retry path is
+# the WRITER's: `rule-sweep` is idempotent on an identical row (rc 10) and never appends it twice,
+# so a duplicate that reaches this reader came from a hand edit or a merge — the case "never a
+# partial count" exists for. Do not read an 18 here as a successful retry.
+#
+# Outputs on success:
+#   line 1:    <emitted> TAB <stale> TAB 0   (the third field is retained for output-shape
+#              stability; a duplicate now refuses the read rather than being counted)
+#   lines 2..: <class> TAB <site> TAB <result>   (one per emitted row, in file order)
+# Returns 0 · 18 (a byte rule, the grammar, or a contradiction) · 19 (a field this module will not
+# store) · 20 (not readable as a regular file).
+adb_rule_sweep_check() {
+  local f="${1:-}" want_run="${2:-}" want_tree="${3:-}" rc
+  adb_rule_sweep_ok_run  "$want_run"  || return 19
+  adb_rule_sweep_ok_tree "$want_tree" || return 19
+  # A ZERO-BYTE FILE IS NO ROWS, NOT DAMAGE. `adb_bytes_whole` refuses an empty file (18), which is
+  # right for a sweep file carrying a mandatory header and wrong here: this record has no header,
+  # the writer only ever creates it by appending a row, and an empty one — left by a crash between
+  # create and write, or by a truncating editor — would otherwise return 18 from every later
+  # report, a state no run can clear without deleting the file by hand.
+  # `[ ! -L ]` FIRST: `-f` follows a symlink, so without it a `rule-sweep.tsv` linked to an empty
+  # file took this shortcut and was reported as "no rows", ahead of `adb_bytes_whole`'s non-link
+  # rule. A link is never this module's record, whatever it points at.
+  # `-r` TOO: `-s` is a stat and answers for a file this process cannot read, so without it an
+  # unreadable empty record read as "no rows" rather than as the 20 every other unreadable record is.
+  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then
+    [ -r "$f" ] || return 20
+    printf '0\t0\t0\n'; return 0
+  fi
+  adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"
+  # ONE awk PASS, LINEAR IN THE RECORD. The first cut validated each row in a shell loop through the
+  # writer's own predicates, and those fork: about four processes per row, plus a duplicate test
+  # that rescanned every earlier row. A record at its own 1 MiB bound took 72 seconds to read, and
+  # because the writer asks this reader about the copy it is about to publish, so did every write
+  # near the bound. awk is POSIX, parses below the bash floor, and needs no associative arrays in
+  # the shell (D30/D35/D65).
+  #
+  # THE GRAMMAR IS RESTATED HERE, rule for rule, from the writer's predicates (`adb_rule_sweep_row`,
+  # `adb_rule_sweep_ok_run`/`_tree`, `adb_ledger_ok_class`/`_span`) — the one place it has two homes,
+  # traded for a reader that is linear. Each rule has its own mutation witness, so a drift between
+  # the halves is caught rather than argued away. Under `LC_ALL=C`, `length` counts BYTES, which is
+  # what the bounds are. No regex interval (`{0,47}`): mawk and older BSD awk disagree about them,
+  # so every length is tested separately. awk's `exit` still runs END, hence the `bad` flag.
+  #
+  # Exit codes are the function's own: 18 a structural rule (arity, kind, the clean/fired site rule,
+  # a duplicate, a contradiction) · 19 a field this module would not have written.
+  local out
+  out="$(LC_ALL=C awk -F'\t' -v wr="$want_run" -v wt="$want_tree" '
+    function fail(code) { bad = code; exit }
+    {
+      if (NF != 6)          fail(18)
+      if ($1 != "rule")     fail(18)
+      run = $2; tree = $3; class = $4; site = $5; result = $6
+      if (length(run) < 1 || length(run) > 64 || run !~ /^[A-Za-z0-9:._-]+$/)  fail(19)
+      if (length(tree) != 64 || tree !~ /^[0-9a-f]+$/)                         fail(19)
+      if (length(class) > 48 || class !~ /^[a-z][a-z0-9-]*$/)                  fail(19)
+      if (result == "clean") {
+        if (site != "-") fail(18)
+      } else if (result == "fired") {
+        if (site == "-") fail(18)
+        # adb_ledger_ok_span: non-empty, no backtick, no control byte — and the writer'"'"'s byte bound.
+        if (site == "" || index(site, "`") || site ~ /[[:cntrl:]]/ || length(site) > 512) fail(19)
+      } else fail(18)
+      # EVERY row is held to the grammar above; only rows of THIS (run, tree) reach the discipline
+      # and the output. A stale row is counted so the report can say it ignored it.
+      if (run != wr || tree != wt) { stale++; next }
+      # A REPEATED (class, site) REFUSES THE READ, whole: the writer is idempotent on an identical
+      # row and never appends one twice, so a duplicate here is a hand edit or a merge.
+      k = class SUBSEP site
+      if (k in seen) fail(18)
+      seen[k] = 1
+      # A class is EITHER clean once OR fired at one or more sites, never both.
+      if (result == "clean") { if (class in sited) fail(18); single[class] = 1 }
+      else                   { if (class in single) fail(18); sited[class] = 1 }
+      rows[++n] = class "\t" site "\t" result
+    }
+    END {
+      if (bad) exit bad
+      printf "%d\t%d\t0\n", n, stale
+      for (i = 1; i <= n; i++) print rows[i]
+    }' "$f")"; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '%s\n' "$out"
+  return 0
 }

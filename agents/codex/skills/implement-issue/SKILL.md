@@ -392,6 +392,10 @@ pass, and name what you swept and what it found — "nothing" included.
 bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" checklist   # 0 = sweep it (empty = no ledger yet) · 18 = fix patterns.md · 21 = over budget, nothing emitted
 ```
 
+**The sweep is PERFORMED here and RECORDED in step 9**, after the last triage commit (#490). It is
+one record, not two: a sweep recorded here would not have seen the code step 9 is about to change,
+and stamping it with the shipped tree's digest would attest to a tree nobody swept.
+
 **Always** run it — self-review is the mandatory floor: edge cases,
 escaping/encoding, binary/NUL corruption, cascade/cancel effects, off-by-one,
 idempotency.
@@ -449,6 +453,34 @@ Per finding (self-review AND each reviewer): CRITICAL/HIGH → fix; MEDIUM → f
 out of scope (then defer — and if the deferral clears the bar, **file it now**); LOW → fix if
 cheap else document; disagree → document why. Re-run gates; commit; `phase=triaged`.
 
+**Then re-sweep the promoted checklist over the FINAL diff and record it** — the mechanism behind
+`self-review.md`'s "name what you swept" (#490). After the last commit, so the digest names the
+tree that ships:
+
+```bash
+# ADB-SNIPPET: rule-sweep
+# ONE CALL FOR BOTH VALUES: the step that records and the step that reports must not derive the
+# run identity or the tree digest separately, or the report can attest to a tree nobody swept.
+IDENT="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" sweep-identity .codex/state)" \
+  || { echo "ERROR: could not resolve the run identity — hard stop"; exit 1; }
+RS_RUN="$(printf '%s' "$IDENT" | cut -f1)"; RS_TREE="$(printf '%s' "$IDENT" | cut -f2)"
+[ -n "$RS_RUN" ] && [ -n "$RS_TREE" ] || { echo "ERROR: sweep-identity returned no usable identity"; exit 1; }
+
+# One call PER PROMOTED RULE. `--result clean` (no --site) means "swept, nothing matched"; a rule
+# that fired takes one call per site. Re-running an identical call is a no-op, so an interrupted
+# recording is safe to resume.
+bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" rule-sweep --state .codex/state --run "$RS_RUN" --tree "$RS_TREE" \
+  --rule <class> --site <path:line|-> --result <fired|clean>
+```
+
+`10` = this exact row is already recorded, a **no-op** — that is the retry path, so an interrupted
+recording is safe to resume · `19` = a field that will not be stored (check `--rule` is a class
+slug, and that `--site` is `-` only with `--result clean`), or an append that would take the record
+past the bound its reader enforces · `20` = the record could not be written.
+
+`$RS_RUN`/`$RS_TREE` are shell variables and die with their block: step 11 re-runs
+`sweep-identity` rather than carrying them.
+
 **A number you have not filed is a number you must not write.** Review-discovered deferrals are
 decided *now*, before step 10, so the PR body cites real numbers — and "decided" applies the bar
 (`issues-and-scope.md`): both questions answerable → file (step 12's placement rules); either
@@ -458,9 +490,14 @@ commit message or changelog entry must resolve *now* (`gh issue view <n>` is one
 
 ### 10. Push + open PR
 
-Write the PR body to a file first: summary; gap findings + how addressed; the survey line;
-self-review + reviewer findings + dispositions (table); the **Docs consulted** block; test plan
-(skeleton: `examples.md`). Render the docs block — never from memory:
+Write the PR body to a file first — **outside the reviewed tree** (`"${TMPDIR:-/tmp}"`, never the
+checkout): an untracked file inside it changes the tree digest step 9 recorded, and step 11's
+report would then read every row as stale on a run that edited no code. Content: summary; gap
+findings + how addressed; the survey line; self-review + reviewer findings + dispositions (table);
+the **Docs consulted** block; the **Learned-checklist sweep** block; test plan (skeleton:
+`examples.md`). Render both blocks — never from memory. The sweep block goes in the body *and* the
+close-out: the record it comes from is run state that /cleanup sweeps, so the PR body is the only
+place it survives for a later reader.
 
 ```bash
 bash "$HOME/.codex/scripts/lib/docs-lib.sh" report --state .codex/state
@@ -468,6 +505,21 @@ case "$?" in
   0)  : ;;   # paste the block into the PR body
   11) echo "STOP: no documentation disposition was recorded — NOTHING WAS RECORDED; state it in 5b (consulted, or none-needed), then re-render"; exit 1 ;;
   *)  : ;;   # 18/20 -> report; the block cannot be rendered
+esac
+```
+
+And the sweep block, rendered HERE — before `open-pr` — because the body is written once and the
+record behind it is swept later:
+
+```bash
+IDENT="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" sweep-identity .codex/state)" \
+  || { echo "ERROR: could not resolve the run identity — hard stop"; exit 1; }
+bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" rule-sweep-report --state .codex/state \
+  --run "$(printf '%s' "$IDENT" | cut -f1)" --tree "$(printf '%s' "$IDENT" | cut -f2)"
+case "$?" in
+  0)  : ;;   # paste the block into the PR body
+  11) echo "STOP: no checklist sweep was recorded while promoted rules exist — go back to step 9, sweep, record, then re-render"; exit 1 ;;
+  *)  : ;;   # 18/20/21 -> the codes step 11 lists; report it, the block cannot be rendered
 esac
 ```
 
@@ -512,8 +564,27 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   surfaces (what answered, per rung), none needed + its justification, or DEGRADED naming the
   server. Code 11 = go back and state it.
 - **Survey disposition** (#435): ran (agent, words) / skipped (unassigned) / failed rc=N,
-  continued. **Learned-checklist sweep** (#421): rules swept and what fired — "swept N, none
-  fired" is a real result; no ledger yet is said, not omitted.
+  continued.
+- **Learned-checklist sweep** (#421, #490): render it — never write the sentence by hand, which is
+  the prose this command replaced:
+
+  ```bash
+  # RESOLVED AGAIN HERE. `$RS_RUN`/`$RS_TREE` were shell variables in step 9's block and died with
+  # it; a fresh shell would pass two empty strings and the command would refuse as usage. The call
+  # is cheap and returns the same pair while the tree is unchanged — which is exactly the property
+  # the report is checking.
+  IDENT="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" sweep-identity .codex/state)" \
+    || { echo "ERROR: could not resolve the run identity — hard stop"; exit 1; }
+  bash "$HOME/.codex/scripts/lib/pattern-ledger.sh" rule-sweep-report --state .codex/state \
+    --run "$(printf '%s' "$IDENT" | cut -f1)" --tree "$(printf '%s' "$IDENT" | cut -f2)"
+  ```
+
+  `0` = paste the block (a project with no promoted rules renders a valid **zero-rule** sweep, and
+  that is a real result, not an omission) · `11` = **nothing was recorded while rules exist** — go
+  back to step 9, sweep, and record, exactly as the docs duty's 11 works · `18` = the rows do not
+  parse or a class is recorded both clean and fired · `20` = the record could not be read · `21` =
+  the promoted checklist is over its prompt budget, so `checklist` emitted nothing and no run was
+  ever given the rules the report would claim coverage against; fix `patterns.md`.
 - **Reconcile disposition**: `0` in-sync-or-reconciled (say which) · `17` not declared (the
   default, no ceremony) · `16`/`18`/`20` refused/unconfirmed + the command that resolves it.
 - **Review rung, in the ladder's own words** — rungs 2–3 are not failures and are also **not** a

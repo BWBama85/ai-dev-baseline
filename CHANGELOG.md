@@ -8,6 +8,32 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Added
+
+- **The learned-checklist sweep is a record, not a sentence (#490).** `self-review.md` asks a run
+  to sweep the promoted checklist and name what it swept; that was prose in a pull-request body
+  with no file behind it, so a real sweep and a plausible sentence read the same. `pattern-ledger.sh`
+  gains `rule-sweep` (one row per rule: the class, the site it fired at or `-`, and `fired`/`clean`)
+  and `rule-sweep-report`, which renders the close-out block.
+
+  Coverage is counted against the **live** promoted checklist and the unswept rules are **named**,
+  so recording one rule cannot render a clean report while the other twenty went unchecked. Rows
+  carry the run identity and a digest of the reviewed tree, both from one `implement-lib.sh
+  sweep-identity` call, so the recorder and the reporter derive them the same way — a tree that
+  changes between them still changes the digest, and that is precisely what the report then
+  detects: rows from an earlier run or an earlier tree are ignored and counted, never credited.
+  The sweep is recorded at the end of step 9, after the last triage commit, so the digest names the
+  tree that actually ships. A rule that fired at several sites takes one row per site; a duplicate
+  `(class, site)` refuses the read whole, and the retry path is the writer's — re-recording an
+  identical row is a no-op (10) that appends nothing, so an interrupted recording is safe to
+  resume. A class recorded both clean and fired refuses the read too, and a recorded class that is
+  not a promoted rule is reported but never credited as coverage. A project with no promoted rules renders a
+  valid zero-rule sweep; a run that recorded nothing while rules exist returns 11, the same
+  unstated-disposition code the documentation duty uses. D114 records the design decisions.
+
+  `implement-lib.sh sweep-report` (the sibling sweep, #475) is untouched — the name collision #465
+  flagged is why this family is `rule-sweep`.
+
 ### Fixed
 
 - **A Codex clean pass that arrives with a comment is clean, and the connector's review-status

@@ -3569,6 +3569,230 @@ eq "$SWR" 20 "53 publish-review refuses a stage replaced during validation (20)"
 if [ -e "$PS/review.md" ]; then bad "53 …and publishes nothing"; else ok; fi
 rm -f "$SWB"/*
 
+# ================= 54. sweep-identity: one call, both values (#490) =============================
+# The recorder (step 9) and the reporter (step 11) must not derive the run identity or the tree
+# digest separately, or the close-out can attest to a tree nobody swept. This is the one call.
+d="$(new_repo)"
+# THE REMOTE-TRACKING BASE THE DIGEST REQUIRES. `sweep-identity` refuses to fall back to a local
+# branch, so the fixture carries `origin/<its default>` exactly as a real clone would.
+si_origin() { git -C "$1" update-ref "refs/remotes/origin/$(git -C "$1" symbolic-ref --short HEAD)" HEAD; }
+si_origin "$d"
+git -C "$d" checkout -q -b issue-490-x
+jq -n '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d/.claude/state/implement-issue-active.json"
+SI_OUT="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>&1 )"; SI_RC=$?
+eq "$SI_RC" 0 "54 sweep-identity succeeds on a run with a marker"
+eq "$(printf '%s' "$SI_OUT" | cut -f1)" "2026-09-24T03:34:07Z" \
+   "54 the run identity is the marker's startedAt"
+SI_TREE="$(printf '%s' "$SI_OUT" | cut -f2)"
+case "$SI_TREE" in
+  *[!0-9a-f]*|'') bad "54 the tree digest is 64 lowercase hex [got $SI_TREE]" ;;
+  *) if [ "${#SI_TREE}" -eq 64 ]; then ok; else bad "54 the tree digest is 64 hex [len ${#SI_TREE}]"; fi ;;
+esac
+
+# DETERMINISM over an unchanged tree — #490's acceptance turns on it: a digest that moved on its
+# own would make every recorded row stale by the time the report ran.
+SI_B="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null )"
+eq "$SI_B" "$SI_OUT" "54 ...and it is identical on a second call over an unchanged tree"
+
+# A TRACKED EDIT moves it.
+printf 'changed\n' > "$d/seed"
+SI_C="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_C" != "$SI_TREE" ]; then ok; else bad "54 a tracked edit must move the tree digest"; fi
+: > "$d/seed"
+
+# AN UNTRACKED FILE moves it — the reviewed tree is what ships, not only what git tracks.
+printf 'new\n' > "$d/untracked.txt"
+SI_D="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_D" != "$SI_TREE" ]; then ok; else bad "54 an untracked file must move the tree digest"; fi
+
+# ...AND SO DOES ITS PATH. Content alone cannot distinguish two untracked trees holding the same
+# bytes under different names, which is why the digest carries the path.
+mv "$d/untracked.txt" "$d/renamed.txt"
+SI_E="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_E" != "$SI_D" ]; then ok; else bad "54 renaming an untracked file must move the tree digest"; fi
+rm -f "$d/renamed.txt"
+
+# AN EMPTY UNTRACKED FILE IS A REAL ADDITION and contributes no content at all, so a
+# contents-only digest would miss it entirely.
+: > "$d/empty.txt"
+SI_F="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ "$SI_F" != "$SI_TREE" ]; then ok; else bad "54 an EMPTY untracked file must move the tree digest"; fi
+rm -f "$d/empty.txt"
+
+# A GITIGNORED file must NOT move it: it is not part of the reviewed tree, and the run's own state
+# directory lives there — a digest that moved as the run wrote its own artifacts could never match
+# between the record and the report.
+printf 'ignored.txt\n.claude/\n' > "$d/.gitignore"
+git -C "$d" add .gitignore >/dev/null 2>&1; git -C "$d" commit -qm ignore >/dev/null 2>&1
+SI_G="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+printf 'noise\n' > "$d/ignored.txt"
+printf 'noise\n' > "$d/.claude/state/scratch.tmp"
+SI_H="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+eq "$SI_H" "$SI_G" "54 a gitignored file — including the run's own state — never moves the digest"
+rm -f "$d/ignored.txt" "$d/.claude/state/scratch.tmp"
+
+# NO MARKER IS 20, not a fabricated identity: without a run there is nothing to attest to.
+d2="$(new_repo)"
+( cd "$d2" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 \
+  "54 no run marker is 20"
+jq -n '{branch:"issue-490-x", issue:"490", phase:"branched"}' > "$d2/.claude/state/implement-issue-active.json"
+( cd "$d2" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 \
+  "54 a marker carrying no startedAt is 20, never a made-up identity"
+( cd "$d2" && bash "$IL" sweep-identity >/dev/null 2>&1 ); eq "$?" 2 "54 sweep-identity needs a state dir"
+
+# A FAILURE ASSEMBLING THE MATERIAL RETURNS 20 — it does not END THE PROCESS. The digest is built
+# inside a subshell for exactly this reason: `exit 1` in a brace group exits the SHELL, so a failed
+# `git diff` terminated implement-lib.sh with status 1 and no caller branching on 20 ever saw it.
+# Driven by a `git` stub that passes everything through except `diff`, which is the one command
+# whose failure the group swallowed. The marker `echo` after the call is what proves the process
+# survived: with the brace group it never ran.
+gitstub="$work/gitstub"; mkdir -p "$gitstub"
+realgit="$(command -v git)"
+cat > "$gitstub/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in -C) continue ;; diff) exit 1 ;; esac
+done
+exec "$realgit" "\$@"
+STUB
+chmod +x "$gitstub/git"
+SI_X="$( cd "$d" && PATH="$gitstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_X" "rc=20" "54 a failed material assembly returns 20, and the process survives to return it"
+hasnt "$SI_X" $'\t' "54 ...and no partial identity is printed"
+
+# A FAILED ENUMERATION IS A FAILURE, not an empty one. The untracked listing ends in a `while`, so
+# without pipefail a failing `git ls-files` contributed no entries and hashed to a confident, wrong
+# identity (#490, reported on PR #502).
+cat > "$gitstub/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in -C) continue ;; ls-files) exit 1 ;; esac
+done
+exec "$realgit" "\$@"
+STUB
+chmod +x "$gitstub/git"
+SI_Y="$( cd "$d" && PATH="$gitstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_Y" "rc=20" "54 a failed untracked enumeration returns 20, never a digest of nothing"
+
+# A SYMLINK TARGET IS HASHED AS BYTES. Captured through `$(…)` it lost a trailing newline, so targets
+# `t` and `t<NL>` gave one identity (#490, reported on PR #502).
+ln -s t "$d/lnk-nl"
+SI_T1="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+rm -f "$d/lnk-nl"; ln -s "t
+" "$d/lnk-nl"
+SI_T2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+rm -f "$d/lnk-nl"
+if [ -n "$SI_T1" ] && [ "$SI_T1" != "$SI_T2" ]; then ok; else
+  bad "54 a symlink target ending in a newline must not share the identity of the one without it"; fi
+
+# NO FALLBACK TO A LOCAL BASE (reported on PR #502). A local default branch can hold unpushed or
+# divergent commits, so a digest taken against it can certify a diff the pull request never shows.
+d3="$(new_repo)"; git -C "$d3" checkout -q -b issue-490-y
+jq -n '{branch:"issue-490-y", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d3/.claude/state/implement-issue-active.json"
+SI_Z="$( cd "$d3" && bash "$IL" sweep-identity .claude/state 2>&1; printf 'rc=%s' "$?" )"
+has "$SI_Z" "rc=20" "54 no origin/<default> is 20, never a digest against the local branch"
+has "$SI_Z" "fetch it" "54 ...and the refusal names the repair"
+
+# A ROOT WHOSE NAME ENDS IN A NEWLINE IS THE ROOT (reported on PR #502). Captured through `$(…)` it
+# lost the newline — and a sibling repository at the shorter name was hashed instead, so edits in
+# the real checkout never moved the digest.
+tnp="$work/tn"; mkdir -p "$tnp"
+tn_real="$tnp/r
+"
+( cd "$tnp" && git init -q r && git -C r config user.email t@e.com && git -C r config user.name t \
+    && : > r/seed && git -C r add seed && git -C r commit -qm seed ) >/dev/null 2>&1
+git init -q "$tn_real" >/dev/null 2>&1
+git -C "$tn_real" config user.email t@e.com; git -C "$tn_real" config user.name t
+: > "$tn_real/seed"; git -C "$tn_real" add seed; git -C "$tn_real" commit -qm seed >/dev/null 2>&1
+mkdir -p "$tn_real/.claude/state"; printf '.claude/\n' > "$tn_real/.gitignore"
+git -C "$tn_real" add .gitignore; git -C "$tn_real" commit -qm ig >/dev/null 2>&1
+si_origin "$tn_real"; si_origin "$tnp/r"
+jq -n '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$tn_real/.claude/state/implement-issue-active.json"
+TN_A="$( cd "$tn_real" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+printf 'edited\n' > "$tn_real/seed"
+TN_B="$( cd "$tn_real" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$TN_A" ] && [ "$TN_A" != "$TN_B" ]; then ok; else
+  bad "54 an edit in a checkout whose root ends in a newline must move its digest [$TN_A] [$TN_B]"; fi
+
+# `sort -z` IS PROBED, NOT ASSUMED (reported on PR #502). On a host whose `sort` lacks it, pipefail
+# made every call fail; the stream now keeps git's own order, which is stable on one host.
+sortstub="$work/sortstub"; mkdir -p "$sortstub"; realsort="$(command -v sort)"
+cat > "$sortstub/sort" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in -z) echo "sort: invalid option -- z" >&2; exit 2 ;; esac; done
+exec "$realsort" "\$@"
+STUB
+chmod +x "$sortstub/sort"
+SI_S1="$( cd "$d" && PATH="$sortstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_S1" "rc=0" "54 a host whose sort lacks -z still yields an identity"
+SI_S2="$( cd "$d" && PATH="$sortstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null )"
+eq "$SI_S2" "${SI_S1%$'\n'rc=0}" "54 ...and the same one on a second call"
+
+# ADMISSION CLEARS AN ABANDONED rule-sweep LOCK (reported on PR #502). A writer killed between the
+# lock's mkdir and its owner record leaves a lock the reclaimer can never prove dead, and state-scan
+# does not enumerate directories — so every later writer waited out its bound and refused.
+d4="$(new_repo)"
+mkdir -p "$d4/.claude/state/rule-sweep.tsv.lock" "$d4/.claude/state/rule-sweep.tsv.lock.stale.1.2/x"
+admit "$d4"
+eq "$AD_RC" 0 "54 admission succeeds over an abandoned rule-sweep lock"
+if [ -e "$d4/.claude/state/rule-sweep.tsv.lock" ] || [ -e "$d4/.claude/state/rule-sweep.tsv.lock.stale.1.2" ]; then
+  bad "54 admission left the abandoned rule-sweep lock (or its tombstone) behind"; else ok; fi
+
+# THE DIGEST IS OF THE BYTES, NOT OF A DIFF DRIVER'S RENDERING (reported on PR #502). Porcelain
+# `git diff` applies a `.gitattributes` textconv filter by default, so with a converter that emits a
+# constant, a tracked change produced an unchanged patch and the identity never moved.
+# The file must exist AT THE MERGE BASE: a file new on the branch diffs with an `index 0000000..<sha>`
+# line that moves with its content whatever textconv does, and the fixture would then prove nothing.
+d5="$(new_repo)"
+printf '*.dat diff=const\n' > "$d5/.gitattributes"; printf '.claude/\n' > "$d5/.gitignore"
+printf 'one\n' > "$d5/f.dat"
+git -C "$d5" add .gitattributes .gitignore f.dat; git -C "$d5" commit -qm dat >/dev/null 2>&1
+si_origin "$d5"; git -C "$d5" checkout -q -b issue-490-z
+git -C "$d5" config diff.const.textconv 'sh -c "echo constant"'
+jq -n '{branch:"issue-490-z", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d5/.claude/state/implement-issue-active.json"
+printf 'two\n' > "$d5/f.dat"
+TC_A="$( cd "$d5" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+printf 'three\n' > "$d5/f.dat"
+TC_B="$( cd "$d5" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$TC_A" ] && [ "$TC_A" != "$TC_B" ]; then ok; else
+  bad "54 a change a textconv driver normalizes still moves the digest [$TC_A] [$TC_B]"; fi
+# The review and sibling-sweep prompts carry the same flags: a reviewer must see the bytes too.
+eq "$(grep -c 'git diff --no-textconv --no-ext-diff --ignore-submodules=none' "$IL")" "2" \
+   "54 the review and sweep prompt diffs disable textconv, external drivers and submodule hiding"
+
+# A GITLINK CHANGE MOVES THE DIGEST WHATEVER `diff.ignoreSubmodules` SAYS (reported on PR #502).
+# `all` hid the update entirely. The submodule is an EMBEDDED REPOSITORY with a checkout, which is
+# the real shape: with no checkout a gitlink diffs as "deleted" whatever the index names, and the
+# fixture would prove nothing. No `submodule add`, so no file-protocol allowance is needed.
+d6="$(new_repo)"; printf '.claude/\n' > "$d6/.gitignore"
+git -C "$d6" add .gitignore; git -C "$d6" commit -qm ig >/dev/null 2>&1
+git init -q "$d6/sub"; git -C "$d6/sub" config user.email t@e.com; git -C "$d6/sub" config user.name t
+: > "$d6/sub/a"; git -C "$d6/sub" add a; git -C "$d6/sub" commit -qm a >/dev/null 2>&1
+git -C "$d6" add sub >/dev/null 2>&1; git -C "$d6" commit -qm sub >/dev/null 2>&1
+si_origin "$d6"; git -C "$d6" checkout -q -b issue-490-s
+git -C "$d6" config diff.ignoreSubmodules all
+jq -n '{branch:"issue-490-s", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d6/.claude/state/implement-issue-active.json"
+SM_A="$( cd "$d6" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+: > "$d6/sub/b"; git -C "$d6/sub" add b; git -C "$d6/sub" commit -qm b >/dev/null 2>&1
+git -C "$d6" add sub >/dev/null 2>&1
+SM_B="$( cd "$d6" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$SM_A" ] && [ "$SM_A" != "$SM_B" ]; then ok; else
+  bad "54 a submodule update moves the digest under diff.ignoreSubmodules=all [$SM_A] [$SM_B]"; fi
+has "$(bash "$IL" --help 2>&1)" "sweep-identity <state-dir>" "54 --help documents sweep-identity"
+
+# THE PAIR ROUND-TRIPS THROUGH THE LEDGER. This is the join the workflow depends on: what
+# sweep-identity emits is exactly what rule-sweep accepts.
+PLIB="$ROOT/scripts/lib/pattern-ledger.sh"
+SI_RUN="$(printf '%s' "$SI_OUT" | cut -f1)"
+( cd "$d" && bash "$PLIB" rule-sweep --state .claude/state --run "$SI_RUN" --tree "$SI_TREE" \
+    --rule some-class --result clean >/dev/null 2>&1 ); eq "$?" 0 \
+  "54 rule-sweep accepts the identity sweep-identity emits"
+
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"
 bash "$IL" bogus x >/dev/null 2>&1;         eq "$?" "2" "11 an unknown subcommand is a usage error"
