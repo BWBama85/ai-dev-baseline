@@ -731,4 +731,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/pattern-ledger.sh:1490` `2aedaea` `PRRT_kwDOTfywrM6l4olF` PR #502 2026-09-25 — an exact duplicate returned 10 before the file bound was checked on an oversized record
 - `status-swallowed` `scripts/lib/common.sh:6889` `2aedaea` `PRRT_kwDOTfywrM6l4olL` PR #502 2026-09-25 — BSD sed failed on a non-UTF-8 byte under a UTF-8 locale and the enclosing printf still returned 0
 - `stale-doc-claim` `.ai-dev-baseline/decisions.md:8400` `2aedaea` `PRRT_kwDOTfywrM6l4olN` PR #502 2026-09-25 — D114 still described an O_APPEND writer after the rename-publish rewrite
+- `partial-validation` `scripts/lib/pattern-ledger.sh:1611` `378937c` `PRRT_kwDOTfywrM6mOwCq` PR #502 2026-09-26 — the report copied the record before checking its type or bounding its size; a FIFO blocked and a huge file was copied whole
+- `stale-state-trusted` `base/workflows/implement-issue.md:500` `378937c` `PRRT_kwDOTfywrM6mOwCr` PR #502 2026-09-26 — the PR-body sweep block was rendered once and went stale after review-round pushes
+- `trailing-newline-stripped` `scripts/lib/pattern-ledger.sh:1395` `378937c` `PRRT_kwDOTfywrM6mOwCs` PR #502 2026-09-26 — an explicit --state path lost a trailing newline through command substitution and resolved a sibling
 <!-- adb:hits:end -->
