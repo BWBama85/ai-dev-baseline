@@ -8448,3 +8448,30 @@ survive is the part a later reader needs.
              duplicate that does reach the reader is a hand edit or a merge, which is exactly the
              case "never a partial count" exists for.
 - baseline-issue: n/a
+
+## D115 — The concurrency model of the ledger and docs-record readers: atomic writers, lock-free readers
+- date:      2026-09-27
+- category:  project-delta
+- unknown:   PR #502's review, round 8, found `rule-sweep-report` deriving coverage from three separate
+             reads of the ledger, so a promotion landing mid-report could combine two versions — and the
+             sibling sweep found the same shape in every reader of both files: `_adb_pl_region`,
+             `classes`, `checklist`, `stats` and `verify` in `pattern-ledger.sh`, and `_adb_dl_records`,
+             `verdict` and `report` in `docs-lib.sh`, all of which predate #490. Rounds 3, 4 and 6 had
+             found the same class on the new rule-sweep record, one site at a time.
+- decision:  State the model once, and hold every reader to it rather than hardening each site as it is
+             found. WRITERS publish atomically: the ledger by an O_EXCL stage renamed into place under
+             `_adb_pl_lock`, the rule-sweep record the same way, the docs record by single appends each
+             under its record bound. So any ONE read observes one complete version. READERS take no lock,
+             and a reader that reads its file more than once may combine two consecutive versions if a
+             write lands between its reads; a re-run resolves it. The finding and its eight siblings are
+             declined against this entry.
+- placement: this entry; the decline replies on PR #502 cite it.
+- reason:    The exposure is a write DURING a read, in files written by the run itself or by the
+             resolver, and the result is a report that is momentarily inconsistent, not a write outside
+             a file or a count nobody can reproduce — the two classes this project does treat as defects
+             (D114 records the writer case, which was fixed). The alternative — one read-once primitive
+             routed through nine readers in two libraries that predate #490 — is a real change with its
+             own review rounds, and the owner chose the model over it. What would change the answer: a
+             reader whose mixed-version result is PERSISTED or acted on irreversibly; that reader must
+             then snapshot, as `rule-sweep-report`'s record read already does.
+- baseline-issue: n/a
