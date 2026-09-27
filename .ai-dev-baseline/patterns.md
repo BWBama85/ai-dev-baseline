@@ -746,4 +746,5 @@ One line per resolved review thread, newest last.
 - `evidence-discarded` `scripts/lib/pattern-ledger.sh:1674` `2fab4ff` `PRRT_kwDOTfywrM6mecAO` PR #502 2026-09-27 — the zero-coverage exit fired before the off-set classes that explain it were rendered
 - `unbounded-resource` `scripts/lib/implement-lib.sh:4151` `2fab4ff` `PRRT_kwDOTfywrM6mecAP` PR #502 2026-09-27 — the identity staged a whole binary diff in TMPDIR with no bound before hashing it
 - `partial-validation` `scripts/lib/implement-lib.sh:4166` `75442d0` `PRRT_kwDOTfywrM6merS2` PR #502 2026-09-27 — an untracked embedded repository was identified by path and type only, not the HEAD git stores as a gitlink
+- `partial-validation` `scripts/lib/docs-lib.sh:229` `d1685d2` `PRRT_kwDOTfywrM6me8Mz` PR #502 2026-09-27 — the docs reader tested absence before refusing links, so a dangling link read as absent
 <!-- adb:hits:end -->
