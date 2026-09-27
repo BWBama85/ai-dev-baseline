@@ -2207,7 +2207,7 @@ if [ "$MODE" = mutation ]; then
       '      if false; then' \
       '12 ...and the report refuses it too, rather than reporting coverage nobody was given'
   check_row 'rule-sweep-unreadable-as-empty' 'scripts/lib/pattern-ledger.sh' 's12' \
-      '    if [ -d "$d" ] && [ ! -x "$d" ]; then' \
+      '    if [ ! -x "$d" ]; then' \
       '    if false; then' \
       '12 an unsearchable state directory is 20, never 11'
   check_row 'rule-sweep-md-unescaped' 'scripts/lib/pattern-ledger.sh' 's12' \
