@@ -1821,6 +1821,18 @@ git init -q "$nlr" >/dev/null 2>&1
 if [ -f "$nlr/.claude/state/rule-sweep.tsv" ] && [ ! -e "$nlp/r/.claude/state/rule-sweep.tsv" ]; then ok; else
   bad "12 rule-sweep writes into the checkout whose name ends in a newline, never its sibling"; fi
 
+# AN UNSEARCHABLE ANCESTOR IS UNREADABLE, NOT ABSENT (reported on PR #502): only the immediate
+# directory was checked, so a record behind a locked ancestor read as "nothing recorded" (11).
+ST12ANC="$work/st12anc"; mkdir -p "$ST12ANC/a/state"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12ANC/a/state/rule-sweep.tsv"
+chmod 000 "$ST12ANC/a"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12ANC/a/state" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSANC=$?; chmod 755 "$ST12ANC/a"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSANC" 20 "12 a record behind an unsearchable ancestor is unreadable (20), never absent"; fi
+# ...while a state directory that genuinely does not exist is still absent.
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12ANC/none/state" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 11 "12 a state directory that does not exist is absent (11), not unreadable"
+
 # THE RECORD KEEPS ITS MODE ACROSS A REWRITE (reported on PR #502): the stage is created under the
 # umask, and renaming it over a 0600 record widened it to 0644.
 ST12MODE="$work/st12mode"
@@ -2274,6 +2286,10 @@ if [ "$MODE" = mutation ]; then
       '  local root; root="$(adb_repo_root 2>/dev/null && printf X)" || root=""' \
       '  local root; root="$(adb_repo_root 2>/dev/null)" || root=""' \
       '12 rule-sweep writes into the checkout whose name ends in a newline, never its sibling'
+  check_row 'rule-sweep-ancestor-unchecked' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ ! -x "$d" ]; then' \
+      '    if [ -d "${f%/*}" ] && [ ! -x "${f%/*}" ]; then' \
+      '12 a record behind an unsearchable ancestor is unreadable (20), never absent'
   check_row 'rule-sweep-report-no-snapshot' 'scripts/lib/pattern-ledger.sh' 's12' \
       '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
       '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \

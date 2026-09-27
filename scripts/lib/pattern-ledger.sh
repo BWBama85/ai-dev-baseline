@@ -1600,8 +1600,14 @@ cmd_rule_sweep_report() {
     # ABSENT IS NOT UNREADABLE. `-f` is false for a file inside a directory this process cannot
     # search, and a state directory we cannot enter must not read as "nothing recorded" — that is
     # the direction that renders a clean report over a sweep nobody can see. docs-lib.sh's rule.
-    d="$(dirname "$f")"
-    if [ -d "$d" ] && [ ! -x "$d" ]; then
+    # The NEAREST EXISTING ANCESTOR decides, not only the parent: behind an unsearchable ancestor
+    # every descendant fails `-e`. Walked by expansion, since `dirname` in `$(…)` strips a newline.
+    d="${f%/*}"; [ "$d" != "$f" ] || d=.
+    while [ -n "$d" ] && [ ! -e "$d" ] && [ ! -L "$d" ]; do
+      case "$d" in */*) d="${d%/*}" ;; *) d=. ;; esac
+    done
+    [ -n "$d" ] || d=/
+    if [ ! -x "$d" ]; then
       printf 'pattern-ledger: %s could not be read (its directory is not searchable) — refusing to report as if nothing were recorded\n' "$f" >&2
       exit 20
     fi
