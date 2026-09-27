@@ -315,7 +315,9 @@ if [ "$MODE" = mutation ]; then
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/common.sh"
   }
-  runner() { ( cd "$1/tree" && bash scripts/check-docs-lib.sh 2>&1 ); }
+  # THE ROW'S WITNESS TRAVELS WITH IT, so a child can skip a test no row but its own depends on.
+  # The copy directory is `mut-<index>` into the table the pool is running.
+  runner() { local i="${1##*/mut-}"; ( cd "$1/tree" && CDL_ROW_WITNESS="${CHECK_MUT_WIT[$i]}" bash scripts/check-docs-lib.sh 2>&1 ); }
 
   check_mutation_pool check-docs-lib "$work" prep runner 6
 
@@ -969,6 +971,10 @@ rm -f "$D29/state/docs-consulted.tsv"
 # refuse a file ordinary appends produced. 2200 valid records (each field under the 512-byte bound),
 # past the 1 MiB a bound once used —
 # must still report.
+# THE SUITE'S COSTLIEST TEST (most of its runtime), so a mutation child runs it only when its row's
+# witness is one of these assertions: a row is scored on its own witness, so skipping it elsewhere
+# cannot change a verdict.
+case "${CDL_ROW_WITNESS-full}" in full|*"a large record of valid appends"*)
 awk 'BEGIN { for (i = 0; i < 2200; i++) { printf "none-needed\t"; for (j = 0; j < 50; j++) printf "abcdefghij"; printf " %d\n", i } }' \
   > "$D29/state/docs-consulted.tsv"
 R29="$(dl report --state "$D29/state" 2>/dev/null)"; eq "$?" 0 "a large record of valid appends still reports — the reader refuses nothing its writer produces"
@@ -976,6 +982,7 @@ R29="$(dl report --state "$D29/state" 2>/dev/null)"; eq "$?" 0 "a large record o
 # command the report runs fails "Argument list too long", and in a tree with no agents.toml the report
 # then printed an empty block and still returned 0.
 has "$R29" "abcdefghij 2199" "a large record of valid appends still reports its last record"
+;; esac
 # A LITERAL newline: building the path with `$(printf …)` would strip it — the defect under test.
 dl none-needed --state "$D29/state
 " --justification x >/dev/null 2>&1; eq "$?" 2 \
