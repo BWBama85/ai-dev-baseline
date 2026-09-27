@@ -3670,6 +3670,18 @@ SI_X="$( cd "$d" && PATH="$gitstub:$PATH" bash "$IL" sweep-identity .claude/stat
 has "$SI_X" "rc=20" "54 a failed material assembly returns 20, and the process survives to return it"
 hasnt "$SI_X" $'\t' "54 ...and no partial identity is printed"
 
+# THE MATERIAL IS STREAMED, NEVER STAGED (reported on PR #502): a large binary diff staged in
+# TMPDIR could fill it before the hash ran. So a TMPDIR nothing can be written to changes nothing,
+# and a digest that fails is 20, never an identity.
+SI_NT0="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+SI_NT="$( cd "$d" && TMPDIR="$work/si-no-such-dir" bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$SI_NT0" ] && [ "$SI_NT" = "$SI_NT0" ]; then ok; else bad "54 sweep-identity stages nothing: an unwritable TMPDIR gives the same identity [$SI_NT0] [$SI_NT]"; fi
+hashstub="$work/hashstub"; mkdir -p "$hashstub"
+for _h in sha256sum shasum openssl; do printf '#!/bin/sh\nexit 1\n' > "$hashstub/$_h"; chmod +x "$hashstub/$_h"; done
+SI_HF="$( cd "$d" && PATH="$hashstub:$PATH" bash "$IL" sweep-identity .claude/state 2>/dev/null; printf 'rc=%s' "$?" )"
+has "$SI_HF" "rc=20" "54 a digest that cannot be computed returns 20"
+hasnt "$SI_HF" $'\t' "54 ...and prints no identity"
+
 # A FAILED ENUMERATION IS A FAILURE, not an empty one. The untracked listing ends in a `while`, so
 # without pipefail a failing `git ls-files` contributed no entries and hashed to a confident, wrong
 # identity (#490, reported on PR #502).

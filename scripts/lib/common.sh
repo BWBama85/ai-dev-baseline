@@ -4801,6 +4801,27 @@ adb_sha256() {
   printf '%s' "$hex"
 }
 
+# adb_sha256_stdin — the lowercase hex SHA-256 of stdin, or non-zero. Streams: nothing is staged,
+# so an input of any size costs no disk.
+adb_sha256_stdin() {
+  local out hex
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum)" || return 1
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256)" || return 1
+  elif command -v openssl >/dev/null 2>&1; then
+    out="$(openssl dgst -sha256 -r)" || return 1
+  else
+    return 1
+  fi
+  hex="${out%% *}"
+  case "$hex" in
+    ''|*[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#hex}" -eq 64 ] || return 1
+  printf '%s' "$hex"
+}
+
 # adb_pinned_relpath_safe <repo-relative path> — refuse a path that could leave the project.
 #
 # A SECURITY BOUNDARY, not tidiness. The receipt is COMMITTED, so on any repository that accepts

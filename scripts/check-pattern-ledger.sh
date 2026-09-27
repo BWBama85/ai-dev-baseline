@@ -1601,8 +1601,11 @@ hasnt "$RSB" 'x.sh:1 <!-- hide' "12 ...and the raw form does not reach the rende
 # coverage; counting it rendered "swept 1 of 21" while naming all 21 as unswept.
 ST12E="$work/st12e"
 bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-only --result clean >/dev/null 2>&1
-bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSE_ERR="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>&1 >/dev/null)"
 eq "$?" 11 "12 a row outside the live checklist credits NO coverage — the run still stated nothing"
+# ...AND THE 11 NAMES THE OFF-SET CLASS (reported on PR #502): it is the evidence that explains the
+# refusal, and exiting before the off-set rendering hid it.
+has "$RSE_ERR" "ghost-only" "12 the zero-coverage 11 names the off-set class it did not credit"
 bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
 RSE="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
 has "$RSE" "swept 1 of 2" "12 ...and the off-set row is still not counted once a real one exists"
@@ -1803,9 +1806,13 @@ if [ -e "$ST12U/rule-sweep.tsv.done" ]; then ok; else bad "12 fixture: the od st
 # umask, and renaming it over a 0600 record widened it to 0644.
 ST12MODE="$work/st12mode"
 bash "$PL" rule-sweep --state "$ST12MODE" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
-chmod 600 "$ST12MODE/rule-sweep.tsv"
+chmod 640 "$ST12MODE/rule-sweep.tsv"
 ( umask 022; bash "$PL" rule-sweep --state "$ST12MODE" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1 )
-eq "$(ls -l "$ST12MODE/rule-sweep.tsv" | cut -c1-10)" "-rw-------" "12 a rewrite keeps a restricted record's mode"
+eq "$(ls -l "$ST12MODE/rule-sweep.tsv" | cut -c1-10)" "-rw-r-----" "12 a rewrite keeps a restricted record's mode"
+# A NEW RECORD TAKES THE UMASK'S MODE, not the owner-only stage's.
+ST12NEW="$work/st12new"
+( umask 022; bash "$PL" rule-sweep --state "$ST12NEW" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1 )
+eq "$(ls -l "$ST12NEW/rule-sweep.tsv" 2>/dev/null | cut -c1-10)" "-rw-r--r--" "12 a new record takes the umask's mode, not the stage's"
 
 # THE REPORT'S SNAPSHOT IS OWNER-ONLY (reported on PR #502): TMPDIR may be shared. The same `od`
 # stub, run while the snapshot exists, records its mode from a TMPDIR only this fixture uses.
@@ -1820,6 +1827,20 @@ chmod +x "$odstub/od"
 ( umask 022; RS_MODE="$work/st12snap-mode" TMPDIR="$work/st12snap-tmp" PATH="$odstub:$PATH" \
   bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12SNAP" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1 )
 eq "$(cat "$work/st12snap-mode" 2>/dev/null)" "-rw-------" "12 the report's private snapshot is created owner-only"
+
+# ...AND SO IS THE WRITER'S STAGE while it holds a copy of the record (reported on PR #502). The
+# writer runs the reader over the stage, so the same stub sees it mid-write.
+ST12STG="$work/st12stg"; mkdir -p "$ST12STG"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12STG/rule-sweep.tsv"; chmod 600 "$ST12STG/rule-sweep.tsv"
+cat > "$odstub/od" <<STUB
+#!/bin/sh
+[ -n "\${RS_MODE:-}" ] && ls -l "\$RS_STAGEDIR"/rule-sweep-*.tsv 2>/dev/null | cut -c1-10 > "\$RS_MODE"
+exec "$realod" "\$@"
+STUB
+chmod +x "$odstub/od"
+( umask 022; RS_MODE="$work/st12stg-mode" RS_STAGEDIR="$ST12STG" PATH="$odstub:$PATH" \
+  bash "$PL" rule-sweep --state "$ST12STG" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1 )
+eq "$(cat "$work/st12stg-mode" 2>/dev/null)" "-rw-------" "12 the writer's stage is owner-only while it holds the record"
 
 # THE WRITER DECIDES ON ITS COPY, THROUGH THE READER'S VALIDATOR (reported on PR #502): it can no
 # longer report success — or an idempotent 10 — over a record the report would refuse whole.
@@ -2203,9 +2224,21 @@ if [ "$MODE" = mutation ]; then
       '  cat -- "$stage" >> "$f" && rm -f "$stage" ||' \
       '12 rule-sweep publishes by rename: the record'"'"'s inode changes on every write'
   check_row 'rule-sweep-mode-widened' 'scripts/lib/pattern-ledger.sh' 's12' \
-      '    _mode="$(adb_file_mode "$f")" && chmod "$_mode" "$stage" 2>/dev/null \' \
-      '    true \' \
+      '    && chmod "$_mode" "$stage" 2>/dev/null \' \
+      '    && true \' \
       '12 a rewrite keeps a restricted record'"'"'s mode'
+  check_row 'rule-sweep-new-record-private' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ -f "$f" ]; then _mode="$(adb_file_mode "$f")"; else _mode="$(printf '"'"'%o'"'"' "$(( 0666 & ~0$(umask) ))")"; fi \' \
+      '  if [ -f "$f" ]; then _mode="$(adb_file_mode "$f")"; else _mode=600; fi \' \
+      '12 a new record takes the umask'"'"'s mode, not the stage'"'"'s'
+  check_row 'rule-sweep-stage-readable' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if ! { exec {wfd}>"$stage"; } 2>/dev/null; then' \
+      '  umask "$_um"; if ! { exec {wfd}>"$stage"; } 2>/dev/null; then' \
+      '12 the writer'"'"'s stage is owner-only while it holds the record'
+  check_row 'rule-sweep-offset-hidden-on-11' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ -n "${off_set//$'"'"'\n'"'"'/}" ]; then' \
+      '    if false; then' \
+      '12 the zero-coverage 11 names the off-set class it did not credit'
   check_row 'rule-sweep-snapshot-world-readable' 'scripts/lib/pattern-ledger.sh' 's12' \
       '    _um="$(umask)"; umask 077' \
       '    _um="$(umask)"' \

@@ -1456,15 +1456,19 @@ cmd_rule_sweep() {
   #
   # THE STAGE IS A MEMBER OF THE FAMILY (`rule-sweep-<n>.tsv`), so one orphaned by a kill is swept by
   # /cleanup and cleared by admission rather than left as debris nothing owns.
-  local stage wfd="" _had_c=0
+  local stage wfd="" _had_c=0 _um
   stage="$(dirname "$f")/rule-sweep-$$${RANDOM}.tsv"
   case "$-" in *C*) _had_c=1 ;; esac
   set -C
+  # OWNER-ONLY UNTIL PUBLISHED: the stage holds a copy of the record, which may be restricted.
+  _um="$(umask)"; umask 077
   if ! { exec {wfd}>"$stage"; } 2>/dev/null; then
+    umask "$_um"
     [ "$_had_c" -eq 1 ] || set +C
     printf 'pattern-ledger: rule-sweep: could not create a private stage beside %s — nothing was written\n' "$f" >&2
     exit 20
   fi
+  umask "$_um"
   [ "$_had_c" -eq 1 ] || set +C
   # ONE READ OF THE RECORD, AND EVERY DECISION MADE ON THE COPY. The record is copied byte-exact
   # (`cat`, never re-emitted line by line, which would add a final newline or drop a NUL and could
@@ -1521,13 +1525,13 @@ cmd_rule_sweep() {
   fi
   printf '%s\n' "$row" >&"$wfd" || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: cannot write %s\n' "$stage" >&2; exit 20; }
   exec {wfd}>&-
-  # THE RECORD KEEPS ITS MODE. The stage was created under the umask, so the rename would silently
-  # widen a record the operator restricted. A mode that cannot be read or applied refuses the write.
-  if [ -f "$f" ]; then
-    local _mode
-    _mode="$(adb_file_mode "$f")" && chmod "$_mode" "$stage" 2>/dev/null \
-      || { rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not carry %s'"'"'s mode onto the replacement — nothing was written\n' "$f" >&2; exit 20; }
-  fi
+  # THE PUBLISHED MODE: an existing record keeps its own, a new one gets what the umask gives a new
+  # file. The stage itself is 0600, so either way this is set here, and a mode that cannot be read
+  # or applied refuses the write.
+  local _mode
+  if [ -f "$f" ]; then _mode="$(adb_file_mode "$f")"; else _mode="$(printf '%o' "$(( 0666 & ~0$(umask) ))")"; fi \
+    && chmod "$_mode" "$stage" 2>/dev/null \
+    || { rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not set the mode of %s'"'"'s replacement — nothing was written\n' "$f" >&2; exit 20; }
   mv -f -- "$stage" "$f" || { rm -f "$stage"; printf 'pattern-ledger: cannot publish %s\n' "$f" >&2; exit 20; }
   printf 'rule-sweep %s %s\n' "$OPT_RULE" "$OPT_RESULT"
 }
@@ -1672,6 +1676,12 @@ ROWS
   # said so by there being nothing to say, and reporting that as a defect would make every
   # ledger-less project fail its own close-out.
   if [ "$n" -eq 0 ] && [ "$m" -gt 0 ]; then
+    # OFF-SET ROWS ARE NAMED BEFORE EITHER 11: rows recorded only for classes outside the promoted
+    # set (a typo, a retired rule) are the evidence that explains "nothing credited".
+    if [ -n "${off_set//$'\n'/}" ]; then
+      printf 'pattern-ledger: recorded for class(es) that are not promoted rules, so not credited: %s\n' \
+        "$(printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | paste -s -d ' ' -)" >&2
+    fi
     # STALE ROWS ARE NAMED HERE TOO. A tree that changed after the sweep leaves every row stale and
     # n at 0, and exiting before the stale count reported "never swept" for a sweep the tree simply
     # outlived — the drift the per-row digest exists to expose. Same code, different diagnosis.

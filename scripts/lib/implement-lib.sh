@@ -4089,7 +4089,7 @@ _il_nul_sort() {
 #
 # 0 · 20 (no marker, no `startedAt`, or a git read failed).
 cmd_sweep_identity() {
-  local dir="${1:-}" marker run mb base root material sum rc
+  local dir="${1:-}" marker run mb base root sum rc
   [ -n "$dir" ] || { echo "implement-lib: sweep-identity needs <state-dir>" >&2; exit 2; }
   marker="$dir/$_IL_MARKER"
   [ -f "$marker" ] || { printf 'implement-lib: sweep-identity: no run marker at %s\n' "$marker" >&2; return 20; }
@@ -4116,20 +4116,13 @@ cmd_sweep_identity() {
   mb="$(git -C "$root" merge-base "origin/$base" HEAD 2>/dev/null)" \
     || { printf 'implement-lib: sweep-identity: no merge-base with origin/%s (shallow clone?)\n' "$base" >&2; return 20; }
   [ -n "$mb" ] || { printf 'implement-lib: sweep-identity: no merge-base with origin/%s\n' "$base" >&2; return 20; }
-  # A private staging file for the digest material, under TMPDIR and NOT under the state
-  # directory: nothing else reads it, it must not join a swept family, and it is removed on every
-  # path below. THE RESULT IS CHECKED — an unchecked `mktemp` leaves an empty name, and the
-  # redirection below would then write to the current directory (this is #497's shape, observed
-  # live in this repo while implementing this issue).
-  material="$(mktemp "${TMPDIR:-/tmp}/adb-sweepid.XXXXXX" 2>/dev/null)" \
-    || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
-  [ -n "$material" ] && [ -f "$material" ] \
-    || { echo "implement-lib: sweep-identity: could not create a staging file" >&2; return 20; }
+  # STREAMED INTO THE DIGEST, never staged: a binary patch can be as large as the blobs it carries,
+  # and a staging file could fill TMPDIR before the hash ran, or be left behind by a kill.
   # A SUBSHELL, NOT A BRACE GROUP. `exit 1` inside `{ … }` exits the SHELL, so a failed `git diff`
   # here would terminate implement-lib.sh with status 1 instead of returning the 20 this function
   # documents — and every caller branching on 20 would never see it. In `( … )` the exit belongs to
   # the subshell and arrives as its status. Observed: a brace group ended the whole script.
-  (
+  sum="$( set -o pipefail; (
     # PIPEFAIL, so a failed `git ls-files` or `sort` below fails the subshell instead of being
     # hidden behind the `while` that ends the pipeline — an enumeration that failed would
     # otherwise contribute NO untracked entries and hash to a confident, wrong identity.
@@ -4187,15 +4180,13 @@ cmd_sweep_identity() {
             printf '%s\0o\0\0' "$u"
           fi
         done || exit 1
-  ) > "$material" 2>/dev/null
+  ) 2>/dev/null | adb_sha256_stdin )"
   rc=$?
-  if [ "$rc" -ne 0 ]; then
-    rm -f "$material"
-    echo "implement-lib: sweep-identity: could not assemble the reviewed-tree material" >&2
+  # Either half failing — the material (a failed read) or the digest — is 20, never an identity.
+  if [ "$rc" -ne 0 ] || [ -z "$sum" ]; then
+    echo "implement-lib: sweep-identity: could not assemble or digest the reviewed-tree material" >&2
     return 20
   fi
-  sum="$(adb_sha256 "$material")" || { rm -f "$material"; echo "implement-lib: sweep-identity: could not digest the reviewed tree" >&2; return 20; }
-  rm -f "$material"
   printf '%s\t%s\n' "$run" "$sum"
 }
 
