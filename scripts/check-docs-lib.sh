@@ -264,9 +264,15 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'the docs writer refuses a symlinked record (20)'
 
+  # THE READER'S LINK GUARD: without it a dangling link reads as absent.
+  check_mut docs-reader-dangling-as-absent \
+    '  [ -L "$f" ] && return 2' \
+    '  :' \
+    'a dangling symlinked docs record is refused (20), never read as absent'
+
   # THE REGULAR-FILE GUARD (#490): without it a FIFO blocks the report forever.
   check_mut docs-fifo-read \
-    '  [ -f "$f" ] && [ ! -L "$f" ] || return 2' \
+    '  [ -f "$f" ] || return 2' \
     '  :' \
     "a FIFO at the docs record's path is refused (20), never read"
 
@@ -950,6 +956,13 @@ printf 'untouched\n' > "$D29/link-target"
 ln -s "$D29/link-target" "$D29/state/docs-consulted.tsv"
 dl none-needed --state "$D29/state" --justification x >/dev/null 2>&1; eq "$?" 20 "the docs writer refuses a symlinked record (20)"
 eq "$(cat "$D29/link-target")" "untouched" "...and the link's target was never written"
+rm -f "$D29/state/docs-consulted.tsv"
+
+# THE READER REFUSES A LINK BEFORE THE ABSENCE TEST (reported on PR #502): `-e` follows a link, so a
+# dangling one read as absent and `report` said 11 while every writer refused the path with 20.
+ln -s "$D29/nowhere" "$D29/state/docs-consulted.tsv"
+( env HOME="$FHOME" bash "$DL" report --state "$D29/state" >/dev/null 2>&1 ); eq "$?" 20 \
+  "a dangling symlinked docs record is refused (20), never read as absent"
 rm -f "$D29/state/docs-consulted.tsv"
 
 # NO SIZE BOUND ON THE READER (reported on PR #502): its writer enforces none, so a bound here would

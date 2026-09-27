@@ -216,6 +216,9 @@ _adb_dl_records() {
   # state directory read as "no records" (`report` said 11 and `verdict` degraded every server),
   # while an unreadable file failed the byte scan below and was reported as a GRAMMAR error (18).
   # Both hand the operator the wrong repair. Reported by the declared reviewer on PR #429.
+  # A LINK IS REFUSED FIRST, dangling or not: `-e` follows it, so a dangling link read as absent (11)
+  # while every writer refused the same path (20).
+  [ -L "$f" ] && return 2
   if [ ! -e "$f" ]; then
     d="$(dirname "$f")"
     if [ -d "$d" ] && [ ! -x "$d" ]; then return 2; fi
@@ -226,7 +229,7 @@ _adb_dl_records() {
   # NO SIZE BOUND, deliberately: `_adb_dl_append` enforces none, and a reader that refuses what its
   # writer produces strands the run with no correction operation. Every record is bounded where it
   # is written, and the file grows only by those appends.
-  [ -f "$f" ] && [ ! -L "$f" ] || return 2
+  [ -f "$f" ] || return 2
   # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
   # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
