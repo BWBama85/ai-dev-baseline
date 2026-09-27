@@ -1802,6 +1802,16 @@ RS_SWAP="$ST12U/rule-sweep.tsv" PATH="$odstub:$PATH" \
 eq "$?" 0 "12 the report validates and parses ONE snapshot — a swap mid-read is never parsed"
 if [ -e "$ST12U/rule-sweep.tsv.done" ]; then ok; else bad "12 fixture: the od stub never ran — the snapshot check asserted NOTHING"; fi
 
+# THE RUN IS THE MARKER'S TIMESTAMP SHAPE, AT BOTH HALVES (reported on PR #502): a run the marker
+# writer cannot produce never attests. The writer refuses it (19); the reader refuses a stored one.
+ST12RUN="$work/st12run"
+bash "$PL" rule-sweep --state "$ST12RUN" --run abc --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a run that is not the marker's timestamp shape (19)"
+mkdir -p "$ST12RUN"; printf 'rule\tabc\t%s\talpha-one\t-\tclean\n' "$RS_TREE" > "$ST12RUN/rule-sweep.tsv"
+bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
+  "$ROOT" "$ST12RUN/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
+eq "$?" 19 "12 the reader refuses a stored run that is not the marker's timestamp shape (19)"
+
 # THE RECORD KEEPS ITS MODE ACROSS A REWRITE (reported on PR #502): the stage is created under the
 # umask, and renaming it over a 0600 record widened it to 0644.
 ST12MODE="$work/st12mode"
@@ -2243,6 +2253,14 @@ if [ "$MODE" = mutation ]; then
       '    _um="$(umask)"; umask 077' \
       '    _um="$(umask)"' \
       '12 the report'"'"'s private snapshot is created owner-only'
+  check_row 'rule-sweep-run-grammar-loose' 'scripts/lib/common.sh' 's12' \
+      '    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;' \
+      '    [A-Za-z0-9]*) return 0 ;;' \
+      '12 the writer refuses a run that is not the marker'"'"'s timestamp shape (19)'
+  check_row 'rule-sweep-reader-run-loose' 'scripts/lib/common.sh' 's12' \
+      '      if (run !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/) fail(19)' \
+      '      if (run !~ /^[A-Za-z0-9:._-]+$/) fail(19)' \
+      '12 the reader refuses a stored run that is not the marker'"'"'s timestamp shape (19)'
   check_row 'rule-sweep-report-no-snapshot' 'scripts/lib/pattern-ledger.sh' 's12' \
       '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
       '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \

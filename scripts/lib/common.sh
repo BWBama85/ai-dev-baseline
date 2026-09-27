@@ -6923,10 +6923,13 @@ ADB_RULE_SWEEP_FILE_MAX=1048576
 
 # adb_rule_sweep_ok_run <value> — a run identity. The /implement-issue marker's `startedAt`, which
 # is fixed for the run's life; the marker's `owner` is deliberately NOT used, because it is
-# re-stamped on pickup and a transferable value cannot tell two runs apart.
+# re-stamped on pickup and a transferable value cannot tell two runs apart. Exactly the shape the
+# marker's writer produces (`date -u +%Y-%m-%dT%H:%M:%SZ`), so no other value can attest.
 adb_rule_sweep_ok_run() {
-  case "${1:-}" in ''|*[!A-Za-z0-9:._-]*) return 1 ;; esac
-  [ "${#1}" -le 64 ]
+  case "${1:-}" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;
+  esac
+  return 1
 }
 
 # adb_rule_sweep_ok_tree <value> — a reviewed-tree digest: exactly one lowercase SHA-256.
@@ -7038,7 +7041,7 @@ adb_rule_sweep_check() {
       if (NF != 6)          fail(18)
       if ($1 != "rule")     fail(18)
       run = $2; tree = $3; class = $4; site = $5; result = $6
-      if (length(run) < 1 || length(run) > 64 || run !~ /^[A-Za-z0-9:._-]+$/)  fail(19)
+      if (run !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/) fail(19)
       if (length(tree) != 64 || tree !~ /^[0-9a-f]+$/)                         fail(19)
       if (length(class) > 48 || class !~ /^[a-z][a-z0-9-]*$/)                  fail(19)
       if (result == "clean") {

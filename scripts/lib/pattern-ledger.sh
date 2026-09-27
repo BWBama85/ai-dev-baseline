@@ -1416,7 +1416,7 @@ cmd_rule_sweep() {
   [ -n "$OPT_SITE" ] || OPT_SITE="-"
   row="$(adb_rule_sweep_row "$OPT_RUN" "$OPT_TREE" "$OPT_RULE" "$OPT_SITE" "$OPT_RESULT")" || {
     printf 'pattern-ledger: rule-sweep: refusing this row — check --run (%s), --tree (64 hex), --rule (a class slug), --site (a path, or - only with --result clean) and --result (fired|clean).\n' \
-      '[A-Za-z0-9:._-]{1,64}' >&2
+      'a YYYY-MM-DDTHH:MM:SSZ timestamp' >&2
     exit 19
   }
   f="$(_adb_pl_rs_file)" || exit 20
@@ -1553,7 +1553,7 @@ cmd_rule_sweep_report() {
   # the operator to inspect a record that is perfectly fine. A bad argument is the caller's, not
   # the file's.
   adb_rule_sweep_ok_run "$OPT_RUN" \
-    || die "rule-sweep-report: --run must be 1-64 chars of [A-Za-z0-9:._-], got $(adb_display_value "$OPT_RUN")"
+    || die "rule-sweep-report: --run must be a YYYY-MM-DDTHH:MM:SSZ timestamp, got $(adb_display_value "$OPT_RUN")"
   adb_rule_sweep_ok_tree "$OPT_TREE" \
     || die "rule-sweep-report: --tree must be 64 lowercase hex, got $(adb_display_value "$OPT_TREE")"
 

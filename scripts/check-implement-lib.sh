@@ -3652,6 +3652,16 @@ SI_H="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f
 eq "$SI_H" "$SI_G" "54 a gitignored file — including the run's own state — never moves the digest"
 rm -f "$d/ignored.txt" "$d/.claude/state/scratch.tmp"
 
+# A NON-STRING OR WRONGLY SHAPED startedAt IS 20 (reported on PR #502): `jq -r` stringifies `true`
+# and `123`, and a loose grammar accepted the result as a run nobody's marker writer produced.
+for _sa in 'true' '123' '"abc"' '"2026-09-24 03:34:07"'; do
+  jq -n --argjson s "$_sa" '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:$s}' \
+    > "$d/.claude/state/implement-issue-active.json"
+  ( cd "$d" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 "54 a startedAt of $_sa is 20, never an identity"
+done
+jq -n '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:"2026-09-24T03:34:07Z"}' \
+  > "$d/.claude/state/implement-issue-active.json"
+
 # NO MARKER IS 20, not a fabricated identity: without a run there is nothing to attest to.
 d2="$(new_repo)"
 ( cd "$d2" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 \
@@ -3792,9 +3802,12 @@ printf 'three\n' > "$d5/f.dat"
 TC_B="$( cd "$d5" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
 if [ -n "$TC_A" ] && [ "$TC_A" != "$TC_B" ]; then ok; else
   bad "54 a change a textconv driver normalizes still moves the digest [$TC_A] [$TC_B]"; fi
-# The review and sibling-sweep prompts carry the same flags: a reviewer must see the bytes too.
-eq "$(grep -c 'git diff --no-textconv --no-ext-diff --ignore-submodules=none' "$IL")" "2" \
-   "54 the review and sweep prompt diffs disable textconv, external drivers and submodule hiding"
+# The review and sibling-sweep prompts keep the project's textconv rendering (reported on PR #502):
+# for a binary format it is the only form a reviewer can read, and disabling it left "Binary files
+# differ". They add only `--ignore-submodules=none`, so a gitlink change is never hidden.
+eq "$(grep -c 'git diff --ignore-submodules=none "$mb"' "$IL")" "2" \
+   "54 the review and sweep prompt diffs keep textconv and never hide a gitlink change"
+eq "$(grep -c -- 'diff --no-textconv' "$IL")" "1" "54 ...and only the identity digest disables textconv"
 
 # A GITLINK CHANGE MOVES THE DIGEST WHATEVER `diff.ignoreSubmodules` SAYS (reported on PR #502).
 # `all` hid the update entirely. The submodule is an EMBEDDED REPOSITORY with a checkout, which is

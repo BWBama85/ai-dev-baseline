@@ -2974,9 +2974,10 @@ cmd_dispatch_review() {
   local _dbefore _dafter
   _dbefore="$(_il_fd_size "$_rpfd")" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
-  # `--no-textconv --no-ext-diff --ignore-submodules=none`: a reviewer must see the committed bytes
-  # and every gitlink change, not what a project's diff driver or submodule setting renders.
-  git diff --no-textconv --no-ext-diff --ignore-submodules=none "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
+  # `--ignore-submodules=none`: a reviewer must see every gitlink change. The project's textconv and
+  # diff drivers stay ON here, unlike sweep-identity's byte digest: for a binary format they are the
+  # only rendering a reviewer can read.
+  git diff --ignore-submodules=none "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
   case "$?" in
     0|141) : ;;
     *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the %s/%s merge-base failed\n' "$db_remote" "$db" >&2; return 20 ;;
@@ -3522,7 +3523,7 @@ cmd_dispatch_sweep() {
     mb="$(git merge-base "$sw_remote/$base_ref" HEAD 2>/dev/null)" \
       || { _sweep_abort "git merge-base $sw_remote/$base_ref HEAD failed — fetch the base branch"; return 20; }
     dbefore="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
-    git diff --no-textconv --no-ext-diff --ignore-submodules=none "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
+    git diff --ignore-submodules=none "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
     case "$?" in 0|141) : ;; *) _sweep_abort "git diff against the merge-base failed"; return 20 ;; esac
     dafter="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
     [ $((dafter - dbefore)) -lt 8388609 ] \
@@ -4093,7 +4094,8 @@ cmd_sweep_identity() {
   [ -n "$dir" ] || { echo "implement-lib: sweep-identity needs <state-dir>" >&2; exit 2; }
   marker="$dir/$_IL_MARKER"
   [ -f "$marker" ] || { printf 'implement-lib: sweep-identity: no run marker at %s\n' "$marker" >&2; return 20; }
-  run="$(jq -r '.startedAt // ""' "$marker" 2>/dev/null)" \
+  # A STRING, never a value `jq -r` stringified: `true` or `123` would otherwise pass the grammar.
+  run="$(jq -r 'if (.startedAt | type) == "string" then .startedAt else "" end' "$marker" 2>/dev/null)" \
     || { printf 'implement-lib: sweep-identity: could not read %s\n' "$marker" >&2; return 20; }
   adb_rule_sweep_ok_run "$run" \
     || { printf 'implement-lib: sweep-identity: the marker carries no usable startedAt\n' >&2; return 20; }
