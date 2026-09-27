@@ -1812,6 +1812,15 @@ bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev
   "$ROOT" "$ST12RUN/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
 eq "$?" 19 "12 the reader refuses a stored run that is not the marker's timestamp shape (19)"
 
+# THE STATE DIRECTORY IS THE CHECKOUT'S OWN, even when its name ends in a newline (reported on PR
+# #502): `$(…)` stripped it, and the record was written under the sibling path without one.
+nlp="$work/nlp"; mkdir -p "$nlp"; nlr="$nlp/r
+"
+git init -q "$nlr" >/dev/null 2>&1
+( cd "$nlr" && bash "$PL" rule-sweep --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1 )
+if [ -f "$nlr/.claude/state/rule-sweep.tsv" ] && [ ! -e "$nlp/r/.claude/state/rule-sweep.tsv" ]; then ok; else
+  bad "12 rule-sweep writes into the checkout whose name ends in a newline, never its sibling"; fi
+
 # THE RECORD KEEPS ITS MODE ACROSS A REWRITE (reported on PR #502): the stage is created under the
 # umask, and renaming it over a 0600 record widened it to 0644.
 ST12MODE="$work/st12mode"
@@ -2261,6 +2270,10 @@ if [ "$MODE" = mutation ]; then
       '      if (run !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/) fail(19)' \
       '      if (run !~ /^[A-Za-z0-9:._-]+$/) fail(19)' \
       '12 the reader refuses a stored run that is not the marker'"'"'s timestamp shape (19)'
+  check_row 'rule-sweep-root-newline-stripped' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  local root; root="$(adb_repo_root 2>/dev/null && printf X)" || root=""' \
+      '  local root; root="$(adb_repo_root 2>/dev/null)" || root=""' \
+      '12 rule-sweep writes into the checkout whose name ends in a newline, never its sibling'
   check_row 'rule-sweep-report-no-snapshot' 'scripts/lib/pattern-ledger.sh' 's12' \
       '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
       '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \

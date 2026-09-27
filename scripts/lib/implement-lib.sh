@@ -4094,8 +4094,10 @@ cmd_sweep_identity() {
   [ -n "$dir" ] || { echo "implement-lib: sweep-identity needs <state-dir>" >&2; exit 2; }
   marker="$dir/$_IL_MARKER"
   [ -f "$marker" ] || { printf 'implement-lib: sweep-identity: no run marker at %s\n' "$marker" >&2; return 20; }
-  # A STRING, never a value `jq -r` stringified: `true` or `123` would otherwise pass the grammar.
-  run="$(jq -r 'if (.startedAt | type) == "string" then .startedAt else "" end' "$marker" 2>/dev/null)" \
+  # A STRING OF PRINTABLE BYTES, decided inside jq: `jq -r` stringifies `true` or `123`, and `$(…)`
+  # strips a trailing newline the value itself carries — either would pass the shell grammar.
+  run="$(jq -r 'if (.startedAt | type) == "string" and (.startedAt | explode | all(. > 31 and . < 127))
+                then .startedAt else "" end' "$marker" 2>/dev/null)" \
     || { printf 'implement-lib: sweep-identity: could not read %s\n' "$marker" >&2; return 20; }
   adb_rule_sweep_ok_run "$run" \
     || { printf 'implement-lib: sweep-identity: the marker carries no usable startedAt\n' >&2; return 20; }
@@ -4180,8 +4182,10 @@ cmd_sweep_identity() {
             case "$_usz" in ''|*[!0-9]*) exit 1 ;; esac
             _udg="$(adb_sha256 "$root/$u")" || exit 1
             # THE EXECUTABLE BIT TOO: git stores it (100755 vs 100644), so a `chmod +x` changes
-            # what ships.
-            if [ -x "$root/$u" ]; then _ux=x; else _ux=-; fi
+            # what ships. Read from the MODE's owner-execute bit, as git does — `-x` asks whether
+            # this process may execute it, which a noexec mount or an ACL answers differently.
+            _um="$(adb_file_mode "$root/$u")" || exit 1
+            case "${_um: -3:1}" in 1|3|5|7) _ux=x ;; *) _ux=- ;; esac
             printf '%s\0f\0%s\0%s\0%s\0' "$u" "$_ux" "$_usz" "$_udg"
           else
             # A socket, fifo or device that `ls-files` reported: named, typed, not hashed.

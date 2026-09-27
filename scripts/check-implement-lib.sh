@@ -3621,6 +3621,20 @@ chmod 755 "$d/exe.sh"
 SI_X2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
 if [ -n "$SI_X1" ] && [ "$SI_X1" != "$SI_X2" ]; then ok; else bad "54 making an untracked file executable must move the tree digest"; fi
 rm -f "$d/exe.sh"
+# ...READ FROM THE MODE, not from `-x` (reported on PR #502): `-x` asks whether this process may
+# execute the file, which a noexec mount or an ACL answers differently from the bits git stores.
+# A deny-execute ACL is the portable-enough witness; where `chmod +a` does not exist it is a SKIP.
+printf 'new\n' > "$d/acl.sh"; chmod 644 "$d/acl.sh"
+SI_A1="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+chmod 755 "$d/acl.sh"
+if chmod +a "user:$(id -un) deny execute" "$d/acl.sh" 2>/dev/null && [ ! -x "$d/acl.sh" ]; then
+  SI_A2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+  if [ -n "$SI_A1" ] && [ "$SI_A1" != "$SI_A2" ]; then ok; else bad "54 an owner-execute mode bit moves the digest even where -x is false"; fi
+  chmod -a "user:$(id -un) deny execute" "$d/acl.sh" 2>/dev/null
+else
+  echo "SKIP: 54 the mode-bit witness needs a deny-execute ACL (chmod +a), unavailable here"
+fi
+rm -f "$d/acl.sh"
 
 # AN UNTRACKED EMBEDDED REPOSITORY CARRIES ITS HEAD (reported on PR #502): `ls-files --others`
 # names it as a directory, and `git add` stores its checked-out commit as a gitlink, so moving that
@@ -3654,7 +3668,7 @@ rm -f "$d/ignored.txt" "$d/.claude/state/scratch.tmp"
 
 # A NON-STRING OR WRONGLY SHAPED startedAt IS 20 (reported on PR #502): `jq -r` stringifies `true`
 # and `123`, and a loose grammar accepted the result as a run nobody's marker writer produced.
-for _sa in 'true' '123' '"abc"' '"2026-09-24 03:34:07"'; do
+for _sa in 'true' '123' '"abc"' '"2026-09-24 03:34:07"' '"2026-09-24T03:34:07Z\n"'; do
   jq -n --argjson s "$_sa" '{branch:"issue-490-x", issue:"490", phase:"triaged", startedAt:$s}' \
     > "$d/.claude/state/implement-issue-active.json"
   ( cd "$d" && bash "$IL" sweep-identity .claude/state >/dev/null 2>&1 ); eq "$?" 20 "54 a startedAt of $_sa is 20, never an identity"

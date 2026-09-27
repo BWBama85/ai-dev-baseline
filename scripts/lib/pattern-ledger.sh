@@ -1386,7 +1386,10 @@ _ADB_PL_RS_FILE="rule-sweep.tsv"
 _adb_pl_rs_dir() {
   local _sd="${OPT_STATE:-${ADB_PATTERN_SWEEP_STATE:-}}"
   if [ -n "$_sd" ]; then printf '%s\n' "$_sd"; return 0; fi
-  local root; root="$(adb_repo_root 2>/dev/null)" || root=""
+  # SENTINEL CAPTURE: `$(…)` strips a newline that ends the checkout's own name, and the record
+  # would then be written under a sibling path. `adb_repo_root` ends its output with exactly one.
+  local root; root="$(adb_repo_root 2>/dev/null && printf X)" || root=""
+  root="${root%X}"; root="${root%$'\n'}"
   [ -n "$root" ] || { printf 'pattern-ledger: not inside a git repository and no --state given\n' >&2; return 1; }
   printf '%s/.%s/state\n' "$root" "${ADB_AGENT:-claude}"
 }
