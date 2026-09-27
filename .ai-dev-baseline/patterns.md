@@ -747,4 +747,6 @@ One line per resolved review thread, newest last.
 - `unbounded-resource` `scripts/lib/implement-lib.sh:4151` `2fab4ff` `PRRT_kwDOTfywrM6mecAP` PR #502 2026-09-27 — the identity staged a whole binary diff in TMPDIR with no bound before hashing it
 - `partial-validation` `scripts/lib/implement-lib.sh:4166` `75442d0` `PRRT_kwDOTfywrM6merS2` PR #502 2026-09-27 — an untracked embedded repository was identified by path and type only, not the HEAD git stores as a gitlink
 - `partial-validation` `scripts/lib/docs-lib.sh:229` `d1685d2` `PRRT_kwDOTfywrM6me8Mz` PR #502 2026-09-27 — the docs reader tested absence before refusing links, so a dangling link read as absent
+- `consumer-contract-mismatch` `scripts/lib/implement-lib.sh:2979` `9e614fb` `PRRT_kwDOTfywrM6mfJSD` PR #502 2026-09-27 — the identity's byte flags were copied onto the review prompts, leaving reviewers only 'Binary files differ'
+- `partial-validation` `scripts/lib/implement-lib.sh:4096` `9e614fb` `PRRT_kwDOTfywrM6mfJSE` PR #502 2026-09-27 — a non-string startedAt that jq stringified passed a loose run grammar as an identity
 <!-- adb:hits:end -->
