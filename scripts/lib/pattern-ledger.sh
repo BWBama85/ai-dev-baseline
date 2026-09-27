@@ -1521,6 +1521,13 @@ cmd_rule_sweep() {
   fi
   printf '%s\n' "$row" >&"$wfd" || { exec {wfd}>&-; rm -f "$stage"; printf 'pattern-ledger: cannot write %s\n' "$stage" >&2; exit 20; }
   exec {wfd}>&-
+  # THE RECORD KEEPS ITS MODE. The stage was created under the umask, so the rename would silently
+  # widen a record the operator restricted. A mode that cannot be read or applied refuses the write.
+  if [ -f "$f" ]; then
+    local _mode
+    _mode="$(adb_file_mode "$f")" && chmod "$_mode" "$stage" 2>/dev/null \
+      || { rm -f "$stage"; printf 'pattern-ledger: rule-sweep: could not carry %s'"'"'s mode onto the replacement — nothing was written\n' "$f" >&2; exit 20; }
+  fi
   mv -f -- "$stage" "$f" || { rm -f "$stage"; printf 'pattern-ledger: cannot publish %s\n' "$f" >&2; exit 20; }
   printf 'rule-sweep %s %s\n' "$OPT_RULE" "$OPT_RESULT"
 }
@@ -1599,14 +1606,18 @@ cmd_rule_sweep_report() {
     # need not be the bytes validated. Copied once, byte-exact, into a file created O_EXCL under
     # TMPDIR (never the state directory, where it would join a swept family), then validated and
     # parsed there. `read-artifact`'s private copy is the same answer to the same question.
-    local snap sfd="" _had_c=0
+    local snap sfd="" _had_c=0 _um
     snap="${TMPDIR:-/tmp}/adb-rule-sweep-snap.$$.$RANDOM"
     case "$-" in *C*) _had_c=1 ;; esac
     set -C
+    # OWNER-ONLY: TMPDIR may be shared, and the copy carries the record's sites and paths.
+    _um="$(umask)"; umask 077
     if ! { exec {sfd}>"$snap"; } 2>/dev/null; then
+      umask "$_um"
       [ "$_had_c" -eq 1 ] || set +C
       printf 'pattern-ledger: could not create a private snapshot of %s\n' "$f" >&2; exit 20
     fi
+    umask "$_um"
     [ "$_had_c" -eq 1 ] || set +C
     _ADB_PL_SNAP="$snap"
     trap 'rm -f "$_ADB_PL_SNAP"' EXIT

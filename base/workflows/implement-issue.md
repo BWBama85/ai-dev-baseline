@@ -504,7 +504,7 @@ place it survives for a later reader.
 case "$?" in
   0)  : ;;   # paste the block into the PR body
   11) echo "STOP: no documentation disposition was recorded — NOTHING WAS RECORDED; state it in 5b (consulted, or none-needed), then re-render"; exit 1 ;;
-  *)  : ;;   # 18/20 -> report; the block cannot be rendered
+  *)  : ;;   # 18/20 -> write "Docs consulted: not rendered (rc N)" into the body in its place
 esac
 ```
 
@@ -520,7 +520,7 @@ IDENT="$({{IMPLEMENT_LIB}} sweep-identity {{STATE_DIR}})" \
 case "$?" in
   0)  : ;;   # paste the block into the PR body
   11) echo "STOP: no checklist sweep was recorded while promoted rules exist — go back to step 9, sweep, record, then re-render"; exit 1 ;;
-  *)  : ;;   # 18/20/21 -> the codes step 11 lists; report it, the block cannot be rendered
+  *)  : ;;   # 18/20/21 (step 11 lists them) -> write "Learned-checklist sweep: not rendered (rc N)" in its place
 esac
 ```
 

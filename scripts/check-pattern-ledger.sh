@@ -1799,6 +1799,28 @@ RS_SWAP="$ST12U/rule-sweep.tsv" PATH="$odstub:$PATH" \
 eq "$?" 0 "12 the report validates and parses ONE snapshot — a swap mid-read is never parsed"
 if [ -e "$ST12U/rule-sweep.tsv.done" ]; then ok; else bad "12 fixture: the od stub never ran — the snapshot check asserted NOTHING"; fi
 
+# THE RECORD KEEPS ITS MODE ACROSS A REWRITE (reported on PR #502): the stage is created under the
+# umask, and renaming it over a 0600 record widened it to 0644.
+ST12MODE="$work/st12mode"
+bash "$PL" rule-sweep --state "$ST12MODE" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+chmod 600 "$ST12MODE/rule-sweep.tsv"
+( umask 022; bash "$PL" rule-sweep --state "$ST12MODE" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1 )
+eq "$(ls -l "$ST12MODE/rule-sweep.tsv" | cut -c1-10)" "-rw-------" "12 a rewrite keeps a restricted record's mode"
+
+# THE REPORT'S SNAPSHOT IS OWNER-ONLY (reported on PR #502): TMPDIR may be shared. The same `od`
+# stub, run while the snapshot exists, records its mode from a TMPDIR only this fixture uses.
+ST12SNAP="$work/st12snap"; mkdir -p "$ST12SNAP" "$work/st12snap-tmp"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12SNAP/rule-sweep.tsv"
+cat > "$odstub/od" <<STUB
+#!/bin/sh
+[ -n "\${RS_MODE:-}" ] && ls -l "\$TMPDIR"/adb-rule-sweep-snap.* 2>/dev/null | cut -c1-10 > "\$RS_MODE"
+exec "$realod" "\$@"
+STUB
+chmod +x "$odstub/od"
+( umask 022; RS_MODE="$work/st12snap-mode" TMPDIR="$work/st12snap-tmp" PATH="$odstub:$PATH" \
+  bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12SNAP" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1 )
+eq "$(cat "$work/st12snap-mode" 2>/dev/null)" "-rw-------" "12 the report's private snapshot is created owner-only"
+
 # THE WRITER DECIDES ON ITS COPY, THROUGH THE READER'S VALIDATOR (reported on PR #502): it can no
 # longer report success — or an idempotent 10 — over a record the report would refuse whole.
 ST12W="$work/st12w"; mkdir -p "$ST12W"
@@ -2180,6 +2202,14 @@ if [ "$MODE" = mutation ]; then
       '  mv -f -- "$stage" "$f" ||' \
       '  cat -- "$stage" >> "$f" && rm -f "$stage" ||' \
       '12 rule-sweep publishes by rename: the record'"'"'s inode changes on every write'
+  check_row 'rule-sweep-mode-widened' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    _mode="$(adb_file_mode "$f")" && chmod "$_mode" "$stage" 2>/dev/null \' \
+      '    true \' \
+      '12 a rewrite keeps a restricted record'"'"'s mode'
+  check_row 'rule-sweep-snapshot-world-readable' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    _um="$(umask)"; umask 077' \
+      '    _um="$(umask)"' \
+      '12 the report'"'"'s private snapshot is created owner-only'
   check_row 'rule-sweep-report-no-snapshot' 'scripts/lib/pattern-ledger.sh' 's12' \
       '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
       '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \

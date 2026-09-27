@@ -3613,6 +3613,15 @@ SI_E="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f
 if [ "$SI_E" != "$SI_D" ]; then ok; else bad "54 renaming an untracked file must move the tree digest"; fi
 rm -f "$d/renamed.txt"
 
+# ...AND SO DOES ITS EXECUTABLE BIT (reported on PR #502): git stores 100755 vs 100644, so a
+# `chmod +x` changes what ships while the path, size and content stay the same.
+printf 'new\n' > "$d/exe.sh"; chmod 644 "$d/exe.sh"
+SI_X1="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+chmod 755 "$d/exe.sh"
+SI_X2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$SI_X1" ] && [ "$SI_X1" != "$SI_X2" ]; then ok; else bad "54 making an untracked file executable must move the tree digest"; fi
+rm -f "$d/exe.sh"
+
 # AN EMPTY UNTRACKED FILE IS A REAL ADDITION and contributes no content at all, so a
 # contents-only digest would miss it entirely.
 : > "$d/empty.txt"

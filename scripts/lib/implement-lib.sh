@@ -4178,7 +4178,10 @@ cmd_sweep_identity() {
             _usz="$(LC_ALL=C wc -c < "$root/$u" 2>/dev/null | tr -d ' ')" || exit 1
             case "$_usz" in ''|*[!0-9]*) exit 1 ;; esac
             _udg="$(adb_sha256 "$root/$u")" || exit 1
-            printf '%s\0f\0%s\0%s\0' "$u" "$_usz" "$_udg"
+            # THE EXECUTABLE BIT TOO: git stores it (100755 vs 100644), so a `chmod +x` changes
+            # what ships.
+            if [ -x "$root/$u" ]; then _ux=x; else _ux=-; fi
+            printf '%s\0f\0%s\0%s\0%s\0' "$u" "$_ux" "$_usz" "$_udg"
           else
             # A socket, fifo or device that `ls-files` reported: named, typed, not hashed.
             printf '%s\0o\0\0' "$u"
