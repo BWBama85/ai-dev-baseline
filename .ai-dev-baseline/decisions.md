@@ -8474,4 +8474,17 @@ survive is the part a later reader needs.
              own review rounds, and the owner chose the model over it. What would change the answer: a
              reader whose mixed-version result is PERSISTED or acted on irreversibly; that reader must
              then snapshot, as `rule-sweep-report`'s record read already does.
+- extended:  2026-09-27, owner decision, PR #502 round 12 — the WRITER side of the same model. A
+             same-user process that replaces a record, stage or template path between a writer's check
+             and its open (the docs append, the ledger's `mktemp` stage and template, the rule-sweep
+             stage's `chmod`) can redirect one write to a target it names. That process already holds
+             write access to the target and could write it directly, so no boundary is crossed; and the
+             outcome fails closed, because every reader refuses a linked or non-regular record. The
+             static case stays guarded — a link or non-regular file already present is refused before
+             the open. The binding alternatives were weighed and not taken: bash's `-ef` against
+             `/dev/fd/N` never matches on macOS (probed: fdesc reports the file's inode under a
+             different device id), and stage-and-rename for the docs record needs a lock and a
+             lost-update design in a library that predates #490. Path-swap findings on these writers
+             are declined against this entry. What would change the answer: a writer running with
+             privileges the swapping process lacks.
 - baseline-issue: n/a

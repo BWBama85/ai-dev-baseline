@@ -4163,7 +4163,13 @@ cmd_sweep_identity() {
             readlink -n "$root/$u" 2>/dev/null || exit 1
             printf '\0'
           elif [ -d "$root/$u" ]; then
-            printf '%s\0d\0\0' "$u"
+            # AN EMBEDDED REPOSITORY CARRIES ITS HEAD: `git add` stores that commit as a gitlink, so
+            # moving it changes what ships. An unborn or unreadable HEAD cannot be added, and is `-`.
+            _uh=""
+            if [ -e "$root/$u/.git" ]; then
+              _uh="$(git -C "$root/$u" rev-parse --verify -q HEAD 2>/dev/null)" || _uh="-"
+            fi
+            printf '%s\0d\0%s\0' "$u" "$_uh"
           elif [ -f "$root/$u" ]; then
             # FAIL CLOSED on a regular file we cannot measure or hash. Substituting a literal and
             # carrying on returned a confident identity for a tree this command could not actually

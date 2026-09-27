@@ -3622,6 +3622,17 @@ SI_X2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -
 if [ -n "$SI_X1" ] && [ "$SI_X1" != "$SI_X2" ]; then ok; else bad "54 making an untracked file executable must move the tree digest"; fi
 rm -f "$d/exe.sh"
 
+# AN UNTRACKED EMBEDDED REPOSITORY CARRIES ITS HEAD (reported on PR #502): `ls-files --others`
+# names it as a directory, and `git add` stores its checked-out commit as a gitlink, so moving that
+# commit changes what ships.
+mkdir -p "$d/emb"; git -C "$d/emb" init -q
+git -C "$d/emb" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+SI_R1="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+git -C "$d/emb" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+SI_R2="$( cd "$d" && bash "$IL" sweep-identity .claude/state 2>/dev/null | cut -f2 )"
+if [ -n "$SI_R1" ] && [ "$SI_R1" != "$SI_R2" ]; then ok; else bad "54 moving an untracked embedded repository's HEAD must move the tree digest"; fi
+rm -rf "$d/emb"
+
 # AN EMPTY UNTRACKED FILE IS A REAL ADDITION and contributes no content at all, so a
 # contents-only digest would miss it entirely.
 : > "$d/empty.txt"
