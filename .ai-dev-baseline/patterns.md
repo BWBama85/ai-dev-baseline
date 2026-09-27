@@ -742,4 +742,7 @@ One line per resolved review thread, newest last.
 - `silent-permission-change` `scripts/lib/pattern-ledger.sh:1606` `f895dc9` `PRRT_kwDOTfywrM6meIKo` PR #502 2026-09-27 — the report's private TMPDIR snapshot was created under the umask, readable by other users
 - `status-swallowed` `base/workflows/implement-issue.md:524` `f895dc9` `PRRT_kwDOTfywrM6meIKu` PR #502 2026-09-27 — an unrenderable sweep block was dropped from the PR body without saying so
 - `partial-validation` `scripts/lib/implement-lib.sh:4181` `f895dc9` `PRRT_kwDOTfywrM6meIKy` PR #502 2026-09-27 — the untracked-file identity omitted the executable bit git stores
+- `silent-permission-change` `scripts/lib/pattern-ledger.sh:1463` `2fab4ff` `PRRT_kwDOTfywrM6mecAK` PR #502 2026-09-27 — the writer's stage held the restricted record's bytes at the umask mode until publish
+- `evidence-discarded` `scripts/lib/pattern-ledger.sh:1674` `2fab4ff` `PRRT_kwDOTfywrM6mecAO` PR #502 2026-09-27 — the zero-coverage exit fired before the off-set classes that explain it were rendered
+- `unbounded-resource` `scripts/lib/implement-lib.sh:4151` `2fab4ff` `PRRT_kwDOTfywrM6mecAP` PR #502 2026-09-27 — the identity staged a whole binary diff in TMPDIR with no bound before hashing it
 <!-- adb:hits:end -->
