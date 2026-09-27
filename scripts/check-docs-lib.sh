@@ -258,6 +258,12 @@ if [ "$MODE" = mutation ]; then
     '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"; export _ADB_DL_SNAPSHOT' \
     'a large record of valid appends still reports its last record'
 
+  # THE WRITER'S LINK GUARD: without it an append follows the link and writes its target.
+  check_mut docs-writer-follows-link \
+    '  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then' \
+    '  if false; then' \
+    'the docs writer refuses a symlinked record (20)'
+
   # THE REGULAR-FILE GUARD (#490): without it a FIFO blocks the report forever.
   check_mut docs-fifo-read \
     '  [ -f "$f" ] && [ ! -L "$f" ] || return 2' \
@@ -938,6 +944,14 @@ D29="$work/d29"; mkdir -p "$D29/state"; mkfifo "$D29/state/docs-consulted.tsv"
 ( timeout 20 env HOME="$FHOME" bash "$DL" report --state "$D29/state" >/dev/null 2>&1 ); eq "$?" 20 \
   "a FIFO at the docs record's path is refused (20), never read"
 rm -f "$D29/state/docs-consulted.tsv"
+# THE WRITER REFUSES A LINKED RECORD, as the reader does (reported on PR #502): `>>` followed the
+# link, wrote its target and reported success, and every later report then refused the record.
+printf 'untouched\n' > "$D29/link-target"
+ln -s "$D29/link-target" "$D29/state/docs-consulted.tsv"
+dl none-needed --state "$D29/state" --justification x >/dev/null 2>&1; eq "$?" 20 "the docs writer refuses a symlinked record (20)"
+eq "$(cat "$D29/link-target")" "untouched" "...and the link's target was never written"
+rm -f "$D29/state/docs-consulted.tsv"
+
 # NO SIZE BOUND ON THE READER (reported on PR #502): its writer enforces none, so a bound here would
 # refuse a file ordinary appends produced. 2200 valid records (each field under the 512-byte bound),
 # past the 1 MiB a bound once used —

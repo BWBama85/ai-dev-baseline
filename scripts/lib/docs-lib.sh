@@ -188,6 +188,13 @@ _adb_dl_append() {
   f="$(_adb_dl_file)" || exit 20
   d="$(dirname "$f")"
   [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'docs-lib: cannot create %s\n' "$d" >&2; exit 20; }
+  # A LINK OR A NON-FILE IS REFUSED BEFORE THE APPEND, as the reader refuses it: `>>` follows a
+  # symlink, so the writer modified whatever the link named and reported success, and every later
+  # `report`/`verdict` then refused the record with no correction operation.
+  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+    printf 'docs-lib: %s is not a regular file (a symlink or another type) — refusing to append to it\n' "$f" >&2
+    exit 20
+  fi
   printf '%s\n' "$*" >> "$f" || { printf 'docs-lib: cannot write %s\n' "$f" >&2; exit 20; }
 }
 
