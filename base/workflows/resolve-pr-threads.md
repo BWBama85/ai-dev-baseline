@@ -324,7 +324,7 @@ esac
 **A promotion pushed here moves the head, and the clean pass was for the head BEFORE it.** Set
 `SWEEP_HEAD="$(git rev-parse HEAD)"` first; step 4c's form then commits the rule and step 4d reviews
 and pushes it, so after a `0` from `due` the pull request's head is a
-SHA no reviewer has looked at — and the rule it carries is an operative instruction that
+SHA the async reviewer has not looked at — and the rule it carries is an operative instruction that
 `/implement-issue` injects into agent prompts, which is exactly the content review exists for.
 Reporting "reviewed clean" over that head would state a status nobody observed
 (`base/practices/verify-before-asserting.md`). So a promotion here is a pushed change like any
@@ -990,7 +990,7 @@ subagent, `publish-review`, and `review-loop pass --published --pr "$PR_NUM" --h
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
 (`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
-`33` carry each REQUIRED finding, then report · `35` · `37`/`38` report. `carry` and `report` take the same
+`33` carry each REQUIRED finding (with its `--site`), then report · `35` · `37`/`38` report. `carry` and `report` take the same
 `--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
 **not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
 
@@ -1005,8 +1005,10 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   LOOP_LINE="$({{IMPLEMENT_LIB}} review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" {{STATE_DIR}})"; LRC=$?
   [ "$(git rev-parse HEAD)" = "$PUSH_SHA" ] \
     || { echo "STOP: HEAD moved while the report ran — nothing was pushed; take another pass"; exit 1; }   # run step 8 first
-  # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live at the moment of the push: the loop
-  # can take minutes, and a PR that closed or gained a head meanwhile is not this round's to push to.
+  # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live immediately before the push: the
+  # loop can take minutes, and a PR that closed or gained a head meanwhile is not this round's to
+  # push to. A close landing between this read and the push is the residual; a new head is refused
+  # by the push itself, which is not a fast-forward from it.
   LIVE="$(gh pr view "$PR_NUM" --json state,headRefOid --jq '.state + " " + .headRefOid')" \
     || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed"; exit 1; }   # run step 8 first
   [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \
@@ -1017,6 +1019,8 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
     27) echo "the worktree is not clean — commit it, then take another pass"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
     *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
+        # THE BLOCKED ROUND STILL REPORTS: the rows gathered so far, and this round's loop line.
+        printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
         # run step 8 (restore the starting branch) FIRST, then:
         exit 1 ;;
   esac
@@ -1160,6 +1164,7 @@ report the difference.**
 # Reported by the declared reviewer on PR #429.
 if [ "$SRC" -ne 0 ] || [ -z "${STATS_BEFORE:-}" ] || [ -z "${STATS_AFTER:-}" ]; then
   echo "NOTE: the ledger could not be read for this round — reporting no counts rather than wrong ones"
+  ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ledger unreadable — no counts"$'\n'
 else
 
 # `$STATS_BEFORE` and `$ROUND_CLASSES` were captured in step 4b; `$STATS_AFTER` just above.
@@ -1200,13 +1205,15 @@ ROUNDCLS
 
 # ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
 ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
+fi
+# OUTSIDE the ledger guard: neither the sweep nor the local review depends on the ledger, and an
+# unreadable ledger must not take their evidence with it.
 # The round's sibling sweep, counted only from a file that validates whole.
 SWEEP_LINE="$({{IMPLEMENT_LIB}} sweep-report "$SWEEP_FILE" 2>/dev/null)" \
   || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
 ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"$'\n'
 # The round's local review line, rendered by 4d from its record before the push (#491).
 ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"$'\n'
-fi
 ```
 
 **The cumulative figures are still worth reporting — just labelled as what they are.** "4 findings

@@ -89,7 +89,8 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `11` | `review-loop report` | no loop was recorded — the loop never ran |
 | `17` | `review-loop pass --published` / `carry` | no native pass was begun for this token — run `review-loop begin` before the subagent / nothing to carry (not exhausted, or its count is already carried) |
 | `27` | `review-loop pass` / `begin` / `report` | the worktree is not clean. A pass reviews the worktree and a push ships HEAD, so the loop reviews and certifies only a committed tree — commit, then pass again |
-| `19` | `review-loop carry` | a refused field (severity, or a finding past 300 bytes or carrying a control character), or a row that would take the record past its 1 MiB bound |
+| `19` | `review-loop carry` | a refused field (severity, a `--site` that is not a repository-relative `path[:line]` or `-`, or a finding past 300 bytes or carrying a control character), or a row that would take the record past its 1 MiB bound |
+| `39` | `open-pr` | the local convergence loop does not certify the tip (`review-loop report` is not 0/33/35, or no loop was recorded while it is enabled), or the tip moved while that verdict was read. Re-run step 9's loop — never push past it |
 | `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 
 ## Every documented stop, in one place

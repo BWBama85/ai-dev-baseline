@@ -504,7 +504,7 @@ excuses what the passes found. On `33`, carry every REQUIRED finding of the fina
 give it (the verdict trailer carries counts, not severities):
 
 ```bash
-bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop carry --severity <critical|high|medium|low> --finding '<one line>' .gemini/state
+bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop carry --severity <critical|high|medium|low> --site <path[:line]|-> --finding '<one line>' .gemini/state
 ```
 
 Then the report, which is the loop's verdict and its one line. Paste the line into the PR body and
@@ -603,7 +603,9 @@ silently (`git-and-prs.md`). Then one call pushes, opens, **proves**, and guards
 bash "$HOME/.gemini/scripts/lib/implement-lib.sh" open-pr .gemini/state --title "<semantic title>" --body-file <file> --closes <n,m>
 ```
 
-Its stdout lines are the record: push → `phase=pushed` → `gh pr create` → `prUrl` +
+It first re-derives the local convergence loop's verdict from its record and refuses (39) a tip the
+loop does not certify — a commit made after step 9's report included — so the pushed commit is the
+reviewed one. Its stdout lines are the record: push → `phase=pushed` → `gh pr create` → `prUrl` +
 `phase=pr_opened`; then it **proves the closing keywords registered** — GitHub's own computed
 link set (`closingIssuesReferences`, repo-scoped, retried while it settles) compared to
 `--closes`; rc 23 = the keywords did not take (a code span, a typo, a cross-repo qualifier): fix

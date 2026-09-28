@@ -24,7 +24,8 @@ only by a published release, which is what these entries are the notes for.
   severity triage gives it, and `review-loop report` renders the one line that goes in the PR body
   (`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`). It blocks a push
   that carries a CRITICAL/HIGH finding, carries fewer findings than the final pass declared, follows
-  a failed final pass, or includes an edit made after it. The resolver now pushes once per round,
+  a failed final pass, or includes an edit made after it. `open-pr` re-reads that verdict before its push, so a commit made after the report cannot ship on
+  it. The resolver now pushes once per round,
   after the loop, and `dispatch-review --local-head` lets it review commits that sit ahead of the
   PR head.
 

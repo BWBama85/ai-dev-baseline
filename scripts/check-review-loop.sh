@@ -26,6 +26,9 @@ adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
+# The suite asserts the BUILT-IN budget and its own bounds, so an operator's one-run overrides must
+# not reach a fixture: every case that wants one sets it through RL_ENV.
+unset ADB_LOCAL_REVIEW_PASSES ADB_DISPATCH_TIMEOUT_SECS ADB_DISPATCH_KILL_GRACE_SECS
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 
@@ -127,8 +130,8 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'a pass killed mid-dispatch is recorded failed on the next call'
   check_mut record-race-accepted \
-    '  if ! _il_loop_parse "$RL_REC" || [ "$RL_OPEN" != "$n" ]; then' \
-    '  if ! _il_loop_parse "$RL_REC"; then' \
+    '  if [ "$RL_OPEN" != "$n" ]; then' \
+    '  if false; then' \
     'a record that changed underneath a pass refuses to record its result'
   check_mut pass-past-budget-accepted \
     '        [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18' \
@@ -147,7 +150,7 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'a carry past the declared count is refused (17)'
   check_mut duplicate-carry-appended \
-    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
+    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     '    if false; then' \
     'the identical carry is a no-op (10)'
   check_mut carry-before-exhaustion \
@@ -182,6 +185,18 @@ if [ "$MODE" = mutation ]; then
     '    mv -f "$aside" "$RL_DIR/review.md" 2>/dev/null' \
     '    :' \
     'puts the previous reply back rather than losing it'
+  check_mut open-pr-ungated \
+    '  if ! _il_open_pr_loop_gate "$dir"; then' \
+    '  if false; then' \
+    'open-pr refuses (39) when no loop is recorded'
+  check_mut open-pr-tip-unpinned \
+    '  if [ "$(git rev-parse "refs/heads/$branch" 2>/dev/null)" != "$_tip" ]; then' \
+    '  if false; then' \
+    'open-pr refuses (39) when the tip moved across the verdict read'
+  check_mut site-not-in-identity \
+    '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[2]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[3]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"' \
+    '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[2]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"' \
+    'same-text findings at different sites leave a readable, fully carried record'
   check_mut local-head-accepts-foreign \
     "        1) printf 'implement-lib: dispatch-review: HEAD %s does not descend from PR %s'\"'\"'s head %s — this is not that pull request plus local commits; sync the branch and re-run.\\n' \"\$lhead\" \"\$crit_pr\" \"\$phead\" >&2; return 16 ;;" \
     '        1) : ;;' \
@@ -217,6 +232,19 @@ if [ "$MODE" = mutation ]; then
     printf '%s\n' "$1/tree/scripts/lib/role-dispatch.sh"
   }
   check_mutation_pool check-review-loop-rd "$work/rd" prep_rd runner 6
+
+  # The resolver's pre-push live check is prose the resolver executes, so its row runs against the
+  # workflow source.
+  check_mut_reset
+  check_mut live-pr-check-dropped \
+    '  [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \' \
+    '  true \' \
+    '…and refuses the push unless the PR is OPEN at the round head'
+  prep_rw() {
+    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1/tree/base/workflows/resolve-pr-threads.md"
+  }
+  check_mutation_pool check-review-loop-rw "$work/rw" prep_rw runner 6
 
   check_summary check-review-loop
   exit 0
@@ -317,20 +345,22 @@ eq "$RL_RC" 38 "2 a pass past the budget is refused (38)"
 eq "$(count "$d")" 3 "2 a spent budget never dispatches a fourth time"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "2 an exhaustion with nothing carried BLOCKS (39)"
-rl "$d" carry --severity low --finding 'a nit in f.sh' .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding 'a nit in f.sh' .claude/state
 eq "$RL_RC" 0 "2 carry records a finding"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "2 an exhaustion with fewer carries than declared BLOCKS"
 has "$RL_OUT" "2 REQUIRED finding(s), 1 carried" "2 …and names the shortfall"
-rl "$d" carry --severity low --finding 'a nit in f.sh' .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding 'a nit in f.sh' .claude/state
 eq "$RL_RC" 10 "2 the identical carry is a no-op (10), so a retry is safe"
-rl "$d" carry --severity medium --finding 'rename <x> & [y]' .claude/state
+rl "$d" carry --severity medium --site f.sh:1 --finding 'rename <x> & [y]' .claude/state
 eq "$RL_RC" 0 "2 the second carry records"
-rl "$d" carry --severity low --finding 'a third' .claude/state
+rl "$d" carry --severity low --site f.sh:9 --finding 'a nit in f.sh' .claude/state
+eq "$RL_RC" 17 "2 …and a third is refused once every declared finding is carried"
+rl "$d" carry --severity low --site f.sh:1 --finding 'a third' .claude/state
 eq "$RL_RC" 17 "2 a carry past the declared count is refused (17)"
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "2 every REQUIRED finding carried, none HIGH: 33 — push, and say so"
-has "$RL_OUT" "exhausted — carried: 2 (low: a nit in f.sh; medium: rename &lt;x&gt; &amp; \\[y\\])" \
+has "$RL_OUT" "exhausted — carried: 2 (low f.sh:1: a nit in f.sh; medium f.sh:1: rename &lt;x&gt; &amp; \\[y\\])" \
    "2 the line names each carried finding, Markdown-escaped (reviewer-derived text)"
 has "$RL_OUT" "pass 1 -> 2 REQUIRED · pass 2 -> 2 · pass 3 -> 2" "2 …after every pass"
 
@@ -338,14 +368,24 @@ has "$RL_OUT" "pass 1 -> 2 REQUIRED · pass 2 -> 2 · pass 3 -> 2" "2 …after e
 d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 33 "2 a budget of 1 exhausts on its only pass"
-rl "$d" carry --severity high --finding 'unescaped path' .claude/state
+rl "$d" carry --severity high --site f.sh:1 --finding 'unescaped path' .claude/state
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "2 a carried HIGH blocks"
 has "$RL_OUT" "CRITICAL/HIGH" "2 …and says why"
-rl "$d" carry --severity sev1 --finding x .claude/state
+rl "$d" carry --severity sev1 --site f.sh:1 --finding x .claude/state
 eq "$RL_RC" 19 "2 a severity outside the closed set is refused (19)"
-rl "$d" carry --severity low --finding "$(printf 'a\tb')" .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding "$(printf 'a\tb')" .claude/state
 eq "$RL_RC" 19 "2 a finding carrying a TAB is refused (19) — it would forge a row"
+rl "$d" carry --severity low --site '/etc/passwd' --finding x .claude/state
+eq "$RL_RC" 19 "2 a site that is not repository-relative is refused (19)"
+# Two findings sharing their wording are still two: the site is part of the identity.
+d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --site a.sh:3 --finding 'same words' .claude/state
+rl "$d" carry --severity low --site b.sh:7 --finding 'same words' .claude/state
+eq "$RL_RC" 0 "2 two findings with identical text at different sites are both carried"
+rl "$d" report .claude/state
+eq "$RL_RC" 33 "2 same-text findings at different sites leave a readable, fully carried record"
 
 # A finding's bound is BYTES, under a UTF-8 locale too: 150 two-byte characters are 300 bytes, 151 are not.
 UTF=""
@@ -357,9 +397,9 @@ if [ -n "$UTF" ]; then
   RL_ENV="ADB_LOCAL_REVIEW_PASSES=1 LC_ALL=$UTF"
   rl "$d" pass .claude/state codex
   mb="$(printf 'é%.0s' $(seq 150))"
-  rl "$d" carry --severity low --finding "$mb" .claude/state
+  rl "$d" carry --severity low --site f.sh:1 --finding "$mb" .claude/state
   eq "$RL_RC" 0 "2 a 300-BYTE multibyte finding is legal"
-  rl "$d" carry --severity low --finding "${mb}é" .claude/state
+  rl "$d" carry --severity low --site f.sh:1 --finding "${mb}é" .claude/state
   eq "$RL_RC" 19 "2 a finding past 300 BYTES is refused (19), whatever its character count"
 else
   check_note "no UTF-8 locale here — the byte-bound case runs only where one exists"
@@ -372,15 +412,15 @@ rl "$d" pass .claude/state codex
 R="$d/.claude/state/review-loop.tsv"
 pad="$(printf 'x%.0s' $(seq 290))"
 awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" \
-  'BEGIN { n = int((1048576 - cur) / 308); for (i = 1; i <= n; i++) printf "carry\t1\tlow\t%05d%s\n", i, pad }' >> "$R"
-rl "$d" carry --severity low --finding "$(printf 'y%.0s' $(seq 300))" .claude/state
+  'BEGIN { n = int((1048576 - cur) / 310); for (i = 1; i <= n; i++) printf "carry\t1\tlow\t-\t%05d%s\n", i, pad }' >> "$R"
+rl "$d" carry --severity low --site f.sh:1 --finding "$(printf 'y%.0s' $(seq 300))" .claude/state
 eq "$RL_RC" 19 "2 a carry that would take the record past its bound is refused (19)"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "2 …and the record it declined to grow still reads (39, not 18)"
 RL_ENV=""
 d="$(fixture)"; script "$d" req:1
 rl "$d" pass .claude/state codex
-rl "$d" carry --severity low --finding x .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding x .claude/state
 eq "$RL_RC" 17 "2 carry against a loop that is NOT exhausted is refused (17)"
 
 # =============================== 3. a failed pass is never clean ================================
@@ -475,7 +515,7 @@ rl "$d" report .claude/state
 eq "$RL_RC" 39 "4 an edit after the FINAL budgeted pass blocks"
 d="$(fixture)"; script "$d" req:1
 rl "$d" pass .claude/state codex
-rl "$d" carry --severity low --finding nit .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 commit_fix "$d" sneaked
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "4 a commit after an EXHAUSTED pass blocks, even with every finding carried"
@@ -535,7 +575,7 @@ eq "$RL_RC" 39 "5 local_passes = 0 after a failed final pass still BLOCKS"
 has "$RL_OUT" "(then disabled)" "5 …and the line says the loop was disabled after it"
 d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
 rl "$d" pass .claude/state codex
-rl "$d" carry --severity high --finding 'real bug' .claude/state
+rl "$d" carry --severity high --site f.sh:1 --finding 'real bug' .claude/state
 RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "5 local_passes = 0 after a carried HIGH still BLOCKS"
@@ -545,7 +585,7 @@ rl "$d" pass .claude/state codex
 rl "$d" pass --unavailable none .claude/state
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "5 a reviewer lost after a pass with findings exhausts the loop — uncarried, it BLOCKS"
-rl "$d" carry --severity low --finding nit .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 eq "$RL_RC" 0 "5 …and its findings can then be carried"
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "5 …after which it pushes with the line"
@@ -734,6 +774,58 @@ AD="$( cd "$d" && env HOME="$FHOME" bash "$IL" admit .claude/state 2>&1 )"
 if [ -e "$S/review-loop.tsv" ] || ls "$S"/review-loop-pr* >/dev/null 2>&1; then
   bad "10 admission left a finished run's loop record behind [$AD]"; else ok; fi
 
+# =============================== 12. open-pr pushes only a certified tip ========================
+# Step 9's report runs before step 10, so open-pr re-derives the loop's verdict itself. Past the gate
+# the push fails (24) — the fixture has no remote — which is how "the gate let it through" is seen.
+OB="$work/opbin"; mkdir -p "$OB"
+printf '#!/usr/bin/env bash\necho "gh stub: $*" >&2; exit 3\n' > "$OB/gh"; chmod +x "$OB/gh"
+printf 'body\n' > "$work/op-body.md"
+opr() { local dd="$1"; shift
+  RL_OUT="$( cd "$dd" && env HOME="$FHOME" PATH="$OB:$SB:$PATH" RL_SCRIPT="$dd.script" RL_COUNT="$dd.count" \
+      ${RL_ENV:-} bash "$IL" open-pr .claude/state --title t --body-file "$work/op-body.md" 2>&1 )"; RL_RC=$?; }
+opfix() { local dd; dd="$(fixture)"
+  jq -n '{branch:"issue-7-x", issue:"7", phase:"triaged", startedAt:"2026-09-28T00:00:00Z"}' > "$dd/.claude/state/implement-issue-active.json"
+  printf '%s\n' "$dd"; }
+d="$(opfix)"
+opr "$d"
+eq "$RL_RC" 39 "12 open-pr refuses (39) when no loop is recorded"
+d="$(opfix)"; script "$d" req:0
+rl "$d" pass .claude/state codex
+opr "$d"
+eq "$RL_RC" 24 "12 a converged loop lets open-pr through to its push"
+commit_fix "$d" after-report
+opr "$d"
+eq "$RL_RC" 39 "12 open-pr refuses (39) a commit made after the converged pass"
+d="$(opfix)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+opr "$d"
+eq "$RL_RC" 24 "12 a disabled loop with nothing recorded does not hold the push"
+RL_ENV=""
+# The tip must not move across the verdict read: a `git` shim advances the branch when open-pr asks
+# for the loop's report, so the report certifies the old tip and the push would send the new one.
+d="$(opfix)"; script "$d" req:0
+rl "$d" pass .claude/state codex
+RB="$work/reportbin"; mkdir -p "$RB"
+# The shebang names the REAL interpreter: this shim is itself named `bash`, so `env bash` would
+# find it again and recurse.
+cat > "$RB/bash" <<SH
+#!$(command -v bash)
+case "\$*" in
+  *"review-loop report"*)
+    if [ -n "\${MOVE_REPO:-}" ] && [ ! -e "\$MOVE_REPO.moved" ]; then
+      : > "\$MOVE_REPO.moved"
+      out="\$("$(command -v bash)" "\$@")"; rc=\$?
+      "$(command -v git)" -C "\$MOVE_REPO" commit -q --allow-empty -m moved >/dev/null 2>&1
+      printf '%s\n' "\$out"; exit \$rc
+    fi ;;
+esac
+exec "$(command -v bash)" "\$@"
+SH
+chmod +x "$RB/bash"
+RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$RB:$OB:$SB:$PATH" MOVE_REPO="$d" \
+    bash "$IL" open-pr .claude/state --title t --body-file "$work/op-body.md" 2>&1 )"; RL_RC=$?
+[ -e "$d.moved" ] && ok || bad "12 the tip-move fixture fired (the witness below is otherwise vacuous)"
+eq "$RL_RC" 39 "12 open-pr refuses (39) when the tip moved across the verdict read"
+
 # =============================== 11. the prose drives the loop ==================================
 # #491 acceptance: step 9 calls the loop before step 10; the resolver calls it before the push and
 # before step 7's re-request. A command is located only INSIDE a fenced block — a prose mention of it
@@ -759,6 +851,14 @@ RPUSH="$(code_line_of "$RW" 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"')
 order "11 the resolver runs the loop before its push" "$RPASS" "$RPUSH"
 order "11 …reads the commit it will push BEFORE the report certifies it" "$(code_line_of "$RW" 'PUSH_SHA="$(git rev-parse HEAD)"')" "$RREPORT"
 order "11 …re-reads the PR live between the report and the push" "$(code_line_of "$RW" 'gh pr view "$PR_NUM" --json state,headRefOid')" "$RPUSH"
+order "11 …and refuses the push unless the PR is OPEN at the round head" "$(code_line_of "$RW" '[ "$LIVE" = "OPEN $SWEEP_HEAD" ]')" "$RPUSH"
+LG="$(code_line_of "$RW" 'ledger unreadable — no counts')"
+[ -n "$LG" ] && ok || bad "11 an unreadable ledger still records the round's row"
+GUARD_END="$(grep -n -B1 -F '# OUTSIDE the ledger guard' "$RW" | head -1 | cut -d- -f1)"
+[ "$(sed -n "${GUARD_END:-0}p" "$RW")" = "fi" ] && ok || bad "11 the ledger guard closes before the sweep and local review lines"
+order "11 …so both are appended OUTSIDE it" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"')"
+order "11 …the local review line included" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"')"
+has "$(grep -F 'Per round so far' "$RW")" 'LOOP_LINE' "11 a blocked round still reports its loop line with the rows so far"
 order "11 …and before step 7's re-request" "$RPASS" "$(line_of "$RW" '### 7. Ask for a re-review')"
 order "11 …after 4c, so the reviewed diff includes the ledger commit" "$(line_of "$RW" '#### 4c. Promote what has become a pattern')" "$RPASS"
 eq "$(grep -c 'git push origin' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"
