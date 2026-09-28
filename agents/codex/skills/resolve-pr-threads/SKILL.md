@@ -1002,7 +1002,9 @@ fi
 
 A Claude slot with Claude driving takes each pass natively, as `/implement-issue` step 9 does:
 `begin` (above), then `dispatch-review --prompt-only --criteria-from-pr "$PR_NUM" --local-head`, the
-subagent, `publish-review`, and `review-loop pass --published --pr "$PR_NUM" --head "$SWEEP_HEAD"`.
+subagent — under the same deadline step 8 gives it — `publish-review`, and
+`review-loop pass --published --pr "$PR_NUM" --head "$SWEEP_HEAD"`, which records a subagent that
+timed out or failed as the failed pass it was.
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
 (`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
@@ -1080,7 +1082,7 @@ For each thread you classified:
 
 ```bash
 THREAD_ID="<id from .codex/state/threads-$PR_NUM.json>"
-REPLY="Addressed in $FIX_SHA: <summary>."   # the THREAD's fix commit from 4b, not the pushed tip — OR "Declined: <reason>." OR "Addressed in <earlier-sha>."
+REPLY="Addressed in <this thread's --fix sha from 4b>: <summary>."   # per thread: a later commit reassigns $FIX_SHA — OR "Declined: <reason>." OR "Addressed in <earlier-sha>."
 
 gh api graphql -f query='
 mutation($threadId:ID!,$body:String!){

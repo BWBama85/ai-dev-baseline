@@ -4862,7 +4862,9 @@ cmd_review_loop_carry() {
     # check saw them. Accepted: no NUL, and at most one newline, as the final byte.
     local _ff _fsz _fnul _fnl
     _ff="$(mktemp "${TMPDIR:-/tmp}/adb-finding.XXXXXX")" || { echo "implement-lib: review-loop carry: could not stage stdin" >&2; return 20; }
-    head -c $(( _IL_LOOP_FINDING_MAX + 2 )) > "$_ff" || { rm -f "$_ff"; echo "implement-lib: review-loop carry: could not read stdin" >&2; return 20; }
+    # BOUNDED: a pipe held open without supplying the line would otherwise hold the command forever.
+    adb_run_bounded 30 5 head -c $(( _IL_LOOP_FINDING_MAX + 2 )) > "$_ff" \
+      || { rm -f "$_ff"; echo "implement-lib: review-loop carry: could not read stdin within 30 s" >&2; return 20; }
     _fsz="$(LC_ALL=C wc -c < "$_ff" | tr -d ' ')"; _fnul="$(LC_ALL=C tr -cd '\000' < "$_ff" | LC_ALL=C wc -c | tr -d ' ')"
     _fnl="$(LC_ALL=C tr -cd '\n' < "$_ff" | LC_ALL=C wc -c | tr -d ' ')"
     if [ "$_fnul" != 0 ] || [ "$_fnl" -gt 1 ] || { [ "$_fnl" = 1 ] && [ "$(tail -c 1 "$_ff" | od -An -tx1 | tr -d ' \n')" != 0a ]; }; then

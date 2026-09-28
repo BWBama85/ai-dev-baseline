@@ -477,7 +477,8 @@ esac
 ```
 
 A Claude slot with Claude driving takes each pass natively, as step 8 does: after `begin`, run
-`dispatch-review --prompt-only`, the subagent, and `publish-review`, then record the pass:
+`dispatch-review --prompt-only`, the subagent — under step 8's deadline, whose expiry is a failed
+pass rather than an open-ended wait — and `publish-review`, then record the pass:
 
 ```bash
 {{IMPLEMENT_LIB}} review-loop pass --published {{STATE_DIR}} "$REVIEW_TOKEN"
