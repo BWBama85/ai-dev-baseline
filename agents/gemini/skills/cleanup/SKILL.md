@@ -947,8 +947,11 @@ RV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN
 # /implement-issue step 5b writes it after the marker exists, and step 10 and step 11 both read it
 # back, so `$RUN_NOW` is what governs the delete.
 DV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict docs "$RUN_NOW")" || DV=keep
+# The learned-checklist sweep record (#490): the docs record's lifecycle exactly — written after the
+# marker exists and read back at steps 10 and 11 — so it takes `$RUN_NOW` for the same reason.
+LV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict rules "$RUN_NOW")" || LV=keep
 
-# The five verdicts above rest on LOCK and RUN_NOW as ONE scan captured them, and the scan
+# The six verdicts above rest on LOCK and RUN_NOW as ONE scan captured them, and the scan
 # fingerprints artifacts as it walks — the claim's row can be probed BEFORE a survey row is
 # fingerprinted, so an admission landing mid-walk yields "no run" verdicts beside a LIVE run's
 # identities, and the delete-time identity check then MATCHES the live file (reviewer find,
@@ -960,7 +963,7 @@ bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" run-live "$STATE"; RL_RC=$?
 # something else, and treating that like 10 would leave the stale verdicts armed over a state
 # directory whose liveness was never established. Anything but 10 keeps everything.
 if [ "$RL_RC" -ne 10 ]; then
-  GV=keep; SV=keep; IV=keep; RV=keep; DV=keep
+  GV=keep; SV=keep; IV=keep; RV=keep; DV=keep; LV=keep
   if [ "$RL_RC" -eq 0 ]; then
     NOTES="${NOTES}KEPT the run artifacts — a run claim or marker was present after the identity snapshot; none were judged this pass
 "
@@ -1034,6 +1037,10 @@ while IFS="$TABC" read -r kind sfile key ident; do
       ;;
     docs)
       [ "$DV" = stale ] || continue
+      sweep_file "$sfile" "$ident" "no run in flight"
+      ;;
+    rules)
+      [ "$LV" = stale ] || continue
       sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     threads)

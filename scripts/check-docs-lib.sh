@@ -243,10 +243,38 @@ if [ "$MODE" = mutation ]; then
   # THE MARKDOWN ESCAPING (PR #429).
   # SINGLE-LINE, for the reason the sibling suite records: a two-line literal matches nothing.
   # Turning the escaper into a pass-through is the whole defect in one line.
+  # RETARGETED when the report stopped inlining its own awk `md()` and began rendering through the
+  # shared `adb_md_escape` (#490): the delegation is this module's half of the escaping, so turning
+  # it into a pass-through is the same defect in one line.
   check_mut evidence-not-escaped \
-    '      function md(v) { gsub(/&/, "\\&amp;", v); gsub(/</, "\\&lt;", v); gsub(/>/, "\\&gt;", v); return v }' \
-    '      function md(v) { return v }' \
+    '_adb_dl_md() { adb_md_escape "$1"; }' \
+    '_adb_dl_md() { printf '"'"'%s'"'"' "$1"; }' \
     'the rendered report contains no raw HTML comment opener'
+
+  # THE SNAPSHOT EXPORTED again: the environment counts against the OS argument limit, so a large
+  # record made every command the report runs fail.
+  check_mut docs-snapshot-exported \
+    '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"' \
+    '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"; export _ADB_DL_SNAPSHOT' \
+    'a large record of valid appends still reports its last record'
+
+  # THE WRITER'S LINK GUARD: without it an append follows the link and writes its target.
+  check_mut docs-writer-follows-link \
+    '  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then' \
+    '  if false; then' \
+    'the docs writer refuses a symlinked record (20)'
+
+  # THE READER'S LINK GUARD: without it a dangling link reads as absent.
+  check_mut docs-reader-dangling-as-absent \
+    '  [ -L "$f" ] && return 2' \
+    '  :' \
+    'a dangling symlinked docs record is refused (20), never read as absent'
+
+  # THE REGULAR-FILE GUARD (#490): without it a FIFO blocks the report forever.
+  check_mut docs-fifo-read \
+    '  [ -f "$f" ] || return 2' \
+    '  :' \
+    "a FIFO at the docs record's path is refused (20), never read"
 
   # THE NUL SCAN (PR #429).
   check_mut nul-normalized \
@@ -287,7 +315,9 @@ if [ "$MODE" = mutation ]; then
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
     printf '%s\n' "$1/tree/scripts/lib/common.sh"
   }
-  runner() { ( cd "$1/tree" && bash scripts/check-docs-lib.sh 2>&1 ); }
+  # THE ROW'S WITNESS TRAVELS WITH IT, so a child can skip a test no row but its own depends on.
+  # The copy directory is `mut-<index>` into the table the pool is running.
+  runner() { local i="${1##*/mut-}"; ( cd "$1/tree" && CDL_ROW_WITNESS="${CHECK_MUT_WIT[$i]}" bash scripts/check-docs-lib.sh 2>&1 ); }
 
   check_mutation_pool check-docs-lib "$work" prep runner 6
 
@@ -908,6 +938,56 @@ hasnt "$R28" '<!--'      "the rendered report contains no raw HTML comment opene
 hasnt "$R28" '<script>'  "…and no raw tag"
 has   "$R28" '&lt;!--'   "…the evidence is escaped rather than dropped, so it stays readable"
 has   "$R28" '&lt;script&gt;' "…including in the probe evidence"
+# …AND MARKDOWN LINK/IMAGE SYNTAX. The two awk renderers escaped HTML only, so a stored source of
+# `![x](https://host/p)` became an image in the pull-request body (#490, reported on PR #502).
+D28b="$work/d28b"; mkdir -p "$D28b/state"
+dl consulted --state "$D28b/state" --surface 'see [docs](https://example.invalid)' --rung 2 --source '![x](https://example.invalid/p)' >/dev/null 2>&1
+R28b="$(dl report --state "$D28b/state" 2>/dev/null)"
+has   "$R28b" '!\[x\](https://example.invalid/p)' "a source carrying image syntax is rendered as text"
+hasnt "$R28b" '![x](' "…and the live image syntax never reaches the report"
+has   "$R28b" 'see \[docs\](https://example.invalid)' "…nor does a surface's link syntax"
+
+# A FIFO OR AN OVERSIZED RECORD IS REFUSED BEFORE IT IS READ WHOLE (#490, reported on PR #502).
+D29="$work/d29"; mkdir -p "$D29/state"; mkfifo "$D29/state/docs-consulted.tsv"
+( timeout 20 env HOME="$FHOME" bash "$DL" report --state "$D29/state" >/dev/null 2>&1 ); eq "$?" 20 \
+  "a FIFO at the docs record's path is refused (20), never read"
+rm -f "$D29/state/docs-consulted.tsv"
+# THE WRITER REFUSES A LINKED RECORD, as the reader does (reported on PR #502): `>>` followed the
+# link, wrote its target and reported success, and every later report then refused the record.
+printf 'untouched\n' > "$D29/link-target"
+ln -s "$D29/link-target" "$D29/state/docs-consulted.tsv"
+dl none-needed --state "$D29/state" --justification x >/dev/null 2>&1; eq "$?" 20 "the docs writer refuses a symlinked record (20)"
+eq "$(cat "$D29/link-target")" "untouched" "...and the link's target was never written"
+rm -f "$D29/state/docs-consulted.tsv"
+
+# THE READER REFUSES A LINK BEFORE THE ABSENCE TEST (reported on PR #502): `-e` follows a link, so a
+# dangling one read as absent and `report` said 11 while every writer refused the path with 20.
+ln -s "$D29/nowhere" "$D29/state/docs-consulted.tsv"
+( env HOME="$FHOME" bash "$DL" report --state "$D29/state" >/dev/null 2>&1 ); eq "$?" 20 \
+  "a dangling symlinked docs record is refused (20), never read as absent"
+rm -f "$D29/state/docs-consulted.tsv"
+
+# NO SIZE BOUND ON THE READER (reported on PR #502): its writer enforces none, so a bound here would
+# refuse a file ordinary appends produced. 2200 valid records (each field under the 512-byte bound),
+# past the 1 MiB a bound once used —
+# must still report.
+# THE SUITE'S COSTLIEST TEST (most of its runtime), so a mutation child runs it only when its row's
+# witness is one of these assertions: a row is scored on its own witness, so skipping it elsewhere
+# cannot change a verdict.
+case "${CDL_ROW_WITNESS-full}" in full|*"a large record of valid appends"*)
+awk 'BEGIN { for (i = 0; i < 2200; i++) { printf "none-needed\t"; for (j = 0; j < 50; j++) printf "abcdefghij"; printf " %d\n", i } }' \
+  > "$D29/state/docs-consulted.tsv"
+R29="$(dl report --state "$D29/state" 2>/dev/null)"; eq "$?" 0 "a large record of valid appends still reports — the reader refuses nothing its writer produces"
+# ...AND RENDERS ITS RECORDS. The exit code alone is not the witness: with the snapshot exported, every
+# command the report runs fails "Argument list too long", and in a tree with no agents.toml the report
+# then printed an empty block and still returned 0.
+has "$R29" "abcdefghij 2199" "a large record of valid appends still reports its last record"
+;; esac
+# A LITERAL newline: building the path with `$(printf …)` would strip it — the defect under test.
+dl none-needed --state "$D29/state
+" --justification x >/dev/null 2>&1; eq "$?" 2 \
+  "a docs --state path carrying a newline is refused as usage"
+
 
 # A KEY DECLARED TWICE IS INVALID TOML (PR #429). `adb_toml_get` stops at the first match, so the
 # first array was accepted and a probe for only those servers could earn a clean verdict on a file

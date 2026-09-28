@@ -37,6 +37,7 @@
 #   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  docs    <run keep|stale|none>
+#   cleanup-lib.sh state-verdict  rules   <run keep|stale|none>
 #   cleanup-lib.sh run-live       <state-dir>                  # 0 claim/marker present NOW, 10 none
 #   cleanup-lib.sh file-size      <path>                       # bytes via a bounded open; loud on failure
 #   cleanup-lib.sh marker-branch   <marker-path>
@@ -321,6 +322,9 @@ EOF
 #   review   -               a code-review artifact (prompt, findings, captured stream)
 #   issue    -               an /implement-issue issue SNAPSHOT, `issue-<n>.json` / `issue-<n>.assoc`
 #   docs     -               an /implement-issue DOCS-DUTY record, `docs-consulted.tsv` (#422)
+#   survey   -               an /implement-issue SURVEY artifact (prompt, summary, trace, stream)
+#   rules    -               an /implement-issue LEARNED-CHECKLIST SWEEP record, `rule-sweep.tsv`
+#                            (#490) — which promoted rules the run swept the diff for
 #   unsafe   -               a file whose NAME cannot be serialized (see #273 below); the path
 #                            field is a `%q`-ENCODED rendering, never a usable path
 #   other    -               ANYTHING ELSE
@@ -438,6 +442,19 @@ cmd_state_scan() {
       # and here that file is the one asserting which documentation this run consulted.
       docs-consulted.tsv|docs-consulted-*.tsv)
         _adb_cl_emit "$want_ident" docs "$f" '-'
+        ;;
+      # /implement-issue step 9's learned-checklist sweep record (#490): one row per promoted rule
+      # this run swept the final diff for. Run evidence with exactly the same lifecycle as the
+      # docs record above — the durable half is the ledger under .ai-dev-baseline/, which is
+      # deliberately not under this directory at all.
+      #
+      # A FAMILY for the same reason the three above are: one fixed name today, and a per-slot or
+      # per-round `rule-sweep-<n>.tsv` is the obvious next shape. Kept identical to the PREFLIGHT
+      # set in `_il_clear` — a name this arm can sweep but `admit` cannot clear is a stale file a
+      # fresh run's marker makes read as live, and here that file is the one asserting which of
+      # this project's learned rules the run actually checked.
+      rule-sweep.tsv|rule-sweep-*.tsv)
+        _adb_cl_emit "$want_ident" rules "$f" '-'
         ;;
       # /implement-issue's survey artifacts (#435): the survey prompt, the bounded summary the
       # dispatched surveyor returns (`survey.md`), its trace (`survey-trace.md`) and the dispatch
@@ -764,7 +781,7 @@ cmd_file_size() {
 }
 
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|sweep|marker|gaps|issue|review|docs|survey)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|sweep|marker|gaps|issue|review|docs|survey|rules)"
   local kind="$1"; shift
   case "$kind" in
     threads|sweep)
@@ -884,7 +901,19 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review|docs|survey)" ;;
+    rules)
+      [ "$#" -eq 1 ] || die "state-verdict rules: needs exactly 1 arg: <run keep|stale|none>"
+      case "$1" in keep|stale|none) : ;;
+        *) die "state-verdict rules: <run> must be keep|stale|none (got '$1')" ;; esac
+      # THE LEARNED-CHECKLIST SWEEP RECORD (#490), with the docs record's lifecycle: written at the
+      # end of step 9, after the marker exists, and read back at steps 10 and 11 — so the marker is
+      # the in-flight signal. Its own arm, like `docs`, so a future divergence stays visible.
+      case "$1" in
+        keep) printf 'keep\n' ;;
+        *)    printf 'stale\n' ;;
+      esac
+      ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|sweep|marker|gaps|issue|review|docs|survey|rules)" ;;
   esac
 }
 

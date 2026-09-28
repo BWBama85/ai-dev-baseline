@@ -1274,8 +1274,10 @@ jobs:
     name: pattern-ledger
     runs-on: ubuntu-26.04
     # THIS JOB EXISTS BECAUSE THE MACOS AGGREGATE COULD NO LONGER AFFORD ITS SLOWEST STEP. The
-    # ledger's mutation harness re-runs the whole `check-pattern-ledger.sh` suite once per injected
-    # row, and the rows grew with PR #429's review rounds: on run 32889697083 that one step was
+    # ledger's mutation harness USED TO re-run the whole `check-pattern-ledger.sh` suite once per
+    # injected row; since PR #502 each row runs only the block holding its witness (#468 mode), and
+    # rows whose target the change does not touch are gated out (#470). The rows grew with PR #429's
+    # review rounds: on run 32889697083 that one step was
     # 1932s of the `selfcheck-macos` job, and the two pushes after it were cancelled by that job's
     # 45-minute ceiling with the step still running. Same disposition as `adopt-readiness-mutation`
     # (#339, D87): a mutation harness answers a LOGIC question, not a platform one, so it runs

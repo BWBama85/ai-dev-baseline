@@ -57,6 +57,7 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
+check_blocks_init "$ROOT/scripts/check-pattern-ledger.sh"
 
 [ "$#" -gt 1 ] && { echo "usage: check-pattern-ledger.sh [--mutation]" >&2; exit 2; }
 MODE=full
@@ -90,380 +91,8 @@ seed() {   # <ledger> <class> <n> [pr]
   done
 }
 
-# ============================= --mutation: the guards must be seen RED ===========================
-# Each row breaks ONE property of the library and requires the FULL suite below to notice. Written
-# first so the file reads in the order a reader needs: the guards, then what they guard.
-if [ "$MODE" = mutation ]; then
-  # The threshold comparison inverted: `due` would then offer classes BELOW the threshold and
-  # withhold the ones at it. Promotion is the mechanism's whole output, so this is the row that
-  # matters most.
-  check_mut threshold-inverted \
-    '[ "$n" -ge "$t" ] || continue' \
-    '[ "$n" -lt "$t" ] || continue' \
-    'two hits reach the threshold'
 
-  # Dedupe disabled: re-recording one thread would append a second hit, and a class would climb to
-  # a promotion on one finding counted twice.
-  check_mut dedupe-disabled \
-    "if printf '%s\\n' \"\$hits\" | awk -F'\\t' -v t=\"\$OPT_THREAD\" '\$4 == t { found = 1 } END { exit !found }'; then" \
-    "if false; then" \
-    'a repeated thread id is a no-op'
-
-  # The region-completeness proof disabled: a truncated hits region would then read as a SHORTER
-  # ledger instead of an error — the count-too-low direction, wearing a clean run's face.
-  check_mut region-proof-disabled \
-    'END { if (nb != 1 || ne != 1 || crossed || inb) exit 1 }' \
-    'END { if (0) exit 1 }' \
-    'a truncated hits region is refused'
-
-  # The record-grammar check disabled: a line that is not a record would be SKIPPED rather than
-  # failing the read, which is the same silent undercount by another route.
-  check_mut grammar-check-disabled \
-    'if (NF < 9)             { bad = 1; exit }' \
-    'if (NF < 9)             { next }' \
-    'a malformed hit record is refused'
-
-  # `checklist` stops asking about the hits region: its own region can be perfectly well-formed, so
-  # this mutation is invisible to every assertion except the one written for it.
-  check_mut checklist-half-read \
-    '  _adb_pl_hits "$ledger" >/dev/null \' \
-    '  true >/dev/null \' \
-    'checklist refuses a half-readable ledger'
-
-  # The summary's containment broken: a reviewer's free text would ride into the prompt surface.
-  # RETARGETED when `checklist` gained the prompt-budget check (PR #429): the emission moved to a
-  # guarded line, and the harness reported the old literal as applying to nothing.
-  check_mut checklist-leaks-summary \
-    '  if [ -n "$emitted" ]; then printf '"'"'%s\n'"'"' "$emitted"; fi' \
-    '  if [ -n "$emitted" ]; then printf '"'"'%s\n'"'"' "$emitted"; fi; _adb_pl_hits "$ledger" | cut -f2' \
-    'checklist emits no site'
-
-  # Region-marker injection accepted: a summary could close the hits region and truncate every
-  # record after it.
-
-  # A malformed declared threshold silently becomes the built-in: the operator's configured number
-  # is then a fiction, and nothing says so.
-  # THE FALL-BACK, not the message. An earlier version of this row deleted the diagnostic and
-  # left `return 2` standing — so the reader still failed, the suite still went red, but on the
-  # assertion about WORDING rather than the one about BEHAVIOUR. `break` is the defect that
-  # matters: the loop abandons the malformed value and falls through to the built-in, handing the
-  # operator a threshold they did not choose, from a file they thought they had configured.
-  # RETARGETED for the same reason: `return 2` is now shared with the complete-scalar guard, and
-  # the first occurrence is that one. The DOMAIN test is what this row is about.
-  # WITNESS UPDATED: `"six"` is now caught by the complete-scalar grammar before the domain check
-  # ever sees it, so the old witness no longer belongs to this row. What the DOMAIN check uniquely
-  # owns is a syntactically perfect value outside the domain — thirteen digits.
-  check_mut bad-threshold-silent \
-    '    if ! _adb_pl_ok_pr "$v"; then' \
-    '    if false; then' \
-    'a syntactically valid but out-of-domain threshold is still a hard error'
-
-  # <copy-dir> -> PRINT the path to mutate, nothing else (check_mutation_pool's contract).
-  # `base` rides along because the call-site assertions below read the workflow sources; without
-  # it every mutation child would fail on a missing file rather than on its own witness.
-  # THE READ-SIDE VALIDATION ITSELF. It was added because the independent review reproduced a
-  # false promotion from a duplicated thread id; without a row here, deleting it again would be
-  # invisible to every assertion except by accident.
-  check_mut reader-skips-validation \
-    '    _adb_pl_ok_class  "$c"  || return 1' \
-    '    :' \
-    'a hand-edited invalid class (BadClass) is refused by the readers'
-
-  check_mut reader-skips-dupes \
-    '    [ -z "${seen[$th]+x}" ] || return 1' \
-    '    :' \
-    'a duplicated thread id is refused by `due`, not only by verify'
-
-  # THE PR REQUIREMENT (PR #429). Reverting it to the optional-if-present form is the exact
-  # regression, so the row spells that form rather than deleting the check.
-  # RETARGETED after the suffix grammar landed: a MISSING `PR #<n>` segment is now caught by the
-  # suffix check before the field validator sees it, so the old "optional if present" mutation
-  # became invisible — the harness reported it staying green, which is the harness working on its
-  # own table. What the field check still uniquely owns is the DOMAIN: `PR #0` satisfies the
-  # suffix grammar and must still be refused.
-  check_mut pr-domain-unchecked \
-    '    _adb_pl_ok_pr "$pr" || return 1' \
-    '    :' \
-    'a hand-edited PR number outside the domain is refused by the readers'
-
-  # THE AWK-SIDE EMPTY-RULE CHECK HAS NO ROW ANY MORE. Once `_adb_pl_ok_text` validated the rule
-  # text on the shell side, an empty rule was refused there too — so disabling the awk test changed
-  # no behaviour and the row stayed GREEN, which the harness reported. The empty case is now
-  # covered by `rule-text-unchecked` below, which mutates the check that actually decides it.
-
-  # RECORD MUST VALIDATE BOTH REGIONS (PR #429).
-  check_mut record-checks-one-region \
-    '  _adb_pl_promoted "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n'"'"' "$ledger" >&2; exit 18; }' \
-    '  :' \
-    'record refuses a ledger whose CHECKLIST region is damaged, not just its hits'
-
-  # VERIFY MUST AGREE WITH THE READERS ABOUT A DUPLICATED CHECKLIST CLASS (PR #429).
-  check_mut verify-misses-dup-class \
-    '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | awk -F'"'"'\t'"'"' '"'"'NF { print $1 }'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
-    '    ckdupes=""' \
-    'a duplicated checklist class is refused by `verify` — verify included'
-
-  # THE MULTI-LINE PROMOTED LIST (PR #429, found by dogfooding). Restores the `-v` spelling, which
-  # is what shipped and what a later edit would reach for again.
-  # THE WITNESS IS THE SECOND CLASS'"'"'S PROMOTED FLAG, not `classes` exiting 0: that exit-status
-  # witness is BWK-awk-specific (fatal "newline in string"), and on gawk — the ubuntu leg, run
-  # 32923514377 — the mutation is accepted and goes red on a different assertion, which the
-  # harness correctly reported as caught by accident. The flag assertion fails on both.
-  check_mut promoted-list-via-v \
-    'ADB_PL_PROM="$promoted" awk -F'"'"'\t'"'"' -v TAB="$TAB"' \
-    'awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
-    '…and marks the SECOND promoted class as promoted — the whole list reached awk'
-
-  # THE ABSENT/PRESENT DISTINCTION (PR #429).
-  check_mut absent-indistinguishable \
-    "    printf 'ledger\\tabsent\\n'" \
-    "    printf 'ledger\\tpresent\\n'" \
-    '…and says so explicitly, rather than leaving it inferred from zeros'
-
-  # PROMOTE'"'"'S EARLY RETURN MUST NOT SKIP THE HITS CHECK (PR #429).
-  check_mut promote-early-return-unchecked \
-    '  _adb_pl_hits "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the hits region)\n'"'"' "$ledger" >&2; exit 18; }' \
-    '  :' \
-    "promote refuses a damaged hits region instead of returning 'already promoted'"
-
-  # THE LOCK `record` TAKES (PR #429). The reported defect was an ORDERING — the template written
-  # before the lock — and that regression is a multi-line restructure `check_mutate_literal` cannot
-  # express as one literal. What it can do is remove the lock this ordering depends on, which
-  # proves the first-writer assertion is able to fire at all; the ordering itself is covered by
-  # that behavioural assertion and not by an injection, and saying so is better than shipping a
-  # row that silently applies to nothing.
-  check_mut write-unverified \
-    '  if ! _adb_pl_hits "$ledger" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
-    '  if false; then' \
-    'a lost row is told'
-  check_mut record-unlocked \
-    '  _adb_pl_lock "$ledger" || exit 20' \
-    '  :' \
-    '25 concurrent writers creating the ledger for the FIRST time all land'
-
-  # THE RULE-TEXT VALIDATION (PR #429).
-  check_mut rule-text-unchecked \
-    '    _adb_pl_ok_text "$rule" || return 1' \
-    '    :' \
-    'a checklist rule carrying a tab is refused by `checklist`'
-
-  # THE MODE PRESERVATION (PR #429).
-  check_mut mode-not-preserved \
-    '  cp -p "$file" "$tmp" 2>/dev/null || true' \
-    '  :' \
-    "the ledger lost its mode to mktemp"
-
-  # THE OWNER-FILE ROW IS RETIRED. It mutated a `cat "$dir/owner"` check that no longer exists:
-  # the token became a SUBDIRECTORY precisely because reading a file and then deleting was
-  # check-then-act. `unlock-check-then-act` below covers the property it was written for.
-
-  # THE COMPLETE-SCALAR CHECK (PR #429).
-  # TARGETS THE AWK GUARD, not the message: `return 2` stopped being unique once this check added
-  # one of its own, and a row aimed at a shared literal mutates whichever comes first.
-  check_mut threshold-scalar-unchecked \
-    '              bad = 1; exit' \
-    '              next' \
-    'an unterminated quoted threshold is refused, not silently reconstructed'
-
-  # THE DUPLICATE-THRESHOLD SCAN (PR #429).
-  check_mut duplicate-threshold-unchecked \
-    '              if (++seen > 1) { bad = 1; exit }' \
-    '              seen = 1' \
-    'a threshold declared twice is refused, not silently resolved to the first'
-
-  # THE ATOMIC RELEASE (PR #429). Restores the read-then-delete form that shipped.
-  check_mut unlock-check-then-act \
-    '  adb_rmdir_excl "$dir" || true' \
-    '  rm -rf "$dir" 2>/dev/null || true' \
-    "release removed a co-resident marker"
-
-  # THE DEATH PROOF (PR #429). Restores age-alone reclamation, which is what shipped.
-  check_mut reclaims-live-owner \
-    '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then' \
-    '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then' \
-    "a stale-but-LIVE owner's lock was reclaimed"
-
-  # THE LEADING-ZERO RULE (PR #429).
-  check_mut leading-zero-threshold \
-    '              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*(0|[1-9][0-9]*)[[:space:]]*(#.*)?$/) next' \
-    '              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/) next' \
-    'a leading-zero threshold (02) is refused'
-
-  # THE `--pr` FILTER VALIDATION (PR #429).
-  check_mut stats-filter-unchecked \
-    '  if [ -n "$OPT_PR" ] && ! _adb_pl_ok_pr "$OPT_PR"; then' \
-    '  if false; then' \
-    'stats refuses --pr 0 rather than reporting a falsely clean zero'
-
-  # THE RECORD PREFIX (PR #429).
-  check_mut record-prefix-unchecked \
-    '      if ($1 != "- ")         { bad = 1; exit }' \
-    '      if (0)                  { bad = 1; exit }' \
-    'a forged record prefix is refused by `verify`'
-
-  # THE ps-BASED LIVENESS PROBE (PR #429). Restores `kill -0`, which conflates EPERM with ESRCH.
-  check_mut liveness-via-kill \
-    '  ps -p "$pid" >/dev/null 2>&1 && return 1' \
-    '  kill -0 "$pid" 2>/dev/null && return 1' \
-    'pid 1 was judged GONE'
-
-  # THE REPEATED-[patterns]-TABLE COUNT (PR #429).
-  check_mut repeated-patterns-table \
-    '                                intbl = (hdr == "patterns"); if (intbl && ++tbl > 1) { bad = 1; exit }' \
-    '                                intbl = (hdr == "patterns");' \
-    'a repeated [patterns] table header is refused'
-
-  # THE NEW-LEDGER MODE (PR #429).
-  check_mut new-ledger-mode \
-    "    chmod \"\$(printf '%o' \"\$(( 0666 & ~0\$(umask) ))\")\" \"\$_tpl\" 2>/dev/null || true" \
-    "    :" \
-    "a NEWLY CREATED ledger did not get the umask's mode"
-
-  # THE BOUNDED RECLAMATION RETRY (PR #429). Restores the unconditional `continue`, which neither
-  # slept nor incremented `waited`, so a rename that can never succeed busy-spun past the bound.
-  # A SINGLE-LINE literal: `check_mutate_literal` matches with `index()` on ONE record, so a
-  # two-line literal applies to nothing and the harness reports the row as testing NOTHING —
-  # which is what it did here. Replacing the explanatory line with a bare `continue` restores
-  # exactly the unconditional retry that shipped.
-  check_mut reclaim-busy-spin \
-    '      # A FAILED RECLAMATION FALLS THROUGH TO THE WAIT, it does not retry immediately. An' \
-    '      continue' \
-    'a reclamation that cannot rename busy-spun past the wait bound'
-
-  # THE HEADER NORMALIZATION IN THE LEDGER'"'"'S OWN SCANNER (PR #429).
-  check_mut patterns-header-comment \
-    '                                  if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
-    '                                  if (0) { hdr = substr(hdr, 1, i - 1); break }' \
-    'a repeated [patterns] table header is refused'
-
-  # THE STRUCTURAL-MARKUP REFUSAL (PR #429). Restores the narrower `<!-- adb:` ban that shipped.
-
-  # THE READERS' SUMMARY VALIDATION (PR #429). The raw parser used to discard the summary, so no
-  # reader could apply the writer's predicate to it; a hand-edited `<!--` then hid every later
-  # record in the review view while `verify` said ok.
-  check_mut summary-unvalidated \
-    '    if [ -n "$summ" ]; then _adb_pl_ok_text "$summ" || return 1; fi' \
-    '    :' \
-    'a hand-edited summary opening an HTML comment is refused by the readers'
-
-  # THE LEDGER'"'"'S NUL SCAN (PR #429). The witness carries the NUL at the END of a summary, where
-  # macOS awk'"'"'s C-string truncation leaves a perfectly valid record behind and gawk'"'"'s retained
-  # byte is dropped by command substitution — so with the scan deleted, both platforms read a
-  # clean ledger, and the scan is the only guard that can fire.
-  check_mut ledger-nul-normalized \
-    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$1\" | wc -c | tr -d ' ')\" -eq \"\$(LC_ALL=C wc -c < \"\$1\" | tr -d ' ')\" ] || return 1" \
-    "  :" \
-    'a NUL byte at the end of a stored summary is refused, not normalized away'
-
-  # FIRST-SEEN BY DATE, NOT ROW (PR #429). Restores the first-row test that shipped.
-  check_mut first-seen-by-row \
-    '        NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }' \
-    '        NF && $1 != "" { if (!($1 in first)) { first[$1] = $5; firstd[$1] = $6 } }' \
-    'a class whose EARLIER-dated row a merge placed later is credited to that earlier PR'
-
-  # THE LOUD TOMBSTONE FAILURE (PR #429). Restores the silent `rm -rf` that shipped. Its witness
-  # is root-skipped like `reclaim-busy-spin`'"'"'s, and for the same reason: the case is a permission.
-  check_mut tombstone-failure-silent \
-    '        if ! rm -rf "$tomb" 2>/dev/null || [ -e "$tomb" ]; then' \
-    '        if false; then' \
-    'a stale-lock tombstone that cannot be removed is a loud failure, not a silent success'
-
-  # THE THRESHOLD READ-FAILURE ARM (PR #429). Restores the fall-through to the built-in.
-  check_mut threshold-read-failure-as-builtin \
-    '    *) printf '"'"'pattern-ledger: an agents.toml contains a NUL byte and is not TOML — refusing to read a threshold from it. Check %s and %s.\n'"'"' "$(adb_repo_root 2>/dev/null)/agents.toml" "$(adb_global_manifest)" >&2; return 2 ;;' \
-    '    *) ;;' \
-    'a global manifest carrying a NUL byte is a hard error, never the built-in threshold'
-
-  # THE CALENDAR CHECK (PR #429). Restores the shape-only predicate: with the day bound gone,
-  # `2026-02-30` is accepted and sorts wherever it likes.
-  check_mut date-shape-only \
-    '  [ "$d" -le "$dim" ]' \
-    '  :' \
-    'an impossible date (2026-02-30) is refused, not accepted on shape'
-
-  # THE PER-TEXT BOUND (PR #429).
-
-  # THE AGGREGATE BOUND AT THE WRITE (PR #429).
-  check_mut promote-aggregate-unchecked \
-    '  if [ "$newsize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
-    '  if false; then' \
-    'promote refuses the rule that would push the checklist over the prompt budget'
-
-  # THE AGGREGATE BOUND AT THE READ (PR #429).
-  check_mut checklist-unbounded \
-    '  if [ "$size" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
-    '  if false; then' \
-    'an over-budget checklist is refused with 21, not emitted into a prompt'
-
-  # RECLAIM'"'"'S DEATH PROOF (PR #429). The literal carries the trailing comment so it is distinct
-  # from `_adb_pl_lock`'"'"'s identical test, which `reclaims-live-owner` targets (first occurrence).
-  check_mut reclaim-ignores-death-proof \
-    '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then   # the writers'"'"' own proof' \
-    '    if [ -n "$age" ]; then   # the writers'"'"' own proof' \
-    'reclaim leaves a LIVE owner'"'"'s lock alone (22)'
-
-  # THE SIBLING SWEEP'S THREE REFUSALS (#475): an unswept class, an open sibling, a foreign PR.
-  check_mut sweep-unswept-accepted \
-    '    [ -n "$_rows" ] || {' \
-    '    true || {' \
-    'record --sweep refuses a class the sweep file has no row for (23)'
-  check_mut sweep-open-sibling-accepted \
-    "    if printf '%s\\n' \"\$_rows\" | grep -qx found; then" \
-    '    if false; then' \
-    'record --sweep refuses a class whose sibling is still found (24)'
-  check_mut sweep-foreign-pr-accepted \
-    "    [ \"\${_sh%%\$'\\t'*}\" = \"\$OPT_PR\" ] || {" \
-    '    true || {' \
-    'record --sweep refuses a sweep file that belongs to another PR (19)'
-
-  prep() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/scripts/lib/pattern-ledger.sh"
-  }
-  runner() { ( cd "$1/tree" && bash scripts/check-pattern-ledger.sh 2>&1 ); }
-
-  check_mutation_pool check-pattern-ledger "$work" prep runner 6
-
-  # The text rules live in common.sh (#475), shared with the sibling-sweep grammar: a second pool
-  # mutates that file, and this suite's own assertions are still the witnesses.
-  check_mut_reset
-  # Region-marker injection accepted: a summary could close the hits region and truncate every
-  # record after it.
-  check_mut marker-injection-allowed \
-    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
-    "  case \"\$1\" in *'ZZQQ-never-appears'*) return 1 ;; esac" \
-    'a region marker in a summary is refused'
-  check_mut markup-in-summary \
-    "  case \"\$1\" in *'<!--'*|*'-->'*) return 1 ;; esac" \
-    "  case \"\$1\" in *'<!-- adb:'*) return 1 ;; esac" \
-    'a summary opening an HTML comment is refused'
-  check_mut rule-bound-removed \
-    "  [ \"\$(printf '%s' \"\$1\" | LC_ALL=C wc -c | tr -d ' ')\" -le \"\$max\" ] || return 1" \
-    "  :" \
-    'a 1025-byte rule is refused by the per-text bound'
-  # The sweep grammar's whole-file refusals and its name binding (#475).
-  check_mut sweep-final-newline-unchecked \
-    '  [ "$last" = 0a ] || return 18' \
-    '  :' \
-    '11 a sweep file with no final newline is refused'
-  check_mut sweep-nul-unchecked \
-    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$f\" | LC_ALL=C wc -c | tr -d ' ')\" -eq \"\$sz\" ] || return 18" \
-    '  :' \
-    '11 a sweep file carrying a NUL is refused'
-  check_mut sweep-name-unbound \
-    '  [ "$base" = "sweep-pr${hpr}-${hhead}.tsv" ] || return 18' \
-    '  :' \
-    '11 a sweep file whose name does not match its header is refused'
-  prep_common() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/scripts/lib/common.sh"
-  }
-  mkdir -p "$work/common"
-  check_mutation_pool check-pattern-ledger-common "$work/common" prep_common runner 6
-  check_summary check-pattern-ledger
-  exit 0
-fi
-
+if check_block s1; then
 # =============================== 1. the threshold boundary, both sides ===========================
 # The mechanism's entire output is "which classes earned a rule", so the boundary is asserted from
 # below and from on it. #421 fixes the meaning — "default 2 — a pattern, not an incident" — so ONE
@@ -488,7 +117,9 @@ eq "$(bash "$PL" due --ledger "$L1" --threshold 3 >/dev/null 2>&1; echo $?)" 11 
    "a higher configured threshold withholds a class that met the built-in one"
 eq "$(bash "$PL" threshold --ledger "$L1" | awk '{print $1}')" 2 "the built-in threshold is 2"
 eq "$(bash "$PL" threshold --ledger "$L1" | awk '{print $2}')" built-in "…and it says which layer supplied it"
+fi
 
+if check_block s2; then
 # =============================== 2. exactly-once, keyed on the thread ============================
 # The resolver records BEFORE it resolves, so a re-run over the same pull request re-offers hits
 # that are already present. That is the ORDINARY case and must be a no-op, not a failure and above
@@ -554,7 +185,9 @@ done
 # validator that only said "does not parse" would leave the operator hunting the line by hand.
 V2="$(bash "$PL" verify --ledger "$work/l2-dup.md" 2>&1)"
 has "$V2" "duplicate thread id" "verify still names WHAT is wrong, not merely that something is"
+fi
 
+if check_block s3; then
 # =============================== 3. a damaged ledger is refused WHOLE ============================
 # The truncated-region shape is the dangerous one: it reports FEWER hits than exist and looks
 # exactly like a smaller project. Every reader must refuse it — a number here is worse than an
@@ -667,7 +300,9 @@ bash "$PL" record --ledger "$L3c" --class spanc --site b.sh --fix abc1234 --pr 1
 bash "$PL" promote --ledger "$L3c" --class spanc --rule 'grep for `adb_toml_array` at every call site' >/dev/null 2>&1
 has "$(bash "$PL" checklist --ledger "$L3c" 2>/dev/null)" 'grep for `adb_toml_array` at every call site' \
    "…and a rule containing a code span survives unchanged"
+fi
 
+if check_block s4; then
 # =============================== 4. the prompt surface carries no free text ======================
 # `checklist` is the ONLY output that reaches another agent's prompt. A hit's summary is a
 # reviewer's own words and on a public repository a reviewer is anyone; a promoted rule got there
@@ -686,7 +321,9 @@ has   "$CK" "leak-class"                   "…named by its class"
 hasnt "$CK" "REVIEWER-FREE-TEXT-MARKER"    "checklist emits no summary (a reviewer's words never reach a prompt)"
 hasnt "$CK" "secret/path.sh"               "checklist emits no site"
 hasnt "$CK" "aaaa111"                      "checklist emits no fix sha"
+fi
 
+if check_block s5; then
 # =============================== 5. no field may forge a record ==================================
 # Each rejection asserts TWO things: the write was refused, and the ledger is UNCHANGED. "It
 # printed an error" and "it wrote nothing" are different claims, and only the second one protects
@@ -734,7 +371,9 @@ bash "$PL" record --ledger "$L5" --class guard-class --site ok.sh --fix ccc3333 
 eq "$?" 0 "a backtick in a SUMMARY is accepted — it cannot move a parsed field"
 eq "$(bash "$PL" classes --ledger "$L5" | awk -F'\t' '$2=="guard-class"{print $1}')" 2 \
    "…and the record it wrote still parses to the right class"
+fi
 
+if check_block s5b s5; then
 # =============================== 5b. the READERS validate the display field (PR #429) ============
 # The raw parser used to discard the summary after checking the suffix shape, so a hand edit or a
 # merge that put `<!--` into one passed every reader — and GitHub then rendered everything after
@@ -790,7 +429,9 @@ seed "$L5f" nulk 2 || bad "fixture: could not seed"
 perl -pe 's/`nulk`/`nu\x00lk`/' "$L5f" > "$L5f.tmp" && mv "$L5f.tmp" "$L5f"
 bash "$PL" due --ledger "$L5f" >/dev/null 2>&1
 eq "$?" 18 "a NUL inside a stored CLASS is refused rather than counted toward a promotion"
+fi
 
+if check_block s5c; then
 # =============================== 5c. the date is operative now (PR #429) =========================
 # `stats --pr` orders a class's history by the record date to decide which PR first recorded it,
 # so a shape-matching impossible date — `0000-00-00` sorts before every real one — moved credit to
@@ -810,7 +451,9 @@ sed 's/2024-02-29/0000-00-00/' "$L5g" > "$L5g.tmp" && mv "$L5g.tmp" "$L5g"
 bash "$PL" classes --ledger "$L5g" >/dev/null 2>&1
 eq "$?" 18 "a hand-edited 0000-00-00 is refused by the readers rather than sorting first"
 has "$(bash "$PL" verify --ledger "$L5g" 2>&1 >/dev/null)" "invalid date" "…and verify names it"
+fi
 
+if check_block s5d; then
 # =============================== 5d. the prompt budget (PR #429) =================================
 # `checklist` is injected whole into two agent prompts, so both the text and the region are
 # bounded — the text at the write and on every read, the region at `promote` (19, naming the
@@ -845,7 +488,9 @@ eq "$(bash "$PL" checklist --ledger "$L5j" 2>/dev/null | wc -c | tr -d ' ')" 0 "
 bash "$PL" verify --ledger "$L5j" >/dev/null 2>&1
 eq "$?" 21 "…and verify says 21 too, so the diagnostic agrees with the reader"
 has "$(bash "$PL" verify --ledger "$L5j" 2>&1 >/dev/null)" "prompt budget" "…naming the budget"
+fi
 
+if check_block s6 s1; then
 # =============================== 6. the threshold declaration fails loud =========================
 # A malformed configured value is a hard error, never a silent fall-back. Falling back hands the
 # operator a threshold they did not choose from a file they thought they had configured — and this
@@ -930,7 +575,9 @@ no "$NRC" "a global manifest carrying a NUL byte is a hard error, never the buil
 has "$NOUT" "NUL byte" "…and the diagnostic says so"
 hasnt "$NOUT" "built-in" "…and no built-in value is printed"
 rm -f "$MHOME/.config/ai-dev-baseline/agents.toml"
+fi
 
+if check_block s7; then
 # =============================== 7. promote's own preconditions ==================================
 L7="$work/l7.md"
 seed "$L7" promo-class 1 || bad "fixture: could not seed"
@@ -965,7 +612,9 @@ eq "$(printf '%s' "$CLS2" | awk -F'\t' '$2=="second-class"{print $3}')"  1 "…a
 bash "$PL" due --ledger "$L7" >/dev/null 2>&1
 eq "$?" 11 "…and due is clean with both promoted"
 eq "$(bash "$PL" stats --ledger "$L7" | awk -F'\t' '$1=="promoted"{print $2}')" 2 "…and stats counts both"
+fi
 
+if check_block s7b; then
 # =============================== 7b. the partial-validation siblings (PR #429) ===================
 # All three are the SAME class the round-1 fixes promoted a checklist rule for: a check that covers
 # less than its consumers do. They are asserted together because that is how the class is found —
@@ -996,7 +645,9 @@ sed 's/<!-- adb:checklist:begin -->//' "$L7b" > "$work/l7b-badck.md"
 bash "$PL" record --ledger "$work/l7b-badck.md" --class other --site s.sh --fix abc1234 \
   --pr 1 --thread T-new-one >/dev/null 2>&1
 eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just its hits"
+fi
 
+if check_block s7c; then
 # =============================== 7c. concurrent writers lose nothing (PR #429) ===================
 # The header used to argue no lock was needed because `/implement-issue`'s run admission permits one
 # run per checkout — but the writer here is `/resolve-pr-threads`, which never takes that claim. So
@@ -1445,7 +1096,9 @@ BEFORE7c="$(cksum < "$L7c")"
     --fix abc1234 --pr 1 --thread T-blocked >/dev/null 2>&1 )
 eq "$(cksum < "$L7c")" "$BEFORE7c" "a writer that cannot take the lock writes NOTHING"
 rmdir "$L7c.lock"
+fi
 
+if check_block s8; then
 # =============================== 8. stats, and what `recurring` counts ===========================
 # `recurring` is HITS IN CLASSES AT OR OVER THE THRESHOLD, not the number of such classes. That
 # distinction is the whole reported signal: classes accumulate forever, while a repeat hit in a
@@ -1516,7 +1169,9 @@ eq "$(bash "$PL" stats --ledger "$EMPTYL" | awk -F'\t' '$1=="ledger"{print $2}')
    "…while a ledger that exists reports present, so the two are distinguishable"
 eq "$(bash "$PL" classes --ledger "$work/nope.md" >/dev/null 2>&1; echo $?)" 0 \
    "…and classes is empty-but-successful, since a first run has nothing wrong with it"
+fi
 
+if check_block s9 s8; then
 # =============================== 9. verify reports what it CHECKED ===============================
 # A validator that scanned zero records prints what one that scanned forty prints. The count is
 # what tells them apart (base/practices/self-review.md).
@@ -1526,7 +1181,9 @@ V="$(bash "$PL" verify --ledger "$L8" 2>&1)"
 # scanned forty prints — so it tracks the fixture rather than being loosened to a wildcard.
 has "$V" "5 hit(s)" "verify says how many records it actually checked"
 has "$V" "checklist rule(s) checked" "…and how many rules"
+fi
 
+if check_block s10; then
 # =============================== 10. the call sites are wired ===================================
 # A library nothing calls is a library that cannot help. These pin the wiring in the SOURCES —
 # base/workflows/, not the rendered skills, because the sources are what a change edits and the
@@ -1702,7 +1359,9 @@ has "$IMPTXT2" 'over budget' "…and step 8 still says what rc 21 means"
 # enumerates files under the state directory.
 hasnt "$(cat base/workflows/cleanup.md)" 'patterns.md' \
   "/cleanup does not sweep the pattern ledger — it is project history, not run state"
+fi
 
+if check_block s11 s10; then
 # =============================== 11. the recorded sibling sweep (#475) ===========================
 # A hit is stored only for a class somebody swept for siblings, and never while a sibling is still
 # open. The sweep file's grammar has one home (common.sh); these read it through that home.
@@ -1799,5 +1458,951 @@ eq "$(bash "$ROOT/scripts/lib/adopt-lib.sh" prescribed patterns patterns.md >/de
    "/adopt knows the pattern ledger is a prescribed home"
 has "$(bash "$ROOT/scripts/lib/adopt-lib.sh" classify patterns yes same yes | cut -f1)" keep \
    "…and classifies it keep, never proposing an adopting project delete its own learned classes"
+fi
+
+if check_block s12; then
+# =============================== 12. the learned-checklist rule sweep (#490) =====================
+# The question this section guards is the one #465's BLOCKING #4 named: the report must establish
+# COVERAGE against the live promoted set, so recording ONE rule can never render a clean sweep
+# while the other twenty went unchecked.
+L12="$work/l12.md"; ST12="$work/st12"
+RS_RUN="2026-09-24T03:34:07Z"
+# FIXED LITERALS, not a `shasum` call: the only property these need is the writer's domain (64
+# lowercase hex), and a fixture that shells out to a digest tool asserts nothing extra while
+# depending on which of sha256sum/shasum/openssl the runner happens to carry.
+RS_TREE="$(printf 'a%.0s' $(seq 1 64))"
+RS_TREE2="$(printf 'b%.0s' $(seq 1 64))"
+rs()   { bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" "$@" >/dev/null 2>&1; }
+rrep() { bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null; }
+rrc()  { bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1; echo $?; }
+
+# A project with NO promoted rules is a valid ZERO-RULE sweep, not a defect. Asserted FIRST,
+# because it is the state every adopting project starts in and the one a naive "nothing recorded"
+# rule would fail forever.
+eq "$(rrc)" 0 "12 no promoted rules at all is a valid zero-rule sweep"
+has "$(rrep)" "zero-rule sweep" "12 ...and the report says so rather than rendering 0 of 0"
+
+seed "$L12" alpha-one 2 || bad "12 fixture: could not seed alpha-one"
+seed "$L12" beta-two  2 || bad "12 fixture: could not seed beta-two"
+bash "$PL" promote --ledger "$L12" --class alpha-one --rule "sweep alpha" >/dev/null 2>&1
+bash "$PL" promote --ledger "$L12" --class beta-two  --rule "sweep beta"  >/dev/null 2>&1
+
+# NOTHING RECORDED WHILE RULES EXIST IS 11 — docs-lib.sh's code and its reasoning: an unstated
+# disposition is indistinguishable from a run that never considered the question.
+eq "$(rrc)" 11 "12 nothing recorded while promoted rules exist is 11"
+
+rs --rule alpha-one --result clean
+eq "$(rrc)" 0 "12 one recorded rule renders"
+has "$(rrep)" "swept 1 of 2"  "12 ...as COVERAGE against the live checklist, not as a clean sweep"
+has "$(rrep)" 'beta-two'      "12 ...and the unswept rule is NAMED, not merely counted"
+
+rs --rule beta-two --site 'lib/x.sh:12' --result fired
+rs --rule beta-two --site 'lib/y.sh:4'  --result fired
+eq "$(rrc)" 0 "12 a rule that fired at two sites is representable"
+has "$(rrep)" "swept 2 of 2" "12 ...and completes the coverage"
+has "$(rrep)" 'lib/x.sh:12'  "12 ...naming the first site"
+has "$(rrep)" 'lib/y.sh:4'   "12 ...and the second"
+
+# DETERMINISM: the same record renders identically twice (#490's acceptance).
+eq "$(rrep)" "$(rrep)" "12 the report is deterministic across two runs"
+
+# THE RETRY PATH LIVES IN THE WRITER, not in the reader. Recording is a sequence of appends, so a
+# run interrupted midway and retried re-offers rows it already wrote; the writer is idempotent on
+# an identical row (10, `record`'s code) and appends nothing, which keeps the reader free to refuse
+# a real duplicate whole. Collapsing in the reader was the first cut and contradicted the stated
+# acceptance — reported by the declared reviewer.
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --site 'lib/y.sh:4' --result fired >/dev/null 2>&1
+eq "$?" 10 "12 re-recording an identical row is a no-op (10) — this is the retry path"
+eq "$(rrc)" 0 "12 ...and it appended nothing, so the record still reads"
+RS_LINES_A="$(wc -l < "$ST12/rule-sweep.tsv" | tr -d ' ')"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --site 'lib/y.sh:4' --result fired >/dev/null 2>&1
+eq "$(wc -l < "$ST12/rule-sweep.tsv" | tr -d ' ')" "$RS_LINES_A" "12 ...proved by the row count, not by the exit code alone"
+
+# A HAND-EDITED DUPLICATE (class, site) REFUSES THE READ WHOLE. The writer cannot produce one; a
+# merge or an editor can, and this module never reports a doubled or partial count.
+printf 'rule\t%s\t%s\tbeta-two\tlib/y.sh:4\tfired\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a hand-edited duplicate (class, site) refuses the read whole"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+
+# A CONTRADICTION still refuses, whole.
+printf 'rule\t%s\t%s\tbeta-two\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a class recorded both clean and fired refuses the read whole"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+
+# STALE ROWS ARE IGNORED AND SAID, never counted and never fatal: a previous run in this same
+# checkout must not be able to credit this one.
+printf 'rule\t2020-01-01T00:00:00Z\t%s\tghost-class\t-\tclean\n' "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\tghost-two\t-\tclean\n' "$RS_RUN" "$RS_TREE2" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 0 "12 rows from an earlier run or an earlier tree do not break the read"
+has "$(rrep)" "earlier run or an earlier tree were ignored" "12 ...and the report says it ignored them"
+hasnt "$(rrep)" "ghost-class" "12 ...and a stale row never credits a sweep"
+hasnt "$(rrep)" "ghost-two"   "12 ...including one from the same run against an earlier tree"
+
+# THE WHOLE FILE IS VALIDATED BEFORE FILTERING. Filtering first would let a damaged row that
+# happens to carry another identity be skipped instead of refused, so a corrupt record could
+# render a clean count.
+printf 'rule\t2020-01-01T00:00:00Z\t%s\tBadClass\t-\tclean\n' "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a malformed row is refused even when it belongs to ANOTHER run"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+# ...and the same class check, on a row of THIS run: the two witnesses are different defects.
+# Without this one, deleting the class predicate is invisible here — every bad-class row in the
+# suite belonged to another run, so it was skipped as stale before the check could have fired.
+printf 'rule\t%s\t%s\tBadClass\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a class outside the slug charset is refused in the CURRENT group too"
+sed -i.bak '$d' "$ST12/rule-sweep.tsv"; rm -f "$ST12/rule-sweep.tsv.bak"
+
+# The byte rules, each on its own witness.
+cp "$ST12/rule-sweep.tsv" "$work/rs-good.tsv"
+printf 'rule\t%s\t%s\tzz-class\t-\tclean' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a row with no final newline is refused"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\tq\000q\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a NUL byte is refused on the raw bytes"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\talpha-one\t-\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a five-field row is refused on arity, before any shell read folds the tabs"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+# A FRESH CLASS, not one already recorded. With a recorded class these rows are ALSO a duplicate
+# (class, site), so the duplicate refusal returns 18 whether or not the check under test exists —
+# and the mutation harness proved that made both rows undetectable.
+printf 'rule\t%s\t%s\tarity-probe\t-\tclean\textra\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a seven-field row is refused on arity too"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'sibling\t%s\t%s\tkind-probe\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a row of another kind is refused — a sibling-sweep row is not a checklist row"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+printf 'rule\t%s\t%s\talpha-one\tx.sh:1\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12/rule-sweep.tsv"
+eq "$(rrc)" 18 "12 a clean row carrying a site is refused — - is the only clean site"
+cp "$work/rs-good.tsv" "$ST12/rule-sweep.tsv"
+
+# The WRITER refuses what the reader would refuse — one grammar, two halves.
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site - --result fired >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses fired with no site"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "${RS_TREE:0:63}" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a tree digest that is not 64 hex"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule 'Not A Class' --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a class outside the slug charset"
+bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result maybe >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a result outside fired|clean"
+bash "$PL" rule-sweep --state "$ST12" --run "$(printf 'a\tb')" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a run identity carrying the field separator"
+
+# MARKUP IS ESCAPED BY THE RENDERER. The record file is swept, so this report is the only
+# surviving copy of the sweep — a site that opens an HTML comment would hide it and everything
+# after it in a pull-request body.
+ST12B="$work/st12b"
+bash "$PL" rule-sweep --state "$ST12B" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site 'x.sh:1 <!-- hide' --result fired >/dev/null 2>&1
+RSB="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12B" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+has "$RSB" '&lt;!--' "12 a site that would open an HTML comment is escaped in the report"
+hasnt "$RSB" 'x.sh:1 <!-- hide' "12 ...and the raw form does not reach the rendered block"
+
+# COVERAGE IS MEMBERSHIP IN THE LIVE SET (reported by the declared reviewer). A row for a class
+# that is not a promoted rule — a retired rule, a typo, a ledger since edited — must not credit
+# coverage; counting it rendered "swept 1 of 21" while naming all 21 as unswept.
+ST12E="$work/st12e"
+bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-only --result clean >/dev/null 2>&1
+RSE_ERR="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>&1 >/dev/null)"
+eq "$?" 11 "12 a row outside the live checklist credits NO coverage — the run still stated nothing"
+# ...AND THE 11 NAMES THE OFF-SET CLASS (reported on PR #502): it is the evidence that explains the
+# refusal, and exiting before the off-set rendering hid it.
+has "$RSE_ERR" "ghost-only" "12 the zero-coverage 11 names the off-set class it did not credit"
+bash "$PL" rule-sweep --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+RSE="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12E" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+has "$RSE" "swept 1 of 2" "12 ...and the off-set row is still not counted once a real one exists"
+has "$RSE" "NOT a promoted rule" "12 ...but it IS reported, never silently dropped"
+has "$RSE" 'ghost-only' "12 ...naming the off-set class itself, not only the heading"
+# AN OFF-SET CLASS WITH SEVERAL ROWS IS LISTED ONCE (reported on PR #502). The set was seeded without
+# its delimiter, so its first entry never matched the membership test and the class repeated.
+# A FRESH RECORD WHERE THAT CLASS IS THE FIRST ROW: with an empty seed only the FIRST off-set entry
+# misses the membership test, so a class recorded after another off-set class never shows the defect.
+ST12S="$work/st12s"
+bash "$PL" rule-sweep --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'a.sh:1' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" --rule ghost-two --site 'b.sh:2' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+RSE2="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12S" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+eq "$(printf '%s\n' "$RSE2" | grep -c '`ghost-two`')" "1" "12 an off-set class with two rows is listed once"
+
+# THE READER REFUSES WHAT THE WRITER REFUSES — the byte bounds, not only the printable shape.
+ST12F="$work/st12f"; mkdir -p "$ST12F"
+RS_BIGSITE="x.sh:1$(printf 'y%.0s' $(seq 1 600))"
+printf 'rule\t%s\t%s\talpha-one\t%s\tfired\n' "$RS_RUN" "$RS_TREE" "$RS_BIGSITE" > "$ST12F/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12F" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 18 "12 a hand-edited site over the writer's byte bound is refused by the reader too"
+bash "$PL" rule-sweep --state "$ST12F" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_BIGSITE" --result fired >/dev/null 2>&1
+eq "$?" 19 "12 ...and the writer would never have produced it"
+
+# AN APPEND THAT WOULD OUTGROW THE READER'S BOUND IS REFUSED WHILE THE RECORD IS STILL READABLE.
+# Every row is individually bounded, but enough legitimate rows still take the file past the
+# reader's limit — and then the write succeeds and every later report refuses it, a state no run
+# can clear. Reported by the declared reviewer.
+ST12G="$work/st12g"; mkdir -p "$ST12G"
+# Filled to just UNDER the bound, so the existing record is valid and it is the APPEND that would
+# cross it; a record already past the bound is refused as damaged (18) before this check is reached.
+awk -v n=$(( 1048576 - 40 )) -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN {
+  out = 0; i = 0
+  while (1) { s = "rule\t" r "\t" t "\tbulk-class\tp/" i ".sh:1\tfired\n"; if (out + length(s) > n) break; printf "%s", s; out += length(s); i++ }
+}' > "$ST12G/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12G" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 an append that would outgrow the reader's file bound is refused at write time"
+
+# THE EVIDENCE LIMIT IS STATED, so nobody reads "2 of 2" as a claim about files scanned.
+has "$(rrep)" "does not enumerate the files scanned" "12 the report states its own evidence limit"
+
+# A CHECKLIST ROW MUST NOT SATISFY `record --sweep` — the two families are separate on purpose.
+bash "$PL" record --ledger "$L12" --class alpha-one --site a.sh:1 --fix abc1234 --pr 7 \
+  --thread T-rs-1 --sweep "$ST12/rule-sweep.tsv" >/dev/null 2>&1
+eq "$?" 18 "12 a rule-sweep record is not a sibling-sweep file — record --sweep still refuses it"
+
+# An unsearchable state directory is UNREADABLE (20), never "nothing recorded" (11): the two hand
+# the operator opposite repairs.
+ST12C="$work/st12c"; mkdir -p "$ST12C"; printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12C/rule-sweep.tsv"
+chmod 600 "$ST12C"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12C" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSC=$?; chmod 700 "$ST12C"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSC" 20 "12 an unsearchable state directory is 20, never 11"; fi
+
+# THE PROMPT BUDGET. Over it, `checklist` emits NOTHING — so no run was ever handed these rules,
+# and "N of M" would be a claim about a sweep nobody could have performed.
+L12B="$work/l12b.md"; seed "$L12B" big-class 2 >/dev/null 2>&1
+bash "$PL" promote --ledger "$L12B" --class big-class --rule "r" >/dev/null 2>&1
+awk -v end='<!-- adb:checklist:end -->' '
+  $0 == end { for (i = 0; i < 20; i++) { printf "- `bulk-%d` — ", i; for (j = 0; j < 90; j++) printf "0123456789"; printf "\n" } }
+  { print }' "$L12B" > "$L12B.new" && mv "$L12B.new" "$L12B"
+bash "$PL" checklist --ledger "$L12B" >/dev/null 2>&1
+eq "$?" 21 "12 fixture: the inflated checklist is over budget"
+bash "$PL" rule-sweep-report --ledger "$L12B" --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 21 "12 ...and the report refuses it too, rather than reporting coverage nobody was given"
+
+# AN EMPTY RECORD IS NO ROWS, NOT DAMAGE (self-review, `rerun-not-idempotent`). A crash between
+# create and first write leaves a zero-byte file; refusing it would return 18 from every later
+# report, a state no run can clear without deleting the file by hand.
+ST12D="$work/st12d"; mkdir -p "$ST12D"; : > "$ST12D/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$work/none12.md" --state "$ST12D" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 a zero-byte record reads as no rows, never as damage"
+
+# A SYMLINKED RECORD IS REFUSED, whatever it points at. `-f` FOLLOWS a link, so the zero-byte
+# shortcut ran ahead of the non-link rule and a link to an empty file was reported as "no rows".
+# Reported by the declared reviewer.
+ST12H="$work/st12h"; mkdir -p "$ST12H"
+: > "$work/rs-empty-target"
+ln -s "$work/rs-empty-target" "$ST12H/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12H" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+# 20 SPECIFICALLY, not merely non-zero. Without the non-link guard the zero-byte shortcut fires
+# and the report returns 11 ("nothing recorded") — also non-zero, so a `!= 0` test passed either
+# way and the mutation row could never go red. The two codes mean opposite things to an operator:
+# one says the record is not ours to read, the other says this run swept nothing.
+eq "$?" 20 "12 a symlinked record is refused as unreadable (20), never read as empty"
+
+# AN UNREADABLE EMPTY RECORD IS UNREADABLE (20). `-s` is a stat and answers for a file this process
+# cannot read, so the zero-byte shortcut used to read it as "no rows".
+ST12Q="$work/st12q"; mkdir -p "$ST12Q"; : > "$ST12Q/rule-sweep.tsv"; chmod 000 "$ST12Q/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Q" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSQ=$?; chmod 600 "$ST12Q/rule-sweep.tsv"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSQ" 20 "12 an unreadable empty record is refused (20), never read as no rows"; fi
+
+# THE READER'S OWN LINK CONTRACT, asked of the library directly. The report now refuses a link
+# before it calls the reader, which is right — and which also means no report-level fixture can see
+# the reader's own guard. The library states "a link is never this module's record" for every
+# caller, so it is held to that on its own witness.
+ST12R="$work/st12r"; mkdir -p "$ST12R"; : > "$work/rs-empty-target2"
+ln -s "$work/rs-empty-target2" "$ST12R/rule-sweep.tsv"
+bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
+  "$ROOT" "$ST12R/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
+eq "$?" 20 "12 the reader itself refuses a symlink to an empty record (20)"
+
+# ...AND THE READER HOLDS THAT ON ITS OWN. The report now snapshots the record first, and an
+# unreadable one fails that copy before the reader runs — which is right, and which also means no
+# report-level fixture can see the reader's own guard. Asked of the library directly.
+ST12V="$work/st12v"; mkdir -p "$ST12V"; : > "$ST12V/rule-sweep.tsv"; chmod 000 "$ST12V/rule-sweep.tsv"
+bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
+  "$ROOT" "$ST12V/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
+RSV=$?; chmod 600 "$ST12V/rule-sweep.tsv"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSV" 20 "12 the reader itself refuses an unreadable empty record (20)"; fi
+
+# A MALFORMED ARGUMENT IS USAGE, NOT A CORRUPT FILE (self-review, `status-swallowed`). The reader
+# refuses a bad run/tree with 19 exactly as it refuses a stored field, and reporting that as "the
+# file holds a field this module would not have written" sends the operator to inspect a record
+# that is fine.
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$(printf 'a b')" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 2 "12 a malformed --run is usage (2), not a report about the file"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12" --run "$RS_RUN" --tree "not-hex" >/dev/null 2>&1
+eq "$?" 2 "12 ...and so is a malformed --tree"
+
+# THE WRITER REFUSES A LINKED RECORD BEFORE ANY READ OR WRITE (reported by the declared reviewer on
+# PR #502). Every read and the append follow a symlink, so the writer modified the link's target and
+# reported success, while the reader — which refuses links — then stranded the close-out.
+ST12J="$work/st12j"; mkdir -p "$ST12J"; printf 'untouched\n' > "$work/rs-link-target"
+ln -s "$work/rs-link-target" "$ST12J/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12J" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 20 "12 the writer refuses a symlinked record (20)"
+eq "$(cat "$work/rs-link-target")" "untouched" "12 ...and the link's target was never written"
+
+# A DANGLING LINK IS REFUSED BY THE REPORT, not read as "no record". `-e` follows a link, so a
+# dangling one read as absent and then as nothing recorded (11) or a clean zero-rule sweep.
+ST12K="$work/st12k"; mkdir -p "$ST12K"; ln -s "$work/rs-nowhere" "$ST12K/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12K" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 20 "12 a dangling symlinked record is refused (20), never read as absent"
+
+# THE CHECK AND THE APPEND ARE ONE OPERATION. Twenty concurrent retries of one row: every one passed
+# the duplicate test before any appended, and the reader then refused the doubled row whole.
+ST12L="$work/st12l"; mkdir -p "$ST12L"
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  bash "$PL" rule-sweep --state "$ST12L" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site 'x.sh:1' --result fired >/dev/null 2>&1 &
+done
+wait
+eq "$(wc -l < "$ST12L/rule-sweep.tsv" | tr -d ' ')" "1" "12 twenty concurrent identical retries append exactly one row"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12L" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 ...so the record still reads"
+if [ -e "$ST12L/rule-sweep.tsv.lock" ]; then bad "12 the record lock was left behind"; else ok; fi
+
+# …AND THE WRITER REALLY TAKES THE LOCK — the deterministic witness the concurrency test above
+# cannot be (a race that happens to serialize would leave it green). A live holder that makes no
+# progress must make `rule-sweep` refuse at the bound, having written nothing.
+ST12P="$work/st12p"; mkdir -p "$ST12P"
+mkdir -p "$ST12P/rule-sweep.tsv.lock/LIVETOKEN"
+printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$ST12P/rule-sweep.tsv.lock/meta"
+ADB_PATTERN_LOCK_WAIT_SECS=1 bash "$PL" rule-sweep --state "$ST12P" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 20 "12 a writer blocked by a live lock holder refuses (20)"
+if [ -e "$ST12P/rule-sweep.tsv" ]; then bad "12 ...but it wrote the record anyway — the append ran outside the lock"; else ok; fi
+rm -rf "$ST12P/rule-sweep.tsv.lock"
+
+# THE WRITER PUBLISHES BY RENAME (reported on PR #502). An append by pathname follows a symlink a
+# same-user process swapped in after the type check. A new inode on every write is the observable
+# property of rename-publish: an in-place append keeps the inode, a rename replaces it.
+ST12T="$work/st12t"
+bash "$PL" rule-sweep --state "$ST12T" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+rs_i1="$(ls -i "$ST12T/rule-sweep.tsv" | awk '{print $1}')"
+bash "$PL" rule-sweep --state "$ST12T" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1
+rs_i2="$(ls -i "$ST12T/rule-sweep.tsv" | awk '{print $1}')"
+if [ -n "$rs_i1" ] && [ "$rs_i1" != "$rs_i2" ]; then ok; else
+  bad "12 rule-sweep publishes by rename: the record's inode changes on every write [$rs_i1] [$rs_i2]"; fi
+eq "$(wc -l < "$ST12T/rule-sweep.tsv" | tr -d ' ')" "2" "12 ...and the published record holds both rows"
+eq "$(find "$ST12T" -name 'rule-sweep-*.tsv' | wc -l | tr -d ' ')" "0" "12 ...and no stage is left behind"
+
+# THE REPORT VALIDATES AND PARSES ONE SNAPSHOT (reported on PR #502). The reader checks the bytes and
+# then re-opens the path to parse, so a swap between the two parsed rows nobody validated. Driven by
+# an `od` stub — the reader calls it on the final byte, between its byte rules and its row parse —
+# that replaces the record at its pathname with one carrying a contradiction. A report reading the
+# snapshot never sees the swap.
+ST12U="$work/st12u"; mkdir -p "$ST12U"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12U/rule-sweep.tsv"
+odstub="$work/odstub"; mkdir -p "$odstub"; realod="$(command -v od)"
+cat > "$odstub/od" <<STUB
+#!/bin/sh
+if [ -n "\${RS_SWAP:-}" ] && [ ! -e "\$RS_SWAP.done" ]; then
+  : > "\$RS_SWAP.done"
+  { cat "\$RS_SWAP"; printf 'rule\t%s\t%s\talpha-one\tx.sh:1\tfired\n' "$RS_RUN" "$RS_TREE"; } > "\$RS_SWAP.new"
+  mv -f "\$RS_SWAP.new" "\$RS_SWAP"
+fi
+exec "$realod" "\$@"
+STUB
+chmod +x "$odstub/od"
+RS_SWAP="$ST12U/rule-sweep.tsv" PATH="$odstub:$PATH" \
+  bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12U" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 the report validates and parses ONE snapshot — a swap mid-read is never parsed"
+if [ -e "$ST12U/rule-sweep.tsv.done" ]; then ok; else bad "12 fixture: the od stub never ran — the snapshot check asserted NOTHING"; fi
+
+# THE RUN IS THE MARKER'S TIMESTAMP SHAPE, AT BOTH HALVES (reported on PR #502): a run the marker
+# writer cannot produce never attests. The writer refuses it (19); the reader refuses a stored one.
+ST12RUN="$work/st12run"
+bash "$PL" rule-sweep --state "$ST12RUN" --run abc --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 19 "12 the writer refuses a run that is not the marker's timestamp shape (19)"
+mkdir -p "$ST12RUN"; printf 'rule\tabc\t%s\talpha-one\t-\tclean\n' "$RS_TREE" > "$ST12RUN/rule-sweep.tsv"
+bash -c '. "$1/scripts/lib/common.sh"; adb_rule_sweep_check "$2" "$3" "$4" >/dev/null' _ \
+  "$ROOT" "$ST12RUN/rule-sweep.tsv" "$RS_RUN" "$RS_TREE" 2>/dev/null
+eq "$?" 19 "12 the reader refuses a stored run that is not the marker's timestamp shape (19)"
+
+# THE STATE DIRECTORY IS THE CHECKOUT'S OWN, even when its name ends in a newline (reported on PR
+# #502): `$(…)` stripped it, and the record was written under the sibling path without one.
+nlp="$work/nlp"; mkdir -p "$nlp"; nlr="$nlp/r
+"
+git init -q "$nlr" >/dev/null 2>&1
+( cd "$nlr" && bash "$PL" rule-sweep --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1 )
+if [ -f "$nlr/.claude/state/rule-sweep.tsv" ] && [ ! -e "$nlp/r/.claude/state/rule-sweep.tsv" ]; then ok; else
+  bad "12 rule-sweep writes into the checkout whose name ends in a newline, never its sibling"; fi
+
+# AN UNSEARCHABLE ANCESTOR IS UNREADABLE, NOT ABSENT (reported on PR #502): only the immediate
+# directory was checked, so a record behind a locked ancestor read as "nothing recorded" (11).
+ST12ANC="$work/st12anc"; mkdir -p "$ST12ANC/a/state"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12ANC/a/state/rule-sweep.tsv"
+chmod 000 "$ST12ANC/a"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12ANC/a/state" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+RSANC=$?; chmod 755 "$ST12ANC/a"
+if [ "$(id -u)" = "0" ]; then ok; else eq "$RSANC" 20 "12 a record behind an unsearchable ancestor is unreadable (20), never absent"; fi
+# ...while a state directory that genuinely does not exist is still absent.
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12ANC/none/state" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 11 "12 a state directory that does not exist is absent (11), not unreadable"
+
+# THE RECORD KEEPS ITS MODE ACROSS A REWRITE (reported on PR #502): the stage is created under the
+# umask, and renaming it over a 0600 record widened it to 0644.
+ST12MODE="$work/st12mode"
+bash "$PL" rule-sweep --state "$ST12MODE" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+chmod 640 "$ST12MODE/rule-sweep.tsv"
+( umask 022; bash "$PL" rule-sweep --state "$ST12MODE" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1 )
+eq "$(ls -l "$ST12MODE/rule-sweep.tsv" | cut -c1-10)" "-rw-r-----" "12 a rewrite keeps a restricted record's mode"
+# A NEW RECORD TAKES THE UMASK'S MODE, not the owner-only stage's.
+ST12NEW="$work/st12new"
+( umask 022; bash "$PL" rule-sweep --state "$ST12NEW" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1 )
+eq "$(ls -l "$ST12NEW/rule-sweep.tsv" 2>/dev/null | cut -c1-10)" "-rw-r--r--" "12 a new record takes the umask's mode, not the stage's"
+
+# THE REPORT'S SNAPSHOT IS OWNER-ONLY (reported on PR #502): TMPDIR may be shared. The same `od`
+# stub, run while the snapshot exists, records its mode from a TMPDIR only this fixture uses.
+ST12SNAP="$work/st12snap"; mkdir -p "$ST12SNAP" "$work/st12snap-tmp"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12SNAP/rule-sweep.tsv"
+cat > "$odstub/od" <<STUB
+#!/bin/sh
+[ -n "\${RS_MODE:-}" ] && ls -l "\$TMPDIR"/adb-rule-sweep-snap.* 2>/dev/null | cut -c1-10 > "\$RS_MODE"
+exec "$realod" "\$@"
+STUB
+chmod +x "$odstub/od"
+( umask 022; RS_MODE="$work/st12snap-mode" TMPDIR="$work/st12snap-tmp" PATH="$odstub:$PATH" \
+  bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12SNAP" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1 )
+eq "$(cat "$work/st12snap-mode" 2>/dev/null)" "-rw-------" "12 the report's private snapshot is created owner-only"
+
+# ...AND SO IS THE WRITER'S STAGE while it holds a copy of the record (reported on PR #502). The
+# writer runs the reader over the stage, so the same stub sees it mid-write.
+ST12STG="$work/st12stg"; mkdir -p "$ST12STG"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12STG/rule-sweep.tsv"; chmod 600 "$ST12STG/rule-sweep.tsv"
+cat > "$odstub/od" <<STUB
+#!/bin/sh
+[ -n "\${RS_MODE:-}" ] && ls -l "\$RS_STAGEDIR"/rule-sweep-*.tsv 2>/dev/null | cut -c1-10 > "\$RS_MODE"
+exec "$realod" "\$@"
+STUB
+chmod +x "$odstub/od"
+( umask 022; RS_MODE="$work/st12stg-mode" RS_STAGEDIR="$ST12STG" PATH="$odstub:$PATH" \
+  bash "$PL" rule-sweep --state "$ST12STG" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1 )
+eq "$(cat "$work/st12stg-mode" 2>/dev/null)" "-rw-------" "12 the writer's stage is owner-only while it holds the record"
+
+# THE WRITER DECIDES ON ITS COPY, THROUGH THE READER'S VALIDATOR (reported on PR #502): it can no
+# longer report success — or an idempotent 10 — over a record the report would refuse whole.
+ST12W="$work/st12w"; mkdir -p "$ST12W"
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site 'x.sh:1' --result fired >/dev/null 2>&1
+eq "$?" 18 "12 the writer refuses to record a class as fired after recording it clean"
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --site 'y.sh:2' --result fired >/dev/null 2>&1
+bash "$PL" rule-sweep --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" --rule beta-two --result clean >/dev/null 2>&1
+eq "$?" 18 "12 ...and clean after fired"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12W" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 0 "12 ...so the record the slip would have stranded still reports"
+# A damaged record is refused before anything is added — including an exact duplicate's 10.
+ST12X="$work/st12x"; mkdir -p "$ST12X"
+printf 'rule\t%s\t%s\talpha-one\t-\tclean\n' "$RS_RUN" "$RS_TREE" > "$ST12X/rule-sweep.tsv"
+printf 'rule\t%s\t%s\tBadClass\t-\tclean\n' "$RS_RUN" "$RS_TREE" >> "$ST12X/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12X" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 18 "12 an exact duplicate over a DAMAGED record is refused (18), never an idempotent 10"
+# An existing record already past the bound: refused, never a 10.
+ST12Y="$work/st12y"; mkdir -p "$ST12Y"
+awk -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN { for (i = 0; i < 9500; i++) printf "rule\t%s\t%s\tbulk-class\tp/%d.sh:1\tfired\n", r, t, i }' > "$ST12Y/rule-sweep.tsv"
+bash "$PL" rule-sweep --state "$ST12Y" --run "$RS_RUN" --tree "$RS_TREE" --rule bulk-class --site 'p/0.sh:1' --result fired >/dev/null 2>&1
+eq "$?" 18 "12 an exact duplicate over a record already past its bound is refused, never an idempotent 10"
+
+# THE FILE BOUND IS BYTES ON BOTH SIDES. `${#row}` counted characters in the caller's locale while
+# the file size and the reader's bound are bytes, so a multibyte site near the limit slipped past.
+ST12M="$work/st12m"; mkdir -p "$ST12M"
+# A UTF-8 LOCALE THE HOST HAS, or the fixture proves nothing: under `C` a character IS a byte, and
+# the defect is unreachable. Ubuntu runners carry `C.UTF-8`; macOS carries `en_US.UTF-8`.
+RS_U8=""
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if locale -a 2>/dev/null | grep -qx "$_l"; then RS_U8="$_l"; break; fi
+done
+if [ -z "$RS_U8" ]; then
+  bad "12 fixture: no UTF-8 locale on this host — the byte-bound check asserted NOTHING"
+else
+  RS_MB_SITE="$(printf 'é%.0s' $(seq 1 200))"   # 200 characters, 400 bytes
+  rs_row_bytes="$(printf 'rule\t%s\t%s\talpha-one\t%s\tfired\n' "$RS_RUN" "$RS_TREE" "$RS_MB_SITE" | LC_ALL=C wc -c | tr -d ' ')"
+  # Fill to within (bound - rowbytes + 70, bound - rowbytes + 190]: past the bound when the row is
+  # counted in BYTES, under it when counted in CHARACTERS (200 fewer). Each filler row is < 120 bytes.
+  rs_hi=$(( 1048576 - rs_row_bytes + 190 ))
+  awk -v n="$rs_hi" -v r="$RS_RUN" -v t="$RS_TREE" 'BEGIN {
+    out = 0; i = 0
+    while (1) { s = "rule\t" r "\t" t "\tpad-class\tp/" i ".sh:1\tfired\n"; if (out + length(s) > n) break; printf "%s", s; out += length(s); i++ }
+  }' > "$ST12M/rule-sweep.tsv"
+  LC_ALL="$RS_U8" bash "$PL" rule-sweep --state "$ST12M" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_MB_SITE" --result fired >/dev/null 2>&1
+  eq "$?" 19 "12 a multibyte row that would push the record past its BYTE bound is refused"
+fi
+
+# A NON-UTF-8 BYTE RENDERS UNDER A UTF-8 LOCALE (reported on PR #502). BSD sed failed on it there,
+# the field vanished and the report still returned 0.
+# NO MUTATION ROW: the failure is BSD-sed-only, and the mutation harness runs on the ubuntu leg, where
+# GNU sed accepts the byte with or without `LC_ALL=C` — a row would stay green there and assert
+# nothing. This unit is what speaks for macOS, on the macOS leg.
+if [ -z "${RS_U8:-}" ]; then
+  bad "12 fixture: no UTF-8 locale on this host — the non-UTF-8 rendering check asserted NOTHING"
+else
+  ST12Z="$work/st12z"
+  bash "$PL" rule-sweep --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$(printf 'lat\xe9n.sh:3')" --result fired >/dev/null 2>&1
+  RSZ="$(LC_ALL="$RS_U8" bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+  has "$RSZ" "$(printf 'lat\xe9n.sh:3')" "12 a site carrying a non-UTF-8 byte is rendered under a UTF-8 locale, not dropped"
+fi
+
+
+# MARKDOWN LINK AND IMAGE SYNTAX IS NEUTRALIZED, not only HTML (reported by the declared reviewer on
+# PR #502). A site of `![x](https://host/p)` rendered as an image in the pull-request body.
+ST12N="$work/st12n"
+bash "$PL" rule-sweep --state "$ST12N" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site '![x](https://example.invalid/p)' --result fired >/dev/null 2>&1
+RSN="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12N" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+has "$RSN" '!\[x\](https://example.invalid/p)' "12 a site carrying image syntax is rendered as text"
+hasnt "$RSN" '![x](' "12 ...and the live image syntax never reaches the block"
+
+# THE REPORT READS ONLY A REGULAR FILE, AND COPIES IT BOUNDED (reported on PR #502, round 6). A FIFO
+# at the record's path blocked the close-out forever; an oversized file was copied whole into TMPDIR
+# before the reader refused it.
+ST12F2="$work/st12fifo"; mkdir -p "$ST12F2"; mkfifo "$ST12F2/rule-sweep.tsv"
+( timeout 20 bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12F2" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1 ); RSF=$?
+eq "$RSF" 20 "12 a FIFO at the record's path is refused (20), never read"
+bash "$PL" rule-sweep --state "$ST12F2" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 20 "12 ...and the writer refuses it too"
+rm -f "$ST12F2/rule-sweep.tsv"
+ST12O="$work/st12o"; mkdir -p "$ST12O"
+head -c 3145728 /dev/zero | tr '\0' 'x' > "$ST12O/rule-sweep.tsv"
+bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12O" --run "$RS_RUN" --tree "$RS_TREE" >/dev/null 2>&1
+eq "$?" 18 "12 an oversized record is refused (18) without being copied whole"
+# THE BLOCK NAMES THE TREE IT ATTESTS TO (reported on PR #502, round 6; re-sweeping is #503).
+has "$(rrep)" "attests to tree \`${RS_TREE:0:12}\`" "12 the block names the tree it attests to"
+# A STATE PATH CARRYING A NEWLINE IS REFUSED (reported on PR #502, round 6): captured through `$(…)`
+# it lost the newline and resolved a sibling directory.
+mkdir -p "$work/st12nl"
+bash "$PL" rule-sweep --state "$work/st12nl
+" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+eq "$?" 2 "12 a --state path carrying a newline is refused as usage"
+if [ -e "$work/st12nl/rule-sweep.tsv" ]; then bad "12 ...and nothing was written to the sibling it would have resolved to"; else ok; fi
+
+# A SWEEP THE TREE OUTLIVED IS NOT "NEVER SWEPT" (reported on PR #502, round 7). Every row stale and
+# none current used to print the nothing-recorded diagnosis; it now names the stale rows.
+ST12D2="$work/st12drift"
+bash "$PL" rule-sweep --state "$ST12D2" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
+RSD_ERR="$(bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12D2" --run "$RS_RUN" --tree "$RS_TREE2" 2>&1 >/dev/null)"; RSD=$?
+eq "$RSD" 11 "12 a sweep recorded only for an earlier tree is still 11 for this one"
+has "$RSD_ERR" "the tree changed after the sweep" "12 ...but names the stale rows rather than reporting a sweep that never happened"
+
+# The subcommands are reachable and self-describing.
+has "$(bash "$PL" --help 2>&1)" "rule-sweep --state" "12 --help documents the writer"
+has "$(bash "$PL" --help 2>&1)" "rule-sweep-report --state" "12 ...and the reporter"
+bash "$PL" rule-sweeps --state "$ST12" >/dev/null 2>&1
+eq "$?" 2 "12 a near-miss subcommand name is usage, not a silent no-op"
+
+# THE FOUR CONSUMERS, asserted together (#490's containment criterion).
+has "$(bash "$ROOT/scripts/lib/cleanup-lib.sh" state-scan "$ST12" 2>/dev/null)" "rules" \
+   "12 state-scan classifies the family"
+if grep -q 'rule-sweep\.tsv' "$ROOT/scripts/lib/implement-lib.sh"; then ok; else bad "12 _il_clear clears the fixed name"; fi
+if grep -q 'rule-sweep-\*\.tsv' "$ROOT/scripts/lib/implement-lib.sh"; then ok; else bad "12 _il_clear clears the family glob"; fi
+if grep -q 'rule-sweep(-\[0-9\]{1,4})?' "$ROOT/scripts/lib/run-state.sh"; then ok; else bad "12 run-state whitelists the opaque name"; fi
+if grep -q 'gaps|review|docs|survey|rules)' "$ROOT/scripts/lib/run-state.sh"; then ok; else bad "12 run-state classifies the kind"; fi
+
+# The workflow records AFTER the last triage commit and renders in the close-out.
+ILW="$ROOT/base/workflows/implement-issue.md"; ILTXT="$(cat "$ILW")"
+has "$ILTXT" '{{IMPLEMENT_LIB}} sweep-identity {{STATE_DIR}}' "12 step 9 resolves the run identity from one call"
+has "$ILTXT" '{{PATTERN_LEDGER_LIB}} rule-sweep --state {{STATE_DIR}}' "12 ...and records each rule"
+has "$ILTXT" '{{PATTERN_LEDGER_LIB}} rule-sweep-report --state {{STATE_DIR}}' "12 step 11 renders the report"
+rs_at="$(grep -n '{{PATTERN_LEDGER_LIB}} rule-sweep --state' "$ILW" | head -n 1 | cut -d: -f1)"
+rep_at="$(grep -n '{{PATTERN_LEDGER_LIB}} rule-sweep-report' "$ILW" | head -n 1 | cut -d: -f1)"
+ck_at="$(grep -n '{{PATTERN_LEDGER_LIB}} checklist' "$ILW" | head -n 1 | cut -d: -f1)"
+if [ -n "$rs_at" ] && [ -n "$rep_at" ] && [ -n "$ck_at" ] && [ "$ck_at" -lt "$rs_at" ] && [ "$rs_at" -lt "$rep_at" ]; then ok; else
+  bad "12 the workflow sweeps, then records, then reports (checklist@${ck_at:-?} record@${rs_at:-?} report@${rep_at:-?})"; fi
+# ...AND THE FIRST RENDER PRECEDES THE PR (reported on PR #502): step 10 requires the block in the
+# body, and the body is written once — a render that first appears in step 11 has nowhere to go.
+pr_at="$(grep -n '{{IMPLEMENT_LIB}} open-pr' "$ILW" | head -n 1 | cut -d: -f1)"
+if [ -n "$rep_at" ] && [ -n "$pr_at" ] && [ "$rep_at" -lt "$pr_at" ]; then ok; else
+  bad "12 the sweep block is rendered before the PR is opened (report@${rep_at:-?} open-pr@${pr_at:-?})"; fi
+fi
+
+check_blocks_done
+
+# ============================= --mutation: the guards must be seen RED ===========================
+# Each row breaks ONE property of a library and requires the block holding its witness to go red —
+# and runs ONLY that block and its declared dependencies (#468, D103), not the whole suite. The
+# whole-suite-per-row pool this replaced re-ran all eighteen sections for every row, which is how
+# this job reached its 120-minute ceiling on PR #502. `mutation-nightly.yml` still runs every row
+# against the full suite (ADB_MUTATION_FULL_SUITE=1), which is what catches a witness that drifted.
+if [ "$MODE" = mutation ]; then
+  prepare_root() { check_copy_worktree "$ROOT" "$1/repo" >/dev/null 2>&1 || return 1; printf '%s' "$1/repo"; }
+  runner() { bash "$1/scripts/check-pattern-ledger.sh" 2>&1; }
+
+  check_row 'threshold-inverted' 'scripts/lib/pattern-ledger.sh' 's1' \
+      '[ "$n" -ge "$t" ] || continue' \
+      '[ "$n" -lt "$t" ] || continue' \
+      'two hits reach the threshold'
+  check_row 'dedupe-disabled' 'scripts/lib/pattern-ledger.sh' 's2' \
+      'if printf '"'"'%s\n'"'"' "$hits" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
+      'if false; then' \
+      'a repeated thread id is a no-op'
+  check_row 'region-proof-disabled' 'scripts/lib/pattern-ledger.sh' 's3' \
+      'END { if (nb != 1 || ne != 1 || crossed || inb) exit 1 }' \
+      'END { if (0) exit 1 }' \
+      'a truncated hits region is refused'
+  check_row 'grammar-check-disabled' 'scripts/lib/pattern-ledger.sh' 's3' \
+      'if (NF < 9)             { bad = 1; exit }' \
+      'if (NF < 9)             { next }' \
+      'a malformed hit record is refused'
+  check_row 'checklist-half-read' 'scripts/lib/pattern-ledger.sh' 's3' \
+      '    || { printf '"'"'pattern-ledger: %s does not parse (the hits region) — refusing to emit a checklist from a ledger that is half readable\n'"'"' "$ledger" >&2; exit 18; }' \
+      '    || true' \
+      'checklist refuses a half-readable ledger'
+  check_row 'checklist-leaks-summary' 'scripts/lib/pattern-ledger.sh' 's4' \
+      '  if [ -n "$emitted" ]; then printf '"'"'%s\n'"'"' "$emitted"; fi' \
+      '  if [ -n "$emitted" ]; then printf '"'"'%s\n'"'"' "$emitted"; fi; _adb_pl_hits "$ledger" | cut -f2' \
+      'checklist emits no site'
+  check_row 'bad-threshold-silent' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '    if ! _adb_pl_ok_pr "$v"; then' \
+      '    if false; then' \
+      'a syntactically valid but out-of-domain threshold is still a hard error'
+  check_row 'reader-skips-validation' 'scripts/lib/pattern-ledger.sh' 's2' \
+      '    _adb_pl_ok_class  "$c"  || return 1' \
+      '    :' \
+      'is refused by the readers, not only by verify'
+  check_row 'reader-skips-dupes' 'scripts/lib/pattern-ledger.sh' 's2' \
+      '    [ -z "${seen[$th]+x}" ] || return 1' \
+      '    :' \
+      'a duplicated thread id is refused by'
+  check_row 'pr-domain-unchecked' 'scripts/lib/pattern-ledger.sh' 's2' \
+      '    _adb_pl_ok_pr "$pr" || return 1' \
+      '    :' \
+      'a hand-edited PR number outside the domain is refused by the readers'
+  check_row 'record-checks-one-region' 'scripts/lib/pattern-ledger.sh' 's7b' \
+      '  _adb_pl_promoted "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n'"'"' "$ledger" >&2; exit 18; }' \
+      '  :' \
+      'record refuses a ledger whose CHECKLIST region is damaged, not just its hits'
+  check_row 'verify-misses-dup-class' 'scripts/lib/pattern-ledger.sh' 's7b' \
+      '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | awk -F'"'"'\t'"'"' '"'"'NF { print $1 }'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
+      '    ckdupes=""' \
+      'a duplicated checklist class is refused by'
+  check_row 'promoted-list-via-v' 'scripts/lib/pattern-ledger.sh' 's7' \
+      'ADB_PL_PROM="$promoted" awk -F'"'"'\t'"'"' -v TAB="$TAB"' \
+      'awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
+      '…and marks the SECOND promoted class as promoted — the whole list reached awk'
+  check_row 'absent-indistinguishable' 'scripts/lib/pattern-ledger.sh' 's8' \
+      '    printf '"'"'ledger\tabsent\n'"'"'' \
+      '    printf '"'"'ledger\tpresent\n'"'"'' \
+      '…and says so explicitly, rather than leaving it inferred from zeros'
+  check_row 'promote-early-return-unchecked' 'scripts/lib/pattern-ledger.sh' 's7b' \
+      '  _adb_pl_hits "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the hits region)\n'"'"' "$ledger" >&2; exit 18; }' \
+      '  :' \
+      'promote refuses a damaged hits region instead of returning '"'"'already promoted'"'"''
+  check_row 'write-unverified' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  if ! _adb_pl_hits "$ledger" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
+      '  if false; then' \
+      'a lost row is told'
+  check_row 'record-unlocked' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  _adb_pl_lock "$ledger" || exit 20   # record-takes-lock' \
+      '  :   # record-takes-lock' \
+      '25 concurrent writers creating the ledger for the FIRST time all land'
+  check_row 'rule-text-unchecked' 'scripts/lib/pattern-ledger.sh' 's3' \
+      '    _adb_pl_ok_text "$rule" || return 1' \
+      '    :' \
+      'a checklist rule carrying a tab is refused by'
+  check_row 'mode-not-preserved' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  cp -p "$file" "$tmp" 2>/dev/null || true' \
+      '  :' \
+      'the ledger lost its mode to mktemp'
+  check_row 'threshold-scalar-unchecked' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '              bad = 1; exit' \
+      '              next' \
+      'an unterminated quoted threshold is refused, not silently reconstructed'
+  check_row 'duplicate-threshold-unchecked' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '              if (++seen > 1) { bad = 1; exit }' \
+      '              seen = 1' \
+      'a threshold declared twice is refused, not silently resolved to the first'
+  check_row 'unlock-check-then-act' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  adb_rmdir_excl "$dir" || true' \
+      '  rm -rf "$dir" 2>/dev/null || true' \
+      'release removed a co-resident marker'
+  check_row 'reclaims-live-owner' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then   # lock-reclaim-needs-proof' \
+      '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ]; then   # lock-reclaim-needs-proof' \
+      'a stale-but-LIVE owner'"'"'s lock was reclaimed'
+  check_row 'leading-zero-threshold' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*(0|[1-9][0-9]*)[[:space:]]*(#.*)?$/) next' \
+      '              if ($0 ~ /^[[:space:]]*threshold[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/) next' \
+      'a leading-zero threshold ('
+  check_row 'stats-filter-unchecked' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '  if [ -n "$OPT_PR" ] && ! _adb_pl_ok_pr "$OPT_PR"; then' \
+      '  if false; then' \
+      'rather than reporting a falsely clean zero'
+  check_row 'record-prefix-unchecked' 'scripts/lib/pattern-ledger.sh' 's2' \
+      '      if ($1 != "- ")         { bad = 1; exit }' \
+      '      if (0)                  { bad = 1; exit }' \
+      'a forged record prefix is refused by'
+  check_row 'liveness-via-kill' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  ps -p "$pid" >/dev/null 2>&1 && return 1' \
+      '  kill -0 "$pid" 2>/dev/null && return 1' \
+      'pid 1 was judged GONE'
+  check_row 'repeated-patterns-table' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '                                intbl = (hdr == "patterns"); if (intbl && ++tbl > 1) { bad = 1; exit }' \
+      '                                intbl = (hdr == "patterns");' \
+      'a repeated [patterns] table header is refused'
+  check_row 'new-ledger-mode' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '    chmod "$(printf '"'"'%o'"'"' "$(( 0666 & ~0$(umask) ))")" "$_tpl" 2>/dev/null || true' \
+      '    :' \
+      'a NEWLY CREATED ledger did not get the umask'"'"'s mode'
+  check_row 'reclaim-busy-spin' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '      # A FAILED RECLAMATION FALLS THROUGH TO THE WAIT, it does not retry immediately. An' \
+      '      continue' \
+      'a reclamation that cannot rename busy-spun past the wait bound'
+  check_row 'patterns-header-comment' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '                                  if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
+      '                                  if (0) { hdr = substr(hdr, 1, i - 1); break }' \
+      'a repeated [patterns] table header is refused'
+  check_row 'summary-unvalidated' 'scripts/lib/pattern-ledger.sh' 's5b' \
+      '    if [ -n "$summ" ]; then _adb_pl_ok_text "$summ" || return 1; fi' \
+      '    :' \
+      'a hand-edited summary opening an HTML comment is refused by the readers'
+  check_row 'ledger-nul-normalized' 'scripts/lib/pattern-ledger.sh' 's5b' \
+      '  [ "$(LC_ALL=C tr -d '"'"'\000'"'"' < "$1" | wc -c | tr -d '"'"' '"'"')" -eq "$(LC_ALL=C wc -c < "$1" | tr -d '"'"' '"'"')" ] || return 1' \
+      '  :' \
+      'a NUL byte at the end of a stored summary is refused, not normalized away'
+  check_row 'first-seen-by-row' 'scripts/lib/pattern-ledger.sh' 's8' \
+      '        NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }' \
+      '        NF && $1 != "" { if (!($1 in first)) { first[$1] = $5; firstd[$1] = $6 } }' \
+      'a class whose EARLIER-dated row a merge placed later is credited to that earlier PR'
+  check_row 'tombstone-failure-silent' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '        if ! rm -rf "$tomb" 2>/dev/null || [ -e "$tomb" ]; then' \
+      '        if false; then' \
+      'a stale-lock tombstone that cannot be removed is a loud failure, not a silent success'
+  check_row 'threshold-read-failure-as-builtin' 'scripts/lib/pattern-ledger.sh' 's6' \
+      '    *) printf '"'"'pattern-ledger: an agents.toml contains a NUL byte and is not TOML — refusing to read a threshold from it. Check %s and %s.\n'"'"' "$(adb_repo_root 2>/dev/null)/agents.toml" "$(adb_global_manifest)" >&2; return 2 ;;' \
+      '    *) ;;' \
+      'a global manifest carrying a NUL byte is a hard error, never the built-in threshold'
+  check_row 'date-shape-only' 'scripts/lib/pattern-ledger.sh' 's5c' \
+      '  [ "$d" -le "$dim" ]' \
+      '  :' \
+      'is refused, not accepted on shape'
+  check_row 'promote-aggregate-unchecked' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '  if [ "$newsize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
+      '  if false; then' \
+      'promote refuses the rule that would push the checklist over the prompt budget'
+  check_row 'checklist-unbounded' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '  if [ "$size" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
+      '  if false; then' \
+      'an over-budget checklist is refused with 21, not emitted into a prompt'
+  check_row 'reclaim-ignores-death-proof' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '    if [ -n "$age" ] && [ "$age" -gt "$_ADB_PL_LOCK_STALE_SECS" ] && _adb_pl_owner_gone "$dir"; then   # the writers'"'"' own proof' \
+      '    if [ -n "$age" ]; then   # the writers'"'"' own proof' \
+      'reclaim leaves a LIVE owner'"'"'s lock alone (22)'
+  check_row 'sweep-unswept-accepted' 'scripts/lib/pattern-ledger.sh' 's11' \
+      '    [ -n "$_rows" ] || {' \
+      '    true || {' \
+      'record --sweep refuses a class the sweep file has no row for (23)'
+  check_row 'sweep-open-sibling-accepted' 'scripts/lib/pattern-ledger.sh' 's11' \
+      '    if printf '"'"'%s\n'"'"' "$_rows" | grep -qx found; then' \
+      '    if false; then' \
+      'record --sweep refuses a class whose sibling is still found (24)'
+  check_row 'sweep-foreign-pr-accepted' 'scripts/lib/pattern-ledger.sh' 's11' \
+      '    [ "${_sh%%$'"'"'\t'"'"'*}" = "$OPT_PR" ] || {' \
+      '    true || {' \
+      'record --sweep refuses a sweep file that belongs to another PR (19)'
+  check_row 'rule-sweep-empty-not-11' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ "$n" -eq 0 ] && [ "$m" -gt 0 ]; then' \
+      '  if false; then' \
+      '12 nothing recorded while promoted rules exist is 11'
+  check_row 'rule-sweep-coverage-from-rows' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '      m="$(printf '"'"'%s'"'"' "$promoted" | awk '"'"'NF { n++ } END { print n + 0 }'"'"')" ;;' \
+      '      m="$n" ;;' \
+      '12 ...as COVERAGE against the live checklist, not as a clean sweep'
+  check_row 'rule-sweep-unswept-unnamed' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '        printf -- '"'"'  - `%s`\n'"'"' "$_mc"' \
+      '        :' \
+      '12 ...and the unswept rule is NAMED, not merely counted'
+  check_row 'rule-sweep-budget-ignored' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '      if [ "$emitted_sz" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then' \
+      '      if false; then' \
+      '12 ...and the report refuses it too, rather than reporting coverage nobody was given'
+  check_row 'rule-sweep-unreadable-as-empty' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ ! -x "$d" ]; then' \
+      '    if false; then' \
+      '12 an unsearchable state directory is 20, never 11'
+  check_row 'rule-sweep-md-unescaped' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '_adb_pl_rs_md() { adb_md_escape "$1"; }' \
+      '_adb_pl_rs_md() { printf '"'"'%s'"'"' "$1"; }' \
+      '12 a site that would open an HTML comment is escaped in the report'
+  check_row 'rule-sweep-args-unvalidated' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  adb_rule_sweep_ok_run "$OPT_RUN"' \
+      '  true "$OPT_RUN"' \
+      '12 a malformed --run is usage (2), not a report about the file'
+  check_row 'rule-sweep-offset-credited' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '      *$'"'"'\n'"'"'"$class"$'"'"'\n'"'"'*)' \
+      '      *)' \
+      '12 a row outside the live checklist credits NO coverage — the run still stated nothing'
+  check_row 'rule-sweep-writer-not-idempotent' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if printf '"'"'%s\n'"'"' "$cur" | LC_ALL=C grep -qxF -- "${OPT_RULE}${TAB}${OPT_SITE}${TAB}${OPT_RESULT}"; then' \
+      '    if false; then' \
+      '12 re-recording an identical row is a no-op (10) — this is the retry path'
+  check_row 'rule-sweep-file-bound-dropped' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
+      '  if false; then' \
+      '12 an append that would outgrow the reader'"'"'s file bound is refused at write time'
+  check_row 'rule-sweep-writer-follows-link' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then' \
+      '  if false; then' \
+      '12 the writer refuses a symlinked record (20)'
+  check_row 'rule-sweep-writer-unlocked' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  _adb_pl_lock "$f" || {' \
+      '  true || {' \
+      '12 a writer blocked by a live lock holder refuses (20)'
+  check_row 'rule-sweep-bound-in-characters' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
+      '  if [ "$(( cursz + ${#row} + 1 ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then' \
+      '12 a multibyte row that would push the record past its BYTE bound is refused'
+  check_row 'rule-sweep-report-dangling-link' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ -L "$f" ]; then' \
+      '  if false; then' \
+      '12 a dangling symlinked record is refused (20), never read as absent'
+  check_row 'rule-sweep-offset-unseeded' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  local class site result off_set=$'"'"'\n'"'"'' \
+      '  local class site result off_set=""' \
+      '12 an off-set class with two rows is listed once'
+  check_row 'rule-sweep-append-by-path' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  mv -f -- "$stage" "$f" ||' \
+      '  cat -- "$stage" >> "$f" && rm -f "$stage" ||' \
+      '12 rule-sweep publishes by rename: the record'"'"'s inode changes on every write'
+  check_row 'rule-sweep-mode-widened' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    && chmod "$_mode" "$stage" 2>/dev/null \' \
+      '    && true \' \
+      '12 a rewrite keeps a restricted record'"'"'s mode'
+  check_row 'rule-sweep-new-record-private' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if [ -f "$f" ]; then _mode="$(adb_file_mode "$f")"; else _mode="$(printf '"'"'%o'"'"' "$(( 0666 & ~0$(umask) ))")"; fi \' \
+      '  if [ -f "$f" ]; then _mode="$(adb_file_mode "$f")"; else _mode=600; fi \' \
+      '12 a new record takes the umask'"'"'s mode, not the stage'"'"'s'
+  check_row 'rule-sweep-stage-readable' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  if ! { exec {wfd}>"$stage"; } 2>/dev/null; then' \
+      '  umask "$_um"; if ! { exec {wfd}>"$stage"; } 2>/dev/null; then' \
+      '12 the writer'"'"'s stage is owner-only while it holds the record'
+  check_row 'rule-sweep-offset-hidden-on-11' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ -n "${off_set//$'"'"'\n'"'"'/}" ]; then' \
+      '    if false; then' \
+      '12 the zero-coverage 11 names the off-set class it did not credit'
+  check_row 'rule-sweep-snapshot-world-readable' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    _um="$(umask)"; umask 077' \
+      '    _um="$(umask)"' \
+      '12 the report'"'"'s private snapshot is created owner-only'
+  check_row 'rule-sweep-run-grammar-loose' 'scripts/lib/common.sh' 's12' \
+      '    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;' \
+      '    [A-Za-z0-9]*) return 0 ;;' \
+      '12 the writer refuses a run that is not the marker'"'"'s timestamp shape (19)'
+  check_row 'rule-sweep-reader-run-loose' 'scripts/lib/common.sh' 's12' \
+      '      if (run !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/) fail(19)' \
+      '      if (run !~ /^[A-Za-z0-9:._-]+$/) fail(19)' \
+      '12 the reader refuses a stored run that is not the marker'"'"'s timestamp shape (19)'
+  check_row 'rule-sweep-root-newline-stripped' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  local root; root="$(adb_repo_root 2>/dev/null && printf X)" || root=""' \
+      '  local root; root="$(adb_repo_root 2>/dev/null)" || root=""' \
+      '12 rule-sweep writes into the checkout whose name ends in a newline, never its sibling'
+  check_row 'rule-sweep-ancestor-unchecked' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ ! -x "$d" ]; then' \
+      '    if [ -d "${f%/*}" ] && [ ! -x "${f%/*}" ]; then' \
+      '12 a record behind an unsearchable ancestor is unreadable (20), never absent'
+  check_row 'rule-sweep-report-no-snapshot' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    out="$(adb_rule_sweep_check "$snap" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
+      '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
+      '12 the report validates and parses ONE snapshot — a swap mid-read is never parsed'
+  check_row 'rule-sweep-writer-contradiction-published' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if printf '"'"'%s\n'"'"' "$cur" | awk -F'"'"'\t'"'"' -v c="$OPT_RULE" -v r="$OPT_RESULT" '"'"'$1 == c && $3 != r { f = 1 } END { exit !f }'"'"'; then' \
+      '    if false; then' \
+      '12 the writer refuses to record a class as fired after recording it clean'
+  check_row 'rule-sweep-writer-damaged-accepted' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    cur="$(adb_rule_sweep_check "$stage" "$OPT_RUN" "$OPT_TREE")"; crc=$?' \
+      '    cur="$(adb_rule_sweep_check "$stage" "$OPT_RUN" "$OPT_TREE")"; crc=0' \
+      '12 an exact duplicate over a DAMAGED record is refused (18), never an idempotent 10'
+  check_row 'rule-sweep-limit-unstated' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  printf -- '"'"'- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\n'"'"'' \
+      '  :' \
+      '12 the report states its own evidence limit'
+  check_row 'marker-injection-allowed' 'scripts/lib/common.sh' 's5' \
+      '  case "$1" in *'"'"'<!--'"'"'*|*'"'"'-->'"'"'*) return 1 ;; esac' \
+      '  case "$1" in *'"'"'ZZQQ-never-appears'"'"'*) return 1 ;; esac' \
+      'a region marker in a summary is refused'
+  check_row 'markup-in-summary' 'scripts/lib/common.sh' 's5' \
+      '  case "$1" in *'"'"'<!--'"'"'*|*'"'"'-->'"'"'*) return 1 ;; esac' \
+      '  case "$1" in *'"'"'<!-- adb:'"'"'*) return 1 ;; esac' \
+      'a summary opening an HTML comment is refused'
+  check_row 'rule-bound-removed' 'scripts/lib/common.sh' 's5d' \
+      '  [ "$(printf '"'"'%s'"'"' "$1" | LC_ALL=C wc -c | tr -d '"'"' '"'"')" -le "$max" ] || return 1' \
+      '  :' \
+      'a 1025-byte rule is refused by the per-text bound'
+  check_row 'sweep-final-newline-unchecked' 'scripts/lib/common.sh' 's11' \
+      '  [ "$last" = 0a ] || return 18' \
+      '  :' \
+      '11 a sweep file with no final newline is refused'
+  check_row 'sweep-nul-unchecked' 'scripts/lib/common.sh' 's11' \
+      '  [ "$(LC_ALL=C tr -d '"'"'\000'"'"' < "$f" | LC_ALL=C wc -c | tr -d '"'"' '"'"')" -eq "$sz" ] || return 18' \
+      '  :' \
+      '11 a sweep file carrying a NUL is refused'
+  check_row 'sweep-name-unbound' 'scripts/lib/common.sh' 's11' \
+      '  [ "$base" = "sweep-pr${hpr}-${hhead}.tsv" ] || return 18' \
+      '  :' \
+      '11 a sweep file whose name does not match its header is refused'
+  check_row 'rule-sweep-arity-unchecked' 'scripts/lib/common.sh' 's12' \
+      '      if (NF != 6)          fail(18)' \
+      '      if (0)          fail(18)' \
+      '12 a seven-field row is refused on arity too'
+  check_row 'rule-sweep-kind-unchecked' 'scripts/lib/common.sh' 's12' \
+      '      if ($1 != "rule")     fail(18)' \
+      '      if (0)     fail(18)' \
+      '12 a row of another kind is refused — a sibling-sweep row is not a checklist row'
+  check_row 'rule-sweep-clean-site-unchecked' 'scripts/lib/common.sh' 's12' \
+      '        if (site != "-") fail(18)' \
+      '        if (0) fail(18)' \
+      '12 a clean row carrying a site is refused — - is the only clean site'
+  check_row 'rule-sweep-class-unchecked' 'scripts/lib/common.sh' 's12' \
+      '      if (length(class) > 48 || class !~ /^[a-z][a-z0-9-]*$/)                  fail(19)' \
+      '      if (0)                  fail(19)' \
+      '12 a class outside the slug charset is refused in the CURRENT group too'
+  check_row 'rule-sweep-filters-before-validating' 'scripts/lib/common.sh' 's12' \
+      '      if (NF != 6)          fail(18)' \
+      '      if ($2 != wr || $3 != wt) { stale++; next }; if (NF != 6) fail(18)' \
+      '12 a malformed row is refused even when it belongs to ANOTHER run'
+  check_row 'rule-sweep-duplicate-collapsed' 'scripts/lib/common.sh' 's12' \
+      '      if (k in seen) fail(18)' \
+      '      if (k in seen) next' \
+      '12 a hand-edited duplicate (class, site) refuses the read whole'
+  check_row 'rule-sweep-reader-site-bound-dropped' 'scripts/lib/common.sh' 's12' \
+      '        if (site == "" || index(site, "`") || site ~ /[[:cntrl:]]/ || length(site) > 512) fail(19)' \
+      '        if (site == "" || index(site, "`") || site ~ /[[:cntrl:]]/) fail(19)' \
+      '12 a hand-edited site over the writer'"'"'s byte bound is refused by the reader too'
+  check_row 'rule-sweep-empty-symlink-accepted' 'scripts/lib/common.sh' 's12' \
+      '  if [ ! -L "$f" ] && [ -f "$f" ] && [ ! -s "$f" ]; then' \
+      '  if [ -f "$f" ] && [ ! -s "$f" ]; then' \
+      '12 the reader itself refuses a symlink to an empty record (20)'
+  check_row 'rule-sweep-md-link-live' 'scripts/lib/common.sh' 's12' \
+      '  printf '"'"'%s'"'"' "${1:-}" | LC_ALL=C sed -e '"'"'s/\\/\\\\/g'"'"' -e '"'"'s/\[/\\[/g'"'"' -e '"'"'s/]/\\]/g'"'"' \' \
+      '  printf '"'"'%s'"'"' "${1:-}" | LC_ALL=C sed -e '"'"'s/\\/\\\\/g'"'"' \' \
+      '12 a site carrying image syntax is rendered as text'
+  check_row 'rule-sweep-empty-unreadable-accepted' 'scripts/lib/common.sh' 's12' \
+      '    [ -r "$f" ] || return 20' \
+      '    :' \
+      '12 the reader itself refuses an unreadable empty record (20)'
+  check_row 'rule-sweep-contradiction-allowed' 'scripts/lib/common.sh' 's12' \
+      '      if (result == "clean") { if (class in sited) fail(18); single[class] = 1 }' \
+      '      if (result == "clean") { single[class] = 1 }' \
+      '12 a class recorded both clean and fired refuses the read whole'
+  check_row 'rule-sweep-bytes-unchecked' 'scripts/lib/common.sh' 's12' \
+      '  adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 0 ] || return "$rc"' \
+      '  adb_bytes_whole "$f" "$ADB_RULE_SWEEP_FILE_MAX"; rc=$?; [ "$rc" -eq 20 ] && return 20' \
+      '12 a row with no final newline is refused'
+  check_row 'rule-sweep-writer-tree-unchecked' 'scripts/lib/common.sh' 's12' \
+      '  adb_rule_sweep_ok_tree "$tree" || return 19' \
+      '  :' \
+      '12 the writer refuses a tree digest that is not 64 hex'
+  check_row 'rule-sweep-writer-result-unchecked' 'scripts/lib/common.sh' 's12' \
+      '    *) return 19 ;;' \
+      '    *) : ;;' \
+      '12 the writer refuses a result outside fired|clean'
+  check_row 'the report reads a FIFO' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ ! -f "$f" ]; then' \
+      '    if false; then' \
+      '12 a FIFO at the record'"'"'s path is refused (20), never read'
+  check_row 'a newline-bearing --state is accepted' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  *[[:cntrl:]]*) die "--state (or ADB_PATTERN_SWEEP_STATE) carries a control character — refused" ;;' \
+      '  *[[:cntrl:]]*) : ;;' \
+      '12 a --state path carrying a newline is refused as usage'
+  check_row 'the block omits the tree it attests to' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '  printf -- '"'"'- attests to tree `%s` (run `%s`); a later change to the tree makes this block stale.\n'"'"' \' \
+      '  : \' \
+      '12 the block names the tree it attests to'
+  check_row 'a sweep the tree outlived reads as never swept' 'scripts/lib/pattern-ledger.sh' 's12' \
+      '    if [ "${stale:-0}" -gt 0 ]; then' \
+      '    if false; then' \
+      '12 ...but names the stale rows rather than reporting a sweep that never happened'
+  check_mutation_rows "check-pattern-ledger" "$work/mut" "scripts/check-pattern-ledger.sh" prepare_root runner 6
+fi
 
 check_summary check-pattern-ledger

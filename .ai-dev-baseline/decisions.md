@@ -8378,3 +8378,113 @@ survive is the part a later reader needs.
              comment rather than added to the snapshot, because the snapshot is read on every poll and
              pr-watch.sh records that bodies are the one field the classification path must not pay for.
 - baseline-issue: n/a
+
+## D114 — The learned-checklist sweep is a record, keyed to the tree that ships
+- date:      2026-09-24
+- category:  project-delta
+- unknown:   #490 (slice of #465, item 3). `self-review.md` requires a run to sweep the promoted
+             checklist and name what it swept; that was a sentence in a PR body with no file behind
+             it, so a real sweep and a plausible sentence were indistinguishable. #465's BLOCKING #4
+             recorded why the obvious record does not fix it: `--rule --site --result` alone cannot
+             establish coverage, because one recorded rule renders a clean report while the other
+             twenty were never checked — the `partial-validation` class from this project's own
+             ledger. Four further gaps were BLOCKING on #490's own gap analysis: the identity
+             fields had no source, the Scope named ledger-bound writer primitives for a
+             state-directory file, one `--site` could not carry a rule that fired at several sites,
+             and — the internal contradiction — recording at step 8 while step 9 commits fixes made
+             an ordinary successful triage invalidate every row before the close-out rendered.
+- decision:  (1) Rows live at `<state>/rule-sweep.tsv`, one per line, with identity on every row
+             rather than in a header. The writer takes `_adb_pl_lock` on `<record>.lock`, copies the
+             record byte-exact into a stage it created O_EXCL (a `rule-sweep-*.tsv` family member),
+             decides the duplicate, contradiction and size questions on that stage through the
+             reader's own validator, appends through the held descriptor and publishes by rename —
+             so it never writes through a path it did not create, and never reports success over a
+             record the reader would refuse. Admission clears the lock, because an ownerless one can
+             never be proven dead. The Scope line naming `_adb_pl_insert` is withdrawn: that writes
+             the tracked ledger, not this record, though this writer follows its publish rule.
+             A same-user process that swaps the record mid-operation can change which rows are
+             read; it is not defended against, because the same access lets it write the rows
+             directly — binding an inode would cross no boundary.
+             (2) `implement-lib.sh sweep-identity` emits `<run>TAB<tree>` in ONE call, so the
+             recorder and the reporter derive them the same way. `run` is the marker's `startedAt`
+             — never `owner`, which is re-stamped on pickup. `tree` digests `git diff --full-index
+             --binary` against the merge-base (the default abbreviates blob names and omits binary
+             content, so two binaries sharing a short prefix produced identical patches) plus every
+             untracked entry as NUL-DELIMITED path/type/size/digest records — a pathname may hold a
+             tab or a newline, so a tab-delimited record let a crafted filename forge an entry and
+             two different trees collide. A symlink contributes its TARGET, not what it
+             dereferences to; a regular file that cannot be read fails the whole call closed.
+             (3) The sweep is re-performed over the FINAL diff and recorded at the end of step 9,
+             after the last triage commit. (4) Coverage is `N of M` against the LIVE promoted set
+             with the unswept rules named, and membership in that set is what counts — a recorded
+             class that is not a promoted rule is reported but never credited. Duplicates are
+             refused on `(class, site)` so several fired sites are representable; the retry path
+             lives in the WRITER, which is idempotent on an identical row (rc 10, `record`'s code)
+             and appends nothing, so the reader stays free to refuse a real duplicate whole.
+- placement: `scripts/lib/common.sh` (`adb_rule_sweep_row`, `adb_rule_sweep_check`),
+             `scripts/lib/pattern-ledger.sh` (`rule-sweep`, `rule-sweep-report`),
+             `scripts/lib/implement-lib.sh` (`sweep-identity`, `_il_clear`),
+             `scripts/lib/cleanup-lib.sh` (`state-scan` `rules` arm), `scripts/lib/run-state.sh`
+             (whitelist + kind), `base/workflows/implement-issue.md` steps 8/9/11,
+             `base/practices/self-review.md`; tests in `check-pattern-ledger.sh` section 12 with
+             `--mutation` rows, and the containment arms in `check-cleanup.sh`
+- reason:    The contradiction is the load-bearing part. A digest is only worth taking if it names
+             the tree a reader can go and look at, and the tree a reader looks at is the one that
+             merged — so the record has to be taken after the last fix, and the sweep has to have
+             seen that fix. Recording earlier and stamping it with the final digest would have
+             produced a record that passes every validator and attests to a tree nobody swept,
+             which is worse than the sentence it replaced. The per-row identity follows from the
+             same refusal to assert a guarantee the code does not provide: `pattern-ledger.sh`'s own
+             header records what "the writer is sequential by construction" cost the last time it
+             was argued, and a header binding one identity would have needed exactly that argument
+             back. The first cut was also unlocked and appended by pathname; review showed the lock
+             was needed once the writer checked for duplicates and for the bound, and then that an
+             append by pathname follows a swapped-in symlink, so the write became rename-publish. The retry path went
+             through one revision worth recording: the first cut had the
+             READER collapse an exact repeat, which kept the writer free of a read — but it
+             contradicted the acceptance criterion that a duplicate is refused whole, and the
+             independent reviewer was right to call it. Moving the idempotency to the writer costs
+             one read before the write and satisfies both: a retry appends nothing, and any
+             duplicate that does reach the reader is a hand edit or a merge, which is exactly the
+             case "never a partial count" exists for.
+- baseline-issue: n/a
+
+## D115 — The concurrency model of the ledger and docs-record readers: atomic writers, lock-free readers
+- date:      2026-09-27
+- category:  project-delta
+- unknown:   PR #502's review, round 8, found `rule-sweep-report` deriving coverage from three separate
+             reads of the ledger, so a promotion landing mid-report could combine two versions — and the
+             sibling sweep found the same shape in every reader of both files: `_adb_pl_region`,
+             `classes`, `checklist`, `stats` and `verify` in `pattern-ledger.sh`, and `_adb_dl_records`,
+             `verdict` and `report` in `docs-lib.sh`, all of which predate #490. Rounds 3, 4 and 6 had
+             found the same class on the new rule-sweep record, one site at a time.
+- decision:  State the model once, and hold every reader to it rather than hardening each site as it is
+             found. WRITERS publish atomically: the ledger by an O_EXCL stage renamed into place under
+             `_adb_pl_lock`, the rule-sweep record the same way, the docs record by single appends each
+             under its record bound. So any ONE read observes one complete version. READERS take no lock,
+             and a reader that reads its file more than once may combine two consecutive versions if a
+             write lands between its reads; a re-run resolves it. The finding and its eight siblings are
+             declined against this entry.
+- placement: this entry; the decline replies on PR #502 cite it.
+- reason:    The exposure is a write DURING a read, in files written by the run itself or by the
+             resolver, and the result is a report that is momentarily inconsistent, not a write outside
+             a file or a count nobody can reproduce — the two classes this project does treat as defects
+             (D114 records the writer case, which was fixed). The alternative — one read-once primitive
+             routed through nine readers in two libraries that predate #490 — is a real change with its
+             own review rounds, and the owner chose the model over it. What would change the answer: a
+             reader whose mixed-version result is PERSISTED or acted on irreversibly; that reader must
+             then snapshot, as `rule-sweep-report`'s record read already does.
+- extended:  2026-09-27, owner decision, PR #502 round 12 — the WRITER side of the same model. A
+             same-user process that replaces a record, stage or template path between a writer's check
+             and its open (the docs append, the ledger's `mktemp` stage and template, the rule-sweep
+             stage's `chmod`) can redirect one write to a target it names. That process already holds
+             write access to the target and could write it directly, so no boundary is crossed; and the
+             outcome fails closed, because every reader refuses a linked or non-regular record. The
+             static case stays guarded — a link or non-regular file already present is refused before
+             the open. The binding alternatives were weighed and not taken: bash's `-ef` against
+             `/dev/fd/N` never matches on macOS (probed: fdesc reports the file's inode under a
+             different device id), and stage-and-rename for the docs record needs a lock and a
+             lost-update design in a library that predates #490. Path-swap findings on these writers
+             are declined against this entry. What would change the answer: a writer running with
+             privileges the swapping process lacks.
+- baseline-issue: n/a

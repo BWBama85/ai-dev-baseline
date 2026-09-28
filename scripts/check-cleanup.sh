@@ -1168,8 +1168,23 @@ else
       }
     }' ; }"
   if [ -n "$sweeparms" ]; then
-    eq "$sweeparms" "gaps survey issue review docs threads sweep " \
-       "6 the sweep loop's delete arms are EXACTLY gaps/survey/issue/review/docs/threads/sweep — no default arm, so 'unsafe' cannot be deleted"
+    eq "$sweeparms" "gaps survey issue review docs rules threads sweep " \
+       "6 the sweep loop's delete arms are EXACTLY gaps/survey/issue/review/docs/rules/threads/sweep — no default arm, so 'unsafe' cannot be deleted"
+    # …AND THAT SET IS EVERY DELETABLE KIND `state-scan` EMITS. The pin above freezes the arms; it
+    # cannot notice a NEW kind the classifier started emitting with no arm to delete it, which is
+    # how `rules` (#490) reached state-scan, `_il_clear` and run-state and was then left behind by
+    # every /cleanup. Derived from the library's own emit lines, so a kind added there without an
+    # arm here goes red. `marker`, `lock`, `other` and `unsafe` are the kinds never deleted by this
+    # loop: the marker has its own verdict below, the lock is a live claim, and the last two are
+    # the allowlist's reason to exist.
+    scankinds="${ grep -o '_adb_cl_emit "\$want_ident" [a-z]*' "$CL" | awk '{print $3}' \
+      | grep -vxE 'marker|lock|other|unsafe' | LC_ALL=C sort -u | tr '\n' ' '; }"
+    armkinds="${ printf '%s' "$sweeparms" | tr ' ' '\n' | awk 'NF' | LC_ALL=C sort -u | tr '\n' ' '; }"
+    if [ -z "$scankinds" ]; then
+      bad "6 could not read state-scan's emitted kinds from cleanup-lib.sh — the coupling check asserted NOTHING"
+    else
+      eq "$armkinds" "$scankinds" "6 every deletable kind state-scan emits has a delete arm in /cleanup's sweep loop"
+    fi
   else
     bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
   fi
@@ -1278,7 +1293,11 @@ else
   # it consulted. Same obligation as the three older families: whatever /cleanup can sweep, `admit`
   # must be able to clear, or a previous run's stated disposition survives into a fresh run whose
   # marker makes it read as current.
-  for armname in gaps issue review docs; do
+  # `rules` joins them for #490 — the learned-checklist sweep record, which carries which of this
+  # project's promoted rules the run actually swept the shipped diff for. `survey` was emitting
+  # from `state-scan` since #435 and was never in this list, so the one family whose containment
+  # nothing asserted is now asserted too.
+  for armname in gaps issue review docs survey rules; do
     # Anchored on the arm's BODY (`printf 'gaps\t…`), not on its label: the gaps arm's label starts
     # with `gap-prompt.txt` and the review arm's with `review-prompt.txt`, so neither begins with
     # the kind it emits. Matching the emit line and reporting the label above it reads the pairing
@@ -1345,7 +1364,7 @@ else
       bad "6 the $armname arm exposes no family glob — the symlink agreement check asserted NOTHING"
     fi
   done
-  eq "$ilarms" "4" "6 all four artifact families (gaps, issue, review, docs) were actually read from state-scan"
+  eq "$ilarms" "6" "6 all six artifact families (gaps, issue, review, docs, survey, rules) were actually read from state-scan"
 
   # A failure to clear must REFUSE and release, never report success over artifacts it did not
   # remove. A read-only state dir (mode 500) is the reproducible form of that.
@@ -1809,6 +1828,36 @@ if [ -e "$SW/after/gaps.md" ]; then
 else ok; fi
 has "$sw_cleared" 'gaps.md' "8b …and the removal it DID make is reported as cleared"
 
+# --- 8b2. the learned-checklist sweep record is actually DELETED, not only classified (#490) ----
+# Section 6 proves `state-scan` classifies `rule-sweep.tsv` and `_il_clear` clears it; that is not
+# the same claim as "/cleanup removes it". The family shipped with a classifier arm and no delete
+# arm, so every /cleanup enumerated the record and left it behind. Run the REAL snippet (the real
+# library, no substituting wrapper) over a finished run's record, then over a live run's.
+rs_run() {   # <state-dir> -> prints CLEARED<…>
+  local code="${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"
+  env STATE="$1" RUN=none NOTES="" CLEARED="" "$BASH" -c '
+TABC="$(printf "\t")"
+pr_state() { printf "open\n"; }
+'"$code"'
+printf "CLEARED<%s>\n" "$(printf "%s" "$CLEARED" | tr "\n" ";")"' 2>&1
+}
+RS_FIN="$work/rs-finished"; rm -rf "$RS_FIN"; mkdir -p "$RS_FIN"
+printf 'rule\tR\tT\tc\t-\tclean\n' > "$RS_FIN/rule-sweep.tsv"
+printf 'x\n' > "$RS_FIN/rule-sweep-2.tsv"
+rs_out="${ rs_run "$RS_FIN"; }"
+if [ -e "$RS_FIN/rule-sweep.tsv" ] || [ -e "$RS_FIN/rule-sweep-2.tsv" ]; then
+  bad "8b2 /cleanup left a finished run's rule-sweep record behind [$rs_out]"
+else ok; fi
+has "$rs_out" 'rule-sweep.tsv' "8b2 …and reports the removal it made"
+# A LIVE run's record is kept: its marker makes the verdict `keep`.
+RS_LIVE="$work/rs-live"; rm -rf "$RS_LIVE"; mkdir -p "$RS_LIVE"
+printf 'rule\tR\tT\tc\t-\tclean\n' > "$RS_LIVE/rule-sweep.tsv"
+printf '{"branch":"issue-490-x","issue":"490","phase":"triaged"}\n' > "$RS_LIVE/implement-issue-active.json"
+rs_run "$RS_LIVE" >/dev/null
+if [ -e "$RS_LIVE/rule-sweep.tsv" ]; then ok; else
+  bad "8b2 THE BUG: /cleanup deleted a LIVE run's rule-sweep record"
+fi
+
 # --- 8c. a kept file is REPORTED, never silently retained --------------------------------------
 # The two outcomes are different facts and the output contract keeps them apart: `SKIPPED … kept`
 # means the file is not ours any more, `REFUSED … left in place` means it IS ours and `rm` failed.
@@ -1855,11 +1904,11 @@ eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'state-scan --with-identity'; }" "1
 # really a checksum.
 has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
 # EVERY deleting arm, not just the one this issue was reported against.
-for arm in gaps survey issue review docs threads sweep; do
+for arm in gaps survey issue review docs rules threads sweep; do
   has "$SW_SNIPPET" "    $arm)" "8d the $arm arm is present in the sweep"
 done
-eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "7" \
-   "8d …and all seven pass the judged identity to the delete"
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "8" \
+   "8d …and all eight pass the judged identity to the delete"
 hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
 ' "8d no arm still deletes by pathname alone"
 

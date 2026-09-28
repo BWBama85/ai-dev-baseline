@@ -151,21 +151,15 @@ _adb_dl_ok_server() {
 }
 
 # --- the state file -----------------------------------------------------------------------------
-# _adb_dl_md <value> — render a stored field safely into Markdown.
-#
-# Every field is validated as one printable line at write time, which stops it forging a RECORD.
-# It does not stop it forging MARKUP: a `source` of `<!-- vendor result` opens an HTML comment that
-# GitHub honours, hiding the evidence and everything after it in the pull-request body — and this
-# report is the only surviving copy once the run state is swept. Escaping is the renderer's job,
-# not the validator's: the storage rules govern the file, this governs the display.
-# Reported by the declared reviewer on PR #429.
-_adb_dl_md() {
-  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
-}
+# _adb_dl_md <value> — render a stored field safely into Markdown. The rule, and what it does and
+# does not neutralize, live in `adb_md_escape`: this report is the only surviving copy of the
+# evidence once the run state is swept, so a stored value must not be able to hide it or turn it
+# into a link.
+_adb_dl_md() { adb_md_escape "$1"; }
 
 _adb_dl_state_dir() {
-  if [ -n "${OPT_STATE:-}" ]; then printf '%s\n' "$OPT_STATE"; return 0; fi
-  if [ -n "${ADB_DOCS_STATE:-}" ]; then printf '%s\n' "$ADB_DOCS_STATE"; return 0; fi
+  local _sd="${OPT_STATE:-${ADB_DOCS_STATE:-}}"
+  if [ -n "$_sd" ]; then printf '%s\n' "$_sd"; return 0; fi
   local root; root="$(adb_repo_root 2>/dev/null)" || root=""
   [ -n "$root" ] || { printf 'docs-lib: not inside a git repository and no --state given\n' >&2; return 1; }
   printf '%s/.%s/state\n' "$root" "${ADB_AGENT:-claude}"
@@ -194,6 +188,13 @@ _adb_dl_append() {
   f="$(_adb_dl_file)" || exit 20
   d="$(dirname "$f")"
   [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || { printf 'docs-lib: cannot create %s\n' "$d" >&2; exit 20; }
+  # A LINK OR A NON-FILE IS REFUSED BEFORE THE APPEND, as the reader refuses it: `>>` follows a
+  # symlink, so the writer modified whatever the link named and reported success, and every later
+  # `report`/`verdict` then refused the record with no correction operation.
+  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+    printf 'docs-lib: %s is not a regular file (a symlink or another type) — refusing to append to it\n' "$f" >&2
+    exit 20
+  fi
   printf '%s\n' "$*" >> "$f" || { printf 'docs-lib: cannot write %s\n' "$f" >&2; exit 20; }
 }
 
@@ -215,12 +216,20 @@ _adb_dl_records() {
   # state directory read as "no records" (`report` said 11 and `verdict` degraded every server),
   # while an unreadable file failed the byte scan below and was reported as a GRAMMAR error (18).
   # Both hand the operator the wrong repair. Reported by the declared reviewer on PR #429.
+  # A LINK IS REFUSED FIRST, dangling or not: `-e` follows it, so a dangling link read as absent (11)
+  # while every writer refused the same path (20).
+  [ -L "$f" ] && return 2
   if [ ! -e "$f" ]; then
     d="$(dirname "$f")"
     if [ -d "$d" ] && [ ! -x "$d" ]; then return 2; fi
     return 0
   fi
   [ -r "$f" ] || return 2
+  # A REGULAR FILE before anything reads it: a FIFO here blocked the report forever.
+  # NO SIZE BOUND, deliberately: `_adb_dl_append` enforces none, and a reader that refuses what its
+  # writer produces strands the run with no correction operation. Every record is bounded where it
+  # is written, and the file grows only by those appends.
+  [ -f "$f" ] || return 2
   # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
   # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
@@ -595,7 +604,10 @@ cmd_report() {
   # verdict and evidence disagreed. Reported by the declared reviewer on PR #429.
   _ADB_DL_SNAPSHOT=""
   [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"
-  export _ADB_DL_SNAPSHOT
+  # NOT EXPORTED. Every reader is this shell or a subshell of it, which inherits the variable
+  # anyway — and the environment counts against the OS argument limit (1 MiB on macOS), so an
+  # exported snapshot near that size made every later command fail "Argument list too long" and
+  # the report blamed a NUL byte in agents.toml.
   if [ -n "$_ADB_DL_SNAPSHOT" ]; then
     n_consulted="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "consulted"'   | wc -l | tr -d ' ')"
     n_none="$(printf '%s\n'      "$_ADB_DL_SNAPSHOT" | awk -F'\t' '$1 == "none-needed"' | wc -l | tr -d ' ')"
@@ -609,15 +621,30 @@ cmd_report() {
   fi
 
   printf '**Docs consulted**\n\n'
+  # RENDERED THROUGH `_adb_dl_md`, not an inlined awk copy of it. The two awk `md()`s escaped HTML
+  # only, so a stored source of `![x](https://host/p)` became an image in the pull-request body;
+  # one helper means the next fix to the rule reaches every renderer at once. Every field was
+  # validated as a single tab-free printable line when it was stored, so the split is exact.
+  local _k _a _b _c
   if [ "$n_consulted" -gt 0 ]; then
-    printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '
-      function md(v) { gsub(/&/, "\\&amp;", v); gsub(/</, "\\&lt;", v); gsub(/>/, "\\&gt;", v); return v }
-      $1 == "consulted" { printf "- %s — rung %s: %s\n", md($2), $3, md($4) }' 
+    while IFS="$TAB" read -r _k _a _b _c; do
+      [ "$_k" = consulted ] || continue
+      # CAPTURED, THEN PRINTED: a failure inside `printf`'s arguments printed an empty field.
+      _a="$(_adb_dl_md "$_a")" && _c="$(_adb_dl_md "$_c")" \
+        || { printf 'docs-lib: could not render a consulted row\n' >&2; return 20; }
+      printf -- '- %s — rung %s: %s\n' "$_a" "$_b" "$_c"
+    done <<SNAP
+$_ADB_DL_SNAPSHOT
+SNAP
   fi
   if [ "$n_none" -gt 0 ]; then
-    printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' '
-      function md(v) { gsub(/&/, "\\&amp;", v); gsub(/</, "\\&lt;", v); gsub(/>/, "\\&gt;", v); return v }
-      $1 == "none-needed" { printf "- none needed: %s\n", md($2) }' 
+    while IFS="$TAB" read -r _k _a _b _c; do
+      [ "$_k" = none-needed ] || continue
+      _a="$(_adb_dl_md "$_a")" || { printf 'docs-lib: could not render a none-needed row\n' >&2; return 20; }
+      printf -- '- none needed: %s\n' "$_a"
+    done <<SNAP
+$_ADB_DL_SNAPSHOT
+SNAP
   fi
   # BOTH KINDS IN ONE RUN IS NOT AN ERROR, BUT IT IS WORTH SAYING. A run can legitimately declare
   # its surfaces trivial and then discover one that is not — the record is append-only and there is
@@ -648,8 +675,10 @@ cmd_report() {
       printf -- '- MCP preflight: every required server answered a real query.\n'
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
-        printf -- '  - `%s` — %s\n' "$_srv" \
-          "$(_adb_dl_md "$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')")"
+        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')" \
+          && _ev="$(_adb_dl_md "$_ev")" \
+          || { printf 'docs-lib: could not render the probe evidence for %s\n' "$_srv" >&2; return 20; }
+        printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
       done <<SERVERS
 $required
 SERVERS
@@ -663,7 +692,9 @@ SERVERS
       # Reported by the declared reviewer on PR #429.
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
-        _ev="$(_adb_dl_md "$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')")"
+        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')" \
+          && _ev="$(_adb_dl_md "$_ev")" \
+          || { printf 'docs-lib: could not render the probe evidence for %s\n' "$_srv" >&2; return 20; }
         [ -n "$_ev" ] || _ev='(no probe was recorded for this server)'
         printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
       done <<SERVERS
@@ -717,6 +748,13 @@ while [ "$#" -gt 0 ]; do
     *)               die "$SUB: unknown option '$1'" ;;
   esac
 done
+
+# A STATE PATH CARRYING A CONTROL BYTE IS REFUSED HERE, in the main shell, as usage: every reader
+# captures it through `$(…)`, which strips a trailing newline and would resolve a sibling directory,
+# and a refusal raised inside that capture could only surface as the caller's 20 (#278's rule).
+case "${OPT_STATE:-${ADB_DOCS_STATE:-}}" in
+  *[[:cntrl:]]*) die "--state (or ADB_DOCS_STATE) carries a control character — refused" ;;
+esac
 
 case "$SUB" in
   mcp-required) cmd_mcp_required ;;
