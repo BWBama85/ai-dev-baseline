@@ -3923,13 +3923,8 @@ cmd_open_pr() {
   # THE TIP PUSHED IS THE TREE THE LOCAL LOOP CERTIFIED (#491). Step 9's report ran earlier, and a
   # commit made since would pass the clean-tree check above and ship unreviewed, so the verdict is
   # re-derived here from the loop's record — and the tip must not move across that read.
-  # HEAD is what the report digests and the branch ref is what is pushed, so both must name _tip on
-  # both sides of the read.
-  if [ "$(git rev-parse HEAD 2>/dev/null)" != "$_tip" ]; then
-    exec {_brfd}<&-; rm -f "$_bcp"
-    printf 'implement-lib: HEAD is not the tip of %s — refusing to push a tip the local review did not read\n' "$branch" >&2
-    return 39
-  fi
+  # HEAD (which the report digests) is on the marker branch by the check above, so it is _tip here;
+  # both it and the branch ref (which is pushed) must still name _tip after the read.
   if ! _il_open_pr_loop_gate "$dir"; then
     exec {_brfd}<&-; rm -f "$_bcp"; return 39
   fi

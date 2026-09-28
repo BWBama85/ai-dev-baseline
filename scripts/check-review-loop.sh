@@ -198,7 +198,7 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'open-pr refuses (39) when no loop is recorded'
   check_mut open-pr-tip-unpinned \
-    '  if [ "$(git rev-parse "refs/heads/$branch" 2>/dev/null)" != "$_tip" ]; then' \
+    '  if [ "$(git rev-parse "refs/heads/$branch" 2>/dev/null)" != "$_tip" ] || [ "$(git rev-parse HEAD 2>/dev/null)" != "$_tip" ]; then' \
     '  if false; then' \
     'open-pr refuses (39) when the tip moved across the verdict read'
   check_mut site-not-in-identity \
