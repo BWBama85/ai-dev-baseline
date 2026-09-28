@@ -4276,8 +4276,9 @@ cmd_sweep_identity() {
 #   review-loop carry  [--pr N --head SHA] --severity critical|high|medium|low --finding <text> <state-dir>
 #   review-loop report [--pr N --head SHA] <state-dir>
 #
-# THE RECORD is `review-loop.tsv` for an /implement-issue run, or `review-loop-pr<N>-<SHA>.tsv` for
-# one /resolve-pr-threads round, keyed by the pushed head <SHA> the round started from. One row per
+# THE RECORD is `review-loop.tsv` for an /implement-issue run, or `review-loop-pr<N>-<sha12>.tsv` for
+# one /resolve-pr-threads round, keyed by the first 12 hex of the pushed head the round started from
+# (the full id would take an 11-digit PR's name past run-state's 64-byte name bound). One row per
 # event, TAB-separated, validated WHOLE by every reader (and never written past its 1 MiB bound):
 #   start <n> <budget> <tree> <token>             dispatched pass n reserved against its tree
 #   begin <n> <budget> <tree> <token>             native pass n reserved against its tree
@@ -4363,6 +4364,8 @@ _il_loop_parse() {
         n="${ADB_SWEEP_F[1]}"; want=$((RL_PASSES + 1))
         [ "$n" = "$want" ] || return 18
         [[ "${ADB_SWEEP_F[2]}" =~ ^([1-9]|10)$ ]] || return 18
+        # A pass is only ever reserved WITHIN the budget it ran under; the writer cannot emit more.
+        [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18
         [[ "${ADB_SWEEP_F[3]}" =~ ^[0-9a-f]{64}$ ]] || return 18
         [[ "${ADB_SWEEP_F[4]}" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || return 18
         RL_PASSES="$n"; RL_OPEN="$n"; RL_OPEN_KIND="${ADB_SWEEP_F[0]}"; RL_OPEN_TOKEN="${ADB_SWEEP_F[4]}"
@@ -4451,7 +4454,7 @@ _il_loop_clean() {
 # base into RL_REC, RL_ROOT and RL_BASE. 0 · 16 (HEAD does not descend from --head) · 20.
 _il_loop_context() {
   local dir="$1" pr="$2" head="$3" r
-  if [ -n "$pr" ]; then RL_REC="$dir/review-loop-pr${pr}-${head}.tsv"; else RL_REC="$dir/review-loop.tsv"; fi
+  if [ -n "$pr" ]; then RL_REC="$dir/review-loop-pr${pr}-${head:0:12}.tsv"; else RL_REC="$dir/review-loop.tsv"; fi
   # SENTINEL CAPTURE, as sweep-identity does: `$(…)` strips a trailing newline in the checkout name.
   r="$(git rev-parse --show-toplevel 2>/dev/null && printf X)" \
     || { echo "implement-lib: review-loop: not inside a git repository" >&2; return 20; }
@@ -4752,7 +4755,7 @@ cmd_review_loop_carry() {
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
   bud="$(_il_loop_budget)" || return $?
   bud="${bud%% *}"
-  if [ -n "$RL_PR" ]; then RL_REC="$dir/review-loop-pr${RL_PR}-${RL_HEAD}.tsv"; else RL_REC="$dir/review-loop.tsv"; fi
+  if [ -n "$RL_PR" ]; then RL_REC="$dir/review-loop-pr${RL_PR}-${RL_HEAD:0:12}.tsv"; else RL_REC="$dir/review-loop.tsv"; fi
   [ -f "$RL_REC" ] || { echo "implement-lib: review-loop carry: no loop is recorded, so nothing is exhausted" >&2; return 17; }
   _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
     || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }

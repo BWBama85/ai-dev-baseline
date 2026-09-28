@@ -428,7 +428,7 @@ cmd_state_scan() {
       # `.artifact.*` is read-artifact's private copy of a gap, survey or review file, held only
       # for the duration of one read — a copy that outlives a killed read carries up to 8 MiB of
       # that content, and as `other` it was unsweepable until the next admission cleared it.
-      # `review-loop.tsv` / `review-loop-pr<N>-<head>.tsv` is the local convergence loop's per-pass
+      # `review-loop.tsv` / `review-loop-pr<N>-<head12>.tsv` is the local convergence loop's per-pass
       # record (#491), cleared by `_il_clear` under exactly these names.
       review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err|.artifact.*|review-loop.tsv|review-loop-pr*-*.tsv)
         _adb_cl_emit "$want_ident" review "$f" '-'

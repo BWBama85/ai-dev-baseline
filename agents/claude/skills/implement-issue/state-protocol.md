@@ -125,7 +125,7 @@ native consumer), the review family (`review-prompt.txt`, `review-prompt-stage.*
 mktemp before the rename publish, `review.md`, `review.err`,
 `review-*.{md,err}`, `.artifact.*` — read-artifact's private copy, orphaned only by a
 killed read — and the local convergence loop's record, `review-loop.tsv` and
-`review-loop-pr<N>-<head>.tsv`, #491), the survey family (`survey-prompt.txt`, `survey.md`, `survey-trace.md`,
+`review-loop-pr<N>-<head12>.tsv`, #491), the survey family (`survey-prompt.txt`, `survey.md`, `survey-trace.md`,
 `survey.err`, `survey-*.{md,err}` — #435), the issue snapshots (`issue-<digits>.json/.assoc`)
 the documentation-duty records (`docs-consulted.tsv`, `docs-consulted-*.tsv`) and the
 learned-checklist sweep records (`rule-sweep.tsv`, `rule-sweep-*.tsv` — #490). They are

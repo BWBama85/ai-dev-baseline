@@ -130,6 +130,10 @@ if [ "$MODE" = mutation ]; then
     '  if ! _il_loop_parse "$RL_REC" || [ "$RL_OPEN" != "$n" ]; then' \
     '  if ! _il_loop_parse "$RL_REC"; then' \
     'a record that changed underneath a pass refuses to record its result'
+  check_mut pass-past-budget-accepted \
+    '        [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18' \
+    '        :' \
+    'a pass numbered past the budget it ran under refuses the record'
   check_mut unknown-row-accepted \
     '      *) return 18 ;;' \
     '      *) : ;;' \
@@ -564,6 +568,12 @@ rl "$d" pass .claude/state codex
 printf 'x' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "6 a record with no final newline is refused (a torn append)"
+d="$(fixture)"; script "$d" req:0
+rl "$d" pass .claude/state codex
+T1="$(awk -F'\t' '$1=="start"{t=$4} END{print t}' "$d/.claude/state/review-loop.tsv")"
+printf 'start\t2\t1\t%s\tcodex\ndone\t2\t%s\t0\t0\t%s\n' "$T1" "$T1" "$T1" >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "6 a pass numbered past the budget it ran under refuses the record (no writer can emit one)"
 d="$(fixture)"; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'bogus\tx\n' >> "$d/.claude/state/review-loop.tsv"
@@ -689,7 +699,7 @@ prl() { local dd="$1"; shift; RL_OUT="$( cd "$dd" && env HOME="$FHOME" PATH="$CB
     RL_SCRIPT="$dd.script" RL_COUNT="$dd.count" bash "$IL" "$@" 2>&1 )"; RL_RC=$?; }
 prl "$d" review-loop pass --pr 7 --head "$PH" .claude/state codex
 eq "$RL_RC" 0 "9 a resolver round reviews its UNPUSHED fix commits (HEAD ahead of the PR head)"
-[ -f "$d/.claude/state/review-loop-pr7-$PH.tsv" ] && ok || bad "9 …keyed to the PR and the round head"
+[ -f "$d/.claude/state/review-loop-pr7-${PH:0:12}.tsv" ] && ok || bad "9 …keyed to the PR and the round head"
 has "$(cat "$d/.claude/state/review-prompt.txt")" "commits not yet pushed" "9 …and the prompt says it is reviewing unpushed commits"
 prl "$d" review-loop report --pr 7 --head "$PH" .claude/state
 eq "$RL_RC" 0 "9 the round's report reads the same record"
@@ -706,15 +716,18 @@ eq "$?" 2 "9 --local-head without --criteria-from-pr is a usage error"
 # =============================== 10. registration ==============================================
 # The containment rule: a state-dir family must be named by state-scan, _il_clear and run-state.
 d="$(fixture)"; S="$d/.claude/state"
-printf 'x\n' > "$S/review-loop.tsv"; printf 'x\n' > "$S/review-loop-pr7-$(printf 'a%.0s' {1..40}).tsv"
+printf 'x\n' > "$S/review-loop.tsv"; printf 'x\n' > "$S/review-loop-pr7-$(printf 'a%.0s' {1..12}).tsv"
+# The widest name the writer can produce — an 11-digit PR — must still fit run-state's name bound.
+printf 'x\n' > "$S/review-loop-pr12345678901-$(printf 'b%.0s' {1..12}).tsv"
 SCAN="$(bash "$ROOT/scripts/lib/cleanup-lib.sh" state-scan "$S")"
-eq "$(printf '%s\n' "$SCAN" | awk -F'\t' '$2 ~ /review-loop/ && $1=="review"' | wc -l | tr -d ' ')" 2 \
-   "10 state-scan classifies both loop records as review artifacts"
+eq "$(printf '%s\n' "$SCAN" | awk -F'\t' '$2 ~ /review-loop/ && $1=="review"' | wc -l | tr -d ' ')" 3 \
+   "10 state-scan classifies every loop record as a review artifact"
 jq -n '{branch:"issue-7-x", issue:"7", phase:"implemented", startedAt:"2026-09-28T00:00:00Z",
          phaseHistory:[{phase:"implemented", at:"2026-09-28T00:00:00Z"}]}' > "$S/implement-issue-active.json"
 RS="$(bash "$ROOT/scripts/lib/run-state.sh" summary --state "$S" 2>/dev/null)"
 has "$RS" "<state>/review-loop.tsv" "10 run-state names the loop record rather than counting it unnamed"
 has "$RS" "<state>/review-loop-pr7-" "10 …and the resolver round's record too"
+has "$RS" "<state>/review-loop-pr12345678901-" "10 …even for the widest PR number --pr accepts"
 hasnt "$RS" "unnamed-artifacts" "10 …and counts nothing as unnamed"
 rm -f "$S/implement-issue-active.json"
 AD="$( cd "$d" && env HOME="$FHOME" bash "$IL" admit .claude/state 2>&1 )"

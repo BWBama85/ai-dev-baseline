@@ -144,7 +144,7 @@ debug        = "claude"     # owns root-cause investigations.
 #
 # `0` disables the loop, and the PR body and summaries say so. Range 0-10; an empty value, a leading
 # zero or anything past 10 is a HARD ERROR, never the default. `ADB_LOCAL_REVIEW_PASSES` overrides
-# this for one run. When the budget runs out with findings left, a MEDIUM/LOW one may be pushed as
+# this for one run by the same rules — set but empty, it means "not overridden". When the budget runs out with findings left, a MEDIUM/LOW one may be pushed as
 # `carried: <n>` and named; a CRITICAL/HIGH one blocks the run.
 # local_passes = 3
 

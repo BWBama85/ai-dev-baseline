@@ -326,9 +326,10 @@ findings left, each is carried with the severity step 9's triage gives it: MEDIU
 `carried: <n>` and are named; a carried CRITICAL or HIGH, a failed final pass, or an edit after the
 final pass blocks the run.
 
-`0` disables the loop and every summary says so. An empty value, a leading zero, a non-integer and
-anything past **10** are hard errors, never the built-in **3**; `ADB_LOCAL_REVIEW_PASSES` overrides
-for one run, and the key layers repo → global. `role-dispatch.sh local-passes` reads it.
+`0` disables the loop and every summary says so. An empty `local_passes`, a leading zero, a
+non-integer and anything past **10** are hard errors, never the built-in **3**.
+`ADB_LOCAL_REVIEW_PASSES` overrides for one run under the same rules, except that an empty or unset
+variable means "not overridden"; the key layers repo → global. `role-dispatch.sh local-passes` reads it.
 
 ## Scope: bespoke orchestration stays project-scoped
 
