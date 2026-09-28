@@ -185,6 +185,14 @@ if [ "$MODE" = mutation ]; then
     '    mv -f "$aside" "$RL_DIR/review.md" 2>/dev/null' \
     '    :' \
     'puts the previous reply back rather than losing it'
+  check_mut validated-verdict-unbound \
+    '    if [ "$rc" -eq 0 ] && [ -n "$expect" ] && [ "$vout" != "$expect" ]; then rc=20; fi' \
+    '    :' \
+    'a reply replaced after dispatch-review validated it never records the replacement'
+  check_mut dotdot-site-accepted \
+    '  case "$s" in /*|-*|..|../*|*/..|*/../*|*/..:*|..:*) return 1 ;; esac' \
+    '  case "$s" in /*|-*) return 1 ;; esac' \
+    'a site that climbs out of the repository (..) is refused (19)'
   check_mut open-pr-ungated \
     '  if ! _il_open_pr_loop_gate "$dir"; then' \
     '  if false; then' \
@@ -378,11 +386,14 @@ rl "$d" carry --severity low --site f.sh:1 --finding "$(printf 'a\tb')" .claude/
 eq "$RL_RC" 19 "2 a finding carrying a TAB is refused (19) — it would forge a row"
 rl "$d" carry --severity low --site '/etc/passwd' --finding x .claude/state
 eq "$RL_RC" 19 "2 a site that is not repository-relative is refused (19)"
+rl "$d" carry --severity low --site '../outside.sh:3' --finding x .claude/state
+eq "$RL_RC" 19 "2 a site that climbs out of the repository (..) is refused (19)"
 # Two findings sharing their wording are still two: the site is part of the identity.
 d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
-rl "$d" carry --severity low --site a.sh:3 --finding 'same words' .claude/state
-rl "$d" carry --severity low --site b.sh:7 --finding 'same words' .claude/state
+rl "$d" carry --severity low --site 'docs/a file.md:3' --finding 'same words' .claude/state
+eq "$RL_RC" 0 "2 a site with a space — a legal path — can be carried"
+rl "$d" carry --severity low --site 'docs/résumé.md:7' --finding 'same words' .claude/state
 eq "$RL_RC" 0 "2 two findings with identical text at different sites are both carried"
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "2 same-text findings at different sites leave a readable, fully carried record"
@@ -472,6 +483,25 @@ RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$SW:$SB:$PATH" RL_SCRIPT="$d.scrip
     SWAP_OUT="$d/.claude/state/review.md" bash "$IL" review-loop pass .claude/state codex 2>&1 )"; RL_RC=$?
 [ -e "$d/.claude/state/review.md.swapped" ] && ok || bad "3 the swap fixture fired (the witness below is otherwise vacuous)"
 eq "$RL_RC" 36 "3 a forged clean reply left behind by a FAILED dispatch is never recorded"
+
+# dispatch-review validated a reply declaring 2 REQUIRED; a clean-looking replacement lands before the
+# loop records the pass. The count recorded must be the one validated — so the pass fails instead.
+VB="$work/validbin"; mkdir -p "$VB"
+cat > "$VB/bash" <<SH
+#!$(command -v bash)
+case "\$*" in
+  *"dispatch-review"*)
+    "$(command -v bash)" "\$@"; rc=\$?
+    printf 'clean\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "\$SWAP_DIR/review.md.new" && mv -f "\$SWAP_DIR/review.md.new" "\$SWAP_DIR/review.md"
+    exit \$rc ;;
+esac
+exec "$(command -v bash)" "\$@"
+SH
+chmod +x "$VB/bash"
+d="$(fixture)"; script "$d" req:2
+RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$VB:$SB:$PATH" RL_SCRIPT="$d.script" RL_COUNT="$d.count" \
+    SWAP_DIR="$d/.claude/state" bash "$IL" review-loop pass .claude/state codex 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 36 "3 a reply replaced after dispatch-review validated it never records the replacement's count"
 
 d="$(fixture)"; script "$d" bad
 rl "$d" pass .claude/state codex
@@ -859,6 +889,10 @@ GUARD_END="$(grep -n -B1 -F '# OUTSIDE the ledger guard' "$RW" | head -1 | cut -
 order "11 …so both are appended OUTSIDE it" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"')"
 order "11 …the local review line included" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"')"
 has "$(grep -F 'Per round so far' "$RW")" 'LOOP_LINE' "11 a blocked round still reports its loop line with the rows so far"
+for stop in 'STOP: HEAD moved while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
+            'STOP: PR #$PR_NUM is no longer OPEN at the round' "STOP: could not push this round's commits"; do
+  has "$(grep -F -- "$stop" "$RW")" '$LOOP_LINE' "11 the 4d exit '$stop' reports the loop line it already rendered"
+done
 order "11 …and before step 7's re-request" "$RPASS" "$(line_of "$RW" '### 7. Ask for a re-review')"
 order "11 …after 4c, so the reviewed diff includes the ledger commit" "$(line_of "$RW" '#### 4c. Promote what has become a pattern')" "$RPASS"
 eq "$(grep -c 'git push origin' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"

@@ -4338,6 +4338,9 @@ cmd_sweep_identity() {
 # still be two findings, so the site is part of the identity — and an identical triple is the
 # idempotent retry (10).
 #
+# A CARRY IS THE DRIVER'S ATTESTATION: the count is checked against the final pass's verdict, but
+# nothing can prove the rows name that review's actual findings — the trailer carries counts only.
+#
 # SEVERITY IS THE DRIVER'S TRIAGE, RECORDED. The verdict trailer carries counts only, so `carry`
 # stores the CRITICAL/HIGH/MEDIUM/LOW judgement step 9 already makes, and `report` applies the rule
 # mechanically: a carried CRITICAL or HIGH blocks, and every REQUIRED finding the final pass declared
@@ -4468,13 +4471,15 @@ _il_loop_finding_ok() {
 }
 
 # _il_loop_site_ok <site> — a repository-relative `path[:line]`, or `-` when the finding names no
-# site: 1-200 bytes of [A-Za-z0-9._/:@+-], never starting with `/` or `-` (except the lone `-`).
+# site: 1-200 bytes, no control character, not absolute, and no `..` segment. Spaces and non-ASCII
+# bytes are legal in a path, so they are legal here; the rendered line escapes the site.
 _il_loop_site_ok() {
   local LC_ALL=C s="$1"
   [ "$s" = "-" ] && return 0
   [ -n "$s" ] && [ "${#s}" -le 200 ] || return 1
-  case "$s" in /*|-*) return 1 ;; esac
-  [[ "$s" =~ ^[A-Za-z0-9._/:@+-]+$ ]]
+  [[ "$s" =~ [[:cntrl:]] ]] && return 1
+  case "$s" in /*|-*|..|../*|*/..|*/../*|*/..:*|..:*) return 1 ;; esac
+  return 0
 }
 
 # _il_loop_append <record> <row> — one whole line, appended, never past the reader's bound.
@@ -4586,7 +4591,7 @@ _il_loop_carried_text() {
   local i out="" sep=""
   for i in "${!RL_CN[@]}"; do
     [ "${RL_CN[i]}" = "$RL_PASSES" ] || continue
-    out="${out}${sep}${RL_CSEV[i]} ${RL_CSITE[i]}: $(adb_md_escape "${RL_CTXT[i]}")"
+    out="${out}${sep}${RL_CSEV[i]} $(adb_md_escape "${RL_CSITE[i]}"): $(adb_md_escape "${RL_CTXT[i]}")"
     sep="; "
   done
   printf '%s' "$out"
@@ -4689,10 +4694,12 @@ _il_loop_reserve() {
   return 0
 }
 
-# _il_loop_finish <n> <tree1> <why> — read the reply for pass n (unless <why> already failed it),
-# append its `done`/`fail` row, print the pass line and return the pass code.
+# _il_loop_finish <n> <tree1> <why> [<frc> [<expected-verdict>]] — read the reply for pass n (unless
+# <why> already failed it), append its `done`/`fail` row, print the pass line and return the pass
+# code. With <expected-verdict> (`<required> <optional>`, as dispatch-review printed it) a reply that
+# no longer carries that verdict fails the pass rather than recording a count nobody validated.
 _il_loop_finish() {
-  local n="$1" tree1="$2" why="$3" frc="${4:--}" rfile="$RL_DIR/review.md" tree2 row="" rc vout req opt rsha _vfd=""
+  local n="$1" tree1="$2" why="$3" frc="${4:--}" expect="${5:-}" rfile="$RL_DIR/review.md" tree2 row="" rc vout req opt rsha _vfd=""
   if [ -z "$why" ]; then
     tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || { tree2=""; why=unbound; }
     if [ -n "$tree2" ] && [ "$tree2" != "$tree1" ]; then why=moved; fi
@@ -4708,6 +4715,7 @@ _il_loop_finish() {
       [ -n "$_vfd" ] && exec {_vfd}<&-
       rc=20
     fi
+    if [ "$rc" -eq 0 ] && [ -n "$expect" ] && [ "$vout" != "$expect" ]; then rc=20; fi
     if [ "$rc" -ne 0 ]; then
       why=verdict; frc="$rc"
     else
@@ -4784,19 +4792,27 @@ cmd_review_loop_pass() {
     return $?
   fi
   _il_loop_reserve start || return $?
+  local dout expect=""
   if [ -n "$RL_PR" ]; then
-    bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} \
-      --criteria-from-pr "$RL_PR" --local-head "$RL_DIR" "$RL_TOKEN"
+    dout="$(bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} \
+      --criteria-from-pr "$RL_PR" --local-head "$RL_DIR" "$RL_TOKEN")"
   else
-    bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} "$RL_DIR" "$RL_TOKEN"
+    dout="$(bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} "$RL_DIR" "$RL_TOKEN")"
   fi
   drc=$?
+  [ -z "$dout" ] || printf '%s\n' "$dout"
   case "$drc" in
-    0)  : ;;
+    0)  # THE VERDICT dispatch-review VALIDATED is the one recorded: the reply is re-read below only to
+        # prove it is still that reply, so a file replaced in between cannot change the count.
+        if [[ "$dout" =~ \(verdict\ ([0-9]{1,4})\ ([0-9]{1,4})\)$ ]]; then
+          expect="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+        else
+          why=verdict; frc=20
+        fi ;;
     28) why=verdict; frc=28 ;;
     *)  why=dispatch; frc="$drc"; [ "${#frc}" -le 3 ] || frc=999 ;;
   esac
-  _il_loop_finish "$RL_N" "$RL_T1" "$why" "$frc"
+  _il_loop_finish "$RL_N" "$RL_T1" "$why" "$frc" "$expect"
 }
 
 cmd_review_loop_carry() {
