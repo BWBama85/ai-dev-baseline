@@ -415,6 +415,13 @@ rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding 'Closes #1 and `Fixes #2`' .claude/state
 rl "$d" report .claude/state
 has "$RL_OUT" "\`Closes #1 and 'Fixes #2'\`" "2 a carried closing keyword is rendered inside a code span, backticks neutralized"
+# EVERY carried finding is named in the line: the PR body is the durable copy once run state is swept.
+d="$(fixture)"; script "$d" req:51; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+rl "$d" pass .claude/state codex
+awk 'BEGIN { for (i = 1; i <= 51; i++) printf "carry\t1\tlow\tf.sh:%d\t1\tfinding %d\n", i, i }' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 33 "2 fifty-one carried findings make a pushable exhaustion"
+has "$RL_OUT" '`f.sh:51`: `finding 51`' "2 …and the line names the 51st, not a count of the rest"
 # Two identical findings (same site, severity and text) are two findings: --occurrence tells them apart.
 d="$(fixture)"; script "$d" req:2
 rl "$d" pass .claude/state codex

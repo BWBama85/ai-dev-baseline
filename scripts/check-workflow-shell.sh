@@ -116,8 +116,9 @@ scan_one() {
 # scan_mod <file> — every unbraced `$NAME:<letter>` in a fenced bash block. zsh reads `:<letter>`
 # after an unbraced parameter as a HISTORY MODIFIER (`:r` strips an extension, `:h` a path component),
 # so `"$SHA:refs/heads/$B"` pushes a mangled refspec there while bash passes it through. Braced
-# `${SHA}:refs` is the portable spelling. Only the modifier letters an accident is likely to hit are
-# matched, so a quoted GraphQL `$id:ID` is not flagged.
+# `${SHA}:refs` is the portable spelling. The lowercase modifiers plus `:A` and `:P` (absolute and
+# real path) are matched; the other uppercase letters are left out so a quoted GraphQL `$id:ID` or
+# `$body:String` is not flagged.
 scan_mod() {
   awk '
     /^```bash$/ { inb = 1; next }
@@ -126,7 +127,7 @@ scan_mod() {
     {
       raw = $0; line = raw
       sub(/(^|[[:space:]])#.*$/, "", line)
-      if (line ~ /\$[A-Za-z_][A-Za-z0-9_]*:[htrelquacs]/) printf "%s:%d: %s\n", FILENAME, FNR, raw
+      if (line ~ /\$[A-Za-z_][A-Za-z0-9_]*:[htrelquacsAP]/) printf "%s:%d: %s\n", FILENAME, FNR, raw
     }
   ' "$1"
 }
@@ -208,7 +209,7 @@ if [ "$WFDIR" = "base/workflows" ]; then
     done
     # The modifier rule, both ways.
     k=0
-    for mbad in 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"' 'x="$dir:h"' 'echo $f:t'; do
+    for mbad in 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"' 'x="$dir:h"' 'echo $f:t' 'cd "$d:A"' 'ls "$p:P"'; do
       k=$((k + 1))
       printf -- '---\nname: m%s\n---\n```bash\n%s\n```\n' "$k" "$mbad" > "$st/m$k.md"
       if [ -z "${ scan_mod "$st/m$k.md"; }" ]; then
@@ -217,7 +218,7 @@ if [ "$WFDIR" = "base/workflows" ]; then
       fi
     done
     for mgood in 'git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}"' 'echo "${x:-default}"' \
-                 "gh api graphql -f query='mutation(\$id:ID!){ x }'" 'echo "$x:-y"'; do
+                 "gh api graphql -f query='mutation(\$id:ID!,\$body:String!){ x }'" 'echo "$x:-y"'; do
       k=$((k + 1))
       printf -- '---\nname: m%s\n---\n```bash\n%s\n```\n' "$k" "$mgood" > "$st/m$k.md"
       if [ -n "${ scan_mod "$st/m$k.md"; }" ]; then

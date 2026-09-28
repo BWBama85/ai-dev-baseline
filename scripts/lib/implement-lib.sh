@@ -4600,21 +4600,20 @@ _il_loop_passes_text() {
 }
 
 # _il_loop_carried_text — the carried findings of the latest pass, for the line a PR body carries.
-# Site and text are CODE SPANS: the text is reviewer-derived, and in prose a `Closes #N` in it would
-# register a closing link on merge and markup would render — a code span suppresses both. A backtick
-# inside would close the span, so it is rendered as a quote. At most 50 are listed, so a legal
-# record cannot render a line past what open-pr accepts as a PR body; the rest are counted.
+# EVERY carried finding is named — the PR body is the durable copy once run state is swept. Site and
+# text are CODE SPANS: the text is reviewer-derived, and in prose a `Closes #N` in it would register
+# a closing link on merge and markup would render — a code span suppresses both. A backtick inside
+# would close the span, so it is rendered as a quote. A set too large for a PR body is refused by
+# open-pr's own body bound rather than silently shortened here.
 _il_loop_carried_text() {
-  local i out="" sep="" shown=0 more=0 site txt occ
+  local i out="" sep="" site txt occ
   for i in "${!RL_CN[@]}"; do
     [ "${RL_CN[i]}" = "$RL_PASSES" ] || continue
-    if [ "$shown" -ge 50 ]; then more=$((more + 1)); continue; fi
     site="${RL_CSITE[i]//\`/\'}"; txt="${RL_CTXT[i]//\`/\'}"; occ=""
     [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
     out="${out}${sep}${RL_CSEV[i]} \`${site}\`${occ}: \`${txt}\`"
-    sep="; "; shown=$((shown + 1))
+    sep="; "
   done
-  [ "$more" -eq 0 ] || out="${out}; and ${more} more carried (review-loop report on the run's record lists them)"
   printf '%s' "$out"
 }
 
