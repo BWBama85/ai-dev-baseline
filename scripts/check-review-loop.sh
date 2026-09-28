@@ -74,11 +74,11 @@ if [ "$MODE" = mutation ]; then
     '    tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || tree2="$tree1"' \
     'a tree that cannot be digested after the pass fails it'
   check_mut dirty-pass-accepted \
-    '  _il_loop_clean; rc=$?' \
-    '  rc=0' \
+    '  if [ "$RL_PRE_CLEAN" -ne 0 ]; then' \
+    '  if false; then' \
     'a pass over a dirty worktree is refused (27)'
   check_mut dirty-report-accepted \
-    '  rc=0; _il_loop_clean || rc=$?' \
+    '  rc="$RL_PRE_CLEAN"' \
     '  rc=0' \
     'report on a dirty worktree is 27, never converged'
   check_mut stale-convergence-accepted \
@@ -178,7 +178,7 @@ if [ "$MODE" = mutation ]; then
     '      1) RL_BASE="$head" ;;' \
     'review-loop refuses a HEAD that does not descend from the round head'
   check_mut dirty-disabled-pushes \
-    '  rc=0; _il_loop_clean || rc=$?' \
+    '  rc="$RL_PRE_CLEAN"' \
     '  rc=0' \
     'a disabled loop over a dirty worktree is 27'
   check_mut begin-loses-reply \
@@ -193,6 +193,18 @@ if [ "$MODE" = mutation ]; then
     '  case "$path" in *:*|.|./|*/|/*|-*|..|../*|*/..|*/../*) return 1 ;; esac' \
     '  case "$path" in *:*|.|./|*/|/*|-*) return 1 ;; esac' \
     'a site that climbs out of the repository (..) is refused (19)'
+  check_mut begin-twice-accepted \
+    '  if [ "$kind" = begin ] && [ "$RL_OPEN_KIND" = begin ]; then' \
+    '  if false; then' \
+    'a second begin over an unfinished native pass is refused (17)'
+  check_mut occurrence-not-in-identity \
+    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_COCC[i]}" = "$RL_OCC" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
+    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
+    'an identical second finding is carried with --occurrence 2'
+  check_mut carried-text-not-spanned \
+    '    out="${out}${sep}${RL_CSEV[i]} \`${site}\`${occ}: \`${txt}\`"' \
+    '    out="${out}${sep}${RL_CSEV[i]} ${site}${occ}: ${RL_CTXT[i]}"' \
+    'a carried closing keyword is rendered inside a code span'
   check_mut open-pr-ungated \
     '  if ! _il_open_pr_loop_gate "$dir"; then' \
     '  if false; then' \
@@ -244,6 +256,10 @@ if [ "$MODE" = mutation ]; then
   # The resolver's pre-push live check is prose the resolver executes, so its row runs against the
   # workflow source.
   check_mut_reset
+  check_mut empty-push-sha-accepted \
+    '  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first' \
+    '  :' \
+    'refuses a push SHA that is not 40 hex'
   check_mut live-pr-check-dropped \
     '  [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \' \
     '  true \' \
@@ -368,8 +384,8 @@ rl "$d" carry --severity low --site f.sh:1 --finding 'a third' .claude/state
 eq "$RL_RC" 17 "2 a carry past the declared count is refused (17)"
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "2 every REQUIRED finding carried, none HIGH: 33 — push, and say so"
-has "$RL_OUT" "exhausted — carried: 2 (low f.sh:1: a nit in f.sh; medium f.sh:1: rename &lt;x&gt; &amp; \\[y\\])" \
-   "2 the line names each carried finding, Markdown-escaped (reviewer-derived text)"
+has "$RL_OUT" 'exhausted — carried: 2 (low `f.sh:1`: `a nit in f.sh`; medium `f.sh:1`: `rename <x> & [y]`)' \
+   "2 the line names each carried finding in code spans (reviewer-derived text renders no markup)"
 has "$RL_OUT" "pass 1 -> 2 REQUIRED · pass 2 -> 2 · pass 3 -> 2" "2 …after every pass"
 
 # A carried HIGH blocks; a carried LOW pushes (above). Both observed.
@@ -392,6 +408,25 @@ for bad_site in 'f.sh:0' 'f.sh:abc' 'a:b:c' '.' 'dir/'; do
   rl "$d" carry --severity low --site "$bad_site" --finding x .claude/state
   eq "$RL_RC" 19 "2 the site '$bad_site' is not a path[:line] and is refused (19)"
 done
+# A closing keyword in carried text must not register a link when the line lands in a PR body: it is
+# rendered inside a code span, and a backtick in it cannot close the span early.
+d="$(fixture)"; script "$d" req:1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --site f.sh:1 --finding 'Closes #1 and `Fixes #2`' .claude/state
+rl "$d" report .claude/state
+has "$RL_OUT" "\`Closes #1 and 'Fixes #2'\`" "2 a carried closing keyword is rendered inside a code span, backticks neutralized"
+# Two identical findings (same site, severity and text) are two findings: --occurrence tells them apart.
+d="$(fixture)"; script "$d" req:2
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --site f.sh:1 --finding 'twice' .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding 'twice' .claude/state
+eq "$RL_RC" 10 "2 an identical row is the retry path (10)"
+rl "$d" carry --severity low --site f.sh:1 --occurrence 2 --finding 'twice' .claude/state
+eq "$RL_RC" 0 "2 an identical second finding is carried with --occurrence 2"
+rl "$d" report .claude/state
+eq "$RL_RC" 33 "2 …and the duplicate-prose exhaustion is fully carried"
+rl "$d" carry --severity low --site f.sh:1 --occurrence 0 --finding 'x' .claude/state
+eq "$RL_RC" 19 "2 --occurrence 0 is refused (19)"
 # Two findings sharing their wording are still two: the site is part of the identity.
 d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
@@ -427,7 +462,7 @@ rl "$d" pass .claude/state codex
 R="$d/.claude/state/review-loop.tsv"
 pad="$(printf 'x%.0s' $(seq 290))"
 awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" \
-  'BEGIN { n = int((1048576 - cur) / 310); for (i = 1; i <= n; i++) printf "carry\t1\tlow\t-\t%05d%s\n", i, pad }' >> "$R"
+  'BEGIN { n = int((1048576 - cur) / 312); for (i = 1; i <= n; i++) printf "carry\t1\tlow\t-\t1\t%05d%s\n", i, pad }' >> "$R"
 rl "$d" carry --severity low --site f.sh:1 --finding "$(printf 'y%.0s' $(seq 300))" .claude/state
 eq "$RL_RC" 19 "2 a carry that would take the record past its bound is refused (19)"
 rl "$d" report .claude/state
@@ -681,6 +716,9 @@ rl "$d" pass --published .claude/state claude
 eq "$RL_RC" 17 "7 --published with no begun pass is refused (17) — even over a reply on disk"
 rl "$d" begin .claude/state claude
 eq "$RL_RC" 0 "7 begin reserves a native pass"
+rl "$d" begin .claude/state claude
+eq "$RL_RC" 17 "7 a second begin over an unfinished native pass is refused (17) — its subagent may still be running"
+eq "$(grep -c '^fail' "$d/.claude/state/review-loop.tsv")" 0 "7 …and the begun pass is NOT marked interrupted"
 [ -e "$d/.claude/state/review.md" ] && bad "7 begin removes the previous reply" || ok
 publish "$d" 1
 rl "$d" pass --published .claude/state claude
@@ -833,6 +871,16 @@ eq "$RL_RC" 39 "12 open-pr refuses (39) a commit made after the converged pass"
 d="$(opfix)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
 opr "$d"
 eq "$RL_RC" 24 "12 a disabled loop with nothing recorded does not hold the push"
+d="$(opfix)"; script "$d" req:1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
+opr "$d"
+eq "$RL_RC" 24 "12 an exhaustion with a carried LOW lets open-pr through to its push"
+d="$(opfix)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity high --site f.sh:1 --finding bug .claude/state
+opr "$d"
+eq "$RL_RC" 39 "12 an exhaustion with a carried HIGH is refused at the push (39)"
 RL_ENV=""
 # The tip must not move across the verdict read: a `git` shim advances the branch when open-pr asks
 # for the loop's report, so the report certifies the old tip and the push would send the new one.
@@ -883,7 +931,10 @@ RPASS="$(code_line_of "$RW" 'review-loop pass --pr "$PR_NUM" --head "$SWEEP_HEAD
 RREPORT="$(code_line_of "$RW" 'review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD"')"
 RPUSH="$(code_line_of "$RW" 'git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}"')"
 order "11 the resolver runs the loop before its push" "$RPASS" "$RPUSH"
-order "11 …reads the commit it will push BEFORE the report certifies it" "$(code_line_of "$RW" 'PUSH_SHA="$(git rev-parse HEAD)"')" "$RREPORT"
+order "11 …reads the commit it will push BEFORE the report certifies it" "$(code_line_of "$RW" 'PUSH_SHA="$NOW_HEAD"')" "$RREPORT"
+order "11 …and refuses a push SHA that is not 40 hex (an empty one would DELETE the branch)" "$(code_line_of "$RW" '[ "${#PUSH_SHA}" -eq 40 ] ||')" "$RPUSH"
+order "11 4a refuses a round head that is not a commit id" "$(code_line_of "$RW" 'SWEEP_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)"')" "$(code_line_of "$RW" '[ "${#SWEEP_HEAD}" -eq 40 ] ||')"
+[ -n "$(code_line_of "$RW" 'HEAD did not move but the worktree has changes')" ] && ok || bad "11 4d refuses a no-change round over an uncommitted fix"
 order "11 …re-reads the PR live between the report and the push" "$(code_line_of "$RW" 'gh pr view "$PR_NUM" --json state,headRefOid')" "$RPUSH"
 order "11 …and refuses the push unless the PR is OPEN at the round head" "$(code_line_of "$RW" '[ "$LIVE" = "OPEN $SWEEP_HEAD" ]')" "$RPUSH"
 LG="$(code_line_of "$RW" 'ledger unreadable — no counts')"
@@ -894,7 +945,7 @@ order "11 …so both are appended OUTSIDE it" "$GUARD_END" "$(code_line_of "$RW"
 order "11 …the local review line included" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"')"
 has "$(grep -F 'Per round so far' "$RW")" 'LOOP_LINE' "11 a blocked round still reports its loop line with the rows so far"
 for stop in 'the loop is not finished — take another pass' 'the worktree is not clean — commit it, then take another pass' \
-            'STOP: HEAD moved while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
+            'STOP: HEAD moved (or could not be read) while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
             'STOP: PR #$PR_NUM is no longer OPEN at the round' "STOP: could not push this round's commits"; do
   has "$(grep -F -- "$stop" "$RW")" '$LOOP_LINE' "11 the 4d exit '$stop' reports the loop line it already rendered"
 done

@@ -681,7 +681,11 @@ A finding with no thread id or no site, such as a task-mode comment, is not swep
 round summary instead. Then sweep, from the PR head, before any edit:
 
 ```bash
-SWEEP_HEAD="$(git rev-parse HEAD)"
+# A FULL 40-HEX COMMIT OR A STOP: an empty capture from a failed read would key the sweep, the
+# round's loop record and 4d's push to nothing.
+SWEEP_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || SWEEP_HEAD=""
+case "$SWEEP_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id"; exit 1 ;; esac
+[ "${#SWEEP_HEAD}" -eq 40 ] || { echo "STOP: could not read HEAD as a commit id"; exit 1; }
 SWEEP_FILE=".gemini/state/sweep-pr${PR_NUM}-${SWEEP_HEAD}.tsv"
 FINDINGS="$SWEEP_FILE.findings"   # the file you just wrote, one line per legitimate thread finding
 # THE RUNG NAMES THE AGENT; TAKE THE TOKEN FROM IT. `resolve review` lists the CONFIGURED tokens in
@@ -966,8 +970,18 @@ every round has a fresh budget (`[reviewers] local_passes`, default 3; `0` disab
 
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
+# HEAD IS READ ONCE AND REQUIRED WHOLE: a failed read printing nothing would otherwise differ from
+# SWEEP_HEAD and walk into the push path with an empty commit id.
+NOW_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || NOW_HEAD=""
+case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; exit 1 ;; esac
 LOOP_LINE="local review: this round changed nothing — no pass, no push"
-if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
+if [ "$NOW_HEAD" = "$SWEEP_HEAD" ]; then
+  # "Changed nothing" is a fact about the WORKTREE too: an uncommitted fix would skip review and
+  # push, and step 5 would then resolve its thread against a commit that does not carry it.
+  if ! _wst="$(git status --porcelain)" || [ -n "$_wst" ]; then
+    echo "STOP: HEAD did not move but the worktree has changes — commit the round's fixes (or discard them), then run 4d again"; exit 1
+  fi
+else
   RUNG="$(bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" review-rung gemini)"
   REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
   EFFORT="$(bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
@@ -992,21 +1006,26 @@ subagent, `publish-review`, and `review-loop pass --published --pr "$PR_NUM" --h
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
 (`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
-`33` carry each REQUIRED finding (with its `--site`), then report · `35` · `37`/`38` report. `carry` and `report` take the same
+`33` carry each REQUIRED finding (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35` · `37`/`38` report. `carry` and `report` take the same
 `--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
 **not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
 
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
-if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
+NOW_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || NOW_HEAD=""
+case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; exit 1 ;; esac
+if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   # THE COMMIT PUSHED IS THE COMMIT CERTIFIED: HEAD is read on both sides of the report and pushed
   # BY SHA, so a branch switch or a ref move after the report cannot push something it never read.
   [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "$PR_BRANCH" ] \
     || { echo "STOP: the checkout is not on $PR_BRANCH — nothing was pushed"; exit 1; }   # run step 8 first
-  PUSH_SHA="$(git rev-parse HEAD)"
+  # 40 HEX OR NOTHING IS PUSHED: an empty PUSH_SHA makes the refspec `:refs/heads/<branch>`, which
+  # git reads as a DELETION of the remote PR branch.
+  PUSH_SHA="$NOW_HEAD"
+  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first
   LOOP_LINE="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .gemini/state)"; LRC=$?
-  [ "$(git rev-parse HEAD)" = "$PUSH_SHA" ] \
-    || { echo "STOP: HEAD moved while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; exit 1; }   # run step 8 first
+  [ "$(git rev-parse --verify HEAD 2>/dev/null)" = "$PUSH_SHA" ] \
+    || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; exit 1; }   # run step 8 first
   # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live immediately before the push: the
   # loop can take minutes, and a PR that closed or gained a head meanwhile is not this round's to
   # push to. A close landing between this read and the push is the residual; a new head is refused
@@ -1050,7 +1069,7 @@ rather than trusting the preflight check (`base/practices/verify-before-assertin
 NOW_STATE=$(gh pr view "$PR_NUM" --json state --jq .state 2>/dev/null) || {
   echo "ERROR: could not re-check PR #$PR_NUM state before resolving"; exit 1
 }
-[ "$NOW_STATE" = "OPEN" ] || { echo "PR #$PR_NUM is now $NOW_STATE — skipping reply/resolve (state changed since preflight)"; exit 0; }
+[ "$NOW_STATE" = "OPEN" ] || { echo "PR #$PR_NUM is now $NOW_STATE — skipping reply/resolve (state changed since preflight). ${LOOP_LINE:-}"; exit 0; }
 ```
 
 For each thread you classified:

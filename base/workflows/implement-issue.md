@@ -507,6 +507,9 @@ give it (the verdict trailer carries counts, not severities):
 {{IMPLEMENT_LIB}} review-loop carry --severity <critical|high|medium|low> --site <path[:line]|-> --finding '<one line>' {{STATE_DIR}}
 ```
 
+A second finding identical to one already carried (same site, severity and line) is carried with
+`--occurrence 2`, and so on; repeating an identical row is the retry path and records nothing.
+
 Then the report, which is the loop's verdict and its one line. Paste the line into the PR body and
 the close-out **verbatim**; it is rendered from the record, never written by hand:
 
@@ -604,8 +607,8 @@ silently (`git-and-prs.md`). Then one call pushes, opens, **proves**, and guards
 ```
 
 It first re-derives the local convergence loop's verdict from its record and refuses (39) a tip the
-loop does not certify — a commit made after step 9's report included — so the pushed commit is the
-reviewed one. Its stdout lines are the record: push → `phase=pushed` → `gh pr create` → `prUrl` +
+loop does not certify — a tree committed after step 9's report included — so the pushed commit is
+the reviewed one. Its stdout lines are the record: push → `phase=pushed` → `gh pr create` → `prUrl` +
 `phase=pr_opened`; then it **proves the closing keywords registered** — GitHub's own computed
 link set (`closingIssuesReferences`, repo-scoped, retried while it settles) compared to
 `--closes`; rc 23 = the keywords did not take (a code span, a typo, a cross-repo qualifier): fix

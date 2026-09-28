@@ -8527,10 +8527,15 @@ survive is the part a later reader needs.
              `local_passes = 0` or an unavailable reviewer EXHAUSTS the loop rather than excusing
              it, so neither can launder a failed final pass or a carried HIGH into a push. `carry`
              refuses (19) a row that would take the record past the 1 MiB its reader enforces, and a
-             carried finding is identified by (site, severity, text), so two findings sharing their
-             wording are still two. `open-pr` re-derives the verdict from the record before its push
-             and refuses (39) a tip the loop does not certify, so a commit made after step 9's report
-             cannot ship on the strength of it.
+             carried finding is identified by (site, severity, occurrence, text), so two findings
+             sharing their wording are still two. `open-pr` re-derives the verdict from the record
+             before its push and refuses (39) a tip the loop does not certify, so a tree changed after
+             step 9's report cannot ship on the strength of it.
+             The loop has ONE driver, like the run it belongs to (D46). Findings that need a second,
+             concurrent actor — a pass reserved between the report and the push, a publisher other
+             than the begun pass writing review.md, a same-user process replacing a reply with an
+             identical count — are the same-user state-directory adversary D112 and D115 place out of
+             scope, and are declined against this entry.
              `[reviewers] local_passes` is 0-10, with `0` the only sentinel and each malformed shape
              a hard error with its own message.
 - placement: `scripts/lib/implement-lib.sh` (`review-loop`, `_il_tree_digest`,
