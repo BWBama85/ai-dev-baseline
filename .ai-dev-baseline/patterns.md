@@ -753,4 +753,7 @@ One line per resolved review thread, newest last.
 - `trailing-newline-stripped` `scripts/lib/implement-lib.sh:4098` `8e0015f` `PRRT_kwDOTfywrM6mfY2L` PR #502 2026-09-27 — command substitution stripped a trailing newline from startedAt before the shape check
 - `partial-validation` `scripts/lib/pattern-ledger.sh:1605` `3e1bf2b` `PRRT_kwDOTfywrM6mfs3e` PR #502 2026-09-28 — absent-vs-unreadable was decided from the state directory alone, so a record behind an unsearchable ancestor read as absent
 - `stale-state-trusted` `base/workflows/implement-issue.md:516` `c7d1b26` `PRRT_kwDOTfywrM6ml5zM` PR #504 2026-09-28 — open-pr pushed a tip it never bound to the local review verdict; a commit after the report shipped unreviewed
+- `rerun-not-idempotent` `scripts/lib/implement-lib.sh:4862` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVL` PR #504 2026-09-28 — carry read an identical second finding as a retry, so a duplicate-prose exhaustion could never be fully carried
+- `status-swallowed` `base/workflows/resolve-pr-threads.md:1004` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVR` PR #504 2026-09-28 — an unchecked rev-parse could leave PUSH_SHA empty, making the refspec delete the remote PR branch
+- `toctou` `scripts/lib/implement-lib.sh:4907` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVU` PR #504 2026-09-28 — report digested the tree under a mutex reaped after 60s, so a slow decision could race a reservation
 <!-- adb:hits:end -->
