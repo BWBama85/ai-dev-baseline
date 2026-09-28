@@ -752,4 +752,5 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/implement-lib.sh:4184` `8e0015f` `PRRT_kwDOTfywrM6mfY2K` PR #502 2026-09-27 — the executable flag tested process execute access with -x instead of the mode bit git stores
 - `trailing-newline-stripped` `scripts/lib/implement-lib.sh:4098` `8e0015f` `PRRT_kwDOTfywrM6mfY2L` PR #502 2026-09-27 — command substitution stripped a trailing newline from startedAt before the shape check
 - `partial-validation` `scripts/lib/pattern-ledger.sh:1605` `3e1bf2b` `PRRT_kwDOTfywrM6mfs3e` PR #502 2026-09-28 — absent-vs-unreadable was decided from the state directory alone, so a record behind an unsearchable ancestor read as absent
+- `stale-state-trusted` `base/workflows/implement-issue.md:516` `c7d1b26` `PRRT_kwDOTfywrM6ml5zM` PR #504 2026-09-28 — open-pr pushed a tip it never bound to the local review verdict; a commit after the report shipped unreviewed
 <!-- adb:hits:end -->
