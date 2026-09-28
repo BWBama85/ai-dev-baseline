@@ -1030,7 +1030,7 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   # THE PUSH IS REQUIRED, NOT ATTEMPTED: step 5 must never resolve a thread whose fix, or whose
   # ledger record, exists only in this checkout. On failure push by hand and re-run — `record` is
   # idempotent and the ledger commit is guarded, so the re-run reaches step 5 cleanly.
-  git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH" || {
+  git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}" || {
     echo "STOP: could not push this round's commits — the fixes and ledger records exist only locally. $LOOP_LINE"
     echo "      Resolving now would erase the records from every future run; push by hand, then re-run."
     # run step 8 (restore the starting branch) FIRST, then:

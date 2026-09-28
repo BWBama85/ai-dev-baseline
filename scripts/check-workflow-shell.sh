@@ -113,7 +113,26 @@ scan_one() {
   ' "$1"
 }
 
+# scan_mod <file> — every unbraced `$NAME:<letter>` in a fenced bash block. zsh reads `:<letter>`
+# after an unbraced parameter as a HISTORY MODIFIER (`:r` strips an extension, `:h` a path component),
+# so `"$SHA:refs/heads/$B"` pushes a mangled refspec there while bash passes it through. Braced
+# `${SHA}:refs` is the portable spelling. Only the modifier letters an accident is likely to hit are
+# matched, so a quoted GraphQL `$id:ID` is not flagged.
+scan_mod() {
+  awk '
+    /^```bash$/ { inb = 1; next }
+    /^```$/     { inb = 0; next }
+    !inb { next }
+    {
+      raw = $0; line = raw
+      sub(/(^|[[:space:]])#.*$/, "", line)
+      if (line ~ /\$[A-Za-z_][A-Za-z0-9_]*:[htrelquacs]/) printf "%s:%d: %s\n", FILENAME, FNR, raw
+    }
+  ' "$1"
+}
+
 found=0
+modfound=0
 # Workflow sources AND their supporting files (#433): a fenced block in a reference file is
 # pasted into the same shells, so it gets the same lint.
 for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
@@ -121,6 +140,13 @@ for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
   # Only the ROOT README is reserved and skipped — build.sh renders a supporting
   # <name>/README.md like any sibling, so its fenced blocks get the same lint.
   [ "$wf" = "$WFDIR/README.md" ] && continue
+  mhits="${ scan_mod "$wf"; }"
+  if [ -n "$mhits" ]; then
+    modfound=1
+    check_note "$wf expands an unbraced \$NAME: followed by a zsh modifier letter inside a fenced block:"
+    printf '%s\n' "$mhits" | sed 's/^/    /' >&2
+    check_fail
+  fi
   hits="${ scan_one "$wf"; }"
   [ -n "$hits" ] || continue
   found=1
@@ -128,6 +154,9 @@ for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
   printf '%s\n' "$hits" | sed 's/^/    /' >&2
   check_fail
 done
+if [ "$modfound" -eq 1 ]; then
+  check_note "zsh applies a history modifier there (\"\$SHA:refs\" becomes \"\${SHA:r}efs\"). Brace it: \"\${SHA}:refs\"."
+fi
 
 if [ "$found" -eq 1 ]; then
   check_note "zsh binds these names to shell state ('path' IS \$PATH), so assigning one empties or"
@@ -177,6 +206,25 @@ if [ "$WFDIR" = "base/workflows" ]; then
         check_fail
       fi
     done
+    # The modifier rule, both ways.
+    k=0
+    for mbad in 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"' 'x="$dir:h"' 'echo $f:t'; do
+      k=$((k + 1))
+      printf -- '---\nname: m%s\n---\n```bash\n%s\n```\n' "$k" "$mbad" > "$st/m$k.md"
+      if [ -z "${ scan_mod "$st/m$k.md"; }" ]; then
+        check_note "self-test: the modifier rule FAILED to catch [$mbad]"
+        check_fail
+      fi
+    done
+    for mgood in 'git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}"' 'echo "${x:-default}"' \
+                 "gh api graphql -f query='mutation(\$id:ID!){ x }'" 'echo "$x:-y"'; do
+      k=$((k + 1))
+      printf -- '---\nname: m%s\n---\n```bash\n%s\n```\n' "$k" "$mgood" > "$st/m$k.md"
+      if [ -n "${ scan_mod "$st/m$k.md"; }" ]; then
+        check_note "self-test: modifier-rule FALSE POSITIVE on [$mgood]"
+        check_fail
+      fi
+    done
     # Text outside a fenced bash block is prose and must never be scanned.
     printf -- '---\nname: h\n---\nProse mentioning path=/tmp inline.\n\n```text\npath=/tmp\n```\n' > "$st/h.md"
     if [ -n "${ scan_one "$st/h.md"; }" ]; then
@@ -187,4 +235,4 @@ if [ "$WFDIR" = "base/workflows" ]; then
   fi
 fi
 
-check_result "no fenced workflow block assigns a zsh-special variable name (guard self-verified)"
+check_result "no fenced workflow block assigns a zsh-special variable name or expands an unbraced \$NAME:<modifier> (guard self-verified)"
