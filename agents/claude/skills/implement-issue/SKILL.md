@@ -494,9 +494,9 @@ could not run is `--unavailable` here too.
 | `16` / `18` / `20` | HEAD moved off its base / the record or budget does not parse / unreadable | fix and re-run — never read as clean |
 
 What counts: **loop passes only** (step 8's review is not one), **one reviewer** (the rung's), and
-convergence is its latest pass returning `required=0` on the **current, committed** tree. Any commit
-after that pass — an OPTIONAL fix included — invalidates it, so make those edits before the pass you
-expect to converge. Disabling the loop or losing the reviewer after a pass exhausts it; it never
+convergence is its latest pass returning `required=0` on the **current, committed** tree. Any change
+to that tree after the pass — an OPTIONAL fix included — invalidates it, so make those edits before
+the pass you expect to converge. (The binding is the tree: an empty commit ships what was reviewed.) Disabling the loop or losing the reviewer after a pass exhausts it; it never
 excuses what the passes found. On `33`, carry every REQUIRED finding of the final pass with the severity this step would
 give it (the verdict trailer carries counts, not severities):
 
@@ -519,7 +519,7 @@ esac
 ```
 
 `39` blocks on a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final
-pass, or a commit after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
+pass, or a tree change after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
 
 **Then re-sweep the promoted checklist over the FINAL diff and record it** — the mechanism behind
 `self-review.md`'s "name what you swept" (#490). After the last commit, so the digest names the

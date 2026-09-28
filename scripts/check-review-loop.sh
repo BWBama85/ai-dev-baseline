@@ -119,8 +119,8 @@ if [ "$MODE" = mutation ]; then
     '    if false; then' \
     '--published with no begun pass is refused (17)'
   check_mut begin-keeps-old-reply \
-    '    rm -rf "$RL_DIR/review.md" 2>/dev/null' \
-    '    :' \
+    '    if ! mv -f "$RL_DIR/review.md" "$aside" 2>/dev/null || [ -e "$RL_DIR/review.md" ] || [ -L "$RL_DIR/review.md" ]; then' \
+    '    if false; then' \
     'begin removes the previous reply'
   check_mut interrupted-left-open \
     '  if [ -n "$RL_OPEN" ] && [ "$keep_open" -eq 0 ]; then' \
@@ -456,6 +456,9 @@ eq "$RL_RC" 27 "4 …and an untracked file is dirty too"
 rm -f "$d/new-untracked"
 rl "$d" report .claude/state
 eq "$RL_RC" 0 "4 …and the clean reviewed tree converges again"
+git -C "$d" commit -q --allow-empty -m empty >/dev/null 2>&1
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "4 an EMPTY commit ships the reviewed tree and keeps convergence (the binding is the tree)"
 commit_fix "$d" optional
 rl "$d" report .claude/state
 eq "$RL_RC" 34 "4 an edit after a converged pass invalidates it — take another pass"
@@ -720,22 +723,33 @@ if [ -e "$S/review-loop.tsv" ] || ls "$S"/review-loop-pr* >/dev/null 2>&1; then
 
 # =============================== 11. the prose drives the loop ==================================
 # #491 acceptance: step 9 calls the loop before step 10; the resolver calls it before the push and
-# before step 7's re-request. Positions are line numbers in the workflow SOURCE.
+# before step 7's re-request. A command is located only INSIDE a fenced block — a prose mention of it
+# is not a call, and ordering pins that matched prose would stay green with the call deleted.
+code_line_of() {
+  awk -v pat="$2" '/^[[:space:]]*(```|~~~)/ { f = !f; next } f && index($0, pat) { print NR; exit }' "$1"
+}
 line_of() { grep -n -m1 -F -- "$2" "$1" | cut -d: -f1; }
-before() { local a b; a="$(line_of "$1" "$2")"; b="$(line_of "$1" "$3")"
-  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then ok; else bad "$4 [$2 @${a:-none}, $3 @${b:-none}]"; fi; }
-before "$IW" 'review-loop pass' '### 10. Push + open PR' "11 implement-issue step 9 calls the loop before step 10"
-before "$IW" '### 9. Triage + fix' 'review-loop pass' "11 …inside step 9, after the first triage"
-before "$IW" 'review-loop report' '# ADB-SNIPPET: rule-sweep' "11 …and reports it before the rule-sweep is recorded over the final tree"
-grep -qF 'review-loop pass --published' "$IW" && ok || bad "11 the native Claude review path participates in the loop"
-before "$IW" 'review-loop begin' 'review-loop pass --published' "11 …reserving its pass (begin) before the subagent's reply is recorded"
-before "$RW" 'review-loop pass --pr' 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"' "11 the resolver runs the loop before its push"
-before "$RW" 'PUSH_SHA="$(git rev-parse HEAD)"' 'review-loop report --pr' "11 …reads the commit it will push BEFORE the report certifies it"
-before "$RW" 'review-loop pass --pr' '### 7. Ask for a re-review' "11 …and before step 7's re-request"
+order() { local a="$2" b="$3"
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then ok; else bad "$1 [@${a:-none} < @${b:-none}]"; fi; }
+IPASS="$(code_line_of "$IW" 'review-loop pass ${EFFORT:+--effort "$EFFORT"} {{STATE_DIR}} "$REVIEW_TOKEN"')"
+IBEGIN="$(code_line_of "$IW" 'review-loop begin {{STATE_DIR}} "$REVIEW_TOKEN"')"
+IREPORT="$(code_line_of "$IW" 'review-loop report {{STATE_DIR}}')"
+order "11 implement-issue step 9 calls the loop before step 10" "$IPASS" "$(line_of "$IW" '### 10. Push + open PR')"
+order "11 …inside step 9, after the first triage" "$(line_of "$IW" '### 9. Triage + fix')" "$IPASS"
+order "11 …and reports it before the rule-sweep is recorded over the final tree" "$IREPORT" "$(line_of "$IW" '# ADB-SNIPPET: rule-sweep')"
+order "11 the native branch is taken BEFORE a CLI pass could be spent" "$IBEGIN" "$IPASS"
+[ -n "$(code_line_of "$IW" 'review-loop pass --published')" ] || grep -qF 'review-loop pass --published {{STATE_DIR}}' "$IW" \
+  && ok || bad "11 the native Claude review path participates in the loop"
+RPASS="$(code_line_of "$RW" 'review-loop pass --pr "$PR_NUM" --head "$SWEEP_HEAD"')"
+RREPORT="$(code_line_of "$RW" 'review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD"')"
+RPUSH="$(code_line_of "$RW" 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"')"
+order "11 the resolver runs the loop before its push" "$RPASS" "$RPUSH"
+order "11 …reads the commit it will push BEFORE the report certifies it" "$(code_line_of "$RW" 'PUSH_SHA="$(git rev-parse HEAD)"')" "$RREPORT"
+order "11 …re-reads the PR live between the report and the push" "$(code_line_of "$RW" 'gh pr view "$PR_NUM" --json state,headRefOid')" "$RPUSH"
+order "11 …and before step 7's re-request" "$RPASS" "$(line_of "$RW" '### 7. Ask for a re-review')"
+order "11 …after 4c, so the reviewed diff includes the ledger commit" "$(line_of "$RW" '#### 4c. Promote what has become a pattern')" "$RPASS"
 eq "$(grep -c 'git push origin' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"
-has "$(grep -F 'git push origin' "$RW")" '"$PUSH_SHA:refs/heads/$PR_BRANCH"' "11 …by the SHA the report certified, never by branch name"
-before "$IW" 'review-loop begin {{STATE_DIR}}' 'review-loop pass ${EFFORT:+--effort' "11 the native branch is taken BEFORE a CLI pass could be spent"
-before "$RW" '#### 4c. Promote what has become a pattern' 'review-loop pass --pr' "11 …after 4c, so the reviewed diff includes the ledger commit"
+[ -n "$RPUSH" ] && ok || bad "11 …by the SHA the report certified, never by branch name"
 grep -q '^# *local_passes' "$ROOT/templates/agents.toml" && ok || bad "11 the template declares the key"
 
 check_summary check-review-loop

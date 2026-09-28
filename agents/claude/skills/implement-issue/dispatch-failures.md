@@ -88,7 +88,7 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `35` | `review-loop pass` / `begin` / `report` | `local_passes = 0`, or no usable reviewer: nothing dispatched. Before any pass the push proceeds and the line says so; after one, `report` treats the loop as exhausted instead |
 | `36` / `37` | `review-loop pass` | the pass FAILED (timeout, 127, no verdict, the tree moved during it) with budget left / on the last budgeted pass. A failed pass counts against the budget and is never clean |
 | `38` | `review-loop pass` | refused: the budget is spent, nothing dispatched — a fourth pass under `local_passes = 3` cannot happen |
-| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass, or a commit after the final pass. Blocked marker, `phase` stays `triaged` |
+| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass, or a tree change after the final pass. Blocked marker, `phase` stays `triaged` |
 | `11` | `review-loop report` | no loop was recorded — the loop never ran |
 | `17` | `review-loop pass --published` / `carry` | no native pass was begun for this token — run `review-loop begin` before the subagent / nothing to carry (not exhausted, or its count is already carried) |
 | `27` | `review-loop pass` / `begin` / `report` | the worktree is not clean. A pass reviews the worktree and a push ships HEAD, so the loop reviews and certifies only a committed tree — commit, then pass again |

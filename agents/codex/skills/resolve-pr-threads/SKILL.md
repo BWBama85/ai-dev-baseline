@@ -1007,6 +1007,12 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   LOOP_LINE="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .codex/state)"; LRC=$?
   [ "$(git rev-parse HEAD)" = "$PUSH_SHA" ] \
     || { echo "STOP: HEAD moved while the report ran — nothing was pushed; take another pass"; exit 1; }   # run step 8 first
+  # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live at the moment of the push: the loop
+  # can take minutes, and a PR that closed or gained a head meanwhile is not this round's to push to.
+  LIVE="$(gh pr view "$PR_NUM" --json state,headRefOid --jq '.state + " " + .headRefOid')" \
+    || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed"; exit 1; }   # run step 8 first
+  [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \
+    || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed"; exit 1; }   # run step 8 first
   case "$LRC" in
     0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable
     34) echo "the loop is not finished — take another pass"; exit 1 ;;

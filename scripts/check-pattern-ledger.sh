@@ -1313,7 +1313,7 @@ eq "$(( $(grep -n '{{PATTERN_LEDGER_LIB}} reclaim' "$RES" | head -1 | cut -d: -f
 # THE ROUND'S ONE PUSH (4d) IS REQUIRED AND MOVES THE HEAD — it carries the ledger commit too.
 has "$RESTXT" "STOP: could not push this round's commits — the fixes and ledger records exist only locally" \
    "a failed round push stops the round before any thread is resolved — the ledger records included"
-has "$RESTXT" 'LAST_SHA="$(git rev-parse --short=7 HEAD)"' \
+has "$RESTXT" 'LAST_SHA="$(git rev-parse --short=7 "$PUSH_SHA")"' \
    "…and a successful one sets LAST_SHA, so a ledger-only round still asks for a re-review"
 # THE ROUND FIGURES COME FROM THIS INVOCATION'"'"'S OWN RECEIPTS, not from PR-wide subtraction —
 # `--pr` is shared, so two overlapping resolver runs would each report the other's work as theirs.

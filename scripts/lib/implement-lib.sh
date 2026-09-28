@@ -4292,7 +4292,8 @@ cmd_sweep_identity() {
 # (`_il_tree_digest`, against the default branch's merge-base or the round head) is taken when the
 # pass is reserved and again when it is recorded; a tree that moved in between fails the pass.
 # Convergence is a `done` pass with required=0 whose tree is the current, clean tree, so any later
-# commit — an OPTIONAL fix included — invalidates it. A native pass is reserved by `begin`, which
+# change to that tree — an OPTIONAL fix included — invalidates it. The binding is the TREE, not the
+# commit id: a commit that changes nothing (an empty or reworded one) ships the reviewed tree. A native pass is reserved by `begin`, which
 # also removes the previous `review.md`: the reply `pass --published` then reads can only have been
 # published for THIS pass.
 #
@@ -4320,7 +4321,7 @@ cmd_sweep_identity() {
 #         every REQUIRED finding carried, none CRITICAL/HIGH: push, and the line names what was
 #         carried · 35 disabled, or no usable reviewer, before any pass · 34 not terminal: take
 #         another pass · 39 BLOCK (a carried CRITICAL/HIGH, fewer carries than the final pass
-#         declared, a failed final pass, or a commit after the final pass) · 27 the worktree is not
+#         declared, a failed final pass, or a tree change after the final pass) · 27 the worktree is not
 #         clean · 11 nothing recorded · 16 · 18 · 20 · 2
 _IL_LOOP_MUTEX=".review-loop-mutex"
 _IL_LOOP_MAX_BYTES=1048576
@@ -4801,14 +4802,16 @@ cmd_review_loop_report() {
   RL_BUD="$(_il_loop_budget)" || return $?
   RL_BSRC="${RL_BUD#* }"; RL_BUD="${RL_BUD%% *}"
   _il_loop_context "$dir" "$RL_PR" "$RL_HEAD" || return $?
+  # THE LOCK IS HELD THROUGH THE DECISION, the existence check included: a pass reserved or recorded
+  # between a snapshot and its verdict would otherwise be certified — or reported absent — from the
+  # older snapshot.
+  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
+    || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
   if [ ! -e "$RL_REC" ] && [ ! -L "$RL_REC" ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
     echo "local review: nothing recorded — the loop never ran"
     return 11
   fi
-  # THE LOCK IS HELD THROUGH THE DECISION, not only the read: a pass reserved or recorded between a
-  # snapshot and its verdict would otherwise be certified from the older snapshot.
-  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
-    || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
   _il_loop_parse "$RL_REC"; rc=$?
   if [ "$rc" -ne 0 ]; then
     _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
@@ -4858,10 +4861,10 @@ _il_loop_decide() {
       return 0
     fi
     if ! _il_loop_exhausted "$bud"; then
-      printf 'local review: %s, converged on an earlier tree — committed since; take pass %s\n' "$passes" "$((L + 1))"
+      printf 'local review: %s, converged on an earlier tree — the tree changed since; take pass %s\n' "$passes" "$((L + 1))"
       return 34
     fi
-    printf 'local review: %s%s — BLOCKED: converged, then committed after the final pass\n' "$passes" "$after"
+    printf 'local review: %s%s — BLOCKED: converged, then the tree changed after the final pass\n' "$passes" "$after"
     return 39
   fi
   if ! _il_loop_exhausted "$bud"; then
@@ -4869,7 +4872,7 @@ _il_loop_decide() {
     return 34
   fi
   if [ "$cur" != "${RL_TREE[L]}" ]; then
-    printf 'local review: %s%s — BLOCKED: committed after the final pass, so the pushed tree is not the reviewed one\n' "$passes" "$after"
+    printf 'local review: %s%s — BLOCKED: the tree changed after the final pass, so the pushed tree is not the reviewed one\n' "$passes" "$after"
     return 39
   fi
   for i in "${!RL_CN[@]}"; do
