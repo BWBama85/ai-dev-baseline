@@ -1010,6 +1010,9 @@ Branch on its code with `/implement-issue` step 9's table — `0` converged · `
 `33` carry each REQUIRED finding (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35`/`38` report — after a pass with REQUIRED findings the loop is exhausted, so carry them first · `37` report. `carry` and `report` take the same
 `--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
 **not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
+When it corrects a thread's own fix, that thread's step-5 reply names this commit too ("Addressed in
+`<fix>`, corrected in `<loop fix>`"); the ledger hit keeps the commit that first fixed it, because
+`record` is keyed on the thread and a stored hit is never rewritten.
 
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
