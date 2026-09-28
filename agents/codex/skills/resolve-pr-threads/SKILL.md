@@ -1017,8 +1017,8 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
     || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
   case "$LRC" in
     0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable
-    34) echo "the loop is not finished — take another pass"; exit 1 ;;
-    27) echo "the worktree is not clean — commit it, then take another pass"; exit 1 ;;
+    34) echo "the loop is not finished — take another pass. $LOOP_LINE"; exit 1 ;;
+    27) echo "the worktree is not clean — commit it, then take another pass. $LOOP_LINE"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
     *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
         # THE BLOCKED ROUND STILL REPORTS: the rows gathered so far, and this round's loop line.

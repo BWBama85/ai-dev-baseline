@@ -3923,10 +3923,17 @@ cmd_open_pr() {
   # THE TIP PUSHED IS THE TREE THE LOCAL LOOP CERTIFIED (#491). Step 9's report ran earlier, and a
   # commit made since would pass the clean-tree check above and ship unreviewed, so the verdict is
   # re-derived here from the loop's record — and the tip must not move across that read.
+  # HEAD is what the report digests and the branch ref is what is pushed, so both must name _tip on
+  # both sides of the read.
+  if [ "$(git rev-parse HEAD 2>/dev/null)" != "$_tip" ]; then
+    exec {_brfd}<&-; rm -f "$_bcp"
+    printf 'implement-lib: HEAD is not the tip of %s — refusing to push a tip the local review did not read\n' "$branch" >&2
+    return 39
+  fi
   if ! _il_open_pr_loop_gate "$dir"; then
     exec {_brfd}<&-; rm -f "$_bcp"; return 39
   fi
-  if [ "$(git rev-parse "refs/heads/$branch" 2>/dev/null)" != "$_tip" ]; then
+  if [ "$(git rev-parse "refs/heads/$branch" 2>/dev/null)" != "$_tip" ] || [ "$(git rev-parse HEAD 2>/dev/null)" != "$_tip" ]; then
     exec {_brfd}<&-; rm -f "$_bcp"
     printf 'implement-lib: %s moved while the local review verdict was read — refusing to push a tip it did not certify\n' "$branch" >&2
     return 39
@@ -4470,15 +4477,21 @@ _il_loop_finding_ok() {
   return 0
 }
 
-# _il_loop_site_ok <site> — a repository-relative `path[:line]`, or `-` when the finding names no
-# site: 1-200 bytes, no control character, not absolute, and no `..` segment. Spaces and non-ASCII
-# bytes are legal in a path, so they are legal here; the rendered line escapes the site.
+# _il_loop_site_ok <site> — a repository-relative `path` or `path:<line>` (line 1 or more), or `-`
+# when the finding names no site: 1-200 bytes, no control character, not absolute, no `..` segment,
+# and no other colon. Spaces and non-ASCII bytes are legal in a path, so they are legal here; the
+# rendered line escapes the site.
 _il_loop_site_ok() {
-  local LC_ALL=C s="$1"
+  local LC_ALL=C s="$1" path
   [ "$s" = "-" ] && return 0
   [ -n "$s" ] && [ "${#s}" -le 200 ] || return 1
   [[ "$s" =~ [[:cntrl:]] ]] && return 1
-  case "$s" in /*|-*|..|../*|*/..|*/../*|*/..:*|..:*) return 1 ;; esac
+  path="$s"
+  if [[ "$s" =~ ^(.+):([0-9]+)$ ]]; then
+    path="${BASH_REMATCH[1]}"
+    [[ "${BASH_REMATCH[2]}" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+  fi
+  case "$path" in *:*|.|./|*/|/*|-*|..|../*|*/..|*/../*) return 1 ;; esac
   return 0
 }
 

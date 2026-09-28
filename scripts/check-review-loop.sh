@@ -190,8 +190,8 @@ if [ "$MODE" = mutation ]; then
     '    :' \
     'a reply replaced after dispatch-review validated it never records the replacement'
   check_mut dotdot-site-accepted \
-    '  case "$s" in /*|-*|..|../*|*/..|*/../*|*/..:*|..:*) return 1 ;; esac' \
-    '  case "$s" in /*|-*) return 1 ;; esac' \
+    '  case "$path" in *:*|.|./|*/|/*|-*|..|../*|*/..|*/../*) return 1 ;; esac' \
+    '  case "$path" in *:*|.|./|*/|/*|-*) return 1 ;; esac' \
     'a site that climbs out of the repository (..) is refused (19)'
   check_mut open-pr-ungated \
     '  if ! _il_open_pr_loop_gate "$dir"; then' \
@@ -388,6 +388,10 @@ rl "$d" carry --severity low --site '/etc/passwd' --finding x .claude/state
 eq "$RL_RC" 19 "2 a site that is not repository-relative is refused (19)"
 rl "$d" carry --severity low --site '../outside.sh:3' --finding x .claude/state
 eq "$RL_RC" 19 "2 a site that climbs out of the repository (..) is refused (19)"
+for bad_site in 'f.sh:0' 'f.sh:abc' 'a:b:c' '.' 'dir/'; do
+  rl "$d" carry --severity low --site "$bad_site" --finding x .claude/state
+  eq "$RL_RC" 19 "2 the site '$bad_site' is not a path[:line] and is refused (19)"
+done
 # Two findings sharing their wording are still two: the site is part of the identity.
 d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
@@ -889,7 +893,8 @@ GUARD_END="$(grep -n -B1 -F '# OUTSIDE the ledger guard' "$RW" | head -1 | cut -
 order "11 …so both are appended OUTSIDE it" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"')"
 order "11 …the local review line included" "$GUARD_END" "$(code_line_of "$RW" 'ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"')"
 has "$(grep -F 'Per round so far' "$RW")" 'LOOP_LINE' "11 a blocked round still reports its loop line with the rows so far"
-for stop in 'STOP: HEAD moved while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
+for stop in 'the loop is not finished — take another pass' 'the worktree is not clean — commit it, then take another pass' \
+            'STOP: HEAD moved while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
             'STOP: PR #$PR_NUM is no longer OPEN at the round' "STOP: could not push this round's commits"; do
   has "$(grep -F -- "$stop" "$RW")" '$LOOP_LINE' "11 the 4d exit '$stop' reports the loop line it already rendered"
 done
