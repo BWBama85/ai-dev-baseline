@@ -4611,17 +4611,24 @@ _il_loop_reserve() {
   RL_N=$((RL_PASSES + 1))
   RL_T1="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" \
     || { _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"; echo "implement-lib: review-loop: could not digest the tree this pass would review" >&2; return 20; }
-  if [ "$kind" = begin ]; then
-    # THE REPLY IS BOUND TO THIS PASS by removing the previous one: whatever `review.md` holds when
-    # `pass --published` reads it was published after this reservation.
-    rm -rf "$RL_DIR/review.md" 2>/dev/null
-    if [ -e "$RL_DIR/review.md" ] || [ -L "$RL_DIR/review.md" ]; then
+  local aside="$RL_DIR/review-prompt-stage.w$$o"
+  if [ "$kind" = begin ] && { [ -e "$RL_DIR/review.md" ] || [ -L "$RL_DIR/review.md" ]; }; then
+    # THE REPLY IS BOUND TO THIS PASS by moving the previous one out of the way: whatever
+    # `review.md` holds when `pass --published` reads it was published after this reservation. Moved
+    # rather than deleted, so a reservation that then fails puts it back; the aside name is in the
+    # swept review-prompt-stage family.
+    rm -rf "$aside" 2>/dev/null
+    if ! mv -f "$RL_DIR/review.md" "$aside" 2>/dev/null || [ -e "$RL_DIR/review.md" ] || [ -L "$RL_DIR/review.md" ]; then
       _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
-      echo "implement-lib: review-loop: could not remove the previous review.md, so a later reply could not be bound to this pass" >&2
+      echo "implement-lib: review-loop: could not move the previous review.md aside, so a later reply could not be bound to this pass" >&2
       return 20
     fi
   fi
   _il_loop_append "$RL_REC" "$kind"$'\t'"$RL_N"$'\t'"$RL_BUD"$'\t'"$RL_T1"$'\t'"$RL_TOKEN"; rc=$?
+  if [ "$rc" -ne 0 ] && { [ -e "$aside" ] || [ -L "$aside" ]; }; then
+    mv -f "$aside" "$RL_DIR/review.md" 2>/dev/null
+  fi
+  rm -rf "$aside" 2>/dev/null
   _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
   [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
   return 0
@@ -4787,27 +4794,47 @@ cmd_review_loop_carry() {
 
 cmd_review_loop_report() {
   _il_loop_opts report "$@"
-  local dir bud bsrc rc L cur passes after="" i c=0 hard=0
+  local dir out rc
   [ "${#RL_ARGS[@]}" -eq 1 ] || { echo "implement-lib: review-loop report needs <state-dir>" >&2; exit 2; }
   dir="${RL_ARGS[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
-  bud="$(_il_loop_budget)" || return $?
-  bsrc="${bud#* }"; bud="${bud%% *}"
+  RL_BUD="$(_il_loop_budget)" || return $?
+  RL_BSRC="${RL_BUD#* }"; RL_BUD="${RL_BUD%% *}"
   _il_loop_context "$dir" "$RL_PR" "$RL_HEAD" || return $?
   if [ ! -e "$RL_REC" ] && [ ! -L "$RL_REC" ]; then
     echo "local review: nothing recorded — the loop never ran"
     return 11
   fi
+  # THE LOCK IS HELD THROUGH THE DECISION, not only the read: a pass reserved or recorded between a
+  # snapshot and its verdict would otherwise be certified from the older snapshot.
   _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
     || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
   _il_loop_parse "$RL_REC"; rc=$?
-  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
   if [ "$rc" -ne 0 ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
     printf 'implement-lib: review-loop: the record %s does not parse (rc %s) — no line is rendered from it\n' "$RL_REC" "$rc" >&2
     return "$rc"
   fi
+  out="$(_il_loop_decide)"; rc=$?
+  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+  [ -z "$out" ] || printf '%s\n' "$out"
+  return "$rc"
+}
+
+# _il_loop_decide — report's verdict over the loaded record, the budget in RL_BUD/RL_BSRC. Prints the
+# one line; returns report's code.
+_il_loop_decide() {
+  local bud="$RL_BUD" bsrc="$RL_BSRC" rc L cur passes after="" i c=0 hard=0
   passes="$(_il_loop_passes_text)"
   L="$RL_PASSES"
+  # EVERY push-able verdict is about the tree a push ships, so a dirty worktree answers first —
+  # a disabled or reviewer-less loop included.
+  rc=0; _il_loop_clean || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ "$rc" -eq 1 ] || { echo "implement-lib: review-loop: could not read the worktree's status" >&2; return 20; }
+    printf 'local review: %s — the worktree is not clean, so the tree a push would ship is not the one reviewed; commit it, then take another pass\n' "${passes:-no pass yet}"
+    return 27
+  fi
   if [ "$L" -eq 0 ]; then
     if [ "$bud" -eq 0 ]; then printf 'local review: disabled (local_passes = 0, from %s)\n' "$bsrc"; return 35; fi
     if [ "$RL_LAST" = none ]; then printf 'local review: no usable reviewer (rung %s) — nothing dispatched\n' "$RL_NONE"; return 35; fi
@@ -4822,12 +4849,6 @@ cmd_review_loop_report() {
       return 34
     fi
     printf 'local review: %s%s — BLOCKED: the final pass failed or never finished, so what remains is unknown\n' "$passes" "$after"; return 39
-  fi
-  rc=0; _il_loop_clean || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    [ "$rc" -eq 1 ] || { echo "implement-lib: review-loop: could not read the worktree's status" >&2; return 20; }
-    printf 'local review: %s — the worktree is not clean, so the tree a push would ship is not the one reviewed; commit it, then take another pass\n' "$passes"
-    return 27
   fi
   cur="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" \
     || { echo "implement-lib: review-loop: could not digest the current tree" >&2; return 20; }

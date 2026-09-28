@@ -974,13 +974,21 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
   case "$RUNG" in
     independent*|same-model*)
-      bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --pr "$PR_NUM" --head "$SWEEP_HEAD" ${EFFORT:+--effort "$EFFORT"} .codex/state "$REVIEW_TOKEN" ;;
+      if [ "$REVIEW_TOKEN" = claude ] && [ "codex" = claude ]; then
+        bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop begin --pr "$PR_NUM" --head "$SWEEP_HEAD" .codex/state "$REVIEW_TOKEN"   # then the native pass, below
+      else
+        bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --pr "$PR_NUM" --head "$SWEEP_HEAD" ${EFFORT:+--effort "$EFFORT"} .codex/state "$REVIEW_TOKEN"
+      fi ;;
     deferred*|none*)
       bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --unavailable "${RUNG%% *}" --pr "$PR_NUM" --head "$SWEEP_HEAD" .codex/state ;;
     *) echo "STOP: the review rung is unknown (${RUNG:-none}) — fix agents.toml"; exit 1 ;;
   esac
 fi
 ```
+
+A Claude slot with Claude driving takes each pass natively, as `/implement-issue` step 9 does:
+`begin` (above), then `dispatch-review --prompt-only --criteria-from-pr "$PR_NUM" --local-head`, the
+subagent, `publish-review`, and `review-loop pass --published --pr "$PR_NUM" --head "$SWEEP_HEAD"`.
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
 (`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
@@ -991,7 +999,14 @@ Branch on its code with `/implement-issue` step 9's table — `0` converged · `
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
 if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
+  # THE COMMIT PUSHED IS THE COMMIT CERTIFIED: HEAD is read on both sides of the report and pushed
+  # BY SHA, so a branch switch or a ref move after the report cannot push something it never read.
+  [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "$PR_BRANCH" ] \
+    || { echo "STOP: the checkout is not on $PR_BRANCH — nothing was pushed"; exit 1; }   # run step 8 first
+  PUSH_SHA="$(git rev-parse HEAD)"
   LOOP_LINE="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .codex/state)"; LRC=$?
+  [ "$(git rev-parse HEAD)" = "$PUSH_SHA" ] \
+    || { echo "STOP: HEAD moved while the report ran — nothing was pushed; take another pass"; exit 1; }   # run step 8 first
   case "$LRC" in
     0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable
     34) echo "the loop is not finished — take another pass"; exit 1 ;;
@@ -1004,13 +1019,13 @@ if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   # THE PUSH IS REQUIRED, NOT ATTEMPTED: step 5 must never resolve a thread whose fix, or whose
   # ledger record, exists only in this checkout. On failure push by hand and re-run — `record` is
   # idempotent and the ledger commit is guarded, so the re-run reaches step 5 cleanly.
-  git push origin "$PR_BRANCH" || {
+  git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH" || {
     echo "STOP: could not push this round's commits — the fixes and ledger records exist only locally."
     echo "      Resolving now would erase the records from every future run; push by hand, then re-run."
     # run step 8 (restore the starting branch) FIRST, then:
     exit 1
   }
-  LAST_SHA="$(git rev-parse --short=7 HEAD)"
+  LAST_SHA="$(git rev-parse --short=7 "$PUSH_SHA")"
 fi
 ```
 

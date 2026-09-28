@@ -465,19 +465,24 @@ REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
 EFFORT="$({{ROLE_DISPATCH}} effort review)"; ERC=$?
 case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
 case "$RUNG" in
-  independent*|same-model*) {{IMPLEMENT_LIB}} review-loop pass ${EFFORT:+--effort "$EFFORT"} {{STATE_DIR}} "$REVIEW_TOKEN" ;;
-  deferred*|none*)          {{IMPLEMENT_LIB}} review-loop pass --unavailable "${RUNG%% *}" {{STATE_DIR}} ;;
-  *)                        echo "STOP: the review rung is unknown (${RUNG:-none}) — fix agents.toml"; exit 1 ;;
+  independent*|same-model*)
+    if [ "$REVIEW_TOKEN" = claude ] && [ "{{CURRENT_AGENT}}" = claude ]; then
+      {{IMPLEMENT_LIB}} review-loop begin {{STATE_DIR}} "$REVIEW_TOKEN"   # then the native pass, below
+    else
+      {{IMPLEMENT_LIB}} review-loop pass ${EFFORT:+--effort "$EFFORT"} {{STATE_DIR}} "$REVIEW_TOKEN"
+    fi ;;
+  deferred*|none*) {{IMPLEMENT_LIB}} review-loop pass --unavailable "${RUNG%% *}" {{STATE_DIR}} ;;
+  *)               echo "STOP: the review rung is unknown (${RUNG:-none}) — fix agents.toml"; exit 1 ;;
 esac
 ```
 
-When `$REVIEW_TOKEN` is your own agent and your harness reviews natively (step 8's subagent path),
-a pass is `{{IMPLEMENT_LIB}} review-loop begin {{STATE_DIR}} "$REVIEW_TOKEN"` → `dispatch-review
---prompt-only` → the subagent → `publish-review` →
+A Claude slot with Claude driving takes each pass natively, as step 8 does: after `begin`, run
+`dispatch-review --prompt-only`, the subagent, `publish-review`, then
 `{{IMPLEMENT_LIB}} review-loop pass --published {{STATE_DIR}} "$REVIEW_TOKEN"`. `begin` binds the
-tree before the subagent reads it and removes the previous `review.md`, so a reply is only ever
-recorded for the pass it was published in; if the subagent fails, go straight to `pass --published`
-and it records the failure.
+tree before the subagent reads it and moves the previous `review.md` aside, so a reply is only
+ever recorded for the pass it was published in; if the subagent fails, go straight to
+`pass --published` and it records the failure. The rung is step 8's ladder, so a reviewer step 8
+could not run is `--unavailable` here too.
 
 | rc | Meaning | Do |
 |---|---|---|

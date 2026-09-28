@@ -170,6 +170,14 @@ if [ "$MODE" = mutation ]; then
     "      1) printf 'implement-lib: review-loop: HEAD does not descend from the round head %s — this is not that round'\"'\"'s history\\n' \"\$head\" >&2; return 16 ;;" \
     '      1) RL_BASE="$head" ;;' \
     'review-loop refuses a HEAD that does not descend from the round head'
+  check_mut dirty-disabled-pushes \
+    '  rc=0; _il_loop_clean || rc=$?' \
+    '  rc=0' \
+    'a disabled loop over a dirty worktree is 27'
+  check_mut begin-loses-reply \
+    '    mv -f "$aside" "$RL_DIR/review.md" 2>/dev/null' \
+    '    :' \
+    'puts the previous reply back rather than losing it'
   check_mut local-head-accepts-foreign \
     "        1) printf 'implement-lib: dispatch-review: HEAD %s does not descend from PR %s'\"'\"'s head %s — this is not that pull request plus local commits; sync the branch and re-run.\\n' \"\$lhead\" \"\$crit_pr\" \"\$phead\" >&2; return 16 ;;" \
     '        1) : ;;' \
@@ -479,6 +487,7 @@ has "$(rec "$d")" "$(printf 'fail\t1\t-\tunbound')" "4 …recorded as unbound"
 
 # =============================== 5. disabled, unavailable, nothing ==============================
 d="$(fixture)"; printf '[reviewers]\nlocal_passes = 0\n' > "$d/agents.toml"
+git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1   # untracked, it would be a dirty tree
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 35 "5 local_passes = 0 is 35"
 eq "$(count "$d")" 0 "5 …with ZERO dispatches"
@@ -496,6 +505,18 @@ has "$RL_OUT" "no usable reviewer (rung deferred)" "5 …and the line names the 
 d="$(fixture)"
 rl "$d" report .claude/state
 eq "$RL_RC" 11 "5 report with nothing recorded is 11 — never a hand-written converged"
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+rl "$d" pass .claude/state codex
+printf 'uncommitted fix\n' >> "$d/f.sh"
+rl "$d" report .claude/state
+eq "$RL_RC" 27 "5 a disabled loop over a dirty worktree is 27, never the push-able 35"
+RL_ENV=""
+d="$(fixture)"; script "$d" req:0
+rl "$d" pass .claude/state codex
+mkdir "$d/.claude/state/.review-loop-mutex"
+rl "$d" report .claude/state
+eq "$RL_RC" 20 "5 report decides under the loop's lock, and refuses (20) when it cannot take it"
+rmdir "$d/.claude/state/.review-loop-mutex"
 
 # Disabling the loop, or losing the reviewer, AFTER a pass exhausts it — it never excuses a block.
 d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:1 127
@@ -602,6 +623,14 @@ rl "$d" pass --published .claude/state claude
 eq "$RL_RC" 36 "7 a published reply with no verdict is a FAILED pass"
 has "$(rec "$d")" "$(printf 'fail\t1\t19\tverdict')" "7 …recorded as a verdict failure, rc 19"
 d="$(fixture)"; script "$d" req:0
+rl "$d" pass .claude/state codex
+printf 'previous reply\n' > "$d/.claude/state/review.md"
+chmod 444 "$d/.claude/state/review-loop.tsv"
+rl "$d" begin .claude/state claude
+chmod 644 "$d/.claude/state/review-loop.tsv"
+eq "$RL_RC" 20 "7 a begin whose reservation cannot be written fails (20)"
+eq "$(cat "$d/.claude/state/review.md" 2>/dev/null)" "previous reply" "7 …and puts the previous reply back rather than losing it"
+d="$(fixture)"; script "$d" req:0
 rl "$d" begin .claude/state claude
 rl "$d" pass .claude/state codex
 has "$(rec "$d")" "$(printf 'fail\t1\t-\tinterrupted')" "7 a dispatched pass over an unfinished native one records it interrupted"
@@ -700,9 +729,12 @@ before "$IW" '### 9. Triage + fix' 'review-loop pass' "11 …inside step 9, afte
 before "$IW" 'review-loop report' '# ADB-SNIPPET: rule-sweep' "11 …and reports it before the rule-sweep is recorded over the final tree"
 grep -qF 'review-loop pass --published' "$IW" && ok || bad "11 the native Claude review path participates in the loop"
 before "$IW" 'review-loop begin' 'review-loop pass --published' "11 …reserving its pass (begin) before the subagent's reply is recorded"
-before "$RW" 'review-loop pass --pr' 'git push origin "$PR_BRANCH"' "11 the resolver runs the loop before its push"
+before "$RW" 'review-loop pass --pr' 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"' "11 the resolver runs the loop before its push"
+before "$RW" 'PUSH_SHA="$(git rev-parse HEAD)"' 'review-loop report --pr' "11 …reads the commit it will push BEFORE the report certifies it"
 before "$RW" 'review-loop pass --pr' '### 7. Ask for a re-review' "11 …and before step 7's re-request"
-eq "$(grep -c 'git push origin "$PR_BRANCH"' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"
+eq "$(grep -c 'git push origin' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"
+has "$(grep -F 'git push origin' "$RW")" '"$PUSH_SHA:refs/heads/$PR_BRANCH"' "11 …by the SHA the report certified, never by branch name"
+before "$IW" 'review-loop begin {{STATE_DIR}}' 'review-loop pass ${EFFORT:+--effort' "11 the native branch is taken BEFORE a CLI pass could be spent"
 before "$RW" '#### 4c. Promote what has become a pattern' 'review-loop pass --pr' "11 …after 4c, so the reviewed diff includes the ledger commit"
 grep -q '^# *local_passes' "$ROOT/templates/agents.toml" && ok || bad "11 the template declares the key"
 
