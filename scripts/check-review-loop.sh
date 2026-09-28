@@ -150,7 +150,7 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'a carry past the declared count is refused (17)'
   check_mut duplicate-carry-appended \
-    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
+    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_COCC[i]}" = "$RL_OCC" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     '    if false; then' \
     'the identical carry is a no-op (10)'
   check_mut carry-before-exhaustion \
