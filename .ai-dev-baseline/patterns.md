@@ -51,6 +51,7 @@ Sweep each of these before opening a pull request.
 - `event-inferred-from-state` — Before reporting that an EVENT happened — ownership relinquished, a repair, an upgrade — compare the before and after facts it would have changed, and report the event only on that delta. A stored label (a disposition, a status word) names the state something is in, never the transition that got it there, so classifying by the label reports an event that may not have occurred.
 - `rerun-not-idempotent` — For every record this code WRITES, feed each one its own readers consume back through them, including the boundary values the writer can legitimately produce (zero rows, an empty set, a retired last entry). A record the writer emits and a reader then refuses as damaged is a state no later run can clear, and it surfaces only once the boundary is reached in the field.
 - `silent-permission-change` — When a write publishes a staged file by rename, or copies content into a new file, name the mode the result will carry and check it against the original: carry an existing file's mode onto the stage and refuse the write if it cannot be read or applied; create a copy outside the checkout (TMPDIR) owner-only. A stage or copy made under the umask silently widens what the operator restricted.
+- `unbounded-resource` — For every resource the diff makes a process consume — disk staged in TMPDIR, the wall clock a CI job or dispatch spends, a pool of workers — name the bound that governs it and check the bound still covers the WHOLE workload with every gate forced on: stream instead of staging an unbounded input, and when a job gains a step, re-measure and resize its timeout-minutes in the same change with the figure in its comment. A bound sized for yesterday cancels today silently.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -756,4 +757,6 @@ One line per resolved review thread, newest last.
 - `rerun-not-idempotent` `scripts/lib/implement-lib.sh:4862` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVL` PR #504 2026-09-28 — carry read an identical second finding as a retry, so a duplicate-prose exhaustion could never be fully carried
 - `status-swallowed` `base/workflows/resolve-pr-threads.md:1004` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVR` PR #504 2026-09-28 — an unchecked rev-parse could leave PUSH_SHA empty, making the refspec delete the remote PR branch
 - `toctou` `scripts/lib/implement-lib.sh:4907` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVU` PR #504 2026-09-28 — report digested the tree under a mutex reaped after 60s, so a slow decision could race a reservation
+- `unbounded-resource` `.github/workflows/ci.yml:1041` `83f829d` `PRRT_kwDOTfywrM6m4Op1` PR #504 2026-09-28 — implement-gate gained a second mutation harness under a 45-minute ceiling sized for one
+- `stale-doc-claim` `.github/workflows/ci.yml:1560` `83f829d` `PRRT_kwDOTfywrM6m4Op_` PR #504 2026-09-28 — CONTRIBUTING.md still described four macOS skips after the fifth was added
 <!-- adb:hits:end -->
