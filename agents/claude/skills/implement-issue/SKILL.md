@@ -492,8 +492,8 @@ could not run is `--unavailable` here too.
 | `34` | REQUIRED findings, budget left | `read-artifact review`, triage as above, gates, commit — then pass again |
 | `36` | the pass failed (timeout, 127, no verdict, the tree moved) | pass again; a failed pass is never clean |
 | `33` | the last budgeted pass found REQUIRED findings | edit nothing more; `carry` each of them, then the report |
-| `35` | disabled, or no usable reviewer | the report says so |
-| `37` / `38` | the last budgeted pass failed / the budget is already spent | the report |
+| `35` | disabled, or no usable reviewer | the report says so — but after a pass with REQUIRED findings the loop is exhausted, so carry them first |
+| `37` / `38` | the last budgeted pass failed / the budget is already spent | the report (on `38`, carry the last pass's REQUIRED findings first) |
 | `27` | the worktree is not clean | commit it — a pass reviews the tree a push ships, which is HEAD — then pass again |
 | `17` | `--published` with no `begin` for this token | run `begin` first |
 | `16` / `18` / `20` | HEAD moved off its base / the record or budget does not parse / unreadable | fix and re-run — never read as clean |

@@ -1007,7 +1007,7 @@ subagent, `publish-review`, and `review-loop pass --published --pr "$PR_NUM" --h
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
 (`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
-`33` carry each REQUIRED finding (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35` · `37`/`38` report. `carry` and `report` take the same
+`33` carry each REQUIRED finding (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35`/`38` report — after a pass with REQUIRED findings the loop is exhausted, so carry them first · `37` report. `carry` and `report` take the same
 `--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
 **not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
 
@@ -1078,7 +1078,7 @@ For each thread you classified:
 
 ```bash
 THREAD_ID="<id from .claude/state/threads-$PR_NUM.json>"
-REPLY="Addressed in $LAST_SHA: <summary>."   # OR "Declined: <reason>." OR "Addressed in <earlier-sha>."
+REPLY="Addressed in $FIX_SHA: <summary>."   # the THREAD's fix commit from 4b, not the pushed tip — OR "Declined: <reason>." OR "Addressed in <earlier-sha>."
 
 gh api graphql -f query='
 mutation($threadId:ID!,$body:String!){

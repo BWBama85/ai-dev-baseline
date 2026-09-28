@@ -4677,7 +4677,9 @@ _il_loop_reserve() {
   local kind="$1" rc
   if [ "$RL_BUD" -eq 0 ]; then
     # `0` can only be DECLARED (the built-in is 3), so its source is always env, repo or global.
-    _il_loop_append "$RL_REC" "off"$'\t'"$RL_BSRC"; rc=$?
+    # Not while a native pass is still open: an `off` row there is an event the reader refuses.
+    rc=0
+    [ -n "$RL_OPEN" ] || { _il_loop_append "$RL_REC" "off"$'\t'"$RL_BSRC"; rc=$?; }
     _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
     [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
     printf 'local review: disabled (local_passes = 0, from %s) — nothing dispatched; report decides\n' "$RL_BSRC"
@@ -4856,11 +4858,20 @@ cmd_review_loop_carry() {
   # `--finding -` reads the one line from stdin, so reviewer-derived text never has to survive shell
   # quoting — a quoted heredoc passes an apostrophe or a `$` through untouched.
   if [ "$RL_FIND" = "-" ]; then
-    local _fl _fn
-    _fl="$(head -c $(( _IL_LOOP_FINDING_MAX + 2 )))" || _fl=""
-    _fn="$(printf '%s' "$_fl" | wc -l | tr -d ' ')"
-    [ "$_fn" -le 1 ] || { echo "implement-lib: review-loop carry: --finding - reads ONE line; stdin carried several" >&2; return 19; }
-    RL_FIND="$_fl"
+    # STAGED TO A FILE, not captured: `$(…)` would drop NUL bytes and trailing newlines before any
+    # check saw them. Accepted: no NUL, and at most one newline, as the final byte.
+    local _ff _fsz _fnul _fnl
+    _ff="$(mktemp "${TMPDIR:-/tmp}/adb-finding.XXXXXX")" || { echo "implement-lib: review-loop carry: could not stage stdin" >&2; return 20; }
+    head -c $(( _IL_LOOP_FINDING_MAX + 2 )) > "$_ff" || { rm -f "$_ff"; echo "implement-lib: review-loop carry: could not read stdin" >&2; return 20; }
+    _fsz="$(LC_ALL=C wc -c < "$_ff" | tr -d ' ')"; _fnul="$(LC_ALL=C tr -cd '\000' < "$_ff" | LC_ALL=C wc -c | tr -d ' ')"
+    _fnl="$(LC_ALL=C tr -cd '\n' < "$_ff" | LC_ALL=C wc -c | tr -d ' ')"
+    if [ "$_fnul" != 0 ] || [ "$_fnl" -gt 1 ] || { [ "$_fnl" = 1 ] && [ "$(tail -c 1 "$_ff" | od -An -tx1 | tr -d ' \n')" != 0a ]; }; then
+      rm -f "$_ff"
+      echo "implement-lib: review-loop carry: --finding - reads ONE line with no NUL byte; stdin carried more" >&2
+      return 19
+    fi
+    [ "$_fsz" -gt 0 ] || { rm -f "$_ff"; echo "implement-lib: review-loop carry: --finding - read nothing from stdin" >&2; return 19; }
+    RL_FIND="$(cat "$_ff")"; rm -f "$_ff"
   fi
   case "$RL_SEV" in critical|high|medium|low) : ;;
     *) echo "implement-lib: review-loop carry: --severity must be critical|high|medium|low" >&2; return 19 ;; esac

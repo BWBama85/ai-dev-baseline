@@ -205,6 +205,14 @@ if [ "$MODE" = mutation ]; then
     '    out="${out}${sep}${RL_CSEV[i]} \`${site}\`${occ}: \`${txt}\`"' \
     '    out="${out}${sep}${RL_CSEV[i]} ${site}${occ}: ${RL_CTXT[i]}"' \
     'a carried closing keyword is rendered inside a code span'
+  check_mut off-while-open-appended \
+    '    [ -n "$RL_OPEN" ] || { _il_loop_append "$RL_REC" "off"$'"'"'\t'"'"'"$RL_BSRC"; rc=$?; }' \
+    '    _il_loop_append "$RL_REC" "off"$'"'"'\t'"'"'"$RL_BSRC"; rc=$?' \
+    'writes no row the reader refuses while a native pass is open'
+  check_mut finding-nul-accepted \
+    '    if [ "$_fnul" != 0 ] || [ "$_fnl" -gt 1 ] || { [ "$_fnl" = 1 ] && [ "$(tail -c 1 "$_ff" | od -An -tx1 | tr -d '"'"' \n'"'"')" != 0a ]; }; then' \
+    '    if [ "$_fnl" -gt 1 ]; then' \
+    'refuses a NUL byte rather than storing the line with it dropped'
   check_mut open-pr-ungated \
     '  if ! _il_open_pr_loop_gate "$dir"; then' \
     '  if false; then' \
@@ -445,6 +453,10 @@ eq "$RL_RC" 0 "2 --finding - carries a line with an apostrophe, a dollar and bac
 has "$(rec "$d")" "it's a \$HOME-looking \`thing\`" "2 …stored byte for byte"
 RL_OUT="$( cd "$d" && printf 'one\ntwo\n' | env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site f.sh:3 --finding - .claude/state 2>&1 )"; RL_RC=$?
 eq "$RL_RC" 19 "2 --finding - refuses stdin carrying more than one line (19)"
+RL_OUT="$( cd "$d" && printf 'one\n\n' | env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site f.sh:3 --finding - .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 19 "2 --finding - refuses a trailing blank line — command substitution would have hidden it"
+RL_OUT="$( cd "$d" && printf 'a\000b\n' | env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site f.sh:3 --finding - .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 19 "2 --finding - refuses a NUL byte rather than storing the line with it dropped"
 # Two findings sharing their wording are still two: the site is part of the identity.
 d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
@@ -737,6 +749,12 @@ eq "$RL_RC" 0 "7 begin reserves a native pass"
 rl "$d" begin .claude/state claude
 eq "$RL_RC" 17 "7 a second begin over an unfinished native pass is refused (17) — its subagent may still be running"
 eq "$(grep -c '^fail' "$d/.claude/state/review-loop.tsv")" 0 "7 …and the begun pass is NOT marked interrupted"
+RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+rl "$d" begin .claude/state claude
+eq "$RL_RC" 35 "7 a begin after local_passes drops to 0 is disabled (35)"
+rl "$d" report .claude/state
+[ "$RL_RC" != 18 ] && ok || bad "7 …and writes no row the reader refuses while a native pass is open"
+RL_ENV=""
 [ -e "$d/.claude/state/review.md" ] && bad "7 begin removes the previous reply" || ok
 publish "$d" 1
 rl "$d" pass --published .claude/state claude

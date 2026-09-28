@@ -991,12 +991,12 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    # 45, not 10: the job carries check-session-context.sh --mutation since #431 — one full suite
-    # run per row, ~19 s each locally, and adb_pool_size caps the pool at the runner's 4 cores —
-    # and the 10-minute bound sized for the Stop-gate suite alone cancelled it at 58 rows. The
-    # mutation gate keeps the harness off a PR that does not touch its inputs, so the ordinary
-    # job stays under a minute; the bound is for the runs that do.
-    timeout-minutes: 45
+    # 75: the job carries TWO whole-suite-per-row mutation harnesses — session-context (#431) and
+    # review-loop (#491) — on a runner whose pool adb_pool_size caps at 4 cores. With both forced
+    # on it took 36m37s and 30m53s on PR #504, too close to the 45 it had. The mutation gate keeps
+    # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
+    # bound is for the runs that do.
+    timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
