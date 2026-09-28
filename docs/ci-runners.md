@@ -352,9 +352,9 @@ cancelled at its 45-minute ceiling with `review-loop-mutation` its slowest step 
 `implement-gate` ran the same harness to completion). The registry is not
 smaller and the local suite is unchanged: these are per-invocation `--skip`s, the log names each
 twice, an unknown name is an error rather than a quiet no-op, and `check-fact-drift.sh` pins all
-four ubuntu invocations because those jobs are now each step's only per-PR execution. The
-non-mutation `adopt-readiness`, `pattern-ledger`, and `session-context` halves still run here, so
-all three keep macOS coverage.
+five ubuntu invocations because those jobs are now each step's only per-PR execution. The
+non-mutation halves of all five — `adopt-readiness`, `pattern-ledger`, `session-context`,
+`settings-fragment` and `review-loop` — still run here, so each keeps macOS coverage.
 
 **And the load-sensitive suites run in the serial prologue here, as everywhere** (#423).
 `session-currency`, `selfcheck-guard` and `selfcheck-guard-mutation` are the ones that flapped on

@@ -4308,7 +4308,7 @@ cmd_sweep_identity() {
 #   review-loop begin  [--pr N --head SHA] <state-dir> <token>     reserve a NATIVE pass, then…
 #   review-loop pass   --published [--pr N --head SHA] <state-dir> <token>   …record its reply
 #   review-loop carry  [--pr N --head SHA] --severity critical|high|medium|low --site <path[:line]>
-#                      [--occurrence K] --finding <text> <state-dir>
+#                      [--occurrence K] --finding <text | - (one line on stdin)> <state-dir>
 #   review-loop report [--pr N --head SHA] <state-dir>
 #
 # THE RECORD is `review-loop.tsv` for an /implement-issue run, or `review-loop-pr<N>-<sha12>.tsv` for
@@ -4853,6 +4853,15 @@ cmd_review_loop_carry() {
   local dir bud rc i c=0 L
   [ "${#RL_ARGS[@]}" -eq 1 ] || { echo "implement-lib: review-loop carry needs <state-dir>" >&2; exit 2; }
   [ -n "$RL_SEV" ] && [ -n "$RL_FIND" ] && [ -n "$RL_SITE" ] || { echo "implement-lib: review-loop carry needs --severity, --site and --finding" >&2; exit 2; }
+  # `--finding -` reads the one line from stdin, so reviewer-derived text never has to survive shell
+  # quoting — a quoted heredoc passes an apostrophe or a `$` through untouched.
+  if [ "$RL_FIND" = "-" ]; then
+    local _fl _fn
+    _fl="$(head -c $(( _IL_LOOP_FINDING_MAX + 2 )))" || _fl=""
+    _fn="$(printf '%s' "$_fl" | wc -l | tr -d ' ')"
+    [ "$_fn" -le 1 ] || { echo "implement-lib: review-loop carry: --finding - reads ONE line; stdin carried several" >&2; return 19; }
+    RL_FIND="$_fl"
+  fi
   case "$RL_SEV" in critical|high|medium|low) : ;;
     *) echo "implement-lib: review-loop carry: --severity must be critical|high|medium|low" >&2; return 19 ;; esac
   _il_loop_finding_ok "$RL_FIND" \

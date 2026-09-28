@@ -434,6 +434,17 @@ rl "$d" report .claude/state
 eq "$RL_RC" 33 "2 …and the duplicate-prose exhaustion is fully carried"
 rl "$d" carry --severity low --site f.sh:1 --occurrence 0 --finding 'x' .claude/state
 eq "$RL_RC" 19 "2 --occurrence 0 is refused (19)"
+# `--finding -` reads the line from stdin, so reviewer text survives without shell quoting.
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+RL_OUT="$( cd "$d" && env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site 'docs/a file.md:2' --finding - .claude/state <<'FINDING' 2>&1
+it's a $HOME-looking `thing`
+FINDING
+)"; RL_RC=$?
+eq "$RL_RC" 0 "2 --finding - carries a line with an apostrophe, a dollar and backticks, read from stdin"
+has "$(rec "$d")" "it's a \$HOME-looking \`thing\`" "2 …stored byte for byte"
+RL_OUT="$( cd "$d" && printf 'one\ntwo\n' | env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site f.sh:3 --finding - .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 19 "2 --finding - refuses stdin carrying more than one line (19)"
 # Two findings sharing their wording are still two: the site is part of the identity.
 d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
@@ -932,8 +943,8 @@ order "11 implement-issue step 9 calls the loop before step 10" "$IPASS" "$(line
 order "11 …inside step 9, after the first triage" "$(line_of "$IW" '### 9. Triage + fix')" "$IPASS"
 order "11 …and reports it before the rule-sweep is recorded over the final tree" "$IREPORT" "$(line_of "$IW" '# ADB-SNIPPET: rule-sweep')"
 order "11 the native branch is taken BEFORE a CLI pass could be spent" "$IBEGIN" "$IPASS"
-[ -n "$(code_line_of "$IW" 'review-loop pass --published')" ] || grep -qF 'review-loop pass --published {{STATE_DIR}}' "$IW" \
-  && ok || bad "11 the native Claude review path participates in the loop"
+order "11 the native Claude review path records its pass in an executable line, after begin" "$IBEGIN" "$(code_line_of "$IW" 'review-loop pass --published {{STATE_DIR}} "$REVIEW_TOKEN"')"
+order "11 the carry recipe passes the finding through a quoted heredoc" "$(code_line_of "$IW" "--finding - {{STATE_DIR}} <<'FINDING'")" "$(line_of "$IW" '### 10. Push + open PR')"
 RPASS="$(code_line_of "$RW" 'review-loop pass --pr "$PR_NUM" --head "$SWEEP_HEAD"')"
 RREPORT="$(code_line_of "$RW" 'review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD"')"
 RPUSH="$(code_line_of "$RW" 'git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}"')"

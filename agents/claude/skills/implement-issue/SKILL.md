@@ -474,8 +474,13 @@ esac
 ```
 
 A Claude slot with Claude driving takes each pass natively, as step 8 does: after `begin`, run
-`dispatch-review --prompt-only`, the subagent, `publish-review`, then
-`bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass --published .claude/state "$REVIEW_TOKEN"`. `begin` binds the
+`dispatch-review --prompt-only`, the subagent, and `publish-review`, then record the pass:
+
+```bash
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass --published .claude/state "$REVIEW_TOKEN"
+```
+
+`begin` binds the
 tree before the subagent reads it and moves the previous `review.md` aside, so a reply is only
 ever recorded for the pass it was published in; if the subagent fails, go straight to
 `pass --published` and it records the failure. The rung is step 8's ladder, so a reviewer step 8
@@ -501,7 +506,11 @@ excuses what the passes found. On `33`, carry every REQUIRED finding of the fina
 give it (the verdict trailer carries counts, not severities):
 
 ```bash
-bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop carry --severity <critical|high|medium|low> --site <path[:line]|-> --finding '<one line>' .claude/state
+# The finding arrives on stdin through a QUOTED heredoc, so reviewer text with an apostrophe or a `$`
+# passes through untouched; the site is quoted too, because a path may hold a space.
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop carry --severity <critical|high|medium|low> --site "<path[:line] or ->" --finding - .claude/state <<'FINDING'
+<one line, in your own words>
+FINDING
 ```
 
 A second finding identical to one already carried (same site, severity and line) is carried with

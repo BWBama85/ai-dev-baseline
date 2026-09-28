@@ -1026,8 +1026,9 @@ if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
     || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; exit 1; }   # run step 8 first
   # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live immediately before the push: the
   # loop can take minutes, and a PR that closed or gained a head meanwhile is not this round's to
-  # push to. A close landing between this read and the push is the residual; a new head is refused
-  # by the push itself, which is not a fast-forward from it.
+  # push to. A close landing between this read and the push is the residual, and so is a head that
+  # advanced to an ancestor of PUSH_SHA (the push fast-forwards over it); a head that DIVERGED is
+  # refused by the push itself, which is not a fast-forward from it.
   LIVE="$(gh pr view "$PR_NUM" --json state,headRefOid --jq '.state + " " + .headRefOid')" \
     || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
   [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \
