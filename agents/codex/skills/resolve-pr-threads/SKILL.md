@@ -965,6 +965,7 @@ minutes a sample. The record is keyed by the head the round started from (`$SWEE
 every round has a fresh budget (`[reviewers] local_passes`, default 3; `0` disables).
 
 ```bash
+: "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
 LOOP_LINE="local review: this round changed nothing — no pass, no push"
 if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   RUNG="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung codex)"
@@ -982,17 +983,19 @@ fi
 ```
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
-(`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `33` carry each REQUIRED
-finding, then report · `35` · `37`/`38` report. `carry` and `report` take the same
+(`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
+`33` carry each REQUIRED finding, then report · `35` · `37`/`38` report. `carry` and `report` take the same
 `--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
 **not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
 
 ```bash
+: "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
 if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
   LOOP_LINE="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .codex/state)"; LRC=$?
   case "$LRC" in
     0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable
     34) echo "the loop is not finished — take another pass"; exit 1 ;;
+    27) echo "the worktree is not clean — commit it, then take another pass"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
     *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
         # run step 8 (restore the starting branch) FIRST, then:

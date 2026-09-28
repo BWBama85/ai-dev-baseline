@@ -770,7 +770,7 @@ add review-loop         bash scripts/check-review-loop.sh
 
 # ...and each of those refusals is injected with its own defect and required RED on its own witness.
 add review-loop-mutation bash scripts/check-review-loop.sh --mutation
-inputs review-loop-mutation     scripts/check-review-loop.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/implement-lib.sh scripts/lib/role-dispatch.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md
+inputs review-loop-mutation     scripts/check-review-loop.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/implement-lib.sh scripts/lib/role-dispatch.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md templates/agents.toml
 
 # The SessionStart run-state hook and its library (#431): a compacted or resumed session gets the
 # in-flight run's facts read back — phase, phase history, branch, issue numbers, artifact paths,

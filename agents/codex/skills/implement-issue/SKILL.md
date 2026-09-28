@@ -472,10 +472,12 @@ esac
 ```
 
 When `$REVIEW_TOKEN` is your own agent and your harness reviews natively (step 8's subagent path),
-a pass is `dispatch-review --prompt-only` → the subagent → `publish-review` →
-`bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --published .codex/state "$REVIEW_TOKEN"`. If the subagent
-fails, publish its empty reply anyway: `publish-review` refuses it and removes `review.md`, so the
-pass records a failure instead of re-reading the previous one.
+a pass is `bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop begin .codex/state "$REVIEW_TOKEN"` → `dispatch-review
+--prompt-only` → the subagent → `publish-review` →
+`bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --published .codex/state "$REVIEW_TOKEN"`. `begin` binds the
+tree before the subagent reads it and removes the previous `review.md`, so a reply is only ever
+recorded for the pass it was published in; if the subagent fails, go straight to `pass --published`
+and it records the failure.
 
 | rc | Meaning | Do |
 |---|---|---|
@@ -485,13 +487,15 @@ pass records a failure instead of re-reading the previous one.
 | `33` | the last budgeted pass found REQUIRED findings | edit nothing more; `carry` each of them, then the report |
 | `35` | disabled, or no usable reviewer | the report says so |
 | `37` / `38` | the last budgeted pass failed / the budget is already spent | the report |
-| `17` | `--published`: that reply is already recorded | publish this pass's reply and re-run |
+| `27` | the worktree is not clean | commit it — a pass reviews the tree a push ships, which is HEAD — then pass again |
+| `17` | `--published` with no `begin` for this token | run `begin` first |
 | `16` / `18` / `20` | HEAD moved off its base / the record or budget does not parse / unreadable | fix and re-run — never read as clean |
 
 What counts: **loop passes only** (step 8's review is not one), **one reviewer** (the rung's), and
-convergence is its latest pass returning `required=0` on the **current** tree. Any edit after that
-pass — an OPTIONAL fix included — invalidates it, so make those edits before the pass you expect to
-converge. On `33`, carry every REQUIRED finding of the final pass with the severity this step would
+convergence is its latest pass returning `required=0` on the **current, committed** tree. Any commit
+after that pass — an OPTIONAL fix included — invalidates it, so make those edits before the pass you
+expect to converge. Disabling the loop or losing the reviewer after a pass exhausts it; it never
+excuses what the passes found. On `33`, carry every REQUIRED finding of the final pass with the severity this step would
 give it (the verdict trailer carries counts, not severities):
 
 ```bash
@@ -506,13 +510,14 @@ bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report .codex/state
 case "$?" in
   0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable — proceed
   34) echo "the loop is not finished — take another pass"; exit 1 ;;
+  27) echo "the worktree is not clean — commit it, then take another pass"; exit 1 ;;
   39) echo "BLOCKED — write the blocked marker with the report's line as its reason"; exit 1 ;;
   *)  echo "no loop verdict (rc $?) — 11 means it never ran; 18/20, fix the record"; exit 1 ;;
 esac
 ```
 
 `39` blocks on a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final
-pass, or an edit after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
+pass, or a commit after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
 
 **Then re-sweep the promoted checklist over the FINAL diff and record it** — the mechanism behind
 `self-review.md`'s "name what you swept" (#490). After the last commit, so the digest names the

@@ -54,7 +54,7 @@ Rung: <independent <agent> | same-model (not independent) | deferred to <logins>
 | # | Finding | Severity | Disposition |
 |---|---|---|---|
 | … | … | … | … |
-Local review: <the line from {{IMPLEMENT_LIB}} review-loop report {{STATE_DIR}}, verbatim — e.g.
+<the line from {{IMPLEMENT_LIB}} review-loop report {{STATE_DIR}}, verbatim — e.g.
 `local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`>
 
 ## Docs consulted

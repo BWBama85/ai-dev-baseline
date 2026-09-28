@@ -51,21 +51,41 @@ RW="$ROOT/base/workflows/resolve-pr-threads.md"
 # ============================= --mutation: every refusal must be seen RED ========================
 if [ "$MODE" = mutation ]; then
   check_mut budget-cap-ignored \
-    '  if [ "$RL_PASSES" -ge "$bud" ]; then' \
+    '  if [ "$RL_PASSES" -ge "$RL_BUD" ]; then' \
     '  if false; then' \
     'a spent budget never dispatches a fourth time'
   check_mut failed-dispatch-reads-clean \
-    '      *)  why=dispatch; frc="$drc"; [ "${#frc}" -le 3 ] || frc=999 ;;' \
-    '      *)  : ;;' \
+    '    *)  why=dispatch; frc="$drc"; [ "${#frc}" -le 3 ] || frc=999 ;;' \
+    '    *)  : ;;' \
     'a forged clean reply left behind by a FAILED dispatch is never recorded'
+  check_mut verdict-read-failure-accepted \
+    '      why=verdict; frc="$rc"' \
+    '      :' \
+    '…recorded as a verdict failure, rc 19'
   check_mut moved-tree-accepted \
     '    if [ -n "$tree2" ] && [ "$tree2" != "$tree1" ]; then why=moved; fi' \
     '    :' \
     'a tree that moved during the pass fails it'
+  check_mut unbound-tree-accepted \
+    '    tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || { tree2=""; why=unbound; }' \
+    '    tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || tree2="$tree1"' \
+    'a tree that cannot be digested after the pass fails it'
+  check_mut dirty-pass-accepted \
+    '  _il_loop_clean; rc=$?' \
+    '  rc=0' \
+    'a pass over a dirty worktree is refused (27)'
+  check_mut dirty-report-accepted \
+    '  rc=0; _il_loop_clean || rc=$?' \
+    '  rc=0' \
+    'report on a dirty worktree is 27, never converged'
   check_mut stale-convergence-accepted \
     '    if [ "$cur" = "${RL_TREE[L]}" ]; then' \
     '    if true; then' \
     'an edit after a converged pass invalidates it'
+  check_mut exhausted-edit-accepted \
+    '  if [ "$cur" != "${RL_TREE[L]}" ]; then' \
+    '  if false; then' \
+    'a commit after an EXHAUSTED pass blocks'
   check_mut undercarried-exhaustion-pushes \
     '  if [ "$c" -lt "${RL_REQ[L]}" ]; then' \
     '  if false; then' \
@@ -75,25 +95,93 @@ if [ "$MODE" = mutation ]; then
     '    :' \
     'a carried HIGH blocks'
   check_mut failed-final-pushes \
-    "unknown\\n' \"\$passes\"; return 39" \
-    "unknown\\n' \"\$passes\"; return 33" \
+    '"$passes" "$after"; return 39' \
+    '"$passes" "$after"; return 33' \
     'a failed final pass BLOCKS'
-  check_mut published-reply-reused \
-    '      if [ -n "$rsha" ] && [ "${RL_RSHA[i]:-}" = "$rsha" ]; then' \
-    '      if false; then' \
-    'a published reply already recorded is refused (17)'
+  check_mut disable-after-pass-excuses \
+    '  if [ "$L" -eq 0 ]; then' \
+    '  if true; then' \
+    'local_passes = 0 after a failed final pass still BLOCKS'
+  check_mut unavailable-does-not-exhaust \
+    '  [ "$1" -eq 0 ] || [ "$RL_LAST" = none ] || [ "$RL_PASSES" -ge "$1" ]' \
+    '  [ "$RL_PASSES" -ge "$1" ]' \
+    'a reviewer lost after a pass with findings exhausts the loop'
   check_mut disabled-dispatches \
-    '  if [ "$bud" -eq 0 ]; then' \
+    '  if [ "$RL_BUD" -eq 0 ]; then' \
     '  if false; then' \
     'local_passes = 0 is 35'
+  check_mut report-invents-empty \
+    '  if [ ! -e "$RL_REC" ] && [ ! -L "$RL_REC" ]; then' \
+    '  if false; then' \
+    'report with nothing recorded is 11'
+  check_mut published-without-begin \
+    '    if [ "$RL_OPEN_KIND" != begin ] || [ "$RL_OPEN_TOKEN" != "$RL_TOKEN" ]; then' \
+    '    if false; then' \
+    '--published with no begun pass is refused (17)'
+  check_mut begin-keeps-old-reply \
+    '    rm -rf "$RL_DIR/review.md" 2>/dev/null' \
+    '    :' \
+    'begin removes the previous reply'
+  check_mut interrupted-left-open \
+    '  if [ -n "$RL_OPEN" ] && [ "$keep_open" -eq 0 ]; then' \
+    '  if false; then' \
+    'a pass killed mid-dispatch is recorded failed on the next call'
+  check_mut record-race-accepted \
+    '  if ! _il_loop_parse "$RL_REC" || [ "$RL_OPEN" != "$n" ]; then' \
+    '  if ! _il_loop_parse "$RL_REC"; then' \
+    'a record that changed underneath a pass refuses to record its result'
+  check_mut unknown-row-accepted \
+    '      *) return 18 ;;' \
+    '      *) : ;;' \
+    'an unknown row kind refuses the whole record'
+  check_mut torn-record-accepted \
+    '  adb_bytes_whole "$f" "$_IL_LOOP_MAX_BYTES" || return $?' \
+    '  :' \
+    'a record with no final newline is refused'
   check_mut overcarry-accepted \
     '  if [ "$c" -ge "${RL_REQ[L]}" ]; then' \
     '  if false; then' \
     'a carry past the declared count is refused (17)'
+  check_mut duplicate-carry-appended \
+    '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
+    '    if false; then' \
+    'the identical carry is a no-op (10)'
+  check_mut carry-before-exhaustion \
+    '|| ! _il_loop_exhausted "$bud"; then' \
+    '; then' \
+    'carry against a loop that is NOT exhausted is refused (17)'
+  check_mut carry-bound-ignored \
+    '  [ $(( sz + ${#2} + 1 )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19' \
+    '  :' \
+    'a carry that would take the record past its bound is refused (19)'
+  check_mut control-char-finding \
+    '  [[ "$t" =~ [[:cntrl:]] ]] && return 1' \
+    '  :' \
+    'a finding carrying a TAB is refused (19)'
+  check_mut severity-open \
+    '    *) echo "implement-lib: review-loop carry: --severity must be critical|high|medium|low" >&2; return 19 ;; esac' \
+    '    *) : ;; esac' \
+    'a severity outside the closed set is refused (19)'
+  check_mut malformed-budget-defaults \
+    '    2) return 18 ;;' \
+    '    2) printf '"'"'%s default\n'"'"' "$_IL_LOOP_DEFAULT" ;;' \
+    'review-loop refuses to run on an unusable budget (18)'
+  check_mut round-head-foreign \
+    "      1) printf 'implement-lib: review-loop: HEAD does not descend from the round head %s — this is not that round'\"'\"'s history\\n' \"\$head\" >&2; return 16 ;;" \
+    '      1) RL_BASE="$head" ;;' \
+    'review-loop refuses a HEAD that does not descend from the round head'
   check_mut local-head-accepts-foreign \
     "        1) printf 'implement-lib: dispatch-review: HEAD %s does not descend from PR %s'\"'\"'s head %s — this is not that pull request plus local commits; sync the branch and re-run.\\n' \"\$lhead\" \"\$crit_pr\" \"\$phead\" >&2; return 16 ;;" \
     '        1) : ;;' \
     '--local-head refuses a HEAD that does not descend from the PR head'
+  # The byte bound on a finding holds only under `local LC_ALL=C`; the row needs a UTF-8 locale to
+  # have a witness, so it is registered only where one exists.
+  if locale -a 2>/dev/null | grep -qx -e C.UTF-8 -e en_US.UTF-8 -e C.utf8 -e en_US.utf8; then
+    check_mut finding-bound-in-characters \
+      '  local LC_ALL=C t="$1"' \
+      '  local t="$1"' \
+      'a finding past 300 BYTES is refused (19)'
+  fi
 
   prep() {
     check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
@@ -131,6 +219,8 @@ SB="$work/stub"; mkdir -p "$SB"
 #   127       exit 127 without writing a reply
 #   hang      sleep past the dispatch bound (a timeout)
 #   touch     a valid req:0 reply, after modifying a tracked file mid-pass (the tree moves)
+#   race      a valid req:0 reply, after appending a row for this pass to the record mid-pass
+#   lock      a valid req:0 reply, after making a tracked file unreadable (the tree cannot be digested)
 cat > "$SB/codex" <<'SH'
 #!/usr/bin/env bash
 last=""; prev=""
@@ -144,6 +234,10 @@ case "$act" in
   127)   exit 127 ;;
   hang)  sleep 30 ;;
   touch) printf 'moved\n' >> "$RL_TOUCH"
+         printf 'clean\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "$last" ;;
+  race)  printf 'fail\t%s\t-\tinterrupted\n' "$k" >> "$RL_RECORD"
+         printf 'clean\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "$last" ;;
+  lock)  chmod 000 "$RL_TOUCH"
          printf 'clean\n\nADB-REVIEW-VERDICT v1 required=0 optional=0\n' > "$last" ;;
   *)     echo "stub: no script line $k" >&2; exit 9 ;;
 esac
@@ -177,7 +271,7 @@ script() { local d="$1"; shift; printf '%s\n' "$@" > "$d.script"; rm -f "$d.coun
 rl() {
   local d="$1"; shift
   RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$SB:$PATH" RL_SCRIPT="$d.script" RL_COUNT="$d.count" \
-      RL_TOUCH="$d/f.sh" ADB_DISPATCH_TIMEOUT_SECS=3 ADB_DISPATCH_KILL_GRACE_SECS=1 \
+      RL_TOUCH="$d/f.sh" RL_RECORD="$d/.claude/state/review-loop.tsv" ADB_DISPATCH_TIMEOUT_SECS=3 ADB_DISPATCH_KILL_GRACE_SECS=1 \
       ${RL_ENV:-} bash "$IL" review-loop "$@" 2>&1 )"; RL_RC=$?
 }
 count() { cat "$1.count" 2>/dev/null || echo 0; }
@@ -240,6 +334,37 @@ rl "$d" carry --severity sev1 --finding x .claude/state
 eq "$RL_RC" 19 "2 a severity outside the closed set is refused (19)"
 rl "$d" carry --severity low --finding "$(printf 'a\tb')" .claude/state
 eq "$RL_RC" 19 "2 a finding carrying a TAB is refused (19) — it would forge a row"
+
+# A finding's bound is BYTES, under a UTF-8 locale too: 150 two-byte characters are 300 bytes, 151 are not.
+UTF=""
+for l in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+  if locale -a 2>/dev/null | grep -qx -- "$l"; then UTF="$l"; break; fi
+done
+if [ -n "$UTF" ]; then
+  d="$(fixture)"; script "$d" req:3
+  RL_ENV="ADB_LOCAL_REVIEW_PASSES=1 LC_ALL=$UTF"
+  rl "$d" pass .claude/state codex
+  mb="$(printf 'é%.0s' $(seq 150))"
+  rl "$d" carry --severity low --finding "$mb" .claude/state
+  eq "$RL_RC" 0 "2 a 300-BYTE multibyte finding is legal"
+  rl "$d" carry --severity low --finding "${mb}é" .claude/state
+  eq "$RL_RC" 19 "2 a finding past 300 BYTES is refused (19), whatever its character count"
+else
+  check_note "no UTF-8 locale here — the byte-bound case runs only where one exists"
+fi
+
+# The writer never produces a record its reader refuses: a carry that would cross the record's
+# 1 MiB bound is refused, and the record it declined to grow still reads.
+d="$(fixture)"; script "$d" req:9999; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+rl "$d" pass .claude/state codex
+R="$d/.claude/state/review-loop.tsv"
+pad="$(printf 'x%.0s' $(seq 290))"
+awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" \
+  'BEGIN { n = int((1048576 - cur) / 308); for (i = 1; i <= n; i++) printf "carry\t1\tlow\t%05d%s\n", i, pad }' >> "$R"
+rl "$d" carry --severity low --finding "$(printf 'y%.0s' $(seq 300))" .claude/state
+eq "$RL_RC" 19 "2 a carry that would take the record past its bound is refused (19)"
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "2 …and the record it declined to grow still reads (39, not 18)"
 RL_ENV=""
 d="$(fixture)"; script "$d" req:1
 rl "$d" pass .claude/state codex
@@ -302,31 +427,55 @@ eq "$RL_RC" 36 "3 a reply with no verdict trailer is a failed pass"
 has "$(rec "$d")" "$(printf 'fail\t1\t28\tverdict')" "3 …recorded as a verdict failure, rc 28"
 
 # =============================== 4. the tree binding ============================================
+# A pass reviews the worktree and a push ships HEAD, so the loop certifies only a CLEAN tree (27).
 d="$(fixture)"; script "$d" req:0
+printf 'uncommitted\n' >> "$d/f.sh"
 rl "$d" pass .claude/state codex
+eq "$RL_RC" 27 "4 a pass over a dirty worktree is refused (27) — the reviewed tree must be the committed one"
+eq "$(count "$d")" 0 "4 …before anything is dispatched"
+git -C "$d" add f.sh
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 27 "4 a STAGED change is dirty too — a commit would ship the index, not the reviewed worktree"
+git -C "$d" commit -qm staged >/dev/null 2>&1
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 0 "4 the committed tree is reviewed and converges"
 printf 'optional fix\n' >> "$d/f.sh"
+rl "$d" report .claude/state
+eq "$RL_RC" 27 "4 report on a dirty worktree is 27, never converged"
+: > "$d/new-untracked"; git -C "$d" checkout -q -- f.sh
+rl "$d" report .claude/state
+eq "$RL_RC" 27 "4 …and an untracked file is dirty too"
+rm -f "$d/new-untracked"
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "4 …and the clean reviewed tree converges again"
+commit_fix "$d" optional
 rl "$d" report .claude/state
 eq "$RL_RC" 34 "4 an edit after a converged pass invalidates it — take another pass"
 has "$RL_OUT" "converged on an earlier tree" "4 …and says so"
-: > "$d/new-untracked"
-git -C "$d" checkout -q -- f.sh
-rl "$d" report .claude/state
-eq "$RL_RC" 34 "4 an UNTRACKED file moves the tree too"
-rm -f "$d/new-untracked"
-rl "$d" report .claude/state
-eq "$RL_RC" 0 "4 …and restoring the reviewed tree restores convergence"
 
 d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:0
 rl "$d" pass .claude/state codex
-printf 'late\n' >> "$d/f.sh"
+commit_fix "$d" late
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "4 an edit after the FINAL budgeted pass blocks"
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --finding nit .claude/state
+commit_fix "$d" sneaked
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "4 a commit after an EXHAUSTED pass blocks, even with every finding carried"
 RL_ENV=""
 
 d="$(fixture)"; script "$d" touch
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 36 "4 a tree that moved during the pass fails it"
 has "$(rec "$d")" "$(printf 'fail\t1\t-\tmoved')" "4 …recorded as moved"
+
+d="$(fixture)"; script "$d" lock
+rl "$d" pass .claude/state codex
+chmod 644 "$d/f.sh"
+eq "$RL_RC" 36 "4 a tree that cannot be digested after the pass fails it"
+has "$(rec "$d")" "$(printf 'fail\t1\t-\tunbound')" "4 …recorded as unbound"
 
 # =============================== 5. disabled, unavailable, nothing ==============================
 d="$(fixture)"; printf '[reviewers]\nlocal_passes = 0\n' > "$d/agents.toml"
@@ -348,6 +497,31 @@ d="$(fixture)"
 rl "$d" report .claude/state
 eq "$RL_RC" 11 "5 report with nothing recorded is 11 — never a hand-written converged"
 
+# Disabling the loop, or losing the reviewer, AFTER a pass exhausts it — it never excuses a block.
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:1 127
+rl "$d" pass .claude/state codex; commit_fix "$d" a
+rl "$d" pass .claude/state codex
+RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "5 local_passes = 0 after a failed final pass still BLOCKS"
+has "$RL_OUT" "(then disabled)" "5 …and the line says the loop was disabled after it"
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity high --finding 'real bug' .claude/state
+RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "5 local_passes = 0 after a carried HIGH still BLOCKS"
+RL_ENV=""
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" pass --unavailable none .claude/state
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "5 a reviewer lost after a pass with findings exhausts the loop — uncarried, it BLOCKS"
+rl "$d" carry --severity low --finding nit .claude/state
+eq "$RL_RC" 0 "5 …and its findings can then be carried"
+rl "$d" report .claude/state
+eq "$RL_RC" 33 "5 …after which it pushes with the line"
+
 # =============================== 6. the record is refused whole =================================
 d="$(fixture)"; script "$d" req:1
 rl "$d" pass .claude/state codex
@@ -366,6 +540,18 @@ rl "$d" pass .claude/state codex
 printf 'x' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "6 a record with no final newline is refused (a torn append)"
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+printf 'bogus\tx\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "6 an unknown row kind refuses the whole record"
+
+# The result is recorded only against the pass still open: a record that moved underneath a pass
+# refuses its result rather than appending a second outcome.
+d="$(fixture)"; script "$d" race
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 20 "6 a record that changed underneath a pass refuses to record its result"
+eq "$(grep -c '^done' "$d/.claude/state/review-loop.tsv")" 0 "6 …and no done row is appended beside the other outcome"
 
 # An interrupted pass (reserved, never answered) is recorded as the failure it was.
 d="$(fixture)"; script "$d" req:1 req:0
@@ -378,17 +564,47 @@ eq "$RL_RC" 0 "6 …and the next pass is pass 3, which converges"
 has "$(rec "$d")" "$(printf 'start\t3\t')" "6 …numbered after the interrupted one"
 
 # =============================== 7. the native (published) path ================================
+# `begin` reserves the pass and binds its tree BEFORE the subagent runs, and removes the previous
+# reply, so `pass --published` can only read one published for this pass.
+publish() { printf 'finding\n\nADB-REVIEW-VERDICT v1 required=%s optional=0\n' "$2" > "$1/.claude/state/review.md"; }
 d="$(fixture)"
-printf 'finding\n\nADB-REVIEW-VERDICT v1 required=1 optional=0\n' > "$d/.claude/state/review.md"
+publish "$d" 0
 rl "$d" pass --published .claude/state claude
-eq "$RL_RC" 34 "7 --published records the verdict of the published reply"
+eq "$RL_RC" 17 "7 --published with no begun pass is refused (17) — even over a reply on disk"
+rl "$d" begin .claude/state claude
+eq "$RL_RC" 0 "7 begin reserves a native pass"
+[ -e "$d/.claude/state/review.md" ] && bad "7 begin removes the previous reply" || ok
+publish "$d" 1
 rl "$d" pass --published .claude/state claude
-eq "$RL_RC" 17 "7 a published reply already recorded is refused (17)"
-eq "$(grep -c '^start' "$d/.claude/state/review-loop.tsv")" 1 "7 …without reserving a pass"
-rm -f "$d/.claude/state/review.md"
+eq "$RL_RC" 34 "7 --published records the verdict of the reply published for the begun pass"
+commit_fix "$d" a
+rl "$d" begin .claude/state claude
+publish "$d" 1
 rl "$d" pass --published .claude/state claude
-eq "$RL_RC" 36 "7 a missing published reply is a FAILED pass (publish-review removed a refused one)"
-has "$(rec "$d")" "$(printf 'fail\t2\t-\tmissing')" "7 …recorded as missing"
+eq "$RL_RC" 34 "7 an identical reply in a later genuine pass is recorded, not refused as reused"
+commit_fix "$d" b
+rl "$d" begin .claude/state claude
+rl "$d" pass --published .claude/state claude
+eq "$RL_RC" 37 "7 a native pass whose reply was never published is a FAILED pass"
+has "$(rec "$d")" "$(printf 'fail\t3\t-\tmissing')" "7 …recorded as missing"
+
+d="$(fixture)"
+rl "$d" begin .claude/state claude
+commit_fix "$d" during
+publish "$d" 0
+rl "$d" pass --published .claude/state claude
+eq "$RL_RC" 36 "7 a commit made while the native subagent reviewed fails the pass — the tree was bound at begin"
+has "$(rec "$d")" "$(printf 'fail\t1\t-\tmoved')" "7 …recorded as moved"
+d="$(fixture)"
+rl "$d" begin .claude/state claude
+printf 'prose with no trailer\n' > "$d/.claude/state/review.md"
+rl "$d" pass --published .claude/state claude
+eq "$RL_RC" 36 "7 a published reply with no verdict is a FAILED pass"
+has "$(rec "$d")" "$(printf 'fail\t1\t19\tverdict')" "7 …recorded as a verdict failure, rc 19"
+d="$(fixture)"; script "$d" req:0
+rl "$d" begin .claude/state claude
+rl "$d" pass .claude/state codex
+has "$(rec "$d")" "$(printf 'fail\t1\t-\tinterrupted')" "7 a dispatched pass over an unfinished native one records it interrupted"
 
 # =============================== 8. the budget reader ===========================================
 bud() { ( cd "$1" && env HOME="$FHOME" ${2:+ADB_LOCAL_REVIEW_PASSES="$2"} bash "$RD" local-passes --with-source 2>&1 ); }
@@ -483,6 +699,7 @@ before "$IW" 'review-loop pass' '### 10. Push + open PR' "11 implement-issue ste
 before "$IW" '### 9. Triage + fix' 'review-loop pass' "11 …inside step 9, after the first triage"
 before "$IW" 'review-loop report' '# ADB-SNIPPET: rule-sweep' "11 …and reports it before the rule-sweep is recorded over the final tree"
 grep -qF 'review-loop pass --published' "$IW" && ok || bad "11 the native Claude review path participates in the loop"
+before "$IW" 'review-loop begin' 'review-loop pass --published' "11 …reserving its pass (begin) before the subagent's reply is recorded"
 before "$RW" 'review-loop pass --pr' 'git push origin "$PR_BRANCH"' "11 the resolver runs the loop before its push"
 before "$RW" 'review-loop pass --pr' '### 7. Ask for a re-review' "11 …and before step 7's re-request"
 eq "$(grep -c 'git push origin "$PR_BRANCH"' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"

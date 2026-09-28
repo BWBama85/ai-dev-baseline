@@ -85,12 +85,14 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `16` | `dispatch-review --criteria-from-pr --local-head` | HEAD does not DESCEND from the PR's head — not that pull request plus local commits. The local convergence loop's form (#491); sync the branch |
 | `33` | `review-loop pass` / `report` | exhausted: the last budgeted pass found REQUIRED findings. `pass` → carry each one; `report` → every one is carried and none is CRITICAL/HIGH, so the push proceeds and the line names them |
 | `34` | `review-loop pass` / `report` | not converged, budget left — fix, commit, pass again |
-| `35` | `review-loop pass` / `report` | `local_passes = 0`, or no usable reviewer: nothing dispatched; the push proceeds and the line says so |
+| `35` | `review-loop pass` / `begin` / `report` | `local_passes = 0`, or no usable reviewer: nothing dispatched. Before any pass the push proceeds and the line says so; after one, `report` treats the loop as exhausted instead |
 | `36` / `37` | `review-loop pass` | the pass FAILED (timeout, 127, no verdict, the tree moved during it) with budget left / on the last budgeted pass. A failed pass counts against the budget and is never clean |
 | `38` | `review-loop pass` | refused: the budget is spent, nothing dispatched — a fourth pass under `local_passes = 3` cannot happen |
-| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass, or an edit after the final pass. Blocked marker, `phase` stays `triaged` |
+| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass, or a commit after the final pass. Blocked marker, `phase` stays `triaged` |
 | `11` | `review-loop report` | no loop was recorded — the loop never ran |
-| `17` | `review-loop pass --published` / `carry` | that reply is already recorded as an earlier pass / nothing to carry (not exhausted, or its count is already carried) |
+| `17` | `review-loop pass --published` / `carry` | no native pass was begun for this token — run `review-loop begin` before the subagent / nothing to carry (not exhausted, or its count is already carried) |
+| `27` | `review-loop pass` / `begin` / `report` | the worktree is not clean. A pass reviews the worktree and a push ships HEAD, so the loop reviews and certifies only a committed tree — commit, then pass again |
+| `19` | `review-loop carry` | a refused field (severity, or a finding past 300 bytes or carrying a control character), or a row that would take the record past its 1 MiB bound |
 | `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 
 ## Every documented stop, in one place

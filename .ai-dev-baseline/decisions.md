@@ -8505,9 +8505,10 @@ survive is the part a later reader needs.
              review is not one, and each resolver round starts a fresh budget. A pass is taken by ONE
              reviewer, the token `review-rung` names (the one the resolver's sweep already uses);
              convergence is that reviewer's latest pass returning `required=0` on the CURRENT tree.
-             The native Claude path participates through `review-loop pass --published`, which
-             records the verdict of the reply `publish-review` just validated and refuses (17) a
-             reply already recorded. (b) `dispatch-review --local-head` accepts a HEAD that
+             The native Claude path participates through `review-loop begin` (before the subagent:
+             it binds the tree and removes the previous `review.md`) and `pass --published`, which
+             records the reply published after that reservation — so a reply is tied to its pass by
+             when it was published, not by its content, and two genuine identical replies both count. (b) `dispatch-review --local-head` accepts a HEAD that
              DESCENDS from the PR head (`git merge-base --is-ancestor`, three outcomes) and names both
              commits in the prompt; without the flag the start-of-round contract is unchanged.
              (c) One push per round, after a new step 4d: fixes and the ledger commit are committed
@@ -8518,9 +8519,16 @@ survive is the part a later reader needs.
              mechanically: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a
              failed final pass, or an edit after the final pass blocks (39).
              Every pass is bound to a tree digest (`_il_tree_digest`, factored out of
-             `sweep-identity` so both name a tree identically) taken before and after the dispatch;
-             a tree that moved during the pass fails it. `[reviewers] local_passes` is 0-10, with
-             `0` the only sentinel and each malformed shape a hard error with its own message.
+             `sweep-identity` so both name a tree identically) taken when the pass is reserved and
+             again when it is recorded; a tree that moved in between fails it. A pass and a
+             push-able report both require a CLEAN worktree (27): the review reads the worktree and
+             a push ships HEAD, and only a clean tree makes those the same — the independent review
+             reproduced a staged commit the worktree digest could not see. Once a pass exists,
+             `local_passes = 0` or an unavailable reviewer EXHAUSTS the loop rather than excusing
+             it, so neither can launder a failed final pass or a carried HIGH into a push. `carry`
+             refuses (19) a row that would take the record past the 1 MiB its reader enforces.
+             `[reviewers] local_passes` is 0-10, with `0` the only sentinel and each malformed shape
+             a hard error with its own message.
 - placement: `scripts/lib/implement-lib.sh` (`review-loop`, `_il_tree_digest`,
              `_il_default_merge_base`, `dispatch-review --local-head`, `_il_clear`),
              `scripts/lib/role-dispatch.sh` (`local-passes`), `scripts/lib/cleanup-lib.sh` (`review`

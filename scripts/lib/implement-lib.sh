@@ -144,7 +144,7 @@
 #       malformed one. Distinct from the rc 0 an empty-but-valid link set takes, so an API failure
 #       can never degrade the review to lens-only and still report success.
 #
-# review-loop (#491) has its own table (33-39, 10, 11, 16-20) at its section below.
+# review-loop (#491) has its own table (33-39, 10, 11, 16-20, 27) at its section below.
 #
 # Usage:
 #   implement-lib.sh admit   <state-dir>    # may a run start? acquire + clear when yes
@@ -182,6 +182,8 @@
 #                                [--pr N --head SHA] <state-dir> [<token>]
 #                                           # #491: ONE pass of the local convergence loop — budget,
 #                                           # verdict and per-pass record, bound to the reviewed tree
+#   implement-lib.sh review-loop begin [--pr N --head SHA] <state-dir> <token>
+#                                           # reserve a NATIVE pass before its subagent runs
 #   implement-lib.sh review-loop carry [--pr N --head SHA] --severity S --finding T <state-dir>
 #                                           # record one REQUIRED finding pushed unfixed on exhaustion
 #   implement-lib.sh review-loop report [--pr N --head SHA] <state-dir>
@@ -4121,10 +4123,13 @@ _il_default_merge_base() {
   printf '%s\n' "$mb"
 }
 
-# _il_tree_digest <root> <base-commit> — a SHA-256 over the tree that ships relative to
-# <base-commit>: the byte diff from it (committed, staged and unstaged) plus every untracked,
-# non-ignored path with its type, size and content digest. Deterministic across two runs over an
-# unchanged tree; any change to what would ship moves it. Prints the digest. 0 · 20.
+# _il_tree_digest <root> <base-commit> — a SHA-256 over the WORKING TREE relative to <base-commit>:
+# the byte diff of the worktree against it (committed and uncommitted changes as the worktree holds
+# them — the index is not consulted) plus every untracked, non-ignored path with its type, size and
+# content digest. Deterministic across two runs over an unchanged tree. It names what a commit
+# SHIPS only when the worktree is clean, so a caller certifying a shipped tree must also require
+# that (`review-loop` does; `open-pr` refuses a dirty tree before sweep-identity's digest is used).
+# Prints the digest. 0 · 20.
 # Shared by `sweep-identity` (#490) and `review-loop` (#491), so a checklist sweep and a review pass
 # over the same tree name it identically.
 _il_tree_digest() {
@@ -4219,8 +4224,9 @@ _il_tree_digest() {
 #
 # `tree` is a SHA-256 over the reviewed material, and it is built to be deterministic across two
 # runs over an unchanged tree:
-#   * the whole branch diff against the merge-base with the remote default branch — one command,
-#     so staged, unstaged and already-committed changes are all in it;
+#   * the worktree's whole diff against the merge-base with the remote default branch — one
+#     command, so committed and uncommitted changes are all in it as the worktree holds them (the
+#     index is not consulted; `open-pr` refuses a dirty tree, which is what makes this the shipped one);
 #   * every untracked, non-ignored path, with its SIZE and its own content digest.
 # PATHS AND SIZES, not contents alone: two untracked trees holding the same bytes at different
 # names are different trees, and an empty file is a real addition that contributes no content at
@@ -4263,28 +4269,36 @@ cmd_sweep_identity() {
 # and fixing happen between passes and no shell library can invoke the driving agent; this owns what
 # the prose must not re-derive: the pass counter, the budget, the verdict and the per-pass record.
 #
-#   review-loop pass   [--effort E] [--published | --unavailable deferred|none]
-#                      [--pr N --head SHA] <state-dir> [<token>]
+#   review-loop pass   [--effort E] [--pr N --head SHA] <state-dir> <token>       one dispatched pass
+#   review-loop pass   --unavailable deferred|none [--pr N --head SHA] <state-dir> no usable reviewer
+#   review-loop begin  [--pr N --head SHA] <state-dir> <token>     reserve a NATIVE pass, then…
+#   review-loop pass   --published [--pr N --head SHA] <state-dir> <token>   …record its reply
 #   review-loop carry  [--pr N --head SHA] --severity critical|high|medium|low --finding <text> <state-dir>
 #   review-loop report [--pr N --head SHA] <state-dir>
 #
 # THE RECORD is `review-loop.tsv` for an /implement-issue run, or `review-loop-pr<N>-<SHA>.tsv` for
 # one /resolve-pr-threads round, keyed by the pushed head <SHA> the round started from. One row per
-# event, TAB-separated, validated WHOLE by every reader:
-#   start <n> <budget> <tree> <token>             pass n reserved, against the tree it will review
+# event, TAB-separated, validated WHOLE by every reader (and never written past its 1 MiB bound):
+#   start <n> <budget> <tree> <token>             dispatched pass n reserved against its tree
+#   begin <n> <budget> <tree> <token>             native pass n reserved against its tree
 #   done  <n> <tree> <required> <optional> <review-sha256>
 #   fail  <n> <rc|-> dispatch|verdict|moved|missing|unbound|interrupted
 #   off   env|repo|global                         local_passes = 0: nothing dispatched
 #   none  deferred|none                           no usable reviewer: nothing dispatched
 #   carry <n> critical|high|medium|low <finding>
 #
-# A PASS IS BOUND TO A TREE: `_il_tree_digest` before the dispatch and again after, against the
-# default branch's merge-base (or the round head, with --pr). A tree that moved during the pass
-# fails it. Convergence is a `done` pass with required=0 whose tree is the CURRENT tree, so any
-# later edit — an OPTIONAL fix included — invalidates it.
+# A PASS REVIEWS A COMMITTED, BOUND TREE. It refuses a dirty worktree (27): the review reads the
+# worktree and a push ships HEAD, so only a clean tree makes the two the same. Its digest
+# (`_il_tree_digest`, against the default branch's merge-base or the round head) is taken when the
+# pass is reserved and again when it is recorded; a tree that moved in between fails the pass.
+# Convergence is a `done` pass with required=0 whose tree is the current, clean tree, so any later
+# commit — an OPTIONAL fix included — invalidates it. A native pass is reserved by `begin`, which
+# also removes the previous `review.md`: the reply `pass --published` then reads can only have been
+# published for THIS pass.
 #
-# THE BUDGET IS READ LIVE on every call (`role-dispatch.sh local-passes`, built-in 3): raising
-# ADB_LOCAL_REVIEW_PASSES grants passes, lowering it exhausts the loop, and 0 disables it.
+# THE BUDGET IS READ LIVE on every call (`role-dispatch.sh local-passes`, built-in 3). Once any pass
+# exists, a budget of 0 or an unavailable reviewer means EXHAUSTED rather than "disabled": neither
+# can launder a failed final pass or a carried CRITICAL/HIGH into a push.
 #
 # SEVERITY IS THE DRIVER'S TRIAGE, RECORDED. The verdict trailer carries counts only, so `carry`
 # stores the CRITICAL/HIGH/MEDIUM/LOW judgement step 9 already makes, and `report` applies the rule
@@ -4293,50 +4307,56 @@ cmd_sweep_identity() {
 #
 # pass:   0 converged · 34 findings, budget remains: fix, commit, pass again · 33 exhausted: the last
 #         budgeted pass found REQUIRED findings — carry each, then report · 35 disabled, or no usable
-#         reviewer: nothing dispatched, the push proceeds and says so · 36 this pass FAILED, budget
-#         remains: pass again · 37 the last budgeted pass failed: block · 38 refused, the budget is
-#         spent: nothing dispatched · 16 (--pr) HEAD does not descend from the round head · 17
-#         (--published) that reply was already recorded as an earlier pass · 18 the record or the
-#         budget does not parse · 20 unreadable, unwritable, or no tree digest · 2 usage
+#         reviewer: nothing dispatched; `report` decides · 36 this pass FAILED, budget remains: pass
+#         again · 37 the last budgeted pass failed: report (it blocks) · 38 refused, the budget is
+#         spent: nothing dispatched · 27 the worktree is not clean · 16 (--pr) HEAD does not descend
+#         from the round head · 17 (--published) no native pass was begun for this token · 18 the
+#         record or the budget does not parse · 20 unreadable, unwritable, or no tree digest · 2 usage
+# begin:  0 reserved · 35 · 38 · 27 · 16 · 18 · 20 · 2, as pass
 # carry:  0 · 10 this exact row is already recorded · 17 nothing to carry (the loop is not exhausted,
-#         or the final pass's REQUIRED count is already carried) · 18 · 19 a refused field · 20 · 2
+#         or the final pass's REQUIRED count is already carried) · 19 a refused field, or a row that
+#         would take the record past its bound · 18 · 20 · 2
 # report: prints ONE line, rendered from the record. 0 converged on the current tree · 33 exhausted,
 #         every REQUIRED finding carried, none CRITICAL/HIGH: push, and the line names what was
-#         carried · 35 disabled, or no usable reviewer · 34 not terminal: take another pass · 39 BLOCK
-#         (a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass,
-#         or an edit after the final pass) · 11 nothing recorded · 18 · 20 · 2
+#         carried · 35 disabled, or no usable reviewer, before any pass · 34 not terminal: take
+#         another pass · 39 BLOCK (a carried CRITICAL/HIGH, fewer carries than the final pass
+#         declared, a failed final pass, or a commit after the final pass) · 27 the worktree is not
+#         clean · 11 nothing recorded · 16 · 18 · 20 · 2
 _IL_LOOP_MUTEX=".review-loop-mutex"
 _IL_LOOP_MAX_BYTES=1048576
 _IL_LOOP_DEFAULT=3
 _IL_LOOP_FINDING_MAX=300
 
-# _il_loop_budget — `<n> <source>`, the default named as such. 0 · 18.
+# _il_loop_budget — `<n> <source>`, the default named as such. 0 · 18 (declared but unusable) · 20.
 _il_loop_budget() {
   local out rc
   out="$(bash "$_IL_ROLE_DISPATCH" local-passes --with-source)"; rc=$?
   case "$rc" in
     0) printf '%s\n' "$out" ;;
     3) printf '%s default\n' "$_IL_LOOP_DEFAULT" ;;
-    *) return 18 ;;
+    2) return 18 ;;
+    *) return 20 ;;
   esac
+}
+
+_il_loop_reset() {
+  RL_PASSES=0; RL_OPEN=""; RL_OPEN_KIND=""; RL_OPEN_TOKEN=""; RL_LAST=""; RL_NONE=""
+  RL_TREE=(); RL_OUT=(); RL_REQ=(); RL_RC=(); RL_WHY=()
+  RL_CN=(); RL_CSEV=(); RL_CTXT=()
 }
 
 # _il_loop_parse <record> — validate the record whole and load it into the RL_* globals.
 # 0 · 18 (a byte rule, a row outside the grammar, or an event out of order) · 20 (unreadable).
 # Absent is the caller's question, not this function's.
-_il_loop_reset() {
-  RL_PASSES=0; RL_OPEN=""; RL_LAST=""; RL_NONE=""
-  RL_TREE=(); RL_OUT=(); RL_REQ=(); RL_RC=(); RL_WHY=(); RL_RSHA=()
-  RL_CN=(); RL_CSEV=(); RL_CTXT=()
-}
 _il_loop_parse() {
-  local f="$1" line rc n want i c
+  local f="$1" line n want k
+  local -A seen=()
+  local -a ccount=()
   _il_loop_reset
-  adb_bytes_whole "$f" "$_IL_LOOP_MAX_BYTES"; rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
+  adb_bytes_whole "$f" "$_IL_LOOP_MAX_BYTES" || return $?
   while IFS= read -r line; do
     case "$line" in
-      start$'\t'*)
+      start$'\t'*|begin$'\t'*)
         adb_sweep_split "$line" 5 || return 18
         [ -z "$RL_OPEN" ] || return 18
         n="${ADB_SWEEP_F[1]}"; want=$((RL_PASSES + 1))
@@ -4344,8 +4364,8 @@ _il_loop_parse() {
         [[ "${ADB_SWEEP_F[2]}" =~ ^([1-9]|10)$ ]] || return 18
         [[ "${ADB_SWEEP_F[3]}" =~ ^[0-9a-f]{64}$ ]] || return 18
         [[ "${ADB_SWEEP_F[4]}" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || return 18
-        RL_PASSES="$n"; RL_OPEN="$n"; RL_LAST=pass
-        RL_TREE[n]="${ADB_SWEEP_F[3]}" ;;
+        RL_PASSES="$n"; RL_OPEN="$n"; RL_OPEN_KIND="${ADB_SWEEP_F[0]}"; RL_OPEN_TOKEN="${ADB_SWEEP_F[4]}"
+        RL_LAST=pass; RL_TREE[n]="${ADB_SWEEP_F[3]}" ;;
       done$'\t'*)
         adb_sweep_split "$line" 6 || return 18
         [ -n "$RL_OPEN" ] && [ "${ADB_SWEEP_F[1]}" = "$RL_OPEN" ] || return 18
@@ -4354,8 +4374,8 @@ _il_loop_parse() {
         [[ "${ADB_SWEEP_F[3]}" =~ ^(0|[1-9][0-9]{0,3})$ ]] || return 18
         [[ "${ADB_SWEEP_F[4]}" =~ ^(0|[1-9][0-9]{0,3})$ ]] || return 18
         [[ "${ADB_SWEEP_F[5]}" =~ ^[0-9a-f]{64}$ ]] || return 18
-        RL_OUT[n]="done"; RL_REQ[n]="${ADB_SWEEP_F[3]}"; RL_RSHA[n]="${ADB_SWEEP_F[5]}"
-        RL_OPEN="" ;;
+        RL_OUT[n]="done"; RL_REQ[n]="${ADB_SWEEP_F[3]}"
+        RL_OPEN=""; RL_OPEN_KIND="" ;;
       fail$'\t'*)
         adb_sweep_split "$line" 4 || return 18
         [ -n "$RL_OPEN" ] && [ "${ADB_SWEEP_F[1]}" = "$RL_OPEN" ] || return 18
@@ -4363,7 +4383,7 @@ _il_loop_parse() {
         [[ "${ADB_SWEEP_F[2]}" =~ ^(-|0|[1-9][0-9]{0,2})$ ]] || return 18
         case "${ADB_SWEEP_F[3]}" in dispatch|verdict|moved|missing|unbound|interrupted) : ;; *) return 18 ;; esac
         RL_OUT[n]=fail; RL_RC[n]="${ADB_SWEEP_F[2]}"; RL_WHY[n]="${ADB_SWEEP_F[3]}"
-        RL_OPEN="" ;;
+        RL_OPEN=""; RL_OPEN_KIND="" ;;
       off$'\t'*)
         adb_sweep_split "$line" 2 || return 18
         [ -z "$RL_OPEN" ] || return 18
@@ -4378,18 +4398,16 @@ _il_loop_parse() {
         adb_sweep_split "$line" 4 || return 18
         [ -z "$RL_OPEN" ] || return 18
         n="${ADB_SWEEP_F[1]}"
-        # Only against the latest pass, which must be a `done` with REQUIRED findings, and never
-        # more carries than it declared: the reader enforces what `carry` promised to write.
+        # Only against the latest pass, which must be a `done` with REQUIRED findings, never twice,
+        # and never more carries than it declared: the reader enforces what `carry` promised.
         [ "$n" = "$RL_PASSES" ] && [ "${RL_OUT[n]:-}" = "done" ] && [ "${RL_REQ[n]}" -gt 0 ] || return 18
         case "${ADB_SWEEP_F[2]}" in critical|high|medium|low) : ;; *) return 18 ;; esac
         _il_loop_finding_ok "${ADB_SWEEP_F[3]}" || return 18
-        c=0
-        for i in "${!RL_CN[@]}"; do
-          [ "${RL_CN[i]}" = "$n" ] || continue
-          c=$((c + 1))
-          [ "${RL_CSEV[i]}${RL_CTXT[i]}" != "${ADB_SWEEP_F[2]}${ADB_SWEEP_F[3]}" ] || return 18
-        done
-        [ "$c" -lt "${RL_REQ[n]}" ] || return 18
+        k="$n"$'\t'"${ADB_SWEEP_F[2]}"$'\t'"${ADB_SWEEP_F[3]}"
+        [ -z "${seen[$k]:-}" ] || return 18
+        seen[$k]=1
+        ccount[n]=$(( ${ccount[n]:-0} + 1 ))
+        [ "${ccount[n]}" -le "${RL_REQ[n]}" ] || return 18
         RL_CN+=("$n"); RL_CSEV+=("${ADB_SWEEP_F[2]}"); RL_CTXT+=("${ADB_SWEEP_F[3]}") ;;
       *) return 18 ;;
     esac
@@ -4408,9 +4426,24 @@ _il_loop_finding_ok() {
   return 0
 }
 
-# _il_loop_append <record> <row> — one whole line, appended. 0 · 20.
+# _il_loop_append <record> <row> — one whole line, appended, never past the reader's bound.
+# 0 · 19 (the row would take the record past it) · 20.
 _il_loop_append() {
+  local LC_ALL=C sz=0
+  if [ -e "$1" ]; then
+    sz="$(wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 20
+    case "$sz" in ''|*[!0-9]*) return 20 ;; esac
+  fi
+  [ $(( sz + ${#2} + 1 )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19
   printf '%s\n' "$2" >> "$1" 2>/dev/null || return 20
+}
+
+# _il_loop_clean — is the worktree exactly HEAD (nothing staged, unstaged, or untracked and
+# unignored)? 0 clean · 1 dirty · 20 unreadable.
+_il_loop_clean() {
+  local st
+  st="$(git -C "$RL_ROOT" status --porcelain --untracked-files=normal --ignore-submodules=none 2>/dev/null)" || return 20
+  [ -z "$st" ]
 }
 
 # _il_loop_context <dir> <pr> <head> — resolve the record path, the repository root and the tree
@@ -4436,7 +4469,7 @@ _il_loop_context() {
   fi
 }
 
-# _il_loop_opts — the options every review-loop verb shares, plus the verb's own. Sets RL_PR,
+# _il_loop_opts <verb> <args>… — the options every verb shares, plus the verb's own. Sets RL_PR,
 # RL_HEAD, RL_EFFORT, RL_PUBLISHED, RL_UNAVAIL, RL_SEV, RL_FIND and RL_ARGS (the positionals).
 _il_loop_opts() {
   local verb="$1"; shift
@@ -4471,6 +4504,12 @@ _il_loop_opts() {
   fi
 }
 
+# _il_loop_exhausted <budget> — no further pass can be taken: the budget is spent, or it is now 0,
+# or the reviewer is unavailable. Reads the loaded record.
+_il_loop_exhausted() {
+  [ "$1" -eq 0 ] || [ "$RL_LAST" = none ] || [ "$RL_PASSES" -ge "$1" ]
+}
+
 # _il_loop_passes_text — the per-pass half of the rendered line, oldest first.
 _il_loop_passes_text() {
   local n out="" sep="" first=1
@@ -4500,110 +4539,104 @@ _il_loop_carried_text() {
   printf '%s' "$out"
 }
 
-cmd_review_loop_pass() {
-  _il_loop_opts pass "$@"
-  local dir token="" bud bsrc rc n tree1 tree2 drc rfile rsha vout req opt i
+# _il_loop_open <verb> <args>… — the shared preamble of pass and begin: parse the options, resolve
+# the budget and the context, take the lock, load the record, and record a reservation that was
+# never answered as the failure it was. On 0 the lock is HELD and RL_BUD/RL_BSRC/RL_DIR/RL_TOKEN are
+# set; on any other status it has been released.
+_il_loop_open() {
+  local verb="$1" rc keep_open=0; shift
+  _il_loop_opts "$verb" "$@"
+  RL_TOKEN=""
   case "${#RL_ARGS[@]}" in
-    1) [ -n "$RL_UNAVAIL" ] || { echo "implement-lib: review-loop pass needs <state-dir> <token> (or --unavailable <rung> <state-dir>)" >&2; exit 2; } ;;
+    1) [ -n "$RL_UNAVAIL" ] || { echo "implement-lib: review-loop $verb needs <state-dir> <token>" >&2; exit 2; } ;;
     2) [ -z "$RL_UNAVAIL" ] || { echo "implement-lib: review-loop pass --unavailable takes no token" >&2; exit 2; }
-       token="${RL_ARGS[1]}"
-       [[ "$token" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "implement-lib: review-loop pass: '$token' is not an agent token" >&2; exit 2; } ;;
-    *) echo "implement-lib: review-loop pass needs <state-dir> <token>" >&2; exit 2 ;;
+       RL_TOKEN="${RL_ARGS[1]}"
+       [[ "$RL_TOKEN" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "implement-lib: review-loop $verb: '$RL_TOKEN' is not an agent token" >&2; exit 2; } ;;
+    *) echo "implement-lib: review-loop $verb needs <state-dir> <token>" >&2; exit 2 ;;
   esac
   [ -z "$RL_UNAVAIL" ] || [ "$RL_PUBLISHED" -eq 0 ] || { echo "implement-lib: review-loop pass: --published and --unavailable exclude each other" >&2; exit 2; }
-  dir="${RL_ARGS[0]}"
-  [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
-  bud="$(_il_loop_budget)" || return 18
-  bsrc="${bud#* }"; bud="${bud%% *}"
-  _il_loop_context "$dir" "$RL_PR" "$RL_HEAD" || return $?
-
-  # THE LOCK SPANS THE DECISION AND THE RESERVATION — budget check, then the `start` row. It is not
-  # held across the dispatch (minutes), so the result is appended under a second take that re-checks
-  # the pass it reserved is still the open one.
-  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
+  RL_DIR="${RL_ARGS[0]}"
+  [ -d "$RL_DIR" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$RL_DIR" >&2; return 20; }
+  RL_BUD="$(_il_loop_budget)" || return $?
+  RL_BSRC="${RL_BUD#* }"; RL_BUD="${RL_BUD%% *}"
+  _il_loop_context "$RL_DIR" "$RL_PR" "$RL_HEAD" || return $?
+  # THE LOCK SPANS THE DECISION AND THE RESERVATION. It is not held across a dispatch (minutes), so
+  # the result is appended under a second take that re-checks the pass it reserved is still open.
+  _il_claim_mutex_take "$RL_DIR" "$_IL_LOOP_MUTEX" \
     || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
   if [ -e "$RL_REC" ] || [ -L "$RL_REC" ]; then
     _il_loop_parse "$RL_REC"; rc=$?
     if [ "$rc" -ne 0 ]; then
-      _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+      _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
       printf 'implement-lib: review-loop: the record %s does not parse (rc %s) — refused whole\n' "$RL_REC" "$rc" >&2
       return "$rc"
     fi
   else
     _il_loop_reset
   fi
-  # A pass that was reserved and never answered was killed mid-dispatch. It spent its place in the
-  # budget, and it is recorded as the failure it was rather than left open.
-  if [ -n "$RL_OPEN" ]; then
+  # `pass --published` completes the native pass `begin` reserved, so that one open row is expected.
+  [ "$RL_PUBLISHED" -eq 1 ] && [ "$RL_OPEN_KIND" = begin ] && keep_open=1
+  if [ -n "$RL_OPEN" ] && [ "$keep_open" -eq 0 ]; then
     _il_loop_append "$RL_REC" "fail"$'\t'"$RL_OPEN"$'\t'"-"$'\t'"interrupted" \
-      || { _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"; echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
-    RL_OUT[RL_OPEN]=fail; RL_WHY[RL_OPEN]=interrupted; RL_RC[RL_OPEN]="-"; RL_OPEN=""
+      || { _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"; echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
+    RL_OUT[RL_OPEN]=fail; RL_WHY[RL_OPEN]=interrupted; RL_RC[RL_OPEN]="-"; RL_OPEN=""; RL_OPEN_KIND=""
   fi
-  if [ -n "$RL_UNAVAIL" ]; then
-    _il_loop_append "$RL_REC" "none"$'\t'"$RL_UNAVAIL"; rc=$?
-    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-    [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
-    printf 'local review: no usable reviewer (rung %s) — nothing dispatched; the push proceeds and must say so\n' "$RL_UNAVAIL"
-    return 35
-  fi
-  if [ "$bud" -eq 0 ]; then
+  return 0
+}
+
+# _il_loop_reserve <kind> — under the held lock: the disabled, spent-budget and clean-tree
+# refusals, then the `start`/`begin` row. Releases the lock on every path. Sets RL_N and RL_T1.
+_il_loop_reserve() {
+  local kind="$1" rc
+  if [ "$RL_BUD" -eq 0 ]; then
     # `0` can only be DECLARED (the built-in is 3), so its source is always env, repo or global.
-    _il_loop_append "$RL_REC" "off"$'\t'"$bsrc"; rc=$?
-    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    _il_loop_append "$RL_REC" "off"$'\t'"$RL_BSRC"; rc=$?
+    _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
     [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
-    printf 'local review: disabled (local_passes = 0, from %s) — nothing dispatched\n' "$bsrc"
+    printf 'local review: disabled (local_passes = 0, from %s) — nothing dispatched; report decides\n' "$RL_BSRC"
     return 35
   fi
-  if [ "$RL_PASSES" -ge "$bud" ]; then
-    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-    printf 'local review: refused — %s of %s budgeted passes already taken (local_passes from %s); nothing dispatched\n' "$RL_PASSES" "$bud" "$bsrc"
+  if [ "$RL_PASSES" -ge "$RL_BUD" ]; then
+    _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+    printf 'local review: refused — %s of %s budgeted passes already taken (local_passes from %s); nothing dispatched\n' "$RL_PASSES" "$RL_BUD" "$RL_BSRC"
     return 38
   fi
-  n=$((RL_PASSES + 1))
-  rfile="$dir/review.md"
-  # A PUBLISHED reply is recorded only once: the native path produces review.md outside this
-  # command, and a pass that re-read the previous pass's file would record a verdict nobody gave.
-  if [ "$RL_PUBLISHED" -eq 1 ] && [ -f "$rfile" ] && [ ! -L "$rfile" ]; then
-    rsha="$(adb_sha256 "$rfile")" || rsha=""
-    for (( i = 1; i < n; i++ )); do
-      if [ -n "$rsha" ] && [ "${RL_RSHA[i]:-}" = "$rsha" ]; then
-        _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-        printf 'implement-lib: review-loop: %s is the reply already recorded as pass %s — publish THIS pass'"'"'s reply (publish-review), then re-run\n' "$rfile" "$i" >&2
-        return 17
-      fi
-    done
+  _il_loop_clean; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+    [ "$rc" -eq 1 ] || { echo "implement-lib: review-loop: could not read the worktree's status" >&2; return 20; }
+    echo "implement-lib: review-loop: the worktree is not clean — commit it (or gitignore it) first; a pass reviews the tree a push will ship, and that is HEAD" >&2
+    return 27
   fi
-  tree1="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" \
-    || { _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"; echo "implement-lib: review-loop: could not digest the tree this pass would review" >&2; return 20; }
-  _il_loop_append "$RL_REC" "start"$'\t'"$n"$'\t'"$bud"$'\t'"$tree1"$'\t'"$token"; rc=$?
-  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-  [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
-
-  local row="" why="" frc="-"
-  if [ "$RL_PUBLISHED" -eq 1 ]; then
-    drc=0
-    { [ -f "$rfile" ] && [ ! -L "$rfile" ]; } || { drc=1; why=missing; }
-  else
-    if [ -n "$RL_PR" ]; then
-      bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} \
-        --criteria-from-pr "$RL_PR" --local-head "$dir" "$token"
-    else
-      bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} "$dir" "$token"
+  RL_N=$((RL_PASSES + 1))
+  RL_T1="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" \
+    || { _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"; echo "implement-lib: review-loop: could not digest the tree this pass would review" >&2; return 20; }
+  if [ "$kind" = begin ]; then
+    # THE REPLY IS BOUND TO THIS PASS by removing the previous one: whatever `review.md` holds when
+    # `pass --published` reads it was published after this reservation.
+    rm -rf "$RL_DIR/review.md" 2>/dev/null
+    if [ -e "$RL_DIR/review.md" ] || [ -L "$RL_DIR/review.md" ]; then
+      _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+      echo "implement-lib: review-loop: could not remove the previous review.md, so a later reply could not be bound to this pass" >&2
+      return 20
     fi
-    drc=$?
-    case "$drc" in
-      0)  : ;;
-      28) why=verdict; frc=28 ;;
-      *)  why=dispatch; frc="$drc"; [ "${#frc}" -le 3 ] || frc=999 ;;
-    esac
   fi
-  if [ "$drc" -eq 0 ]; then
+  _il_loop_append "$RL_REC" "$kind"$'\t'"$RL_N"$'\t'"$RL_BUD"$'\t'"$RL_T1"$'\t'"$RL_TOKEN"; rc=$?
+  _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+  [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
+  return 0
+}
+
+# _il_loop_finish <n> <tree1> <why> — read the reply for pass n (unless <why> already failed it),
+# append its `done`/`fail` row, print the pass line and return the pass code.
+_il_loop_finish() {
+  local n="$1" tree1="$2" why="$3" frc="${4:--}" rfile="$RL_DIR/review.md" tree2 row="" rc vout req opt rsha _vfd=""
+  if [ -z "$why" ]; then
     tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || { tree2=""; why=unbound; }
     if [ -n "$tree2" ] && [ "$tree2" != "$tree1" ]; then why=moved; fi
   fi
   if [ -z "$why" ]; then
     # Read by a HELD descriptor, the name bracketed on both sides, as read-artifact reads.
-    local _vfd=""
     if { exec {_vfd}<"$rfile"; } 2>/dev/null && _il_same_inode "$rfile" "$_vfd"; then
       vout="$(_il_verdict_read "$rfile")"; rc=$?
       rsha="$(adb_sha256 "$rfile")" || rsha=""
@@ -4621,36 +4654,81 @@ cmd_review_loop_pass() {
     fi
   fi
   [ -n "$row" ] || row="fail"$'\t'"$n"$'\t'"$frc"$'\t'"$why"
-
-  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
+  _il_claim_mutex_take "$RL_DIR" "$_IL_LOOP_MUTEX" \
     || { echo "implement-lib: review-loop: could not take the loop's lock to record pass $n" >&2; return 20; }
   if ! _il_loop_parse "$RL_REC" || [ "$RL_OPEN" != "$n" ]; then
-    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
     printf 'implement-lib: review-loop: the record changed underneath pass %s — its result is NOT recorded\n' "$n" >&2
     return 20
   fi
   _il_loop_append "$RL_REC" "$row"; rc=$?
-  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+  _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
   [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
-
   if [ "${row%%$'\t'*}" = "done" ]; then
     if [ "$req" -eq 0 ]; then
-      printf 'local review: pass %s/%s -> 0 REQUIRED (%s OPTIONAL) — converged on this tree\n' "$n" "$bud" "$opt"
+      printf 'local review: pass %s/%s -> 0 REQUIRED (%s OPTIONAL) — converged on this tree\n' "$n" "$RL_BUD" "$opt"
       return 0
     fi
-    if [ "$n" -lt "$bud" ]; then
-      printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — fix, commit, and take pass %s\n' "$n" "$bud" "$req" "$opt" "$((n + 1))"
+    if [ "$n" -lt "$RL_BUD" ]; then
+      printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — fix, commit, and take pass %s\n' "$n" "$RL_BUD" "$req" "$opt" "$((n + 1))"
       return 34
     fi
-    printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — the budget is spent: carry each REQUIRED finding, then report\n' "$n" "$bud" "$req" "$opt"
+    printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — the budget is spent: carry each REQUIRED finding, then report\n' "$n" "$RL_BUD" "$req" "$opt"
     return 33
   fi
-  if [ "$n" -lt "$bud" ]; then
-    printf 'local review: pass %s/%s -> FAILED (%s) — a failed pass is never clean; take pass %s\n' "$n" "$bud" "$why" "$((n + 1))"
+  if [ "$n" -lt "$RL_BUD" ]; then
+    printf 'local review: pass %s/%s -> FAILED (%s) — a failed pass is never clean; take pass %s\n' "$n" "$RL_BUD" "$why" "$((n + 1))"
     return 36
   fi
-  printf 'local review: pass %s/%s -> FAILED (%s) — the last budgeted pass failed, so what remains is unknown: block\n' "$n" "$bud" "$why"
+  printf 'local review: pass %s/%s -> FAILED (%s) — the last budgeted pass failed, so what remains is unknown: report\n' "$n" "$RL_BUD" "$why"
   return 37
+}
+
+cmd_review_loop_begin() {
+  local rc
+  _il_loop_open begin "$@" || return $?
+  _il_loop_reserve begin; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf 'local review: pass %s/%s reserved for a native review — dispatch-review --prompt-only, the subagent, publish-review, then review-loop pass --published\n' "$RL_N" "$RL_BUD"
+  return 0
+}
+
+cmd_review_loop_pass() {
+  local rc drc why="" frc="-" n tree1
+  _il_loop_open pass "$@" || return $?
+  if [ -n "$RL_UNAVAIL" ]; then
+    _il_loop_append "$RL_REC" "none"$'\t'"$RL_UNAVAIL"; rc=$?
+    _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+    [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
+    printf 'local review: no usable reviewer (rung %s) — nothing dispatched; report decides\n' "$RL_UNAVAIL"
+    return 35
+  fi
+  if [ "$RL_PUBLISHED" -eq 1 ]; then
+    if [ "$RL_OPEN_KIND" != begin ] || [ "$RL_OPEN_TOKEN" != "$RL_TOKEN" ]; then
+      _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+      printf 'implement-lib: review-loop: no native pass was begun for %s — run review-loop begin before dispatching the subagent\n' "$RL_TOKEN" >&2
+      return 17
+    fi
+    n="$RL_OPEN"; tree1="${RL_TREE[n]}"
+    _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+    { [ -f "$RL_DIR/review.md" ] && [ ! -L "$RL_DIR/review.md" ]; } || why=missing
+    _il_loop_finish "$n" "$tree1" "$why"
+    return $?
+  fi
+  _il_loop_reserve start || return $?
+  if [ -n "$RL_PR" ]; then
+    bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} \
+      --criteria-from-pr "$RL_PR" --local-head "$RL_DIR" "$RL_TOKEN"
+  else
+    bash "${BASH_SOURCE[0]}" dispatch-review ${RL_EFFORT:+--effort "$RL_EFFORT"} "$RL_DIR" "$RL_TOKEN"
+  fi
+  drc=$?
+  case "$drc" in
+    0)  : ;;
+    28) why=verdict; frc=28 ;;
+    *)  why=dispatch; frc="$drc"; [ "${#frc}" -le 3 ] || frc=999 ;;
+  esac
+  _il_loop_finish "$RL_N" "$RL_T1" "$why" "$frc"
 }
 
 cmd_review_loop_carry() {
@@ -4664,7 +4742,7 @@ cmd_review_loop_carry() {
     || { printf 'implement-lib: review-loop carry: --finding must be 1-%s bytes with no control character\n' "$_IL_LOOP_FINDING_MAX" >&2; return 19; }
   dir="${RL_ARGS[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
-  bud="$(_il_loop_budget)" || return 18
+  bud="$(_il_loop_budget)" || return $?
   bud="${bud%% *}"
   if [ -n "$RL_PR" ]; then RL_REC="$dir/review-loop-pr${RL_PR}-${RL_HEAD}.tsv"; else RL_REC="$dir/review-loop.tsv"; fi
   [ -f "$RL_REC" ] || { echo "implement-lib: review-loop carry: no loop is recorded, so nothing is exhausted" >&2; return 17; }
@@ -4677,9 +4755,9 @@ cmd_review_loop_carry() {
     return "$rc"
   fi
   L="$RL_PASSES"
-  if [ "$L" -eq 0 ] || [ "${RL_OUT[L]:-}" != "done" ] || [ "${RL_REQ[L]}" -eq 0 ] || [ "$L" -lt "$bud" ]; then
+  if [ "$L" -eq 0 ] || [ -n "$RL_OPEN" ] || [ "${RL_OUT[L]:-}" != "done" ] || [ "${RL_REQ[L]}" -eq 0 ] || ! _il_loop_exhausted "$bud"; then
     _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-    echo "implement-lib: review-loop carry: nothing to carry — the last pass did not spend the budget with REQUIRED findings" >&2
+    echo "implement-lib: review-loop carry: nothing to carry — the loop is not exhausted with REQUIRED findings on its last pass" >&2
     return 17
   fi
   for i in "${!RL_CN[@]}"; do
@@ -4698,21 +4776,24 @@ cmd_review_loop_carry() {
   fi
   _il_loop_append "$RL_REC" "carry"$'\t'"$L"$'\t'"$RL_SEV"$'\t'"$RL_FIND"; rc=$?
   _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-  [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
+  case "$rc" in
+    0)  : ;;
+    19) printf 'implement-lib: review-loop carry: this row would take %s past its %s-byte bound — refused rather than written unreadable\n' "$RL_REC" "$_IL_LOOP_MAX_BYTES" >&2; return 19 ;;
+    *)  echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20 ;;
+  esac
   printf 'local review: carried %s of %s from pass %s — %s\n' "$((c + 1))" "${RL_REQ[L]}" "$L" "$RL_SEV"
   return 0
 }
 
 cmd_review_loop_report() {
   _il_loop_opts report "$@"
-  local dir bud bsrc rc L cur passes i c=0 hard=0
+  local dir bud bsrc rc L cur passes after="" i c=0 hard=0
   [ "${#RL_ARGS[@]}" -eq 1 ] || { echo "implement-lib: review-loop report needs <state-dir>" >&2; exit 2; }
   dir="${RL_ARGS[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
-  bud="$(_il_loop_budget)" || return 18
+  bud="$(_il_loop_budget)" || return $?
   bsrc="${bud#* }"; bud="${bud%% *}"
-  _il_loop_context "$dir" "$RL_PR" "$RL_HEAD"; rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
+  _il_loop_context "$dir" "$RL_PR" "$RL_HEAD" || return $?
   if [ ! -e "$RL_REC" ] && [ ! -L "$RL_REC" ]; then
     echo "local review: nothing recorded — the loop never ran"
     return 11
@@ -4726,46 +4807,48 @@ cmd_review_loop_report() {
     return "$rc"
   fi
   passes="$(_il_loop_passes_text)"
-  if [ "$bud" -eq 0 ]; then
-    printf 'local review: %sdisabled (local_passes = 0, from %s)\n' "${passes:+$passes · then }" "$bsrc"
-    return 35
-  fi
-  if [ "$RL_LAST" = none ]; then
-    printf 'local review: %sno usable reviewer (rung %s) — nothing dispatched\n' "${passes:+$passes · then }" "$RL_NONE"
-    return 35
-  fi
   L="$RL_PASSES"
   if [ "$L" -eq 0 ]; then
+    if [ "$bud" -eq 0 ]; then printf 'local review: disabled (local_passes = 0, from %s)\n' "$bsrc"; return 35; fi
+    if [ "$RL_LAST" = none ]; then printf 'local review: no usable reviewer (rung %s) — nothing dispatched\n' "$RL_NONE"; return 35; fi
     printf 'local review: no pass taken yet under a budget of %s (local_passes from %s) — take a pass\n' "$bud" "$bsrc"
     return 34
   fi
-  if [ "${RL_OUT[L]:-}" != "done" ]; then
-    if [ "$L" -lt "$bud" ]; then
+  # After a pass, disabling the loop or losing the reviewer EXHAUSTS it rather than excusing it.
+  if [ "$bud" -eq 0 ]; then after=" (then disabled)"; elif [ "$RL_LAST" = none ]; then after=" (then no usable reviewer)"; fi
+  if [ -n "$RL_OPEN" ] || [ "${RL_OUT[L]:-}" != "done" ]; then
+    if ! _il_loop_exhausted "$bud"; then
       printf 'local review: %s — not converged; take pass %s\n' "$passes" "$((L + 1))"
       return 34
     fi
-    printf 'local review: %s — BLOCKED: the final budgeted pass failed, so what remains is unknown\n' "$passes"; return 39
+    printf 'local review: %s%s — BLOCKED: the final pass failed or never finished, so what remains is unknown\n' "$passes" "$after"; return 39
+  fi
+  rc=0; _il_loop_clean || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ "$rc" -eq 1 ] || { echo "implement-lib: review-loop: could not read the worktree's status" >&2; return 20; }
+    printf 'local review: %s — the worktree is not clean, so the tree a push would ship is not the one reviewed; commit it, then take another pass\n' "$passes"
+    return 27
   fi
   cur="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" \
     || { echo "implement-lib: review-loop: could not digest the current tree" >&2; return 20; }
   if [ "${RL_REQ[L]}" -eq 0 ]; then
     if [ "$cur" = "${RL_TREE[L]}" ]; then
-      printf 'local review: %s, converged\n' "$passes"
+      printf 'local review: %s, converged%s\n' "$passes" "$after"
       return 0
     fi
-    if [ "$L" -lt "$bud" ]; then
-      printf 'local review: %s, converged on an earlier tree — edited since; take pass %s\n' "$passes" "$((L + 1))"
+    if ! _il_loop_exhausted "$bud"; then
+      printf 'local review: %s, converged on an earlier tree — committed since; take pass %s\n' "$passes" "$((L + 1))"
       return 34
     fi
-    printf 'local review: %s — BLOCKED: converged, then edited after the final budgeted pass\n' "$passes"
+    printf 'local review: %s%s — BLOCKED: converged, then committed after the final pass\n' "$passes" "$after"
     return 39
   fi
-  if [ "$L" -lt "$bud" ]; then
+  if ! _il_loop_exhausted "$bud"; then
     printf 'local review: %s — not converged; fix, commit, and take pass %s\n' "$passes" "$((L + 1))"
     return 34
   fi
   if [ "$cur" != "${RL_TREE[L]}" ]; then
-    printf 'local review: %s — BLOCKED: edited after the final budgeted pass, so the pushed tree is not the reviewed one\n' "$passes"
+    printf 'local review: %s%s — BLOCKED: committed after the final pass, so the pushed tree is not the reviewed one\n' "$passes" "$after"
     return 39
   fi
   for i in "${!RL_CN[@]}"; do
@@ -4774,14 +4857,14 @@ cmd_review_loop_report() {
     case "${RL_CSEV[i]}" in critical|high) hard=$((hard + 1)) ;; esac
   done
   if [ "$c" -lt "${RL_REQ[L]}" ]; then
-    printf 'local review: %s — BLOCKED: exhausted with %s REQUIRED finding(s), %s carried\n' "$passes" "${RL_REQ[L]}" "$c"
+    printf 'local review: %s%s — BLOCKED: exhausted with %s REQUIRED finding(s), %s carried\n' "$passes" "$after" "${RL_REQ[L]}" "$c"
     return 39
   fi
   if [ "$hard" -gt 0 ]; then
-    printf 'local review: %s, exhausted — BLOCKED: %s carried CRITICAL/HIGH finding(s) (%s)\n' "$passes" "$hard" "$(_il_loop_carried_text)"
+    printf 'local review: %s%s, exhausted — BLOCKED: %s carried CRITICAL/HIGH finding(s) (%s)\n' "$passes" "$after" "$hard" "$(_il_loop_carried_text)"
     return 39
   fi
-  printf 'local review: %s, exhausted — carried: %s (%s)\n' "$passes" "$c" "$(_il_loop_carried_text)"
+  printf 'local review: %s%s, exhausted — carried: %s (%s)\n' "$passes" "$after" "$c" "$(_il_loop_carried_text)"
   return 33
 }
 
@@ -4790,9 +4873,10 @@ cmd_review_loop() {
   [ "$#" -ge 1 ] && shift
   case "$verb" in
     pass)   cmd_review_loop_pass "$@" ;;
+    begin)  cmd_review_loop_begin "$@" ;;
     carry)  cmd_review_loop_carry "$@" ;;
     report) cmd_review_loop_report "$@" ;;
-    *) echo "implement-lib: review-loop needs a verb: pass | carry | report" >&2; exit 2 ;;
+    *) echo "implement-lib: review-loop needs a verb: pass | begin | carry | report" >&2; exit 2 ;;
   esac
 }
 

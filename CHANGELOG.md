@@ -18,9 +18,9 @@ only by a published release, which is what these entries are the notes for.
   REQUIRED findings on the tree that will ship or `[reviewers] local_passes` passes are spent
   (default 3, `0` disables, `ADB_LOCAL_REVIEW_PASSES` overrides for one run).
 
-  Every pass is bound to a digest of the reviewed tree, so an edit after a clean pass — an
-  OPTIONAL fix included — invalidates it. A failed pass counts against the budget and is never
-  clean. On exhaustion, `review-loop carry` records each remaining REQUIRED finding with the
+  Every pass reviews a committed, clean tree and is bound to its digest, so a commit after a clean
+  pass — an OPTIONAL fix included — invalidates it. A failed pass counts against the budget and is
+  never clean, and disabling the loop after a pass exhausts it rather than excusing it. On exhaustion, `review-loop carry` records each remaining REQUIRED finding with the
   severity triage gives it, and `review-loop report` renders the one line that goes in the PR body
   (`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`). It blocks a push
   that carries a CRITICAL/HIGH finding, carries fewer findings than the final pass declared, follows
