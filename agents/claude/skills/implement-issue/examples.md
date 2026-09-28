@@ -57,6 +57,8 @@ Rung: <independent <agent> | same-model (not independent) | deferred to <logins>
 | # | Finding | Severity | Disposition |
 |---|---|---|---|
 | … | … | … | … |
+Local review: <the line from bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report .claude/state, verbatim — e.g.
+`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`>
 
 ## Docs consulted
 <the rendered block from bash "$HOME/.claude/scripts/lib/docs-lib.sh" report --state .claude/state>

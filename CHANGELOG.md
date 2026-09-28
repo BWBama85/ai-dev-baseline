@@ -10,6 +10,24 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **Fix code is reviewed before it is pushed (#491).** `/implement-issue` reviewed a diff once and
+  pushed step 9's fixes unread; `/resolve-pr-threads` sent each round's fixes straight to the async
+  reviewer, roughly 80 minutes a sample. Both now run a local convergence loop first:
+  `implement-lib.sh review-loop pass` takes one bounded review of the fix code by the reviewer
+  `review-rung` names, the workflow fixes between passes, and the loop ends when a pass finds zero
+  REQUIRED findings on the tree that will ship or `[reviewers] local_passes` passes are spent
+  (default 3, `0` disables, `ADB_LOCAL_REVIEW_PASSES` overrides for one run).
+
+  Every pass is bound to a digest of the reviewed tree, so an edit after a clean pass — an
+  OPTIONAL fix included — invalidates it. A failed pass counts against the budget and is never
+  clean. On exhaustion, `review-loop carry` records each remaining REQUIRED finding with the
+  severity triage gives it, and `review-loop report` renders the one line that goes in the PR body
+  (`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`). It blocks a push
+  that carries a CRITICAL/HIGH finding, carries fewer findings than the final pass declared, follows
+  a failed final pass, or includes an edit made after it. The resolver now pushes once per round,
+  after the loop, and `dispatch-review --local-head` lets it review commits that sit ahead of the
+  PR head.
+
 - **The learned-checklist sweep is a record, not a sentence (#490).** `self-review.md` asks a run
   to sweep the promoted checklist and name what it swept; that was prose in a pull-request body
   with no file behind it, so a real sweep and a plausible sentence read the same. `pattern-ledger.sh`

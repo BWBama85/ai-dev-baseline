@@ -324,13 +324,14 @@ case "$DRC" in
 esac
 ```
 
-**A promotion pushed here moves the head, and the clean pass was for the head BEFORE it.** Step
-4c's form commits the rule and pushes it, so after a `0` from `due` the pull request's head is a
+**A promotion pushed here moves the head, and the clean pass was for the head BEFORE it.** Set
+`SWEEP_HEAD="$(git rev-parse HEAD)"` first; step 4c's form then commits the rule and step 4d reviews
+and pushes it, so after a `0` from `due` the pull request's head is a
 SHA no reviewer has looked at — and the rule it carries is an operative instruction that
 `/implement-issue` injects into agent prompts, which is exactly the content review exists for.
 Reporting "reviewed clean" over that head would state a status nobody observed
 (`base/practices/verify-before-asserting.md`). So a promotion here is a pushed change like any
-other: set `LAST_SHA` to the ledger commit, run step 7's re-review request, and return to the wait
+other: 4d's push sets `LAST_SHA`, then run step 7's re-review request and return to the wait
 in 0b; under `--once`, request and exit, saying that the clean pass was for the previous head. Only
 a round in which `due` returned `11` — nothing written, nothing pushed — exits on the clean
 verdict. Reported by the declared reviewer on PR #429.
@@ -640,7 +641,7 @@ reviews the wrong diff.
 (16) unless the PR is OPEN and the checkout's HEAD *is* its head commit, so a review is never
 attributed to a commit it did not read. That is the same predicate `dispatch-sweep` applies two
 steps down, and it means this cannot review a fix diff you have committed but not pushed — that is
-the local convergence loop's job (#491), deliberately not this one's.
+4d's local convergence loop (#491), deliberately not this one's.
 
 **Then read what it found — `dispatch-review` prints only a status and a path.** Read the reply
 through the validating reader, exactly as `/implement-issue` step 9 does, and never by opening
@@ -757,12 +758,8 @@ invocation from then on (`code-comments.md`, #432).
 
 Bundle multiple fixes from the same review into one commit if they're tightly related; otherwise keep them separate so the audit trail per-thread is clean.
 
-After all fixes are committed, push once:
-
-```bash
-git push origin "$PR_BRANCH"
-LAST_SHA=$(git rev-parse --short HEAD)
-```
+**Do not push yet.** 4b records and 4c commits the ledger on top of these fixes, and 4d reviews the
+whole round locally and then pushes it once.
 
 #### 4b. Record what each fix taught this project (#421)
 
@@ -950,31 +947,70 @@ if git diff --cached --quiet -- .ai-dev-baseline/patterns.md; then
   echo "ledger unchanged this round (every hit was already recorded) — nothing to commit"
 else
   git commit -m "chore: record review-finding classes from PR #$PR_NUM"
-  # THE PUSH IS REQUIRED, NOT ATTEMPTED. Unguarded, a push that failed — a network error, a
-  # permission, a non-fast-forward — fell through to step 5, which resolved the threads while
-  # their records existed only in this checkout's local commit; a later resolver never enumerates
-  # a resolved thread, so a discarded or reset checkout then lost the history, and any promotion
-  # it earned, for good. The local commit is still here: push it by hand and re-run — `record` is
-  # idempotent and the commit above is guarded, so the re-run reaches step 5 cleanly.
-  # Reported by the declared reviewer on PR #429.
-  git push origin "$PR_BRANCH" || {
-    echo "STOP: could not push the ledger commit — its records exist only locally."
-    echo "      Resolving now would erase them from every future run; push by hand, then re-run."
-    # run step 8 (restore the starting branch) FIRST, then:
-    exit 1
-  }
-  # A LEDGER PUSH MOVES THE HEAD, so it is a pushed change like a fix. A round whose legitimate
-  # findings were all already addressed by earlier commits makes NO fix commit, so step 4 never
-  # set `LAST_SHA` — and step 7 then took its empty-`LAST_SHA` exit and requested no re-review,
-  # leaving the new head unreviewed. Set it here from the ledger commit, so step 7 asks.
-  # Reported by the declared reviewer on PR #429.
-  LAST_SHA="$(git rev-parse --short=7 HEAD)"
 fi
 ```
+
+**Not pushed here.** 4d reviews this commit with the round's fixes and pushes them together, before
+step 5 resolves anything — so the records still reach the remote before any thread closes.
 
 **Do NOT fold this into the fix commit.** `--fix` names that commit's hash, so the ledger entry
 must land after it — and keeping them separate also keeps a reviewer's `git show` of the fix free
 of bookkeeping.
+
+#### 4d. Review the round locally, then push once (#491)
+
+**Everything this round committed — the fixes and the ledger — is reviewed here before any of it is
+pushed**, by the same bounded one-pass loop `/implement-issue` step 9 runs. The async reviewer stays
+the last sample rather than the first: a round's fix diff used to go straight to it, at roughly 80
+minutes a sample. The record is keyed by the head the round started from (`$SWEEP_HEAD`, 4a), so
+every round has a fresh budget (`[reviewers] local_passes`, default 3; `0` disables).
+
+```bash
+LOOP_LINE="local review: this round changed nothing — no pass, no push"
+if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
+  RUNG="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" review-rung claude)"
+  REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
+  EFFORT="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+  case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+  case "$RUNG" in
+    independent*|same-model*)
+      bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass --pr "$PR_NUM" --head "$SWEEP_HEAD" ${EFFORT:+--effort "$EFFORT"} .claude/state "$REVIEW_TOKEN" ;;
+    deferred*|none*)
+      bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass --unavailable "${RUNG%% *}" --pr "$PR_NUM" --head "$SWEEP_HEAD" .claude/state ;;
+    *) echo "STOP: the review rung is unknown (${RUNG:-none}) — fix agents.toml"; exit 1 ;;
+  esac
+fi
+```
+
+Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
+(`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `33` carry each REQUIRED
+finding, then report · `35` · `37`/`38` report. `carry` and `report` take the same
+`--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
+**not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
+
+```bash
+if [ "$(git rev-parse HEAD)" != "$SWEEP_HEAD" ]; then
+  LOOP_LINE="$(bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .claude/state)"; LRC=$?
+  case "$LRC" in
+    0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable
+    34) echo "the loop is not finished — take another pass"; exit 1 ;;
+    # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
+    *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
+        # run step 8 (restore the starting branch) FIRST, then:
+        exit 1 ;;
+  esac
+  # THE PUSH IS REQUIRED, NOT ATTEMPTED: step 5 must never resolve a thread whose fix, or whose
+  # ledger record, exists only in this checkout. On failure push by hand and re-run — `record` is
+  # idempotent and the ledger commit is guarded, so the re-run reaches step 5 cleanly.
+  git push origin "$PR_BRANCH" || {
+    echo "STOP: could not push this round's commits — the fixes and ledger records exist only locally."
+    echo "      Resolving now would erase the records from every future run; push by hand, then re-run."
+    # run step 8 (restore the starting branch) FIRST, then:
+    exit 1
+  }
+  LAST_SHA="$(git rev-parse --short=7 HEAD)"
+fi
+```
 
 ### 5. Reply + resolve each thread
 
@@ -1147,6 +1183,8 @@ ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUN
 SWEEP_LINE="$(bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-report "$SWEEP_FILE" 2>/dev/null)" \
   || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
 ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"$'\n'
+# The round's local review line, rendered by 4d from its record before the push (#491).
+ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"$'\n'
 fi
 ```
 

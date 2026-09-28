@@ -1310,9 +1310,12 @@ has "$RESTXT" 'A promotion pushed here moves the head' \
 has "$RESTXT" '{{PATTERN_LEDGER_LIB}} reclaim' "step 1 reclaims an abandoned ledger lock"
 eq "$(( $(grep -n '{{PATTERN_LEDGER_LIB}} reclaim' "$RES" | head -1 | cut -d: -f1) < $(grep -n 'working tree dirty' "$RES" | head -1 | cut -d: -f1) ))" 1 \
    "…BEFORE the dirty-tree guard, which would otherwise refuse the lock as dirt"
-# THE LEDGER PUSH IS REQUIRED AND IS A HEAD MOVE (PR #429).
-has "$RESTXT" 'STOP: could not push the ledger commit' "a failed ledger push stops the round before any thread is resolved"
-has "$RESTXT" 'A LEDGER PUSH MOVES THE HEAD' "…and a successful one sets LAST_SHA so step 7 asks for a re-review"
+# THE LEDGER PUSH IS REQUIRED AND IS A HEAD MOVE (PR #429) — since #491 it is the round's ONE push,
+# in 4d, carrying the fixes and the ledger commit together.
+has "$RESTXT" "STOP: could not push this round's commits — the fixes and ledger records exist only locally" \
+   "a failed round push stops the round before any thread is resolved — the ledger records included"
+has "$RESTXT" 'LAST_SHA="$(git rev-parse --short=7 HEAD)"' \
+   "…and a successful one sets LAST_SHA, so a ledger-only round still asks for a re-review"
 # THE ROUND FIGURES COME FROM THIS INVOCATION'"'"'S OWN RECEIPTS, not from PR-wide subtraction —
 # `--pr` is shared, so two overlapping resolver runs would each report the other's work as theirs.
 has   "$RESTXT" 'ROUND_FINDINGS="$(printf' "round findings are counted from the rows this run appended"

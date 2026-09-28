@@ -450,6 +450,67 @@ Per finding (self-review AND each reviewer): CRITICAL/HIGH → fix; MEDIUM → f
 out of scope (then defer — and if the deferral clears the bar, **file it now**); LOW → fix if
 cheap else document; disagree → document why. Re-run gates; commit; `phase=triaged`.
 
+**Then the local convergence loop (#491): the fix code gets reviewed before it is pushed.** Step 8
+reviewed the diff; nothing step 9 wrote has been read by anyone. Take one bounded pass at a time with
+the reviewer the rung names, fixing between passes, until a pass returns zero REQUIRED findings on
+the tree that will ship, or the budget (`[reviewers] local_passes`, default 3, `0` disables) runs
+out. The library owns the counter, the verdict and the record — never count passes yourself.
+
+```bash
+RUNG="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" review-rung claude)"
+REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
+EFFORT="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+case "$RUNG" in
+  independent*|same-model*) bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass ${EFFORT:+--effort "$EFFORT"} .claude/state "$REVIEW_TOKEN" ;;
+  deferred*|none*)          bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass --unavailable "${RUNG%% *}" .claude/state ;;
+  *)                        echo "STOP: the review rung is unknown (${RUNG:-none}) — fix agents.toml"; exit 1 ;;
+esac
+```
+
+When `$REVIEW_TOKEN` is your own agent and your harness reviews natively (step 8's subagent path),
+a pass is `dispatch-review --prompt-only` → the subagent → `publish-review` →
+`bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop pass --published .claude/state "$REVIEW_TOKEN"`. If the subagent
+fails, publish its empty reply anyway: `publish-review` refuses it and removes `review.md`, so the
+pass records a failure instead of re-reading the previous one.
+
+| rc | Meaning | Do |
+|---|---|---|
+| `0` | converged: zero REQUIRED on this tree | the report, below |
+| `34` | REQUIRED findings, budget left | `read-artifact review`, triage as above, gates, commit — then pass again |
+| `36` | the pass failed (timeout, 127, no verdict, the tree moved) | pass again; a failed pass is never clean |
+| `33` | the last budgeted pass found REQUIRED findings | edit nothing more; `carry` each of them, then the report |
+| `35` | disabled, or no usable reviewer | the report says so |
+| `37` / `38` | the last budgeted pass failed / the budget is already spent | the report |
+| `17` | `--published`: that reply is already recorded | publish this pass's reply and re-run |
+| `16` / `18` / `20` | HEAD moved off its base / the record or budget does not parse / unreadable | fix and re-run — never read as clean |
+
+What counts: **loop passes only** (step 8's review is not one), **one reviewer** (the rung's), and
+convergence is its latest pass returning `required=0` on the **current** tree. Any edit after that
+pass — an OPTIONAL fix included — invalidates it, so make those edits before the pass you expect to
+converge. On `33`, carry every REQUIRED finding of the final pass with the severity this step would
+give it (the verdict trailer carries counts, not severities):
+
+```bash
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop carry --severity <critical|high|medium|low> --finding '<one line>' .claude/state
+```
+
+Then the report, which is the loop's verdict and its one line. Paste the line into the PR body and
+the close-out **verbatim**; it is rendered from the record, never written by hand:
+
+```bash
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report .claude/state
+case "$?" in
+  0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable — proceed
+  34) echo "the loop is not finished — take another pass"; exit 1 ;;
+  39) echo "BLOCKED — write the blocked marker with the report's line as its reason"; exit 1 ;;
+  *)  echo "no loop verdict (rc $?) — 11 means it never ran; 18/20, fix the record"; exit 1 ;;
+esac
+```
+
+`39` blocks on a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final
+pass, or an edit after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
+
 **Then re-sweep the promoted checklist over the FINAL diff and record it** — the mechanism behind
 `self-review.md`'s "name what you swept" (#490). After the last commit, so the digest names the
 tree that ships:
@@ -491,7 +552,8 @@ Write the PR body to a file first — **outside the reviewed tree** (`"${TMPDIR:
 checkout): an untracked file inside it changes the tree digest step 9 recorded, and step 11's
 report would then read every row as stale on a run that edited no code. Content: summary; gap
 findings + how addressed; the survey line; self-review + reviewer findings + dispositions (table);
-the **Docs consulted** block; the **Learned-checklist sweep** block; test plan (skeleton:
+the **local review** line (`review-loop report`, verbatim); the **Docs consulted** block; the
+**Learned-checklist sweep** block; test plan (skeleton:
 `examples.md`). Render both blocks — never from memory. The sweep block goes in the body *and* the
 close-out: the record it comes from is run state that /cleanup sweeps, so the PR body is the only
 place it survives for a later reader.
@@ -563,6 +625,8 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   server. Code 11 = go back and state it.
 - **Survey disposition** (#435): ran (agent, words) / skipped (unassigned) / failed rc=N,
   continued.
+- **Local review loop** (#491): render `bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report .claude/state` —
+  converged, exhausted with what was carried, disabled, or unavailable. Never write the line by hand.
 - **Learned-checklist sweep** (#421, #490): render it — never write the sentence by hand, which is
   the prose this command replaced:
 

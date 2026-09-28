@@ -319,7 +319,8 @@ EOF
 #   marker   <branch>|-      an /implement-issue run marker; the key is its recorded branch
 #   lock     -               the gap-analysis in-flight lock
 #   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
-#   review   -               a code-review artifact (prompt, findings, captured stream)
+#   review   -               a code-review artifact (prompt, findings, captured stream, and the
+#                            local convergence loop's record, `review-loop*.tsv` — #491)
 #   issue    -               an /implement-issue issue SNAPSHOT, `issue-<n>.json` / `issue-<n>.assoc`
 #   docs     -               an /implement-issue DOCS-DUTY record, `docs-consulted.tsv` (#422)
 #   survey   -               an /implement-issue SURVEY artifact (prompt, summary, trace, stream)
@@ -427,7 +428,9 @@ cmd_state_scan() {
       # `.artifact.*` is read-artifact's private copy of a gap, survey or review file, held only
       # for the duration of one read — a copy that outlives a killed read carries up to 8 MiB of
       # that content, and as `other` it was unsweepable until the next admission cleared it.
-      review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err|.artifact.*)
+      # `review-loop.tsv` / `review-loop-pr<N>-<head>.tsv` is the local convergence loop's per-pass
+      # record (#491), cleared by `_il_clear` under exactly these names.
+      review-prompt.txt|review-prompt-stage.*|review.md|review.err|review-*.md|review-*.err|.artifact.*|review-loop.tsv|review-loop-pr*-*.tsv)
         _adb_cl_emit "$want_ident" review "$f" '-'
         ;;
       # /implement-issue step 5b's documentation-duty record (#422): which third-party surfaces

@@ -21,6 +21,7 @@
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
 #   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
 #   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
+#   role-dispatch.sh local-passes [--with-source]  # the local review loop's pass budget (#491; 0 = off)
 #   role-dispatch.sh untrusted <source>      # stdin = third-party text → a containment-safe JSON envelope
 # `untrusted` belongs to THIS helper rather than a new one, and the charter question is fair enough
 # to answer rather than wave at (raised in review of #214): serialization on its own has nothing to
@@ -686,6 +687,52 @@ adb_dispatch_max_rounds() {
   return 0
 }
 
+# adb_dispatch_local_passes [--with-source] — the local convergence loop's pass budget (#491):
+# `ADB_LOCAL_REVIEW_PASSES` (one run), else `[reviewers] local_passes` layered repo → global.
+#
+#   0 + <n>  usable: 0 (the loop is disabled) through 10. `--with-source` prints `<n> <env|repo|global>`
+#   3        declared nowhere — the CALLER applies its built-in default and names it as such
+#   2        declared but unusable — a HARD ERROR, never the default. Each shape has its own message:
+#            empty, not a plain integer, a leading zero, and out of range (past 10)
+#
+# The env var follows the one-run-override contract: unset or empty means "not overridden"; a
+# non-empty value is validated exactly like the key. `0` is matched as the exact string before the
+# leading-zero rule, so `00` is refused rather than read as the sentinel.
+_ADB_RD_LOCAL_PASSES_MAX=10
+adb_dispatch_local_passes() {
+  local raw layer="" with_source=0 _rc what
+  [ "${1:-}" = "--with-source" ] && with_source=1
+  if [ -n "${ADB_LOCAL_REVIEW_PASSES:-}" ]; then
+    raw="$ADB_LOCAL_REVIEW_PASSES"; layer="env"; what="ADB_LOCAL_REVIEW_PASSES"
+  else
+    raw="$(_adb_rd_layered_get reviewers local_passes --with-layer)"; _rc=$?
+    case "$_rc" in 0) ;; 1) return 3 ;; *) _adb_rd_read_failed "$_rc"; return 2 ;; esac
+    layer="${raw%% *}"; raw="${raw#* }"; what="[reviewers].local_passes"
+  fi
+  case "$raw" in
+    ''|'""'|"''")
+      printf 'role-dispatch: %s is empty — write 0 to disable the local review loop, or a pass budget of 1-%s\n' \
+        "$what" "$_ADB_RD_LOCAL_PASSES_MAX" >&2
+      return 2 ;;
+    *[!0-9]*)
+      printf 'role-dispatch: %s must be a plain decimal integer 0-%s — no quotes, sign or underscores (got %s)\n' \
+        "$what" "$_ADB_RD_LOCAL_PASSES_MAX" "$(adb_display_value "$raw")" >&2
+      return 2 ;;
+    0)  ;;
+    0*) printf 'role-dispatch: %s must not carry a leading zero — TOML has no such integer (got %s)\n' \
+          "$what" "$(adb_display_value "$raw")" >&2
+        return 2 ;;
+  esac
+  # Length first: an 18+ digit value would overflow the comparison below.
+  if [ "${#raw}" -gt 2 ] || [ "$raw" -gt "$_ADB_RD_LOCAL_PASSES_MAX" ]; then
+    printf 'role-dispatch: %s is out of range — 0 disables the loop, and a budget may be at most %s passes (got %s)\n' \
+      "$what" "$_ADB_RD_LOCAL_PASSES_MAX" "$(adb_display_value "$raw")" >&2
+    return 2
+  fi
+  if [ "$with_source" -eq 1 ]; then printf '%s %s\n' "$raw" "$layer"; else printf '%s\n' "$raw"; fi
+  return 0
+}
+
 # --- invocation --------------------------------------------------------------------------------
 
 # Run <argv> with the hang backstop. THE mechanism lives once in common.sh as `adb_run_bounded`
@@ -1243,11 +1290,14 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
              # `--with-source` appends the winning layer (`repo`|`global`) so a caller can name
              # which agents.toml to edit.
              adb_dispatch_max_rounds "${2:-}" ;;
+    local-passes) # The local convergence loop's pass budget (#491): 0 disables it. Nothing + rc 3
+             # when nothing declares one (the caller applies its built-in); rc 2 = unusable.
+             adb_dispatch_local_passes "${2:-}" ;;
     untrusted) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh untrusted <source>   # text on stdin" >&2; exit 2; }
              # A REQUIRED <source>: the envelope's whole job is telling the reader where the text
              # came from, and a defaulted "unknown" would silently ship an unlabelled payload from
              # a caller that simply forgot the argument.
              adb_untrusted_block "$2" ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | max-rounds | untrusted <source>]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | max-rounds | local-passes [--with-source] | untrusted <source>]" >&2; exit 2 ;;
   esac
 fi

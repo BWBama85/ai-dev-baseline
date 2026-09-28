@@ -135,6 +135,18 @@ debug        = "claude"     # owns root-cause investigations.
 # per-round deadline still apply, so it cannot tight-spin. `0` is the only sentinel — `-1`, `00` and
 # any non-integer remain hard errors.
 # max_rounds = 0
+#
+# Optional, in the same table: the LOCAL convergence loop's pass budget (#491). Before either
+# workflow pushes fix code, it re-reviews the fixes locally — one bounded pass at a time, fixing
+# between passes — until a pass finds no REQUIRED finding on the tree that will ship, or this many
+# passes are spent. It counts re-reviews of FIX code: /implement-issue's step-8 review is not one,
+# and each /resolve-pr-threads round starts a fresh budget.
+#
+# `0` disables the loop, and the PR body and summaries say so. Range 0-10; an empty value, a leading
+# zero or anything past 10 is a HARD ERROR, never the default. `ADB_LOCAL_REVIEW_PASSES` overrides
+# this for one run. When the budget runs out with findings left, a MEDIUM/LOW one may be pushed as
+# `carried: <n>` and named; a CRITICAL/HIGH one blocks the run.
+# local_passes = 3
 
 # Optional: let the loop REPAIR required-check drift, not merely detect it (#333).
 #

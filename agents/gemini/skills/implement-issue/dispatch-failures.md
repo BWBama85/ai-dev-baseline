@@ -82,6 +82,15 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `28` | `dispatch-review` | the slot RAN and its reply carries no usable verdict trailer. **Not a clean pass and not a dispatch failure** — the agent answered in a shape nobody can read. Treat the slot as failed: retry once, then per the role's policy. Never read it as zero findings |
 | `29` | `dispatch-review --criteria-from-pr` | the linked-issue read FAILED, or the PR returned a malformed `closingIssuesReferences`. Distinct from the rc `0` an empty-but-valid link set takes, so an API failure can never quietly degrade the review to lens-only and still report success |
 | `16` | `dispatch-review --criteria-from-pr` | the PR is not OPEN, or the checkout's HEAD is not its head commit. This review runs at the **start of a round, on the pushed head** — a review is never attributed to a commit it did not read. Sync the branch and re-run |
+| `16` | `dispatch-review --criteria-from-pr --local-head` | HEAD does not DESCEND from the PR's head — not that pull request plus local commits. The local convergence loop's form (#491); sync the branch |
+| `33` | `review-loop pass` / `report` | exhausted: the last budgeted pass found REQUIRED findings. `pass` → carry each one; `report` → every one is carried and none is CRITICAL/HIGH, so the push proceeds and the line names them |
+| `34` | `review-loop pass` / `report` | not converged, budget left — fix, commit, pass again |
+| `35` | `review-loop pass` / `report` | `local_passes = 0`, or no usable reviewer: nothing dispatched; the push proceeds and the line says so |
+| `36` / `37` | `review-loop pass` | the pass FAILED (timeout, 127, no verdict, the tree moved during it) with budget left / on the last budgeted pass. A failed pass counts against the budget and is never clean |
+| `38` | `review-loop pass` | refused: the budget is spent, nothing dispatched — a fourth pass under `local_passes = 3` cannot happen |
+| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass, or an edit after the final pass. Blocked marker, `phase` stays `triaged` |
+| `11` | `review-loop report` | no loop was recorded — the loop never ran |
+| `17` | `review-loop pass --published` / `carry` | that reply is already recorded as an earlier pass / nothing to carry (not exhausted, or its count is already carried) |
 | `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 
 ## Every documented stop, in one place
@@ -98,6 +107,10 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
   prints its recovery; act on what it printed.
 - **Gates fail the same way three consecutive times after fixes** → write the blocked marker and
   stop. Never push red.
+- **`review-loop report` returns 39** (#491) → the local convergence loop cannot certify the tree
+  that would ship. Blocked marker, reason = the report's line. The escape is the operator's:
+  `ADB_LOCAL_REVIEW_PASSES` raised for one more pass, or the finding fixed and re-reviewed —
+  never an edit pushed past the last pass.
 - **Branch already exists on remote** → blocked marker; ask the user; never force-push.
 - **The Stop hook keeps blocking** → you are trying to end before the PR is open; open it or
   write the blocked marker. Don't fight the hook.

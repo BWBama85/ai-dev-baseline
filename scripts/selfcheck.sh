@@ -762,6 +762,16 @@ add implement-gate      bash scripts/check-implement-gate.sh
 # not just the exit code.
 add implement-lib       bash scripts/check-implement-lib.sh
 
+# The local convergence loop (#491): `implement-lib.sh review-loop`, the `local-passes` budget
+# reader, `dispatch-review --local-head`, and the prose that drives them. Its dangerous direction is
+# a FALSE CONVERGED — fix code pushed as reviewed when no review read it — so a failed pass, a moved
+# tree, an edit after a clean pass, a reused reply and an under-carried exhaustion must each refuse.
+add review-loop         bash scripts/check-review-loop.sh
+
+# ...and each of those refusals is injected with its own defect and required RED on its own witness.
+add review-loop-mutation bash scripts/check-review-loop.sh --mutation
+inputs review-loop-mutation     scripts/check-review-loop.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/implement-lib.sh scripts/lib/role-dispatch.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md
+
 # The SessionStart run-state hook and its library (#431): a compacted or resumed session gets the
 # in-flight run's facts read back — phase, phase history, branch, issue numbers, artifact paths,
 # REQUIRED-mark count — and NEVER an issue's or a finding's text. Owner-scoped exactly as the Stop

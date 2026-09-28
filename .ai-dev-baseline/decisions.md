@@ -8488,3 +8488,50 @@ survive is the part a later reader needs.
              are declined against this entry. What would change the answer: a writer running with
              privileges the swapping process lacks.
 - baseline-issue: n/a
+
+## D116 — The local convergence loop: one reviewer, loop passes only, bound to the tree, one push per round
+- date:      2026-09-28
+- category:  project-delta
+- unknown:   #491 (slice of #465, items 1 and 6). The issue settled BLOCKING #1 (workflow prose
+             loops around a one-pass subcommand) and BLOCKING #3 (the exhaustion exception is narrow)
+             and left three questions to the implementer "to settle, not invent silently"; the
+             gap analysis added a fourth. (a) What counts as a pass across review slots, and does
+             step 8's review spend the budget? (b) The resolver reviews fix commits it has not
+             pushed, and `dispatch-review --criteria-from-pr` refuses (16) unless HEAD IS the PR head.
+             (c) The resolver pushes fixes (step 4) and then the ledger (4c) — reviewing before the
+             first push misses the second diff. (d) "A carried CRITICAL/HIGH blocks" has no
+             machine-readable input: the verdict trailer (#488) carries counts, not severities.
+- decision:  (a) The budget counts LOOP passes only — re-reviews of fix code — so step 8's initial
+             review is not one, and each resolver round starts a fresh budget. A pass is taken by ONE
+             reviewer, the token `review-rung` names (the one the resolver's sweep already uses);
+             convergence is that reviewer's latest pass returning `required=0` on the CURRENT tree.
+             The native Claude path participates through `review-loop pass --published`, which
+             records the verdict of the reply `publish-review` just validated and refuses (17) a
+             reply already recorded. (b) `dispatch-review --local-head` accepts a HEAD that
+             DESCENDS from the PR head (`git merge-base --is-ancestor`, three outcomes) and names both
+             commits in the prompt; without the flag the start-of-round contract is unchanged.
+             (c) One push per round, after a new step 4d: fixes and the ledger commit are committed
+             unpushed, 4d runs the loop over the whole round, then pushes once and sets `LAST_SHA`,
+             still before step 5 resolves anything — record-before-resolve and push-before-resolve
+             both hold. (d) `review-loop carry` records the severity the driver's step-9 triage
+             gives each REQUIRED finding of the final pass, and `report` applies the rule
+             mechanically: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a
+             failed final pass, or an edit after the final pass blocks (39).
+             Every pass is bound to a tree digest (`_il_tree_digest`, factored out of
+             `sweep-identity` so both name a tree identically) taken before and after the dispatch;
+             a tree that moved during the pass fails it. `[reviewers] local_passes` is 0-10, with
+             `0` the only sentinel and each malformed shape a hard error with its own message.
+- placement: `scripts/lib/implement-lib.sh` (`review-loop`, `_il_tree_digest`,
+             `_il_default_merge_base`, `dispatch-review --local-head`, `_il_clear`),
+             `scripts/lib/role-dispatch.sh` (`local-passes`), `scripts/lib/cleanup-lib.sh` (`review`
+             arm), `scripts/lib/run-state.sh` (whitelist), `base/workflows/implement-issue.md` step 9,
+             `base/workflows/resolve-pr-threads.md` step 4d; tests and `--mutation` rows in
+             `scripts/check-review-loop.sh`
+- reason:    Per-slot budgets or all-slots-must-agree would multiply every pass by the slot count for
+             a loop whose point is cheap samples; step 8 still runs every configured slot once. Binding
+             convergence to the tree is what makes "converged" a fact about the code that ships rather
+             than about the last thing a reviewer happened to read — the first suite run proved it by
+             failing every pass whose fixture wrote an untracked file mid-dispatch. Consolidating the
+             push costs one fewer network round-trip per round and reviews the ledger's operative
+             rules, which `/implement-issue` injects into prompts, before they reach the PR.
+- baseline-issue: n/a

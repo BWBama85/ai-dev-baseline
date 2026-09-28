@@ -1031,6 +1031,15 @@ jobs:
       - name: ...and its guards must be able to fail — each mutation observed RED (#431)
         run: bash scripts/mutation-gate.sh run session-context-mutation -- bash scripts/check-session-context.sh --mutation
 
+      # The local convergence loop (#491) runs between the review and the push of the same
+      # /implement-issue run this job's hooks enforce, so it rides this job rather than adding one.
+      - name: Local convergence loop — budget, tree binding, carry and block (#491)
+        run: bash scripts/check-review-loop.sh
+
+      # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
+      - name: ...and its refusals must be able to fail — each mutation observed RED (#491)
+        run: bash scripts/mutation-gate.sh run review-loop-mutation -- bash scripts/check-review-loop.sh --mutation
+
   install-migration:
     name: install-migration
     runs-on: ubuntu-26.04
