@@ -66,6 +66,9 @@ split_source() {
   ' "$2"
 }
 
+# present <path> — anything at <path>, a dangling symlink included (`-e` alone misses one).
+present() { [ -e "$1" ] || [ -L "$1" ]; }
+
 # paths_of <practice> — its `adb:paths` globs, one per line.
 paths_of() { sed -n 's/^<!-- adb:paths \(.*\) -->$/\1/p' "$1" | tr ' ' '\n'; }
 
@@ -82,7 +85,7 @@ manifest_dest() {
 # verify_tree <root> — the checks in the header, against the tree at <root>. Reports each defect
 # with `bad`; prints what it covered.
 verify_tree() {
-  local r="$1" scratch pair agent doc f name i nsec procs ptrs body want dir other dest line
+  local r="$1" scratch pair agent doc f name i nsec procs ptrs body want dir other dest line src
   local -a practices=() sections=()
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/practice-split.XXXXXX")" || { bad "verify: mktemp failed"; return; }
   for f in "$r"/base/practices/*.md; do
@@ -137,16 +140,18 @@ verify_tree() {
       if ! grep -Fqx -- '<!-- adb:procedure -->' "$f"; then
         [ -z "$line" ] && ok || bad "$agent/$name: the root doc carries a procedure pointer, but the practice has no procedure"
         for dir in reference rules; do
-          [ ! -e "$r/agents/$agent/$dir/$name" ] && ok \
-            || bad "$agent/$name: agents/$agent/$dir/$name exists, but the practice has no procedure (orphaned output)"
+          present "$r/agents/$agent/$dir/$name" \
+            && bad "$agent/$name: agents/$agent/$dir/$name exists, but the practice has no procedure (orphaned output)" \
+            || ok
         done
         continue
       fi
       procs=$((procs + 1))
-      [ ! -e "$r/agents/$agent/$other/$name" ] && ok \
-        || bad "$agent/$name: the procedure is ALSO at agents/$agent/$other/$name — it must render exactly once"
-      if [ ! -f "$r/agents/$agent/$dir/$name" ]; then
-        bad "$agent/$name: no procedure file at agents/$agent/$dir/$name"
+      present "$r/agents/$agent/$other/$name" \
+        && bad "$agent/$name: the procedure is ALSO at agents/$agent/$other/$name — it must render exactly once" \
+        || ok
+      if [ ! -f "$r/agents/$agent/$dir/$name" ] || [ -L "$r/agents/$agent/$dir/$name" ]; then
+        bad "$agent/$name: no procedure file at agents/$agent/$dir/$name (a generated file is a regular file, never a link)"
         continue
       fi
       # The WHOLE file, byte for byte: the scope frontmatter exactly when it is a path-scoped rule,
@@ -188,10 +193,15 @@ verify_tree() {
         bad "$agent: agents/$agent/rules/ exists — only Claude has a path-scoped rules surface"
       fi
       for f in "$r/agents/$agent/$dir"/* "$r/agents/$agent/$dir"/.*; do
-        [ -e "$f" ] || [ -L "$f" ] || continue
+        present "$f" || continue
         case "${f##*/}" in .|..) continue ;; esac
-        [ -f "$r/base/practices/${f##*/}" ] && [ "${f##*/}" != 00-index.md ] && ok \
-          || bad "$agent: agents/$agent/$dir/${f##*/} has no source practice (orphaned output)"
+        # Valid only as a regular file, in the tree its practice renders to for this agent.
+        src="$r/base/practices/${f##*/}"
+        want="reference"
+        [ "$agent" = claude ] && [ -f "$src" ] && [ -n "$(paths_of "$src")" ] && want="rules"
+        if [ -f "$f" ] && [ ! -L "$f" ] && [ "${f##*/}" != 00-index.md ] && [ -f "$src" ] \
+           && grep -Fqx -- '<!-- adb:procedure -->' "$src" && [ "$dir" = "$want" ]; then ok
+        else bad "$agent: agents/$agent/$dir/${f##*/} has no source practice rendering it there (orphaned output)"; fi
       done
     done
   done
@@ -244,6 +254,9 @@ if [ "$SELF_TEST" -eq 1 ]; then
   m_pointer()    { sed 's|~/\.codex/ai-dev-baseline/reference/|~/.codex/reference/|' "$1/agents/codex/AGENTS.md" > "$1/x" && mv "$1/x" "$1/agents/codex/AGENTS.md"; }
   m_no_paths()   { local f; f="$(ls "$1/agents/claude/rules" | head -n1)"; [ -n "$f" ] || return 1; sed '/^paths:$/,/^---$/d' "$1/agents/claude/rules/$f" > "$1/x" && mv "$1/x" "$1/agents/claude/rules/$f"; }
   m_rules_codex() { mkdir -p "$1/agents/codex/rules"; }
+  m_dangling()   { local f; f="$(ls "$1/agents/claude/rules" | head -n1)"; [ -n "$f" ] || return 1; ln -s /nonexistent/adb-434 "$1/agents/claude/reference/$f"; }
+  m_linked()     { local f; f="$(first_ref "$1")"; mv "$1/agents/codex/reference/$f" "$1/agents/codex/$f.real" && ln -s "../$f.real" "$1/agents/codex/reference/$f"; }
+  m_misplaced()  { local f; f="$(first_ref "$1")"; mkdir -p "$1/agents/gemini/rules" && cp "$1/agents/gemini/reference/$f" "$1/agents/gemini/rules/zz-$f" && mv "$1/agents/gemini/rules/zz-$f" "$1/agents/gemini/rules/$f"; }
   m_pointer_extra() { awk '/^\*\*Procedure:\*\* / && !x { $0 = $0 " Or `~/.codex/elsewhere/x.md`."; x = 1 } { print }' "$1/agents/codex/AGENTS.md" > "$1/x" && mv "$1/x" "$1/agents/codex/AGENTS.md"; }
   m_trail_blank() { printf '\n' >> "$1/agents/codex/reference/$(first_ref "$1")"; }
   m_prefix_text() { local p; p="$1/agents/codex/reference/$(first_ref "$1")"; { printf 'INJECTED BEFORE THE HEADER\n'; cat "$p"; } > "$p.x" && mv "$p.x" "$p"; }
@@ -265,6 +278,9 @@ if [ "$SELF_TEST" -eq 1 ]; then
   red trailing-blank   m_trail_blank   "the procedure file is exactly its header"
   red text-before-head m_prefix_text   "the procedure file is exactly its header"
   red rule-blank-added m_rule_blank    "section is exactly the practice's rule lines"
+  red dangling-other   m_dangling      "it must render exactly once"
+  red linked-proc      m_linked        "a generated file is a regular file, never a link"
+  red misplaced        m_misplaced     "has no source practice rendering it there"
   red rules-for-codex  m_rules_codex   "only Claude has a path-scoped rules surface"
   red stale-render     m_source_edit   "section is exactly the practice's rule lines"
 

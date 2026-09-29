@@ -4,6 +4,8 @@
 
 # Git and pull requests — procedure
 
+## Undoing an edit without destroying it
+
 **Prefer the non-destructive move.** `git stash push -- <path>` parks the change
 instead of deleting it, and
 
@@ -21,6 +23,8 @@ redirecting straight into `$(mktemp …)` throws away the only handle on it at t
 exact moment you are about to need it. And when the goal is
 to test something rather than to discard it, don't touch the tracked file at all —
 see the negative-testing method in `self-review.md`.
+
+## Closing keywords register only from prose
 
   **A code span or a fenced block SUPPRESSES it, silently.** This is the same
   "only prose declares" rule the roadmap markers already live by, and it bites in

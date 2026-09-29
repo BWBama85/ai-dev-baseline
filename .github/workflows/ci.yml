@@ -152,6 +152,14 @@ jobs:
               echo "$untracked"
               rc=1
             fi
+            # Gitignore-immune, as for the skills below: --others respects .gitignore.
+            for pf in "$tree"/*.md; do
+              [ -e "$pf" ] || continue
+              if ! git ls-files --error-unmatch "$pf" >/dev/null 2>&1; then
+                echo "::error::$pf exists but is not git-tracked (untracked or gitignored) — run 'bash scripts/build.sh' and commit it"
+                rc=1
+              fi
+            done
           done
 
           # Generated skills: base/workflows/*.md renders into EVERY agent's skills tree

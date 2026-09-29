@@ -284,7 +284,7 @@ for pf in base/practices/*.md; do
     a="${pair%%:*}"
     pexp=reference; pother=rules
     if [ "$a" = claude ] && LC_ALL=C grep -q '^<!-- adb:paths ' "$pf"; then pexp=rules; pother=reference; fi
-    if [ -e "agents/$a/$pother/$pbase" ]; then
+    if [ -e "agents/$a/$pother/$pbase" ] || [ -L "agents/$a/$pother/$pbase" ]; then
       printf 'render-size: DUPLICATE %s — agents/%s/%s/%s is a stale copy; this procedure renders to agents/%s/%s/ (delete the stale one)\n' "$pbase" "$a" "$pother" "$pbase" "$a" "$pexp" >&2
       rc=1
     fi

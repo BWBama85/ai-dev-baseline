@@ -962,6 +962,14 @@ out="$(bash "$PI" install --project "$PCN" --agent codex --artifact "$ART" --sum
 has "$out" "the AGENTS.md chain down to svc/api/ is" "budget(nested): a nested doc pushing the chain past the budget is warned about"
 want=$(( ( ( $(wc -c < "$PCN/AGENTS.md") + $(wc -c < "$PCN/svc/api/AGENTS.md") ) / 32768 + 2) * 32768 ))
 has "$out" "project_doc_max_bytes = $want" "budget(nested): …with a value that covers the whole chain"
+# Codex finds its docs on the filesystem, so a git-ignored doc — here under a non-ASCII directory
+# name git would print quoted — is measured all the same.
+PCI="$(new_project codexignored)"
+mkdir -p "$PCI/café"
+printf 'café/\n' > "$PCI/.gitignore"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Ignored prose Codex still reads when it runs in this directory, long enough." }' > "$PCI/café/AGENTS.md"
+out="$(bash "$PI" install --project "$PCI" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to café/ is" "budget(ignored): an ignored, non-ASCII nested doc is still measured"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"

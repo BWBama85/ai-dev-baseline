@@ -264,7 +264,7 @@ step_shellcheck() {
 }
 
 step_build_drift() {
-  local bd=0 tree
+  local bd=0 tree pf
   # Capture the build exit: a malformed source makes build.sh exit non-zero WITHOUT
   # rewriting the already-tracked skill, so the diff-only checks below would still see
   # a clean tree and print PASS. CI's rebuild step fails on that non-zero exit; the
@@ -292,6 +292,14 @@ step_build_drift() {
       git ls-files --others --exclude-standard -- "$tree" | sed 's/^/    /'
       bd=1
     fi
+    # Gitignore-immune: `--others` respects .gitignore, so an ignored rendered procedure needs this.
+    for pf in "$tree"/*.md; do
+      [ -e "$pf" ] || continue
+      if ! git ls-files --error-unmatch -- "$pf" >/dev/null 2>&1; then
+        echo "  $pf exists but is not git-tracked (untracked or gitignored) — run scripts/build.sh and commit it"
+        bd=1
+      fi
+    done
   done
   # Every agent's rendered skills tree (Claude, Codex, Gemini) is regenerated from the
   # same base/workflows sources, so a stale/uncommitted render in ANY of them is drift.

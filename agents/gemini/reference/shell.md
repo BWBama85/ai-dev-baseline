@@ -4,6 +4,8 @@
 
 # Shell discipline — procedure
 
+## Don't assume `PATH`: the interpreter too
+
   On macOS this reaches the **interpreter**, not just the tools. `/bin/bash` is
   **3.2.57** and Apple has pinned it there for the whole bash-4-and-later era, so
   a modern bash is a Homebrew install at `/opt/homebrew/bin` (Apple Silicon) or

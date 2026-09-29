@@ -92,21 +92,22 @@ PI_CODEX_DOC_DEFAULT_MAX=32768
 # Codex reads: each directory's doc from the root down to the working directory (agents_md.rs), taken
 # over every directory that carries one, so a nested AGENTS.md counts with the root's. A directory's
 # doc is its AGENTS.override.md when present, else its AGENTS.md — the order Codex probes them in.
-# Git-ignored files are skipped. Returns non-zero when the tree cannot be listed.
+# Found on the filesystem as Codex finds them, ignored files included; names Codex reads through
+# `project_doc_fallback_filenames` in the operator's config are not counted. Non-zero when the tree
+# cannot be walked.
 _pi_codex_doc_load() {
-  local p="$1" list f d best=0 bestdir=. sum anc
+  local p="$1" f d best=0 bestdir=. sum anc
   local -A doc=()
-  list="$(git -C "$p" ls-files --cached --others --exclude-standard -- \
-            'AGENTS.md' '*/AGENTS.md' 'AGENTS.override.md' '*/AGENTS.override.md')" || return 1
-  while IFS= read -r f; do
-    { [ -n "$f" ] && [ -f "$p/$f" ]; } || continue
+  while IFS= read -r -d '' f; do
+    f="${f#"$p"/}"
     d="${f%/*}"; [ "$d" = "$f" ] && d=.
     case "$f" in
       AGENTS.override.md|*/AGENTS.override.md) doc["$d"]="$f" ;;
       *) [ -n "${doc[$d]+x}" ] || doc["$d"]="$f" ;;
     esac
-  done <<< "$list"
-  if [ -z "${doc[.]+x}" ] && [ -f "$p/AGENTS.md" ]; then doc[.]=AGENTS.md; fi
+  done < <(find "$p" -name .git -prune -o \( -name AGENTS.md -o -name AGENTS.override.md \) -type f -print0)
+  # The walk's own status: a directory find could not read leaves the chain unmeasured, not small.
+  wait "$!" || return 1
   for d in "${!doc[@]}"; do
     sum=0; anc="$d"
     while :; do
@@ -1011,10 +1012,11 @@ _pi_stage() {
       rel="${dest#"$p"/}"
       _pi_relpath_safe "$rel" || { _pi_err "stage: the payload map produced an unsafe destination: $(adb_tsv_field_display "$rel")"; return 1; }
       mkdir -p "$stage/$(dirname "$rel")" || return 1
-      # THE PRACTICE DOCUMENT IS RE-ANCHORED TOO, not just the skills. Both rendered root docs carry
-      # `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify …` (agents/*/[CLAUDE|AGENTS].md:69),
-      # so a verbatim copy told a pinned project's agent to run a library at the user-global path —
-      # which on a pinned-only machine does not exist, and on a mixed machine is the OTHER install's.
+      # THE PRACTICE DOCUMENTS ARE RE-ANCHORED TOO, not just the skills. The CI procedure carries
+      # `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify …` and each root doc points at its
+      # procedures, so a verbatim copy told a pinned project's agent to run a library, or read a
+      # procedure, at the user-global path — absent on a pinned-only machine, the OTHER install's
+      # on a mixed one.
       # `*/skills/*/*.md`, not `SKILL.md` alone (#433): a skill's supporting files carry the
       # same rendered `bash "$HOME/.<agent>/scripts/lib/…"` invocations, and a verbatim copy of
       # one is exactly the cross-install reach _pi_assert_reanchored refuses below.

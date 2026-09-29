@@ -44,6 +44,8 @@ back. These do not, and they are the ones most likely to be typed casually — a
   **until gc prunes it**. Recovery is possible, not guaranteed — treat it as loss.
 <!-- adb:procedure -->
 
+## Undoing an edit without destroying it
+
 **Prefer the non-destructive move.** `git stash push -- <path>` parks the change
 instead of deleting it, and
 
@@ -71,6 +73,8 @@ see the negative-testing method in `self-review.md`.
   PR fully resolves. For partial work use **`Refs #N`** — and never write a
   closing keyword "illustratively" in prose, it will still fire.
 <!-- adb:procedure -->
+
+## Closing keywords register only from prose
 
   **A code span or a fenced block SUPPRESSES it, silently.** This is the same
   "only prose declares" rule the roadmap markers already live by, and it bites in
