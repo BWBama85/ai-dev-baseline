@@ -325,6 +325,11 @@ mutate_line "$d/scripts/build.sh" '  } > "$tmp"' 's|^  } > "\$tmp"$|  } > "$pfil
   "mut-proc-naive" || mutated=0
 mutate_line "$d/scripts/build.sh" '  build_publish "$pfile"' '\|^  build_publish "\$pfile"$|d' \
   "mut-proc-naive" || mutated=0
+# The empty-procedure check reads what was just written, so it follows the write to its new target.
+empty_check="d' \"\$tmp\" | grep -q"
+if [ "$(grep -Fc -- "$empty_check" "$d/scripts/build.sh")" = 1 ] \
+   && check_mutate_literal "$d/scripts/build.sh" "$empty_check" "d' \"\$pfile\" | grep -q"; then ok
+else bad "mut-proc-naive: the empty-procedure check is not exactly one line reading \$tmp — the mutation no longer describes the code"; mutated=0; fi
 if [ "$mutated" -eq 1 ]; then
   proc_src "$d" ""
   run_build "$d" || bad "mut-proc-naive: the mutated fixture's clean build failed — the mutation broke the script rather than changing its write shape"

@@ -886,8 +886,9 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   defaults to 32 KiB, shared by the project's `AGENTS.md` and any nested ones, and what lies past it
   is never read. Since #434 the rendered rules fit it with room to spare — the procedures are
   vendored beside them rather than spliced in — so a stock project needs no change. A project whose
-  own `AGENTS.md` prose pushes the spliced file past the budget is told at install, with the line
-  sized to that file for `~/.codex/config.toml`; the setting is yours, not the payload's.
+  own `AGENTS.md` prose — at the root, or in a nested `AGENTS.md` on the way down to some directory
+  — pushes what Codex loads past the budget is told at install, with a line for
+  `~/.codex/config.toml` sized to that chain; the setting is yours, not the payload's.
 - **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
   commit this installer cannot reconstruct; retire it deliberately first.
 - **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would

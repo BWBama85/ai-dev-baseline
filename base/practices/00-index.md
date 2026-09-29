@@ -62,7 +62,8 @@ Without it, the procedure goes to `agents/<agent>/reference/`. Use it only where
 genuinely scopes the practice.
 
 The build refuses every malformed spelling — an unclosed, nested, empty or misplaced block, a
-second or misplaced `adb:paths`, a procedure marker in a workflow — naming the file and line, and
+second or misplaced `adb:paths`, a procedure marker in a workflow, a procedure an `adb:except`
+empties for some agent — naming the file, and
 `scripts/check-practice-split.sh` proves the rendered split lost and duplicated nothing.
 
 ## Precedence

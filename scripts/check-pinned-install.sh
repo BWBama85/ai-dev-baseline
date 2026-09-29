@@ -126,24 +126,24 @@ eq "$rc" 2 "reanchor: refuses an agent it does not support"
 # A root doc's procedure pointers (#434) name the GLOBAL install's copies; a pinned project reads its
 # own. Only those two prefixes move — other `~/.<agent>/` paths in the docs mean what they say.
 out="$(printf '%s\n' '**Procedure:** `~/.claude/ai-dev-baseline/reference/git-and-prs.md` and `~/.claude/rules/ai-dev-baseline/shell.md`, not `~/.claude/settings.json`' | bash "$PI" reanchor claude /p)"
-has "$out" '`.claude/adb/reference/git-and-prs.md`' "reanchor: a reference pointer lands on the vendored copy"
-has "$out" '`.claude/rules/ai-dev-baseline/shell.md`' "reanchor: a path-scoped rule pointer lands on the project rule"
+has "$out" '`$(git rev-parse --show-toplevel)/.claude/adb/reference/git-and-prs.md`' "reanchor: a reference pointer lands on the vendored copy, from the repository root"
+has "$out" '`$(git rev-parse --show-toplevel)/.claude/rules/ai-dev-baseline/shell.md`' "reanchor: a path-scoped rule pointer lands on the project rule"
 has "$out" '`~/.claude/settings.json`' "reanchor: leaves every other user-global path alone"
 out="$(printf '%s\n' '`~/.codex/ai-dev-baseline/reference/shell.md`' | bash "$PI" reanchor codex /p)"
-eq "$out" '`.codex/adb/reference/shell.md`' "reanchor: the codex pointer lands on its vendored copy"
+eq "$out" '`$(git rev-parse --show-toplevel)/.codex/adb/reference/shell.md`' "reanchor: the codex pointer lands on its vendored copy"
 
 # _pi_assert_reanchored IS THE GUARD behind every re-anchor, so each input it rejects is fed to it:
 # a staged doc still pointing at the global procedure bundle, one still reaching the global library,
 # and a scan that cannot run — which must fail it rather than read as clean.
 ra="$work/reanchor-guard"; mkdir -p "$ra/.claude/rules/ai-dev-baseline"
 assert_ra() { ( . "$PI"; _pi_assert_reanchored "$ra" claude ) 2>&1; }
-printf 'see `.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+printf 'see `$(git rev-parse --show-toplevel)/.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
 printf 'run bash "$(git rev-parse --show-toplevel)/.claude/adb/lib/x.sh"\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
 out="$(assert_ra)"; yes "$?" "assert-reanchored: a fully re-anchored stage passes"
 printf 'see `~/.claude/ai-dev-baseline/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
 out="$(assert_ra)"; no "$?" "assert-reanchored: a pointer left at the global bundle is refused"
 has "$out" "still points at the user-global procedures" "assert-reanchored: …naming the pointer"
-printf 'see `.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+printf 'see `$(git rev-parse --show-toplevel)/.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
 printf 'run bash "$HOME/.claude/scripts/lib/x.sh"\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
 out="$(assert_ra)"; no "$?" "assert-reanchored: a vendored procedure reaching the global library is refused"
 has "$out" "still reaches the user-global library" "assert-reanchored: …naming the library"
@@ -925,9 +925,15 @@ has   "$(cat "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" '/.claude/a
 has   "$(head -n 3 "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" 'paths:' "practices: the vendored rule keeps its paths: scope"
 # …and the pointers in the vendored rules name the vendored procedures, never the global ones.
 hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`~/.claude/ai-dev-baseline/reference/' "practices: no Claude pointer names the global bundle"
-has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`.claude/adb/reference/git-and-prs.md`' "practices: … it names the vendored copy"
-has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`.claude/rules/ai-dev-baseline/shell.md`' "practices: … and the project rule"
-has   "$(cat "$PPD/AGENTS.md")" '`.codex/adb/reference/shell.md`' "practices: the spliced Codex pointers name the vendored copies"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/adb/reference/git-and-prs.md`' "practices: … it names the vendored copy"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/rules/ai-dev-baseline/shell.md`' "practices: … and the project rule"
+has   "$(cat "$PPD/AGENTS.md")" '/.codex/adb/reference/shell.md`' "practices: the spliced Codex pointers name the vendored copies"
+# Resolvable from a subdirectory: the pointer's path, evaluated there, is the vendored file.
+mkdir -p "$PPD/deep/er"
+ptr="$(sed -n 's/^\*\*Procedure:\*\* `\([^`]*shell\.md\)`.*/\1/p' "$PPD/AGENTS.md" | head -n1)"
+resolved="$(cd "$PPD/deep/er" && eval "printf '%s' \"$ptr\"")"
+cmp -s "$resolved" "$PPD/.codex/adb/reference/shell.md" && ok \
+  || bad "practices: a pinned pointer evaluated from a subdirectory reaches the vendored procedure (got $resolved)"
 file_is "$PPD/.codex/adb/reference/shell.md" "practices: the codex procedure the pointer names exists"
 grep -Fq '.claude/adb/reference/git-and-prs.md' "$PPD/.ai-dev-baseline/pinned-files.sha256" && ok \
   || bad "practices: a vendored procedure is on the receipt, so status and uninstall cover it"
@@ -945,6 +951,17 @@ out="$(bash "$PI" install --project "$PCL" --agent codex --artifact "$ART" --sum
 has "$out" "WARNING  AGENTS.md is now" "budget: a project doc pushing the file past the budget is warned"
 want=$(( ($(wc -c < "$PCL/AGENTS.md" | tr -d ' ') / 32768 + 2) * 32768 ))
 has "$out" "project_doc_max_bytes = $want" "budget: …with a value that covers the spliced file"
+# The budget covers every AGENTS.md from the root down to where Codex runs, so a nested doc that
+# pushes that chain past it is warned about even though the root file fits.
+PCN="$(new_project codexnested)"
+mkdir -p "$PCN/svc/api"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Service prose that belongs to one subtree of the project, long enough to matter." }' > "$PCN/svc/api/AGENTS.md"
+check_git "$PCN" add svc/api/AGENTS.md >/dev/null 2>&1
+out="$(bash "$PI" install --project "$PCN" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+[ "$(wc -c < "$PCN/AGENTS.md" | tr -d ' ')" -le 32768 ] && ok || bad "budget(nested): the root AGENTS.md alone fits"
+has "$out" "the AGENTS.md chain down to svc/api/ is" "budget(nested): a nested doc pushing the chain past the budget is warned about"
+want=$(( ( ( $(wc -c < "$PCN/AGENTS.md") + $(wc -c < "$PCN/svc/api/AGENTS.md") ) / 32768 + 2) * 32768 ))
+has "$out" "project_doc_max_bytes = $want" "budget(nested): …with a value that covers the whole chain"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"

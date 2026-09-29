@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# ai-dev-baseline — assemble base/practices/*.md into each agent's generated
-# root document (CLAUDE.md / AGENTS.md / GEMINI.md).
+# ai-dev-baseline — render base/practices/*.md into each agent's generated root document
+# (CLAUDE.md / AGENTS.md / GEMINI.md) and procedure files (agents/<agent>/reference/, Claude's
+# agents/claude/rules/), and base/workflows/*.md into each agent's skills.
 #
-# base/practices/*.md is the single hand-edited source of truth. The per-agent
-# root docs are GENERATED — run this after editing any practice, and commit the
-# result. CI re-runs this and fails on drift, so a stale root doc can't merge.
+# base/ is the single hand-edited source of truth. Everything under agents/ this writes is
+# GENERATED — run this after editing a source, and commit the result. CI re-runs this and fails on
+# drift, so a stale generated file can't merge.
 
 # bash 5.3 runtime floor (#256) — FIRST executable statement, before `set -e` and before anything
 # resolves a path or reads input. adb_require_bash re-execs into a >= 5.3 interpreter or exits with
@@ -515,6 +516,12 @@ render_procedure() {
     printf '# %s — procedure\n' "$title"
     block_filter "$agent" "$f" procedure
   } > "$tmp"
+  # The root doc points every agent here, so a procedure an `adb:except` empties for one agent
+  # would point it at nothing.
+  if ! sed '1,/^# .* — procedure$/d' "$tmp" | grep -q '[^[:space:]]'; then
+    echo "build.sh: base/practices/$name — its procedure renders EMPTY for $agent (an \`adb:except\` covers all of it); a procedure must reach every agent its pointer names" >&2
+    exit 3
+  fi
   block_marker_residue "$tmp" "the rendered '$agent' procedure for $name" || exit 3
   build_publish "$pfile"
   echo "wrote ${pfile#"$root"/}"

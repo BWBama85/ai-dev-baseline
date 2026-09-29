@@ -85,8 +85,39 @@ PI_HOOKS_EXCLUDED="session-currency.sh"
 # Codex reads project AGENTS.md files only up to `project_doc_max_bytes`, a budget whose default is
 # 32 KiB and which the project's own text and nested AGENTS.md files share (codex-rs/core/src/
 # agents_md.rs). The rendered practices fit it since #434, but a large project doc beside them may
-# not, so the spliced file is measured and the operator told, with the config line that fixes it.
+# not, so the heaviest chain Codex loads is measured and the operator told, with the line that fixes it.
 PI_CODEX_DOC_DEFAULT_MAX=32768
+
+# _pi_codex_doc_load <project-root> — print `<bytes><TAB><dir>` for the heaviest chain of project docs
+# Codex reads: each directory's doc from the root down to the working directory (agents_md.rs), taken
+# over every directory that carries one, so a nested AGENTS.md counts with the root's. A directory's
+# doc is its AGENTS.override.md when present, else its AGENTS.md — the order Codex probes them in.
+# Git-ignored files are skipped. Returns non-zero when the tree cannot be listed.
+_pi_codex_doc_load() {
+  local p="$1" list f d best=0 bestdir=. sum anc
+  local -A doc=()
+  list="$(git -C "$p" ls-files --cached --others --exclude-standard -- \
+            'AGENTS.md' '*/AGENTS.md' 'AGENTS.override.md' '*/AGENTS.override.md')" || return 1
+  while IFS= read -r f; do
+    { [ -n "$f" ] && [ -f "$p/$f" ]; } || continue
+    d="${f%/*}"; [ "$d" = "$f" ] && d=.
+    case "$f" in
+      AGENTS.override.md|*/AGENTS.override.md) doc["$d"]="$f" ;;
+      *) [ -n "${doc[$d]+x}" ] || doc["$d"]="$f" ;;
+    esac
+  done <<< "$list"
+  if [ -z "${doc[.]+x}" ] && [ -f "$p/AGENTS.md" ]; then doc[.]=AGENTS.md; fi
+  for d in "${!doc[@]}"; do
+    sum=0; anc="$d"
+    while :; do
+      if [ -n "${doc[$anc]+x}" ]; then sum=$(( sum + $(wc -c < "$p/${doc[$anc]}") )); fi
+      [ "$anc" = . ] && break
+      case "$anc" in */*) anc="${anc%/*}" ;; *) anc=. ;; esac
+    done
+    if [ "$sum" -gt "$best" ]; then best="$sum"; bestdir="$d"; fi
+  done
+  printf '%s\t%s\n' "$best" "$bestdir"
+}
 
 # The managed region in a project's own AGENTS.md. Codex discovers project instructions by
 # concatenating every AGENTS.md from the project root down to the cwd; its own discovery module
@@ -281,16 +312,17 @@ EOF
 # body and must NOT be rewritten — it genuinely means the user-global skills root.
 #
 # A root doc's procedure pointers (#434) name the global install's `~/.<agent>/ai-dev-baseline/reference/` and
-# `~/.claude/rules/ai-dev-baseline/`; they become the project-root-relative paths cmd_payload
-# vendors them to. Only those two prefixes: the docs name other `~/.<agent>/` paths that mean it.
+# `~/.claude/rules/ai-dev-baseline/`; they become the paths cmd_payload vendors them to, anchored at
+# the repository root like the library prefix, since the agent may be reading from a subdirectory.
+# Only those two prefixes: the docs name other `~/.<agent>/` paths that mean it.
 cmd_reanchor() {
   [ "$#" -eq 2 ] || { _pi_err "reanchor: needs <agent> <project-root>"; return 2; }
   local agent="$1" tl='~'
   case "$agent" in claude|codex) ;; *) _pi_err "reanchor: unknown agent: $agent"; return 2 ;; esac
   ADB_PI_F1="\$HOME/.$agent/scripts/lib/" \
   ADB_PI_T1="\$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.$agent/$PI_NS/lib/" \
-  ADB_PI_F2="$tl/.$agent/ai-dev-baseline/reference/" ADB_PI_T2=".$agent/$PI_NS/reference/" \
-  ADB_PI_F3="$tl/.claude/rules/ai-dev-baseline/" ADB_PI_T3=".claude/rules/ai-dev-baseline/" awk '
+  ADB_PI_F2="$tl/.$agent/ai-dev-baseline/reference/" ADB_PI_T2="\$(git rev-parse --show-toplevel)/.$agent/$PI_NS/reference/" \
+  ADB_PI_F3="$tl/.claude/rules/ai-dev-baseline/" ADB_PI_T3="\$(git rev-parse --show-toplevel)/.claude/rules/ai-dev-baseline/" awk '
     function swap(s, from, to,   out, i) {
       out = ""
       while ((i = index(s, from)) > 0) { out = out substr(s, 1, i - 1) to; s = substr(s, i + length(from)) }
@@ -1442,19 +1474,26 @@ EOF
   }
 
   # Codex reads only the root AGENTS.md, so its practices are spliced there as a delimited region.
-  local created bytes
+  local created bytes load deep where
   for agent in "${agents[@]}"; do
     [ "$agent" = codex ] || continue
     _pi_splice_block "$p/AGENTS.md" "$p/.codex/$PI_NS/AGENTS.practices.md" \
       || { _pi_err "install: could not splice the practices into AGENTS.md"; rm -rf "$work"; trap - EXIT; return 14; }
     _pi_say "  block  managed region written into AGENTS.md"
-    # What does not fit is never read, so it is said out loud with the fix, sized to this file.
-    bytes="$(wc -c < "$p/AGENTS.md" | tr -d ' ')"
+    # What does not fit is never read, so it is said out loud with the fix, sized to what Codex loads.
+    if ! load="$(_pi_codex_doc_load "$p")"; then
+      _pi_say "  NOTE   could not list this project's AGENTS.md files — Codex's project_doc_max_bytes budget was not checked"
+      continue
+    fi
+    bytes="${load%%$'\t'*}"; deep="${load#*$'\t'}"
+    where="AGENTS.md is now"
+    [ "$deep" = . ] || where="the AGENTS.md chain down to $deep/ is"
     if [ "$bytes" -gt "$PI_CODEX_DOC_DEFAULT_MAX" ]; then
       _pi_say ""
-      _pi_say "  WARNING  AGENTS.md is now $bytes bytes, and Codex reads at most $PI_CODEX_DOC_DEFAULT_MAX by"
-      _pi_say "           default (project_doc_max_bytes), shared with any nested AGENTS.md. Whatever"
-      _pi_say "           lies past the budget never reaches it. Raise the limit in ~/.codex/config.toml:"
+      _pi_say "  WARNING  $where $bytes bytes, and Codex reads at most $PI_CODEX_DOC_DEFAULT_MAX by"
+      _pi_say "           default (project_doc_max_bytes), across the root AGENTS.md and every nested one"
+      _pi_say "           on the way to where it runs. Whatever lies past the budget never reaches it."
+      _pi_say "           Raise the limit in ~/.codex/config.toml:"
       _pi_say ""
       _pi_say "               project_doc_max_bytes = $(( (bytes / 32768 + 2) * 32768 ))"
       _pi_say ""

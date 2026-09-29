@@ -361,6 +361,14 @@ X
 X
 <!-- adb:end -->
 ' 'carries a backslash or backtick'
+  refused empty-for-agent '# p
+<!-- adb:procedure -->
+<!-- adb:except claude -->
+
+CODEX-ONLY
+<!-- adb:end -->
+<!-- adb:end -->
+' 'renders EMPTY for claude'
   refused paths-in-workflow '# p
 ' 'is a practice marker' '
 <!-- adb:paths *.sh -->
