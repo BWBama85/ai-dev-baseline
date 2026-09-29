@@ -1020,6 +1020,16 @@ printf 'project_doc_fallback_filenames = ["GUIDE]v2.md", "OTHER.md"]\n' > "$cxho
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose under a fallback name that carries a closing bracket, long enough." }' > "$PCQ/svc/GUIDE]v2.md"
 out="$(CODEX_HOME="$cxhome2" bash "$PI" install --project "$PCQ" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback-bracket): a fallback name carrying ] is still counted"
+# Names are matched exactly: a name that is a word of another is still its own name, and a pattern
+# character in a name is literal, as Codex joins it to the directory.
+PCD="$(new_project codexdedup)"
+cxhome3="$work/codexhome3"; mkdir -p "$cxhome3" "$PCD/svc" "$PCD/lib"
+printf 'project_doc_fallback_filenames = ["TEAM GUIDE.md", "TEAM", "G*.md"]\n' > "$cxhome3/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Team prose under a fallback name that is also a word of another name." }' > "$PCD/svc/TEAM"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose a glob would match but Codex never reads by that literal name." }' > "$PCD/lib/GUIDEbig.md"
+out="$(CODEX_HOME="$cxhome3" bash "$PI" install --project "$PCD" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(dedup): a name that is a word of another name is still counted"
+hasnt "$out" "chain down to lib/" "budget(literal): a pattern character in a fallback name matches only that literal name"
 # A config that exists but cannot be read leaves the budget unmeasured, never measured without it.
 if [ "$(id -u)" -ne 0 ]; then
   PCU="$(new_project codexunreadablecfg)"

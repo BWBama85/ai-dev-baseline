@@ -128,8 +128,8 @@ _pi_codex_fallback_names() {
 # PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, each size read and the loops between —
 # and returns 3 when it runs out; 1 when a walk or a read fails.
 _pi_codex_doc_load() {
-  local p="$1" f d n i best=0 bestdir=. sum anc list wrc deadline left raw fb
-  local -A doc=() rank=() size=() isroot=()
+  local p="$1" f d n i best=0 bestdir=. sum anc wrc deadline left raw fb
+  local -A doc=() rank=() size=() isroot=() seen=()
   local -a names=(AGENTS.override.md AGENTS.md) expr=()
   deadline=$(( SECONDS + PI_CODEX_SCAN_SECS ))
   # Reading the config is inside the bound too: a child interpreter, because the deadline primitive
@@ -137,35 +137,32 @@ _pi_codex_doc_load() {
   fb="$(adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 "$BASH" -c '. "$1" && _pi_codex_fallback_names "$2"' \
         adb-codex-fallback "$_PI_SELF" "$p")"; wrc=$?
   case "$wrc" in 0) : ;; 124) return 3 ;; *) return 1 ;; esac
-  [ "$SECONDS" -lt "$deadline" ] || return 3
+  seen[AGENTS.override.md]=1; seen[AGENTS.md]=1
   while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    case " ${names[*]} " in *" $n "*) continue ;; esac
-    names+=("$n")
+    [ "$SECONDS" -lt "$deadline" ] || return 3
+    [ -n "$n" ] && [ -z "${seen[$n]+x}" ] || continue
+    seen["$n"]=1; names+=("$n")
   done <<< "$fb"
   for i in "${!names[@]}"; do
     rank["${names[$i]}"]="$i"
     [ "$i" -eq 0 ] || expr+=(-o)
-    expr+=(-name "${names[$i]}")
+    # Codex reads each name literally; `find -name` reads a glob, so its pattern characters are escaped.
+    expr+=(-name "$(printf '%s' "${names[$i]}" | sed 's/[][*?\\]/\\&/g')")
   done
-  list="$(mktemp "${TMPDIR:-/tmp}/adb-codex-docs.XXXXXX")" || return 1
-  adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 find "$p" \( -name .git -print0 -prune \) -o \
-    \( \( "${expr[@]}" \) \( -type f -o -type l \) -print0 \) > "$list"; wrc=$?
-  case "$wrc" in
-    0)   : ;;
-    124) rm -f "$list"; return 3 ;;
-    *)   rm -f "$list"; return 1 ;;
-  esac
+  left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] || return 3
+  # Streamed, not staged: the walk's output is read as it arrives, and its status is the procsub's.
   while IFS= read -r -d '' f; do
-    [ "$SECONDS" -lt "$deadline" ] || { rm -f "$list"; return 3; }
+    [ "$SECONDS" -lt "$deadline" ] || return 3
     n="${f##*/}"
     f="${f#"$p"}"; f="${f#/}"
     d="${f%/*}"; [ "$d" = "$f" ] && d=.
     if [ "$n" = .git ]; then isroot["$d"]=1; continue; fi
     [ -f "$p/$f" ] || continue   # a link is read through; a dangling one is nothing Codex can read
     if [ -z "${doc[$d]+x}" ] || [ "${rank[$n]}" -lt "${rank[${doc[$d]##*/}]}" ]; then doc["$d"]="$f"; fi
-  done < "$list"
-  rm -f "$list"
+  done < <(adb_run_bounded "$left" 5 find "$p" \( -name .git -print0 -prune \) -o \
+             \( \( "${expr[@]}" \) \( -type f -o -type l \) -print0 \))
+  wait "$!"; wrc=$?
+  case "$wrc" in 0) : ;; 124) return 3 ;; *) return 1 ;; esac
   for d in "${!doc[@]}"; do
     left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] || return 3
     raw="$(adb_run_bounded "$left" 5 wc -c "$p/${doc[$d]}")"; wrc=$?
