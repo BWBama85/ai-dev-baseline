@@ -1006,6 +1006,26 @@ chmod +x "$badwc/wc"
 out="$(PATH="$badwc:$PATH" bash "$PI" install --project "$PCF" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
 yes "$rc" "budget(failed-read): an install whose size read fails still completes"
 has "$out" "could not list or read this project's AGENTS.md files" "budget(failed-read): …and reports the budget unchecked rather than measured"
+# A configured fallback name is a project doc Codex loads, so it counts toward the chain.
+PCG="$(new_project codexfallback)"
+cxhome="$work/codexhome"; mkdir -p "$cxhome" "$PCG/svc"
+printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$cxhome/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PCG/svc/GUIDE.md"
+out="$(CODEX_HOME="$cxhome" bash "$PI" install --project "$PCG" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback): a configured fallback doc is measured"
+# A nested repository is its own project root to Codex, so its docs never add to the outer root's.
+PCR="$(new_project codexnestedrepo)"
+mkdir -p "$PCR/vendor/lib/.git"
+awk 'BEGIN { for (i = 0; i < 280; i++) print "Nested repository prose that Codex loads only from inside that repository." }' > "$PCR/vendor/lib/AGENTS.md"
+out="$(bash "$PI" install --project "$PCR" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+[ $(( $(wc -c < "$PCR/AGENTS.md") + $(wc -c < "$PCR/vendor/lib/AGENTS.md") )) -gt 32768 ] && ok \
+  || bad "budget(nested-repo): the fixture must put root + nested past the budget, or this row proves nothing"
+hasnt "$out" "WARNING  " "budget(nested-repo): a nested repository's doc is not chained onto the outer root's"
+# An unusable scan bound falls back to the default instead of reaching the arithmetic.
+PCB2="$(new_project codexbadsecs)"
+out="$(ADB_PINNED_CODEX_SCAN_SECS=abc bash "$PI" install --project "$PCB2" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(bad-secs): a non-numeric scan bound does not break the install"
+hasnt "$out" "could not be measured" "budget(bad-secs): …and the scan ran under the default bound"
 # Uninstall deletes a project AGENTS.md only when NOTHING of the project's own is left in it; a
 # grep that cannot read what would remain must refuse, never read as "nothing left".
 PSB="$(new_project stripblock)"

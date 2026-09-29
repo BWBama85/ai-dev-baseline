@@ -94,10 +94,11 @@ might carry is rejected as an unknown token.
 
 **Procedures (#434).** A practice's `<!-- adb:procedure -->` blocks render to one file per agent,
 not into the root doc, and the root doc ends that practice with a pointer. Add a
-`render_procedure foo "$f"` line beside the other three in the procedure loop, and give `foo` a
-row in `_adb_procedure_manifest_lines` (`scripts/lib/common.sh`) linking
-`agents/foo/reference` into `foo`'s home — the pointer is read from that manifest row, so
-without it the build refuses to render `foo`'s root doc. Verify, through the agent's own
+`render_procedure foo "$f"` line beside the other three in the procedure loop, and call
+`_adb_procedure_manifest_lines foo "$repo" "$home/.foo"` from `foo`'s arm of `adb_agent_manifest`
+(`scripts/lib/common.sh`); that helper emits the `agents/foo/reference` row for any agent. The
+pointer is read from that manifest row, so without the call the build refuses to render `foo`'s
+root doc. Verify, through the agent's own
 documentation, what on-demand instruction surface `foo` really has: the reference bundle is
 the fallback when it has none (Codex and Gemini), and a path-scoped surface like Claude's rules
 directory earns its own branch in `build_procedure_dir` only if it loads a file *lazily*.
@@ -120,9 +121,9 @@ and its output tree. If `foo` uses the same `SKILL.md` surface, add a `case`
 arm and a `render_agent_skill foo "$wf"` call in the render loop; if it uses a
 different surface, its renderer plugs in the same way and reads the same
 `base/workflows/*.md` sources — either way the workflows are authored once, not
-re-authored per agent. A `render()` for `foo`'s root doc is all that's required
-for `foo` to be installable and role-assignable; native skills are the optional
-deeper parity described below.
+re-authored per agent. A `render()` for `foo`'s root doc, its `render_procedure` line and its
+manifest call (the procedures section above) are all that's required for `foo` to be installable
+and role-assignable; native skills are the optional deeper parity described below.
 
 ### Choose `foo`'s instruction density — do not let it default silently
 

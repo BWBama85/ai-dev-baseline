@@ -10,8 +10,8 @@ A project-specific doc in the current repo overrides anything here
 (see base/practices/00-index.md for precedence).
 
 A practice with a procedure ends in a **Procedure:** line naming the file that holds it. If
-that file is missing, the procedures were never linked for this install: run `baseline update`
-(a pinned project: `baseline pinned status`).
+that file is missing, re-link the procedures with `baseline update` (in a pinned project,
+`baseline pinned status` names what is missing).
 
 ---
 

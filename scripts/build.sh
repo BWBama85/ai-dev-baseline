@@ -418,8 +418,8 @@ render() {
     printf 'A project-specific doc in the current repo overrides anything here\n'
     printf '(see base/practices/00-index.md for precedence).\n\n'
     printf 'A practice with a procedure ends in a **Procedure:** line naming the file that holds it. If\n'
-    printf 'that file is missing, the procedures were never linked for this install: run `baseline update`\n'
-    printf '(a pinned project: `baseline pinned status`).\n\n'
+    printf 'that file is missing, re-link the procedures with `baseline update` (in a pinned project,\n'
+    printf '`baseline pinned status` names what is missing).\n\n'
     printf -- '---\n\n'
     local f
     for f in "$practices"/*.md; do

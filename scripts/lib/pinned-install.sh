@@ -88,24 +88,71 @@ PI_HOOKS_EXCLUDED="session-currency.sh"
 # not, so the heaviest chain Codex loads is measured and the operator told, with the line that fixes it.
 PI_CODEX_DOC_DEFAULT_MAX=32768
 
-# How long the Codex budget scan may walk the project before it gives up and says so.
+# How long the Codex budget scan may take before it gives up and says so; anything but a small
+# positive integer falls back to the default rather than reaching the arithmetic below.
 PI_CODEX_SCAN_SECS="${ADB_PINNED_CODEX_SCAN_SECS:-30}"
+case "$PI_CODEX_SCAN_SECS" in ''|*[!0-9]*) PI_CODEX_SCAN_SECS=30 ;; esac
+[ "${#PI_CODEX_SCAN_SECS}" -le 6 ] && [ "$(( 10#$PI_CODEX_SCAN_SECS ))" -gt 0 ] || PI_CODEX_SCAN_SECS=30
+PI_CODEX_SCAN_SECS=$(( 10#$PI_CODEX_SCAN_SECS ))
+
+# _pi_codex_fallback_names <project-root> — the `project_doc_fallback_filenames` Codex adds after
+# AGENTS.override.md and AGENTS.md, one per line: the repository's `.codex/config.toml` when it sets
+# the key, else `${CODEX_HOME:-~/.codex}/config.toml`. The system, profile and command-line layers
+# are not read. A name carrying a slash is not a filename and is skipped.
+_pi_codex_fallback_names() {
+  local f names=""
+  for f in "$1/.codex/config.toml" "${CODEX_HOME:-$HOME/.codex}/config.toml"; do
+    [ -f "$f" ] || continue
+    names="$(awk -v sq="'" '
+      /^[[:space:]]*\[/ && !inval { exit }
+      !inval && /^[[:space:]]*project_doc_fallback_filenames[[:space:]]*=/ { inval = 1; sub(/^[^=]*=/, "") }
+      inval {
+        buf = buf " " $0
+        if (index($0, "]")) { found = 1; exit }
+      }
+      END {
+        if (!found) exit
+        sub(/\].*$/, "", buf)
+        while (match(buf, "\"[^\"]*\"|" sq "[^" sq "]*" sq)) {
+          v = substr(buf, RSTART + 1, RLENGTH - 2); buf = substr(buf, RSTART + RLENGTH)
+          if (v != "" && index(v, "/") == 0) print v
+        }
+        print "\001"
+      }' "$f")"
+    # The trailing \001 line says the key was set (possibly to []), which ends the search.
+    case "$names" in *$'\001') printf '%s' "${names%$'\001'}"; return 0 ;; esac
+  done
+  return 0
+}
 
 # _pi_codex_doc_load <project-root> — print `<bytes><TAB><dir>` for the heaviest chain of project docs
-# Codex reads: each directory's doc from the root down to the working directory (agents_md.rs), taken
-# over every directory that carries one, so a nested AGENTS.md counts with the root's. A directory's
-# doc is its AGENTS.override.md when present, else its AGENTS.md — the order Codex probes them in.
-# Found on the filesystem as Codex finds them: ignored files and symlinked docs count. Not counted:
-# names from the operator's `project_doc_fallback_filenames`, and docs reachable only through a
-# symlinked directory. PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, each size read,
-# and the loops between them — and returns 3 when it runs out; 1 when a walk or a read fails.
+# Codex reads: each directory's doc from the project root down to the working directory
+# (agents_md.rs), taken over every directory that carries one. A directory's doc is the first of
+# AGENTS.override.md, AGENTS.md and the configured fallback names that exists there — the order Codex
+# probes them in — and a chain starts at the nearest directory holding `.git`, Codex's default
+# project-root marker, so a nested repository's docs are not added to the outer root's. Found on the
+# filesystem as Codex finds them: ignored files and symlinked docs count; docs reachable only through
+# a symlinked directory, custom `project_root_markers` and the unread config layers do not.
+# PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, each size read and the loops between —
+# and returns 3 when it runs out; 1 when a walk or a read fails.
 _pi_codex_doc_load() {
-  local p="$1" f d best=0 bestdir=. sum anc list wrc deadline left raw
-  local -A doc=() size=()
+  local p="$1" f d n i best=0 bestdir=. sum anc list wrc deadline left raw
+  local -A doc=() rank=() size=() isroot=()
+  local -a names=(AGENTS.override.md AGENTS.md) expr=()
   deadline=$(( SECONDS + PI_CODEX_SCAN_SECS ))
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    case " ${names[*]} " in *" $n "*) continue ;; esac
+    names+=("$n")
+  done <<< "$(_pi_codex_fallback_names "$p")"
+  for i in "${!names[@]}"; do
+    rank["${names[$i]}"]="$i"
+    [ "$i" -eq 0 ] || expr+=(-o)
+    expr+=(-name "${names[$i]}")
+  done
   list="$(mktemp "${TMPDIR:-/tmp}/adb-codex-docs.XXXXXX")" || return 1
-  adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 find "$p" -name .git -prune -o \
-    \( -name AGENTS.md -o -name AGENTS.override.md \) \( -type f -o -type l \) -print0 > "$list"; wrc=$?
+  adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 find "$p" \( -name .git -print0 -prune \) -o \
+    \( \( "${expr[@]}" \) \( -type f -o -type l \) -print0 \) > "$list"; wrc=$?
   case "$wrc" in
     0)   : ;;
     124) rm -f "$list"; return 3 ;;
@@ -113,13 +160,12 @@ _pi_codex_doc_load() {
   esac
   while IFS= read -r -d '' f; do
     [ "$SECONDS" -lt "$deadline" ] || { rm -f "$list"; return 3; }
-    [ -f "$f" ] || continue   # a link is read through; a dangling one is nothing Codex can read
-    f="${f#"$p"/}"
+    n="${f##*/}"
+    f="${f#"$p"}"; f="${f#/}"
     d="${f%/*}"; [ "$d" = "$f" ] && d=.
-    case "$f" in
-      AGENTS.override.md|*/AGENTS.override.md) doc["$d"]="$f" ;;
-      *) [ -n "${doc[$d]+x}" ] || doc["$d"]="$f" ;;
-    esac
+    if [ "$n" = .git ]; then isroot["$d"]=1; continue; fi
+    [ -f "$p/$f" ] || continue   # a link is read through; a dangling one is nothing Codex can read
+    if [ -z "${doc[$d]+x}" ] || [ "${rank[$n]}" -lt "${rank[${doc[$d]##*/}]}" ]; then doc["$d"]="$f"; fi
   done < "$list"
   rm -f "$list"
   for d in "${!doc[@]}"; do
@@ -136,6 +182,7 @@ _pi_codex_doc_load() {
     while :; do
       if [ -n "${size[$anc]+x}" ]; then sum=$(( sum + size[$anc] )); fi
       [ "$anc" = . ] && break
+      [ -n "${isroot[$anc]+x}" ] && break
       case "$anc" in */*) anc="${anc%/*}" ;; *) anc=. ;; esac
     done
     if [ "$sum" -gt "$best" ]; then best="$sum"; bestdir="$d"; fi
