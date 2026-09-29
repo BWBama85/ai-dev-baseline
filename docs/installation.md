@@ -105,6 +105,11 @@ project's directories and Gemini's `@file` imports load eagerly — so each gets
 bundle its pointers name. Each tree is one directory link, removed by `uninstall.sh` like
 every other manifest row; `/context` (Claude) and `/memory show` (Gemini) show what loaded.
 
+**Upgrading from a single-file install:** a bare `git pull` updates the root doc, but the procedure
+links are new manifest rows, which only `install.sh` or `baseline update` creates — run either once
+(Claude's session-start currency check does it for you). Until then the rules still load and each
+pointer names a file that is not there yet; the root doc's header says which command links it.
+
 **Want the old single-file shape?** Concatenate them yourself — the procedures are plain
 Markdown: `cat ~/.claude/CLAUDE.md ~/.claude/ai-dev-baseline/reference/*.md ~/.claude/rules/ai-dev-baseline/*.md`.
 Nothing ships a flag for it.

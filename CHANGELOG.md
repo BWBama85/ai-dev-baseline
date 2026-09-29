@@ -31,6 +31,11 @@ only by a published release, which is what these entries are the notes for.
   procedures in the on-demand bucket and each root doc's lines against the ~200-line goal, never
   as a gate, and `scripts/check-practice-split.sh` proves the split lost and doubled nothing.
 
+  **Upgrading a global install:** a bare `git pull` updates the root doc but cannot create the
+  new procedure links — run `baseline update` (or `./install.sh`) once. Claude's session-start
+  currency check does this on its own; the root doc's header names the command for any agent that
+  finds a procedure missing.
+
 - **Fix code is reviewed before it is pushed (#491).** `/implement-issue` reviewed a diff once and
   pushed step 9's fixes unread; `/resolve-pr-threads` sent each round's fixes straight to the async
   reviewer, roughly 80 minutes a sample. Both now run a local convergence loop first:
