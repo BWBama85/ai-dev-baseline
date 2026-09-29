@@ -490,7 +490,8 @@ just executed by a different agent:
 ## Why this matters
 
 Because the practices in `base/practices/` are agent-neutral and every
-agent's rendered root doc carries the same content (see
+agent's rendered root doc carries the same rules, and its procedures the same how give or take a
+per-agent density block (see
 [philosophy.md](philosophy.md)), the only thing that changes between these
 two examples is four lines in `agents.toml`. The workflow, the gates, the
 state protocol, and the discipline are identical either way.

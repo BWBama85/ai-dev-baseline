@@ -1,0 +1,53 @@
+<!-- GENERATED FILE — do not edit by hand.
+     Source: base/practices/repo-scope.md · Regenerate: scripts/build.sh
+     Edits here are overwritten on the next build. -->
+
+# Verify repo scope before starting — procedure
+
+## The project may be larger or smaller than the git root
+
+Do not assume the working directory **is** the git root, or that there is exactly
+**one** root doc. Real repos break both, and tooling that assumes a tidy single-root
+state either fails or silently operates on the wrong root. Watch for:
+
+- **Working dir ≠ git root.** You may be several directories below the top level.
+  Resolve the git root explicitly before acting on repo-wide state.
+- **Nested repos.** A repo can be checked out *inside* another repo (a plugin under
+  a site, a vendored checkout). Git operations from inside the inner repo act on the
+  **inner** one — confirm that's the one you mean.
+- **Untracked parent trees.** The git root can sit deep inside a larger project that
+  is **entirely untracked** (e.g. a plugin at `.../wp-content/plugins/<repo>` inside
+  a WordPress install). Git-aware tools see only the inner repo; the surrounding
+  project is invisible to them.
+- **Out-of-repo root docs.** A `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` referenced by
+  relative path may live **above** the git root, outside any repo — real context that
+  no git-aware command will surface. Layered/monorepo layouts also carry **multiple**
+  in-tree root docs (one per package).
+
+**When the shape is non-tidy, surface it — don't hard-fail and don't operate on the
+wrong root.** State what you resolved, note what's outside your reach (the untracked
+parent, the out-of-repo doc), and confirm the intended boundary before proceeding.
+The shared `adb_repo_shape` primitive (`scripts/lib/common.sh`) reports these facts
+(git-root vs working dir, nested-in, out-of-repo `foreign_doc`s, in-tree `extra_doc`s)
+so tooling can tolerate the shape from one home rather than each re-deriving it;
+`bin/agent-init` consumes it.
+
+**The one shape that IS refused rather than surfaced: a path the reporter cannot
+name.** "Don't hard-fail" above is about layouts that are merely *awkward* — nested,
+untracked-parent, layered — where the root is known and only the boundary is in
+question. A directory whose name contains a **tab or newline** is a different problem:
+those are the record delimiters `adb_repo_shape` reports through, so the root does not
+arrive truncated-and-obviously-broken, it arrives as a **shorter path that frequently
+exists** — `/w/project<NL>shadow` reads back as `/w/project`, a real sibling. There is
+no "surface it and proceed" for that, because proceeding means operating on the wrong
+root, which is the thing this whole section forbids. So the primitive emits a `warning`
+and *no* facts, and `bin/agent-init` stops (#278).
+
+## Why
+
+A whole session was once lost because the requested issues lived in a different
+repository than the one that was checked out. A three-second `gh issue view`
+up front fails fast instead. The same class of mistake — assuming a tidy single-root
+layout — surfaced in a 4-project sweep (a plugin nested in an untracked WordPress
+install with a second root doc outside the repo; a pnpm monorepo whose "project" is
+several packages), which is why repo-shape awareness is part of scoping.

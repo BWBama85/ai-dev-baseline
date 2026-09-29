@@ -264,6 +264,23 @@ danglesrc="$work/dangle-src"; ln -s "$work/nowhere" "$danglesrc"
 adb_link "$danglesrc" "$work/guard-dangle.txt" "$backup" 2>/dev/null; no $? "adb_link dangling-symlink source returns nonzero"
 if [ ! -e "$work/guard-dangle.txt" ]; then ok; else bad "adb_link dangling source creates no link"; fi
 
+# --- adb_toml_get: an empty table names the top level ------------------------
+tlf="$work/toplevel.toml"
+printf 'k = ["a]b.md", "c.md"]\n[t]\nk = ["nested"]\n' > "$tlf"
+eq "$(adb_toml_get "$tlf" "" k)" '["a]b.md", "c.md"]' "adb_toml_get with an empty table reads the top-level key"
+eq "$(adb_toml_get "$tlf" t k)" '["nested"]' "…and a named table still reads its own key, not the top-level one"
+eq "$(adb_toml_array "$(adb_toml_get "$tlf" "" k)" | tr '\n' ' ')" "a]b.md c.md " "a bracket inside a quoted element survives the array read"
+eq "$(adb_toml_array "[\"TEAM,GUIDE.md\", 'lit,eral', \"claude\"]" | tr '\n' '|')" "TEAM,GUIDE.md|lit,eral|claude|" \
+  "a comma inside a quoted element (basic or literal) is part of it, not a separator"
+eq "$(adb_toml_array --verbatim "[\" TEAM.md \", 'a,b', \"c\",]" | tr '\n' '|')" " TEAM.md |a,b|c|" \
+  "--verbatim keeps a quoted element's bytes exactly and tolerates a trailing comma"
+adb_toml_array --verbatim '["x\\"y"]' >/dev/null; eq "$?" "2" "--verbatim refuses a backslash escape it does not decode"
+adb_toml_array --verbatim '[bare]' >/dev/null; eq "$?" "2" "--verbatim refuses an unquoted element"
+adb_toml_array --verbatim '["G\u0055IDE.md"]' >/dev/null; eq "$?" "2" "--verbatim sees an escape awk -v would have decoded away"
+eq "$(adb_toml_array "[\" claude \"]")" "claude" "the default mode still trims inside the quotes"
+printf '[t]\nk = ["nested"]\n' > "$tlf"
+adb_toml_get "$tlf" "" k >/dev/null; eq "$?" "1" "a key that appears only inside a table is absent at the top level"
+
 # --- adb_agent_manifest (#48) ------------------------------------------------
 # One producer of the install surface. Assert the shape: TAB-separated <src>\t<dest>, absolute
 # sources with NO trailing slash on skill dirs, and the canonical scripts/lib entry.
@@ -299,6 +316,21 @@ echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/GEMINI.md${tab_}$mhome/.gemini/
 echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/skills/demo${tab_}$mhome/.gemini/config/skills/demo" && ok || bad "gemini manifest emits skill dir under ~/.gemini/config/skills"
 echo "$gman" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.gemini/scripts/lib" && ok || bad "gemini manifest emits the shared gate runner (scripts/lib)"
 eq "$(adb_agent_manifest bogus "$mrepo" "$mhome")" "" "unknown agent manifest prints nothing"
+# Procedure trees (#434): one directory link each, emitted only once the tree exists, and `rules/`
+# for Claude alone — ~/.codex/rules holds command-approval policy, never Markdown.
+echo "$man" | grep -Fq -- "/reference${tab_}" && bad "manifest names a reference tree that does not exist" || ok
+mkdir -p "$mrepo/agents/claude/rules" "$mrepo/agents/claude/reference" "$mrepo/agents/codex/rules" \
+         "$mrepo/agents/codex/reference" "$mrepo/agents/gemini/reference"
+man="$(adb_agent_manifest claude "$mrepo" "$mhome")"
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/rules${tab_}$mhome/.claude/rules/ai-dev-baseline" && ok || bad "claude manifest links its path-scoped rules tree"
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/reference${tab_}$mhome/.claude/ai-dev-baseline/reference" && ok || bad "claude manifest links its reference tree"
+cman="$(adb_agent_manifest codex "$mrepo" "$mhome")"
+echo "$cman" | grep -Fq -- "$mrepo/agents/codex/reference${tab_}$mhome/.codex/ai-dev-baseline/reference" && ok || bad "codex manifest links its reference tree"
+echo "$cman" | grep -Fq -- "/rules" && bad "codex manifest must never link a rules tree into ~/.codex/rules" || ok
+gman="$(adb_agent_manifest gemini "$mrepo" "$mhome")"
+echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/reference${tab_}$mhome/.gemini/ai-dev-baseline/reference" && ok || bad "gemini manifest links its reference tree"
+rm -rf "$mrepo/agents/claude/rules" "$mrepo/agents/claude/reference" "$mrepo/agents/codex/rules" \
+       "$mrepo/agents/codex/reference" "$mrepo/agents/gemini/reference"
 
 # --- adb_link_manifest (#48) -------------------------------------------------
 # Consumes a manifest and links each entry; accumulates a non-zero status if ANY entry fails.

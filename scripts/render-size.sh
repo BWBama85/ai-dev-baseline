@@ -45,14 +45,19 @@
 # --markdown: the same rows as a GitHub-flavored Markdown table with a header row, for a CI job
 # summary; the column names above are its ONE home.
 #
-# The expected artifact set is DERIVED from base/workflows/ and the agent table below, never
-# globbed from agents/ — a glob reports what exists, so a skill that failed to render would simply
-# be absent from the output.
+# The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
+# below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render
+# would simply be absent from the output. A practice carrying an `adb:procedure` block yields one
+# procedure file per agent (#434): agents/claude/rules/ for Claude when the practice declares
+# `adb:paths`, agents/<agent>/reference/ otherwise — derived from the source, so a copy in the other
+# tree is a fault rather than a substitute. It is measured in the on-demand bucket, and the summary
+# reports each root doc's lines against the ~200-line goal, which is a report and never a gate.
 #
 # Exit: 0 every expected artifact was measured · 1 a mechanical fault — MISSING, UNREADABLE,
-# UNCOUNTABLE, EMPTY, UNNAMEABLE, a collapsed derivation, or a blob at <ref> that git could not
-# list or read · 2 usage, --since outside a git repository, or a <ref> that is not a commit.
-# Size NEVER fails this command; there is no ceiling (#355).
+# UNCOUNTABLE, EMPTY, UNNAMEABLE, DUPLICATE (a procedure also present in the tree it does not
+# render to), a collapsed
+# derivation, or a blob at <ref> that git could not list or read · 2 usage, --since outside a git
+# repository, or a <ref> that is not a commit. Size NEVER fails this command; there is no ceiling (#355).
 
 # bash 5.3 runtime floor (#256) — FIRST, before `set -u` and before the cd, and confirmed by
 # PROBING FOR THE FUNCTION rather than by the source's exit status. Same idiom, same reasons, as
@@ -214,7 +219,7 @@ emit() {
     rc=1; return 1
   fi
   measure "$f" "$f" || { rc=1; return 1; }
-  lines=$M_LINES; words=$M_WORDS; tokens=$M_TOKENS
+  lines=$M_LINES; words=$M_WORDS; tokens=$M_TOKENS; E_LINES=$lines
   fenced="$(fenced_comments "$f")" || fenced=""
   case "$fenced" in ''|*[!0-9]*)
     printf 'render-size: UNCOUNTABLE %s — the fenced-comment scan returned %s\n' "$f" "$(adb_display_value "$fenced")" >&2
@@ -258,9 +263,50 @@ if [ "$MARKDOWN" -eq 1 ]; then
   row "${SEP[@]}"
 fi
 
+goal=""
 for pair in $AGENTS; do
-  emit "agents/${pair%%:*}/${pair#*:}" && roots=$(( roots + 1 ))
+  emit "agents/${pair%%:*}/${pair#*:}" && { roots=$(( roots + 1 )); goal="${goal:+$goal, }${pair%%:*} $E_LINES"; }
 done
+
+procs=0; psources=0
+EMIT_BUCKET=ondemand
+for pf in base/practices/*.md; do
+  [ -f "$pf" ] || continue
+  pbase="${pf##*/}"
+  case "$pbase" in 00-index.md) continue ;; esac
+  # 2 is a practice that could not be read, which must not pass as one with no procedure.
+  LC_ALL=C grep -Fqx -- '<!-- adb:procedure -->' "$pf"; grc=$?
+  case "$grc" in
+    0) : ;;
+    1) continue ;;
+    *) printf 'render-size: UNREADABLE %s — could not read it to learn whether it has a procedure\n' "$pf" >&2
+       rc=1; continue ;;
+  esac
+  case "$pbase" in *[!A-Za-z0-9._-]*)
+    printf 'render-size: UNNAMEABLE base/practices/%s — a practice name outside [A-Za-z0-9._-] cannot be reported in this TSV\n' "$(adb_display_value "$pbase")" >&2
+    rc=1; continue ;;
+  esac
+  psources=$(( psources + 1 ))
+  for pair in $AGENTS; do
+    a="${pair%%:*}"
+    pexp=reference; pother=rules
+    if [ "$a" = claude ]; then
+      LC_ALL=C grep -q '^<!-- adb:paths ' "$pf"; grc=$?
+      case "$grc" in
+        0) pexp=rules; pother=reference ;;
+        1) : ;;
+        *) printf 'render-size: UNREADABLE %s — could not read its adb:paths scope\n' "$pf" >&2
+           rc=1; continue ;;
+      esac
+    fi
+    if [ -e "agents/$a/$pother/$pbase" ] || [ -L "agents/$a/$pother/$pbase" ]; then
+      printf 'render-size: DUPLICATE %s — agents/%s/%s/%s is a stale copy; this procedure renders to agents/%s/%s/ (delete the stale one)\n' "$pbase" "$a" "$pother" "$pbase" "$a" "$pexp" >&2
+      rc=1
+    fi
+    emit "agents/$a/$pexp/$pbase" && procs=$(( procs + 1 ))
+  done
+done
+EMIT_BUCKET=loaded
 
 sources=0
 for wf in base/workflows/*.md; do
@@ -309,12 +355,13 @@ fi
 # subtotal ROW would break any consumer that sums the rows or reads the last row as the total.
 if [ -z "$SINCE_SHA" ]; then
   row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))"
-  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer\n' \
-    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" >&2
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s), and %s procedure file(s) from %s practice(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer\n' \
+    "$roots" "$skills" "$supports" "$sources" "$procs" "$psources" "$t_tokens" "$od_tokens" >&2
 else
   row TOTAL "$((t_lines + od_lines))" "$((t_words + od_words))" "$((t_tokens + od_tokens))" "$((t_fenced + od_fenced))" "$((t_dlines + od_dlines))" "$((t_dtokens + od_dtokens))"
-  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new (on-demand: %s new)\n' \
-    "$roots" "$skills" "$supports" "$sources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news_loaded" "$news_od" >&2
+  printf 'render-size: measured %s root doc(s), %s skill(s) and %s on-demand supporting file(s) from %s workflow source(s), and %s procedure file(s) from %s practice(s); loaded approx_tokens %s, on-demand approx_tokens %s; approx_tokens = ceil(bytes/4), a heuristic, not a tokenizer; since %s (%s): loaded delta_lines %s, delta_tokens %s, %s new (on-demand: %s new)\n' \
+    "$roots" "$skills" "$supports" "$sources" "$procs" "$psources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news_loaded" "$news_od" >&2
 fi
+[ -z "$goal" ] || printf 'render-size: root doc lines against the ~200-line goal (a report, never a gate): %s\n' "$goal" >&2
 
 exit "$rc"

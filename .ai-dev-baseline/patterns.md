@@ -759,4 +759,11 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/implement-lib.sh:4907` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVU` PR #504 2026-09-28 — report digested the tree under a mutex reaped after 60s, so a slow decision could race a reservation
 - `unbounded-resource` `.github/workflows/ci.yml:1041` `83f829d` `PRRT_kwDOTfywrM6m4Op1` PR #504 2026-09-28 — implement-gate gained a second mutation harness under a 45-minute ceiling sized for one
 - `stale-doc-claim` `.github/workflows/ci.yml:1560` `83f829d` `PRRT_kwDOTfywrM6m4Op_` PR #504 2026-09-28 — CONTRIBUTING.md still described four macOS skips after the fifth was added
+- `status-swallowed` `scripts/build.sh:521` `3e49ca3` `PRRT_kwDOTfywrM6m9VA-` PR #507 2026-09-29 — sed piped into grep -q under pipefail read a nonempty procedure as empty
+- `trailing-newline-stripped` `scripts/check-practice-split.sh:172` `9ce6881` `PRRT_kwDOTfywrM6m9VBA` PR #507 2026-09-29 — byte-exact comparisons through command substitution dropped NUL bytes
+- `unbounded-resource` `scripts/lib/pinned-install.sh:126` `6dc4311` `PRRT_kwDOTfywrM6m_Rlj` PR #507 2026-09-29 — each Codex doc size read ran outside the scan deadline
+- `status-swallowed` `scripts/lib/pinned-install.sh:126` `6dc4311` `PRRT_kwDOTfywrM6m_Rlm` PR #507 2026-09-29 — a failed size read counted as zero bytes and suppressed the budget warning
+- `consumer-contract-mismatch` `scripts/lib/common.sh:269` `a906820` `PRRT_kwDOTfywrM6m_Rlr` PR #507 2026-09-29 — the root doc a git pull updates pointed at links only an installer creates, with no stated route
+- `unbounded-resource` `scripts/lib/pinned-install.sh:153` `b456036` `PRRT_kwDOTfywrM6nLp8f` PR #507 2026-09-29 — the walk got the full scan bound after the config read spent part of it
+- `partial-validation` `scripts/lib/pinned-install.sh:144` `b456036` `PRRT_kwDOTfywrM6nLp8s` PR #507 2026-09-29 — fallback names deduplicated by substring match dropped a name that was a word of another
 <!-- adb:hits:end -->

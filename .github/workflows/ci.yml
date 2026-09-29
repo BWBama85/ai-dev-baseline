@@ -139,6 +139,29 @@ jobs:
             rc=1
           fi
 
+          # Procedure files (#434): the second render class of base/practices/*.md. Their 1:1
+          # with the sources is check-practice-split.sh's, below.
+          for tree in agents/claude/rules agents/claude/reference agents/codex/reference agents/gemini/reference; do
+            if ! git diff --exit-code -- "$tree"; then
+              echo "::error::$tree is stale relative to base/practices/*.md. Run 'bash scripts/build.sh' locally and commit the regenerated file(s)."
+              rc=1
+            fi
+            untracked="$(git ls-files --others --exclude-standard -- "$tree")"
+            if [ -n "$untracked" ]; then
+              echo "::error::rendered procedure(s) under $tree were produced but not committed:"
+              echo "$untracked"
+              rc=1
+            fi
+            # Gitignore-immune, as for the skills below: --others respects .gitignore.
+            for pf in "$tree"/*.md; do
+              [ -e "$pf" ] || continue
+              if ! git ls-files --error-unmatch "$pf" >/dev/null 2>&1; then
+                echo "::error::$pf exists but is not git-tracked (untracked or gitignored) — run 'bash scripts/build.sh' and commit it"
+                rc=1
+              fi
+            done
+          done
+
           # Generated skills: base/workflows/*.md renders into EVERY agent's skills tree
           # (Claude, Codex, Gemini). git diff catches a modified tracked SKILL.md;
           # git ls-files --others catches a newly-rendered skill that was never committed
@@ -192,6 +215,13 @@ jobs:
       # drift comparison is safe.
       - name: A failed render must not truncate the tracked file it was writing (#268)
         run: bash scripts/check-build-atomic.sh
+
+      # Rides this job for the reason the step above gives. build-drift proves the outputs MATCH a
+      # rebuild; this proves the split behind them lost and doubled nothing, and that every pointer
+      # names the path the install manifest links (#434). Measured at 11 s locally (2026-09-28); the
+      # job took 9 s on main (run 36503379920), so its 10-minute bound stands.
+      - name: Every practice's procedure renders exactly once per agent (#434)
+        run: bash scripts/check-practice-split.sh --self-test
 
   skill-frontmatter:
     name: skill-frontmatter
@@ -1417,12 +1447,19 @@ jobs:
             "$HOME/.gemini/scripts/lib/role-dispatch.sh" \
             "$HOME/.gemini/scripts/lib/roadmap-lib.sh" \
             "$HOME/.gemini/scripts/lib/cleanup-lib.sh" \
-            "$HOME/.gemini/scripts/lib/pr-review.sh"; do
+            "$HOME/.gemini/scripts/lib/pr-review.sh" \
+            "$HOME/.claude/rules/ai-dev-baseline/shell.md" \
+            "$HOME/.claude/ai-dev-baseline/reference/git-and-prs.md" \
+            "$HOME/.codex/ai-dev-baseline/reference/shell.md" \
+            "$HOME/.gemini/ai-dev-baseline/reference/shell.md"; do
             if [ ! -e "$p" ]; then
               echo "::error::expected path to exist and resolve: $p"
               exit 1
             fi
           done
+          # Claude loads a rule from ~/.claude/rules only through its `paths:` frontmatter (#434).
+          head -n 3 "$HOME/.claude/rules/ai-dev-baseline/shell.md" | grep -qx '  - "\*\*/\*\.sh"' \
+            || { echo "::error::the installed shell rule does not open with its paths: scope"; exit 1; }
 
       - name: Assert Stop hook wired into settings.json
         run: |
@@ -1442,7 +1479,11 @@ jobs:
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/skills/implement-issue" \
             "$HOME/.gemini/GEMINI.md" \
-            "$HOME/.gemini/config/skills/implement-issue"; do
+            "$HOME/.gemini/config/skills/implement-issue" \
+            "$HOME/.claude/rules/ai-dev-baseline" \
+            "$HOME/.claude/ai-dev-baseline/reference" \
+            "$HOME/.codex/ai-dev-baseline/reference" \
+            "$HOME/.gemini/ai-dev-baseline/reference"; do
             if [ -L "$p" ]; then
               echo "::error::$p is still a symlink after uninstall"
               exit 1

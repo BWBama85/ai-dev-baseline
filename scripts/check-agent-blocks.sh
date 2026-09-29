@@ -525,22 +525,44 @@ eq "$leaked" "" "no tracked generated file carries a marker"
 
 # The unlisted agents still receive byte-identical root docs. This is the assertion that catches a
 # shared paragraph reworded in one render only — build-drift cannot, because it agrees with
-# whatever was committed.
-cmp -s agents/codex/AGENTS.md agents/gemini/GEMINI.md && ok \
-  || bad "the codex and gemini root docs differ — no shipped block excludes either, so they must be byte-identical"
+# whatever was committed. The procedure POINTER is the one line allowed to differ (#434): it names
+# each agent's own installed path, so it is removed before comparing and pinned separately below.
+# The rule text only: from the first separator on (the header names each agent's own pinned route),
+# without the pointer lines.
+rules_only() { sed -n '/^---$/,$p' "$1" | grep -v '^\*\*Procedure:\*\* '; }
+# The comparisons below go through `$(…)`, which drops NUL bytes, so each doc is required NUL-free.
+for f in agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md; do
+  LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f" && ok || bad "$f carries a NUL byte, which the comparisons below cannot see"
+done
+[ "$(rules_only agents/codex/AGENTS.md; printf x)" = "$(rules_only agents/gemini/GEMINI.md; printf x)" ] && ok \
+  || bad "the codex and gemini root docs differ outside their procedure pointers — no shipped block excludes either, so they must be identical"
+for f in agents/codex/reference/*.md; do
+  cmp -s "$f" "agents/gemini/reference/${f##*/}" && ok \
+    || bad "codex and gemini procedure ${f##*/} differ — no shipped block excludes either"
+done
+refs=(agents/codex/reference/*.md)
+eq "$(grep -c '^\*\*Procedure:\*\* ' agents/codex/AGENTS.md)" "${#refs[@]}" \
+  "every codex procedure pointer is a pointer line the comparison above removed, and nothing else was"
 
-# NOTHING IS CLAUDE-EXCLUSIVE TODAY. Every shipped block is an `except claude`, so claude's root
-# doc is a strict subset of codex's and `diff` must produce no `<` lines at all. A future block
+# NOTHING IS CLAUDE-EXCLUSIVE TODAY. Every shipped block is an `except claude`, so claude's rules and
+# procedures are a subset of codex's and `diff` must produce no `<` lines at all. A future block
 # excluding a different agent would fail here — deliberately: it must come with its own assertion
 # rather than silently widening what this one covers.
-onlyclaude="$(diff agents/claude/CLAUDE.md agents/codex/AGENTS.md | grep -c '^<')"
+onlyclaude="$(diff <(rules_only agents/claude/CLAUDE.md) <(rules_only agents/codex/AGENTS.md) | grep -c '^<')"
 eq "$onlyclaude" "0" "the claude root doc adds nothing the codex root doc lacks"
+body() { sed -n '/^# .* — procedure$/,$p' "$1"; }   # a procedure file from its title on
+for f in agents/claude/reference/*.md agents/claude/rules/*.md; do
+  onlyclaude="$(diff <(body "$f") <(body "agents/codex/reference/${f##*/}") | grep -c '^<')"
+  eq "$onlyclaude" "0" "claude's procedure ${f##*/} adds nothing codex's lacks"
+done
 
 # And the difference is the one #304 asked for, named concretely so a render that varies the WRONG
-# text cannot pass by merely varying something.
+# text cannot pass by merely varying something. Since #434 that scaffolding is procedure, so it is
+# pinned in the self-review procedure file each agent receives.
 for s in '## What to look for' 'not a victory lap'; do
-  hasnt "$(cat agents/claude/CLAUDE.md)" "$s" "claude's root doc drops the verification scaffolding: $s"
-  has   "$(cat agents/codex/AGENTS.md)"  "$s" "codex's root doc keeps it: $s"
+  hasnt "$(cat agents/claude/reference/self-review.md)" "$s" "claude's self-review procedure drops the verification scaffolding: $s"
+  has   "$(cat agents/codex/reference/self-review.md)"  "$s" "codex's self-review procedure keeps it: $s"
+  hasnt "$(cat agents/codex/AGENTS.md)"               "$s" "codex's root doc does not carry procedure text: $s"
 done
 for a in codex gemini; do
   has "$(cat "agents/$a/skills/implement-issue/SKILL.md")" 'self-review is the mandatory floor' \

@@ -15,6 +15,7 @@ reference, **confirm it belongs to _this_ repository.**
 **Stop and say which repo the work maps to.** Do not guess, and do not start
 implementing against the wrong codebase. One misrouted issue can waste an entire
 session of exploration before the mismatch surfaces.
+<!-- adb:procedure -->
 
 ## The project may be larger or smaller than the git root
 
@@ -63,3 +64,4 @@ up front fails fast instead. The same class of mistake — assuming a tidy singl
 layout — surfaced in a 4-project sweep (a plugin nested in an untracked WordPress
 install with a second root doc outside the repo; a pnpm monorepo whose "project" is
 several packages), which is why repo-shape awareness is part of scoping.
+<!-- adb:end -->

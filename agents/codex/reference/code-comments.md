@@ -1,0 +1,87 @@
+<!-- GENERATED FILE — do not edit by hand.
+     Source: base/practices/code-comments.md · Regenerate: scripts/build.sh
+     Edits here are overwritten on the next build. -->
+
+# Code comments — procedure
+
+It covers the **fenced code blocks inside `base/workflows/*.md`** too, and there a
+comment costs more than a reader's time: a workflow body is rendered into each agent's
+skill and loaded on every invocation, so a comment inside one of its fences is
+prompt text paid for by every run of that skill, once per agent that renders it, for
+as long as it stays. A review-round annotation beside a fix — *"reported by the
+declared reviewer on PR #N"* — is class 2 there exactly as it is in a script: the
+class goes to the pattern ledger, the story to the decision log, and the line does
+not survive. Measured on this framework's own repo: the #361 rewrite took
+`implement-issue.md` from 16,237 to 13,457 words on 2026-08-18; ten days later it
+stood at 16,266, past where it started, and no pull request in between had shown any
+reviewer the growth (#432). The prose around the fences is instruction, not comment,
+and is not governed here.
+
+When a comment mixes classes — most long ones do — split it. The class-1 sentence
+stays; the rest goes to its home or goes away. When one sentence is genuinely
+both — a call-site constraint that also restates law, like a credential warning
+beside the key it protects — **the keep-class wins**: precedence is 1 > 2 > 3 > 4,
+and the survivor is written as the local constraint, never as the policy quote.
+
+## The form: Google Shell Style Guide
+
+Fetch the guide at implementation time via context7, library id
+`/websites/google_github_io_styleguide` — never from recall
+(`third-party-claims.md`). Its shape, as fetched:
+
+- **File header** — one top-level comment describing the file's contents. One line
+  of purpose; copyright and author optional.
+- **Function comments** — only for functions that are not both obvious *and* short;
+  in a library, that is all of them. Written as API behavior: description,
+  `Globals:`, `Arguments:`, `Outputs:`, `Returns:`. Terse.
+- **Implementation comments** — only for tricky, non-obvious, or important parts.
+  Not every line, and never the code restated in English.
+- **`TODO:`** — for a temporary, short-term or knowingly imperfect solution,
+  carrying the identifier that gives it context.
+
+Other languages: same three-part shape, that language's idiom (docstring, JSDoc,
+doc comment).
+
+The guide stops there; this baseline adds one rule on top of its `TODO:`. Where the
+project tracks work, a TODO that clears `issues-and-scope.md`'s bar is an **issue**
+and not a comment — and one that answers neither of that file's two questions is
+neither, so it is deleted.
+
+## What explicitly stays
+
+- **A guard's contract header.** `self-review.md` requires a guard to say what it
+  checked and to be observed failing; the header naming its rejectable inputs, its
+  exit codes and its output contract is class 1 and is load-bearing. Keep it terse.
+  Do not mistake it for class 2 because it mentions the defect it rejects.
+- **The one-line residue of a relocated incident.** State the rule, not the story —
+  "published by rename; a truncate is observable to a live reader" — and point at
+  the decision-log entry that carries the evidence.
+- **A constraint whose reason is invisible at the call site.** An ordering
+  requirement, a fail-closed choice, an interpreter floor, a deliberate
+  non-obvious spelling. One or two lines: what breaks if you change it.
+
+## No numeric cap
+
+There is no target ratio and no maximum length. A forty-line contract header for a
+library with forty lines of contract is correct; a three-line comment restating a
+practice is not, at any ratio. **The classes are the rule.** A density target would
+license deleting class 1 to reach a number, and class 1 is the one class that must
+survive.
+
+Measured on this framework's own repo, 2026-08-15: 26,015 of 59,681 shell lines —
+44% — were comment lines, with one library at 67% and a single 197-line comment run.
+A 197-line run is not a contract.
+
+## What this does NOT enforce
+
+- **Prose, no gate.** Nothing classifies a comment or blocks a commit on this. The
+  one count that exists is a report — this framework's `render-size.sh` prints the
+  fenced comment lines per rendered artifact, and the delta per pull request — never
+  a threshold: the classes are not decidable from the text by a matcher, and a
+  density check would fire hardest on the class worth keeping.
+- **Enforcement is review-side.** The self-review pass and the reviewer name the
+  class and the disposition, or nobody does. "Comment density" is not a finding;
+  "this is class 3, move it to the decision log or drop it" is.
+- **It stops at the comment character.** Instruction prose — practices, the workflow
+  text around a fence, root docs — is out of scope here, and no claim is made that
+  anything else governs it.

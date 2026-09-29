@@ -123,6 +123,38 @@ has "$out" '/.codex/adb/lib/x.sh' "reanchor: is per-agent"
 bash "$PI" reanchor gemini /p </dev/null >/dev/null 2>&1; rc=$?
 eq "$rc" 2 "reanchor: refuses an agent it does not support"
 
+# A root doc's procedure pointers (#434) name the GLOBAL install's copies; a pinned project reads its
+# own. Only those two prefixes move — other `~/.<agent>/` paths in the docs mean what they say.
+out="$(printf '%s\n' '**Procedure:** `~/.claude/ai-dev-baseline/reference/git-and-prs.md` and `~/.claude/rules/ai-dev-baseline/shell.md`, not `~/.claude/settings.json`' | bash "$PI" reanchor claude /p)"
+has "$out" '`$(git rev-parse --show-toplevel)/.claude/adb/reference/git-and-prs.md`' "reanchor: a reference pointer lands on the vendored copy, from the repository root"
+has "$out" '`$(git rev-parse --show-toplevel)/.claude/rules/ai-dev-baseline/shell.md`' "reanchor: a path-scoped rule pointer lands on the project rule"
+has "$out" '`~/.claude/settings.json`' "reanchor: leaves every other user-global path alone"
+out="$(printf '%s\n' '`~/.codex/ai-dev-baseline/reference/shell.md`' | bash "$PI" reanchor codex /p)"
+eq "$out" '`$(git rev-parse --show-toplevel)/.codex/adb/reference/shell.md`' "reanchor: the codex pointer lands on its vendored copy"
+
+# _pi_assert_reanchored IS THE GUARD behind every re-anchor, so each input it rejects is fed to it:
+# a staged doc still pointing at the global procedure bundle, one still reaching the global library,
+# and a scan that cannot run — which must fail it rather than read as clean.
+ra="$work/reanchor-guard"; mkdir -p "$ra/.claude/rules/ai-dev-baseline"
+assert_ra() { ( . "$PI"; _pi_assert_reanchored "$ra" claude ) 2>&1; }
+printf 'see `$(git rev-parse --show-toplevel)/.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+printf 'run bash "$(git rev-parse --show-toplevel)/.claude/adb/lib/x.sh"\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
+out="$(assert_ra)"; yes "$?" "assert-reanchored: a fully re-anchored stage passes"
+printf 'see `~/.claude/ai-dev-baseline/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+out="$(assert_ra)"; no "$?" "assert-reanchored: a pointer left at the global bundle is refused"
+has "$out" "still points at the user-global procedures" "assert-reanchored: …naming the pointer"
+printf 'see `$(git rev-parse --show-toplevel)/.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+printf 'run bash "$HOME/.claude/scripts/lib/x.sh"\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
+out="$(assert_ra)"; no "$?" "assert-reanchored: a vendored procedure reaching the global library is refused"
+has "$out" "still reaches the user-global library" "assert-reanchored: …naming the library"
+if [ "$(id -u)" -ne 0 ]; then
+  printf 'clean\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
+  chmod 000 "$ra/.claude/rules/ai-dev-baseline/shell.md"
+  out="$(assert_ra)"; no "$?" "assert-reanchored: a stage it cannot read fails rather than passing unscanned"
+  has "$out" "could not scan" "assert-reanchored: …and says so"
+  chmod 644 "$ra/.claude/rules/ai-dev-baseline/shell.md"
+fi
+
 # ================================ payload =======================================================
 
 man="$(bash "$PI" payload claude "$work/src/$PREFIX" /proj)"; rc=$?
@@ -136,6 +168,8 @@ has "$man" "/proj/.claude/adb/session-context.sh" "payload: the run-state hook I
 # `.claude/scripts/` is handling-the-unknown.md's one prescribed home for a project's OWN gate
 # policy. An install that wrote there would occupy it.
 hasnt "$man" "/proj/.claude/scripts/" "payload: never occupies the project's own gate-policy home"
+has "$man" "/proj/.claude/rules/ai-dev-baseline/shell.md" "payload: a path-scoped procedure lands as a project rule (#434)"
+has "$man" "/proj/.claude/adb/reference/git-and-prs.md" "payload: every other procedure lands in the namespace"
 
 man="$(bash "$PI" payload codex "$work/src/$PREFIX" /proj)"
 has "$man" "/proj/.codex/skills/implement-issue/SKILL.md" "payload: codex skills land under .codex/skills"
@@ -883,9 +917,175 @@ if [ -n "$(find "$dlhome" -name ai-dev-baseline.md -type l 2>/dev/null)" ]; then
 PPD="$(new_project practicedocs)"
 bash "$PI" install --project "$PPD" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
 hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '$HOME/.claude/scripts/lib/' "practices: the Claude rule is re-anchored"
-has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/adb/lib/' "practices: … to the project's own library"
 hasnt "$(cat "$PPD/.codex/adb/AGENTS.practices.md")" '$HOME/.codex/scripts/lib/' "practices: the Codex region is re-anchored"
 hasnt "$(cat "$PPD/AGENTS.md")" '$HOME/.codex/scripts/lib/' "practices: … including the copy spliced into AGENTS.md"
+# Since #434 the library invocations sit in the PROCEDURES, which are vendored and re-anchored too.
+hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" '$HOME/.claude/scripts/lib/' "practices: a vendored procedure is re-anchored"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" '/.claude/adb/lib/' "practices: … to the project's own library"
+has   "$(head -n 3 "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" 'paths:' "practices: the vendored rule keeps its paths: scope"
+# …and the pointers in the vendored rules name the vendored procedures, never the global ones.
+hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`~/.claude/ai-dev-baseline/reference/' "practices: no Claude pointer names the global bundle"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/adb/reference/git-and-prs.md`' "practices: … it names the vendored copy"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/rules/ai-dev-baseline/shell.md`' "practices: … and the project rule"
+has   "$(cat "$PPD/AGENTS.md")" '/.codex/adb/reference/shell.md`' "practices: the spliced Codex pointers name the vendored copies"
+# Resolvable from a subdirectory: the pointer's path, evaluated there, is the vendored file.
+mkdir -p "$PPD/deep/er"
+ptr="$(sed -n 's/^\*\*Procedure:\*\* `\([^`]*shell\.md\)`.*/\1/p' "$PPD/AGENTS.md" | head -n1)"
+resolved="$(cd "$PPD/deep/er" && eval "printf '%s' \"$ptr\"")"
+cmp -s "$resolved" "$PPD/.codex/adb/reference/shell.md" && ok \
+  || bad "practices: a pinned pointer evaluated from a subdirectory reaches the vendored procedure (got $resolved)"
+file_is "$PPD/.codex/adb/reference/shell.md" "practices: the codex procedure the pointer names exists"
+grep -Fq '.claude/adb/reference/git-and-prs.md' "$PPD/.ai-dev-baseline/pinned-files.sha256" && ok \
+  || bad "practices: a vendored procedure is on the receipt, so status and uninstall cover it"
+
+# THE CODEX BUDGET (#434): the rendered rules fit Codex's default 32 KiB project-doc budget, so a
+# stock project is not told to raise it; a project whose own AGENTS.md pushes the spliced file past
+# it is, with a value that covers that file.
+PCB="$(new_project codexbudget)"
+out="$(bash "$PI" install --project "$PCB" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+hasnt "$out" "WARNING  AGENTS.md is now" "budget: a stock project's spliced AGENTS.md fits the default budget"
+[ "$(wc -c < "$PCB/AGENTS.md" | tr -d ' ')" -le 32768 ] && ok || bad "budget: the spliced AGENTS.md is at most 32 KiB"
+PCL="$(new_project codexlarge)"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Project prose that is the project'"'"'s own, and long enough to matter." }' > "$PCL/AGENTS.md"
+out="$(bash "$PI" install --project "$PCL" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "WARNING  AGENTS.md is now" "budget: a project doc pushing the file past the budget is warned"
+want=$(( ($(wc -c < "$PCL/AGENTS.md" | tr -d ' ') / 32768 + 2) * 32768 ))
+has "$out" "project_doc_max_bytes = $want" "budget: …with a value that covers the spliced file"
+# The budget covers every AGENTS.md from the root down to where Codex runs, so a nested doc that
+# pushes that chain past it is warned about even though the root file fits.
+PCN="$(new_project codexnested)"
+mkdir -p "$PCN/svc/api"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Service prose that belongs to one subtree of the project, long enough to matter." }' > "$PCN/svc/api/AGENTS.md"
+check_git "$PCN" add svc/api/AGENTS.md >/dev/null 2>&1
+out="$(bash "$PI" install --project "$PCN" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+[ "$(wc -c < "$PCN/AGENTS.md" | tr -d ' ')" -le 32768 ] && ok || bad "budget(nested): the root AGENTS.md alone fits"
+has "$out" "the AGENTS.md chain down to svc/api/ is" "budget(nested): a nested doc pushing the chain past the budget is warned about"
+want=$(( ( ( $(wc -c < "$PCN/AGENTS.md") + $(wc -c < "$PCN/svc/api/AGENTS.md") ) / 32768 + 2) * 32768 ))
+has "$out" "project_doc_max_bytes = $want" "budget(nested): …with a value that covers the whole chain"
+# Codex finds its docs on the filesystem, so a git-ignored doc — here under a non-ASCII directory
+# name git would print quoted — is measured all the same.
+PCI="$(new_project codexignored)"
+mkdir -p "$PCI/café"
+printf 'café/\n' > "$PCI/.gitignore"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Ignored prose Codex still reads when it runs in this directory, long enough." }' > "$PCI/café/AGENTS.md"
+out="$(bash "$PI" install --project "$PCI" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to café/ is" "budget(ignored): an ignored, non-ASCII nested doc is still measured"
+# A symlinked doc is read through, as Codex reads it.
+PCS="$(new_project codexsymlink)"
+mkdir -p "$PCS/docs" "$PCS/svc"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Shared prose one service links in as its own AGENTS.md, long enough to count." }' > "$PCS/docs/shared.md"
+ln -s ../docs/shared.md "$PCS/svc/AGENTS.md"
+out="$(bash "$PI" install --project "$PCS" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(symlink): a symlinked nested doc is measured through its link"
+# The walk is bounded: one that outlives its bound says the budget went unchecked, and the install
+# still completes. The stub slows only the doc scan; every other find runs the real one.
+PCT="$(new_project codexslow)"
+slowbin="$work/slowbin"; mkdir -p "$slowbin"
+realfind="$(command -v find)"
+printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.override.md*) sleep 8 ;; esac\nexec %s "$@"\n' "$realfind" > "$slowbin/find"
+chmod +x "$slowbin/find"
+out="$(PATH="$slowbin:$PATH" ADB_PINNED_CODEX_SCAN_SECS=1 bash "$PI" install --project "$PCT" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(bounded): an install whose doc scan outlives its bound still completes"
+has "$out" "could not be measured within 1s" "budget(bounded): …and says the budget was not checked"
+# …and the bound covers the size reads that follow the walk, not only the walk: a slow `wc` over
+# several documents must end in the same NOTE rather than hold the install past the bound.
+PCW="$(new_project codexslowwc)"
+for sub in a b c; do mkdir -p "$PCW/$sub"; printf 'small\n' > "$PCW/$sub/AGENTS.md"; done
+slowwc="$work/slowwc"; mkdir -p "$slowwc"
+printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.md*) sleep 2 ;; esac\nexec %s "$@"\n' "$(command -v wc)" > "$slowwc/wc"
+chmod +x "$slowwc/wc"
+out="$(PATH="$slowwc:$PATH" ADB_PINNED_CODEX_SCAN_SECS=1 bash "$PI" install --project "$PCW" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(bounded-sizes): an install whose size reads outlive the bound still completes"
+has "$out" "could not be measured within 1s" "budget(bounded-sizes): …and says the budget was not checked"
+# A size read that FAILS is an unmeasured budget, never a zero-byte document.
+PCF="$(new_project codexbadwc)"
+mkdir -p "$PCF/svc"; printf 'service prose\n' > "$PCF/svc/AGENTS.md"
+badwc="$work/badwc"; mkdir -p "$badwc"
+printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.md*) exit 7 ;; esac\nexec %s "$@"\n' "$(command -v wc)" > "$badwc/wc"
+chmod +x "$badwc/wc"
+out="$(PATH="$badwc:$PATH" bash "$PI" install --project "$PCF" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(failed-read): an install whose size read fails still completes"
+has "$out" "could not list or read this project's AGENTS.md files" "budget(failed-read): …and reports the budget unchecked rather than measured"
+# A configured fallback name is a project doc Codex loads, so it counts toward the chain.
+PCG="$(new_project codexfallback)"
+cxhome="$work/codexhome"; mkdir -p "$cxhome" "$PCG/svc"
+printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$cxhome/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PCG/svc/GUIDE.md"
+out="$(CODEX_HOME="$cxhome" bash "$PI" install --project "$PCG" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback): a configured fallback doc is measured"
+# A `]` inside a quoted name is part of the name, not the end of the array.
+PCQ="$(new_project codexbracketname)"
+cxhome2="$work/codexhome2"; mkdir -p "$cxhome2" "$PCQ/svc"
+printf 'project_doc_fallback_filenames = ["GUIDE]v2.md", "OTHER.md"]\n' > "$cxhome2/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose under a fallback name that carries a closing bracket, long enough." }' > "$PCQ/svc/GUIDE]v2.md"
+out="$(CODEX_HOME="$cxhome2" bash "$PI" install --project "$PCQ" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback-bracket): a fallback name carrying ] is still counted"
+# Both config layers count — Codex applies the repository's only to a trusted project — so a
+# repository `[]` does not hide the user's names; and a comma inside a quoted name is part of it.
+PCL2="$(new_project codexlayers)"
+cxhome4="$work/codexhome4"; mkdir -p "$cxhome4" "$PCL2/.codex" "$PCL2/svc"
+printf 'project_doc_fallback_filenames = ["TEAM,GUIDE.md"]\n' > "$cxhome4/config.toml"
+printf 'project_doc_fallback_filenames = []\n' > "$PCL2/.codex/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose under a user-configured fallback name that carries a comma, long enough." }' > "$PCL2/svc/TEAM,GUIDE.md"
+out="$(CODEX_HOME="$cxhome4" bash "$PI" install --project "$PCL2" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(layers): a user fallback name with a comma is counted despite a repository []"
+# Names are read byte-exactly, and one this reader cannot decode leaves the budget unmeasured.
+PCV="$(new_project codexverbatim)"
+cxhome5="$work/codexhome5"; mkdir -p "$cxhome5" "$PCV/svc"
+printf 'project_doc_fallback_filenames = [" TEAM.md "]\n' > "$cxhome5/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose under a fallback name whose spaces are part of the name, long enough." }' > "$PCV/svc/ TEAM.md "
+out="$(CODEX_HOME="$cxhome5" bash "$PI" install --project "$PCV" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(verbatim): a fallback name's own spaces are kept"
+PCE="$(new_project codexescaped)"
+cxhome6="$work/codexhome6"; mkdir -p "$cxhome6"
+printf 'project_doc_fallback_filenames = ["G\\u0055IDE.md"]\n' > "$cxhome6/config.toml"
+out="$(CODEX_HOME="$cxhome6" bash "$PI" install --project "$PCE" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "could not list or read this project's AGENTS.md files" "budget(escaped): a name this reader cannot decode leaves the budget unmeasured"
+# Names are matched exactly: a name that is a word of another is still its own name, and a pattern
+# character in a name is literal, as Codex joins it to the directory.
+PCD="$(new_project codexdedup)"
+cxhome3="$work/codexhome3"; mkdir -p "$cxhome3" "$PCD/svc" "$PCD/lib"
+printf 'project_doc_fallback_filenames = ["TEAM GUIDE.md", "TEAM", "G*.md"]\n' > "$cxhome3/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Team prose under a fallback name that is also a word of another name." }' > "$PCD/svc/TEAM"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose a glob would match but Codex never reads by that literal name." }' > "$PCD/lib/GUIDEbig.md"
+out="$(CODEX_HOME="$cxhome3" bash "$PI" install --project "$PCD" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(dedup): a name that is a word of another name is still counted"
+hasnt "$out" "chain down to lib/" "budget(literal): a pattern character in a fallback name matches only that literal name"
+# A config that exists but cannot be read leaves the budget unmeasured, never measured without it.
+if [ "$(id -u)" -ne 0 ]; then
+  PCU="$(new_project codexunreadablecfg)"
+  mkdir -p "$PCU/.codex"; printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$PCU/.codex/config.toml"
+  chmod 000 "$PCU/.codex/config.toml"
+  out="$(bash "$PI" install --project "$PCU" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+  chmod 644 "$PCU/.codex/config.toml"
+  has "$out" "could not list or read this project's AGENTS.md files" "budget(unreadable-config): an unreadable config reports the budget unchecked"
+fi
+# The vendored root doc names the pinned route a machine without `baseline` can run.
+has "$(cat "$PCQ/.codex/adb/AGENTS.practices.md")" '/.codex/adb/lib/pinned-install.sh" status' "header: a pinned doc names the vendored status command"
+# A nested repository is its own project root to Codex, so its docs never add to the outer root's.
+PCR="$(new_project codexnestedrepo)"
+mkdir -p "$PCR/vendor/lib/.git"
+awk 'BEGIN { for (i = 0; i < 280; i++) print "Nested repository prose that Codex loads only from inside that repository." }' > "$PCR/vendor/lib/AGENTS.md"
+out="$(bash "$PI" install --project "$PCR" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+[ $(( $(wc -c < "$PCR/AGENTS.md") + $(wc -c < "$PCR/vendor/lib/AGENTS.md") )) -gt 32768 ] && ok \
+  || bad "budget(nested-repo): the fixture must put root + nested past the budget, or this row proves nothing"
+hasnt "$out" "WARNING  " "budget(nested-repo): a nested repository's doc is not chained onto the outer root's"
+# An unusable scan bound falls back to the default instead of reaching the arithmetic.
+PCB2="$(new_project codexbadsecs)"
+out="$(ADB_PINNED_CODEX_SCAN_SECS=abc bash "$PI" install --project "$PCB2" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(bad-secs): a non-numeric scan bound does not break the install"
+hasnt "$out" "could not be measured" "budget(bad-secs): …and the scan ran under the default bound"
+# Uninstall deletes a project AGENTS.md only when NOTHING of the project's own is left in it; a
+# grep that cannot read what would remain must refuse, never read as "nothing left".
+PSB="$(new_project stripblock)"
+printf '# Our own project instructions\n' > "$PSB/AGENTS.md"
+bash "$PI" install --project "$PSB" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+badgrep="$work/badgrep"; mkdir -p "$badgrep"
+printf '#!/usr/bin/env bash\ncase "$*" in *"[^[:space:]]"*) exit 2 ;; esac\nexec %s "$@"\n' "$(command -v grep)" > "$badgrep/grep"
+chmod +x "$badgrep/grep"
+( cd "$PSB" && PATH="$badgrep:$PATH" bash "$PI" uninstall --project "$PSB" ) >/dev/null 2>&1
+file_is "$PSB/AGENTS.md" "strip: a failed read of what would remain never deletes the project's AGENTS.md"
+has "$(cat "$PSB/AGENTS.md" 2>/dev/null)" "Our own project instructions" "strip: …and the project's own text is intact"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"
@@ -1059,6 +1259,7 @@ file_is "$globalhome/.claude/scripts/lib/common.sh" "global: the shared library 
 [ -L "$globalhome/.codex/AGENTS.md" ] && ok || bad "global: the codex adapter still runs"
 # AND IT MUST NOT HAVE ACQUIRED THE PINNED MODEL'S ARTIFACTS.
 file_isnt "$globalhome/.claude/adb" "global: an ordinary install writes nothing into the pinned namespace"
+[ -L "$globalhome/.claude/ai-dev-baseline/reference" ] && ok || bad "global: the procedure bundle is linked outside the pinned namespace (#434)"
 out="$(HOME="$globalhome" bash "$ROOT/uninstall.sh" --agent claude --agent codex 2>&1)"; rc=$?
 yes "$rc" "global: an ordinary uninstall.sh run still succeeds"
 [ -L "$globalhome/.claude/CLAUDE.md" ] && bad "global: uninstall left the root doc linked" || ok

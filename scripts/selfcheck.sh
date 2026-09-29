@@ -264,7 +264,7 @@ step_shellcheck() {
 }
 
 step_build_drift() {
-  local bd=0 tree
+  local bd=0 tree pf
   # Capture the build exit: a malformed source makes build.sh exit non-zero WITHOUT
   # rewriting the already-tracked skill, so the diff-only checks below would still see
   # a clean tree and print PASS. CI's rebuild step fails on that non-zero exit; the
@@ -281,6 +281,26 @@ step_build_drift() {
     echo "  root docs stale — base/practices changed; run scripts/build.sh and commit them"
     bd=1
   fi
+  # The procedure trees (#434) render from the same sources as the root docs.
+  for tree in agents/claude/rules agents/claude/reference agents/codex/reference agents/gemini/reference; do
+    if ! git diff --quiet HEAD -- "$tree"; then
+      echo "  procedures stale ($tree) — base/practices changed; run scripts/build.sh and commit them"
+      bd=1
+    fi
+    if [ -n "$(git ls-files --others --exclude-standard -- "$tree")" ]; then
+      echo "  rendered procedure(s) not committed ($tree) — run scripts/build.sh and 'git add' the result:"
+      git ls-files --others --exclude-standard -- "$tree" | sed 's/^/    /'
+      bd=1
+    fi
+    # Gitignore-immune: `--others` respects .gitignore, so an ignored rendered procedure needs this.
+    for pf in "$tree"/*.md; do
+      [ -e "$pf" ] || continue
+      if ! git ls-files --error-unmatch -- "$pf" >/dev/null 2>&1; then
+        echo "  $pf exists but is not git-tracked (untracked or gitignored) — run scripts/build.sh and commit it"
+        bd=1
+      fi
+    done
+  done
   # Every agent's rendered skills tree (Claude, Codex, Gemini) is regenerated from the
   # same base/workflows sources, so a stale/uncommitted render in ANY of them is drift.
   for tree in agents/claude/skills agents/codex/skills agents/gemini/skills; do
@@ -438,6 +458,12 @@ step_install_dry_run() {
   [ -L "$FAKE/.claude/scripts/session-context.sh" ] || ok=0
   grep -q 'session-context.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
   [ -e "$FAKE/.claude/scripts/lib/run-state.sh" ] || ok=0
+  # Every agent's procedure bundle, and Claude's path-scoped rules (#434) — each a directory link.
+  [ -L "$FAKE/.claude/rules/ai-dev-baseline" ] || ok=0
+  [ -e "$FAKE/.claude/rules/ai-dev-baseline/shell.md" ] || ok=0
+  [ -e "$FAKE/.claude/ai-dev-baseline/reference/git-and-prs.md" ] || ok=0
+  [ -e "$FAKE/.codex/ai-dev-baseline/reference/shell.md" ] || ok=0
+  [ -e "$FAKE/.gemini/ai-dev-baseline/reference/shell.md" ] || ok=0
   HOME="$FAKE" bash uninstall.sh --agent claude --agent codex --agent gemini >>"$log" 2>&1 || ok=0
   [ ! -L "$FAKE/.claude/CLAUDE.md" ] || ok=0
   [ ! -L "$FAKE/.claude/scripts/session-currency.sh" ] || ok=0
@@ -449,6 +475,10 @@ step_install_dry_run() {
   [ ! -L "$FAKE/.codex/skills/implement-issue" ] || ok=0
   [ ! -L "$FAKE/.gemini/GEMINI.md" ] || ok=0
   [ ! -L "$FAKE/.gemini/config/skills/implement-issue" ] || ok=0
+  [ ! -L "$FAKE/.claude/rules/ai-dev-baseline" ] || ok=0
+  [ ! -L "$FAKE/.claude/ai-dev-baseline/reference" ] || ok=0
+  [ ! -L "$FAKE/.codex/ai-dev-baseline/reference" ] || ok=0
+  [ ! -L "$FAKE/.gemini/ai-dev-baseline/reference" ] || ok=0
   [ "$ok" -eq 1 ] || { echo "  installer log:"; sed 's/^/    /' "$log"; }
   rm -rf "$FAKE"
   [ "$ok" -eq 1 ]
@@ -486,6 +516,13 @@ add workflow-render     bash scripts/check-workflow-render.sh
 # byte-identical everywhere else" a `cmp`, on BOTH render paths, and five mutations of a copied
 # build.sh are each required to make a named assertion go red.
 add agent-blocks        bash scripts/check-agent-blocks.sh
+
+# A practice's two render classes (#434): its rule lines are exactly its root-doc section, its
+# procedure lines exactly one procedure file per agent, and each pointer names the path the install
+# manifest links. build-drift agrees with whatever was committed, so a split that lost or doubled a
+# paragraph would pass it. `--self-test` drives the marker grammar red and mutates copies of the
+# outputs, requiring the verifier red on each.
+add practice-split      bash scripts/check-practice-split.sh --self-test
 
 # What the rendered artifacts COST to load (#359). A report, not a gate: it fails only on
 # mechanics — an expected artifact missing, unreadable or zero-byte — and never on size, because

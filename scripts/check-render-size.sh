@@ -179,6 +179,53 @@ eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { l += $2; w += $3; t 
 has "$RS_ERR" "3 on-demand supporting file(s)" "supports: the stderr summary counts them"
 has "$RS_ERR" "loaded approx_tokens" "supports: …and carries the loaded/on-demand token split"
 
+# --- procedures (#434): derived from base/practices, on-demand, and in exactly one tree ----------
+loaded_tokens() { printf '%s\n' "$RS_ERR" | sed -n 's/.*loaded approx_tokens \([0-9]*\),.*/\1/p'; }
+fxg="$(mk_fixture procs-base)" || bad "fixture: could not build the procedure baseline tree"
+run_rs "$fxg"; base_loaded="$(loaded_tokens)"
+fxp="$(mk_fixture procs)" || bad "fixture: could not build the procedures tree"
+mkdir -p "$fxp/base/practices" "$fxp/agents/claude/rules" "$fxp/agents/codex/reference" "$fxp/agents/gemini/reference"
+printf '# index\n' > "$fxp/base/practices/00-index.md"
+printf '# p\n<!-- adb:paths *.sh -->\n\nrule\n<!-- adb:procedure -->\n\nhow\n<!-- adb:end -->\n' > "$fxp/base/practices/10-p.md"
+printf '# q\n\nrule only\n' > "$fxp/base/practices/20-q.md"
+printf '# p — procedure\n\nhow\n' > "$fxp/agents/claude/rules/10-p.md"
+printf '# p — procedure\n\nhow\n' > "$fxp/agents/codex/reference/10-p.md"
+printf '# p — procedure\n\nhow\n' > "$fxp/agents/gemini/reference/10-p.md"
+run_rs "$fxp"
+yes "$RS_RC" "procs: a tree with procedure files exits 0"
+has "$RS_OUT" "agents/claude/rules/10-p.md" "procs: a path-scoped claude procedure is measured where it rendered"
+has "$RS_OUT" "agents/codex/reference/10-p.md" "procs: a reference procedure is measured"
+hasnt "$RS_OUT" "20-q.md" "procs: a practice with no procedure block yields no row"
+has "$RS_ERR" "3 procedure file(s) from 1 practice(s)" "procs: the summary counts them"
+eq "$(loaded_tokens)" "$base_loaded" "procs: procedure files land in the on-demand bucket, never the loaded figure"
+has "$RS_ERR" "root doc lines against the ~200-line goal (a report, never a gate): claude 2, codex 2, gemini 2" \
+  "procs: each root doc's lines are reported against the goal"
+rm "$fxp/agents/codex/reference/10-p.md"
+run_rs "$fxp"
+eq "$RS_RC" "1" "procs: a practice's missing procedure file fails the report"
+has "$RS_ERR" "MISSING agents/codex/reference/10-p.md" "procs: …naming the file the derivation expected"
+printf '# p — procedure\n\nhow\n' > "$fxp/agents/codex/reference/10-p.md"
+mkdir -p "$fxp/agents/claude/reference"
+cp "$fxp/agents/claude/rules/10-p.md" "$fxp/agents/claude/reference/10-p.md"
+run_rs "$fxp"
+eq "$RS_RC" "1" "procs: a procedure rendered to both trees fails the report"
+has "$RS_ERR" "DUPLICATE 10-p.md — agents/claude/reference/10-p.md is a stale copy" "procs: …naming the stale one"
+# The tree is DERIVED from the practice, never taken from whichever file exists: a path-scoped
+# procedure found only in reference/ is the expected file missing, not a substitute for it.
+rm "$fxp/agents/claude/rules/10-p.md"
+run_rs "$fxp"
+eq "$RS_RC" "1" "procs: a path-scoped procedure present only in reference/ fails the report"
+has "$RS_ERR" "MISSING agents/claude/rules/10-p.md" "procs: …naming the file the practice's scope expects"
+hasnt "$RS_OUT" "agents/claude/reference/10-p.md" "procs: …and the stale copy is never measured in its place"
+# A practice that cannot be read is a fault, never a practice without a procedure.
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$fxp/base/practices/10-p.md"
+  run_rs "$fxp"
+  chmod 644 "$fxp/base/practices/10-p.md"
+  eq "$RS_RC" "1" "procs: an unreadable practice fails the report"
+  has "$RS_ERR" "UNREADABLE base/practices/10-p.md" "procs: …naming it"
+fi
+
 # --- fenced_comment_lines (#432) ----------------------------------------------------------------
 
 fx="$(mk_fixture fenced)" || bad "fixture: could not build the fenced tree"

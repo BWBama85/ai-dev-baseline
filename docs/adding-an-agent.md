@@ -92,6 +92,18 @@ render foo "$root/agents/foo/FOO.md" "Global engineering practices"
 Add `foo` to `build_known_agents` in the same file, or every `<!-- adb:except foo -->` a source
 might carry is rejected as an unknown token.
 
+**Procedures (#434).** A practice's `<!-- adb:procedure -->` blocks render to one file per agent,
+not into the root doc, and the root doc ends that practice with a pointer. Add a
+`render_procedure foo "$f"` line beside the other three in the procedure loop, and call
+`_adb_procedure_manifest_lines foo "$repo" "$home/.foo"` from `foo`'s arm of `adb_agent_manifest`
+(`scripts/lib/common.sh`); that helper emits the `agents/foo/reference` row for any agent. The
+pointer is read from that manifest row, so without the call the build refuses to render `foo`'s
+root doc. Verify, through the agent's own
+documentation, what on-demand instruction surface `foo` really has: the reference bundle is
+the fallback when it has none (Codex and Gemini), and a path-scoped surface like Claude's rules
+directory earns its own branch in `build_procedure_dir` only if it loads a file *lazily*.
+`scripts/check-practice-split.sh` reads the agent table at its top; add `foo` there too.
+
 Run `bash scripts/build.sh` and commit the generated file — CI re-runs this
 script and fails the build if the checked-in output has drifted from what
 `base/practices/*.md` would currently render, so this step isn't optional
@@ -109,9 +121,9 @@ and its output tree. If `foo` uses the same `SKILL.md` surface, add a `case`
 arm and a `render_agent_skill foo "$wf"` call in the render loop; if it uses a
 different surface, its renderer plugs in the same way and reads the same
 `base/workflows/*.md` sources — either way the workflows are authored once, not
-re-authored per agent. A `render()` for `foo`'s root doc is all that's required
-for `foo` to be installable and role-assignable; native skills are the optional
-deeper parity described below.
+re-authored per agent. A `render()` for `foo`'s root doc, its `render_procedure` line and its
+manifest call (the procedures section above) are all that's required for `foo` to be installable
+and role-assignable; native skills are the optional deeper parity described below.
 
 ### Choose `foo`'s instruction density — do not let it default silently
 

@@ -74,6 +74,8 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | Source (in this repo) | Destination |
 |---|---|
 | `agents/claude/CLAUDE.md` | `~/.claude/CLAUDE.md` |
+| `agents/claude/rules/` (path-scoped procedures) | `~/.claude/rules/ai-dev-baseline` |
+| `agents/claude/reference/` (every other procedure) | `~/.claude/ai-dev-baseline/reference` |
 | `agents/claude/skills/<name>/` (each skill dir) | `~/.claude/skills/<name>` |
 | `agents/claude/scripts/precommit-gate.sh` | `~/.claude/scripts/precommit-gate.sh` |
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
@@ -81,6 +83,37 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/scripts/session-currency.sh` | `~/.claude/scripts/session-currency.sh` |
 | `agents/claude/scripts/session-context.sh` | `~/.claude/scripts/session-context.sh` |
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
+
+### The root doc holds rules; the procedures load on demand (#434)
+
+Each practice renders in two classes from its one source. The **rule** — what every
+session must hold — is in the root doc. The **procedure** — the how, needed only when the
+practice applies — is one file per practice, and the root doc ends that practice with a
+`**Procedure:**` line naming where it is installed. Where each agent reads it:
+
+| Agent | Procedure surface | Loads |
+|---|---|---|
+| Claude, practice declares `<!-- adb:paths … -->` | `~/.claude/rules/ai-dev-baseline/<practice>.md`, `paths:` frontmatter | when Claude reads a matching file; otherwise when the pointer is followed |
+| Claude, every other practice | `~/.claude/ai-dev-baseline/reference/<practice>.md` | when the pointer is followed |
+| Codex | `~/.codex/ai-dev-baseline/reference/<practice>.md` | when the pointer is followed |
+| Gemini | `~/.gemini/ai-dev-baseline/reference/<practice>.md` | when the pointer is followed |
+
+Only a path-scoped procedure becomes a Claude rule: Claude loads a rule *without* `paths:`
+at launch, which would put the procedure back into every session. Codex and Gemini have no
+global on-demand instruction surface — Codex's nested `AGENTS.md` files are scoped to a
+project's directories and Gemini's `@file` imports load eagerly — so each gets the reference
+bundle its pointers name. Each tree is one directory link, removed by `uninstall.sh` like
+every other manifest row; `/context` (Claude) and `/memory show` (Gemini) show what loaded.
+
+**Upgrading from a single-file install:** a bare `git pull` updates the root doc, but the procedure
+links are new manifest rows, which only `install.sh` or `baseline update` creates — run either once
+(Claude's session-start currency check does it for you in its `auto` mode, not in `notify` or
+`off`). Until then the rules still load and each
+pointer names a file that is not there yet; the root doc's header says which command links it.
+
+**Want the old single-file shape?** Concatenate them yourself — the procedures are plain
+Markdown: `cat ~/.claude/CLAUDE.md ~/.claude/ai-dev-baseline/reference/*.md ~/.claude/rules/ai-dev-baseline/*.md`.
+Nothing ships a flag for it.
 
 The shared shell library (`scripts/lib/common.sh` + `project-gates.sh`) installs as
 `~/.claude/scripts/lib` so the runtime gates can source it as a sibling. An install
@@ -761,14 +794,16 @@ truncation**, not authenticity — an attacker who can replace one can replace b
 
 | Path in your project | What |
 |---|---|
-| `.claude/rules/ai-dev-baseline.md` | the practices — a rule with no `paths:` frontmatter loads at session start |
+| `.claude/rules/ai-dev-baseline.md` | the practices' rules — a rule with no `paths:` frontmatter loads at session start |
+| `.claude/rules/ai-dev-baseline/<practice>.md` | the path-scoped procedures (#434), which load when a matching file is read |
+| `.claude/adb/reference/<practice>.md` | every other procedure; the vendored root doc's pointers are re-anchored to these project paths |
 | `.claude/skills/<name>/SKILL.md` | the workflows, shadowing any same-named global skill |
 | `.claude/adb/lib/*.sh` | the shared shell libraries the skills and gates call |
 | `.claude/adb/{precommit,implement-issue,state-claim}-gate.sh` | the Stop gates |
 | `.claude/adb/session-context.sh` | the `SessionStart` run-state hook (#431): on `compact\|resume` it reads the project's own `.claude/state` back into context |
 | `.claude/settings.json` | the Stop gates and the `SessionStart` hook wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) — each under its own event, the hook with the `compact\|resume` matcher |
 | `.codex/skills/<name>/SKILL.md`, `.codex/adb/…` | the same, for Codex |
-| `AGENTS.md` | Codex's practices, inside a delimited managed region |
+| `AGENTS.md` | Codex's practice rules, inside a delimited managed region; its procedures are `.codex/adb/reference/` |
 | `.ai-dev-baseline/upstream.toml` | the pin — `mode`, `version`, `source`, `artifact` (the release archive's SHA-256), `adopted`, `agents`, and `stack` when a previous pin recorded one |
 | `.ai-dev-baseline/pinned-files.sha256` | the receipt: every file this install wrote, and its digest |
 
@@ -853,11 +888,19 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   sandbox policy there commits one on behalf of every contributor to that repository, and the
   ownership and uninstall semantics are the global install's, not a reviewed file's. The install
   says so rather than omitting them silently; run the global `./install.sh` to get them.
-- **Codex truncates long project instructions, and this install cannot stop it.** Its
-  `project_doc_max_bytes` defaults to 32 KiB and larger files are truncated *silently*, while the
-  rendered practices are far bigger. The install measures the resulting `AGENTS.md` and prints the
-  one line that fixes it — put `project_doc_max_bytes = 262144` in `~/.codex/config.toml` — but the
-  setting is yours, not the payload's.
+- **Codex reads project instructions only up to a byte budget.** Its `project_doc_max_bytes`
+  defaults to 32 KiB, shared by the project's `AGENTS.md` and any nested ones, and what lies past it
+  is never read. Since #434 the rendered rules fit it with room to spare — the procedures are
+  vendored beside them rather than spliced in — so a stock project needs no change. A project whose
+  own `AGENTS.md` prose — at the root, or in a nested `AGENTS.md` on the way down to some directory
+  — pushes what Codex loads past the budget is told at install, with a line for
+  `~/.codex/config.toml` sized to that chain; the setting is yours, not the payload's. The
+  measurement counts `AGENTS.override.md`, `AGENTS.md` and every `project_doc_fallback_filenames`
+  entry set in `~/.codex/config.toml` or the repository's `.codex/config.toml` (Codex reads the
+  latter only for a trusted project, so both are counted), symlinked files included, and
+  starts a chain at a nested repository's `.git` as Codex does; custom `project_root_markers` and
+  the system, profile and command-line config layers are not read. It gives up with a note after
+  30 seconds (`ADB_PINNED_CODEX_SCAN_SECS`) rather than hold the install.
 - **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
   commit this installer cannot reconstruct; retire it deliberately first.
 - **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would

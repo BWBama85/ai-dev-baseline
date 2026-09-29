@@ -4,12 +4,14 @@
 shapes, pagination and rate limits, a library's capability, a CLI flag, a config key,
 a platform default, a pricing tier — recall closes none of them. Training data is a
 snapshot, and the vendor shipped after it.
+<!-- adb:procedure -->
 
 The boundary is provenance, not location. `verify-before-asserting.md` governs this
 project's own mutable state — PR, branch, issue, CI. This file governs behavior you
 do not control, wherever it sits: a vendored or generated dependency inside the
 checkout is still third-party; your own code in a sibling repository is not.
 Neither file covers the other's ground; cite whichever one applies.
+<!-- adb:end -->
 
 ## When the duty fires
 
@@ -18,7 +20,7 @@ confident in stale recall has no claim in doubt, consults nothing, and ships the
 confidence is what stale recall feels like from the inside. So the question to ask before writing
 code is not *am I unsure?* but *is this nontrivial usage of somebody else's technology?*
 
-**Consult vendor documentation — through the ladder below — when the code you are about to write:**
+**Consult vendor documentation — through the resolution ladder in this practice's procedure — when the code you are about to write:**
 
 - uses an API surface (package, framework, service) for the **first time in this project**;
 - depends on **vendor-defined behavior for correctness or safety** — configuration, lifecycle,
@@ -30,6 +32,7 @@ code is not *am I unsure?* but *is this nontrivial usage of somebody else's tech
 **Skip it when** the code is language-core idiom, or when its shape already exists in this project
 and survived review. A hello-world function consults nothing. That boundary is the rule's whole
 credibility: a duty that fires on everything is one nobody performs.
+<!-- adb:procedure -->
 
 **This decides WHETHER to resolve, never HOW.** Once you are resolving, the ladder below is
 unchanged and context7 is still the required first documentation source — including for surfaces
@@ -156,7 +159,7 @@ credential to every clone, every fork, and every CI log that prints the file
   another agent recorded. The mechanism is the recorded evidence and the report line, and
   review is what reads them.
 - **Nothing decides whether a surface was "complex enough" to need docs.** The trigger
-  list above is judgment, like the comment classes.
+  list is judgment, like the comment classes.
 - **The empty-disposition check reports; it does not gate.** `/implement-issue`'s report
   step returns a distinct code when a run recorded nothing, and the step says to go back
   and state the disposition — but nothing *stops* the run, and no hook enforces it. It is
@@ -165,3 +168,4 @@ credential to every clone, every fork, and every CI log that prints the file
 - **`debugging.md` still owns the diagnosis.** A resolved documentation fact is
   evidence toward a root cause, never the root cause: "the docs say X" does not
   close an investigation that has not reproduced the failure.
+<!-- adb:end -->

@@ -8,13 +8,18 @@ per-repo setup.
 
 `adapter.sh install <repo> <backup_dir>` symlinks:
 
-- `agents/codex/AGENTS.md` → `~/.codex/AGENTS.md` — the generated root doc.
+- `agents/codex/AGENTS.md` → `~/.codex/AGENTS.md` — the generated root doc: each practice's
+  rule, ending in a pointer to its procedure.
+- `agents/codex/reference/` → `~/.codex/ai-dev-baseline/reference/` — the generated procedures (#434), read
+  when a practice applies. Codex has no global on-demand instruction surface — nested
+  `AGENTS.md` files are scoped to a project's directories — so this bundle is what the pointers
+  name.
 - `agents/codex/skills/<name>/` → `~/.codex/skills/<name>/` — the rendered
   workflow skills (see "Native workflow parity" below).
 - `scripts/lib/` → `~/.codex/scripts/lib/` — the shared, agent-neutral gate
   runner (`project-gates.sh`) a rendered workflow's gate step calls.
 
-`AGENTS.md` and the skills are **generated** by `scripts/build.sh` (from
+`AGENTS.md`, the procedures and the skills are **generated** by `scripts/build.sh` (from
 `base/practices/*.md` and `base/workflows/*.md` respectively) — do not
 hand-edit them, edit the sources and rebuild. Codex auto-loads
 `~/.codex/AGENTS.md` at the start of every session (see `base/roles.md`:

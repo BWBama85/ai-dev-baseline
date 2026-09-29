@@ -2,6 +2,7 @@
 
 Before opening a PR, run a **dedicated self-review pass focused on real bugs** —
 separate from writing the code, and separate from any independent reviewer.
+<!-- adb:procedure -->
 <!-- adb:except claude -->
 
 This is a **mandatory gate**, not a victory lap. It repeatedly catches genuine
@@ -21,19 +22,21 @@ landmines in freshly generated code before they reach a reviewer or production.
   migrations, cron, scripts especially.)
 - **Resource leaks:** unclosed handles, unbounded growth, missing timeouts.
 <!-- adb:end -->
+<!-- adb:end -->
 
 ## How
 
 List each finding explicitly and either fix it or consciously disposition it with
 a reason — before proceeding to push. "I read it over and it looks fine" is not a
 self-review; naming what you checked is.
+<!-- adb:procedure -->
 
 ## Sweep what this project has already learned
 
 **Start from the classes this project has hit before.** A project that keeps a pattern ledger
 (`.ai-dev-baseline/patterns.md`, #421) has a promoted checklist: finding classes seen more than
 once, each carrying a rule somebody wrote after fixing one. Read it and sweep the diff for every
-rule on it, then do the open-ended pass above.
+rule on it, then do the open-ended pass.
 
 That ordering is the point. The open-ended pass finds what is novel; the checklist finds what this
 project already paid a review round for and would otherwise pay for again. `debugging.md` states
@@ -54,12 +57,14 @@ what each found, not which files were read.
 
 A project without a ledger simply does the open-ended pass; there is nothing to skip and no gate
 here.
+<!-- adb:end -->
 
 ## A new guard is not done until it has been observed failing
 
 This is not "test your code." It is the narrower claim that a **check** — a lint,
 a gate, an assertion, a CI step — must be **seen going red** before you call it
 done, on an input it is supposed to reject.
+<!-- adb:procedure -->
 
 A guard's failure mode is **silence**. Ordinary code that breaks throws, returns
 the wrong value, fails a test. A guard that breaks *passes*: it scans zero files,
@@ -110,3 +115,4 @@ caught only because the agent *chose* to negative-test. Nothing required it, and
 nothing else would have noticed: a check that matches nothing is
 indistinguishable from a check that found nothing wrong. The way that pin was
 tested is why the copy rule sits beside it.
+<!-- adb:end -->

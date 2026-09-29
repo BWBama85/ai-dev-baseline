@@ -19,6 +19,7 @@ every future reader the time to re-triage it.
 
 If either answer is *"unclear"* or *"nothing concrete"* — **don't file.** The work
 was not real enough to track, and writing it down does not make it real.
+<!-- adb:procedure -->
 
 ### Specifically not filing reasons
 
@@ -89,6 +90,7 @@ That is the cost of a filing bar set at zero: not a tidy record of good intentio
 but a tracker nobody can read, a roadmap that cannot be trusted, and real defects
 sitting alongside sixty things nobody was ever going to do.
 
-The bar above is the sink. That `NOT_PLANNED` closures were happening at all proves
+The bar is the sink. That `NOT_PLANNED` closures were happening at all proves
 the judgment was always available — it was just being applied after the issue
 existed instead of before.
+<!-- adb:end -->

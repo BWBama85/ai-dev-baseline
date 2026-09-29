@@ -2,6 +2,7 @@
 
 **When you meet something the baseline doesn't model, do not improvise a one-off.**
 Classify it, put it in that bucket's one prescribed home, and record the decision.
+<!-- adb:procedure -->
 
 The baseline defines the *known* — practices, workflows, gates for known stacks. The
 moment an agent hits something it *doesn't* cover (an unfamiliar toolchain, gate, config,
@@ -9,6 +10,7 @@ convention, role setup, doc shape, or tool), improvisation is where drift is bor
 agents, two runs, or two similar projects organize the *same* unknown two *different*
 ways. A deterministic protocol makes the same unknown land the same way every time,
 regardless of which agent is driving.
+<!-- adb:end -->
 
 ## Protocol: classify → place → record → (when unsure) escalate
 
@@ -18,20 +20,23 @@ Classify the unknown into **exactly one** bucket, then act as that bucket prescr
    config surface if one fits (e.g. a missing gate command → `agents.toml [gates]`).
    Never a bespoke local fix others can't inherit. If no supported surface fits the gap,
    escalate (bucket 4) rather than inventing a new home.
+<!-- adb:procedure -->
 
    **File a baseline issue only if the gap clears the bar in `issues-and-scope.md`** —
    you can name who does it and what breaks if nobody ever does. "Many projects *would*
    want this" is a hypothesis about absent users, not an answer to either question; a gap
    *you* just worked around with a stopgap that holds is, by demonstration, not breaking
    anything. A config surface that covered the case is the fix, not a placeholder for one.
+<!-- adb:end -->
 2. **Project-specific delta** — legitimately unique to this repo. → Record it in the
-   **prescribed home for its category** (table below), never scattered or ad-hoc.
+   **prescribed home for its category** (the table in this practice's procedure), never scattered or ad-hoc.
 3. **Deviation** — the project deliberately contradicts a baseline rule. → Allowed, but
    **recorded explicitly** as a `DEVIATION` with `{baseline-rule, reason}`. Never a silent
    fork.
 4. **Ambiguous / can't classify confidently** — → **STOP and ask the owner** a concrete
    question. Improvisation is how two projects diverge; escalation is the release valve
    that keeps the set honest (the completion-contract discipline, applied to *organization*).
+<!-- adb:procedure -->
 
 ## Prescribed homes (one legal home per category)
 
@@ -102,3 +107,4 @@ The baseline removes drift by giving every known thing one home. Its blind spot 
 another name. A deterministic classify → place → record → escalate protocol closes that
 blind spot: the same unknown lands the same way every time, and the few genuinely
 ambiguous cases surface to the owner instead of silently forking two projects apart.
+<!-- adb:end -->

@@ -8,7 +8,11 @@ project, without per-repo setup.
 
 `adapter.sh install <repo> <backup_dir>` symlinks:
 
-- `agents/gemini/GEMINI.md` → `~/.gemini/GEMINI.md` — the generated root doc.
+- `agents/gemini/GEMINI.md` → `~/.gemini/GEMINI.md` — the generated root doc: each practice's
+  rule, ending in a pointer to its procedure.
+- `agents/gemini/reference/` → `~/.gemini/ai-dev-baseline/reference/` — the generated procedures (#434),
+  read when a practice applies. An `@file` import would load them eagerly and JIT context files
+  are discovered only inside a project, so this bundle is what the pointers name.
 - `agents/gemini/skills/<name>/` → `~/.gemini/config/skills/<name>/` — the
   rendered workflow skills. `~/.gemini/config/` is Antigravity's **global
   customization root** (confirmed in `agy`'s own bundled customization docs),
@@ -17,7 +21,7 @@ project, without per-repo setup.
 - `scripts/lib/` → `~/.gemini/scripts/lib/` — the shared, agent-neutral gate
   runner (`project-gates.sh`) a rendered workflow's gate step calls.
 
-`GEMINI.md` and the skills are **generated** by `scripts/build.sh` (from
+`GEMINI.md`, the procedures and the skills are **generated** by `scripts/build.sh` (from
 `base/practices/*.md` and `base/workflows/*.md` respectively) — do not
 hand-edit them, edit the sources and rebuild. Antigravity auto-loads
 `~/.gemini/GEMINI.md` at the start of every session (see `base/roles.md`:

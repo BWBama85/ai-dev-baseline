@@ -203,6 +203,10 @@ replaced:
   quote the syntax in a file that renders — which is why the two files documenting it, this one
   and `base/practices/00-index.md`, are both files their renderer skips.
 
+**A workflow has one render class.** The practice-only markers — `adb:procedure`, which splits
+a practice into its rule and its procedure, and `adb:paths`, which scopes that procedure — are
+refused in a workflow source. Their contract lives in `base/practices/00-index.md` (#434).
+
 ### Step headings are project-override anchors
 
 A skill's `### ` step headings are a stable contract: a project can carry a small

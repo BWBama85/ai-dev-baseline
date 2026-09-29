@@ -1,4 +1,5 @@
 # Shell discipline
+<!-- adb:paths **/*.sh -->
 
 The interactive shell is commonly **zsh** (macOS default) and **bash** on Linux
 CI. Write commands that work in both, and default to POSIX `sh` semantics unless
@@ -31,6 +32,9 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
   brew/user-installed tool might be missing, export the prefix explicitly once
   (e.g. `export PATH="/opt/homebrew/bin:$PATH"`) rather than relying on login
   shell setup.
+<!-- adb:procedure -->
+
+## Don't assume `PATH`: the interpreter too
 
   On macOS this reaches the **interpreter**, not just the tools. `/bin/bash` is
   **3.2.57** and Apple has pinned it there for the whole bash-4-and-later era, so
@@ -50,9 +54,11 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
     re-exec'ing into a known-good interpreter rather than trusting `PATH` — and
     failing loudly with the platform's install command when there is none. By the
     time your code runs, `PATH` has already given its answer.
+<!-- adb:end -->
 - **Globs and `find`:** when a glob may match nothing, guard it (`shopt -s
   nullglob` in bash, or iterate `find … -print0 | while IFS= read -r -d ''`).
   Don't let an unmatched glob leak through as a literal argument.
+<!-- adb:procedure -->
 
 ## Background processes
 
@@ -109,3 +115,4 @@ Shell-environment friction — bash array expansions and globs failing under zsh
 exit-127 sourcing errors, and blocked compound commands — is a recurring source
 of wasted retries. Defaulting to portable, single-purpose commands eliminates it
 before it starts.
+<!-- adb:end -->

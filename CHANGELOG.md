@@ -10,6 +10,35 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **The root doc holds rules; procedures load when a practice applies (#434).** Every session
+  in every project started by loading the whole rendered practice set — 85 KB, ~21k approx
+  tokens — though most of it was the how of a situation that had not arisen. Each practice now
+  renders in two classes from its one source: its **rule** stays in the root doc, and its
+  `<!-- adb:procedure -->` blocks render to one file per agent, which the root doc names in a
+  `**Procedure:**` line. The root docs are now ~21.5 KB, under Codex's 32 KiB project-doc
+  budget.
+
+  Where each agent reads a procedure: Claude, for a practice that declares
+  `<!-- adb:paths <glob>… -->` (shell, CI), from `~/.claude/rules/ai-dev-baseline/` with `paths:`
+  frontmatter, loading when a matching file is read; every other procedure, for every agent,
+  from `~/.<agent>/ai-dev-baseline/reference/`, when the pointer is followed. A rule without `paths:` would
+  load at launch, so only path-scoped procedures become Claude rules. Each tree is one directory
+  link; `uninstall.sh` removes it and `bin/baseline` verifies it. A pinned install vendors the
+  procedures beside the rules and re-anchors the pointers to them; the blanket advice to raise
+  Codex's `project_doc_max_bytes` to 256 KiB is retired, and the pinned install's warning now
+  measures the chain of project docs Codex loads — `AGENTS.override.md`, `AGENTS.md` and configured
+  fallback names, from a project root down to a subdirectory — and warns when that chain may
+  exceed the default budget, with a value sized to it. It is a conservative estimate: fallback
+  names from both the user and the repository config count, though Codex applies the repository's
+  only to a trusted project. `render-size.sh` reports the
+  procedures in the on-demand bucket and each root doc's lines against the ~200-line goal, never
+  as a gate, and `scripts/check-practice-split.sh` proves the split lost and doubled nothing.
+
+  **Upgrading a global install:** a bare `git pull` updates the root doc but cannot create the
+  new procedure links — run `baseline update` (or `./install.sh`) once. Claude's session-start
+  currency check does this on its own in its `auto` mode; the root doc's header names the command
+  for any agent that finds a procedure missing.
+
 - **Fix code is reviewed before it is pushed (#491).** `/implement-issue` reviewed a diff once and
   pushed step 9's fixes unread; `/resolve-pr-threads` sent each round's fixes straight to the async
   reviewer, roughly 80 minutes a sample. Both now run a local convergence loop first:

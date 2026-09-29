@@ -255,6 +255,22 @@ _adb_skill_manifest_lines() {
   done
 }
 
+# Emit the generated PROCEDURE trees (#434) as one directory link each, and only for a tree that
+# exists — the existence rule the skill glob above follows. `rules/` is Claude's alone: its
+# `~/.claude/rules/` loads Markdown, while `~/.codex/rules/` holds command-approval policy files.
+# scripts/build.sh reads these destinations back to write each root doc's pointer, so they are
+# stated nowhere else. Usage: _adb_procedure_manifest_lines <agent> <repo> <agent-home>
+_adb_procedure_manifest_lines() {
+  local agent="$1" repo="$2" ahome="$3"
+  if [ "$agent" = claude ] && [ -d "$repo/agents/claude/rules" ]; then
+    printf '%s\t%s\n' "$repo/agents/claude/rules" "$ahome/rules/ai-dev-baseline"
+  fi
+  if [ -d "$repo/agents/$agent/reference" ]; then
+    printf '%s\t%s\n' "$repo/agents/$agent/reference" "$ahome/ai-dev-baseline/reference"
+  fi
+  return 0
+}
+
 # Can every value `adb_agent_manifest` is about to interpolate survive this record format?
 # True (0) iff <repo>, <home> and every skill-directory name under <skills-dir> are TSV-safe.
 # False (1), with exactly one physical stderr line PER OFFENDING VALUE. Usage:
@@ -1858,6 +1874,7 @@ adb_agent_manifest() {
     claude)
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/claude/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
+      _adb_procedure_manifest_lines claude "$repo" "$home/.claude"
       _adb_skill_manifest_lines "$repo/agents/claude/skills" "$home/.claude/skills"
       # Every wired hook. Fed through a heredoc rather than an unquoted `$(…)` so no
       # word-splitting is relied on. An installed-but-not-wired script would be appended to this
@@ -1873,6 +1890,7 @@ EOF
     codex)
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/codex/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/codex/AGENTS.md" "$home/.codex/AGENTS.md"
+      _adb_procedure_manifest_lines codex "$repo" "$home/.codex"
       # Rendered workflow skills (agent-skills SKILL.md folders) → Codex's skills dir, which
       # discovers ~/.codex/skills/<name>/SKILL.md.
       _adb_skill_manifest_lines "$repo/agents/codex/skills" "$home/.codex/skills"
@@ -1885,6 +1903,7 @@ EOF
     gemini)
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/gemini/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/gemini/GEMINI.md" "$home/.gemini/GEMINI.md"
+      _adb_procedure_manifest_lines gemini "$repo" "$home/.gemini"
       # Rendered workflow skills → Antigravity's GLOBAL customization root, ~/.gemini/config/
       # (agy discovers skills/<name>/SKILL.md there; confirmed in agy's own bundled
       # agy-customizations docs). The scripts/lib runner lives beside the other agents' at
@@ -4571,6 +4590,7 @@ adb_install_source() {
 # file they never chose. And a NUL is checked on the raw bytes because command substitution and
 # `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
 # a value the operator never wrote. Reported by the declared reviewer on PR #429.
+# An EMPTY <table> names the top level — the keys before the first `[table]` header.
 # Usage: adb_toml_get <file> <table> <key>
 adb_toml_get() {
   local file="$1" table="$2" key="$3"
@@ -4578,6 +4598,7 @@ adb_toml_get() {
   [ -r "$file" ] || return 2
   [ "$(LC_ALL=C tr -d '\000' < "$file" | wc -c | tr -d ' ')" -eq "$(wc -c < "$file" | tr -d ' ')" ] || return 3
   awk -v tbl="$table" -v key="$key" '
+    BEGIN { intbl = (tbl == "") }
     # A table header toggles whether we are inside the target table. The header name is
     # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
     # never accidentally match table "gatesXscope" via the "." metacharacter, and a
@@ -4745,20 +4766,56 @@ adb_toml_keys() {
 # returned 0 but this prints nothing). Only the single-line, comma-separated quoted-string
 # array the templates use is supported (matching adb_toml_get's own scope); an element may
 # itself contain `[`/`]` (e.g. a `foo[bot]` login) because the outer close is found as the
-# LAST `]`. Elements containing a literal comma are out of scope. Usage: adb_toml_array <raw>
+# LAST `]`, and a comma INSIDE a quoted element is part of it. Usage: adb_toml_array <raw>
+#
+# `--verbatim` keeps each quoted element's bytes exactly (no trimming inside the quotes) and
+# returns 2 — printing nothing — for an unquoted element or a basic string carrying a backslash
+# escape, which this reader does not decode. For values that name files.
+# Usage: adb_toml_array [--verbatim] <raw>
 adb_toml_array() {
-  awk -v s="$1" '
+  local verb=0
+  if [ "${1:-}" = --verbatim ]; then verb=1; shift; fi
+  # ENVIRON, not `-v`: `-v` decodes backslash escapes, so the value would reach awk already altered.
+  ADB_TOML_ARRAY_RAW="${1:-}" awk -v verb="$verb" '
     BEGIN {
+      s = ENVIRON["ADB_TOML_ARRAY_RAW"]
       if (substr(s, 1, 1) != "[") exit 0        # not an array literal → no elements
       s = substr(s, 2)                           # drop the opening "["
       pos = 0                                     # find the LAST "]" (the array close)
       for (i = length(s); i >= 1; i--) { if (substr(s, i, 1) == "]") { pos = i; break } }
       if (pos > 0) s = substr(s, 1, pos - 1)
-      m = split(s, parts, ",")
+      # Split on the commas OUTSIDE quotes: a comma inside a quoted element is part of it.
+      m = 0; cur = ""; q = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+        if (c == "\"" || c == "\047") { q = c; cur = cur c; continue }
+        if (c == ",") { parts[++m] = cur; cur = ""; continue }
+        cur = cur c
+      }
+      parts[++m] = cur
+      if (verb) {
+        n = 0
+        for (j = 1; j <= m; j++) {
+          e = parts[j]
+          gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)
+          if (e == "" && j == m) continue                     # a trailing comma
+          if (e ~ /^".*"$/ && length(e) >= 2) {
+            v = substr(e, 2, length(e) - 2)
+            if (index(v, "\\")) exit 2                       # an escape this reader does not decode
+          } else if (e ~ /^\047.*\047$/ && length(e) >= 2) {
+            v = substr(e, 2, length(e) - 2)
+          } else exit 2
+          out[++n] = v
+        }
+        for (j = 1; j <= n; j++) if (out[j] != "") print out[j]
+        exit 0
+      }
       for (j = 1; j <= m; j++) {
         e = parts[j]
         gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim outer whitespace
-        sub(/^"/, "", e); sub(/"$/, "", e)                            # strip one quote layer
+        if (e ~ /^\047.*\047$/) { e = substr(e, 2, length(e) - 2) }  # a literal string: one layer
+        else { sub(/^"/, "", e); sub(/"$/, "", e) }                   # strip one quote layer
         gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim inside the quotes
         if (e != "") print e
       }
@@ -4857,6 +4914,7 @@ adb_pinned_payload_shaped() {
   case "${1:-}" in
     .ai-dev-baseline/upstream.toml|.ai-dev-baseline/pinned-files.sha256) return 0 ;;
     .claude/rules/ai-dev-baseline.md) return 0 ;;
+    .claude/rules/ai-dev-baseline/*) return 0 ;;
     .claude/adb/*|.codex/adb/*) return 0 ;;
     .claude/skills/*|.codex/skills/*) return 0 ;;
   esac

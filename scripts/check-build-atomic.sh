@@ -292,4 +292,54 @@ run_build "$d"; rc=$?
 eq "$rc" "3" "an unmapped placeholder fails the build loud (rc 3)"
 eq "$(tmps "$d")" "" "...and leaves no staged temp beside the skill trees"
 
+# ================ 7. the procedure path (#434) publishes by rename too =========================
+# A path-scoped practice renders to agents/claude/rules/, the file Claude loads from ~/.claude/rules.
+# The fault is an `adb:except` left open at EOF: awk has already emitted PROC-BODY when it dies, so
+# the render fails PART-WAY through that file, the shape that tears a truncate-and-write.
+proc_src() { # <fixture> <tail> — a practice whose procedure is scoped to *.sh, plus <tail>
+  printf '# scoped practice\n<!-- adb:paths **/*.sh -->\n\nRULE-BODY\n<!-- adb:procedure -->\n\nPROC-BODY\n<!-- adb:end -->\n%s' "$2" \
+    > "$1/base/practices/30-ccc.md"
+}
+PROC_TORN='<!-- adb:except codex -->
+UNCLOSED
+'
+d="$work/proc"
+mkfixture "$d" || bad "proc: could not build the fixture"
+proc_src "$d" ""
+run_build "$d" || bad "proc: the fixture's first (clean) build failed"
+has "$(cat "$d/agents/claude/rules/30-ccc.md" 2>/dev/null)" "PROC-BODY" "proc: a scoped procedure renders to agents/claude/rules/"
+has "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "rules/ai-dev-baseline/30-ccc.md" "proc: the root doc points at the installed rules path"
+cp "$SENTINEL" "$d/agents/claude/rules/30-ccc.md"
+proc_src "$d" "$PROC_TORN"
+run_build "$d"; rc=$?
+eq "$rc" "3" "proc: an unterminated block inside the practice fails the build loud (rc 3)"
+cmp -s "$SENTINEL" "$d/agents/claude/rules/30-ccc.md" && ok \
+  || bad "the tracked rules file is NOT byte-exact after a failed procedure render"
+eq "$(tmps "$d")" "" "proc: a failed procedure render leaves no staged temp"
+
+# ------- 7a. MUTATION: a truncate-and-write procedure publish must destroy that sentinel --------
+d="$work/mut-proc-naive"
+mkfixture "$d" || bad "mut-proc-naive: could not build the fixture"
+mutated=1
+mutate_line "$d/scripts/build.sh" '  } > "$tmp"' 's|^  } > "\$tmp"$|  } > "$pfile"|' \
+  "mut-proc-naive" || mutated=0
+mutate_line "$d/scripts/build.sh" '  build_publish "$pfile"' '\|^  build_publish "\$pfile"$|d' \
+  "mut-proc-naive" || mutated=0
+# The empty-procedure check reads what was just written, so it follows the write to its new target.
+empty_check="END { exit !found }' \"\$tmp\""
+if [ "$(grep -Fc -- "$empty_check" "$d/scripts/build.sh")" = 1 ] \
+   && check_mutate_literal "$d/scripts/build.sh" "$empty_check" "END { exit !found }' \"\$pfile\""; then ok
+else bad "mut-proc-naive: the empty-procedure check is not exactly one line reading \$tmp — the mutation no longer describes the code"; mutated=0; fi
+if [ "$mutated" -eq 1 ]; then
+  proc_src "$d" ""
+  run_build "$d" || bad "mut-proc-naive: the mutated fixture's clean build failed — the mutation broke the script rather than changing its write shape"
+  cp "$SENTINEL" "$d/agents/claude/rules/30-ccc.md"
+  proc_src "$d" "$PROC_TORN"
+  run_build "$d"
+  if cmp -s "$SENTINEL" "$d/agents/claude/rules/30-ccc.md"; then
+    bad "MUTATION DID NOT FIRE: with a naive procedure publish, the sentinel SURVIVED a failed render — section 7 proves nothing"
+  else ok; fi
+  has "$(cat "$d/agents/claude/rules/30-ccc.md" 2>/dev/null)" "PROC-BODY" "mut-proc-naive: what the naive publish leaves is a PARTIAL render"
+fi
+
 check_summary "check-build-atomic"

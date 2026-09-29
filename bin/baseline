@@ -485,7 +485,8 @@ adb_report_partial_hooks() {
 
 # Scan the ACTUAL installed symlinks that point INTO <src>, across ONLY the namespaces where a
 # rename can leave an orphan: each agent's skills/* and scripts/* trees (Claude, Codex, and
-# Antigravity/Gemini — whose skills live under ~/.gemini/config/). Unlike the manifest (what
+# Antigravity/Gemini — whose skills live under ~/.gemini/config/), plus the procedure links (#434)
+# in ~/.claude/rules/ and each agent's ~/.<agent>/ai-dev-baseline/. Unlike the manifest (what
 # SHOULD be linked), this reports what IS linked — so a renamed-away orphan (a link into <src>
 # with no current manifest entry) is visible to the pruner.
 #
@@ -500,8 +501,9 @@ adb_report_partial_hooks() {
 adb_scan_links() {
   local src="$1" p
   for p in "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/* \
-           "$HOME"/.codex/skills/* "$HOME"/.codex/scripts/* \
-           "$HOME"/.gemini/config/skills/* "$HOME"/.gemini/scripts/*; do
+           "$HOME"/.claude/rules/* "$HOME"/.claude/ai-dev-baseline/* \
+           "$HOME"/.codex/skills/* "$HOME"/.codex/scripts/* "$HOME"/.codex/ai-dev-baseline/* \
+           "$HOME"/.gemini/config/skills/* "$HOME"/.gemini/scripts/* "$HOME"/.gemini/ai-dev-baseline/*; do
     adb_link_into "$p" "$src" && printf '%s\n' "$p"
   done
 }
