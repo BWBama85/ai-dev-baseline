@@ -986,7 +986,17 @@ printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.override.md*) sleep 8 ;; esac\
 chmod +x "$slowbin/find"
 out="$(PATH="$slowbin:$PATH" ADB_PINNED_CODEX_SCAN_SECS=1 bash "$PI" install --project "$PCT" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
 yes "$rc" "budget(bounded): an install whose doc scan outlives its bound still completes"
-has "$out" "could not be walked within 1s" "budget(bounded): …and says the budget was not checked"
+has "$out" "could not be measured within 1s" "budget(bounded): …and says the budget was not checked"
+# …and the bound covers the size reads that follow the walk, not only the walk: a slow `wc` over
+# several documents must end in the same NOTE rather than hold the install past the bound.
+PCW="$(new_project codexslowwc)"
+for sub in a b c; do mkdir -p "$PCW/$sub"; printf 'small\n' > "$PCW/$sub/AGENTS.md"; done
+slowwc="$work/slowwc"; mkdir -p "$slowwc"
+printf '#!/usr/bin/env bash\nsleep 2\nexec %s "$@"\n' "$(command -v wc)" > "$slowwc/wc"
+chmod +x "$slowwc/wc"
+out="$(PATH="$slowwc:$PATH" ADB_PINNED_CODEX_SCAN_SECS=1 bash "$PI" install --project "$PCW" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(bounded-sizes): an install whose size reads outlive the bound still completes"
+has "$out" "could not be measured within 1s" "budget(bounded-sizes): …and says the budget was not checked"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"

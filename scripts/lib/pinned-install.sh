@@ -97,10 +97,12 @@ PI_CODEX_SCAN_SECS="${ADB_PINNED_CODEX_SCAN_SECS:-30}"
 # doc is its AGENTS.override.md when present, else its AGENTS.md — the order Codex probes them in.
 # Found on the filesystem as Codex finds them: ignored files and symlinked docs count. Not counted:
 # names from the operator's `project_doc_fallback_filenames`, and docs reachable only through a
-# symlinked directory. Returns 3 when the walk outlives PI_CODEX_SCAN_SECS, 1 when it cannot run.
+# symlinked directory. PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, then one size read
+# per document — and returns 3 when it runs out; 1 when the walk cannot run.
 _pi_codex_doc_load() {
-  local p="$1" f d best=0 bestdir=. sum anc list wrc
-  local -A doc=()
+  local p="$1" f d best=0 bestdir=. sum anc list wrc deadline
+  local -A doc=() size=()
+  deadline=$(( SECONDS + PI_CODEX_SCAN_SECS ))
   list="$(mktemp "${TMPDIR:-/tmp}/adb-codex-docs.XXXXXX")" || return 1
   adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 find "$p" -name .git -prune -o \
     \( -name AGENTS.md -o -name AGENTS.override.md \) \( -type f -o -type l \) -print0 > "$list"; wrc=$?
@@ -120,9 +122,13 @@ _pi_codex_doc_load() {
   done < "$list"
   rm -f "$list"
   for d in "${!doc[@]}"; do
+    [ "$SECONDS" -lt "$deadline" ] || return 3
+    size["$d"]=$(( $(wc -c < "$p/${doc[$d]}") ))
+  done
+  for d in "${!doc[@]}"; do
     sum=0; anc="$d"
     while :; do
-      if [ -n "${doc[$anc]+x}" ]; then sum=$(( sum + $(wc -c < "$p/${doc[$anc]}") )); fi
+      if [ -n "${size[$anc]+x}" ]; then sum=$(( sum + size[$anc] )); fi
       [ "$anc" = . ] && break
       case "$anc" in */*) anc="${anc%/*}" ;; *) anc=. ;; esac
     done
@@ -1497,7 +1503,7 @@ EOF
     load="$(_pi_codex_doc_load "$p")"; lrc=$?
     case "$lrc" in
       0) : ;;
-      3) _pi_say "  NOTE   the project tree could not be walked within ${PI_CODEX_SCAN_SECS}s — Codex's project_doc_max_bytes budget was not checked"
+      3) _pi_say "  NOTE   the project's AGENTS.md files could not be measured within ${PI_CODEX_SCAN_SECS}s — Codex's project_doc_max_bytes budget was not checked"
          continue ;;
       *) _pi_say "  NOTE   could not list this project's AGENTS.md files — Codex's project_doc_max_bytes budget was not checked"
          continue ;;

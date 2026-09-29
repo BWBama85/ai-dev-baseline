@@ -888,7 +888,10 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   vendored beside them rather than spliced in — so a stock project needs no change. A project whose
   own `AGENTS.md` prose — at the root, or in a nested `AGENTS.md` on the way down to some directory
   — pushes what Codex loads past the budget is told at install, with a line for
-  `~/.codex/config.toml` sized to that chain; the setting is yours, not the payload's.
+  `~/.codex/config.toml` sized to that chain; the setting is yours, not the payload's. The
+  measurement counts `AGENTS.md` and `AGENTS.override.md` files, symlinked ones included; names you
+  configured in `project_doc_fallback_filenames` are not counted, and it gives up with a note after
+  30 seconds (`ADB_PINNED_CODEX_SCAN_SECS`) rather than hold the install.
 - **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
   commit this installer cannot reconstruct; retire it deliberately first.
 - **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would
