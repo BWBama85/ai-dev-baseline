@@ -255,6 +255,22 @@ _adb_skill_manifest_lines() {
   done
 }
 
+# Emit the generated PROCEDURE trees (#434) as one directory link each, and only for a tree that
+# exists — the existence rule the skill glob above follows. `rules/` is Claude's alone: its
+# `~/.claude/rules/` loads Markdown, while `~/.codex/rules/` holds command-approval policy files.
+# scripts/build.sh reads these destinations back to write each root doc's pointer, so they are
+# stated nowhere else. Usage: _adb_procedure_manifest_lines <agent> <repo> <agent-home>
+_adb_procedure_manifest_lines() {
+  local agent="$1" repo="$2" ahome="$3"
+  if [ "$agent" = claude ] && [ -d "$repo/agents/claude/rules" ]; then
+    printf '%s\t%s\n' "$repo/agents/claude/rules" "$ahome/rules/ai-dev-baseline"
+  fi
+  if [ -d "$repo/agents/$agent/reference" ]; then
+    printf '%s\t%s\n' "$repo/agents/$agent/reference" "$ahome/ai-dev-baseline/reference"
+  fi
+  return 0
+}
+
 # Can every value `adb_agent_manifest` is about to interpolate survive this record format?
 # True (0) iff <repo>, <home> and every skill-directory name under <skills-dir> are TSV-safe.
 # False (1), with exactly one physical stderr line PER OFFENDING VALUE. Usage:
@@ -1858,6 +1874,7 @@ adb_agent_manifest() {
     claude)
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/claude/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
+      _adb_procedure_manifest_lines claude "$repo" "$home/.claude"
       _adb_skill_manifest_lines "$repo/agents/claude/skills" "$home/.claude/skills"
       # Every wired hook. Fed through a heredoc rather than an unquoted `$(…)` so no
       # word-splitting is relied on. An installed-but-not-wired script would be appended to this
@@ -1873,6 +1890,7 @@ EOF
     codex)
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/codex/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/codex/AGENTS.md" "$home/.codex/AGENTS.md"
+      _adb_procedure_manifest_lines codex "$repo" "$home/.codex"
       # Rendered workflow skills (agent-skills SKILL.md folders) → Codex's skills dir, which
       # discovers ~/.codex/skills/<name>/SKILL.md.
       _adb_skill_manifest_lines "$repo/agents/codex/skills" "$home/.codex/skills"
@@ -1885,6 +1903,7 @@ EOF
     gemini)
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/gemini/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/gemini/GEMINI.md" "$home/.gemini/GEMINI.md"
+      _adb_procedure_manifest_lines gemini "$repo" "$home/.gemini"
       # Rendered workflow skills → Antigravity's GLOBAL customization root, ~/.gemini/config/
       # (agy discovers skills/<name>/SKILL.md there; confirmed in agy's own bundled
       # agy-customizations docs). The scripts/lib runner lives beside the other agents' at
@@ -4857,6 +4876,7 @@ adb_pinned_payload_shaped() {
   case "${1:-}" in
     .ai-dev-baseline/upstream.toml|.ai-dev-baseline/pinned-files.sha256) return 0 ;;
     .claude/rules/ai-dev-baseline.md) return 0 ;;
+    .claude/rules/ai-dev-baseline/*) return 0 ;;
     .claude/adb/*|.codex/adb/*) return 0 ;;
     .claude/skills/*|.codex/skills/*) return 0 ;;
   esac

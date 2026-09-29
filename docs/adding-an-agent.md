@@ -92,6 +92,17 @@ render foo "$root/agents/foo/FOO.md" "Global engineering practices"
 Add `foo` to `build_known_agents` in the same file, or every `<!-- adb:except foo -->` a source
 might carry is rejected as an unknown token.
 
+**Procedures (#434).** A practice's `<!-- adb:procedure -->` blocks render to one file per agent,
+not into the root doc, and the root doc ends that practice with a pointer. Add a
+`render_procedure foo "$f"` line beside the other three in the procedure loop, and give `foo` a
+row in `_adb_procedure_manifest_lines` (`scripts/lib/common.sh`) linking
+`agents/foo/reference` into `foo`'s home — the pointer is read from that manifest row, so
+without it the build refuses to render `foo`'s root doc. Verify, through the agent's own
+documentation, what on-demand instruction surface `foo` really has: the reference bundle is
+the fallback when it has none (Codex and Gemini), and a path-scoped surface like Claude's rules
+directory earns its own branch in `build_procedure_dir` only if it loads a file *lazily*.
+`scripts/check-practice-split.sh` reads the agent table at its top; add `foo` there too.
+
 Run `bash scripts/build.sh` and commit the generated file — CI re-runs this
 script and fails the build if the checked-in output has drifted from what
 `base/practices/*.md` would currently render, so this step isn't optional

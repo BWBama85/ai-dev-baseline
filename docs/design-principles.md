@@ -16,9 +16,15 @@ at the end first — it is the one that most often gets skipped.
 renders from it or references it; and CI fails when a copy drifts.** This is the whole
 product thesis turned inward.
 
-- **Practices** are authored once under `base/practices/*.md` and rendered into every
-  agent's root doc by `scripts/build.sh`. Never hand-edit a generated root doc — the
-  `build-drift` CI job fails on a stale, missing, untracked, or orphaned generated file.
+- **Practices** are authored once under `base/practices/*.md` and rendered by
+  `scripts/build.sh` in two classes from that one source (#434): the rule into every agent's
+  root doc, the `<!-- adb:procedure -->` blocks into one procedure file per agent under
+  `agents/<agent>/reference/` (or, for a Claude procedure the practice path-scopes with
+  `<!-- adb:paths … -->`, `agents/claude/rules/`). Never hand-edit a generated root doc or
+  procedure — the `build-drift` CI job fails on a stale, missing, untracked, or orphaned
+  generated file, and `check-practice-split.sh` proves the split lost and doubled nothing. The
+  pointer each root doc prints is read from `adb_agent_manifest`, so it names exactly the path
+  the installer links.
 - **Workflows** are authored once under `base/workflows/*.md` and rendered into the
   Claude skills the same way, drift-checked identically.
 - **Shell logic** lives once in `scripts/lib/common.sh` — `adb_link` /

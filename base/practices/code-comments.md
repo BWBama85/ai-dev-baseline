@@ -7,6 +7,7 @@ it here charges every future reader — human or model — the tokens to skip it
 
 The rule covers **CI and workflow YAML** exactly as it covers `*.sh`, `*.ts`,
 `*.py`. A pipeline definition is code.
+<!-- adb:procedure -->
 
 It covers the **fenced code blocks inside `base/workflows/*.md`** too, and there a
 comment costs more than a reader's time: a workflow body is rendered into each agent's
@@ -20,6 +21,7 @@ not survive. Measured on this framework's own repo: the #361 rewrite took
 stood at 16,266, past where it started, and no pull request in between had shown any
 reviewer the growth (#432). The prose around the fences is instruction, not comment,
 and is not governed here.
+<!-- adb:end -->
 
 ## The four classes
 
@@ -32,6 +34,7 @@ these. Classify it, then dispose of it:
 | **2 — Incident history**: "PR #N shipped this bug, which is why…", a dated outage, a narrative of what broke | **Relocate** to `.ai-dev-baseline/decisions.md` (`handling-the-unknown.md`). Leave behind the one-line rule the incident proved, and cite the decision id — never retell the incident. |
 | **3 — Design alternatives**: "X and Y were considered; Y loses because…", benchmark tables, a rejected approach argued out | **Relocate** to the decision log, or delete. A rejected alternative is a decision, not an interface. |
 | **4 — Restated policy**: text duplicating a `base/practices/` rule, a root doc, or a workflow step | **Delete.** The law has one home. A copy in code is a second home that drifts, and the drifted copy is the one being read at the moment it matters. |
+<!-- adb:procedure -->
 
 When a comment mixes classes — most long ones do — split it. The class-1 sentence
 stays; the rest goes to its home or goes away. When one sentence is genuinely
@@ -101,3 +104,4 @@ A 197-line run is not a contract.
 - **It stops at the comment character.** Instruction prose — practices, the workflow
   text around a fence, root docs — is out of scope here, and no claim is made that
   anything else governs it.
+<!-- adb:end -->

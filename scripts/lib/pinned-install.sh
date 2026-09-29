@@ -82,10 +82,10 @@ PI_NS="adb"
 # and a pinned project has none.
 PI_HOOKS_EXCLUDED="session-currency.sh"
 
-# Codex silently truncates a project doc at `project_doc_max_bytes`, whose default is 32 KiB
-# (`AGENTS_MD_MAX_BYTES` in codex-rs/core/src/config/mod.rs: "Larger files are *silently truncated*
-# to this size"). The rendered practices are larger than that, so the operator is told — loudly,
-# with the one config line that fixes it — rather than left with half the law and no symptom.
+# Codex reads project AGENTS.md files only up to `project_doc_max_bytes`, a budget whose default is
+# 32 KiB and which the project's own text and nested AGENTS.md files share (codex-rs/core/src/
+# agents_md.rs). The rendered practices fit it since #434, but a large project doc beside them may
+# not, so the spliced file is measured and the operator told, with the config line that fixes it.
 PI_CODEX_DOC_DEFAULT_MAX=32768
 
 # The managed region in a project's own AGENTS.md. Codex discovers project instructions by
@@ -204,6 +204,27 @@ cmd_payload() {
     codex)  printf '%s\t%s\n' "$doc" "$p/$dot/$PI_NS/AGENTS.practices.md" ;;
   esac
 
+  # Their procedures (#434), where the root doc's re-anchored pointers name them: Claude's
+  # path-scoped ones as project rules, which load when a matching file is read; every other one
+  # under the namespace.
+  local pdir pdest
+  for pdir in rules reference; do
+    [ -d "$a/agents/$agent/$pdir" ] || continue
+    case "$agent:$pdir" in
+      claude:rules) pdest="$p/.claude/rules/ai-dev-baseline" ;;
+      *:rules)      continue ;;
+      *)            pdest="$p/$dot/$PI_NS/reference" ;;
+    esac
+    for f in "$a/agents/$agent/$pdir"/*.md; do
+      [ -f "$f" ] || continue
+      adb_tsv_field_safe "${f##*/}" || {
+        _pi_err "payload: procedure file name contains a tab or newline: $(adb_tsv_field_display "${f##*/}")"
+        return 1
+      }
+      printf '%s\t%s\n' "$f" "$pdest/${f##*/}"
+    done
+  done
+
   # The skills, at the harness-fixed project root for this agent.
   for d in "$skills"/*/; do
     [ -d "$d" ] || continue
@@ -247,7 +268,8 @@ EOF
   fi
 }
 
-# cmd_reanchor <agent> <project-root> — rewrite the library prefix on stdin, to stdout.
+# cmd_reanchor <agent> <project-root> — rewrite the library prefix and the procedure pointers on
+# stdin, to stdout.
 #
 # A rendered skill reaches its libraries through `$HOME/.<agent>/scripts/lib/` (scripts/build.sh),
 # which is one directory shared by the global install and by every project on the machine. A
@@ -257,21 +279,27 @@ EOF
 #
 # The prefix carries `scripts/lib/` on purpose. `$HOME/.<agent>/skills` also appears in a rendered
 # body and must NOT be rewritten — it genuinely means the user-global skills root.
+#
+# A root doc's procedure pointers (#434) name the global install's `~/.<agent>/ai-dev-baseline/reference/` and
+# `~/.claude/rules/ai-dev-baseline/`; they become the project-root-relative paths cmd_payload
+# vendors them to. Only those two prefixes: the docs name other `~/.<agent>/` paths that mean it.
 cmd_reanchor() {
   [ "$#" -eq 2 ] || { _pi_err "reanchor: needs <agent> <project-root>"; return 2; }
-  local agent="$1" from to
+  local agent="$1" tl='~'
   case "$agent" in claude|codex) ;; *) _pi_err "reanchor: unknown agent: $agent"; return 2 ;; esac
-  from="\$HOME/.$agent/scripts/lib/"
-  to="\$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.$agent/$PI_NS/lib/"
-  ADB_PI_FROM="$from" ADB_PI_TO="$to" awk '
-    BEGIN { from = ENVIRON["ADB_PI_FROM"]; to = ENVIRON["ADB_PI_TO"]; n = length(from) }
-    {
+  ADB_PI_F1="\$HOME/.$agent/scripts/lib/" \
+  ADB_PI_T1="\$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.$agent/$PI_NS/lib/" \
+  ADB_PI_F2="$tl/.$agent/ai-dev-baseline/reference/" ADB_PI_T2=".$agent/$PI_NS/reference/" \
+  ADB_PI_F3="$tl/.claude/rules/ai-dev-baseline/" ADB_PI_T3=".claude/rules/ai-dev-baseline/" awk '
+    function swap(s, from, to,   out, i) {
       out = ""
-      while ((i = index($0, from)) > 0) {
-        out = out substr($0, 1, i - 1) to
-        $0 = substr($0, i + n)
-      }
-      print out $0
+      while ((i = index(s, from)) > 0) { out = out substr(s, 1, i - 1) to; s = substr(s, i + length(from)) }
+      return out s
+    }
+    {
+      $0 = swap($0, ENVIRON["ADB_PI_F1"], ENVIRON["ADB_PI_T1"])
+      $0 = swap($0, ENVIRON["ADB_PI_F2"], ENVIRON["ADB_PI_T2"])
+      print swap($0, ENVIRON["ADB_PI_F3"], ENVIRON["ADB_PI_T3"])
     }
   '
 }
@@ -959,7 +987,7 @@ _pi_stage() {
       # same rendered `bash "$HOME/.<agent>/scripts/lib/…"` invocations, and a verbatim copy of
       # one is exactly the cross-install reach _pi_assert_reanchored refuses below.
       case "$dest" in
-        */skills/*/*.md|*/rules/ai-dev-baseline.md|*/AGENTS.practices.md)
+        */skills/*/*.md|*/rules/ai-dev-baseline.md|*/AGENTS.practices.md|*/rules/ai-dev-baseline/*.md|*/"$PI_NS"/reference/*.md)
           cmd_reanchor "$agent" "$p" < "$src" > "$stage/$rel" || return 1 ;;
         *)
           cp "$src" "$stage/$rel" || return 1 ;;
@@ -981,18 +1009,27 @@ EOF
 # re-anchored at all.
 _pi_assert_reanchored() {
   local stage="$1"; shift
-  local agent hits rc=0
+  local agent hits rc=0 tl='~'
   for agent in "$@"; do
     # THE PRACTICE DOCUMENTS ARE IN SCOPE, so the paths scanned are every re-anchored destination
     # rather than the skills alone — a doc that slipped back to a verbatim copy would otherwise pass.
     local -a scan=()
     [ -d "$stage/.$agent/skills" ] && scan+=("$stage/.$agent/skills")
     [ -f "$stage/.claude/rules/ai-dev-baseline.md" ] && [ "$agent" = claude ] && scan+=("$stage/.claude/rules/ai-dev-baseline.md")
+    [ -d "$stage/.claude/rules/ai-dev-baseline" ] && [ "$agent" = claude ] && scan+=("$stage/.claude/rules/ai-dev-baseline")
     [ -f "$stage/.codex/$PI_NS/AGENTS.practices.md" ] && [ "$agent" = codex ] && scan+=("$stage/.codex/$PI_NS/AGENTS.practices.md")
+    [ -d "$stage/.$agent/$PI_NS/reference" ] && scan+=("$stage/.$agent/$PI_NS/reference")
     [ "${#scan[@]}" -gt 0 ] || continue
     hits="$(grep -rlE -- "\\\$(HOME|\\{HOME\\})/\\.$agent/scripts/lib/" "${scan[@]}" 2>/dev/null)" || true
     if [ -n "$hits" ]; then
       _pi_err "staged $agent payload still reaches the user-global library — the re-anchor did not take:"
+      printf '%s\n' "$hits" | sed 's/^/  /' >&2
+      rc=1
+    fi
+    # A pointer left at the global procedure path names the OTHER install's copy, or nothing.
+    hits="$(grep -rlF -e "$tl/.$agent/ai-dev-baseline/reference/" -e "$tl/.claude/rules/ai-dev-baseline/" "${scan[@]}" 2>/dev/null)" || true
+    if [ -n "$hits" ]; then
+      _pi_err "staged $agent payload still points at the user-global procedures — the re-anchor did not take:"
       printf '%s\n' "$hits" | sed 's/^/  /' >&2
       rc=1
     fi
@@ -1402,15 +1439,15 @@ EOF
     _pi_splice_block "$p/AGENTS.md" "$p/.codex/$PI_NS/AGENTS.practices.md" \
       || { _pi_err "install: could not splice the practices into AGENTS.md"; rm -rf "$work"; trap - EXIT; return 14; }
     _pi_say "  block  managed region written into AGENTS.md"
-    # SILENT TRUNCATION IS THE WORST FAILURE MODE THERE IS, so it is said out loud with the fix.
+    # What does not fit is never read, so it is said out loud with the fix, sized to this file.
     bytes="$(wc -c < "$p/AGENTS.md" | tr -d ' ')"
     if [ "$bytes" -gt "$PI_CODEX_DOC_DEFAULT_MAX" ]; then
       _pi_say ""
       _pi_say "  WARNING  AGENTS.md is now $bytes bytes, and Codex reads at most $PI_CODEX_DOC_DEFAULT_MAX by"
-      _pi_say "           default (project_doc_max_bytes). It TRUNCATES SILENTLY, so much of the"
-      _pi_say "           practices would never reach it. Raise the limit in ~/.codex/config.toml:"
+      _pi_say "           default (project_doc_max_bytes), shared with any nested AGENTS.md. Whatever"
+      _pi_say "           lies past the budget never reaches it. Raise the limit in ~/.codex/config.toml:"
       _pi_say ""
-      _pi_say "               project_doc_max_bytes = 262144"
+      _pi_say "               project_doc_max_bytes = $(( (bytes / 32768 + 2) * 32768 ))"
       _pi_say ""
     fi
   done

@@ -123,6 +123,15 @@ has "$out" '/.codex/adb/lib/x.sh' "reanchor: is per-agent"
 bash "$PI" reanchor gemini /p </dev/null >/dev/null 2>&1; rc=$?
 eq "$rc" 2 "reanchor: refuses an agent it does not support"
 
+# A root doc's procedure pointers (#434) name the GLOBAL install's copies; a pinned project reads its
+# own. Only those two prefixes move — other `~/.<agent>/` paths in the docs mean what they say.
+out="$(printf '%s\n' '**Procedure:** `~/.claude/ai-dev-baseline/reference/git-and-prs.md` and `~/.claude/rules/ai-dev-baseline/shell.md`, not `~/.claude/settings.json`' | bash "$PI" reanchor claude /p)"
+has "$out" '`.claude/adb/reference/git-and-prs.md`' "reanchor: a reference pointer lands on the vendored copy"
+has "$out" '`.claude/rules/ai-dev-baseline/shell.md`' "reanchor: a path-scoped rule pointer lands on the project rule"
+has "$out" '`~/.claude/settings.json`' "reanchor: leaves every other user-global path alone"
+out="$(printf '%s\n' '`~/.codex/ai-dev-baseline/reference/shell.md`' | bash "$PI" reanchor codex /p)"
+eq "$out" '`.codex/adb/reference/shell.md`' "reanchor: the codex pointer lands on its vendored copy"
+
 # ================================ payload =======================================================
 
 man="$(bash "$PI" payload claude "$work/src/$PREFIX" /proj)"; rc=$?
@@ -136,6 +145,8 @@ has "$man" "/proj/.claude/adb/session-context.sh" "payload: the run-state hook I
 # `.claude/scripts/` is handling-the-unknown.md's one prescribed home for a project's OWN gate
 # policy. An install that wrote there would occupy it.
 hasnt "$man" "/proj/.claude/scripts/" "payload: never occupies the project's own gate-policy home"
+has "$man" "/proj/.claude/rules/ai-dev-baseline/shell.md" "payload: a path-scoped procedure lands as a project rule (#434)"
+has "$man" "/proj/.claude/adb/reference/git-and-prs.md" "payload: every other procedure lands in the namespace"
 
 man="$(bash "$PI" payload codex "$work/src/$PREFIX" /proj)"
 has "$man" "/proj/.codex/skills/implement-issue/SKILL.md" "payload: codex skills land under .codex/skills"
@@ -883,9 +894,34 @@ if [ -n "$(find "$dlhome" -name ai-dev-baseline.md -type l 2>/dev/null)" ]; then
 PPD="$(new_project practicedocs)"
 bash "$PI" install --project "$PPD" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
 hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '$HOME/.claude/scripts/lib/' "practices: the Claude rule is re-anchored"
-has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/adb/lib/' "practices: … to the project's own library"
 hasnt "$(cat "$PPD/.codex/adb/AGENTS.practices.md")" '$HOME/.codex/scripts/lib/' "practices: the Codex region is re-anchored"
 hasnt "$(cat "$PPD/AGENTS.md")" '$HOME/.codex/scripts/lib/' "practices: … including the copy spliced into AGENTS.md"
+# Since #434 the library invocations sit in the PROCEDURES, which are vendored and re-anchored too.
+hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" '$HOME/.claude/scripts/lib/' "practices: a vendored procedure is re-anchored"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" '/.claude/adb/lib/' "practices: … to the project's own library"
+has   "$(head -n 3 "$PPD/.claude/rules/ai-dev-baseline/ci-discipline.md")" 'paths:' "practices: the vendored rule keeps its paths: scope"
+# …and the pointers in the vendored rules name the vendored procedures, never the global ones.
+hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`~/.claude/ai-dev-baseline/reference/' "practices: no Claude pointer names the global bundle"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`.claude/adb/reference/git-and-prs.md`' "practices: … it names the vendored copy"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '`.claude/rules/ai-dev-baseline/shell.md`' "practices: … and the project rule"
+has   "$(cat "$PPD/AGENTS.md")" '`.codex/adb/reference/shell.md`' "practices: the spliced Codex pointers name the vendored copies"
+file_is "$PPD/.codex/adb/reference/shell.md" "practices: the codex procedure the pointer names exists"
+grep -Fq '.claude/adb/reference/git-and-prs.md' "$PPD/.ai-dev-baseline/pinned-files.sha256" && ok \
+  || bad "practices: a vendored procedure is on the receipt, so status and uninstall cover it"
+
+# THE CODEX BUDGET (#434): the rendered rules fit Codex's default 32 KiB project-doc budget, so a
+# stock project is not told to raise it; a project whose own AGENTS.md pushes the spliced file past
+# it is, with a value that covers that file.
+PCB="$(new_project codexbudget)"
+out="$(bash "$PI" install --project "$PCB" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+hasnt "$out" "WARNING  AGENTS.md is now" "budget: a stock project's spliced AGENTS.md fits the default budget"
+[ "$(wc -c < "$PCB/AGENTS.md" | tr -d ' ')" -le 32768 ] && ok || bad "budget: the spliced AGENTS.md is at most 32 KiB"
+PCL="$(new_project codexlarge)"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Project prose that is the project'"'"'s own, and long enough to matter." }' > "$PCL/AGENTS.md"
+out="$(bash "$PI" install --project "$PCL" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "WARNING  AGENTS.md is now" "budget: a project doc pushing the file past the budget is warned"
+want=$(( ($(wc -c < "$PCL/AGENTS.md" | tr -d ' ') / 32768 + 2) * 32768 ))
+has "$out" "project_doc_max_bytes = $want" "budget: …with a value that covers the spliced file"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"
@@ -1059,6 +1095,7 @@ file_is "$globalhome/.claude/scripts/lib/common.sh" "global: the shared library 
 [ -L "$globalhome/.codex/AGENTS.md" ] && ok || bad "global: the codex adapter still runs"
 # AND IT MUST NOT HAVE ACQUIRED THE PINNED MODEL'S ARTIFACTS.
 file_isnt "$globalhome/.claude/adb" "global: an ordinary install writes nothing into the pinned namespace"
+[ -L "$globalhome/.claude/ai-dev-baseline/reference" ] && ok || bad "global: the procedure bundle is linked outside the pinned namespace (#434)"
 out="$(HOME="$globalhome" bash "$ROOT/uninstall.sh" --agent claude --agent codex 2>&1)"; rc=$?
 yes "$rc" "global: an ordinary uninstall.sh run still succeeds"
 [ -L "$globalhome/.claude/CLAUDE.md" ] && bad "global: uninstall left the root doc linked" || ok

@@ -8,6 +8,7 @@ merged, an issue's open/closed, CI green/red — **changes out from under you.**
 Narrating or acting on it from an earlier turn's memory, or from an unsynced local
 git ref, is a correctness bug: it produces flatly-wrong claims ("PR #N is still
 open" when it merged an hour ago) and destroys trust.
+<!-- adb:procedure -->
 
 ## Immutable vs mutable
 
@@ -155,3 +156,4 @@ Prose alone had already failed twice in one session with this practice loaded in
 is why the read-and-render step is a command rather than another paragraph — the same move that
 turned the dependency-edge rule, the release-readiness ladder and `/cleanup`'s predicates from
 remembered rules into tested code.
+<!-- adb:end -->

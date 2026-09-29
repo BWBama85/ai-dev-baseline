@@ -4,6 +4,7 @@
 
 "Probably X" is a hypothesis, not a diagnosis. A fix built on an unproven cause
 is a coin flip.
+<!-- adb:procedure -->
 
 ## Protocol
 
@@ -35,3 +36,4 @@ The strongest debugging sessions trace incidents to a provable root cause —
 dead-letter queues to an overload source, a poisoned value to the exact commit
 that leaked it. The weak ones guess and patch. Make evidence the default and the
 fix follows cleanly.
+<!-- adb:end -->

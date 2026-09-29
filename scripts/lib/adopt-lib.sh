@@ -252,7 +252,8 @@ cmd_baseline() {
 # --- shipped -------------------------------------------------------------------------------------
 # Print the IDENTITY of every artifact the baseline installs, as `<kind>TAB<name>`. Kinds:
 # `skill` (a skill directory name), `script` (a basename under the agent's scripts dir), `lib` (the
-# shared scripts/lib dir), `rootdoc` (the agent's root doc basename).
+# shared scripts/lib dir), `rootdoc` (the agent's root doc basename), `procedures` (a generated
+# procedure tree, #434 — the scan emits no such kind, so it never collides).
 #
 # DERIVED FROM `adb_agent_manifest`, which is install.sh's own manifest — the ONE enumeration of
 # what this framework ships. A hardcoded list here would be a second answer to "what does the
@@ -310,6 +311,7 @@ EOF
         */skills/*)  kind=skill;   name="${dest##*/}" ;;
         */scripts/lib) kind=lib;   name=lib ;;
         */scripts/*) kind=script;  name="${dest##*/}" ;;
+        */rules/ai-dev-baseline|*/ai-dev-baseline/reference) kind=procedures; name="${dest##*/}" ;;
         *)           kind=rootdoc; name="${dest##*/}" ;;
       esac
       # THE SOURCE PATH IS THE FOURTH FIELD, and it is why this subcommand is worth having rather

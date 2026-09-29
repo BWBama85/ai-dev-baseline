@@ -33,6 +33,37 @@ and render identically to every agent. The full source contract for the markers 
 authoring idiom, and the fail-loud rules) lives in one place, `base/workflows/README.md`, because
 the same facility serves both render paths; decision **D67** records why it exists.
 
+## Rule and procedure (#434)
+
+A practice renders in **two classes** from its one file. Its **rule** — what an agent must hold on
+every turn — goes into the root doc. Its **procedure** — the how, needed only when the practice
+applies — is wrapped in whole-line markers and rendered to a separate file per agent:
+
+```markdown
+The rule, which stays in the root doc.
+<!-- adb:procedure -->
+
+The how, which moves to the agent's on-demand surface.
+<!-- adb:end -->
+```
+
+The root doc ends each practice that has a procedure with a `**Procedure:**` line naming its
+installed path (read from the install manifest). A practice may carry several blocks, and rule
+text may follow one; each block should begin with its own blank line, as above. An
+`adb:except` block may nest **inside** a procedure block, never the reverse. A practice with
+no block renders whole into the root doc — the compaction guidance must, because the compactor
+reads it from there.
+
+One line anywhere outside the blocks, `<!-- adb:paths <glob>… -->`, scopes the practice's
+procedure to matching files for an agent with a path-scoped surface: Claude renders it to
+`agents/claude/rules/` with `paths:` frontmatter, which loads when a matching file is read.
+Without it, the procedure goes to `agents/<agent>/reference/`. Use it only where a path
+genuinely scopes the practice.
+
+The build refuses every malformed spelling — an unclosed, nested, empty or misplaced block, a
+second or misplaced `adb:paths`, a procedure marker in a workflow — naming the file and line, and
+`scripts/check-practice-split.sh` proves the rendered split lost and duplicated nothing.
+
 ## Precedence
 
 1. **Explicit instructions in the current task** win.
@@ -47,6 +78,7 @@ doc is silent on a topic, the baseline applies.
 ## How these get loaded
 
 The global installer (`install.sh --agent <name>`) symlinks the generated root
-doc into the agent's user-level config directory, so these practices load on
+doc into the agent's user-level config directory, so these practices' rules load on
 every session in every project — regardless of which repo you are in or which
-agent is driving. See `docs/installation.md`.
+agent is driving — and links each agent's procedure files beside it, where the root
+doc's pointers name them. See `docs/installation.md`.

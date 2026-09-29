@@ -1,0 +1,99 @@
+<!-- GENERATED FILE — do not edit by hand.
+     Source: base/practices/self-review.md · Regenerate: scripts/build.sh
+     Edits here are overwritten on the next build. -->
+
+# Self-review before shipping — procedure
+
+This is a **mandatory gate**, not a victory lap. It repeatedly catches genuine
+landmines in freshly generated code before they reach a reviewer or production.
+
+## What to look for
+
+- **Edge cases:** empty input, single element, zero, negative, max, unicode.
+- **Escaping / encoding:** shell, SQL, JSON, HTML, regex — anywhere a value
+  crosses a syntax boundary. JS string-escaping bugs are common.
+- **Binary / encoding corruption:** generated files with stray NUL bytes, wrong
+  line endings, missing final newline, or a dropped pragma/shebang.
+- **Cascade / cancellation effects:** does one change trigger a chain (a cancel
+  guard, a cascading delete, a retry storm)? Trace it.
+- **Off-by-one and boundary conditions** in loops, slices, ranges, pagination.
+- **Idempotency:** can this run twice without corrupting state? (Queue consumers,
+  migrations, cron, scripts especially.)
+- **Resource leaks:** unclosed handles, unbounded growth, missing timeouts.
+
+## Sweep what this project has already learned
+
+**Start from the classes this project has hit before.** A project that keeps a pattern ledger
+(`.ai-dev-baseline/patterns.md`, #421) has a promoted checklist: finding classes seen more than
+once, each carrying a rule somebody wrote after fixing one. Read it and sweep the diff for every
+rule on it, then do the open-ended pass above.
+
+That ordering is the point. The open-ended pass finds what is novel; the checklist finds what this
+project already paid a review round for and would otherwise pay for again. `debugging.md` states
+the underlying rule — grep for the *class*, not the instance — and the checklist is what carries a
+class forward from the pull request that discovered it to the one that would repeat it.
+
+**Name what you swept, and what the sweep found**, including "nothing" — a checklist rule that has
+never fired since promotion is a fact worth seeing, because it is either a class that stopped
+recurring or a rule that no longer matches anything.
+
+**And name it in a RECORD, not a sentence.** "Swept all 21 promoted rules, four fired" is a claim
+with nothing behind it: no file says which rules ran, so a real sweep and a plausible sentence are
+indistinguishable to every later reader. Where the project keeps a ledger, each rule's disposition
+is recorded as it is swept and the close-out renders the result — coverage counted against the
+**live** promoted set, so recording one rule cannot render a clean report while the other twenty
+went unchecked. The rendered report states its own limit: it records which rules were swept and
+what each found, not which files were read.
+
+A project without a ledger simply does the open-ended pass; there is nothing to skip and no gate
+here.
+
+A guard's failure mode is **silence**. Ordinary code that breaks throws, returns
+the wrong value, fails a test. A guard that breaks *passes*: it scans zero files,
+matches zero lines, evaluates zero rules, and reports exactly what a clean run
+reports. No existing test catches it, because every assertion still passes. So a
+guard that cannot answer wrong is strictly worse than no guard — it costs CI time
+and reports safety it never checked.
+
+- **Prove it on the real superseded input**, not on a convenient one. A pattern
+  that catches three of four spellings is green on the fourth. A negative pin
+  written for a contiguous `[bot]$` matched neither of the two real idioms
+  (`sed 's/\[bot\]$//'` and `sub("\\[bot\\]$"; "")`, where the bracket is always
+  backslash-escaped) and shipped green while checking nothing.
+- **Make the guard say what it checked**, not only whether it passed — the count
+  of rules evaluated, files scanned, cases run. A zero is then visible in the log
+  instead of indistinguishable from success.
+- **Automate the observation where the set is closed.** If the guard's rules are
+  enumerable, a harness that injects each rejectable input and asserts the guard
+  goes red turns "I checked once" into a standing test. Where the set is open —
+  an arbitrary future gate — this stays a discipline, not a mechanism, and saying
+  so plainly is better than implying coverage that does not exist.
+
+### Negative-test against a copy, never the live tree
+
+To watch a check reject something, it needs a rejectable input — and the
+temptation is to edit the real file, run the check, then put it back.
+
+**Don't.** Copy the target into a temp dir and run the check against the copy.
+
+Editing a tracked file to test a check that reads tracked files ends in `git
+checkout -- <path>` or `git restore <path>` to "put it back", and if that file
+also held uncommitted work, the work is gone with no reflog to recover it (see
+`git-and-prs.md`). That exact sequence cost ~40 minutes of unsaved work. It is
+also unnecessary: build the fixture — a temp dir, a throwaway git repo under
+`mktemp -d`, a copy of the tree — and mutate that.
+
+## Why
+
+An explicit self-review pass has repeatedly caught real bugs — a cascade-cancel
+guard bug, a JS-escaping bug, NUL-byte-corrupted generated files — that a casual
+read missed. Making it a fixed step means it never gets skipped when a task runs
+long or gets interrupted.
+
+The guard rules are here for the same reason. Two guards shipped in one run
+unable to fire — one negative pin that matched neither real spelling, one
+identity predicate that normalized its two sides differently — and both were
+caught only because the agent *chose* to negative-test. Nothing required it, and
+nothing else would have noticed: a check that matches nothing is
+indistinguishable from a check that found nothing wrong. The way that pin was
+tested is why the copy rule sits beside it.

@@ -8552,3 +8552,50 @@ survive is the part a later reader needs.
              push costs one fewer network round-trip per round and reviews the ledger's operative
              rules, which `/implement-issue` injects into prompts, before they reach the PR.
 - baseline-issue: n/a
+
+## D117 — A practice renders in two classes: rules to the root doc, procedures on demand
+- date:      2026-09-28
+- category:  project-delta
+- unknown:   #434 (owner decision 2026-08-25: one `base/practices/` source, two render classes).
+             The issue named the marker and Claude's surface and left four things open, three of
+             which the gap analysis called blocking. (a) Where a procedure goes when no `paths:`
+             scope applies — the issue said "none where it does not", but Claude loads a rule
+             WITHOUT `paths:` at launch (https://code.claude.com/docs/en/memory, fetched this run),
+             so that placement would put the procedure back into every session. (b) What Codex and
+             Gemini get. (c) What a pinned install vendors. (d) The 14th practice,
+             `compact-instructions.md`, postdates the issue and must stay loaded.
+- decision:  (a) A procedure becomes a Claude rule only when its practice declares
+             `<!-- adb:paths <glob>… -->` (shell → `**/*.sh`, CI → `.github/workflows/**`, the two
+             the issue named); every other one goes to the reference bundle, the issue's own
+             fallback. The scope is a marker in the practice rather than a table in `build.sh`, so
+             it sits beside the procedure it scopes and a scope naming no procedure is refused by
+             the grammar. (b) Codex and Gemini have no global on-demand surface — Codex's nested
+             `AGENTS.md` is directory-scoped within a project and its 32 KiB budget covers project
+             docs only (context7 `/openai/codex`, `agents_md.rs`); Gemini's `@imports` load
+             eagerly and its JIT files are project-directory files (context7 `/websites/geminicli`)
+             — so both get the bundle. Installed as ONE directory link per tree:
+             `~/.<agent>/ai-dev-baseline/reference` (not `adb/`, which is the pinned model's project namespace) and
+             `~/.claude/rules/ai-dev-baseline`, never per-file links, so a user's own rule of the
+             same name is never backed up. `rules/` is Claude-only because `~/.codex/rules/` holds
+             command-approval policy. The root doc ends each practice with a one-line pointer whose
+             path `build.sh` reads from `adb_agent_manifest`, so pointer and installer share one
+             home; the pointer is the one line allowed to differ between agents' root docs.
+             (c) The pinned install vendors the split too — procedures under `.<agent>/adb/reference/`
+             and `.claude/rules/ai-dev-baseline/` — and re-anchors the doc's pointers to those
+             project paths; vendoring the old single file would have kept the Codex splice over its
+             budget. (d) A practice with no procedure block renders whole: compaction guidance and
+             the 28-line logging practice stay in the root doc. The root docs went from 85-86 KB to
+             ~21.5 KB; the pinned Codex warning stays, measured on the real spliced file and sized
+             to it, because a project's own `AGENTS.md` shares the budget.
+- placement: `scripts/build.sh` (`block_filter` classes, `adb:paths`, `render_procedure`,
+             `build_pointer`), `scripts/lib/common.sh` (`_adb_procedure_manifest_lines`,
+             `adb_pinned_payload_shaped`), `scripts/lib/pinned-install.sh`, `bin/baseline`
+             (`adb_scan_links`), `scripts/lib/adopt-lib.sh` (`procedures` kind),
+             `scripts/render-size.sh`, `scripts/check-practice-split.sh`; the marker contract in
+             `base/practices/00-index.md`
+- reason:    The owner's goal is a root doc at rule altitude; a placement that loads at launch
+             meets the letter of the issue and misses the goal. Everything else follows the
+             existing homes: the manifest is the one enumeration of the install surface, the
+             pinned namespace is the one place a pinned payload may write, and the split is
+             verified by an oracle independent of the renderer it checks.
+- baseline-issue: n/a

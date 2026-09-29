@@ -1461,8 +1461,8 @@ Apply these in order; every tie has a stable break so two runs agree:
    noting the break.
 2. **Bundle by shared subsystem/files.** Group issues that touch the same subsystem so a
    branch never edits the same file twice. Infer from issue bodies, cross-refs, and
-   touched-path hints — but **ignore generated fan-out** (the rendered root docs and skills
-   that *every* practice/workflow change regenerates), or every issue looks like it touches
+   touched-path hints — but **ignore generated fan-out** (the rendered root docs, procedures
+   and skills that *every* practice/workflow change regenerates), or every issue looks like it touches
    the same three files and the whole backlog collapses into one mega-bundle. Keep bundles
    small (soft cap ~4 issues; note when a subsystem legitimately exceeds it).
 3. **Importance.** Order phases by milestone build order and any priority labels;

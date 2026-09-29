@@ -42,6 +42,7 @@ back. These do not, and they are the ones most likely to be typed casually — a
   Weaker but still bad: a stash entry *is* commit objects, so the dropped SHA is
   recoverable from the command's own output or `git fsck --unreachable`
   **until gc prunes it**. Recovery is possible, not guaranteed — treat it as loss.
+<!-- adb:procedure -->
 
 **Prefer the non-destructive move.** `git stash push -- <path>` parks the change
 instead of deleting it, and
@@ -60,6 +61,7 @@ redirecting straight into `$(mktemp …)` throws away the only handle on it at t
 exact moment you are about to need it. And when the goal is
 to test something rather than to discard it, don't touch the tracked file at all —
 see the negative-testing method in `self-review.md`.
+<!-- adb:end -->
 
 ## PR body hygiene
 
@@ -68,6 +70,7 @@ see the negative-testing method in `self-review.md`.
   or a table) closes that issue when the PR merges. Use them only for issues this
   PR fully resolves. For partial work use **`Refs #N`** — and never write a
   closing keyword "illustratively" in prose, it will still fire.
+<!-- adb:procedure -->
 
   **A code span or a fenced block SUPPRESSES it, silently.** This is the same
   "only prose declares" rule the roadmap markers already live by, and it bites in
@@ -93,8 +96,10 @@ see the negative-testing method in `self-review.md`.
 
   Empty, or missing an issue you meant to close, means the keyword did not
   register — fix the body **before** the merge, or the close never happens at all.
+<!-- adb:end -->
 - Follow the project's commit/PR conventions (semantic subject, co-author
   trailer, milestone/labels) when it has them.
+<!-- adb:procedure -->
 
 ## Branch cleanup — sweep, don't dribble
 
@@ -116,3 +121,4 @@ These rules encode two recurring frictions: cleanup skills that scoped too
 narrowly and left 30+ merged branches behind, and safety gating that blocked
 branch deletion when the branch wasn't named. Sweeping all merged branches and
 naming each one fixes both.
+<!-- adb:end -->

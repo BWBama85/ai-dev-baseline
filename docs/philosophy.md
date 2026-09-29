@@ -25,12 +25,14 @@ Gemini. They're written in terms of what an agent should do, not which agent
 does it. That neutrality is enforced structurally:
 
 - The practice files live once, under `base/practices/`.
-- `scripts/build.sh` **renders** them into each agent's native root document —
-  `agents/claude/CLAUDE.md`, `agents/codex/AGENTS.md`, `agents/gemini/GEMINI.md`
-  — by concatenating every practice file (skipping the index) under a
-  generated-file banner. The three outputs are byte-for-byte the same body
-  today (only the surrounding agent-specific wiring differs by design), because
-  the source they're rendered from is the same.
+- `scripts/build.sh` **renders** them in two classes (#434). A practice's **rule** —
+  what an agent must hold on every turn — goes into each agent's native root document,
+  `agents/claude/CLAUDE.md`, `agents/codex/AGENTS.md`, `agents/gemini/GEMINI.md`, under
+  a generated-file banner. Its **procedure** — the how, needed only when the practice
+  applies — goes to that agent's on-demand surface, and the root doc names where. The
+  three root docs carry the same rules, byte-for-byte; what differs is the installed
+  shape (each pointer names its own agent's path, and a per-agent density block may
+  differ), never the source, which is one file per practice.
 - CI re-runs `build.sh` and fails on drift, so nobody can hand-edit a rendered
   root doc and have it silently diverge from the source of truth.
 

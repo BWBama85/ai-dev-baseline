@@ -79,7 +79,8 @@ default. Full model: [docs/roles-and-agents.md](docs/roles-and-agents.md).
 ## What's inside
 
 **Practices** ([`base/practices/`](base/practices)) — the agent-neutral law, one
-concern per file, rendered into every agent's root doc:
+concern per file. Each practice's rule is rendered into every agent's root doc; its
+procedure — the how — into a file the agent reads when the practice applies:
 
 - **Shell** — portable, single-purpose commands (no zsh/bash footguns).
 - **Git & PRs** — feature-branch-only, no destructive git, and a real branch
@@ -122,8 +123,8 @@ gates that **auto-detect** the toolchain (pnpm/npm/yarn/bun, cargo, go, python) 
 base/practices/     agent-neutral practices (single source of truth for the root docs)
 base/workflows/     agent-neutral workflows (single source of truth for the skills)
 base/roles.md       the multi-agent role registry
-agents/<agent>/     per-agent rendering: root doc + skills + scripts + adapter
-scripts/build.sh    renders base/practices → root docs, base/workflows → Claude skills
+agents/<agent>/     per-agent rendering: root doc + procedures (reference/, Claude rules/) + skills + scripts + adapter
+scripts/build.sh    renders base/practices → root docs + procedures, base/workflows → every agent's skills
 templates/          the per-project agents.toml
 install.sh          global installer (per --agent, symlinks + wires gates + least-privilege sandbox settings)
 bin/agent-init      per-project role setup

@@ -299,6 +299,21 @@ echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/GEMINI.md${tab_}$mhome/.gemini/
 echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/skills/demo${tab_}$mhome/.gemini/config/skills/demo" && ok || bad "gemini manifest emits skill dir under ~/.gemini/config/skills"
 echo "$gman" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.gemini/scripts/lib" && ok || bad "gemini manifest emits the shared gate runner (scripts/lib)"
 eq "$(adb_agent_manifest bogus "$mrepo" "$mhome")" "" "unknown agent manifest prints nothing"
+# Procedure trees (#434): one directory link each, emitted only once the tree exists, and `rules/`
+# for Claude alone — ~/.codex/rules holds command-approval policy, never Markdown.
+echo "$man" | grep -Fq -- "/reference${tab_}" && bad "manifest names a reference tree that does not exist" || ok
+mkdir -p "$mrepo/agents/claude/rules" "$mrepo/agents/claude/reference" "$mrepo/agents/codex/rules" \
+         "$mrepo/agents/codex/reference" "$mrepo/agents/gemini/reference"
+man="$(adb_agent_manifest claude "$mrepo" "$mhome")"
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/rules${tab_}$mhome/.claude/rules/ai-dev-baseline" && ok || bad "claude manifest links its path-scoped rules tree"
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/reference${tab_}$mhome/.claude/ai-dev-baseline/reference" && ok || bad "claude manifest links its reference tree"
+cman="$(adb_agent_manifest codex "$mrepo" "$mhome")"
+echo "$cman" | grep -Fq -- "$mrepo/agents/codex/reference${tab_}$mhome/.codex/ai-dev-baseline/reference" && ok || bad "codex manifest links its reference tree"
+echo "$cman" | grep -Fq -- "/rules" && bad "codex manifest must never link a rules tree into ~/.codex/rules" || ok
+gman="$(adb_agent_manifest gemini "$mrepo" "$mhome")"
+echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/reference${tab_}$mhome/.gemini/ai-dev-baseline/reference" && ok || bad "gemini manifest links its reference tree"
+rm -rf "$mrepo/agents/claude/rules" "$mrepo/agents/claude/reference" "$mrepo/agents/codex/rules" \
+       "$mrepo/agents/codex/reference" "$mrepo/agents/gemini/reference"
 
 # --- adb_link_manifest (#48) -------------------------------------------------
 # Consumes a manifest and links each entry; accumulates a non-zero status if ANY entry fails.

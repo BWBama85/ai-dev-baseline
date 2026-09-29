@@ -1,10 +1,12 @@
 # CI discipline
+<!-- adb:paths .github/workflows/** -->
 
 **A failing CI job is a signal to diagnose, not a button to re-press.**
 
 Never re-run a failed or "flaky" CI job as a first resort. Re-running burns CI
 minutes, hides the root cause, and — if it happens to go green — ships a latent
 bug.
+<!-- adb:procedure -->
 
 ## Protocol when CI fails
 
@@ -149,3 +151,4 @@ file the noise.
 (Step numbers are deliberately absent from that account: it describes the protocol
 as it stood *before* the third class was added, and the steps have renumbered since.
 Naming them survives the next edit; a number silently stops meaning what it meant.)
+<!-- adb:end -->

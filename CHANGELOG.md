@@ -10,6 +10,27 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **The root doc holds rules; procedures load when a practice applies (#434).** Every session
+  in every project started by loading the whole rendered practice set — 85 KB, ~21k approx
+  tokens — though most of it was the how of a situation that had not arisen. Each practice now
+  renders in two classes from its one source: its **rule** stays in the root doc, and its
+  `<!-- adb:procedure -->` blocks render to one file per agent, which the root doc names in a
+  `**Procedure:**` line. The root docs are now ~21.5 KB, under Codex's 32 KiB project-doc
+  budget.
+
+  Where each agent reads a procedure: Claude, for a practice that declares
+  `<!-- adb:paths <glob>… -->` (shell, CI), from `~/.claude/rules/ai-dev-baseline/` with `paths:`
+  frontmatter, loading when a matching file is read; every other procedure, for every agent,
+  from `~/.<agent>/ai-dev-baseline/reference/`, when the pointer is followed. A rule without `paths:` would
+  load at launch, so only path-scoped procedures become Claude rules. Each tree is one directory
+  link; `uninstall.sh` removes it and `bin/baseline` verifies it. A pinned install vendors the
+  procedures beside the rules and re-anchors the pointers to them; the blanket advice to raise
+  Codex's `project_doc_max_bytes` to 256 KiB is retired, and the pinned install's warning now
+  fires only when a project's own `AGENTS.md` pushes the spliced file past the budget, with a
+  value sized to that file. `render-size.sh` reports the
+  procedures in the on-demand bucket and each root doc's lines against the ~200-line goal, never
+  as a gate, and `scripts/check-practice-split.sh` proves the split lost and doubled nothing.
+
 - **Fix code is reviewed before it is pushed (#491).** `/implement-issue` reviewed a diff once and
   pushed step 9's fixes unread; `/resolve-pr-threads` sent each round's fixes straight to the async
   reviewer, roughly 80 minutes a sample. Both now run a local convergence loop first:

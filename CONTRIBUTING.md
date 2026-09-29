@@ -21,11 +21,14 @@ agent-facing quick rules live in [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS
 per-agent files:
 
 - `base/practices/*.md` → each agent's root doc (`agents/claude/CLAUDE.md`,
-  `agents/codex/AGENTS.md`, `agents/gemini/GEMINI.md`).
+  `agents/codex/AGENTS.md`, `agents/gemini/GEMINI.md`) for the **rule**, and one procedure
+  file per agent (`agents/<agent>/reference/`, or `agents/claude/rules/` when the practice
+  declares `<!-- adb:paths … -->`) for each `<!-- adb:procedure -->` block (#434). The marker
+  contract is in `base/practices/00-index.md`.
 - `base/workflows/*.md` → the Claude skills (`agents/claude/skills/<name>/SKILL.md`).
   Each rendered skill carries a `GENERATED FILE` marker in its frontmatter.
 
-**Never hand-edit a generated file** — a root doc *or* a skill. Edit the source under
+**Never hand-edit a generated file** — a root doc, a procedure *or* a skill. Edit the source under
 `base/`, rebuild, commit both. CI's `build-drift` job fails a PR whose generated docs or
 skills are stale, missing, untracked, or orphaned.
 
@@ -145,8 +148,10 @@ where this walkthrough covers 23 of 57 and was silently claiming to be the whole
 counted it. Read it for what these checks are *for*; ask `--list` for what runs.
 
 **shellcheck** (tracked `*.sh` + `bin/agent-init`),
-**build-drift** (rebuild + assert generated root docs **and** skills are current — not
-stale, untracked, or missing), **build-atomic** (a render that fails part-way must leave the
+**build-drift** (rebuild + assert generated root docs, procedures **and** skills are current — not
+stale, untracked, or missing), **practice-split** (every practice's rule is exactly its root-doc
+section and its procedure exactly one file per agent, each pointer naming the manifest's
+installed path — with the marker grammar and the verifier both driven red), **build-atomic** (a render that fails part-way must leave the
 tracked file it was writing byte-exact — faulted in a throwaway fixture, with three mutations
 proving the assertion can go red), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
@@ -193,10 +198,10 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `base/practices/*.md` | The shared law (edit here) |
 | `base/workflows/*.md` | Single source for each workflow — procedure + metadata (edit here) |
 | `base/roles.md` · `templates/agents.toml` | Role model + per-project manifest |
-| `agents/<agent>/` | Per-agent adapter, generated root doc, generated `skills/`; (Claude:) **hand-written** hook `scripts/` (not rendered — edit in place) |
+| `agents/<agent>/` | Per-agent adapter, generated root doc, generated `reference/` procedures (Claude also `rules/`), generated `skills/`; (Claude:) **hand-written** hook `scripts/` (not rendered — edit in place) |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/lib/pr-watch.sh` · `pr-threads.sh` | The PR-review loop's two libraries: *is the reviewer done?* and *which threads are there?* (installs alongside) |
-| `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
+| `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + procedures + skills · local CI |
 | `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-self-test · claims · claims-self-test · practice-index · release-skill · selfcheck) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent · ci-runners |

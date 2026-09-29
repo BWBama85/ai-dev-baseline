@@ -146,8 +146,28 @@ build_known_agents='claude codex gemini'
 # Markers are BODY-ONLY, the same rule `{{TOKEN}}` already lives by. This filter has no notion of
 # frontmatter (the practices it also serves have none), so a marker placed in a skill's frontmatter
 # is neither rejected nor meaningful — see base/workflows/README.md's source contract.
+#
+# THE SECOND MARKER SPLITS A PRACTICE INTO ITS TWO RENDER CLASSES (#434):
+#
+#     <!-- adb:procedure -->
+#     …the how, rendered to the agent's on-demand surface…
+#     <!-- adb:end -->
+#
+# <class> selects what is emitted: `rule` everything outside procedure blocks (the root doc),
+# `procedure` only what is inside them. Omitted — the skill path — a procedure marker is refused,
+# since a workflow has no second render class. An `adb:except` block may nest INSIDE a procedure
+# block; the reverse is refused. `adb:end` closes the innermost open block. Also refused: a nested
+# procedure, an empty one, a malformed opener, and EOF inside one.
+#
+# `<!-- adb:paths <glob>… -->`, at most once per practice and outside every block, scopes that
+# practice's procedure to matching files for an agent with a path-scoped surface; it renders to no
+# class. A practice that declares it without any procedure block is refused.
 block_filter() {
-  local agent="$1" src="$2"
+  local agent="$1" src="$2" class="${3:-}"
+  case "$class" in ''|rule|procedure) ;; *)
+    printf 'build.sh: block_filter called with unknown class `%s`\n' "$class" >&2
+    return 1 ;;
+  esac
   # REFUSE ANYTHING THAT IS NOT A READABLE REGULAR FILE, before awk sees it — and this test is
   # load-bearing, not defensive garnish. In the root-doc renderer this call replaced `cat "$f"`,
   # and the two disagree in exactly the direction that matters: `cat` on a DIRECTORY exits 1 with
@@ -175,7 +195,7 @@ block_filter() {
     printf 'build.sh: %s does not end with a newline — sources must be newline-terminated (see base/workflows/README.md)\n' "$src" >&2
     return 1
   fi
-  awk -v agent="$agent" -v known="$build_known_agents" -v src="$src" '
+  awk -v agent="$agent" -v known="$build_known_agents" -v src="$src" -v class="$class" '
     # DIAGNOSTICS GO THROUGH A PIPE TO `cat 1>&2`, not to "/dev/stderr". Redirecting to that
     # pseudo-file is what every awk here happens to support, but POSIX does not specify it — and
     # this function already argues its own portability (it avoids whole-array `delete` for exactly
@@ -196,12 +216,36 @@ block_filter() {
       # not any line of the source. (Independent-review find.)
       if (!(agent in valid))
         die(0, "block_filter called for unknown agent `" agent "` — known: " known)
-      open = 0; emit = 1
+      open = 0; emit = 1; proc = 0
     }
     # Matched as a WHOLE LINE, so a marker quoted inside running prose is text, not a directive.
     /^<!-- adb:end -->$/ {
-      if (!open) die(FNR, "`adb:end` with no open block")
-      open = 0; emit = 1
+      if (open) { open = 0; emit = 1; next }
+      if (proc) {
+        if (!proc_body) die(proc_line, "empty `adb:procedure` block — a procedure marker must wrap content")
+        proc = 0
+        next
+      }
+      die(FNR, "`adb:end` with no open block")
+    }
+    /^<!-- adb:procedure/ {
+      if ($0 != "<!-- adb:procedure -->")
+        die(FNR, "malformed `adb:procedure` marker (want `<!-- adb:procedure -->`): " $0)
+      if (class == "")
+        die(FNR, "`adb:procedure` is a practice marker — only base/practices/*.md has a procedure render class")
+      if (open) die(FNR, "`adb:procedure` inside the `adb:except` block opened at line " open_line " — open the procedure first and nest the per-agent block inside it")
+      if (proc) die(FNR, "nested `adb:procedure` — close the block opened at line " proc_line " first")
+      proc = 1; proc_line = FNR; proc_body = 0; seen_proc = 1
+      next
+    }
+    /^<!-- adb:paths/ {
+      if ($0 !~ /^<!-- adb:paths( [^ "]+)+ -->$/)
+        die(FNR, "malformed `adb:paths` marker (want `<!-- adb:paths <glob>… -->`, globs space-separated, unquoted): " $0)
+      if (class == "")
+        die(FNR, "`adb:paths` is a practice marker — only base/practices/*.md has a procedure to scope")
+      if (open || proc) die(FNR, "`adb:paths` inside a block — it scopes the whole procedure, so it stands outside every block")
+      if (paths_line) die(FNR, "a second `adb:paths` marker — the first is at line " paths_line)
+      paths_line = FNR
       next
     }
     # The loose pattern selects, the strict one validates. Selecting loosely is what lets a
@@ -231,10 +275,15 @@ block_filter() {
       open = 1; open_line = FNR; emit = !excluded
       next
     }
-    { if (emit) print }
+    {
+      if (proc && $0 !~ /^[ \t]*$/) proc_body = 1
+      if (emit && (class == "" || (class == "procedure") == proc)) print
+    }
     END {
       if (dying) exit 3
       if (open) die(open_line, "unterminated `adb:except` block — no `adb:end` before EOF")
+      if (proc) die(proc_line, "unterminated `adb:procedure` block — no `adb:end` before EOF")
+      if (paths_line && !seen_proc) die(paths_line, "`adb:paths` scopes a procedure, but this practice has no `adb:procedure` block")
     }
   ' "$src"
 }
@@ -364,7 +413,11 @@ render() {
     local f
     for f in "$practices"/*.md; do
       case "$(basename "$f")" in 00-index.md) continue ;; esac
-      block_filter "$agent" "$f"
+      block_filter "$agent" "$f" rule
+      if build_has_procedure "$f"; then
+        printf '\n'
+        build_pointer "$agent" "$f"
+      fi
       printf '\n\n---\n\n'
     done
     printf '_Generated from base/practices. The multi-agent role model lives in base/roles.md._\n'
@@ -375,6 +428,103 @@ render() {
   build_publish "$outfile"
   echo "wrote ${outfile#"$root"/}"
 }
+
+# --- procedures: the second render class of a practice (#434) ----------------------------------
+# A practice's `adb:procedure` blocks render to ONE file per agent — `agents/<agent>/reference/`,
+# or for Claude `agents/claude/rules/` when the practice declares `<!-- adb:paths <glob>… -->` —
+# and its root-doc section ends with a pointer naming where the manifest installs that file.
+# Only a path-scoped procedure goes to Claude's rules: a rule WITHOUT `paths:` loads at launch,
+# which would put the procedure back into every session.
+
+build_has_procedure() { LC_ALL=C grep -Fqx -- '<!-- adb:procedure -->' "$1"; }
+
+# build_rule_globs <agent> <practice-file> — the practice's `adb:paths` globs, one per line, for an
+# agent with a path-scoped surface (Claude); nothing otherwise. block_filter validates the marker.
+build_rule_globs() {
+  [ "$1" = claude ] || return 0
+  sed -n 's/^<!-- adb:paths \(.*\) -->$/\1/p' "$2" | tr ' ' '\n'
+}
+
+# build_procedure_dir <agent> <practice-file> — the generated tree its procedure is written to.
+build_procedure_dir() {
+  if [ -n "$(build_rule_globs "$1" "$2")" ]; then
+    printf '%s\n' "$root/agents/$1/rules"
+  else
+    printf '%s\n' "$root/agents/$1/reference"
+  fi
+}
+
+# build_install_dir <agent> <generated-dir> — where the install manifest links that tree, with HOME
+# spelled `~`. Asking the manifest is what keeps the pointer and install.sh on one path.
+build_install_dir() {
+  local m src dest
+  m="$(adb_agent_manifest "$1" "$root" '~')" || return 1
+  while IFS=$'\t' read -r src dest; do
+    [ "$src" = "$2" ] && { printf '%s\n' "$dest"; return 0; }
+  done <<< "$m"
+  return 1
+}
+
+# build_pointer <agent> <practice-file> — the one line a root doc carries in place of a procedure.
+build_pointer() {
+  local agent="$1" f="$2" dir dest globs g list=""
+  dir="$(build_procedure_dir "$agent" "$f")"
+  dest="$(build_install_dir "$agent" "$dir")" || {
+    printf 'build.sh: the install manifest (adb_agent_manifest) names no destination for %s — the root doc cannot point at it\n' "${dir#"$root"/}" >&2
+    return 1
+  }
+  globs="$(build_rule_globs "$agent" "$f")"
+  if [ -z "$globs" ]; then
+    printf '**Procedure:** `%s/%s` — read it when this practice applies.\n' "$dest" "${f##*/}"
+    return 0
+  fi
+  while IFS= read -r g; do list="${list:+$list or }\`$g\`"; done <<< "$globs"
+  printf '**Procedure:** `%s/%s` — loads on its own when you read a file matching %s; read it directly when this practice applies otherwise.\n' \
+    "$dest" "${f##*/}" "$list"
+}
+
+# render_procedure <agent> <practice-file> — stage, render and publish that agent's procedure file.
+render_procedure() {
+  local agent="$1" f="$2" name title dir pfile globs g tmp
+  name="${f##*/}"
+  title="$(sed -n '1s/^# //p' "$f")"
+  if [ -z "$title" ]; then
+    echo "build.sh: base/practices/$name carries a procedure but its first line is not a '# ' title — the procedure file is titled from it" >&2
+    exit 3
+  fi
+  dir="$(build_procedure_dir "$agent" "$f")"
+  pfile="$dir/$name"
+  globs="$(build_rule_globs "$agent" "$f")"
+  mkdir -p "$dir"
+  build_stage "$pfile"
+  tmp="$build_tmp"
+  {
+    # `paths:` is the only frontmatter key Claude reads from a rule, and it must open the file.
+    if [ -n "$globs" ]; then
+      printf -- '---\npaths:\n'
+      while IFS= read -r g; do printf '  - "%s"\n' "$g"; done <<< "$globs"
+      printf -- '---\n\n'
+    fi
+    printf '<!-- GENERATED FILE — do not edit by hand.\n'
+    printf '     Source: base/practices/%s · Regenerate: scripts/build.sh\n' "$name"
+    printf '     Edits here are overwritten on the next build. -->\n\n'
+    printf '# %s — procedure\n' "$title"
+    block_filter "$agent" "$f" procedure
+  } > "$tmp"
+  block_marker_residue "$tmp" "the rendered '$agent' procedure for $name" || exit 3
+  build_publish "$pfile"
+  echo "wrote ${pfile#"$root"/}"
+}
+
+# Procedures before root docs: a root doc's pointer asks the manifest for the directory, and the
+# manifest only names a generated tree that exists.
+for f in "$practices"/*.md; do
+  case "${f##*/}" in 00-index.md) continue ;; esac
+  build_has_procedure "$f" || continue
+  render_procedure claude "$f"
+  render_procedure codex  "$f"
+  render_procedure gemini "$f"
+done
 
 render claude "$root/agents/claude/CLAUDE.md" "Global engineering practices"
 render codex  "$root/agents/codex/AGENTS.md"  "Global engineering practices"
