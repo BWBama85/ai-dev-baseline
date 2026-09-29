@@ -44,7 +44,9 @@ set -u
 # common.sh lives beside this file; the install lands the whole lib directory together, so a
 # missing one is a broken install and fails loud rather than degrading.
 _pi_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
-_PI_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/${BASH_SOURCE[0]##*/}"
+# This file as it was reached. It never changes directory in its own shell, so the path stays valid
+# for the child the Codex budget scan starts.
+_PI_SELF="${BASH_SOURCE[0]:-$0}"
 if [ ! -f "$_pi_common" ]; then
   printf 'pinned-install: FATAL — required library not found: %s (broken/incomplete install)\n' "$_pi_common" >&2
   return 1 2>/dev/null || exit 1
