@@ -764,4 +764,6 @@ One line per resolved review thread, newest last.
 - `unbounded-resource` `scripts/lib/pinned-install.sh:126` `6dc4311` `PRRT_kwDOTfywrM6m_Rlj` PR #507 2026-09-29 — each Codex doc size read ran outside the scan deadline
 - `status-swallowed` `scripts/lib/pinned-install.sh:126` `6dc4311` `PRRT_kwDOTfywrM6m_Rlm` PR #507 2026-09-29 — a failed size read counted as zero bytes and suppressed the budget warning
 - `consumer-contract-mismatch` `scripts/lib/common.sh:269` `a906820` `PRRT_kwDOTfywrM6m_Rlr` PR #507 2026-09-29 — the root doc a git pull updates pointed at links only an installer creates, with no stated route
+- `unbounded-resource` `scripts/lib/pinned-install.sh:153` `b456036` `PRRT_kwDOTfywrM6nLp8f` PR #507 2026-09-29 — the walk got the full scan bound after the config read spent part of it
+- `partial-validation` `scripts/lib/pinned-install.sh:144` `b456036` `PRRT_kwDOTfywrM6nLp8s` PR #507 2026-09-29 — fallback names deduplicated by substring match dropped a name that was a word of another
 <!-- adb:hits:end -->
