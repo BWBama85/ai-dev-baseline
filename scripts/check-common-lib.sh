@@ -272,6 +272,12 @@ eq "$(adb_toml_get "$tlf" t k)" '["nested"]' "…and a named table still reads i
 eq "$(adb_toml_array "$(adb_toml_get "$tlf" "" k)" | tr '\n' ' ')" "a]b.md c.md " "a bracket inside a quoted element survives the array read"
 eq "$(adb_toml_array "[\"TEAM,GUIDE.md\", 'lit,eral', \"claude\"]" | tr '\n' '|')" "TEAM,GUIDE.md|lit,eral|claude|" \
   "a comma inside a quoted element (basic or literal) is part of it, not a separator"
+eq "$(adb_toml_array --verbatim "[\" TEAM.md \", 'a,b', \"c\",]" | tr '\n' '|')" " TEAM.md |a,b|c|" \
+  "--verbatim keeps a quoted element's bytes exactly and tolerates a trailing comma"
+adb_toml_array --verbatim '["x\\"y"]' >/dev/null; eq "$?" "2" "--verbatim refuses a backslash escape it does not decode"
+adb_toml_array --verbatim '[bare]' >/dev/null; eq "$?" "2" "--verbatim refuses an unquoted element"
+adb_toml_array --verbatim '["G\u0055IDE.md"]' >/dev/null; eq "$?" "2" "--verbatim sees an escape awk -v would have decoded away"
+eq "$(adb_toml_array "[\" claude \"]")" "claude" "the default mode still trims inside the quotes"
 printf '[t]\nk = ["nested"]\n' > "$tlf"
 adb_toml_get "$tlf" "" k >/dev/null; eq "$?" "1" "a key that appears only inside a table is absent at the top level"
 

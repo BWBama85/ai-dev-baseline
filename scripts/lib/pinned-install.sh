@@ -104,16 +104,17 @@ PI_CODEX_SCAN_SECS=$(( 10#$PI_CODEX_SCAN_SECS ))
 # project, so the union is counted: a name either layer can set may be loaded, and over-counting
 # can only err toward a warning. The system, profile and command-line layers are not read, and a
 # name carrying a slash is not a filename and is skipped. Returns 1 when a config exists but cannot
-# be read, or sets the key to something other than a one-line array.
+# be read, or sets the key to something other than a one-line array of names read byte-exactly.
 _pi_codex_fallback_names() {
-  local f raw rc n
+  local f raw rc n names
   for f in "${CODEX_HOME:-$HOME/.codex}/config.toml" "$1/.codex/config.toml"; do
     raw="$(adb_toml_get "$f" "" project_doc_fallback_filenames)"; rc=$?
     case "$rc" in 0) : ;; 1) continue ;; *) return 1 ;; esac
     case "$raw" in '['*']') : ;; *) return 1 ;; esac
+    names="$(adb_toml_array --verbatim "$raw")" || return 1
     while IFS= read -r n; do
       case "$n" in ''|*/*) : ;; *) printf '%s\n' "$n" ;; esac
-    done <<< "$(adb_toml_array "$raw")"
+    done <<< "$names"
   done
   return 0
 }

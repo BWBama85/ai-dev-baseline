@@ -1029,6 +1029,18 @@ printf 'project_doc_fallback_filenames = []\n' > "$PCL2/.codex/config.toml"
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose under a user-configured fallback name that carries a comma, long enough." }' > "$PCL2/svc/TEAM,GUIDE.md"
 out="$(CODEX_HOME="$cxhome4" bash "$PI" install --project "$PCL2" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to svc/ is" "budget(layers): a user fallback name with a comma is counted despite a repository []"
+# Names are read byte-exactly, and one this reader cannot decode leaves the budget unmeasured.
+PCV="$(new_project codexverbatim)"
+cxhome5="$work/codexhome5"; mkdir -p "$cxhome5" "$PCV/svc"
+printf 'project_doc_fallback_filenames = [" TEAM.md "]\n' > "$cxhome5/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose under a fallback name whose spaces are part of the name, long enough." }' > "$PCV/svc/ TEAM.md "
+out="$(CODEX_HOME="$cxhome5" bash "$PI" install --project "$PCV" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(verbatim): a fallback name's own spaces are kept"
+PCE="$(new_project codexescaped)"
+cxhome6="$work/codexhome6"; mkdir -p "$cxhome6"
+printf 'project_doc_fallback_filenames = ["G\\u0055IDE.md"]\n' > "$cxhome6/config.toml"
+out="$(CODEX_HOME="$cxhome6" bash "$PI" install --project "$PCE" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "could not list or read this project's AGENTS.md files" "budget(escaped): a name this reader cannot decode leaves the budget unmeasured"
 # Names are matched exactly: a name that is a word of another is still its own name, and a pattern
 # character in a name is literal, as Codex joins it to the directory.
 PCD="$(new_project codexdedup)"

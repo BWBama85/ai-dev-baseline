@@ -27,8 +27,10 @@ only by a published release, which is what these entries are the notes for.
   procedures beside the rules and re-anchors the pointers to them; the blanket advice to raise
   Codex's `project_doc_max_bytes` to 256 KiB is retired, and the pinned install's warning now
   measures the chain of project docs Codex loads — `AGENTS.override.md`, `AGENTS.md` and configured
-  fallback names, from a project root down to a subdirectory — and fires only when that chain
-  exceeds the default budget, with a value sized to it. `render-size.sh` reports the
+  fallback names, from a project root down to a subdirectory — and warns when that chain may
+  exceed the default budget, with a value sized to it. It is a conservative estimate: fallback
+  names from both the user and the repository config count, though Codex applies the repository's
+  only to a trusted project. `render-size.sh` reports the
   procedures in the on-demand bucket and each root doc's lines against the ~200-line goal, never
   as a gate, and `scripts/check-practice-split.sh` proves the split lost and doubled nothing.
 

@@ -4767,9 +4767,18 @@ adb_toml_keys() {
 # array the templates use is supported (matching adb_toml_get's own scope); an element may
 # itself contain `[`/`]` (e.g. a `foo[bot]` login) because the outer close is found as the
 # LAST `]`, and a comma INSIDE a quoted element is part of it. Usage: adb_toml_array <raw>
+#
+# `--verbatim` keeps each quoted element's bytes exactly (no trimming inside the quotes) and
+# returns 2 — printing nothing — for an unquoted element or a basic string carrying a backslash
+# escape, which this reader does not decode. For values that name files.
+# Usage: adb_toml_array [--verbatim] <raw>
 adb_toml_array() {
-  awk -v s="$1" '
+  local verb=0
+  if [ "${1:-}" = --verbatim ]; then verb=1; shift; fi
+  # ENVIRON, not `-v`: `-v` decodes backslash escapes, so the value would reach awk already altered.
+  ADB_TOML_ARRAY_RAW="${1:-}" awk -v verb="$verb" '
     BEGIN {
+      s = ENVIRON["ADB_TOML_ARRAY_RAW"]
       if (substr(s, 1, 1) != "[") exit 0        # not an array literal → no elements
       s = substr(s, 2)                           # drop the opening "["
       pos = 0                                     # find the LAST "]" (the array close)
@@ -4785,6 +4794,23 @@ adb_toml_array() {
         cur = cur c
       }
       parts[++m] = cur
+      if (verb) {
+        n = 0
+        for (j = 1; j <= m; j++) {
+          e = parts[j]
+          gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)
+          if (e == "" && j == m) continue                     # a trailing comma
+          if (e ~ /^".*"$/ && length(e) >= 2) {
+            v = substr(e, 2, length(e) - 2)
+            if (index(v, "\\")) exit 2                       # an escape this reader does not decode
+          } else if (e ~ /^\047.*\047$/ && length(e) >= 2) {
+            v = substr(e, 2, length(e) - 2)
+          } else exit 2
+          out[++n] = v
+        }
+        for (j = 1; j <= n; j++) if (out[j] != "") print out[j]
+        exit 0
+      }
       for (j = 1; j <= m; j++) {
         e = parts[j]
         gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim outer whitespace
