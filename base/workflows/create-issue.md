@@ -1,6 +1,6 @@
 ---
 name: create-issue
-description: Draft and file a well-scoped GitHub issue. Enforces an 11-axis adversarial gap-analysis pass BEFORE filing so the issue ships with enough depth that /review-issue does not have to patch it later. Works in any repo where `gh` is authenticated.
+description: Use to draft and file a GitHub issue. Argument is a topic or rough draft; an adversarial gap-analysis pass runs before anything is filed.
 user-invocable: true
 effort: high
 # Triage-only skill: it drafts and files an issue but must never edit code. Write
@@ -10,6 +10,10 @@ disallowed-tools: Edit, NotebookEdit
 ---
 
 # Create GitHub Issue
+
+Draft and file a well-scoped GitHub issue, with an 11-axis adversarial gap-analysis pass run
+**before** filing so the issue ships with its full depth. Works in any repo where `gh` is
+authenticated.
 
 Argument: free-text topic, rough draft, or — if called with no argument — the skill asks what the issue should cover.
 

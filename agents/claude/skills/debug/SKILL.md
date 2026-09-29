@@ -3,7 +3,7 @@
 # Source: base/workflows/debug.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
 name: debug
-description: Root-cause a bug or production incident with evidence — reproduce it, prove the cause (logs / queries / a failing regression test), rule out your own stale state, fix the cause, and ship through the normal PR + gates path. Never guesses; never re-runs flaky CI to make red go green.
+description: Use when a bug, failing test or incident needs its root cause proven with evidence before a fix. Argument is the symptom or log snippet.
 argument-hint: <symptom / incident / failing test / log snippet>
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, TaskCreate, TaskUpdate, TaskList, Agent, Skill
 user-invocable: true
@@ -14,7 +14,8 @@ user-invocable: true
 Trace **$ARGUMENTS** to a definitive, evidence-backed root cause and fix the cause —
 not the symptom. Implements `base/practices/debugging.md` as a repeatable flow. The
 bar: you can point at the exact line/commit/row/log that proves the cause before you
-change anything, and you leave behind a regression test that would have caught it.
+change anything, and you leave behind a regression test that would have caught it. Along the
+way: reproduce it, rule out your own stale state, and ship through the normal PR + gates path.
 
 ## Anti-patterns this skill refuses
 

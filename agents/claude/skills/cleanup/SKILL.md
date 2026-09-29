@@ -3,7 +3,7 @@
 # Source: base/workflows/cleanup.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
 name: cleanup
-description: Sweep ALL merged branches (local and, on confirmation, remote) plus resolved run-state, not just the current task's branch. Detects squash/rebase merges, which `--merged` alone can never see. Names each branch explicitly so command-safety gating never blocks the delete. Never touches unmerged or protected branches, or state for a live run.
+description: Use after a merge to delete every merged branch (squash merges included) and finished run state. Argument local, remote or all; unmerged branches are kept.
 argument-hint: [local | remote | all] [verbose]  (default: local)
 allowed-tools: Bash, Read
 user-invocable: true
@@ -11,8 +11,9 @@ user-invocable: true
 
 # /cleanup
 
-Sweep what a finished task leaves behind, then leave the tooling current. Two kinds of debris and
-one currency check, one command:
+Sweep what a finished task leaves behind, then leave the tooling current. It detects squash and
+rebase merges, which `--merged` alone never sees, and never touches an unmerged or protected
+branch or the state of a live run. Two kinds of debris and one currency check, one command:
 
 - **Merged branches** — local and, on confirmation, remote. The failure mode this exists to
   prevent is deleting only the *current* task's branch and leaving dozens of stale merged

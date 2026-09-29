@@ -10,6 +10,18 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **Skill descriptions are selectors, not abstracts (#436).** Every session in every project
+  loads each skill's `description:`, whether or not a skill runs, and the model reads it to
+  decide which skill to invoke. The eight descriptions totalled 479 words and summarized each
+  skill instead of saying when to use it. Each is now at most 25 words: when to invoke it, the
+  argument it takes, and one clause that sets it apart, 198 words in all. The argument matters
+  most on Codex and Gemini, which drop `argument-hint`. Facts the old abstracts carried that a
+  body did not already hold moved into that body's opening paragraph, which loads only on
+  invocation. `render-size.sh`
+  now reports the always-loaded cost as a `descriptions` figure per agent (skills, words,
+  `approx_tokens`) in its stderr summary, never as a row, and fails closed (`UNDESCRIBED`) on
+  a rendered skill that lost its single-line description. It is a report and never a size gate.
+
 - **The root doc holds rules; procedures load when a practice applies (#434).** Every session
   in every project started by loading the whole rendered practice set — 85 KB, ~21k approx
   tokens — though most of it was the how of a situation that had not arisen. Each practice now

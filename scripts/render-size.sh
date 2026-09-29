@@ -45,6 +45,15 @@
 # --markdown: the same rows as a GitHub-flavored Markdown table with a header row, for a CI job
 # summary; the column names above are its ONE home.
 #
+# The `descriptions` figure (#436) is on stderr, never a row: every session loads every skill's
+# `description:` value whether or not a skill runs, and those words are already inside the
+# SKILL.md rows, so a row would count them twice under TOTAL. Per agent — one session loads one
+# agent's set — it is the skill count, the value's `wc -w` words, and ceil(bytes/4) of the values,
+# where the value is the `description:` line of the rendered frontmatter after the key and the
+# whitespace that follows it. It is always the current tree's; --since reports growth in the
+# SKILL.md rows' deltas. A rendered SKILL.md whose frontmatter carries no single-line, non-empty
+# description is UNDESCRIBED — a broken render, never zero words.
+#
 # The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
 # below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render
 # would simply be absent from the output. A practice carrying an `adb:procedure` block yields one
@@ -55,7 +64,7 @@
 #
 # Exit: 0 every expected artifact was measured · 1 a mechanical fault — MISSING, UNREADABLE,
 # UNCOUNTABLE, EMPTY, UNNAMEABLE, DUPLICATE (a procedure also present in the tree it does not
-# render to), a collapsed
+# render to), UNDESCRIBED, a collapsed
 # derivation, or a blob at <ref> that git could not list or read · 2 usage, --since outside a git
 # repository, or a <ref> that is not a commit. Size NEVER fails this command; there is no ceiling (#355).
 
@@ -171,6 +180,50 @@ measure() {
     return 1
   fi
   M_LINES=$lines; M_WORDS=$words; M_TOKENS=$(( (bytes + 3) / 4 ))
+}
+
+# describe <SKILL.md> <agent> — add the rendered description to <agent>'s always-loaded figure, or
+# diagnose and fail closed. The single-line rule is scripts/build.sh's source rule, applied to the
+# render: the Codex/Gemini frontmatter carries only that one line.
+declare -A D_SKILLS=() D_WORDS=() D_BYTES=()
+describe() {
+  local f="$1" a="$2" out v counts words bytes
+  out="$(LC_ALL=C awk '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 != "---") { r = "no frontmatter"; exit }; next }
+    $0 == "---" { closed = 1; exit }
+    after { after = 0; if ($0 ~ /^[[:space:]]/) { r = "a multi-line continuation"; exit } }
+    /^description:/ {
+      if (seen) { r = "a second description line"; exit }
+      v = $0; sub(/^description:[[:space:]]*/, "", v)
+      if (v ~ /^[[:space:]]*$/) { r = "an empty description"; exit }
+      if (v ~ /^[>|][+-]?[[:space:]]*$/) { r = "a folded/block scalar"; exit }
+      seen = 1; after = 1
+    }
+    END {
+      if (r == "" && NR == 0) r = "no frontmatter"
+      if (r == "" && !closed) r = "an unclosed frontmatter"
+      if (r == "" && !seen) r = "no description line"
+      if (r != "") print "bad\t" r
+      else print "ok\t" v
+    }' "$f")" || out=""
+  case "$out" in
+    ok$'\t'*) v="${out#ok$'\t'}" ;;
+    bad$'\t'*)
+      printf 'render-size: UNDESCRIBED %s — %s where the frontmatter must carry one single-line description\n' "$f" "${out#bad$'\t'}" >&2
+      rc=1; return 1 ;;
+    *) printf 'render-size: UNREADABLE %s — its description could not be read\n' "$f" >&2
+       rc=1; return 1 ;;
+  esac
+  counts="$(printf '%s' "$v" | LC_ALL=C wc -wc)" || counts=""
+  read -r words bytes <<< "$counts"
+  case "$words$bytes" in ''|*[!0-9]*)
+    printf 'render-size: UNCOUNTABLE %s — wc returned %s for its description\n' "$f" "$(adb_display_value "$counts")" >&2
+    rc=1; return 1 ;;
+  esac
+  D_SKILLS[$a]=$(( ${D_SKILLS[$a]:-0} + 1 ))
+  D_WORDS[$a]=$(( ${D_WORDS[$a]:-0} + words ))
+  D_BYTES[$a]=$(( ${D_BYTES[$a]:-0} + bytes ))
 }
 
 # fenced_comments <file> — print the count defined in the header. `adb_md_block` classifies every
@@ -321,7 +374,8 @@ for wf in base/workflows/*.md; do
   esac
   sources=$(( sources + 1 ))
   for pair in $AGENTS; do
-    emit "agents/${pair%%:*}/skills/$name/SKILL.md" && skills=$(( skills + 1 ))
+    emit "agents/${pair%%:*}/skills/$name/SKILL.md" && skills=$(( skills + 1 )) \
+      && describe "agents/${pair%%:*}/skills/$name/SKILL.md" "${pair%%:*}"
   done
   # Supporting files (#433): derived from base/workflows/<name>/, never globbed from agents/ —
   # a sibling that failed to render must be MISSING here, not absent from the report.
@@ -363,5 +417,12 @@ else
     "$roots" "$skills" "$supports" "$sources" "$procs" "$psources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news_loaded" "$news_od" >&2
 fi
 [ -z "$goal" ] || printf 'render-size: root doc lines against the ~200-line goal (a report, never a gate): %s\n' "$goal" >&2
+descs=""
+for pair in $AGENTS; do
+  a="${pair%%:*}"
+  [ -n "${D_SKILLS[$a]+x}" ] || continue
+  descs="${descs:+$descs, }$a ${D_SKILLS[$a]} skill(s) ${D_WORDS[$a]} words approx_tokens $(( (D_BYTES[$a] + 3) / 4 ))"
+done
+[ -z "$descs" ] || printf 'render-size: descriptions, loaded at every session start whether or not a skill runs (a report, never a gate): %s\n' "$descs" >&2
 
 exit "$rc"

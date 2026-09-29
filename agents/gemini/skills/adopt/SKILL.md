@@ -5,7 +5,7 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: adopt
-description: Bring the baseline into an EXISTING project. Scans the config it already has, classifies every artifact keep / remove / move / escalate with evidence and parity caveats, infers an agents.toml from the project's own signals, flags four adoption-hygiene risks, and emits an ordered migration plan. It never deletes, moves, or edits a file in the project it scans; with --apply it may create only agents.toml and the upstream pin, and only when they do not already exist.
+description: Adopt the baseline into an existing project that already has agent config. Optional path argument; reports a keep/remove/move migration plan and never edits existing files.
 ---
 
 # /adopt
@@ -14,6 +14,9 @@ Bring `ai-dev-baseline` into a project that **already has** its own `.claude/`, 
 `.gemini/`, root docs, skills, and hooks. Adoption is not installation — the global install
 already happened. Adoption is working out **what this project already has, what now duplicates
 the baseline, what carries a delta that has to be kept, and in what order to reconcile them.**
+It classifies every artifact `keep` / `remove` / `move` / `escalate` with evidence and parity
+caveats, infers an `agents.toml` from the project's own signals, flags four adoption-hygiene
+risks, and emits an ordered migration plan — and never edits a file in the project it scans.
 
 Argument: `$ARGUMENTS` — an optional path (defaults to the current repo), an optional
 `--agents claude,codex` to narrow the scan, and an optional `--apply`.

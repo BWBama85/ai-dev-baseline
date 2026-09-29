@@ -9,12 +9,14 @@
 # tree, and the size rules are driven the other way: an artifact made arbitrarily large must still
 # exit 0, because there is no ceiling.
 #
-# The two measurements #432 added are guarded the same way, and each is OBSERVED FAILING on a
-# mutated copy of the command: a fenced-comment count that ignores fences, and a `--since` half
-# that measures the working tree instead of the ref, must each turn a named assertion below red —
-# the SAME assertion function the green run uses, re-run against the mutant in a subshell, with
-# its own `FAIL:` line as the witness. Inline rather than a `--mutation` pool row (the
-# check-build-atomic.sh shape): two rows, seconds each, and no new registry, gate or nightly entry.
+# The measurements #432 and #436 added are guarded the same way, and each is OBSERVED FAILING on a
+# mutated copy of the command: a fenced-comment count that ignores fences, a `--since` half that
+# measures the working tree instead of the ref, a descriptions figure that counts the key, and a
+# description reader that passes a skill with none as zero words must each turn a named assertion
+# below red — the SAME assertion function the green run uses, re-run against the mutant in a
+# subshell, with its own `FAIL:` line as the witness. Inline rather than a `--mutation` pool row
+# (the check-build-atomic.sh shape): four rows, seconds each, and no new registry, gate or nightly
+# entry.
 #
 # Never touches the tracked tree — every case builds its own fixture under one `mktemp -d`,
 # including the git repositories the `--since` cases need.
@@ -59,7 +61,7 @@ mk_fixture() {
     printf 'root doc for %s\nsecond line\n' "${agent%%:*}" > "$fx/agents/${agent%%:*}/${agent#*:}" || return 1
     for name in alpha beta; do
       mkdir -p "$fx/agents/${agent%%:*}/skills/$name" || return 1
-      printf -- '---\nname: %s\n---\n\nbody words here\n' "$name" > "$fx/agents/${agent%%:*}/skills/$name/SKILL.md" || return 1
+      printf -- '---\nname: %s\ndescription: use %s in a fixture\n---\n\nbody words here\n' "$name" "$name" > "$fx/agents/${agent%%:*}/skills/$name/SKILL.md" || return 1
     done
   done
   printf '%s\n' "$fx"
@@ -70,6 +72,7 @@ write_fenced() {
   cat > "$1" <<'EOF'
 ---
 name: alpha
+description: use alpha in a fixture
 ---
 # a heading is not a comment
 prose, then a fence:
@@ -99,7 +102,7 @@ mk_since_repo() {
   printf 'source gamma\n' > "$fx/base/workflows/gamma.md" || return 1
   for agent in claude codex gemini; do
     mkdir -p "$fx/agents/$agent/skills/gamma" || return 1
-    printf -- '---\nname: gamma\n---\n\nnew body\n' > "$fx/agents/$agent/skills/gamma/SKILL.md" || return 1
+    printf -- '---\nname: gamma\ndescription: use gamma in a fixture\n---\n\nnew body\n' > "$fx/agents/$agent/skills/gamma/SKILL.md" || return 1
   done
   check_git "$fx" add -A >/dev/null 2>&1 || return 1
   check_git "$fx" commit -q -m c2 >/dev/null 2>&1 || return 1
@@ -124,13 +127,22 @@ rows_not_fields() { printf '%s\n' "$RS_OUT" | awk -F'\t' -v n="$1" 'NF != n' | w
 
 ALPHA=agents/claude/skills/alpha/SKILL.md
 
-# The two assertions the mutations must turn red. ONE function each, so the green run and the
+# The assertions the mutations must turn red. ONE function each, so the green run and the
 # mutant run the identical witness — a mutation that only compares the mutant's value to a number
 # of its own would stay green if the assertion it claims to protect were weakened or deleted.
 FENCED_WITNESS="fenced: 3 # lines inside the fence and 2 outside count 3"
 assert_fenced_three() { eq "$(col "$ALPHA" 5)" "3" "$FENCED_WITNESS"; }
 GROWN_WITNESS="since: the skill that grew by 10 lines reports delta_lines 10"
 assert_grown_ten() { eq "$(col "$ALPHA" 6)" "10" "$GROWN_WITNESS"; }
+# mk_fixture's descriptions are `use alpha in a fixture` (5 words, 22 bytes) and `use beta in a
+# fixture` (5 words, 21 bytes): per agent 2 skills, 10 words, ceil(43/4) = 11.
+DESC_WITNESS="descriptions: per agent, the rendered values' words and ceil(bytes/4) — the key excluded"
+assert_desc_figure() {
+  has "$RS_ERR" "descriptions, loaded at every session start whether or not a skill runs (a report, never a gate): claude 2 skill(s) 10 words approx_tokens 11, codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 10 words approx_tokens 11" \
+    "$DESC_WITNESS"
+}
+UNDESC_WITNESS="undescribed: a rendered skill whose frontmatter has no description line fails the report"
+assert_undescribed() { eq "$RS_RC" "1" "$UNDESC_WITNESS"; }
 
 # --- the green run ------------------------------------------------------------------------------
 
@@ -158,6 +170,67 @@ eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { l += $2; w += $3; t 
 eq "$(col "$ALPHA" 5)" "0" "green: an artifact with no fence has 0 fenced comment lines"
 has "$RS_ERR" "measured 3 root doc(s), 6 skill(s) and 0 on-demand supporting file(s)" "green: it says what it checked"
 has "$RS_ERR" "not a tokenizer" "green: the approximation is stated, not implied"
+assert_desc_figure
+hasnt "$RS_OUT" "descriptions" "green: the descriptions figure is never a row — its words are already inside the SKILL.md rows"
+
+# --- descriptions (#436): per agent, and fail-closed on a render that lost one -------------------
+fx="$(mk_fixture desc)" || bad "fixture: could not build the descriptions tree"
+# Per agent, not one agent's figure printed three times: gemini's beta says twelve words (62 bytes).
+printf -- '---\nname: beta\ndescription: one two three four five six seven eight nine ten eleven twelve\n---\n\nbody\n' \
+  > "$fx/agents/gemini/skills/beta/SKILL.md"
+run_rs "$fx"
+yes "$RS_RC" "desc: a longer description is a report, never a failure"
+has "$RS_ERR" "codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 17 words approx_tokens 21" \
+  "desc: each agent's figure is its own renders' — gemini's twelve-word beta moves gemini alone"
+# undesc_case <reason> <SKILL.md content> — codex's beta rendered broken: the report fails, names the
+# file and the reason, and still prints every artifact row.
+undesc_case() {
+  fx="$(mk_fixture "undesc-$1")" || { bad "fixture: could not build the undescribed tree ($1)"; return; }
+  printf -- '%b' "$2" > "$fx/agents/codex/skills/beta/SKILL.md"
+  run_rs "$fx"
+  eq "$RS_RC" "1" "undescribed ($1): the report fails"
+  has "$RS_ERR" "UNDESCRIBED agents/codex/skills/beta/SKILL.md — $1" "undescribed ($1): naming the file and the reason"
+  eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "10" "undescribed ($1): every artifact row is still reported"
+  has "$RS_ERR" "codex 1 skill(s) 5 words" "undescribed ($1): the broken skill is not counted as zero words"
+}
+undesc_case "no description line" '---\nname: beta\n---\n\nbody\n'
+undesc_case "an empty description" '---\nname: beta\ndescription:   \n---\n\nbody\n'
+undesc_case "a folded/block scalar" '---\nname: beta\ndescription: >-\n  folded words\n---\n\nbody\n'
+undesc_case "a multi-line continuation" '---\nname: beta\ndescription: first line\n  and a second\n---\n\nbody\n'
+undesc_case "a second description line" '---\nname: beta\ndescription: one\ndescription: two\n---\n\nbody\n'
+undesc_case "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
+undesc_case "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
+fx="$(mk_fixture undesc-witness)" || bad "fixture: could not build the undescribed-witness tree"
+printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
+run_rs "$fx"
+assert_undescribed
+
+# ------- MUTATIONS: a figure that counts the key, and a reader that passes a missing one ---------
+fx="$(mk_fixture mut-desc-key)" || bad "fixture: could not build the description-key mutation tree"
+check_mutate_literal "$fx/scripts/render-size.sh" 'sub(/^description:[[:space:]]*/, "", v)' 'v = v'; mrc=$?
+case "$mrc" in
+  0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_desc_figure 2>&1 )"
+     has "$out" "mutant-rc=0" "mut-desc-key: the mutated command still runs"
+     case "$out" in
+       *"FAIL: $DESC_WITNESS"*) ok ;;
+       *) bad "MUTATION 3 DID NOT FIRE: the assertion [$DESC_WITNESS] stayed green on a figure that counts the description: key, so it proves nothing (subshell output: $out)" ;;
+     esac ;;
+  2) bad "mut-desc-key: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
+  *) bad "mut-desc-key: the mutation could not be applied (rc $mrc)" ;;
+esac
+fx="$(mk_fixture mut-undesc)" || bad "fixture: could not build the undescribed mutation tree"
+printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
+check_mutate_literal "$fx/scripts/render-size.sh" 'if (r == "" && !seen) r = "no description line"' ''; mrc=$?
+case "$mrc" in
+  0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_undescribed 2>&1 )"
+     has "$out" "mutant-rc=0" "mut-undesc: the mutant passes a skill with no description as zero words, which is the defect"
+     case "$out" in
+       *"FAIL: $UNDESC_WITNESS"*) ok ;;
+       *) bad "MUTATION 4 DID NOT FIRE: the assertion [$UNDESC_WITNESS] stayed green on a reader that passes a missing description, so it proves nothing (subshell output: $out)" ;;
+     esac ;;
+  2) bad "mut-undesc: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
+  *) bad "mut-undesc: the mutation could not be applied (rc $mrc)" ;;
+esac
 
 # --- supports-present: ONE final TOTAL summing EVERY row above (#433) ---------------------------
 # The TSV contract is the header's own sentence — one row per artifact, then a TOTAL summing the
@@ -241,6 +314,7 @@ fx="$(mk_fixture fences)" || bad "fixture: could not build the fence-shapes tree
   cat <<'EOF'
 ---
 name: alpha
+description: use alpha in a fixture
 ---
 - a list item
   ```sh
@@ -297,13 +371,13 @@ EOF
 EOF
 } > "$fx/$ALPHA"
 # CRLF endings on another artifact: the closer must still close and the count must still be right.
-printf -- '---\r\nname: alpha\r\n---\r\n```bash\r\n# one\r\n# two\r\n```\r\n# outside\r\n' > "$fx/agents/codex/skills/alpha/SKILL.md"
+printf -- '---\r\nname: alpha\r\ndescription: use alpha in a fixture\r\n---\r\n```bash\r\n# one\r\n# two\r\n```\r\n# outside\r\n' > "$fx/agents/codex/skills/alpha/SKILL.md"
 # ADJACENT LIST FENCES (review of PR #446): an unterminated nested fence ended by the next item,
 # which opens a fence of the SAME delimiter, length and column on its own marker line. The two
 # directions live in two artifacts, because a counter that infers an opener from the delimiter
 # tuple gets them wrong in opposite ways (0 and 1) and a single total would cancel to the right sum.
-printf -- '---\nname: alpha\n---\n- old\n  ```text\n- ```bash\n  # one, in the bash fence the ending item opened\n  ```\n' > "$fx/agents/gemini/skills/alpha/SKILL.md"
-printf -- '---\nname: beta\n---\n- old\n  ```bash\n- ```text\n  # not a comment: the ending item opened a TEXT fence\n  ```\n' > "$fx/agents/gemini/skills/beta/SKILL.md"
+printf -- '---\nname: alpha\ndescription: use alpha in a fixture\n---\n- old\n  ```text\n- ```bash\n  # one, in the bash fence the ending item opened\n  ```\n' > "$fx/agents/gemini/skills/alpha/SKILL.md"
+printf -- '---\nname: beta\ndescription: use beta in a fixture\n---\n- old\n  ```bash\n- ```text\n  # not a comment: the ending item opened a TEXT fence\n  ```\n' > "$fx/agents/gemini/skills/beta/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "fence-shapes: exits 0"
 eq "$(col agents/gemini/skills/alpha/SKILL.md 5)" "1" "adjacent: a bash fence opened by the item that ended an unterminated text fence counts its comment"
@@ -351,7 +425,7 @@ eq "$(col agents/codex/skills/gamma/SKILL.md 6),$(col agents/codex/skills/gamma/
 eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { l += ($6 == "new") ? $2 : $6; t += ($7 == "new") ? $4 : $7 } END { print l, t }')" \
    "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 == "TOTAL" { print $6, $7 }')" \
    "since: TOTAL's deltas are the sum of the rows, a new row counting its whole size"
-eq "$(col TOTAL 6)" "$(( 10 + 3 * 5 ))" "since: TOTAL delta_lines = 10 grown + three 5-line new skills"
+eq "$(col TOTAL 6)" "$(( 10 + 3 * 6 ))" "since: TOTAL delta_lines = 10 grown + three 6-line new skills"
 has "$RS_ERR" "3 new" "since: the summary line counts the new artifacts"
 eq "$(check_git "$fx" status --porcelain | wc -l | tr -d ' ')" "0" "since: the working tree and the repository are untouched"
 eq "$(ls -A "$WORK/tmp" | wc -l | tr -d ' ')" "0" "since: the scratch directory for the ref's artifacts is removed on exit"
@@ -383,7 +457,7 @@ run_rs "$fx" --since HEAD~1
 yes "$RS_RC" "rename: exits 0"
 hasnt "$RS_OUT" "skills/beta/" "rename: the artifact that no longer exists has no row"
 eq "$(col agents/gemini/skills/delta/SKILL.md 6)" "new" "rename: the renamed artifact is new"
-eq "$(col TOTAL 6)" "$(( 3 * 5 ))" "rename: TOTAL delta_lines counts the three new rows and nothing for the removed ones"
+eq "$(col TOTAL 6)" "$(( 3 * 6 ))" "rename: TOTAL delta_lines counts the three new rows and nothing for the removed ones"
 
 # --- --markdown ---------------------------------------------------------------------------------
 
@@ -503,5 +577,6 @@ yes "$RS_RC" "usage: -h exits 0"
 has "$(cat "$WORK/out")" "approx_tokens" "usage: -h prints the output contract"
 has "$(cat "$WORK/out")" "fenced_comment_lines" "usage: -h names the fenced-comment column"
 has "$(cat "$WORK/out")" "--since <ref>" "usage: -h names --since"
+has "$(cat "$WORK/out")" "UNDESCRIBED" "usage: -h documents the descriptions figure and its fault"
 
 check_summary "check-render-size"
