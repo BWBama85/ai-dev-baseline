@@ -992,11 +992,31 @@ has "$out" "could not be measured within 1s" "budget(bounded): …and says the b
 PCW="$(new_project codexslowwc)"
 for sub in a b c; do mkdir -p "$PCW/$sub"; printf 'small\n' > "$PCW/$sub/AGENTS.md"; done
 slowwc="$work/slowwc"; mkdir -p "$slowwc"
-printf '#!/usr/bin/env bash\nsleep 2\nexec %s "$@"\n' "$(command -v wc)" > "$slowwc/wc"
+printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.md*) sleep 2 ;; esac\nexec %s "$@"\n' "$(command -v wc)" > "$slowwc/wc"
 chmod +x "$slowwc/wc"
 out="$(PATH="$slowwc:$PATH" ADB_PINNED_CODEX_SCAN_SECS=1 bash "$PI" install --project "$PCW" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
 yes "$rc" "budget(bounded-sizes): an install whose size reads outlive the bound still completes"
 has "$out" "could not be measured within 1s" "budget(bounded-sizes): …and says the budget was not checked"
+# A size read that FAILS is an unmeasured budget, never a zero-byte document.
+PCF="$(new_project codexbadwc)"
+mkdir -p "$PCF/svc"; printf 'service prose\n' > "$PCF/svc/AGENTS.md"
+badwc="$work/badwc"; mkdir -p "$badwc"
+printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.md*) exit 7 ;; esac\nexec %s "$@"\n' "$(command -v wc)" > "$badwc/wc"
+chmod +x "$badwc/wc"
+out="$(PATH="$badwc:$PATH" bash "$PI" install --project "$PCF" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(failed-read): an install whose size read fails still completes"
+has "$out" "could not list or read this project's AGENTS.md files" "budget(failed-read): …and reports the budget unchecked rather than measured"
+# Uninstall deletes a project AGENTS.md only when NOTHING of the project's own is left in it; a
+# grep that cannot read what would remain must refuse, never read as "nothing left".
+PSB="$(new_project stripblock)"
+printf '# Our own project instructions\n' > "$PSB/AGENTS.md"
+bash "$PI" install --project "$PSB" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+badgrep="$work/badgrep"; mkdir -p "$badgrep"
+printf '#!/usr/bin/env bash\ncase "$*" in *"[^[:space:]]"*) exit 2 ;; esac\nexec %s "$@"\n' "$(command -v grep)" > "$badgrep/grep"
+chmod +x "$badgrep/grep"
+( cd "$PSB" && PATH="$badgrep:$PATH" bash "$PI" uninstall --project "$PSB" ) >/dev/null 2>&1
+file_is "$PSB/AGENTS.md" "strip: a failed read of what would remain never deletes the project's AGENTS.md"
+has "$(cat "$PSB/AGENTS.md" 2>/dev/null)" "Our own project instructions" "strip: …and the project's own text is intact"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"

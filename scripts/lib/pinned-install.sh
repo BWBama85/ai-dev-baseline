@@ -97,10 +97,10 @@ PI_CODEX_SCAN_SECS="${ADB_PINNED_CODEX_SCAN_SECS:-30}"
 # doc is its AGENTS.override.md when present, else its AGENTS.md — the order Codex probes them in.
 # Found on the filesystem as Codex finds them: ignored files and symlinked docs count. Not counted:
 # names from the operator's `project_doc_fallback_filenames`, and docs reachable only through a
-# symlinked directory. PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, then one size read
-# per document — and returns 3 when it runs out; 1 when the walk cannot run.
+# symlinked directory. PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, each size read,
+# and the loops between them — and returns 3 when it runs out; 1 when a walk or a read fails.
 _pi_codex_doc_load() {
-  local p="$1" f d best=0 bestdir=. sum anc list wrc deadline
+  local p="$1" f d best=0 bestdir=. sum anc list wrc deadline left raw
   local -A doc=() size=()
   deadline=$(( SECONDS + PI_CODEX_SCAN_SECS ))
   list="$(mktemp "${TMPDIR:-/tmp}/adb-codex-docs.XXXXXX")" || return 1
@@ -112,6 +112,7 @@ _pi_codex_doc_load() {
     *)   rm -f "$list"; return 1 ;;
   esac
   while IFS= read -r -d '' f; do
+    [ "$SECONDS" -lt "$deadline" ] || { rm -f "$list"; return 3; }
     [ -f "$f" ] || continue   # a link is read through; a dangling one is nothing Codex can read
     f="${f#"$p"/}"
     d="${f%/*}"; [ "$d" = "$f" ] && d=.
@@ -122,10 +123,15 @@ _pi_codex_doc_load() {
   done < "$list"
   rm -f "$list"
   for d in "${!doc[@]}"; do
-    [ "$SECONDS" -lt "$deadline" ] || return 3
-    size["$d"]=$(( $(wc -c < "$p/${doc[$d]}") ))
+    left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] || return 3
+    raw="$(adb_run_bounded "$left" 5 wc -c "$p/${doc[$d]}")"; wrc=$?
+    case "$wrc" in 0) : ;; 124) return 3 ;; *) return 1 ;; esac
+    raw="${raw#"${raw%%[![:space:]]*}"}"; raw="${raw%%[!0-9]*}"
+    [ -n "$raw" ] || return 1
+    size["$d"]="$raw"
   done
   for d in "${!doc[@]}"; do
+    [ "$SECONDS" -lt "$deadline" ] || return 3
     sum=0; anc="$d"
     while :; do
       if [ -n "${size[$anc]+x}" ]; then sum=$(( sum + size[$anc] )); fi
@@ -731,7 +737,7 @@ _pi_splice_block() {
 # it ever held. A file carrying the project's own prose keeps it. Refuses an unbalanced region for
 # the same reason the splice does.
 _pi_strip_block() {
-  local f="$1" tmp="$1.adb.$$.tmp" state
+  local f="$1" tmp="$1.adb.$$.tmp" state grc
   if [ -L "$f" ]; then
     _pi_err "$f is a symlink — refusing to rewrite it; remove the managed region by hand"
     return 1
@@ -748,11 +754,15 @@ _pi_strip_block() {
     $0 == e { skip = 0; next }
     !skip { print }
   ' "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
-  if [ -s "$tmp" ] && grep -q '[^[:space:]]' "$tmp"; then
-    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
-  else
-    rm -f "$tmp" "$f"
-  fi
+  # Whether anything is left decides between keeping the file and DELETING it, so a grep that could
+  # not read the staged copy (2) refuses rather than reading as "nothing left".
+  grc=1
+  if [ -s "$tmp" ]; then grep -q '[^[:space:]]' "$tmp"; grc=$?; fi
+  case "$grc" in
+    0) mv "$tmp" "$f" || { rm -f "$tmp"; return 1; } ;;
+    1) rm -f "$tmp" "$f" ;;
+    *) rm -f "$tmp"; _pi_err "could not read what would remain of $f — left it untouched"; return 1 ;;
+  esac
 }
 
 # _pi_hook_groups <artifact-root> — the project's hook wiring, DERIVED from the same
@@ -1505,7 +1515,7 @@ EOF
       0) : ;;
       3) _pi_say "  NOTE   the project's AGENTS.md files could not be measured within ${PI_CODEX_SCAN_SECS}s — Codex's project_doc_max_bytes budget was not checked"
          continue ;;
-      *) _pi_say "  NOTE   could not list this project's AGENTS.md files — Codex's project_doc_max_bytes budget was not checked"
+      *) _pi_say "  NOTE   could not list or read this project's AGENTS.md files — Codex's project_doc_max_bytes budget was not checked"
          continue ;;
     esac
     bytes="${load%%$'\t'*}"; deep="${load#*$'\t'}"
