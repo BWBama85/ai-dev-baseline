@@ -895,8 +895,9 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   own `AGENTS.md` prose — at the root, or in a nested `AGENTS.md` on the way down to some directory
   — pushes what Codex loads past the budget is told at install, with a line for
   `~/.codex/config.toml` sized to that chain; the setting is yours, not the payload's. The
-  measurement counts `AGENTS.override.md`, `AGENTS.md` and the `project_doc_fallback_filenames` set
-  in the repository's `.codex/config.toml` or `~/.codex/config.toml`, symlinked files included, and
+  measurement counts `AGENTS.override.md`, `AGENTS.md` and every `project_doc_fallback_filenames`
+  entry set in `~/.codex/config.toml` or the repository's `.codex/config.toml` (Codex reads the
+  latter only for a trusted project, so both are counted), symlinked files included, and
   starts a chain at a nested repository's `.git` as Codex does; custom `project_root_markers` and
   the system, profile and command-line config layers are not read. It gives up with a note after
   30 seconds (`ADB_PINNED_CODEX_SCAN_SECS`) rather than hold the install.

@@ -4766,7 +4766,7 @@ adb_toml_keys() {
 # returned 0 but this prints nothing). Only the single-line, comma-separated quoted-string
 # array the templates use is supported (matching adb_toml_get's own scope); an element may
 # itself contain `[`/`]` (e.g. a `foo[bot]` login) because the outer close is found as the
-# LAST `]`. Elements containing a literal comma are out of scope. Usage: adb_toml_array <raw>
+# LAST `]`, and a comma INSIDE a quoted element is part of it. Usage: adb_toml_array <raw>
 adb_toml_array() {
   awk -v s="$1" '
     BEGIN {
@@ -4775,11 +4775,21 @@ adb_toml_array() {
       pos = 0                                     # find the LAST "]" (the array close)
       for (i = length(s); i >= 1; i--) { if (substr(s, i, 1) == "]") { pos = i; break } }
       if (pos > 0) s = substr(s, 1, pos - 1)
-      m = split(s, parts, ",")
+      # Split on the commas OUTSIDE quotes: a comma inside a quoted element is part of it.
+      m = 0; cur = ""; q = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+        if (c == "\"" || c == "\047") { q = c; cur = cur c; continue }
+        if (c == ",") { parts[++m] = cur; cur = ""; continue }
+        cur = cur c
+      }
+      parts[++m] = cur
       for (j = 1; j <= m; j++) {
         e = parts[j]
         gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim outer whitespace
-        sub(/^"/, "", e); sub(/"$/, "", e)                            # strip one quote layer
+        if (e ~ /^\047.*\047$/) { e = substr(e, 2, length(e) - 2) }  # a literal string: one layer
+        else { sub(/^"/, "", e); sub(/"$/, "", e) }                   # strip one quote layer
         gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim inside the quotes
         if (e != "") print e
       }

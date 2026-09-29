@@ -1020,6 +1020,15 @@ printf 'project_doc_fallback_filenames = ["GUIDE]v2.md", "OTHER.md"]\n' > "$cxho
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose under a fallback name that carries a closing bracket, long enough." }' > "$PCQ/svc/GUIDE]v2.md"
 out="$(CODEX_HOME="$cxhome2" bash "$PI" install --project "$PCQ" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback-bracket): a fallback name carrying ] is still counted"
+# Both config layers count — Codex applies the repository's only to a trusted project — so a
+# repository `[]` does not hide the user's names; and a comma inside a quoted name is part of it.
+PCL2="$(new_project codexlayers)"
+cxhome4="$work/codexhome4"; mkdir -p "$cxhome4" "$PCL2/.codex" "$PCL2/svc"
+printf 'project_doc_fallback_filenames = ["TEAM,GUIDE.md"]\n' > "$cxhome4/config.toml"
+printf 'project_doc_fallback_filenames = []\n' > "$PCL2/.codex/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Prose under a user-configured fallback name that carries a comma, long enough." }' > "$PCL2/svc/TEAM,GUIDE.md"
+out="$(CODEX_HOME="$cxhome4" bash "$PI" install --project "$PCL2" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(layers): a user fallback name with a comma is counted despite a repository []"
 # Names are matched exactly: a name that is a word of another is still its own name, and a pattern
 # character in a name is literal, as Codex joins it to the directory.
 PCD="$(new_project codexdedup)"

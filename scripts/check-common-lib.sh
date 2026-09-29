@@ -270,6 +270,8 @@ printf 'k = ["a]b.md", "c.md"]\n[t]\nk = ["nested"]\n' > "$tlf"
 eq "$(adb_toml_get "$tlf" "" k)" '["a]b.md", "c.md"]' "adb_toml_get with an empty table reads the top-level key"
 eq "$(adb_toml_get "$tlf" t k)" '["nested"]' "…and a named table still reads its own key, not the top-level one"
 eq "$(adb_toml_array "$(adb_toml_get "$tlf" "" k)" | tr '\n' ' ')" "a]b.md c.md " "a bracket inside a quoted element survives the array read"
+eq "$(adb_toml_array "[\"TEAM,GUIDE.md\", 'lit,eral', \"claude\"]" | tr '\n' '|')" "TEAM,GUIDE.md|lit,eral|claude|" \
+  "a comma inside a quoted element (basic or literal) is part of it, not a separator"
 printf '[t]\nk = ["nested"]\n' > "$tlf"
 adb_toml_get "$tlf" "" k >/dev/null; eq "$?" "1" "a key that appears only inside a table is absent at the top level"
 

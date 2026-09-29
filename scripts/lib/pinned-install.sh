@@ -98,21 +98,22 @@ case "$PI_CODEX_SCAN_SECS" in ''|*[!0-9]*) PI_CODEX_SCAN_SECS=30 ;; esac
 [ "${#PI_CODEX_SCAN_SECS}" -le 6 ] && [ "$(( 10#$PI_CODEX_SCAN_SECS ))" -gt 0 ] || PI_CODEX_SCAN_SECS=30
 PI_CODEX_SCAN_SECS=$(( 10#$PI_CODEX_SCAN_SECS ))
 
-# _pi_codex_fallback_names <project-root> — the `project_doc_fallback_filenames` Codex adds after
-# AGENTS.override.md and AGENTS.md, one per line: the repository's `.codex/config.toml` when it sets
-# the key, else `${CODEX_HOME:-~/.codex}/config.toml`. The system, profile and command-line layers
-# are not read, and a name carrying a slash is not a filename and is skipped. Returns 1 when a
-# config exists but cannot be read, or sets the key to something other than a one-line array.
+# _pi_codex_fallback_names <project-root> — the `project_doc_fallback_filenames` Codex may add after
+# AGENTS.override.md and AGENTS.md, one per line, from BOTH `${CODEX_HOME:-~/.codex}/config.toml` and
+# the repository's `.codex/config.toml`. Codex applies the repository layer only to a trusted
+# project, so the union is counted: a name either layer can set may be loaded, and over-counting
+# can only err toward a warning. The system, profile and command-line layers are not read, and a
+# name carrying a slash is not a filename and is skipped. Returns 1 when a config exists but cannot
+# be read, or sets the key to something other than a one-line array.
 _pi_codex_fallback_names() {
   local f raw rc n
-  for f in "$1/.codex/config.toml" "${CODEX_HOME:-$HOME/.codex}/config.toml"; do
+  for f in "${CODEX_HOME:-$HOME/.codex}/config.toml" "$1/.codex/config.toml"; do
     raw="$(adb_toml_get "$f" "" project_doc_fallback_filenames)"; rc=$?
     case "$rc" in 0) : ;; 1) continue ;; *) return 1 ;; esac
     case "$raw" in '['*']') : ;; *) return 1 ;; esac
     while IFS= read -r n; do
       case "$n" in ''|*/*) : ;; *) printf '%s\n' "$n" ;; esac
     done <<< "$(adb_toml_array "$raw")"
-    return 0
   done
   return 0
 }
@@ -144,10 +145,14 @@ _pi_codex_doc_load() {
     seen["$n"]=1; names+=("$n")
   done <<< "$fb"
   for i in "${!names[@]}"; do
+    [ "$SECONDS" -lt "$deadline" ] || return 3
     rank["${names[$i]}"]="$i"
     [ "$i" -eq 0 ] || expr+=(-o)
-    # Codex reads each name literally; `find -name` reads a glob, so its pattern characters are escaped.
-    expr+=(-name "$(printf '%s' "${names[$i]}" | sed 's/[][*?\\]/\\&/g')")
+    # Codex reads each name literally; `find -name` reads a glob, so its pattern characters are
+    # escaped — in the shell, so building the walk spawns nothing the deadline does not see.
+    n="${names[$i]}"
+    n="${n//\\/\\\\}"; n="${n//\*/\\*}"; n="${n//\?/\\?}"; n="${n//\[/\\[}"; n="${n//\]/\\]}"
+    expr+=(-name "$n")
   done
   left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] || return 3
   # Streamed, not staged: the walk's output is read as it arrives, and its status is the procsub's.
