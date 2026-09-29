@@ -759,4 +759,6 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/lib/implement-lib.sh:4907` `c3d3cbf` `PRRT_kwDOTfywrM6m1ZVU` PR #504 2026-09-28 — report digested the tree under a mutex reaped after 60s, so a slow decision could race a reservation
 - `unbounded-resource` `.github/workflows/ci.yml:1041` `83f829d` `PRRT_kwDOTfywrM6m4Op1` PR #504 2026-09-28 — implement-gate gained a second mutation harness under a 45-minute ceiling sized for one
 - `stale-doc-claim` `.github/workflows/ci.yml:1560` `83f829d` `PRRT_kwDOTfywrM6m4Op_` PR #504 2026-09-28 — CONTRIBUTING.md still described four macOS skips after the fifth was added
+- `status-swallowed` `scripts/build.sh:521` `3e49ca3` `PRRT_kwDOTfywrM6m9VA-` PR #507 2026-09-29 — sed piped into grep -q under pipefail read a nonempty procedure as empty
+- `trailing-newline-stripped` `scripts/check-practice-split.sh:172` `9ce6881` `PRRT_kwDOTfywrM6m9VBA` PR #507 2026-09-29 — byte-exact comparisons through command substitution dropped NUL bytes
 <!-- adb:hits:end -->
