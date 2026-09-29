@@ -528,6 +528,10 @@ eq "$leaked" "" "no tracked generated file carries a marker"
 # whatever was committed. The procedure POINTER is the one line allowed to differ (#434): it names
 # each agent's own installed path, so it is removed before comparing and pinned separately below.
 rules_only() { grep -v '^\*\*Procedure:\*\* ' "$1"; }
+# The comparisons below go through `$(…)`, which drops NUL bytes, so each doc is required NUL-free.
+for f in agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md; do
+  LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f" && ok || bad "$f carries a NUL byte, which the comparisons below cannot see"
+done
 [ "$(rules_only agents/codex/AGENTS.md; printf x)" = "$(rules_only agents/gemini/GEMINI.md; printf x)" ] && ok \
   || bad "the codex and gemini root docs differ outside their procedure pointers — no shipped block excludes either, so they must be identical"
 for f in agents/codex/reference/*.md; do

@@ -66,6 +66,10 @@ split_source() {
   ' "$2"
 }
 
+# nul_free <file> — true when <file> carries no NUL byte. The comparisons below capture text with
+# `$(…)`, which drops NULs from both sides, so every file they read is required NUL-free first.
+nul_free() { LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1"; }
+
 # present <path> — anything at <path>, a dangling symlink included (`-e` alone misses one).
 present() { [ -e "$1" ] || [ -L "$1" ]; }
 
@@ -98,6 +102,11 @@ verify_tree() {
     practices+=("$f")
   done
   [ "${#practices[@]}" -gt 0 ] || { bad "verify: base/practices named no practice under $r"; rm -rf "$scratch"; return; }
+  for f in "${practices[@]}" "$r"/agents/*/CLAUDE.md "$r"/agents/*/AGENTS.md "$r"/agents/*/GEMINI.md \
+           "$r"/agents/*/reference/* "$r"/agents/*/rules/*; do
+    [ -f "$f" ] || continue
+    nul_free "$f" && ok || bad "${f#"$r"/}: carries a NUL byte — no instruction file does, and the exact comparisons below cannot see one"
+  done
   procs=0; ptrs=0
 
   for pair in $AGENTS; do
@@ -254,6 +263,7 @@ if [ "$SELF_TEST" -eq 1 ]; then
   m_pointer()    { sed 's|~/\.codex/ai-dev-baseline/reference/|~/.codex/reference/|' "$1/agents/codex/AGENTS.md" > "$1/x" && mv "$1/x" "$1/agents/codex/AGENTS.md"; }
   m_no_paths()   { local f; f="$(ls "$1/agents/claude/rules" | head -n1)"; [ -n "$f" ] || return 1; sed '/^paths:$/,/^---$/d' "$1/agents/claude/rules/$f" > "$1/x" && mv "$1/x" "$1/agents/claude/rules/$f"; }
   m_rules_codex() { mkdir -p "$1/agents/codex/rules"; }
+  m_nul()        { local p; p="$1/agents/codex/reference/$(first_ref "$1")"; printf 'X\000Y\n' >> "$p"; }
   m_dangling()   { local f; f="$(ls "$1/agents/claude/rules" | head -n1)"; [ -n "$f" ] || return 1; ln -s /nonexistent/adb-434 "$1/agents/claude/reference/$f"; }
   m_linked()     { local f; f="$(first_ref "$1")"; mv "$1/agents/codex/reference/$f" "$1/agents/codex/$f.real" && ln -s "../$f.real" "$1/agents/codex/reference/$f"; }
   m_misplaced()  { local f; f="$(first_ref "$1")"; mkdir -p "$1/agents/gemini/rules" && cp "$1/agents/gemini/reference/$f" "$1/agents/gemini/rules/zz-$f" && mv "$1/agents/gemini/rules/zz-$f" "$1/agents/gemini/rules/$f"; }
@@ -281,6 +291,7 @@ if [ "$SELF_TEST" -eq 1 ]; then
   red dangling-other   m_dangling      "it must render exactly once"
   red linked-proc      m_linked        "a generated file is a regular file, never a link"
   red misplaced        m_misplaced     "has no source practice rendering it there"
+  red nul-byte         m_nul           "carries a NUL byte"
   red rules-for-codex  m_rules_codex   "only Claude has a path-scoped rules surface"
   red stale-render     m_source_edit   "section is exactly the practice's rule lines"
 
@@ -406,6 +417,16 @@ RULE
   hasnt "$(cat "$d/agents/codex/AGENTS.md" 2>/dev/null)" "SHARED-PROC" "nest-ok: the root doc carries no procedure text"
   has   "$(cat "$d/agents/codex/AGENTS.md" 2>/dev/null)" "MORE-RULE" "nest-ok: rule text after a procedure block stays in the root doc"
   before="$fail"; verify_tree "$d" > /dev/null; eq "$fail" "$before" "nest-ok: the fixture build verifies clean"
+
+  # A procedure far larger than a pipe buffer still builds: nothing between the render and its
+  # emptiness check may read short.
+  d="$work/g-large"
+  mkfixture "$d" || bad "large: fixture"
+  { printf '# p\n\nRULE\n<!-- adb:procedure -->\n\nEARLY-MATCH\n'
+    awk 'BEGIN { for (i = 0; i < 20000; i++) print "a long procedure line that keeps the stream flowing past any buffer" }'
+    printf '<!-- adb:end -->\n'; } > "$d/base/practices/10-fixture.md"
+  run_build "$d"; yes "$?" "large: a procedure well past a pipe buffer builds"
+  has "$(tail -n 1 "$d/agents/codex/reference/10-fixture.md" 2>/dev/null)" "a long procedure line" "large: …and renders whole"
 
   # ------- 4. MUTATION: a renderer that stops splitting is caught by the tree verifier ----------
   d="$work/mut-nosplit"
