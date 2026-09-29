@@ -766,4 +766,6 @@ One line per resolved review thread, newest last.
 - `consumer-contract-mismatch` `scripts/lib/common.sh:269` `a906820` `PRRT_kwDOTfywrM6m_Rlr` PR #507 2026-09-29 — the root doc a git pull updates pointed at links only an installer creates, with no stated route
 - `unbounded-resource` `scripts/lib/pinned-install.sh:153` `b456036` `PRRT_kwDOTfywrM6nLp8f` PR #507 2026-09-29 — the walk got the full scan bound after the config read spent part of it
 - `partial-validation` `scripts/lib/pinned-install.sh:144` `b456036` `PRRT_kwDOTfywrM6nLp8s` PR #507 2026-09-29 — fallback names deduplicated by substring match dropped a name that was a word of another
+- `stale-doc-claim` `base/workflows/adopt.md:3` `d294684` `PRRT_kwDOTfywrM6nTb6N` PR #508 2026-09-29 — the adopt description promised it never edits existing files though the skill rewrites its own run-state
+- `partial-validation` `scripts/build.sh:747` `c5704e5` `PRRT_kwDOTfywrM6nTb6Q` PR #508 2026-09-29 — the description continuation check refused an indented YAML comment that the loader drops
 <!-- adb:hits:end -->
