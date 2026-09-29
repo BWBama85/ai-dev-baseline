@@ -1040,7 +1040,7 @@ printf 'body\n\nCloses #9\n' > "$PCLONE/body.md"
 SHIM_DEFAULT_BASE="$(cd "$PCLONE" && adb_default_branch)"
 export SHIM_DEFAULT_BASE
 GOODREFS='{"closingIssuesReferences":[{"number":9,"repository":{"name":"r","owner":{"login":"o"}}}]}'
-openpr() { OP_OUT="$( cd "$PCLONE" && env "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 9 2>&1 )"; OP_RC=$?; }
+openpr() { OP_OUT="$( cd "$PCLONE" && env ADB_LOCAL_REVIEW_PASSES=0 "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 9 2>&1 )"; OP_RC=$?; }
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "21 the happy path exits 0"
 has "$OP_OUT" "pushed issue-9-x" "21 …pushed"
@@ -1074,7 +1074,7 @@ has "$OP_OUT" "gh pr create failed" "21 …reporting the captured create failure
 # GitHub's closingIssuesReferences is a CANONICAL numeric set, so the comparison side must be
 # too: a duplicate or leading-zero spelling otherwise mismatches forever (23) with the links
 # correctly registered.
-openpr2() { local cl="$1"; shift; OP_OUT="$( cd "$PCLONE" && env "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes "$cl" 2>&1 )"; OP_RC=$?; }
+openpr2() { local cl="$1"; shift; OP_OUT="$( cd "$PCLONE" && env ADB_LOCAL_REVIEW_PASSES=0 "$@" bash "$IL" open-pr .claude/state --title t --body-file body.md --closes "$cl" 2>&1 )"; OP_RC=$?; }
 openpr2 "9,9" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "0" "21 a duplicated --closes entry canonicalizes and verifies"
 openpr2 "009" SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS"
@@ -1103,7 +1103,7 @@ jq -n '{branch:"issue-3-y", issue:"3", phase:"triaged", startedAt:"2026-08-30T00
         phaseHistory:[{phase:"triaged", at:"2026-08-30T00:00:00Z"}]}' \
   > "$P3CLONE/.claude/state/implement-issue-active.json"
 printf 'body\n\nCloses #3\n' > "$P3CLONE/body.md"
-OP_STDOUT="$( cd "$P3CLONE" && env SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/3" \
+OP_STDOUT="$( cd "$P3CLONE" && env ADB_LOCAL_REVIEW_PASSES=0 SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/3" \
   SHIM_CLOSING_JSON='{"closingIssuesReferences":[{"number":3,"repository":{"name":"r","owner":{"login":"o"}}}]}' \
   bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 3 2>/dev/null )"
 if printf '%s\n' "$OP_STDOUT" | grep -q 'set up to track'; then
@@ -1185,7 +1185,7 @@ jq -n '{reason:"r", phase:"triaged", branch:"issue-9-x", issue:"9"}' > "$PCLONE/
 openpr SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON="$GOODREFS"
 eq "$OP_RC" "26" "21 an active marker without a readable .issue refuses while --closes is present"
 has "$OP_OUT" "no readable string .issue" "21 …naming the marker fault before anything is pushed"
-OP_OUT="$( cd "$PCLONE" && env SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON='{"closingIssuesReferences":[]}' \
+OP_OUT="$( cd "$PCLONE" && env ADB_LOCAL_REVIEW_PASSES=0 SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/8" SHIM_CLOSING_JSON='{"closingIssuesReferences":[]}' \
   bash "$IL" open-pr .claude/state --title t --body-file body.md 2>&1 )"; OP_RC=$?
 eq "$OP_RC" "0" "21 …while WITHOUT --closes the same marker still opens the PR"
 has "$OP_OUT" "arm-skipped blocked-marker-unreadable" "21 …and withholds the arm — the comparison's other half is missing"
@@ -2249,7 +2249,7 @@ eq "$OP_RC" "25" "30 a set GH_REPO is refused before anything is pushed"
 has "$OP_OUT" "GH_REPO/GH_HOST is set" "30 …naming the environment override"
 # A mistyped --closes number outside the marker's issue set would sail through the GitHub proof
 # (which only confirms the same mistake registered) and close an unrelated issue on merge.
-OP_OUT="$( cd "$PCLONE" && env SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS" \
+OP_OUT="$( cd "$PCLONE" && env ADB_LOCAL_REVIEW_PASSES=0 SHIM_SLUG="o/r" SHIM_PR_URL="https://github.com/o/r/pull/5" SHIM_CLOSING_JSON="$GOODREFS" \
   bash "$IL" open-pr .claude/state --title t --body-file body.md --closes 8 2>&1 )"; OP_RC=$?
 eq "$OP_RC" "26" "30 a --closes number outside the marker's issue set refuses before the push"
 has "$OP_OUT" "not in the run marker" "30 …naming the mismatch"

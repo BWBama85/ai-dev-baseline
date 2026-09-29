@@ -18,7 +18,8 @@ who executes each step moves.
 imposes. A role only takes effect where some workflow explicitly resolves it
 (via `role-dispatch.sh`, below). Today `/implement-issue` consumes
 `survey` + `gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
-`[reviewers]` bot allowlist plus `review`'s first slot, for each round's sibling sweep (#475). `debug`, `issue_author`, and `release` are
+`[reviewers]` bot allowlist plus `review`'s first slot, for each round's sibling sweep (#475)
+and its local convergence loop (#491, `[reviewers] local_passes`). `debug`, `issue_author`, and `release` are
 **declared but not yet consumed** by any shipped workflow — they resolve
 correctly and are there for your own skills to honor. This matters most for
 `release`, which the baseline never implements at all (see below): a
@@ -415,7 +416,10 @@ findings, asks for a re-review and goes round again until the reviewer passes or
 ceiling entirely and so is never reached (#420). The waiting itself spends no model tokens — it is
 a `sleep` loop with no model in it — provided the caller dispatches it as a background task rather
 than chunking it across foreground shell calls, which is #417 and is specified in the skill's step
-0b. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended on a
+0b. Before each round's push, a **local convergence loop** (#491, `[reviewers] local_passes`,
+built-in 3, `0` disables) re-reviews that round's fixes and ledger commit with `review`'s reviewer,
+so the async reviewer is the last sample rather than the first; `/implement-issue` runs the same
+loop between step 9's triage and step 10's push. See `base/roles.md`. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended on a
 bot-reviewed repo. Whether the watcher should arm is an open decision, not an oversight: #49's
 own text says it must "never merge", while this page and `docs/repo-settings.md` were written
 expecting it to arm. That contradiction is #168, tracked rather than resolved by assumption.

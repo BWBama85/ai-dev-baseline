@@ -244,6 +244,10 @@ bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 # How many re-review rounds /resolve-pr-threads may request. Optional.
 #   unset → the built-in 6;  0 → uncapped;  `--max-rounds <n>` overrides both
 max_rounds = 6
+
+# The local convergence loop's pass budget, before either workflow pushes fix code. Optional.
+#   unset → the built-in 3;  0 → the loop is disabled;  ADB_LOCAL_REVIEW_PASSES overrides; max 10
+local_passes = 3
 ```
 
 `role-dispatch.sh bots` reads this (repo → global → the built-in default allowlist) and
@@ -305,6 +309,27 @@ Uncapped rounds, never unbounded waits.
 an adopting repo — every round pushing fixes, round 5's fixes breeding three of round 6's findings —
 hit the cap at 3, because four requests already existed and all four were the operator's own manual
 kick-starts. `role-dispatch.sh max-rounds` reads it; `pr-watch.sh request-review` owns the built-in.
+
+### `local_passes` — the local convergence loop's budget (#491)
+
+Fix code used to be the only code in a pull request no local review read: `/implement-issue`
+reviewed once (step 8), fixed (step 9) and pushed; `/resolve-pr-threads` fixed and asked the async
+reviewer to look again. So every round's fix diff went straight to the slowest reviewer available.
+The loop re-reviews the fixes locally first — one bounded `implement-lib.sh review-loop pass` at a
+time, by the reviewer `review-rung` names, the workflow fixing between passes — until a pass returns
+zero REQUIRED findings **on the tree that will ship**, or `local_passes` passes are spent.
+
+It counts **loop passes only**: step 8's review is not one, and each resolver round starts a fresh
+budget. A pass that fails — a timeout, rc 127, a reply with no verdict trailer, a tree that moved
+during it — counts against the budget and is never clean. When the budget runs out with REQUIRED
+findings left, each is carried with the severity step 9's triage gives it: MEDIUM and LOW push as
+`carried: <n>` and are named; a carried CRITICAL or HIGH, a failed final pass, or an edit after the
+final pass blocks the run.
+
+`0` disables the loop and every summary says so. An empty `local_passes`, a leading zero, a
+non-integer and anything past **10** are hard errors, never the built-in **3**.
+`ADB_LOCAL_REVIEW_PASSES` overrides for one run under the same rules, except that an empty or unset
+variable means "not overridden"; the key layers repo → global. `role-dispatch.sh local-passes` reads it.
 
 ## Scope: bespoke orchestration stays project-scoped
 

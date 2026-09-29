@@ -991,12 +991,12 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    # 45, not 10: the job carries check-session-context.sh --mutation since #431 — one full suite
-    # run per row, ~19 s each locally, and adb_pool_size caps the pool at the runner's 4 cores —
-    # and the 10-minute bound sized for the Stop-gate suite alone cancelled it at 58 rows. The
-    # mutation gate keeps the harness off a PR that does not touch its inputs, so the ordinary
-    # job stays under a minute; the bound is for the runs that do.
-    timeout-minutes: 45
+    # 75: the job carries TWO whole-suite-per-row mutation harnesses — session-context (#431) and
+    # review-loop (#491) — on a runner whose pool adb_pool_size caps at 4 cores. With both forced
+    # on it took 36m37s and 30m53s on PR #504, too close to the 45 it had. The mutation gate keeps
+    # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
+    # bound is for the runs that do.
+    timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1030,6 +1030,15 @@ jobs:
       # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
       - name: ...and its guards must be able to fail — each mutation observed RED (#431)
         run: bash scripts/mutation-gate.sh run session-context-mutation -- bash scripts/check-session-context.sh --mutation
+
+      # The local convergence loop (#491) runs between the review and the push of the same
+      # /implement-issue run this job's hooks enforce, so it rides this job rather than adding one.
+      - name: Local convergence loop — budget, tree binding, carry and block (#491)
+        run: bash scripts/check-review-loop.sh
+
+      # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
+      - name: ...and its refusals must be able to fail — each mutation observed RED (#491)
+        run: bash scripts/mutation-gate.sh run review-loop-mutation -- bash scripts/check-review-loop.sh --mutation
 
   install-migration:
     name: install-migration
@@ -1529,11 +1538,11 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less FOUR steps. shellcheck is installed above for a reason: selfcheck
+      # The offline suite, less FIVE steps. shellcheck is installed above for a reason: selfcheck
       # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
       # false in precisely the silent way this repo keeps writing guards against.
       #
-      # These four mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
+      # These five mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
       # jobs run each on every relevant PR, and check-fact-drift.sh pins those invocations because
       # they are each harness's ONLY per-PR execution after this skip. Their non-mutation halves
       # still run here. Measurements and rationale: D87, D101.
@@ -1548,7 +1557,7 @@ jobs:
       - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent

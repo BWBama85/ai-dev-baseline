@@ -1549,11 +1549,19 @@ fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mut
 # settings-fragment harness's only per-PR execution after the skip.
 fact settings-fragment-mutation-wired 'regex:^[^#]*check-settings-fragment\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# The fifth step `selfcheck-macos` skips by name (#491): the ubuntu `implement-gate` job is the
+# review-loop harness's only per-PR execution after the skip.
+fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
 # Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
 # copy of a whole-suite-per-mutation harness to the 45-minute job.
 fact macos-logic-mutations-skipped \
-  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation' -- \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation' -- \
   .github/workflows/ci.yml
+# …and every document that spells the list out says the same five names, so a contributor reading
+# any of them learns which harnesses the macOS leg does not run.
+fact macos-skip-list-documented 'fixed:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation' -- \
+  CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
 # touches the step's declared inputs and prints a stated SKIP otherwise. The positive pin says at

@@ -57,6 +57,8 @@ Rung: <independent <agent> | same-model (not independent) | deferred to <logins>
 | # | Finding | Severity | Disposition |
 |---|---|---|---|
 | … | … | … | … |
+<the line from bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report .codex/state, verbatim — e.g.
+`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`>
 
 ## Docs consulted
 <the rendered block from bash "$HOME/.codex/scripts/lib/docs-lib.sh" report --state .codex/state>

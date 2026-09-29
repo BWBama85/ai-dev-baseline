@@ -81,21 +81,37 @@ WFDIR="${1:-base/workflows}"
 #   argv             — positional parameters
 ZSH_SPECIALS='path fpath cdpath manpath module_path argv'
 
+# uncomment(s) — `s` up to its first `#` that starts a word OUTSIDE single or double quotes (a
+# backslash escapes the next character outside single quotes). Shared by both scanners.
+_WS_UNCOMMENT='
+function uncomment(s,    i, c, q, prev, out) {
+  q = ""; prev = " "; out = ""
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (q == "") {
+      if (c == "\\") { out = out c substr(s, i + 1, 1); i++; prev = "x"; continue }
+      if (c == "#" && prev ~ /[[:space:]]/) break
+      if (c == "\047" || c == "\"") q = c
+    } else if (q == "\"" && c == "\\") { out = out c substr(s, i + 1, 1); i++; prev = "x"; continue }
+    else if (c == q) q = ""
+    out = out c; prev = c
+  }
+  return out
+}'
+
 # scan_one <file> — print "<file>:<line>: <raw line>" for every violation. All matching happens
 # here, on the raw line, so `^` genuinely means start-of-line.
 scan_one() {
-  awk -v SPECIALS="$ZSH_SPECIALS" '
+  awk -v SPECIALS="$ZSH_SPECIALS" "$_WS_UNCOMMENT"'
     BEGIN { nsp = split(SPECIALS, sp, " ") }
     /^```bash$/ { inb = 1; next }
     /^```$/     { inb = 0; next }
     !inb { next }
     {
       raw = $0
-      line = raw
-      # Strip a trailing/whole-line comment so a block may document the trap it avoids. A `#`
-      # inside a quoted string is stripped too; that can only cause a MISSED report on that one
-      # line, never a false one, and the alternative is a shell parser.
-      sub(/(^|[[:space:]])#.*$/, "", line)
+      # Strip a trailing/whole-line comment so a block may document the trap it avoids — only a `#`
+      # OUTSIDE quotes, so a quoted `#` cannot hide the rest of the line from the scan.
+      line = uncomment(raw)
       if (line ~ /^[[:space:]]*$/) next
       # A boundary is start-of-line or a shell separator. Anchoring on the raw line is the whole
       # point — see the header note about the line-number prefix that used to defeat it.
@@ -113,7 +129,26 @@ scan_one() {
   ' "$1"
 }
 
+# scan_mod <file> — every unbraced `$NAME:<letter>` in a fenced bash block. zsh reads `:<letter>`
+# after an unbraced parameter as a HISTORY MODIFIER (`:r` strips an extension, `:h` a path component),
+# so `"$SHA:refs/heads/$B"` pushes a mangled refspec there while bash passes it through. Braced
+# `${SHA}:refs` is the portable spelling. The lowercase modifiers plus `:A` and `:P` (absolute and
+# real path) are matched; the other uppercase letters are left out so a quoted GraphQL `$id:ID` or
+# `$body:String` is not flagged.
+scan_mod() {
+  awk "$_WS_UNCOMMENT"'
+    /^```bash$/ { inb = 1; next }
+    /^```$/     { inb = 0; next }
+    !inb { next }
+    {
+      raw = $0; line = uncomment(raw)
+      if (line ~ /\$[A-Za-z_][A-Za-z0-9_]*:[htrelquacsAP]/) printf "%s:%d: %s\n", FILENAME, FNR, raw
+    }
+  ' "$1"
+}
+
 found=0
+modfound=0
 # Workflow sources AND their supporting files (#433): a fenced block in a reference file is
 # pasted into the same shells, so it gets the same lint.
 for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
@@ -121,6 +156,13 @@ for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
   # Only the ROOT README is reserved and skipped — build.sh renders a supporting
   # <name>/README.md like any sibling, so its fenced blocks get the same lint.
   [ "$wf" = "$WFDIR/README.md" ] && continue
+  mhits="${ scan_mod "$wf"; }"
+  if [ -n "$mhits" ]; then
+    modfound=1
+    check_note "$wf expands an unbraced \$NAME: followed by a zsh modifier letter inside a fenced block:"
+    printf '%s\n' "$mhits" | sed 's/^/    /' >&2
+    check_fail
+  fi
   hits="${ scan_one "$wf"; }"
   [ -n "$hits" ] || continue
   found=1
@@ -128,6 +170,9 @@ for wf in "$WFDIR"/*.md "$WFDIR"/*/*.md; do
   printf '%s\n' "$hits" | sed 's/^/    /' >&2
   check_fail
 done
+if [ "$modfound" -eq 1 ]; then
+  check_note "zsh applies a history modifier there (\"\$SHA:refs\" becomes \"\${SHA:r}efs\"). Brace it: \"\${SHA}:refs\"."
+fi
 
 if [ "$found" -eq 1 ]; then
   check_note "zsh binds these names to shell state ('path' IS \$PATH), so assigning one empties or"
@@ -177,6 +222,26 @@ if [ "$WFDIR" = "base/workflows" ]; then
         check_fail
       fi
     done
+    # The modifier rule, both ways.
+    k=0
+    for mbad in 'git push origin "$PUSH_SHA:refs/heads/$PR_BRANCH"' 'x="$dir:h"' 'echo $f:t' 'cd "$d:A"' 'ls "$p:P"' \
+                'echo "tag #$SHA:refs/heads/x"' "echo 'a # b' \$f:t"; do
+      k=$((k + 1))
+      printf -- '---\nname: m%s\n---\n```bash\n%s\n```\n' "$k" "$mbad" > "$st/m$k.md"
+      if [ -z "${ scan_mod "$st/m$k.md"; }" ]; then
+        check_note "self-test: the modifier rule FAILED to catch [$mbad]"
+        check_fail
+      fi
+    done
+    for mgood in 'git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}"' 'echo "${x:-default}"' 'echo ok # "$SHA:refs"' \
+                 "gh api graphql -f query='mutation(\$id:ID!,\$body:String!){ x }'" 'echo "$x:-y"'; do
+      k=$((k + 1))
+      printf -- '---\nname: m%s\n---\n```bash\n%s\n```\n' "$k" "$mgood" > "$st/m$k.md"
+      if [ -n "${ scan_mod "$st/m$k.md"; }" ]; then
+        check_note "self-test: modifier-rule FALSE POSITIVE on [$mgood]"
+        check_fail
+      fi
+    done
     # Text outside a fenced bash block is prose and must never be scanned.
     printf -- '---\nname: h\n---\nProse mentioning path=/tmp inline.\n\n```text\npath=/tmp\n```\n' > "$st/h.md"
     if [ -n "${ scan_one "$st/h.md"; }" ]; then
@@ -187,4 +252,4 @@ if [ "$WFDIR" = "base/workflows" ]; then
   fi
 fi
 
-check_result "no fenced workflow block assigns a zsh-special variable name (guard self-verified)"
+check_result "no fenced workflow block assigns a zsh-special variable name or expands an unbraced \$NAME:<modifier> (guard self-verified)"

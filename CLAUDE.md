@@ -131,12 +131,12 @@ those. The rules below are specific to this repo's code.
    guarantee — GitHub documents that a `schedule` may be delayed or dropped), one matrix job per
    harness; `check-mutation-gate.sh` pins its matrix to the registry.
 
-   **CI runs four steps fewer on the macOS leg** (#339; the second since PR #429, the third since
-   PR #443, the fourth since PR #463). `selfcheck-macos` passes
-   `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation`:
+   **CI runs five steps fewer on the macOS leg** (#339; the second since PR #429, the third since
+   PR #443, the fourth since PR #463, the fifth since PR #504). `selfcheck-macos` passes
+   `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation`:
    each answers a logic question, not a platform one, and an ubuntu job runs it on every relevant
    PR — `adopt` for the first, `pattern-ledger` for the second, `implement-gate` for the third,
-   `install-guard` for the fourth — where `check-fact-drift.sh` pins all four invocations, because
+   `install-guard` for the fourth, `implement-gate` again for the fifth — where `check-fact-drift.sh` pins all five invocations, because
    after the skip those jobs are each step's **only** per-PR execution. Measured on run 32451790033
    (green, `main`, 2026-08-21): the `adopt` step was 680s of a 1086s job that was the run's critical
    path; on run 32889697083 (2026-08-25) the ledger harness was 1932s of a 39.5-minute macOS job,
@@ -147,7 +147,10 @@ those. The rules below are specific to this repo's code.
    cancelled in both jobs that ran it — at `install-guard`'s 15-minute ceiling and at the macOS
    leg's 45 — having last completed in CI at 601s on 2026-09-05. On the next run (34652254652) the
    macOS leg passed in 31m3s with the skip, while the same step ran **2640s** in `install-guard` and
-   was cancelled at the 45 it had just been raised to, so that job now allows **240** (D101; raised from 120 to 180 on 2026-09-15, when run 34892155444 was cancelled at 120, and to 240 on 2026-09-16, when 230 rows took 160 minutes). A plain local `bash scripts/selfcheck.sh` still *selects* the whole
+   was cancelled at the 45 it had just been raised to, so that job now allows **240** (D101; raised from 120 to 180 on 2026-09-15, when run 34892155444 was cancelled at 120, and to 240 on 2026-09-16, when 230 rows took 160 minutes). On run 36396924698 (2026-09-28) the macOS
+   leg was cancelled at its 45-minute ceiling with `review-loop-mutation` its slowest step at 1556s,
+   while `implement-gate`, which carries it beside `session-context-mutation`, finished in 36m37s — the
+   job's ceiling is now 75 minutes for that reason. A plain local `bash scripts/selfcheck.sh` still *selects* the whole
    registry — the `--skip`s are a CI-invocation choice, never a new default — and then applies the
    gate above to it.
 

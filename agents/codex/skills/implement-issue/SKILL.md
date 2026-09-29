@@ -453,6 +453,90 @@ Per finding (self-review AND each reviewer): CRITICAL/HIGH → fix; MEDIUM → f
 out of scope (then defer — and if the deferral clears the bar, **file it now**); LOW → fix if
 cheap else document; disagree → document why. Re-run gates; commit; `phase=triaged`.
 
+**Then the local convergence loop (#491): the fix code gets reviewed before it is pushed.** Step 8
+reviewed the diff; nothing step 9 wrote has been read by anyone. Take one bounded pass at a time with
+the reviewer the rung names, fixing between passes, until a pass returns zero REQUIRED findings on
+the tree that will ship, or the budget (`[reviewers] local_passes`, default 3, `0` disables) runs
+out. The library owns the counter, the verdict and the record — never count passes yourself.
+
+```bash
+RUNG="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung codex)"
+REVIEW_TOKEN="$(printf '%s\n' "$RUNG" | awk '{print $2}')"
+EFFORT="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" effort review)"; ERC=$?
+case "$ERC" in 0) : ;; 1) EFFORT="" ;; *) echo "STOP: [roles.effort] review is invalid — fix agents.toml"; exit 1 ;; esac
+case "$RUNG" in
+  independent*|same-model*)
+    if [ "$REVIEW_TOKEN" = claude ] && [ "codex" = claude ]; then
+      bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop begin .codex/state "$REVIEW_TOKEN"   # then the native pass, below
+    else
+      bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass ${EFFORT:+--effort "$EFFORT"} .codex/state "$REVIEW_TOKEN"
+    fi ;;
+  deferred*|none*) bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --unavailable "${RUNG%% *}" .codex/state ;;
+  *)               echo "STOP: the review rung is unknown (${RUNG:-none}) — fix agents.toml"; exit 1 ;;
+esac
+```
+
+A Claude slot with Claude driving takes each pass natively, as step 8 does: after `begin`, run
+`dispatch-review --prompt-only`, the subagent — under step 8's deadline, whose expiry is a failed
+pass rather than an open-ended wait — and `publish-review`, then record the pass:
+
+```bash
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop pass --published .codex/state "$REVIEW_TOKEN"
+```
+
+`begin` binds the
+tree before the subagent reads it and moves the previous `review.md` aside, so a reply is only
+ever recorded for the pass it was published in; if the subagent fails, go straight to
+`pass --published` and it records the failure. The rung is step 8's ladder, so a reviewer step 8
+could not run is `--unavailable` here too.
+
+| rc | Meaning | Do |
+|---|---|---|
+| `0` | converged: zero REQUIRED on this tree | the report, below |
+| `34` | REQUIRED findings, budget left | `read-artifact review`, triage as above, gates, commit — then pass again |
+| `36` | the pass failed (timeout, 127, no verdict, the tree moved) | pass again; a failed pass is never clean |
+| `33` | the last budgeted pass found REQUIRED findings | edit nothing more; `carry` each of them, then the report |
+| `35` | disabled, or no usable reviewer | the report says so — but after a pass with REQUIRED findings the loop is exhausted, so carry them first |
+| `37` / `38` | the last budgeted pass failed / the budget is already spent | the report (on `38`, carry the last pass's REQUIRED findings first) |
+| `27` | the worktree is not clean | commit it — a pass reviews the tree a push ships, which is HEAD — then pass again |
+| `17` | `--published` with no `begin` for this token | run `begin` first |
+| `16` / `18` / `20` | HEAD moved off its base / the record or budget does not parse / unreadable | fix and re-run — never read as clean |
+
+What counts: **loop passes only** (step 8's review is not one), **one reviewer** (the rung's), and
+convergence is its latest pass returning `required=0` on the **current, committed** tree. Any change
+to that tree after the pass — an OPTIONAL fix included — invalidates it, so make those edits before
+the pass you expect to converge. (The binding is the tree: an empty commit ships what was reviewed.) Disabling the loop or losing the reviewer after a pass exhausts it; it never
+excuses what the passes found. On `33`, carry every REQUIRED finding of the final pass with the severity this step would
+give it (the verdict trailer carries counts, not severities):
+
+```bash
+# The finding arrives on stdin through a QUOTED heredoc, so reviewer text with an apostrophe or a `$`
+# passes through untouched; the site is quoted too, because a path may hold a space.
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop carry --severity <critical|high|medium|low> --site "<path[:line] or ->" --finding - .codex/state <<'FINDING'
+<one line, in your own words>
+FINDING
+```
+
+A second finding identical to one already carried (same site, severity and line) is carried with
+`--occurrence 2`, and so on; repeating an identical row is the retry path and records nothing.
+
+Then the report, which is the loop's verdict and its one line. Paste the line into the PR body and
+the close-out **verbatim**; it is rendered from the record, never written by hand:
+
+```bash
+bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report .codex/state
+case "$?" in
+  0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable — proceed
+  34) echo "the loop is not finished — take another pass"; exit 1 ;;
+  27) echo "the worktree is not clean — commit it, then take another pass"; exit 1 ;;
+  39) echo "BLOCKED — write the blocked marker with the report's line as its reason"; exit 1 ;;
+  *)  echo "no loop verdict (rc $?) — 11 means it never ran; 18/20, fix the record"; exit 1 ;;
+esac
+```
+
+`39` blocks on a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final
+pass, or a tree change after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
+
 **Then re-sweep the promoted checklist over the FINAL diff and record it** — the mechanism behind
 `self-review.md`'s "name what you swept" (#490). After the last commit, so the digest names the
 tree that ships:
@@ -494,7 +578,8 @@ Write the PR body to a file first — **outside the reviewed tree** (`"${TMPDIR:
 checkout): an untracked file inside it changes the tree digest step 9 recorded, and step 11's
 report would then read every row as stale on a run that edited no code. Content: summary; gap
 findings + how addressed; the survey line; self-review + reviewer findings + dispositions (table);
-the **Docs consulted** block; the **Learned-checklist sweep** block; test plan (skeleton:
+the **local review** line (`review-loop report`, verbatim); the **Docs consulted** block; the
+**Learned-checklist sweep** block; test plan (skeleton:
 `examples.md`). Render both blocks — never from memory. The sweep block goes in the body *and* the
 close-out: the record it comes from is run state that /cleanup sweeps, so the PR body is the only
 place it survives for a later reader.
@@ -531,7 +616,9 @@ silently (`git-and-prs.md`). Then one call pushes, opens, **proves**, and guards
 bash "$HOME/.codex/scripts/lib/implement-lib.sh" open-pr .codex/state --title "<semantic title>" --body-file <file> --closes <n,m>
 ```
 
-Its stdout lines are the record: push → `phase=pushed` → `gh pr create` → `prUrl` +
+It first re-derives the local convergence loop's verdict from its record and refuses (39) a tip the
+loop does not certify — a tree committed after step 9's report included — so the pushed commit is
+the reviewed one. Its stdout lines are the record: push → `phase=pushed` → `gh pr create` → `prUrl` +
 `phase=pr_opened`; then it **proves the closing keywords registered** — GitHub's own computed
 link set (`closingIssuesReferences`, repo-scoped, retried while it settles) compared to
 `--closes`; rc 23 = the keywords did not take (a code span, a typo, a cross-repo qualifier): fix
@@ -566,6 +653,8 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   server. Code 11 = go back and state it.
 - **Survey disposition** (#435): ran (agent, words) / skipped (unassigned) / failed rc=N,
   continued.
+- **Local review loop** (#491): render `bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report .codex/state` —
+  converged, exhausted with what was carried, disabled, or unavailable. Never write the line by hand.
 - **Learned-checklist sweep** (#421, #490): render it — never write the sentence by hand, which is
   the prose this command replaced:
 
