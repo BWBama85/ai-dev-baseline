@@ -517,8 +517,9 @@ render_procedure() {
     block_filter "$agent" "$f" procedure
   } > "$tmp"
   # The root doc points every agent here, so a procedure an `adb:except` empties for one agent
-  # would point it at nothing.
-  if ! sed '1,/^# .* — procedure$/d' "$tmp" | grep -q '[^[:space:]]'; then
+  # would point it at nothing. One reader of the whole file, never a pipeline: a consumer that
+  # stops at its first match can SIGPIPE the writer, which pipefail reads as "empty".
+  if ! awk 'seen && /[^[:space:]]/ { found = 1 } /^# .* — procedure$/ { seen = 1 } END { exit !found }' "$tmp"; then
     echo "build.sh: base/practices/$name — its procedure renders EMPTY for $agent (an \`adb:except\` covers all of it); a procedure must reach every agent its pointer names" >&2
     exit 3
   fi
