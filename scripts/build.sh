@@ -738,10 +738,15 @@ render_agent_skill() {
   # number), holds no `: ` or trailing `:` (a mapping), no whitespace-then-`#` (a comment that cuts
   # the value short), and is not a bare null or boolean keyword — so its text IS the loaded value,
   # which is what lets scripts/render-size.sh count the line as written.
+  # The WHOLE frontmatter is scanned: a second `description:` anywhere, or an indented line after
+  # it — blank lines between included, since YAML folds across them — is a different value.
   descprob="$(awk '
     NR==1 { next }
     $0 == "---" { exit }
-    seen { if ($0 ~ /^[[:space:]]/) print "a multi-line continuation"; exit }
+    cont && /^[[:space:]]*$/ { next }
+    cont && /^[[:space:]]/   { print "a multi-line continuation"; exit }
+    { cont = 0 }
+    seen && /^description:/  { print "a second description line"; exit }
     /^description:[[:space:]]*$/                     { print "empty"; exit }
     /^description:[[:space:]]*[>|][+-]?[[:space:]]*$/ { print "a folded/block scalar"; exit }
     /^description:/ {
@@ -750,7 +755,7 @@ render_agent_skill() {
       if (v ~ /:([[:space:]]|$)/)     { print "a colon YAML reads as a mapping"; exit }
       if (v ~ /[[:space:]]#/)         { print "a space-hash YAML reads as a comment"; exit }
       if (tolower(v) ~ /^(null|true|false|yes|no|on|off|y|n)$/) { print "a bare YAML keyword"; exit }
-      seen = 1
+      seen = 1; cont = 1
     }
   ' "$src")"
   if [ -n "$descprob" ]; then

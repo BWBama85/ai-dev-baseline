@@ -197,13 +197,15 @@ describe() {
     { sub(/\r$/, "") }
     NR == 1 { if ($0 != "---") { r = "no frontmatter"; exit }; next }
     $0 == "---" { closed = 1; exit }
-    after { after = 0; if ($0 ~ /^[[:space:]]/) { r = "a multi-line continuation"; exit } }
+    cont && /^[[:space:]]*$/ { next }
+    cont && /^[[:space:]]/ { r = "a multi-line continuation"; exit }
+    { cont = 0 }
     /^description:/ {
       if (seen) { r = "a second description line"; exit }
       v = $0; sub(/^description:[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
       if (v == "") { r = "an empty description"; exit }
       if (v ~ /^[>|][+-]?$/) { r = "a folded/block scalar"; exit }
-      seen = 1; after = 1
+      seen = 1; cont = 1
     }
     END {
       if (r == "" && NR == 0) r = "no frontmatter"

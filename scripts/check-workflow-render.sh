@@ -246,19 +246,21 @@ fi
 # Each value is one line, so only the plain-text rule can refuse it — and each is a shape a YAML
 # loader reads as something else (null, a boolean, a mapping, a cut-short string, a flow sequence)
 # or cannot parse. The control proves the fixture builds when the value is plain.
-# desc_neg <label> <value> <reason> — build a fixture whose description is <value>.
-desc_neg() {
+# desc_fm <label> <frontmatter lines after name, printf %b> <reason, or empty for a build that passes>
+desc_fm() {
   local d="$WORK/desc-$1" src="$WORK/desc-$1-src.md"
-  printf -- '---\nname: fixture\ndescription: %s\nuser-invocable: true\n---\n\n# /fixture\nbody ok\n' "$2" > "$src"
+  printf -- '---\nname: fixture\n%b\n---\n\n# /fixture\nbody ok\n' "$2" > "$src"
   render_fixture "$d" fixture "$src"; rc=$?
   if [ -z "$3" ]; then
-    yes "$rc" "plain-text ($1): [$2] builds"
+    yes "$rc" "plain-text ($1): builds"
     return
   fi
-  no "$rc" "plain-text ($1): [$2] fails the build"
+  no "$rc" "plain-text ($1): fails the build"
   has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
   if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
 }
+# desc_neg <label> <value> <reason> — the same, for a frontmatter whose description is <value>.
+desc_neg() { desc_fm "$1" "description: $2\nuser-invocable: true" "$3"; }
 desc_neg control 'Use when testing, with parens (and a hash#tag), a:b and --flags.' ''
 desc_neg quoted '"quoted text"' 'a value that does not start with a letter'
 desc_neg flow '[not a list' 'a value that does not start with a letter'
@@ -270,6 +272,11 @@ desc_neg cut 'Fixes it #435 and more' 'a space-hash YAML reads as a comment'
 desc_neg null 'null' 'a bare YAML keyword'
 desc_neg bool 'True' 'a bare YAML keyword'
 desc_neg yes 'yes' 'a bare YAML keyword'
+# The WHOLE frontmatter is the scope, not the line after the description: YAML folds an indented
+# line in across a blank one, and a later duplicate key is a second value.
+desc_fm blank-then-key 'description: Fine\n\nuser-invocable: true' ''
+desc_fm continued-blank 'description: First line\n\n  folded in after a blank line\nuser-invocable: true' 'a multi-line continuation'
+desc_fm twice-later 'description: One\nuser-invocable: true\ndescription: Two' 'a second description line'
 
 # --- 3c: the EMPTY-SLUG refusal, OBSERVED FAILING (#183) --------------------------------------
 # A guard is not done until it has been seen going red on an input it is supposed to reject, and

@@ -176,8 +176,11 @@ hasnt "$RS_OUT" "descriptions" "green: the descriptions figure is never a row â€
 # --- descriptions (#436): per agent, and fail-closed on a render that lost one -------------------
 fx="$(mk_fixture desc)" || bad "fixture: could not build the descriptions tree"
 # Per agent, not one agent's figure printed three times: gemini's beta says twelve words (62 bytes).
+# claude's beta is followed by a blank line and a key, which ends the value rather than continuing it.
 printf -- '---\nname: beta\ndescription: one two three four five six seven eight nine ten eleven twelve\n---\n\nbody\n' \
   > "$fx/agents/gemini/skills/beta/SKILL.md"
+printf -- '---\nname: beta\ndescription: use beta in a fixture\n\nuser-invocable: true\n---\n\nbody\n' \
+  > "$fx/agents/claude/skills/beta/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "desc: a longer description is a report, never a failure"
 has "$RS_ERR" "claude 2 skill(s) 10 words approx_tokens 11, codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 17 words approx_tokens 21" \
@@ -198,6 +201,8 @@ undesc_case blank "an empty description" '---\nname: beta\ndescription:   \n---\
 undesc_case folded "a folded/block scalar" '---\nname: beta\ndescription: >-\n  folded words\n---\n\nbody\n'
 undesc_case continued "a multi-line continuation" '---\nname: beta\ndescription: first line\n  and a second\n---\n\nbody\n'
 undesc_case twice "a second description line" '---\nname: beta\ndescription: one\ndescription: two\n---\n\nbody\n'
+undesc_case twice-later "a second description line" '---\nname: beta\ndescription: one\nuser-invocable: true\ndescription: two\n---\n\nbody\n'
+undesc_case continued-blank "a multi-line continuation" '---\nname: beta\ndescription: first line\n\n  folded in after a blank line\n---\n\nbody\n'
 undesc_case no-fm "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
 undesc_case unclosed "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
 fx="$(mk_fixture undesc-witness)" || bad "fixture: could not build the undescribed-witness tree"
@@ -207,7 +212,7 @@ assert_undescribed
 
 # ------- MUTATIONS: a figure that counts the key, and a reader that passes a missing one ---------
 fx="$(mk_fixture mut-desc-key)" || bad "fixture: could not build the description-key mutation tree"
-check_mutate_literal "$fx/scripts/render-size.sh" 'seen = 1; after = 1' 'v = $0; seen = 1; after = 1'; mrc=$?
+check_mutate_literal "$fx/scripts/render-size.sh" 'seen = 1; cont = 1' 'v = $0; seen = 1; cont = 1'; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_desc_figure 2>&1 )"
      has "$out" "mutant-rc=0" "mut-desc-key: the mutated command still runs"
