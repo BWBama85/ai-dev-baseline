@@ -88,26 +88,37 @@ PI_HOOKS_EXCLUDED="session-currency.sh"
 # not, so the heaviest chain Codex loads is measured and the operator told, with the line that fixes it.
 PI_CODEX_DOC_DEFAULT_MAX=32768
 
+# How long the Codex budget scan may walk the project before it gives up and says so.
+PI_CODEX_SCAN_SECS="${ADB_PINNED_CODEX_SCAN_SECS:-30}"
+
 # _pi_codex_doc_load <project-root> — print `<bytes><TAB><dir>` for the heaviest chain of project docs
 # Codex reads: each directory's doc from the root down to the working directory (agents_md.rs), taken
 # over every directory that carries one, so a nested AGENTS.md counts with the root's. A directory's
 # doc is its AGENTS.override.md when present, else its AGENTS.md — the order Codex probes them in.
-# Found on the filesystem as Codex finds them, ignored files included; names Codex reads through
-# `project_doc_fallback_filenames` in the operator's config are not counted. Non-zero when the tree
-# cannot be walked.
+# Found on the filesystem as Codex finds them: ignored files and symlinked docs count. Not counted:
+# names from the operator's `project_doc_fallback_filenames`, and docs reachable only through a
+# symlinked directory. Returns 3 when the walk outlives PI_CODEX_SCAN_SECS, 1 when it cannot run.
 _pi_codex_doc_load() {
-  local p="$1" f d best=0 bestdir=. sum anc
+  local p="$1" f d best=0 bestdir=. sum anc list wrc
   local -A doc=()
+  list="$(mktemp "${TMPDIR:-/tmp}/adb-codex-docs.XXXXXX")" || return 1
+  adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 find "$p" -name .git -prune -o \
+    \( -name AGENTS.md -o -name AGENTS.override.md \) \( -type f -o -type l \) -print0 > "$list"; wrc=$?
+  case "$wrc" in
+    0)   : ;;
+    124) rm -f "$list"; return 3 ;;
+    *)   rm -f "$list"; return 1 ;;
+  esac
   while IFS= read -r -d '' f; do
+    [ -f "$f" ] || continue   # a link is read through; a dangling one is nothing Codex can read
     f="${f#"$p"/}"
     d="${f%/*}"; [ "$d" = "$f" ] && d=.
     case "$f" in
       AGENTS.override.md|*/AGENTS.override.md) doc["$d"]="$f" ;;
       *) [ -n "${doc[$d]+x}" ] || doc["$d"]="$f" ;;
     esac
-  done < <(find "$p" -name .git -prune -o \( -name AGENTS.md -o -name AGENTS.override.md \) -type f -print0)
-  # The walk's own status: a directory find could not read leaves the chain unmeasured, not small.
-  wait "$!" || return 1
+  done < "$list"
+  rm -f "$list"
   for d in "${!doc[@]}"; do
     sum=0; anc="$d"
     while :; do
@@ -1476,17 +1487,21 @@ EOF
   }
 
   # Codex reads only the root AGENTS.md, so its practices are spliced there as a delimited region.
-  local created bytes load deep where
+  local created bytes load lrc deep where
   for agent in "${agents[@]}"; do
     [ "$agent" = codex ] || continue
     _pi_splice_block "$p/AGENTS.md" "$p/.codex/$PI_NS/AGENTS.practices.md" \
       || { _pi_err "install: could not splice the practices into AGENTS.md"; rm -rf "$work"; trap - EXIT; return 14; }
     _pi_say "  block  managed region written into AGENTS.md"
     # What does not fit is never read, so it is said out loud with the fix, sized to what Codex loads.
-    if ! load="$(_pi_codex_doc_load "$p")"; then
-      _pi_say "  NOTE   could not list this project's AGENTS.md files — Codex's project_doc_max_bytes budget was not checked"
-      continue
-    fi
+    load="$(_pi_codex_doc_load "$p")"; lrc=$?
+    case "$lrc" in
+      0) : ;;
+      3) _pi_say "  NOTE   the project tree could not be walked within ${PI_CODEX_SCAN_SECS}s — Codex's project_doc_max_bytes budget was not checked"
+         continue ;;
+      *) _pi_say "  NOTE   could not list this project's AGENTS.md files — Codex's project_doc_max_bytes budget was not checked"
+         continue ;;
+    esac
     bytes="${load%%$'\t'*}"; deep="${load#*$'\t'}"
     where="AGENTS.md is now"
     [ "$deep" = . ] || where="the AGENTS.md chain down to $deep/ is"

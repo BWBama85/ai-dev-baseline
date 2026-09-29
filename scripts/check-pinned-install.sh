@@ -970,6 +970,23 @@ printf 'café/\n' > "$PCI/.gitignore"
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Ignored prose Codex still reads when it runs in this directory, long enough." }' > "$PCI/café/AGENTS.md"
 out="$(bash "$PI" install --project "$PCI" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to café/ is" "budget(ignored): an ignored, non-ASCII nested doc is still measured"
+# A symlinked doc is read through, as Codex reads it.
+PCS="$(new_project codexsymlink)"
+mkdir -p "$PCS/docs" "$PCS/svc"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Shared prose one service links in as its own AGENTS.md, long enough to count." }' > "$PCS/docs/shared.md"
+ln -s ../docs/shared.md "$PCS/svc/AGENTS.md"
+out="$(bash "$PI" install --project "$PCS" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(symlink): a symlinked nested doc is measured through its link"
+# The walk is bounded: one that outlives its bound says the budget went unchecked, and the install
+# still completes. The stub slows only the doc scan; every other find runs the real one.
+PCT="$(new_project codexslow)"
+slowbin="$work/slowbin"; mkdir -p "$slowbin"
+realfind="$(command -v find)"
+printf '#!/usr/bin/env bash\ncase "$*" in *AGENTS.override.md*) sleep 8 ;; esac\nexec %s "$@"\n' "$realfind" > "$slowbin/find"
+chmod +x "$slowbin/find"
+out="$(PATH="$slowbin:$PATH" ADB_PINNED_CODEX_SCAN_SECS=1 bash "$PI" install --project "$PCT" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "budget(bounded): an install whose doc scan outlives its bound still completes"
+has "$out" "could not be walked within 1s" "budget(bounded): …and says the budget was not checked"
 
 # T5. A CODEX-ONLY PIN must be told a command that exists.
 PCO="$(new_project codexonly)"

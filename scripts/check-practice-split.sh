@@ -396,6 +396,12 @@ CODEX-ONLY
 <!-- adb:end -->
 <!-- adb:end -->
 ' 'renders EMPTY for claude'
+  refused paths-bracket '# p
+<!-- adb:paths photos[2024/** -->
+<!-- adb:procedure -->
+X
+<!-- adb:end -->
+' 'carries a bracket expression'
   refused paths-in-workflow '# p
 ' 'is a practice marker' '
 <!-- adb:paths *.sh -->
