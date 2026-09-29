@@ -126,9 +126,10 @@ verify_tree() {
         line="${sections[-1]}"
         sections=("${sections[@]:0:${#sections[@]}-2}")
       fi
-      if [ "${#sections[@]}" -eq 0 ]; then body=""; else body="$(printf '%s\n' "${sections[@]}")"; fi
-      want="$(cat "$scratch/rule")"
-      eq "$body" "$want" "$agent/$name: the root-doc section is exactly the practice's rule lines"
+      # Every comparison captures with a sentinel: `$(…)` strips trailing newlines, which would make
+      # an added or dropped final blank line invisible.
+      body="$(if [ "${#sections[@]}" -gt 0 ]; then printf '%s\n' "${sections[@]}"; fi; printf x)"
+      eq "$body" "$(cat "$scratch/rule"; printf x)" "$agent/$name: the root-doc section is exactly the practice's rule lines"
 
       # Where the procedure must live for this agent, and where it must not.
       dir="reference"; other="rules"
@@ -148,26 +149,36 @@ verify_tree() {
         bad "$agent/$name: no procedure file at agents/$agent/$dir/$name"
         continue
       fi
-      # The body is everything after the title line; the frontmatter is exactly the declared scope.
-      eq "$(grep -Fxc -- "# $(sed -n '1s/^# //p' "$f") — procedure" "$r/agents/$agent/$dir/$name")" "1" \
-        "$agent/$name: the procedure file carries its practice's title exactly once"
-      body="$(sed -n '/^# .* — procedure$/,$p' "$r/agents/$agent/$dir/$name" | sed '1d')"
-      eq "$body" "$(cat "$scratch/proc")" "$agent/$name: the procedure file's body is exactly the practice's procedure lines"
-      if [ "$dir" = rules ]; then
-        want="$(printf -- '---\npaths:\n'; paths_of "$f" | while IFS= read -r g; do printf '  - "%s"\n' "$g"; done; printf -- '---')"
-        eq "$(sed -n '1,/^---$/p' "$r/agents/$agent/$dir/$name")" \
-          "$want" "$agent/$name: the rule's frontmatter is exactly the practice's declared paths"
-      else
-        [ "$(head -n1 "$r/agents/$agent/$dir/$name")" != "---" ] && ok \
-          || bad "$agent/$name: a reference file carries frontmatter — only a path-scoped rule does"
-      fi
+      # The WHOLE file, byte for byte: the scope frontmatter exactly when it is a path-scoped rule,
+      # the generated banner, the practice's title, then exactly the procedure lines.
+      want="$(
+        if [ "$dir" = rules ]; then
+          printf -- '---\npaths:\n'
+          paths_of "$f" | while IFS= read -r g; do printf '  - "%s"\n' "$g"; done
+          printf -- '---\n\n'
+        fi
+        printf '<!-- GENERATED FILE — do not edit by hand.\n'
+        printf '     Source: base/practices/%s · Regenerate: scripts/build.sh\n' "$name"
+        printf '     Edits here are overwritten on the next build. -->\n\n'
+        printf '# %s — procedure\n' "$(sed -n '1s/^# //p' "$f")"
+        cat "$scratch/proc"
+        printf x)"
+      eq "$(cat "$r/agents/$agent/$dir/$name"; printf x)" "$want" \
+        "$agent/$name: the procedure file is exactly its header, its title and the practice's procedure lines"
 
-      # The pointer names the installed path the manifest links.
+      # The pointer is exactly the line naming the installed path the manifest links.
       if [ -z "$line" ]; then bad "$agent/$name: the practice has a procedure, but its root-doc section ends in no pointer"; continue; fi
       ptrs=$((ptrs + 1))
       dest="$(manifest_dest "$r" "$agent" "$r/agents/$agent/$dir")" \
         || { bad "$agent/$name: the install manifest names no destination for agents/$agent/$dir"; continue; }
-      has "$line" "${POINTER_PREFIX}\`$dest/$name\`" "$agent/$name: the pointer names the installed path"
+      if [ "$dir" = rules ]; then
+        want=""
+        while IFS= read -r g; do want="${want:+$want or }\`$g\`"; done < <(paths_of "$f")
+        want="${POINTER_PREFIX}\`$dest/$name\` — loads on its own when you read a file matching $want; read it directly when this practice applies otherwise."
+      else
+        want="${POINTER_PREFIX}\`$dest/$name\` — read it when this practice applies."
+      fi
+      eq "$line" "$want" "$agent/$name: the pointer is exactly the line naming the installed path"
     done
 
     # Nothing in the generated trees that no practice produced.
@@ -233,19 +244,27 @@ if [ "$SELF_TEST" -eq 1 ]; then
   m_pointer()    { sed 's|~/\.codex/ai-dev-baseline/reference/|~/.codex/reference/|' "$1/agents/codex/AGENTS.md" > "$1/x" && mv "$1/x" "$1/agents/codex/AGENTS.md"; }
   m_no_paths()   { local f; f="$(ls "$1/agents/claude/rules" | head -n1)"; [ -n "$f" ] || return 1; sed '/^paths:$/,/^---$/d' "$1/agents/claude/rules/$f" > "$1/x" && mv "$1/x" "$1/agents/claude/rules/$f"; }
   m_rules_codex() { mkdir -p "$1/agents/codex/rules"; }
+  m_pointer_extra() { awk '/^\*\*Procedure:\*\* / && !x { $0 = $0 " Or `~/.codex/elsewhere/x.md`."; x = 1 } { print }' "$1/agents/codex/AGENTS.md" > "$1/x" && mv "$1/x" "$1/agents/codex/AGENTS.md"; }
+  m_trail_blank() { printf '\n' >> "$1/agents/codex/reference/$(first_ref "$1")"; }
+  m_prefix_text() { local p; p="$1/agents/codex/reference/$(first_ref "$1")"; { printf 'INJECTED BEFORE THE HEADER\n'; cat "$p"; } > "$p.x" && mv "$p.x" "$p"; }
+  m_rule_blank() { awk '/^\*\*Procedure:\*\* / && !x { print ""; x = 1 } { print }' "$1/agents/gemini/GEMINI.md" > "$1/x" && mv "$1/x" "$1/agents/gemini/GEMINI.md"; }
   m_source_edit() { local f; f="$(ls "$1/agents/codex/reference" | head -n1)"; printf '\nADDED-TO-SOURCE\n' >> "$1/base/practices/$f"; }
 
   # Control first: an unmutated copy must verify clean, or every row below proves nothing.
   d="$work/tree-control"; tree_copy "$d" || bad "control: could not copy the tree"
   before="$fail"; verify_tree "$d" > /dev/null; eq "$fail" "$before" "control: an unmutated copy of the tree verifies clean"
 
-  red drop-paragraph   m_drop_para     "body is exactly the practice's procedure lines"
+  red drop-paragraph   m_drop_para     "the procedure file is exactly its header"
   red dup-into-root    m_dup_into_root "section is exactly the practice's rule lines"
   red removed-proc     m_rm_proc       "no procedure file at"
   red orphan           m_orphan        "has no source practice"
   red rendered-twice   m_twice         "it must render exactly once"
-  red wrong-pointer    m_pointer       "the pointer names the installed path"
-  red lost-paths       m_no_paths      "frontmatter is exactly the practice's declared paths"
+  red wrong-pointer    m_pointer       "the pointer is exactly the line naming the installed path"
+  red pointer-extra    m_pointer_extra "the pointer is exactly the line naming the installed path"
+  red lost-paths       m_no_paths      "the procedure file is exactly its header"
+  red trailing-blank   m_trail_blank   "the procedure file is exactly its header"
+  red text-before-head m_prefix_text   "the procedure file is exactly its header"
+  red rule-blank-added m_rule_blank    "section is exactly the practice's rule lines"
   red rules-for-codex  m_rules_codex   "only Claude has a path-scoped rules surface"
   red stale-render     m_source_edit   "section is exactly the practice's rule lines"
 
@@ -330,6 +349,18 @@ X
 X
 <!-- adb:end -->
 ' 'inside a block'
+  refused paths-backslash '# p
+<!-- adb:paths photos\[2024/** -->
+<!-- adb:procedure -->
+X
+<!-- adb:end -->
+' 'carries a backslash or backtick'
+  refused paths-backtick '# p
+<!-- adb:paths a`b -->
+<!-- adb:procedure -->
+X
+<!-- adb:end -->
+' 'carries a backslash or backtick'
   refused paths-in-workflow '# p
 ' 'is a practice marker' '
 <!-- adb:paths *.sh -->

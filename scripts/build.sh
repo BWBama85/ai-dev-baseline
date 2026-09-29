@@ -241,6 +241,10 @@ block_filter() {
     /^<!-- adb:paths/ {
       if ($0 !~ /^<!-- adb:paths( [^ "]+)+ -->$/)
         die(FNR, "malformed `adb:paths` marker (want `<!-- adb:paths <glob>… -->`, globs space-separated, unquoted): " $0)
+      # Each glob is written into double-quoted YAML and into a root-doc code span, where a
+      # backslash is an escape and a backtick closes the span.
+      if (index($0, "\\") || index($0, "`"))
+        die(FNR, "`adb:paths` glob carries a backslash or backtick, which the quoted `paths:` frontmatter or the pointer would misread: " $0)
       if (class == "")
         die(FNR, "`adb:paths` is a practice marker — only base/practices/*.md has a procedure to scope")
       if (open || proc) die(FNR, "`adb:paths` inside a block — it scopes the whole procedure, so it stands outside every block")

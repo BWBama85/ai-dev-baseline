@@ -20,7 +20,7 @@ confident in stale recall has no claim in doubt, consults nothing, and ships the
 confidence is what stale recall feels like from the inside. So the question to ask before writing
 code is not *am I unsure?* but *is this nontrivial usage of somebody else's technology?*
 
-**Consult vendor documentation — through the ladder below — when the code you are about to write:**
+**Consult vendor documentation — through the resolution ladder in this practice's procedure — when the code you are about to write:**
 
 - uses an API surface (package, framework, service) for the **first time in this project**;
 - depends on **vendor-defined behavior for correctness or safety** — configuration, lifecycle,
@@ -159,7 +159,7 @@ credential to every clone, every fork, and every CI log that prints the file
   another agent recorded. The mechanism is the recorded evidence and the report line, and
   review is what reads them.
 - **Nothing decides whether a surface was "complex enough" to need docs.** The trigger
-  list above is judgment, like the comment classes.
+  list is judgment, like the comment classes.
 - **The empty-disposition check reports; it does not gate.** `/implement-issue`'s report
   step returns a distinct code when a run recorded nothing, and the step says to go back
   and state the disposition — but nothing *stops* the run, and no hook enforces it. It is

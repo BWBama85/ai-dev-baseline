@@ -210,7 +210,8 @@ jobs:
 
       # Rides this job for the reason the step above gives. build-drift proves the outputs MATCH a
       # rebuild; this proves the split behind them lost and doubled nothing, and that every pointer
-      # names the path the install manifest links (#434).
+      # names the path the install manifest links (#434). Measured at 11 s locally (2026-09-28); the
+      # job took 9 s on main (run 36503379920), so its 10-minute bound stands.
       - name: Every practice's procedure renders exactly once per agent (#434)
         run: bash scripts/check-practice-split.sh --self-test
 

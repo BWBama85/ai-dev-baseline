@@ -16,7 +16,7 @@ Never run destructive git without an **explicit** ask from the owner:
 
 - `git reset --hard`, `git push --force` / `--force-with-lease`
 - `git clean -fd`
-- deleting branches or tags (except the merged-branch cleanup sweep below, which
+- deleting branches or tags (except the merged-branch cleanup sweep, which
   only ever deletes branches already merged into the default branch)
 
 ### The ones that destroy work that was never committed

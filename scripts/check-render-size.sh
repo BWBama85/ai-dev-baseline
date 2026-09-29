@@ -186,7 +186,7 @@ run_rs "$fxg"; base_loaded="$(loaded_tokens)"
 fxp="$(mk_fixture procs)" || bad "fixture: could not build the procedures tree"
 mkdir -p "$fxp/base/practices" "$fxp/agents/claude/rules" "$fxp/agents/codex/reference" "$fxp/agents/gemini/reference"
 printf '# index\n' > "$fxp/base/practices/00-index.md"
-printf '# p\n\nrule\n<!-- adb:procedure -->\n\nhow\n<!-- adb:end -->\n' > "$fxp/base/practices/10-p.md"
+printf '# p\n<!-- adb:paths *.sh -->\n\nrule\n<!-- adb:procedure -->\n\nhow\n<!-- adb:end -->\n' > "$fxp/base/practices/10-p.md"
 printf '# q\n\nrule only\n' > "$fxp/base/practices/20-q.md"
 printf '# p — procedure\n\nhow\n' > "$fxp/agents/claude/rules/10-p.md"
 printf '# p — procedure\n\nhow\n' > "$fxp/agents/codex/reference/10-p.md"
@@ -205,11 +205,18 @@ run_rs "$fxp"
 eq "$RS_RC" "1" "procs: a practice's missing procedure file fails the report"
 has "$RS_ERR" "MISSING agents/codex/reference/10-p.md" "procs: …naming the file the derivation expected"
 printf '# p — procedure\n\nhow\n' > "$fxp/agents/codex/reference/10-p.md"
-cp "$fxp/agents/claude/rules/10-p.md" "$fxp/agents/claude/reference/10-p.md" 2>/dev/null \
-  || { mkdir -p "$fxp/agents/claude/reference" && cp "$fxp/agents/claude/rules/10-p.md" "$fxp/agents/claude/reference/10-p.md"; }
+mkdir -p "$fxp/agents/claude/reference"
+cp "$fxp/agents/claude/rules/10-p.md" "$fxp/agents/claude/reference/10-p.md"
 run_rs "$fxp"
 eq "$RS_RC" "1" "procs: a procedure rendered to both trees fails the report"
-has "$RS_ERR" "DUPLICATE 10-p.md" "procs: …naming it"
+has "$RS_ERR" "DUPLICATE 10-p.md — agents/claude/reference/10-p.md is a stale copy" "procs: …naming the stale one"
+# The tree is DERIVED from the practice, never taken from whichever file exists: a path-scoped
+# procedure found only in reference/ is the expected file missing, not a substitute for it.
+rm "$fxp/agents/claude/rules/10-p.md"
+run_rs "$fxp"
+eq "$RS_RC" "1" "procs: a path-scoped procedure present only in reference/ fails the report"
+has "$RS_ERR" "MISSING agents/claude/rules/10-p.md" "procs: …naming the file the practice's scope expects"
+hasnt "$RS_OUT" "agents/claude/reference/10-p.md" "procs: …and the stale copy is never measured in its place"
 
 # --- fenced_comment_lines (#432) ----------------------------------------------------------------
 

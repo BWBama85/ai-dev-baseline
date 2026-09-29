@@ -29,7 +29,7 @@ Classify the unknown into **exactly one** bucket, then act as that bucket prescr
    anything. A config surface that covered the case is the fix, not a placeholder for one.
 <!-- adb:end -->
 2. **Project-specific delta** — legitimately unique to this repo. → Record it in the
-   **prescribed home for its category** (table below), never scattered or ad-hoc.
+   **prescribed home for its category** (the table in this practice's procedure), never scattered or ad-hoc.
 3. **Deviation** — the project deliberately contradicts a baseline rule. → Allowed, but
    **recorded explicitly** as a `DEVIATION` with `{baseline-rule, reason}`. Never a silent
    fork.

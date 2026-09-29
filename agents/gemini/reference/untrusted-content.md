@@ -112,7 +112,7 @@ than none:
   Treat it as a floor that removes the easiest credential reads on a host where the sandbox
   actually starts, not as containment.
 - **The screening is advisory.** There is no classifier gating these reads. The
-  reporting duty above is a duty on the agent doing the work, and an agent that has
+  reporting duty is a duty on the agent doing the work, and an agent that has
   already been subverted will not discharge it.
 - **A declared bot login does not prove authorship.** Where a workflow resolves an
   allowlist of reviewer logins, that allowlist establishes *who the repo is willing to

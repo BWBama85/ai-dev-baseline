@@ -132,6 +132,29 @@ has "$out" '`~/.claude/settings.json`' "reanchor: leaves every other user-global
 out="$(printf '%s\n' '`~/.codex/ai-dev-baseline/reference/shell.md`' | bash "$PI" reanchor codex /p)"
 eq "$out" '`.codex/adb/reference/shell.md`' "reanchor: the codex pointer lands on its vendored copy"
 
+# _pi_assert_reanchored IS THE GUARD behind every re-anchor, so each input it rejects is fed to it:
+# a staged doc still pointing at the global procedure bundle, one still reaching the global library,
+# and a scan that cannot run — which must fail it rather than read as clean.
+ra="$work/reanchor-guard"; mkdir -p "$ra/.claude/rules/ai-dev-baseline"
+assert_ra() { ( . "$PI"; _pi_assert_reanchored "$ra" claude ) 2>&1; }
+printf 'see `.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+printf 'run bash "$(git rev-parse --show-toplevel)/.claude/adb/lib/x.sh"\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
+out="$(assert_ra)"; yes "$?" "assert-reanchored: a fully re-anchored stage passes"
+printf 'see `~/.claude/ai-dev-baseline/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+out="$(assert_ra)"; no "$?" "assert-reanchored: a pointer left at the global bundle is refused"
+has "$out" "still points at the user-global procedures" "assert-reanchored: …naming the pointer"
+printf 'see `.claude/adb/reference/x.md`\n' > "$ra/.claude/rules/ai-dev-baseline.md"
+printf 'run bash "$HOME/.claude/scripts/lib/x.sh"\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
+out="$(assert_ra)"; no "$?" "assert-reanchored: a vendored procedure reaching the global library is refused"
+has "$out" "still reaches the user-global library" "assert-reanchored: …naming the library"
+if [ "$(id -u)" -ne 0 ]; then
+  printf 'clean\n' > "$ra/.claude/rules/ai-dev-baseline/shell.md"
+  chmod 000 "$ra/.claude/rules/ai-dev-baseline/shell.md"
+  out="$(assert_ra)"; no "$?" "assert-reanchored: a stage it cannot read fails rather than passing unscanned"
+  has "$out" "could not scan" "assert-reanchored: …and says so"
+  chmod 644 "$ra/.claude/rules/ai-dev-baseline/shell.md"
+fi
+
 # ================================ payload =======================================================
 
 man="$(bash "$PI" payload claude "$work/src/$PREFIX" /proj)"; rc=$?

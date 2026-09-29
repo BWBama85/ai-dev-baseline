@@ -528,7 +528,7 @@ eq "$leaked" "" "no tracked generated file carries a marker"
 # whatever was committed. The procedure POINTER is the one line allowed to differ (#434): it names
 # each agent's own installed path, so it is removed before comparing and pinned separately below.
 rules_only() { grep -v '^\*\*Procedure:\*\* ' "$1"; }
-[ "$(rules_only agents/codex/AGENTS.md)" = "$(rules_only agents/gemini/GEMINI.md)" ] && ok \
+[ "$(rules_only agents/codex/AGENTS.md; printf x)" = "$(rules_only agents/gemini/GEMINI.md; printf x)" ] && ok \
   || bad "the codex and gemini root docs differ outside their procedure pointers — no shipped block excludes either, so they must be identical"
 for f in agents/codex/reference/*.md; do
   cmp -s "$f" "agents/gemini/reference/${f##*/}" && ok \

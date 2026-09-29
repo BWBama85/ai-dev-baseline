@@ -54,8 +54,9 @@ text may follow one; each block should begin with its own blank line, as above. 
 no block renders whole into the root doc — the compaction guidance must, because the compactor
 reads it from there.
 
-One line anywhere outside the blocks, `<!-- adb:paths <glob>… -->`, scopes the practice's
-procedure to matching files for an agent with a path-scoped surface: Claude renders it to
+One line anywhere outside the blocks, `<!-- adb:paths <glob>… -->` — globs space-separated,
+with no quote, backslash or backtick, since each is written into quoted YAML and a code span —
+scopes the practice's procedure to matching files for an agent with a path-scoped surface: Claude renders it to
 `agents/claude/rules/` with `paths:` frontmatter, which loads when a matching file is read.
 Without it, the procedure goes to `agents/<agent>/reference/`. Use it only where a path
 genuinely scopes the practice.

@@ -30,7 +30,7 @@ these. Classify it, then dispose of it:
 
 | Class | Disposition |
 |---|---|
-| **1 — Operative contract**: usage, arguments, exit codes, output format, globals read or written, a non-obvious constraint or invariant | **Keep**, in the form below. |
+| **1 — Operative contract**: usage, arguments, exit codes, output format, globals read or written, a non-obvious constraint or invariant | **Keep**, in the form this practice's procedure gives. |
 | **2 — Incident history**: "PR #N shipped this bug, which is why…", a dated outage, a narrative of what broke | **Relocate** to `.ai-dev-baseline/decisions.md` (`handling-the-unknown.md`). Leave behind the one-line rule the incident proved, and cite the decision id — never retell the incident. |
 | **3 — Design alternatives**: "X and Y were considered; Y loses because…", benchmark tables, a rejected approach argued out | **Relocate** to the decision log, or delete. A rejected alternative is a decision, not an interface. |
 | **4 — Restated policy**: text duplicating a `base/practices/` rule, a root doc, or a workflow step | **Delete.** The law has one home. A copy in code is a second home that drifts, and the drifted copy is the one being read at the moment it matters. |

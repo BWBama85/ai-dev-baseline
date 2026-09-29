@@ -48,12 +48,14 @@
 # The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
 # below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render
 # would simply be absent from the output. A practice carrying an `adb:procedure` block yields one
-# procedure file per agent (#434), in agents/<agent>/reference/ or, path-scoped, agents/claude/rules/;
-# it is measured in the on-demand bucket, and the summary reports each root doc's lines against the
-# ~200-line goal, which is a report and never a gate.
+# procedure file per agent (#434): agents/claude/rules/ for Claude when the practice declares
+# `adb:paths`, agents/<agent>/reference/ otherwise — derived from the source, so a copy in the other
+# tree is a fault rather than a substitute. It is measured in the on-demand bucket, and the summary
+# reports each root doc's lines against the ~200-line goal, which is a report and never a gate.
 #
 # Exit: 0 every expected artifact was measured · 1 a mechanical fault — MISSING, UNREADABLE,
-# UNCOUNTABLE, EMPTY, UNNAMEABLE, DUPLICATE (a procedure rendered to both trees), a collapsed
+# UNCOUNTABLE, EMPTY, UNNAMEABLE, DUPLICATE (a procedure also present in the tree it does not
+# render to), a collapsed
 # derivation, or a blob at <ref> that git could not list or read · 2 usage, --since outside a git
 # repository, or a <ref> that is not a commit. Size NEVER fails this command; there is no ceiling (#355).
 
@@ -280,12 +282,13 @@ for pf in base/practices/*.md; do
   psources=$(( psources + 1 ))
   for pair in $AGENTS; do
     a="${pair%%:*}"
-    if [ -f "agents/$a/rules/$pbase" ] && [ -f "agents/$a/reference/$pbase" ]; then
-      printf 'render-size: DUPLICATE %s — rendered to both agents/%s/rules/ and agents/%s/reference/ (run scripts/build.sh and delete the stale one)\n' "$pbase" "$a" "$a" >&2
-      rc=1; continue
+    pexp=reference; pother=rules
+    if [ "$a" = claude ] && LC_ALL=C grep -q '^<!-- adb:paths ' "$pf"; then pexp=rules; pother=reference; fi
+    if [ -e "agents/$a/$pother/$pbase" ]; then
+      printf 'render-size: DUPLICATE %s — agents/%s/%s/%s is a stale copy; this procedure renders to agents/%s/%s/ (delete the stale one)\n' "$pbase" "$a" "$pother" "$pbase" "$a" "$pexp" >&2
+      rc=1
     fi
-    if [ -f "agents/$a/rules/$pbase" ]; then pdest="agents/$a/rules/$pbase"; else pdest="agents/$a/reference/$pbase"; fi
-    emit "$pdest" && procs=$(( procs + 1 ))
+    emit "agents/$a/$pexp/$pbase" && procs=$(( procs + 1 ))
   done
 done
 EMIT_BUCKET=loaded

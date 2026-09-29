@@ -135,7 +135,7 @@ credential to every clone, every fork, and every CI log that prints the file
   another agent recorded. The mechanism is the recorded evidence and the report line, and
   review is what reads them.
 - **Nothing decides whether a surface was "complex enough" to need docs.** The trigger
-  list above is judgment, like the comment classes.
+  list is judgment, like the comment classes.
 - **The empty-disposition check reports; it does not gate.** `/implement-issue`'s report
   step returns a distinct code when a run recorded nothing, and the step says to go back
   and state the disposition — but nothing *stops* the run, and no hook enforces it. It is

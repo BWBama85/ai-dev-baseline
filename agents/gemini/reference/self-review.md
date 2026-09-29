@@ -26,7 +26,7 @@ landmines in freshly generated code before they reach a reviewer or production.
 **Start from the classes this project has hit before.** A project that keeps a pattern ledger
 (`.ai-dev-baseline/patterns.md`, #421) has a promoted checklist: finding classes seen more than
 once, each carrying a rule somebody wrote after fixing one. Read it and sweep the diff for every
-rule on it, then do the open-ended pass above.
+rule on it, then do the open-ended pass.
 
 That ordering is the point. The open-ended pass finds what is novel; the checklist finds what this
 project already paid a review round for and would otherwise pay for again. `debugging.md` states

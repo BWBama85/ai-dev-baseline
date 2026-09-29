@@ -1009,7 +1009,7 @@ EOF
 # re-anchored at all.
 _pi_assert_reanchored() {
   local stage="$1"; shift
-  local agent hits rc=0 tl='~'
+  local agent hits grc rc=0 tl='~'
   for agent in "$@"; do
     # THE PRACTICE DOCUMENTS ARE IN SCOPE, so the paths scanned are every re-anchored destination
     # rather than the skills alone — a doc that slipped back to a verbatim copy would otherwise pass.
@@ -1020,14 +1020,23 @@ _pi_assert_reanchored() {
     [ -f "$stage/.codex/$PI_NS/AGENTS.practices.md" ] && [ "$agent" = codex ] && scan+=("$stage/.codex/$PI_NS/AGENTS.practices.md")
     [ -d "$stage/.$agent/$PI_NS/reference" ] && scan+=("$stage/.$agent/$PI_NS/reference")
     [ "${#scan[@]}" -gt 0 ] || continue
-    hits="$(grep -rlE -- "\\\$(HOME|\\{HOME\\})/\\.$agent/scripts/lib/" "${scan[@]}" 2>/dev/null)" || true
+    # grep's 2 is a scan that could not run, which must fail the assertion rather than read as clean.
+    hits="$(grep -rlE -- "\\\$(HOME|\\{HOME\\})/\\.$agent/scripts/lib/" "${scan[@]}" 2>/dev/null)"; grc=$?
+    if [ "$grc" -gt 1 ]; then
+      _pi_err "could not scan the staged $agent payload for user-global library paths (grep rc $grc)"
+      rc=1
+    fi
     if [ -n "$hits" ]; then
       _pi_err "staged $agent payload still reaches the user-global library — the re-anchor did not take:"
       printf '%s\n' "$hits" | sed 's/^/  /' >&2
       rc=1
     fi
     # A pointer left at the global procedure path names the OTHER install's copy, or nothing.
-    hits="$(grep -rlF -e "$tl/.$agent/ai-dev-baseline/reference/" -e "$tl/.claude/rules/ai-dev-baseline/" "${scan[@]}" 2>/dev/null)" || true
+    hits="$(grep -rlF -e "$tl/.$agent/ai-dev-baseline/reference/" -e "$tl/.claude/rules/ai-dev-baseline/" "${scan[@]}" 2>/dev/null)"; grc=$?
+    if [ "$grc" -gt 1 ]; then
+      _pi_err "could not scan the staged $agent payload for user-global procedure pointers (grep rc $grc)"
+      rc=1
+    fi
     if [ -n "$hits" ]; then
       _pi_err "staged $agent payload still points at the user-global procedures — the re-anchor did not take:"
       printf '%s\n' "$hits" | sed 's/^/  /' >&2
