@@ -217,6 +217,14 @@ run_rs "$fxp"
 eq "$RS_RC" "1" "procs: a path-scoped procedure present only in reference/ fails the report"
 has "$RS_ERR" "MISSING agents/claude/rules/10-p.md" "procs: …naming the file the practice's scope expects"
 hasnt "$RS_OUT" "agents/claude/reference/10-p.md" "procs: …and the stale copy is never measured in its place"
+# A practice that cannot be read is a fault, never a practice without a procedure.
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$fxp/base/practices/10-p.md"
+  run_rs "$fxp"
+  chmod 644 "$fxp/base/practices/10-p.md"
+  eq "$RS_RC" "1" "procs: an unreadable practice fails the report"
+  has "$RS_ERR" "UNREADABLE base/practices/10-p.md" "procs: …naming it"
+fi
 
 # --- fenced_comment_lines (#432) ----------------------------------------------------------------
 

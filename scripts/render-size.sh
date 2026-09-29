@@ -274,7 +274,14 @@ for pf in base/practices/*.md; do
   [ -f "$pf" ] || continue
   pbase="${pf##*/}"
   case "$pbase" in 00-index.md) continue ;; esac
-  LC_ALL=C grep -Fqx -- '<!-- adb:procedure -->' "$pf" || continue
+  # 2 is a practice that could not be read, which must not pass as one with no procedure.
+  LC_ALL=C grep -Fqx -- '<!-- adb:procedure -->' "$pf"; grc=$?
+  case "$grc" in
+    0) : ;;
+    1) continue ;;
+    *) printf 'render-size: UNREADABLE %s — could not read it to learn whether it has a procedure\n' "$pf" >&2
+       rc=1; continue ;;
+  esac
   case "$pbase" in *[!A-Za-z0-9._-]*)
     printf 'render-size: UNNAMEABLE base/practices/%s — a practice name outside [A-Za-z0-9._-] cannot be reported in this TSV\n' "$(adb_display_value "$pbase")" >&2
     rc=1; continue ;;
@@ -283,7 +290,15 @@ for pf in base/practices/*.md; do
   for pair in $AGENTS; do
     a="${pair%%:*}"
     pexp=reference; pother=rules
-    if [ "$a" = claude ] && LC_ALL=C grep -q '^<!-- adb:paths ' "$pf"; then pexp=rules; pother=reference; fi
+    if [ "$a" = claude ]; then
+      LC_ALL=C grep -q '^<!-- adb:paths ' "$pf"; grc=$?
+      case "$grc" in
+        0) pexp=rules; pother=reference ;;
+        1) : ;;
+        *) printf 'render-size: UNREADABLE %s — could not read its adb:paths scope\n' "$pf" >&2
+           rc=1; continue ;;
+      esac
+    fi
     if [ -e "agents/$a/$pother/$pbase" ] || [ -L "agents/$a/$pother/$pbase" ]; then
       printf 'render-size: DUPLICATE %s — agents/%s/%s/%s is a stale copy; this procedure renders to agents/%s/%s/ (delete the stale one)\n' "$pbase" "$a" "$pother" "$pbase" "$a" "$pexp" >&2
       rc=1
