@@ -199,7 +199,7 @@ measure() {
 declare -A D_SKILLS=() D_WORDS=() D_BYTES=()
 describe() {
   local f="$1" a="$2" out v counts words bytes
-  out="$(LC_ALL=C awk -f scripts/skill-description.awk "$f")" || out=""
+  out="$(LC_ALL=C tr '\000' '\001' < "$f" | LC_ALL=C awk -f scripts/skill-description.awk)" || out=""
   case "$out" in
     ok$'\t'*) v="${out#ok$'\t'}" ;;
     bad$'\t'*)

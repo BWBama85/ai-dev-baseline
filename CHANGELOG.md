@@ -10,9 +10,9 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
-- **Skill descriptions are selectors, not abstracts (#436).** Every session in every project
-  loads each skill's `description:`, whether or not a skill runs, and the model reads it to
-  decide which skill to invoke. The eight descriptions totalled 479 words and summarized each
+- **Skill descriptions are selectors, not abstracts (#436).** By default, every session in every
+  project loads each available skill's `description:`, whether or not a skill runs, and the model
+  reads it to decide which skill to invoke. The eight descriptions totalled 479 words and summarized each
   skill instead of saying when to use it. Each is now at most 25 words: when to invoke it, the
   argument it takes, and one clause that sets it apart, 197 words in all. The argument matters
   most on Codex and Gemini, which drop `argument-hint`. Facts the old abstracts carried that a

@@ -284,6 +284,15 @@ desc_neg control-byte 'Use a\x1bfixture' 'a byte outside printable ASCII'
 desc_neg embedded-cr 'Use a\rfixture' 'a byte outside printable ASCII'
 desc_neg tab 'Use a\tfixture' 'a byte outside printable ASCII'
 desc_neg non-ascii 'Use a fixture — with a dash' 'a byte outside printable ASCII'
+desc_neg nul 'Fi\0rst value' 'a byte outside printable ASCII'
+# YAML reads every one of these as the SAME `description` key, the last one winning, so a second
+# spelling would give Claude one value and the Codex/Gemini capture another.
+desc_fm key-dquoted 'description: First\n"description": Second\nuser-invocable: true' 'a description key spelled another way'
+desc_fm key-squoted "description: First\n'description': Second\nuser-invocable: true" 'a description key spelled another way'
+desc_fm key-tagged 'description: First\n!!str description: Second\nuser-invocable: true' 'a description key spelled another way'
+desc_fm key-spaced 'description: First\ndescription : Second\nuser-invocable: true' 'a description key spelled another way'
+desc_fm key-complex 'description: First\n? description\n: Second\nuser-invocable: true' 'a description key spelled another way'
+desc_fm key-other 'descriptions: A different key\ndescription: Fine\nuser-invocable: true' ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.
@@ -294,7 +303,7 @@ desc_mut() {
     && cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk" || { bad "one-home: could not copy the scripts"; return; }
   printf '# index\n' > "$d/base/practices/00-index.md"; printf '# dummy practice\n' > "$d/base/practices/aaa.md"
   printf -- '---\nname: fixture\ndescription: Use it: now\nuser-invocable: true\n---\n\n# /fixture\nbody ok\n' > "$d/base/workflows/fixture.md"
-  check_mutate_literal "$d/scripts/skill-description.awk" 'if (v ~ /:( |$)/) { r = "a colon YAML reads as a mapping"; exit }' ''; mrc=$?
+  check_mutate_literal "$d/scripts/skill-description.awk" 'if (v ~ /:( |$)/) { r = "a colon YAML reads as a mapping"; done = 1; next }' ''; mrc=$?
   case "$mrc" in
     0) bash "$d/scripts/build.sh" >"$d/build.log" 2>&1
        yes "$?" "one-home: with the mapping rule removed from the fixture's scripts/skill-description.awk, build.sh admits [Use it: now]" ;;
@@ -303,6 +312,17 @@ desc_mut() {
   esac
 }
 desc_mut
+
+# A SOURCE LARGER THAN A PIPE BUFFER builds. build.sh runs under `pipefail` and feeds the rule
+# through `tr`; a rule that stopped reading once it had decided let `tr` die of SIGPIPE on a big
+# file, and the build reported a rule it could not run. Every fixture above fits in the buffer.
+big="$WORK/desc-big-src.md"
+{ printf -- '---\nname: fixture\ndescription: Fine\nuser-invocable: true\n---\n\n# /fixture\n'
+  awk 'BEGIN { for (i = 0; i < 8000; i++) print "a body line long enough to outgrow any pipe buffer" }'
+} > "$big"
+d="$WORK/desc-big"
+render_fixture "$d" fixture "$big"; rc=$?
+yes "$rc" "large source: a workflow bigger than a pipe buffer builds (the rule reads its whole input)"
 desc_fm continued-blank 'description: First line\n\n  folded in after a blank line\nuser-invocable: true' 'a multi-line continuation'
 desc_fm twice-later 'description: One\nuser-invocable: true\ndescription: Two' 'a second description line'
 

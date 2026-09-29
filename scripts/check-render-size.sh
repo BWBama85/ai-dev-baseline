@@ -213,6 +213,8 @@ undesc_case keyword "a bare YAML keyword" '---\nname: beta\ndescription: true\n-
 undesc_case mapping "a colon YAML reads as a mapping" '---\nname: beta\ndescription: Use it: now\n---\n\nbody\n'
 undesc_case no-space "no space after the description key" '---\nname: beta\ndescription:Use a fixture\n---\n\nbody\n'
 undesc_case control "a byte outside printable ASCII" '---\nname: beta\ndescription: Use a\x1bfixture\n---\n\nbody\n'
+undesc_case nul "a byte outside printable ASCII" '---\nname: beta\ndescription: Fi\0rst value\n---\n\nbody\n'
+undesc_case key-quoted "a description key spelled another way" '---\nname: beta\ndescription: First\n"description": Second\n---\n\nbody\n'
 # Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
 fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"
 rm -f "$fx/scripts/skill-description.awk"

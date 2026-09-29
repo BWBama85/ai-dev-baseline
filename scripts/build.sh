@@ -731,7 +731,7 @@ render_agent_skill() {
   # reads as itself. The Codex/Gemini synth render captures ONLY that line, and a value a loader
   # cannot parse drops the skill on Codex and strips its fields on Claude, so it is refused here, at
   # the source, before anything is written.
-  descout="$(LC_ALL=C awk -f "$root/scripts/skill-description.awk" "$src")" || descout=""
+  descout="$(LC_ALL=C tr '\000' '\001' < "$src" | LC_ALL=C awk -f "$root/scripts/skill-description.awk")" || descout=""
   case "$descout" in
     ok$'\t'*) : ;;
     bad$'\t'*)
