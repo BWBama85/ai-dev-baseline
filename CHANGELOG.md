@@ -19,8 +19,11 @@ only by a published release, which is what these entries are the notes for.
   body did not already hold moved into that body's opening paragraph, which loads only on
   invocation. `render-size.sh`
   now reports the always-loaded cost as a `descriptions` figure per agent (skills, words,
-  `approx_tokens`) in its stderr summary, never as a row, and fails closed (`UNDESCRIBED`) on
-  a rendered skill that lost its single-line description. It is a report and never a size gate.
+  `approx_tokens`): a line of its stderr summary, and a second table in the `--markdown` report
+  CI puts in every PR's job summary, never a row of the artifact table, whose TOTAL already counts
+  those words. It fails closed (`UNDESCRIBED`) on a rendered skill whose description is missing,
+  spans lines, or is a value a YAML loader reads as null, rejects, or cuts short. It is a report
+  and never a size gate.
 
 - **The root doc holds rules; procedures load when a practice applies (#434).** Every session
   in every project started by loading the whole rendered practice set — 85 KB, ~21k approx

@@ -1,6 +1,6 @@
 ---
 name: roadmap
-description: Pick what to build next. Reconciles the roadmap issue with the tracker, emitting the next issue batch or, once ready, the release command. Optional --no-autofix.
+description: Pick what to build next. Reconciles the roadmap issue, emitting the next issue batch or, for an opted-in release milestone, the release command. Optional --no-autofix.
 argument-hint: "[--no-autofix]"
 user-invocable: true
 effort: high

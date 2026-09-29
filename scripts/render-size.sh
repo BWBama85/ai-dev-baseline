@@ -43,16 +43,20 @@
 # execute another commit's build.
 #
 # --markdown: the same rows as a GitHub-flavored Markdown table with a header row, for a CI job
-# summary; the column names above are its ONE home.
+# summary, followed by the descriptions table below; the column names above are its ONE home.
 #
-# The `descriptions` figure (#436) is on stderr, never a row: every session loads every skill's
-# `description:` value whether or not a skill runs, and those words are already inside the
-# SKILL.md rows, so a row would count them twice under TOTAL. Per agent — one session loads one
-# agent's set — it is the skill count, the value's `wc -w` words, and ceil(bytes/4) of the values,
-# where the value is the `description:` line of the rendered frontmatter after the key and the
-# whitespace that follows it. It is always the current tree's; --since reports growth in the
-# SKILL.md rows' deltas. A rendered SKILL.md whose frontmatter carries no single-line, non-empty
-# description is UNDESCRIBED — a broken render, never zero words.
+# The `descriptions` figure (#436): every session loads every skill's `description:` value whether
+# or not a skill runs. Its words are already inside the SKILL.md rows, so it is never a row of the
+# artifact table — TOTAL would count them twice. In TSV it is a line of the stderr summary; with
+# --markdown, the report CI publishes, it is a second table after a blank line, one row per agent.
+# Per agent — one session loads one agent's set — it is the skill count, the values' `wc -w`
+# words, and ceil(bytes/4) of the values. The value is what a YAML loader reads from the rendered
+# frontmatter's one `description:` line: the text between a quoted value's quotes, or the plain
+# text after the key. That is the descriptions' share of the listing, not the whole of it (each
+# agent adds names and paths around them). It is always the current tree's; --since reports growth
+# in the SKILL.md rows' deltas. A rendered SKILL.md with no such value — absent, empty, a block
+# scalar, continued onto another line, or one YAML reads as null, rejects, or cuts short at a
+# ` #` — is UNDESCRIBED: a broken render, never zero words.
 #
 # The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
 # below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render
@@ -184,21 +188,52 @@ measure() {
 
 # describe <SKILL.md> <agent> — add the rendered description to <agent>'s always-loaded figure, or
 # diagnose and fail closed. The single-line rule is scripts/build.sh's source rule, applied to the
-# render: the Codex/Gemini frontmatter carries only that one line.
+# render: the Codex/Gemini frontmatter carries only that one line. The value rules are YAML's for a
+# one-line scalar in block context — the shapes a loader reads as null, rejects, or cuts short.
 declare -A D_SKILLS=() D_WORDS=() D_BYTES=()
 describe() {
   local f="$1" a="$2" out v counts words bytes
-  out="$(LC_ALL=C awk '
+  out="$(LC_ALL=C awk -v sq="'" '
+    # closer <s> <quote> — the index of the quote that closes s, or 0. A double-quoted value
+    # escapes with a backslash; a single-quoted one by doubling the quote.
+    function closer(s, q,   i, c) {
+      for (i = 2; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q == "\"" && c == "\\") { i++; continue }
+        if (c != q) continue
+        if (q == sq && substr(s, i + 1, 1) == sq) { i++; continue }
+        return i
+      }
+      return 0
+    }
+    # scalar <s> — "" with V set to the text a YAML loader reads, or the reason it reads none.
+    function scalar(s,   q, e) {
+      q = substr(s, 1, 1)
+      if (q == "\"" || q == sq) {
+        e = closer(s, q)
+        if (e != length(s)) return "a quoted value that does not end at its closing quote"
+        V = substr(s, 2, e - 2); return ""
+      }
+      if (q == "#") return "a comment where the value should be, which YAML reads as null"
+      if (index("[]{},&*!%@`|>", q)) return "a value that opens with the YAML indicator " q
+      if (index("-?:", q) && (length(s) == 1 || substr(s, 2, 1) ~ /[[:space:]]/))
+        return "a value that opens with the YAML indicator " q
+      if (s ~ /:([[:space:]]|$)/) return "a colon YAML reads as a mapping"
+      if (s ~ /[[:space:]]#/) return "a space-hash YAML reads as a comment, cutting the value short"
+      V = s; return ""
+    }
     { sub(/\r$/, "") }
     NR == 1 { if ($0 != "---") { r = "no frontmatter"; exit }; next }
     $0 == "---" { closed = 1; exit }
     after { after = 0; if ($0 ~ /^[[:space:]]/) { r = "a multi-line continuation"; exit } }
     /^description:/ {
       if (seen) { r = "a second description line"; exit }
-      v = $0; sub(/^description:[[:space:]]*/, "", v)
-      if (v ~ /^[[:space:]]*$/) { r = "an empty description"; exit }
-      if (v ~ /^[>|][+-]?[[:space:]]*$/) { r = "a folded/block scalar"; exit }
-      seen = 1; after = 1
+      v = $0; sub(/^description:[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (v == "") { r = "an empty description"; exit }
+      if (v ~ /^[>|][+-]?$/) { r = "a folded/block scalar"; exit }
+      r = scalar(v); if (r != "") exit
+      if (V ~ /^[[:space:]]*$/) { r = "an empty description"; exit }
+      v = V; seen = 1; after = 1
     }
     END {
       if (r == "" && NR == 0) r = "no frontmatter"
@@ -210,7 +245,7 @@ describe() {
   case "$out" in
     ok$'\t'*) v="${out#ok$'\t'}" ;;
     bad$'\t'*)
-      printf 'render-size: UNDESCRIBED %s — %s where the frontmatter must carry one single-line description\n' "$f" "${out#bad$'\t'}" >&2
+      printf 'render-size: UNDESCRIBED %s — %s, where the frontmatter must carry one single-line description a YAML loader reads as text\n' "$f" "${out#bad$'\t'}" >&2
       rc=1; return 1 ;;
     *) printf 'render-size: UNREADABLE %s — its description could not be read\n' "$f" >&2
        rc=1; return 1 ;;
@@ -424,5 +459,15 @@ for pair in $AGENTS; do
   descs="${descs:+$descs, }$a ${D_SKILLS[$a]} skill(s) ${D_WORDS[$a]} words approx_tokens $(( (D_BYTES[$a] + 3) / 4 ))"
 done
 [ -z "$descs" ] || printf 'render-size: descriptions, loaded at every session start whether or not a skill runs (a report, never a gate): %s\n' "$descs" >&2
+if [ "$MARKDOWN" -eq 1 ] && [ -n "$descs" ]; then
+  printf '\nSkill descriptions, loaded at every session start whether or not a skill runs (the current tree, per agent; #436):\n\n'
+  row descriptions skills words approx_tokens
+  row --- ---: ---: ---:
+  for pair in $AGENTS; do
+    a="${pair%%:*}"
+    [ -n "${D_SKILLS[$a]+x}" ] || continue
+    row "$a" "${D_SKILLS[$a]}" "${D_WORDS[$a]}" "$(( (D_BYTES[$a] + 3) / 4 ))"
+  done
+fi
 
 exit "$rc"

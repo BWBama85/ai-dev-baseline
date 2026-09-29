@@ -5,7 +5,7 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: new-release
-description: After a Claude, Codex or Antigravity CLI release, apply its fallout as one PR. Argument is the CLI and optional version. Never cuts your release.
+description: After a Claude, Codex or Antigravity CLI release, act on what applies here. Argument is the CLI and optional version. Never cuts your own release.
 ---
 
 # New CLI Release Review

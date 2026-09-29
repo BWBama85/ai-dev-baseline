@@ -12,11 +12,11 @@
 # The measurements #432 and #436 added are guarded the same way, and each is OBSERVED FAILING on a
 # mutated copy of the command: a fenced-comment count that ignores fences, a `--since` half that
 # measures the working tree instead of the ref, a descriptions figure that counts the key, and a
-# description reader that passes a skill with none as zero words must each turn a named assertion
-# below red — the SAME assertion function the green run uses, re-run against the mutant in a
-# subshell, with its own `FAIL:` line as the witness. Inline rather than a `--mutation` pool row
-# (the check-build-atomic.sh shape): four rows, seconds each, and no new registry, gate or nightly
-# entry.
+# description reader that passes a skill with no description line, or one whose value YAML rejects
+# as a mapping, must each turn a named assertion below red — the SAME assertion function the green
+# run uses, re-run against the mutant in a subshell, with its own `FAIL:` line as the witness.
+# Inline rather than a `--mutation` pool row (the check-build-atomic.sh shape): five rows, seconds
+# each, and no new registry, gate or nightly entry.
 #
 # Never touches the tracked tree — every case builds its own fixture under one `mktemp -d`,
 # including the git repositories the `--since` cases need.
@@ -141,7 +141,7 @@ assert_desc_figure() {
   has "$RS_ERR" "descriptions, loaded at every session start whether or not a skill runs (a report, never a gate): claude 2 skill(s) 10 words approx_tokens 11, codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 10 words approx_tokens 11" \
     "$DESC_WITNESS"
 }
-UNDESC_WITNESS="undescribed: a rendered skill whose frontmatter has no description line fails the report"
+UNDESC_WITNESS="undescribed: a rendered skill with no description a YAML loader reads as text fails the report"
 assert_undescribed() { eq "$RS_RC" "1" "$UNDESC_WITNESS"; }
 
 # --- the green run ------------------------------------------------------------------------------
@@ -176,38 +176,53 @@ hasnt "$RS_OUT" "descriptions" "green: the descriptions figure is never a row �
 # --- descriptions (#436): per agent, and fail-closed on a render that lost one -------------------
 fx="$(mk_fixture desc)" || bad "fixture: could not build the descriptions tree"
 # Per agent, not one agent's figure printed three times: gemini's beta says twelve words (62 bytes).
+# A quoted value counts the text between its quotes, where `: ` is legal YAML: claude's beta is
+# `it''s quoted: fine` (3 words, 18 bytes), codex's `use it here: quoted` (4 words, 19 bytes).
 printf -- '---\nname: beta\ndescription: one two three four five six seven eight nine ten eleven twelve\n---\n\nbody\n' \
   > "$fx/agents/gemini/skills/beta/SKILL.md"
+printf -- '---\nname: beta\ndescription: %s\n---\n\nbody\n' "'it''s quoted: fine'" > "$fx/agents/claude/skills/beta/SKILL.md"
+printf -- '---\nname: beta\ndescription: %s\n---\n\nbody\n' '"use it here: quoted"' > "$fx/agents/codex/skills/beta/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "desc: a longer description is a report, never a failure"
-has "$RS_ERR" "codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 17 words approx_tokens 21" \
-  "desc: each agent's figure is its own renders' — gemini's twelve-word beta moves gemini alone"
-# undesc_case <reason> <SKILL.md content> — codex's beta rendered broken: the report fails, names the
-# file and the reason, and still prints every artifact row.
+has "$RS_ERR" "claude 2 skill(s) 8 words approx_tokens 10, codex 2 skill(s) 9 words approx_tokens 11, gemini 2 skill(s) 17 words approx_tokens 21" \
+  "desc: each agent's figure is its own renders', and a quoted value counts the text between its quotes"
+# undesc_case <label> <reason> <SKILL.md content> — codex's beta rendered broken: the report fails,
+# names the file and the reason, and still prints every artifact row. The value shapes are the ones
+# a YAML loader reads as null, rejects, or cuts short (each checked against a real parser).
 undesc_case() {
   fx="$(mk_fixture "undesc-$1")" || { bad "fixture: could not build the undescribed tree ($1)"; return; }
-  printf -- '%b' "$2" > "$fx/agents/codex/skills/beta/SKILL.md"
+  printf -- '%b' "$3" > "$fx/agents/codex/skills/beta/SKILL.md"
   run_rs "$fx"
   eq "$RS_RC" "1" "undescribed ($1): the report fails"
-  has "$RS_ERR" "UNDESCRIBED agents/codex/skills/beta/SKILL.md — $1" "undescribed ($1): naming the file and the reason"
+  has "$RS_ERR" "UNDESCRIBED agents/codex/skills/beta/SKILL.md — $2" "undescribed ($1): naming the file and the reason"
   eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "10" "undescribed ($1): every artifact row is still reported"
   has "$RS_ERR" "codex 1 skill(s) 5 words" "undescribed ($1): the broken skill is not counted as zero words"
 }
-undesc_case "no description line" '---\nname: beta\n---\n\nbody\n'
-undesc_case "an empty description" '---\nname: beta\ndescription:   \n---\n\nbody\n'
-undesc_case "a folded/block scalar" '---\nname: beta\ndescription: >-\n  folded words\n---\n\nbody\n'
-undesc_case "a multi-line continuation" '---\nname: beta\ndescription: first line\n  and a second\n---\n\nbody\n'
-undesc_case "a second description line" '---\nname: beta\ndescription: one\ndescription: two\n---\n\nbody\n'
-undesc_case "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
-undesc_case "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
+undesc_case none "no description line" '---\nname: beta\n---\n\nbody\n'
+undesc_case blank "an empty description" '---\nname: beta\ndescription:   \n---\n\nbody\n'
+undesc_case quoted-empty "an empty description" '---\nname: beta\ndescription: ""\n---\n\nbody\n'
+undesc_case folded "a folded/block scalar" '---\nname: beta\ndescription: >-\n  folded words\n---\n\nbody\n'
+undesc_case continued "a multi-line continuation" '---\nname: beta\ndescription: first line\n  and a second\n---\n\nbody\n'
+undesc_case twice "a second description line" '---\nname: beta\ndescription: one\ndescription: two\n---\n\nbody\n'
+undesc_case no-fm "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
+undesc_case unclosed "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
+undesc_case comment "a comment where the value should be" '---\nname: beta\ndescription: # only a comment\n---\n\nbody\n'
+undesc_case mapping "a colon YAML reads as a mapping" '---\nname: beta\ndescription: a: b\n---\n\nbody\n'
+undesc_case colon-end "a colon YAML reads as a mapping" '---\nname: beta\ndescription: ends with a colon:\n---\n\nbody\n'
+undesc_case cut "a space-hash YAML reads as a comment" '---\nname: beta\ndescription: fixes it #435 and more\n---\n\nbody\n'
+undesc_case flow "a value that opens with the YAML indicator [" '---\nname: beta\ndescription: [not a list\n---\n\nbody\n'
+undesc_case alias "a value that opens with the YAML indicator *" '---\nname: beta\ndescription: *alias\n---\n\nbody\n'
+undesc_case dash "a value that opens with the YAML indicator -" '---\nname: beta\ndescription: - a list item\n---\n\nbody\n'
+undesc_case open-quote "a quoted value that does not end at its closing quote" '---\nname: beta\ndescription: "never closed\n---\n\nbody\n'
+undesc_case tail-quote "a quoted value that does not end at its closing quote" '---\nname: beta\ndescription: "closed" then more\n---\n\nbody\n'
 fx="$(mk_fixture undesc-witness)" || bad "fixture: could not build the undescribed-witness tree"
 printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
 run_rs "$fx"
 assert_undescribed
 
-# ------- MUTATIONS: a figure that counts the key, and a reader that passes a missing one ---------
+# ------- MUTATIONS: a figure that counts the key, a reader that passes a missing value or one YAML rejects
 fx="$(mk_fixture mut-desc-key)" || bad "fixture: could not build the description-key mutation tree"
-check_mutate_literal "$fx/scripts/render-size.sh" 'sub(/^description:[[:space:]]*/, "", v)' 'v = v'; mrc=$?
+check_mutate_literal "$fx/scripts/render-size.sh" 'v = V; seen = 1' 'v = $0; seen = 1'; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_desc_figure 2>&1 )"
      has "$out" "mutant-rc=0" "mut-desc-key: the mutated command still runs"
@@ -223,13 +238,26 @@ printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL
 check_mutate_literal "$fx/scripts/render-size.sh" 'if (r == "" && !seen) r = "no description line"' ''; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_undescribed 2>&1 )"
-     has "$out" "mutant-rc=0" "mut-undesc: the mutant passes a skill with no description as zero words, which is the defect"
+     has "$out" "mutant-rc=0" "mut-undesc: the mutant passes a skill with no description line as zero words, which is the defect"
      case "$out" in
        *"FAIL: $UNDESC_WITNESS"*) ok ;;
        *) bad "MUTATION 4 DID NOT FIRE: the assertion [$UNDESC_WITNESS] stayed green on a reader that passes a missing description, so it proves nothing (subshell output: $out)" ;;
      esac ;;
   2) bad "mut-undesc: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
   *) bad "mut-undesc: the mutation could not be applied (rc $mrc)" ;;
+esac
+fx="$(mk_fixture mut-mapping)" || bad "fixture: could not build the mapping mutation tree"
+printf -- '---\nname: beta\ndescription: a: b\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
+check_mutate_literal "$fx/scripts/render-size.sh" 'if (s ~ /:([[:space:]]|$)/) return "a colon YAML reads as a mapping"' ''; mrc=$?
+case "$mrc" in
+  0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_undescribed 2>&1 )"
+     has "$out" "mutant-rc=0" "mut-mapping: the mutant counts a value YAML rejects as a mapping, which is the defect"
+     case "$out" in
+       *"FAIL: $UNDESC_WITNESS"*) ok ;;
+       *) bad "MUTATION 5 DID NOT FIRE: the assertion [$UNDESC_WITNESS] stayed green on a reader that counts a value YAML rejects, so it proves nothing (subshell output: $out)" ;;
+     esac ;;
+  2) bad "mut-mapping: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
+  *) bad "mut-mapping: the mutation could not be applied (rc $mrc)" ;;
 esac
 
 # --- supports-present: ONE final TOTAL summing EVERY row above (#433) ---------------------------
@@ -465,8 +493,13 @@ run_rs "$fx" --markdown
 yes "$RS_RC" "markdown: exits 0"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 1p)" "| name | lines | words | approx_tokens | fenced_comment_lines |" "markdown: the header row names the five columns"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 2p)" "| --- | ---: | ---: | ---: | ---: |" "markdown: the separator row"
-eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "15" "markdown: header + separator + 12 artifact rows + TOTAL"
-has "$(printf '%s\n' "$RS_OUT" | tail -1)" "| TOTAL |" "markdown: the last row is TOTAL"
+eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "23" "markdown: the artifact table (header, separator, 12 rows, TOTAL), then the descriptions table (blank, caption, blank, header, separator, one row per agent)"
+has "$(printf '%s\n' "$RS_OUT" | sed -n 15p)" "| TOTAL |" "markdown: the artifact table still ends in TOTAL"
+eq "$(printf '%s\n' "$RS_OUT" | sed -n 16p)" "" "markdown: a blank line closes the artifact table, so no row is appended to it"
+eq "$(printf '%s\n' "$RS_OUT" | sed -n '19,21p')" \
+   "$(printf '%s\n' '| descriptions | skills | words | approx_tokens |' '| --- | ---: | ---: | ---: |' '| claude | 3 | 15 | 17 |')" \
+   "markdown: the descriptions table — three skills of five words each, 65 bytes"
+eq "$(printf '%s\n' "$RS_OUT" | sed -n '21,23p' | cut -d' ' -f2 | tr '\n' ' ')" "claude codex gemini " "markdown: one descriptions row per agent"
 run_rs "$fx" --since HEAD~1 --markdown
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 1p)" "| name | lines | words | approx_tokens | fenced_comment_lines | delta_lines | delta_tokens |" "markdown: with --since the header carries the delta columns"
 eq "$(printf '%s\n' "$RS_OUT" | grep -c '| new | new |')" "3" "markdown: new rows render new / new"

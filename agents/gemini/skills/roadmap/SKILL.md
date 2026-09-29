@@ -5,7 +5,7 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: roadmap
-description: Pick what to build next. Reconciles the roadmap issue with the tracker, emitting the next issue batch or, once ready, the release command. Optional --no-autofix.
+description: Pick what to build next. Reconciles the roadmap issue, emitting the next issue batch or, for an opted-in release milestone, the release command. Optional --no-autofix.
 ---
 
 # /roadmap

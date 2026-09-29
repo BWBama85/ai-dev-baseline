@@ -3,7 +3,7 @@
 # Source: base/workflows/new-release.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
 name: new-release
-description: After a Claude, Codex or Antigravity CLI release, apply its fallout as one PR. Argument is the CLI and optional version. Never cuts your release.
+description: After a Claude, Codex or Antigravity CLI release, act on what applies here. Argument is the CLI and optional version. Never cuts your own release.
 user-invocable: true
 effort: high
 # Apply-or-drop skill. Earlier versions of this skill were triage-only (filed
