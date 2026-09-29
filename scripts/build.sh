@@ -732,16 +732,29 @@ render_agent_skill() {
   # that drives activation on those agents — is broken. Reject it at the source (agent-neutral,
   # so it fails uniformly for every agent, before anything is written). No-op for a normal
   # single-line description.
+  # That line must also be PLAIN TEXT every YAML loader reads as itself (#436): a value Claude's
+  # loader cannot parse loads the skill with no fields, and Codex skips the skill. The admitted
+  # shape is deliberately narrower than YAML — it starts with a letter (no quote, indicator or
+  # number), holds no `: ` or trailing `:` (a mapping), no whitespace-then-`#` (a comment that cuts
+  # the value short), and is not a bare null or boolean keyword — so its text IS the loaded value,
+  # which is what lets scripts/render-size.sh count the line as written.
   descprob="$(awk '
     NR==1 { next }
     $0 == "---" { exit }
     seen { if ($0 ~ /^[[:space:]]/) print "a multi-line continuation"; exit }
     /^description:[[:space:]]*$/                     { print "empty"; exit }
     /^description:[[:space:]]*[>|][+-]?[[:space:]]*$/ { print "a folded/block scalar"; exit }
-    /^description:/ { seen = 1 }
+    /^description:/ {
+      v = $0; sub(/^description:[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (v !~ /^[A-Za-z]/)          { print "a value that does not start with a letter"; exit }
+      if (v ~ /:([[:space:]]|$)/)     { print "a colon YAML reads as a mapping"; exit }
+      if (v ~ /[[:space:]]#/)         { print "a space-hash YAML reads as a comment"; exit }
+      if (tolower(v) ~ /^(null|true|false|yes|no|on|off|y|n)$/) { print "a bare YAML keyword"; exit }
+      seen = 1
+    }
   ' "$src")"
   if [ -n "$descprob" ]; then
-    echo "build.sh: base/workflows/$name.md has a non-single-line 'description:' ($descprob) — it must be one non-empty line (the Codex/Gemini render captures only that line)." >&2
+    echo "build.sh: base/workflows/$name.md has a 'description:' that is not one line of plain text ($descprob) — it must be one non-empty line (the Codex/Gemini render captures only that line) that starts with a letter, with no ': ', no trailing ':', no ' #', and no bare null/boolean keyword." >&2
     exit 3
   fi
   # PER-AGENT MARKERS ARE BODY-ONLY, and that is REJECTED here rather than merely documented

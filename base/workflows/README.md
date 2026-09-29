@@ -40,8 +40,12 @@ bounded by each CLI).
 - **Required frontmatter keys:** `name`, `description`, `user-invocable`. `description`
   must be a **single, non-empty line** — the Codex/Gemini render synthesises a minimal
   `name` + `description` frontmatter and captures only that one line, so a folded/block
-  scalar (`>`/`|`) or a multi-line value would drop content. `scripts/build.sh` rejects a
-  non-single-line description loud, for every agent.
+  scalar (`>`/`|`) or a multi-line value would drop content. It must also be **plain text**
+  every YAML loader reads as itself: it starts with a letter and holds no `: `, no trailing `:`,
+  no ` #`, and no bare null/boolean keyword — a value a loader cannot parse drops the skill on
+  Codex and strips its fields on Claude. `scripts/build.sh` rejects either loud, for every
+  agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
+  at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.
 - **Optional (Claude-specific) keys, passed through verbatim:** `argument-hint`,
   `allowed-tools`, `disallowed-tools`, `effort`. A future non-Claude renderer maps or
   ignores these per its CLI.

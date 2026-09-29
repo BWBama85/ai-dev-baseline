@@ -21,9 +21,11 @@ only by a published release, which is what these entries are the notes for.
   now reports the always-loaded cost as a `descriptions` figure per agent (skills, words,
   `approx_tokens`): a line of its stderr summary, and a second table in the `--markdown` report
   CI puts in every PR's job summary, never a row of the artifact table, whose TOTAL already counts
-  those words. It fails closed (`UNDESCRIBED`) on a rendered skill whose description is missing,
-  spans lines, or is a value a YAML loader reads as null, rejects, or cuts short. It is a report
-  and never a size gate.
+  those words. It fails closed (`UNDESCRIBED`) on a rendered skill whose description is missing
+  or spans lines, and it is a report, never a size gate. `build.sh` now also refuses a
+  description that is not plain text every YAML loader reads as itself — one that does not start
+  with a letter, holds `: ` or a trailing `:`, holds ` #`, or is a bare null/boolean keyword —
+  because such a value drops the skill on Codex and strips its fields on Claude.
 
 - **The root doc holds rules; procedures load when a practice applies (#434).** Every session
   in every project started by loading the whole rendered practice set — 85 KB, ~21k approx

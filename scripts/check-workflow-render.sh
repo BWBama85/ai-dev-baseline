@@ -202,7 +202,7 @@ neg2="$WORK/neg2-src.md"
 cat > "$neg2" <<'EOF'
 ---
 name: fixture
-description: {{ARGS}}
+description: fixture {{ARGS}}
 user-invocable: true
 ---
 
@@ -235,12 +235,41 @@ EOF
 d="$WORK/neg3"
 render_fixture "$d" fixture "$neg3"; rc=$?
 no "$rc" "a folded/multi-line description fails the build"
-has "$(cat "$d/build.log" 2>/dev/null)" 'non-single-line' "neg3 fails via the single-line-description guard"
+has "$(cat "$d/build.log" 2>/dev/null)" '(a folded/block scalar)' "neg3 fails via the single-line-description guard"
 if [ -f "$d/agents/claude/skills/fixture/SKILL.md" ]; then
   bad "skill was written despite the multi-line description"
 else
   ok
 fi
+
+# --- 3b': a description that is not PLAIN TEXT fails the build (#436) ----------------------------
+# Each value is one line, so only the plain-text rule can refuse it — and each is a shape a YAML
+# loader reads as something else (null, a boolean, a mapping, a cut-short string, a flow sequence)
+# or cannot parse. The control proves the fixture builds when the value is plain.
+# desc_neg <label> <value> <reason> — build a fixture whose description is <value>.
+desc_neg() {
+  local d="$WORK/desc-$1" src="$WORK/desc-$1-src.md"
+  printf -- '---\nname: fixture\ndescription: %s\nuser-invocable: true\n---\n\n# /fixture\nbody ok\n' "$2" > "$src"
+  render_fixture "$d" fixture "$src"; rc=$?
+  if [ -z "$3" ]; then
+    yes "$rc" "plain-text ($1): [$2] builds"
+    return
+  fi
+  no "$rc" "plain-text ($1): [$2] fails the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
+  if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
+}
+desc_neg control 'Use when testing, with parens (and a hash#tag), a:b and --flags.' ''
+desc_neg quoted '"quoted text"' 'a value that does not start with a letter'
+desc_neg flow '[not a list' 'a value that does not start with a letter'
+desc_neg comment '# only a comment' 'a value that does not start with a letter'
+desc_neg number '123' 'a value that does not start with a letter'
+desc_neg mapping 'Use it: now' 'a colon YAML reads as a mapping'
+desc_neg colon-end 'Ends with a colon:' 'a colon YAML reads as a mapping'
+desc_neg cut 'Fixes it #435 and more' 'a space-hash YAML reads as a comment'
+desc_neg null 'null' 'a bare YAML keyword'
+desc_neg bool 'True' 'a bare YAML keyword'
+desc_neg yes 'yes' 'a bare YAML keyword'
 
 # --- 3c: the EMPTY-SLUG refusal, OBSERVED FAILING (#183) --------------------------------------
 # A guard is not done until it has been seen going red on an input it is supposed to reject, and
