@@ -45,18 +45,19 @@
 # --markdown: the same rows as a GitHub-flavored Markdown table with a header row, for a CI job
 # summary, followed by the descriptions table below; the column names above are its ONE home.
 #
-# The `descriptions` figure (#436): every session loads every skill's `description:` value whether
-# or not a skill runs. Its words are already inside the SKILL.md rows, so it is never a row of the
-# artifact table — TOTAL would count them twice. In TSV it is a line of the stderr summary; with
-# --markdown, the report CI publishes, it is a second table after a blank line, one row per agent.
-# Per agent — one session loads one agent's set — it is the skill count, the values' `wc -w`
-# words, and ceil(bytes/4) of the values. The value is the text of the rendered frontmatter's one
-# `description:` line after the key; scripts/build.sh admits only plain text a YAML loader reads as
-# itself, so that text is what every agent loads. That is the descriptions' share of the listing,
-# not the whole of it (each agent adds names and paths around them). It is always the current
-# tree's; --since reports growth in the SKILL.md rows' deltas. A rendered SKILL.md with no such
-# line — absent, empty, a block scalar, continued onto another line, or given twice — is
-# UNDESCRIBED: a broken render, never zero words.
+# The `descriptions` figure (#436) is the NOMINAL always-loaded cost: the text of every skill's
+# `description:` value, which each agent lists at session start whether or not a skill runs, before
+# any host budget — a host may shorten or drop entries when its listing is over one. Its words are
+# already inside the SKILL.md rows, so it is never a row of the artifact table — TOTAL would count
+# them twice. In TSV it is a line of the stderr summary; with --markdown, the report CI publishes,
+# it is a second table after a blank line, one row per agent. Per agent — one session loads one
+# agent's set — it is the skill count, the values' `wc -w` words, and ceil(bytes/4) of the values.
+# The value is the one `description:` line's text after the key, and scripts/skill-description.awk
+# — the rule build.sh applies to every source — admits only plain text every YAML loader reads as
+# itself. That is the descriptions' share of the listing, not the whole of it (each agent adds
+# names and paths around them). It is always the current tree's; --since reports growth in the
+# SKILL.md rows' deltas. A render that fails the rule is UNDESCRIBED: a broken render, never zero
+# words.
 #
 # The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
 # below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render
@@ -118,6 +119,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 cd "$(dirname "$0")/.." || exit 1
+# The description rule is the shared one or nothing: without it every skill would read as an
+# unreadable description rather than as a missing file.
+[ -r scripts/skill-description.awk ] || {
+  printf '%s: FATAL — scripts/skill-description.awk is missing; cannot read skill descriptions\n' "${0##*/}" >&2
+  exit 1
+}
 
 # <agent>:<root-doc-basename>. Restated rather than sourced: scripts/build.sh owns the same triple
 # and says why it is not single-sourced yet.
@@ -187,38 +194,16 @@ measure() {
 }
 
 # describe <SKILL.md> <agent> — add the rendered description to <agent>'s always-loaded figure, or
-# diagnose and fail closed. The single-line rule is scripts/build.sh's source rule, applied to the
-# render: the Codex/Gemini frontmatter carries only that one line. build.sh also admits only plain
-# text a YAML loader reads as itself, so the line's text is the value every agent loads.
+# diagnose and fail closed. The rule is scripts/skill-description.awk, the one build.sh applies to
+# every source: a render that passes it carries plain text every YAML loader reads as itself.
 declare -A D_SKILLS=() D_WORDS=() D_BYTES=()
 describe() {
   local f="$1" a="$2" out v counts words bytes
-  out="$(LC_ALL=C awk '
-    { sub(/\r$/, "") }
-    NR == 1 { if ($0 != "---") { r = "no frontmatter"; exit }; next }
-    $0 == "---" { closed = 1; exit }
-    cont && /^[[:space:]]*$/ { next }
-    cont && /^[[:space:]]*#/ { next }
-    cont && /^[[:space:]]/ { r = "a multi-line continuation"; exit }
-    { cont = 0 }
-    /^description:/ {
-      if (seen) { r = "a second description line"; exit }
-      v = $0; sub(/^description:[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
-      if (v == "") { r = "an empty description"; exit }
-      if (v ~ /^[>|][+-]?$/) { r = "a folded/block scalar"; exit }
-      seen = 1; cont = 1
-    }
-    END {
-      if (r == "" && NR == 0) r = "no frontmatter"
-      if (r == "" && !closed) r = "an unclosed frontmatter"
-      if (r == "" && !seen) r = "no description line"
-      if (r != "") print "bad\t" r
-      else print "ok\t" v
-    }' "$f")" || out=""
+  out="$(LC_ALL=C awk -f scripts/skill-description.awk "$f")" || out=""
   case "$out" in
     ok$'\t'*) v="${out#ok$'\t'}" ;;
     bad$'\t'*)
-      printf 'render-size: UNDESCRIBED %s — %s, where the frontmatter must carry one single-line description\n' "$f" "${out#bad$'\t'}" >&2
+      printf 'render-size: UNDESCRIBED %s — %s (scripts/skill-description.awk names the admitted shape)\n' "$f" "${out#bad$'\t'}" >&2
       rc=1; return 1 ;;
     *) printf 'render-size: UNREADABLE %s — its description could not be read\n' "$f" >&2
        rc=1; return 1 ;;
@@ -431,9 +416,9 @@ for pair in $AGENTS; do
   [ -n "${D_SKILLS[$a]+x}" ] || continue
   descs="${descs:+$descs, }$a ${D_SKILLS[$a]} skill(s) ${D_WORDS[$a]} words approx_tokens $(( (D_BYTES[$a] + 3) / 4 ))"
 done
-[ -z "$descs" ] || printf 'render-size: descriptions, loaded at every session start whether or not a skill runs (a report, never a gate): %s\n' "$descs" >&2
+[ -z "$descs" ] || printf 'render-size: descriptions, the nominal listing text every session starts with, before any host budget (a report, never a gate): %s\n' "$descs" >&2
 if [ "$MARKDOWN" -eq 1 ] && [ -n "$descs" ]; then
-  printf '\nSkill descriptions, loaded at every session start whether or not a skill runs (the current tree, per agent; #436):\n\n'
+  printf '\nSkill descriptions: the nominal listing text every session starts with, before any host budget (the current tree, per agent; #436).\n\n'
   row descriptions skills words approx_tokens
   row --- ---: ---: ---:
   for pair in $AGENTS; do

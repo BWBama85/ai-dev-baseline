@@ -5,7 +5,7 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: cleanup
-description: Use after a merge to delete every merged branch (squash merges included) and finished run state. Argument local, remote or all; unmerged branches are kept.
+description: Use after a merge to delete merged branches (squash merges included) and finished run state. Argument local, remote or all; protected branches are kept.
 ---
 
 # /cleanup

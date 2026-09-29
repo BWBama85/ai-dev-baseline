@@ -56,6 +56,7 @@ render_fixture() {
   local dst="$1" name="$2" src="$3"
   mkdir -p "$dst/scripts" "$dst/scripts/lib" "$dst/base/practices" "$dst/base/workflows" || return 2
   cp "$ROOT/scripts/build.sh" "$dst/scripts/build.sh" || return 2
+  cp "$ROOT/scripts/skill-description.awk" "$dst/scripts/skill-description.awk" || return 2
   # build.sh gates its own interpreter (#256), so the fixture repo needs the library that holds the
   # gate. Without it the fixture dies at the source line and EVERY assertion below reports the same
   # "no SKILL.md" — a fixture failure wearing a render failure's clothes.
@@ -278,6 +279,30 @@ desc_neg yes 'yes' 'a bare YAML keyword'
 desc_fm blank-then-key 'description: Fine\n\nuser-invocable: true' ''
 desc_fm indented-comments 'description: Fine\n  # an indented comment\n\n  # another, after a blank\nuser-invocable: true' ''
 desc_fm comment-then-text 'description: First line\n  # a comment\n  then more text\nuser-invocable: true' 'a multi-line continuation'
+desc_fm no-space 'description:Use a fixture\nuser-invocable: true' 'no space after the description key'
+desc_neg control-byte 'Use a\x1bfixture' 'a byte outside printable ASCII'
+desc_neg embedded-cr 'Use a\rfixture' 'a byte outside printable ASCII'
+desc_neg tab 'Use a\tfixture' 'a byte outside printable ASCII'
+desc_neg non-ascii 'Use a fixture — with a dash' 'a byte outside printable ASCII'
+
+# ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
+# it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.
+desc_mut() {
+  local d="$WORK/desc-one-home" mrc
+  mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows" || { bad "one-home: could not build the fixture"; return; }
+  cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh" && cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh" \
+    && cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk" || { bad "one-home: could not copy the scripts"; return; }
+  printf '# index\n' > "$d/base/practices/00-index.md"; printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+  printf -- '---\nname: fixture\ndescription: Use it: now\nuser-invocable: true\n---\n\n# /fixture\nbody ok\n' > "$d/base/workflows/fixture.md"
+  check_mutate_literal "$d/scripts/skill-description.awk" 'if (v ~ /:( |$)/) { r = "a colon YAML reads as a mapping"; exit }' ''; mrc=$?
+  case "$mrc" in
+    0) bash "$d/scripts/build.sh" >"$d/build.log" 2>&1
+       yes "$?" "one-home: with the mapping rule removed from the fixture's scripts/skill-description.awk, build.sh admits [Use it: now]" ;;
+    2) bad "one-home: the mutation literal no longer matches scripts/skill-description.awk, so this proof would prove nothing" ;;
+    *) bad "one-home: the mutation could not be applied (rc $mrc)" ;;
+  esac
+}
+desc_mut
 desc_fm continued-blank 'description: First line\n\n  folded in after a blank line\nuser-invocable: true' 'a multi-line continuation'
 desc_fm twice-later 'description: One\nuser-invocable: true\ndescription: Two' 'a second description line'
 
@@ -307,6 +332,7 @@ for broken in 'adb_actions_app_slug() { printf ""; }' 'adb_actions_app_slug() { 
   d="$WORK/neg-slug-$(printf '%s' "$broken" | cksum | cut -d' ' -f1)"
   mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows"
   cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
   cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
   # Appended AFTER the real definition, so it wins — and the bash-floor gate above it still loads.
   printf '\n%s\n' "$broken" >> "$d/scripts/lib/common.sh"
@@ -330,6 +356,7 @@ done
 d="$WORK/dotsupport"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -345,6 +372,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming t
 d="$WORK/nlsupport"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -359,6 +387,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'unsupported supporting file' "...naming
 d="$WORK/nldir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"$'\n'
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -375,6 +404,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'supporting files belong to a workflow s
 d="$WORK/casefold"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -391,6 +421,7 @@ if [ ! -e "$WORK/caseprobe" ]; then
   d="$WORK/casedup"
   mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
   cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
   cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
   printf '# index\n' > "$d/base/practices/00-index.md"
   printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -408,6 +439,7 @@ fi
 d="$WORK/readmedir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/README"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -424,6 +456,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'README' "...naming the reserved source"
 d="$WORK/nonmd"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -478,6 +511,7 @@ rm -f "$d/base/workflows/orphanlink"
 d="$WORK/dotdir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/.notes"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -489,6 +523,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'hidden director' "...naming the hidden-
 d="$WORK/nestdir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture/extra"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"

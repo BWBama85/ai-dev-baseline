@@ -726,44 +726,21 @@ render_agent_skill() {
     echo "build.sh: base/workflows/$name.md frontmatter name '$fmname' must equal the file stem '$name'" >&2
     exit 3
   fi
-  # `description:` must be a single, non-empty line. The Codex/Gemini synth render captures ONLY
-  # the `description:` line, so a folded/block scalar (`>`/`|`), a plain multi-line continuation,
-  # or an empty value would silently drop content and ship a skill whose description — the field
-  # that drives activation on those agents — is broken. Reject it at the source (agent-neutral,
-  # so it fails uniformly for every agent, before anything is written). No-op for a normal
-  # single-line description.
-  # That line must also be PLAIN TEXT every YAML loader reads as itself (#436): a value Claude's
-  # loader cannot parse loads the skill with no fields, and Codex skips the skill. The admitted
-  # shape is deliberately narrower than YAML — it starts with a letter (no quote, indicator or
-  # number), holds no `: ` or trailing `:` (a mapping), no whitespace-then-`#` (a comment that cuts
-  # the value short), and is not a bare null or boolean keyword — so its text IS the loaded value,
-  # which is what lets scripts/render-size.sh count the line as written.
-  # The WHOLE frontmatter is scanned: a second `description:` anywhere, or an indented line after
-  # it — blank lines between included, since YAML folds across them — is a different value. An
-  # indented comment line is not: YAML drops it and the value stays one line.
-  descprob="$(awk '
-    NR==1 { next }
-    $0 == "---" { exit }
-    cont && /^[[:space:]]*$/ { next }
-    cont && /^[[:space:]]*#/ { next }
-    cont && /^[[:space:]]/   { print "a multi-line continuation"; exit }
-    { cont = 0 }
-    seen && /^description:/  { print "a second description line"; exit }
-    /^description:[[:space:]]*$/                     { print "empty"; exit }
-    /^description:[[:space:]]*[>|][+-]?[[:space:]]*$/ { print "a folded/block scalar"; exit }
-    /^description:/ {
-      v = $0; sub(/^description:[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
-      if (v !~ /^[A-Za-z]/)          { print "a value that does not start with a letter"; exit }
-      if (v ~ /:([[:space:]]|$)/)     { print "a colon YAML reads as a mapping"; exit }
-      if (v ~ /[[:space:]]#/)         { print "a space-hash YAML reads as a comment"; exit }
-      if (tolower(v) ~ /^(null|true|false|yes|no|on|off|y|n)$/) { print "a bare YAML keyword"; exit }
-      seen = 1; cont = 1
-    }
-  ' "$src")"
-  if [ -n "$descprob" ]; then
-    echo "build.sh: base/workflows/$name.md has a 'description:' that is not one line of plain text ($descprob) — it must be one non-empty line (the Codex/Gemini render captures only that line) that starts with a letter, with no ': ', no trailing ':', no ' #', and no bare null/boolean keyword." >&2
-    exit 3
-  fi
+  # `description:` is checked by THE description rule, scripts/skill-description.awk, which
+  # scripts/render-size.sh also runs on every render (#436): one line of plain text every YAML loader
+  # reads as itself. The Codex/Gemini synth render captures ONLY that line, and a value a loader
+  # cannot parse drops the skill on Codex and strips its fields on Claude, so it is refused here, at
+  # the source, before anything is written.
+  descout="$(LC_ALL=C awk -f "$root/scripts/skill-description.awk" "$src")" || descout=""
+  case "$descout" in
+    ok$'\t'*) : ;;
+    bad$'\t'*)
+      echo "build.sh: base/workflows/$name.md has a 'description:' that is not one line of plain text (${descout#bad$'\t'}) — see scripts/skill-description.awk for the admitted shape (the Codex/Gemini render captures only that line)." >&2
+      exit 3 ;;
+    *)
+      echo "build.sh: could not run the description rule (scripts/skill-description.awk) on base/workflows/$name.md" >&2
+      exit 3 ;;
+  esac
   # PER-AGENT MARKERS ARE BODY-ONLY, and that is REJECTED here rather than merely documented
   # (independent-review find). `block_filter` has no notion of frontmatter — it also serves the
   # practices, which have none — so it processes a marker there like any other, which means a

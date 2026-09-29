@@ -52,6 +52,7 @@ mk_fixture() {
   local fx="$WORK/$1" agent name
   mkdir -p "$fx/scripts/lib" "$fx/base/workflows" || return 1
   cp "$REPO/scripts/render-size.sh" "$fx/scripts/render-size.sh" || return 1
+  cp "$REPO/scripts/skill-description.awk" "$fx/scripts/skill-description.awk" || return 1
   cp "$REPO/scripts/lib/common.sh" "$fx/scripts/lib/common.sh" || return 1
   for name in alpha beta README; do
     printf 'source %s\n' "$name" > "$fx/base/workflows/$name.md" || return 1
@@ -138,7 +139,7 @@ assert_grown_ten() { eq "$(col "$ALPHA" 6)" "10" "$GROWN_WITNESS"; }
 # fixture` (5 words, 21 bytes): per agent 2 skills, 10 words, ceil(43/4) = 11.
 DESC_WITNESS="descriptions: per agent, the rendered values' words and ceil(bytes/4) — the key excluded"
 assert_desc_figure() {
-  has "$RS_ERR" "descriptions, loaded at every session start whether or not a skill runs (a report, never a gate): claude 2 skill(s) 10 words approx_tokens 11, codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 10 words approx_tokens 11" \
+  has "$RS_ERR" "descriptions, the nominal listing text every session starts with, before any host budget (a report, never a gate): claude 2 skill(s) 10 words approx_tokens 11, codex 2 skill(s) 10 words approx_tokens 11, gemini 2 skill(s) 10 words approx_tokens 11" \
     "$DESC_WITNESS"
 }
 UNDESC_WITNESS="undescribed: a rendered skill whose frontmatter has no description line fails the report"
@@ -205,6 +206,20 @@ undesc_case twice "a second description line" '---\nname: beta\ndescription: one
 undesc_case twice-later "a second description line" '---\nname: beta\ndescription: one\nuser-invocable: true\ndescription: two\n---\n\nbody\n'
 undesc_case continued-blank "a multi-line continuation" '---\nname: beta\ndescription: first line\n\n  folded in after a blank line\n---\n\nbody\n'
 undesc_case comment-then-text "a multi-line continuation" '---\nname: beta\ndescription: first line\n  # a comment\n  then more text\n---\n\nbody\n'
+# The report reads a render with the SAME rule build.sh applies to a source, so a value a loader
+# reads as something else is refused here too rather than counted as text.
+undesc_case space-hash "a space-hash YAML reads as a comment" '---\nname: beta\ndescription: Use a fixture # ignored words\n---\n\nbody\n'
+undesc_case keyword "a bare YAML keyword" '---\nname: beta\ndescription: true\n---\n\nbody\n'
+undesc_case mapping "a colon YAML reads as a mapping" '---\nname: beta\ndescription: Use it: now\n---\n\nbody\n'
+undesc_case no-space "no space after the description key" '---\nname: beta\ndescription:Use a fixture\n---\n\nbody\n'
+undesc_case control "a byte outside printable ASCII" '---\nname: beta\ndescription: Use a\x1bfixture\n---\n\nbody\n'
+# Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
+fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"
+rm -f "$fx/scripts/skill-description.awk"
+run_rs "$fx"
+eq "$RS_RC" "1" "no-rule: a missing scripts/skill-description.awk fails the report"
+has "$RS_ERR" "FATAL — scripts/skill-description.awk is missing" "no-rule: …naming the missing rule"
+eq "$(printf '%s' "$RS_OUT" | wc -c | tr -d ' ')" "0" "no-rule: …before printing a single row"
 undesc_case no-fm "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
 undesc_case unclosed "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
 fx="$(mk_fixture undesc-witness)" || bad "fixture: could not build the undescribed-witness tree"
@@ -214,7 +229,7 @@ assert_undescribed
 
 # ------- MUTATIONS: a figure that counts the key, and a reader that passes a missing one ---------
 fx="$(mk_fixture mut-desc-key)" || bad "fixture: could not build the description-key mutation tree"
-check_mutate_literal "$fx/scripts/render-size.sh" 'seen = 1; cont = 1' 'v = $0; seen = 1; cont = 1'; mrc=$?
+check_mutate_literal "$fx/scripts/skill-description.awk" 'seen = 1; cont = 1' 'v = $0; seen = 1; cont = 1'; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_desc_figure 2>&1 )"
      has "$out" "mutant-rc=0" "mut-desc-key: the mutated command still runs"
@@ -222,12 +237,12 @@ case "$mrc" in
        *"FAIL: $DESC_WITNESS"*) ok ;;
        *) bad "MUTATION 3 DID NOT FIRE: the assertion [$DESC_WITNESS] stayed green on a figure that counts the description: key, so it proves nothing (subshell output: $out)" ;;
      esac ;;
-  2) bad "mut-desc-key: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
+  2) bad "mut-desc-key: the mutation literal no longer matches scripts/skill-description.awk, so this proof would prove nothing" ;;
   *) bad "mut-desc-key: the mutation could not be applied (rc $mrc)" ;;
 esac
 fx="$(mk_fixture mut-undesc)" || bad "fixture: could not build the undescribed mutation tree"
 printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
-check_mutate_literal "$fx/scripts/render-size.sh" 'if (r == "" && !seen) r = "no description line"' ''; mrc=$?
+check_mutate_literal "$fx/scripts/skill-description.awk" 'if (r == "" && !seen) r = "no description line"' ''; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_undescribed 2>&1 )"
      has "$out" "mutant-rc=0" "mut-undesc: the mutant passes a skill with no description line as zero words, which is the defect"
@@ -235,7 +250,7 @@ case "$mrc" in
        *"FAIL: $UNDESC_WITNESS"*) ok ;;
        *) bad "MUTATION 4 DID NOT FIRE: the assertion [$UNDESC_WITNESS] stayed green on a reader that passes a missing description, so it proves nothing (subshell output: $out)" ;;
      esac ;;
-  2) bad "mut-undesc: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
+  2) bad "mut-undesc: the mutation literal no longer matches scripts/skill-description.awk, so this proof would prove nothing" ;;
   *) bad "mut-undesc: the mutation could not be applied (rc $mrc)" ;;
 esac
 

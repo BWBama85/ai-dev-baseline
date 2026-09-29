@@ -16,7 +16,7 @@ already happened. Adoption is working out **what this project already has, what 
 the baseline, what carries a delta that has to be kept, and in what order to reconcile them.**
 It classifies every artifact `keep` / `remove` / `move` / `escalate` with evidence and parity
 caveats, infers an `agents.toml` from the project's own signals, flags four adoption-hygiene
-risks, and emits an ordered migration plan — and never edits a file in the project it scans.
+risks, and emits an ordered migration plan — and never edits the scanned project's own files.
 
 Argument: `$ARGUMENTS` — an optional path (defaults to the current repo), an optional
 `--agents claude,codex` to narrow the scan, and an optional `--apply`.

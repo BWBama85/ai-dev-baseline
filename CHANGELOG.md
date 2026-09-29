@@ -14,18 +14,19 @@ only by a published release, which is what these entries are the notes for.
   loads each skill's `description:`, whether or not a skill runs, and the model reads it to
   decide which skill to invoke. The eight descriptions totalled 479 words and summarized each
   skill instead of saying when to use it. Each is now at most 25 words: when to invoke it, the
-  argument it takes, and one clause that sets it apart, 198 words in all. The argument matters
+  argument it takes, and one clause that sets it apart, 197 words in all. The argument matters
   most on Codex and Gemini, which drop `argument-hint`. Facts the old abstracts carried that a
   body did not already hold moved into that body's opening paragraph, which loads only on
-  invocation. `render-size.sh`
-  now reports the always-loaded cost as a `descriptions` figure per agent (skills, words,
-  `approx_tokens`): a line of its stderr summary, and a second table in the `--markdown` report
-  CI puts in every PR's job summary, never a row of the artifact table, whose TOTAL already counts
-  those words. It fails closed (`UNDESCRIBED`) on a rendered skill whose description is missing
-  or spans lines, and it is a report, never a size gate. `build.sh` now also refuses a
-  description that is not plain text every YAML loader reads as itself — one that does not start
-  with a letter, holds `: ` or a trailing `:`, holds ` #`, or is a bare null/boolean keyword —
-  because such a value drops the skill on Codex and strips its fields on Claude.
+  invocation. `render-size.sh` now reports the always-loaded cost as a `descriptions` figure per
+  agent (skills, words, `approx_tokens`): a line of its stderr summary, and a second table in the
+  `--markdown` report CI puts in every PR's job summary, never a row of the artifact table, whose
+  TOTAL already counts those words. The figure is nominal: a host may shorten or drop entries when its listing is over
+  budget. It is a report, never a size gate. Both `build.sh` (on every source) and `render-size.sh`
+  (on every render, as `UNDESCRIBED`) now refuse a description that is not plain text every YAML
+  loader reads as itself — printable ASCII, starting with a letter, a space after the key, one
+  line, no `: `, trailing `:`, ` #` or bare null/boolean keyword — because such a value drops the
+  skill on Codex and strips its fields on Claude. The rule has one home,
+  `scripts/skill-description.awk`.
 
 - **The root doc holds rules; procedures load when a practice applies (#434).** Every session
   in every project started by loading the whole rendered practice set — 85 KB, ~21k approx
