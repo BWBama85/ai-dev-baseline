@@ -198,6 +198,7 @@ describe() {
     NR == 1 { if ($0 != "---") { r = "no frontmatter"; exit }; next }
     $0 == "---" { closed = 1; exit }
     cont && /^[[:space:]]*$/ { next }
+    cont && /^[[:space:]]*#/ { next }
     cont && /^[[:space:]]/ { r = "a multi-line continuation"; exit }
     { cont = 0 }
     /^description:/ {

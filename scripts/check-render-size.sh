@@ -176,10 +176,11 @@ hasnt "$RS_OUT" "descriptions" "green: the descriptions figure is never a row â€
 # --- descriptions (#436): per agent, and fail-closed on a render that lost one -------------------
 fx="$(mk_fixture desc)" || bad "fixture: could not build the descriptions tree"
 # Per agent, not one agent's figure printed three times: gemini's beta says twelve words (62 bytes).
-# claude's beta is followed by a blank line and a key, which ends the value rather than continuing it.
+# claude's beta is followed by an indented comment, a blank line and a key: YAML drops the comment
+# and the key ends the value, so neither continues it.
 printf -- '---\nname: beta\ndescription: one two three four five six seven eight nine ten eleven twelve\n---\n\nbody\n' \
   > "$fx/agents/gemini/skills/beta/SKILL.md"
-printf -- '---\nname: beta\ndescription: use beta in a fixture\n\nuser-invocable: true\n---\n\nbody\n' \
+printf -- '---\nname: beta\ndescription: use beta in a fixture\n  # an indented comment\n\nuser-invocable: true\n---\n\nbody\n' \
   > "$fx/agents/claude/skills/beta/SKILL.md"
 run_rs "$fx"
 yes "$RS_RC" "desc: a longer description is a report, never a failure"
@@ -203,6 +204,7 @@ undesc_case continued "a multi-line continuation" '---\nname: beta\ndescription:
 undesc_case twice "a second description line" '---\nname: beta\ndescription: one\ndescription: two\n---\n\nbody\n'
 undesc_case twice-later "a second description line" '---\nname: beta\ndescription: one\nuser-invocable: true\ndescription: two\n---\n\nbody\n'
 undesc_case continued-blank "a multi-line continuation" '---\nname: beta\ndescription: first line\n\n  folded in after a blank line\n---\n\nbody\n'
+undesc_case comment-then-text "a multi-line continuation" '---\nname: beta\ndescription: first line\n  # a comment\n  then more text\n---\n\nbody\n'
 undesc_case no-fm "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
 undesc_case unclosed "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
 fx="$(mk_fixture undesc-witness)" || bad "fixture: could not build the undescribed-witness tree"

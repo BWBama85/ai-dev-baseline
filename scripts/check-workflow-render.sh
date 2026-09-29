@@ -273,8 +273,11 @@ desc_neg null 'null' 'a bare YAML keyword'
 desc_neg bool 'True' 'a bare YAML keyword'
 desc_neg yes 'yes' 'a bare YAML keyword'
 # The WHOLE frontmatter is the scope, not the line after the description: YAML folds an indented
-# line in across a blank one, and a later duplicate key is a second value.
+# line in across a blank one, and a later duplicate key is a second value. An indented comment is
+# dropped, so it does not continue the value — but text indented after one is still refused.
 desc_fm blank-then-key 'description: Fine\n\nuser-invocable: true' ''
+desc_fm indented-comments 'description: Fine\n  # an indented comment\n\n  # another, after a blank\nuser-invocable: true' ''
+desc_fm comment-then-text 'description: First line\n  # a comment\n  then more text\nuser-invocable: true' 'a multi-line continuation'
 desc_fm continued-blank 'description: First line\n\n  folded in after a blank line\nuser-invocable: true' 'a multi-line continuation'
 desc_fm twice-later 'description: One\nuser-invocable: true\ndescription: Two' 'a second description line'
 

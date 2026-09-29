@@ -739,11 +739,13 @@ render_agent_skill() {
   # the value short), and is not a bare null or boolean keyword — so its text IS the loaded value,
   # which is what lets scripts/render-size.sh count the line as written.
   # The WHOLE frontmatter is scanned: a second `description:` anywhere, or an indented line after
-  # it — blank lines between included, since YAML folds across them — is a different value.
+  # it — blank lines between included, since YAML folds across them — is a different value. An
+  # indented comment line is not: YAML drops it and the value stays one line.
   descprob="$(awk '
     NR==1 { next }
     $0 == "---" { exit }
     cont && /^[[:space:]]*$/ { next }
+    cont && /^[[:space:]]*#/ { next }
     cont && /^[[:space:]]/   { print "a multi-line continuation"; exit }
     { cont = 0 }
     seen && /^description:/  { print "a second description line"; exit }
