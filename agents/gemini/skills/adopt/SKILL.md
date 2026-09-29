@@ -5,7 +5,7 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: adopt
-description: Adopt the baseline into an existing project that already has agent config. Optional path argument; reports a keep/remove/move migration plan and never edits existing files.
+description: Adopt the baseline into an existing project that has agent config. Optional path; reports a keep/remove/move migration plan and never edits the project's own files.
 ---
 
 # /adopt

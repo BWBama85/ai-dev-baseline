@@ -1,6 +1,6 @@
 ---
 name: adopt
-description: Adopt the baseline into an existing project that already has agent config. Optional path argument; reports a keep/remove/move migration plan and never edits existing files.
+description: Adopt the baseline into an existing project that has agent config. Optional path; reports a keep/remove/move migration plan and never edits the project's own files.
 argument-hint: "[path] [--agents claude,codex] [--apply]"
 allowed-tools: Bash, Read
 user-invocable: true
