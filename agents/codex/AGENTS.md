@@ -11,7 +11,8 @@ A project-specific doc in the current repo overrides anything here
 
 A practice with a procedure ends in a **Procedure:** line naming the file that holds it. If
 that file is missing, re-link the procedures with `baseline update` (in a pinned project,
-`baseline pinned status` names what is missing).
+`bash "$(git rev-parse --show-toplevel)/.codex/adb/lib/pinned-install.sh" status` names what is
+missing).
 
 ---
 

@@ -33,8 +33,8 @@ only by a published release, which is what these entries are the notes for.
 
   **Upgrading a global install:** a bare `git pull` updates the root doc but cannot create the
   new procedure links — run `baseline update` (or `./install.sh`) once. Claude's session-start
-  currency check does this on its own; the root doc's header names the command for any agent that
-  finds a procedure missing.
+  currency check does this on its own in its `auto` mode; the root doc's header names the command
+  for any agent that finds a procedure missing.
 
 - **Fix code is reviewed before it is pushed (#491).** `/implement-issue` reviewed a diff once and
   pushed step 9's fixes unread; `/resolve-pr-threads` sent each round's fixes straight to the async

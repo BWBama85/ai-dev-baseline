@@ -4590,6 +4590,7 @@ adb_install_source() {
 # file they never chose. And a NUL is checked on the raw bytes because command substitution and
 # `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
 # a value the operator never wrote. Reported by the declared reviewer on PR #429.
+# An EMPTY <table> names the top level — the keys before the first `[table]` header.
 # Usage: adb_toml_get <file> <table> <key>
 adb_toml_get() {
   local file="$1" table="$2" key="$3"
@@ -4597,6 +4598,7 @@ adb_toml_get() {
   [ -r "$file" ] || return 2
   [ "$(LC_ALL=C tr -d '\000' < "$file" | wc -c | tr -d ' ')" -eq "$(wc -c < "$file" | tr -d ' ')" ] || return 3
   awk -v tbl="$table" -v key="$key" '
+    BEGIN { intbl = (tbl == "") }
     # A table header toggles whether we are inside the target table. The header name is
     # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
     # never accidentally match table "gatesXscope" via the "." metacharacter, and a

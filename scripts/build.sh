@@ -417,9 +417,20 @@ render() {
     printf '[ai-dev-baseline](https://github.com/BWBama85/ai-dev-baseline).\n'
     printf 'A project-specific doc in the current repo overrides anything here\n'
     printf '(see base/practices/00-index.md for precedence).\n\n'
-    printf 'A practice with a procedure ends in a **Procedure:** line naming the file that holds it. If\n'
-    printf 'that file is missing, re-link the procedures with `baseline update` (in a pinned project,\n'
-    printf '`baseline pinned status` names what is missing).\n\n'
+    local p any=0
+    for p in "$practices"/*.md; do
+      case "${p##*/}" in 00-index.md) continue ;; esac
+      if build_has_procedure "$p"; then any=1; break; fi
+    done
+    if [ "$any" -eq 1 ]; then
+      printf 'A practice with a procedure ends in a **Procedure:** line naming the file that holds it. If\n'
+      printf 'that file is missing, re-link the procedures with `baseline update`'
+      # Only these agents have a pinned install, and a pinned-only machine may have no `baseline`.
+      case "$agent" in
+        claude|codex) printf ' (in a pinned project,\n`bash "$(git rev-parse --show-toplevel)/.%s/adb/lib/pinned-install.sh" status` names what is\nmissing).\n\n' "$agent" ;;
+        *)            printf '.\n\n' ;;
+      esac
+    fi
     printf -- '---\n\n'
     local f
     for f in "$practices"/*.md; do

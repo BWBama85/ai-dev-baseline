@@ -1013,6 +1013,24 @@ printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$cxhome/config.toml"
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PCG/svc/GUIDE.md"
 out="$(CODEX_HOME="$cxhome" bash "$PI" install --project "$PCG" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback): a configured fallback doc is measured"
+# A `]` inside a quoted name is part of the name, not the end of the array.
+PCQ="$(new_project codexbracketname)"
+cxhome2="$work/codexhome2"; mkdir -p "$cxhome2" "$PCQ/svc"
+printf 'project_doc_fallback_filenames = ["GUIDE]v2.md", "OTHER.md"]\n' > "$cxhome2/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose under a fallback name that carries a closing bracket, long enough." }' > "$PCQ/svc/GUIDE]v2.md"
+out="$(CODEX_HOME="$cxhome2" bash "$PI" install --project "$PCQ" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback-bracket): a fallback name carrying ] is still counted"
+# A config that exists but cannot be read leaves the budget unmeasured, never measured without it.
+if [ "$(id -u)" -ne 0 ]; then
+  PCU="$(new_project codexunreadablecfg)"
+  mkdir -p "$PCU/.codex"; printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$PCU/.codex/config.toml"
+  chmod 000 "$PCU/.codex/config.toml"
+  out="$(bash "$PI" install --project "$PCU" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+  chmod 644 "$PCU/.codex/config.toml"
+  has "$out" "could not list or read this project's AGENTS.md files" "budget(unreadable-config): an unreadable config reports the budget unchecked"
+fi
+# The vendored root doc names the pinned route a machine without `baseline` can run.
+has "$(cat "$PCQ/.codex/adb/AGENTS.practices.md")" '/.codex/adb/lib/pinned-install.sh" status' "header: a pinned doc names the vendored status command"
 # A nested repository is its own project root to Codex, so its docs never add to the outer root's.
 PCR="$(new_project codexnestedrepo)"
 mkdir -p "$PCR/vendor/lib/.git"

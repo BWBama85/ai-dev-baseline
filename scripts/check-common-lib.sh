@@ -264,6 +264,15 @@ danglesrc="$work/dangle-src"; ln -s "$work/nowhere" "$danglesrc"
 adb_link "$danglesrc" "$work/guard-dangle.txt" "$backup" 2>/dev/null; no $? "adb_link dangling-symlink source returns nonzero"
 if [ ! -e "$work/guard-dangle.txt" ]; then ok; else bad "adb_link dangling source creates no link"; fi
 
+# --- adb_toml_get: an empty table names the top level ------------------------
+tlf="$work/toplevel.toml"
+printf 'k = ["a]b.md", "c.md"]\n[t]\nk = ["nested"]\n' > "$tlf"
+eq "$(adb_toml_get "$tlf" "" k)" '["a]b.md", "c.md"]' "adb_toml_get with an empty table reads the top-level key"
+eq "$(adb_toml_get "$tlf" t k)" '["nested"]' "…and a named table still reads its own key, not the top-level one"
+eq "$(adb_toml_array "$(adb_toml_get "$tlf" "" k)" | tr '\n' ' ')" "a]b.md c.md " "a bracket inside a quoted element survives the array read"
+printf '[t]\nk = ["nested"]\n' > "$tlf"
+adb_toml_get "$tlf" "" k >/dev/null; eq "$?" "1" "a key that appears only inside a table is absent at the top level"
+
 # --- adb_agent_manifest (#48) ------------------------------------------------
 # One producer of the install surface. Assert the shape: TAB-separated <src>\t<dest>, absolute
 # sources with NO trailing slash on skill dirs, and the canonical scripts/lib entry.

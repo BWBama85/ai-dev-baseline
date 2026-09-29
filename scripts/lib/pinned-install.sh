@@ -44,6 +44,7 @@ set -u
 # common.sh lives beside this file; the install lands the whole lib directory together, so a
 # missing one is a broken install and fails loud rather than degrading.
 _pi_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+_PI_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/${BASH_SOURCE[0]##*/}"
 if [ ! -f "$_pi_common" ]; then
   printf 'pinned-install: FATAL — required library not found: %s (broken/incomplete install)\n' "$_pi_common" >&2
   return 1 2>/dev/null || exit 1
@@ -98,29 +99,18 @@ PI_CODEX_SCAN_SECS=$(( 10#$PI_CODEX_SCAN_SECS ))
 # _pi_codex_fallback_names <project-root> — the `project_doc_fallback_filenames` Codex adds after
 # AGENTS.override.md and AGENTS.md, one per line: the repository's `.codex/config.toml` when it sets
 # the key, else `${CODEX_HOME:-~/.codex}/config.toml`. The system, profile and command-line layers
-# are not read. A name carrying a slash is not a filename and is skipped.
+# are not read, and a name carrying a slash is not a filename and is skipped. Returns 1 when a
+# config exists but cannot be read, or sets the key to something other than a one-line array.
 _pi_codex_fallback_names() {
-  local f names=""
+  local f raw rc n
   for f in "$1/.codex/config.toml" "${CODEX_HOME:-$HOME/.codex}/config.toml"; do
-    [ -f "$f" ] || continue
-    names="$(awk -v sq="'" '
-      /^[[:space:]]*\[/ && !inval { exit }
-      !inval && /^[[:space:]]*project_doc_fallback_filenames[[:space:]]*=/ { inval = 1; sub(/^[^=]*=/, "") }
-      inval {
-        buf = buf " " $0
-        if (index($0, "]")) { found = 1; exit }
-      }
-      END {
-        if (!found) exit
-        sub(/\].*$/, "", buf)
-        while (match(buf, "\"[^\"]*\"|" sq "[^" sq "]*" sq)) {
-          v = substr(buf, RSTART + 1, RLENGTH - 2); buf = substr(buf, RSTART + RLENGTH)
-          if (v != "" && index(v, "/") == 0) print v
-        }
-        print "\001"
-      }' "$f")"
-    # The trailing \001 line says the key was set (possibly to []), which ends the search.
-    case "$names" in *$'\001') printf '%s' "${names%$'\001'}"; return 0 ;; esac
+    raw="$(adb_toml_get "$f" "" project_doc_fallback_filenames)"; rc=$?
+    case "$rc" in 0) : ;; 1) continue ;; *) return 1 ;; esac
+    case "$raw" in '['*']') : ;; *) return 1 ;; esac
+    while IFS= read -r n; do
+      case "$n" in ''|*/*) : ;; *) printf '%s\n' "$n" ;; esac
+    done <<< "$(adb_toml_array "$raw")"
+    return 0
   done
   return 0
 }
@@ -136,15 +126,21 @@ _pi_codex_fallback_names() {
 # PI_CODEX_SCAN_SECS bounds the WHOLE measurement — the walk, each size read and the loops between —
 # and returns 3 when it runs out; 1 when a walk or a read fails.
 _pi_codex_doc_load() {
-  local p="$1" f d n i best=0 bestdir=. sum anc list wrc deadline left raw
+  local p="$1" f d n i best=0 bestdir=. sum anc list wrc deadline left raw fb
   local -A doc=() rank=() size=() isroot=()
   local -a names=(AGENTS.override.md AGENTS.md) expr=()
   deadline=$(( SECONDS + PI_CODEX_SCAN_SECS ))
+  # Reading the config is inside the bound too: a child interpreter, because the deadline primitive
+  # runs a command, not a function. `$0` is not this file, so its `main` stays unrun.
+  fb="$(adb_run_bounded "$PI_CODEX_SCAN_SECS" 5 "$BASH" -c '. "$1" && _pi_codex_fallback_names "$2"' \
+        adb-codex-fallback "$_PI_SELF" "$p")"; wrc=$?
+  case "$wrc" in 0) : ;; 124) return 3 ;; *) return 1 ;; esac
+  [ "$SECONDS" -lt "$deadline" ] || return 3
   while IFS= read -r n; do
     [ -n "$n" ] || continue
     case " ${names[*]} " in *" $n "*) continue ;; esac
     names+=("$n")
-  done <<< "$(_pi_codex_fallback_names "$p")"
+  done <<< "$fb"
   for i in "${!names[@]}"; do
     rank["${names[$i]}"]="$i"
     [ "$i" -eq 0 ] || expr+=(-o)
