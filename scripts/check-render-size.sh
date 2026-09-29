@@ -214,7 +214,8 @@ undesc_case mapping "a colon YAML reads as a mapping" '---\nname: beta\ndescript
 undesc_case no-space "no space after the description key" '---\nname: beta\ndescription:Use a fixture\n---\n\nbody\n'
 undesc_case control "a byte outside printable ASCII" '---\nname: beta\ndescription: Use a\x1bfixture\n---\n\nbody\n'
 undesc_case nul "a byte outside printable ASCII" '---\nname: beta\ndescription: Fi\0rst value\n---\n\nbody\n'
-undesc_case key-quoted "a description key spelled another way" '---\nname: beta\ndescription: First\n"description": Second\n---\n\nbody\n'
+undesc_case key-quoted "a top-level line that is not a plain key" '---\nname: beta\ndescription: First\n"description": Second\n---\n\nbody\n'
+undesc_case key-tab "a top-level line that is not a plain key" '---\nname: beta\ndescription: First\ndescription\t: Second\n---\n\nbody\n'
 # Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
 fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"
 rm -f "$fx/scripts/skill-description.awk"
@@ -223,7 +224,7 @@ eq "$RS_RC" "1" "no-rule: a missing scripts/skill-description.awk fails the repo
 has "$RS_ERR" "FATAL — scripts/skill-description.awk is missing" "no-rule: …naming the missing rule"
 eq "$(printf '%s' "$RS_OUT" | wc -c | tr -d ' ')" "0" "no-rule: …before printing a single row"
 undesc_case no-fm "no frontmatter" 'name: beta\ndescription: one\n\nbody\n'
-undesc_case unclosed "an unclosed frontmatter" '---\nname: beta\ndescription: one\n\nbody\n'
+undesc_case unclosed "an unclosed frontmatter" '---\nname: beta\ndescription: one\n'
 fx="$(mk_fixture undesc-witness)" || bad "fixture: could not build the undescribed-witness tree"
 printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
 run_rs "$fx"

@@ -286,13 +286,20 @@ desc_neg tab 'Use a\tfixture' 'a byte outside printable ASCII'
 desc_neg non-ascii 'Use a fixture — with a dash' 'a byte outside printable ASCII'
 desc_neg nul 'Fi\0rst value' 'a byte outside printable ASCII'
 # YAML reads every one of these as the SAME `description` key, the last one winning, so a second
-# spelling would give Claude one value and the Codex/Gemini capture another.
-desc_fm key-dquoted 'description: First\n"description": Second\nuser-invocable: true' 'a description key spelled another way'
-desc_fm key-squoted "description: First\n'description': Second\nuser-invocable: true" 'a description key spelled another way'
-desc_fm key-tagged 'description: First\n!!str description: Second\nuser-invocable: true' 'a description key spelled another way'
-desc_fm key-spaced 'description: First\ndescription : Second\nuser-invocable: true' 'a description key spelled another way'
-desc_fm key-complex 'description: First\n? description\n: Second\nuser-invocable: true' 'a description key spelled another way'
-desc_fm key-other 'descriptions: A different key\ndescription: Fine\nuser-invocable: true' ''
+# spelling would give Claude one value and the Codex/Gemini capture another. The rule does not
+# enumerate spellings: a top-level line that is not a plain `key:` is refused, whatever it spells.
+desc_fm key-dquoted 'description: First\n"description": Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-squoted "description: First\n'description': Second\nuser-invocable: true" 'a top-level line that is not a plain key'
+desc_fm key-escaped 'description: First\n"\\x64escription": Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-tagged 'description: First\n!!str description: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-anchored 'description: First\n&d description: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-spaced 'description: First\ndescription : Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-tab 'description: First\ndescription\t: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-complex 'description: First\n? description\n: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+# …and the same holds for every key, `name` included: the render names the skill from the first.
+desc_fm name-twice 'description: Fine\nname: other\nuser-invocable: true' 'the key name given twice'
+desc_fm name-dquoted 'description: Fine\n"name": other\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-other 'descriptions: A different key\ndescription: Fine\nx_1-y: z\nuser-invocable: true' ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

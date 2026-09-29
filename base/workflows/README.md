@@ -43,9 +43,11 @@ bounded by each CLI).
   scalar (`>`/`|`) or a multi-line value would drop content. It must also be **plain text**
   every YAML loader reads as itself: printable ASCII, starting with a letter, a space after the
   key, and no `: `, trailing `:`, ` #` or bare null/boolean keyword — a value a loader cannot
-  parse drops the skill on Codex and strips its fields on Claude. The rule has one home,
-  `scripts/skill-description.awk`; `scripts/build.sh` rejects a source that fails it, loud, for
-  every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
+  parse drops the skill on Codex and strips its fields on Claude. Every top-level frontmatter
+  line is a plain `key:` (letters, digits, `_`, `-`), a comment, blank or indented, and no key is
+  given twice — a quoted or tab-separated key may be a second `description` or `name` that one
+  agent sees and another does not. The rule has one home, `scripts/skill-description.awk`;
+  `scripts/build.sh` rejects a source that fails it, loud, for every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
   at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.
 - **Optional (Claude-specific) keys, passed through verbatim:** `argument-hint`,
   `allowed-tools`, `disallowed-tools`, `effort`. A future non-Claude renderer maps or

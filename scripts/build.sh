@@ -726,6 +726,17 @@ render_agent_skill() {
     echo "build.sh: base/workflows/$name.md frontmatter name '$fmname' must equal the file stem '$name'" >&2
     exit 3
   fi
+  # PER-AGENT MARKERS ARE BODY-ONLY, and that is REJECTED here rather than merely documented
+  # (independent-review find). `block_filter` has no notion of frontmatter — it also serves the
+  # practices, which have none — so it processes a marker there like any other, which means a
+  # well-formed one could delete a frontmatter key or the closing `---` for one agent and not
+  # another. Rejecting is what makes the source contract's "body-only" a fact instead of a wish,
+  # and it belongs in this function because this is the renderer that knows where frontmatter ends.
+  fmmarker="$(awk 'NR==1 { next } $0 == "---" { exit } /<!-- adb:/ { print NR; exit }' "$src")"
+  if [ -n "$fmmarker" ]; then
+    echo "build.sh: base/workflows/$name.md carries a per-agent block marker inside its frontmatter (line $fmmarker) — markers are body-only (see base/workflows/README.md)." >&2
+    exit 3
+  fi
   # `description:` is checked by THE description rule, scripts/skill-description.awk, which
   # scripts/render-size.sh also runs on every render (#436): one line of plain text every YAML loader
   # reads as itself. The Codex/Gemini synth render captures ONLY that line, and a value a loader
@@ -741,17 +752,6 @@ render_agent_skill() {
       echo "build.sh: could not run the description rule (scripts/skill-description.awk) on base/workflows/$name.md" >&2
       exit 3 ;;
   esac
-  # PER-AGENT MARKERS ARE BODY-ONLY, and that is REJECTED here rather than merely documented
-  # (independent-review find). `block_filter` has no notion of frontmatter — it also serves the
-  # practices, which have none — so it processes a marker there like any other, which means a
-  # well-formed one could delete a frontmatter key or the closing `---` for one agent and not
-  # another. Rejecting is what makes the source contract's "body-only" a fact instead of a wish,
-  # and it belongs in this function because this is the renderer that knows where frontmatter ends.
-  fmmarker="$(awk 'NR==1 { next } $0 == "---" { exit } /<!-- adb:/ { print NR; exit }' "$src")"
-  if [ -n "$fmmarker" ]; then
-    echo "build.sh: base/workflows/$name.md carries a per-agent block marker inside its frontmatter (line $fmmarker) — markers are body-only (see base/workflows/README.md)." >&2
-    exit 3
-  fi
 
   mkdir -p "$(dirname "$out")"
   # Render to a temp file and mv into place only on success — a failed render must

@@ -13,11 +13,15 @@
 #
 # The admitted value is deliberately narrower than YAML, so that its text IS what every loader reads
 # as the description (a value Claude cannot parse loads the skill with no fields; Codex skips the
-# skill). It judges the description only — every other key is its own reader's business:
-#   - one `description:` key in a frontmatter that opens on line 1 and closes with `---`, spelled
-#     exactly so (no quoted, tagged, `? ` or `description :` form, which YAML reads as the same key),
-#     a space after the key, and no continuation — an indented line after it, across blank lines,
-#     unless it is a comment, which YAML drops;
+# skill). It judges the description and the one frontmatter property that decides WHICH line is the
+# description: every top-level line is blank, a comment, indented, or a plain `key:` (letters,
+# digits, `_`, `-`), and no key is given twice. A quoted, escaped, tagged, anchored, `? ` or
+# tab-separated key is refused rather than parsed, since YAML may read it as a second spelling of
+# `description` — or of `name` — that Claude would see and the Codex/Gemini capture would not.
+# Every other property of the other keys is their own reader's business. The description itself:
+#   - one `description:` key in a frontmatter that opens on line 1 and closes with `---`, a space
+#     after the key, and no continuation — an indented line after it, across blank lines, unless
+#     it is a comment, which YAML drops;
 #   - printable ASCII only (no control byte, CR, tab or non-ASCII), starting with a letter;
 #   - no `: ` or trailing `:` (a mapping), no ` #` (a comment that cuts it short), and not a bare
 #     null or boolean keyword.
@@ -31,11 +35,6 @@ cont && /^[[:space:]]*$/ { next }
 cont && /^[[:space:]]*#/ { next }
 cont && /^[[:space:]]/ { r = "a multi-line continuation"; done = 1; next }
 { cont = 0 }
-{
-  k = $0; sub(/^\?[ ]+/, "", k); sub(/^![^ ]*[ ]+/, "", k)
-  if (k ~ /^["']/) { q = substr(k, 1, 1); k = substr(k, 2); sub(q, "", k) }
-  if (k ~ /^description[ ]*(:|$)/ && $0 !~ /^description:/) { r = "a description key spelled another way"; done = 1; next }
-}
 /^description:/ {
   if (seen) { r = "a second description line"; done = 1; next }
   if ($0 ~ /^description:[[:space:]]*$/) { r = "an empty description"; done = 1; next }
@@ -48,6 +47,12 @@ cont && /^[[:space:]]/ { r = "a multi-line continuation"; done = 1; next }
   if (v ~ / #/) { r = "a space-hash YAML reads as a comment"; done = 1; next }
   if (tolower(v) ~ /^(null|true|false|yes|no|on|off|y|n)$/) { r = "a bare YAML keyword"; done = 1; next }
   seen = 1; cont = 1
+}
+!/^$/ && !/^#/ && !/^[[:space:]]/ {
+  if ($0 !~ /^[A-Za-z][A-Za-z0-9_-]*:( |$)/) { r = "a top-level line that is not a plain key"; done = 1; next }
+  key = $0; sub(/:.*/, "", key)
+  if (key in keys) { r = "the key " key " given twice"; done = 1; next }
+  keys[key] = 1
 }
 END {
   if (r == "" && NR == 0) r = "no frontmatter"
