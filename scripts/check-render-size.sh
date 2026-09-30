@@ -12,11 +12,11 @@
 # The measurements #432 and #436 added are guarded the same way, and each is OBSERVED FAILING on a
 # mutated copy of the command: a fenced-comment count that ignores fences, a `--since` half that
 # measures the working tree instead of the ref, a descriptions figure that counts the key, and a
-# description reader that passes a skill with no description line as zero words must each turn a
-# named assertion below red — the SAME assertion function the green run uses, re-run against the
-# mutant in a subshell, with its own `FAIL:` line as the witness. Inline rather than a `--mutation`
-# pool row (the check-build-atomic.sh shape): four rows, seconds each, and no new registry, gate or
-# nightly entry.
+# description reader that passes a skill with no description line as zero words, and a description
+# pipeline that answers for its last stage alone, must each turn a named assertion below red — the
+# SAME assertion function the green run uses, re-run against the mutant in a subshell, with its own
+# `FAIL:` line as the witness. Inline rather than a `--mutation` pool row (the check-build-atomic.sh
+# shape): five rows, seconds each, and no new registry, gate or nightly entry.
 #
 # Never touches the tracked tree — every case builds its own fixture under one `mktemp -d`,
 # including the git repositories the `--since` cases need.
@@ -490,16 +490,92 @@ run_rs "$fx" --markdown
 yes "$RS_RC" "markdown: exits 0"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 1p)" "| name | lines | words | approx_tokens | fenced_comment_lines |" "markdown: the header row names the five columns"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 2p)" "| --- | ---: | ---: | ---: | ---: |" "markdown: the separator row"
-eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "23" "markdown: the artifact table (header, separator, 12 rows, TOTAL), then the descriptions table (blank, caption, blank, header, separator, one row per agent)"
+eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "24" "markdown: the artifact table (header, separator, 12 rows, TOTAL), then the descriptions table (blank, caption, blank, header, separator, one row per agent, TOTAL)"
 has "$(printf '%s\n' "$RS_OUT" | sed -n 15p)" "| TOTAL |" "markdown: the artifact table still ends in TOTAL"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 16p)" "" "markdown: a blank line closes the artifact table, so no row is appended to it"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n '19,21p')" \
-   "$(printf '%s\n' '| descriptions | skills | words | approx_tokens |' '| --- | ---: | ---: | ---: |' '| claude | 3 | 15 | 17 |')" \
+   "$(printf '%s\n' '| agent | skills | words | approx_tokens |' '| --- | ---: | ---: | ---: |' '| claude | 3 | 15 | 17 |')" \
    "markdown: the descriptions table — three skills of five words each, 65 bytes"
 eq "$(printf '%s\n' "$RS_OUT" | sed -n '21,23p' | cut -d' ' -f2 | tr '\n' ' ')" "claude codex gemini " "markdown: one descriptions row per agent"
+eq "$(printf '%s\n' "$RS_OUT" | sed -n 24p)" "| TOTAL | 9 | 45 | 51 |" "markdown: the descriptions table ends in its own TOTAL, the sum of the rows above it"
 run_rs "$fx" --since HEAD~1 --markdown
 eq "$(printf '%s\n' "$RS_OUT" | sed -n 1p)" "| name | lines | words | approx_tokens | fenced_comment_lines | delta_lines | delta_tokens |" "markdown: with --since the header carries the delta columns"
 eq "$(printf '%s\n' "$RS_OUT" | grep -c '| new | new |')" "3" "markdown: new rows render new / new"
+
+# --- --descriptions (#436): the figure alone, machine-readable, with its own TOTAL ---------------
+
+fx="$(mk_fixture descs-only)" || bad "fixture: could not build the --descriptions tree"
+run_rs "$fx" --descriptions
+yes "$RS_RC" "descriptions: exits 0"
+eq "$RS_OUT" "$(printf 'claude\t2\t10\t11\ncodex\t2\t10\t11\ngemini\t2\t10\t11\nTOTAL\t6\t30\t33')" \
+   "descriptions: one row per agent then TOTAL, and no artifact row"
+eq "$(tail -c 1 "$WORK/out" | od -An -c | tr -d ' ')" '\n' "descriptions: the output ends in a newline (the last row is complete)"
+eq "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 != "TOTAL" { s += $2; w += $3; t += $4 } END { print s, w, t }')" \
+   "$(printf '%s\n' "$RS_OUT" | awk -F'\t' '$1 == "TOTAL" { print $2, $3, $4 }')" \
+   "descriptions: TOTAL is the sum of the rows above it in every column"
+has "$RS_ERR" "descriptions, the nominal listing text" "descriptions: the stderr summary still carries the figure"
+run_rs "$fx" --descriptions --markdown
+eq "$RS_OUT" "$(printf '%s\n' '| agent | skills | words | approx_tokens |' '| --- | ---: | ---: | ---: |' '| claude | 2 | 10 | 11 |' '| codex | 2 | 10 | 11 |' '| gemini | 2 | 10 | 11 |' '| TOTAL | 6 | 30 | 33 |')" \
+   "descriptions: with --markdown, the same rows as a table"
+run_rs "$fx" --descriptions --since HEAD
+eq "$RS_RC" "2" "descriptions: --since is refused as usage, never ignored"
+has "$RS_ERR" "takes no --since" "descriptions: …saying why"
+eq "$(printf '%s' "$RS_OUT" | wc -c | tr -d ' ')" "0" "descriptions: …and prints no rows"
+# A fault still fails the run: every artifact is measured even though none of its rows is printed.
+printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
+run_rs "$fx" --descriptions
+eq "$RS_RC" "1" "descriptions: an undescribed skill still fails the run"
+eq "$(col codex 2),$(col codex 3)" "1,5" "descriptions: …and its agent's row counts only what was measured"
+eq "$(printf '%s\n' "$RS_OUT" | wc -l | tr -d ' ')" "4" "descriptions: …with no artifact row printed"
+rm -f "$fx/agents/gemini/GEMINI.md"
+run_rs "$fx" --descriptions
+has "$RS_ERR" "MISSING agents/gemini/GEMINI.md" "descriptions: a missing artifact is still found, though its row is never printed"
+
+# --- the commands a count depends on are heard, not assumed (#436) ------------------------------
+# PATH shims stand in for `tr` and `wc`, the only external commands between an artifact and its
+# figures: a `tr` that writes and then fails, and a `wc` that returns one field where two or three
+# are read. Each must fail the run rather than produce a plausible figure.
+REAL_TR="$(command -v tr)"; REAL_WC="$(command -v wc)"
+mkdir -p "$WORK/shim-tr" "$WORK/shim-wc" "$WORK/shim-wc-desc" || bad "shims: could not create them"
+printf '#!/bin/sh\n"%s" "$@"\nexit 7\n' "$REAL_TR" > "$WORK/shim-tr/tr"
+printf '#!/bin/sh\necho 5\n' > "$WORK/shim-wc/wc"
+printf '#!/bin/sh\ncase "$1" in -wc) echo 5 ;; *) exec "%s" "$@" ;; esac\n' "$REAL_WC" > "$WORK/shim-wc-desc/wc"
+chmod +x "$WORK/shim-tr/tr" "$WORK/shim-wc/wc" "$WORK/shim-wc-desc/wc"
+# run_shim <root> <shim-dir> [arg…] — run_rs with <shim-dir> first on PATH.
+run_shim() {
+  local root="$1" shim="$2"; shift 2
+  RS_RC=0
+  ( cd "$root" && PATH="$shim:$PATH" bash scripts/render-size.sh "$@" ) >"$WORK/out" 2>"$WORK/err" || RS_RC=$?
+  RS_OUT="$(cat "$WORK/out")"; RS_ERR="$(cat "$WORK/err")"
+}
+TR_WITNESS="pipeline: a tr that writes and then fails makes the description unreadable"
+assert_tr_heard() { eq "$RS_RC" "1" "$TR_WITNESS"; }
+fx="$(mk_fixture shim-tr)" || bad "fixture: could not build the tr-shim tree"
+run_shim "$fx" "$WORK/shim-tr"
+assert_tr_heard
+has "$RS_ERR" "UNREADABLE agents/claude/skills/alpha/SKILL.md — its description could not be read" "pipeline: …naming the file"
+fx="$(mk_fixture shim-wc)" || bad "fixture: could not build the wc-shim tree"
+run_shim "$fx" "$WORK/shim-wc"
+eq "$RS_RC" "1" "counts: a wc that returns one field of three fails the run"
+has "$RS_ERR" "UNCOUNTABLE agents/claude/CLAUDE.md — wc returned 5" "counts: …naming the artifact and what wc said"
+fx="$(mk_fixture shim-wc-desc)" || bad "fixture: could not build the description wc-shim tree"
+run_shim "$fx" "$WORK/shim-wc-desc"
+eq "$RS_RC" "1" "counts: a wc that returns one field of two for a description fails the run"
+has "$RS_ERR" "wc returned 5 for its description" "counts: …naming the description count"
+
+# ------- MUTATION: a pipeline that answers for awk alone must turn the tr witness RED ------------
+fx="$(mk_fixture mut-pipefail)" || bad "fixture: could not build the pipefail-mutation tree"
+check_mutate_literal "$fx/scripts/render-size.sh" 'set -o pipefail; ' ''; mrc=$?
+case "$mrc" in
+  0) out="$( run_shim "$fx" "$WORK/shim-tr"; echo "mutant-rc=$RS_RC"; assert_tr_heard 2>&1 )"
+     has "$out" "mutant-rc=0" "mut-pipefail: the mutant reports a figure over a tr that failed, which is the defect"
+     case "$out" in
+       *"FAIL: $TR_WITNESS"*) ok ;;
+       *) bad "MUTATION 5 DID NOT FIRE: the assertion [$TR_WITNESS] stayed green on a pipeline that ignores tr's status, so it proves nothing (subshell output: $out)" ;;
+     esac ;;
+  2) bad "mut-pipefail: the mutation literal no longer matches render-size.sh, so this proof would prove nothing" ;;
+  *) bad "mut-pipefail: the mutation could not be applied (rc $mrc)" ;;
+esac
 
 # ------- MUTATION: a --since half that measures the working tree must turn the delta RED --------
 fx="$(mk_since_repo mut-since)" || bad "fixture: could not build the since-mutation repository"
@@ -608,5 +684,6 @@ has "$(cat "$WORK/out")" "approx_tokens" "usage: -h prints the output contract"
 has "$(cat "$WORK/out")" "fenced_comment_lines" "usage: -h names the fenced-comment column"
 has "$(cat "$WORK/out")" "--since <ref>" "usage: -h names --since"
 has "$(cat "$WORK/out")" "UNDESCRIBED" "usage: -h documents the descriptions figure and its fault"
+has "$(cat "$WORK/out")" "agent<TAB>skills<TAB>words<TAB>approx_tokens" "usage: -h names the --descriptions columns"
 
 check_summary "check-render-size"

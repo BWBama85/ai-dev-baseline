@@ -18,9 +18,10 @@ only by a published release, which is what these entries are the notes for.
   most on Codex and Gemini, which drop `argument-hint`. Facts the old abstracts carried that a
   body did not already hold moved into that body's opening paragraph, which loads only on
   invocation. `render-size.sh` now reports the always-loaded cost as a `descriptions` figure per
-  agent (skills, words, `approx_tokens`): a line of its stderr summary, and a second table in the
-  `--markdown` report CI puts in every PR's job summary, never a row of the artifact table, whose
-  TOTAL already counts those words. The figure is nominal: a host may shorten or drop entries when its listing is over
+  agent (skills, words, `approx_tokens`). It appears as a line of its stderr summary, as its own
+  machine-readable TSV with `--descriptions` (one row per agent, then its own TOTAL), and as a
+  second table in the `--markdown` report CI puts in every PR's job summary. It is never a row of
+  the artifact table, whose TOTAL already counts those words. The figure is nominal: a host may shorten or drop entries when its listing is over
   budget. It is a report, never a size gate. Both `build.sh` (on every source) and `render-size.sh`
   (on every render, as `UNDESCRIBED`) now refuse a description that is not plain text every YAML
   loader reads as itself — printable ASCII, starting with a letter, a space after the key, one
