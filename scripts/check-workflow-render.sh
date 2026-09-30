@@ -319,6 +319,10 @@ desc_fm value-continued 'description: Fine\nuser-invocable: true\n  extra' 'a mu
 desc_fm block-list 'description: Fine\nallowed-tools:\n  - Bash\n  - Read\nuser-invocable: true' ''
 desc_fm block-scalar 'description: Fine\nnotes: |\n  line one\n  line two\nuser-invocable: true' ''
 desc_fm block-commented 'description: Fine\nmeta: # a note\n  sub: x\nuser-invocable: true' ''
+desc_fm block-header-comment 'description: Fine\nnotes: | # explanation\n  text\nuser-invocable: true' ''
+desc_fm block-folded-comment 'description: Fine\nnotes: >- # explanation\n  text\nuser-invocable: true' ''
+desc_fm block-indicators 'description: Fine\nnotes: |2-\n  text\nmore: >+1\n  text\nuser-invocable: true' ''
+desc_fm block-bad-indicator 'description: Fine\nnotes: |0\n  text\nuser-invocable: true' 'a multi-line continuation'
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

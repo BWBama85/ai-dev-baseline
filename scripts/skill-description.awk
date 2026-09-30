@@ -20,11 +20,14 @@
 #     refused rather than parsed, since YAML may read it as a second spelling of `description` — or
 #     of `name` — that Claude would see and the Codex/Gemini capture would not;
 #   - an indented line belongs only under a key with no inline value (`key:`, `key: # note`, or a
-#     block-scalar header `key: |`), which opens a block.
+#     block-scalar header: `|` or `>`, an optional 1-9 indentation indicator and `+`/`-` in either
+#     order, and an optional comment), which opens a block.
 #     Before any key it is a mapping of its own; after `key: value` it continues that value, across
 #     blank lines — either way YAML reads a value this line-by-line reading would not. An indented
 #     comment is dropped by YAML, so it is allowed anywhere.
-# Every other property of the other keys is their own reader's business. The description itself:
+# What sits INSIDE another key's block is not parsed: a malformed block can still make the whole
+# frontmatter unreadable to a strict loader, and that is that key's reader's business, as is every
+# other property of the other keys. The description itself:
 #   - one `description:` key in a frontmatter that opens on line 1 and closes with `---`, and a
 #     space after the key;
 #   - printable ASCII only (no control byte, CR, tab or non-ASCII), starting with a letter;
@@ -60,7 +63,7 @@ $0 == "---" { closed = 1; done = 1; next }
   if ($0 !~ /^[A-Za-z][A-Za-z0-9_-]*:( |$)/) { r = "a top-level line that is not a plain key"; done = 1; next }
   key = $0; sub(/:.*/, "", key)
   if (key in keys) { r = "the key " key " given twice"; done = 1; next }
-  keys[key] = 1; haskey = 1; block = ($0 ~ /^[A-Za-z][A-Za-z0-9_-]*:([ ]*|[ ]+#.*|[ ]+[|>][-+0-9]*[ ]*)$/)
+  keys[key] = 1; haskey = 1; block = ($0 ~ /^[A-Za-z][A-Za-z0-9_-]*:([ ]*|[ ]+#.*|[ ]+[|>]([1-9][-+]?|[-+][1-9]?)?([ ]+#.*)?[ ]*)$/)
 }
 END {
   if (r == "" && NR == 0) r = "no frontmatter"
