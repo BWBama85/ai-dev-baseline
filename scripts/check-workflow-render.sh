@@ -323,6 +323,12 @@ desc_fm block-header-comment 'description: Fine\nnotes: | # explanation\n  text\
 desc_fm block-folded-comment 'description: Fine\nnotes: >- # explanation\n  text\nuser-invocable: true' ''
 desc_fm block-indicators 'description: Fine\nnotes: |2-\n  text\nmore: >+1\n  text\nuser-invocable: true' ''
 desc_fm block-bad-indicator 'description: Fine\nnotes: |0\n  text\nuser-invocable: true' 'a multi-line continuation'
+# Indentation is spaces. A tab in leading whitespace makes a strict loader reject the whole
+# frontmatter, whether the line is a comment, blank, or content under a block key.
+desc_fm tab-comment 'description: Fine\n\t# a tab-indented comment\nuser-invocable: true' 'a tab in indentation'
+desc_fm tab-blank 'description: Fine\n\t\nuser-invocable: true' 'a tab in indentation'
+desc_fm tab-in-block 'description: Fine\nmeta:\n\tsub: x\nuser-invocable: true' 'a tab in indentation'
+desc_fm tab-after-spaces 'description: Fine\nmeta:\n  \tsub: x\nuser-invocable: true' 'a tab in indentation'
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

@@ -21,7 +21,9 @@
 #     of `name` — that Claude would see and the Codex/Gemini capture would not;
 #   - an indented line belongs only under a key with no inline value (`key:`, `key: # note`, or a
 #     block-scalar header: `|` or `>`, an optional 1-9 indentation indicator and `+`/`-` in either
-#     order, and an optional comment), which opens a block.
+#     order, and an optional comment), which opens a block. Indentation is spaces: YAML forbids a
+#     tab there, so a line whose leading whitespace holds one — a comment, a blank, or content — is
+#     refused.
 #     Before any key it is a mapping of its own; after `key: value` it continues that value, across
 #     blank lines — either way YAML reads a value this line-by-line reading would not. An indented
 #     comment is dropped by YAML, so it is allowed anywhere.
@@ -39,6 +41,7 @@
 done { next }
 NR == 1 { if ($0 != "---") { r = "no frontmatter"; done = 1 }; next }
 $0 == "---" { closed = 1; done = 1; next }
+/^[ ]*\t/ { r = "a tab in indentation"; done = 1; next }
 /^[[:space:]]*$/ { next }
 /^[[:space:]]*#/ { next }
 /^[[:space:]]/ {
