@@ -27,8 +27,9 @@ only by a published release, which is what these entries are the notes for.
   loader reads as itself — printable ASCII, starting with a letter, a space after the key, one
   line, no `: `, trailing `:`, ` #` or bare null/boolean keyword — because such a value drops the
   skill on Codex and strips its fields on Claude. Every top-level frontmatter line must be a plain
-  `key:`, and no key may repeat, so no second spelling of `description` or `name` can give one
-  agent a different value from another. The rule has one home, `scripts/skill-description.awk`.
+  `key:`, no key may repeat, and an indented line may sit only under a key that opens a block, so
+  no second spelling or continuation of `description` or `name` can give one agent a different
+  value from another. The rule has one home, `scripts/skill-description.awk`.
 
 - **The root doc holds rules; procedures load when a practice applies (#434).** Every session
   in every project started by loading the whole rendered practice set — 85 KB, ~21k approx

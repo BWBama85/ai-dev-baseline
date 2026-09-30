@@ -260,6 +260,17 @@ desc_fm() {
   has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
   if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
 }
+# desc_raw <label> <whole frontmatter, printf %b> <reason, or empty> — desc_fm with no name: line
+# supplied, for a shape that must come before it.
+desc_raw() {
+  local d="$WORK/desc-$1" src="$WORK/desc-$1-src.md"
+  printf -- '---\n%b\n---\n\n# /fixture\nbody ok\n' "$2" > "$src"
+  render_fixture "$d" fixture "$src"; rc=$?
+  if [ -z "$3" ]; then yes "$rc" "plain-text ($1): builds"; return; fi
+  no "$rc" "plain-text ($1): fails the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
+  if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
+}
 # desc_neg <label> <value> <reason> — the same, for a frontmatter whose description is <value>.
 desc_neg() { desc_fm "$1" "description: $2\nuser-invocable: true" "$3"; }
 desc_neg control 'Use when testing, with parens (and a hash#tag), a:b and --flags.' ''
@@ -300,6 +311,14 @@ desc_fm key-complex 'description: First\n? description\n: Second\nuser-invocable
 desc_fm name-twice 'description: Fine\nname: other\nuser-invocable: true' 'the key name given twice'
 desc_fm name-dquoted 'description: Fine\n"name": other\nuser-invocable: true' 'a top-level line that is not a plain key'
 desc_fm key-other 'descriptions: A different key\ndescription: Fine\nx_1-y: z\nuser-invocable: true' ''
+# An indented line belongs only under a key that opens a block. Before any key it is a mapping of
+# its own (YAML reads THAT as the frontmatter); after `key: value` it continues the value.
+desc_raw orphan '  description: Other\nname: fixture\ndescription: Fine\nuser-invocable: true' 'an indented line with no key above it'
+desc_fm name-continued '  other\ndescription: Fine\nuser-invocable: true' 'a multi-line continuation'
+desc_fm value-continued 'description: Fine\nuser-invocable: true\n  extra' 'a multi-line continuation'
+desc_fm block-list 'description: Fine\nallowed-tools:\n  - Bash\n  - Read\nuser-invocable: true' ''
+desc_fm block-scalar 'description: Fine\nnotes: |\n  line one\n  line two\nuser-invocable: true' ''
+desc_fm block-commented 'description: Fine\nmeta: # a note\n  sub: x\nuser-invocable: true' ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

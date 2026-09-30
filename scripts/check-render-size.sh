@@ -216,6 +216,8 @@ undesc_case control "a byte outside printable ASCII" '---\nname: beta\ndescripti
 undesc_case nul "a byte outside printable ASCII" '---\nname: beta\ndescription: Fi\0rst value\n---\n\nbody\n'
 undesc_case key-quoted "a top-level line that is not a plain key" '---\nname: beta\ndescription: First\n"description": Second\n---\n\nbody\n'
 undesc_case key-tab "a top-level line that is not a plain key" '---\nname: beta\ndescription: First\ndescription\t: Second\n---\n\nbody\n'
+undesc_case orphan "an indented line with no key above it" '---\n  description: Other\nname: beta\ndescription: Fine\n---\n\nbody\n'
+undesc_case name-continued "a multi-line continuation" '---\nname: beta\n  other\ndescription: one\n---\n\nbody\n'
 # Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
 fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"
 rm -f "$fx/scripts/skill-description.awk"
@@ -232,7 +234,7 @@ assert_undescribed
 
 # ------- MUTATIONS: a figure that counts the key, and a reader that passes a missing one ---------
 fx="$(mk_fixture mut-desc-key)" || bad "fixture: could not build the description-key mutation tree"
-check_mutate_literal "$fx/scripts/skill-description.awk" 'seen = 1; cont = 1' 'v = $0; seen = 1; cont = 1'; mrc=$?
+check_mutate_literal "$fx/scripts/skill-description.awk" '  seen = 1' '  v = $0; seen = 1'; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_desc_figure 2>&1 )"
      has "$out" "mutant-rc=0" "mut-desc-key: the mutated command still runs"

@@ -44,9 +44,10 @@ bounded by each CLI).
   every YAML loader reads as itself: printable ASCII, starting with a letter, a space after the
   key, and no `: `, trailing `:`, ` #` or bare null/boolean keyword — a value a loader cannot
   parse drops the skill on Codex and strips its fields on Claude. Every top-level frontmatter
-  line is a plain `key:` (letters, digits, `_`, `-`), a comment, blank or indented, and no key is
-  given twice — a quoted or tab-separated key may be a second `description` or `name` that one
-  agent sees and another does not. The rule has one home, `scripts/skill-description.awk`;
+  line is a plain `key:` (letters, digits, `_`, `-`), a comment or blank, no key is given twice,
+  and an indented line sits only under a key that opens a block (`key:` or `key: |`) — a quoted
+  or tab-separated key, or an indented line anywhere else, may give one agent a different
+  `description` or `name` than another. The rule has one home, `scripts/skill-description.awk`;
   `scripts/build.sh` rejects a source that fails it, loud, for every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
   at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.
 - **Optional (Claude-specific) keys, passed through verbatim:** `argument-hint`,
