@@ -329,6 +329,12 @@ desc_fm tab-comment 'description: Fine\n\t# a tab-indented comment\nuser-invocab
 desc_fm tab-blank 'description: Fine\n\t\nuser-invocable: true' 'a tab in indentation'
 desc_fm tab-in-block 'description: Fine\nmeta:\n\tsub: x\nuser-invocable: true' 'a tab in indentation'
 desc_fm tab-after-spaces 'description: Fine\nmeta:\n  \tsub: x\nuser-invocable: true' 'a tab in indentation'
+# …and a control byte on any line: a vertical tab or form feed would pass for whitespace.
+desc_fm vt-comment 'description: Fine\n\x0b# a comment\nuser-invocable: true' 'a control byte'
+desc_fm ff-blank 'description: Fine\n\x0c\nuser-invocable: true' 'a control byte'
+desc_fm ctl-in-value 'description: Fine\nuser-invocable: tr\x01ue' 'a control byte'
+desc_fm nul-in-key 'description: Fine\nuser-invocable: true\nother: a\0b' 'a control byte'
+desc_fm tab-mid-line 'description: Fine\nargument-hint: a\tb\nuser-invocable: true' ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

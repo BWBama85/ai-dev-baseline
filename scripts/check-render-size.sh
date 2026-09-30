@@ -219,6 +219,7 @@ undesc_case key-tab "a top-level line that is not a plain key" '---\nname: beta\
 undesc_case orphan "an indented line with no key above it" '---\n  description: Other\nname: beta\ndescription: Fine\n---\n\nbody\n'
 undesc_case name-continued "a multi-line continuation" '---\nname: beta\n  other\ndescription: one\n---\n\nbody\n'
 undesc_case tab-comment "a tab in indentation" '---\nname: beta\ndescription: one\n\t# a comment\n---\n\nbody\n'
+undesc_case vt-comment "a control byte" '---\nname: beta\ndescription: one\n\x0b# a comment\n---\n\nbody\n'
 # Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
 fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"
 rm -f "$fx/scripts/skill-description.awk"

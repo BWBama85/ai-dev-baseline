@@ -23,7 +23,8 @@
 #     block-scalar header: `|` or `>`, an optional 1-9 indentation indicator and `+`/`-` in either
 #     order, and an optional comment), which opens a block. Indentation is spaces: YAML forbids a
 #     tab there, so a line whose leading whitespace holds one — a comment, a blank, or content — is
-#     refused.
+#     refused, and so is a control byte on any line (a vertical tab or form feed would otherwise pass
+#     for whitespace). A tab later in a line is YAML whitespace and is left to its key's reader.
 #     Before any key it is a mapping of its own; after `key: value` it continues that value, across
 #     blank lines — either way YAML reads a value this line-by-line reading would not. An indented
 #     comment is dropped by YAML, so it is allowed anywhere.
@@ -37,11 +38,19 @@
 #     null or boolean keyword.
 # A trailing CR per line is tolerated, as a CRLF file's line ending; an embedded one is not.
 
+BEGIN {
+  # Every C0 control byte but TAB, and DEL, built by value rather than spelled as octal escapes,
+  # whose meaning inside a bracket expression is not the same in every awk.
+  ctl = "["
+  for (i = 1; i < 32; i++) if (i != 9) ctl = ctl sprintf("%c", i)
+  ctl = ctl sprintf("%c", 127) "]"
+}
 { sub(/\r$/, "") }
 done { next }
 NR == 1 { if ($0 != "---") { r = "no frontmatter"; done = 1 }; next }
 $0 == "---" { closed = 1; done = 1; next }
 /^[ ]*\t/ { r = "a tab in indentation"; done = 1; next }
+!/^description:/ && $0 ~ ctl { r = "a control byte"; done = 1; next }
 /^[[:space:]]*$/ { next }
 /^[[:space:]]*#/ { next }
 /^[[:space:]]/ {
