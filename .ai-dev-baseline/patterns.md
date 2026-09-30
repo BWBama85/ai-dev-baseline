@@ -769,4 +769,5 @@ One line per resolved review thread, newest last.
 - `stale-doc-claim` `base/workflows/adopt.md:3` `d294684` `PRRT_kwDOTfywrM6nTb6N` PR #508 2026-09-29 — the adopt description promised it never edits existing files though the skill rewrites its own run-state
 - `partial-validation` `scripts/build.sh:747` `c5704e5` `PRRT_kwDOTfywrM6nTb6Q` PR #508 2026-09-29 — the description continuation check refused an indented YAML comment that the loader drops
 - `partial-validation` `scripts/skill-description.awk:37` `25817a6` `PRRT_kwDOTfywrM6nU0_I` PR #508 2026-09-29 — the duplicate-key check listed known spellings, so a tab-separated description key passed as a second value
+- `partial-validation` `scripts/skill-description.awk:52` `3b7dc1d` `PRRT_kwDOTfywrM6nYJ_m` PR #508 2026-09-30 — an indented line before any key was exempt, so an orphan mapping could stand before the description the rule approved
 <!-- adb:hits:end -->
