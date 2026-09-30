@@ -28,9 +28,12 @@
 #     Before any key it is a mapping of its own; after `key: value` it continues that value, across
 #     blank lines — either way YAML reads a value this line-by-line reading would not. An indented
 #     comment is dropped by YAML, so it is allowed anywhere.
-# What sits INSIDE another key's block is not parsed: a malformed block can still make the whole
-# frontmatter unreadable to a strict loader, and that is that key's reader's business, as is every
-# other property of the other keys. The description itself:
+# What sits INSIDE another key's block is not parsed — past the two lexical rules every line obeys
+# (no tab in its leading whitespace, no control byte) — so a malformed block can still make the
+# whole frontmatter unreadable to a strict loader, and that is that key's reader's business, as is
+# every other property of the other keys. The tab rule holds inside a block scalar too: a tab right
+# after the indentation is content to PyYAML and an error to libyaml, and where loaders disagree
+# the rule refuses. The description itself:
 #   - one `description:` key in a frontmatter that opens on line 1 and closes with `---`, and a
 #     space after the key;
 #   - printable ASCII only (no control byte, CR, tab or non-ASCII), starting with a letter;

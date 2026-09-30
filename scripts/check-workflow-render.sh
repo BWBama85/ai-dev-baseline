@@ -296,8 +296,9 @@ desc_neg embedded-cr 'Use a\rfixture' 'a byte outside printable ASCII'
 desc_neg tab 'Use a\tfixture' 'a byte outside printable ASCII'
 desc_neg non-ascii 'Use a fixture — with a dash' 'a byte outside printable ASCII'
 desc_neg nul 'Fi\0rst value' 'a byte outside printable ASCII'
-# YAML reads every one of these as the SAME `description` key, the last one winning, so a second
-# spelling would give Claude one value and the Codex/Gemini capture another. The rule does not
+# YAML reads every one of these as the SAME `description` key. YAML requires keys to be unique, so a
+# strict loader rejects the duplicate and a lenient one keeps one of them — either way Claude's
+# verbatim frontmatter and the Codex/Gemini capture can disagree about the value. The rule does not
 # enumerate spellings: a top-level line that is not a plain `key:` is refused, whatever it spells.
 desc_fm key-dquoted 'description: First\n"description": Second\nuser-invocable: true' 'a top-level line that is not a plain key'
 desc_fm key-squoted "description: First\n'description': Second\nuser-invocable: true" 'a top-level line that is not a plain key'
@@ -335,6 +336,10 @@ desc_fm ff-blank 'description: Fine\n\x0c\nuser-invocable: true' 'a control byte
 desc_fm ctl-in-value 'description: Fine\nuser-invocable: tr\x01ue' 'a control byte'
 desc_fm nul-in-key 'description: Fine\nuser-invocable: true\nother: a\0b' 'a control byte'
 desc_fm tab-mid-line 'description: Fine\nargument-hint: a\tb\nuser-invocable: true' ''
+# Inside a block scalar a tab mid-line is content to every loader; a tab right after the
+# indentation is content to PyYAML and an error to libyaml, so the rule refuses it.
+desc_fm tab-in-scalar-text 'description: Fine\nnotes: |\n  legal\tcontent\nuser-invocable: true' ''
+desc_fm tab-after-scalar-indent 'description: Fine\nnotes: |\n  \tcontent\nuser-invocable: true' 'a tab in indentation'
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.
