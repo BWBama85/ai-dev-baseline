@@ -23,8 +23,8 @@
 #   docs-lib.sh report        [--state <dir>] [--manifest <file>]
 #   docs-lib.sh -h | --help
 #
-# Outputs — stdout is the answer and nothing else; diagnostics go to stderr, and there is no verbose
-# form (#437):
+# Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
+# the whole answer, so there is no verbose form (#437):
 #   mcp-required · mcp-optional        the declared servers, one per line; nothing on 1
 #   probe-record · consulted · none-needed   one confirmation line naming what was recorded
 #   verdict   one `docs-lib: …` line; on 10 nothing, and the DEGRADED lines go to stderr

@@ -30,8 +30,8 @@
 #    the lock; nothing is reported as recorded that the ledger does not hold)
 #   pattern-ledger.sh -h | --help
 #
-# Outputs — stdout is the answer and nothing else; diagnostics go to stderr. Every output is already
-# bounded by what it reports on, so there is no verbose form (#437):
+# Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
+# the whole answer, bounded by what it reports on, so there is no verbose form (#437):
 #   record · promote · rule-sweep   one confirmation line (`recorded …`, `promoted …`, `rule-sweep …`)
 #   classes            <count>TAB<class>TAB<promoted 0|1>, one line per class
 #   due                <class>TAB<count>, one line per class owed a rule; nothing on 11

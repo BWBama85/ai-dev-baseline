@@ -47,8 +47,8 @@
 #   roadmap-lib.sh compose-select     # compose-candidates TSV on stdin
 #   roadmap-lib.sh -h | --help
 #
-# Outputs — each subcommand prints only the value its caller captures, bounded by its input;
-# diagnostics go to stderr, and there is no verbose form (#437):
+# Outputs: each subcommand prints only the value its caller captures, bounded by its input;
+# diagnostics go to stderr. That value is the whole answer, so there is no verbose form (#437):
 #   slug-ok · pr-targets-issue          nothing — the exit status is the answer
 #   release-ready · read-complete · emit-verdict · health-optout
 #                                       one word (health-optout: `invalid <values>` on a bad marker)

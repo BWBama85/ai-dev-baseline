@@ -48,7 +48,8 @@
 #   adopt-readiness.sh verdict                         # decide + report (rung records on stdin)
 #   adopt-readiness.sh status [root]                   # probe + facts + tracker + verdict, end to end
 #
-# Outputs — stdout is the answer; diagnostics go to stderr, and there is no verbose form (#437):
+# Outputs: stdout is the answer; diagnostics go to stderr. Each default is already the whole
+# answer, so there is no verbose form (#437):
 #   contract          <rung>TAB<owner>TAB<title>, one line per rung
 #   probe · tracker   <rung>TAB<status>TAB<detail> records — machine input for `verdict`, which a
 #                     caller redirects to a file rather than reading

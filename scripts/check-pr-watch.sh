@@ -1834,7 +1834,7 @@ wout observe --pr 1;  rc 12 "contract: a merged PR is gone"
 eq "$OUT" "gone $HEAD_SHA" "contract: observe's gone stdout is exactly '<verdict> <sha>'"
 reset_fx; undeclare
 wout observe --pr 1;  rc 17 "contract: an undeclared repo refuses"
-eq "$OUT" "" "contract: a refusal prints nothing on stdout"
+eq "$(_w observe --pr 1 2>/dev/null | wc -c | tr -d ' ')" "0" "contract: a refusal prints nothing on stdout, not even a newline"
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 wout request-review --pr 1;  rc 0 "contract: request-review asks"
 eq "$OUT" "requested $HEAD_SHA" "contract: request-review's stdout is exactly '<word> <sha>'"

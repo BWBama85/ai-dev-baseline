@@ -386,14 +386,15 @@ cmd_state_scan() {
       continue
     fi
     case "$base" in
-      # `threads-<N>.json.*` is `pr-threads.sh list --out`'s stage before the rename (#437); a kill
-      # in between orphans it, holding every thread body of that PR.
-      threads-*.json|threads-*.json.*)
-        n="${base#threads-}"; n="${n%%.json*}"
-        case "$n" in
-          ''|*[!0-9]*) _adb_cl_emit "$want_ident" other   "$f" '-' ;;
-          *)           _adb_cl_emit "$want_ident" threads "$f" "$n" ;;
-        esac
+      # `threads-<N>.json.stage.XXXXXX` is `pr-threads.sh list --out`'s stage before the rename
+      # (#437); a kill in between orphans it, holding every thread body of that PR. Matched EXACTLY,
+      # so an operator's `threads-<N>.json.bak` is never claimed.
+      threads-*)
+        if [[ "$base" =~ ^threads-([0-9]+)\.json(\.stage\.[A-Za-z0-9]{6})?$ ]]; then
+          _adb_cl_emit "$want_ident" threads "$f" "${BASH_REMATCH[1]}"
+        else
+          _adb_cl_emit "$want_ident" other "$f" '-'
+        fi
         ;;
       # Keyed on the PR like `threads`, and a name whose PR or head component is not the grammar's
       # stays `other`, since the liveness read needs a real PR number.

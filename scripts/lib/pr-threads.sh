@@ -68,9 +68,9 @@
 #   pr-threads.sh remaining --pr <number|url>    # unresolved BOT threads, complete. count on stdout
 #   pr-threads.sh -h | --help
 #
-# Outputs — stdout only on exit 0; every diagnostic goes to stderr (#437):
+# Outputs: stdout only on exit 0; every diagnostic goes to stderr (#437).
 #   infer-pr   the bare PR number.
-#   remaining  the bare count.
+#   remaining  the bare count — already the whole answer, so it has no verbose form.
 #   list       TERSE by default — the counts and the round's work list, never a comment body:
 #                total<TAB><n>               every thread the read proved exists
 #                unresolved<TAB><n>          of which `isResolved` is false
@@ -84,7 +84,8 @@
 #                   into place as the last step before the terse lines print, so a failed read or a
 #                   failed write publishes nothing and leaves an existing <file> untouched. A <file>
 #                   that cannot be written is 2, naming the path.
-#     --verbose     the whole JSON document on stdout INSTEAD; every terse line is derivable from it.
+#     --verbose     the whole JSON document on stdout INSTEAD; every count and `thread` line is
+#                   derivable from it.
 #                   Exclusive with --out.
 #
 # Exit codes — a stable machine contract for the workflow steps that consume them. `18` and `20`
@@ -523,7 +524,12 @@ cmd_infer_pr() {
 # The --out stage, removed on every exit that did not publish it. A kill between `mktemp` and the
 # rename would otherwise leave a copy of every thread body beside the destination.
 _ADB_PT_STAGE=""
-_adb_pt_unstage() { [ -z "$_ADB_PT_STAGE" ] || rm -f "$_ADB_PT_STAGE"; _ADB_PT_STAGE=""; }
+_adb_pt_unstage() {
+  [ -n "$_ADB_PT_STAGE" ] || return 0
+  rm -f "$_ADB_PT_STAGE" 2>/dev/null \
+    || printf 'pr-threads: could not remove the staged copy %s — remove it by hand\n' "$(adb_display_value "$_ADB_PT_STAGE")" >&2
+  _ADB_PT_STAGE=""
+}
 
 # cmd_list — every review thread of the pull request, classified, complete.
 #
@@ -551,7 +557,7 @@ cmd_list() {
     trap '_adb_pt_unstage' EXIT
     trap '_adb_pt_unstage; exit 130' INT
     trap '_adb_pt_unstage; exit 143' TERM
-    _ADB_PT_STAGE="$(mktemp "$OPT_OUT.XXXXXX" 2>/dev/null)" \
+    _ADB_PT_STAGE="$(mktemp "$OPT_OUT.stage.XXXXXX" 2>/dev/null)" \
       || { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (could not stage a file beside it)" >&2; return 2; }
   fi
   adb_require_gh jq || return 20
@@ -585,8 +591,7 @@ cmd_list() {
           comments: [ .comments.nodes[] | {id, author: (.author.login // ""), body, createdAt} ] } ] }' 2>/dev/null)" \
     || { echo "pr-threads: could not classify the review threads of PR #$n" >&2; return 20; }
   if [ "$OPT_VERBOSE" -eq 1 ]; then
-    printf '%s\n' "$out"
-    return 0
+    printf '%s\n' "$out"; return
   fi
 
   # RENDERED BEFORE THE PUBLISH, so a failure here leaves the destination untouched rather than
@@ -609,8 +614,24 @@ cmd_list() {
     printf '%s\n' "$out" > "$_ADB_PT_STAGE" 2>/dev/null \
       || { echo "pr-threads: --out $dshow cannot be written (the staged copy failed)" >&2; return 2; }
     # adb_publish_json reports on stdout; stdout here is the contract, so its words go to stderr.
+    # adb_publish_json carries an existing file's mode onto the stage but PROCEEDS when it cannot read
+    # it (a choice argued for settings.json); here an unreadable mode refuses, so a restricted file is
+    # never replaced by one carrying the stage's own mode.
+    if [ -f "$OPT_OUT" ] && ! adb_file_mode "$OPT_OUT" >/dev/null; then
+      echo "pr-threads: --out $dshow cannot be written (its permissions could not be read to carry onto the replacement)" >&2
+      return 2
+    fi
     adb_publish_json "$_ADB_PT_STAGE" "$OPT_OUT" >&2 \
-      || { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (the rename into place failed)" >&2; return 2; }
+      || { echo "pr-threads: --out $dshow cannot be written (the rename into place failed)" >&2; return 2; }
+    # `mv` onto a path that became a directory after the checks moves the stage INSIDE it and
+    # succeeds, so the rename is verified rather than trusted.
+    if [ ! -f "$OPT_OUT" ]; then
+      rm -f "$OPT_OUT/${_ADB_PT_STAGE##*/}" 2>/dev/null \
+        || printf 'pr-threads: could not remove %s — remove it by hand\n' "$(adb_display_value "$OPT_OUT/${_ADB_PT_STAGE##*/}")" >&2
+      _ADB_PT_STAGE=""
+      echo "pr-threads: --out $dshow is no longer a regular file — nothing was published there" >&2
+      return 2
+    fi
     _ADB_PT_STAGE=""
   fi
   printf '%s\n' "$terse"

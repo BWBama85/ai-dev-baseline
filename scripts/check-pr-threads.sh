@@ -160,7 +160,20 @@ if [ "$MODE" = mutation ]; then
     '|| { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (could not stage a file beside it)" >&2; return 2; }' \
     '|| { _ADB_PT_STAGE=""; OPT_OUT=""; }' \
     'list --out into a missing directory is 2'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 8
+  # The two publish defences the shared publisher does not provide here, and --verbose's write status.
+  check_mut "unreadable-mode-accepted" \
+    'if [ -f "$OPT_OUT" ] && ! adb_file_mode "$OPT_OUT" >/dev/null; then' \
+    'if false; then' \
+    'list --out: an unreadable destination mode is refused (2)'
+  check_mut "rename-into-directory-trusted" \
+    'if [ ! -f "$OPT_OUT" ]; then' \
+    'if false; then' \
+    'list --out: a destination that became a directory before the rename is refused (2)'
+  check_mut "verbose-write-status-dropped" \
+    "printf '%s\\n' \"\$out\"; return" \
+    "printf '%s\\n' \"\$out\"; return 0" \
+    'list --verbose: a failed write to stdout is still exit 0'
+  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 11
   check_summary "check-pr-threads --mutation"
   exit 0
 fi
@@ -219,6 +232,23 @@ fi
 exit 0
 STUB
 
+# `stat` and `mv` pass through to the real binaries unless a knob arms them, so the --out publish's
+# two defences can be driven: STUB_FAIL_STAT=1 makes a mode unreadable, and STUB_MV_RACE=<path>
+# turns <path> into a directory just before the rename onto it.
+REAL_STAT="$(command -v stat)"; REAL_MV="$(command -v mv)"
+check_write_stub "$SBIN/stat" <<STUB
+#!/usr/bin/env bash
+[ "\${STUB_FAIL_STAT:-0}" = 1 ] && exit 1
+exec "$REAL_STAT" "\$@"
+STUB
+check_write_stub "$SBIN/mv" <<STUB
+#!/usr/bin/env bash
+if [ -n "\${STUB_MV_RACE:-}" ] && [ "\${2:-}" = "\$STUB_MV_RACE" ]; then
+  rm -f "\$STUB_MV_RACE"; mkdir "\$STUB_MV_RACE"
+fi
+exec "$REAL_MV" "\$@"
+STUB
+
 # pt <args…> — run the library against the fixture. stdout in $OUT, stderr in $ERR, status in $RC.
 # `cd "$REPO"`, because both `adb_repo_root` (which locates agents.toml) and `adb_git_repo_slugs`
 # (which anchors the repository identity check) read the CURRENT checkout.
@@ -228,6 +258,13 @@ pt() {
           bash "$LIB" "$@" 2>"$work/err" )"
   RC=$?
   ERR="$(cat "$work/err")"
+}
+# pt_raw <file> <args…> — the same run with stdout written RAW to <file>, for the assertions about
+# trailing newlines and empty output that a `$( )` capture would erase. Status in $RC.
+pt_raw() {
+  local f="$1"; shift
+  ( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" "$@" ) > "$f" 2>/dev/null
+  RC=$?
 }
 reset_fx()     { rm -f "$S"/calls "$S"/page-*.json "$S"/prlist.json "$work"/gh-argv; }
 declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
@@ -728,6 +765,15 @@ _offgrammar="$(printf '%s\n' "$OUT" | awk -F'\t' '
     $1 == "thread" && NF == 4 && $2 != "" && ($3 == "bot" || $3 == "human") && $4 != "" { next }
     { print }')"
 eq "$_offgrammar" "" "list: every default line is in the header's Outputs grammar"
+# BYTE-exact, final newline included — a `$( )` capture would accept trailing blank lines.
+pt_raw "$work/terse.out" list --pr 1
+printf 'total\t7\nunresolved\t3\nunresolved-bot\t3\nthread\tU0\tbot\tb.txt:0\nthread\tU1\tbot\tb.txt:1\nthread\tU2\tbot\tb.txt:2\n' > "$work/terse.want"
+if cmp -s "$work/terse.out" "$work/terse.want"; then ok; else bad "list: the default stdout is not byte-exact"; fi
+# A failed write to stdout is a failure, in both forms.
+( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 >&- 2>/dev/null ); _wrc=$?
+if [ "$_wrc" -ne 0 ]; then ok; else bad "list: a failed write to stdout is still exit 0"; fi
+( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 --verbose >&- 2>/dev/null ); _wrc=$?
+if [ "$_wrc" -ne 0 ]; then ok; else bad "list --verbose: a failed write to stdout is still exit 0"; fi
 
 # --verbose is the document, and every terse line is derivable from it: the counts agree and each
 # `thread` line names an unresolved thread of the same classification and site.
@@ -801,6 +847,28 @@ STUB_FAIL_GQL=1 pt list --pr 1 --out "$_dest"
 eq "$RC" "20" "list --out: an unreadable read is still 20"
 eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: an unreadable read leaves no staged copy"
 
+# An existing file's mode is carried onto the replacement; one that cannot be READ refuses rather
+# than replacing a restricted file with the stage's own mode.
+reset_fx; declare_bots "[\"$CODEX\"]"; mkmixed 1 7 false "" 4 3
+chmod 640 "$_dest"
+pt list --pr 1 --out "$_dest"
+eq "$RC" "0" "list --out: an existing destination is replaced"
+eq "$(adb_file_mode "$_dest")" "640" "list --out: ...carrying its mode onto the replacement"
+printf 'OLD\n' > "$_dest"; chmod 400 "$_dest"; cp "$_dest" "$work/old-mode.json"
+STUB_FAIL_STAT=1 pt list --pr 1 --out "$_dest"
+eq "$RC" "2" "list --out: an unreadable destination mode is refused (2)"
+if cmp -s "$_dest" "$work/old-mode.json"; then ok; else bad "list --out: a destination whose mode could not be read was replaced"; fi
+eq "$(adb_file_mode "$_dest")" "400" "list --out: ...and its mode is untouched"
+eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: ...and no staged copy is left"
+chmod 600 "$_dest"
+# `mv` onto a path that became a DIRECTORY moves the stage inside it and succeeds; that is refused
+# and undone, never reported as published.
+STUB_MV_RACE="$_dest" pt list --pr 1 --out "$_dest"
+eq "$RC" "2" "list --out: a destination that became a directory before the rename is refused (2)"
+eq "$OUT" "" "list --out: ...and prints nothing"
+eq "$(find "$_dest" -type f | wc -l | tr -d ' ')" "0" "list --out: ...and leaves no document inside that directory"
+rm -rf "$_dest"
+
 # An unwritable destination is 2, named, refused before the network, and never falls back to stdout.
 reset_fx; mkpage 1 6 false "" 0 6
 pt list --pr 1 --out "$work/no-such-dir/threads-1.json"
@@ -808,6 +876,8 @@ eq "$RC" "2" "list --out into a missing directory is 2"
 eq "$OUT" "" "list --out unwritable: nothing on stdout — never a silent fallback to the document"
 has "$ERR" "no-such-dir/threads-1.json" "list --out unwritable: the refusal names the path"
 eq "$(calls_for 'graphql:1')" "0" "list --out unwritable: refused before any read"
+pt_raw "$work/unwritable.out" list --pr 1 --out "$work/no-such-dir/threads-1.json"
+eq "$(wc -c < "$work/unwritable.out" | tr -d ' ')" "0" "list --out unwritable: stdout is zero bytes, not a stray newline"
 mkdir -p "$work/o/adir"
 pt list --pr 1 --out "$work/o/adir"
 eq "$RC" "2" "list --out naming a directory is 2"

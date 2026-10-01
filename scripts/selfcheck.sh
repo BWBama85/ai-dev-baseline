@@ -620,8 +620,10 @@ add pr-threads          bash scripts/check-pr-threads.sh
 # truncating window, so it printed exactly what a clean run prints. The mutations — the cursor loop
 # stopped, the cursor never sent, the count proof disabled, the count proof disabled against #418's
 # OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, the per-node type
-# check disabled, and (#437) `list` printing the whole document by default and an unwritable `--out`
-# falling back to stdout — plus an unmutated control, each required back RED on ITS OWN witness.
+# check disabled, and (#437) `list` printing the whole document by default, an unwritable `--out`
+# falling back to stdout, an unreadable destination mode accepted, a rename into a directory
+# trusted, and `--verbose`'s write status dropped — plus an unmutated control, each required back
+# RED on ITS OWN witness.
 add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
 inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-threads.sh scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
 
@@ -671,7 +673,7 @@ add docs-lib            bash scripts/check-docs-lib.sh
 # fall-back to training-data recall that the declaration exists to end. The live count is printed by
 # `--mutation` itself rather than written here, for the reason the step above gives.
 add docs-lib-mutation   bash scripts/check-docs-lib.sh --mutation
-inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh base/workflows/implement-issue.md base/practices/third-party-claims.md
+inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh base/workflows/implement-issue.md base/practices/third-party-claims.md templates/agents.toml
 
 # Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge
 # detection against a real fixture (#106 — `--merged` alone is blind to it, so the sweep was a

@@ -143,8 +143,9 @@
 #                                                       # <n> = 0 means UNCAPPED (#420)
 #   pr-watch.sh -h | --help
 #
-# Outputs — at most ONE stdout line, `<verdict> <head-sha>`, and none on 2/17/18/20. Every
-# diagnostic, `wait`'s per-poll progress included, goes to stderr; there is no verbose form (#437):
+# Outputs: at most ONE stdout line, `<verdict> <head-sha>`, and none on 2/17/18/20. Every
+# diagnostic, `wait`'s per-poll progress included, goes to stderr. That line is the whole answer,
+# so there is no verbose form (#437):
 #   observe          clean|findings|pending|gone <sha>
 #   wait             the terminal poll's line, in the same words
 #   request-review   requested|already|no-trigger|capped|gone <sha>
