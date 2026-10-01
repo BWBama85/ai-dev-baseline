@@ -162,11 +162,11 @@ if [ "$MODE" = mutation ]; then
     'list --out into a missing directory is 2'
   # The two publish defences the shared publisher does not provide here, and --verbose's write status.
   check_mut "unreadable-mode-accepted" \
-    'if [ -f "$OPT_OUT" ] && ! adb_file_mode "$OPT_OUT" >/dev/null; then' \
+    'if [ -f "$dest" ]; then' \
     'if false; then' \
     'list --out: an unreadable destination mode is refused (2)'
   check_mut "rename-into-directory-trusted" \
-    'if [ ! -f "$OPT_OUT" ]; then' \
+    'if [ ! -f "$dest" ]; then' \
     'if false; then' \
     'list --out: a destination that became a directory before the rename is refused (2)'
   check_mut "verbose-write-status-dropped" \
@@ -243,7 +243,8 @@ exec "$REAL_STAT" "\$@"
 STUB
 check_write_stub "$SBIN/mv" <<STUB
 #!/usr/bin/env bash
-if [ -n "\${STUB_MV_RACE:-}" ] && [ "\${2:-}" = "\$STUB_MV_RACE" ]; then
+for _last; do :; done
+if [ -n "\${STUB_MV_RACE:-}" ] && [ "\${_last:-}" = "\$STUB_MV_RACE" ]; then
   rm -f "\$STUB_MV_RACE"; mkdir "\$STUB_MV_RACE"
 fi
 exec "$REAL_MV" "\$@"
@@ -253,12 +254,16 @@ STUB
 # `cd "$REPO"`, because both `adb_repo_root` (which locates agents.toml) and `adb_git_repo_slugs`
 # (which anchors the repository identity check) read the CURRENT checkout.
 OUT=""; ERR=""; RC=0
+# The raw bytes stay in "$work/out" for `out_empty`, since `$( )` would turn a stray newline into "".
 pt() {
-  OUT="$( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" \
-          bash "$LIB" "$@" 2>"$work/err" )"
+  ( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" \
+      bash "$LIB" "$@" ) > "$work/out" 2>"$work/err"
   RC=$?
+  OUT="$(cat "$work/out")"
   ERR="$(cat "$work/err")"
 }
+# out_empty <label> — the last `pt` printed ZERO bytes on stdout, not even a newline.
+out_empty() { eq "$(wc -c < "$work/out" | tr -d ' ')" "0" "$1"; }
 # pt_raw <file> <args…> — the same run with stdout written RAW to <file>, for the assertions about
 # trailing newlines and empty output that a `$( )` capture would erase. Status in $RC.
 pt_raw() {
@@ -355,7 +360,7 @@ printf '%s\n' '[{"number":9,"title":"nine","headRefName":"b9","isDraft":true,"ur
                 {"number":7,"title":"seven","headRefName":"b7","isDraft":false,"url":"https://x/7"}]' > "$S/prlist.json"
 pt infer-pr
 eq "$RC" "11" "infer-pr: two open PRs refuse (11) rather than picking one"
-eq "$OUT" ""  "infer-pr: the ambiguous arm prints NO number — a caller reading stdout gets nothing to act on"
+out_empty "infer-pr: the ambiguous arm prints NO number — a caller reading stdout gets nothing to act on"
 has "$ERR" "#7"      "infer-pr: the refusal lists the candidates"
 has "$ERR" "#9"      "infer-pr: ...all of them"
 has "$ERR" "[draft]" "infer-pr: ...and marks a draft, which is still an open PR with threads"
@@ -382,7 +387,7 @@ if [ "$_scoped" -ge 1 ]; then ok; else bad "infer-pr: the PR list is not scoped 
 reset_fx; printf '%s\n' '[{}]' > "$S/prlist.json"
 pt infer-pr
 eq "$RC" "20" "infer-pr: a singleton with no number is unreadable, not a successful inference"
-eq "$OUT" ""  "infer-pr: ...and prints nothing — never the string 'null'"
+out_empty "infer-pr: ...and prints nothing — never the string 'null'"
 reset_fx; printf '%s\n' '[{"number":0,"title":"z","headRefName":"b","isDraft":false,"url":"u"}]' > "$S/prlist.json"
 pt infer-pr
 eq "$RC" "20" "infer-pr: a zero PR number is not usable"
@@ -445,11 +450,11 @@ eq "$(calls_for 'graphql:c2')" "1" "remaining: the check follows the cursor as w
 reset_fx; mkpage 1 101 false "" 0 50
 pt list --pr 1 --verbose
 eq "$RC" "19" "list: a short read is exit 19, not a shorter list"
-eq "$OUT" ""  "list: ...and prints NO document, so a caller cannot act on a partial one"
+out_empty "list: ...and prints NO document, so a caller cannot act on a partial one"
 has "$ERR" "read 50 of totalCount 101" "list: the refusal names the shortfall in both numbers"
 pt remaining --pr 1
 eq "$RC" "19" "remaining: a short read REFUSES rather than reporting a count"
-eq "$OUT" ""  "remaining: ...and prints no count at all, never '0'"
+out_empty "remaining: ...and prints no count at all, never '0'"
 
 # A `hasNextPage: true` with no cursor cannot be followed — refuse rather than stop one page short.
 reset_fx; mkpage 1 154 true "" 0 100
@@ -494,7 +499,7 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 mkmixed 1 54 false "" 45 5          # the page: 45 resolved + 5 unresolved; totalCount says 54
 pt remaining --pr 1
 eq "$RC" "19" "the #418 shape: a resolved page hiding unresolved overflow REFUSES"
-eq "$OUT" ""  "the #418 shape: ...and reports NO count — 5, and certainly not 0"
+out_empty "the #418 shape: ...and reports NO count — 5, and certainly not 0"
 has "$ERR" "read 50 of totalCount 54" "the #418 shape: the refusal names the exact live shortfall"
 # ...and the resolve pass refuses on the same read, so a round cannot act on the truncated page and
 # then have the check bless it.
@@ -599,7 +604,7 @@ reset_fx; declare_bots "[\"$CODEX\"]"; mkpage 1 3 false "" 0 3
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].isResolved)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt remaining --pr 1
 eq "$RC" "20" "a node with NO isResolved is unreadable — never a count with that thread dropped"
-eq "$OUT" ""  "...and prints no count at all"
+out_empty "...and prints no count at all"
 reset_fx; mkpage 1 3 false "" 0 3
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = "false"' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt remaining --pr 1
@@ -620,7 +625,7 @@ reset_fx; mkpage 1 3 false "" 0 3
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes = []' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt remaining --pr 1
 eq "$RC" "20" "an unresolved thread with an EMPTY comments page is unreadable, not a non-bot thread"
-eq "$OUT" ""  "...and prints no count, so the missing thread cannot vanish into a 0"
+out_empty "...and prints no count, so the missing thread cannot vanish into a 0"
 # A non-numeric nested totalCount would be read as zero by `// 0`, hiding truncated context.
 reset_fx; mkpage 1 3 false "" 0 3
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
@@ -819,8 +824,9 @@ eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 == "thread" && NF != 4' | wc -l | tr
 
 # Zero threads: the three counts and nothing else.
 reset_fx; mkpage 1 0 false "" 0 0
-pt list --pr 1
-eq "$OUT" "$(printf 'total\t0\nunresolved\t0\nunresolved-bot\t0')" "list: a PR with no threads prints three zero counts"
+pt_raw "$work/zero.out" list --pr 1
+printf 'total\t0\nunresolved\t0\nunresolved-bot\t0\n' > "$work/zero.want"
+if cmp -s "$work/zero.out" "$work/zero.want"; then ok; else bad "list: a PR with no threads prints three zero counts, byte for byte"; fi
 
 # --out publishes the document beside the destination and names it; stdout stays terse.
 reset_fx; declare_bots "[\"$CODEX\"]"; mkmixed 1 7 false "" 4 3
@@ -839,7 +845,7 @@ printf 'OLD\n' > "$_dest"; cp "$_dest" "$work/old.json"
 reset_fx; mkpage 1 101 false "" 0 50
 pt list --pr 1 --out "$_dest"
 eq "$RC" "19" "list --out: a short read is still 19"
-eq "$OUT" "" "list --out: ...and prints nothing"
+out_empty "list --out: ...and prints nothing"
 if cmp -s "$_dest" "$work/old.json"; then ok; else bad "list --out: a failed read replaced the earlier file"; fi
 eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: a failed read leaves no staged copy"
 reset_fx; mkpage 1 6 false "" 0 6
@@ -865,15 +871,27 @@ chmod 600 "$_dest"
 # and undone, never reported as published.
 STUB_MV_RACE="$_dest" pt list --pr 1 --out "$_dest"
 eq "$RC" "2" "list --out: a destination that became a directory before the rename is refused (2)"
-eq "$OUT" "" "list --out: ...and prints nothing"
+out_empty "list --out: ...and prints nothing"
 eq "$(find "$_dest" -type f | wc -l | tr -d ' ')" "0" "list --out: ...and leaves no document inside that directory"
 rm -rf "$_dest"
+# The terse lines print AFTER the rename, so a failed stdout write is non-zero over a published file
+# — the order the header states.
+( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 --out "$_dest" >&- 2>/dev/null ); _wrc=$?
+if [ "$_wrc" -ne 0 ]; then ok; else bad "list --out: a failed stdout write is still exit 0"; fi
+if cmp -s "$_dest" "$work/verbose.json"; then ok; else bad "list --out: the header's order (publish, then print) does not hold"; fi
+# A relative path starting with `-` is a path, never an option to mktemp or mv.
+pt list --pr 1 --out "-lead.json"
+eq "$RC" "0" "list --out: a relative path starting with '-' is published"
+if cmp -s "$REPO/-lead.json" "$work/verbose.json"; then ok; else bad "list --out: a '-'-led path was not published beside itself"; fi
+has_line "$OUT" "$(printf 'file\t-lead.json')" "list --out: ...and the file line names it as given"
+eq "$(find "$REPO" -maxdepth 1 -name '*.stage.*' | wc -l | tr -d ' ')" "0" "list --out: ...leaving no stage behind"
+rm -f "$REPO/-lead.json"
 
 # An unwritable destination is 2, named, refused before the network, and never falls back to stdout.
 reset_fx; mkpage 1 6 false "" 0 6
 pt list --pr 1 --out "$work/no-such-dir/threads-1.json"
 eq "$RC" "2" "list --out into a missing directory is 2"
-eq "$OUT" "" "list --out unwritable: nothing on stdout — never a silent fallback to the document"
+out_empty "list --out unwritable: nothing on stdout — never a silent fallback to the document"
 has "$ERR" "no-such-dir/threads-1.json" "list --out unwritable: the refusal names the path"
 eq "$(calls_for 'graphql:1')" "0" "list --out unwritable: refused before any read"
 pt_raw "$work/unwritable.out" list --pr 1 --out "$work/no-such-dir/threads-1.json"

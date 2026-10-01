@@ -1169,16 +1169,23 @@ eq "$(bash "$PL" stats --ledger "$EMPTYL" | awk -F'\t' '$1=="ledger"{print $2}')
    "…while a ledger that exists reports present, so the two are distinguishable"
 eq "$(bash "$PL" classes --ledger "$work/nope.md" >/dev/null 2>&1; echo $?)" 0 \
    "…and classes is empty-but-successful, since a first run has nothing wrong with it"
-# THE OUTPUT CONTRACT (#437): stdout is exactly the keys the header's Outputs names, in order.
-eq "$(printf '%s\n' "$S" | cut -f1 | paste -s -d ' ' -)" \
+# THE OUTPUT CONTRACT (#437): stdout is exactly the keys the header's Outputs names, in order, each
+# line exactly <key>TAB<value>. Read RAW: a `$( )` capture hides a trailing blank line.
+bash "$PL" stats --ledger "$L8" --pr 200 > "$work/stats.out" 2>/dev/null
+eq "$(cut -f1 "$work/stats.out" | paste -s -d ' ' -)" \
    "ledger hits classes recurring promoted threshold threshold-source pr-hits pr-recurring pr-new-classes" \
    "stats --pr: stdout is exactly the header's Outputs keys, in order"
+eq "$(awk -F'\t' 'NF != 2 || $2 == ""' "$work/stats.out" | wc -l | tr -d ' ')" 0 \
+   "stats: every line is exactly <key>TAB<value> — no blank line, no extra column"
+eq "$(tail -c 1 "$work/stats.out" | od -An -c | tr -d ' ')" '\n' "stats: stdout ends with its last line's newline"
 eq "$(bash "$PL" stats --ledger "$L8" | cut -f1 | paste -s -d ' ' -)" \
    "ledger hits classes recurring promoted threshold threshold-source" \
    "stats: without --pr, the lifetime keys and no pr- key"
-eq "$(bash "$PL" stats --ledger "$work/nope.md" | cut -f1 | paste -s -d ' ' -)" \
-   "ledger hits classes recurring promoted threshold threshold-source" \
-   "stats: an absent ledger prints the same keys, not a shorter set"
+read -r _pl_t _pl_src < <(bash "$PL" threshold 2>/dev/null)
+bash "$PL" stats --ledger "$work/nope.md" > "$work/stats-absent.out" 2>/dev/null
+printf 'ledger\tabsent\nhits\t0\nclasses\t0\nrecurring\t0\npromoted\t0\nthreshold\t%s\nthreshold-source\t%s\n' \
+  "$_pl_t" "$_pl_src" > "$work/stats-absent.want"
+if cmp -s "$work/stats-absent.out" "$work/stats-absent.want"; then ok; else bad "stats: an absent ledger prints the same keys, byte for byte"; fi
 fi
 
 if check_block s9 s8; then
@@ -1192,9 +1199,10 @@ V="$(bash "$PL" verify --ledger "$L8" 2>&1)"
 has "$V" "5 hit(s)" "verify says how many records it actually checked"
 has "$V" "checklist rule(s) checked" "…and how many rules"
 # THE OUTPUT CONTRACT (#437): one `ok …` line on stdout, diagnostics on stderr.
-VO="$(bash "$PL" verify --ledger "$L8" 2>/dev/null)"
-eq "$(printf '%s\n' "$VO" | wc -l | tr -d ' ')" 1 "verify: stdout is exactly one line"
-case "$VO" in "ok "*) ok ;; *) bad "verify: stdout is not an 'ok …' line: [$VO]" ;; esac
+bash "$PL" verify --ledger "$L8" > "$work/verify.out" 2>/dev/null
+eq "$(wc -l < "$work/verify.out" | tr -d ' ')" 1 "verify: stdout is exactly one newline-terminated line"
+eq "$(tail -c 1 "$work/verify.out" | od -An -c | tr -d ' ')" '\n' "verify: ...ending in its newline"
+case "$(head -c 3 "$work/verify.out")" in "ok ") ok ;; *) bad "verify: stdout is not an 'ok …' line" ;; esac
 fi
 
 if check_block s10; then

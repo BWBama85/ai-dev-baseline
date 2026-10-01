@@ -2725,13 +2725,32 @@ if [ -n "$fr_check_at" ] && [ -n "$fr_split_at" ] && [ "$fr_check_at" -lt "$fr_s
 else bad "the 2-line check must precede the split, or it validates values already re-partitioned (check@${fr_check_at:-none} split@${fr_split_at:-none})"; fi
 
 # ============================ the output contract (#437) ============================
-# The header's Outputs: each subcommand prints only the value its caller captures.
-eq "$(bash "$RL" release-ready 1 1 0 0 0 green 2>/dev/null | wc -l | tr -d ' ')" 1 "contract: release-ready prints one line"
-eq "$(bash "$RL" read-complete 3 3 2>/dev/null)" "complete" "contract: read-complete prints one word"
-eq "$(printf 'implementable\n' | bash "$RL" emit-verdict 2>/dev/null)" "ready" "contract: emit-verdict prints one word"
-eq "$(printf '[]' | bash "$RL" release-counts release-blocker 0 2>/dev/null | wc -l | tr -d ' ')" 3 \
-   "contract: release-counts prints exactly three lines, even for an empty milestone"
-eq "$(bash "$RL" slug-ok acme/widget 2>/dev/null)" "" "contract: slug-ok prints nothing — its exit status is the answer"
-eq "$(printf '[]' | bash "$RL" pr-targets-issue 5 acme/widget 2>/dev/null)" "" "contract: pr-targets-issue prints nothing"
+# The header's Outputs: each subcommand prints only the value its caller captures. Compared as
+# BYTES — a `$( )` capture would accept a trailing blank line or a missing newline.
+ct="$(mktemp -d)"
+if [ -n "$ct" ] && [ -d "$ct" ]; then
+  # same_bytes <file> <printf-format> <label> [args…] — the format IS the expected bytes.
+  same_bytes() {
+    local f="$1" fmt="$2" l="$3"; shift 3
+    # shellcheck disable=SC2059
+    printf "$fmt" "$@" > "$f.want"
+    if cmp -s "$f" "$f.want"; then ok; else bad "$l"; fi
+  }
+  bash "$RL" release-ready 1 1 0 0 0 green > "$ct/rr" 2>/dev/null
+  same_bytes "$ct/rr" 'met\n' "contract: release-ready prints one word and its newline"
+  bash "$RL" read-complete 3 3 > "$ct/rc" 2>/dev/null
+  same_bytes "$ct/rc" 'complete\n' "contract: read-complete prints one word"
+  printf 'implementable\n' | bash "$RL" emit-verdict > "$ct/ev" 2>/dev/null
+  same_bytes "$ct/ev" 'ready\n' "contract: emit-verdict prints one word"
+  printf '[]' | bash "$RL" release-counts release-blocker 0 > "$ct/cnt" 2>/dev/null
+  same_bytes "$ct/cnt" '0 0 0 0\n\n\n' "contract: release-counts prints exactly three lines, even for an empty milestone"
+  bash "$RL" slug-ok acme/widget > "$ct/so" 2>/dev/null
+  same_bytes "$ct/so" '' "contract: slug-ok prints nothing — its exit status is the answer"
+  printf '[]' | bash "$RL" pr-targets-issue 5 acme/widget > "$ct/pt" 2>/dev/null
+  same_bytes "$ct/pt" '' "contract: pr-targets-issue prints nothing"
+  rm -rf "$ct"
+else
+  bad "contract: could not create a scratch directory"
+fi
 
 check_summary "roadmap"

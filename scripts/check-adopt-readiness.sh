@@ -239,11 +239,17 @@ has "$out" "none detected" "verdict: the evidence detail reaches the report"
 
 # THE OUTPUT CONTRACT (#437): met rungs are never listed, so a green report is the headline and the
 # VERDICT line, and a red one adds only the rungs that remain.
-out="$(records ok | ar verdict)"
-eq "$(printf '%s\n' "$out" | grep -c .)" 2 "verdict: a green report is the headline and the VERDICT line only"
-out="$(printf '%s' "$mixed" | ar verdict)"
-eq "$(printf '%s\n' "$out" | grep -c .)" 4 "verdict: a red report adds only the outstanding section and its rung"
-hasnt "$out" "agents.toml exists" "verdict: a met rung is not listed"
+# Compared as BYTES, so a stray blank line or a lost newline is caught.
+total="$(ar contract | wc -l | tr -d ' ')"
+records ok | ar verdict > "$WORK/v-green.out"
+printf 'Adoption completion contract — %d of %d rungs evaluated (%d met, %d N/A, %d outstanding, %d undetermined)\n\nVERDICT: green — every rung of the completion contract is met.\n' \
+  "$total" "$total" "$total" 0 0 0 > "$WORK/v-green.want"
+if cmp -s "$WORK/v-green.out" "$WORK/v-green.want"; then ok; else bad "verdict: a green report is the headline and the VERDICT line only"; fi
+IFS="$TAB" read -r _r1 _o1 _t1 < <(ar contract | head -1)
+printf '%s' "$mixed" | ar verdict > "$WORK/v-red.out"
+printf 'Adoption completion contract — %d of %d rungs evaluated (%d met, %d N/A, %d outstanding, %d undetermined)\n\nOUTSTANDING — this is what remains, and who decides it:\n  [%s] %-13s %s\n\nVERDICT: red — adoption is NOT complete.\n' \
+  "$total" "$total" "$((total - 1))" 0 1 0 "$_o1" "$_r1" "$_t1" > "$WORK/v-red.want"
+if cmp -s "$WORK/v-red.out" "$WORK/v-red.want"; then ok; else bad "verdict: a red report adds only the outstanding section and its rung"; fi
 
 # --- 3. probe: the offline rungs, each driven both ways -------------------------------------------
 # --- manifest

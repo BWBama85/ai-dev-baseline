@@ -8599,3 +8599,32 @@ survive is the part a later reader needs.
              pinned namespace is the one place a pinned payload may write, and the split is
              verified by an oracle independent of the renderer it checks.
 - baseline-issue: n/a
+
+## D118 — A library's terse default is what its caller branches on or pastes; `--verbose` exists only where the default withholds something
+- date:      2026-10-01
+- category:  project-delta
+- unknown:   #437. Its test plan asks, for every listed subcommand, that `--verbose` output be a
+             superset of the default. The gap analysis returned three BLOCKING questions: the
+             default grammar per subcommand, whether a verdict-only default would discard the
+             evidence `docs-lib report` and `adopt-readiness verdict` exist to carry, and how far
+             "every module header" reaches. Two review passes then flagged the superset line as
+             unmet for the modules that grew no `--verbose`.
+- decision:  (a) Only `pr-threads.sh list` withheld a payload: its default became three counts plus
+             one `thread` line per unresolved thread, with the document behind `--out` (rename
+             publish) or `--verbose`. (b) Every other listed subcommand's default already IS its
+             whole answer — one verdict line, a bounded key/value set, or the evidence block a PR
+             body pastes — so its header gains an `Outputs:` section saying so and no `--verbose`.
+             **Owner decision 2026-10-01: the superset criterion applies only where a default
+             withholds something; an identity `--verbose` everywhere was offered and declined.**
+             (c) Scope is the six enumerated modules; `cleanup-lib.sh` already carries #84's
+             contract, and `implement-lib.sh`'s outputs are already terse lines. (d) `--out` does
+             not use `adb_publish_json`: that helper proceeds when a destination's mode cannot be
+             read (argued for settings.json), and changing it gates every mutation harness. The
+             caller reads the mode once and refuses on failure, renames, and verifies the rename
+             landed on a regular file.
+- placement: the `Outputs:` sections of `scripts/lib/{pr-threads,pr-watch,pattern-ledger,docs-lib,
+             adopt-readiness,roadmap-lib}.sh`; `cmd_list` in `pr-threads.sh`; each module's suite
+             pins its default shape
+- reason:    A verdict-only default would cut the evidence its consumers exist to show, and a flag
+             that prints the default again adds a parser branch with nothing behind it.
+- baseline-issue: n/a

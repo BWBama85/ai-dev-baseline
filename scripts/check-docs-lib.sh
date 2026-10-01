@@ -371,9 +371,9 @@ dl probe-record --state "$D1/state" --server context7 --result usable \
 dl verdict --state "$D1/state" --manifest "$D1/agents.toml" >/dev/null 2>&1
 eq "$?" 0 "a usable probe earns a clean verdict"
 # THE OUTPUT CONTRACT (#437): one stdout line on 0, and none on 10 — DEGRADED goes to stderr.
-eq "$(dl verdict --state "$D1/state" --manifest "$D1/agents.toml" 2>/dev/null)" \
-   "docs-lib: all required MCP server(s) answered: context7" \
-   "verdict: a clean answer is exactly one stdout line"
+dl verdict --state "$D1/state" --manifest "$D1/agents.toml" > "$work/verdict.out" 2>/dev/null
+printf '%s\n' 'docs-lib: all required MCP server(s) answered: context7' > "$work/verdict.want"
+if cmp -s "$work/verdict.out" "$work/verdict.want"; then ok; else bad "verdict: a clean answer is exactly one stdout line"; fi
 eq "$(dl verdict --state "$D1b/state" --manifest "$D1b/agents.toml" 2>/dev/null | wc -c | tr -d ' ')" "0" \
    "verdict: a DEGRADED answer prints nothing on stdout, not even a newline"
 

@@ -81,9 +81,11 @@
 #              Lines are jq `@tsv`: a tab, newline or backslash inside a field is escaped, and the
 #              path's other control bytes print as `?`. The document is the authority for every value.
 #     --out <file>  also publishes the whole JSON document to <file>, staged beside it and renamed
-#                   into place as the last step before the terse lines print, so a failed read or a
-#                   failed write publishes nothing and leaves an existing <file> untouched. A <file>
-#                   that cannot be written is 2, naming the path.
+#                   into place. A failed read, stage or rename publishes nothing and leaves an
+#                   existing <file> untouched; a <file> that cannot be written — or whose mode cannot
+#                   be read to carry onto the replacement — is 2, naming the path. The terse lines
+#                   print AFTER the rename, so a failure writing them is non-zero over a file that
+#                   was published.
 #     --verbose     the whole JSON document on stdout INSTEAD; every count and `thread` line is
 #                   derivable from it.
 #                   Exclusive with --out.
@@ -538,7 +540,7 @@ _adb_pt_unstage() {
 # computed HERE so the workflow never rebuilds the allowlist. What reaches stdout is the header's
 # Outputs contract: the terse lines by default, the document only under --verbose.
 cmd_list() {
-  local n slug nodes re rrc out terse dshow
+  local n slug nodes re rrc out terse dshow dest mode
   [ -n "$OPT_PR" ] || { echo "pr-threads: list requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-threads: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
@@ -550,14 +552,16 @@ cmd_list() {
   # unwritable path is an argument fact, knowable without a round trip.
   if [ -n "$OPT_OUT" ]; then
     dshow="$(adb_display_value "$OPT_OUT")"
-    if [ -e "$OPT_OUT" ] && [ ! -f "$OPT_OUT" ]; then
+    # `./` before a relative path, so one starting with `-` is never read as an option by mktemp/mv.
+    case "$OPT_OUT" in /*) dest="$OPT_OUT" ;; *) dest="./$OPT_OUT" ;; esac
+    if [ -e "$dest" ] && [ ! -f "$dest" ]; then
       echo "pr-threads: --out $dshow exists and is not a regular file — refusing to publish over it" >&2
       return 2
     fi
     trap '_adb_pt_unstage' EXIT
     trap '_adb_pt_unstage; exit 130' INT
     trap '_adb_pt_unstage; exit 143' TERM
-    _ADB_PT_STAGE="$(mktemp "$OPT_OUT.stage.XXXXXX" 2>/dev/null)" \
+    _ADB_PT_STAGE="$(mktemp "$dest.stage.XXXXXX" 2>/dev/null)" \
       || { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (could not stage a file beside it)" >&2; return 2; }
   fi
   adb_require_gh jq || return 20
@@ -613,26 +617,28 @@ cmd_list() {
   if [ -n "$OPT_OUT" ]; then
     printf '%s\n' "$out" > "$_ADB_PT_STAGE" 2>/dev/null \
       || { echo "pr-threads: --out $dshow cannot be written (the staged copy failed)" >&2; return 2; }
-    # adb_publish_json reports on stdout; stdout here is the contract, so its words go to stderr.
-    # adb_publish_json carries an existing file's mode onto the stage but PROCEEDS when it cannot read
-    # it (a choice argued for settings.json); here an unreadable mode refuses, so a restricted file is
-    # never replaced by one carrying the stage's own mode.
-    if [ -f "$OPT_OUT" ] && ! adb_file_mode "$OPT_OUT" >/dev/null; then
-      echo "pr-threads: --out $dshow cannot be written (its permissions could not be read to carry onto the replacement)" >&2
-      return 2
+    # NOT adb_publish_json, which proceeds when it cannot read the destination's mode (D118): the
+    # mode is read ONCE here and an unreadable one refuses, so a restricted file is never replaced
+    # by one carrying the stage's own mode.
+    mode=""
+    if [ -f "$dest" ]; then
+      mode="$(adb_file_mode "$dest")" \
+        || { echo "pr-threads: --out $dshow cannot be written (its permissions could not be read to carry onto the replacement)" >&2; return 2; }
+      chmod "$mode" "$_ADB_PT_STAGE" 2>/dev/null \
+        || { echo "pr-threads: --out $dshow cannot be written (its permissions could not be carried onto the replacement)" >&2; return 2; }
     fi
-    adb_publish_json "$_ADB_PT_STAGE" "$OPT_OUT" >&2 \
+    mv -f "$_ADB_PT_STAGE" "$dest" 2>/dev/null \
       || { echo "pr-threads: --out $dshow cannot be written (the rename into place failed)" >&2; return 2; }
     # `mv` onto a path that became a directory after the checks moves the stage INSIDE it and
     # succeeds, so the rename is verified rather than trusted.
-    if [ ! -f "$OPT_OUT" ]; then
-      rm -f "$OPT_OUT/${_ADB_PT_STAGE##*/}" 2>/dev/null \
-        || printf 'pr-threads: could not remove %s — remove it by hand\n' "$(adb_display_value "$OPT_OUT/${_ADB_PT_STAGE##*/}")" >&2
+    if [ ! -f "$dest" ]; then
+      rm -f "$dest/${_ADB_PT_STAGE##*/}" 2>/dev/null \
+        || printf 'pr-threads: could not remove %s — remove it by hand\n' "$(adb_display_value "$dest/${_ADB_PT_STAGE##*/}")" >&2
       _ADB_PT_STAGE=""
       echo "pr-threads: --out $dshow is no longer a regular file — nothing was published there" >&2
       return 2
     fi
-    _ADB_PT_STAGE=""
+    _ADB_PT_STAGE=""""
   fi
   printf '%s\n' "$terse"
 }

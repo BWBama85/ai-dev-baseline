@@ -147,7 +147,8 @@
 # diagnostic, `wait`'s per-poll progress included, goes to stderr. That line is the whole answer,
 # so there is no verbose form (#437):
 #   observe          clean|findings|pending|gone <sha>
-#   wait             the terminal poll's line, in the same words
+#   wait             the terminal poll's line, in the same words; when the bound expires, the last
+#                    poll's `pending <sha>` (11), or no line if that poll was unreadable
 #   request-review   requested|already|no-trigger|capped|gone <sha>
 #
 # PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
