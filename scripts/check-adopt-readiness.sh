@@ -256,8 +256,12 @@ if cmp -s "$WORK/v-red.out" "$WORK/v-red.want"; then ok; else bad "verdict: a re
 d="$WORK/p-nomanifest"; mkrepo "$d"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}todo" "probe: no agents.toml is todo"
-eq "$(printf '%s\n' "$out" | awk -F'\t' 'NF != 3' | wc -l | tr -d ' ')" 0 \
-   "probe: every record is <rung>TAB<status>TAB<detail> (#437)"
+# Read RAW: the workflow concatenates probe and tracker files, so a lost final newline would join
+# two records, and `$( )` would hide it.
+ar probe "$d" > "$WORK/probe.out" 2>/dev/null
+eq "$(awk -F'\t' 'NF != 3 || $1 == "" || $2 !~ /^(ok|todo|unknown|na)$/' "$WORK/probe.out" | wc -l | tr -d ' ')" 0 \
+   "probe: every record is <rung>TAB<ok|todo|unknown|na>TAB<detail> (#437)"
+eq "$(tail -c 1 "$WORK/probe.out" | od -An -c | tr -d ' ')" '\n' "probe: the last record ends in its newline"
 printf 'x = 1\n' > "$d/agents.toml"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}todo" "probe: an agents.toml with no [roles] is still todo"

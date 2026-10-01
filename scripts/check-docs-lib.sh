@@ -473,12 +473,18 @@ eq "$?" 0 "a consultation is recorded"
 REPORT="$(dl report --state "$D8/state" --manifest "$D8/agents.toml" 2>/dev/null)"
 has "$REPORT" "rung 3" "the report carries the rung"
 has "$REPORT" "docs.github.com" "…and WHAT answered, which is what makes it re-checkable"
-# THE OUTPUT CONTRACT (#437): the block is a heading and one line per record — nothing else.
+# THE OUTPUT CONTRACT (#437): for one consulted record and no declared server, the block is the
+# heading and that record's line — nothing else.
 # Compared as BYTES, since a `$( )` capture would accept trailing blank lines.
 dl report --state "$D8/state" --manifest "$D8/agents.toml" > "$D8/report.out" 2>/dev/null
 printf '%s\n\n%s\n' '**Docs consulted**' \
   '- gh pr view closingIssuesReferences — rung 3: docs.github.com/graphql, fetched this run' > "$D8/report.want"
 if cmp -s "$D8/report.out" "$D8/report.want"; then ok; else bad "report: stdout is the heading plus one line per record, exactly"; fi
+# ...and a run that recorded BOTH kinds carries the note the header names, after the records.
+dl none-needed --state "$D8/state" --justification 'the rest is language-core idiom' >/dev/null 2>&1
+REPORT="$(dl report --state "$D8/state" --manifest "$D8/agents.toml" 2>/dev/null)"
+has "$REPORT" '"none needed" covers only what had been considered at that point' \
+    "report: a run that recorded both kinds says the earlier none-needed is scoped"
 
 # Rung 4 is training-data recall, which never closes a claim — it is not a consultation.
 dl consulted --state "$D8/state" --surface x --rung 4 --source y >/dev/null 2>&1

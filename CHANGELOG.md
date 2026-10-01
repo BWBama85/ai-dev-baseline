@@ -17,6 +17,8 @@ only by a published release, which is what these entries are the notes for.
   The whole document goes to `--out <file>`, staged beside the file and renamed into place, or
   instead to stdout with `--verbose`. An `--out` path that cannot be written exits 2 and names the
   path. So does one whose mode cannot be read, or one that becomes a directory before the rename.
+  Both refusals live in the shared `adb_publish_json`. It gains an opt-in `--strict` for the mode;
+  its default still proceeds for `settings.json`. Every caller now gets the post-rename check.
   It never falls back to printing the document, and a failed read publishes nothing.
   `/resolve-pr-threads` step 2 now uses `--out`. Step 3 reads only the unresolved entries, not
   the whole file. `/cleanup` sweeps a staged copy that a killed writer left behind.

@@ -8617,14 +8617,17 @@ survive is the part a later reader needs.
              **Owner decision 2026-10-01: the superset criterion applies only where a default
              withholds something; an identity `--verbose` everywhere was offered and declined.**
              (c) Scope is the six enumerated modules; `cleanup-lib.sh` already carries #84's
-             contract, and `implement-lib.sh`'s outputs are already terse lines. (d) `--out` does
-             not use `adb_publish_json`: that helper proceeds when a destination's mode cannot be
-             read (argued for settings.json), and changing it gates every mutation harness. The
-             caller reads the mode once and refuses on failure, renames, and verifies the rename
-             landed on a regular file.
+             contract, and `implement-lib.sh`'s outputs are already terse lines. (d) **Owner
+             decision 2026-10-01:** `--out` publishes through `adb_publish_json`, which gains an
+             opt-in `--strict` — an unreadable destination mode refuses, where the default still
+             proceeds as argued for settings.json — and, for every caller, verifies after `mv` that
+             the rename landed on a regular file. A caller-side publisher was built first and
+             declined: it duplicated the primitive to avoid gating every mutation harness, and
+             that cost was taken knowingly. A concurrent `chmod` of the destination between the
+             mode read and the rename is out of scope, on D112's threat model for `.claude/state/`.
 - placement: the `Outputs:` sections of `scripts/lib/{pr-threads,pr-watch,pattern-ledger,docs-lib,
-             adopt-readiness,roadmap-lib}.sh`; `cmd_list` in `pr-threads.sh`; each module's suite
-             pins its default shape
+             adopt-readiness,roadmap-lib}.sh`; `cmd_list` in `pr-threads.sh`; `adb_publish_json` in
+             `scripts/lib/common.sh`; each module's suite pins its default shape
 - reason:    A verdict-only default would cut the evidence its consumers exist to show, and a flag
              that prints the default again adds a parser branch with nothing behind it.
 - baseline-issue: n/a

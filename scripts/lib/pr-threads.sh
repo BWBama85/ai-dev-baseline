@@ -68,7 +68,8 @@
 #   pr-threads.sh remaining --pr <number|url>    # unresolved BOT threads, complete. count on stdout
 #   pr-threads.sh -h | --help
 #
-# Outputs: stdout only on exit 0; every diagnostic goes to stderr (#437).
+# Outputs: what each subcommand prints on exit 0. A refusal or failed read prints nothing on stdout,
+# and every diagnostic goes to stderr (#437).
 #   infer-pr   the bare PR number.
 #   remaining  the bare count — already the whole answer, so it has no verbose form.
 #   list       TERSE by default — the counts and the round's work list, never a comment body:
@@ -540,7 +541,7 @@ _adb_pt_unstage() {
 # computed HERE so the workflow never rebuilds the allowlist. What reaches stdout is the header's
 # Outputs contract: the terse lines by default, the document only under --verbose.
 cmd_list() {
-  local n slug nodes re rrc out terse dshow dest mode
+  local n slug nodes re rrc out terse dshow dest
   [ -n "$OPT_PR" ] || { echo "pr-threads: list requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-threads: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
@@ -617,28 +618,11 @@ cmd_list() {
   if [ -n "$OPT_OUT" ]; then
     printf '%s\n' "$out" > "$_ADB_PT_STAGE" 2>/dev/null \
       || { echo "pr-threads: --out $dshow cannot be written (the staged copy failed)" >&2; return 2; }
-    # NOT adb_publish_json, which proceeds when it cannot read the destination's mode (D118): the
-    # mode is read ONCE here and an unreadable one refuses, so a restricted file is never replaced
-    # by one carrying the stage's own mode.
-    mode=""
-    if [ -f "$dest" ]; then
-      mode="$(adb_file_mode "$dest")" \
-        || { echo "pr-threads: --out $dshow cannot be written (its permissions could not be read to carry onto the replacement)" >&2; return 2; }
-      chmod "$mode" "$_ADB_PT_STAGE" 2>/dev/null \
-        || { echo "pr-threads: --out $dshow cannot be written (its permissions could not be carried onto the replacement)" >&2; return 2; }
-    fi
-    mv -f "$_ADB_PT_STAGE" "$dest" 2>/dev/null \
-      || { echo "pr-threads: --out $dshow cannot be written (the rename into place failed)" >&2; return 2; }
-    # `mv` onto a path that became a directory after the checks moves the stage INSIDE it and
-    # succeeds, so the rename is verified rather than trusted.
-    if [ ! -f "$dest" ]; then
-      rm -f "$dest/${_ADB_PT_STAGE##*/}" 2>/dev/null \
-        || printf 'pr-threads: could not remove %s — remove it by hand\n' "$(adb_display_value "$dest/${_ADB_PT_STAGE##*/}")" >&2
-      _ADB_PT_STAGE=""
-      echo "pr-threads: --out $dshow is no longer a regular file — nothing was published there" >&2
-      return 2
-    fi
-    _ADB_PT_STAGE=""""
+    # `--strict`: an unreadable destination mode refuses rather than publishing the stage's own
+    # (D118). The helper's WARN goes to stderr — stdout here is the contract.
+    adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2 \
+      || { echo "pr-threads: --out $dshow cannot be written (see the line above)" >&2; return 2; }
+    _ADB_PT_STAGE=""
   fi
   printf '%s\n' "$terse"
 }

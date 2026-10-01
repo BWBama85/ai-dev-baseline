@@ -2869,6 +2869,40 @@ eq "$(bare_mkdir_scan "${_bm_files[@]}")" "" "no branched-on bare mkdir outside 
 printf 'lock() {\n  while ! mkdir "$d" 2>/dev/null; do sleep 1; done\n  mkdir "$e" 2>/dev/null && return 0\n  if mkdir "$f"; then :; fi\n  mkdir -p "$g" || exit 1\n}\n' > "$work/bare-mkdir.sh"
 eq "$(bare_mkdir_scan "$work/bare-mkdir.sh" | wc -l | tr -d ' ')" 3 "the bare-mkdir scan fires on while, && and if takes, and not on mkdir -p"
 
+# --- adb_publish_json: `--strict`, and a rename verified rather than trusted (#437) --------------
+# `stat` and `mv` are stubbed on PATH, one knob each: an unreadable mode, and a destination that
+# becomes a directory just before the rename onto it (which `mv` follows INTO, and reports as 0).
+pj="$work/pubjson"; mkdir -p "$pj/statbin" "$pj/mvbin"
+printf '#!/bin/sh\nexit 1\n' > "$pj/statbin/stat"
+{ printf '#!/bin/sh\nfor last; do :; done\nrm -f "$last"; mkdir "$last"\n'
+  printf 'exec %s "$@"\n' "$(command -v mv)"; } > "$pj/mvbin/mv"
+chmod +x "$pj/statbin/stat" "$pj/mvbin/mv"
+printf 'old\n' > "$pj/dest.json"; chmod 400 "$pj/dest.json"; cp "$pj/dest.json" "$pj/dest.orig"
+printf 'new\n' > "$pj/t1"
+if ( PATH="$pj/statbin:$PATH"; adb_publish_json "$pj/t1" "$pj/dest.json" --strict ) >/dev/null 2>&1; then
+  bad "adb_publish_json --strict refuses an unreadable destination mode"
+else ok; fi
+if cmp -s "$pj/dest.json" "$pj/dest.orig"; then ok; else bad "adb_publish_json --strict: ...leaving the destination untouched"; fi
+if [ -e "$pj/t1" ]; then bad "adb_publish_json --strict: ...and removing the temp"; else ok; fi
+# The DEFAULT is unchanged: an unreadable mode still publishes (the settings.json choice).
+printf 'new\n' > "$pj/t2"
+if ( PATH="$pj/statbin:$PATH"; adb_publish_json "$pj/t2" "$pj/dest.json" ) >/dev/null 2>&1; then ok
+else bad "adb_publish_json without --strict still publishes over an unreadable mode"; fi
+printf 'x\n' > "$pj/d2.json"; printf 'y\n' > "$pj/t3"
+if ( PATH="$pj/mvbin:$PATH"; adb_publish_json "$pj/t3" "$pj/d2.json" ) >/dev/null 2>&1; then
+  bad "adb_publish_json refuses a rename that landed INSIDE a directory"
+else ok; fi
+if [ -d "$pj/d2.json" ] && [ -z "$(ls -A "$pj/d2.json")" ]; then ok
+else bad "adb_publish_json: ...and removes what the rename put there"; fi
+printf 'z\n' > "$pj/t4"
+if adb_publish_json "$pj/t4" "$pj/d4.json" --stric >/dev/null 2>&1; then
+  bad "adb_publish_json refuses an unknown option rather than ignoring it"
+else ok; fi
+if [ -e "$pj/t4" ] || [ -e "$pj/d4.json" ]; then bad "adb_publish_json: ...publishing nothing and removing the temp"; else ok; fi
+: > "$pj/t5"
+if adb_publish_json "$pj/t5" "$pj/d5.json" --allow-empty --strict >/dev/null 2>&1 && [ -f "$pj/d5.json" ]; then ok
+else bad "adb_publish_json takes --allow-empty and --strict together"; fi
+
 # --- --mutation: the manifest guards must be OBSERVED failing (#324) ----------------------------
 #
 # A guard's failure mode is silence: one that scans nothing, matches nothing, or refuses nothing
@@ -3067,6 +3101,18 @@ if [ "${1:-}" = "--mutation" ]; then
     "adb_pool_size stays SILENT on an over-large budget" \
     '[ "${#v}" -le 9 ] || return 1' \
     '/\[ "\${#v}" -le 9 \] || return 1/d'
+
+  # 15. `--strict` is accepted and then ignored, so an unreadable mode publishes anyway (#437).
+  mutate publish-strict-ignored \
+    "adb_publish_json --strict refuses an unreadable destination mode" \
+    '' \
+    '/^      if \[ -n "\$strict" \]; then$/s/-n "\$strict"/-n ""/'
+
+  # 16. The rename is trusted again, so a destination that became a directory reads as published.
+  mutate publish-rename-unverified \
+    "adb_publish_json refuses a rename that landed INSIDE a directory" \
+    '' \
+    '/^  if \[ ! -f "\$dest" \]; then$/s/! -f "\$dest"/-z x/'
 
   # --- run them, bounded ------------------------------------------------------------------------
   # `adb_pool_size` is the one home for the width (scripts/lib/common.sh): min(cpu, 8), so it

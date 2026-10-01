@@ -524,7 +524,8 @@ EOF
 #
 #   * A DIRECTORY at <dest> makes `mv tmp dest` move the file INSIDE it and exit 0 — so a caller
 #     that trusts the status reports a write that every later reader will fail to find, because
-#     the path it reads is not a regular file. Refused here instead.
+#     the path it reads is not a regular file. Refused here instead, before the rename AND after it:
+#     a directory created between the check and `mv` gets the temp inside it, which is undone (#437).
 #   * The temp file is created under the process UMASK, so publishing it over a mode-0600
 #     `settings.json` silently relaxes it to 0644. That file can hold an `env` block, so the
 #     permission is not cosmetic. The mode is carried across before the rename.
@@ -535,7 +536,9 @@ EOF
 # A SYMLINK at <dest> that resolves to a regular file is still REPLACED by a regular file, exactly
 # as before — narrowing that is a behaviour change for the hook surface and is not claimed here.
 #
-# Usage: adb_publish_json <tmp> <dest>
+# Usage: adb_publish_json <tmp> <dest> [--allow-empty] [--strict]
+#   --strict  an existing <dest> whose mode cannot be READ refuses, instead of publishing the temp
+#             at its own mode (#437, D118). An unknown option refuses.
 # Returns: 0 published · 1 refused or failed (the temp file is removed on every failure)
 # The destination's permission bits, or empty. ORDER MATTERS AND IS NOT SYMMETRIC: GNU `stat`
 # spells the mode `-c '%a'` and reads `-f` as `--file-system` (which takes no format argument, so
@@ -564,18 +567,35 @@ adb_file_mode() {
 # exactly the unrecoverable state the rollback exists to prevent. Restoring it here rather than
 # writing a second publisher keeps the rename and the mode-preservation in one place. (PR review)
 adb_publish_json() {
-  local tmp="$1" dest="$2" allow_empty="${3:-}" mode=""
+  local tmp="$1" dest="$2" allow_empty="" strict="" opt mode=""
+  shift 2
+  for opt in "$@"; do
+    case "$opt" in
+      --allow-empty) allow_empty=1 ;;
+      --strict)      strict=1 ;;
+      *) rm -f "$tmp"; adb_info "  WARN   adb_publish_json: unknown option $opt — NOT published"; return 1 ;;
+    esac
+  done
   if [ -e "$dest" ] && [ ! -f "$dest" ]; then
     rm -f "$tmp"
     adb_info "  WARN   $dest is not a regular file — refusing to publish over it"
     return 1
   fi
-  if [ "$allow_empty" != "--allow-empty" ]; then
+  if [ -z "$allow_empty" ]; then
     [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
   fi
   # An unreadable mode leaves the umask default rather than failing the write: a
-  # preserved-but-unknown permission is not worth losing the settings over.
-  if [ -f "$dest" ]; then mode="$(adb_file_mode "$dest")" || mode=""; fi
+  # preserved-but-unknown permission is not worth losing the settings over. `--strict` refuses.
+  if [ -f "$dest" ]; then
+    if ! mode="$(adb_file_mode "$dest")"; then
+      mode=""
+      if [ -n "$strict" ]; then
+        rm -f "$tmp"
+        adb_info "  WARN   could not read $dest's mode to carry onto the replacement — NOT published"
+        return 1
+      fi
+    fi
+  fi
   # A MODE WE READ AND COULD NOT SET IS A PUBLICATION FAILURE. The hook writers build their temp
   # under the caller's ordinary umask, so publishing anyway replaces a 0600 settings.json with a
   # 0644 one — and that file carries unrelated values, an `env` block among them. Failing to READ
@@ -586,6 +606,11 @@ adb_publish_json() {
     return 1
   fi
   mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  if [ ! -f "$dest" ]; then
+    rm -f "$dest/${tmp##*/}" 2>/dev/null
+    adb_info "  WARN   $dest became a directory before the rename — NOT published"
+    return 1
+  fi
   return 0
 }
 

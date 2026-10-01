@@ -160,20 +160,16 @@ if [ "$MODE" = mutation ]; then
     '|| { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (could not stage a file beside it)" >&2; return 2; }' \
     '|| { _ADB_PT_STAGE=""; OPT_OUT=""; }' \
     'list --out into a missing directory is 2'
-  # The two publish defences the shared publisher does not provide here, and --verbose's write status.
-  check_mut "unreadable-mode-accepted" \
-    'if [ -f "$dest" ]; then' \
-    'if false; then' \
+  # --out's choice of the STRICT publisher (D118), and --verbose's write status.
+  check_mut "strict-publish-dropped" \
+    'adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2' \
+    'adb_publish_json "$_ADB_PT_STAGE" "$dest" >&2' \
     'list --out: an unreadable destination mode is refused (2)'
-  check_mut "rename-into-directory-trusted" \
-    'if [ ! -f "$dest" ]; then' \
-    'if false; then' \
-    'list --out: a destination that became a directory before the rename is refused (2)'
   check_mut "verbose-write-status-dropped" \
     "printf '%s\\n' \"\$out\"; return" \
     "printf '%s\\n' \"\$out\"; return 0" \
     'list --verbose: a failed write to stdout is still exit 0'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 11
+  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 10
   check_summary "check-pr-threads --mutation"
   exit 0
 fi
@@ -442,6 +438,8 @@ mkpage c2  154 false ""  100 54
 pt remaining --pr 1
 eq "$RC" "0"    "remaining: reads across two pages too"
 eq "$OUT" "154" "remaining: it counts every unresolved bot thread, not one page's worth"
+printf '154\n' > "$work/remaining.want"
+if cmp -s "$work/out" "$work/remaining.want"; then ok; else bad "remaining: stdout is the bare count and its newline, byte for byte"; fi
 eq "$(calls_for 'graphql:c2')" "1" "remaining: the check follows the cursor as well"
 
 # --- THE SHORTFALL IS A HARD ERROR ------------------------------------------------------------

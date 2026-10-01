@@ -1323,7 +1323,7 @@ cmd_verify() {
   fi
   [ "$bad" -eq 0 ] || exit 18
   [ "$over" -eq 0 ] || exit 21
-  printf 'ok %s hit(s), %s checklist rule(s) checked in %s (checklist %s of %s bytes)\n' "$nh" "$np" "$ledger" "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES"
+  printf 'ok %s hit(s), %s checklist rule(s) checked in %s (checklist %s of %s bytes)\n' "$nh" "$np" "$(adb_display_value "$ledger")" "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES"
 }
 
 # `reclaim` — remove an ABANDONED write lock, or say why not.
@@ -1348,7 +1348,7 @@ cmd_reclaim() {
     if ! rm -rf "$t" 2>/dev/null || [ -e "$t" ]; then
       printf 'pattern-ledger: could not remove the stale-lock tombstone %s — remove it by hand.\n' "$t" >&2; rc=20
     else
-      printf 'pattern-ledger: removed a leftover stale-lock tombstone: %s\n' "$t"; did=1
+      printf 'pattern-ledger: removed a leftover stale-lock tombstone: %s\n' "$(adb_display_value "$t")"; did=1
     fi
   done
   if [ -d "$dir" ]; then
@@ -1363,14 +1363,14 @@ cmd_reclaim() {
         printf 'pattern-ledger: could not remove the stale lock %s after renaming it — it is owned by another user, or its contents are not deletable here. Remove it by hand.\n' "$tomb" >&2
         exit 20
       fi
-      printf 'pattern-ledger: reclaimed a stale write lock (%ss old, owner gone): %s\n' "$age" "$dir"; did=1
+      printf 'pattern-ledger: reclaimed a stale write lock (%ss old, owner gone): %s\n' "$age" "$(adb_display_value "$dir")"; did=1
     else
       printf 'pattern-ledger: %s is HELD — its owner is alive, on another host, unrecorded, or the lock is not yet stale (%ss old). Nothing reclaimed; remove it by hand only once you are sure.\n' "$dir" "${age:-?}" >&2
       exit 22
     fi
   fi
   [ "$rc" -eq 0 ] || exit "$rc"
-  [ "$did" -eq 1 ] || printf 'pattern-ledger: no lock at %s\n' "$dir"
+  [ "$did" -eq 1 ] || printf 'pattern-ledger: no lock at %s\n' "$(adb_display_value "$dir")"
   exit 0
 }
 

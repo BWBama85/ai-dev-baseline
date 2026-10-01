@@ -1203,6 +1203,11 @@ bash "$PL" verify --ledger "$L8" > "$work/verify.out" 2>/dev/null
 eq "$(wc -l < "$work/verify.out" | tr -d ' ')" 1 "verify: stdout is exactly one newline-terminated line"
 eq "$(tail -c 1 "$work/verify.out" | od -An -c | tr -d ' ')" '\n' "verify: ...ending in its newline"
 case "$(head -c 3 "$work/verify.out")" in "ok ") ok ;; *) bad "verify: stdout is not an 'ok …' line" ;; esac
+# A legal path carrying a newline is rendered on that ONE line, not split across two.
+L9="$work/led"$'\n'"ger.md"
+bash "$PL" record --ledger "$L9" --class nl-class --site a.sh --fix abc1234 --pr 1 --thread TNL1 >/dev/null 2>&1
+bash "$PL" verify --ledger "$L9" > "$work/verify-nl.out" 2>/dev/null
+eq "$(wc -l < "$work/verify-nl.out" | tr -d ' ')" 1 "verify: a ledger path with a newline still prints one line"
 fi
 
 if check_block s10; then
