@@ -55,7 +55,7 @@
 #                     caller redirects to a file rather than reading
 #   facts             one JSON object — likewise redirected, not read
 #   receipt run       the gates' own output, then `recorded pass|fail at <sha12>`
-#   receipt check     one word, ok|failed|stale|none, with its reason in parentheses
+#   receipt check     one word, ok|failed|stale|none, then its reason in parentheses when it has one
 #   verdict · status  the report: a headline counting rungs evaluated, OUTSTANDING and UNDETERMINED
 #                     rungs with their owners, then one `VERDICT:` line. Met rungs are never listed,
 #                     so the report is already the terse form, and what it names IS the evidence.

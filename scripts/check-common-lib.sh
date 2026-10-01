@@ -2874,8 +2874,8 @@ eq "$(bare_mkdir_scan "$work/bare-mkdir.sh" | wc -l | tr -d ' ')" 3 "the bare-mk
 # becomes a directory just before the rename onto it (which `mv` follows INTO, and reports as 0).
 pj="$work/pubjson"; mkdir -p "$pj/statbin" "$pj/mvbin"
 printf '#!/bin/sh\nexit 1\n' > "$pj/statbin/stat"
-{ printf '#!/bin/sh\nfor last; do :; done\nrm -f "$last"; mkdir "$last"\n'
-  printf 'exec %s "$@"\n' "$(command -v mv)"; } > "$pj/mvbin/mv"
+{ printf '#!/usr/bin/env bash\nfor last; do :; done\nrm -f "$last"; mkdir "$last"\n'
+  printf 'exec %q "$@"\n' "$(command -v mv)"; } > "$pj/mvbin/mv"
 chmod +x "$pj/statbin/stat" "$pj/mvbin/mv"
 printf 'old\n' > "$pj/dest.json"; chmod 400 "$pj/dest.json"; cp "$pj/dest.json" "$pj/dest.orig"
 printf 'new\n' > "$pj/t1"
@@ -2894,6 +2894,15 @@ if ( PATH="$pj/mvbin:$PATH"; adb_publish_json "$pj/t3" "$pj/d2.json" ) >/dev/nul
 else ok; fi
 if [ -d "$pj/d2.json" ] && [ -z "$(ls -A "$pj/d2.json")" ]; then ok
 else bad "adb_publish_json: ...and removes what the rename put there"; fi
+# ...and when that undo itself fails, the refusal NAMES the copy it could not remove.
+mkdir -p "$pj/rmbin"; cp "$pj/mvbin/mv" "$pj/rmbin/mv"
+{ printf '#!/usr/bin/env bash\ncase "$*" in *d6.json/*) exit 1 ;; esac\n'
+  printf 'exec %q "$@"\n' "$(command -v rm)"; } > "$pj/rmbin/rm"
+chmod +x "$pj/rmbin/rm"
+printf 'x\n' > "$pj/d6.json"; printf 'y\n' > "$pj/t6"
+pj_out="$( ( PATH="$pj/rmbin:$PATH"; adb_publish_json "$pj/t6" "$pj/d6.json" ) 2>&1 )" \
+  && bad "adb_publish_json: a failed undo still reports success" || ok
+has "$pj_out" "could not be removed" "adb_publish_json: a failed undo names the copy left inside the directory"
 printf 'z\n' > "$pj/t4"
 if adb_publish_json "$pj/t4" "$pj/d4.json" --stric >/dev/null 2>&1; then
   bad "adb_publish_json refuses an unknown option rather than ignoring it"

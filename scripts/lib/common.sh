@@ -573,12 +573,12 @@ adb_publish_json() {
     case "$opt" in
       --allow-empty) allow_empty=1 ;;
       --strict)      strict=1 ;;
-      *) rm -f "$tmp"; adb_info "  WARN   adb_publish_json: unknown option $opt — NOT published"; return 1 ;;
+      *) rm -f "$tmp"; adb_info "  WARN   adb_publish_json: unknown option $(adb_display_value "$opt") — NOT published"; return 1 ;;
     esac
   done
   if [ -e "$dest" ] && [ ! -f "$dest" ]; then
     rm -f "$tmp"
-    adb_info "  WARN   $dest is not a regular file — refusing to publish over it"
+    adb_info "  WARN   $(adb_display_value "$dest") is not a regular file — refusing to publish over it"
     return 1
   fi
   if [ -z "$allow_empty" ]; then
@@ -591,7 +591,7 @@ adb_publish_json() {
       mode=""
       if [ -n "$strict" ]; then
         rm -f "$tmp"
-        adb_info "  WARN   could not read $dest's mode to carry onto the replacement — NOT published"
+        adb_info "  WARN   could not read the mode of $(adb_display_value "$dest") to carry onto the replacement — NOT published"
         return 1
       fi
     fi
@@ -602,13 +602,16 @@ adb_publish_json() {
   # the mode still proceeds (the comment above); failing to APPLY one we read does not. (PR review)
   if [ -n "$mode" ] && ! chmod "$mode" "$tmp" 2>/dev/null; then
     rm -f "$tmp"
-    adb_info "  WARN   could not preserve $dest's mode ($mode) on the replacement — NOT published"
+    adb_info "  WARN   could not preserve the mode ($mode) of $(adb_display_value "$dest") on the replacement — NOT published"
     return 1
   fi
   mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
   if [ ! -f "$dest" ]; then
-    rm -f "$dest/${tmp##*/}" 2>/dev/null
-    adb_info "  WARN   $dest became a directory before the rename — NOT published"
+    if rm -f "$dest/${tmp##*/}" 2>/dev/null && [ ! -e "$dest/${tmp##*/}" ]; then
+      adb_info "  WARN   $(adb_display_value "$dest") became a directory before the rename — NOT published"
+    else
+      adb_info "  WARN   $(adb_display_value "$dest") became a directory before the rename — NOT published, and $(adb_display_value "$dest/${tmp##*/}") could not be removed"
+    fi
     return 1
   fi
   return 0

@@ -2748,6 +2748,21 @@ if [ -n "$ct" ] && [ -d "$ct" ]; then
   same_bytes "$ct/so" '' "contract: slug-ok prints nothing — its exit status is the answer"
   printf '[]' | bash "$RL" pr-targets-issue 5 acme/widget > "$ct/pt" 2>/dev/null
   same_bytes "$ct/pt" '' "contract: pr-targets-issue prints nothing"
+  bash "$RL" health-decl off write > "$ct/hd1" 2>/dev/null
+  same_bytes "$ct/hd1" 'off\n' "contract: health-decl with no reason prints one line"
+  # A REASON IS PROSE, so the shape is pinned rather than the wording: line 1 is the verdict, there
+  # are exactly two lines, and the last ends in its newline — a stray line or a lost one fails.
+  # two_lines <file> <verdict> <label>
+  two_lines() {
+    if [ "$(head -n 1 "$1")" = "$2" ] && [ "$(wc -l < "$1" | tr -d ' ')" = 2 ] \
+       && [ -n "$(sed -n 2p "$1")" ] && [ "$(tail -c 1 "$1" | od -An -c | tr -d ' ')" = '\n' ]; then ok
+    else bad "$3"; fi
+  }
+  bash "$RL" health-decl skip-unreported read > "$ct/hd2" 2>/dev/null
+  two_lines "$ct/hd2" off "contract: health-decl with a reason prints the verdict and ONE reason line"
+  printf '{"check_runs":[],"statuses":[],"required_contexts":[]}' \
+    | bash "$RL" branch-health 0123456789abcdef0123456789abcdef01234567 0 off > "$ct/bh" 2>/dev/null
+  two_lines "$ct/bh" indeterminate "contract: branch-health prints the verdict and ONE reason line"
   rm -rf "$ct"
 else
   bad "contract: could not create a scratch directory"

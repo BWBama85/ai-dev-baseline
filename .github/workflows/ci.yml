@@ -430,7 +430,7 @@ jobs:
       # sees no new or missing context. The harness still runs unconditionally once a day:
       # `.github/workflows/mutation-nightly.yml`. Every other `--mutation` step in this file is the
       # same shape and says so by pointing here.
-      - name: ...and the manifest guards must be able to fail — 8 mutations, each observed RED (#324)
+      - name: ...and the manifest guards must be able to fail — every mutation observed RED (#324, #437)
         run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation
 
   agent-init:

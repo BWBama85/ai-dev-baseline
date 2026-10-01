@@ -157,7 +157,7 @@ if [ "$MODE" = mutation ]; then
     'list: the default prints the terse contract, not the document'
   # ...and an unwritable --out must refuse, never quietly degrade to stdout.
   check_mut "out-falls-back-to-stdout" \
-    '|| { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (could not stage a file beside it)" >&2; return 2; }' \
+    "|| { _ADB_PT_STAGE=\"\"; printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\\n' \"\$dshow\" >&2; return 2; }" \
     '|| { _ADB_PT_STAGE=""; OPT_OUT=""; }' \
     'list --out into a missing directory is 2'
   # --out's choice of the STRICT publisher (D118), and --verbose's write status.
@@ -884,6 +884,12 @@ if cmp -s "$REPO/-lead.json" "$work/verbose.json"; then ok; else bad "list --out
 has_line "$OUT" "$(printf 'file\t-lead.json')" "list --out: ...and the file line names it as given"
 eq "$(find "$REPO" -maxdepth 1 -name '*.stage.*' | wc -l | tr -d ' ')" "0" "list --out: ...leaving no stage behind"
 rm -f "$REPO/-lead.json"
+# The `file` line gets a path's display policy too: an ESC in the destination prints as `?`.
+_esc_dest="$work/o/esc"$'\033'"x.json"
+pt list --pr 1 --out "$_esc_dest"
+eq "$RC" "0" "list --out: a destination carrying a control byte is still published"
+has_line "$OUT" "$(printf 'file\t%s' "$work/o/esc?x.json")" "list --out: ...and the file line prints its control byte as '?'"
+rm -f "$_esc_dest"
 
 # An unwritable destination is 2, named, refused before the network, and never falls back to stdout.
 reset_fx; mkpage 1 6 false "" 0 6

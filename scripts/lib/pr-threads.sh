@@ -79,7 +79,7 @@
 #                file<TAB><path>             with --out only: where the whole document was published
 #                thread<TAB><id><TAB>bot|human<TAB><path>[:<line>]|-
 #                                            one per UNRESOLVED thread, in read order, never truncated
-#              Lines are jq `@tsv`: a tab, newline or backslash inside a field is escaped, and the
+#              Lines are jq `@tsv`: a tab, newline or backslash inside a field is escaped, and a
 #              path's other control bytes print as `?`. The document is the authority for every value.
 #     --out <file>  also publishes the whole JSON document to <file>, staged beside it and renamed
 #                   into place. A failed read, stage or rename publishes nothing and leaves an
@@ -556,14 +556,14 @@ cmd_list() {
     # `./` before a relative path, so one starting with `-` is never read as an option by mktemp/mv.
     case "$OPT_OUT" in /*) dest="$OPT_OUT" ;; *) dest="./$OPT_OUT" ;; esac
     if [ -e "$dest" ] && [ ! -f "$dest" ]; then
-      echo "pr-threads: --out $dshow exists and is not a regular file — refusing to publish over it" >&2
+      printf 'pr-threads: --out %s exists and is not a regular file — refusing to publish over it\n' "$dshow" >&2
       return 2
     fi
     trap '_adb_pt_unstage' EXIT
     trap '_adb_pt_unstage; exit 130' INT
     trap '_adb_pt_unstage; exit 143' TERM
     _ADB_PT_STAGE="$(mktemp "$dest.stage.XXXXXX" 2>/dev/null)" \
-      || { _ADB_PT_STAGE=""; echo "pr-threads: --out $dshow cannot be written (could not stage a file beside it)" >&2; return 2; }
+      || { _ADB_PT_STAGE=""; printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\n' "$dshow" >&2; return 2; }
   fi
   adb_require_gh jq || return 20
   # THE MANIFEST IS READ BEFORE THE NETWORK. A malformed `[reviewers] bots` is a configuration fact
@@ -602,26 +602,25 @@ cmd_list() {
   # RENDERED BEFORE THE PUBLISH, so a failure here leaves the destination untouched rather than
   # published under a non-zero exit.
   terse="$(printf '%s' "$out" | jq -r --arg file "$OPT_OUT" '
+      def disp: explode | map(if (. < 32 and . != 9 and . != 10) or . == 127 then 63 else . end) | implode;
       [ .threads[] | select(.isResolved == false) ] as $u
       | ["total", .total], ["unresolved", ($u | length)],
         ["unresolved-bot", ([ $u[] | select(.is_bot) ] | length)],
-        (if $file == "" then empty else ["file", $file] end),
+        (if $file == "" then empty else ["file", ($file | disp)] end),
         ( $u[] | ["thread", .id, (if .is_bot then "bot" else "human" end),
                   (if .path == null then "-"
-                   else (.path | explode
-                         | map(if (. < 32 and . != 9 and . != 10) or . == 127 then 63 else . end)
-                         | implode)
+                   else (.path | disp)
                         + (if .line == null then "" else ":\(.line)" end) end)] )
       | @tsv' 2>/dev/null)" \
     || { echo "pr-threads: could not summarise the review threads of PR #$n" >&2; return 20; }
 
   if [ -n "$OPT_OUT" ]; then
     printf '%s\n' "$out" > "$_ADB_PT_STAGE" 2>/dev/null \
-      || { echo "pr-threads: --out $dshow cannot be written (the staged copy failed)" >&2; return 2; }
+      || { printf 'pr-threads: --out %s cannot be written (the staged copy failed)\n' "$dshow" >&2; return 2; }
     # `--strict`: an unreadable destination mode refuses rather than publishing the stage's own
     # (D118). The helper's WARN goes to stderr — stdout here is the contract.
     adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2 \
-      || { echo "pr-threads: --out $dshow cannot be written (see the line above)" >&2; return 2; }
+      || { printf 'pr-threads: --out %s cannot be written (see the line above)\n' "$dshow" >&2; return 2; }
     _ADB_PT_STAGE=""
   fi
   printf '%s\n' "$terse"
