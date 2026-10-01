@@ -299,6 +299,7 @@ if [ "$SELF_TEST" -eq 1 ]; then
   mkfixture() {
     mkdir -p "$1/scripts/lib" "$1/base/practices" "$1/base/workflows" || return 1
     cp "$ROOT/scripts/build.sh" "$1/scripts/build.sh" || return 1
+    cp "$ROOT/scripts/skill-description.awk" "$1/scripts/skill-description.awk" || return 1
     cp "$ROOT/scripts/lib/common.sh" "$1/scripts/lib/common.sh" || return 1
     printf '# index\n' > "$1/base/practices/00-index.md"
     printf -- '---\nname: fixture\ndescription: a fixture workflow\n---\n\n# /fixture\n\nbody\n' > "$1/base/workflows/fixture.md"

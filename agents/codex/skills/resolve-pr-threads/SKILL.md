@@ -5,7 +5,7 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: resolve-pr-threads
-description: Wait for the async reviewer, then address and resolve its review threads on an open PR — by default, and with no arguments. Infers the PR when exactly one is open, switches the working tree to its head branch, addresses findings (commit + push if needed), replies, marks each thread Resolved via GraphQL so branch protection unblocks merge, then asks for a re-review and goes round again until the reviewer passes, a guard refuses, or the round cap is reached. --once does a single pass instead.
+description: On an open PR, await async review, then fix and resolve its threads until the reviewer passes. Optional PR number; --once for one pass.
 ---
 
 # /resolve-pr-threads

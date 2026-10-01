@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — rendered instruction size per agent artifact (#359), and its growth (#432).
 #
-# Usage: bash scripts/render-size.sh [--since <ref>] [--markdown] [-h]
+# Usage: bash scripts/render-size.sh [--since <ref> | --descriptions] [--markdown] [-h]
 #
 # stdout, TAB-separated, one row per rendered artifact and then a TOTAL row:
 #
@@ -43,7 +43,31 @@
 # execute another commit's build.
 #
 # --markdown: the same rows as a GitHub-flavored Markdown table with a header row, for a CI job
-# summary; the column names above are its ONE home.
+# summary, followed by the descriptions table below; the column names here are its ONE home.
+#
+# --descriptions: stdout is the descriptions figure alone, one row per agent and then a TOTAL row:
+#
+#     agent<TAB>skills<TAB>words<TAB>approx_tokens
+#
+# where TOTAL is again the sum of the rows above it, in every column — across agents, although a
+# session loads one agent's row. Every artifact is still measured and every fault still fails the
+# command; none of their rows is printed. With --markdown, the same rows as a table. It takes no
+# --since: the figure is the current tree's.
+#
+# The `descriptions` figure (#436) is the NOMINAL always-loaded cost: the text of every skill's
+# `description:` value, which each agent lists at session start whether or not a skill runs, before
+# any host budget — a host may shorten or drop entries when its listing is over one. Its words are
+# already inside the SKILL.md rows, so it is never a row of the artifact table — TOTAL would count
+# them twice. It is a line of the stderr summary on every run, the whole of stdout with
+# --descriptions, and with --markdown, the report CI publishes, a second table after the artifact
+# table: the --descriptions rows, TOTAL included. Per agent — one session loads one
+# agent's set — it is the skill count, the values' `wc -w` words, and ceil(bytes/4) of the values.
+# The value is the one `description:` line's text after the key, and scripts/skill-description.awk
+# — the rule build.sh applies to every source — admits only plain text every YAML loader reads as
+# itself. That is the descriptions' share of the listing, not the whole of it (each agent adds
+# names and paths around them). It is always the current tree's; --since reports growth in the
+# SKILL.md rows' deltas. A render that fails the rule is UNDESCRIBED: a broken render, never zero
+# words.
 #
 # The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
 # below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render
@@ -55,7 +79,7 @@
 #
 # Exit: 0 every expected artifact was measured · 1 a mechanical fault — MISSING, UNREADABLE,
 # UNCOUNTABLE, EMPTY, UNNAMEABLE, DUPLICATE (a procedure also present in the tree it does not
-# render to), a collapsed
+# render to), UNDESCRIBED, a collapsed
 # derivation, or a blob at <ref> that git could not list or read · 2 usage, --since outside a git
 # repository, or a <ref> that is not a commit. Size NEVER fails this command; there is no ceiling (#355).
 
@@ -81,8 +105,9 @@ set -u
 # resolving once the working directory changes. Values are validated here and resolved after.
 SINCE=""
 MARKDOWN=0
+DESCS_ONLY=0
 usage_error() {   # <message> — a usage fault is exit 2, never a silent full run
-  printf 'render-size: %s (usage: bash scripts/render-size.sh [--since <ref>] [--markdown])\n' "$1" >&2
+  printf 'render-size: %s (usage: bash scripts/render-size.sh [--since <ref> | --descriptions] [--markdown])\n' "$1" >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -100,11 +125,19 @@ while [ "$#" -gt 0 ]; do
       [ -z "$SINCE" ] || usage_error '--since given twice'
       SINCE="${1#--since=}"; shift ;;
     --markdown) MARKDOWN=1; shift ;;
+    --descriptions) DESCS_ONLY=1; shift ;;
     *) usage_error "unknown argument $(adb_display_value "$1")" ;;
   esac
 done
+[ "$DESCS_ONLY" -eq 0 ] || [ -z "$SINCE" ] || usage_error '--descriptions reports the current tree, so it takes no --since'
 
 cd "$(dirname "$0")/.." || exit 1
+# The description rule is the shared one or nothing: without it every skill would read as an
+# unreadable description rather than as a missing file.
+[ -r scripts/skill-description.awk ] || {
+  printf '%s: FATAL — scripts/skill-description.awk is missing; cannot read skill descriptions\n' "${0##*/}" >&2
+  exit 1
+}
 
 # <agent>:<root-doc-basename>. Restated rather than sourced: scripts/build.sh owns the same triple
 # and says why it is not single-sourced yet.
@@ -161,16 +194,51 @@ measure() {
     return 1
   fi
   read -r lines words bytes <<< "$counts"
-  # Non-numeric counts would evaluate to 0 in the arithmetic below and print a plausible row.
-  case "$lines$words$bytes" in ''|*[!0-9]*)
-    printf 'render-size: UNCOUNTABLE %s — wc returned %s\n' "$label" "$counts" >&2
-    return 1 ;;
-  esac
+  # Non-numeric or MISSING counts would evaluate to 0 in the arithmetic below and print a plausible
+  # row, so each field is checked on its own: concatenated, one digit string passes for three.
+  local n
+  for n in "$lines" "$words" "$bytes"; do
+    case "$n" in ''|*[!0-9]*)
+      printf 'render-size: UNCOUNTABLE %s — wc returned %s\n' "$label" "$counts" >&2
+      return 1 ;;
+    esac
+  done
   if [ "$bytes" -eq 0 ]; then
     printf 'render-size: EMPTY %s — a rendered artifact is never zero bytes, so this is a truncated render, not a size verdict\n' "$label" >&2
     return 1
   fi
   M_LINES=$lines; M_WORDS=$words; M_TOKENS=$(( (bytes + 3) / 4 ))
+}
+
+# describe <SKILL.md> <agent> — add the rendered description to <agent>'s always-loaded figure, or
+# diagnose and fail closed. The rule is scripts/skill-description.awk, the one build.sh applies to
+# every source: a render that passes it carries plain text every YAML loader reads as itself.
+declare -A D_SKILLS=() D_WORDS=() D_BYTES=()
+describe() {
+  local f="$1" a="$2" out v counts words bytes
+  # pipefail INSIDE the substitution: this script runs without it, and a `tr` that failed after
+  # writing would otherwise be answered for by awk's status alone.
+  out="$(set -o pipefail; LC_ALL=C tr '\000' '\001' < "$f" | LC_ALL=C awk -f scripts/skill-description.awk)" || out=""
+  case "$out" in
+    ok$'\t'*) v="${out#ok$'\t'}" ;;
+    bad$'\t'*)
+      printf 'render-size: UNDESCRIBED %s — %s (scripts/skill-description.awk names the admitted shape)\n' "$f" "${out#bad$'\t'}" >&2
+      rc=1; return 1 ;;
+    *) printf 'render-size: UNREADABLE %s — its description could not be read\n' "$f" >&2
+       rc=1; return 1 ;;
+  esac
+  counts="$(printf '%s' "$v" | LC_ALL=C wc -wc)" || counts=""
+  read -r words bytes <<< "$counts"
+  local n
+  for n in "$words" "$bytes"; do
+    case "$n" in ''|*[!0-9]*)
+      printf 'render-size: UNCOUNTABLE %s — wc returned %s for its description\n' "$f" "$(adb_display_value "$counts")" >&2
+      rc=1; return 1 ;;
+    esac
+  done
+  D_SKILLS[$a]=$(( ${D_SKILLS[$a]:-0} + 1 ))
+  D_WORDS[$a]=$(( ${D_WORDS[$a]:-0} + words ))
+  D_BYTES[$a]=$(( ${D_BYTES[$a]:-0} + bytes ))
 }
 
 # fenced_comments <file> — print the count defined in the header. `adb_md_block` classifies every
@@ -200,7 +268,11 @@ fenced_comments() {
 }
 
 # row <cell>… — one output record, TSV or a Markdown table row; the ONLY writer of stdout rows.
+# ROWS_ON=0 measures without printing: --descriptions keeps every artifact's faults, not its rows.
+ROWS_ON=1
+[ "$DESCS_ONLY" -eq 0 ] || ROWS_ON=0
 row() {
+  [ "$ROWS_ON" -eq 1 ] || return 0
   if [ "$MARKDOWN" -eq 1 ]; then
     local out="|" cell
     for cell in "$@"; do out="$out $cell |"; done
@@ -321,7 +393,8 @@ for wf in base/workflows/*.md; do
   esac
   sources=$(( sources + 1 ))
   for pair in $AGENTS; do
-    emit "agents/${pair%%:*}/skills/$name/SKILL.md" && skills=$(( skills + 1 ))
+    emit "agents/${pair%%:*}/skills/$name/SKILL.md" && skills=$(( skills + 1 )) \
+      && describe "agents/${pair%%:*}/skills/$name/SKILL.md" "${pair%%:*}"
   done
   # Supporting files (#433): derived from base/workflows/<name>/, never globbed from agents/ —
   # a sibling that failed to render must be MISSING here, not absent from the report.
@@ -363,5 +436,36 @@ else
     "$roots" "$skills" "$supports" "$sources" "$procs" "$psources" "$t_tokens" "$od_tokens" "$(adb_display_value "$SINCE")" "$SINCE_SHORT" "$t_dlines" "$t_dtokens" "$news_loaded" "$news_od" >&2
 fi
 [ -z "$goal" ] || printf 'render-size: root doc lines against the ~200-line goal (a report, never a gate): %s\n' "$goal" >&2
+descs=""
+for pair in $AGENTS; do
+  a="${pair%%:*}"
+  [ -n "${D_SKILLS[$a]+x}" ] || continue
+  descs="${descs:+$descs, }$a ${D_SKILLS[$a]} skill(s) ${D_WORDS[$a]} words approx_tokens $(( (D_BYTES[$a] + 3) / 4 ))"
+done
+[ -z "$descs" ] || printf 'render-size: descriptions, the nominal listing text every session starts with, before any host budget (a report, never a gate): %s\n' "$descs" >&2
+# The descriptions rows — --descriptions' whole stdout, and the table --markdown appends. An agent
+# with no description measured has no row, as a missing artifact has none above; the run has failed.
+desc_rows() {
+  local a n=0 w=0 t=0 tok
+  ROWS_ON=1
+  if [ "$MARKDOWN" -eq 1 ]; then
+    row agent skills words approx_tokens
+    row --- ---: ---: ---:
+  fi
+  for pair in $AGENTS; do
+    a="${pair%%:*}"
+    [ -n "${D_SKILLS[$a]+x}" ] || continue
+    tok=$(( (D_BYTES[$a] + 3) / 4 ))
+    row "$a" "${D_SKILLS[$a]}" "${D_WORDS[$a]}" "$tok"
+    n=$(( n + D_SKILLS[$a] )); w=$(( w + D_WORDS[$a] )); t=$(( t + tok ))
+  done
+  row TOTAL "$n" "$w" "$t"
+}
+if [ "$DESCS_ONLY" -eq 1 ]; then
+  desc_rows
+elif [ "$MARKDOWN" -eq 1 ] && [ -n "$descs" ]; then
+  printf '\nSkill descriptions: the nominal listing text every session starts with, before any host budget (the current tree, per agent; #436).\n\n'
+  desc_rows
+fi
 
 exit "$rc"

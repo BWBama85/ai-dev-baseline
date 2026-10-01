@@ -80,6 +80,7 @@ mkfixture() {
   local dst="$1"
   mkdir -p "$dst/scripts/lib" "$dst/base/practices" "$dst/base/workflows" || return 1
   cp "$ROOT/scripts/build.sh" "$dst/scripts/build.sh" || return 1
+  cp "$ROOT/scripts/skill-description.awk" "$dst/scripts/skill-description.awk" || return 1
   # build.sh gates its own interpreter (#256), so the fixture needs common.sh. Without it the
   # fixture dies at the source line and every assertion below reports the same "no output" — a
   # fixture failure wearing a render failure's clothes.

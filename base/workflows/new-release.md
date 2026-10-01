@@ -1,6 +1,6 @@
 ---
 name: new-release
-description: Review a Claude / Codex / Antigravity CLI release changelog against the current project and ACT on every actionable change — apply config/code/doc fixes this session and ship them as one PR (or edit user-level config directly), surface the few that need an owner decision, and drop the rest. Files a GitHub issue only for work genuinely blocked on a future release. Works in any repo that uses one of those CLIs.
+description: After a Claude, Codex or Antigravity CLI release, act on what applies here. Argument is the CLI and optional version. Never cuts your own release.
 user-invocable: true
 effort: high
 # Apply-or-drop skill. Earlier versions of this skill were triage-only (filed

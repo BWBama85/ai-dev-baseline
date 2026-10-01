@@ -3,7 +3,7 @@
 # Source: base/workflows/resolve-pr-threads.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
 name: resolve-pr-threads
-description: Wait for the async reviewer, then address and resolve its review threads on an open PR — by default, and with no arguments. Infers the PR when exactly one is open, switches the working tree to its head branch, addresses findings (commit + push if needed), replies, marks each thread Resolved via GraphQL so branch protection unblocks merge, then asks for a re-review and goes round again until the reviewer passes, a guard refuses, or the round cap is reached. --once does a single pass instead.
+description: On an open PR, await async review, then fix and resolve its threads until the reviewer passes. Optional PR number; --once for one pass.
 argument-hint: "[pr-number] [--once] [--max-rounds <n>]"
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 user-invocable: true

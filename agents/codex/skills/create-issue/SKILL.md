@@ -5,10 +5,14 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: create-issue
-description: Draft and file a well-scoped GitHub issue. Enforces an 11-axis adversarial gap-analysis pass BEFORE filing so the issue ships with enough depth that /review-issue does not have to patch it later. Works in any repo where `gh` is authenticated.
+description: Use to draft and file a GitHub issue. Argument is a topic or rough draft; an adversarial gap-analysis pass runs before anything is filed.
 ---
 
 # Create GitHub Issue
+
+Draft and file a well-scoped GitHub issue, with an 11-axis adversarial gap-analysis pass run
+**before** filing so the issue ships with its full depth. Works in any repo where `gh` is
+authenticated.
 
 Argument: free-text topic, rough draft, or — if called with no argument — the skill asks what the issue should cover.
 

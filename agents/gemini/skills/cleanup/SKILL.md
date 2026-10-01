@@ -5,13 +5,14 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: cleanup
-description: Sweep ALL merged branches (local and, on confirmation, remote) plus resolved run-state, not just the current task's branch. Detects squash/rebase merges, which `--merged` alone can never see. Names each branch explicitly so command-safety gating never blocks the delete. Never touches unmerged or protected branches, or state for a live run.
+description: Use after a merge to delete merged branches (squash merges included) and finished run state. Argument local, remote or all; protected branches are kept.
 ---
 
 # /cleanup
 
-Sweep what a finished task leaves behind, then leave the tooling current. Two kinds of debris and
-one currency check, one command:
+Sweep what a finished task leaves behind, then leave the tooling current. It detects squash and
+rebase merges, which `--merged` alone never sees, and never touches an unmerged or protected
+branch or the state of a live run. Two kinds of debris and one currency check, one command:
 
 - **Merged branches** — local and, on confirmation, remote. The failure mode this exists to
   prevent is deleting only the *current* task's branch and leaving dozens of stale merged

@@ -5,13 +5,14 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: roadmap
-description: Maintain the build roadmap and emit the next /implement-issue batch. Locates one canonical roadmap artifact (a `roadmap`-labeled issue), reconciles it against the live tracker, and outputs the next unblocked, one-branch bundle of issue IDs. Bootstraps the artifact if none exists. When a repo opts into the release-goal convention, it also computes release readiness live and emits the release command once the active milestone's requirements are met. Works in any repo with a GitHub issue tracker.
+description: Pick what to build next. Reconciles the roadmap issue, emitting the next issue batch or, for an opted-in release milestone, the release command. Optional --no-autofix.
 ---
 
 # /roadmap
 
-Read the live tracker, reconcile one roadmap artifact against it, and print the next batch to
-build. Run this after `/implement-issue … → PR → merge → /cleanup → /clear`; the last line of the
+Read the live tracker, reconcile one roadmap artifact against it — the single open
+`roadmap`-labeled issue, bootstrapped when none exists — and print the next unblocked, one-branch
+batch to build. Works in any repo with a GitHub issue tracker. Run this after `/implement-issue … → PR → merge → /cleanup → /clear`; the last line of the
 output is the command to run next.
 
 Every run ends in exactly one of: a `/implement-issue` batch · a release command · a named terminal

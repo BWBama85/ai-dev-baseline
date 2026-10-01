@@ -5,13 +5,14 @@
 # $ARGUMENTS marks where THIS skill's invocation arguments go — a placeholder you fill
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: implement-issue
-description: Implement a GitHub issue end-to-end — repo-scope check, role-assigned gap-analysis, auto-detected gates, self-review + assigned code review, then open a PR. Agent-neutral via agents.toml; stack-agnostic via gate auto-detection.
+description: Use to implement GitHub issues end to end, from gap analysis through gates and review to a PR. Argument is one or more issue numbers.
 ---
 
 # /implement-issue
 
-Implement GitHub issue(s) **#$ARGUMENTS** end-to-end. Run autonomously; stop only when genuinely
-blocked. Stack-agnostic (gates are auto-detected) and agent-neutral (`agents.toml`;
+Implement GitHub issue(s) **#$ARGUMENTS** end-to-end — repo-scope check, role-assigned gap
+analysis, auto-detected gates, self-review plus an assigned code review, then a PR. Run
+autonomously; stop only when genuinely blocked. Stack-agnostic (gates are auto-detected) and agent-neutral (`agents.toml`;
 `base/roles.md`). The practices in your rendered root doc govern this run — repo scope, untrusted
 content, the issue-filing bar, self-review, feature-branch-only, never `--no-verify` — and this
 skill restates none of them. **Multi-issue:** when `$ARGUMENTS` begins with more than one issue

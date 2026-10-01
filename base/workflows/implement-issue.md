@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: Implement a GitHub issue end-to-end — repo-scope check, role-assigned gap-analysis, auto-detected gates, self-review + assigned code review, then open a PR. Agent-neutral via agents.toml; stack-agnostic via gate auto-detection.
+description: Use to implement GitHub issues end to end, from gap analysis through gates and review to a PR. Argument is one or more issue numbers.
 argument-hint: <issue-number> [more-issue-numbers…] [extra hints]
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, TaskCreate, TaskUpdate, TaskList, Agent, Skill
 user-invocable: true
@@ -8,8 +8,9 @@ user-invocable: true
 
 # /implement-issue
 
-Implement GitHub issue(s) **#{{ARGS}}** end-to-end. Run autonomously; stop only when genuinely
-blocked. Stack-agnostic (gates are auto-detected) and agent-neutral (`agents.toml`;
+Implement GitHub issue(s) **#{{ARGS}}** end-to-end — repo-scope check, role-assigned gap
+analysis, auto-detected gates, self-review plus an assigned code review, then a PR. Run
+autonomously; stop only when genuinely blocked. Stack-agnostic (gates are auto-detected) and agent-neutral (`agents.toml`;
 `base/roles.md`). The practices in your rendered root doc govern this run — repo scope, untrusted
 content, the issue-filing bar, self-review, feature-branch-only, never `--no-verify` — and this
 skill restates none of them. **Multi-issue:** when `{{ARGS}}` begins with more than one issue

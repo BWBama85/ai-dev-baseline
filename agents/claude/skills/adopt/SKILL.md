@@ -3,7 +3,7 @@
 # Source: base/workflows/adopt.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
 name: adopt
-description: Bring the baseline into an EXISTING project. Scans the config it already has, classifies every artifact keep / remove / move / escalate with evidence and parity caveats, infers an agents.toml from the project's own signals, flags four adoption-hygiene risks, and emits an ordered migration plan. It never deletes, moves, or edits a file in the project it scans; with --apply it may create only agents.toml and the upstream pin, and only when they do not already exist.
+description: Adopt the baseline into an existing project that has agent config. Optional path; reports a keep/remove/move migration plan and never edits the project's own files.
 argument-hint: "[path] [--agents claude,codex] [--apply]"
 allowed-tools: Bash, Read
 user-invocable: true
@@ -21,6 +21,9 @@ Bring `ai-dev-baseline` into a project that **already has** its own `.claude/`, 
 `.gemini/`, root docs, skills, and hooks. Adoption is not installation — the global install
 already happened. Adoption is working out **what this project already has, what now duplicates
 the baseline, what carries a delta that has to be kept, and in what order to reconcile them.**
+It classifies every artifact `keep` / `remove` / `move` / `escalate` with evidence and parity
+caveats, infers an `agents.toml` from the project's own signals, flags four adoption-hygiene
+risks, and emits an ordered migration plan — and never edits the scanned project's own files.
 
 Argument: `$ARGUMENTS` — an optional path (defaults to the current repo), an optional
 `--agents claude,codex` to narrow the scan, and an optional `--apply`.

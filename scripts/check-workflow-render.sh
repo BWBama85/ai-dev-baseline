@@ -56,6 +56,7 @@ render_fixture() {
   local dst="$1" name="$2" src="$3"
   mkdir -p "$dst/scripts" "$dst/scripts/lib" "$dst/base/practices" "$dst/base/workflows" || return 2
   cp "$ROOT/scripts/build.sh" "$dst/scripts/build.sh" || return 2
+  cp "$ROOT/scripts/skill-description.awk" "$dst/scripts/skill-description.awk" || return 2
   # build.sh gates its own interpreter (#256), so the fixture repo needs the library that holds the
   # gate. Without it the fixture dies at the source line and EVERY assertion below reports the same
   # "no SKILL.md" — a fixture failure wearing a render failure's clothes.
@@ -202,7 +203,7 @@ neg2="$WORK/neg2-src.md"
 cat > "$neg2" <<'EOF'
 ---
 name: fixture
-description: {{ARGS}}
+description: fixture {{ARGS}}
 user-invocable: true
 ---
 
@@ -235,12 +236,142 @@ EOF
 d="$WORK/neg3"
 render_fixture "$d" fixture "$neg3"; rc=$?
 no "$rc" "a folded/multi-line description fails the build"
-has "$(cat "$d/build.log" 2>/dev/null)" 'non-single-line' "neg3 fails via the single-line-description guard"
+has "$(cat "$d/build.log" 2>/dev/null)" '(a folded/block scalar)' "neg3 fails via the single-line-description guard"
 if [ -f "$d/agents/claude/skills/fixture/SKILL.md" ]; then
   bad "skill was written despite the multi-line description"
 else
   ok
 fi
+
+# --- 3b': a description that is not PLAIN TEXT fails the build (#436) ----------------------------
+# Each value is one line, so only the plain-text rule can refuse it — and each is a shape a YAML
+# loader reads as something else (null, a boolean, a mapping, a cut-short string, a flow sequence)
+# or cannot parse. The control proves the fixture builds when the value is plain.
+# desc_fm <label> <frontmatter lines after name, printf %b> <reason, or empty for a build that passes>
+desc_fm() {
+  local d="$WORK/desc-$1" src="$WORK/desc-$1-src.md"
+  printf -- '---\nname: fixture\n%b\n---\n\n# /fixture\nbody ok\n' "$2" > "$src"
+  render_fixture "$d" fixture "$src"; rc=$?
+  if [ -z "$3" ]; then
+    yes "$rc" "plain-text ($1): builds"
+    return
+  fi
+  no "$rc" "plain-text ($1): fails the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
+  if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
+}
+# desc_raw <label> <whole frontmatter, printf %b> <reason, or empty> — desc_fm with no name: line
+# supplied, for a shape that must come before it.
+desc_raw() {
+  local d="$WORK/desc-$1" src="$WORK/desc-$1-src.md"
+  printf -- '---\n%b\n---\n\n# /fixture\nbody ok\n' "$2" > "$src"
+  render_fixture "$d" fixture "$src"; rc=$?
+  if [ -z "$3" ]; then yes "$rc" "plain-text ($1): builds"; return; fi
+  no "$rc" "plain-text ($1): fails the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
+  if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
+}
+# desc_neg <label> <value> <reason> — the same, for a frontmatter whose description is <value>.
+desc_neg() { desc_fm "$1" "description: $2\nuser-invocable: true" "$3"; }
+desc_neg control 'Use when testing, with parens (and a hash#tag), a:b and --flags.' ''
+desc_neg quoted '"quoted text"' 'a value that does not start with a letter'
+desc_neg flow '[not a list' 'a value that does not start with a letter'
+desc_neg comment '# only a comment' 'a value that does not start with a letter'
+desc_neg number '123' 'a value that does not start with a letter'
+desc_neg mapping 'Use it: now' 'a colon YAML reads as a mapping'
+desc_neg colon-end 'Ends with a colon:' 'a colon YAML reads as a mapping'
+desc_neg cut 'Fixes it #435 and more' 'a space-hash YAML reads as a comment'
+desc_neg null 'null' 'a bare YAML keyword'
+desc_neg bool 'True' 'a bare YAML keyword'
+desc_neg yes 'yes' 'a bare YAML keyword'
+# The WHOLE frontmatter is the scope, not the line after the description: YAML folds an indented
+# line in across a blank one, and a later duplicate key is a second value. An indented comment is
+# dropped, so it does not continue the value — but text indented after one is still refused.
+desc_fm blank-then-key 'description: Fine\n\nuser-invocable: true' ''
+desc_fm indented-comments 'description: Fine\n  # an indented comment\n\n  # another, after a blank\nuser-invocable: true' ''
+desc_fm comment-then-text 'description: First line\n  # a comment\n  then more text\nuser-invocable: true' 'a multi-line continuation'
+desc_fm no-space 'description:Use a fixture\nuser-invocable: true' 'no space after the description key'
+desc_neg control-byte 'Use a\x1bfixture' 'a byte outside printable ASCII'
+desc_neg embedded-cr 'Use a\rfixture' 'a byte outside printable ASCII'
+desc_neg tab 'Use a\tfixture' 'a byte outside printable ASCII'
+desc_neg non-ascii 'Use a fixture — with a dash' 'a byte outside printable ASCII'
+desc_neg nul 'Fi\0rst value' 'a byte outside printable ASCII'
+# YAML reads every one of these as the SAME `description` key. YAML requires keys to be unique, so a
+# strict loader rejects the duplicate and a lenient one keeps one of them — either way Claude's
+# verbatim frontmatter and the Codex/Gemini capture can disagree about the value. The rule does not
+# enumerate spellings: a top-level line that is not a plain `key:` is refused, whatever it spells.
+desc_fm key-dquoted 'description: First\n"description": Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-squoted "description: First\n'description': Second\nuser-invocable: true" 'a top-level line that is not a plain key'
+desc_fm key-escaped 'description: First\n"\\x64escription": Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-tagged 'description: First\n!!str description: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-anchored 'description: First\n&d description: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-spaced 'description: First\ndescription : Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-tab 'description: First\ndescription\t: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-complex 'description: First\n? description\n: Second\nuser-invocable: true' 'a top-level line that is not a plain key'
+# …and the same holds for every key, `name` included: the render names the skill from the first.
+desc_fm name-twice 'description: Fine\nname: other\nuser-invocable: true' 'the key name given twice'
+desc_fm name-dquoted 'description: Fine\n"name": other\nuser-invocable: true' 'a top-level line that is not a plain key'
+desc_fm key-other 'descriptions: A different key\ndescription: Fine\nx_1-y: z\nuser-invocable: true' ''
+# An indented line belongs only under a key that opens a block. Before any key it is a mapping of
+# its own (YAML reads THAT as the frontmatter); after `key: value` it continues the value.
+desc_raw orphan '  description: Other\nname: fixture\ndescription: Fine\nuser-invocable: true' 'an indented line with no key above it'
+desc_fm name-continued '  other\ndescription: Fine\nuser-invocable: true' 'a multi-line continuation'
+desc_fm value-continued 'description: Fine\nuser-invocable: true\n  extra' 'a multi-line continuation'
+desc_fm block-list 'description: Fine\nallowed-tools:\n  - Bash\n  - Read\nuser-invocable: true' ''
+desc_fm block-scalar 'description: Fine\nnotes: |\n  line one\n  line two\nuser-invocable: true' ''
+desc_fm block-commented 'description: Fine\nmeta: # a note\n  sub: x\nuser-invocable: true' ''
+desc_fm block-header-comment 'description: Fine\nnotes: | # explanation\n  text\nuser-invocable: true' ''
+desc_fm block-folded-comment 'description: Fine\nnotes: >- # explanation\n  text\nuser-invocable: true' ''
+desc_fm block-indicators 'description: Fine\nnotes: |2-\n  text\nmore: >+1\n  text\nuser-invocable: true' ''
+desc_fm block-bad-indicator 'description: Fine\nnotes: |0\n  text\nuser-invocable: true' 'a multi-line continuation'
+# Indentation is spaces. A tab in leading whitespace makes a strict loader reject the whole
+# frontmatter, whether the line is a comment, blank, or content under a block key.
+desc_fm tab-comment 'description: Fine\n\t# a tab-indented comment\nuser-invocable: true' 'a tab in indentation'
+desc_fm tab-blank 'description: Fine\n\t\nuser-invocable: true' 'a tab in indentation'
+desc_fm tab-in-block 'description: Fine\nmeta:\n\tsub: x\nuser-invocable: true' 'a tab in indentation'
+desc_fm tab-after-spaces 'description: Fine\nmeta:\n  \tsub: x\nuser-invocable: true' 'a tab in indentation'
+# …and a control byte on any line: a vertical tab or form feed would pass for whitespace.
+desc_fm vt-comment 'description: Fine\n\x0b# a comment\nuser-invocable: true' 'a control byte'
+desc_fm ff-blank 'description: Fine\n\x0c\nuser-invocable: true' 'a control byte'
+desc_fm ctl-in-value 'description: Fine\nuser-invocable: tr\x01ue' 'a control byte'
+desc_fm nul-in-key 'description: Fine\nuser-invocable: true\nother: a\0b' 'a control byte'
+desc_fm tab-mid-line 'description: Fine\nargument-hint: a\tb\nuser-invocable: true' ''
+# Inside a block scalar a tab mid-line is content to every loader; a tab right after the
+# indentation is content to PyYAML and an error to libyaml, so the rule refuses it.
+desc_fm tab-in-scalar-text 'description: Fine\nnotes: |\n  legal\tcontent\nuser-invocable: true' ''
+desc_fm tab-after-scalar-indent 'description: Fine\nnotes: |\n  \tcontent\nuser-invocable: true' 'a tab in indentation'
+
+# ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
+# it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.
+desc_mut() {
+  local d="$WORK/desc-one-home" mrc
+  mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows" || { bad "one-home: could not build the fixture"; return; }
+  cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh" && cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh" \
+    && cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk" || { bad "one-home: could not copy the scripts"; return; }
+  printf '# index\n' > "$d/base/practices/00-index.md"; printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+  printf -- '---\nname: fixture\ndescription: Use it: now\nuser-invocable: true\n---\n\n# /fixture\nbody ok\n' > "$d/base/workflows/fixture.md"
+  check_mutate_literal "$d/scripts/skill-description.awk" 'if (v ~ /:( |$)/) { r = "a colon YAML reads as a mapping"; done = 1; next }' ''; mrc=$?
+  case "$mrc" in
+    0) bash "$d/scripts/build.sh" >"$d/build.log" 2>&1
+       yes "$?" "one-home: with the mapping rule removed from the fixture's scripts/skill-description.awk, build.sh admits [Use it: now]" ;;
+    2) bad "one-home: the mutation literal no longer matches scripts/skill-description.awk, so this proof would prove nothing" ;;
+    *) bad "one-home: the mutation could not be applied (rc $mrc)" ;;
+  esac
+}
+desc_mut
+
+# A SOURCE LARGER THAN A PIPE BUFFER builds. build.sh runs under `pipefail` and feeds the rule
+# through `tr`; a rule that stopped reading once it had decided let `tr` die of SIGPIPE on a big
+# file, and the build reported a rule it could not run. Every fixture above fits in the buffer.
+big="$WORK/desc-big-src.md"
+{ printf -- '---\nname: fixture\ndescription: Fine\nuser-invocable: true\n---\n\n# /fixture\n'
+  awk 'BEGIN { for (i = 0; i < 8000; i++) print "a body line long enough to outgrow any pipe buffer" }'
+} > "$big"
+d="$WORK/desc-big"
+render_fixture "$d" fixture "$big"; rc=$?
+yes "$rc" "large source: a workflow bigger than a pipe buffer builds (the rule reads its whole input)"
+desc_fm continued-blank 'description: First line\n\n  folded in after a blank line\nuser-invocable: true' 'a multi-line continuation'
+desc_fm twice-later 'description: One\nuser-invocable: true\ndescription: Two' 'a second description line'
 
 # --- 3c: the EMPTY-SLUG refusal, OBSERVED FAILING (#183) --------------------------------------
 # A guard is not done until it has been seen going red on an input it is supposed to reject, and
@@ -268,6 +399,7 @@ for broken in 'adb_actions_app_slug() { printf ""; }' 'adb_actions_app_slug() { 
   d="$WORK/neg-slug-$(printf '%s' "$broken" | cksum | cut -d' ' -f1)"
   mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows"
   cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
   cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
   # Appended AFTER the real definition, so it wins — and the bash-floor gate above it still loads.
   printf '\n%s\n' "$broken" >> "$d/scripts/lib/common.sh"
@@ -291,6 +423,7 @@ done
 d="$WORK/dotsupport"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -306,6 +439,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'must not begin with a dot' "...naming t
 d="$WORK/nlsupport"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -320,6 +454,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'unsupported supporting file' "...naming
 d="$WORK/nldir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"$'\n'
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -336,6 +471,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'supporting files belong to a workflow s
 d="$WORK/casefold"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -352,6 +488,7 @@ if [ ! -e "$WORK/caseprobe" ]; then
   d="$WORK/casedup"
   mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
   cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
   cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
   printf '# index\n' > "$d/base/practices/00-index.md"
   printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -369,6 +506,7 @@ fi
 d="$WORK/readmedir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/README"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -385,6 +523,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'README' "...naming the reserved source"
 d="$WORK/nonmd"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -439,6 +578,7 @@ rm -f "$d/base/workflows/orphanlink"
 d="$WORK/dotdir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/.notes"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
@@ -450,6 +590,7 @@ has "$(cat "$d/build.log" 2>/dev/null)" 'hidden director' "...naming the hidden-
 d="$WORK/nestdir"
 mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows/fixture/extra"
 cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk"
 cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
 printf '# index\n' > "$d/base/practices/00-index.md"
 printf '# dummy practice\n' > "$d/base/practices/aaa.md"
