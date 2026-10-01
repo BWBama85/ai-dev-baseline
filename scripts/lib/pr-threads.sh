@@ -81,8 +81,9 @@
 #              Lines are jq `@tsv`: a tab, newline or backslash inside a field is escaped, and the
 #              path's other control bytes print as `?`. The document is the authority for every value.
 #     --out <file>  also publishes the whole JSON document to <file>, staged beside it and renamed
-#                   into place. On any non-zero exit nothing is published and an existing <file> is
-#                   left untouched. A <file> that cannot be written is 2, naming the path.
+#                   into place as the last step before the terse lines print, so a failed read or a
+#                   failed write publishes nothing and leaves an existing <file> untouched. A <file>
+#                   that cannot be written is 2, naming the path.
 #     --verbose     the whole JSON document on stdout INSTEAD; every terse line is derivable from it.
 #                   Exclusive with --out.
 #
@@ -597,7 +598,9 @@ cmd_list() {
         (if $file == "" then empty else ["file", $file] end),
         ( $u[] | ["thread", .id, (if .is_bot then "bot" else "human" end),
                   (if .path == null then "-"
-                   else (.path | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?"))
+                   else (.path | explode
+                         | map(if (. < 32 and . != 9 and . != 10) or . == 127 then 63 else . end)
+                         | implode)
                         + (if .line == null then "" else ":\(.line)" end) end)] )
       | @tsv' 2>/dev/null)" \
     || { echo "pr-threads: could not summarise the review threads of PR #$n" >&2; return 20; }

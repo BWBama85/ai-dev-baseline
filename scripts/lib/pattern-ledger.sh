@@ -40,7 +40,7 @@
 #                      threshold, threshold-source; with --pr also pr-hits, pr-recurring, pr-new-classes
 #   verify             one `ok …` line
 #   threshold          <n> <source>
-#   reclaim            one `pattern-ledger: …` line saying what was removed, or that no lock exists
+#   reclaim            a `pattern-ledger: …` line per thing removed, or one saying no lock exists
 #   rule-sweep-report  the Markdown block for the PR body — the evidence itself, so it is the default
 #
 # Globals read: ADB_PATTERN_LEDGER (default <repo-root>/.ai-dev-baseline/patterns.md).
