@@ -30,6 +30,19 @@
 #    the lock; nothing is reported as recorded that the ledger does not hold)
 #   pattern-ledger.sh -h | --help
 #
+# Outputs — stdout is the answer and nothing else; diagnostics go to stderr. Every output is already
+# bounded by what it reports on, so there is no verbose form (#437):
+#   record · promote · rule-sweep   one confirmation line (`recorded …`, `promoted …`, `rule-sweep …`)
+#   classes            <count>TAB<class>TAB<promoted 0|1>, one line per class
+#   due                <class>TAB<count>, one line per class owed a rule; nothing on 11
+#   checklist          the promoted rules, one per line; nothing on 18/21
+#   stats              <key>TAB<value>: ledger (present|absent), hits, classes, recurring, promoted,
+#                      threshold, threshold-source; with --pr also pr-hits, pr-recurring, pr-new-classes
+#   verify             one `ok …` line
+#   threshold          <n> <source>
+#   reclaim            one `pattern-ledger: …` line saying what was removed, or that no lock exists
+#   rule-sweep-report  the Markdown block for the PR body — the evidence itself, so it is the default
+#
 # Globals read: ADB_PATTERN_LEDGER (default <repo-root>/.ai-dev-baseline/patterns.md).
 #
 # Exit codes — a stable machine contract for the workflow steps that consume them. Deliberately

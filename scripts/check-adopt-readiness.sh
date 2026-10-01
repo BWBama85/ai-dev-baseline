@@ -237,11 +237,21 @@ out="$(printf 'gates\ttodo\tnone detected\n' | ar verdict)"
 has "$out" "[agent]" "verdict: an agent-actionable rung is labelled [agent]"
 has "$out" "none detected" "verdict: the evidence detail reaches the report"
 
+# THE OUTPUT CONTRACT (#437): met rungs are never listed, so a green report is the headline and the
+# VERDICT line, and a red one adds only the rungs that remain.
+out="$(records ok | ar verdict)"
+eq "$(printf '%s\n' "$out" | grep -c .)" 2 "verdict: a green report is the headline and the VERDICT line only"
+out="$(printf '%s' "$mixed" | ar verdict)"
+eq "$(printf '%s\n' "$out" | grep -c .)" 4 "verdict: a red report adds only the outstanding section and its rung"
+hasnt "$out" "agents.toml exists" "verdict: a met rung is not listed"
+
 # --- 3. probe: the offline rungs, each driven both ways -------------------------------------------
 # --- manifest
 d="$WORK/p-nomanifest"; mkrepo "$d"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}todo" "probe: no agents.toml is todo"
+eq "$(printf '%s\n' "$out" | awk -F'\t' 'NF != 3' | wc -l | tr -d ' ')" 0 \
+   "probe: every record is <rung>TAB<status>TAB<detail> (#437)"
 printf 'x = 1\n' > "$d/agents.toml"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}todo" "probe: an agents.toml with no [roles] is still todo"

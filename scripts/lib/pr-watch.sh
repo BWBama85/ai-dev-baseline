@@ -143,6 +143,12 @@
 #                                                       # <n> = 0 means UNCAPPED (#420)
 #   pr-watch.sh -h | --help
 #
+# Outputs — at most ONE stdout line, `<verdict> <head-sha>`, and none on 2/17/18/20. Every
+# diagnostic, `wait`'s per-poll progress included, goes to stderr; there is no verbose form (#437):
+#   observe          clean|findings|pending|gone <sha>
+#   wait             the terminal poll's line, in the same words
+#   request-review   requested|already|no-trigger|capped|gone <sha>
+#
 # PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
 # and this module applies it to every login in `[reviewers] bots` without per-reviewer dispatch.
 # For a reviewer that signals differently the degradation is safe and bounded, but it is a real

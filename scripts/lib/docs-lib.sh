@@ -23,6 +23,15 @@
 #   docs-lib.sh report        [--state <dir>] [--manifest <file>]
 #   docs-lib.sh -h | --help
 #
+# Outputs — stdout is the answer and nothing else; diagnostics go to stderr, and there is no verbose
+# form (#437):
+#   mcp-required · mcp-optional        the declared servers, one per line; nothing on 1
+#   probe-record · consulted · none-needed   one confirmation line naming what was recorded
+#   verdict   one `docs-lib: …` line; on 10 nothing, and the DEGRADED lines go to stderr
+#   report    the "Docs consulted" Markdown block: a heading, one line per record, and the MCP
+#             preflight with its evidence when servers are declared. The block IS the deliverable (it is pasted into the PR body, and the record file it reads
+#             is swept run state), so a verdict-only default would discard the evidence; nothing on 11
+#
 # Exit codes — a stable machine contract for the workflow step that consumes them.
 #
 #   0  ok

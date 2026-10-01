@@ -386,8 +386,10 @@ cmd_state_scan() {
       continue
     fi
     case "$base" in
-      threads-*.json)
-        n="${base#threads-}"; n="${n%.json}"
+      # `threads-<N>.json.*` is `pr-threads.sh list --out`'s stage before the rename (#437); a kill
+      # in between orphans it, holding every thread body of that PR.
+      threads-*.json|threads-*.json.*)
+        n="${base#threads-}"; n="${n%%.json*}"
         case "$n" in
           ''|*[!0-9]*) _adb_cl_emit "$want_ident" other   "$f" '-' ;;
           *)           _adb_cl_emit "$want_ident" threads "$f" "$n" ;;

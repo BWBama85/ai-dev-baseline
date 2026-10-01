@@ -50,6 +50,9 @@ product thesis turned inward.
   testable), while `repo-settings.sh`, `release-convention.sh`, `skill-compose.sh`,
   `role-dispatch.sh` and `currency-lib.sh` all deliberately mutate outside state. Do not infer a
   directory-wide rule from the first header you read; state your module's contract in your module.
+  That includes its **output** (#437): an `Outputs:` section saying what stdout carries by default
+  — the line(s) the calling workflow branches on or pastes — and what is available on request, so
+  a payload the agent does not need never reaches its context by default.
 - **Repeated prose facts** — the cross-agent invocation commands, the 45-minute dispatch
   hang backstop, the role-resolution order, the gate-axis list — are pinned by
   `scripts/check-fact-drift.sh`, an allowlisted lint that fails when a canonical token

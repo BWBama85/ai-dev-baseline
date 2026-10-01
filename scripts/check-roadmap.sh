@@ -2724,4 +2724,14 @@ fr_split_at="$(printf '%s\n' "$readiness_block" | grep -nF 'IFS= read -r REPO' |
 if [ -n "$fr_check_at" ] && [ -n "$fr_split_at" ] && [ "$fr_check_at" -lt "$fr_split_at" ]; then ok
 else bad "the 2-line check must precede the split, or it validates values already re-partitioned (check@${fr_check_at:-none} split@${fr_split_at:-none})"; fi
 
+# ============================ the output contract (#437) ============================
+# The header's Outputs: each subcommand prints only the value its caller captures.
+eq "$(bash "$RL" release-ready 1 1 0 0 0 green 2>/dev/null | wc -l | tr -d ' ')" 1 "contract: release-ready prints one line"
+eq "$(bash "$RL" read-complete 3 3 2>/dev/null)" "complete" "contract: read-complete prints one word"
+eq "$(printf 'implementable\n' | bash "$RL" emit-verdict 2>/dev/null)" "ready" "contract: emit-verdict prints one word"
+eq "$(printf '[]' | bash "$RL" release-counts release-blocker 0 2>/dev/null | wc -l | tr -d ' ')" 3 \
+   "contract: release-counts prints exactly three lines, even for an empty milestone"
+eq "$(bash "$RL" slug-ok acme/widget 2>/dev/null)" "" "contract: slug-ok prints nothing — its exit status is the answer"
+eq "$(printf '[]' | bash "$RL" pr-targets-issue 5 acme/widget 2>/dev/null)" "" "contract: pr-targets-issue prints nothing"
+
 check_summary "roadmap"

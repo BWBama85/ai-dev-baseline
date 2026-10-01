@@ -1169,6 +1169,16 @@ eq "$(bash "$PL" stats --ledger "$EMPTYL" | awk -F'\t' '$1=="ledger"{print $2}')
    "…while a ledger that exists reports present, so the two are distinguishable"
 eq "$(bash "$PL" classes --ledger "$work/nope.md" >/dev/null 2>&1; echo $?)" 0 \
    "…and classes is empty-but-successful, since a first run has nothing wrong with it"
+# THE OUTPUT CONTRACT (#437): stdout is exactly the keys the header's Outputs names, in order.
+eq "$(printf '%s\n' "$S" | cut -f1 | paste -s -d ' ' -)" \
+   "ledger hits classes recurring promoted threshold threshold-source pr-hits pr-recurring pr-new-classes" \
+   "stats --pr: stdout is exactly the header's Outputs keys, in order"
+eq "$(bash "$PL" stats --ledger "$L8" | cut -f1 | paste -s -d ' ' -)" \
+   "ledger hits classes recurring promoted threshold threshold-source" \
+   "stats: without --pr, the lifetime keys and no pr- key"
+eq "$(bash "$PL" stats --ledger "$work/nope.md" | cut -f1 | paste -s -d ' ' -)" \
+   "ledger hits classes recurring promoted threshold threshold-source" \
+   "stats: an absent ledger prints the same keys, not a shorter set"
 fi
 
 if check_block s9 s8; then
@@ -1181,6 +1191,10 @@ V="$(bash "$PL" verify --ledger "$L8" 2>&1)"
 # scanned forty prints — so it tracks the fixture rather than being loosened to a wildcard.
 has "$V" "5 hit(s)" "verify says how many records it actually checked"
 has "$V" "checklist rule(s) checked" "…and how many rules"
+# THE OUTPUT CONTRACT (#437): one `ok …` line on stdout, diagnostics on stderr.
+VO="$(bash "$PL" verify --ledger "$L8" 2>/dev/null)"
+eq "$(printf '%s\n' "$VO" | wc -l | tr -d ' ')" 1 "verify: stdout is exactly one line"
+case "$VO" in "ok "*) ok ;; *) bad "verify: stdout is not an 'ok …' line: [$VO]" ;; esac
 fi
 
 if check_block s10; then

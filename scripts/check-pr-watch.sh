@@ -1824,4 +1824,20 @@ w request-review --pr 1;  rc 0 "request-review: two spellings of one App still a
 eq "$(grep -c "requested a re-review" <<<"$OUT")" "1" "request-review: exactly one comment is posted"
 reset_fx
 
+# ============================ the output contract (#437) ============================
+# The header's Outputs: at most ONE stdout line, `<verdict> <head-sha>`, and none on a refusal.
+reset_fx; declare_bots "[\"$CODEX\"]"
+wout observe --pr 1;  rc 11 "contract: no signal yet is pending"
+eq "$OUT" "pending $HEAD_SHA" "contract: observe's pending stdout is exactly '<verdict> <sha>'"
+reset_fx; declare_bots "[\"$CODEX\"]"; pr_fx --state closed --merged-at "2026-07-25T05:00:00Z"
+wout observe --pr 1;  rc 12 "contract: a merged PR is gone"
+eq "$OUT" "gone $HEAD_SHA" "contract: observe's gone stdout is exactly '<verdict> <sha>'"
+reset_fx; undeclare
+wout observe --pr 1;  rc 17 "contract: an undeclared repo refuses"
+eq "$OUT" "" "contract: a refusal prints nothing on stdout"
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+wout request-review --pr 1;  rc 0 "contract: request-review asks"
+eq "$OUT" "requested $HEAD_SHA" "contract: request-review's stdout is exactly '<word> <sha>'"
+reset_fx
+
 check_summary "pr-watch"
