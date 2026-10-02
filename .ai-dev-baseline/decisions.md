@@ -8642,9 +8642,9 @@ survive is the part a later reader needs.
 - category:  project-delta
 - unknown:   #438 asked for two things: a disposition bar in `/resolve-pr-threads` step 3, and a
              finite round cap restored in this repo's `agents.toml`. Later owner statements
-             conflicted with the second. #486's body (2026-09-16) says this repo runs uncapped
-             deliberately, and the owner's 2026-09-22 comment on #438 says the round count stays
-             uncapped.
+             conflicted with the second. #486 (filed 2026-09-22 from an owner report of
+             2026-09-16) says this repo runs uncapped deliberately, and the owner's 2026-09-22
+             comment on #438 says the round count stays uncapped.
 - decision:  **Owner decision 2026-10-02: keep `[reviewers] max_rounds = 0`.** #438 ships the
              disposition bar and per-round decline counts only, and its cap half is declined. The
              bar fixes a finding only if it is (a) a defect on a reachable path or (b) a regression

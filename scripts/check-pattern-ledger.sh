@@ -1395,6 +1395,27 @@ has "$RESTXT" '-f body="$REPLY" && REPLY_OK=1' "the reply's receipt is captured"
 has "$RESTXT" '-f id="$THREAD_ID" && RESOLVE_OK=1' "…and the resolve's"
 has "$RESTXT" 'if [ "$RESOLVE_OK" = 1 ]; then' "a decline counts once its resolve succeeded"
 has "$RESTXT" '[ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=' "…and one resolved without its reply is named"
+# …AND THE COUNT IS EXECUTED TOO: step 3's real opener and step 5's real count, over two rounds.
+RO="$(check_wf_snippet "$RES" round-open)"; RO="${RO//'{{PATTERN_LEDGER_LIB}}'/rr_pl}"
+DC="$(awk '/^case "\$REPLY" in$/ { f = 1 } f { print } f && /^esac$/ { exit }' "$RES")"
+[ -n "$RO" ] && [ -n "$DC" ] && ok || bad "step 3's round-open block and step 5's decline count are extractable"
+TWO="$("$BASH" -c 'rr_pl() { :; }
+decline() { REPLY="Declined: a shape."; REPLY_OK=$1; RESOLVE_OK=$2
+'"$DC"'
+}
+'"$RO"'
+decline 0 1; decline 1 0
+printf "r1 %s %s\n" "$ROUND_DECLINED" "$ROUND_DECLINED_UNREPLIED"
+'"$RO"'
+decline 1 1
+REPLY="Addressed in abc1234: fixed."; REPLY_OK=1; RESOLVE_OK=1
+'"$DC"'
+printf "r2 %s %s %s\n" "$ROUND_NO" "$ROUND_DECLINED" "$ROUND_DECLINED_UNREPLIED"' 2>&1)"
+has "$TWO" 'r1 1 1' "step 5 counts a decline whose resolve succeeded, names it unreplied, and skips one whose resolve failed"
+has "$TWO" 'r2 2 1 0' "…and the next round opens at zero, counting only declines"
+# A DECLINE-ONLY ROUND STILL CAPTURES ITS HEAD AND RUNS 4c/4d, where a due promotion is committed.
+has "$RESTXT" '**A round whose every finding was declined sweeps, fixes and records nothing.**' \
+   "4a names the decline-only path, through 4c and 4d"
 # THE ROW IS EXECUTED, not grepped: step 6's real block runs against stubs, once over an unreadable
 # ledger and once over a round that declined everything and never reached step 4.
 RR="$(check_wf_snippet "$RES" round-row)"
@@ -2522,6 +2543,18 @@ if [ "$MODE" = mutation ]; then
       'if [ -z "${SWEEP_FILE:-}" ]; then' \
       'if false; then' \
       '…and a sweep line that says none was taken'
+  check_row 'decline-never-incremented' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '      ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 ))' \
+      '      :' \
+      'step 5 counts a decline whose resolve succeeded'
+  check_row 'unreplied-not-reset' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'ROUND_DECLINED_UNREPLIED=0   # …of those, the ones whose reply failed' \
+      ':' \
+      '…and the next round opens at zero, counting only declines'
+  check_row 'decline-only-path-unnamed' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '**A round whose every finding was declined sweeps, fixes and records nothing.** Leave `SWEEP_FILE`' \
+      'Leave `SWEEP_FILE`' \
+      '4a names the decline-only path, through 4c and 4d'
   check_row 'loop-line-not-reset' 'base/workflows/resolve-pr-threads.md' 's10' \
       'LOOP_LINE=""                   # set by 4d; empty means this round ran no local review' \
       ':' \

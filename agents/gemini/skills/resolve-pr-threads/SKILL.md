@@ -585,11 +585,12 @@ fields step 3 depends on:
 ### 3. Classify each thread
 
 **Open the round's accounting first, before anything is classified.** Every round passes through
-this step, and not every round reaches step 4: a round in which every finding is declined has
-nothing to fix. Anything opened later would carry the previous round's figures and evidence into
+this step, and not every round does step 4's work: a round in which every finding is declined has
+nothing to sweep, fix or record. Anything opened later would carry the previous round's figures and evidence into
 this round's row.
 
 ```bash
+# ADB-SNIPPET: round-open
 STATS_BEFORE="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
 CLASSES_BEFORE="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" classes)"   # step 6 asks which classes are NEW against this
 ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring and new from it
@@ -727,10 +728,8 @@ round lists, for each legitimate thread finding, every *other* site in this pull
 same shape. Its answer is a file that `record` in 4b refuses to proceed without, so a round fixes the
 class and not only the site the reviewer happened to name.
 
-Write the round's legitimate thread findings to the findings file: one line each,
-`<class>TAB<path[:line]>TAB<thread-id>TAB<one-line summary>`, with the class chosen as 4b describes.
-A finding with no thread id or no site, such as a task-mode comment, is not swept; name it in the
-round summary instead. Then sweep, from the PR head, before any edit:
+**Every round captures its head first**, including one whose findings were all declined: 4d keys
+the round's review and push by it.
 
 ```bash
 # A FULL 40-HEX COMMIT OR A STOP: an empty capture from a failed read would key the sweep, the
@@ -738,6 +737,21 @@ round summary instead. Then sweep, from the PR head, before any edit:
 SWEEP_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || SWEEP_HEAD=""
 case "$SWEEP_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id"; exit 1 ;; esac
 [ "${#SWEEP_HEAD}" -eq 40 ] || { echo "STOP: could not read HEAD as a commit id"; exit 1; }
+```
+
+**A round whose every finding was declined sweeps, fixes and records nothing.** Leave `SWEEP_FILE`
+empty and go straight to 4c, which may still owe a promotion that merged history earned, and then
+to 4d, which reviews and pushes that commit or reports that the round changed nothing. Any other
+legitimate finding needs the sweep, an already-addressed one included, because 4b records it
+against the sweep file.
+
+Write the round's legitimate thread findings to the findings file: one line each,
+`<class>TAB<path[:line]>TAB<thread-id>TAB<one-line summary>`, with the class chosen as 4b describes.
+A finding with no thread id or no site, such as a task-mode comment, is not swept; name it in the
+round summary instead. Then sweep, from the PR head, before any edit:
+
+```bash
+: "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, captured above) is unset}"
 SWEEP_FILE=".gemini/state/sweep-pr${PR_NUM}-${SWEEP_HEAD}.tsv"
 FINDINGS="$SWEEP_FILE.findings"   # the file you just wrote, one line per legitimate thread finding
 # THE RUNG NAMES THE AGENT; TAKE THE TOKEN FROM IT. `resolve review` lists the CONFIGURED tokens in
@@ -1147,7 +1161,7 @@ case "$REPLY" in
 esac
 ```
 
-Both calls must succeed for a thread to count as resolved. If the reply mutation fails (e.g. a permissions issue), still attempt the resolve — branch protection only checks `isResolved`, not whether you left a reply.
+A thread counts as resolved when its resolve succeeds; one whose reply failed is reported as resolved without its reply, never as a clean resolution. If the reply mutation fails (e.g. a permissions issue), still attempt the resolve — branch protection only checks `isResolved`, not whether you left a reply.
 
 **A round that stops before this step declines nothing.** Its threads stay unresolved and the next
 run reads them again, so no exit earlier in the round has a decline to report.
@@ -1303,7 +1317,7 @@ case "${ROUND_DECLINED_UNREPLIED:-0}" in
 esac
 ROUND_ROWS="${ROUND_ROWS}  ${DECL_LINE}"$'\n'
 # The round's sibling sweep, counted only from a file that validates whole. Empty means the round
-# never reached 4a — every finding was declined or already addressed.
+# swept nothing because every finding was declined (4a).
 if [ -z "${SWEEP_FILE:-}" ]; then
   SWEEP_LINE="sweep: none — this round had no finding to fix"
 else
