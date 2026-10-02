@@ -1374,13 +1374,16 @@ NOTDEF="$(awk '/^### Specifically not filing reasons/ { f = 1; next }
                f && /^\*\*Only a defect/ { exit }
                f && (/^- / || /^  [^ ]/)' base/practices/issues-and-scope.md)"
 eq "$(printf '%s\n' "$NOTDEF" | grep -c '^- ')" 6 "the not-a-defect list reads as six items from issues-and-scope.md"
-has "$RESTXT" "$NOTDEF" "…and the resolver quotes all six verbatim"
+RESLIST="$(awk '/These are shapes, not defects/ { f = 1; next }
+                f && /^Only a defect \*caused by\*/ { exit }
+                f && (/^- / || /^  [^ ]/)' "$RES")"
+eq "$RESLIST" "$NOTDEF" "…and the resolver quotes all six verbatim, and nothing else"
 has "$(grep -F 'These are shapes, not defects' "$RES")" 'base/practices/issues-and-scope.md' \
    "…naming the practice the list comes from"
 has "$RESTXT" 'Reply with `Declined: <one-sentence reason>` — for a bar decline, the sentence names the shape' \
    "the decline arm names the shape it declined"
-# THE ROUND OPENS IN STEP 3: a round of only declines never reaches step 4, so counters opened there
-# would carry the previous round's figures into this round's row.
+# THE ROUND OPENS IN STEP 3: a round of only declines fixes and records nothing in step 4, so
+# counters opened there would carry the previous round's figures into this round's row.
 s3_at="$(grep -n -F '### 3. Classify each thread' "$RES" | head -n 1 | cut -d: -f1)"
 s4_at="$(grep -n -F '### 4. Address legitimate findings' "$RES" | head -n 1 | cut -d: -f1)"
 for v in 'STATS_BEFORE="$(' 'ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))' 'ROUND_DECLINED=0' 'SWEEP_HEAD=""; SWEEP_FILE=""' 'LOOP_LINE=""'; do
@@ -1396,6 +1399,8 @@ has "$RESTXT" '-f id="$THREAD_ID" && RESOLVE_OK=1' "…and the resolve's"
 has "$RESTXT" 'if [ "$RESOLVE_OK" = 1 ]; then' "a decline counts once its resolve succeeded"
 has "$RESTXT" '[ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=' "…and one resolved without its reply is named"
 # …AND THE COUNT IS EXECUTED TOO: step 3's real opener and step 5's real count, over two rounds.
+# Compared as WHOLE lines: a substring match would accept `1 10` for `1 1`.
+rr_line() { if printf '%s\n' "$1" | grep -q -x -F -- "$2"; then ok; else bad "$3: no line [$2] in [$1]"; fi; }
 RO="$(check_wf_snippet "$RES" round-open)"; RO="${RO//'{{PATTERN_LEDGER_LIB}}'/rr_pl}"
 DC="$(awk '/^case "\$REPLY" in$/ { f = 1 } f { print } f && /^esac$/ { exit }' "$RES")"
 [ -n "$RO" ] && [ -n "$DC" ] && ok || bad "step 3's round-open block and step 5's decline count are extractable"
@@ -1411,13 +1416,13 @@ decline 1 1
 REPLY="Addressed in abc1234: fixed."; REPLY_OK=1; RESOLVE_OK=1
 '"$DC"'
 printf "r2 %s %s %s\n" "$ROUND_NO" "$ROUND_DECLINED" "$ROUND_DECLINED_UNREPLIED"' 2>&1)"
-has "$TWO" 'r1 1 1' "step 5 counts a decline whose resolve succeeded, names it unreplied, and skips one whose resolve failed"
-has "$TWO" 'r2 2 1 0' "…and the next round opens at zero, counting only declines"
+rr_line "$TWO" 'r1 1 1' "step 5 counts a decline whose resolve succeeded, names it unreplied, and skips one whose resolve failed"
+rr_line "$TWO" 'r2 2 1 0' "…and the next round opens at zero, counting only declines"
 # A DECLINE-ONLY ROUND STILL CAPTURES ITS HEAD AND RUNS 4c/4d, where a due promotion is committed.
 has "$RESTXT" '**A round whose every finding was declined sweeps, fixes and records nothing.**' \
    "4a names the decline-only path, through 4c and 4d"
 # THE ROW IS EXECUTED, not grepped: step 6's real block runs against stubs, once over an unreadable
-# ledger and once over a round that declined everything and never reached step 4.
+# ledger and once over a round that declined everything and so swept nothing.
 RR="$(check_wf_snippet "$RES" round-row)"
 [ -n "$RR" ] && ok || bad "step 6's row block is extractable by its round-row snippet marker"
 RR="${RR//'{{PATTERN_LEDGER_LIB}}'/rr_pl}"; RR="${RR//'{{IMPLEMENT_LIB}}'/rr_il}"
@@ -1428,16 +1433,16 @@ printf "%s" "$ROUND_ROWS"' 2>&1
 }
 RR_OUT="$(rr_run SRC=18 STATS_BEFORE= STATS_AFTER= ROUND_NO=2 ROUND_DECLINED=4 ROUND_DECLINED_UNREPLIED=1 \
   SWEEP_FILE=/nonexistent/sweep.tsv LOOP_LINE= ROUND_ROWS=)"
-has "$RR_OUT" 'round 2: ledger unreadable — no counts' "an unreadable-ledger round still gets its row"
-has "$RR_OUT" '  declined: 4, 1 resolved without their reply' "…and an unreadable-ledger round still reports its declines"
-has "$RR_OUT" '  sweep: stub report' "…and its sweep, read from the round's own sweep file"
-has "$RR_OUT" '  local review: not reported' "…and says it has no local review line rather than borrowing one"
+rr_line "$RR_OUT" 'round 2: ledger unreadable — no counts' "an unreadable-ledger round still gets its row"
+rr_line "$RR_OUT" '  declined: 4, 1 resolved without their reply' "…and an unreadable-ledger round still reports its declines"
+rr_line "$RR_OUT" '  sweep: stub report' "…and its sweep, read from the round's own sweep file"
+rr_line "$RR_OUT" '  local review: not reported' "…and says it has no local review line rather than borrowing one"
 RR_OUT="$(rr_run SRC=0 STATS_BEFORE="$(printf 'ledger\tpresent')" STATS_AFTER="$(printf 'ledger\tpresent\nthreshold\t2')" \
   ROUND_NO=1 ROUND_CLASSES= CLASSES_BEFORE= ROUND_PROMOTED=0 ROUND_DECLINED=6 SWEEP_FILE= LOOP_LINE= ROUND_ROWS=)"
-has "$RR_OUT" 'round 1: 0 findings · 0 recurring · 0 new · 0 promoted' "a decline-only round gets a zero row"
-has "$RR_OUT" '  declined: 6' "…with its declines under it"
+rr_line "$RR_OUT" 'round 1: 0 findings · 0 recurring · 0 new · 0 promoted' "a decline-only round gets a zero row"
+rr_line "$RR_OUT" '  declined: 6' "…with its declines under it"
 hasnt "$RR_OUT" 'resolved without their reply' "…naming unreplied declines only when there are some"
-has "$RR_OUT" '  sweep: none — this round had no finding to fix' "…and a sweep line that says none was taken"
+rr_line "$RR_OUT" '  sweep: none — this round had no finding to fix' "…and a sweep line that says none was taken"
 
 # THE RECOVERY HINT MUST NAME A COMMAND THAT EXISTS. The first draft pointed at
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown
@@ -2514,7 +2519,7 @@ if [ "$MODE" = mutation ]; then
   check_row 'disposition-bar-list-drifted' 'base/workflows/resolve-pr-threads.md' 's10' \
       '- a check could be more thorough, or cover one more case;' \
       '- a check could be more thorough;' \
-      '…and the resolver quotes all six verbatim'
+      '…and the resolver quotes all six verbatim, and nothing else'
   check_row 'disposition-bar-source-unnamed' 'base/workflows/resolve-pr-threads.md' 's10' \
       'These are shapes, not defects — `base/practices/issues-and-scope.md`'"'"'s list, quoted' \
       'These are shapes, not defects — the practice'"'"'s list, quoted' \
@@ -2555,6 +2560,14 @@ if [ "$MODE" = mutation ]; then
       '**A round whose every finding was declined sweeps, fixes and records nothing.** Leave `SWEEP_FILE`' \
       'Leave `SWEEP_FILE`' \
       '4a names the decline-only path, through 4c and 4d'
+  check_row 'unreplied-counted-by-ten' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '      [ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=$(( ${ROUND_DECLINED_UNREPLIED:-0} + 1 ))' \
+      '      [ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=$(( ${ROUND_DECLINED_UNREPLIED:-0} + 10 ))' \
+      'step 5 counts a decline whose resolve succeeded'
+  check_row 'disposition-bar-list-grown' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'Only a defect *caused by* one of those passes the bar, and then you fix the defect, not the shape.' \
+      '- a seventh shape. Only a defect *caused by* one of those passes the bar, and then you fix the defect, not the shape.' \
+      '…and the resolver quotes all six verbatim, and nothing else'
   check_row 'loop-line-not-reset' 'base/workflows/resolve-pr-threads.md' 's10' \
       'LOOP_LINE=""                   # set by 4d; empty means this round ran no local review' \
       ':' \

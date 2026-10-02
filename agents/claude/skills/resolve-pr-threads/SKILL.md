@@ -1162,7 +1162,7 @@ case "$REPLY" in
 esac
 ```
 
-A thread counts as resolved when its resolve succeeds; one whose reply failed is reported as resolved without its reply, never as a clean resolution. If the reply mutation fails (e.g. a permissions issue), still attempt the resolve — branch protection only checks `isResolved`, not whether you left a reply.
+Both calls must succeed for a fixed or already-addressed thread to count as resolved. A decline counts once its resolve succeeds, because it is final either way; one whose reply failed is named as unreplied in its round's row. If the reply mutation fails (e.g. a permissions issue), still attempt the resolve — branch protection only checks `isResolved`, not whether you left a reply.
 
 **A round that stops before this step declines nothing.** Its threads stay unresolved and the next
 run reads them again, so no exit earlier in the round has a decline to report.

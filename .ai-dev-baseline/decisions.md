@@ -8654,7 +8654,8 @@ survive is the part a later reader needs.
              shapes ends the loop. A reviewer that keeps naming reachable defects keeps it going,
              which is what D88 chose.
 - placement: `base/workflows/resolve-pr-threads.md` step 3 (the bar, and the round's counters and
-             evidence, which open there because a decline-only round never reaches step 4), step 5
+             evidence, which open there because a decline-only round fixes and records nothing in
+             step 4), 4a (the head every round captures, and the decline-only path), step 5
              (a decline counted once its resolve succeeds, an unreplied one named), step 6 (the
              `declined:` line under each round's row, executed by the suite as snippet
              `round-row`);
