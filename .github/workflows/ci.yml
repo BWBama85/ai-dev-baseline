@@ -430,7 +430,7 @@ jobs:
       # sees no new or missing context. The harness still runs unconditionally once a day:
       # `.github/workflows/mutation-nightly.yml`. Every other `--mutation` step in this file is the
       # same shape and says so by pointing here.
-      - name: ...and the manifest guards must be able to fail — 8 mutations, each observed RED (#324)
+      - name: ...and the manifest guards must be able to fail — every mutation observed RED (#324, #437)
         run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation
 
   agent-init:
@@ -506,7 +506,8 @@ jobs:
     runs-on: ubuntu-26.04
     # 25, not 10, because the mutation step below runs the whole suite once per row plus a control.
     # Measured: 2m27s at this workstation's pool width, 3m36s with the pool forced to 2 — which is
-    # what a 2-core hosted runner gets — before that runner's own slower CPU is counted. A job that
+    # what a 2-core hosted runner gets — before that runner's own slower CPU is counted. The
+    # pr-threads harness after it (11 rows, #437) measured 2m13s with the pool forced to 2. A job that
     # times out is a red CI leg that says nothing about the diff, which is the class of defect #394
     # is about.
     timeout-minutes: 25
@@ -551,7 +552,7 @@ jobs:
       # ...and the completeness proof must be able to fail (#418). Its failure mode is SILENCE: the
       # shipped defect printed exactly what a clean run prints.
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: ...and that proof must be able to fail — 6 mutations, each observed RED (#418)
+      - name: ...and that proof must be able to fail — every mutation observed RED (#418, #437)
         run: bash scripts/mutation-gate.sh run pr-threads-mutation -- bash scripts/check-pr-threads.sh --mutation
 
   state-assert:

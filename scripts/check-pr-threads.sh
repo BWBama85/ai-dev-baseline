@@ -87,9 +87,9 @@ if [ "$MODE" = mutation ]; then
       || { printf 'the mutated pr-threads.sh no longer PARSES\n'; return 9; }
     "$BASH" "$d/scripts/check-pr-threads.sh" 2>&1
   }
-  # `scripts` alone is this suite's whole mutation surface, so the subtree copier rather than the
-  # worktree one: copies of the repo's .git would be spent moving a tree about to be deleted.
-  mut_prep() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1
+  # `scripts` plus the workflow the suite pins are its whole surface, so the subtree copier rather
+  # than the worktree one: copies of the repo's .git would be spent moving a tree about to be deleted.
+  mut_prep() { check_copy_subtrees "$ROOT" "$1" scripts base/workflows >/dev/null 2>&1 || return 1
                printf '%s' "$1/scripts/lib/pr-threads.sh"; }
 
   # THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. `_check_mut_witness`
@@ -149,7 +149,31 @@ if [ "$MODE" = mutation ]; then
     'if any($t.nodes[]; (.isResolved | type) != "boolean")' \
     'if (false)' \
     'a node with NO isResolved is unreadable — never a count with that thread dropped'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 6
+  # #437: the document is opt-in. With the default printing it, every call site's stdout is the
+  # whole thread set again — bodies included.
+  check_mut "default-prints-document" \
+    'if [ "$OPT_VERBOSE" -eq 1 ]; then' \
+    'if true; then' \
+    'list: the default prints the terse contract, not the document'
+  # ...and an unwritable --out must refuse, never quietly degrade to stdout.
+  check_mut "out-falls-back-to-stdout" \
+    "|| { printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\\n' \"\$dshow\" >&2; return 2; }" \
+    '|| { OPT_OUT=""; }' \
+    'list --out into a missing directory is 2'
+  # --out's choice of the STRICT publisher (D118), and --verbose's write status.
+  check_mut "strict-publish-dropped" \
+    'adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2' \
+    'adb_publish_json "$_ADB_PT_STAGE" "$dest" >&2' \
+    'list --out: an unreadable destination mode is refused (2)'
+  check_mut "stage-written-by-path" \
+    "printf '%s\\n' \"\$out\" 1>&\"\$fd\" 2>/dev/null \\" \
+    "printf '%s\\n' \"\$out\" > \"\$_ADB_PT_STAGE\"; :  \\" \
+    'list --out: a stage removed during the read is refused (2)'
+  check_mut "verbose-write-status-dropped" \
+    "printf '%s\\n' \"\$out\"; return" \
+    "printf '%s\\n' \"\$out\"; return 0" \
+    'list --verbose: a failed write to stdout is still exit 0'
+  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 11
   check_summary "check-pr-threads --mutation"
   exit 0
 fi
@@ -183,6 +207,7 @@ check_write_stub "$SBIN/gh" <<'STUB'
 #   STUB_EMPTY_PRLIST=1  -> it succeeds with an EMPTY body (not `[]`)
 #   STUB_FAIL_GQL=1      -> the thread read fails
 #   STUB_EMPTY_GQL=1     -> the thread read succeeds with an empty body
+#   STUB_RM_STAGE=<dest> -> <dest>'s --out stage is deleted during the thread read
 case "${1:-}" in
   auth) exit 0 ;;
   pr)
@@ -197,6 +222,8 @@ case "${1:-}" in
 esac
 if [ "${2:-}" = "graphql" ]; then
   [ "${STUB_FAIL_GQL:-0}" = "1" ] && exit 1
+  # STUB_RM_STAGE=<dest>: delete <dest>'s --out stage mid-read, as a racing sweep would.
+  [ -n "${STUB_RM_STAGE:-}" ] && rm -f "$STUB_RM_STAGE".stage.*
   [ "${STUB_EMPTY_GQL:-0}" = "1" ] && exit 0
   _cur=""
   for a in "$@"; do case "$a" in endCursor=*) _cur="${a#endCursor=}" ;; esac; done
@@ -208,15 +235,44 @@ fi
 exit 0
 STUB
 
+# `stat` and `mv` pass through to the real binaries unless a knob arms them, so the --out publish's
+# two defences can be driven: STUB_FAIL_STAT=1 makes a mode unreadable, and STUB_MV_RACE=<path>
+# turns <path> into a directory just before the rename onto it.
+REAL_STAT="$(command -v stat)"; REAL_MV="$(command -v mv)"
+check_write_stub "$SBIN/stat" <<STUB
+#!/usr/bin/env bash
+[ "\${STUB_FAIL_STAT:-0}" = 1 ] && exit 1
+exec "$REAL_STAT" "\$@"
+STUB
+check_write_stub "$SBIN/mv" <<STUB
+#!/usr/bin/env bash
+for _last; do :; done
+if [ -n "\${STUB_MV_RACE:-}" ] && [ "\${_last:-}" = "\$STUB_MV_RACE" ]; then
+  rm -f "\$STUB_MV_RACE"; mkdir "\$STUB_MV_RACE"
+fi
+exec "$REAL_MV" "\$@"
+STUB
+
 # pt <args…> — run the library against the fixture. stdout in $OUT, stderr in $ERR, status in $RC.
 # `cd "$REPO"`, because both `adb_repo_root` (which locates agents.toml) and `adb_git_repo_slugs`
 # (which anchors the repository identity check) read the CURRENT checkout.
 OUT=""; ERR=""; RC=0
+# The raw bytes stay in "$work/out" for `out_empty`, since `$( )` would turn a stray newline into "".
 pt() {
-  OUT="$( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" \
-          bash "$LIB" "$@" 2>"$work/err" )"
+  ( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" \
+      bash "$LIB" "$@" ) > "$work/out" 2>"$work/err"
   RC=$?
+  OUT="$(cat "$work/out")"
   ERR="$(cat "$work/err")"
+}
+# out_empty <label> — the last `pt` printed ZERO bytes on stdout, not even a newline.
+out_empty() { eq "$(wc -c < "$work/out" | tr -d ' ')" "0" "$1"; }
+# pt_raw <file> <args…> — the same run with stdout written RAW to <file>, for the assertions about
+# trailing newlines and empty output that a `$( )` capture would erase. Status in $RC.
+pt_raw() {
+  local f="$1"; shift
+  ( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" "$@" ) > "$f" 2>/dev/null
+  RC=$?
 }
 reset_fx()     { rm -f "$S"/calls "$S"/page-*.json "$S"/prlist.json "$work"/gh-argv; }
 declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
@@ -307,7 +363,7 @@ printf '%s\n' '[{"number":9,"title":"nine","headRefName":"b9","isDraft":true,"ur
                 {"number":7,"title":"seven","headRefName":"b7","isDraft":false,"url":"https://x/7"}]' > "$S/prlist.json"
 pt infer-pr
 eq "$RC" "11" "infer-pr: two open PRs refuse (11) rather than picking one"
-eq "$OUT" ""  "infer-pr: the ambiguous arm prints NO number — a caller reading stdout gets nothing to act on"
+out_empty "infer-pr: the ambiguous arm prints NO number — a caller reading stdout gets nothing to act on"
 has "$ERR" "#7"      "infer-pr: the refusal lists the candidates"
 has "$ERR" "#9"      "infer-pr: ...all of them"
 has "$ERR" "[draft]" "infer-pr: ...and marks a draft, which is still an open PR with threads"
@@ -334,7 +390,7 @@ if [ "$_scoped" -ge 1 ]; then ok; else bad "infer-pr: the PR list is not scoped 
 reset_fx; printf '%s\n' '[{}]' > "$S/prlist.json"
 pt infer-pr
 eq "$RC" "20" "infer-pr: a singleton with no number is unreadable, not a successful inference"
-eq "$OUT" ""  "infer-pr: ...and prints nothing — never the string 'null'"
+out_empty "infer-pr: ...and prints nothing — never the string 'null'"
 reset_fx; printf '%s\n' '[{"number":0,"title":"z","headRefName":"b","isDraft":false,"url":"u"}]' > "$S/prlist.json"
 pt infer-pr
 eq "$RC" "20" "infer-pr: a zero PR number is not usable"
@@ -353,7 +409,7 @@ eq "$RC" "20" "infer-pr: an EMPTY body is 20 — a successful call that produced
 # =============== list / remaining: the complete enumeration (#418) ==============================
 # ONE PAGE, the ordinary case. 6 threads, totalCount 6.
 reset_fx; mkpage 1 6 false "" 0 6
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "0" "list: a single-page PR reads cleanly"
 eq "$(printf '%s' "$OUT" | jq -r .total)" "6" "list: it reports every thread"
 eq "$(calls_for 'graphql:1')" "1" "list: one page costs exactly one read"
@@ -362,7 +418,7 @@ eq "$(calls_for 'graphql:1')" "1" "list: one page costs exactly one read"
 # the point: 54 is complete WITHOUT pagination, so a suite that only tested 54 would prove nothing
 # about the cursor. That is what the 154 case below is for.
 reset_fx; mkpage 1 54 false "" 0 54
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "0" "list: a 54-thread PR (the size that found #418) reads completely"
 eq "$(printf '%s' "$OUT" | jq -r .total)" "54" "list: all 54 threads"
 has "$OUT" '"T53"' "list: a 54-thread PR carries its NEWEST thread"
@@ -373,7 +429,7 @@ has "$OUT" '"T53"' "list: a 54-thread PR carries its NEWEST thread"
 reset_fx
 mkpage 1   154 true  c2 0   100
 mkpage c2  154 false ""  100 54
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "0" "list: a 154-thread PR reads completely across two pages"
 eq "$(printf '%s' "$OUT" | jq -r .total)" "154" "list: all 154 threads"
 has "$OUT" '"T153"' "list: a 154-thread PR carries its NEWEST thread"
@@ -389,23 +445,25 @@ mkpage c2  154 false ""  100 54
 pt remaining --pr 1
 eq "$RC" "0"    "remaining: reads across two pages too"
 eq "$OUT" "154" "remaining: it counts every unresolved bot thread, not one page's worth"
+printf '154\n' > "$work/remaining.want"
+if cmp -s "$work/out" "$work/remaining.want"; then ok; else bad "remaining: stdout is the bare count and its newline, byte for byte"; fi
 eq "$(calls_for 'graphql:c2')" "1" "remaining: the check follows the cursor as well"
 
 # --- THE SHORTFALL IS A HARD ERROR ------------------------------------------------------------
 # The exact #418 arithmetic: a page carrying 50 of a declared 101, with no further page. Under the
 # old code this is what printed "0 remaining".
 reset_fx; mkpage 1 101 false "" 0 50
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "list: a short read is exit 19, not a shorter list"
-eq "$OUT" ""  "list: ...and prints NO document, so a caller cannot act on a partial one"
+out_empty "list: ...and prints NO document, so a caller cannot act on a partial one"
 has "$ERR" "read 50 of totalCount 101" "list: the refusal names the shortfall in both numbers"
 pt remaining --pr 1
 eq "$RC" "19" "remaining: a short read REFUSES rather than reporting a count"
-eq "$OUT" ""  "remaining: ...and prints no count at all, never '0'"
+out_empty "remaining: ...and prints no count at all, never '0'"
 
 # A `hasNextPage: true` with no cursor cannot be followed — refuse rather than stop one page short.
 reset_fx; mkpage 1 154 true "" 0 100
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "list: 'more threads' with no cursor is a refusal, not a silent stop"
 has "$ERR" "carries no cursor" "list: ...and says which"
 
@@ -414,7 +472,7 @@ reset_fx; mkpage c9 154 true c9 0 100
 cp "$S/page-c9.json" "$S/page-1.json"
 # page 1 hands back cursor c9; page c9 hands back c9 again.
 jq '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor = "c9"' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "list: a cursor that does not advance is a refusal, not an infinite loop"
 has "$ERR" "did not advance" "list: ...and says which"
 
@@ -426,7 +484,7 @@ has "$ERR" "did not advance" "list: ...and says which"
 reset_fx
 mkpage 1  200 true  c2 0 100
 mkpage c2 200 false ""  0 100
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "list: a repeated page is refused, not counted as completeness"
 has "$ERR" "distinct ids" "list: ...and says the pages overlapped"
 hasnt "$ERR" "of totalCount" "list: ...caught by the IDENTITY proof, not by the arithmetic"
@@ -446,11 +504,11 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 mkmixed 1 54 false "" 45 5          # the page: 45 resolved + 5 unresolved; totalCount says 54
 pt remaining --pr 1
 eq "$RC" "19" "the #418 shape: a resolved page hiding unresolved overflow REFUSES"
-eq "$OUT" ""  "the #418 shape: ...and reports NO count — 5, and certainly not 0"
+out_empty "the #418 shape: ...and reports NO count — 5, and certainly not 0"
 has "$ERR" "read 50 of totalCount 54" "the #418 shape: the refusal names the exact live shortfall"
 # ...and the resolve pass refuses on the same read, so a round cannot act on the truncated page and
 # then have the check bless it.
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "the #418 shape: the resolve pass refuses too, not just the check"
 
 # THE CONTROL FOR THAT SHAPE: when the overflow is actually PAGED, the same 54 threads read cleanly
@@ -469,7 +527,7 @@ eq "$OUT" "9" "the #418 shape, PAGED: all 9 unresolved threads are counted, incl
 reset_fx; declare_bots "[\"$CODEX\"]"
 mkpage 1  154 true  c2 0   100
 mkpage c2 154 false ""  100 54 "$CODEX" false 1 "someone/else"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "2" "the identity check runs on page TWO as well, not only page one"
 has "$ERR" "refusing" "...and refuses rather than accumulating that page's ids"
 
@@ -478,19 +536,19 @@ has "$ERR" "refusing" "...and refuses rather than accumulating that page's ids"
 # context is complete when the contradictory count cannot prove replies were not omitted.
 reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 5
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount = 1' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "a nested totalCount BELOW its own node count is refused"
 reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 5
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount = -1' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "a NEGATIVE nested totalCount is refused"
 reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 5
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount = 1.5' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "a FRACTIONAL nested totalCount is refused"
 # The control: a consistent over-count (more comments than returned) is the ordinary truncated case.
 reset_fx; mkpage 1 2 false "" 0 2 "$CODEX" false 25
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "0" "control: totalCount ABOVE the node count is ordinary truncation, not an error"
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "true" "control: ...and is flagged"
 
@@ -501,27 +559,27 @@ eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "true" "cont
 reset_fx; declare_bots "[\"$CODEX\"]"
 mkpage 1  154 true  c2 0   100
 mkpage c2 100 false ""  100 54
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "a totalCount that CHANGES between pages is refused, not reconciled"
 has "$ERR" "changed between pages" "...and says the connection contradicts itself"
 # ...in the other direction too: a count that GROWS mid-pagination is equally unprovable.
 reset_fx
 mkpage 1  154 true  c2 0   100
 mkpage c2 200 false ""  100 54
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "19" "a totalCount that GROWS between pages is refused as well"
 # The control: a stable count across pages still reads cleanly.
 reset_fx
 mkpage 1  154 true  c2 0   100
 mkpage c2 154 false ""  100 54
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "0" "control: a STABLE totalCount across pages still reads cleanly"
 
 # --- EVERY UNREADABLE PATH REFUSES ------------------------------------------------------------
 reset_fx; mkpage 1 6 false "" 0 6
-STUB_FAIL_GQL=1 pt list --pr 1
+STUB_FAIL_GQL=1 pt list --pr 1 --verbose
 eq "$RC" "20" "list: an unreadable read is 20, never an empty thread list"
-STUB_EMPTY_GQL=1 pt list --pr 1
+STUB_EMPTY_GQL=1 pt list --pr 1 --verbose
 eq "$RC" "20" "list: an EMPTY body is 20 — a successful call that produced no document is not 'no threads'"
 STUB_FAIL_GQL=1 pt remaining --pr 1
 eq "$RC" "20" "remaining: an unreadable read is 20, never a count"
@@ -529,17 +587,17 @@ eq "$RC" "20" "remaining: an unreadable read is 20, never a count"
 # A document carrying GraphQL `errors` is not a page, however well-formed the rest looks.
 reset_fx; mkpage 1 6 false "" 0 6
 jq '. + {errors:[{message:"boom"}]}' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "list: a document carrying GraphQL errors is unreadable, not an empty page"
 
 # A connection with no totalCount must not read as zero — `// 0` is the fail-open this rejects.
 reset_fx; mkpage 1 6 false "" 0 6
 jq 'del(.data.repository.pullRequest.reviewThreads.totalCount)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "list: a connection with no totalCount is unreadable, not complete-by-default"
 reset_fx; mkpage 1 6 false "" 0 6
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "list: a connection with no nodes array is unreadable, not empty"
 
 # --- EVERY NODE IS TYPE-CHECKED, NOT JUST THE ARRAY AROUND THEM -------------------------------
@@ -551,7 +609,7 @@ reset_fx; declare_bots "[\"$CODEX\"]"; mkpage 1 3 false "" 0 3
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].isResolved)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt remaining --pr 1
 eq "$RC" "20" "a node with NO isResolved is unreadable — never a count with that thread dropped"
-eq "$OUT" ""  "...and prints no count at all"
+out_empty "...and prints no count at all"
 reset_fx; mkpage 1 3 false "" 0 3
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = "false"' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt remaining --pr 1
@@ -559,11 +617,11 @@ eq "$RC" "20" "a STRING isResolved is unreadable too — jq would compare it une
 # The id is what the caller RESOLVES threads by, so an empty one aims a mutation at nothing.
 reset_fx; mkpage 1 3 false "" 0 3
 jq '.data.repository.pullRequest.reviewThreads.nodes[1].id = ""' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "an EMPTY thread id is unreadable — it is what a resolve mutation is aimed at"
 reset_fx; mkpage 1 3 false "" 0 3
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes[2].comments)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "a node with no comments connection is unreadable — classification reads its head"
 # THE SAME DEFECT ONE LEVEL DEEPER: `comments: {totalCount: 1, nodes: []}` satisfies "nodes is an
 # array", so the head author defaults to "" and an unresolved BOT thread is read as non-bot and
@@ -572,11 +630,11 @@ reset_fx; mkpage 1 3 false "" 0 3
 jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes = []' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
 pt remaining --pr 1
 eq "$RC" "20" "an unresolved thread with an EMPTY comments page is unreadable, not a non-bot thread"
-eq "$OUT" ""  "...and prints no count, so the missing thread cannot vanish into a 0"
+out_empty "...and prints no count, so the missing thread cannot vanish into a 0"
 # A non-numeric nested totalCount would be read as zero by `// 0`, hiding truncated context.
 reset_fx; mkpage 1 3 false "" 0 3
 jq 'del(.data.repository.pullRequest.reviewThreads.nodes[0].comments.totalCount)' "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "20" "a thread with no comments totalCount is unreadable, not silently zero"
 # A null author (a deleted GitHub account) on an UNRESOLVED thread cannot be classified either.
 reset_fx; mkpage 1 3 false "" 0 3
@@ -602,29 +660,29 @@ eq "$OUT" "3" "control: ...and counts every unresolved bot thread"
 # The caller REPLIES ON and RESOLVES the ids this returns, so answering about another repository is
 # a mutation on a stranger's pull request.
 reset_fx; mkpage 1 6 false "" 0 6 "$CODEX" false 1 "someone/else"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "2" "list: a response naming another repository is refused"
 has "$ERR" "refusing" "list: ...and says so"
 
 # ============================= the resolvable-bot allowlist ====================================
 # EXACT, ANCHORED, CASE-INSENSITIVE — the RESOLVER's rule, not the merge guards' asymmetric one.
 reset_fx; declare_bots "[\"$CODEX\"]"; mkpage 1 2 false "" 0 2 "$CODEX"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '[.threads[]|select(.is_bot)]|length')" "2" \
    "list: a declared login classifies as a bot"
 reset_fx; mkpage 1 2 false "" 0 2 "some-human"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '[.threads[]|select(.is_bot)]|length')" "0" \
    "list: an undeclared login is never a bot"
 pt remaining --pr 1
 eq "$OUT" "0" "remaining: a human thread is not counted"
 # CASE-INSENSITIVE...
 reset_fx; mkpage 1 1 false "" 0 1 "Chatgpt-Codex-Connector"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "true" "list: the match is case-insensitive"
 # ...but ANCHORED: a login that merely CONTAINS a declared one is not it.
 reset_fx; mkpage 1 1 false "" 0 1 "evil-$CODEX-x"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" \
    "list: the match is anchored — a login containing a declared one is not a match"
 
@@ -634,35 +692,35 @@ eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" \
 # comparison is an exact string match now, so exactness is a property of the design rather than of
 # the escaping. Reported by the declared reviewer on PR #419.
 reset_fx; declare_bots '["foo.bar"]'; mkpage 1 1 false "" 0 1 "foo-bar"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" \
    "a regex metacharacter in a declared login does NOT widen the match (foo.bar must not match foo-bar)"
 pt remaining --pr 1
 eq "$OUT" "0" "...and such a thread is not counted as a bot thread"
 # ...the literal login it names still matches, so the escape did not simply break matching.
 reset_fx; declare_bots '["foo.bar"]'; mkpage 1 1 false "" 0 1 "foo.bar"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "true" "...but the LITERAL login still matches"
 # Other metacharacters are equally inert.
 reset_fx; declare_bots '["a+b"]'; mkpage 1 1 false "" 0 1 "aab"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" "a plus sign in a declared login is literal, not a quantifier"
 reset_fx; declare_bots '["x|y"]'; mkpage 1 1 false "" 0 1 "x"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" "a pipe in a declared login is literal, not an alternation"
 # The `[bot]` suffix — the one bracket case the old escaping existed for — still matches literally.
 reset_fx; declare_bots '["gemini-code-assist[bot]"]'; mkpage 1 1 false "" 0 1 "gemini-code-assist[bot]"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "true" "a [bot]-suffixed login still matches literally"
 reset_fx; declare_bots '["gemini-code-assist[bot]"]'; mkpage 1 1 false "" 0 1 "gemini-code-assistb"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].is_bot')" "false" "...and its brackets are not a character class"
 
 # `bots = []` MUST CLASSIFY NOTHING. jq's `test("")` matches EVERY string, so an empty allowlist
 # handed straight to the matcher would mark every thread a bot and auto-resolve a human's. That
 # trap used to live as a COMMENT in the workflow, beside a default nothing could exercise.
 reset_fx; declare_bots '[]'; mkpage 1 3 false "" 0 3 "$CODEX"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "0" "list: bots = [] still enumerates (the disable is about resolving, not reading)"
 eq "$(printf '%s' "$OUT" | jq -r '[.threads[]|select(.is_bot)]|length')" "0" \
    "list: bots = [] classifies NOTHING as a bot"
@@ -672,7 +730,7 @@ eq "$OUT" "0" "remaining: bots = [] counts nothing"
 # A MALFORMED DECLARATION IS 18, AND IT IS REPORTED BEFORE THE NETWORK. An operator should not wait
 # for an enumeration whose classification was never going to work.
 reset_fx; printf '%s\n' '[reviewers]' 'bots = "not-an-array"' > "$REPO/agents.toml"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$RC" "18" "list: a malformed [reviewers] bots is 18"
 eq "$(calls_for 'graphql:1')" "0" "list: ...and nothing was read — the manifest is checked first"
 pt remaining --pr 1
@@ -682,12 +740,12 @@ eq "$RC" "18" "remaining: a malformed [reviewers] bots is 18 there too"
 # The contract is narrowed, not the number raised: classification is the HEAD comment (complete by
 # construction), context is up to ten, and TRUNCATION IS VISIBLE so an agent knows there is a rest.
 reset_fx; declare_bots "[\"$CODEX\"]"; mkpage 1 1 false "" 0 1 "$CODEX" false 25
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_total')"     "25"   "list: a thread reports how many comments it HAS"
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_read')"      "10"   "list: ...and that TEN were actually read (not one — the query says first:10)"
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "true" "list: ...and flags the difference, rather than hiding it"
 reset_fx; mkpage 1 1 false "" 0 1 "$CODEX" false 1
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "false" \
    "list: an untruncated thread is not flagged"
 
@@ -695,8 +753,192 @@ eq "$(printf '%s' "$OUT" | jq -r '.threads[0].comments_truncated')" "false" \
 reset_fx; mkpage 1 4 false "" 0 4 "$CODEX" true
 pt remaining --pr 1
 eq "$OUT" "0" "remaining: already-resolved threads are not remaining"
-pt list --pr 1
+pt list --pr 1 --verbose
 eq "$(printf '%s' "$OUT" | jq -r .total)" "4" "list: ...but list still reports them (idempotency needs to see them)"
+
+# ================================ the output contract (#437) ===================================
+# The header's `Outputs:` is the contract: by default `list` prints the counts and one line per
+# UNRESOLVED thread and never a comment body; the document goes to --out or, instead, to --verbose.
+TB="$(printf '\t')"
+# has_line <text> <line> <label> — <line> is one WHOLE line of <text>, not a substring of one.
+has_line() { case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) ok ;; *) bad "$3: [$1] has no line [$2]" ;; esac; }
+reset_fx; declare_bots "[\"$CODEX\"]"; mkmixed 1 7 false "" 4 3
+pt list --pr 1
+eq "$RC" "0" "list (default): a clean read exits 0"
+eq "$OUT" "$(printf 'total\t7\nunresolved\t3\nunresolved-bot\t3\nthread\tU0\tbot\tb.txt:0\nthread\tU1\tbot\tb.txt:1\nthread\tU2\tbot\tb.txt:2')" \
+   "list: the default prints the terse contract, not the document"
+hasnt "$OUT" "finding" "list: the default carries no comment body, resolved or not"
+# Every line is in the grammar the header states — nothing else reaches stdout.
+_offgrammar="$(printf '%s\n' "$OUT" | awk -F'\t' '
+    ($1 == "total" || $1 == "unresolved" || $1 == "unresolved-bot") && NF == 2 && $2 ~ /^[0-9]+$/ { next }
+    $1 == "file" && NF == 2 && $2 != "" { next }
+    $1 == "thread" && NF == 4 && $2 != "" && ($3 == "bot" || $3 == "human") && $4 != "" { next }
+    { print }')"
+eq "$_offgrammar" "" "list: every default line is in the header's Outputs grammar"
+# BYTE-exact, final newline included — a `$( )` capture would accept trailing blank lines.
+pt_raw "$work/terse.out" list --pr 1
+printf 'total\t7\nunresolved\t3\nunresolved-bot\t3\nthread\tU0\tbot\tb.txt:0\nthread\tU1\tbot\tb.txt:1\nthread\tU2\tbot\tb.txt:2\n' > "$work/terse.want"
+if cmp -s "$work/terse.out" "$work/terse.want"; then ok; else bad "list: the default stdout is not byte-exact"; fi
+# A failed write to stdout is a failure, in both forms.
+( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 >&- 2>/dev/null ); _wrc=$?
+if [ "$_wrc" -ne 0 ]; then ok; else bad "list: a failed write to stdout is still exit 0"; fi
+( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 --verbose >&- 2>/dev/null ); _wrc=$?
+if [ "$_wrc" -ne 0 ]; then ok; else bad "list --verbose: a failed write to stdout is still exit 0"; fi
+
+# --verbose is the document, and every terse line is derivable from it: the counts agree and each
+# `thread` line names an unresolved thread of the same classification and site.
+_terse="$OUT"
+pt list --pr 1 --verbose
+eq "$RC" "0" "list --verbose: a clean read exits 0"
+_v="$OUT"
+eq "$(printf '%s' "$_v" | jq -r .total)" "$(printf '%s\n' "$_terse" | awk -F'\t' '$1 == "total" { print $2 }')" \
+   "list --verbose: its total is the default's total"
+eq "$(printf '%s' "$_v" | jq -r '[.threads[] | select(.isResolved == false)] | length')" \
+   "$(printf '%s\n' "$_terse" | awk -F'\t' '$1 == "unresolved" { print $2 }')" \
+   "list --verbose: its unresolved count is the default's"
+_missing=""
+while IFS="$TB" read -r _k _id _who _site; do
+  [ "$_k" = thread ] || continue
+  _hit="$(printf '%s' "$_v" | jq -r --arg id "$_id" --arg who "$_who" --arg site "$_site" '
+      [ .threads[] | select(.id == $id and .isResolved == false
+                            and ((.is_bot and $who == "bot") or ((.is_bot | not) and $who == "human"))
+                            and ("\(.path):\(.line)" == $site)) ] | length')"
+  [ "$_hit" = 1 ] || _missing="$_missing $_id"
+done <<< "$_terse"
+eq "$_missing" "" "list --verbose: every default thread line is in the document (a superset)"
+pt remaining --pr 1
+eq "$OUT" "$(printf '%s\n' "$_terse" | awk -F'\t' '$1 == "unresolved-bot" { print $2 }')" \
+   "list: unresolved-bot is what remaining counts on the same read"
+
+# A human thread, a thread with no path, one with no line, and a path carrying control bytes.
+reset_fx; mkpage 1 4 false "" 0 4 "$CODEX"
+jq '.data.repository.pullRequest.reviewThreads.nodes[1].comments.nodes[0].author.login = "a-human"
+    | .data.repository.pullRequest.reviewThreads.nodes[2].comments.nodes[0].path = null
+    | .data.repository.pullRequest.reviewThreads.nodes[3].comments.nodes[0].line = null
+    | .data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[0].path = "x\ty\u001bz.txt"' \
+   "$S/page-1.json" > "$S/t" && mv "$S/t" "$S/page-1.json"
+pt list --pr 1
+eq "$RC" "0" "list (default): a mixed page reads cleanly"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 == "unresolved-bot" { print $2 }')" "3" "list: a human thread is not counted as bot"
+has_line "$OUT" "$(printf 'thread\tT1\thuman\ta.txt:1')" "list: a human thread is listed as human"
+has_line "$OUT" "$(printf 'thread\tT2\tbot\t-')" "list: a thread with no path prints '-' for its site"
+has_line "$OUT" "$(printf 'thread\tT3\tbot\ta.txt')" "list: a thread with no line prints the bare path"
+has_line "$OUT" "$(printf 'thread\tT0\tbot\tx\\ty?z.txt:0')" "list: a tab in a path is escaped and a control byte prints as '?'"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 == "thread" && NF != 4' | wc -l | tr -d ' ')" "0" \
+   "list: a hostile path cannot add a field to a thread line"
+
+# Zero threads: the three counts and nothing else.
+reset_fx; mkpage 1 0 false "" 0 0
+pt_raw "$work/zero.out" list --pr 1
+printf 'total\t0\nunresolved\t0\nunresolved-bot\t0\n' > "$work/zero.want"
+if cmp -s "$work/zero.out" "$work/zero.want"; then ok; else bad "list: a PR with no threads prints three zero counts, byte for byte"; fi
+
+# --out publishes the document beside the destination and names it; stdout stays terse.
+reset_fx; declare_bots "[\"$CODEX\"]"; mkmixed 1 7 false "" 4 3
+mkdir -p "$work/o"; _dest="$work/o/threads-1.json"
+pt list --pr 1 --out "$_dest"
+eq "$RC" "0" "list --out: a clean read exits 0"
+has "$OUT" "$(printf 'file\t%s' "$_dest")" "list --out: the terse output names the file"
+has "$OUT" "$(printf 'thread\tU2\tbot')" "list --out: ...and still lists the work"
+hasnt "$OUT" "finding" "list --out: no comment body reaches stdout"
+printf '%s\n' "$_v" > "$work/verbose.json"
+if cmp -s "$_dest" "$work/verbose.json"; then ok; else bad "list --out: the file is not byte-identical to --verbose's document"; fi
+eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: no staged copy is left beside the destination"
+
+# A failed read publishes nothing and leaves an earlier file untouched.
+printf 'OLD\n' > "$_dest"; cp "$_dest" "$work/old.json"
+reset_fx; mkpage 1 101 false "" 0 50
+pt list --pr 1 --out "$_dest"
+eq "$RC" "19" "list --out: a short read is still 19"
+out_empty "list --out: ...and prints nothing"
+if cmp -s "$_dest" "$work/old.json"; then ok; else bad "list --out: a failed read replaced the earlier file"; fi
+eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: a failed read leaves no staged copy"
+reset_fx; mkpage 1 6 false "" 0 6
+STUB_FAIL_GQL=1 pt list --pr 1 --out "$_dest"
+eq "$RC" "20" "list --out: an unreadable read is still 20"
+eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: an unreadable read leaves no staged copy"
+
+# An existing file's mode is carried onto the replacement; one that cannot be READ refuses rather
+# than replacing a restricted file with the stage's own mode.
+reset_fx; declare_bots "[\"$CODEX\"]"; mkmixed 1 7 false "" 4 3
+chmod 640 "$_dest"
+pt list --pr 1 --out "$_dest"
+eq "$RC" "0" "list --out: an existing destination is replaced"
+eq "$(adb_file_mode "$_dest")" "640" "list --out: ...carrying its mode onto the replacement"
+printf 'OLD\n' > "$_dest"; chmod 400 "$_dest"; cp "$_dest" "$work/old-mode.json"
+STUB_FAIL_STAT=1 pt list --pr 1 --out "$_dest"
+eq "$RC" "2" "list --out: an unreadable destination mode is refused (2)"
+if cmp -s "$_dest" "$work/old-mode.json"; then ok; else bad "list --out: a destination whose mode could not be read was replaced"; fi
+eq "$(adb_file_mode "$_dest")" "400" "list --out: ...and its mode is untouched"
+eq "$(find "$work/o" -type f | wc -l | tr -d ' ')" "1" "list --out: ...and no staged copy is left"
+chmod 600 "$_dest"
+# `mv` onto a path that became a DIRECTORY moves the stage inside it and succeeds; that is refused
+# and undone, never reported as published.
+STUB_MV_RACE="$_dest" pt list --pr 1 --out "$_dest"
+eq "$RC" "2" "list --out: a destination that became a directory before the rename is refused (2)"
+out_empty "list --out: ...and prints nothing"
+eq "$(find "$_dest" -type f | wc -l | tr -d ' ')" "0" "list --out: ...and leaves no document inside that directory"
+rm -rf "$_dest"
+# A stage swept away DURING the read is refused, never recreated by a path write at the umask mode.
+STUB_RM_STAGE="$_dest" pt list --pr 1 --out "$_dest"
+eq "$RC" "2" "list --out: a stage removed during the read is refused (2)"
+if [ -e "$_dest" ]; then bad "list --out: ...and nothing is published"; else ok; fi
+# The terse lines print AFTER the rename, so a failed stdout write is non-zero over a published file
+# — the order the header states.
+( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 --out "$_dest" >&- 2>/dev/null ); _wrc=$?
+if [ "$_wrc" -ne 0 ]; then ok; else bad "list --out: a failed stdout write is still exit 0"; fi
+if cmp -s "$_dest" "$work/verbose.json"; then ok; else bad "list --out: the header's order (publish, then print) does not hold"; fi
+# A relative path starting with `-` is a path, never an option to mktemp or mv.
+pt list --pr 1 --out "-lead.json"
+eq "$RC" "0" "list --out: a relative path starting with '-' is published"
+if cmp -s "$REPO/-lead.json" "$work/verbose.json"; then ok; else bad "list --out: a '-'-led path was not published beside itself"; fi
+has_line "$OUT" "$(printf 'file\t-lead.json')" "list --out: ...and the file line names it as given"
+eq "$(find "$REPO" -maxdepth 1 -name '*.stage.*' | wc -l | tr -d ' ')" "0" "list --out: ...leaving no stage behind"
+rm -f "$REPO/-lead.json"
+# The `file` line gets a path's display policy too: an ESC in the destination prints as `?`.
+_esc_dest="$work/o/esc"$'\033'"x.json"
+pt list --pr 1 --out "$_esc_dest"
+eq "$RC" "0" "list --out: a destination carrying a control byte is still published"
+has_line "$OUT" "$(printf 'file\t%s' "$work/o/esc?x.json")" "list --out: ...and the file line prints its control byte as '?'"
+rm -f "$_esc_dest"
+
+# An unwritable destination is 2, named, refused before the network, and never falls back to stdout.
+reset_fx; mkpage 1 6 false "" 0 6
+pt list --pr 1 --out "$work/no-such-dir/threads-1.json"
+eq "$RC" "2" "list --out into a missing directory is 2"
+out_empty "list --out unwritable: nothing on stdout — never a silent fallback to the document"
+has "$ERR" "no-such-dir/threads-1.json" "list --out unwritable: the refusal names the path"
+eq "$(calls_for 'graphql:1')" "0" "list --out unwritable: refused before any read"
+pt_raw "$work/unwritable.out" list --pr 1 --out "$work/no-such-dir/threads-1.json"
+eq "$(wc -c < "$work/unwritable.out" | tr -d ' ')" "0" "list --out unwritable: stdout is zero bytes, not a stray newline"
+mkdir -p "$work/o/adir"
+pt list --pr 1 --out "$work/o/adir"
+eq "$RC" "2" "list --out naming a directory is 2"
+mkdir -p "$work/ro"; chmod 555 "$work/ro"
+if [ ! -w "$work/ro" ]; then
+  pt list --pr 1 --out "$work/ro/threads-1.json"
+  eq "$RC" "2" "list --out into a read-only directory is 2"
+fi
+chmod 755 "$work/ro"
+
+# The two flags are list-only and exclusive.
+pt list --pr 1 --out "$_dest" --verbose
+eq "$RC" "2" "list: --out with --verbose is a usage error"
+pt remaining --pr 1 --verbose
+eq "$RC" "2" "remaining: --verbose is list-only"
+pt remaining --pr 1 --out "$_dest"
+eq "$RC" "2" "remaining: --out is list-only"
+pt list --pr 1 --out
+eq "$RC" "2" "list: --out with no value is a usage error"
+pt list --pr 1 --out ""
+eq "$RC" "2" "list: an empty --out is rejected on its value"
+
+# THE WORKFLOW CALL SITE, pinned: a redirect would now capture the terse lines, not the document
+# step 3 reads.
+WF="$ROOT/base/workflows/resolve-pr-threads.md"
+eq "$(grep -cF -- '{{PR_THREADS_LIB}} list --pr "$PR_NUM" --out {{STATE_DIR}}/threads-$PR_NUM.json' "$WF")" "1" \
+   "resolve-pr-threads: step 2 publishes the document with --out"
+eq "$(grep -c '{{PR_THREADS_LIB}} list[^`]*>' "$WF")" "0" "resolve-pr-threads: no list call is redirected into a file"
 
 # ======================================== usage ================================================
 pt list

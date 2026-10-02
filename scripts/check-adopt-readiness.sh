@@ -237,11 +237,31 @@ out="$(printf 'gates\ttodo\tnone detected\n' | ar verdict)"
 has "$out" "[agent]" "verdict: an agent-actionable rung is labelled [agent]"
 has "$out" "none detected" "verdict: the evidence detail reaches the report"
 
+# THE OUTPUT CONTRACT (#437): met rungs are never listed, so a green report is the headline and the
+# VERDICT line, and a red one adds only the rungs that remain.
+# Compared as BYTES, so a stray blank line or a lost newline is caught.
+total="$(ar contract | wc -l | tr -d ' ')"
+records ok | ar verdict > "$WORK/v-green.out"
+printf 'Adoption completion contract — %d of %d rungs evaluated (%d met, %d N/A, %d outstanding, %d undetermined)\n\nVERDICT: green — every rung of the completion contract is met.\n' \
+  "$total" "$total" "$total" 0 0 0 > "$WORK/v-green.want"
+if cmp -s "$WORK/v-green.out" "$WORK/v-green.want"; then ok; else bad "verdict: a green report is the headline and the VERDICT line only"; fi
+IFS="$TAB" read -r _r1 _o1 _t1 < <(ar contract | head -1)
+printf '%s' "$mixed" | ar verdict > "$WORK/v-red.out"
+printf 'Adoption completion contract — %d of %d rungs evaluated (%d met, %d N/A, %d outstanding, %d undetermined)\n\nOUTSTANDING — this is what remains, and who decides it:\n  [%s] %-13s %s\n\nVERDICT: red — adoption is NOT complete.\n' \
+  "$total" "$total" "$((total - 1))" 0 1 0 "$_o1" "$_r1" "$_t1" > "$WORK/v-red.want"
+if cmp -s "$WORK/v-red.out" "$WORK/v-red.want"; then ok; else bad "verdict: a red report adds only the outstanding section and its rung"; fi
+
 # --- 3. probe: the offline rungs, each driven both ways -------------------------------------------
 # --- manifest
 d="$WORK/p-nomanifest"; mkrepo "$d"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}todo" "probe: no agents.toml is todo"
+# Read RAW: the workflow concatenates probe and tracker files, so a lost final newline would join
+# two records, and `$( )` would hide it.
+ar probe "$d" > "$WORK/probe.out" 2>/dev/null
+eq "$(awk -F'\t' 'NF != 3 || $1 == "" || $2 !~ /^(ok|todo|unknown|na)$/' "$WORK/probe.out" | wc -l | tr -d ' ')" 0 \
+   "probe: every record is <rung>TAB<ok|todo|unknown|na>TAB<detail> (#437)"
+eq "$(tail -c 1 "$WORK/probe.out" | od -An -c | tr -d ' ')" '\n' "probe: the last record ends in its newline"
 printf 'x = 1\n' > "$d/agents.toml"
 out="$(ar probe "$d")"
 has "$out" "manifest${TAB}todo" "probe: an agents.toml with no [roles] is still todo"

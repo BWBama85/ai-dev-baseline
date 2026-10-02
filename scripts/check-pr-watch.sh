@@ -1824,4 +1824,25 @@ w request-review --pr 1;  rc 0 "request-review: two spellings of one App still a
 eq "$(grep -c "requested a re-review" <<<"$OUT")" "1" "request-review: exactly one comment is posted"
 reset_fx
 
+# ============================ the output contract (#437) ============================
+# The header's Outputs: at most ONE stdout line, `<verdict> <head-sha>`, and none on a refusal.
+# Compared as BYTES — a `$( )` capture would accept a trailing blank line or a missing newline.
+# contract_is <want-rc> <want-stdout-line|''> <label> <subcommand…>
+contract_is() {
+  local want_rc="$1" want="$2" label="$3"; shift 3
+  _w "$@" > "$work/contract.out" 2>/dev/null; RC_=$?
+  rc "$want_rc" "$label (exit code)"
+  if [ -n "$want" ]; then printf '%s\n' "$want" > "$work/contract.want"; else : > "$work/contract.want"; fi
+  if cmp -s "$work/contract.out" "$work/contract.want"; then ok; else bad "$label: stdout is not exactly that line"; fi
+}
+reset_fx; declare_bots "[\"$CODEX\"]"
+contract_is 11 "pending $HEAD_SHA" "contract: observe's pending stdout is '<verdict> <sha>'" observe --pr 1
+reset_fx; declare_bots "[\"$CODEX\"]"; pr_fx --state closed --merged-at "2026-07-25T05:00:00Z"
+contract_is 12 "gone $HEAD_SHA" "contract: observe's gone stdout is '<verdict> <sha>'" observe --pr 1
+reset_fx; undeclare
+contract_is 17 "" "contract: a refusal prints nothing on stdout, not even a newline" observe --pr 1
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+contract_is 0 "requested $HEAD_SHA" "contract: request-review's stdout is '<word> <sha>'" request-review --pr 1
+reset_fx
+
 check_summary "pr-watch"

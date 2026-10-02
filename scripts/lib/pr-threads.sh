@@ -64,15 +64,38 @@
 # ------------------------------------------------------------------------------------------------
 # Usage:
 #   pr-threads.sh infer-pr                       # the ONE open PR, or refuse (#416)
-#   pr-threads.sh list      --pr <number|url>    # every review thread, complete. JSON on stdout
+#   pr-threads.sh list      --pr <number|url> [--out <file> | --verbose]   # every review thread, complete
 #   pr-threads.sh remaining --pr <number|url>    # unresolved BOT threads, complete. count on stdout
 #   pr-threads.sh -h | --help
+#
+# Outputs: what each subcommand prints on exit 0. A refusal or failed read prints nothing on stdout,
+# and every diagnostic goes to stderr (#437).
+#   infer-pr   the bare PR number.
+#   remaining  the bare count — already the whole answer, so it has no verbose form.
+#   list       TERSE by default — the counts and the round's work list, never a comment body:
+#                total<TAB><n>               every thread the read proved exists
+#                unresolved<TAB><n>          of which `isResolved` is false
+#                unresolved-bot<TAB><n>      of which `is_bot` is also true (what `remaining` counts)
+#                file<TAB><path>             with --out only: where the whole document was published
+#                thread<TAB><id><TAB>bot|human<TAB><path>[:<line>]|-
+#                                            one per UNRESOLVED thread, in read order, never truncated
+#              Lines are jq `@tsv`: a tab, newline or backslash inside a field is escaped, and a
+#              path's other control bytes print as `?`. The document is the authority for every value.
+#     --out <file>  also publishes the whole JSON document to <file>, staged beside it and renamed
+#                   into place. A failed read, stage or rename publishes nothing and leaves an
+#                   existing <file> untouched; a <file> that cannot be written — or whose mode cannot
+#                   be read to carry onto the replacement — is 2, naming the path. The terse lines
+#                   print AFTER the rename, so a failure writing them is non-zero over a file that
+#                   was published.
+#     --verbose     the whole JSON document on stdout INSTEAD; every count and `thread` line is
+#                   derivable from it.
+#                   Exclusive with --out.
 #
 # Exit codes — a stable machine contract for the workflow steps that consume them. `18` and `20`
 # carry the same meanings they do in pr-watch.sh and pr-review.sh; every other code here is this
 # module's own and is deliberately disjoint from theirs.
 #
-#   0  ok         — `infer-pr`: "<number>". `list`: the JSON document. `remaining`: the count.
+#   0  ok         — the subcommand's Outputs, above.
 #   10 none       — `infer-pr` only: this repository has NO open pull request.
 #   11 ambiguous  — `infer-pr` only: two or more are open; the candidates are listed on stderr.
 #                   NEVER a guess — an inference that picks wrong replies on and RESOLVES threads
@@ -83,7 +106,8 @@
 #   18 config     — `[reviewers] bots` is present but malformed. Fix agents.toml.
 #   20 unknown    — live state unreadable (API failure, a malformed response, no repository, a
 #                   broken install). FAIL CLOSED — never a count, never an empty thread list.
-#   2  usage      — bad or missing arguments, or the reads answered for another repository.
+#   2  usage      — bad or missing arguments, the reads answered for another repository, or
+#                   `--out` names a path that cannot be written.
 #
 # NOTE THE OTHER VOCABULARIES IN THIS FAMILY: `pr-watch.sh` uses 0/10-15/17/18/20 and
 # `repo-settings.sh automerge-ok` uses 0/10-14/20, so their 10/11 mean entirely different things
@@ -121,6 +145,8 @@ _ADB_PT_ROLE_DISPATCH="$_adb_pt_libdir/role-dispatch.sh"
 usage() { adb_usage "$0"; }
 
 OPT_PR=""
+OPT_OUT=""
+OPT_VERBOSE=0
 
 # How many threads one page requests. NOT a ceiling — the loop below pages to exhaustion and then
 # proves that it did. 100 is GitHub's documented per-connection maximum, so it costs the fewest
@@ -498,17 +524,52 @@ cmd_infer_pr() {
   return 11
 }
 
+# The --out stage, removed on every exit that did not publish it. A kill between `mktemp` and the
+# rename would otherwise leave a copy of every thread body beside the destination.
+_ADB_PT_STAGE=""
+_adb_pt_unstage() {
+  [ -n "$_ADB_PT_STAGE" ] || return 0
+  rm -f "$_ADB_PT_STAGE" 2>/dev/null \
+    || printf 'pr-threads: could not remove the staged copy %s — remove it by hand\n' "$(adb_display_value "$_ADB_PT_STAGE")" >&2
+  _ADB_PT_STAGE=""
+}
+
 # cmd_list — every review thread of the pull request, classified, complete.
 #
-# Emits ONE object: `{ pr, total, bot_re, threads: [ … ] }`, where each thread carries the fields
-# the resolver classifies on plus `is_bot` — the resolver's own exact-allowlist verdict, computed
-# HERE so the workflow never rebuilds the regex (it used to build it twice, in two blocks that could
-# not be tested and had already been given a comment warning about the empty-regex trap).
+# The document is ONE object: `{ pr, total, bots, threads: [ … ] }`, where each thread carries the
+# fields the resolver classifies on plus `is_bot` — the resolver's own exact-allowlist verdict,
+# computed HERE so the workflow never rebuilds the allowlist. What reaches stdout is the header's
+# Outputs contract: the terse lines by default, the document only under --verbose.
 cmd_list() {
-  local n slug nodes re rrc out
+  local n slug nodes re rrc out terse dshow dest fd
   [ -n "$OPT_PR" ] || { echo "pr-threads: list requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-threads: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
+  if [ -n "$OPT_OUT" ] && [ "$OPT_VERBOSE" -eq 1 ]; then
+    echo "pr-threads: --out and --verbose are exclusive — the document goes to the file or to stdout, not both" >&2
+    return 2
+  fi
+  # STAGED BEFORE THE NETWORK, beside the destination so the publish is a same-directory rename: an
+  # unwritable path is an argument fact, knowable without a round trip.
+  if [ -n "$OPT_OUT" ]; then
+    dshow="$(adb_display_value "$OPT_OUT")"
+    # `./` before a relative path, so one starting with `-` is never read as an option by mktemp/mv.
+    case "$OPT_OUT" in /*) dest="$OPT_OUT" ;; *) dest="./$OPT_OUT" ;; esac
+    if [ -e "$dest" ] && [ ! -f "$dest" ]; then
+      printf 'pr-threads: --out %s exists and is not a regular file — refusing to publish over it\n' "$dshow" >&2
+      return 2
+    fi
+    trap '_adb_pt_unstage' EXIT
+    trap '_adb_pt_unstage; exit 130' INT
+    trap '_adb_pt_unstage; exit 143' TERM
+    # The stage is HELD OPEN from its creation and the document is written through it: a stage
+    # swept away during the read (a /cleanup racing a closed PR) then takes the write on its
+    # unlinked inode and the publish refuses, where a path write would recreate it at the umask mode.
+    # One step, one failure branch: an empty `$_ADB_PT_STAGE` (mktemp failed) leaves the trap nothing
+    # to remove, and a stage that would not open is removed by it.
+    _ADB_PT_STAGE="$(mktemp "$dest.stage.XXXXXX" 2>/dev/null)" && { exec {fd}>"$_ADB_PT_STAGE"; } 2>/dev/null \
+      || { printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\n' "$dshow" >&2; return 2; }
+  fi
   adb_require_gh jq || return 20
   # THE MANIFEST IS READ BEFORE THE NETWORK. A malformed `[reviewers] bots` is a configuration fact
   # knowable without a round trip, and reporting it after the reads would make the operator wait for
@@ -539,7 +600,38 @@ cmd_list() {
           comments_truncated: ((.comments.totalCount // 0) > (.comments.nodes | length)),
           comments: [ .comments.nodes[] | {id, author: (.author.login // ""), body, createdAt} ] } ] }' 2>/dev/null)" \
     || { echo "pr-threads: could not classify the review threads of PR #$n" >&2; return 20; }
-  printf '%s\n' "$out"
+  if [ "$OPT_VERBOSE" -eq 1 ]; then
+    printf '%s\n' "$out"; return
+  fi
+
+  # RENDERED BEFORE THE PUBLISH, so a failure here leaves the destination untouched rather than
+  # published under a non-zero exit.
+  terse="$(printf '%s' "$out" | jq -r --arg file "$OPT_OUT" '
+      def disp: explode | map(if (. < 32 and . != 9 and . != 10) or . == 127 then 63 else . end) | implode;
+      [ .threads[] | select(.isResolved == false) ] as $u
+      | ["total", .total], ["unresolved", ($u | length)],
+        ["unresolved-bot", ([ $u[] | select(.is_bot) ] | length)],
+        (if $file == "" then empty else ["file", ($file | disp)] end),
+        ( $u[] | ["thread", .id, (if .is_bot then "bot" else "human" end),
+                  (if .path == null then "-"
+                   else (.path | disp)
+                        + (if .line == null then "" else ":\(.line)" end) end)] )
+      | @tsv' 2>/dev/null)" \
+    || { echo "pr-threads: could not summarise the review threads of PR #$n" >&2; return 20; }
+
+  if [ -n "$OPT_OUT" ]; then
+    printf '%s\n' "$out" 1>&"$fd" 2>/dev/null \
+      || { printf 'pr-threads: --out %s cannot be written (the staged copy failed)\n' "$dshow" >&2; return 2; }
+    exec {fd}>&-
+    [ -f "$_ADB_PT_STAGE" ] \
+      || { printf 'pr-threads: --out %s cannot be written (the staged copy was removed during the read)\n' "$dshow" >&2; return 2; }
+    # `--strict`: an unreadable destination mode refuses rather than publishing the stage's own
+    # (D118). The helper's WARN goes to stderr — stdout here is the contract.
+    adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2 \
+      || { printf 'pr-threads: --out %s cannot be written (see the line above)\n' "$dshow" >&2; return 2; }
+    _ADB_PT_STAGE=""
+  fi
+  printf '%s\n' "$terse"
 }
 
 # cmd_remaining — how many UNRESOLVED bot threads are left, counted over a COMPLETE enumeration.
@@ -584,6 +676,14 @@ parse_opts() {
         [ "$#" -ge 2 ] || { echo "pr-threads: --pr needs a value" >&2; exit 2; }
         [ -n "$2" ] || { echo "pr-threads: --pr must not be empty" >&2; exit 2; }
         OPT_PR="$2"; shift ;;
+      --out)
+        [ "$SUB" = list ] || { echo "pr-threads: --out applies to 'list' only" >&2; exit 2; }
+        [ "$#" -ge 2 ] || { echo "pr-threads: --out needs a value" >&2; exit 2; }
+        [ -n "$2" ] || { echo "pr-threads: --out must not be empty" >&2; exit 2; }
+        OPT_OUT="$2"; shift ;;
+      --verbose)
+        [ "$SUB" = list ] || { echo "pr-threads: --verbose applies to 'list' only" >&2; exit 2; }
+        OPT_VERBOSE=1 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "pr-threads: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac

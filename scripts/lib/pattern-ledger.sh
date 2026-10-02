@@ -30,6 +30,19 @@
 #    the lock; nothing is reported as recorded that the ledger does not hold)
 #   pattern-ledger.sh -h | --help
 #
+# Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
+# the whole answer, bounded by what it reports on, so there is no verbose form (#437):
+#   record · promote · rule-sweep   one confirmation line (`recorded …`, `promoted …`, `rule-sweep …`)
+#   classes            <count>TAB<class>TAB<promoted 0|1>, one line per class
+#   due                <class>TAB<count>, one line per class owed a rule; nothing on 11
+#   checklist          the promoted rules, one per line; nothing on 18/21
+#   stats              <key>TAB<value>: ledger (present|absent), hits, classes, recurring, promoted,
+#                      threshold, threshold-source; with --pr also pr-hits, pr-recurring, pr-new-classes
+#   verify             one `ok …` line
+#   threshold          <n> <source>
+#   reclaim            a `pattern-ledger: …` line per thing removed, or one saying no lock exists
+#   rule-sweep-report  the Markdown block for the PR body — the evidence itself, so it is the default
+#
 # Globals read: ADB_PATTERN_LEDGER (default <repo-root>/.ai-dev-baseline/patterns.md).
 #
 # Exit codes — a stable machine contract for the workflow steps that consume them. Deliberately
@@ -1310,7 +1323,7 @@ cmd_verify() {
   fi
   [ "$bad" -eq 0 ] || exit 18
   [ "$over" -eq 0 ] || exit 21
-  printf 'ok %s hit(s), %s checklist rule(s) checked in %s (checklist %s of %s bytes)\n' "$nh" "$np" "$ledger" "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES"
+  printf 'ok %s hit(s), %s checklist rule(s) checked in %s (checklist %s of %s bytes)\n' "$nh" "$np" "$(adb_display_value "$ledger")" "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES"
 }
 
 # `reclaim` — remove an ABANDONED write lock, or say why not.
@@ -1335,7 +1348,7 @@ cmd_reclaim() {
     if ! rm -rf "$t" 2>/dev/null || [ -e "$t" ]; then
       printf 'pattern-ledger: could not remove the stale-lock tombstone %s — remove it by hand.\n' "$t" >&2; rc=20
     else
-      printf 'pattern-ledger: removed a leftover stale-lock tombstone: %s\n' "$t"; did=1
+      printf 'pattern-ledger: removed a leftover stale-lock tombstone: %s\n' "$(adb_display_value "$t")"; did=1
     fi
   done
   if [ -d "$dir" ]; then
@@ -1350,14 +1363,14 @@ cmd_reclaim() {
         printf 'pattern-ledger: could not remove the stale lock %s after renaming it — it is owned by another user, or its contents are not deletable here. Remove it by hand.\n' "$tomb" >&2
         exit 20
       fi
-      printf 'pattern-ledger: reclaimed a stale write lock (%ss old, owner gone): %s\n' "$age" "$dir"; did=1
+      printf 'pattern-ledger: reclaimed a stale write lock (%ss old, owner gone): %s\n' "$age" "$(adb_display_value "$dir")"; did=1
     else
       printf 'pattern-ledger: %s is HELD — its owner is alive, on another host, unrecorded, or the lock is not yet stale (%ss old). Nothing reclaimed; remove it by hand only once you are sure.\n' "$dir" "${age:-?}" >&2
       exit 22
     fi
   fi
   [ "$rc" -eq 0 ] || exit "$rc"
-  [ "$did" -eq 1 ] || printf 'pattern-ledger: no lock at %s\n' "$dir"
+  [ "$did" -eq 1 ] || printf 'pattern-ledger: no lock at %s\n' "$(adb_display_value "$dir")"
   exit 0
 }
 

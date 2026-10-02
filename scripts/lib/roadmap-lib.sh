@@ -33,6 +33,7 @@
 #   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health>
 #   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
+#   roadmap-lib.sh release-command                                # roadmap artifact body on stdin
 #   roadmap-lib.sh health-optout                                  # roadmap artifact body on stdin
 #   roadmap-lib.sh health-decl <marker-value> <author-permission>  # resolve the declaration
 #   roadmap-lib.sh deps-from-body [self-issue-number]             # issue/decision body on stdin
@@ -45,6 +46,18 @@
 #                                     # {issues,edges,exclude,canceled} on stdin
 #   roadmap-lib.sh compose-select     # compose-candidates TSV on stdin
 #   roadmap-lib.sh -h | --help
+#
+# Outputs: each subcommand prints only the value its caller captures, bounded by its input;
+# diagnostics go to stderr. That value is the whole answer, so there is no verbose form (#437):
+#   slug-ok · pr-targets-issue          nothing — the exit status is the answer
+#   release-ready · read-complete · emit-verdict · health-optout
+#                                       one word (health-optout: `invalid <values>` on a bad marker)
+#   branch-health · health-decl         line 1 the verdict, line 2 (when there is one) its reason
+#   release-counts                      three lines: the release-ready counts, the open non-blocker
+#                                       numbers, the open blocker numbers
+#   deps-from-body · deps-ambiguous · decisions · open-issues   one value per line; empty = none
+#   marker-title · release-command      each extracted marker value, one per line; empty = no marker
+#   compose-candidates · compose-select TSV, one candidate / one decision per line
 #
 # `pr-targets-issue` stdin is the output of:
 #   gh pr list --state open --limit 200 --json number,body,closingIssuesReferences

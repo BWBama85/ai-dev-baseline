@@ -607,7 +607,7 @@ add pr-watch            bash scripts/check-pr-watch.sh
 # row required back RED on ITS OWN named witness, so "these cases can fire" is re-runnable rather
 # than a claim in a PR body.
 add pr-watch-mutation   bash scripts/check-pr-watch.sh --mutation
-inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-watch.sh
+inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-watch.sh scripts/lib/role-dispatch.sh
 
 # Unit tests for the /resolve-pr-threads decision predicates (scripts/lib/pr-threads.sh, #416/#418):
 # argument-less PR inference refusing rather than guessing, the COMPLETE thread enumeration across a
@@ -617,12 +617,15 @@ add pr-threads          bash scripts/check-pr-threads.sh
 
 # The negative half of the step above (#418). Its cases are guards, and a guard's failure mode is
 # silence: the shipped defect was a `first:50` read whose own remaining-count check shared the
-# truncating window, so it printed exactly what a clean run prints. Six mutations — the cursor loop
+# truncating window, so it printed exactly what a clean run prints. The mutations — the cursor loop
 # stopped, the cursor never sent, the count proof disabled, the count proof disabled against #418's
-# OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, and the per-node type
-# check disabled — plus an unmutated control, each required back RED on ITS OWN named witness.
+# OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, the per-node type
+# check disabled, and (#437) `list` printing the whole document by default, an unwritable `--out`
+# falling back to stdout, `--out` publishing without `--strict`, its stage written by path rather
+# than through the held descriptor, and `--verbose`'s write status dropped — plus an unmutated
+# control, each required back RED on ITS OWN witness.
 add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
-inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-threads.sh
+inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-threads.sh scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
 
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
 # mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,
@@ -670,7 +673,7 @@ add docs-lib            bash scripts/check-docs-lib.sh
 # fall-back to training-data recall that the declaration exists to end. The live count is printed by
 # `--mutation` itself rather than written here, for the reason the step above gives.
 add docs-lib-mutation   bash scripts/check-docs-lib.sh --mutation
-inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh
+inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh base/workflows/implement-issue.md base/practices/third-party-claims.md templates/agents.toml
 
 # Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge
 # detection against a real fixture (#106 — `--merged` alone is blind to it, so the sweep was a

@@ -10,6 +10,28 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **Library output the agent reads has a stated, terse default (#437).** `pr-threads.sh list`
+  printed every review thread as JSON, comment bodies included. On a long-running PR most of
+  those threads are already resolved history. It now prints three counts (`total`, `unresolved`,
+  `unresolved-bot`) and one `thread` line per unresolved thread: id, `bot`/`human`, `path:line`.
+  The whole document goes to `--out <file>`, staged beside the file and renamed into place, or
+  instead to stdout with `--verbose`. An `--out` path that cannot be written exits 2 and names the
+  path. So does one whose mode cannot be read, or one that becomes a directory before the rename.
+  Both refusals live in the shared `adb_publish_json`. It gains an opt-in `--strict` for the mode;
+  its default still proceeds for `settings.json`. Every caller now gets the post-rename check.
+  The stage is written through a descriptor held open from its creation, so a stage swept away
+  during the read refuses rather than reappearing at the umask's mode.
+  It never falls back to printing the document, and a failed read publishes nothing.
+  `/resolve-pr-threads` step 2 now uses `--out`. Step 3 reads only the unresolved entries, not
+  the whole file. `/cleanup` sweeps a staged copy that a killed writer left behind.
+
+  `pr-watch.sh`, `pattern-ledger.sh`, `docs-lib.sh`, `adopt-readiness.sh` and `roadmap-lib.sh`
+  each now carry an `Outputs:` section in their header, printed by `--help`. It says what stdout
+  carries and confirms none has a larger payload held back. `docs-lib.sh report` and
+  `adopt-readiness.sh verdict` keep their whole block as the default because that block *is* the
+  evidence their consumers paste. Each module's suite pins its default shape. No verdict, exit
+  code or classification changed.
+
 - **Skill descriptions are selectors, not abstracts (#436).** By default, every session in every
   project loads each available skill's `description:`, whether or not a skill runs, and the model
   reads it to decide which skill to invoke. The eight descriptions totalled 479 words and summarized each

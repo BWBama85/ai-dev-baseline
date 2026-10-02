@@ -4044,7 +4044,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '  _rbody="$(cat "$receipt" 2>/dev/null)" || true' \
     'the container reader with it'
   check_row 'the empty-publish opt-in is ignored' 'scripts/lib/common.sh' 'round-34-an-open-that-failed-a-publisher' \
-    '  if [ "$allow_empty" != "--allow-empty" ]; then' \
+    '  if [ -z "$allow_empty" ]; then' \
     '  if true; then' \
     'must publish a zero-byte pre-image'
   check_row 'a failed owner read counts as somebody else holding the lock' 'scripts/lib/common.sh' 'round-35-a-release-that-lied-a-signal-dr' \

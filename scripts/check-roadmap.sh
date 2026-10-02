@@ -2724,4 +2724,48 @@ fr_split_at="$(printf '%s\n' "$readiness_block" | grep -nF 'IFS= read -r REPO' |
 if [ -n "$fr_check_at" ] && [ -n "$fr_split_at" ] && [ "$fr_check_at" -lt "$fr_split_at" ]; then ok
 else bad "the 2-line check must precede the split, or it validates values already re-partitioned (check@${fr_check_at:-none} split@${fr_split_at:-none})"; fi
 
+# ============================ the output contract (#437) ============================
+# The header's Outputs: each subcommand prints only the value its caller captures. Compared as
+# BYTES — a `$( )` capture would accept a trailing blank line or a missing newline.
+ct="$(mktemp -d)"
+if [ -n "$ct" ] && [ -d "$ct" ]; then
+  # same_bytes <file> <printf-format> <label> [args…] — the format IS the expected bytes.
+  same_bytes() {
+    local f="$1" fmt="$2" l="$3"; shift 3
+    # shellcheck disable=SC2059
+    printf "$fmt" "$@" > "$f.want"
+    if cmp -s "$f" "$f.want"; then ok; else bad "$l"; fi
+  }
+  bash "$RL" release-ready 1 1 0 0 0 green > "$ct/rr" 2>/dev/null
+  same_bytes "$ct/rr" 'met\n' "contract: release-ready prints one word and its newline"
+  bash "$RL" read-complete 3 3 > "$ct/rc" 2>/dev/null
+  same_bytes "$ct/rc" 'complete\n' "contract: read-complete prints one word"
+  printf 'implementable\n' | bash "$RL" emit-verdict > "$ct/ev" 2>/dev/null
+  same_bytes "$ct/ev" 'ready\n' "contract: emit-verdict prints one word"
+  printf '[]' | bash "$RL" release-counts release-blocker 0 > "$ct/cnt" 2>/dev/null
+  same_bytes "$ct/cnt" '0 0 0 0\n\n\n' "contract: release-counts prints exactly three lines, even for an empty milestone"
+  bash "$RL" slug-ok acme/widget > "$ct/so" 2>/dev/null
+  same_bytes "$ct/so" '' "contract: slug-ok prints nothing — its exit status is the answer"
+  printf '[]' | bash "$RL" pr-targets-issue 5 acme/widget > "$ct/pt" 2>/dev/null
+  same_bytes "$ct/pt" '' "contract: pr-targets-issue prints nothing"
+  bash "$RL" health-decl off write > "$ct/hd1" 2>/dev/null
+  same_bytes "$ct/hd1" 'off\n' "contract: health-decl with no reason prints one line"
+  # A REASON IS PROSE, so the shape is pinned rather than the wording: line 1 is the verdict, there
+  # are exactly two lines, and the last ends in its newline — a stray line or a lost one fails.
+  # two_lines <file> <verdict> <label>
+  two_lines() {
+    if [ "$(head -n 1 "$1")" = "$2" ] && [ "$(wc -l < "$1" | tr -d ' ')" = 2 ] \
+       && [ -n "$(sed -n 2p "$1")" ] && [ "$(tail -c 1 "$1" | od -An -c | tr -d ' ')" = '\n' ]; then ok
+    else bad "$3"; fi
+  }
+  bash "$RL" health-decl skip-unreported read > "$ct/hd2" 2>/dev/null
+  two_lines "$ct/hd2" off "contract: health-decl with a reason prints the verdict and ONE reason line"
+  printf '{"check_runs":[],"statuses":[],"required_contexts":[]}' \
+    | bash "$RL" branch-health 0123456789abcdef0123456789abcdef01234567 0 off > "$ct/bh" 2>/dev/null
+  two_lines "$ct/bh" indeterminate "contract: branch-health prints the verdict and ONE reason line"
+  rm -rf "$ct"
+else
+  bad "contract: could not create a scratch directory"
+fi
+
 check_summary "roadmap"

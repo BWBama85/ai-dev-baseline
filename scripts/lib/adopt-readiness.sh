@@ -48,6 +48,18 @@
 #   adopt-readiness.sh verdict                         # decide + report (rung records on stdin)
 #   adopt-readiness.sh status [root]                   # probe + facts + tracker + verdict, end to end
 #
+# Outputs: stdout is the answer; diagnostics go to stderr. Each default is already the whole
+# answer, so there is no verbose form (#437):
+#   contract          <rung>TAB<owner>TAB<title>, one line per rung
+#   probe · tracker   <rung>TAB<status>TAB<detail> records — machine input for `verdict`, which a
+#                     caller redirects to a file rather than reading
+#   facts             one JSON object — likewise redirected, not read
+#   receipt run       the gates' own output, then `recorded pass|fail at <sha12>`
+#   receipt check     one word, ok|failed|stale|none, then its reason in parentheses when it has one
+#   verdict · status  the report: a headline counting rungs evaluated, OUTSTANDING and UNDETERMINED
+#                     rungs with their owners, then one `VERDICT:` line. Met rungs are never listed,
+#                     so the report is already the terse form, and what it names IS the evidence.
+#
 # Exit codes for `verdict`: 0 green · 10 red (something remains) · 11 indeterminate (a fact
 # could not be established) · 2 usage. Red and indeterminate are BOTH non-green; they are
 # separate because "this is not done" and "I could not tell" need different next moves.

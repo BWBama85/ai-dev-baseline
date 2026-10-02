@@ -370,6 +370,12 @@ dl probe-record --state "$D1/state" --server context7 --result usable \
    --evidence 'resolve-library-id("bash") returned 5 libraries' >/dev/null 2>&1
 dl verdict --state "$D1/state" --manifest "$D1/agents.toml" >/dev/null 2>&1
 eq "$?" 0 "a usable probe earns a clean verdict"
+# THE OUTPUT CONTRACT (#437): one stdout line on 0, and none on 10 — DEGRADED goes to stderr.
+dl verdict --state "$D1/state" --manifest "$D1/agents.toml" > "$work/verdict.out" 2>/dev/null
+printf '%s\n' 'docs-lib: all required MCP server(s) answered: context7' > "$work/verdict.want"
+if cmp -s "$work/verdict.out" "$work/verdict.want"; then ok; else bad "verdict: a clean answer is exactly one stdout line"; fi
+eq "$(dl verdict --state "$D1b/state" --manifest "$D1b/agents.toml" 2>/dev/null | wc -c | tr -d ' ')" "0" \
+   "verdict: a DEGRADED answer prints nothing on stdout, not even a newline"
 
 # THE LATEST RECORD WINS, so a retry that succeeds clears a degradation. Asserted because the
 # opposite reading (first-record-wins) is equally plausible from the code and would pin a run to a
@@ -467,6 +473,23 @@ eq "$?" 0 "a consultation is recorded"
 REPORT="$(dl report --state "$D8/state" --manifest "$D8/agents.toml" 2>/dev/null)"
 has "$REPORT" "rung 3" "the report carries the rung"
 has "$REPORT" "docs.github.com" "…and WHAT answered, which is what makes it re-checkable"
+# THE OUTPUT CONTRACT (#437): for one consulted record and no declared server, the block is the
+# heading and that record's line — nothing else.
+# Compared as BYTES, since a `$( )` capture would accept trailing blank lines.
+dl report --state "$D8/state" --manifest "$D8/agents.toml" > "$D8/report.out" 2>/dev/null
+printf '%s\n\n%s\n' '**Docs consulted**' \
+  '- gh pr view closingIssuesReferences — rung 3: docs.github.com/graphql, fetched this run' > "$D8/report.want"
+if cmp -s "$D8/report.out" "$D8/report.want"; then ok; else bad "report: stdout is the heading plus one line per record, exactly"; fi
+# ...and a run that recorded BOTH kinds carries the note the header names. The fixture records
+# "none needed" FIRST and then a consultation, the sequence the note describes.
+D8b="$(fixture both '[roles]
+primary = "claude"
+')"
+dl none-needed --state "$D8b/state" --justification 'every surface is language-core idiom' >/dev/null 2>&1
+dl consulted --state "$D8b/state" --surface 'gh api graphql' --rung 3 --source 'docs.github.com/graphql' >/dev/null 2>&1
+REPORT="$(dl report --state "$D8b/state" --manifest "$D8b/agents.toml" 2>/dev/null)"
+has "$REPORT" '"none needed" covers only what had been considered at that point' \
+    "report: a run that recorded both kinds carries the scoping note"
 
 # Rung 4 is training-data recall, which never closes a claim — it is not a consultation.
 dl consulted --state "$D8/state" --surface x --rung 4 --source y >/dev/null 2>&1
