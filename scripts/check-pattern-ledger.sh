@@ -1363,6 +1363,41 @@ has "$RESTXT" 'pr-new-classes' "…and pr-new-classes, which stats now supplies"
 # timestamp, so the workflow no longer asks anyone to count by hand.
 has "$RESTXT" 'ROUND_PROMOTED' "…including the promotions, which the delta derives without a timestamp"
 
+# THE DISPOSITION BAR (#438, D119): a finding that reproduces is not thereby worth fixing.
+has "$RESTXT" '**The disposition bar — apply it before touching code (#438).**' \
+   "step 3 states a disposition bar before any fix"
+has "$RESTXT" "- **(b) a regression of this PR's own changes**" "…whose second arm fixes the PR's own regressions"
+# The list is read from the practice, so the resolver's verbatim copy cannot drift from it.
+NOTDEF="$(awk '/^### Specifically not filing reasons/ { f = 1; next }
+               f && /^\*\*Only a defect/ { exit }
+               f && (/^- / || /^  [^ ]/)' base/practices/issues-and-scope.md)"
+eq "$(printf '%s\n' "$NOTDEF" | grep -c '^- ')" 6 "the not-a-defect list reads as six items from issues-and-scope.md"
+has "$RESTXT" "$NOTDEF" "…and the resolver quotes all six verbatim"
+has "$(grep -F 'These are shapes, not defects' "$RES")" 'base/practices/issues-and-scope.md' \
+   "…naming the practice the list comes from"
+has "$RESTXT" 'Reply with `Declined: <one-sentence reason>` — for a bar decline, the sentence names the shape' \
+   "the decline arm names the shape it declined"
+# THE ROUND OPENS IN STEP 3: a round of only declines never reaches step 4, so counters opened there
+# would carry the previous round's figures into this round's row.
+s3_at="$(grep -n -F '### 3. Classify each thread' "$RES" | head -n 1 | cut -d: -f1)"
+s4_at="$(grep -n -F '### 4. Address legitimate findings' "$RES" | head -n 1 | cut -d: -f1)"
+for v in 'STATS_BEFORE="$(' 'ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))' 'ROUND_DECLINED=0'; do
+  v_at="$(grep -n -F -- "$v" "$RES" | head -n 1 | cut -d: -f1)"
+  if [ -n "$v_at" ] && [ -n "$s3_at" ] && [ -n "$s4_at" ] && [ "$s3_at" -lt "$v_at" ] && [ "$v_at" -lt "$s4_at" ]; then ok; else
+    bad "the round opens in step 3, before classification: $v (step3@${s3_at:-?} at@${v_at:-?} step4@${s4_at:-?})"; fi
+done
+eq "$(grep -c -F 'ROUND_NO=$((' "$RES")" 1 "…and the round counter is incremented exactly once"
+# A DECLINE IS COUNTED FROM BOTH RECEIPTS, never from the classification.
+has "$RESTXT" '-f body="$REPLY" && REPLY_OK=1' "the reply's receipt is captured"
+has "$RESTXT" '-f id="$THREAD_ID" && RESOLVE_OK=1' "…and the resolve's"
+has "$RESTXT" 'if [ "$REPLY_OK" = 1 ] && [ "$RESOLVE_OK" = 1 ]; then ROUND_DECLINED=' \
+   "a decline counts only when its reply and its resolve both succeeded"
+# …AND EACH ROW CARRIES IT, outside the ledger guard, so an unreadable ledger does not take it along.
+dl_at="$(grep -n -F 'ROUND_ROWS="${ROUND_ROWS}  declined: ${ROUND_DECLINED:-not counted}"' "$RES" | head -n 1 | cut -d: -f1)"
+ge_at="$(grep -n -B1 -F '# OUTSIDE the ledger guard' "$RES" | head -n 1 | cut -d- -f1)"
+if [ -n "$dl_at" ] && [ -n "$ge_at" ] && [ "$ge_at" -lt "$dl_at" ]; then ok; else
+  bad "…and each round's row carries its declines, outside the ledger guard (guard-end@${ge_at:-?} declined@${dl_at:-?})"; fi
+
 # THE RECOVERY HINT MUST NAME A COMMAND THAT EXISTS. The first draft pointed at
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown
 # command at exactly the moment they need a working diagnostic.
@@ -2431,6 +2466,34 @@ if [ "$MODE" = mutation ]; then
       '    if [ "${stale:-0}" -gt 0 ]; then' \
       '    if false; then' \
       '12 ...but names the stale rows rather than reporting a sweep that never happened'
+  check_row 'disposition-bar-removed' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '**The disposition bar — apply it before touching code (#438).** A finding that reproduces is not' \
+      'A finding that reproduces is not' \
+      'step 3 states a disposition bar before any fix'
+  check_row 'disposition-bar-list-drifted' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '- a check could be more thorough, or cover one more case;' \
+      '- a check could be more thorough;' \
+      '…and the resolver quotes all six verbatim'
+  check_row 'disposition-bar-source-unnamed' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'These are shapes, not defects — `base/practices/issues-and-scope.md`'"'"'s list, quoted' \
+      'These are shapes, not defects — the practice'"'"'s list, quoted' \
+      '…naming the practice the list comes from'
+  check_row 'decline-counted-without-receipts' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '  Declined:*) if [ "$REPLY_OK" = 1 ] && [ "$RESOLVE_OK" = 1 ]; then ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 )); fi ;;' \
+      '  Declined:*) ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 )) ;;' \
+      'a decline counts only when its reply and its resolve both succeeded'
+  check_row 'decline-row-dropped' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'ROUND_ROWS="${ROUND_ROWS}  declined: ${ROUND_DECLINED:-not counted}"$'"'"'\n'"'"'' \
+      ':' \
+      '…and each round'"'"'s row carries its declines'
+  check_row 'decline-counter-never-opened' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'ROUND_DECLINED=0   # incremented in step 5, per decline both replied to and resolved' \
+      ':' \
+      'the round opens in step 3, before classification'
+  check_row 'round-counter-reopened-in-4b' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'Append to `ROUND_CLASSES` as each hit is recorded,' \
+      'ROUND_NO=$(( ${ROUND_NO:-0} + 1 )) Append to `ROUND_CLASSES` as each hit is recorded,' \
+      '…and the round counter is incremented exactly once'
   check_mutation_rows "check-pattern-ledger" "$work/mut" "scripts/check-pattern-ledger.sh" prepare_root runner 6
 fi
 

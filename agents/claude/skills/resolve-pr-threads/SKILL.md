@@ -585,13 +585,55 @@ fields step 3 depends on:
 
 ### 3. Classify each thread
 
+**Open the round's accounting first, before anything is classified.** Every round passes through
+this step, and not every round reaches step 4: a round in which every finding is declined has
+nothing to fix. Counters opened later would carry the previous round's figures into this round's row.
+
+```bash
+STATS_BEFORE="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
+CLASSES_BEFORE="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" classes)"   # step 6 asks which classes are NEW against this
+ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring and new from it
+ROUND_PROMOTED=0   # incremented in 4c by promotions that actually landed
+ROUND_DECLINED=0   # incremented in step 5, per decline both replied to and resolved
+ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))
+# ACCUMULATED ACROSS ROUNDS, so initialise it ONLY on the first: step 7 sends the loop back through
+# step 1, and clearing it here would leave the terminal summary reporting only the LAST round.
+ROUND_ROWS="${ROUND_ROWS:-}"
+```
+
 For every `thread` line step 2 printed, read that thread's entry and decide one of. `jq '.threads[] | select(.isResolved == false)' .claude/state/threads-$PR_NUM.json` prints exactly those entries — loading the whole file also loads every resolved thread's history. **A thread already `isResolved` is skipped silently** — that is what makes a second run of this skill a no-op.
+
+**The disposition bar — apply it before touching code (#438).** A finding that reproduces is not
+thereby worth fixing. Fix a bot finding only if it is:
+
+- **(a) a defect on a path a user or the loop can actually reach** — you can name what produces it:
+  an input, a configuration, or a sequence of loop steps reached through supported use; or
+- **(b) a regression of this PR's own changes** — behaviour this diff broke, on any path. (b) wins
+  over the list below: declining a regression this PR introduced ships it, however unusual its
+  trigger.
+
+Everything else is **Disagree with reason**: reply `Declined: <one sentence naming the shape>` and
+resolve. These are shapes, not defects — `base/practices/issues-and-scope.md`'s list, quoted
+verbatim because that practice's procedure loads on demand and may not be in context here:
+
+- the same rule is stated in two places;
+- a helper would live better in another home;
+- a check could be more thorough, or cover one more case;
+- a sibling *might* have the same bug (go look — if it does, that is one filable
+  bug with two sites; if it doesn't, there is nothing to file);
+- a feature could be extended, generalized, or made pluggable;
+- an edge case exists that nothing has ever hit.
+
+Only a defect *caused by* one of those passes the bar, and then you fix the defect, not the shape.
+The bar decides only whether to change code. Human-authored and unlisted threads are still skipped,
+a thread asking for the right-hand column of the table below is still left unresolved, and a
+finding an earlier commit already fixed needs no change, so it stays **Already addressed**.
 
 | Disposition                     | Criteria                                                                                       | Action                                                                                                               |
 | ------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Legitimate code change**      | The bot found a real bug or correctness issue you agree with.                                  | Edit the relevant file, run gates, commit, push, then reply + resolve.                                               |
+| **Legitimate code change**      | The bot found a real bug or correctness issue you agree with, and it passes the disposition bar. | Edit the relevant file, run gates, commit, push, then reply + resolve.                                               |
 | **Already addressed**           | A prior commit in this PR (yours or `/code-review`'s) already fixed the underlying issue.      | Reply with `Addressed in <sha>: <one-line summary>`. Then resolve.                                                   |
-| **Disagree with reason**        | The bot's claim is wrong, doesn't apply to the codebase, or is a style preference you decline. | Reply with `Declined: <one-sentence reason>`. Then resolve. Branch protection cares about resolution, not agreement. |
+| **Disagree with reason**        | The bot's claim is wrong, doesn't apply to the codebase, is a style preference you decline, or fails the disposition bar. | Reply with `Declined: <one-sentence reason>` — for a bar decline, the sentence names the shape. Then resolve. Branch protection cares about resolution, not agreement. |
 | **Human-authored**              | `is_bot` is `false` — the author login is not in the `[reviewers] bots` allowlist.              | Skip. Log it in the summary and let the human handle.                                                                |
 | **Login not in the allowlist**  | `is_bot` is `false` for an account that merely *looks* like a bot, including an unlisted `[bot]` one. | Skip + log (treat as human-authored). List it in `[reviewers] bots` to resolve it.                                  |
 
@@ -778,26 +820,11 @@ thread you just resolved as a real code change is a labeled example — a findin
 site, and the commit that closed it — and you know all four right now, at their cheapest, because
 you just read the finding and wrote the fix. Nothing recovers that later.
 
-**Snapshot the ledger FIRST**, because a round is a delta and `--pr` is not a round — every round
-of one pull request records under the same PR number, so the cumulative figures cannot answer "what
-did *this* round find". Step 6 subtracts these.
+**The ledger was snapshotted when step 3 opened the round**, because a round is a delta and `--pr`
+is not a round — every round of one pull request records under the same PR number, so the
+cumulative figures cannot answer "what did *this* round find". Step 6 subtracts `STATS_BEFORE`.
 
-```bash
-STATS_BEFORE="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
-CLASSES_BEFORE="$(bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" classes)"   # step 6 asks which classes are NEW against this
-ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring and new from it
-ROUND_PROMOTED=0   # incremented in 4c by promotions that actually landed
-ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))
-# ACCUMULATED ACROSS ROUNDS, so initialise it ONLY on the first. `STATS_BEFORE` and
-# `ROUND_CLASSES` are per-round and must be cleared here; `ROUND_ROWS` is the run's record and must
-# not be. Step 7 sends the loop back through step 1, so clearing this unconditionally would leave
-# the terminal summary reporting only the LAST round — and the finding-per-round trend, which is
-# the whole observable, unobservable for exactly the multi-round loop it exists to measure.
-# Reported by the declared reviewer on PR #429.
-ROUND_ROWS="${ROUND_ROWS:-}"
-```
-
-…and append to it as each hit is recorded, so step 6 can count recurring hits from the rows this
+Append to `ROUND_CLASSES` as each hit is recorded, so step 6 can count recurring hits from the rows this
 round actually added rather than from a cumulative figure that reclassifies the past:
 
 ```bash
@@ -1091,20 +1118,30 @@ For each thread you classified:
 THREAD_ID="<id from .claude/state/threads-$PR_NUM.json>"
 REPLY="Addressed in <this thread's --fix sha from 4b>: <summary>."   # per thread: a later commit reassigns $FIX_SHA — OR "Declined: <reason>." OR "Addressed in <earlier-sha>."
 
+REPLY_OK=0; RESOLVE_OK=0
 gh api graphql -f query='
 mutation($threadId:ID!,$body:String!){
   addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}){
     comment{ id }
   }
-}' -f threadId="$THREAD_ID" -f body="$REPLY"
+}' -f threadId="$THREAD_ID" -f body="$REPLY" && REPLY_OK=1
 
 gh api graphql -f query='
 mutation($id:ID!){
   resolveReviewThread(input:{threadId:$id}){ thread{ id isResolved } }
-}' -f id="$THREAD_ID"
+}' -f id="$THREAD_ID" && RESOLVE_OK=1
+
+# A DECLINE IS COUNTED FROM BOTH RECEIPTS, never from the classification: a decline whose reply or
+# resolve failed is still open on the PR and will be read again next run.
+case "$REPLY" in
+  Declined:*) if [ "$REPLY_OK" = 1 ] && [ "$RESOLVE_OK" = 1 ]; then ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 )); fi ;;
+esac
 ```
 
 Both calls must succeed for a thread to count as resolved. If the reply mutation fails (e.g. a permissions issue), still attempt the resolve — branch protection only checks `isResolved`, not whether you left a reply.
+
+**A round that stops before this step declines nothing.** Its threads stay unresolved and the next
+run reads them again, so no exit earlier in the round has a decline to report.
 
 ### 6. Verify + summary
 
@@ -1152,6 +1189,10 @@ Emit a concise summary to the user:
 **Every round's row, not just the last.** The summary is emitted once at the terminal exit, and a
 run that processed six rounds has six measurements to report — printing only the final one is how
 the trend stays invisible for exactly the multi-round loop it is meant to measure.
+
+**Each row carries the round's declines beside its findings (#438).** A round that declined
+everything reads `0 findings` with `declined: 6` under it, not as a round with nothing in it. The
+trend has to show what the disposition bar turned away as well as what was fixed.
 > Ledger: <hits> hits across <classes> classes, <promoted> promoted (threshold <t>).
 
 **The last two lines are the point of the whole mechanism, not decoration (#421).** Its honest
@@ -1240,8 +1281,11 @@ ROUNDCLS
 # ONE ROW PER ROUND, kept for the terminal summary. Appended here, rendered once in step 7's exit.
 ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ${ROUND_FINDINGS} findings · ${ROUND_RECURRING} recurring · ${ROUND_NEW} new · ${ROUND_PROMOTED} promoted"$'\n'
 fi
-# OUTSIDE the ledger guard: neither the sweep nor the local review depends on the ledger, and an
-# unreadable ledger must not take their evidence with it.
+# OUTSIDE the ledger guard: neither the declines, the sweep nor the local review depends on the
+# ledger, and an unreadable ledger must not take their evidence with it.
+# Declines sit directly under the round's findings, so a round that declined everything does not
+# read as a silent one. Unset means step 3 never opened the round, which is not zero.
+ROUND_ROWS="${ROUND_ROWS}  declined: ${ROUND_DECLINED:-not counted}"$'\n'
 # The round's sibling sweep, counted only from a file that validates whole.
 SWEEP_LINE="$(bash "$HOME/.claude/scripts/lib/implement-lib.sh" sweep-report "$SWEEP_FILE" 2>/dev/null)" \
   || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
@@ -1380,6 +1424,10 @@ operator turning this on should know exactly what is left:
 - **Every per-round deadline.** Each round's own wait keeps its `--max-secs`. Uncapped rounds, never
   unbounded waits.
 - **A round that pushed nothing exits** with code `30`, rather than re-finding the same findings.
+- **The disposition bar (step 3, #438).** A round whose findings all fail the bar is declined
+  whole, pushes nothing, and so exits `30`. A reviewer that keeps naming shapes therefore ends the
+  loop rather than feeding it. The bar is not a cap: a reviewer that keeps finding reachable
+  defects keeps the loop going.
 - **The receipt read refuses past 100 comments.** `request-review` proves whether this head was
   already asked about by reading the PR's issue comments, and it reads at most 100 — beyond that it
   returns `20` rather than risk re-posting. That is a pre-existing bound and it is fail-closed, but

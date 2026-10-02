@@ -10,6 +10,20 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **`/resolve-pr-threads` has a disposition bar, and each round reports what it declined (#438).**
+  A review finding that reproduces is no longer fixed for that reason alone. Step 3 fixes a finding
+  only if it is a defect on a path a user or the loop can reach, or a regression of the PR's own
+  changes. Anything else is declined with a sentence naming the shape. The shapes are
+  `issues-and-scope.md`'s not-a-defect list, quoted verbatim in the workflow; a check suite reads
+  the list from the practice, so the two copies cannot drift. A round whose findings all fail the
+  bar pushes nothing, and exits `30`. Each round's summary row now carries a `declined:` line,
+  counted only when the reply and the resolve both succeeded, so a round that declined everything
+  no longer reads as a silent one. The round's counters now open in step 3, which every round
+  passes through. Before, a round with nothing to fix could report the previous round's figures.
+  This repo keeps `[reviewers] max_rounds = 0` by owner decision (D119): the bar, not a cap, is
+  what stops a loop that keeps finding shapes. #438's other request, a finite cap here, was
+  declined.
+
 - **Library output the agent reads has a stated, terse default (#437).** `pr-threads.sh list`
   printed every review thread as JSON, comment bodies included. On a long-running PR most of
   those threads are already resolved history. It now prints three counts (`total`, `unresolved`,

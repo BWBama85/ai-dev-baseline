@@ -7285,6 +7285,10 @@ survive is the part a later reader needs.
                  not the only line of defence" is likewise retired: nothing prevents an old value and
                  the new one from coexisting, so that pin can be green while a stale sentence sits
                  three lines away — which is the reason this `absent:` rule exists beside it.
+- amended:       2026-10-02 by D119 (#438). PR #429 hit the runaway mode this entry predicted: 19
+                 rounds of findings that each reproduced and were each fixed. #438 asked for the
+                 cap to be restored here. The owner declined that and kept `0`. What changed is
+                 the per-finding bar: a shape is declined, and a round of only declines exits `30`.
 
 ## D89 — the pattern ledger's home is `.ai-dev-baseline/patterns.md`, tracked
 - date:      2026-08-24
@@ -8630,4 +8634,29 @@ survive is the part a later reader needs.
              `scripts/lib/common.sh`; each module's suite pins its default shape
 - reason:    A verdict-only default would cut the evidence its consumers exist to show, and a flag
              that prints the default again adds a parser branch with nothing behind it.
+- baseline-issue: n/a
+
+## D119 — The resolver keeps an uncapped round count here; a disposition bar decides what a round fixes
+- date:      2026-10-02
+- category:  project-delta
+- unknown:   #438 asked for two things: a disposition bar in `/resolve-pr-threads` step 3, and a
+             finite round cap restored in this repo's `agents.toml`. Later owner statements
+             conflicted with the second. #486's body (2026-09-16) says this repo runs uncapped
+             deliberately, and the owner's 2026-09-22 comment on #438 says the round count stays
+             uncapped.
+- decision:  **Owner decision 2026-10-02: keep `[reviewers] max_rounds = 0`.** #438 ships the
+             disposition bar and per-round decline counts only, and its cap half is declined. The
+             bar fixes a finding only if it is (a) a defect on a reachable path or (b) a regression
+             of the PR's own changes, and declines a shape from `issues-and-scope.md`'s list with a
+             reason. A round whose findings all fail the bar pushes nothing and exits `30`, so a
+             reviewer that keeps naming shapes ends the loop. A reviewer that keeps naming reachable
+             defects keeps it going, which is what D88 chose.
+- placement: `base/workflows/resolve-pr-threads.md` step 3 (the bar, and the round's counters,
+             which open there because a decline-only round never reaches step 4), step 5 (a decline
+             counted from both receipts), step 6 (the `declined:` line under each round's row);
+             `agents.toml`'s `[reviewers]` comment; pinned by `scripts/check-pattern-ledger.sh` s10
+- reason:    The runaway #438 measured on PR #429 was valid-but-not-worth-fixing findings, each
+             classified legitimate because it reproduced. A per-finding bar removes that cause
+             directly. A round cap would stop a productive loop and a shape-chasing one alike, and
+             the loop would still not say which kind it was.
 - baseline-issue: n/a
