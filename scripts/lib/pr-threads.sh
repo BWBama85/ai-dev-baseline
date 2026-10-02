@@ -541,7 +541,7 @@ _adb_pt_unstage() {
 # computed HERE so the workflow never rebuilds the allowlist. What reaches stdout is the header's
 # Outputs contract: the terse lines by default, the document only under --verbose.
 cmd_list() {
-  local n slug nodes re rrc out terse dshow dest
+  local n slug nodes re rrc out terse dshow dest fd
   [ -n "$OPT_PR" ] || { echo "pr-threads: list requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-threads: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
@@ -562,8 +562,13 @@ cmd_list() {
     trap '_adb_pt_unstage' EXIT
     trap '_adb_pt_unstage; exit 130' INT
     trap '_adb_pt_unstage; exit 143' TERM
-    _ADB_PT_STAGE="$(mktemp "$dest.stage.XXXXXX" 2>/dev/null)" \
-      || { _ADB_PT_STAGE=""; printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\n' "$dshow" >&2; return 2; }
+    # The stage is HELD OPEN from its creation and the document is written through it: a stage
+    # swept away during the read (a /cleanup racing a closed PR) then takes the write on its
+    # unlinked inode and the publish refuses, where a path write would recreate it at the umask mode.
+    # One step, one failure branch: an empty `$_ADB_PT_STAGE` (mktemp failed) leaves the trap nothing
+    # to remove, and a stage that would not open is removed by it.
+    _ADB_PT_STAGE="$(mktemp "$dest.stage.XXXXXX" 2>/dev/null)" && { exec {fd}>"$_ADB_PT_STAGE"; } 2>/dev/null \
+      || { printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\n' "$dshow" >&2; return 2; }
   fi
   adb_require_gh jq || return 20
   # THE MANIFEST IS READ BEFORE THE NETWORK. A malformed `[reviewers] bots` is a configuration fact
@@ -615,8 +620,11 @@ cmd_list() {
     || { echo "pr-threads: could not summarise the review threads of PR #$n" >&2; return 20; }
 
   if [ -n "$OPT_OUT" ]; then
-    printf '%s\n' "$out" > "$_ADB_PT_STAGE" 2>/dev/null \
+    printf '%s\n' "$out" 1>&"$fd" 2>/dev/null \
       || { printf 'pr-threads: --out %s cannot be written (the staged copy failed)\n' "$dshow" >&2; return 2; }
+    exec {fd}>&-
+    [ -f "$_ADB_PT_STAGE" ] \
+      || { printf 'pr-threads: --out %s cannot be written (the staged copy was removed during the read)\n' "$dshow" >&2; return 2; }
     # `--strict`: an unreadable destination mode refuses rather than publishing the stage's own
     # (D118). The helper's WARN goes to stderr — stdout here is the contract.
     adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2 \

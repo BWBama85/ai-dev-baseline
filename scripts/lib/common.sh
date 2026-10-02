@@ -539,7 +539,9 @@ EOF
 # Usage: adb_publish_json <tmp> <dest> [--allow-empty] [--strict]
 #   --strict  an existing <dest> whose mode cannot be READ refuses, instead of publishing the temp
 #             at its own mode (#437, D118). An unknown option refuses.
-# Returns: 0 published · 1 refused or failed (the temp file is removed on every failure)
+# Returns: 0 published · 1 refused or failed. The temp is removed on every failure; the one copy
+#   that can survive is a rename that landed INSIDE a directory and could not be undone, and the
+#   WARN names it.
 # The destination's permission bits, or empty. ORDER MATTERS AND IS NOT SYMMETRIC: GNU `stat`
 # spells the mode `-c '%a'` and reads `-f` as `--file-system` (which takes no format argument, so
 # the BSD spelling with no `-L` still PRINTS a filesystem block for FILE while exiting non-zero) — an

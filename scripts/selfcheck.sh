@@ -621,8 +621,9 @@ add pr-threads          bash scripts/check-pr-threads.sh
 # stopped, the cursor never sent, the count proof disabled, the count proof disabled against #418's
 # OWN resolved-page/unresolved-overflow shape, the distinct-id proof disabled, the per-node type
 # check disabled, and (#437) `list` printing the whole document by default, an unwritable `--out`
-# falling back to stdout, `--out` publishing without `--strict`, and `--verbose`'s write status
-# dropped — plus an unmutated control, each required back RED on ITS OWN witness.
+# falling back to stdout, `--out` publishing without `--strict`, its stage written by path rather
+# than through the held descriptor, and `--verbose`'s write status dropped — plus an unmutated
+# control, each required back RED on ITS OWN witness.
 add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
 inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-threads.sh scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
 

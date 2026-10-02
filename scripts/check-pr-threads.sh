@@ -157,19 +157,23 @@ if [ "$MODE" = mutation ]; then
     'list: the default prints the terse contract, not the document'
   # ...and an unwritable --out must refuse, never quietly degrade to stdout.
   check_mut "out-falls-back-to-stdout" \
-    "|| { _ADB_PT_STAGE=\"\"; printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\\n' \"\$dshow\" >&2; return 2; }" \
-    '|| { _ADB_PT_STAGE=""; OPT_OUT=""; }' \
+    "|| { printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\\n' \"\$dshow\" >&2; return 2; }" \
+    '|| { OPT_OUT=""; }' \
     'list --out into a missing directory is 2'
   # --out's choice of the STRICT publisher (D118), and --verbose's write status.
   check_mut "strict-publish-dropped" \
     'adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2' \
     'adb_publish_json "$_ADB_PT_STAGE" "$dest" >&2' \
     'list --out: an unreadable destination mode is refused (2)'
+  check_mut "stage-written-by-path" \
+    "printf '%s\\n' \"\$out\" 1>&\"\$fd\" 2>/dev/null \\" \
+    "printf '%s\\n' \"\$out\" > \"\$_ADB_PT_STAGE\"; :  \\" \
+    'list --out: a stage removed during the read is refused (2)'
   check_mut "verbose-write-status-dropped" \
     "printf '%s\\n' \"\$out\"; return" \
     "printf '%s\\n' \"\$out\"; return 0" \
     'list --verbose: a failed write to stdout is still exit 0'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 10
+  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 11
   check_summary "check-pr-threads --mutation"
   exit 0
 fi
@@ -203,6 +207,7 @@ check_write_stub "$SBIN/gh" <<'STUB'
 #   STUB_EMPTY_PRLIST=1  -> it succeeds with an EMPTY body (not `[]`)
 #   STUB_FAIL_GQL=1      -> the thread read fails
 #   STUB_EMPTY_GQL=1     -> the thread read succeeds with an empty body
+#   STUB_RM_STAGE=<dest> -> <dest>'s --out stage is deleted during the thread read
 case "${1:-}" in
   auth) exit 0 ;;
   pr)
@@ -217,6 +222,8 @@ case "${1:-}" in
 esac
 if [ "${2:-}" = "graphql" ]; then
   [ "${STUB_FAIL_GQL:-0}" = "1" ] && exit 1
+  # STUB_RM_STAGE=<dest>: delete <dest>'s --out stage mid-read, as a racing sweep would.
+  [ -n "${STUB_RM_STAGE:-}" ] && rm -f "$STUB_RM_STAGE".stage.*
   [ "${STUB_EMPTY_GQL:-0}" = "1" ] && exit 0
   _cur=""
   for a in "$@"; do case "$a" in endCursor=*) _cur="${a#endCursor=}" ;; esac; done
@@ -872,6 +879,10 @@ eq "$RC" "2" "list --out: a destination that became a directory before the renam
 out_empty "list --out: ...and prints nothing"
 eq "$(find "$_dest" -type f | wc -l | tr -d ' ')" "0" "list --out: ...and leaves no document inside that directory"
 rm -rf "$_dest"
+# A stage swept away DURING the read is refused, never recreated by a path write at the umask mode.
+STUB_RM_STAGE="$_dest" pt list --pr 1 --out "$_dest"
+eq "$RC" "2" "list --out: a stage removed during the read is refused (2)"
+if [ -e "$_dest" ]; then bad "list --out: ...and nothing is published"; else ok; fi
 # The terse lines print AFTER the rename, so a failed stdout write is non-zero over a published file
 # — the order the header states.
 ( cd "$REPO" && S="$S" W="$work" HOME="$GHOME" PATH="$SBIN:$PATH" bash "$LIB" list --pr 1 --out "$_dest" >&- 2>/dev/null ); _wrc=$?
