@@ -586,14 +586,18 @@ fields step 3 depends on:
 
 **Open the round's accounting first, before anything is classified.** Every round passes through
 this step, and not every round reaches step 4: a round in which every finding is declined has
-nothing to fix. Counters opened later would carry the previous round's figures into this round's row.
+nothing to fix. Anything opened later would carry the previous round's figures and evidence into
+this round's row.
 
 ```bash
 STATS_BEFORE="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" stats --pr "$PR_NUM")"
 CLASSES_BEFORE="$(bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" classes)"   # step 6 asks which classes are NEW against this
 ROUND_CLASSES=""   # one class per hit THIS round records; step 6 counts recurring and new from it
 ROUND_PROMOTED=0   # incremented in 4c by promotions that actually landed
-ROUND_DECLINED=0   # incremented in step 5, per decline both replied to and resolved
+ROUND_DECLINED=0   # incremented in step 5, per decline whose resolve succeeded
+ROUND_DECLINED_UNREPLIED=0   # …of those, the ones whose reply failed
+SWEEP_HEAD=""; SWEEP_FILE=""   # set by 4a; empty means this round swept nothing
+LOOP_LINE=""                   # set by 4d; empty means this round ran no local review
 ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))
 # ACCUMULATED ACROSS ROUNDS, so initialise it ONLY on the first: step 7 sends the loop back through
 # step 1, and clearing it here would leave the terminal summary reporting only the LAST round.
@@ -821,7 +825,8 @@ you just read the finding and wrote the fix. Nothing recovers that later.
 
 **The ledger was snapshotted when step 3 opened the round**, because a round is a delta and `--pr`
 is not a round — every round of one pull request records under the same PR number, so the
-cumulative figures cannot answer "what did *this* round find". Step 6 subtracts `STATS_BEFORE`.
+cumulative figures cannot answer "what did *this* round find". Step 6 reports no counts without
+`STATS_BEFORE`, and decides which classes are new against `CLASSES_BEFORE`.
 
 Append to `ROUND_CLASSES` as each hit is recorded, so step 6 can count recurring hits from the rows this
 round actually added rather than from a cumulative figure that reclassifies the past:
@@ -1130,10 +1135,15 @@ mutation($id:ID!){
   resolveReviewThread(input:{threadId:$id}){ thread{ id isResolved } }
 }' -f id="$THREAD_ID" && RESOLVE_OK=1
 
-# A DECLINE IS COUNTED FROM BOTH RECEIPTS, never from the classification: a decline whose reply or
-# resolve failed is still open on the PR and will be read again next run.
+# A DECLINE IS COUNTED FROM THE RESOLVE'S RECEIPT, never from the classification. A thread whose
+# resolve failed is still open and is read again next run. One resolved after its reply failed is
+# closed with no reason posted and is never read again, so it counts and is named as unreplied.
 case "$REPLY" in
-  Declined:*) if [ "$REPLY_OK" = 1 ] && [ "$RESOLVE_OK" = 1 ]; then ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 )); fi ;;
+  Declined:*)
+    if [ "$RESOLVE_OK" = 1 ]; then
+      ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 ))
+      [ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=$(( ${ROUND_DECLINED_UNREPLIED:-0} + 1 ))
+    fi ;;
 esac
 ```
 
@@ -1230,6 +1240,7 @@ The ledger has no round identifier and should not grow one: **snapshot before, s
 report the difference.**
 
 ```bash
+# ADB-SNIPPET: round-row
 # GUARDED ON BOTH SNAPSHOTS. The `case` above promises to report NO counts on a non-zero read, and
 # then fell through to this arithmetic anyway: a ledger that became malformed after the before-
 # snapshot returns 18 with no TSV, `_field` yields empty strings, and the round is reported with
@@ -1241,7 +1252,8 @@ if [ "$SRC" -ne 0 ] || [ -z "${STATS_BEFORE:-}" ] || [ -z "${STATS_AFTER:-}" ]; 
   ROUND_ROWS="${ROUND_ROWS}round ${ROUND_NO}: ledger unreadable — no counts"$'\n'
 else
 
-# `$STATS_BEFORE` and `$ROUND_CLASSES` were captured in step 4b; `$STATS_AFTER` just above.
+# `$STATS_BEFORE` was captured when step 3 opened the round, `$ROUND_CLASSES` filled in 4b, and
+# `$STATS_AFTER` just above.
 _field() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
 
 # DERIVED FROM WHAT THIS INVOCATION APPENDED, not from PR-wide subtraction. `--pr` is shared: two
@@ -1284,10 +1296,20 @@ fi
 # ledger, and an unreadable ledger must not take their evidence with it.
 # Declines sit directly under the round's findings, so a round that declined everything does not
 # read as a silent one. Unset means step 3 never opened the round, which is not zero.
-ROUND_ROWS="${ROUND_ROWS}  declined: ${ROUND_DECLINED:-not counted}"$'\n'
-# The round's sibling sweep, counted only from a file that validates whole.
-SWEEP_LINE="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" sweep-report "$SWEEP_FILE" 2>/dev/null)" \
-  || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
+DECL_LINE="declined: ${ROUND_DECLINED:-not counted}"
+case "${ROUND_DECLINED_UNREPLIED:-0}" in
+  0) : ;;
+  *) DECL_LINE="${DECL_LINE}, ${ROUND_DECLINED_UNREPLIED} resolved without their reply" ;;
+esac
+ROUND_ROWS="${ROUND_ROWS}  ${DECL_LINE}"$'\n'
+# The round's sibling sweep, counted only from a file that validates whole. Empty means the round
+# never reached 4a — every finding was declined or already addressed.
+if [ -z "${SWEEP_FILE:-}" ]; then
+  SWEEP_LINE="sweep: none — this round had no finding to fix"
+else
+  SWEEP_LINE="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" sweep-report "$SWEEP_FILE" 2>/dev/null)" \
+    || SWEEP_LINE="sweep: no valid sweep file for this round — no counts reported"
+fi
 ROUND_ROWS="${ROUND_ROWS}  ${SWEEP_LINE}"$'\n'
 # The round's local review line, rendered by 4d from its record before the push (#491).
 ROUND_ROWS="${ROUND_ROWS}  ${LOOP_LINE:-local review: not reported}"$'\n'
@@ -1423,10 +1445,10 @@ operator turning this on should know exactly what is left:
 - **Every per-round deadline.** Each round's own wait keeps its `--max-secs`. Uncapped rounds, never
   unbounded waits.
 - **A round that pushed nothing exits** with code `30`, rather than re-finding the same findings.
-- **The disposition bar (step 3, #438).** A round whose findings all fail the bar is declined
-  whole, pushes nothing, and so exits `30`. A reviewer that keeps naming shapes therefore ends the
-  loop rather than feeding it. The bar is not a cap: a reviewer that keeps finding reachable
-  defects keeps the loop going.
+- **The disposition bar (step 3, #438).** A round whose findings all fail the bar changes no code.
+  Unless 4c has a promotion to commit, it pushes nothing and so exits `30`. A reviewer that keeps
+  naming shapes therefore ends the loop rather than feeding it. The bar is not a cap: a reviewer
+  that keeps finding reachable defects keeps the loop going.
 - **The receipt read refuses past 100 comments.** `request-review` proves whether this head was
   already asked about by reading the PR's issue comments, and it reads at most 100 — beyond that it
   returns `20` rather than risk re-posting. That is a pre-existing bound and it is fail-closed, but

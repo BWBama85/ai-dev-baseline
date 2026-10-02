@@ -7288,7 +7288,8 @@ survive is the part a later reader needs.
 - amended:       2026-10-02 by D119 (#438). PR #429 hit the runaway mode this entry predicted: 19
                  rounds of findings that each reproduced and were each fixed. #438 asked for the
                  cap to be restored here. The owner declined that and kept `0`. What changed is
-                 the per-finding bar: a shape is declined, and a round of only declines exits `30`.
+                 the per-finding bar: a shape is declined, and a round of only declines pushes
+                 nothing and exits `30` unless it has a promotion to commit.
 
 ## D89 — the pattern ledger's home is `.ai-dev-baseline/patterns.md`, tracked
 - date:      2026-08-24
@@ -8648,12 +8649,15 @@ survive is the part a later reader needs.
              disposition bar and per-round decline counts only, and its cap half is declined. The
              bar fixes a finding only if it is (a) a defect on a reachable path or (b) a regression
              of the PR's own changes, and declines a shape from `issues-and-scope.md`'s list with a
-             reason. A round whose findings all fail the bar pushes nothing and exits `30`, so a
-             reviewer that keeps naming shapes ends the loop. A reviewer that keeps naming reachable
-             defects keeps it going, which is what D88 chose.
-- placement: `base/workflows/resolve-pr-threads.md` step 3 (the bar, and the round's counters,
-             which open there because a decline-only round never reaches step 4), step 5 (a decline
-             counted from both receipts), step 6 (the `declined:` line under each round's row);
+             reason. A round whose findings all fail the bar changes no code; unless it has a
+             promotion to commit, it pushes nothing and exits `30`, so a reviewer that keeps naming
+             shapes ends the loop. A reviewer that keeps naming reachable defects keeps it going,
+             which is what D88 chose.
+- placement: `base/workflows/resolve-pr-threads.md` step 3 (the bar, and the round's counters and
+             evidence, which open there because a decline-only round never reaches step 4), step 5
+             (a decline counted once its resolve succeeds, an unreplied one named), step 6 (the
+             `declined:` line under each round's row, executed by the suite as snippet
+             `round-row`);
              `agents.toml`'s `[reviewers]` comment; pinned by `scripts/check-pattern-ledger.sh` s10
 - reason:    The runaway #438 measured on PR #429 was valid-but-not-worth-fixing findings, each
              classified legitimate because it reproduced. A per-finding bar removes that cause

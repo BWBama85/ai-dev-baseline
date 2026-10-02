@@ -1366,7 +1366,9 @@ has "$RESTXT" 'ROUND_PROMOTED' "…including the promotions, which the delta der
 # THE DISPOSITION BAR (#438, D119): a finding that reproduces is not thereby worth fixing.
 has "$RESTXT" '**The disposition bar — apply it before touching code (#438).**' \
    "step 3 states a disposition bar before any fix"
-has "$RESTXT" "- **(b) a regression of this PR's own changes**" "…whose second arm fixes the PR's own regressions"
+has "$RESTXT" '- **(a) a defect on a path a user or the loop can actually reach**' \
+   "…whose first arm fixes a reachable defect"
+has "$RESTXT" "- **(b) a regression of this PR's own changes**" "…and whose second arm fixes the PR's own regressions"
 # The list is read from the practice, so the resolver's verbatim copy cannot drift from it.
 NOTDEF="$(awk '/^### Specifically not filing reasons/ { f = 1; next }
                f && /^\*\*Only a defect/ { exit }
@@ -1381,22 +1383,40 @@ has "$RESTXT" 'Reply with `Declined: <one-sentence reason>` — for a bar declin
 # would carry the previous round's figures into this round's row.
 s3_at="$(grep -n -F '### 3. Classify each thread' "$RES" | head -n 1 | cut -d: -f1)"
 s4_at="$(grep -n -F '### 4. Address legitimate findings' "$RES" | head -n 1 | cut -d: -f1)"
-for v in 'STATS_BEFORE="$(' 'ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))' 'ROUND_DECLINED=0'; do
+for v in 'STATS_BEFORE="$(' 'ROUND_NO=$(( ${ROUND_NO:-0} + 1 ))' 'ROUND_DECLINED=0' 'SWEEP_HEAD=""; SWEEP_FILE=""' 'LOOP_LINE=""'; do
   v_at="$(grep -n -F -- "$v" "$RES" | head -n 1 | cut -d: -f1)"
   if [ -n "$v_at" ] && [ -n "$s3_at" ] && [ -n "$s4_at" ] && [ "$s3_at" -lt "$v_at" ] && [ "$v_at" -lt "$s4_at" ]; then ok; else
     bad "the round opens in step 3, before classification: $v (step3@${s3_at:-?} at@${v_at:-?} step4@${s4_at:-?})"; fi
 done
 eq "$(grep -c -F 'ROUND_NO=$((' "$RES")" 1 "…and the round counter is incremented exactly once"
-# A DECLINE IS COUNTED FROM BOTH RECEIPTS, never from the classification.
+# A DECLINE IS COUNTED FROM THE RESOLVE'S RECEIPT, never from the classification: a thread resolved
+# after its reply failed is closed for good, so it counts and is named.
 has "$RESTXT" '-f body="$REPLY" && REPLY_OK=1' "the reply's receipt is captured"
 has "$RESTXT" '-f id="$THREAD_ID" && RESOLVE_OK=1' "…and the resolve's"
-has "$RESTXT" 'if [ "$REPLY_OK" = 1 ] && [ "$RESOLVE_OK" = 1 ]; then ROUND_DECLINED=' \
-   "a decline counts only when its reply and its resolve both succeeded"
-# …AND EACH ROW CARRIES IT, outside the ledger guard, so an unreadable ledger does not take it along.
-dl_at="$(grep -n -F 'ROUND_ROWS="${ROUND_ROWS}  declined: ${ROUND_DECLINED:-not counted}"' "$RES" | head -n 1 | cut -d: -f1)"
-ge_at="$(grep -n -B1 -F '# OUTSIDE the ledger guard' "$RES" | head -n 1 | cut -d- -f1)"
-if [ -n "$dl_at" ] && [ -n "$ge_at" ] && [ "$ge_at" -lt "$dl_at" ]; then ok; else
-  bad "…and each round's row carries its declines, outside the ledger guard (guard-end@${ge_at:-?} declined@${dl_at:-?})"; fi
+has "$RESTXT" 'if [ "$RESOLVE_OK" = 1 ]; then' "a decline counts once its resolve succeeded"
+has "$RESTXT" '[ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=' "…and one resolved without its reply is named"
+# THE ROW IS EXECUTED, not grepped: step 6's real block runs against stubs, once over an unreadable
+# ledger and once over a round that declined everything and never reached step 4.
+RR="$(check_wf_snippet "$RES" round-row)"
+[ -n "$RR" ] && ok || bad "step 6's row block is extractable by its round-row snippet marker"
+RR="${RR//'{{PATTERN_LEDGER_LIB}}'/rr_pl}"; RR="${RR//'{{IMPLEMENT_LIB}}'/rr_il}"
+rr_run() {
+  env "$@" "$BASH" -c 'rr_pl() { :; }; rr_il() { echo "sweep: stub report"; }
+'"$RR"'
+printf "%s" "$ROUND_ROWS"' 2>&1
+}
+RR_OUT="$(rr_run SRC=18 STATS_BEFORE= STATS_AFTER= ROUND_NO=2 ROUND_DECLINED=4 ROUND_DECLINED_UNREPLIED=1 \
+  SWEEP_FILE=/nonexistent/sweep.tsv LOOP_LINE= ROUND_ROWS=)"
+has "$RR_OUT" 'round 2: ledger unreadable — no counts' "an unreadable-ledger round still gets its row"
+has "$RR_OUT" '  declined: 4, 1 resolved without their reply' "…and an unreadable-ledger round still reports its declines"
+has "$RR_OUT" '  sweep: stub report' "…and its sweep, read from the round's own sweep file"
+has "$RR_OUT" '  local review: not reported' "…and says it has no local review line rather than borrowing one"
+RR_OUT="$(rr_run SRC=0 STATS_BEFORE="$(printf 'ledger\tpresent')" STATS_AFTER="$(printf 'ledger\tpresent\nthreshold\t2')" \
+  ROUND_NO=1 ROUND_CLASSES= CLASSES_BEFORE= ROUND_PROMOTED=0 ROUND_DECLINED=6 SWEEP_FILE= LOOP_LINE= ROUND_ROWS=)"
+has "$RR_OUT" 'round 1: 0 findings · 0 recurring · 0 new · 0 promoted' "a decline-only round gets a zero row"
+has "$RR_OUT" '  declined: 6' "…with its declines under it"
+hasnt "$RR_OUT" 'resolved without their reply' "…naming unreplied declines only when there are some"
+has "$RR_OUT" '  sweep: none — this round had no finding to fix' "…and a sweep line that says none was taken"
 
 # THE RECOVERY HINT MUST NAME A COMMAND THAT EXISTS. The first draft pointed at
 # `baseline patterns verify`, which no dispatcher implements — handing the operator an unknown
@@ -2478,16 +2498,40 @@ if [ "$MODE" = mutation ]; then
       'These are shapes, not defects — `base/practices/issues-and-scope.md`'"'"'s list, quoted' \
       'These are shapes, not defects — the practice'"'"'s list, quoted' \
       '…naming the practice the list comes from'
-  check_row 'decline-counted-without-receipts' 'base/workflows/resolve-pr-threads.md' 's10' \
-      '  Declined:*) if [ "$REPLY_OK" = 1 ] && [ "$RESOLVE_OK" = 1 ]; then ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 )); fi ;;' \
-      '  Declined:*) ROUND_DECLINED=$(( ${ROUND_DECLINED:-0} + 1 )) ;;' \
-      'a decline counts only when its reply and its resolve both succeeded'
+  check_row 'disposition-bar-arm-a-removed' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '- **(a) a defect on a path a user or the loop can actually reach** — you can name what produces it:' \
+      '- you can name what produces it:' \
+      '…whose first arm fixes a reachable defect'
+  check_row 'decline-counted-without-resolve' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '    if [ "$RESOLVE_OK" = 1 ]; then' \
+      '    if true; then' \
+      'a decline counts once its resolve succeeded'
+  check_row 'decline-unreplied-unnamed' 'base/workflows/resolve-pr-threads.md' 's10' \
+      '      [ "$REPLY_OK" = 1 ] || ROUND_DECLINED_UNREPLIED=$(( ${ROUND_DECLINED_UNREPLIED:-0} + 1 ))' \
+      '      :' \
+      '…and one resolved without its reply is named'
+  check_row 'decline-row-inside-ledger-guard' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'ROUND_ROWS="${ROUND_ROWS}  ${DECL_LINE}"$'"'"'\n'"'"'' \
+      '[ "$SRC" -eq 0 ] && ROUND_ROWS="${ROUND_ROWS}  ${DECL_LINE}"$'"'"'\n'"'"'' \
+      '…and an unreadable-ledger round still reports its declines'
   check_row 'decline-row-dropped' 'base/workflows/resolve-pr-threads.md' 's10' \
-      'ROUND_ROWS="${ROUND_ROWS}  declined: ${ROUND_DECLINED:-not counted}"$'"'"'\n'"'"'' \
+      'ROUND_ROWS="${ROUND_ROWS}  ${DECL_LINE}"$'"'"'\n'"'"'' \
       ':' \
-      '…and each round'"'"'s row carries its declines'
+      '…with its declines under it'
+  check_row 'sweep-line-borrowed' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'if [ -z "${SWEEP_FILE:-}" ]; then' \
+      'if false; then' \
+      '…and a sweep line that says none was taken'
+  check_row 'loop-line-not-reset' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'LOOP_LINE=""                   # set by 4d; empty means this round ran no local review' \
+      ':' \
+      'the round opens in step 3, before classification'
+  check_row 'sweep-file-not-reset' 'base/workflows/resolve-pr-threads.md' 's10' \
+      'SWEEP_HEAD=""; SWEEP_FILE=""   # set by 4a; empty means this round swept nothing' \
+      ':' \
+      'the round opens in step 3, before classification'
   check_row 'decline-counter-never-opened' 'base/workflows/resolve-pr-threads.md' 's10' \
-      'ROUND_DECLINED=0   # incremented in step 5, per decline both replied to and resolved' \
+      'ROUND_DECLINED=0   # incremented in step 5, per decline whose resolve succeeded' \
       ':' \
       'the round opens in step 3, before classification'
   check_row 'round-counter-reopened-in-4b' 'base/workflows/resolve-pr-threads.md' 's10' \
