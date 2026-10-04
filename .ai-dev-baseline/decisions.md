@@ -8665,3 +8665,96 @@ survive is the part a later reader needs.
              directly. A round cap would stop a productive loop and a shape-chasing one alike, and
              the loop would still not say which kind it was.
 - baseline-issue: n/a
+
+## D120 — Stacked PRs: the #439 spike says go, for this repo first
+- date:      2026-10-04
+- category:  project-delta
+- unknown:   #439, refiling #280, asked whether GitHub stacked PRs, driven by the `github/gh-stack`
+             extension, can carry the loop's branch/PR/merge flow. Its decisive question was #216's:
+             does a reviewer's clean signal on a middle layer survive the cascade when the layer
+             below merges? The issue named this entry D42, which was already taken (the roadmap
+             filter), so it is D120, and "D42" in #439 and #440 means this entry.
+- decision:  **Go, for this repo first. Nothing reaches the installed baseline before a release.**
+             **Owner decisions 2026-10-04:** run the spike on this repo with a fixture that cancels
+             itself out; take the declared bot's signal (`pr-review.sh gate`) as the "approval",
+             because `main` requires 0 approving reviews and an author cannot approve their own PR;
+             classify the `git-and-prs.md` conflict as a scoped DEVIATION (D121); number it D120.
+             The spike ran on gh 2.101.0 with gh-stack 0.2.0. Throwaway stack #515 was PRs #512
+             (bottom, `spike-439-1`), #513 (middle) and #514 (top). The layers added, edited and
+             deleted `.ai-dev-baseline/spike-439.txt`, so `main`'s tree ended byte-identical to
+             86c955e. Three squash commits (b1913d0, b84695b, f5d3de4) stay in its history.
+             1. Protection applies to every layer, against the trunk. #513's own base, `spike-439-1`,
+                was unprotected and had 0 rules, yet `gh pr checks 513 --required` listed all 31 of
+                `main`'s required contexts. #513 read BLOCKED while one was pending and CLEAN at
+                31 of 31. The REST `pulls` object carries `stack: {base: main, number, position, size}`.
+             2. The cascade changes the head, and the gate notices. Merging #512 with a squash put
+                `automatic_base_change_succeeded` on #513 at 19:30:39Z and `head_ref_force_pushed` at
+                19:30:42Z. Its base moved from `spike-439-1` to `main` and its head from 682089a to
+                1e201c8, and its diff kept the same content (one added line). `pr-review.sh gate
+                --pr 513` went from 0 to 16, because codex's `+1` (19:10:55Z) predates the new head.
+                #514 did the same (98bfef0 to e652de9, 0 to 16). Codex did not re-review either new
+                head on its own. No clean signal survived a cascade. The cost #216 deferred is real
+                and bounded: one fresh review for each layer above every merge.
+             3. A retarget that keeps the head cannot be made by hand inside a stack. `gh pr edit
+                514 --base main` was refused: "Cannot change the base branch because the pull request
+                is part of a stack." The one such window found is the cascade's own, about 3 s between
+                the base change and the head rewrite in (2). It is inferred from those two
+                timestamps; the gate was not run inside it.
+             4. Neither of the loop's merge paths works on a layer. `gh pr merge --auto --squash
+                --match-head-commit`, which is what `open-pr` arms, was refused: "Auto-merge is not
+                supported for stacked pull requests." `gh pr merge --squash` was refused: a layer
+                "must be merged using the asynchronous merge REST API". `gh stack merge <n> --squash
+                --yes` merged, and merging #514 took #513 with it in one command.
+             5. `gh stack sync` after a cascade does not adopt the heads GitHub produced. It rebased
+                locally and force-pushed its own (#513 to 403f61f, #514 to b5ccddf). That is a second
+                head change, and a second CI run, for every layer.
+             6. `cleanup-lib.sh branch-verdict`, given `gh pr list --head <b> --state merged` JSON,
+                returned `merged-pr` for each branch whose local tip equalled its PR's final head,
+                which was all three after the merges. An open layer returned `unmerged`. So did a
+                local branch left at its pre-cascade tip (682089a) after its PR merged, so `/cleanup`
+                keeps it: the safe direction. #514 is recorded MERGED with base `spike-439-2`,
+                although it landed on `main`.
+             7. `rerere` stayed unset at every level before and after `init`, `add`, `submit`, `sync`
+                and `sync --prune`. The extension's source explains why. `ensureRerere`, which
+                `init`, `sync` and `rebase` call, asks first under a TTY, and on yes writes
+                `rerere.enabled` and `rerere.autoupdate` to local config. From a non-interactive
+                shell it wrote nothing. `gh stack unstack` refused a fully merged stack (exit 5), and
+                a code search of the source for `rerere` matches no unstack file, so a yes is never
+                reverted.
+- placement: this entry and D121. The loop changes are #440's slices, filed from this entry.
+- reason:    Neither of the issue's "no" conditions holds. No clean signal survived a retarget that
+             changed the diff (2, 3), and per-layer protection and CI behaved as the rollout doc says
+             (1). The spike also turned up facts #440's scope does not yet assume:
+             - No layer can arm `--auto` (4), so a stack cannot report and end the way a single PR
+               does. Something has to come back and merge it.
+             - A cascade's retarget event is `automatic_base_change_succeeded` (2). A #216 guard
+               keyed only on `base_ref_changed` would never see it.
+             - `sync` doubles the head churn (5).
+             - `/cleanup`'s open-PR arm filters `--base "$DEFAULT"` (`base/workflows/cleanup.md:475`),
+               so it does not see a middle PR before that PR retargets.
+- baseline-issue: n/a
+
+## D121 — DEVIATION: a `gh stack` stack's branches are rebased and force-pushed by the extension
+- date:          2026-10-04
+- category:      deviation
+- baseline-rule: `git-and-prs.md`: "Branch off the **default branch**, not off the current feature
+                 branch", and "One branch per task … do not force-push a rebase over review
+                 history", and `git push --force-with-lease` on its destructive-git list.
+- conflict:      A stack carries one task on several branches, each branched from the layer below.
+                 `gh stack submit`, `push` and `sync` push every layer with a per-branch
+                 `--force-with-lease`, and GitHub's own cascade force-pushes every layer above a merge
+                 (D120, items 2 and 5).
+- scope:         Branches that `gh stack` created and tracks in this repository, while their stack is
+                 open, and only through `gh stack` commands and GitHub's cascade. Nobody rebases or
+                 force-pushes a stack branch by hand. Every other branch keeps every rule above,
+                 `--force-with-lease` on the destructive list included. `gh stack sync --prune`
+                 deletes only branches whose PRs merged, which the merged-branch cleanup exception
+                 already covers. This does not apply to the installed baseline: an adopting project
+                 inherits nothing from this entry before a release ships it.
+- reason:        Owner decision 2026-10-04: a scoped DEVIATION instead of a practice amendment, so
+                 #439 edits no shipped file. The rules protect two things, and the stack keeps both.
+                 Review history: codex's comment and `+1` on #513 and #514 survived both
+                 force-pushes, and GitHub records each push as a `head_ref_force_pushed` event on
+                 the PR rather than replacing the PR. Review currency: a rewritten head drops every
+                 earlier clean signal (`pr-review.sh gate` 0 to 16). The spike drew no inline review
+                 threads, so their behaviour across a cascade was not observed.
