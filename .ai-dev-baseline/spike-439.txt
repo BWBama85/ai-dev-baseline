@@ -1,3 +1,0 @@
-Throwaway fixture for the #439 stacked-PR spike (layer 1 of 3).
-Layer 3 deletes this file, so merging the whole stack leaves main unchanged.
-Layer 2 of 3: this line is the middle layer's only change.
