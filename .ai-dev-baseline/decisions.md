@@ -8672,8 +8672,8 @@ survive is the part a later reader needs.
 - unknown:   #439, refiling #280, asked whether GitHub stacked PRs, driven by the `github/gh-stack`
              extension, can carry the loop's branch/PR/merge flow. Its decisive question was #216's:
              does a reviewer's clean signal on a middle layer survive the cascade when the layer
-             below merges? The issue named this entry D42, which was already taken (the roadmap
-             filter), so it is D120, and "D42" in #439 and #440 means this entry.
+             below merges? The issue named this entry D42, which was already taken (the Markdown
+             filter's list state, #252), so it is D120, and "D42" in #439 and #440 means this entry.
 - decision:  **Go, for this repo first. Nothing reaches the installed baseline before a release.**
              **Owner decisions 2026-10-04:** run the spike on this repo with a fixture that cancels
              itself out; take the declared bot's signal (`pr-review.sh gate`) as the "approval",
@@ -8747,9 +8747,9 @@ survive is the part a later reader needs.
 - scope:         Branches that `gh stack` created and tracks in this repository, while their stack is
                  open, and only through `gh stack` commands and GitHub's cascade. Nobody rebases or
                  force-pushes a stack branch by hand. Every other branch keeps every rule above,
-                 `--force-with-lease` on the destructive list included. `gh stack sync --prune`
-                 deletes only branches whose PRs merged, which the merged-branch cleanup exception
-                 already covers. This does not apply to the installed baseline: an adopting project
+                 `--force-with-lease` on the destructive list included. `gh stack sync --prune` is in
+                 scope too: in the D120 spike it deleted only the local branches whose PRs had merged.
+                 This does not apply to the installed baseline: an adopting project
                  inherits nothing from this entry before a release ships it.
 - reason:        Owner decision 2026-10-04: a scoped DEVIATION instead of a practice amendment, so
                  #439 edits no shipped file. The rules protect two things, and the stack keeps both.
