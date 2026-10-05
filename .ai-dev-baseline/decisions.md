@@ -8814,7 +8814,7 @@ survive is the part a later reader needs.
                  regressions for the listed cases are what show nothing slips between them. The spike
                  drew no inline review threads, so their behaviour across a cascade was not observed.
 
-## D122 — #445: selfcheck's cost is measured again, its last large whole-suite harness runs per block, and nothing is awaited in silence
+## D122 — #445: selfcheck's cost is measured again, its whole-suite harness with the most rows runs per block, and nothing is awaited in silence
 - date:      2026-10-05
 - category:  project-delta
 - unknown:   #445 asked for an audit of `scripts/selfcheck.sh`'s wall clock on a library branch
@@ -8936,9 +8936,10 @@ survive is the part a later reader needs.
                away again inside the bounded subshell — presence and value carried separately — so the
                suite under test sees its own environment. Expiry is `bad|hung — no verdict within Ns`:
                applied, never RED. "Hung" is `adb_run_bounded`'s own answer, a new `_ADB_BOUNDED_FIRED`
-               (owner decision, after the local review): the watchdog path sets it from its flag, the
-               binary path from 124 and the elapsed time. Inferring it from the status alone would call
-               a suite that exits 124 on its own, just after the bound, terminated. The tree-copy callback is not bounded; it runs before the injection,
+               (owner decision, after the local review): exact on the watchdog path, from its flag, and
+               EMPTY on the binary path, where `timeout` reports a fired bound and a child's own 124 the
+               same way. Inferring it from the status and elapsed time — the first cut on both paths —
+               called a child that exits 124 on its own near the bound terminated. The tree-copy callback is not bounded; it runs before the injection,
                on unmutated code.
              * **A defect in `adb_run_bounded` itself, found here and fixed at the root (owner decision
                2026-10-05).** The watchdog path stopped its watcher as soon as its wait returned,
@@ -8967,7 +8968,9 @@ survive is the part a later reader needs.
              name in 433 s instead of holding the suite for hours, because every hang fixture's own
              sleep is bounded at 45 s and matched by a pattern carrying the run's pid. The
              `check-common-lib.sh --mutation` table gains two rows (the sweep dropped; the sweep made
-             unconditional), 18/18 RED. `check-selfcheck.sh --mutation` gains three (a silent ticker,
+             unconditional), 18/18 RED at that point; the final table adds three more for the fired
+             signal (never raised, guessed on the binary path, never reset), 21 in all, each RED on its
+             own witness. `check-selfcheck.sh --mutation` gains three (a silent ticker,
              the `overran` line dropped, the digest dropping it), 9/9 RED. Two 8e assertions are not
              rows because their defects cost more than a row can pay; both were observed against a
              copy: a ticker left running held a fast run 61 s against the assertion's 30 s bound, and
@@ -8982,7 +8985,7 @@ survive is the part a later reader needs.
              | consumer | what it states | disposition |
              |---|---|---|
              | `CLAUDE.md` golden rule 3 | the runtime range; a step total ("now 61"); the macOS `--skip` list; both lanes; the dominant step | range re-measured, pinned (`selfcheck-cost`), the old one refused; total REMOVED; `--skip` already pinned; lanes now pinned to `--list`; dominant-step claim replaced by the measured slowest steps |
-             | `CONTRIBUTING.md` | the range; "covers 23 of 57"; `--skip`; lanes; "about 90 seconds" for the isolated lane | range pinned; count REMOVED; `--skip` pinned; lanes pinned; the 90 s figure is UNDATED and predates this change's larger guard suites — kept, unpinned, as an order of magnitude, and the dated range above is the figure that includes that lane |
+             | `CONTRIBUTING.md` | the range; "covers 23 of 57"; `--skip`; lanes; "about 90 seconds" for the isolated lane | range pinned; count REMOVED; `--skip` pinned; lanes pinned; the undated 90 s figure REMOVED — the dated range is the figure that includes that lane |
              | `docs/ci-runners.md` | "skips two named steps" (it skips five); per-run job durations | count REMOVED; run figures carry their run ids and stay as history |
              | `.github/workflows/ci.yml` | the `--skip` list; job ceilings with dated figures | `--skip` pinned; no ceiling changed (below) |
              | `.github/workflows/mutation-nightly.yml` | the harness matrix | derived: pinned to the registry by `check-mutation-gate.sh` |

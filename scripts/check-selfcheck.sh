@@ -196,10 +196,9 @@ if [ "$MODE" = mutation ]; then
 
   # The overrun warning (#445). Each of its halves is a report, and a report's failure mode is the
   # silent one: a ticker that never prints, a result block that drops the names and a digest that
-  # forgets them all leave every step green. Two of 8e's assertions are NOT rows here, because their
-  # defects cost more than a row can pay: a ticker left running makes every nested run wait out a
-  # full tick, and a ticker reaped as a step corrupts the pool's running count. D122 records both
-  # observed red once, by hand, against a copy.
+  # forgets them all leave every step green. Two of 8e's assertions are not rows: a ticker left
+  # running would make every nested run wait out a full tick, and a ticker reaped as a step corrupts
+  # the pool's running count. Their observation is in D122.
   check_mut "overrun-silent" \
     'printf '"'"'selfcheck: still running past %ss: %s (%ss so far)\n'"'"' "$OVERRUN" "$name" "$el"' ':' \
     'a step past the ceiling is named LIVE'

@@ -369,6 +369,9 @@ _check_row_secs() {
 _check_run_bounded() {
   local of="$1" had="${ADB_NO_TIMEOUT_BIN+set}" was="${ADB_NO_TIMEOUT_BIN-}" rc
   shift
+  # RESET FIRST: a redirect that fails runs nothing, so adb_run_bounded never gets to reset it, and a
+  # previous run's answer would be read as this one's. The unreadable output then gets its own verdict.
+  _ADB_BOUNDED_FIRED=0
   ADB_NO_TIMEOUT_BIN=1 adb_run_bounded "$CHECK_ROW_SECS" 5 _check_run_as_caller "$had" "$was" "$@" > "$of" 2>&1 < /dev/null; rc=$?
   CHECK_RUN_HUNG=0
   [ "${_ADB_BOUNDED_FIRED:-0}" = 1 ] && CHECK_RUN_HUNG=1

@@ -21,10 +21,10 @@ only by a published release, which is what these entries are the notes for.
   `adb_run_bounded` (`scripts/lib/common.sh`) now sweeps the child's process group after a fired
   bound on its watchdog path too, as the `timeout`-binary path already did: a child that died on the
   TERM no longer leaves a TERM-proof member of its group running, and it now reports whether its
-  bound actually fired (`_ADB_BOUNDED_FIRED`) rather than leaving a caller to infer it from a 124.
+  bound actually fired (`_ADB_BOUNDED_FIRED`: exact on the watchdog path, empty on the binary path,
+  where `timeout` cannot say) rather than leaving a caller to infer it from a 124.
   The watchdog path is what a stock macOS without coreutils takes, `role-dispatch.sh` included.
-  `check-session-context.sh --mutation`, the largest harness still running its whole suite once per
-  row, now runs each of its 94 rows against only the block that holds its witness (#468) and gates
+  `check-session-context.sh --mutation`, the whole-suite harness with the most rows, now runs each of its 94 rows against only the block that holds its witness (#468) and gates
   each on its own target (#470). It took 253 s standalone against 1217 s before (2,559 + 2,643
   CPU-s down to 217 + 235), and 457 s against 3747 s inside a forced full run. A forced full run
   itself moved only 5%, because three other harnesses near an hour each still set its length.

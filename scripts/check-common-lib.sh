@@ -1512,6 +1512,8 @@ rm -f "$livepid"
 if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
   adb_run_bounded 1 1 "$gcp" >/dev/null 2>&1
   eq "$?" "124" "timeout binary: a TERM-ignoring child still returns 124 (the grandchild case)"
+  # …and this path does not CLAIM to know that it fired: `timeout` reports a child's own 124 the same way.
+  eq "${_ADB_BOUNDED_FIRED-unset}" "" "timeout binary: the fired signal is EMPTY, never a guess"
   sleep 1
   if [ -s "$gcpid" ]; then ok; else bad "timeout binary: the probe never recorded a grandchild pid — the case did not run"; fi
   eq "$(gc_alive)" "dead" "timeout binary: the bound reaps the grandchild too — the paths AGREE"
@@ -3174,11 +3176,16 @@ if [ "${1:-}" = "--mutation" ]; then
     '' \
     '/^  rm -f "\$flag"; return "\$rc"$/s/return "\$rc"/_adb_bounded_signal KILL "$cmd_pid"; return "$rc"/'
 
-  # 19-20. The fired signal (#445): never raised on the watchdog path, or never reset between calls.
+  # 19-21. The fired signal (#445): never raised on the watchdog path, guessed on the binary path, or
+  #        never reset between calls.
   mutate watchdog-fired-never-set \
     "watchdog: a stopped child is a fired bound" \
     '_ADB_BOUNDED_FIRED=1; return 124; fi' \
     '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi/s/ _ADB_BOUNDED_FIRED=1;//'
+  mutate binary-path-guesses-fired \
+    "timeout binary: the fired signal is EMPTY, never a guess" \
+    '' \
+    '/^    _ADB_BOUNDED_FIRED=""$/s/""/1/'
   mutate fired-not-reset \
     "watchdog: a child's own 124 is not a fired bound" \
     '' \

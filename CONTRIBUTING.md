@@ -124,8 +124,8 @@ which the ubuntu `adopt`, `pattern-ledger`, `install-guard` and `implement-gate`
 already run on every relevant PR (#339, PR #429, PR #443, PR #463, PR #504). Your local run is unaffected in *coverage* — a plain
 `bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
 it does get **longer** when the gate lets everything through, because the six isolated steps no
-longer overlap with anything: about 90 seconds' worth, measured serially on a 10-core machine. The
-dated range above includes that lane; the `result` block is still the current answer, as it says.
+longer overlap with anything. The dated range above includes that cost; the `result` block is still
+the current answer, as it says.
 
 In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
 a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),

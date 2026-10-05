@@ -4280,10 +4280,10 @@ adb_untrusted_block() {
 # does that for us; the watchdog path does it with `set -m` (see the launch below).
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
-# Sets _ADB_BOUNDED_FIRED to 1 when the bound fired and 0 otherwise, so a caller can tell the bound's
-# 124 from a child that exits 124 on its own (#445). The watchdog path knows it exactly, from its own
-# flag. The binary path infers it as the 137 normalisation below does, from the elapsed time, because
-# `timeout` reports both events as 124.
+# Sets _ADB_BOUNDED_FIRED, so a caller can tell the bound's 124 from a child that exits 124 on its own
+# (#445): 1 the bound fired, 0 it did not — the watchdog path, which knows from its own flag — and
+# EMPTY on the binary path, where `timeout` reports both events as 124 and nothing here can tell them
+# apart. A caller that needs the answer forces the watchdog path (ADB_NO_TIMEOUT_BIN=1).
 
 # Signal a bounded child AND everything it spawned: the process GROUP first, then the bare pid.
 #
@@ -4415,7 +4415,7 @@ adb_run_bounded() {
     # left something running (the dev-server case), and killing that would make a bound into a
     # reaper of successful work.
     [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
-    [ "$trc" -eq 124 ] && [ "$(( SECONDS - t0 ))" -ge "$secs" ] && _ADB_BOUNDED_FIRED=1
+    _ADB_BOUNDED_FIRED=""
     return "$trc"
   fi
   local flag rc cmd_pid watcher tick
