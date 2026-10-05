@@ -4280,6 +4280,10 @@ adb_untrusted_block() {
 # does that for us; the watchdog path does it with `set -m` (see the launch below).
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
+# Sets _ADB_BOUNDED_FIRED to 1 when the bound fired and 0 otherwise, so a caller can tell the bound's
+# 124 from a child that exits 124 on its own (#445). The watchdog path knows it exactly, from its own
+# flag. The binary path infers it as the 137 normalisation below does, from the elapsed time, because
+# `timeout` reports both events as 124.
 
 # Signal a bounded child AND everything it spawned: the process GROUP first, then the bare pid.
 #
@@ -4343,6 +4347,7 @@ _adb_bounded_reap() {
 
 adb_run_bounded() {
   local secs="$1" grace="$2" tb="" t0 trc otrap had_m=0; shift 2
+  _ADB_BOUNDED_FIRED=0
   # Does the CALLER already have job control on? Read ONCE, here, because BOTH paths need the
   # answer: the watchdog path restores it after borrowing it (see the launch below), and BOTH
   # `wait`s need `-f` under it. With job control enabled, plain `wait` returns when a job merely
@@ -4410,6 +4415,7 @@ adb_run_bounded() {
     # left something running (the dev-server case), and killing that would make a bound into a
     # reaper of successful work.
     [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
+    [ "$trc" -eq 124 ] && [ "$(( SECONDS - t0 ))" -ge "$secs" ] && _ADB_BOUNDED_FIRED=1
     return "$trc"
   fi
   local flag rc cmd_pid watcher tick
@@ -4485,7 +4491,7 @@ adb_run_bounded() {
   # …AND SWEEP THE GROUP when the bound fired, as the binary path does: the watcher is stopped as
   # soon as the wait returns, before its own KILL, so a member of the group that ignores TERM is
   # reached only here (D122).
-  if [ -f "$flag" ]; then rm -f "$flag"; _adb_bounded_signal KILL "$cmd_pid"; return 124; fi
+  if [ -f "$flag" ]; then rm -f "$flag"; _adb_bounded_signal KILL "$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi
   rm -f "$flag"; return "$rc"
 }
 

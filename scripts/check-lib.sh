@@ -359,19 +359,19 @@ _check_row_secs() {
 #     again inside the bounded subshell, so the suite under test sees the environment it was given —
 #     several suites here exercise adb_run_bounded's binary path themselves. A suite that ignores
 #     TERM, or leaves a descendant that does, is reaped by that path's group sweep.
-#   * "Hung" is decided by elapsed time, as adb_run_bounded's own 137 normalisation is: a suite that
-#     exits 124 on its own before the bound is scored as the exit it was.
+#   * "Hung" is adb_run_bounded's own answer (`_ADB_BOUNDED_FIRED`), never inferred from the status:
+#     a suite that exits 124 on its own is scored as the exit it was.
 #   * The bound is kept to within the watchdog's tick (5 s once the bound is 10 s or more) plus a 5 s
 #     grace, so a run can outlive CHECK_ROW_SECS by up to about 10 s before it is scored hung.
 #   * The output file has no byte bound — the `$(…)` this replaced held the same output in memory,
 #     unbounded and with no time bound — so a mutant that prints in a loop can grow it for as long as
 #     the deadline allows. Recorded rather than capped (D122).
 _check_run_bounded() {
-  local of="$1" had="${ADB_NO_TIMEOUT_BIN+set}" was="${ADB_NO_TIMEOUT_BIN-}" t0="$SECONDS" rc
+  local of="$1" had="${ADB_NO_TIMEOUT_BIN+set}" was="${ADB_NO_TIMEOUT_BIN-}" rc
   shift
   ADB_NO_TIMEOUT_BIN=1 adb_run_bounded "$CHECK_ROW_SECS" 5 _check_run_as_caller "$had" "$was" "$@" > "$of" 2>&1 < /dev/null; rc=$?
   CHECK_RUN_HUNG=0
-  [ "$rc" -eq 124 ] && [ $(( SECONDS - t0 )) -ge "$CHECK_ROW_SECS" ] && CHECK_RUN_HUNG=1
+  [ "${_ADB_BOUNDED_FIRED:-0}" = 1 ] && CHECK_RUN_HUNG=1
   return "$rc"
 }
 

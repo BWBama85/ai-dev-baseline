@@ -1632,8 +1632,13 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 # one line — and BOUNDED on both sides: the nearest non-blank character on either side may be neither a
 # comma nor a backtick, so a list with a member more or fewer, at either end and however it is
 # spaced, never matches as part of a longer or shorter one.
+# The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
+# --list that failed after printing some rows would still yield a plausible, wrong lane.
+if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
+  check_note "[selfcheck-lanes] selfcheck.sh --list failed — the lane pins below would compare a partial registry"; check_fail; _sc_list=""
+fi
 for _lane in mutates-tree load-sensitive; do
-  _members="$(bash scripts/selfcheck.sh --list | awk -F'\t' -v l="$_lane" '$4 == l { printf "%s`%s`", (n++ ? ", " : ""), $1 }')"
+  _members="$(printf '%s\n' "$_sc_list" | awk -F'\t' -v l="$_lane" '$4 == l { printf "%s`%s`", (n++ ? ", " : ""), $1 }')"
   if [ -z "$_members" ]; then
     check_note "[selfcheck-lane-$_lane] selfcheck.sh --list reports no member — the pin would compare nothing"; check_fail; continue
   fi

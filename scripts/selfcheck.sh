@@ -883,7 +883,7 @@ add fact-drift          bash scripts/check-fact-drift.sh
 # into a COPY of every file it pins and the real lint must come back red. Runs ~22 sub-lints
 # against a throwaway tree; the working tree is never touched.
 add fact-mutation       bash scripts/check-fact-drift.sh --mutation
-inputs fact-mutation            scripts/check-fact-drift.sh scripts/check-lib.sh scripts/lib/common.sh
+inputs fact-mutation            scripts/check-fact-drift.sh scripts/check-lib.sh scripts/lib/common.sh scripts/selfcheck.sh
 
 # ...and the guard rails above are themselves guards, so they get the same treatment (#213): the
 # witness contract and the mutation harness are each driven against deliberately broken rules in a

@@ -8846,10 +8846,10 @@ survive is the part a later reader needs.
              |---|---|---|---|---|---|
              | before | `9d1d658` (`main`) | 5207 s (86m47s) | 12,499 / 17,677 | 3.7 / 72 / 327 | 70/71: `release-skill` red, see below |
              | after 1 | `3023fbc` | 4933 s (82m12s) | 10,380 / 15,455 | 6.0 / 53 / 243 | 71/71 |
+             | after 2 (checkout) | `3023fbc` | 5929 s (98m49s) | 10,661 / 16,279 | 9.2 / 73 / 374 | 71/71 |
 
              Wall is `/usr/bin/time`'s; the m:s beside it is the runner's own `result` line, which
              counts whole seconds from its own start and so reads 82m12s where `time` reads 4933.13 s.
-             | after 2 (checkout) | `3023fbc` | 5929 s (98m49s) | 10,661 / 16,279 | 9.2 / 73 / 374 | 71/71 |
 
              The before and after-1 runs are a back-to-back PAIR, taken one after the other so that
              both see the same kind of load. The first before-run, started after the standalone
@@ -8885,13 +8885,17 @@ survive is the part a later reader needs.
              **What the numbers say.**
              * The session-context harness got 4.8x faster in wall and 11.5x cheaper in CPU standalone,
                and 8.2x faster in the pool. Its in-pool cost was 3.1 times its standalone cost before
-               and 1.8 times after, which is the outer/inner pool interaction measured directly.
+               and 1.8 times after. That ratio is the pool AND the external load together — the
+               standalone and pooled runs saw different loads — so it bounds the interaction rather
+               than isolating it.
              * The whole forced run barely moved: 5% in wall, 14% in CPU. Its wall is set by the
                longest pole. Session-context was one of four poles near an hour; the other three
                remain: `pattern-ledger-mutation` and `settings-fragment-mutation` (already per block)
-               and `review-loop-mutation` (whole suite). Converting `review-loop` would not shorten the
-               run while the other two stay near an hour, so owner decision (1) leaves it alone: no
-               remaining whole-suite harness dominates.
+               and `review-loop-mutation` (whole suite). Converting `review-loop` would remove one
+               pole and the CPU it takes from the others, but not the two poles already per block, so
+               it would not obviously shorten the run; that is a reading of these figures, not a
+               measurement. Owner decision (1) leaves it alone: no remaining whole-suite harness
+               dominates.
              * The local SELECTION policy is unchanged (owner decision 2): the gate still holds back
                every harness whose inputs a branch does not touch, and a row-mode harness the rows
                whose targets are untouched. What a plain run gets that it did not is the block
@@ -8931,7 +8935,10 @@ survive is the part a later reader needs.
                output in a file rather than a pipe, and the override that forces the watchdog is taken
                away again inside the bounded subshell — presence and value carried separately — so the
                suite under test sees its own environment. Expiry is `bad|hung — no verdict within Ns`:
-               applied, never RED. The tree-copy callback is not bounded; it runs before the injection,
+               applied, never RED. "Hung" is `adb_run_bounded`'s own answer, a new `_ADB_BOUNDED_FIRED`
+               (owner decision, after the local review): the watchdog path sets it from its flag, the
+               binary path from 124 and the elapsed time. Inferring it from the status alone would call
+               a suite that exits 124 on its own, just after the bound, terminated. The tree-copy callback is not bounded; it runs before the injection,
                on unmutated code.
              * **A defect in `adb_run_bounded` itself, found here and fixed at the root (owner decision
                2026-10-05).** The watchdog path stopped its watcher as soon as its wait returned,
@@ -8975,7 +8982,7 @@ survive is the part a later reader needs.
              | consumer | what it states | disposition |
              |---|---|---|
              | `CLAUDE.md` golden rule 3 | the runtime range; a step total ("now 61"); the macOS `--skip` list; both lanes; the dominant step | range re-measured, pinned (`selfcheck-cost`), the old one refused; total REMOVED; `--skip` already pinned; lanes now pinned to `--list`; dominant-step claim replaced by the measured slowest steps |
-             | `CONTRIBUTING.md` | the range; "covers 23 of 57"; `--skip`; lanes; "about 90 seconds" for the isolated lane | range pinned; count REMOVED; `--skip` pinned; lanes pinned; the 90 s figure is dated by its own sentence and kept |
+             | `CONTRIBUTING.md` | the range; "covers 23 of 57"; `--skip`; lanes; "about 90 seconds" for the isolated lane | range pinned; count REMOVED; `--skip` pinned; lanes pinned; the 90 s figure is UNDATED and predates this change's larger guard suites — kept, unpinned, as an order of magnitude, and the dated range above is the figure that includes that lane |
              | `docs/ci-runners.md` | "skips two named steps" (it skips five); per-run job durations | count REMOVED; run figures carry their run ids and stay as history |
              | `.github/workflows/ci.yml` | the `--skip` list; job ceilings with dated figures | `--skip` pinned; no ceiling changed (below) |
              | `.github/workflows/mutation-nightly.yml` | the harness matrix | derived: pinned to the registry by `check-mutation-gate.sh` |
@@ -8994,12 +9001,12 @@ survive is the part a later reader needs.
              | criterion | disposition |
              |---|---|
              | dated table: full suite, wall and CPU, before and after | met: the pair above, plus a second after-run |
-             | each of the six named harnesses standalone, before and after | met for session-context, the one this change converts. The other five (pattern-ledger, adopt-readiness, adopt, docs-lib, mutation-gate) are unchanged but for the deadline wrapper; their paired IN-POOL figures stand in. The adopt-readiness and review-loop standalone before-figures were taken under this session's own load and are not comparable |
-             | one row of each (suite time) | the plain suites' in-pool times are in the per-step table; session-context's per-block selection costs are above |
-             | per-step CPU | not obtainable: the runner records wall per step, and `/usr/bin/time` covers the whole run |
+             | each of the six named harnesses standalone, before and after | met for session-context, the one this change converts. For the other five (pattern-ledger, adopt-readiness, adopt, docs-lib, mutation-gate) UNMET and WAIVED: they are unchanged but for the deadline wrapper, and only their paired in-pool figures exist. The adopt-readiness and review-loop standalone before-figures were taken under this session's own load and are not comparable |
+             | one row of each (suite time) | met for session-context (per-block selections above); for the other five UNMET and WAIVED, with only their plain suites' in-pool times in the per-step table |
+             | per-step CPU | UNMET and WAIVED: the runner records wall per step, `/usr/bin/time` covers the whole run, and timing each step's command separately was not done |
              | copy cost per row, `cp -R` vs `check_copy_subtrees` | `check_copy_worktree` (the `cp -R` shape, `.git` omitted) against `check_copy_subtrees`, above |
-             | an idle machine | not available (owner decision 5): load recorded per run, and the full runs taken as a pair |
-             | scope item 5, the pool interaction re-measured | the contention ratio, not a controlled scheduling comparison: D66's leaf-budget runner is not rebuilt |
+             | an idle machine | UNMET and WAIVED (owner decision 5): load recorded per run, and the full runs taken as a pair |
+             | scope item 5, the pool interaction re-measured | UNMET and WAIVED: the contention ratio above bounds it, but no controlled scheduling comparison was run and D66's leaf-budget runner is not rebuilt |
 
              **Not bounded, by decision: the callback's output.** Each callback's output now lands in a
              file with no byte cap, so a mutant that prints in a loop can grow it for as long as the

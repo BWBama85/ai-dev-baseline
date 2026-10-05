@@ -928,13 +928,13 @@ overrun_sc() {   # <ceiling> <args...> — the fixture's selfcheck under a given
 overran_line() { printf '%s\n' "$OUT" | grep '^overran (past '; }
 
 reset_ctl
-printf '7\n' > "$FX/ctl/gates.sleep"
+printf '10\n' > "$FX/ctl/gates.sleep"
 printf '5\n' > "$FX/ctl/claims.sleep"; printf '5\n' > "$FX/ctl/claims.rc"
-overrun_sc 3 --only "$ONLY" --jobs 4
+overrun_sc 2 --only "$ONLY" --jobs 4
 eq "$RC_" "1" "a red step past the ceiling still fails the run"
 has "$OUT" "FAILED: claims" "...and is named, with the ticker running"
 has "$OUT" "FAIL (exit 5," "...with its own exit code"
-has "$OUT" "selfcheck: still running past 3s: gates (" "a step past the ceiling is named LIVE"
+has "$OUT" "selfcheck: still running past 2s: gates (" "a step past the ceiling is named LIVE"
 has "$(block_of gates)" "gates-line-1" "an overrunning step still runs to completion and emits its block"
 has "$(overran_line)" "gates" "the result block names a step that overran and passed"
 has "$(overran_line)" "claims" "the result block names a step that overran and failed"
@@ -942,10 +942,14 @@ hasnt "$(overran_line)" "practice-index" "a step that finished inside the ceilin
 # The ticker is a job in the same `wait -n` and must never be mistaken for a step.
 eq "$(printf '%s\n' "$OUT" | grep -c '^=== ')" "9" "the ticker is never emitted as a step (8 banners + result)"
 has "$OUT" "8 step(s) in" "the step count is unchanged by the ticker"
-# Once per MULTIPLE of the ceiling, never once per tick forever: a 7s step under a 3s ceiling
-# crosses it twice at most.
-_n="$(printf '%s\n' "$OUT" | grep -c '^selfcheck: still running past 3s: gates (')"
-[ "$_n" -ge 1 ] && [ "$_n" -le 2 ] && ok || bad "a 7s step under a 3s ceiling was named $_n time(s), not once per multiple"
+# AGAIN at each later multiple, and never more often: a 10s step under a 2s ceiling is ticked about
+# every 2s, so it is named more than once, and never more than once per multiple it crossed. The
+# last line's elapsed figure must also have reached a SECOND multiple, which a warning that fired
+# once and then stayed silent could not show.
+_n="$(printf '%s\n' "$OUT" | grep -c '^selfcheck: still running past 2s: gates (')"
+[ "$_n" -ge 2 ] && [ "$_n" -le 5 ] && ok || bad "a 10s step under a 2s ceiling was named $_n time(s), not again at each later multiple"
+_last="$(printf '%s\n' "$OUT" | sed -n 's/^selfcheck: still running past 2s: gates (\([0-9]*\)s so far)$/\1/p' | tail -1)"
+[ -n "$_last" ] && [ "$_last" -ge 4 ] && ok || bad "the last warning for a 10s step said ${_last:-nothing}s — it was never repeated at a later multiple"
 
 reset_ctl
 printf '5\n' > "$FX/ctl/gates.sleep"

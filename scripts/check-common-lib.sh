@@ -1486,6 +1486,12 @@ sleep 1
 if [ -s "$gcpid" ]; then ok; else bad "watchdog: the leader-dies probe never recorded a pid — the case did not run"; fi
 eq "$(gc_alive)" "dead" "watchdog: a TERM-proof member outlives a leader that died on TERM unless the sweep reaps it"
 gc_reset
+# _ADB_BOUNDED_FIRED says whether the BOUND fired, never merely that the status was 124 (#445). In this
+# ORDER, so the second case also proves the flag is reset by every call rather than left over.
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 sleep 20
+eq "$?:${_ADB_BOUNDED_FIRED:-unset}" "124:1" "watchdog: a stopped child is a fired bound"
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 sh -c 'exit 124'
+eq "$?:${_ADB_BOUNDED_FIRED:-unset}" "124:0" "watchdog: a child's own 124 is not a fired bound"
 # THE SWEEP IS CONDITIONAL ON THE BOUND HAVING FIRED on this path too — see the binary path's case below.
 livepid="$work/livepid-w"; rm -f "$livepid"
 ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 "$BASH" -c "sleep 45 & echo \$! > \"$livepid\"; exit 0" >/dev/null 2>&1
@@ -3158,8 +3164,8 @@ if [ "${1:-}" = "--mutation" ]; then
   #     leaves a TERM-proof member of its group running, because the watcher's KILL never comes.
   mutate watchdog-sweep-dropped \
     "watchdog: a TERM-proof member outlives a leader that died on TERM" \
-    '_adb_bounded_signal KILL "$cmd_pid"; return 124' \
-    '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; return 124; fi/s/ _adb_bounded_signal KILL "\$cmd_pid";//'
+    '_adb_bounded_signal KILL "$cmd_pid"; _ADB_BOUNDED_FIRED=1' \
+    '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi/s/ _adb_bounded_signal KILL "\$cmd_pid";//'
 
   # 18. …and the sweep fires on EVERY return, so a command that finished on its own loses the
   #     background work it deliberately left running.
@@ -3167,6 +3173,16 @@ if [ "${1:-}" = "--mutation" ]; then
     "watchdog: the sweep killed a SUCCESSFUL run's background work" \
     '' \
     '/^  rm -f "\$flag"; return "\$rc"$/s/return "\$rc"/_adb_bounded_signal KILL "$cmd_pid"; return "$rc"/'
+
+  # 19-20. The fired signal (#445): never raised on the watchdog path, or never reset between calls.
+  mutate watchdog-fired-never-set \
+    "watchdog: a stopped child is a fired bound" \
+    '_ADB_BOUNDED_FIRED=1; return 124; fi' \
+    '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi/s/ _ADB_BOUNDED_FIRED=1;//'
+  mutate fired-not-reset \
+    "watchdog: a child's own 124 is not a fired bound" \
+    '' \
+    '/^  _ADB_BOUNDED_FIRED=0$/d'
 
   # --- run them, bounded ------------------------------------------------------------------------
   # `adb_pool_size` is the one home for the width (scripts/lib/common.sh): min(cpu, 8), so it

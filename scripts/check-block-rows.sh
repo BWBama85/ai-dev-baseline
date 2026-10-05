@@ -413,19 +413,29 @@ check_copy_worktree "$cw/nope" "$cw/nope-dst" 2>/dev/null; [ "$?" -ne 0 ] && ok 
 # and each sleep is itself bounded (45 s), so a broken deadline fails these cases by name, in about
 # a minute, instead of holding the suite until its job is cancelled.
 HANG="45.$$"; HANG_RE="^sleep 45\\.$$[0-9]\$"
-# survivors — this run's hang fixtures still running, or ERR when the process table cannot be read:
-# pgrep exits 1 for "no match" and above 1 for a failure, and only the first is an empty answer.
+# survivors — this run's hang fixtures still running, or `ERR rc=<n>: <stderr>` when the process
+# table cannot be read: pgrep exits 1 for "no match" and above 1 for a failure, and only the first is
+# an empty answer. A failure is retried twice, briefly — the probe is not what is under test — and
+# the last one's status and diagnostic are what a red reports.
 survivors() {
-  local out rc
-  out="$(pgrep -f "$HANG_RE" 2>/dev/null)"; rc=$?
-  case "$rc" in 0) printf '%s' "$out" | tr '\n' ' ' ;; 1) : ;; *) printf 'ERR' ;; esac
+  local out rc err _
+  for _ in 1 2 3; do
+    out="$(pgrep -f "$HANG_RE" 2>"$work/pgrep.err")"; rc=$?
+    case "$rc" in 0|1) break ;; esac
+    sleep 0.3
+  done
+  case "$rc" in
+    0) printf '%s' "$out" | tr '\n' ' ' ;;
+    1) : ;;
+    *) err="$(head -c 300 "$work/pgrep.err" 2>/dev/null | tr '\n' ' ')"; printf 'ERR rc=%s: %s' "$rc" "$err" ;;
+  esac
 }
 kill_own() { pkill -KILL -f "$HANG_RE" 2>/dev/null; return 0; }
 no_survivor() {   # <label> — after the harness has returned, none of this run's hung suites may live
   local s; s="$(survivors)"
   case "$s" in
     '')  ok ;;
-    ERR) bad "$1: the process table could not be read (pgrep failed), so whether a hung suite survived is unknown" ;;
+    ERR*) bad "$1: the process table could not be read (pgrep failed: ${s#ERR }), so whether a hung suite survived is unknown" ;;
     *)   bad "$1: hung suite(s) still running after the harness returned (pids $s)"; kill_own ;;
   esac
 }
@@ -548,7 +558,7 @@ set +m
 _deadline=$(( EPOCHSECONDS + 30 ))
 until [ -n "$(survivors)" ] || [ "$EPOCHSECONDS" -ge "$_deadline" ]; do sleep 0.2; done
 case "$(survivors)" in
-  ''|ERR) bad "cancellation: the hung row never started (or the process table is unreadable), so this case proves nothing" ;;
+  ''|ERR*) bad "cancellation: the hung row never started (or the process table is unreadable), so this case proves nothing" ;;
   *) ok ;;
 esac
 kill -TERM -- "-$_cpid" 2>/dev/null
