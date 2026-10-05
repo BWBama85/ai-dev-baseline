@@ -14,8 +14,8 @@ proves — so no job's own shell is ever the bootstrap case `adb_require_bash` e
 sub-floor half goes looking for an older interpreter **on the machine** instead, and `macos-latest`
 is the only per-PR environment that has one: `/bin/bash`, permanently 3.2.57. It reaches the check
 through `selfcheck-macos`, which runs the offline suite there, so the parse and evaluation probes
-really do run under 3.2 on that job. (That job skips two named steps, one since #339 — see below. It is
-not this one: `bash-floor` still runs, and it is what carries `--sub-floor`.)
+really do run under 3.2 on that job. (That job skips the named mutation harnesses listed below. None
+of them is this one: `bash-floor` still runs, and it is what carries `--sub-floor`.)
 
 On the Ubuntu runner there is no bash below the floor at all, so the half states a **SKIP** and
 names every interpreter it probed. That is the honest answer rather than a gap: running the parse
@@ -289,7 +289,7 @@ individually would need another hand-added job every time a `check-*.sh` lands, 
 one would be invisible.
 
 **Every mutation harness is gated on its inputs, on both legs (#441, D91).** A `--mutation`
-harness re-runs a whole suite once per injected defect to prove that suite can go red, and its
+harness runs its suite once per injected defect to prove that suite can go red, and its
 verdict depends on a small declared input set — the library it mutates, its suite,
 `scripts/check-lib.sh`, `scripts/lib/common.sh` — recorded in `scripts/selfcheck.sh --list` (field
 5). On a change touching none of it, the harness re-derives the answer it already gave on `main`,
@@ -337,7 +337,8 @@ copy of each workflow file — requiring the suite red on each row's own witness
 **Less exactly five named steps — one since #339, one since PR #429, one since PR #443, one since
 PR #463, one since PR #504.** The job invokes
 `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation`. Each
-re-runs a whole suite once per injected defect to answer a question about *logic* — can the guards
+runs its suite once per injected defect — whole, or since #468 only the block that holds the row's
+witness — to answer a question about *logic* — can the guards
 fail closed? — and an ubuntu job already answers it on every relevant PR: `adopt` for the first
 (on run 32451790033 it was 680s of a 1086s job that was the run's critical path),
 `pattern-ledger` for the second (on run 32889697083 it was 1932s of a 39.5-minute job, and the

@@ -141,7 +141,7 @@ _RS_MARKER_JQ='
   # A prefix test, not a parse: a slug may itself begin with digits (issue-431-2-factor-auth).
   | ("issue-" + (.issue | gsub(","; "-")) + "-") as $pfx | if (.branch | startswith($pfx)) then . else error("branch-issue") end
   | if (str(.phase; 32) and (.phase | phase_ok)) then . else error("phase") end
-  | (has("owner")) as $had_owner
+  | (has("owner")) as $had_owner   # marker
   | .owner = (if $had_owner then .owner else "" end)
   | if (str(.owner; 128) and (.owner|unsafe|not) and (($had_owner|not) or (.owner != ""))) then . else error("owner") end
   | (has("prUrl")) as $had_pr
