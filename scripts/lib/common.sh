@@ -4481,7 +4481,11 @@ adb_run_bounded() {
   # reported as a clean success carrying truncated output — silent incompleteness accepted as a
   # result, and GNU `timeout` does NOT have that flaw (it returns 124 for that child), so gating on
   # rc would also reintroduce the platform-dependent split the normalization above eliminates.
-  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
+  #
+  # …AND SWEEP THE GROUP, exactly as the binary path does after a fired bound (#445). The watcher was
+  # stopped the moment the wait returned, and its KILL comes only after the grace, so a direct child
+  # that died on the TERM left any member of its group that ignores TERM running, unreached.
+  if [ -f "$flag" ]; then rm -f "$flag"; _adb_bounded_signal KILL "$cmd_pid"; return 124; fi
   rm -f "$flag"; return "$rc"
 }
 

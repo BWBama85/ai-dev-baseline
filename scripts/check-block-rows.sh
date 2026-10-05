@@ -407,27 +407,53 @@ check_copy_worktree "$cw/nope" "$cw/nope-dst" 2>/dev/null; [ "$?" -ne 0 ] && ok 
 # --- 10. the row deadline (#445) ------------------------------------------------------------------
 #
 # A mutant that BLOCKS must end as a named verdict within the bound, in both pools, and so must a
-# control that never finishes. Every hang below sleeps for a distinctive duration, so "nothing
-# survived" is a process-table question rather than an inference from the verdict text.
-
-survivors() { pgrep -f 'sleep 4450[0-9]' 2>/dev/null | tr '\n' ' '; }
-no_survivor() {   # <label> — after the harness has returned, no hung suite may still be running
-  local s; s="$(survivors)"
-  if [ -z "$s" ]; then ok; else bad "$1: hung suite(s) still running after the harness returned (pids $s)"; pkill -f 'sleep 4450[0-9]' 2>/dev/null; fi
+# control that never finishes. Every hang below is a `sleep` of a duration carrying THIS run's pid, so
+# "nothing survived" is a process-table question that can only ever match this run's own fixtures —
+# and each sleep is itself bounded (45 s), so a broken deadline fails these cases by name, in about
+# a minute, instead of holding the suite until its job is cancelled.
+HANG="45.$$"; HANG_RE="^sleep 45\\.$$[0-9]\$"
+# survivors — this run's hang fixtures still running, or ERR when the process table cannot be read:
+# pgrep exits 1 for "no match" and above 1 for a failure, and only the first is an empty answer.
+survivors() {
+  local out rc
+  out="$(pgrep -f "$HANG_RE" 2>/dev/null)"; rc=$?
+  case "$rc" in 0) printf '%s' "$out" | tr '\n' ' ' ;; 1) : ;; *) printf 'ERR' ;; esac
 }
+kill_own() { pkill -KILL -f "$HANG_RE" 2>/dev/null; return 0; }
+no_survivor() {   # <label> — after the harness has returned, none of this run's hung suites may live
+  local s; s="$(survivors)"
+  case "$s" in
+    '')  ok ;;
+    ERR) bad "$1: the process table could not be read (pgrep failed), so whether a hung suite survived is unknown" ;;
+    *)   bad "$1: hung suite(s) still running after the harness returned (pids $s)"; kill_own ;;
+  esac
+}
+# within <label> <t0> — the harness returned well inside the fixtures' own 45 s sleep: the bound, not
+# the sleep ending, is what let it go.
+within() { if [ $(( SECONDS - $2 )) -lt 40 ]; then ok; else bad "$1: took $(( SECONDS - $2 ))s — the bound did not end it, the fixture's own sleep did"; fi; }
 
 # 10a. row mode: a hung mutant is named, counted as applied, never as RED.
-rows hang "check_row hang lib.sh uses-helper 'T_A=1' 'sleep 44501' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+_t0=$SECONDS
+rows hang "check_row hang lib.sh uses-helper 'T_A=1' 'sleep ${HANG}1' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "a hung row" "$_t0"
 eq "$rc" 1 "a hung row fails the harness"
 has "$out" "mutation 'hang': hung — no verdict within 3s" "a hung row is named, with the bound"
 has "$out" "1/1 mutation(s) applied, 0 observed RED" "a hung row reached the code, so it is applied, and it is never RED"
 has "$out" "row deadline 3s" "the tally names the bound it ran under"
 no_survivor "row mode"
 
-# 10b. a suite that IGNORES TERM is still reaped: the KILL after the grace must land on the group.
-rows hang-stubborn "check_row stubborn lib.sh uses-helper 'T_A=1' 'trap \"\" TERM; sleep 44502' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+# 10b. a suite that IGNORES TERM is still reaped, and so is a TERM-proof descendant of a suite that
+# died on the TERM: in both, only the group sweep after the fired bound reaches what is left.
+_t0=$SECONDS
+rows hang-stubborn "check_row stubborn lib.sh uses-helper 'T_A=1' 'trap \"\" TERM; sleep ${HANG}2' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "a TERM-proof suite" "$_t0"
 has "$out" "mutation 'stubborn': hung — no verdict within 3s" "a TERM-proof hung row is named"
 no_survivor "a suite that ignores TERM"
+_t0=$SECONDS
+rows hang-orphan "check_row orphan lib.sh uses-helper 'T_A=1' '( trap \"\" TERM; exec sleep ${HANG}7 ) & sleep ${HANG}8' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "a suite with a TERM-proof descendant" "$_t0"
+has "$out" "mutation 'orphan': hung — no verdict within 3s" "a hung row whose suite left a TERM-proof descendant is named"
+no_survivor "a TERM-proof descendant of a suite that died on TERM"
 
 # 10c. a mutant that finishes INSIDE the bound is scored as what it was, not as hung.
 rows slow "check_row slow lib.sh uses-helper 'neg() { echo' 'neg() { sleep 1; echo \"\$(( 1 + \$1 ))\"; return; echo' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=8
@@ -443,15 +469,19 @@ variant_after() {   # <name> <exact line> <line to insert after it>
     "$fix/suite.sh" > "$work/$1/suite.sh"
   stub_gate "$work/$1"
 }
-variant_after hangctl '  eq "$(sq 3)" 9 "sq-value"' 'sleep 44503'
+variant_after hangctl '  eq "$(sq 3)" 9 "sq-value"' "sleep ${HANG}3"
+_t0=$SECONDS
 ADB_T_FIX="$work/hangctl" rows hangctl "check_row neg lib.sh uses-helper '0 - \$1' '0 + \$1' 'neg-value'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "a hung full control" "$_t0"
 eq "$rc" 1 "a hung full control fails the harness"
 has "$out" "the UNMUTATED suite did not finish within 3s" "a hung full control is named"
 no_survivor "a hung full control"
 
 # 10e. a block's control hangs only when it runs as a SELECTION: its rows say so.
-variant_after hangsel 'if check_block base; then' '  [ -z "${ADB_CHECK_BLOCK:-}" ] || sleep 44504'
+variant_after hangsel 'if check_block base; then' "  [ -z \"\${ADB_CHECK_BLOCK:-}\" ] || sleep ${HANG}4"
+_t0=$SECONDS
 ADB_T_FIX="$work/hangsel" rows hangsel "check_row add lib.sh base '\$1 + \$2' '\$1 - \$2' 'add-sum'" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "a hung block control" "$_t0"
 eq "$rc" 1 "a hung block control fails the harness"
 has "$out" "control failed for block base: its unmutated control did not finish within 3s" "a hung block control is named on its rows"
 no_survivor "a hung block control"
@@ -473,25 +503,35 @@ cat > "$work/pool-driver.sh" <<'EOF'
 #!/usr/bin/env bash
 # shellcheck source=/dev/null
 . "$ADB_T_LIB"
-prep() { mkdir -p "$1" && cp -R "$ADB_T_FIX/." "$1/" && printf '%s' "$1/lib.sh"; }
+prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; mkdir -p "$1" && cp -R "$ADB_T_FIX/." "$1/" && printf '%s' "$1/lib.sh"; }
 run() { ADB_T_LIB="$ADB_T_LIB" bash "$1/suite.sh"; }
 check_mut caught '0 - $1' '0 + $1' 'neg-value'
-check_mut hung 'T_A=1' 'sleep 44505' 'neg-value'
+check_mut hung 'T_A=1' "sleep ${ADB_T_HANG}5" 'neg-value'
 check_mutation_pool "fixture" "$ADB_T_WD" prep run 4
 check_summary pool-driver
 EOF
-out="$(env ADB_T_LIB="$T_LIB" ADB_T_FIX="$fix" ADB_T_WD="$work/wd-pool" ADB_MUTATION_ROW_TIMEOUT_SECS=3 bash "$work/pool-driver.sh" 2>&1)"; rc=$?
+pool_driver() {   # <name> [ENV=val...] — sets $out and $rc
+  local nm="$1"; shift
+  rm -f "$work/prep-$nm.log"
+  out="$(env ADB_T_LIB="$T_LIB" ADB_T_FIX="$fix" ADB_T_WD="$work/wd-$nm" ADB_T_PREP_LOG="$work/prep-$nm.log" \
+           ADB_T_HANG="$HANG" "$@" bash "$work/pool-driver.sh" 2>&1)"; rc=$?
+}
+_t0=$SECONDS
+pool_driver pool ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "a hung row in the whole-suite pool" "$_t0"
 eq "$rc" 1 "a hung row fails the whole-suite pool"
 has "$out" "mutation 'hung': hung — no verdict within 3s" "the whole-suite pool names a hung row"
 has "$out" "2/2 mutation(s) applied, 1 observed RED on their own witness (pool=" "the whole-suite pool counts a hung row as applied, not RED"
 has "$out" "row deadline 3s" "the whole-suite pool names its bound"
 no_survivor "the whole-suite pool"
-out="$(env ADB_T_LIB="$T_LIB" ADB_T_FIX="$fix" ADB_T_WD="$work/wd-pool-bad" ADB_MUTATION_ROW_TIMEOUT_SECS=x bash "$work/pool-driver.sh" 2>&1)"
-has "$out" "ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer" "the whole-suite pool refuses a bad bound"
+pool_driver pool-bad ADB_MUTATION_ROW_TIMEOUT_SECS=x
+eq "$rc" 1 "the whole-suite pool fails on a bad bound"
+has "$out" "ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer" "the whole-suite pool names a bad bound"
+[ ! -e "$work/prep-pool-bad.log" ] && ok || bad "the whole-suite pool built a tree copy before the bound was validated"
 
 # 10h. CANCELLATION: the bound runs each suite in a process group of its own, so terminating the
 # harness the way selfcheck's _cleanup does (TERM to the harness's group) must still reach it.
-printf '%s\n' "check_row cancel lib.sh uses-helper 'T_A=1' 'sleep 44506' 'neg-value'" > "$work/rows-cancel.sh"
+printf '%s\n' "check_row cancel lib.sh uses-helper 'T_A=1' 'sleep ${HANG}6' 'neg-value'" > "$work/rows-cancel.sh"
 set -m
 env ADB_T_LIB="$T_LIB" ADB_T_FIX="$fix" ADB_T_ROWS="$work/rows-cancel.sh" ADB_T_WD="$work/wd-cancel" \
   ADB_T_PREP_LOG="$work/prep-cancel.log" ADB_MUTATION_ROW_TIMEOUT_SECS=600 bash "$work/driver.sh" > /dev/null 2>&1 &
@@ -499,11 +539,15 @@ _cpid=$!
 set +m
 _deadline=$(( EPOCHSECONDS + 30 ))
 until [ -n "$(survivors)" ] || [ "$EPOCHSECONDS" -ge "$_deadline" ]; do sleep 0.2; done
-if [ -n "$(survivors)" ]; then ok; else bad "cancellation: the hung row never started, so this case proves nothing"; fi
+case "$(survivors)" in
+  ''|ERR) bad "cancellation: the hung row never started (or the process table is unreadable), so this case proves nothing" ;;
+  *) ok ;;
+esac
 kill -TERM -- "-$_cpid" 2>/dev/null
 _deadline=$(( EPOCHSECONDS + 15 ))
 until [ -z "$(survivors)" ] || [ "$EPOCHSECONDS" -ge "$_deadline" ]; do sleep 0.2; done
 no_survivor "cancelling the harness"
 wait "$_cpid" 2>/dev/null
+kill_own
 
 check_summary "block-rows"

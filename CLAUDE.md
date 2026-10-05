@@ -93,12 +93,14 @@ those. The rules below are specific to this repo's code.
      approximation with a stated bound — a row whose block *executes* another row's target can be
      gated out — and `mutation-nightly.yml` is the backstop that runs every row unconditionally.
      A row target the step does not declare refuses gating for the whole step and says which.
-   - **Nothing is awaited in silence** (#445, D122). Every suite run a mutation harness makes — each
-     mutant, each block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS`
-     (default 1800, a hang backstop and not a budget), and its expiry is a named `hung` verdict:
-     applied, never RED. Above it, a step still running past `ADB_SELFCHECK_OVERRUN_SECS` (default
-     1800) is named live, once per multiple of it, and again on the `result` block's `overran` line.
-     That warning reports and never kills: the step keeps its own verdict.
+   - **Nothing is awaited in silence** (#445, D122). Every suite run the two shared harness pools
+     make (`check_mutation_pool`, `check_mutation_rows`) — each mutant, each block's control, the
+     full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a hang backstop and
+     not a budget), and its expiry is a named `hung` verdict: applied, never RED. A run a harness
+     makes outside those pools, or a harness with a pool of its own, is not; above all of them, a
+     step still running past `ADB_SELFCHECK_OVERRUN_SECS` (default 1800) is named live, once per
+     multiple of it, and again on the `result` block's `overran` line. That warning reports and
+     never kills: the step keeps its own verdict.
    - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),
      **`--skip a,b`** runs everything except them (same unknown-name contract, and the skipped
      names are printed — twice, since #339 — because a step dropped in silence is indistinguishable

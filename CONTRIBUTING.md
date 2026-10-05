@@ -143,9 +143,17 @@ block unmutated first to require the assertion count a full pass gives it. So a 
 is a red control, not a quiet GREEN. The nightly sets `ADB_MUTATION_FULL_SUITE=1`, which scores every
 row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a suite by hand.
 
+**Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each
+block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a
+backstop for a hang rather than a budget), and a run that reaches it is scored `hung — no verdict
+within Ns`: it counts as applied, never as RED. One level up, a step still running past
+`ADB_SELFCHECK_OVERRUN_SECS` (default 1800) is named while it runs, once per multiple of that
+ceiling, and again on the `result` block's `overran` line. That warning never kills anything — the
+step keeps its own verdict — so on a slow machine raise the ceiling rather than reading it as a red.
+
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
-where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335
-counted it. Read it for what these checks are *for*; ask `--list` for what runs.
+where this walkthrough covers a minority of them and was silently claiming to be the whole set
+until #335 counted it. Read it for what these checks are *for*; ask `--list` for what runs.
 
 **shellcheck** (tracked `*.sh` + `bin/agent-init`),
 **build-drift** (rebuild + assert generated root docs, procedures **and** skills are current — not

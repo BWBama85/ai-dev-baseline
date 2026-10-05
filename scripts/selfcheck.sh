@@ -1080,6 +1080,7 @@ done
 # Rationale: D87.
 summarize_run() {   # <captured-log>
   local log="$1" failed witnesses _f
+  local -a _names
   # `-f` before `-r`: `-r` alone is true for a readable DIRECTORY, which then parsed as a log with
   # no markers in it and rendered an invented "the run was cancelled" report. A FIFO would have
   # been worse — `sed` on it blocks until someone writes, with the job's timeout as the only bound.
@@ -1108,8 +1109,11 @@ summarize_run() {   # <captured-log>
     # can forge by printing `FAILED: ` at the start of a line. A name carrying a backtick would
     # close the span and render the rest as markup in a page a maintainer reads. A token that is
     # not a [A-Za-z0-9_-] slug is reported as unparsable rather than rendered.
-    # shellcheck disable=SC2086  # deliberate word-split of a space-joined name list
-    for _f in $failed; do
+    # SPLIT INTO AN ARRAY, never by an unquoted expansion: that also GLOBS, so a forged `scripts/*`
+    # token became one omission notice per file in the checkout, and a glob matching slug-shaped
+    # names would have rendered names no run printed.
+    read -r -a _names <<< "$failed"
+    for _f in "${_names[@]}"; do
       case "$_f" in
         *[!A-Za-z0-9_-]*|'') printf ' (one unparsable name omitted)' ;;
         *) printf ' `%s`' "$_f" ;;
@@ -1145,12 +1149,13 @@ summarize_run() {   # <captured-log>
 # reason: a step's own output can forge either line.
 summarize_overran() {   # <captured-log>
   local names _n
+  local -a _names
   names="$(sed -n 's/^overran (past [0-9]*s): //p' "$1" | tail -1)"
   [ -n "$names" ] || names="$(sed -n 's/^selfcheck: still running past [0-9]*s: \([^ ]*\) (.*/\1/p' "$1" | awk '!seen[$0]++' | tr '\n' ' ')"
   [ -n "${names// /}" ] || return 0
   printf '\n**Ran past the overrun warning:**'
-  # shellcheck disable=SC2086  # deliberate word-split of a space-joined name list
-  for _n in $names; do
+  read -r -a _names <<< "$names"   # an array, never an unquoted expansion — see summarize_run
+  for _n in "${_names[@]}"; do
     case "$_n" in
       *[!A-Za-z0-9_-]*|'') printf ' (one unparsable name omitted)' ;;
       *) printf ' `%s`' "$_n" ;;
@@ -1264,7 +1269,7 @@ WORK="$(mktemp -d)" || { echo "selfcheck: FATAL — cannot create a scratch dire
 declare -A LIVE=()          # pid -> 1, for the signal path
 declare -a FAILED=()        # step names, in emission order
 declare -a SLOW=()          # "secs name", for the summary
-declare -a OVERRAN=()       # step names past the overrun ceiling, in the order they crossed it
+declare -a OVERRAN=()       # step names past the overrun ceiling, in the order the runner noticed them
 declare -A OVER_LAST=()     # name -> the last multiple of the ceiling already reported
 
 # Terminate every live worker — the whole PROCESS GROUP, not the pid.

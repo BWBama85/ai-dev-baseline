@@ -953,6 +953,14 @@ overrun_sc 2 --serial --only "$ONLY"
 yes "$RC_" "--serial with an overrunning step that passes still exits 0"
 has "$OUT" "selfcheck: still running past 2s: gates (" "--serial names a step past the ceiling LIVE"
 has "$(overran_line)" "gates" "--serial's result block names it too"
+# …and a step that overruns and THEN fails keeps its own status: the serial loop's wait reaps the
+# ticker as well as the step, and only the step's status may reach the verdict.
+reset_ctl
+printf '5\n' > "$FX/ctl/gates.sleep"; printf '6\n' > "$FX/ctl/gates.rc"
+overrun_sc 2 --serial --only "$ONLY"
+eq "$RC_" "1" "--serial: a step that overran and then failed still fails the run"
+has "$OUT" "FAILED: gates" "--serial: the overrunning failure is named"
+has "$OUT" "FAIL (exit 6," "--serial: the overrunning failure keeps its own exit code, not the ticker's"
 
 # The ticker must not hold a fast run open: the default one-minute tick is killed when the pool drains.
 reset_ctl
@@ -992,6 +1000,13 @@ printf '=== result ===\noverran (past 1800s): gates x`**INJECTED**`\nFAILED: gat
 summarize "$sum_fx/overran-forged.log"
 hasnt "$OUT" '**INJECTED**' "a forged overrun name is not rendered"
 has "$OUT" "unparsable name omitted" "...and its omission is stated"
+# A GLOB-SHAPED TOKEN IS ONE TOKEN. The digest runs from the checkout root, where an unquoted
+# expansion of `scripts/*` became one omission notice per file there (and a glob that matched
+# slug-shaped names would have rendered names no run printed). Both lists, since both split the same way.
+printf '=== result ===\noverran (past 1800s): gates scripts/*\nFAILED: gates scripts/*\nSOME CHECKS FAILED\n' > "$sum_fx/glob.log"
+summarize "$sum_fx/glob.log"
+eq "$(printf '%s\n' "$OUT" | grep -o 'unparsable name omitted' | wc -l | tr -d ' ')" "2" \
+  "a glob-shaped name is one omitted token in each list, never expanded against the checkout"
 
 # ============================== 9. large output ===============================================
 # A step's buffer is a file precisely so a big one survives; a variable would have eaten the

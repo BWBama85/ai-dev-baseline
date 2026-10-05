@@ -322,13 +322,15 @@ _check_mut_score() {
 }
 
 # --- the row deadline (#445) -------------------------------------------------------------------
-# Every suite run a harness makes is bounded: each mutant, each block's unmutated control and the
+# Every suite run THESE TWO POOLS make is bounded: each mutant, each block's unmutated control and the
 # full unmutated control. Without it, a mutant that BLOCKS (a FIFO opened with no writer, a `read`
 # with no -t, a lock never released) is indistinguishable from one still running, and the harness
 # waits on it for as long as the operator does. The bound is a hang backstop, not a budget:
 # ADB_MUTATION_ROW_TIMEOUT_SECS, default 1800, sized for a suite running several times its idle time
-# inside a contended pool. Its expiry is a named verdict, never a pass. The tree-copy callback is not
-# bounded: it runs before the injection, so nothing it executes has been mutated. (D122)
+# inside a contended pool. Its expiry is a named verdict, never a pass. NOT bounded here: the
+# tree-copy callback (it runs before the injection, so nothing it executes has been mutated), a run a
+# harness makes itself outside these pools, and the harnesses that hand-roll a pool of their own —
+# selfcheck's overrun warning is what names a hang there. (D122)
 
 CHECK_ROW_SECS=1800
 CHECK_RUN_HUNG=0
@@ -354,30 +356,25 @@ _check_row_secs() {
 #   * The WATCHDOG path of adb_run_bounded is forced, because the `timeout` binary cannot execute a
 #     shell function and every callback here is one. `_check_run_as_caller` takes the override away
 #     again inside the bounded subshell, so the suite under test sees the environment it was given —
-#     several suites here exercise adb_run_bounded's binary path themselves.
+#     several suites here exercise adb_run_bounded's binary path themselves. A suite that ignores
+#     TERM, or leaves a descendant that does, is reaped by that path's group sweep.
 #   * "Hung" is decided by elapsed time, as adb_run_bounded's own 137 normalisation is: a suite that
 #     exits 124 on its own before the bound is scored as the exit it was.
 _check_run_bounded() {
-  local of="$1" was="${ADB_NO_TIMEOUT_BIN-__adb_unset__}" t0="$SECONDS" rc
+  local of="$1" had="${ADB_NO_TIMEOUT_BIN+set}" was="${ADB_NO_TIMEOUT_BIN-}" t0="$SECONDS" rc
   shift
-  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded "$CHECK_ROW_SECS" 5 _check_run_as_caller "$was" "$@" > "$of" 2>&1 < /dev/null; rc=$?
+  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded "$CHECK_ROW_SECS" 5 _check_run_as_caller "$had" "$was" "$@" > "$of" 2>&1 < /dev/null; rc=$?
   CHECK_RUN_HUNG=0
   [ "$rc" -eq 124 ] && [ $(( SECONDS - t0 )) -ge "$CHECK_ROW_SECS" ] && CHECK_RUN_HUNG=1
   return "$rc"
 }
 
-# _check_run_as_caller <saved ADB_NO_TIMEOUT_BIN, or __adb_unset__> <fn> [args…] — restore the
-# caller's value of the override, then run <fn>. Runs only inside adb_run_bounded's subshell.
-#
-# TERM is HANDLED here, never ignored. A handled signal reverts to its default in the suite <fn>
-# starts, so the suite still dies on the watchdog's TERM; but this subshell, which is the process
-# adb_run_bounded waits on, now outlives a suite that ignores TERM. Without that, the subshell died
-# at once, the wait returned, adb_run_bounded stopped its watcher before the KILL that follows the
-# grace, and the TERM-proof suite ran on as an orphan.
+# _check_run_as_caller <"set" or ""> <saved value> <fn> [args…] — restore the caller's override (its
+# presence and its value, separately, so no value can be mistaken for "unset"), then run <fn>. Runs
+# only inside adb_run_bounded's subshell.
 _check_run_as_caller() {
-  if [ "$1" = __adb_unset__ ]; then unset ADB_NO_TIMEOUT_BIN; else export ADB_NO_TIMEOUT_BIN="$1"; fi
-  shift
-  trap ':' TERM
+  if [ "$1" = set ]; then export ADB_NO_TIMEOUT_BIN="$2"; else unset ADB_NO_TIMEOUT_BIN; fi
+  shift 2
   "$@"
 }
 

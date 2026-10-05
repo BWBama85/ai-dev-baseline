@@ -1469,6 +1469,39 @@ if [ -s "$gcpid" ]; then ok; else bad "watchdog: the probe never recorded a gran
 eq "$(gc_alive)" "dead" "watchdog: the bound reaps the child's GRANDCHILD, not just the child"
 gc_reset
 
+# …and the other half of that shape (#445): a leader that DIES on the TERM while a member of its
+# group ignores it. The watcher was stopped as soon as the wait returned, and its KILL comes only after
+# the grace, so the TERM-proof member ran on. The binary path's sweep already covered this; the
+# watchdog path now sweeps the same way when its bound fired.
+gcp2="$work/gcprobe2.sh"
+cat > "$gcp2" <<EOF
+#!/usr/bin/env bash
+( trap '' TERM; exec sleep 60 ) &
+echo \$! > "$gcpid"
+while :; do sleep 1; done
+EOF
+chmod +x "$gcp2"
+gc_reset
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 "$gcp2" >/dev/null 2>&1
+eq "$?" "124" "watchdog: a leader that dies on TERM still returns 124"
+sleep 1
+if [ -s "$gcpid" ]; then ok; else bad "watchdog: the leader-dies probe never recorded a pid — the case did not run"; fi
+eq "$(gc_alive)" "dead" "watchdog: a TERM-proof member outlives a leader that died on TERM unless the sweep reaps it"
+gc_reset
+# THE SWEEP IS CONDITIONAL ON THE BOUND HAVING FIRED on this path too — see the binary path's case below.
+livepid="$work/livepid-w"; rm -f "$livepid"
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 "$BASH" -c "sleep 45 & echo \$! > \"$livepid\"; exit 0" >/dev/null 2>&1
+eq "$?" "0" "watchdog: a command that finishes on its own still returns its own status"
+sleep 1
+survivor="$(cat "$livepid" 2>/dev/null)"
+case "$survivor" in
+  ''|*[!0-9]*) bad "watchdog: the clean-exit probe never recorded a background pid — the case did not run" ;;
+  *) if kill -0 "$survivor" 2>/dev/null; then ok
+     else bad "watchdog: the sweep killed a SUCCESSFUL run's background work — it must only fire when the bound did"; fi
+     kill -KILL "$survivor" 2>/dev/null || : ;;
+esac
+rm -f "$livepid"
+
 # The timeout binary already did this — that is what made the watchdog's behavior a DIVERGENCE
 # rather than a shared limitation — so assert it holds rather than assuming it, and skip honestly
 # where the binary is absent instead of reporting a case that never ran.
@@ -3122,6 +3155,20 @@ if [ "${1:-}" = "--mutation" ]; then
     "adb_publish_json refuses a rename that landed INSIDE a directory" \
     '' \
     '/^  if \[ ! -f "\$dest" \]; then$/s/! -f "\$dest"/-z x/'
+
+  # 17. The watchdog path stops sweeping after a fired bound (#445): a leader that died on the TERM
+  #     leaves a TERM-proof member of its group running, because the watcher's KILL never comes.
+  mutate watchdog-sweep-dropped \
+    "watchdog: a TERM-proof member outlives a leader that died on TERM" \
+    '_adb_bounded_signal KILL "$cmd_pid"; return 124' \
+    '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; return 124; fi/s/ _adb_bounded_signal KILL "\$cmd_pid";//'
+
+  # 18. …and the sweep fires on EVERY return, so a command that finished on its own loses the
+  #     background work it deliberately left running.
+  mutate watchdog-sweep-unconditional \
+    "watchdog: the sweep killed a SUCCESSFUL run's background work" \
+    '' \
+    '/^  rm -f "\$flag"; return "\$rc"$/s/return "\$rc"/_adb_bounded_signal KILL "$cmd_pid"; return "$rc"/'
 
   # --- run them, bounded ------------------------------------------------------------------------
   # `adb_pool_size` is the one home for the width (scripts/lib/common.sh): min(cpu, 8), so it
