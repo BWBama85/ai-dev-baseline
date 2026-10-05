@@ -334,17 +334,14 @@ CHECK_ROW_SECS=1800
 CHECK_RUN_HUNG=0
 
 # _check_row_secs <label> — validate ADB_MUTATION_ROW_TIMEOUT_SECS once, before any row is built, into
-# CHECK_ROW_SECS. A value that is not a positive integer records ONE failure and returns 1: a bound
-# quietly replaced by its default is a knob that does not do what it says. Leading zeros are stripped,
-# since `[ 0900 -lt … ]` and `$(( 0900 ))` would read the same text as two different numbers.
+# CHECK_ROW_SECS, through common.sh's `_adb_pos_int` (which also normalises leading zeros). A value
+# that is not a positive integer records ONE failure and returns 1: a bound quietly replaced by its
+# default is a knob that does not do what it says.
 _check_row_secs() {
-  local v="${ADB_MUTATION_ROW_TIMEOUT_SECS:-1800}"
-  case "$v" in
-    ''|*[!0-9]*) bad "$1 --mutation: ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer of seconds, got '$v'"; return 1 ;;
-  esac
-  while [ "${v#0}" != "$v" ] && [ -n "${v#0}" ]; do v="${v#0}"; done
-  if [ "$v" = 0 ] || [ "${#v}" -gt 9 ]; then
-    bad "$1 --mutation: ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer of seconds, got '${ADB_MUTATION_ROW_TIMEOUT_SECS:-}'"; return 1
+  local v
+  if ! v="$(_adb_pos_int "${ADB_MUTATION_ROW_TIMEOUT_SECS:-1800}")"; then
+    bad "$1 --mutation: ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer of seconds, got '${ADB_MUTATION_ROW_TIMEOUT_SECS:-}'"
+    return 1
   fi
   CHECK_ROW_SECS="$v"
 }

@@ -1248,14 +1248,10 @@ fi
 # next tick. It reports and never kills — the per-row deadline in check-lib.sh is what turns a hung
 # mutant into a verdict, and a step killed here would trade a hang for a red the step did not earn.
 # Validated here, after the terminal modes, so `--list` and `--summarize` never depend on it.
-OVERRUN="${ADB_SELFCHECK_OVERRUN_SECS:-1800}"
-case "$OVERRUN" in
-  ''|*[!0-9]*) echo "selfcheck: ADB_SELFCHECK_OVERRUN_SECS must be a positive integer of seconds, got '$OVERRUN'" >&2; exit 2 ;;
-esac
-while [ "${OVERRUN#0}" != "$OVERRUN" ] && [ -n "${OVERRUN#0}" ]; do OVERRUN="${OVERRUN#0}"; done
-if [ "$OVERRUN" = 0 ] || [ "${#OVERRUN}" -gt 9 ]; then
-  echo "selfcheck: ADB_SELFCHECK_OVERRUN_SECS must be a positive integer of seconds, got '${ADB_SELFCHECK_OVERRUN_SECS:-}'" >&2; exit 2
-fi
+OVERRUN="$(_adb_pos_int "${ADB_SELFCHECK_OVERRUN_SECS:-1800}")" || {
+  echo "selfcheck: ADB_SELFCHECK_OVERRUN_SECS must be a positive integer of seconds, got '${ADB_SELFCHECK_OVERRUN_SECS:-}'" >&2
+  exit 2
+}
 # A minute between looks, or the ceiling itself when it is shorter: a hung step is named within a
 # minute of crossing it, and a short ceiling (the guard's fixtures) is still observed on time.
 OVERRUN_TICK=60
