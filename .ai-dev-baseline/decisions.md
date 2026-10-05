@@ -8766,12 +8766,12 @@ survive is the part a later reader needs.
 - scope:         The branches of a stack that #440's slices create and ship in this repository, while
                  that stack is open. **Owner decision 2026-10-04: the deviation takes effect only
                  through #440.** Until a slice ships a stack, nothing here ships as one, and every rule
-                 above holds for every branch. Each slice must meet four requirements, each closing a
-                 hole the spike or its review found:
+                 above holds for every branch. Each slice must meet four requirements, each answering
+                 a hole the spike or its review found:
                  - A layer merges only through the asynchronous merge API, with `sha` pinned to the
                    head `pr-review.sh gate --pr <n>` returned for it. Layers merge from the bottom
-                   one at a time: each merge must reach a terminal success, and the remaining stack
-                   is re-read, before the next lowest open layer is gated. A request for a higher
+                   one at a time: each PR must read back as merged, and the remaining stack is
+                   re-read, before the next lowest open layer is gated. A request for a higher
                    layer would merge every open layer below it. gh-stack v0.2.0's `merge` sends no
                    `sha` (`internal/github/merge_async.go`), and the API then pins whatever head it
                    finds when the request arrives, so a push or a cascade between the gate's read and
@@ -8788,6 +8788,16 @@ survive is the part a later reader needs.
                    `cleanup-lib.sh branch-verdict`.
                  - Nobody rebases or force-pushes a stack branch by hand. Only `gh stack` commands
                    and GitHub's cascade do.
+                 These requirements are necessary, not sufficient. A slice must also prove, with a
+                 regression for each case, that no layer merges at a head the declared reviewer did
+                 not clear against the base it lands on. The cases the spike's review found that the
+                 requirements above do not close:
+                 - the gate clears a head, a cascade then moves the base, and the merge request
+                   arrives before the head is rewritten;
+                 - a lower layer reads back as merged before its cascade has finished;
+                 - a clean signal and a base change stamped in the same second;
+                 - an async merge that ends `enqueued` rather than `merged`;
+                 - a `sync` that exits 0 without having published every layer it rebased.
                  Every branch outside such a stack keeps every rule above, `--force-with-lease` on the
                  destructive list included. This does not apply to the installed baseline: an adopting
                  project inherits nothing from this entry before a release ships it.
@@ -8798,7 +8808,8 @@ survive is the part a later reader needs.
                  records each push as a `head_ref_force_pushed` event on the PR rather than replacing
                  the PR. Review currency is detected but not enforced: a rewritten head drops every
                  earlier clean signal (`pr-review.sh gate` 0 to 16), yet `gh stack merge` merged the
-                 rewritten layers without a fresh one. The first two requirements together are what
-                 enforce it: the pin binds the merge to a reviewed head, and the base-change rule
-                 stops a reviewed head from passing against a base it was not reviewed on. The spike
+                 rewritten layers without a fresh one. The first two requirements are where
+                 enforcement starts, not where it is proved. The pin binds the merge to a reviewed
+                 head, and the base-change rule refuses a head reviewed against another base. The
+                 regressions for the listed cases are what show nothing slips between them. The spike
                  drew no inline review threads, so their behaviour across a cascade was not observed.
