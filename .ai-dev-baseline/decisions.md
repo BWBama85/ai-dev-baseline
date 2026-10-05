@@ -8702,7 +8702,8 @@ survive is the part a later reader needs.
                 --pr 513` went from 0 to 16, because codex's `+1` (19:10:55Z) predates the new head.
                 #514 did the same (98bfef0 to e652de9, 0 to 16). Codex did not re-review either new
                 head on its own. No clean signal survived a cascade. The cost #216 deferred is real
-                and bounded: one fresh review for each layer above every merge.
+                and bounded: one fresh review for each layer above every merge, requested after any
+                `sync` has settled, since `sync` rewrites the head again (item 5).
              3. A retarget that keeps the head cannot be made by hand inside a stack. `gh pr edit
                 514 --base main` was refused: "Cannot change the base branch because the pull request
                 is part of a stack." The one such window found is the cascade's own, about 3 s between
@@ -8765,12 +8766,20 @@ survive is the part a later reader needs.
 - scope:         The branches of a stack that #440's slices create and ship in this repository, while
                  that stack is open. **Owner decision 2026-10-04: the deviation takes effect only
                  through #440.** Until a slice ships a stack, nothing here ships as one, and every rule
-                 above holds for every branch. Each slice must meet three requirements, each closing a
+                 above holds for every branch. Each slice must meet four requirements, each closing a
                  hole the spike or its review found:
                  - A layer merges only through the asynchronous merge API, with `sha` pinned to the
-                   head `pr-review.sh gate --pr <n>` returned for it, bottom layer first. gh-stack
-                   v0.2.0's `merge` sends no `sha` (`internal/github/merge_async.go`), so a push or a
-                   cascade between the gate and the merge would land a head nobody reviewed.
+                   head `pr-review.sh gate --pr <n>` returned for it. Layers merge from the bottom
+                   one at a time: each merge must reach a terminal success, and the remaining stack
+                   is re-read, before the next lowest open layer is gated. A request for a higher
+                   layer would merge every open layer below it. gh-stack v0.2.0's `merge` sends no
+                   `sha` (`internal/github/merge_async.go`), and the API then pins whatever head it
+                   finds when the request arrives, so a push or a cascade between the gate's read and
+                   that moment would land a head nobody reviewed.
+                 - The gate treats a clean signal older than the PR's latest
+                   `automatic_base_change_succeeded` or `base_ref_changed` event as stale, and a
+                   regression shows it rejected in the window D120 item 3 describes. The head
+                   pin alone cannot see that window, because the head has not moved yet.
                  - `gh stack sync` runs without `--prune` and without a TTY. v0.2.0 offers to prune
                    only when interactive, with yes as the default, and either path force-deletes
                    every merged local branch except one checked out in another worktree or one it
@@ -8789,6 +8798,7 @@ survive is the part a later reader needs.
                  records each push as a `head_ref_force_pushed` event on the PR rather than replacing
                  the PR. Review currency is detected but not enforced: a rewritten head drops every
                  earlier clean signal (`pr-review.sh gate` 0 to 16), yet `gh stack merge` merged the
-                 rewritten layers without a fresh one. The pinned merge in the first requirement is
-                 what enforces it. The spike drew no inline review threads, so their behaviour across a
-                 cascade was not observed.
+                 rewritten layers without a fresh one. The first two requirements together are what
+                 enforce it: the pin binds the merge to a reviewed head, and the base-change rule
+                 stops a reviewed head from passing against a base it was not reviewed on. The spike
+                 drew no inline review threads, so their behaviour across a cascade was not observed.
