@@ -1622,6 +1622,20 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
   -- $_sc_cost_docs agents.toml .claude/scripts/precommit-gate.sh \
      docs/per-project-overrides.md .github/workflows/ci.yml
 
+# --- the serial prologue's lanes, as the two contributor contracts list them (#445) -------------
+#
+# Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md, and nothing compared
+# either list with the runner. The spelling is DERIVED from `selfcheck.sh --list` — the members in
+# declaration order, backticked, comma-joined, on one line — and bounded on BOTH sides, because a
+# lane that loses its last or first member still matches as a prefix or a suffix of the old list.
+for _lane in mutates-tree load-sensitive; do
+  _members="$(bash scripts/selfcheck.sh --list | awk -F'\t' -v l="$_lane" '$4 == l { printf "%s`%s`", (n++ ? ", " : ""), $1 }')"
+  if [ -z "$_members" ]; then
+    check_note "[selfcheck-lane-$_lane] selfcheck.sh --list reports no member — the pin would compare nothing"; check_fail; continue
+  fi
+  fact "selfcheck-lane-$_lane" "regex:(^|[^ ]|[^,] )${_members}([^,]|\$)" -- CLAUDE.md CONTRIBUTING.md
+done
+
 # --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------
 #
 # The floor number itself, pinned across the constant and the docs that restate it. The constant in

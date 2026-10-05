@@ -117,9 +117,8 @@ those. The rules below are specific to this repo's code.
      Since #268 each individual file is published by **rename**, so no single one is observable
      half-written; what is still not atomic is the transition *across* files, so a reader that
      starts mid-build sees a **mixed generation**. That is why the fix did not retire the pin.
-   - **`load-sensitive` — `session-currency`, `install-migration`, `install-guard`,
-     `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`.** These assert on signal
-     delivery, worker reaping and installer writes, and every one passes unloaded and on the
+   - **`load-sensitive` — `session-currency`, `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`.**
+     These assert on signal delivery, worker reaping and installer writes, and every one passes unloaded and on the
      ubuntu leg. **Two of them account for all four reds** over 08-19..08-21 — `session-currency`
      and `selfcheck-guard` (with `selfcheck-guard-mutation`), one of those runs on `main`, so not
      any PR's diff. The three `install-*` steps have **never** failed there: they join because they
