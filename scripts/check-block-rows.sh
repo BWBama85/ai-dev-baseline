@@ -547,6 +547,17 @@ eq "$rc" 1 "a row whose output cannot be read back fails the harness"
 has "$out" "mutation 'add': its output could not be read back" "an unreadable output is named"
 has "$out" "1/1 mutation(s) applied, 0 observed RED" "an unreadable output is applied, never RED"
 
+# 10g". the bounded subshell restores the caller's override EXACTLY — absent, exported, or set but not
+# exported — so the suite under test sees the environment it was given and nothing the bound needed.
+_envcb() { bash -c 'printf "%s" "${ADB_NO_TIMEOUT_BIN-UNSET}"'; }
+( unset ADB_NO_TIMEOUT_BIN; CHECK_ROW_SECS=30; _check_run_bounded "$work/env1" _envcb )
+eq "$(cat "$work/env1")" UNSET "an absent override stays absent inside the bound"
+( export ADB_NO_TIMEOUT_BIN=0; CHECK_ROW_SECS=30; _check_run_bounded "$work/env2" _envcb )
+eq "$(cat "$work/env2")" 0 "an exported override is restored, exported"
+# shellcheck disable=SC2034  # both are read by _check_run_bounded, in check-lib.sh
+( unset ADB_NO_TIMEOUT_BIN; ADB_NO_TIMEOUT_BIN=caller-local; CHECK_ROW_SECS=30; _check_run_bounded "$work/env3" _envcb )
+eq "$(cat "$work/env3")" UNSET "an override the caller never exported does not reach the suite under test"
+
 # 10h. CANCELLATION: the bound runs each suite in a process group of its own, so terminating the
 # harness the way selfcheck's _cleanup does (TERM to the harness's group) must still reach it.
 printf '%s\n' "check_row cancel lib.sh uses-helper 'T_A=1' 'sleep ${HANG}6' 'neg-value'" > "$work/rows-cancel.sh"

@@ -4481,17 +4481,18 @@ adb_run_bounded() {
   else                                                 wait    "$cmd_pid" 2>/dev/null; rc=$?; fi
   trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
   unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
-  kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+  # A FIRED bound's watcher is part-way through its escalation, so it is waited for rather than
+  # stopped: its grace, then its KILL of the whole GROUP, is what lets a member that handles TERM
+  # finish its cleanup and still reaches one that ignores TERM (D122). Otherwise it has nothing left
+  # to police and is stopped.
+  if [ -f "$flag" ]; then wait "$watcher" 2>/dev/null
+  else kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null; fi
   # The flag ALONE decides: if the bound fired, this is 124 whatever status the child exited with.
   # A child that traps SIGTERM and exits 0 (ordinary well-behaved-CLI cleanup) would otherwise be
   # reported as a clean success carrying truncated output — silent incompleteness accepted as a
   # result, and GNU `timeout` does NOT have that flaw (it returns 124 for that child), so gating on
   # rc would also reintroduce the platform-dependent split the normalization above eliminates.
-  #
-  # …AND SWEEP THE GROUP when the bound fired, as the binary path does: the watcher is stopped as
-  # soon as the wait returns, before its own KILL, so a member of the group that ignores TERM is
-  # reached only here (D122).
-  if [ -f "$flag" ]; then rm -f "$flag"; _adb_bounded_signal KILL "$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi
+  if [ -f "$flag" ]; then rm -f "$flag"; _ADB_BOUNDED_FIRED=1; return 124; fi
   rm -f "$flag"; return "$rc"
 }
 

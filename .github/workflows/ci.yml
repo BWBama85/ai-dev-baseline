@@ -1022,9 +1022,10 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    # 75: the job carries TWO whole-suite-per-row mutation harnesses — session-context (#431) and
-    # review-loop (#491) — on a runner whose pool adb_pool_size caps at 4 cores. With both forced
-    # on it took 36m37s and 30m53s on PR #504, too close to the 45 it had. The mutation gate keeps
+    # 75: the job carries two mutation harnesses — session-context (#431; per block since #445) and
+    # review-loop (#491; whole suite per row) — on a runner whose pool adb_pool_size caps at 4 cores.
+    # With both forced on, and session-context still whole-suite, it took 36m37s and 30m53s on PR
+    # #504, too close to the 45 it had. The mutation gate keeps
     # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
     # bound is for the runs that do.
     timeout-minutes: 75

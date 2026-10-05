@@ -1470,7 +1470,7 @@ eq "$(gc_alive)" "dead" "watchdog: the bound reaps the child's GRANDCHILD, not j
 gc_reset
 
 # …and the other half of that shape: a leader that DIES on the TERM while a member of its group
-# ignores it. Only the group sweep after a fired bound reaches that member (D122).
+# ignores it. Only the watcher's group KILL, which a fired bound now waits for, reaches it (D122).
 gcp2="$work/gcprobe2.sh"
 cat > "$gcp2" <<EOF
 #!/usr/bin/env bash
@@ -1486,6 +1486,20 @@ sleep 1
 if [ -s "$gcpid" ]; then ok; else bad "watchdog: the leader-dies probe never recorded a pid — the case did not run"; fi
 eq "$(gc_alive)" "dead" "watchdog: a TERM-proof member outlives a leader that died on TERM unless the sweep reaps it"
 gc_reset
+# …and a member that HANDLES TERM gets the grace it was promised: its two-second cleanup finishes
+# inside a five-second grace, rather than being cut off by a KILL the moment the leader is gone.
+gcmark="$work/gcmark"; rm -f "$gcmark"
+gcp3="$work/gcprobe3.sh"
+cat > "$gcp3" <<EOF
+#!/usr/bin/env bash
+( trap 'sleep 2; echo cleaned > "$gcmark"; exit 0' TERM; while :; do sleep 0.2; done ) &
+while :; do sleep 1; done
+EOF
+chmod +x "$gcp3"
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 5 "$gcp3" >/dev/null 2>&1
+eq "$?" "124" "watchdog: a leader with a TERM-handling member still returns 124"
+eq "$(cat "$gcmark" 2>/dev/null)" "cleaned" "watchdog: a member that handles TERM gets the grace"
+rm -f "$gcmark"
 # _ADB_BOUNDED_FIRED says whether the BOUND fired, never merely that the status was 124 (#445). In this
 # ORDER, so the second case also proves the flag is reset by every call rather than left over.
 ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 sleep 20
@@ -3162,12 +3176,18 @@ if [ "${1:-}" = "--mutation" ]; then
     '' \
     '/^  if \[ ! -f "\$dest" \]; then$/s/! -f "\$dest"/-z x/'
 
-  # 17. The watchdog path stops sweeping after a fired bound (#445): a leader that died on the TERM
-  #     leaves a TERM-proof member of its group running, because the watcher's KILL never comes.
+  # 17. A fired bound stops its watcher instead of waiting for it (#445): a leader that died on the
+  #     TERM leaves a TERM-proof member of its group running, because the watcher's KILL never comes.
+  #     17b: it sweeps at once instead, so a member that handles TERM loses its grace.
   mutate watchdog-sweep-dropped \
     "watchdog: a TERM-proof member outlives a leader that died on TERM" \
-    '_adb_bounded_signal KILL "$cmd_pid"; _ADB_BOUNDED_FIRED=1' \
-    '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi/s/ _adb_bounded_signal KILL "\$cmd_pid";//'
+    '' \
+    '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/-f "\$flag"/-n ""/'
+
+  mutate grace-cut-short \
+    "watchdog: a member that handles TERM gets the grace" \
+    '' \
+    '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/wait "\$watcher"/_adb_bounded_signal KILL "\$cmd_pid"; kill -TERM "\$watcher"; wait "\$watcher"/'
 
   # 18. …and the sweep fires on EVERY return, so a command that finished on its own loses the
   #     background work it deliberately left running.
@@ -3181,11 +3201,17 @@ if [ "${1:-}" = "--mutation" ]; then
   mutate watchdog-fired-never-set \
     "watchdog: a stopped child is a fired bound" \
     '_ADB_BOUNDED_FIRED=1; return 124; fi' \
-    '/rm -f "\$flag"; _adb_bounded_signal KILL "\$cmd_pid"; _ADB_BOUNDED_FIRED=1; return 124; fi/s/ _ADB_BOUNDED_FIRED=1;//'
-  mutate binary-path-guesses-fired \
-    "timeout binary: the fired signal is EMPTY, never a guess" \
-    '' \
-    '/^    _ADB_BOUNDED_FIRED=""$/s/""/1/'
+    '/rm -f "\$flag"; _ADB_BOUNDED_FIRED=1; return 124; fi/s/ _ADB_BOUNDED_FIRED=1;//'
+  # REGISTERED ONLY WHERE ITS ASSERTION CAN RUN: the binary-path cases need `timeout` or `gtimeout`,
+  # which a stock macOS lacks, and a row whose witness cannot be reached would be scored GREEN.
+  if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+    mutate binary-path-guesses-fired \
+      "timeout binary: the fired signal is EMPTY, never a guess" \
+      '' \
+      '/^    _ADB_BOUNDED_FIRED=""$/s/""/1/'
+  else
+    printf 'check-common-lib --mutation: NOTE — no timeout/gtimeout binary, so the binary-path row is not registered\n'
+  fi
   mutate fired-not-reset \
     "watchdog: a child's own 124 is not a fired bound" \
     '' \

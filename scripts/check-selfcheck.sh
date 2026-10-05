@@ -946,7 +946,10 @@ has "$OUT" "8 step(s) in" "the step count is unchanged by the ticker"
 # last line's elapsed figure must also have reached a SECOND multiple, which a warning that fired
 # once and then stayed silent could not show.
 _n="$(printf '%s\n' "$OUT" | grep -c '^selfcheck: still running past 2s: gates (')"
-[ "$_n" -ge 2 ] && [ "$_n" -le 5 ] && ok || bad "a 10s step under a 2s ceiling was named $_n time(s), not again at each later multiple"
+# The ceiling on the count is the multiples the step actually crossed, from its OWN reported time:
+# under load a 10 s sleep can take longer, and a fixed number would then fail a correct ticker.
+_gs="$(printf '%s\n' "$OUT" | awk '/^=== gates ===$/ { p = 1; next } p && /^(PASS|FAIL) \(/ { s = $0; sub(/.*[ (]/, "", s); sub(/s\)$/, "", s); print s; exit }')"
+[ "$_n" -ge 2 ] && [ "$_n" -le $(( ${_gs:-0} / 2 )) ] && ok || bad "a ${_gs:-?}s step under a 2s ceiling was named $_n time(s), not once per later multiple it crossed"
 _last="$(printf '%s\n' "$OUT" | sed -n 's/^selfcheck: still running past 2s: gates (\([0-9]*\)s so far)$/\1/p' | tail -1)"
 [ -n "$_last" ] && [ "$_last" -ge 4 ] && ok || bad "the last warning for a 10s step said ${_last:-nothing}s — it was never repeated at a later multiple"
 

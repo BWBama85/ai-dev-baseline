@@ -1628,10 +1628,10 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 # --- the serial prologue's lanes, as the two contributor contracts list them (#445) -------------
 #
 # Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md. The spelling is
-# DERIVED from `selfcheck.sh --list` — the members in declaration order, backticked, comma-joined, on
-# one line — and BOUNDED on both sides: the nearest non-blank character on either side may be neither a
-# comma nor a backtick, so a list with a member more or fewer, at either end and however it is
-# spaced, never matches as part of a longer or shorter one.
+# DERIVED from `selfcheck.sh --list` — the members in declaration order, backticked, comma-joined —
+# and BOUNDED on both sides: the nearest non-blank character on either side, line breaks included, may
+# be neither a comma nor a backtick, so a list with a member more or fewer, at either end and however
+# it is spaced or wrapped, never matches as part of a longer or shorter one.
 # The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
 # --list that failed after printing some rows would still yield a plausible, wrong lane.
 if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
@@ -1642,7 +1642,16 @@ for _lane in mutates-tree load-sensitive; do
   if [ -z "$_members" ]; then
     check_note "[selfcheck-lane-$_lane] selfcheck.sh --list reports no member — the pin would compare nothing"; check_fail; continue
   fi
-  fact "selfcheck-lane-$_lane" "regex:(^|[^,\`[:space:]])[[:space:]]*${_members}[[:space:]]*([^,\`[:space:]]|\$)" -- CLAUDE.md CONTRIBUTING.md
+  # ACROSS LINE BREAKS: each document is read as ONE line, because a line-oriented match let a list
+  # that went on, on the next line, pass as complete.
+  for _doc in CLAUDE.md CONTRIBUTING.md; do
+    if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
+      check_note "[selfcheck-lane-$_lane] $_doc could not be read"; check_fail; continue
+    fi
+    if ! grep -qE -- "(^|[^,\`[:space:]])[[:space:]]*${_members}[[:space:]]*([^,\`[:space:]]|\$)" <<< "$_joined"; then
+      check_note "[selfcheck-lane-$_lane] $_doc does not list the lane exactly as the runner does: $_members"; check_fail
+    fi
+  done
 done
 
 # --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------

@@ -8885,9 +8885,9 @@ survive is the part a later reader needs.
              **What the numbers say.**
              * The session-context harness got 4.8x faster in wall and 11.5x cheaper in CPU standalone,
                and 8.2x faster in the pool. Its in-pool cost was 3.1 times its standalone cost before
-               and 1.8 times after. That ratio is the pool AND the external load together — the
-               standalone and pooled runs saw different loads — so it bounds the interaction rather
-               than isolating it.
+               and 1.8 times after. That is an OBSERVED ratio under unlike loads — the standalone and
+               pooled runs saw different external load — so it neither isolates nor bounds the pool
+               interaction; it records what the two runs did.
              * The whole forced run barely moved: 5% in wall, 14% in CPU. Its wall is set by the
                longest pole. Session-context was one of four poles near an hour; the other three
                remain: `pattern-ledger-mutation` and `settings-fragment-mutation` (already per block)
@@ -8944,8 +8944,11 @@ survive is the part a later reader needs.
              * **A defect in `adb_run_bounded` itself, found here and fixed at the root (owner decision
                2026-10-05).** The watchdog path stopped its watcher as soon as its wait returned,
                before the KILL that follows the grace, so a child that died on the TERM left any
-               TERM-proof member of its group running. The binary path already swept the group after a
-               fired bound; the watchdog path now does the same. It is what a stock macOS without
+               TERM-proof member of its group running. A fired bound now WAITS for its watcher to
+               finish — the grace, then the KILL of the whole group — so a member that handles TERM gets
+               its grace and one that ignores TERM is still reached. (An intermediate cut swept the group
+               at once, as the binary path's sweep does; the local review reproduced a TERM-handling
+               member cut off mid-cleanup, so the grace is kept.) It is what a stock macOS without
                coreutils takes, `role-dispatch.sh` included. A first cut worked around it inside
                `check-lib.sh` (a TERM-handling subshell); the review of this change reproduced the case
                it missed — a suite that dies while its descendant lives — and the workaround was removed
@@ -8963,14 +8966,16 @@ survive is the part a later reader needs.
              **Observed failing.** `check-block-rows.sh` section 10 went red on its own witness
              against mutated copies: the hung verdict never detected, the whole-suite pool's hung
              verdict dropped, the bound's validation bypassed, `_adb_bounded_reap` disabled (the
-             cancellation case), the watchdog's sweep dropped (the TERM-proof suite and the
+             cancellation case), the watchdog's group KILL dropped (the TERM-proof suite and the
              leader-dies cases), and the deadline not applied at all — which now fails each case by
              name in 433 s instead of holding the suite for hours, because every hang fixture's own
              sleep is bounded at 45 s and matched by a pattern carrying the run's pid. The
-             `check-common-lib.sh --mutation` table gains two rows (the sweep dropped; the sweep made
-             unconditional), 18/18 RED at that point; the final table adds three more for the fired
-             signal (never raised, guessed on the binary path, never reset), 21 in all, each RED on its
-             own witness. `check-selfcheck.sh --mutation` gains three (a silent ticker,
+             `check-common-lib.sh --mutation` table gains six rows, 17-21 and 17b: the fired bound's
+             watcher stopped instead of waited for; the group killed at once, cutting a TERM-handling
+             member's grace; the KILL made unconditional; the fired signal never raised, guessed on
+             the binary path, or never reset. The binary-path row is registered only where a `timeout`
+             binary exists, since its assertion can run nowhere else. 22 rows in all on such a host,
+             each RED on its own witness (18/18 was an intermediate count). `check-selfcheck.sh --mutation` gains three (a silent ticker,
              the `overran` line dropped, the digest dropping it), 9/9 RED. Two 8e assertions are not
              rows because their defects cost more than a row can pay; both were observed against a
              copy: a ticker left running held a fast run 61 s against the assertion's 30 s bound, and
@@ -9009,7 +9014,7 @@ survive is the part a later reader needs.
              | per-step CPU | UNMET and WAIVED: the runner records wall per step, `/usr/bin/time` covers the whole run, and timing each step's command separately was not done |
              | copy cost per row, `cp -R` vs `check_copy_subtrees` | `check_copy_worktree` (the `cp -R` shape, `.git` omitted) against `check_copy_subtrees`, above |
              | an idle machine | UNMET and WAIVED (owner decision 5): load recorded per run, and the full runs taken as a pair |
-             | scope item 5, the pool interaction re-measured | UNMET and WAIVED: the contention ratio above bounds it, but no controlled scheduling comparison was run and D66's leaf-budget runner is not rebuilt |
+             | scope item 5, the pool interaction re-measured | UNMET and WAIVED: only the observed in-pool/standalone ratio above exists; no controlled scheduling comparison was run and D66's leaf-budget runner is not rebuilt |
 
              **Not bounded, by decision: the callback's output.** Each callback's output now lands in a
              file with no byte cap, so a mutant that prints in a loop can grow it for as long as the
@@ -9023,8 +9028,8 @@ survive is the part a later reader needs.
              causes — each heavy harness's wall inside the full run against its standalone wall,
              above — and nothing in it argues for a scheduling change D66's table did not already
              refute.
-- placement: `scripts/lib/common.sh` (`adb_run_bounded`'s watchdog sweep),
-             `scripts/check-common-lib.sh` (two cases, two rows),
+- placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound waits for its watcher,
+             and `_ADB_BOUNDED_FIRED`), `scripts/check-common-lib.sh` (seven cases, six rows),
              `scripts/check-lib.sh` (`_check_run_bounded`, `_check_row_secs`, both pools),
              `scripts/check-session-context.sh` (blocks, rows), `scripts/lib/run-state.sh` (one
              anchor comment), `scripts/selfcheck.sh` (ticker, `overran`, `--summarize`, the

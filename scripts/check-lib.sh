@@ -361,14 +361,19 @@ _check_row_secs() {
 #     TERM, or leaves a descendant that does, is reaped by that path's group sweep.
 #   * "Hung" is adb_run_bounded's own answer (`_ADB_BOUNDED_FIRED`), never inferred from the status:
 #     a suite that exits 124 on its own is scored as the exit it was.
-#   * The bound is kept to within the watchdog's tick (5 s once the bound is 10 s or more) plus a 5 s
-#     grace, so a run can outlive CHECK_ROW_SECS by up to about 10 s before it is scored hung.
+#   * The bound is approximate: the watchdog counts its own 5 s ticks (once the bound is 10 s or more)
+#     rather than reading a clock, and a fired bound then waits out a 5 s grace, so a run outlives
+#     CHECK_ROW_SECS by about 10 s on an idle machine and by more under load.
 #   * The output file has no byte bound — the `$(…)` this replaced held the same output in memory,
 #     unbounded and with no time bound — so a mutant that prints in a loop can grow it for as long as
 #     the deadline allows. Recorded rather than capped (D122).
 _check_run_bounded() {
-  local of="$1" had="${ADB_NO_TIMEOUT_BIN+set}" was="${ADB_NO_TIMEOUT_BIN-}" rc
+  local of="$1" had="" was="${ADB_NO_TIMEOUT_BIN-}" rc dp
   shift
+  if [ -n "${ADB_NO_TIMEOUT_BIN+x}" ]; then
+    dp="$(declare -p ADB_NO_TIMEOUT_BIN 2>/dev/null)"; dp="${dp#declare -}"
+    case "${dp%% *}" in *x*) had="exported" ;; *) had="set" ;; esac
+  fi
   # RESET FIRST: a redirect that fails runs nothing, so adb_run_bounded never gets to reset it, and a
   # previous run's answer would be read as this one's. The unreadable output then gets its own verdict.
   _ADB_BOUNDED_FIRED=0
@@ -378,11 +383,15 @@ _check_run_bounded() {
   return "$rc"
 }
 
-# _check_run_as_caller <"set" or ""> <saved value> <fn> [args…] — restore the caller's override (its
-# presence and its value, separately, so no value can be mistaken for "unset"), then run <fn>. Runs
-# only inside adb_run_bounded's subshell.
+# _check_run_as_caller <"exported" | "set" | ""> <saved value> <fn> [args…] — restore the caller's
+# override exactly — its presence, its value and whether it was exported, each carried separately so
+# no value can be mistaken for another state — then run <fn>. Runs only inside adb_run_bounded's subshell.
 _check_run_as_caller() {
-  if [ "$1" = set ]; then export ADB_NO_TIMEOUT_BIN="$2"; else unset ADB_NO_TIMEOUT_BIN; fi
+  case "$1" in
+    exported) export ADB_NO_TIMEOUT_BIN="$2" ;;
+    set)      ADB_NO_TIMEOUT_BIN="$2"; export -n ADB_NO_TIMEOUT_BIN ;;
+    *)        unset ADB_NO_TIMEOUT_BIN ;;
+  esac
   shift 2
   "$@"
 }

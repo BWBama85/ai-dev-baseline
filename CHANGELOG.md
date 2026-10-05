@@ -18,9 +18,10 @@ only by a published release, which is what these entries are the notes for.
   within Ns`: applied, never RED. A `selfcheck` step still running past `ADB_SELFCHECK_OVERRUN_SECS`
   (default 1800) is named while it runs, once per multiple of that ceiling, again on the `result`
   block's new `overran` line, and in `--summarize`'s digest. That warning reports and never kills.
-  `adb_run_bounded` (`scripts/lib/common.sh`) now sweeps the child's process group after a fired
-  bound on its watchdog path too, as the `timeout`-binary path already did: a child that died on the
-  TERM no longer leaves a TERM-proof member of its group running, and it now reports whether its
+  `adb_run_bounded` (`scripts/lib/common.sh`): on its watchdog path a fired bound now waits for its
+  watcher to finish — the grace, then the KILL of the whole process group — instead of stopping it,
+  so a child that died on the TERM no longer leaves a TERM-proof member of its group running and a
+  member that handles TERM still gets its grace. It also reports whether its
   bound actually fired (`_ADB_BOUNDED_FIRED`: exact on the watchdog path, empty on the binary path,
   where `timeout` cannot say) rather than leaving a caller to infer it from a 124.
   The watchdog path is what a stock macOS without coreutils takes, `role-dispatch.sh` included.
