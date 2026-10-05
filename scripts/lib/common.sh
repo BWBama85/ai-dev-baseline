@@ -4482,9 +4482,9 @@ adb_run_bounded() {
   # result, and GNU `timeout` does NOT have that flaw (it returns 124 for that child), so gating on
   # rc would also reintroduce the platform-dependent split the normalization above eliminates.
   #
-  # …AND SWEEP THE GROUP, exactly as the binary path does after a fired bound (#445). The watcher was
-  # stopped the moment the wait returned, and its KILL comes only after the grace, so a direct child
-  # that died on the TERM left any member of its group that ignores TERM running, unreached.
+  # …AND SWEEP THE GROUP when the bound fired, as the binary path does: the watcher is stopped as
+  # soon as the wait returns, before its own KILL, so a member of the group that ignores TERM is
+  # reached only here (D122).
   if [ -f "$flag" ]; then rm -f "$flag"; _adb_bounded_signal KILL "$cmd_pid"; return 124; fi
   rm -f "$flag"; return "$rc"
 }

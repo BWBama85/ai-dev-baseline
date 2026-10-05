@@ -965,7 +965,8 @@ has "$OUT" "FAIL (exit 6," "--serial: the overrunning failure keeps its own exit
 # The ticker must not hold a fast run open: the default one-minute tick is killed when the pool drains.
 reset_ctl
 _t0="$EPOCHSECONDS"
-sc --only "$ONLY" --jobs 4
+# EMPTY, not inherited: a caller's own ceiling would decide which ticker this case exercises.
+ADB_SELFCHECK_OVERRUN_SECS='' sc --only "$ONLY" --jobs 4
 yes "$RC_" "a fast run under the default ceiling exits 0"
 [ $(( EPOCHSECONDS - _t0 )) -lt 30 ] && ok || bad "a fast run took $(( EPOCHSECONDS - _t0 ))s — the ticker held it open"
 hasnt "$OUT" "overran" "a fast run names nothing as overrunning"

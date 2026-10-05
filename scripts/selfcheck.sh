@@ -1109,9 +1109,8 @@ summarize_run() {   # <captured-log>
     # can forge by printing `FAILED: ` at the start of a line. A name carrying a backtick would
     # close the span and render the rest as markup in a page a maintainer reads. A token that is
     # not a [A-Za-z0-9_-] slug is reported as unparsable rather than rendered.
-    # SPLIT INTO AN ARRAY, never by an unquoted expansion: that also GLOBS, so a forged `scripts/*`
-    # token became one omission notice per file in the checkout, and a glob matching slug-shaped
-    # names would have rendered names no run printed.
+    # SPLIT INTO AN ARRAY, never by an unquoted expansion, which would also GLOB a forged token
+    # against the checkout (D122).
     read -r -a _names <<< "$failed"
     for _f in "${_names[@]}"; do
       case "$_f" in

@@ -184,7 +184,8 @@ prep() {   # <copy-dir> — copy the fixture and print its root; records that a 
   [ -z "${ADB_T_DUP:-}" ] || printf '# add() { echo\n' >> "$1/t/lib.sh"
   printf '%s' "$1/t"
 }
-run() { ADB_T_LIB="$ADB_T_LIB" bash "$1/suite.sh"; }
+# ADB_T_UNLINK removes the rows' captured output once the suite has run, so the harness's read of it fails.
+run() { local rc; ADB_T_LIB="$ADB_T_LIB" bash "$1/suite.sh"; rc=$?; [ -z "${ADB_T_UNLINK:-}" ] || rm -f "$ADB_T_WD"/row-*.out; return "$rc"; }
 . "$ADB_T_ROWS"
 check_mutation_rows "fixture" "$ADB_T_WD" "suite.sh" prep run 4
 check_summary driver
@@ -528,6 +529,13 @@ pool_driver pool-bad ADB_MUTATION_ROW_TIMEOUT_SECS=x
 eq "$rc" 1 "the whole-suite pool fails on a bad bound"
 has "$out" "ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer" "the whole-suite pool names a bad bound"
 [ ! -e "$work/prep-pool-bad.log" ] && ok || bad "the whole-suite pool built a tree copy before the bound was validated"
+
+# 10g'. an output that cannot be read back is not scored: a read that failed part-way can still
+# carry the witness, so the row gets its own verdict instead of a RED it did not earn.
+rows unreadable "check_row add lib.sh base '\$1 + \$2' '\$1 - \$2' 'add-sum'" ADB_T_UNLINK=1
+eq "$rc" 1 "a row whose output cannot be read back fails the harness"
+has "$out" "mutation 'add': its output could not be read back" "an unreadable output is named"
+has "$out" "1/1 mutation(s) applied, 0 observed RED" "an unreadable output is applied, never RED"
 
 # 10h. CANCELLATION: the bound runs each suite in a process group of its own, so terminating the
 # harness the way selfcheck's _cleanup does (TERM to the harness's group) must still reach it.

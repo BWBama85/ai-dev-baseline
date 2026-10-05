@@ -1469,10 +1469,8 @@ if [ -s "$gcpid" ]; then ok; else bad "watchdog: the probe never recorded a gran
 eq "$(gc_alive)" "dead" "watchdog: the bound reaps the child's GRANDCHILD, not just the child"
 gc_reset
 
-# …and the other half of that shape (#445): a leader that DIES on the TERM while a member of its
-# group ignores it. The watcher was stopped as soon as the wait returned, and its KILL comes only after
-# the grace, so the TERM-proof member ran on. The binary path's sweep already covered this; the
-# watchdog path now sweeps the same way when its bound fired.
+# …and the other half of that shape: a leader that DIES on the TERM while a member of its group
+# ignores it. Only the group sweep after a fired bound reaches that member (D122).
 gcp2="$work/gcprobe2.sh"
 cat > "$gcp2" <<EOF
 #!/usr/bin/env bash

@@ -295,7 +295,8 @@ _check_mut_one() {   # <index> <workdir> <prepare-fn> <run-fn>
   # The output goes BESIDE the copy, never into it: the copy is the tree the suite is scanning.
   _check_run_bounded "$2/mut-$1.out" "$run" "$copy"; src=$?
   if [ "$CHECK_RUN_HUNG" -eq 1 ]; then _check_hung_verdict "$copy/verdict"; return 0; fi
-  out="$(cat "$2/mut-$1.out" 2>/dev/null)"
+  # READ IN FULL OR NOT AT ALL: a read that failed part-way can still carry the witness.
+  if ! out="$(cat "$2/mut-$1.out")"; then printf 'bad|its output could not be read back, so it has no verdict\n' > "$copy/verdict"; return 0; fi
   _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_MUT_WIT[$i]}"
   return 0
 }
@@ -360,6 +361,11 @@ _check_row_secs() {
 #     TERM, or leaves a descendant that does, is reaped by that path's group sweep.
 #   * "Hung" is decided by elapsed time, as adb_run_bounded's own 137 normalisation is: a suite that
 #     exits 124 on its own before the bound is scored as the exit it was.
+#   * The bound is kept to within the watchdog's tick (5 s once the bound is 10 s or more) plus a 5 s
+#     grace, so a run can outlive CHECK_ROW_SECS by up to about 10 s before it is scored hung.
+#   * The output file has no byte bound — the `$(…)` this replaced held the same output in memory,
+#     unbounded and with no time bound — so a mutant that prints in a loop can grow it for as long as
+#     the deadline allows. Recorded rather than capped (D122).
 _check_run_bounded() {
   local of="$1" had="${ADB_NO_TIMEOUT_BIN+set}" was="${ADB_NO_TIMEOUT_BIN-}" t0="$SECONDS" rc
   shift
@@ -666,7 +672,7 @@ _check_row_one() {
     ADB_CHECK_BLOCK="${CHECK_ROW_BLOCK[$i]}" _check_run_bounded "$2/row-$1.out" "$run" "$root"; src=$?
   fi
   if [ "$CHECK_RUN_HUNG" -eq 1 ]; then _check_hung_verdict "$copy/verdict"; return 0; fi
-  out="$(cat "$2/row-$1.out" 2>/dev/null)"
+  if ! out="$(cat "$2/row-$1.out")"; then printf 'bad|its output could not be read back, so it has no verdict\n' > "$copy/verdict"; return 0; fi
   _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_ROW_WIT[$i]}"
   return 0
 }

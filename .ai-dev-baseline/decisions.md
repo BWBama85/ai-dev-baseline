@@ -8846,6 +8846,9 @@ survive is the part a later reader needs.
              |---|---|---|---|---|---|
              | before | `9d1d658` (`main`) | 5207 s (86m47s) | 12,499 / 17,677 | 3.7 / 72 / 327 | 70/71: `release-skill` red, see below |
              | after 1 | `3023fbc` | 4933 s (82m12s) | 10,380 / 15,455 | 6.0 / 53 / 243 | 71/71 |
+
+             Wall is `/usr/bin/time`'s; the m:s beside it is the runner's own `result` line, which
+             counts whole seconds from its own start and so reads 82m12s where `time` reads 4933.13 s.
              | after 2 (checkout) | `3023fbc` | 5929 s (98m49s) | 10,661 / 16,279 | 9.2 / 73 / 374 | 71/71 |
 
              The before and after-1 runs are a back-to-back PAIR, taken one after the other so that
@@ -8889,13 +8892,19 @@ survive is the part a later reader needs.
                and `review-loop-mutation` (whole suite). Converting `review-loop` would not shorten the
                run while the other two stay near an hour, so owner decision (1) leaves it alone: no
                remaining whole-suite harness dominates.
-             * A plain local run on a branch is unaffected by all of this. The gate holds back every
-               harness whose inputs the branch does not touch, and a row-mode harness holds back the
-               rows whose targets are untouched. This branch touches `check-lib.sh`, `common.sh` and
-               `selfcheck.sh` — inputs of every harness — so its gate run is a forced run in all but
-               name. That is the cost #445 measured, and it is the cost of changing the harness itself.
-             * The copy is not the cost. At 0.2-0.5 s per row it is under 1% of even the cheapest block
-               run, so copy-once was not built.
+             * The local SELECTION policy is unchanged (owner decision 2): the gate still holds back
+               every harness whose inputs a branch does not touch, and a row-mode harness the rows
+               whose targets are untouched. What a plain run gets that it did not is the block
+               execution, the row gating of session-context, both bounds and the ticker. This branch
+               touches `check-lib.sh`, `common.sh` and `selfcheck.sh` — inputs of every harness — so its
+               own plain run is a forced run in all but name.
+             * The copy is NOT negligible for a per-block harness. One tree copy per row costs 0.2-0.5 s
+               (load 43-50), and a single session-context block selection costs 0.16-0.25 s for the
+               cheapest (`lib-1a`, `lib-1d`, `hook-2c`, `wf-3c`, at load 4) up to 10.7 s (`hook-2j`):
+               for the cheap blocks the copy is as large as the run. Copy-once was not built here. Every
+               row mutates its own tree, so it would still copy per row; what it would save is the
+               walk of the checkout, which is unmeasured. The loads differ, so these figures bound the
+               ratio, they do not measure it.
              * `release-skill` went red once, in the before run on unmodified `main`, on a structural
                assertion (`slug()` delegating to `adb_is_path_safe_repo_slug`). The output carried no
                fork, pipe or descriptor diagnostic. A SIGPIPE-under-pipefail cause was ruled out: the
@@ -8980,6 +8989,24 @@ survive is the part a later reader needs.
              and PR #502, which un-gated the same harnesses; the nightly's 240 covers full-suite mode,
              which is the old per-row cost.
 
+             **#445's measurement criteria, disposition by criterion (owner decision 2026-10-05, after
+             the local review asked for each one explicitly).**
+             | criterion | disposition |
+             |---|---|
+             | dated table: full suite, wall and CPU, before and after | met: the pair above, plus a second after-run |
+             | each of the six named harnesses standalone, before and after | met for session-context, the one this change converts. The other five (pattern-ledger, adopt-readiness, adopt, docs-lib, mutation-gate) are unchanged but for the deadline wrapper; their paired IN-POOL figures stand in. The adopt-readiness and review-loop standalone before-figures were taken under this session's own load and are not comparable |
+             | one row of each (suite time) | the plain suites' in-pool times are in the per-step table; session-context's per-block selection costs are above |
+             | per-step CPU | not obtainable: the runner records wall per step, and `/usr/bin/time` covers the whole run |
+             | copy cost per row, `cp -R` vs `check_copy_subtrees` | `check_copy_worktree` (the `cp -R` shape, `.git` omitted) against `check_copy_subtrees`, above |
+             | an idle machine | not available (owner decision 5): load recorded per run, and the full runs taken as a pair |
+             | scope item 5, the pool interaction re-measured | the contention ratio, not a controlled scheduling comparison: D66's leaf-budget runner is not rebuilt |
+
+             **Not bounded, by decision: the callback's output.** Each callback's output now lands in a
+             file with no byte cap, so a mutant that prints in a loop can grow it for as long as the
+             deadline allows. The `$(…)` capture this replaced held the same output in memory, unbounded,
+             and with no time bound at all. The local review asked for a cap twice; the owner declined it
+             (2026-10-05) as a pre-existing shape, recorded here and in `check-lib.sh` rather than capped.
+
              **D66 is not superseded.** Item 5 asked to re-measure the outer/inner pool interaction
              on a registry with several heavy harnesses. The leaf-budget runner D66 built and
              reverted was not rebuilt; what was measured instead is the contention the interaction
@@ -8997,6 +9024,8 @@ survive is the part a later reader needs.
 - reason:    A row that pays for the whole suite to fire one assertion was the cost #445 named, and
              D103 had already proven the cure on two harnesses; session-context was the largest
              left. A guard that can wait forever is the silent-guard shape this repo keeps paying
-             for, one level up, and both bounds are reports of a hang rather than budgets, so neither
-             can turn a slow-but-healthy run red.
+             for, one level up. The two bounds differ on purpose: the step warning only reports and
+             never changes a verdict, while the row deadline DOES end a run and score it `hung` — it is
+             set at 1800 s, far above any healthy row measured here, so that only a run that has stopped
+             making progress reaches it.
 - baseline-issue: n/a

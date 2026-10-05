@@ -1602,8 +1602,7 @@ fact mutation-nightly-forces 'fixed:ADB_MUTATION_RUN_ALL' -- \
 _sc_cost_docs="CLAUDE.md CONTRIBUTING.md"
 # shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
 fact selfcheck-cost 'fixed:82m12s to 98m49s' -- $_sc_cost_docs
-# The range it replaced (#445, D122): measured on 2026-08-14 against a 61-step registry, before three
-# of today's four hour-long harnesses existed. Refused in the two files that carry the live one.
+# The range it replaced (D122), refused in the two files that carry the live one.
 # shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
 fact selfcheck-cost-2026-08 'absent:8m46s to 12m55s' 'fires:spanned **8m46s to 12m55s**' -- $_sc_cost_docs
 #
@@ -1628,16 +1627,17 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 
 # --- the serial prologue's lanes, as the two contributor contracts list them (#445) -------------
 #
-# Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md, and nothing compared
-# either list with the runner. The spelling is DERIVED from `selfcheck.sh --list` — the members in
-# declaration order, backticked, comma-joined, on one line — and bounded on BOTH sides, because a
-# lane that loses its last or first member still matches as a prefix or a suffix of the old list.
+# Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md. The spelling is
+# DERIVED from `selfcheck.sh --list` — the members in declaration order, backticked, comma-joined, on
+# one line — and BOUNDED on both sides: the nearest non-blank character on either side may be neither a
+# comma nor a backtick, so a list with a member more or fewer, at either end and however it is
+# spaced, never matches as part of a longer or shorter one.
 for _lane in mutates-tree load-sensitive; do
   _members="$(bash scripts/selfcheck.sh --list | awk -F'\t' -v l="$_lane" '$4 == l { printf "%s`%s`", (n++ ? ", " : ""), $1 }')"
   if [ -z "$_members" ]; then
     check_note "[selfcheck-lane-$_lane] selfcheck.sh --list reports no member — the pin would compare nothing"; check_fail; continue
   fi
-  fact "selfcheck-lane-$_lane" "regex:(^|[^ ]|[^,] )${_members}([^,]|\$)" -- CLAUDE.md CONTRIBUTING.md
+  fact "selfcheck-lane-$_lane" "regex:(^|[^,\`[:space:]])[[:space:]]*${_members}[[:space:]]*([^,\`[:space:]]|\$)" -- CLAUDE.md CONTRIBUTING.md
 done
 
 # --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------
