@@ -1601,7 +1601,11 @@ fact mutation-nightly-forces 'fixed:ADB_MUTATION_RUN_ALL' -- \
 # measurement, and both state it as a dated RANGE.
 _sc_cost_docs="CLAUDE.md CONTRIBUTING.md"
 # shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
-fact selfcheck-cost 'fixed:8m46s to 12m55s' -- $_sc_cost_docs
+fact selfcheck-cost 'fixed:82m12s to 98m49s' -- $_sc_cost_docs
+# The range it replaced (#445, D122): measured on 2026-08-14 against a 61-step registry, before three
+# of today's four hour-long harnesses existed. Refused in the two files that carry the live one.
+# shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
+fact selfcheck-cost-2026-08 'absent:8m46s to 12m55s' 'fires:spanned **8m46s to 12m55s**' -- $_sc_cost_docs
 #
 # THE NEGATIVE HALF, and it is exactly what this file's header sanctions `absent:` for — "a value a
 # fact has retired", never a general prose blocklist. Presence-checking cannot catch a file that

@@ -53,10 +53,12 @@ those. The rules below are specific to this repo's code.
    (`adb_pool_size`), which is what stops a harness inventing its own number.
 
    **What it costs — a RANGE, measured, not a number.** On the maintainer's 10-core macOS machine
-   on 2026-08-14, eight full runs of near-identical trees spanned **8m46s to 12m55s**. That spread is
-   the honest answer: it is what the machine actually did, and it is wider than most changes
-   anyone will make to the suite. One step, `adopt-readiness-mutation`, is consistently 85-95% of
-   it — it runs the whole `check-adopt-readiness.sh` suite once per injected defect, 38 times.
+   on 2026-10-05, two forced full runs of one tree spanned **82m12s to 98m49s**, both beside another
+   session's builds at load averages from single digits into the hundreds (D122 has the table). That
+   spread is the honest answer: it is what the machine actually did. No one step dominates: the run
+   is as long as the longest of three harnesses that each take about an hour inside it —
+   `pattern-ledger-mutation`, `settings-fragment-mutation`, `review-loop-mutation` — and every
+   `*-mutation` step runs its suite once per injected defect, whole or per block.
    That range is a **forced** full run (`ADB_MUTATION_RUN_ALL=1`): since #441 a plain run pays for
    a mutation harness only when the change touches its inputs — see the gate, below — so an
    untouched tree finishes in a fraction of it, and says which steps it held back.

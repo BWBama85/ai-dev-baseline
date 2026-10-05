@@ -76,10 +76,12 @@ steps run bounded pools of their own, so the real number of workers is higher th
 suggests — not every `*-mutation` step does, so read the suite rather than assuming. Turning it into a bound on processes was tried and measured and made the suite slower —
 see D66 for the table.
 
-**Expect minutes, not seconds, and read the run's own output rather than this sentence.** Eight
-full runs on the maintainer's 10-core macOS machine (2026-08-14) spanned **8m46s to 12m55s** — the range
-is the honest figure, and it is wider than most changes you will make to the suite. One step,
-`adopt-readiness-mutation`, is consistently most of it. The `result` block prints the elapsed time
+**Expect an hour or more for a forced run, and read the run's own output rather than this
+sentence.** Two forced full runs of one tree on the maintainer's 10-core macOS machine (2026-10-05)
+spanned **82m12s to 98m49s**, beside another session's builds — the range is the honest figure, and
+D122 has the table. No one step is most of it: the run is as long as the longest of three harnesses
+near an hour each (`pattern-ledger-mutation`, `settings-fragment-mutation`, `review-loop-mutation`).
+The `result` block prints the elapsed time
 and the three slowest steps every run, which is why the number lives there and only a dated
 snapshot lives here. That range is a **forced** full run: since #441 the mutation harnesses are
 **gated** — each `*-mutation` step declares the paths its verdict depends on (`--list`, fifth
@@ -123,8 +125,7 @@ already run on every relevant PR (#339, PR #429, PR #443, PR #463, PR #504). You
 `bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
 it does get **longer** when the gate lets everything through, because the six isolated steps no
 longer overlap with anything: about 90 seconds' worth, measured serially on a 10-core machine. The
-dated range above was taken before that lane existed and has not been re-measured; the `result`
-block is the current answer, as it says.
+dated range above includes that lane; the `result` block is still the current answer, as it says.
 
 In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
 a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),

@@ -10,6 +10,26 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **No mutation harness or selfcheck step is awaited in silence, and session-context runs per block
+  (#445).** A mutant that blocked (a FIFO opened with no writer, a `read` with no `-t`) used to
+  stall a whole `selfcheck` run with nothing printed; one did, for 45 minutes. Every suite run the
+  two shared harness pools make is now bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a
+  hang backstop rather than a budget), and a run that reaches it is scored `hung — no verdict
+  within Ns`: applied, never RED. A `selfcheck` step still running past `ADB_SELFCHECK_OVERRUN_SECS`
+  (default 1800) is named while it runs, once per multiple of that ceiling, again on the `result`
+  block's new `overran` line, and in `--summarize`'s digest. That warning reports and never kills.
+  `adb_run_bounded` (`scripts/lib/common.sh`) now sweeps the child's process group after a fired
+  bound on its watchdog path too, as the `timeout`-binary path already did: a child that died on the
+  TERM no longer leaves a TERM-proof member of its group running. The watchdog path is what a stock
+  macOS without coreutils takes, `role-dispatch.sh` included.
+  `check-session-context.sh --mutation`, the largest harness still running its whole suite once per
+  row, now runs each of its 94 rows against only the block that holds its witness (#468) and gates
+  each on its own target (#470). It took 253 s standalone against 1217 s before (2,559 + 2,643
+  CPU-s down to 217 + 235), and 457 s against 3747 s inside a forced full run. A forced full run
+  itself moved only 5%, because three other harnesses near an hour each still set its length.
+  `selfcheck`'s documented cost in `CLAUDE.md` and `CONTRIBUTING.md` is re-measured (82m12s to
+  98m49s forced), and D122 records the before/after table and the consumer audit.
+
 - **`/resolve-pr-threads` has a disposition bar, and each round reports what it declined (#438).**
   A review finding that reproduces is no longer fixed for that reason alone. Step 3 fixes a finding
   only if it is a defect on a path a user or the loop can reach, or a regression of the PR's own
