@@ -386,7 +386,9 @@ jobs:
   common-lib:
     name: common-lib
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # Above the Linux jobs' 10: the mutation step runs the whole suite once per row, and each run
+    # waits out the stopped-watcher scenarios' windows (D122).
+    timeout-minutes: 20
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1022,9 +1024,10 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    # 75: the job carries TWO whole-suite-per-row mutation harnesses — session-context (#431) and
-    # review-loop (#491) — on a runner whose pool adb_pool_size caps at 4 cores. With both forced
-    # on it took 36m37s and 30m53s on PR #504, too close to the 45 it had. The mutation gate keeps
+    # 75: the job carries two mutation harnesses — session-context (#431; per block since #445) and
+    # review-loop (#491; whole suite per row) — on a runner whose pool adb_pool_size caps at 4 cores.
+    # With both forced on, and session-context still whole-suite, it took 36m37s and 30m53s on PR
+    # #504, too close to the 45 it had. The mutation gate keeps
     # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
     # bound is for the runs that do.
     timeout-minutes: 75
@@ -1525,8 +1528,9 @@ jobs:
     # help (D66). Since #423 the load-sensitive suites are lifted out of that contention into the
     # serial prologue, and since #339 the single most expensive step does not run here at all; the
     # headroom nonetheless stays as it was rather than being trimmed to a number this runner will
-    # not reproduce.
-    timeout-minutes: 45
+    # not reproduce. 45 until #445, which made `common-lib-mutation` heavier on a leg that had
+    # taken 38m50s (D122).
+    timeout-minutes: 55
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

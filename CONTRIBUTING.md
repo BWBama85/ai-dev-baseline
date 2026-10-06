@@ -76,10 +76,12 @@ steps run bounded pools of their own, so the real number of workers is higher th
 suggests — not every `*-mutation` step does, so read the suite rather than assuming. Turning it into a bound on processes was tried and measured and made the suite slower —
 see D66 for the table.
 
-**Expect minutes, not seconds, and read the run's own output rather than this sentence.** Eight
-full runs on the maintainer's 10-core macOS machine (2026-08-14) spanned **8m46s to 12m55s** — the range
-is the honest figure, and it is wider than most changes you will make to the suite. One step,
-`adopt-readiness-mutation`, is consistently most of it. The `result` block prints the elapsed time
+**Expect an hour or more for a forced run, and read the run's own output rather than this
+sentence.** Two forced full runs of one tree on the maintainer's 10-core macOS machine (2026-10-05)
+spanned **82m12s to 98m49s**, beside another session's builds — the range is the honest figure, and
+D122 has the table. No one step is most of it: the run is as long as the longest of three harnesses
+near an hour each (`pattern-ledger-mutation`, `settings-fragment-mutation`, `review-loop-mutation`).
+The `result` block prints the elapsed time
 and the three slowest steps every run, which is why the number lives there and only a dated
 snapshot lives here. That range is a **forced** full run: since #441 the mutation harnesses are
 **gated** — each `*-mutation` step declares the paths its verdict depends on (`--list`, fifth
@@ -105,10 +107,10 @@ names are printed, before the run and again in the `result` block, because a ste
 quietly looks exactly like a step that passed.
 
 In a default (parallel) run a **serial prologue** goes first, one step at a time, and it holds two
-lanes for two different reasons — `--list`'s fourth field says which. `build-drift` is
-`mutates-tree`: it rewrites files in the working tree that other steps read. `session-currency`,
-`install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation` and
-`install-dry-run` are `load-sensitive` (#423): they assert on signal delivery, worker reaping and
+lanes for two different reasons — `--list`'s fourth field says which. The `mutates-tree` lane is
+<!-- adb:lane mutates-tree -->`build-drift`<!-- /adb:lane -->: it rewrites files in the working tree that other steps read. The `load-sensitive` lane (#423) is
+<!-- adb:lane load-sensitive -->`session-currency`, `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`<!-- /adb:lane -->:
+they assert on signal delivery, worker reaping and
 installer writes, and they pass unloaded and on Linux. Two of them — `session-currency` and
 `selfcheck-guard` (with its mutation mode) — were the whole of that job's flakiness on the 3-core
 `macos-latest`. The three install steps have never failed there; they join because they drive the
@@ -122,9 +124,8 @@ which the ubuntu `adopt`, `pattern-ledger`, `install-guard` and `implement-gate`
 already run on every relevant PR (#339, PR #429, PR #443, PR #463, PR #504). Your local run is unaffected in *coverage* — a plain
 `bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
 it does get **longer** when the gate lets everything through, because the six isolated steps no
-longer overlap with anything: about 90 seconds' worth, measured serially on a 10-core machine. The
-dated range above was taken before that lane existed and has not been re-measured; the `result`
-block is the current answer, as it says.
+longer overlap with anything. The dated range above includes that cost; the `result` block is still
+the current answer, as it says.
 
 In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
 a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),
@@ -143,9 +144,17 @@ block unmutated first to require the assertion count a full pass gives it. So a 
 is a red control, not a quiet GREEN. The nightly sets `ADB_MUTATION_FULL_SUITE=1`, which scores every
 row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a suite by hand.
 
+**Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each
+block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a
+backstop for a hang rather than a budget), and a run that reaches it is scored `hung — no verdict
+within Ns`: it counts as applied, never as RED. One level up, a step still running past
+`ADB_SELFCHECK_OVERRUN_SECS` (default 1800) is named while it runs, once per multiple of that
+ceiling, and again on the `result` block's `overran` line. That warning never kills anything — the
+step keeps its own verdict — so on a slow machine raise the ceiling rather than reading it as a red.
+
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
-where this walkthrough covers 23 of 57 and was silently claiming to be the whole set until #335
-counted it. Read it for what these checks are *for*; ask `--list` for what runs.
+where this walkthrough covers a minority of them and was silently claiming to be the whole set
+until #335 counted it. Read it for what these checks are *for*; ask `--list` for what runs.
 
 **shellcheck** (tracked `*.sh` + `bin/agent-init`),
 **build-drift** (rebuild + assert generated root docs, procedures **and** skills are current — not

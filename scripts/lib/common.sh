@@ -4277,9 +4277,14 @@ adb_untrusted_block() {
 #
 # BOTH paths also agree on process CLEANUP: each puts the child in its OWN PROCESS GROUP and
 # signals the GROUP, so a grandchild dies with the bound instead of outliving it. GNU `timeout`
-# does that for us; the watchdog path does it with `set -m` (see the launch below).
+# does that for us; the watchdog path does it with `set -m` (see the launch below). A descendant
+# that moves itself into another group (`set -m`, `setsid`) is not in that group and is not reached.
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
+# Sets _ADB_BOUNDED_FIRED, so a caller can tell the bound's 124 from a child that exits 124 on its own
+# (#445): 1 the bound fired, 0 it did not — the watchdog path, which knows from its own flag — and
+# EMPTY on the binary path, where `timeout` reports both events as 124 and nothing here can tell them
+# apart. A caller that needs the answer forces the watchdog path (ADB_NO_TIMEOUT_BIN=1).
 
 # Signal a bounded child AND everything it spawned: the process GROUP first, then the bare pid.
 #
@@ -4335,7 +4340,9 @@ _adb_bounded_waitf_ok() {
 # bug one level up.
 _adb_bounded_reap() {
   [ -n "${_ADB_BOUNDED_CHILD:-}" ] && _adb_bounded_signal TERM "$_ADB_BOUNDED_CHILD"
-  [ -n "${_ADB_BOUNDED_WATCHER:-}" ] && kill -TERM "$_ADB_BOUNDED_WATCHER" 2>/dev/null
+  # …woken after its TERM, or a watcher someone stopped holds the TERM pending (Linux) and is left behind.
+  [ -n "${_ADB_BOUNDED_WATCHER:-}" ] && kill -TERM "$_ADB_BOUNDED_WATCHER" 2>/dev/null \
+    && _adb_bounded_signal CONT "$_ADB_BOUNDED_WATCHER"
   sleep 1
   [ -n "${_ADB_BOUNDED_CHILD:-}" ] && _adb_bounded_signal KILL "$_ADB_BOUNDED_CHILD"
   exit 143   # report as "terminated by an outer bound", which is exactly what happened
@@ -4343,6 +4350,7 @@ _adb_bounded_reap() {
 
 adb_run_bounded() {
   local secs="$1" grace="$2" tb="" t0 trc otrap had_m=0; shift 2
+  _ADB_BOUNDED_FIRED=0
   # Does the CALLER already have job control on? Read ONCE, here, because BOTH paths need the
   # answer: the watchdog path restores it after borrowing it (see the launch below), and BOTH
   # `wait`s need `-f` under it. With job control enabled, plain `wait` returns when a job merely
@@ -4394,8 +4402,6 @@ adb_run_bounded() {
     # read at the top of this function and `_adb_bounded_waitf_ok`.
     if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$_ADB_BOUNDED_CHILD"; trc=$?
     else                                                 wait    "$_ADB_BOUNDED_CHILD"; trc=$?; fi
-    trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
-    unset _ADB_BOUNDED_CHILD
     # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child, but
     # relays the child's own signal status (137) when -k had to escalate to SIGKILL — so ONE event
     # reports two different codes depending only on how stubborn the child was, and 137 is what
@@ -4408,8 +4414,19 @@ adb_run_bounded() {
     # in its group is a descendant that outlived the deadline — exactly the orphan this issue is
     # about. Conditional on 124 because a command that finished ON ITS OWN may have deliberately
     # left something running (the dev-server case), and killing that would make a bound into a
-    # reaper of successful work.
-    [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
+    # reaper of successful work. And AFTER THE SAME GRACE the watchdog path gives: `timeout` returns
+    # once its leader is gone, which can be before a member that handles TERM has finished, so the
+    # sweep waits up to the grace for the group to empty and only then kills what is left.
+    if [ "$trc" -eq 124 ]; then
+      local tg=0
+      while [ "$tg" -lt "$grace" ] && kill -0 -- "-$tb_pid" 2>/dev/null; do sleep 1; tg=$(( tg + 1 )); done
+      _adb_bounded_signal KILL "$tb_pid"
+    fi
+    # The reap trap is disarmed only AFTER the sweep, so a cancellation arriving between the wait and
+    # the sweep still reaches the group (D122).
+    trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
+    unset _ADB_BOUNDED_CHILD
+    _ADB_BOUNDED_FIRED=""
     return "$trc"
   fi
   local flag rc cmd_pid watcher tick
@@ -4473,15 +4490,30 @@ adb_run_bounded() {
   # capability check; below 5.1 the caller keeps the pre-#141 behaviour rather than a broken one.
   if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$cmd_pid" 2>/dev/null; rc=$?
   else                                                 wait    "$cmd_pid" 2>/dev/null; rc=$?; fi
+  # A FIRED bound's watcher is part-way through its escalation, so it is waited for rather than
+  # stopped: its grace, then its KILL of the whole GROUP, is what lets a member that handles TERM
+  # finish its cleanup and still reaches one that ignores TERM (D122). Otherwise it has nothing left
+  # to police and is stopped. The reap trap and the tracked identities stay armed THROUGH that wait,
+  # so a cancellation during the grace still reaches the group.
+  #
+  # The watcher is WOKEN — its GROUP, and then itself (`_adb_bounded_signal`) — and waited for with
+  # `-f` under the child's own condition. A watcher someone STOPPED holds its escalation, and on Linux
+  # any TERM sent to it, until it is continued, and one whose whole group was stopped is also waiting
+  # on a stopped `sleep` that a CONT to the watcher alone never resumes. A plain `wait` then returns at
+  # once (job control) or never. The CONT covers a watcher already stopped; `-f` a stop that lands
+  # during the wait, which it sits out rather than return 124 over a live group.
+  if [ -f "$flag" ]; then _adb_bounded_signal CONT "$watcher"
+  else kill -TERM "$watcher" 2>/dev/null; _adb_bounded_signal CONT "$watcher"; fi
+  if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$watcher" 2>/dev/null
+  else                                                 wait    "$watcher" 2>/dev/null; fi
   trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
   unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
-  kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
   # The flag ALONE decides: if the bound fired, this is 124 whatever status the child exited with.
   # A child that traps SIGTERM and exits 0 (ordinary well-behaved-CLI cleanup) would otherwise be
   # reported as a clean success carrying truncated output — silent incompleteness accepted as a
   # result, and GNU `timeout` does NOT have that flaw (it returns 124 for that child), so gating on
   # rc would also reintroduce the platform-dependent split the normalization above eliminates.
-  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
+  if [ -f "$flag" ]; then rm -f "$flag"; _ADB_BOUNDED_FIRED=1; return 124; fi
   rm -f "$flag"; return "$rc"
 }
 

@@ -33,8 +33,9 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs —
    shellcheck, the generated-file drift check, every `check-*.sh` suite, and an install→uninstall
    dry-run. **`bash scripts/selfcheck.sh --list` prints the registry**, and that is the
-   authoritative set: the hand-copied list that used to sit here named 29 of what are now 61 steps,
-   because a list in prose goes stale the first time a step is added and nothing says so. Fix red
+   authoritative set: the hand-copied list that used to sit here named 29 steps of a registry that
+   had long outgrown it, because a list in prose goes stale the first time a step is added and
+   nothing says so — and so does a count, which is why none is quoted here. Fix red
    at the root — never push and hope (the CI-discipline practice applies to this repo too).
 
    **It runs those steps in PARALLEL** (#260, D37) — a registry of steps dispatched through a
@@ -52,10 +53,12 @@ those. The rules below are specific to this repo's code.
    (`adb_pool_size`), which is what stops a harness inventing its own number.
 
    **What it costs — a RANGE, measured, not a number.** On the maintainer's 10-core macOS machine
-   on 2026-08-14, eight full runs of near-identical trees spanned **8m46s to 12m55s**. That spread is
-   the honest answer: it is what the machine actually did, and it is wider than most changes
-   anyone will make to the suite. One step, `adopt-readiness-mutation`, is consistently 85-95% of
-   it — it runs the whole `check-adopt-readiness.sh` suite once per injected defect, 38 times.
+   on 2026-10-05, two forced full runs of one tree spanned **82m12s to 98m49s**, both beside another
+   session's builds at load averages from single digits into the hundreds (D122 has the table). That
+   spread is the honest answer: it is what the machine actually did. No one step dominates: the run
+   is as long as the longest of three harnesses that each take about an hour inside it —
+   `pattern-ledger-mutation`, `settings-fragment-mutation`, `review-loop-mutation` — and every
+   `*-mutation` step runs its suite once per injected defect, whole or per block.
    That range is a **forced** full run (`ADB_MUTATION_RUN_ALL=1`): since #441 a plain run pays for
    a mutation harness only when the change touches its inputs — see the gate, below — so an
    untouched tree finishes in a fraction of it, and says which steps it held back.
@@ -92,6 +95,14 @@ those. The rules below are specific to this repo's code.
      approximation with a stated bound — a row whose block *executes* another row's target can be
      gated out — and `mutation-nightly.yml` is the backstop that runs every row unconditionally.
      A row target the step does not declare refuses gating for the whole step and says which.
+   - **Nothing is awaited in silence** (#445, D122). Every suite run the two shared harness pools
+     make (`check_mutation_pool`, `check_mutation_rows`) — each mutant, each block's control, the
+     full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a hang backstop and
+     not a budget), and its expiry is a named `hung` verdict: applied, never RED. A run a harness
+     makes outside those pools, or a harness with a pool of its own, is not; above all of them, a
+     step still running past `ADB_SELFCHECK_OVERRUN_SECS` (default 1800) is named live, once per
+     multiple of it, and again on the `result` block's `overran` line. That warning reports and
+     never kills: the step keeps its own verdict.
    - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),
      **`--skip a,b`** runs everything except them (same unknown-name contract, and the skipped
      names are printed — twice, since #339 — because a step dropped in silence is indistinguishable
@@ -103,14 +114,13 @@ those. The rules below are specific to this repo's code.
    **The serial prologue holds TWO lanes, for two different reasons** (#423), and `--list`'s fourth
    field is which:
 
-   - **`mutates-tree` — `build-drift` alone.** It runs `scripts/build.sh`, which rewrites tracked
+   - **`mutates-tree` — <!-- adb:lane mutates-tree -->`build-drift`<!-- /adb:lane --> alone.** It runs `scripts/build.sh`, which rewrites tracked
      generated files; every other step only reads the tree or works inside its own `mktemp -d`.
      Since #268 each individual file is published by **rename**, so no single one is observable
      half-written; what is still not atomic is the transition *across* files, so a reader that
      starts mid-build sees a **mixed generation**. That is why the fix did not retire the pin.
-   - **`load-sensitive` — `session-currency`, `install-migration`, `install-guard`,
-     `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`.** These assert on signal
-     delivery, worker reaping and installer writes, and every one passes unloaded and on the
+   - **`load-sensitive` — <!-- adb:lane load-sensitive -->`session-currency`, `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`<!-- /adb:lane -->.**
+     These assert on signal delivery, worker reaping and installer writes, and every one passes unloaded and on the
      ubuntu leg. **Two of them account for all four reds** over 08-19..08-21 — `session-currency`
      and `selfcheck-guard` (with `selfcheck-guard-mutation`), one of those runs on `main`, so not
      any PR's diff. The three `install-*` steps have **never** failed there: they join because they

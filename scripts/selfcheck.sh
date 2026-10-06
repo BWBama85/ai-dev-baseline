@@ -821,9 +821,11 @@ add session-context     bash scripts/check-session-context.sh
 
 # ...and the guards in it are guards, so each is injected with its own defect and required RED on
 # its own witness: the owner check, the source gate, the whole-record refusal, the containment of
-# the injected fields, the REQUIRED count, and the workflow snippet's history append.
+# the injected fields, the REQUIRED count, and the workflow snippet's history append. Per-block
+# since #445: each row runs only the block that holds its witness (D103), and is gated on its own
+# target (D108).
 add session-context-mutation bash scripts/check-session-context.sh --mutation
-inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md
+inputs session-context-mutation scripts/check-session-context.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh scripts/lib/run-state.sh agents/claude/scripts/session-context.sh agents/claude/scripts/implement-issue-gate.sh agents/claude/settings.hooks.json base/workflows/implement-issue.md scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # The installer's SECOND settings surface (#248): which leaves of ~/.claude/settings.json does it
 # own, and what does it do to one it does not? Drives the merge's five verdicts, the receipt's four
@@ -881,7 +883,7 @@ add fact-drift          bash scripts/check-fact-drift.sh
 # into a COPY of every file it pins and the real lint must come back red. Runs ~22 sub-lints
 # against a throwaway tree; the working tree is never touched.
 add fact-mutation       bash scripts/check-fact-drift.sh --mutation
-inputs fact-mutation            scripts/check-fact-drift.sh scripts/check-lib.sh scripts/lib/common.sh
+inputs fact-mutation            scripts/check-fact-drift.sh scripts/check-lib.sh scripts/lib/common.sh scripts/selfcheck.sh
 
 # ...and the guard rails above are themselves guards, so they get the same treatment (#213): the
 # witness contract and the mutation harness are each driven against deliberately broken rules in a
@@ -1008,6 +1010,10 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
                 failed — the step names and their FAIL: witness lines — then exit 0. For a CI job
                 summary, so a recurring red is readable without opening the log. A reporter, never
                 a gate: it does not re-run anything and its status describes only itself.
+
+  The overrun warning (#445): a step still running past ADB_SELFCHECK_OVERRUN_SECS (default 1800)
+  is named live, once per multiple of that ceiling, and again in the result block. It is a report,
+  never a kill: the step runs on and its own status is its verdict.
 USAGE
 }
 
@@ -1074,6 +1080,7 @@ done
 # Rationale: D87.
 summarize_run() {   # <captured-log>
   local log="$1" failed witnesses _f
+  local -a _names
   # `-f` before `-r`: `-r` alone is true for a readable DIRECTORY, which then parsed as a log with
   # no markers in it and rendered an invented "the run was cancelled" report. A FIFO would have
   # been worse — `sed` on it blocks until someone writes, with the job's timeout as the only bound.
@@ -1090,9 +1097,11 @@ summarize_run() {   # <captured-log>
   # one somebody eventually quotes, and the cost of being right here is three lines.
   if [ -z "$failed" ] && grep -q '^ALL CHECKS PASSED$' "$log" 2>/dev/null; then
     printf '### `selfcheck` passed\n\nNo failing steps in the captured run.\n'
+    summarize_overran "$log"
     return 0
   fi
   printf '### `selfcheck` failed\n\n'
+  summarize_overran "$log"
   if [ -n "$failed" ]; then
     printf '**Failed step(s):**'
     # EVERY TOKEN IS RE-VALIDATED before it enters a code span. `add` constrains what may be
@@ -1100,8 +1109,10 @@ summarize_run() {   # <captured-log>
     # can forge by printing `FAILED: ` at the start of a line. A name carrying a backtick would
     # close the span and render the rest as markup in a page a maintainer reads. A token that is
     # not a [A-Za-z0-9_-] slug is reported as unparsable rather than rendered.
-    # shellcheck disable=SC2086  # deliberate word-split of a space-joined name list
-    for _f in $failed; do
+    # SPLIT INTO AN ARRAY, never by an unquoted expansion, which would also GLOB a forged token
+    # against the checkout (D122).
+    read -r -a _names <<< "$failed"
+    for _f in "${_names[@]}"; do
       case "$_f" in
         *[!A-Za-z0-9_-]*|'') printf ' (one unparsable name omitted)' ;;
         *) printf ' `%s`' "$_f" ;;
@@ -1128,6 +1139,28 @@ summarize_run() {   # <captured-log>
   fi
   printf 'Full output is in the job log for this step.\n'
   return 0
+}
+
+# summarize_overran <captured-log> — the digest's paragraph for steps that ran past the overrun
+# ceiling (#445), or nothing. From the result block's `overran` line when the run reached it, else
+# from the LIVE warnings — a run cancelled while a step hung has only those, and it is exactly the
+# run whose reader most needs the name. Every name is re-validated as `FAILED:`'s are, for the same
+# reason: a step's own output can forge either line.
+summarize_overran() {   # <captured-log>
+  local names _n
+  local -a _names
+  names="$(sed -n 's/^overran (past [0-9]*s): //p' "$1" | tail -1)"
+  [ -n "$names" ] || names="$(sed -n 's/^selfcheck: still running past [0-9]*s: \([^ ]*\) (.*/\1/p' "$1" | awk '!seen[$0]++' | tr '\n' ' ')"
+  [ -n "${names// /}" ] || return 0
+  printf '\n**Ran past the overrun warning:**'
+  read -r -a _names <<< "$names"   # an array, never an unquoted expansion — see summarize_run
+  for _n in "${_names[@]}"; do
+    case "$_n" in
+      *[!A-Za-z0-9_-]*|'') printf ' (one unparsable name omitted)' ;;
+      *) printf ' `%s`' "$_n" ;;
+    esac
+  done
+  printf '\n\n'
 }
 
 # SELECTION IS VALIDATED BEFORE THE TERMINAL MODES, and the order is the fix for a real hole
@@ -1213,6 +1246,21 @@ fi
 
 [ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
 
+# THE OVERRUN CEILING (#445). `wait -n` has no timeout and the result block prints only once every
+# step has finished, so neither can say that a step has hung. A TICKER does: a `sleep` job the
+# dispatcher reaps like any worker, after which it names every step past the ceiling and starts the
+# next tick. It reports and never kills — the per-row deadline in check-lib.sh is what turns a hung
+# mutant into a verdict, and a step killed here would trade a hang for a red the step did not earn.
+# Validated here, after the terminal modes, so `--list` and `--summarize` never depend on it.
+OVERRUN="$(_adb_pos_int "${ADB_SELFCHECK_OVERRUN_SECS:-1800}")" || {
+  echo "selfcheck: ADB_SELFCHECK_OVERRUN_SECS must be a positive integer of seconds, got '${ADB_SELFCHECK_OVERRUN_SECS:-}'" >&2
+  exit 2
+}
+# A minute between looks, or the ceiling itself when it is shorter: a hung step is named within a
+# minute of crossing it, and a short ceiling (the guard's fixtures) is still observed on time.
+OVERRUN_TICK=60
+[ "$OVERRUN" -lt "$OVERRUN_TICK" ] && OVERRUN_TICK="$OVERRUN"
+
 # --only, applied to the declared order so the selection keeps it. An unknown name EXITS rather
 # than being skipped: a filter that quietly matches nothing runs zero checks and reports the same
 # clean verdict a full green run reports (base/practices/self-review.md).
@@ -1220,6 +1268,8 @@ WORK="$(mktemp -d)" || { echo "selfcheck: FATAL — cannot create a scratch dire
 declare -A LIVE=()          # pid -> 1, for the signal path
 declare -a FAILED=()        # step names, in emission order
 declare -a SLOW=()          # "secs name", for the summary
+declare -a OVERRAN=()       # step names past the overrun ceiling, in the order the runner noticed them
+declare -A OVER_LAST=()     # name -> the last multiple of the ceiling already reported
 
 # Terminate every live worker — the whole PROCESS GROUP, not the pid.
 #
@@ -1293,12 +1343,54 @@ banner() { printf '\n=== %s ===\n' "$1"; }
 # (scripts/check-claims.sh --self-test, the note above its digit-boundary case).
 run_step() {
   local name="$1" rc=0
+  # WHEN IT STARTED AND ENDED, both stamped from inside the step: the dispatcher records a start only
+  # after the fork and reaps one job per wait, so either clock can be late, and an overrun is a fact
+  # about the step, not about its dispatch or its reaping (D122). A stamp that cannot be written is
+  # SAID, in the step's own output, because the runner then falls back to those later clocks.
+  printf '%s\n' "$EPOCHSECONDS" > "$WORK/started.$name" 2>/dev/null \
+    || printf 'selfcheck: NOTE — could not record when %s started; any overrun named for it is judged by when it was dispatched\n' "$name" >&2
   # shellcheck disable=SC2086  # deliberate word-split of a value `add` validated at registration
   ${STEP_CMD[$name]} </dev/null || rc=$?
+  printf '%s\n' "$EPOCHSECONDS" > "$WORK/ended.$name" 2>/dev/null \
+    || printf 'selfcheck: NOTE — could not record when %s ended; any overrun named for it is judged by when it was reaped\n' "$name" >&2
   return "$rc"
 }
 
-record() {   # name rc secs
+# stamp_of <started|ended> <name> — a step's own stamp, or nothing (status 1) while there is none.
+stamp_of() {
+  local e
+  e="$(cat "$WORK/$1.$2" 2>/dev/null)" || return 1
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$e"
+}
+
+# running_for <name> <dispatched-at> — how long a step that has not ended has run, by its own start
+# stamp when it has one.
+running_for() {
+  local s
+  s="$(stamp_of started "$1")" || s="$2"
+  printf '%s' "$(( EPOCHSECONDS - s ))"
+}
+
+# note_overrun <name> <elapsed-secs> [live] — remember a step that ran past the ceiling, and with
+# `live` say so now: once per multiple of the ceiling, so a step that never ends keeps saying so
+# instead of going quiet after one line. Without `live` it only records, which is how a step that
+# crossed the ceiling and finished between two ticks still reaches the result block.
+note_overrun() {
+  local name="$1" el="$2" k
+  k=$(( el / OVERRUN ))
+  [ "$k" -ge 1 ] || return 0
+  [ -n "${OVER_LAST[$name]+x}" ] || { OVERRAN+=("$name"); OVER_LAST["$name"]=0; }
+  [ "${3:-}" = live ] || return 0
+  [ "${OVER_LAST[$name]}" -lt "$k" ] || return 0
+  OVER_LAST["$name"]="$k"
+  printf 'selfcheck: still running past %ss: %s (%ss so far)\n' "$OVERRUN" "$name" "$el"
+}
+
+record() {   # name rc secs — the overrun is judged by the step's own stamps when it has both
+  local el="$3" s e
+  if s="$(stamp_of started "$1")" && e="$(stamp_of ended "$1")"; then el=$(( e - s )); fi
+  note_overrun "$1" "$el"
   SLOW+=("$(printf '%06d %s' "$3" "$1")")
   if [ "$2" -eq 0 ]; then
     printf 'PASS (%ss)\n' "$3"
@@ -1309,7 +1401,7 @@ record() {   # name rc secs
 }
 
 run_serial() {   # names...
-  local name t0 rc pid
+  local name t0 rc pid tick got
   # Job control here for the same reason `run_pool` uses it, and it is not optional: without it the
   # backgrounded step shares THIS shell's process group, so `_cleanup` can only signal the worker
   # subshell — and the `bash scripts/check-*.sh` it forked is orphaned and runs on. The step being
@@ -1328,7 +1420,24 @@ run_serial() {   # names...
     run_step "$name" &
     pid=$!
     LIVE["$pid"]=1
-    wait "$pid" || rc=$?
+    # The step OR the ticker, whichever ends first: a tick names the step if it is past the ceiling
+    # and starts the next one. `-f` for the reason run_pool gives — job control is on here too.
+    while :; do
+      sleep "$OVERRUN_TICK" &
+      tick=$!
+      got=""
+      if wait -f -n -p got "$pid" "$tick"; then rc=0; else rc=$?; fi
+      if [ "${got:-}" = "$tick" ]; then
+        # Only a step that has not ENDED is still running; one the ticker beat to the reap is not.
+        stamp_of ended "$name" >/dev/null || note_overrun "$name" "$(running_for "$name" "$t0")" live
+        rc=0; continue
+      fi
+      kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null
+      # Nothing reaped: a trapped signal interrupted the wait. The traps exit; loop rather than
+      # attribute a status the step did not return.
+      [ -n "${got:-}" ] || { rc=0; continue; }
+      break
+    done
     unset "LIVE[$pid]"
     record "$name" "$rc" "$(( EPOCHSECONDS - t0 ))"
   done
@@ -1342,7 +1451,7 @@ run_serial() {   # names...
 run_pool() {   # names...
   local -a queue=("$@")
   local -A pid_name=() pid_out=() pid_t0=()
-  local running=0 next=0 rc pid name out
+  local running=0 next=0 rc pid name out tick="" p
   # Job control, ON, for the pool only — and it is not cosmetic. It is what puts each worker in its
   # own process group, which is the only portable way `_cleanup` can reach a worker's grandchildren
   # (see its header). Restored on the way out so nothing after this function inherits it.
@@ -1369,8 +1478,20 @@ run_pool() {   # names...
     # `-f` is required BECAUSE of the `set -m` above: with job control enabled, plain `wait` returns
     # when a job CHANGES STATUS, which includes being stopped. Without `-f` a stopped worker would
     # be reaped as if it had finished and its half-written buffer emitted as a result.
+    # THE TICKER is one more job in the same `wait -n`, so the dispatcher wakes at least once per
+    # tick even when no step finishes. It is never in `pid_name`, so it can never be reported as a
+    # step; `_cleanup` reaches it through the shell's job table like any other job.
+    if [ -z "$tick" ]; then sleep "$OVERRUN_TICK" & tick=$!; fi
     pid=""
     if wait -f -n -p pid; then rc=0; else rc=$?; fi
+    if [ -n "${pid:-}" ] && [ "$pid" = "$tick" ]; then
+      tick=""
+      # An entry is not yet REAPED; only one with no end stamp is still RUNNING.
+      for p in "${!pid_name[@]}"; do
+        stamp_of ended "${pid_name[$p]}" >/dev/null || note_overrun "${pid_name[$p]}" "$(running_for "${pid_name[$p]}" "${pid_t0[$p]}")" live
+      done
+      continue
+    fi
     if [ -z "${pid:-}" ]; then
       # A trapped signal interrupted the wait and nothing was reaped. The traps above exit, so
       # this is belt-and-braces; loop rather than mis-attribute a status to an arbitrary step.
@@ -1396,7 +1517,10 @@ run_pool() {   # names...
     [ -s "$out" ] && cat "$out"
     record "$name" "$rc" "$(( EPOCHSECONDS - ${pid_t0[$pid]} ))"
     rm -f "$out"
+    # Forgotten once reaped, so the ticker's walk over `pid_name` is a walk over RUNNING steps.
+    unset "pid_name[$pid]" "pid_out[$pid]" "pid_t0[$pid]"
   done
+  if [ -n "$tick" ]; then kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null; fi
   set +m
 }
 
@@ -1498,6 +1622,9 @@ printf '%s step(s) in %sm%02ds — %s passed, %s failed\n' \
 # …and the gated ones, for the same reason: a step the gate held back produced exactly what a
 # step that passed produced, and the header of a long log is not where a reader looks.
 [ "${#GATED[@]}" -gt 0 ] && printf 'gated (inputs unchanged): %s\n' "${GATED[*]}"
+# …and every step that ran past the overrun ceiling, finished or not. A run cancelled while a step
+# hung never reaches this block, which is why each one was also named live when it crossed.
+[ "${#OVERRAN[@]}" -gt 0 ] && printf 'overran (past %ss): %s\n' "$OVERRUN" "${OVERRAN[*]}"
 # The slowest few, because under a pool the wall clock is the longest single step and knowing
 # which one that is turns "make it faster" into a specific question.
 if [ "${#SLOW[@]}" -gt 0 ]; then

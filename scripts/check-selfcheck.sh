@@ -31,7 +31,9 @@
 #   9. large output survives intact;
 #  10. cancellation terminates the workers instead of orphaning them — including a worker forked
 #      but not yet recorded in `LIVE`, and each case observed failing against a runner whose
-#      reaping is broken in the one way that case exists to catch.
+#      reaping is broken in the one way that case exists to catch;
+#  11. a step past ADB_SELFCHECK_OVERRUN_SECS is named live and in the result block, keeps its own
+#      verdict under the pool and --serial, and is carried by `--summarize` (#445).
 #
 # Usage: bash scripts/check-selfcheck.sh   (exit 0 = all pass, 1 = a failure)
 
@@ -191,6 +193,24 @@ if [ "$MODE" = mutation ]; then
     'for _p in "${ISOLATED_STEPS[@]}"; do [ "$1" = "$_p" ] && { printf '"'"'load-sensitive\n'"'"'; return 0; }; done' \
     ':' \
     "--list's lane and its reason never disagree about any step"
+
+  # The overrun warning (#445). Each of its halves is a report, and a report's failure mode is the
+  # silent one: a ticker that never prints, a result block that drops the names and a digest that
+  # forgets them all leave every step green. Two of 8e's assertions are not rows: a ticker left
+  # running would make every nested run wait out a full tick, and a ticker reaped as a step corrupts
+  # the pool's running count. Their observation is in D122.
+  check_mut "overrun-silent" \
+    'printf '"'"'selfcheck: still running past %ss: %s (%ss so far)\n'"'"' "$OVERRUN" "$name" "$el"' ':' \
+    'a step past the ceiling is named LIVE'
+  check_mut "overrun-unreported" \
+    '[ "${#OVERRAN[@]}" -gt 0 ] && printf '"'"'overran (past %ss): %s\n'"'"' "$OVERRUN" "${OVERRAN[*]}"' ':' \
+    'the result block names a step that overran and passed'
+  check_mut "overrun-by-reap-time" \
+    '  if s="$(stamp_of started "$1")" && e="$(stamp_of ended "$1")"; then el=$(( e - s )); fi' ':' \
+    'a step that ENDED inside the ceiling is not named'
+  check_mut "digest-drops-overran" \
+    '    summarize_overran "$log"' ':' \
+    'a green digest still names a step that overran'
 
   check_mutation_pool "selfcheck-guard" "$work" mut_prepare mut_run 4
   check_summary "selfcheck-guard-mutation"
@@ -898,6 +918,106 @@ eq "$RC_" "2" "--summarize with an empty path is rejected even alongside --list"
 OUT="$(bash "$ROOT/scripts/selfcheck.sh" --list --summarize "$sum_fx/one.log" 2>&1)"; RC_=$?
 eq "$RC_" "2" "--list and --summarize together are rejected rather than silently ordered"
 
+# ============================== 8e. the overrun warning (#445) ================================
+# `wait -n` has no timeout, so a step that never ended used to be awaited in silence. A ticker now
+# names every step past ADB_SELFCHECK_OVERRUN_SECS live, and the result block names them again. It
+# REPORTS and never kills: an overrunning step must still finish and keep its own verdict, and a red
+# one must still fail the run by name — under the pool and under --serial alike.
+overrun_sc() {   # <ceiling> <args...> — the fixture's selfcheck under a given ceiling
+  local c="$1"; shift
+  OUT="$(ADB_STUB_CTL="$FX/ctl" ADB_SELFCHECK_OVERRUN_SECS="$c" bash "$FX/scripts/selfcheck.sh" "$@" 2>&1)"; RC_=$?
+}
+overran_line() { printf '%s\n' "$OUT" | grep '^overran (past '; }
+
+reset_ctl
+printf '10\n' > "$FX/ctl/gates.sleep"
+printf '5\n' > "$FX/ctl/claims.sleep"; printf '5\n' > "$FX/ctl/claims.rc"
+overrun_sc 2 --only "$ONLY" --jobs 4
+eq "$RC_" "1" "a red step past the ceiling still fails the run"
+has "$OUT" "FAILED: claims" "...and is named, with the ticker running"
+has "$OUT" "FAIL (exit 5," "...with its own exit code"
+has "$OUT" "selfcheck: still running past 2s: gates (" "a step past the ceiling is named LIVE"
+has "$(block_of gates)" "gates-line-1" "an overrunning step still runs to completion and emits its block"
+has "$(overran_line)" "gates" "the result block names a step that overran and passed"
+has "$(overran_line)" "claims" "the result block names a step that overran and failed"
+hasnt "$(overran_line)" "practice-index" "a step that finished inside the ceiling is not named"
+# The ticker is a job in the same `wait -n` and must never be mistaken for a step.
+eq "$(printf '%s\n' "$OUT" | grep -c '^=== ')" "9" "the ticker is never emitted as a step (8 banners + result)"
+has "$OUT" "8 step(s) in" "the step count is unchanged by the ticker"
+# AGAIN at each later multiple, and never more often: a 10s step under a 2s ceiling is ticked about
+# every 2s, so it is named more than once, and never more than once per multiple it crossed. The
+# last line's elapsed figure must also have reached a SECOND multiple, which a warning that fired
+# once and then stayed silent could not show.
+_n="$(printf '%s\n' "$OUT" | grep -c '^selfcheck: still running past 2s: gates (')"
+# The ceiling on the count is the multiples the step actually crossed, from its OWN reported time:
+# under load a 10 s sleep can take longer, and a fixed number would then fail a correct ticker.
+_gs="$(printf '%s\n' "$OUT" | awk '/^=== gates ===$/ { p = 1; next } p && /^(PASS|FAIL) \(/ { s = $0; sub(/.*[ (]/, "", s); sub(/s\)$/, "", s); print s; exit }')"
+[ "$_n" -ge 2 ] && [ "$_n" -le $(( ${_gs:-0} / 2 )) ] && ok || bad "a ${_gs:-?}s step under a 2s ceiling was named $_n time(s), not once per later multiple it crossed"
+_last="$(printf '%s\n' "$OUT" | sed -n 's/^selfcheck: still running past 2s: gates (\([0-9]*\)s so far)$/\1/p' | tail -1)"
+[ -n "$_last" ] && [ "$_last" -ge 4 ] && ok || bad "the last warning for a 10s step said ${_last:-nothing}s — it was never repeated at a later multiple"
+
+reset_ctl
+printf '5\n' > "$FX/ctl/gates.sleep"
+overrun_sc 2 --serial --only "$ONLY"
+yes "$RC_" "--serial with an overrunning step that passes still exits 0"
+has "$OUT" "selfcheck: still running past 2s: gates (" "--serial names a step past the ceiling LIVE"
+has "$(overran_line)" "gates" "--serial's result block names it too"
+# …and a step that overruns and THEN fails keeps its own status: the serial loop's wait reaps the
+# ticker as well as the step, and only the step's status may reach the verdict.
+reset_ctl
+printf '5\n' > "$FX/ctl/gates.sleep"; printf '6\n' > "$FX/ctl/gates.rc"
+overrun_sc 2 --serial --only "$ONLY"
+eq "$RC_" "1" "--serial: a step that overran and then failed still fails the run"
+has "$OUT" "FAILED: gates" "--serial: the overrunning failure is named"
+has "$OUT" "FAIL (exit 6," "--serial: the overrunning failure keeps its own exit code, not the ticker's"
+
+# The ticker must not hold a fast run open: the default one-minute tick is killed when the pool drains.
+reset_ctl
+_t0="$EPOCHSECONDS"
+# EMPTY, not inherited: a caller's own ceiling would decide which ticker this case exercises.
+ADB_SELFCHECK_OVERRUN_SECS='' sc --only "$ONLY" --jobs 4
+yes "$RC_" "a fast run under the default ceiling exits 0"
+[ $(( EPOCHSECONDS - _t0 )) -lt 30 ] && ok || bad "a fast run took $(( EPOCHSECONDS - _t0 ))s — the ticker held it open"
+hasnt "$OUT" "overran" "a fast run names nothing as overrunning"
+
+# The ceiling is validated, and only where it is used: --list never depends on it.
+for _v in abc 0 -1 1234567890; do
+  overrun_sc "$_v" --only "$ONLY"
+  eq "$RC_" "2" "ADB_SELFCHECK_OVERRUN_SECS='$_v' is a usage error"
+  has "$OUT" "ADB_SELFCHECK_OVERRUN_SECS must be a positive integer" "ADB_SELFCHECK_OVERRUN_SECS='$_v' is named"
+done
+overrun_sc abc --list
+yes "$RC_" "--list does not depend on the overrun ceiling"
+
+# --summarize carries the names: from the result block, or — for a run cancelled while a step hung,
+# which never reaches it — from the live lines. A name is re-validated before it enters a span.
+cat > "$sum_fx/overran.log" <<'LOG'
+=== gates ===
+PASS (1900s)
+=== result ===
+1 step(s) in 31m40s — 1 passed, 0 failed
+overran (past 1800s): gates
+ALL CHECKS PASSED
+LOG
+summarize "$sum_fx/overran.log"
+has "$OUT" "Ran past the overrun warning:" "a green digest still names a step that overran"
+has "$OUT" '`gates`' "...by name"
+printf '=== gates ===\nselfcheck: still running past 1800s: session-context-mutation (1800s so far)\nselfcheck: still running past 1800s: session-context-mutation (3600s so far)\n' > "$sum_fx/hung.log"
+summarize "$sum_fx/hung.log"
+has "$OUT" '`session-context-mutation`' "a cancelled run's digest names the step from its live warning"
+eq "$(printf '%s\n' "$OUT" | grep -o 'session-context-mutation' | wc -l | tr -d ' ')" "1" "...once, however many times it was warned about"
+printf '=== result ===\noverran (past 1800s): gates x`**INJECTED**`\nFAILED: gates\nSOME CHECKS FAILED\n' > "$sum_fx/overran-forged.log"
+summarize "$sum_fx/overran-forged.log"
+hasnt "$OUT" '**INJECTED**' "a forged overrun name is not rendered"
+has "$OUT" "unparsable name omitted" "...and its omission is stated"
+# A GLOB-SHAPED TOKEN IS ONE TOKEN. The digest runs from the checkout root, where an unquoted
+# expansion of `scripts/*` became one omission notice per file there (and a glob that matched
+# slug-shaped names would have rendered names no run printed). Both lists, since both split the same way.
+printf '=== result ===\noverran (past 1800s): gates scripts/*\nFAILED: gates scripts/*\nSOME CHECKS FAILED\n' > "$sum_fx/glob.log"
+summarize "$sum_fx/glob.log"
+eq "$(printf '%s\n' "$OUT" | grep -o 'unparsable name omitted' | wc -l | tr -d ' ')" "2" \
+  "a glob-shaped name is one omitted token in each list, never expanded against the checkout"
+
 # ============================== 9. large output ===============================================
 # A step's buffer is a file precisely so a big one survives; a variable would have eaten the
 # trailing newlines and a pipe would have needed a reader. 4000 lines is well past PIPE_BUF.
@@ -1177,6 +1297,45 @@ if mutate_line "$FXRACE/scripts/selfcheck.sh" \
   rm -f "$FXRACE/ctl/HOLD"
   eq "$CANCEL_TERMINATED" "1" \
     "a worker forked but not yet recorded in LIVE is still reaped ($CANCEL_DIAG)"
+fi
+
+# --- 10.5 an overrun is judged by the step's own stamps, not by its dispatch or reaping (#445) --
+# A gate injected just AFTER the step's start is recorded holds the parent, so a step that ends at once
+# is not reaped until the hold lifts. By then it is past the ceiling, and it must still not be named.
+# (After the start stamp, not after the fork: a hold before the stamp delays the start too, and the
+# reap would then not be late at all.)
+HOLD_T0_SED='s#^      pid_name\["\$pid"\]="\$name"; pid_out\["\$pid"\]="\$out"; pid_t0\["\$pid"\]="\$EPOCHSECONDS"$#&; while [ -f "$ADB_STUB_CTL/HOLD" ]; do sleep 0.05; done#'
+FXHOLD="$work/fx-hold"
+mkfx "$FXHOLD" || bad "10.5: could not build the hold fixture"
+if mutate_line "$FXHOLD/scripts/selfcheck.sh" \
+     '      pid_name["$pid"]="$name"; pid_out["$pid"]="$out"; pid_t0["$pid"]="$EPOCHSECONDS"' \
+     "$HOLD_T0_SED" "10.5 post-start gate" && mut_parses "$FXHOLD" "10.5"; then
+  : > "$FXHOLD/ctl/HOLD"
+  ( sleep 4; rm -f "$FXHOLD/ctl/HOLD" ) &
+  _hold=$!
+  OUT="$(ADB_STUB_CTL="$FXHOLD/ctl" ADB_SELFCHECK_OVERRUN_SECS=2 bash "$FXHOLD/scripts/selfcheck.sh" --only gates --jobs 4 2>&1)"; RC_=$?
+  wait "$_hold" 2>/dev/null
+  yes "$RC_" "10.5: a run held at dispatch still passes"
+  has "$OUT" "gates-line-1" "10.5: the held step ran"
+  _rs="$(printf '%s\n' "$OUT" | awk '/^=== gates ===$/ { p = 1; next } p && /^PASS \(/ { s = $0; sub(/.*[ (]/, "", s); sub(/s\)$/, "", s); print s; exit }')"
+  [ "${_rs:-0}" -ge 3 ] && ok || bad "10.5: the step was reaped at ${_rs:-?}s, not past the 2s ceiling — the case is not the one it names"
+  hasnt "$OUT" "overran" "a step that ENDED inside the ceiling is not named, however late it was reaped"
+fi
+# …and the mirror image: a hold right after the FORK, before the start is recorded, must not shrink a
+# real overrun. A 3 s step under a 2 s ceiling is named, however late the parent recorded its start.
+FXHOLD2="$work/fx-hold2"
+mkfx "$FXHOLD2" || bad "10.5: could not build the second hold fixture"
+if mutate_line "$FXHOLD2/scripts/selfcheck.sh" \
+     '      ( export GIT_OPTIONAL_LOCKS=0; run_step "$name" ) >"$out" 2>&1 &' \
+     "$RACE_SED" "10.5 dispatch gate" && mut_parses "$FXHOLD2" "10.5"; then
+  printf '3\n' > "$FXHOLD2/ctl/gates.sleep"
+  : > "$FXHOLD2/ctl/HOLD"
+  ( sleep 4; rm -f "$FXHOLD2/ctl/HOLD" ) &
+  _hold=$!
+  OUT="$(ADB_STUB_CTL="$FXHOLD2/ctl" ADB_SELFCHECK_OVERRUN_SECS=2 bash "$FXHOLD2/scripts/selfcheck.sh" --only gates --jobs 4 2>&1)"; RC_=$?
+  wait "$_hold" 2>/dev/null
+  yes "$RC_" "10.5: a run held before its start was recorded still passes"
+  has "$OUT" "overran (past 2s): gates" "a step that RAN past the ceiling is named, however late its start was recorded"
 fi
 
 # --- the negative half lives in `--mutation` --------------------------------------------------

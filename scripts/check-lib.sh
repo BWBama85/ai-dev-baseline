@@ -292,7 +292,11 @@ _check_mut_one() {   # <index> <workdir> <prepare-fn> <run-fn>
   esac
   # The status AND the witness: matching printed text alone accepts a child that prints the expected
   # line and then exits 0. Exactly 1 is a failed assertion; anything else is the suite dying. (D68)
-  out="$("$run" "$copy" 2>&1)"; src=$?
+  # The output goes BESIDE the copy, never into it: the copy is the tree the suite is scanning.
+  _check_run_bounded "$2/mut-$1.out" "$run" "$copy"; src=$?
+  if [ "$CHECK_RUN_HUNG" -eq 1 ]; then _check_hung_verdict "$copy/verdict"; return 0; fi
+  # READ IN FULL OR NOT AT ALL: a read that failed part-way can still carry the witness.
+  if ! out="$(cat "$2/mut-$1.out")"; then printf 'bad|its output could not be read back, so it has no verdict\n' > "$copy/verdict"; return 0; fi
   _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_MUT_WIT[$i]}"
   return 0
 }
@@ -318,6 +322,89 @@ _check_mut_score() {
   esac
 }
 
+# --- the row deadline (#445) -------------------------------------------------------------------
+# Every suite run THESE TWO POOLS make is bounded: each mutant, each block's unmutated control and the
+# full unmutated control. Without it, a mutant that BLOCKS (a FIFO opened with no writer, a `read`
+# with no -t, a lock never released) is indistinguishable from one still running, and the harness
+# waits on it for as long as the operator does. The bound is a hang backstop, not a budget:
+# ADB_MUTATION_ROW_TIMEOUT_SECS, default 1800, sized for a suite running several times its idle time
+# inside a contended pool. Its expiry is a named verdict, never a pass. NOT bounded here: the
+# tree-copy callback (it runs before the injection, so nothing it executes has been mutated), a run a
+# harness makes itself outside these pools, and the harnesses that hand-roll a pool of their own —
+# selfcheck's overrun warning is what names a hang there. (D122)
+
+CHECK_ROW_SECS=1800
+CHECK_RUN_HUNG=0
+
+# _check_row_secs <label> — validate ADB_MUTATION_ROW_TIMEOUT_SECS once, before any row is built, into
+# CHECK_ROW_SECS, through common.sh's `_adb_pos_int` (which also normalises leading zeros). A value
+# that is not a positive integer records ONE failure and returns 1: a bound quietly replaced by its
+# default is a knob that does not do what it says.
+_check_row_secs() {
+  local v
+  if ! v="$(_adb_pos_int "${ADB_MUTATION_ROW_TIMEOUT_SECS:-1800}")"; then
+    bad "$1 --mutation: ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer of seconds, got '${ADB_MUTATION_ROW_TIMEOUT_SECS:-}'"
+    return 1
+  fi
+  CHECK_ROW_SECS="$v"
+}
+
+# _check_run_bounded <out-file> <fn> [args…] — run a harness callback under CHECK_ROW_SECS with stdout
+# and stderr in <out-file>, and set CHECK_RUN_HUNG to 1 when the bound fired, else 0. Returns the
+# callback's status (124 when the bound fired).
+#   * A FILE, never a pipe: a descendant that leaves the process group would hold a pipe open, and a
+#     `$(…)` read would wait on it after the bound had fired.
+#   * The WATCHDOG path of adb_run_bounded is forced, because the `timeout` binary cannot execute a
+#     shell function and every callback here is one. `_check_run_as_caller` takes the override away
+#     again inside the bounded subshell, so the suite under test sees the environment it was given —
+#     several suites here exercise adb_run_bounded's binary path themselves. A suite that ignores
+#     TERM, or leaves a descendant IN ITS PROCESS GROUP that does, is reaped by the watcher's group
+#     KILL. A descendant that leads a group of its own (`set -m`, `setsid`) is outside that group,
+#     and nothing here reaches it: the run is still scored `hung`, but that process outlives it.
+#   * "Hung" is adb_run_bounded's own answer (`_ADB_BOUNDED_FIRED`), never inferred from the status:
+#     a suite that exits 124 on its own is scored as the exit it was.
+#   * The bound is approximate: the watchdog counts its own 5 s ticks (once the bound is 10 s or more)
+#     rather than reading a clock, and a fired bound then waits out a 5 s grace, so a run outlives
+#     CHECK_ROW_SECS by about 10 s on an idle machine and by more under load.
+#   * The output file has no byte bound — the `$(…)` this replaced held the same output in memory,
+#     unbounded and with no time bound — so a mutant that prints in a loop can grow it for as long as
+#     the deadline allows. Recorded rather than capped (D122).
+_check_run_bounded() {
+  local of="$1" had="" was="${ADB_NO_TIMEOUT_BIN-}" rc dp
+  shift
+  if [ -n "${ADB_NO_TIMEOUT_BIN+x}" ]; then
+    dp="$(declare -p ADB_NO_TIMEOUT_BIN 2>/dev/null)"; dp="${dp#declare -}"
+    case "${dp%% *}" in *x*) had="exported" ;; *) had="set" ;; esac
+  fi
+  # RESET FIRST: a redirect that fails runs nothing, so adb_run_bounded never gets to reset it, and a
+  # previous run's answer would be read as this one's. The unreadable output then gets its own verdict.
+  _ADB_BOUNDED_FIRED=0
+  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded "$CHECK_ROW_SECS" 5 _check_run_as_caller "$had" "$was" "$@" > "$of" 2>&1 < /dev/null; rc=$?
+  CHECK_RUN_HUNG=0
+  [ "${_ADB_BOUNDED_FIRED:-0}" = 1 ] && CHECK_RUN_HUNG=1
+  return "$rc"
+}
+
+# _check_run_as_caller <"exported" | "set" | ""> <saved value> <fn> [args…] — restore the caller's
+# override exactly — its presence, its value and whether it was exported, each carried separately so
+# no value can be mistaken for another state — then run <fn>. Runs only inside adb_run_bounded's subshell.
+_check_run_as_caller() {
+  case "$1" in
+    exported) export ADB_NO_TIMEOUT_BIN="$2" ;;
+    set)      ADB_NO_TIMEOUT_BIN="$2"; export -n ADB_NO_TIMEOUT_BIN ;;
+    *)        unset ADB_NO_TIMEOUT_BIN ;;
+  esac
+  shift 2
+  "$@"
+}
+
+# _check_hung_verdict <verdict-file> — the row deadline's verdict. A hung mutant DID reach the code, so
+# the pools count it as applied; it is never counted RED, because no assertion caught anything.
+_check_hung_verdict() {
+  printf 'bad|hung — no verdict within %ss (the row deadline, ADB_MUTATION_ROW_TIMEOUT_SECS), so the suite was terminated: the defect was neither caught nor missed\n' \
+    "$CHECK_ROW_SECS" > "$1"
+}
+
 # check_mutation_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run every table row
 # through a bounded pool, scoring into family 2's counters. Width from `adb_pool_size`
 # (min(cpu, cap)); the cap is a parameter because the two adopt suites differ deliberately (D66).
@@ -337,6 +424,7 @@ check_mutation_pool() {
     bad "$label --mutation: adb_pool_size is unavailable — source scripts/lib/common.sh before check-lib.sh"
     return 1
   fi
+  _check_row_secs "$label" || return 1
   pool="$(adb_pool_size "$cap")"
 
   for (( i = 0; i < n; i++ )); do
@@ -373,8 +461,8 @@ check_mutation_pool() {
   fi
   # SAY THE WIDTH IT ACTUALLY USED. A pool that degrades to one finishes with the same counts and
   # the same verdict as a healthy one — the only difference is how long it took, which nothing reads.
-  printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s)\n' \
-    "$label" "$applied" "$n" "$red" "$pool"
+  printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; row deadline %ss)\n' \
+    "$label" "$applied" "$n" "$red" "$pool" "$CHECK_ROW_SECS"
   [ "$applied" -eq "$n" ] || bad "$label --mutation: only $applied of $n mutations actually applied — the rest tested nothing"
 }
 
@@ -593,10 +681,12 @@ _check_row_one() {
     *) printf 'bad|the rewrite failed\n' > "$copy/verdict"; return 0 ;;
   esac
   if [ "$full" -eq 1 ]; then
-    out="$(ADB_CHECK_BLOCK="" "$run" "$root" 2>&1)"; src=$?
+    ADB_CHECK_BLOCK="" _check_run_bounded "$2/row-$1.out" "$run" "$root"; src=$?
   else
-    out="$(ADB_CHECK_BLOCK="${CHECK_ROW_BLOCK[$i]}" "$run" "$root" 2>&1)"; src=$?
+    ADB_CHECK_BLOCK="${CHECK_ROW_BLOCK[$i]}" _check_run_bounded "$2/row-$1.out" "$run" "$root"; src=$?
   fi
+  if [ "$CHECK_RUN_HUNG" -eq 1 ]; then _check_hung_verdict "$copy/verdict"; return 0; fi
+  if ! out="$(cat "$2/row-$1.out")"; then printf 'bad|its output could not be read back, so it has no verdict\n' > "$copy/verdict"; return 0; fi
   _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_ROW_WIT[$i]}"
   return 0
 }
@@ -608,10 +698,12 @@ _check_block_ctl() {
   if ! root="$("$prep" "$wd/ctl-$key")" || [ -z "$root" ]; then
     printf 'bad|its control tree copy could not be built\n' > "$wd/ctl-$key.verdict"; return 0
   fi
-  out="$(ADB_CHECK_BLOCK="$b" ADB_CHECK_BLOCK_COUNTS="$wd/ctl-$key.counts" "$run" "$root" 2>&1)"; src=$?
+  ADB_CHECK_BLOCK="$b" ADB_CHECK_BLOCK_COUNTS="$wd/ctl-$key.counts" _check_run_bounded "$wd/ctl-$key.out" "$run" "$root"; src=$?
   want="$(awk -F '\t' -v bs=",$b," 'index(bs, "," $1 ",") { s += $2; hit = 1 } END { if (hit) print s }' "$wd/control.counts" 2>/dev/null)"
   got="$(awk -F '\t' -v bs=",$b," 'index(bs, "," $1 ",") { s += $2; hit = 1 } END { if (hit) print s }' "$wd/ctl-$key.counts" 2>/dev/null)"
-  if [ "$src" -ne 0 ]; then
+  if [ "$CHECK_RUN_HUNG" -eq 1 ]; then
+    printf 'bad|its unmutated control did not finish within %ss (the row deadline) — no row on it can be scored\n' "$CHECK_ROW_SECS" > "$wd/ctl-$key.verdict"
+  elif [ "$src" -ne 0 ]; then
     printf 'bad|its unmutated control failed (rc %s) — a dependency is undeclared, or the block is red on its own\n' "$src" > "$wd/ctl-$key.verdict"
   elif [ -z "$want" ] || [ "$want" != "$got" ]; then
     printf 'bad|its unmutated control ran %s assertion(s) where the full suite runs %s — the selection does not reproduce the block\n' "${got:-no}" "${want:-none}" > "$wd/ctl-$key.verdict"
@@ -654,6 +746,7 @@ check_mutation_rows() {
     bad "$label --mutation: adb_pool_size is unavailable — source scripts/lib/common.sh before check-lib.sh"; return 1
   fi
   [ "${ADB_MUTATION_FULL_SUITE:-0}" = 1 ] && full=1
+  _check_row_secs "$label" || return 1
   pool="$(adb_pool_size "$cap")"
   # A FRESH workdir: counts and verdicts are read back by name, so a previous run's files would be scored.
   if [ -e "$wd" ] && [ -n "$(ls -A "$wd" 2>/dev/null)" ]; then
@@ -777,7 +870,10 @@ check_mutation_rows() {
     bad "$label --mutation: the control tree copy could not be built"; return 1
   fi
   : > "$wd/control.counts"
-  ADB_CHECK_BLOCK="" ADB_CHECK_BLOCK_COUNTS="$wd/control.counts" "$run" "$root" > "$wd/control.out" 2>&1; rc=$?
+  ADB_CHECK_BLOCK="" ADB_CHECK_BLOCK_COUNTS="$wd/control.counts" _check_run_bounded "$wd/control.out" "$run" "$root"; rc=$?
+  if [ "$CHECK_RUN_HUNG" -eq 1 ]; then
+    bad "$label --mutation: the UNMUTATED suite did not finish within ${CHECK_ROW_SECS}s (the row deadline, ADB_MUTATION_ROW_TIMEOUT_SECS) — no row can be scored"; return 1
+  fi
   if [ "$rc" -ne 0 ]; then
     bad "$label --mutation: the UNMUTATED suite failed (rc $rc) — no row can be scored against a red baseline"; return 1
   fi
@@ -836,9 +932,9 @@ check_mutation_rows() {
   local ran=$((n - gated)) gatedsuffix=""
   [ "$gated" -gt 0 ] && gatedsuffix="; $gated row(s) gated (targets unchanged:${gated_tgts% })"
   if [ "$full" -eq 1 ]; then
-    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; full suite per mutant%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$gatedsuffix"
+    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; full suite per mutant; row deadline %ss%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$CHECK_ROW_SECS" "$gatedsuffix"
   else
-    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; per-block, %d block(s) controlled%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$nblocks" "$gatedsuffix"
+    printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; per-block, %d block(s) controlled; row deadline %ss%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$nblocks" "$CHECK_ROW_SECS" "$gatedsuffix"
   fi
   # AGAINST THE ROWS THAT RAN, not the table: a gated row was never meant to apply, and comparing
   # to `n` would turn every gated run red. `scored -eq n` above is what still proves no row was

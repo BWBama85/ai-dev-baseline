@@ -8813,3 +8813,295 @@ survive is the part a later reader needs.
                  head, and the base-change rule refuses a head reviewed against another base. The
                  regressions for the listed cases are what show nothing slips between them. The spike
                  drew no inline review threads, so their behaviour across a cascade was not observed.
+
+## D122 — #445: selfcheck's cost is measured again, its whole-suite harness with the most rows runs per block, and nothing is awaited in silence
+- date:      2026-10-05
+- category:  project-delta
+- unknown:   #445 asked for an audit of `scripts/selfcheck.sh`'s wall clock on a library branch
+             (42-60 minutes observed on PR #443, 65m46s on #452's branch) and for every win that
+             keeps each guard's verdict. Much of what it proposed had shipped since it was filed:
+             per-block rows (#468, D103) and the per-row gate (#470, D108), but only two harnesses
+             had adopted them. Its 2026-08-27 owner comment added a defect the baseline does not
+             model: a harness had no per-row deadline, so one mutant blocked on a FIFO stalled a
+             whole run for 45 minutes, printing nothing.
+- decision:  **Owner decisions 2026-10-05:** (1) scope is the core audit — measure, audit every
+             consumer, add the row deadline and the step overrun report, convert
+             `session-context-mutation`; other harnesses stay on the whole-suite pool unless the
+             measurement shows one dominating; (2) NO local policy change — no held-back default,
+             no last-push base; golden rule 3's "the skips are a CI-invocation choice, never a new
+             default" stands, and the decision is revisited with the after-numbers below in hand;
+             (3) the row deadline is an 1800 s hang backstop; (4) a step past the ceiling is named
+             live and never killed; (5) the machine could not be made idle (another agent session
+             ran node tests and webpack builds throughout), so every figure is taken under load and
+             states it; (6) after the first before-run was stopped at a 2-hour task cap, the full runs
+             are taken as a back-to-back PAIR, so both sides share whatever load exists; (7) the
+             watchdog defect below is fixed in `common.sh`, not worked around.
+
+             **The measurements**, 2026-10-05, the maintainer's 10-core macOS (26.6.2), bash 5.3.20,
+             `/usr/bin/time -l`, every full run FORCED (`ADB_MUTATION_RUN_ALL=1`). Load is the 1-minute
+             average sampled every 30 s; another agent session's node tests and webpack builds ran
+             throughout, and this table is a record of what was observed, not a ranking (D66).
+
+             | run | tree | wall | user / sys CPU-s | load (min / median / max) | result |
+             |---|---|---|---|---|---|
+             | before | `9d1d658` (`main`) | 5207 s (86m47s) | 12,499 / 17,677 | 3.7 / 72 / 327 | 70/71: `release-skill` red, see below |
+             | after 1 | `3023fbc` | 4933 s (82m12s) | 10,380 / 15,455 | 6.0 / 53 / 243 | 71/71 |
+             | after 2 (checkout) | `3023fbc` | 5929 s (98m49s) | 10,661 / 16,279 | 9.2 / 73 / 374 | 71/71 |
+
+             Wall is `/usr/bin/time`'s; the m:s beside it is the runner's own `result` line, which
+             counts whole seconds from its own start and so reads 82m12s where `time` reads 4933.13 s.
+
+             The before and after-1 runs are a back-to-back PAIR, taken one after the other so that
+             both see the same kind of load. The first before-run, started after the standalone
+             harnesses, was stopped at a 2-hour task cap with 56 of 71 steps reported. Its step times
+             are not used here.
+
+             Per step, in the pool (s), the pair:
+
+             | step | before | after | |
+             |---|---|---|---|
+             | `pattern-ledger-mutation` (per block since #490) | 4309 | 3915 | the critical path now |
+             | `settings-fragment-mutation` (per block since #468) | 4081 | 3445 | |
+             | `review-loop-mutation` (whole suite, 49 rows) | 3962 | 3432 | |
+             | **`session-context-mutation`** (per block since this change) | **3747** | **457** | 8.2x (498 in after 2) |
+             | `adopt-readiness-mutation` (whole suite, 38 rows) | 2919 | 2756 | |
+             | `pinned-install` | 2468 | 2072 | |
+             | `pr-watch-mutation` | 1259 | 1454 | |
+             | `mutation-gate-mutation` | 868 | 432 | |
+             | `docs-lib-mutation` / `adopt-mutation` / `common-lib-mutation` | 341 / 154 / 249 | 365 / 207 / 299 | |
+             | `session-context` (the plain suite) | 161 | 170 | |
+             | sum over all 71 steps | 31,236 | 26,782 | |
+
+             Standalone (s; wall, then user / sys):
+
+             | item | before | after |
+             |---|---|---|
+             | `check-session-context.sh`, 3 runs | 52-54; 24 / 20 (load 6-8) | 72-80; 30 / 27 (load 26-29) |
+             | `check-session-context.sh --mutation` | 1217; 2559 / 2643 (load 7-13) | **253; 217 / 235** (load 26-58) |
+             | `check-adopt-readiness.sh --mutation` | 1876 (load to 60: this session's own suites ran beside it) | not re-taken; the harness is unchanged but for the deadline |
+             | `check-review-loop.sh --mutation` | 2034 (same caveat) | not re-taken |
+             | one tree copy per row: `check_copy_subtrees scripts agents base` / `check_copy_worktree` | 0.21 / 0.39 | 0.32 / 0.47 (mean of 10, load 43-50) |
+
+             **What the numbers say.**
+             * The session-context harness got 4.8x faster in wall and 11.5x cheaper in CPU standalone,
+               and 8.2x faster in the pool. Its in-pool cost was 3.1 times its standalone cost before
+               and 1.8 times after. That is an OBSERVED ratio under unlike loads — the standalone and
+               pooled runs saw different external load — so it neither isolates nor bounds the pool
+               interaction; it records what the two runs did.
+             * The whole forced run barely moved: 5% in wall, 14% in CPU. Its wall is set by the
+               longest pole. Session-context was one of four poles near an hour; the other three
+               remain: `pattern-ledger-mutation` and `settings-fragment-mutation` (already per block)
+               and `review-loop-mutation` (whole suite). Converting `review-loop` would remove one
+               pole and the CPU it takes from the others, but not the two poles already per block, so
+               it would not obviously shorten the run; that is a reading of these figures, not a
+               measurement. Owner decision (1) leaves it alone: no remaining whole-suite harness
+               dominates.
+             * The local SELECTION policy is unchanged (owner decision 2): the gate still holds back
+               every harness whose inputs a branch does not touch, and a row-mode harness the rows
+               whose targets are untouched. What a plain run gets that it did not is the block
+               execution, the row gating of session-context, both bounds and the ticker. This branch
+               touches `check-lib.sh`, `common.sh` and `selfcheck.sh` — inputs of every harness — so its
+               own plain run is a forced run in all but name.
+             * The copy is NOT negligible for a per-block harness. One tree copy per row costs 0.2-0.5 s
+               (load 43-50), and a single session-context block selection costs 0.16-0.25 s for the
+               cheapest (`lib-1a`, `lib-1d`, `hook-2c`, `wf-3c`, at load 4) up to 10.7 s (`hook-2j`):
+               for the cheap blocks the copy is as large as the run. Copy-once was not built here. Every
+               row mutates its own tree, so it would still copy per row; what it would save is the
+               walk of the checkout, which is unmeasured. The loads differ, so these are illustrative
+               observations of the two costs, not a measured ratio and not a bound on one.
+             * `release-skill` went red once, in the before run on unmodified `main`, on a structural
+               assertion (`slug()` delegating to `adb_is_path_safe_repo_slug`). The output carried no
+               fork, pipe or descriptor diagnostic. A SIGPIPE-under-pipefail cause was ruled out: the
+               payload is 334 bytes, written in a single call, and 500 trials gave no false negative.
+               It passed in both after runs. Cause not established; not filed (one observation, no
+               mechanism).
+
+             **What changed, and what each part proves.**
+             * `check-session-context.sh` declares 46 blocks; its 94 rows (68 on `run-state.sh`, 24
+               on the hook, 2 on the workflow snippet) run per block and gate per row. All 564
+               assertions are unchanged. Shared fixtures — `refused`, the no-jq PATH, the hook's
+               fixture install — moved into the prelude, and each `1e` sub-block takes its own
+               state directory, because a block selected alone cannot see an earlier block's `$d`.
+               Two rows changed shape to satisfy D103's preflight: `owner-false-as-absent`'s literal
+               was a prefix of the claim's line, so `run-state.sh`'s marker line gained `# marker`
+               (the claim line already carried `# claim` for the same reason); and
+               `source-gate-dropped`'s witness `startup: nothing is injected` exists only after `$s`
+               expands, so it never appeared in source — it is `: nothing is injected` now, which
+               the block's source and its FAIL line both carry. The block table is built once in
+               full mode only, so `--mutation` pays for no whole-suite pass of its own.
+             * The row deadline is `_check_run_bounded` in `check-lib.sh`: every mutant, block
+               control and full control of BOTH shared pools runs through `adb_run_bounded`'s
+               watchdog path (the `timeout` binary cannot execute a shell-function callback), its
+               output in a file rather than a pipe, and the override that forces the watchdog is taken
+               away again inside the bounded subshell — presence and value carried separately — so the
+               suite under test sees its own environment. Expiry is `bad|hung — no verdict within Ns`:
+               applied, never RED. "Hung" is `adb_run_bounded`'s own answer, a new `_ADB_BOUNDED_FIRED`
+               (owner decision, after the local review): exact on the watchdog path, from its flag, and
+               EMPTY on the binary path, where `timeout` reports a fired bound and a child's own 124 the
+               same way. Inferring it from the status and elapsed time — the first cut on both paths —
+               called a child that exits 124 on its own near the bound terminated. The tree-copy callback is not bounded; it runs before the injection,
+               on unmutated code.
+             * **A defect in `adb_run_bounded` itself, found here and fixed at the root (owner decision
+               2026-10-05).** The watchdog path stopped its watcher as soon as its wait returned,
+               before the KILL that follows the grace, so a child that died on the TERM left any
+               TERM-proof member of its group running. A fired bound now WAITS for its watcher to
+               finish — the grace, then the KILL of the whole group — so a member that handles TERM gets
+               its grace and one that ignores TERM is still reached. (An intermediate cut swept the group
+               at once, as the binary path's sweep does; the local review reproduced a TERM-handling
+               member cut off mid-cleanup, so the grace is kept.) It is what a stock macOS without
+               coreutils takes, `role-dispatch.sh` included. A first cut worked around it inside
+               `check-lib.sh` (a TERM-handling subshell); the review of this change reproduced the case
+               it missed — a suite that dies while its descendant lives — and the workaround was removed
+               so the defect has one defence. The wait on that watcher is now the child's own: woken
+               first and waited for with `-f` under job control (owner decision, after the local review
+               reproduced a STOPPED watcher returning 124 at once over a live TERM-proof member; a
+               watcher stopped before the wait instead held the call indefinitely). The wake goes to its
+               GROUP and then to it (`_adb_bounded_signal CONT`), because a watcher whose whole group
+               was stopped is waiting on a stopped `sleep` that a CONT to the watcher alone never
+               resumes. EVERY signal to the watcher is followed by that wake — the unfired branch's TERM
+               and the reap trap's too. A first cut dropped those two on the reading that a TERM ends a
+               stopped process anyway; that holds on macOS and is false on Linux, where the TERM stays
+               pending until the process is continued, and the two cases kept to pin the reading went
+               red on the ubuntu leg (5 assertions), which is what restored them.
+             * The binary path's sweep waits out the same grace. `timeout` returns once its leader is
+               gone, which can be before a member that handles TERM has finished, so after a fired
+               bound the sweep waits up to the grace for the group to empty before its KILL. It had
+               killed the group at once — the defect the watchdog path's row 17c already guards, on the
+               other path.
+             * The overrun warning is a ticker job inside the dispatcher's own `wait -n`, in both
+               `run_pool` and `run_serial`: `selfcheck: still running past Ns: <step> (Es so far)`,
+               once per multiple of `ADB_SELFCHECK_OVERRUN_SECS`, plus an `overran (past Ns):` line
+               in the result block and a paragraph in `--summarize` (from the result line, or from
+               the live lines when a cancelled run never reached it).
+             * An overrun is judged by the STEP'S OWN STAMPS, not by its dispatch or its reaping:
+               `run_step` stamps when the step started and when it ended, the ticks measure from the
+               start stamp and skip a step that has ended, and `record` judges by the two. The
+               dispatcher records a start only after the fork and reaps one job per `wait`, so either of
+               its clocks can be late: a late reap read as a live overrun and an `overran` entry for a
+               step that ended in time, and a late start shrank a real overrun below the ceiling. A
+               stamp that cannot be written is said in the step's own output, and the runner then
+               falls back to the dispatcher's clock.
+             * The lane pins compare TEXT EXACTLY, not substrings (owner decisions in the review of
+               PR #517). Each document wraps each lane's list in `<!-- adb:lane <name> -->` …
+               `<!-- /adb:lane -->`; the pin requires exactly one such region per lane per document,
+               its text — any whitespace run read as one blank — EQUAL to the lane rendered from
+               `--list` (each member backticked, in order, joined by ", "), and the markers across each
+               document alternating open, close. A comparison of the region's backticked tokens came
+               first and still passed a list with every separator removed. The macOS `--skip` pins are bounded at their end as well. Matched
+               anywhere, the one-member `mutates-tree` lane passed on any other mention of
+               `build-drift`; a list that gained a name still contained the pinned one; and a regex
+               anchored to the lane's declaration still let a conjunction or emphasis through at the
+               list's end.
+             * NOT covered by the row deadline, deliberately: the three harnesses that hand-roll
+               their own pool (`check-common-lib.sh`, `check-bootstrap.sh`, `check-fact-drift.sh`).
+               Their rows do not pass through `check-lib.sh`'s pools; a hang there is now at least
+               named by the overrun warning instead of awaited silently.
+
+             **Observed failing.** `check-block-rows.sh` section 10 went red on its own witness
+             against mutated copies: the hung verdict never detected, the whole-suite pool's hung
+             verdict dropped, the bound's validation bypassed, `_adb_bounded_reap` disabled (the
+             cancellation case), the watchdog's group KILL dropped (the TERM-proof suite and the
+             leader-dies cases), and the deadline not applied at all — which now fails each case by
+             name in 433 s instead of holding the suite for hours, because every hang fixture's own
+             sleep is bounded at 45 s and matched by a pattern carrying the run's pid. The
+             `check-common-lib.sh --mutation` table gains thirteen rows, 17-21, 17b, 17c, three of 17d,
+             two of 17e and one more on the binary path: the fired bound's watcher stopped instead of
+             waited for; the group killed at once, cutting a TERM-handling member's grace; the reap
+             trap disarmed before that grace, so a cancellation inside it orphans the group; the KILL
+             made unconditional; the fired signal never raised, guessed on the binary path, or never
+             reset; a stopped watcher waited for without `-f`, not woken first, or woken by pid alone;
+             the unfired branch's and the reap trap's wake dropped; and the binary path's sweep cutting
+             the grace. Two rows on the binary path are registered only where a `timeout` binary
+             exists, and the two of 17e only where a stopped process holds a TERM pending (asked of the
+             platform), since their witnesses can go red nowhere else. On this macOS host, which has a
+             `timeout` binary and ends a stopped process on TERM, that is 27 rows, each observed RED on
+             its own witness (18, 21, 22, 23 and 25 were counts at earlier points of review); the two of
+             17e are the ubuntu leg's to observe. The stopped-watcher cases were also observed red
+             against the library before each fix: 124 returned 3 s in with the member alive; a call that
+             never returned inside its 20 s deadline, with the watcher alone stopped and then with its
+             whole group; and on the binary path a member's cleanup cut off. `check-selfcheck.sh --mutation` gains four — a
+             silent ticker, the `overran` line dropped, the digest dropping it, and an overrun judged
+             by the dispatcher's clocks rather than by the step's own stamps — 10/10 RED on the final
+             tree (9/9 earlier). Section 10.5 holds the parent at each of those clocks: after it
+             records the start (a step that ended in time must not be named) and after the fork,
+             before the start is recorded (a 3 s step under a 2 s ceiling must be). The second case
+             was observed red against the runner that stamped only the end, its one failure of 211. Two 8e assertions are not
+             rows because their defects cost more than a row can pay; both were observed against a
+             copy: a ticker left running held a fast run 61 s against the assertion's 30 s bound, and
+             a ticker reaped as a step broke the run's emission (2 banners where 4 were due). The
+             digest's name lists now split into arrays — an unquoted expansion also globbed, in the
+             existing `FAILED:` loop too: the old runner printed 14 omission notices for a two-token
+             log, the new one 2. The lane pin goes red against copies of both documents on a member
+             dropped, a bare word or a conjunction added, emphasis inside the region, the separators
+             removed or replaced, the members reordered, the region deleted or duplicated, and a stray
+             close or open; a list wrapped across lines still passes. The stray close and the missing
+             separators each passed the pin before it.
+
+             **The consumer audit (scope item 2).** Every file that names `selfcheck` was read for
+             a figure, a step count, a skip list or a lane. Disposition:
+             | consumer | what it states | disposition |
+             |---|---|---|
+             | `CLAUDE.md` golden rule 3 | the runtime range; a step total ("now 61"); the macOS `--skip` list; both lanes; the dominant step | range re-measured, pinned (`selfcheck-cost`), the old one refused; total REMOVED; `--skip` already pinned; lanes now pinned to `--list`; dominant-step claim replaced by the measured slowest steps |
+             | `CONTRIBUTING.md` | the range; "covers 23 of 57"; `--skip`; lanes; "about 90 seconds" for the isolated lane | range pinned; count REMOVED; `--skip` pinned; lanes pinned; the undated 90 s figure REMOVED — the dated range is the figure that includes that lane |
+             | `docs/ci-runners.md` | "skips two named steps" (it skips five); per-run job durations | count REMOVED; run figures carry their run ids and stay as history |
+             | `.github/workflows/ci.yml` | the `--skip` list; job ceilings with dated figures | `--skip` pinned; no ceiling changed (below) |
+             | `.github/workflows/mutation-nightly.yml` | the harness matrix | derived: pinned to the registry by `check-mutation-gate.sh` |
+             | `agents.toml`, `.claude/scripts/precommit-gate.sh`, `docs/per-project-overrides.md` | "minutes, not seconds" | qualitative by D66's design, and already refused the retired figure |
+             | `scripts/mutation-gate.sh`, `check-mutation-gate.sh`, `check-selfcheck.sh` | inputs, the nightly matrix, the lanes | derived: each asks `--list` |
+             | `AGENTS.md`, `README.md`, `docs/{design-principles,installation,repo-settings,roadmap-acceptance}.md`, `base/workflows/README.md`, `.claude/skills/release/*`, `.github/workflows/wsl-smoke.yml`, `scripts/lib/project-gates.sh` | that the gate exists, or the command | no figure, count, list or lane |
+
+             CI ceilings: `implement-gate` (75 min) carries `session-context-mutation`, which only got
+             cheaper; the nightly's 240 covers full-suite mode, which is the old per-row cost. Two were
+             raised (owner decision, after the local review found the first missing from this audit):
+             `common-lib` 10 → 20 — at `df4273c` it took 6m33s (plain suite 39 s, block rows 60 s,
+             mutation 287 s for 23 rows), and every run of the suite now also waits out the
+             stopped-watcher scenarios while ubuntu registers 29 rows; `selfcheck-macos` 45 → 55 — it
+             took 38m50s at `df4273c` with `common-lib-mutation` its second-slowest step at 555 s, and
+             that step gains three rows and the same per-run wait. The scenarios run concurrently, so a
+             run waits about as long as the longest of them (a 1 s bound and a 7 s grace) rather than
+             their sum. Both ceilings were sized from those figures, not from a run of this tree; the
+             first CI run on it is what confirms them.
+
+             **#445's measurement criteria, disposition by criterion (owner decision 2026-10-05, after
+             the local review asked for each one explicitly).**
+             | criterion | disposition |
+             |---|---|
+             | dated table: full suite, wall and CPU, before and after | met: the pair above, plus a second after-run |
+             | each of the six named harnesses standalone, before and after | met for session-context, the one this change converts. For the other five (pattern-ledger, adopt-readiness, adopt, docs-lib, mutation-gate) UNMET and WAIVED: they are unchanged but for the deadline wrapper, and only their paired in-pool figures exist. The adopt-readiness and review-loop standalone before-figures were taken under this session's own load and are not comparable |
+             | one row of each (suite time) | met for session-context (per-block selections above); for the other five UNMET and WAIVED, with only their plain suites' in-pool times in the per-step table |
+             | per-step CPU | UNMET and WAIVED: the runner records wall per step, `/usr/bin/time` covers the whole run, and timing each step's command separately was not done |
+             | copy cost per row, `cp -R` vs `check_copy_subtrees` | `check_copy_worktree` (the `cp -R` shape, `.git` omitted) against `check_copy_subtrees`, above |
+             | an idle machine | UNMET and WAIVED (owner decision 5): load recorded per run, and the full runs taken as a pair |
+             | scope item 5, the pool interaction re-measured | UNMET and WAIVED: only the observed in-pool/standalone ratio above exists; no controlled scheduling comparison was run and D66's leaf-budget runner is not rebuilt |
+
+             **Not bounded, by decision: the callback's output.** Each callback's output now lands in a
+             file with no byte cap, so a mutant that prints in a loop can grow it for as long as the
+             deadline allows. The `$(…)` capture this replaced held the same output in memory, unbounded,
+             and with no time bound at all. The local review asked for a cap twice; the owner declined it
+             (2026-10-05) as a pre-existing shape, recorded here and in `check-lib.sh` rather than capped.
+
+             **D66 is not superseded.** Item 5 asked to re-measure the outer/inner pool interaction
+             on a registry with several heavy harnesses. The leaf-budget runner D66 built and
+             reverted was not rebuilt; what was measured instead is each heavy harness's wall inside
+             the full run against its standalone wall, above. That is an observed ratio under unlike
+             loads, not a cost the interaction is shown to cause, and nothing in it argues for a
+             scheduling change D66's table did not already refute.
+- placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound wakes and waits for its watcher,
+             and `_ADB_BOUNDED_FIRED`; the reap trap armed until the escalation or sweep is done),
+             `scripts/check-common-lib.sh` (thirteen cases, thirteen rows),
+             `scripts/check-lib.sh` (`_check_run_bounded`, `_check_row_secs`, both pools),
+             `scripts/check-session-context.sh` (blocks, rows), `scripts/lib/run-state.sh` (one
+             anchor comment), `scripts/selfcheck.sh` (ticker, `overran`, `--summarize`, the
+             session-context inputs), `scripts/check-block-rows.sh` (section 10),
+             `scripts/check-selfcheck.sh` (8e and 10.5, four rows), `scripts/check-fact-drift.sh` (the
+             figure, the lane pins), `CLAUDE.md`, `CONTRIBUTING.md` (the `adb:lane` regions),
+             `docs/ci-runners.md`.
+- reason:    A row that pays for the whole suite to fire one assertion was the cost #445 named, and
+             D103 had already proven the cure on two harnesses; session-context was the largest
+             left. A guard that can wait forever is the silent-guard shape this repo keeps paying
+             for, one level up. The two bounds differ on purpose: the step warning only reports and
+             never changes a verdict, while the row deadline DOES end a run and score it `hung`. It is
+             set at 1800 s, far above any healthy row measured here, and is meant to catch a run that
+             has stopped making progress; a healthy row slowed past it by load is ended too, and its
+             `hung` is applied and never RED.
+- baseline-issue: n/a

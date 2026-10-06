@@ -1556,11 +1556,12 @@ fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -
 # Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
 # copy of a whole-suite-per-mutation harness to the 45-minute job.
 fact macos-logic-mutations-skipped \
-  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation' -- \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation([^,A-Za-z0-9_-]|$)' -- \
   .github/workflows/ci.yml
 # …and every document that spells the list out says the same five names, so a contributor reading
 # any of them learns which harnesses the macOS leg does not run.
-fact macos-skip-list-documented 'fixed:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation' -- \
+# ENDED, not merely present: a list that gained a sixth name would otherwise still contain this one.
+fact macos-skip-list-documented 'regex:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation([^,A-Za-z0-9_-]|$)' -- \
   CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
@@ -1601,7 +1602,10 @@ fact mutation-nightly-forces 'fixed:ADB_MUTATION_RUN_ALL' -- \
 # measurement, and both state it as a dated RANGE.
 _sc_cost_docs="CLAUDE.md CONTRIBUTING.md"
 # shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
-fact selfcheck-cost 'fixed:8m46s to 12m55s' -- $_sc_cost_docs
+fact selfcheck-cost 'fixed:82m12s to 98m49s' -- $_sc_cost_docs
+# The range it replaced (D122), refused in the two files that carry the live one.
+# shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
+fact selfcheck-cost-2026-08 'absent:8m46s to 12m55s' 'fires:spanned **8m46s to 12m55s**' -- $_sc_cost_docs
 #
 # THE NEGATIVE HALF, and it is exactly what this file's header sanctions `absent:` for — "a value a
 # fact has retired", never a general prose blocklist. Presence-checking cannot catch a file that
@@ -1621,6 +1625,60 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
   'fires:66-72s after' 'fires:measured at 66–72s a turn' 'fires:even 66s per turn is the wrong trade' \
   -- $_sc_cost_docs agents.toml .claude/scripts/precommit-gate.sh \
      docs/per-project-overrides.md .github/workflows/ci.yml
+
+# --- the serial prologue's lanes, as the two contributor contracts list them (#445) -------------
+#
+# Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md, between
+# `<!-- adb:lane <name> -->` and `<!-- /adb:lane -->`. Each document must carry each lane's region
+# exactly once, and the region's text must EQUAL the lane as `selfcheck.sh --list` renders it — each
+# member backticked, in order, joined by ", " — with any run of whitespace, line breaks included,
+# read as one blank. Equality, not a grammar: English joins a list in more ways than a pattern or a
+# token extraction can enumerate, and each of the two this replaced let some through (D122).
+# The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
+# --list that failed after printing some rows would still yield a plausible, wrong lane.
+if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
+  check_note "[selfcheck-lanes] selfcheck.sh --list failed — the lane pins below would compare a partial registry"; check_fail; _sc_list=""
+fi
+# …and the markers are a GRAMMAR, not merely findable: across each document they alternate open,
+# close, open, close, so a stray close or a second open is a region edited by half, not ignored.
+for _doc in CLAUDE.md CONTRIBUTING.md; do
+  if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
+    check_note "[selfcheck-lanes] $_doc could not be read"; check_fail; continue
+  fi
+  _seq="$(grep -oE '<!-- /?adb:lane[^>]*-->' <<< "$_joined" | sed -E 's#^<!-- /.*#C#; s#^<!-- adb.*#O#' | tr -d '\n')"
+  case "$_seq" in
+    *[!OC]*|*OO*|*CC*|C*|*O)
+      check_note "[selfcheck-lanes] $_doc's lane markers do not alternate open, close (read as [$_seq])"; check_fail ;;
+  esac
+done
+for _lane in mutates-tree load-sensitive; do
+  _want="$(printf '%s\n' "$_sc_list" | awk -F'\t' -v l="$_lane" '$4 == l { print $1 }')"
+  if [ -z "$_want" ]; then
+    check_note "[selfcheck-lane-$_lane] selfcheck.sh --list reports no member — the pin would compare nothing"; check_fail; continue
+  fi
+  _open="<!-- adb:lane $_lane -->"; _close="<!-- /adb:lane -->"
+  for _doc in CLAUDE.md CONTRIBUTING.md; do
+    # Read as ONE line, so a region that spans a line break is still one region.
+    if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
+      check_note "[selfcheck-lane-$_lane] $_doc could not be read"; check_fail; continue
+    fi
+    _n="$(grep -oF -- "$_open" <<< "$_joined" | wc -l | tr -d ' ')"
+    if [ "$_n" != 1 ]; then
+      check_note "[selfcheck-lane-$_lane] $_doc carries $_n '$_open' region(s), not exactly one"; check_fail; continue
+    fi
+    _region="${_joined#*"$_open"}"
+    case "$_region" in
+      *"$_close"*) _region="${_region%%"$_close"*}" ;;
+      *) check_note "[selfcheck-lane-$_lane] $_doc opens the lane's region and never closes it"; check_fail; continue ;;
+    esac
+    _canon="$(printf '%s\n' "$_want" | awk '{ printf "%s`%s`", (NR > 1 ? ", " : ""), $0 }')"
+    _norm="$(printf '%s' "$_region" | tr -s '[:space:]' ' ' | sed -E 's/^ //; s/ $//')"
+    if [ "$_norm" != "$_canon" ]; then
+      check_note "[selfcheck-lane-$_lane] $_doc lists [$_norm], where the runner's lane renders as [$_canon]"
+      check_fail
+    fi
+  done
+done
 
 # --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------
 #
