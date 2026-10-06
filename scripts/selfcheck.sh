@@ -1346,8 +1346,11 @@ run_step() {
   # shellcheck disable=SC2086  # deliberate word-split of a value `add` validated at registration
   ${STEP_CMD[$name]} </dev/null || rc=$?
   # WHEN IT ENDED, stamped from inside the step: the dispatcher reaps one job per wait and may reap
-  # this one later, and an overrun is a fact about the step, not about its reaping (D122).
-  printf '%s\n' "$EPOCHSECONDS" > "$WORK/ended.$name" 2>/dev/null
+  # this one later, and an overrun is a fact about the step, not about its reaping (D122). A stamp
+  # that cannot be written is SAID, in the step's own output: without it the step reads as running
+  # until it is reaped, and its overrun is judged by the reap.
+  printf '%s\n' "$EPOCHSECONDS" > "$WORK/ended.$name" 2>/dev/null \
+    || printf 'selfcheck: NOTE — could not record when %s ended; any overrun named for it is judged by when it was reaped\n' "$name" >&2
   return "$rc"
 }
 

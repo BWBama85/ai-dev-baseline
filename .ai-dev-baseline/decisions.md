@@ -8907,8 +8907,8 @@ survive is the part a later reader needs.
                cheapest (`lib-1a`, `lib-1d`, `hook-2c`, `wf-3c`, at load 4) up to 10.7 s (`hook-2j`):
                for the cheap blocks the copy is as large as the run. Copy-once was not built here. Every
                row mutates its own tree, so it would still copy per row; what it would save is the
-               walk of the checkout, which is unmeasured. The loads differ, so these figures bound the
-               ratio, they do not measure it.
+               walk of the checkout, which is unmeasured. The loads differ, so these are illustrative
+               observations of the two costs, not a measured ratio and not a bound on one.
              * `release-skill` went red once, in the before run on unmodified `main`, on a structural
                assertion (`slug()` delegating to `adb_is_path_safe_repo_slug`). The output carried no
                fork, pipe or descriptor diagnostic. A SIGPIPE-under-pipefail cause was ruled out: the
@@ -8958,6 +8958,17 @@ survive is the part a later reader needs.
                once per multiple of `ADB_SELFCHECK_OVERRUN_SECS`, plus an `overran (past Ns):` line
                in the result block and a paragraph in `--summarize` (from the result line, or from
                the live lines when a cancelled run never reached it).
+             * An overrun is judged by the STEP'S OWN END, not by its reaping: `run_step` stamps when the
+               step ended, the ticks skip a step that has ended, and `record` judges by the stamp. The
+               dispatcher reaps one job per `wait` and can reap a finished step late, which otherwise
+               read as a live overrun and an `overran` entry for a step that ended in time. A stamp that
+               cannot be written is said in the step's own output.
+             * The lane pins are ANCHORED to each lane's declaration (the backticked lane name, then the
+               list within 40 characters), bounded at the list's end past blanks and Markdown emphasis,
+               and both documents declare both lanes in that form; the macOS `--skip` pins are bounded
+               at their end as well. Matched anywhere, the one-member `mutates-tree` lane passed on any
+               other mention of `build-drift`, and a list that gained a name still contained the pinned
+               one.
              * NOT covered by the row deadline, deliberately: the three harnesses that hand-roll
                their own pool (`check-common-lib.sh`, `check-bootstrap.sh`, `check-fact-drift.sh`).
                Their rows do not pass through `check-lib.sh`'s pools; a hang there is now at least
@@ -8970,13 +8981,17 @@ survive is the part a later reader needs.
              leader-dies cases), and the deadline not applied at all — which now fails each case by
              name in 433 s instead of holding the suite for hours, because every hang fixture's own
              sleep is bounded at 45 s and matched by a pattern carrying the run's pid. The
-             `check-common-lib.sh --mutation` table gains six rows, 17-21 and 17b: the fired bound's
-             watcher stopped instead of waited for; the group killed at once, cutting a TERM-handling
-             member's grace; the KILL made unconditional; the fired signal never raised, guessed on
-             the binary path, or never reset. The binary-path row is registered only where a `timeout`
-             binary exists, since its assertion can run nowhere else. 22 rows in all on such a host,
-             each RED on its own witness (18/18 was an intermediate count). `check-selfcheck.sh --mutation` gains three (a silent ticker,
-             the `overran` line dropped, the digest dropping it), 9/9 RED. Two 8e assertions are not
+             `check-common-lib.sh --mutation` table gains seven rows, 17-21, 17b and 17c: the fired
+             bound's watcher stopped instead of waited for; the group killed at once, cutting a
+             TERM-handling member's grace; the reap trap disarmed before that grace, so a cancellation
+             inside it orphans the group; the KILL made unconditional; the fired signal never raised,
+             guessed on the binary path, or never reset. The binary-path row is registered only where
+             a `timeout` binary exists, since its assertion can run nowhere else. On the final tree
+             that is 23 rows on such a host, each observed RED on its own witness (18, 21 and 22 were
+             counts at earlier points of review). `check-selfcheck.sh --mutation` gains four — a
+             silent ticker, the `overran` line dropped, the digest dropping it, and an overrun judged
+             by the reap time rather than by the step's own end stamp — 10/10 RED on the final
+             tree (9/9 earlier). Two 8e assertions are not
              rows because their defects cost more than a row can pay; both were observed against a
              copy: a ticker left running held a fast run 61 s against the assertion's 30 s bound, and
              a ticker reaped as a step broke the run's emission (2 banners where 4 were due). The
@@ -9029,12 +9044,13 @@ survive is the part a later reader needs.
              above — and nothing in it argues for a scheduling change D66's table did not already
              refute.
 - placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound waits for its watcher,
-             and `_ADB_BOUNDED_FIRED`), `scripts/check-common-lib.sh` (seven cases, six rows),
+             and `_ADB_BOUNDED_FIRED`; the reap trap armed until the escalation or sweep is done),
+             `scripts/check-common-lib.sh` (eight cases, seven rows),
              `scripts/check-lib.sh` (`_check_run_bounded`, `_check_row_secs`, both pools),
              `scripts/check-session-context.sh` (blocks, rows), `scripts/lib/run-state.sh` (one
              anchor comment), `scripts/selfcheck.sh` (ticker, `overran`, `--summarize`, the
              session-context inputs), `scripts/check-block-rows.sh` (section 10),
-             `scripts/check-selfcheck.sh` (8e, three rows), `scripts/check-fact-drift.sh` (the
+             `scripts/check-selfcheck.sh` (8e and 10.5, four rows), `scripts/check-fact-drift.sh` (the
              figure), `CLAUDE.md`, `CONTRIBUTING.md`, `docs/ci-runners.md`.
 - reason:    A row that pays for the whole suite to fire one assertion was the cost #445 named, and
              D103 had already proven the cure on two harnesses; session-context was the largest

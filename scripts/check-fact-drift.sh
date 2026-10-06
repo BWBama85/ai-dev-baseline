@@ -1632,8 +1632,9 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 # DERIVED from `selfcheck.sh --list` — the members in declaration order, backticked, comma-joined —
 # and ANCHORED to the lane's own declaration: the backticked lane name, then at most 40 characters
 # with no backtick (" — ", " lane (#423) is "), then the list. Matched anywhere, a one-member lane
-# passes on any other mention of its member. The list's END is bounded too: the next non-blank
-# character may be neither a comma nor a backtick, so a list with a member more never matches.
+# passes on any other mention of its member. The list's END is bounded too: past any blanks and
+# Markdown emphasis (`*`, `_`), the next character may be neither a comma nor a backtick, so a list
+# with a member more never matches, emphasised or not.
 # The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
 # --list that failed after printing some rows would still yield a plausible, wrong lane.
 if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
@@ -1650,7 +1651,7 @@ for _lane in mutates-tree load-sensitive; do
     if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
       check_note "[selfcheck-lane-$_lane] $_doc could not be read"; check_fail; continue
     fi
-    if ! grep -qE -- "\`${_lane}\`[^\`]{0,40}${_members}[[:space:]]*([^,\`[:space:]]|\$)" <<< "$_joined"; then
+    if ! grep -qE -- "\`${_lane}\`[^\`]{0,40}${_members}[[:space:]*_]*([^,\`[:space:]*_]|\$)" <<< "$_joined"; then
       check_note "[selfcheck-lane-$_lane] $_doc does not list the lane exactly as the runner does: $_members"; check_fail
     fi
   done
