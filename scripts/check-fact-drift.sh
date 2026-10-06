@@ -1556,11 +1556,12 @@ fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -
 # Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
 # copy of a whole-suite-per-mutation harness to the 45-minute job.
 fact macos-logic-mutations-skipped \
-  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation' -- \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation([^,A-Za-z0-9_-]|$)' -- \
   .github/workflows/ci.yml
 # …and every document that spells the list out says the same five names, so a contributor reading
 # any of them learns which harnesses the macOS leg does not run.
-fact macos-skip-list-documented 'fixed:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation' -- \
+# ENDED, not merely present: a list that gained a sixth name would otherwise still contain this one.
+fact macos-skip-list-documented 'regex:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation([^,A-Za-z0-9_-]|$)' -- \
   CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
@@ -1629,9 +1630,10 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 #
 # Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md. The spelling is
 # DERIVED from `selfcheck.sh --list` — the members in declaration order, backticked, comma-joined —
-# and BOUNDED on both sides: the nearest non-blank character on either side, line breaks included, may
-# be neither a comma nor a backtick, so a list with a member more or fewer, at either end and however
-# it is spaced or wrapped, never matches as part of a longer or shorter one.
+# and ANCHORED to the lane's own declaration: the backticked lane name, then at most 40 characters
+# with no backtick (" — ", " lane (#423) is "), then the list. Matched anywhere, a one-member lane
+# passes on any other mention of its member. The list's END is bounded too: the next non-blank
+# character may be neither a comma nor a backtick, so a list with a member more never matches.
 # The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
 # --list that failed after printing some rows would still yield a plausible, wrong lane.
 if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
@@ -1648,7 +1650,7 @@ for _lane in mutates-tree load-sensitive; do
     if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
       check_note "[selfcheck-lane-$_lane] $_doc could not be read"; check_fail; continue
     fi
-    if ! grep -qE -- "(^|[^,\`[:space:]])[[:space:]]*${_members}[[:space:]]*([^,\`[:space:]]|\$)" <<< "$_joined"; then
+    if ! grep -qE -- "\`${_lane}\`[^\`]{0,40}${_members}[[:space:]]*([^,\`[:space:]]|\$)" <<< "$_joined"; then
       check_note "[selfcheck-lane-$_lane] $_doc does not list the lane exactly as the runner does: $_members"; check_fail
     fi
   done
