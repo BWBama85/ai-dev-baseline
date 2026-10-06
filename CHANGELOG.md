@@ -21,8 +21,9 @@ only by a published release, which is what these entries are the notes for.
   `adb_run_bounded` (`scripts/lib/common.sh`): on its watchdog path a fired bound now waits for its
   watcher to finish — the grace, then the KILL of the whole process group — instead of stopping it,
   so a child that died on the TERM no longer leaves a TERM-proof member of its group running and a
-  member that handles TERM still gets its grace. A watcher that was stopped is woken and waited out,
-  so it no longer ends that wait early. It also reports whether its
+  member that handles TERM still gets its grace — on the `timeout` path too, whose sweep now waits
+  that grace out before its KILL. A watcher that was stopped, alone or with its whole group, is woken
+  and waited out, so it neither ends that wait early nor holds it. It also reports whether its
   bound actually fired (`_ADB_BOUNDED_FIRED`: exact on the watchdog path, empty on the binary path,
   where `timeout` cannot say) rather than leaving a caller to infer it from a 124.
   The watchdog path is what a stock macOS without coreutils takes, `role-dispatch.sh` included.

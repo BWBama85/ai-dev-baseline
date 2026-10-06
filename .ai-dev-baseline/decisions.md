@@ -8953,12 +8953,21 @@ survive is the part a later reader needs.
                `check-lib.sh` (a TERM-handling subshell); the review of this change reproduced the case
                it missed — a suite that dies while its descendant lives — and the workaround was removed
                so the defect has one defence. The wait on that watcher is now the child's own: woken
-               first (CONT) and waited for with `-f` under job control (owner decision, after the
-               local review reproduced a STOPPED watcher returning 124 at once over a live TERM-proof
-               member; a watcher stopped before the wait instead held the call indefinitely). The
-               unfired branch and the reap trap send no CONT: the watcher does not catch TERM, so a TERM
-               ends it stopped or not. That is a platform property, observed on macOS; two cases pin it
-               on both CI platforms and carry no row, because no code of ours is what makes them pass.
+               first and waited for with `-f` under job control (owner decision, after the local review
+               reproduced a STOPPED watcher returning 124 at once over a live TERM-proof member; a
+               watcher stopped before the wait instead held the call indefinitely). The wake goes to its
+               GROUP and then to it (`_adb_bounded_signal CONT`), because a watcher whose whole group
+               was stopped is waiting on a stopped `sleep` that a CONT to the watcher alone never
+               resumes. EVERY signal to the watcher is followed by that wake — the unfired branch's TERM
+               and the reap trap's too. A first cut dropped those two on the reading that a TERM ends a
+               stopped process anyway; that holds on macOS and is false on Linux, where the TERM stays
+               pending until the process is continued, and the two cases kept to pin the reading went
+               red on the ubuntu leg (5 assertions), which is what restored them.
+             * The binary path's sweep waits out the same grace. `timeout` returns once its leader is
+               gone, which can be before a member that handles TERM has finished, so after a fired
+               bound the sweep waits up to the grace for the group to empty before its KILL. It had
+               killed the group at once — the defect the watchdog path's row 17c already guards, on the
+               other path.
              * The overrun warning is a ticker job inside the dispatcher's own `wait -n`, in both
                `run_pool` and `run_serial`: `selfcheck: still running past Ns: <step> (Es so far)`,
                once per multiple of `ADB_SELFCHECK_OVERRUN_SECS`, plus an `overran (past Ns):` line
@@ -8995,17 +9004,22 @@ survive is the part a later reader needs.
              leader-dies cases), and the deadline not applied at all — which now fails each case by
              name in 433 s instead of holding the suite for hours, because every hang fixture's own
              sleep is bounded at 45 s and matched by a pattern carrying the run's pid. The
-             `check-common-lib.sh --mutation` table gains nine rows, 17-21, 17b, 17c and the two of
-             17d: the fired bound's watcher stopped instead of waited for; the group killed at once,
-             cutting a TERM-handling member's grace; the reap trap disarmed before that grace, so a
-             cancellation inside it orphans the group; the KILL made unconditional; the fired signal
-             never raised, guessed on the binary path, or never reset; and a stopped watcher waited for
-             without `-f`, or not woken first. The binary-path row is registered only where a `timeout`
-             binary exists, since its assertion can run nowhere else. On the final tree that is 25 rows
-             on such a host, each observed RED on its own witness (18, 21, 22 and 23 were counts at
-             earlier points of review). Both stopped-watcher cases were also observed red against the
-             library before the fix: 124 returned 3 s in with the member alive, and a call that never
-             returned inside its 20 s deadline. `check-selfcheck.sh --mutation` gains four — a
+             `check-common-lib.sh --mutation` table gains thirteen rows, 17-21, 17b, 17c, three of 17d,
+             two of 17e and one more on the binary path: the fired bound's watcher stopped instead of
+             waited for; the group killed at once, cutting a TERM-handling member's grace; the reap
+             trap disarmed before that grace, so a cancellation inside it orphans the group; the KILL
+             made unconditional; the fired signal never raised, guessed on the binary path, or never
+             reset; a stopped watcher waited for without `-f`, not woken first, or woken by pid alone;
+             the unfired branch's and the reap trap's wake dropped; and the binary path's sweep cutting
+             the grace. Two rows on the binary path are registered only where a `timeout` binary
+             exists, and the two of 17e only where a stopped process holds a TERM pending (asked of the
+             platform), since their witnesses can go red nowhere else. On this macOS host, which has a
+             `timeout` binary and ends a stopped process on TERM, that is 27 rows, each observed RED on
+             its own witness (18, 21, 22, 23 and 25 were counts at earlier points of review); the two of
+             17e are the ubuntu leg's to observe. The stopped-watcher cases were also observed red
+             against the library before each fix: 124 returned 3 s in with the member alive; a call that
+             never returned inside its 20 s deadline, with the watcher alone stopped and then with its
+             whole group; and on the binary path a member's cleanup cut off. `check-selfcheck.sh --mutation` gains four — a
              silent ticker, the `overran` line dropped, the digest dropping it, and an overrun judged
              by the dispatcher's clocks rather than by the step's own stamps — 10/10 RED on the final
              tree (9/9 earlier). Section 10.5 holds the parent at each of those clocks: after it
@@ -9068,7 +9082,7 @@ survive is the part a later reader needs.
              scheduling change D66's table did not already refute.
 - placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound wakes and waits for its watcher,
              and `_ADB_BOUNDED_FIRED`; the reap trap armed until the escalation or sweep is done),
-             `scripts/check-common-lib.sh` (twelve cases, nine rows),
+             `scripts/check-common-lib.sh` (thirteen cases, thirteen rows),
              `scripts/check-lib.sh` (`_check_run_bounded`, `_check_row_secs`, both pools),
              `scripts/check-session-context.sh` (blocks, rows), `scripts/lib/run-state.sh` (one
              anchor comment), `scripts/selfcheck.sh` (ticker, `overran`, `--summarize`, the

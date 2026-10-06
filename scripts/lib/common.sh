@@ -4340,7 +4340,9 @@ _adb_bounded_waitf_ok() {
 # bug one level up.
 _adb_bounded_reap() {
   [ -n "${_ADB_BOUNDED_CHILD:-}" ] && _adb_bounded_signal TERM "$_ADB_BOUNDED_CHILD"
-  [ -n "${_ADB_BOUNDED_WATCHER:-}" ] && kill -TERM "$_ADB_BOUNDED_WATCHER" 2>/dev/null
+  # …woken after its TERM, or a watcher someone stopped holds the TERM pending (Linux) and is left behind.
+  [ -n "${_ADB_BOUNDED_WATCHER:-}" ] && kill -TERM "$_ADB_BOUNDED_WATCHER" 2>/dev/null \
+    && _adb_bounded_signal CONT "$_ADB_BOUNDED_WATCHER"
   sleep 1
   [ -n "${_ADB_BOUNDED_CHILD:-}" ] && _adb_bounded_signal KILL "$_ADB_BOUNDED_CHILD"
   exit 143   # report as "terminated by an outer bound", which is exactly what happened
@@ -4412,8 +4414,14 @@ adb_run_bounded() {
     # in its group is a descendant that outlived the deadline — exactly the orphan this issue is
     # about. Conditional on 124 because a command that finished ON ITS OWN may have deliberately
     # left something running (the dev-server case), and killing that would make a bound into a
-    # reaper of successful work.
-    [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
+    # reaper of successful work. And AFTER THE SAME GRACE the watchdog path gives: `timeout` returns
+    # once its leader is gone, which can be before a member that handles TERM has finished, so the
+    # sweep waits up to the grace for the group to empty and only then kills what is left.
+    if [ "$trc" -eq 124 ]; then
+      local tg=0
+      while [ "$tg" -lt "$grace" ] && kill -0 -- "-$tb_pid" 2>/dev/null; do sleep 1; tg=$(( tg + 1 )); done
+      _adb_bounded_signal KILL "$tb_pid"
+    fi
     # The reap trap is disarmed only AFTER the sweep, so a cancellation arriving between the wait and
     # the sweep still reaches the group (D122).
     trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
@@ -4488,13 +4496,14 @@ adb_run_bounded() {
   # to police and is stopped. The reap trap and the tracked identities stay armed THROUGH that wait,
   # so a cancellation during the grace still reaches the group.
   #
-  # A fired bound's watcher is WOKEN FIRST and waited for with `-f` under the child's own condition.
-  # A watcher someone STOPPED holds its escalation until it is continued, and a plain `wait` on it
-  # then returns at once (job control) or never: the CONT covers a watcher already stopped, and `-f`
-  # a stop that lands during the wait, which it sits out rather than return 124 over a live group.
-  # The other branch needs no CONT: the watcher does not catch TERM, so the TERM ends it stopped or not.
-  if [ -f "$flag" ]; then kill -CONT "$watcher" 2>/dev/null
-  else kill -TERM "$watcher" 2>/dev/null; fi
+  # The watcher is WOKEN — its GROUP, and then itself (`_adb_bounded_signal`) — and waited for with
+  # `-f` under the child's own condition. A watcher someone STOPPED holds its escalation, and on Linux
+  # any TERM sent to it, until it is continued, and one whose whole group was stopped is also waiting
+  # on a stopped `sleep` that a CONT to the watcher alone never resumes. A plain `wait` then returns at
+  # once (job control) or never. The CONT covers a watcher already stopped; `-f` a stop that lands
+  # during the wait, which it sits out rather than return 124 over a live group.
+  if [ -f "$flag" ]; then _adb_bounded_signal CONT "$watcher"
+  else kill -TERM "$watcher" 2>/dev/null; _adb_bounded_signal CONT "$watcher"; fi
   if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$watcher" 2>/dev/null
   else                                                 wait    "$watcher" 2>/dev/null; fi
   trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
