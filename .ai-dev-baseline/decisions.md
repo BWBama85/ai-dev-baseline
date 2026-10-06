@@ -8952,7 +8952,13 @@ survive is the part a later reader needs.
                coreutils takes, `role-dispatch.sh` included. A first cut worked around it inside
                `check-lib.sh` (a TERM-handling subshell); the review of this change reproduced the case
                it missed — a suite that dies while its descendant lives — and the workaround was removed
-               so the defect has one defence.
+               so the defect has one defence. The wait on that watcher is now the child's own: woken
+               first (CONT) and waited for with `-f` under job control (owner decision, after the
+               local review reproduced a STOPPED watcher returning 124 at once over a live TERM-proof
+               member; a watcher stopped before the wait instead held the call indefinitely). The
+               unfired branch and the reap trap send no CONT: the watcher does not catch TERM, so a TERM
+               ends it stopped or not. That is a platform property, observed on macOS; two cases pin it
+               on both CI platforms and carry no row, because no code of ours is what makes them pass.
              * The overrun warning is a ticker job inside the dispatcher's own `wait -n`, in both
                `run_pool` and `run_serial`: `selfcheck: still running past Ns: <step> (Es so far)`,
                once per multiple of `ADB_SELFCHECK_OVERRUN_SECS`, plus an `overran (past Ns):` line
@@ -8969,8 +8975,8 @@ survive is the part a later reader needs.
              * The lane pins compare SETS, not substrings (owner decision in the review of PR #517).
                Each document wraps each lane's list in `<!-- adb:lane <name> -->` …
                `<!-- /adb:lane -->`; the pin requires exactly one such region per lane per document,
-               its backticked tokens equal to `--list`'s members in order, and nothing else inside it
-               but commas and blanks. The macOS `--skip` pins are bounded at their end as well. Matched
+               its backticked tokens equal to `--list`'s members in order, nothing else inside it
+               but commas and blanks, and the markers across each document alternating open, close. The macOS `--skip` pins are bounded at their end as well. Matched
                anywhere, the one-member `mutates-tree` lane passed on any other mention of
                `build-drift`; a list that gained a name still contained the pinned one; and a regex
                anchored to the lane's declaration still let a conjunction or emphasis through at the
@@ -8987,14 +8993,17 @@ survive is the part a later reader needs.
              leader-dies cases), and the deadline not applied at all — which now fails each case by
              name in 433 s instead of holding the suite for hours, because every hang fixture's own
              sleep is bounded at 45 s and matched by a pattern carrying the run's pid. The
-             `check-common-lib.sh --mutation` table gains seven rows, 17-21, 17b and 17c: the fired
-             bound's watcher stopped instead of waited for; the group killed at once, cutting a
-             TERM-handling member's grace; the reap trap disarmed before that grace, so a cancellation
-             inside it orphans the group; the KILL made unconditional; the fired signal never raised,
-             guessed on the binary path, or never reset. The binary-path row is registered only where
-             a `timeout` binary exists, since its assertion can run nowhere else. On the final tree
-             that is 23 rows on such a host, each observed RED on its own witness (18, 21 and 22 were
-             counts at earlier points of review). `check-selfcheck.sh --mutation` gains four — a
+             `check-common-lib.sh --mutation` table gains nine rows, 17-21, 17b, 17c and the two of
+             17d: the fired bound's watcher stopped instead of waited for; the group killed at once,
+             cutting a TERM-handling member's grace; the reap trap disarmed before that grace, so a
+             cancellation inside it orphans the group; the KILL made unconditional; the fired signal
+             never raised, guessed on the binary path, or never reset; and a stopped watcher waited for
+             without `-f`, or not woken first. The binary-path row is registered only where a `timeout`
+             binary exists, since its assertion can run nowhere else. On the final tree that is 25 rows
+             on such a host, each observed RED on its own witness (18, 21, 22 and 23 were counts at
+             earlier points of review). Both stopped-watcher cases were also observed red against the
+             library before the fix: 124 returned 3 s in with the member alive, and a call that never
+             returned inside its 20 s deadline. `check-selfcheck.sh --mutation` gains four — a
              silent ticker, the `overran` line dropped, the digest dropping it, and an overrun judged
              by the dispatcher's clocks rather than by the step's own stamps — 10/10 RED on the final
              tree (9/9 earlier). Section 10.5 holds the parent at each of those clocks: after it
@@ -9007,8 +9016,9 @@ survive is the part a later reader needs.
              digest's name lists now split into arrays — an unquoted expansion also globbed, in the
              existing `FAILED:` loop too: the old runner printed 14 omission notices for a two-token
              log, the new one 2. The lane pin goes red against copies of both documents on a member
-             dropped, a bare word or a conjunction added, emphasis inside the region, and the region
-             deleted or duplicated.
+             dropped, a bare word or a conjunction added, emphasis inside the region, the region
+             deleted or duplicated, and a stray close or open — the stray close passing the pin it
+             replaced.
 
              **The consumer audit (scope item 2).** Every file that names `selfcheck` was read for
              a figure, a step count, a skip list or a lane. Disposition:
@@ -9053,9 +9063,9 @@ survive is the part a later reader needs.
              the full run against its standalone wall, above. That is an observed ratio under unlike
              loads, not a cost the interaction is shown to cause, and nothing in it argues for a
              scheduling change D66's table did not already refute.
-- placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound waits for its watcher,
+- placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound wakes and waits for its watcher,
              and `_ADB_BOUNDED_FIRED`; the reap trap armed until the escalation or sweep is done),
-             `scripts/check-common-lib.sh` (eight cases, seven rows),
+             `scripts/check-common-lib.sh` (twelve cases, nine rows),
              `scripts/check-lib.sh` (`_check_run_bounded`, `_check_row_secs`, both pools),
              `scripts/check-session-context.sh` (blocks, rows), `scripts/lib/run-state.sh` (one
              anchor comment), `scripts/selfcheck.sh` (ticker, `overran`, `--summarize`, the

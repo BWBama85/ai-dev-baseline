@@ -4486,8 +4486,16 @@ adb_run_bounded() {
   # finish its cleanup and still reaches one that ignores TERM (D122). Otherwise it has nothing left
   # to police and is stopped. The reap trap and the tracked identities stay armed THROUGH that wait,
   # so a cancellation during the grace still reaches the group.
-  if [ -f "$flag" ]; then wait "$watcher" 2>/dev/null
-  else kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null; fi
+  #
+  # A fired bound's watcher is WOKEN FIRST and waited for with `-f` under the child's own condition.
+  # A watcher someone STOPPED holds its escalation until it is continued, and a plain `wait` on it
+  # then returns at once (job control) or never: the CONT covers a watcher already stopped, and `-f`
+  # a stop that lands during the wait, which it sits out rather than return 124 over a live group.
+  # The other branch needs no CONT: the watcher does not catch TERM, so the TERM ends it stopped or not.
+  if [ -f "$flag" ]; then kill -CONT "$watcher" 2>/dev/null
+  else kill -TERM "$watcher" 2>/dev/null; fi
+  if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$watcher" 2>/dev/null
+  else                                                 wait    "$watcher" 2>/dev/null; fi
   trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
   unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
   # The flag ALONE decides: if the bound fired, this is 124 whatever status the child exited with.

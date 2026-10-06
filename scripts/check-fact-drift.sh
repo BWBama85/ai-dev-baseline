@@ -1639,6 +1639,18 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
   check_note "[selfcheck-lanes] selfcheck.sh --list failed — the lane pins below would compare a partial registry"; check_fail; _sc_list=""
 fi
+# …and the markers are a GRAMMAR, not merely findable: across each document they alternate open,
+# close, open, close, so a stray close or a second open is a region edited by half, not ignored.
+for _doc in CLAUDE.md CONTRIBUTING.md; do
+  if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
+    check_note "[selfcheck-lanes] $_doc could not be read"; check_fail; continue
+  fi
+  _seq="$(grep -oE '<!-- /?adb:lane[^>]*-->' <<< "$_joined" | sed -E 's#^<!-- /.*#C#; s#^<!-- adb.*#O#' | tr -d '\n')"
+  case "$_seq" in
+    *[!OC]*|*OO*|*CC*|C*|*O)
+      check_note "[selfcheck-lanes] $_doc's lane markers do not alternate open, close (read as [$_seq])"; check_fail ;;
+  esac
+done
 for _lane in mutates-tree load-sensitive; do
   _want="$(printf '%s\n' "$_sc_list" | awk -F'\t' -v l="$_lane" '$4 == l { print $1 }')"
   if [ -z "$_want" ]; then

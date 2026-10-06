@@ -1516,6 +1516,102 @@ sleep 2
 if [ -s "$gcpid" ]; then ok; else bad "watchdog: the cancel-in-grace probe never recorded a pid — the case did not run"; fi
 eq "$(gc_alive)" "dead" "watchdog: cancelling inside a fired bound's grace still reaches its TERM-proof member"
 gc_reset
+# …and a STOPPED watcher can neither end the call early nor hold it for ever (#445). Nothing outside
+# the function names the watcher; what tells it apart is the sleep it is in — its grace, or its tick —
+# so each case gives that sleep a length no other process here has. A case that could hang carries
+# its own deadline, because the hang is the defect it exists to catch.
+bw_watcher() {   # <shell-pid> <its-sleep> — <shell-pid>'s child whose own child is <its-sleep>
+  ps -eo pid=,ppid=,args= 2>/dev/null | awk -v top="$1" -v want="$2" '
+    { p = $1; pp = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); par[p] = pp; cmd[p] = $0 }
+    END { for (p in cmd) if (cmd[p] == want && par[par[p]] == top) { print par[p]; exit } }'
+}
+bw_live() {   # <pid> — true while it exists and is not a zombie
+  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$1" 2>/dev/null || return 1
+  case "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" in Z*|'') return 1 ;; esac
+}
+bw_drop() { bw_live "${1:-}" && { kill -CONT "$1"; kill -KILL "$1"; } 2>/dev/null; return 0; }
+bw_await() {   # <file> <secs> — wait for <file> to be written, for at most <secs>
+  local d=$(( EPOCHSECONDS + $2 ))
+  while [ ! -s "$1" ] && [ "$EPOCHSECONDS" -lt "$d" ]; do sleep 0.2; done
+}
+# A: stopped INSIDE a fired bound's grace, continued two seconds later, under the caller's job control
+# (as selfcheck's pool worker has it). The call returns only once the escalation is done — never while
+# the watcher is stopped — and the TERM-proof member is reaped.
+gc_reset; rm -f "$work/bw-a"
+_btop=$BASHPID
+set -m
+( sleep 3; w="$(bw_watcher "$_btop" 'sleep 7')"
+  case "$w" in ''|*[!0-9]*) exit 0 ;; esac
+  kill -STOP "$w"; echo "$w" > "$work/bw-a"; sleep 2; kill -CONT "$w" ) &
+_bws=$!
+_bt0=$EPOCHSECONDS
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 7 "$gcp2" >/dev/null 2>&1
+_brc="$?:${_ADB_BOUNDED_FIRED:-unset}"; _bel=$(( EPOCHSECONDS - _bt0 ))
+set +m
+wait "$_bws" 2>/dev/null
+if [ -s "$work/bw-a" ]; then ok; else bad "watchdog: the stopped-in-grace probe never found the watcher — the case did not run"; fi
+eq "$_brc" "124:1" "watchdog: a fired bound whose watcher was stopped still returns 124"
+[ "$_bel" -ge 5 ] && ok || bad "watchdog: a fired bound returned while its watcher was STOPPED (${_bel}s in), before its group was reaped"
+eq "$(gc_alive)" "dead" "watchdog: a watcher stopped inside the grace still reaps the TERM-proof member"
+bw_drop "$(cat "$work/bw-a" 2>/dev/null)"; gc_reset
+# B: stopped inside the grace BEFORE the call reaches its wait on the watcher — the leader takes three
+# seconds to die on its TERM — and never continued. The call wakes it and returns once it is done.
+gcp4="$work/gcprobe4.sh"
+printf '#!/usr/bin/env bash\ntrap '"'"'sleep 3; exit 0'"'"' TERM\nwhile :; do sleep 0.2; done\n' > "$gcp4"
+chmod +x "$gcp4"
+rm -f "$work/bw-c.rc" "$work/bw-c.w"
+( set -m
+  _top=$BASHPID
+  ( sleep 2; w="$(bw_watcher "$_top" 'sleep 7')"
+    case "$w" in ''|*[!0-9]*) exit 0 ;; esac
+    kill -STOP "$w"; echo "$w" > "$work/bw-c.w" ) &
+  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 7 "$gcp4" >/dev/null 2>&1; echo "$?" > "$work/bw-c.rc" ) &
+_bwc=$!
+bw_await "$work/bw-c.rc" 20
+_bw="$(cat "$work/bw-c.w" 2>/dev/null)"
+if [ -n "$_bw" ]; then ok; else bad "watchdog: the stopped-before-the-wait probe never found the watcher — the case did not run"; fi
+eq "$(cat "$work/bw-c.rc" 2>/dev/null)" "124" "watchdog: a watcher stopped before the fired bound's wait is woken, and the call returns 124"
+bw_drop "$_bw"; kill -KILL "$_bwc" 2>/dev/null; wait "$_bwc" 2>/dev/null
+# C and D pin the PLATFORM PROPERTY the other two TERMs rely on instead of a CONT: a watcher does not
+# catch TERM, so a TERM ends it even while it is stopped. If a platform kept that TERM pending, the
+# unfired branch's plain `wait` would never return without job control (C, under its own deadline)
+# and a cancelled call would leave its stopped watcher behind (D).
+# C: stopped BEFORE the bound fires and never continued; the command then finishes on its own.
+for _bm in plain monitor; do
+  rm -f "$work/bw-c2.rc" "$work/bw-c2.w"
+  ( [ "$_bm" = monitor ] && set -m
+    _top=$BASHPID
+    ( sleep 1; w="$(bw_watcher "$_top" 'sleep 5')"
+      case "$w" in ''|*[!0-9]*) exit 0 ;; esac
+      kill -STOP "$w"; echo "$w" > "$work/bw-c2.w" ) &
+    ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 12 1 sleep 2.5 >/dev/null 2>&1; echo "$?" > "$work/bw-c2.rc" ) &
+  _bwc=$!
+  bw_await "$work/bw-c2.rc" 15
+  _bw="$(cat "$work/bw-c2.w" 2>/dev/null)"
+  if [ -n "$_bw" ]; then ok; else bad "watchdog ($_bm): the stopped-before-firing probe never found the watcher — the case did not run"; fi
+  eq "$(cat "$work/bw-c2.rc" 2>/dev/null)" "0" "watchdog ($_bm): a watcher stopped before the bound fired still ends on its TERM, and the call returns its command's status"
+  sleep 0.5
+  if bw_live "$_bw"; then bad "watchdog ($_bm): a watcher stopped before the bound fired was left behind"; else ok; fi
+  bw_drop "$_bw"; kill -KILL "$_bwc" 2>/dev/null; wait "$_bwc" 2>/dev/null
+done
+# D: the CALLER is cancelled while its watcher is stopped; the reap trap's TERM still ends it.
+rm -f "$work/bw-d.w"
+( _top=$BASHPID
+  ( sleep 1; w="$(bw_watcher "$_top" 'sleep 5')"
+    case "$w" in ''|*[!0-9]*) exit 0 ;; esac
+    kill -STOP "$w"; echo "$w" > "$work/bw-d.w" ) &
+  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 sleep 20 >/dev/null 2>&1 ) &
+_bwc=$!
+bw_await "$work/bw-d.w" 10
+kill -TERM "$_bwc" 2>/dev/null
+_bdl=$(( EPOCHSECONDS + 10 )); while kill -0 "$_bwc" 2>/dev/null && [ "$EPOCHSECONDS" -lt "$_bdl" ]; do sleep 0.2; done
+wait "$_bwc" 2>/dev/null
+sleep 0.5
+_bw="$(cat "$work/bw-d.w" 2>/dev/null)"
+if [ -n "$_bw" ]; then ok; else bad "watchdog: the cancelled-while-stopped probe never found the watcher — the case did not run"; fi
+if bw_live "$_bw"; then bad "watchdog: a cancelled call left its stopped watcher behind"; else ok; fi
+bw_drop "$_bw"; kill -KILL "$_bwc" 2>/dev/null
 # _ADB_BOUNDED_FIRED says whether the BOUND fired, never merely that the status was 124 (#445). In this
 # ORDER, so the second case also proves the flag is reset by every call rather than left over.
 ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 sleep 20
@@ -3198,16 +3294,28 @@ if [ "${1:-}" = "--mutation" ]; then
   mutate watchdog-sweep-dropped \
     "watchdog: a TERM-proof member outlives a leader that died on TERM" \
     '' \
-    '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/-f "\$flag"/-n ""/'
+    '/^  if \[ -f "\$flag" \]; then kill -CONT "\$watcher" 2>\/dev\/null$/s/-f "\$flag"/-n ""/'
 
   mutate reap-disarmed-before-grace \
     "watchdog: cancelling inside a fired bound's grace still reaches its TERM-proof member" \
     '' \
-    '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/then wait/then trap - TERM INT HUP; wait/'
+    '/^  if \[ -f "\$flag" \]; then kill -CONT "\$watcher" 2>\/dev\/null$/s/then kill -CONT/then trap - TERM INT HUP; kill -CONT/'
   mutate grace-cut-short \
     "watchdog: a member that handles TERM gets the grace" \
     '' \
-    '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/wait "\$watcher"/_adb_bounded_signal KILL "\$cmd_pid"; kill -TERM "\$watcher"; wait "\$watcher"/'
+    '/^  if \[ -f "\$flag" \]; then kill -CONT "\$watcher" 2>\/dev\/null$/s/kill -CONT "\$watcher"/_adb_bounded_signal KILL "\$cmd_pid"; kill -TERM "\$watcher"/'
+
+  # 17d. …and a STOPPED watcher (#445): waited for without `-f`, a stop landing during the grace ends
+  #      the wait at once and 124 comes back over a live group; not woken first, a watcher already
+  #      stopped holds the call for ever.
+  mutate watcher-wait-plain \
+    "watchdog: a fired bound returned while its watcher was STOPPED" \
+    '' \
+    '/^  if \[ "\$had_m" -eq 1 \] && _adb_bounded_waitf_ok; then wait -f "\$watcher" 2>\/dev\/null$/s/wait -f/wait/'
+  mutate watcher-not-woken \
+    "watchdog: a watcher stopped before the fired bound's wait is woken, and the call returns 124" \
+    '' \
+    '/^  if \[ -f "\$flag" \]; then kill -CONT "\$watcher" 2>\/dev\/null$/s/kill -CONT "\$watcher" 2>\/dev\/null/:/'
 
   # 18. …and the sweep fires on EVERY return, so a command that finished on its own loses the
   #     background work it deliberately left running.
