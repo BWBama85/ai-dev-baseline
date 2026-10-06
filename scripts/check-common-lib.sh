@@ -1500,6 +1500,22 @@ ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 5 "$gcp3" >/dev/null 2>&1
 eq "$?" "124" "watchdog: a leader with a TERM-handling member still returns 124"
 eq "$(cat "$gcmark" 2>/dev/null)" "cleaned" "watchdog: a member that handles TERM gets the grace"
 rm -f "$gcmark"
+# …and a CANCELLATION during that grace still reaches the group: the reap trap stays armed until the
+# watcher's escalation is done. The caller runs as its own process group, as selfcheck's pool worker
+# does, and is sent TERM three seconds in — after its one-second bound fired, inside the five-second
+# grace — the way selfcheck's _cleanup cancels a step.
+gc_reset
+set -m
+( ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 5 "$gcp2" >/dev/null 2>&1 ) &
+_gcc=$!
+set +m
+sleep 3
+kill -TERM -- "-$_gcc" 2>/dev/null
+wait "$_gcc" 2>/dev/null
+sleep 2
+if [ -s "$gcpid" ]; then ok; else bad "watchdog: the cancel-in-grace probe never recorded a pid — the case did not run"; fi
+eq "$(gc_alive)" "dead" "watchdog: cancelling inside a fired bound's grace still reaches its TERM-proof member"
+gc_reset
 # _ADB_BOUNDED_FIRED says whether the BOUND fired, never merely that the status was 124 (#445). In this
 # ORDER, so the second case also proves the flag is reset by every call rather than left over.
 ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 sleep 20
@@ -3184,6 +3200,10 @@ if [ "${1:-}" = "--mutation" ]; then
     '' \
     '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/-f "\$flag"/-n ""/'
 
+  mutate reap-disarmed-before-grace \
+    "watchdog: cancelling inside a fired bound's grace still reaches its TERM-proof member" \
+    '' \
+    '/^  if \[ -f "\$flag" \]; then wait "\$watcher" 2>\/dev\/null$/s/then wait/then trap - TERM INT HUP; wait/'
   mutate grace-cut-short \
     "watchdog: a member that handles TERM gets the grace" \
     '' \

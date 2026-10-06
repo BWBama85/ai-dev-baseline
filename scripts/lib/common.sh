@@ -4399,8 +4399,6 @@ adb_run_bounded() {
     # read at the top of this function and `_adb_bounded_waitf_ok`.
     if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$_ADB_BOUNDED_CHILD"; trc=$?
     else                                                 wait    "$_ADB_BOUNDED_CHILD"; trc=$?; fi
-    trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
-    unset _ADB_BOUNDED_CHILD
     # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child, but
     # relays the child's own signal status (137) when -k had to escalate to SIGKILL — so ONE event
     # reports two different codes depending only on how stubborn the child was, and 137 is what
@@ -4415,6 +4413,10 @@ adb_run_bounded() {
     # left something running (the dev-server case), and killing that would make a bound into a
     # reaper of successful work.
     [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
+    # The reap trap is disarmed only AFTER the sweep, so a cancellation arriving between the wait and
+    # the sweep still reaches the group (D122).
+    trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
+    unset _ADB_BOUNDED_CHILD
     _ADB_BOUNDED_FIRED=""
     return "$trc"
   fi
@@ -4479,14 +4481,15 @@ adb_run_bounded() {
   # capability check; below 5.1 the caller keeps the pre-#141 behaviour rather than a broken one.
   if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$cmd_pid" 2>/dev/null; rc=$?
   else                                                 wait    "$cmd_pid" 2>/dev/null; rc=$?; fi
-  trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
-  unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
   # A FIRED bound's watcher is part-way through its escalation, so it is waited for rather than
   # stopped: its grace, then its KILL of the whole GROUP, is what lets a member that handles TERM
   # finish its cleanup and still reaches one that ignores TERM (D122). Otherwise it has nothing left
-  # to police and is stopped.
+  # to police and is stopped. The reap trap and the tracked identities stay armed THROUGH that wait,
+  # so a cancellation during the grace still reaches the group.
   if [ -f "$flag" ]; then wait "$watcher" 2>/dev/null
   else kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null; fi
+  trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
+  unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
   # The flag ALONE decides: if the bound fired, this is 124 whatever status the child exited with.
   # A child that traps SIGTERM and exits 0 (ordinary well-behaved-CLI cleanup) would otherwise be
   # reported as a clean success carrying truncated output — silent incompleteness accepted as a
