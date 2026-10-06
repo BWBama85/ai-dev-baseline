@@ -28,7 +28,8 @@ only by a published release, which is what these entries are the notes for.
   `check-session-context.sh --mutation`, the whole-suite harness with the most rows, now runs each of its 94 rows against only the block that holds its witness (#468) and gates
   each on its own target (#470). It took 253 s standalone against 1217 s before (2,559 + 2,643
   CPU-s down to 217 + 235), and 457 s against 3747 s inside a forced full run. A forced full run
-  itself moved only 5%, because three other harnesses near an hour each still set its length.
+  itself moved only 5%. Inferred from the per-step times, not measured: three other harnesses near
+  an hour each still set its length.
   `selfcheck`'s documented cost in `CLAUDE.md` and `CONTRIBUTING.md` is re-measured (82m12s to
   98m49s forced), and D122 records the before/after table and the consumer audit.
 

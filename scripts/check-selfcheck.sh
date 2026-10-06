@@ -206,7 +206,7 @@ if [ "$MODE" = mutation ]; then
     '[ "${#OVERRAN[@]}" -gt 0 ] && printf '"'"'overran (past %ss): %s\n'"'"' "$OVERRUN" "${OVERRAN[*]}"' ':' \
     'the result block names a step that overran and passed'
   check_mut "overrun-by-reap-time" \
-    '  if [ -n "${4:-}" ] && e="$(ended_at "$1")"; then el=$(( e - $4 )); fi' ':' \
+    '  if s="$(stamp_of started "$1")" && e="$(stamp_of ended "$1")"; then el=$(( e - s )); fi' ':' \
     'a step that ENDED inside the ceiling is not named'
   check_mut "digest-drops-overran" \
     '    summarize_overran "$log"' ':' \
@@ -1299,7 +1299,7 @@ if mutate_line "$FXRACE/scripts/selfcheck.sh" \
     "a worker forked but not yet recorded in LIVE is still reaped ($CANCEL_DIAG)"
 fi
 
-# --- 10.5 an overrun is judged by the step's own end, not by its reaping (#445) ----------------
+# --- 10.5 an overrun is judged by the step's own stamps, not by its dispatch or reaping (#445) --
 # A gate injected just AFTER the step's start is recorded holds the parent, so a step that ends at once
 # is not reaped until the hold lifts. By then it is past the ceiling, and it must still not be named.
 # (After the start stamp, not after the fork: a hold before the stamp delays the start too, and the
@@ -1320,6 +1320,22 @@ if mutate_line "$FXHOLD/scripts/selfcheck.sh" \
   _rs="$(printf '%s\n' "$OUT" | awk '/^=== gates ===$/ { p = 1; next } p && /^PASS \(/ { s = $0; sub(/.*[ (]/, "", s); sub(/s\)$/, "", s); print s; exit }')"
   [ "${_rs:-0}" -ge 3 ] && ok || bad "10.5: the step was reaped at ${_rs:-?}s, not past the 2s ceiling — the case is not the one it names"
   hasnt "$OUT" "overran" "a step that ENDED inside the ceiling is not named, however late it was reaped"
+fi
+# …and the mirror image: a hold right after the FORK, before the start is recorded, must not shrink a
+# real overrun. A 3 s step under a 2 s ceiling is named, however late the parent recorded its start.
+FXHOLD2="$work/fx-hold2"
+mkfx "$FXHOLD2" || bad "10.5: could not build the second hold fixture"
+if mutate_line "$FXHOLD2/scripts/selfcheck.sh" \
+     '      ( export GIT_OPTIONAL_LOCKS=0; run_step "$name" ) >"$out" 2>&1 &' \
+     "$RACE_SED" "10.5 dispatch gate" && mut_parses "$FXHOLD2" "10.5"; then
+  printf '3\n' > "$FXHOLD2/ctl/gates.sleep"
+  : > "$FXHOLD2/ctl/HOLD"
+  ( sleep 4; rm -f "$FXHOLD2/ctl/HOLD" ) &
+  _hold=$!
+  OUT="$(ADB_STUB_CTL="$FXHOLD2/ctl" ADB_SELFCHECK_OVERRUN_SECS=2 bash "$FXHOLD2/scripts/selfcheck.sh" --only gates --jobs 4 2>&1)"; RC_=$?
+  wait "$_hold" 2>/dev/null
+  yes "$RC_" "10.5: a run held before its start was recorded still passes"
+  has "$OUT" "overran (past 2s): gates" "a step that RAN past the ceiling is named, however late its start was recorded"
 fi
 
 # --- the negative half lives in `--mutation` --------------------------------------------------

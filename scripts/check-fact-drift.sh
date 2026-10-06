@@ -1628,31 +1628,42 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 
 # --- the serial prologue's lanes, as the two contributor contracts list them (#445) -------------
 #
-# Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md. The spelling is
-# DERIVED from `selfcheck.sh --list` — the members in declaration order, backticked, comma-joined —
-# and ANCHORED to the lane's own declaration: the backticked lane name, then at most 40 characters
-# with no backtick (" — ", " lane (#423) is "), then the list. Matched anywhere, a one-member lane
-# passes on any other mention of its member. The list's END is bounded too: past any blanks and
-# Markdown emphasis (`*`, `_`), the next character may be neither a comma nor a backtick, so a list
-# with a member more never matches, emphasised or not.
+# Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md, between
+# `<!-- adb:lane <name> -->` and `<!-- /adb:lane -->`. Each document must carry each lane's region
+# exactly once, and the region must hold exactly the lane's members in `selfcheck.sh --list`'s
+# order, backticked and separated by commas and blanks — NOTHING else. A comparison of the region's
+# members, not a pattern over prose: English joins a list in more ways than a pattern can enumerate,
+# and four of them got past the pattern this replaced (D122).
 # The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
 # --list that failed after printing some rows would still yield a plausible, wrong lane.
 if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
   check_note "[selfcheck-lanes] selfcheck.sh --list failed — the lane pins below would compare a partial registry"; check_fail; _sc_list=""
 fi
 for _lane in mutates-tree load-sensitive; do
-  _members="$(printf '%s\n' "$_sc_list" | awk -F'\t' -v l="$_lane" '$4 == l { printf "%s`%s`", (n++ ? ", " : ""), $1 }')"
-  if [ -z "$_members" ]; then
+  _want="$(printf '%s\n' "$_sc_list" | awk -F'\t' -v l="$_lane" '$4 == l { print $1 }')"
+  if [ -z "$_want" ]; then
     check_note "[selfcheck-lane-$_lane] selfcheck.sh --list reports no member — the pin would compare nothing"; check_fail; continue
   fi
-  # ACROSS LINE BREAKS: each document is read as ONE line, because a line-oriented match let a list
-  # that went on, on the next line, pass as complete.
+  _open="<!-- adb:lane $_lane -->"; _close="<!-- /adb:lane -->"
   for _doc in CLAUDE.md CONTRIBUTING.md; do
+    # Read as ONE line, so a region that spans a line break is still one region.
     if ! _joined="$(tr '\n' ' ' < "$_doc")"; then
       check_note "[selfcheck-lane-$_lane] $_doc could not be read"; check_fail; continue
     fi
-    if ! grep -qE -- "\`${_lane}\`[^\`]{0,40}${_members}[[:space:]*_]*([^,\`[:space:]*_]|\$)" <<< "$_joined"; then
-      check_note "[selfcheck-lane-$_lane] $_doc does not list the lane exactly as the runner does: $_members"; check_fail
+    _n="$(grep -oF -- "$_open" <<< "$_joined" | wc -l | tr -d ' ')"
+    if [ "$_n" != 1 ]; then
+      check_note "[selfcheck-lane-$_lane] $_doc carries $_n '$_open' region(s), not exactly one"; check_fail; continue
+    fi
+    _region="${_joined#*"$_open"}"
+    case "$_region" in
+      *"$_close"*) _region="${_region%%"$_close"*}" ;;
+      *) check_note "[selfcheck-lane-$_lane] $_doc opens the lane's region and never closes it"; check_fail; continue ;;
+    esac
+    _got="$(grep -oE '`[^`]+`' <<< "$_region" | tr -d '`')"
+    _rest="$(sed -E 's/`[^`]+`//g; s/[[:space:],]//g' <<< "$_region")"
+    if [ "$_got" != "$_want" ] || [ -n "$_rest" ]; then
+      check_note "[selfcheck-lane-$_lane] $_doc lists [$(printf '%s' "$_got" | tr '\n' ' ')] with [$_rest] beside it, where the runner's lane is [$(printf '%s' "$_want" | tr '\n' ' ')]"
+      check_fail
     fi
   done
 done

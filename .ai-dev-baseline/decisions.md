@@ -8958,17 +8958,23 @@ survive is the part a later reader needs.
                once per multiple of `ADB_SELFCHECK_OVERRUN_SECS`, plus an `overran (past Ns):` line
                in the result block and a paragraph in `--summarize` (from the result line, or from
                the live lines when a cancelled run never reached it).
-             * An overrun is judged by the STEP'S OWN END, not by its reaping: `run_step` stamps when the
-               step ended, the ticks skip a step that has ended, and `record` judges by the stamp. The
-               dispatcher reaps one job per `wait` and can reap a finished step late, which otherwise
-               read as a live overrun and an `overran` entry for a step that ended in time. A stamp that
-               cannot be written is said in the step's own output.
-             * The lane pins are ANCHORED to each lane's declaration (the backticked lane name, then the
-               list within 40 characters), bounded at the list's end past blanks and Markdown emphasis,
-               and both documents declare both lanes in that form; the macOS `--skip` pins are bounded
-               at their end as well. Matched anywhere, the one-member `mutates-tree` lane passed on any
-               other mention of `build-drift`, and a list that gained a name still contained the pinned
-               one.
+             * An overrun is judged by the STEP'S OWN STAMPS, not by its dispatch or its reaping:
+               `run_step` stamps when the step started and when it ended, the ticks measure from the
+               start stamp and skip a step that has ended, and `record` judges by the two. The
+               dispatcher records a start only after the fork and reaps one job per `wait`, so either of
+               its clocks can be late: a late reap read as a live overrun and an `overran` entry for a
+               step that ended in time, and a late start shrank a real overrun below the ceiling. A
+               stamp that cannot be written is said in the step's own output, and the runner then
+               falls back to the dispatcher's clock.
+             * The lane pins compare SETS, not substrings (owner decision in the review of PR #517).
+               Each document wraps each lane's list in `<!-- adb:lane <name> -->` …
+               `<!-- /adb:lane -->`; the pin requires exactly one such region per lane per document,
+               its backticked tokens equal to `--list`'s members in order, and nothing else inside it
+               but commas and blanks. The macOS `--skip` pins are bounded at their end as well. Matched
+               anywhere, the one-member `mutates-tree` lane passed on any other mention of
+               `build-drift`; a list that gained a name still contained the pinned one; and a regex
+               anchored to the lane's declaration still let a conjunction or emphasis through at the
+               list's end.
              * NOT covered by the row deadline, deliberately: the three harnesses that hand-roll
                their own pool (`check-common-lib.sh`, `check-bootstrap.sh`, `check-fact-drift.sh`).
                Their rows do not pass through `check-lib.sh`'s pools; a hang there is now at least
@@ -8990,15 +8996,19 @@ survive is the part a later reader needs.
              that is 23 rows on such a host, each observed RED on its own witness (18, 21 and 22 were
              counts at earlier points of review). `check-selfcheck.sh --mutation` gains four — a
              silent ticker, the `overran` line dropped, the digest dropping it, and an overrun judged
-             by the reap time rather than by the step's own end stamp — 10/10 RED on the final
-             tree (9/9 earlier). Two 8e assertions are not
+             by the dispatcher's clocks rather than by the step's own stamps — 10/10 RED on the final
+             tree (9/9 earlier). Section 10.5 holds the parent at each of those clocks: after it
+             records the start (a step that ended in time must not be named) and after the fork,
+             before the start is recorded (a 3 s step under a 2 s ceiling must be). The second case
+             was observed red against the runner that stamped only the end, its one failure of 211. Two 8e assertions are not
              rows because their defects cost more than a row can pay; both were observed against a
              copy: a ticker left running held a fast run 61 s against the assertion's 30 s bound, and
              a ticker reaped as a step broke the run's emission (2 banners where 4 were due). The
              digest's name lists now split into arrays — an unquoted expansion also globbed, in the
              existing `FAILED:` loop too: the old runner printed 14 omission notices for a two-token
-             log, the new one 2. The lane pin goes red when a prose list loses its first member and
-             when it loses its last.
+             log, the new one 2. The lane pin goes red against copies of both documents on a member
+             dropped, a bare word or a conjunction added, emphasis inside the region, and the region
+             deleted or duplicated.
 
              **The consumer audit (scope item 2).** Every file that names `selfcheck` was read for
              a figure, a step count, a skip list or a lane. Disposition:
@@ -9039,10 +9049,10 @@ survive is the part a later reader needs.
 
              **D66 is not superseded.** Item 5 asked to re-measure the outer/inner pool interaction
              on a registry with several heavy harnesses. The leaf-budget runner D66 built and
-             reverted was not rebuilt; what was measured instead is the contention the interaction
-             causes — each heavy harness's wall inside the full run against its standalone wall,
-             above — and nothing in it argues for a scheduling change D66's table did not already
-             refute.
+             reverted was not rebuilt; what was measured instead is each heavy harness's wall inside
+             the full run against its standalone wall, above. That is an observed ratio under unlike
+             loads, not a cost the interaction is shown to cause, and nothing in it argues for a
+             scheduling change D66's table did not already refute.
 - placement: `scripts/lib/common.sh` (`adb_run_bounded`: the fired bound waits for its watcher,
              and `_ADB_BOUNDED_FIRED`; the reap trap armed until the escalation or sweep is done),
              `scripts/check-common-lib.sh` (eight cases, seven rows),
@@ -9051,12 +9061,14 @@ survive is the part a later reader needs.
              anchor comment), `scripts/selfcheck.sh` (ticker, `overran`, `--summarize`, the
              session-context inputs), `scripts/check-block-rows.sh` (section 10),
              `scripts/check-selfcheck.sh` (8e and 10.5, four rows), `scripts/check-fact-drift.sh` (the
-             figure), `CLAUDE.md`, `CONTRIBUTING.md`, `docs/ci-runners.md`.
+             figure, the lane pins), `CLAUDE.md`, `CONTRIBUTING.md` (the `adb:lane` regions),
+             `docs/ci-runners.md`.
 - reason:    A row that pays for the whole suite to fire one assertion was the cost #445 named, and
              D103 had already proven the cure on two harnesses; session-context was the largest
              left. A guard that can wait forever is the silent-guard shape this repo keeps paying
              for, one level up. The two bounds differ on purpose: the step warning only reports and
-             never changes a verdict, while the row deadline DOES end a run and score it `hung` — it is
-             set at 1800 s, far above any healthy row measured here, so that only a run that has stopped
-             making progress reaches it.
+             never changes a verdict, while the row deadline DOES end a run and score it `hung`. It is
+             set at 1800 s, far above any healthy row measured here, and is meant to catch a run that
+             has stopped making progress; a healthy row slowed past it by load is ended too, and its
+             `hung` is applied and never RED.
 - baseline-issue: n/a

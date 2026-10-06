@@ -108,8 +108,8 @@ quietly looks exactly like a step that passed.
 
 In a default (parallel) run a **serial prologue** goes first, one step at a time, and it holds two
 lanes for two different reasons — `--list`'s fourth field says which. The `mutates-tree` lane is
-`build-drift`: it rewrites files in the working tree that other steps read. The `load-sensitive` lane (#423) is
-`session-currency`, `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`:
+<!-- adb:lane mutates-tree -->`build-drift`<!-- /adb:lane -->: it rewrites files in the working tree that other steps read. The `load-sensitive` lane (#423) is
+<!-- adb:lane load-sensitive -->`session-currency`, `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`<!-- /adb:lane -->:
 they assert on signal delivery, worker reaping and
 installer writes, and they pass unloaded and on Linux. Two of them — `session-currency` and
 `selfcheck-guard` (with its mutation mode) — were the whole of that job's flakiness on the 3-core
