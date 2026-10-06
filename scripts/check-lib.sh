@@ -1238,14 +1238,16 @@ check_pr_activity_json() {
 }
 
 # check_pr_json <out> [--sha X] [--state X] [--merged-at X] [--base-slug X] [--head-slug X]
-#               [--head-ref X] — the PULL-REQUEST OBJECT, the fifth shape both suites stub.
+#               [--head-ref X] [--base-ref X] — the PULL-REQUEST OBJECT, the fifth shape both
+#               suites stub. `--base-ref` is the branch the head-CI read (#448) asks required
+#               contexts of; empty renders `base.ref` null.
 #
 # Named flags, never positional — a positional superset mis-shifts calls silently (D68). Last wins.
 # Empty is meaningful: `--head-slug ""` renders `head.repo` null, `--merged-at ""` likewise.
 # Every field defaults to empty (the fixture constants live in the suites); a bad flag fails loudly.
 check_pr_json() {
   local out="$1"; shift
-  local sha="" state="open" merged="" bslug="" hslug="" href=""
+  local sha="" state="open" merged="" bslug="" hslug="" href="" bref=""
   while [ "$#" -gt 0 ]; do
     if [ "$#" -lt 2 ]; then bad "check_pr_json: flag '$1' has no value"; return 1; fi
     case "$1" in
@@ -1255,15 +1257,16 @@ check_pr_json() {
       --base-slug) bslug="$2" ;;
       --head-slug) hslug="$2" ;;
       --head-ref)  href="$2" ;;
+      --base-ref)  bref="$2" ;;
       *) bad "check_pr_json: unknown flag '$1'"; return 1 ;;
     esac
     shift 2
   done
   jq -n --arg sha "$sha" --arg st "$state" --arg m "$merged" --arg slug "$bslug" \
-        --arg hslug "$hslug" --arg href "$href" \
+        --arg hslug "$hslug" --arg href "$href" --arg bref "$bref" \
     '{head:{sha:$sha, ref:$href, repo:(if $hslug == "" then null else {full_name:$hslug} end)},
       state:$st, merged_at:(if $m == "" then null else $m end),
-      base:{repo:{full_name:$slug}}}' > "$out"
+      base:{ref:(if $bref == "" then null else $bref end), repo:{full_name:$slug}}}' > "$out"
 }
 
 # check_declare_bots <repo-dir> <toml-array> — declare the reviewer set the guards read, e.g.
@@ -1316,6 +1319,7 @@ def tc($given; $nodes): if ($given|length) > 0 then ($given|tonumber) else ($nod
         mergedAt: ($pr.merged_at // null),
         headRefOid: ($pr.head.sha // null),
         headRefName: ($pr.head.ref // null),
+        baseRefName: ($pr.base.ref // null),
         baseRepository: (if ($pr.base.repo.full_name // null) == null then null
                          else {nameWithOwner: $pr.base.repo.full_name} end),
         headRepository: (if ($pr.head.repo // null) == null then null

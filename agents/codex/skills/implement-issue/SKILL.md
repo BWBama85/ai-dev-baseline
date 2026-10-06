@@ -375,7 +375,7 @@ An unstated disposition is the defect — rc 11 at the report step, which 10/11 
 | a dispatched agent (survey, gap-analysis, a review slot) | a bounded call you wait for — background where the harness caps foreground calls; never a poll of its output |
 | the async reviewer on the PR | `bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait`, driven by `/resolve-pr-threads` |
 | the project's gates | the blocking `bash "$HOME/.codex/scripts/lib/project-gates.sh" run` — fix and re-run |
-| CI going green after the push | **report-and-end**: step 10 arms auto-merge or reports why not; GitHub merges when the required checks pass |
+| CI concluding after the push | `bash "$HOME/.codex/scripts/lib/pr-watch.sh" ci-wait`, driven by `/resolve-pr-threads` at its terminal exit (#448); this run reads it ONCE at close-out (step 11) and hands the watch on |
 
 ### 7. First commit
 
@@ -686,9 +686,13 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   model tokens). **21 is not 16**: the reviewer has finished — point at its comment and suggest
   `/resolve-pr-threads <PR#> --once`. Report only **observed** guard results, never predictions;
   any PR/issue status here comes from `bash "$HOME/.codex/scripts/lib/state-assert.sh" observe pr <N>`.
+- **CI line** (#448): one reading — `bash "$HOME/.codex/scripts/lib/pr-watch.sh" ci --pr <N>` — and its stderr line pasted
+  verbatim. Seconds after the push it is normally `indeterminate` with most checks still running:
+  say so with the counts, never "green" and never "none red". The wait for CI to conclude belongs
+  to `/resolve-pr-threads <PR#>`, the same hand-off as the reviewer's.
 - `--squash` takes its subject from the **PR title** — it must satisfy the commit convention.
 
-Do not poll for bot reviews here; report the state and end.
+Do not poll for bot reviews or CI here; report the state and end.
 
 ### 12. Reconcile every deferred / out-of-scope item (mandatory)
 

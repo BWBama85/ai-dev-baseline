@@ -3200,7 +3200,10 @@ adb_pr_snapshot() {
            or (($cm.totalCount | floor) != $cm.totalCount) or ($cm.totalCount < ($cm.nodes | length))
            or (($rx.totalCount | floor) != $rx.totalCount) or ($rx.totalCount < ($rx.nodes | length))
         then error("a connection carries an impossible totalCount") else . end
+      # `base_ref` is read by the head-CI read alone (#448): required status contexts belong to the
+      # branch the pull request merges INTO. Empty when absent, which that read treats as unreadable.
       | { base_slug: ($p.baseRepository.nameWithOwner // ""),
+          base_ref:  ($p.baseRefName // ""),
           head_sha:  ($p.headRefOid // ""),
           head_ref:  ($p.headRefName // ""),
           head_slug: ($p.headRepository.nameWithOwner // ""),
@@ -3240,7 +3243,7 @@ adb_pr_snapshot_query() {
 'query($owner:String!,$name:String!,$number:Int!){' \
 'repository(owner:$owner,name:$name){' \
 'pullRequest(number:$number){' \
-'state merged mergedAt headRefOid headRefName ' \
+'state merged mergedAt headRefOid headRefName baseRefName ' \
 'baseRepository{nameWithOwner} headRepository{nameWithOwner} ' \
 'reviews(last:100){totalCount nodes{author{login __typename} state commit{oid}}} ' \
 'comments(last:100){totalCount nodes{author{login __typename} createdAt fullDatabaseId}} ' \

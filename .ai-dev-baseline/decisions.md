@@ -9105,3 +9105,57 @@ survive is the part a later reader needs.
              has stopped making progress; a healthy row slowed past it by load is ended too, and its
              `hung` is applied and never RED.
 - baseline-issue: n/a
+
+## D123 — #448: the PR loops read the head's CI — observed on every verdict, waited on once, routed by class
+- date:      2026-10-06
+- category:  project-delta
+- unknown:   #448. Neither PR loop read GitHub CI; D86 (10) had routed "CI going green after the
+             push" to report-and-end, true only for an armed PR. On a bot-reviewed repo the arm is
+             withheld, so a red required check on a head the resolver pushed went unread through
+             every later round (PR #446; support-cases PR #26). The gap analysis returned five
+             BLOCKING questions: the stdout contract, the completion rule, failure routing, the
+             flaky arm, and where a PR-side `no-ci` comes from.
+- decision:  **Owner decisions 2026-10-06**, each the recommended option:
+             (a) Output. `observe`/`wait` keep D118's one-line stdout and their exit codes. The CI
+             observation is ONE stderr line on the verdict they return, never per poll, and a
+             failed read prints `ci unreadable`. The machine answer is two new subcommands, `ci`
+             and `ci-wait`, whose stdout is the same `<verdict> <sha>` shape and whose exit code is
+             the CI verdict: 0 green, 40 not-green, 41 no-ci, 11 not concluded, 12, 20, 2.
+             (b) Completion. not-green returns at once (fail fast). green must hold for two
+             consecutive polls over an identical check set, because check runs register
+             incrementally. An empty set is never green, and check runs are read `filter=latest`.
+             `--no-fail-fast` waits until nothing is running, for the one case that needs it: a red
+             whose run has not concluded (ci-health 24/25).
+             (c) Routing. A failing Actions check maps to its run through `check_suite.id` =
+             the run's `check_suite_id` (verified live). ci-health 22 is a finding, diagnosed from
+             the log rather than assumed to be the diff's. 23 is re-run once. 24/25 wait for the run.
+             20 or anything else is handed back. An external check or status is named and never
+             re-run.
+             (d) Flaky arm. The ledger class is NOT a flake registry. A red is a known flake only
+             when an OPEN issue already names that exact job or test and the log matches. Then that
+             issue is linked and the run re-run once. The resolver never files a de-flake issue
+             itself.
+             (e) Re-run bound. Only a run on `attempt 1` is re-run. The counter is GitHub's, so the
+             bound survives a restarted session.
+             (f) `no-ci`. The roadmap artifact's `release-health: no-ci`, through `health-decl`'s
+             author-permission rule. It is read only when no Actions check ran and no workflow is
+             active. `skip-unreported` is not honoured for a PR head.
+             (g) Defaults accepted. `--once` takes one reading and never waits. A CI fix is a pushed
+             round, so the round cap counts it. The head is read, not the test merge commit, and the
+             docs say so. Names pass an allowlist, `?`-substituted, cut at 100 and joined with `; `.
+             `ci-wait` defaults to every 60 s for up to 3600 s.
+             This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
+             by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
+- placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in
+             `observe`/`wait`); `scripts/lib/common.sh` (`adb_pr_snapshot` carries `base_ref`);
+             `scripts/check-pr-watch.sh` (section 14, blocks, per-test CI rows);
+             `scripts/check-lib.sh` (`--base-ref`); `scripts/selfcheck.sh` (`pr-watch-mutation`
+             inputs); `base/workflows/resolve-pr-threads.md` (0b's CI line, step 7b, step 6's CI
+             line, the scope exception); `base/workflows/implement-issue.md` (the wait table, step
+             11); `docs/roles-and-agents.md`, `docs/repo-settings.md`, `CLAUDE.md`, `CHANGELOG.md`
+- reason:    The remote's verdict on a head is the other half of "never push red", and the
+             reviewer's wait is the poll the loop already makes. Reading CI there costs nothing per
+             poll. Waiting for it in every round would multiply the loop by the CI leg, which takes
+             25 to 45 minutes here, so the loop waits only at its terminal exit, which is the last
+             thing between the head and a merge.
+- baseline-issue: n/a

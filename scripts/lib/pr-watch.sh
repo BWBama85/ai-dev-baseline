@@ -141,6 +141,10 @@
 #   pr-watch.sh request-review --pr <number|url> \   # ask for a re-review of the CURRENT head (#169)
 #                       [--max-rounds <n>]              # > `[reviewers] max_rounds` > built-in 6
 #                                                       # <n> = 0 means UNCAPPED (#420)
+#   pr-watch.sh ci      --pr <number|url>            # the head's CI, once (#448)
+#   pr-watch.sh ci-wait --pr <number|url> \          # ...until it concludes, bounded
+#                       [--interval <secs>] [--max-secs <secs>]   # defaults 60 and 3600
+#                       [--no-fail-fast]               # hold a red until nothing is running
 #   pr-watch.sh -h | --help
 #
 # Outputs: at most ONE stdout line, `<verdict> <head-sha>`, and none on 2/17/18/20. Every
@@ -150,6 +154,15 @@
 #   wait             the terminal poll's line, in the same words; when the bound expires, the last
 #                    poll's `pending <sha>` (11), or no line if that poll was unreadable
 #   request-review   requested|already|no-trigger|capped|gone <sha>
+#   ci               green|not-green|indeterminate|no-ci|gone <sha>
+#   ci-wait          the concluding poll's line; when the bound expires, `indeterminate <sha>` (11)
+#
+# observe and wait ALSO print one stderr line about the head's CI on the verdict they return (#448),
+# never per poll and never changing the exit code:
+#   pr-watch: ci <green|not-green|indeterminate|no-ci|unreadable> <sha> observed <UTC> — <detail>
+# `ci` and `ci-wait` print the same line beside their stdout answer. <detail> counts the checks and
+# names each failing one with its run (`[run <id>, attempt <n>]`) or as `[external check]` /
+# `[external status]`; names pass an allowlist and are joined with `; `.
 #
 # PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
 # and this module applies it to every login in `[reviewers] bots` without per-reviewer dispatch.
@@ -190,6 +203,15 @@
 #                   UNDER THE UNCAPPED SENTINEL THIS CODE IS UNREACHABLE (#420) — a cap of `0` is
 #                   the operator declaring there is no ceiling, so 13 becomes the only repeat
 #                   answer and the ordering above stops mattering. Every other code is untouched.
+#   `ci` and `ci-wait` reuse 0 (green), 11 (not concluded — and, from `ci-wait`, the bound expired),
+#   12, 20 and 2 in the meanings above, and add two, disjoint from every code in this family:
+#   40 not-green  — a check on the head concluded failing. `ci-wait` returns it at once, while
+#                   siblings may still run — or, with `--no-fail-fast`, once none is still running.
+#                   STDOUT: "not-green <sha>".
+#   41 no-ci      — the roadmap artifact declares `release-health: no-ci` and nothing reported:
+#                   there is no CI to wait for. Not green. STDOUT: "no-ci <sha>".
+#   Neither reads `[reviewers] bots`, so 17/18 never come from them.
+#
 #   17 undeclared — the repo declares no `[reviewers] bots`, so it cannot be known whether a
 #                   reviewer is coming. FAIL CLOSED. Declare them, or `bots = []` if there are none.
 #   18 config     — `[reviewers] bots` is present but malformed. Fix agents.toml.
@@ -230,8 +252,9 @@
 # connector while the reviews endpoint reports `type: "Bot"` for the same App, so it would reject the
 # real signal.
 #
-# What this file must never grow: it does not resolve threads, edit code, push, or merge. Acting on
-# a `findings` verdict is the resolver's job; arming a merge is the arming guard's.
+# What this file must never grow: it does not resolve threads, edit code, push, merge, or re-run CI.
+# Acting on a `findings` verdict or a red check is the resolver's job; arming a merge is the arming
+# guard's.
 #
 # IT IS NO LONGER READ-ONLY, AND THAT WAS A DELIBERATE WIDENING (#169). `request-review` posts ONE
 # comment — a reviewer's own documented trigger phrase — because #49's multi-round loop cannot reach
@@ -307,8 +330,15 @@ OPT_PR=""
 # enough that no anchor is established — which is `pending`, the safe side. An unbounded paginated
 # scan for a bound that is only ever used to REFUSE would be paying by PR age for nothing. It stays
 # REST because GraphQL has no ref-scoped update time at all (see `adb_pr_snapshot`).
+#
+# THE HEAD-CI READ (#448) IS NOT A POLL COST of `wait`: it is made once, on the verdict `wait`
+# returns. `ci-wait` pays it on every poll — the snapshot plus check runs, statuses and the base
+# branch, four requests, and more while Actions has not reported or a check is red — which is why
+# its interval defaults to 60s rather than 30s.
 OPT_INTERVAL=30
 OPT_MAX_SECS=1800
+# `ci-wait --no-fail-fast` (#448): hold a red until nothing on the head is still running.
+OPT_NO_FAIL_FAST=0
 # Consecutive unreadable polls tolerated before `wait` gives up. A single 502/rate-limit must not
 # abandon a 30-minute watch, but an endlessly unreadable API must not be waited on forever either.
 _ADB_PW_MAX_UNREADABLE=3
@@ -390,7 +420,7 @@ read_declared_bots() {
 # Every read is fresh: this is called once per poll, so a head that moves mid-watch is picked up on
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
-  local n="$1" want="$2" qslug pjson pfields head state merged gotslug src headslug headref
+  local n="$1" want="$2" qslug pjson pfields head state merged gotslug src headslug headref baseref
   local classes verdict pending_from
 
   # THE IDENTITY PREDICATE IS NO LONGER APPLIED HERE. `adb_reviewer_match_jq` used to be hoisted into
@@ -420,10 +450,10 @@ classify() {
   # (where case must not decide the answer), while these two are interpolated into a URL and a ref
   # name, both of which GitHub treats as case-sensitive.
   pfields="$(printf '%s' "$pjson" \
-             | jq -r '(.head_sha // ""), (.state // "" | ascii_downcase), (.merged_at // ""), (.base_slug // "" | ascii_downcase), (.head_slug // ""), (.head_ref // "")' 2>/dev/null)" \
+             | jq -r '(.head_sha // ""), (.state // "" | ascii_downcase), (.merged_at // ""), (.base_slug // "" | ascii_downcase), (.head_slug // ""), (.head_ref // ""), (.base_ref // "")' 2>/dev/null)" \
     || { echo "pr-watch: could not parse PR #$n" >&2; return 20; }
   { IFS= read -r head; IFS= read -r state; IFS= read -r merged; IFS= read -r gotslug
-    IFS= read -r headslug; IFS= read -r headref; } <<EOF
+    IFS= read -r headslug; IFS= read -r headref; IFS= read -r baseref; } <<EOF
 $pfields
 EOF
   [ -n "$head" ] \
@@ -455,6 +485,10 @@ EOF
     fi
     return 12
   fi
+
+  # The head every verdict below is about, for the CI line (#448). Every open-PR verdict, `bots = []`
+  # included: a repo with no reviewer still has CI.
+  [ -n "$_ADB_PW_SNAP_SINK" ] && printf '%s\n%s\n%s\n' "$qslug" "$baseref" "$head" > "$_ADB_PW_SNAP_SINK"
 
   # `bots = []` — an explicit declaration that this repo has NO async reviewer. Nothing will ever
   # arrive, so waiting would be an infinite wait for a caller that cannot know better.
@@ -987,19 +1021,427 @@ adb_pw_count_receipts() {
   case "$out" in ''|*[!0-9]*) return 2 ;; esac
   printf '%s' "$out"
 }
+
+# ================================================================================================
+# THE HEAD'S CI (#448)
+#
+# A pushed head has two verdicts, the reviewer's and the remote CI's, and before #448 neither PR loop
+# read the second: a required check could go red on the head a resolver round had just pushed while
+# every later round reported itself clean. This section is that read, in three shapes:
+#
+#   observe / wait   ONE stderr line, about the classification they return — never one per poll:
+#                      pr-watch: ci <verdict> <sha> observed <UTC> — <detail>
+#                    Their stdout and exit code are untouched (D118): the reviewer verdict stays the
+#                    whole machine answer, and a CI read that fails prints `ci unreadable`.
+#   ci               the same read as a machine answer — stdout `<verdict> <sha>`, exit = verdict.
+#   ci-wait          `ci` polled until the head's checks conclude, bounded exactly as `wait` is.
+#
+# THE VERDICT IS `roadmap-lib.sh branch-health`'s, fed the input /roadmap and /release assemble:
+# check runs (`filter=latest`, so a re-run replaces its earlier attempt) and commit statuses for the
+# head, the BASE branch's required contexts, the active-workflow count when Actions has not
+# reported, and the roadmap artifact's `release-health: no-ci` when nothing could have reported.
+# `skip-unreported` is not honoured here: it describes CI that never reports on the DEFAULT branch,
+# and a pull request's head is where such CI does report.
+#
+# THE HEAD, NOT THE TEST MERGE COMMIT. GitHub may evaluate required checks on the merge commit, so
+# `green` here is a statement about the head and never a promise that the pull request can merge.
+_ADB_PW_ROADMAP_LIB="$_adb_pw_libdir/roadmap-lib.sh"
+_ADB_PW_REPO_SETTINGS="$_adb_pw_libdir/repo-settings.sh"
+# Consecutive `ci-wait` polls that must read `green` over an IDENTICAL check set before it reports
+# green. Check runs register incrementally — a job gated on another has none until it is queued —
+# so a single all-complete read can be a complete-looking subset.
+_ADB_PW_CI_SETTLE=2
+# Where `classify` records the slug, base branch and head of the verdict it returns, so the CI line
+# describes exactly that head. A file, for the reason `_ADB_PW_PENDING_SINK` is one.
+_ADB_PW_SNAP_SINK=""
+# Where `_pw_ci_classify` leaves the check-set signature and the CI line for `ci-wait`, which polls
+# inside `$( … )` too; `_ADB_PW_CI_QUIET` keeps that line off stderr until the wait ends (#417).
+_ADB_PW_CI_SINK=""
+_ADB_PW_CI_QUIET=0
+
+# _pw_ci_decl <slug> — the `release-health` declaration a head with no CI evidence is judged under:
+# prints `no-ci` or `off`. Asked only when no Actions check run exists and no workflow is active.
+# Every failure prints `off`, under which such a head stays `indeterminate` — never green.
+_pw_ci_decl() {
+  local slug="$1" raw one num body author optout pj perm out decl why
+  raw="$(gh api --paginate "repos/$slug/issues?labels=roadmap&state=open&per_page=100" 2>/dev/null)" \
+    || { echo "pr-watch: ci — could not read the roadmap artifact; no release-health declaration applies" >&2
+         printf 'off'; return 0; }
+  # The issues endpoint lists pull requests too; only an issue can be the artifact.
+  one="$(printf '%s' "$raw" | jq -s -c '
+      if all(.[]; type == "array") | not then error("not an issues page") else . end
+      | [.[][] | select(.pull_request == null)]
+      | if length == 1 then .[0] else length end' 2>/dev/null)" \
+    || { echo "pr-watch: ci — could not parse the roadmap artifact list; no release-health declaration applies" >&2
+         printf 'off'; return 0; }
+  case "$one" in
+    0) printf 'off'; return 0 ;;
+    '{'*) : ;;
+    *) echo "pr-watch: ci — $one open roadmap artifacts; none is read as a release-health declaration" >&2
+       printf 'off'; return 0 ;;
+  esac
+  num="$(printf '%s' "$one" | jq -r '.number // "?"' 2>/dev/null)"
+  body="$(printf '%s' "$one" | jq -r '.body // ""' 2>/dev/null)"
+  author="$(printf '%s' "$one" | jq -r '.user.login // ""' 2>/dev/null)"
+  optout="$(printf '%s' "$body" | bash "$_ADB_PW_ROADMAP_LIB" health-optout 2>/dev/null)" \
+    || { printf 'off'; return 0; }
+  [ "$optout" = off ] && { printf 'off'; return 0; }
+  # The PERMISSION decides, never the association — `health-decl` holds that rule. A login this
+  # cannot put in a path leaves the permission unknown, which that rule fails closed on.
+  perm=""
+  case "$author" in
+    ''|*[!A-Za-z0-9-]*) : ;;
+    *) pj="$(gh api "repos/$slug/collaborators/$author/permission" 2>/dev/null)" \
+         && perm="$(printf '%s' "$pj" | jq -r '.permission // ""' 2>/dev/null)" || perm="" ;;
+  esac
+  out="$(bash "$_ADB_PW_ROADMAP_LIB" health-decl "$optout" "$perm" 2>/dev/null)" \
+    || { printf 'off'; return 0; }
+  decl="${out%%$'\n'*}"; why=""
+  case "$out" in *$'\n'*) why="${out#*$'\n'}" ;; esac
+  # The reason echoes the marker, which is issue-body text: one line, no control characters.
+  [ -n "$why" ] && printf 'pr-watch: ci — roadmap #%s: %s\n' "$num" "$(printf '%s' "$why" | tr -d '\000-\037')" >&2
+  case "$decl" in
+    no-ci) printf 'no-ci' ;;
+    skip-unreported)
+      echo "pr-watch: ci — roadmap #$num declares release-health: skip-unreported, which describes the default branch; a pull request's head is not judged under it" >&2
+      printf 'off' ;;
+    *) printf 'off' ;;
+  esac
+}
+
+# _pw_ci_eval <slug> <head-sha> <base-ref> — the head's CI state, from live reads.
+#
+# Prints FOUR lines and returns 0: the verdict word (`branch-health`'s vocabulary), a one-line
+# display detail, a one-line signature of the check set, which `ci-wait` compares across polls, and
+# how many checks are still running.
+# Returns 20 — reason on stderr, nothing on stdout — when any read or parse fails.
+#
+# Job and context names are workflow-controlled text and the detail is read by an agent and pasted
+# into a summary, so every name is rendered through an allowlist: characters outside
+# `[A-Za-z0-9 ._,:/()+=@#-]` become `?` and a name is cut at 100. Names are joined with `; `, which
+# no rendered name can contain, so the list stays unambiguous with matrix names like `test (a, b)`.
+_pw_ci_eval() {
+  local slug="$1" head="$2" base="$3" aslug ck runs st sts bpath brj req hin nact wf=0 wfj decl=off
+  local hout verdict reason wr runmap='[]'
+  # An EMPTY slug would attribute every check run of unknown provenance to Actions and skip the
+  # workflow probe that keeps an unreported build out of `green` — refuse it, as branch-health does.
+  aslug="$(adb_actions_app_slug 2>/dev/null)" && [ -n "$aslug" ] \
+    || { echo "pr-watch: ci — adb_actions_app_slug is unavailable or empty (broken install)" >&2; return 20; }
+  # READ, THEN PARSE, and every page is checked before it is merged: a dropped page would drop a
+  # failing check and leave the rest reading green. `filter=latest` is pinned rather than defaulted.
+  ck="$(gh api --paginate "repos/$slug/commits/$head/check-runs?filter=latest&per_page=100" 2>/dev/null)" \
+    || { echo "pr-watch: ci — could not read the check runs of $head" >&2; return 20; }
+  runs="$(printf '%s' "$ck" | jq -s -c '
+      if length == 0 then error("no pages") else . end
+      | if all(.[]; (type == "object") and ((.check_runs | type) == "array")
+                    and ((.total_count | type) == "number")) | not
+        then error("not a check-runs page") else . end
+      | if ([.[].total_count] | unique | length) != 1 then error("the pages disagree") else . end
+      | .[0].total_count as $t
+      | [.[].check_runs[]] as $all
+      | if all($all[]; type == "object") | not then error("a check run is not an object") else . end
+      | if ($all | length) != $t then error("the list is incomplete") else . end
+      | if ([$all[] | .id] | unique | length) != ($all | length) then error("a check run repeats") else . end
+      | $all' 2>/dev/null)" \
+    || { echo "pr-watch: ci — the check runs of $head are not a complete, well-formed list" >&2; return 20; }
+  st="$(gh api --paginate "repos/$slug/commits/$head/status?per_page=100" 2>/dev/null)" \
+    || { echo "pr-watch: ci — could not read the commit statuses of $head" >&2; return 20; }
+  sts="$(printf '%s' "$st" | jq -s -c --arg sha "$head" '
+      if length == 0 then error("no pages") else . end
+      | if all(.[]; (type == "object") and ((.statuses | type) == "array")) | not
+        then error("not a status page") else . end
+      | if any(.[]; ((.sha // "") | ascii_downcase) != ($sha | ascii_downcase))
+        then error("a status page describes another commit") else . end
+      | [.[].statuses[]]
+      | if all(.[]; type == "object") | not then error("a status is not an object") else . end' 2>/dev/null)" \
+    || { echo "pr-watch: ci — the commit statuses of $head are not a well-formed list for that commit" >&2; return 20; }
+  # REQUIRED CONTEXTS BELONG TO THE BASE BRANCH, and an unknown base is unreadable rather than "no
+  # requirement": defaulting it would let an unreported required check read as nothing missing.
+  # `adb_url_path_segment` refuses an empty name, so that one call is the guard.
+  bpath="$(adb_url_path_segment "$base")" \
+    || { echo "pr-watch: ci — the pull request reports no base branch, or one that cannot be addressed safely, so its required checks cannot be read" >&2; return 20; }
+  brj="$(gh api "repos/$slug/branches/$bpath" 2>/dev/null)" && [ -n "$brj" ] \
+    || { echo "pr-watch: ci — could not read the base branch's protection" >&2; return 20; }
+  req="$(printf '%s' "$brj" | bash "$_ADB_PW_REPO_SETTINGS" branch-required-contexts 2>/dev/null)" \
+    || { echo "pr-watch: ci — could not classify the base branch's required checks" >&2; return 20; }
+  case "$req" in '['*|null) : ;;
+    *) echo "pr-watch: ci — the base branch's required checks did not classify" >&2; return 20 ;; esac
+  hin="$(jq -n -c --argjson runs "$runs" --argjson sts "$sts" --argjson req "$req" \
+           '{check_runs:$runs, statuses:$sts, required_contexts:$req}' 2>/dev/null)" \
+    || { echo "pr-watch: ci — could not assemble the CI read of $head" >&2; return 20; }
+  # The Actions inventory is the second existence probe, and only needed when Actions has not
+  # reported — the rule /roadmap applies, for the reason its snippet gives.
+  nact="$(printf '%s' "$runs" | jq --arg a "$aslug" '[.[] | select((.app.slug // "") == $a)] | length' 2>/dev/null)"
+  case "$nact" in ''|*[!0-9]*) echo "pr-watch: ci — could not attribute the check runs of $head" >&2; return 20 ;; esac
+  if [ "$nact" -eq 0 ]; then
+    wfj="$(gh api --paginate "repos/$slug/actions/workflows?per_page=100" 2>/dev/null)" \
+      || { echo "pr-watch: ci — could not read the workflow inventory" >&2; return 20; }
+    wf="$(printf '%s' "$wfj" | jq -s '
+        if all(.[]; (type == "object") and ((.workflows | type) == "array")) | not
+        then error("not a workflows page") else . end
+        | [.[].workflows[] | select(.state == "active")] | length' 2>/dev/null)"
+    case "$wf" in ''|*[!0-9]*) echo "pr-watch: ci — could not parse the workflow inventory" >&2; return 20 ;; esac
+    [ "$wf" -eq 0 ] && decl="$(_pw_ci_decl "$slug")"
+  fi
+  hout="$(printf '%s' "$hin" | bash "$_ADB_PW_ROADMAP_LIB" branch-health "$head" "$wf" "$decl" 2>/dev/null)" \
+    || { echo "pr-watch: ci — branch-health could not classify $head" >&2; return 20; }
+  verdict="${hout%%$'\n'*}"; reason=""
+  case "$hout" in *$'\n'*) reason="${hout#*$'\n'}" ;; esac
+  case "$verdict" in
+    green|not-green|indeterminate|no-ci|unreported-ok) : ;;
+    *) echo "pr-watch: ci — branch-health answered a verdict this module does not know" >&2; return 20 ;;
+  esac
+  # WHICH RUN EACH FAILING ACTIONS CHECK BELONGS TO, so the caller can ask `ci-health.sh classify
+  # --run` whether it executed. Matched by check suite: a check run's `check_suite.id` is its
+  # workflow run's `check_suite_id`, and a re-run keeps both. Display only — a failed read here
+  # renders `[run ?]` and leaves the verdict alone.
+  if [ "$verdict" = not-green ]; then
+    wr="$(gh api --paginate "repos/$slug/actions/runs?head_sha=$head&per_page=100" 2>/dev/null)" \
+      && runmap="$(printf '%s' "$wr" | jq -s -c '[.[] | objects | (.workflow_runs // [])[] | objects
+                     | select(((.id | type) == "number") and ((.check_suite_id | type) == "number"))
+                     | {suite: .check_suite_id, id,
+                        attempt: (if (.run_attempt | type) == "number" then .run_attempt else null end)}]' 2>/dev/null)" \
+      || runmap='[]'
+    [ -n "$runmap" ] || runmap='[]'
+  fi
+  # The failing set mirrors `branch-health`'s own: a completed check whose conclusion is not
+  # success/skipped/neutral, a status that is neither success nor pending. It is DISPLAY, and the
+  # verdict above remains the predicate's.
+  jq -n -r --argjson runs "$runs" --argjson sts "$sts" --argjson rm "$runmap" \
+        --arg sha "$head" --arg a "$aslug" --arg v "$verdict" --arg why "$reason" '
+      def clean: tostring | gsub("[^A-Za-z0-9 ._,:/()+=@#-]"; "?");
+      def nm: clean | if length > 100 then .[0:97] + "..." else . end;
+      ($sha | ascii_downcase) as $want
+      | [$runs[] | select((.head_sha // "" | ascii_downcase) == $want)] as $mine
+      | [$mine[] | select(((.status // "") == "completed") and ((.conclusion // null) != null))] as $rdone
+      | [$sts[] | select((.state // "") != "pending")] as $sdone
+      | (($mine | length) + ($sts | length)) as $total
+      | (($rdone | length) + ($sdone | length)) as $done
+      | [ ( $rdone[] | select(.conclusion | IN("success","skipped","neutral") | not)
+            | (.name // "check" | nm) + " "
+              + (if (.app.slug // "") == $a then
+                   (.check_suite.id // null) as $s
+                   | ([$rm[] | select(.suite == $s)] | first) as $r
+                   | if $r == null then "[run ?]"
+                     else "[run \($r.id), attempt \($r.attempt // "?")]" end
+                 else "[external check]" end) ),
+          ( $sts[] | select((.state // "") | IN("success","pending") | not)
+            | (.context // "status" | nm) + " [external status]" ) ] as $failing
+      | $v,
+        ( "\($total) check(s): \($done) concluded, \($total - $done) running"
+          + (if ($failing | length) > 0 then " — failing: " + ($failing | join("; ")) else "" end)
+          + (if ($v != "green") and ($v != "not-green") and (($why | length) > 0)
+             then " — " + ($why | clean | if length > 300 then .[0:297] + "..." else . end)
+             else "" end) ),
+        ( [ ($mine[] | [(.name // ""), (.status // ""), (.conclusion // "")]),
+            ($sts[] | [(.context // ""), (.state // "")]) ] | sort | tojson | @base64 ),
+        ($total - $done)' 2>/dev/null \
+    || { echo "pr-watch: ci — could not render the CI state of $head" >&2; return 20; }
+}
+
+# _pw_ci_note — the stderr CI line about the head `classify` just recorded in the snapshot sink.
+# ALWAYS returns 0: whatever this read finds, the reviewer verdict and its exit code stand.
+_pw_ci_note() {
+  local slug base head at out
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ -z "$_ADB_PW_SNAP_SINK" ] || [ ! -s "$_ADB_PW_SNAP_SINK" ]; then
+    echo "pr-watch: ci unreadable observed $at — the head this verdict is about was not recorded" >&2
+    return 0
+  fi
+  { IFS= read -r slug; IFS= read -r base; IFS= read -r head; } < "$_ADB_PW_SNAP_SINK"
+  if out="$(_pw_ci_eval "$slug" "$head" "$base")"; then
+    printf 'pr-watch: ci %s %s observed %s — %s\n' "${out%%$'\n'*}" "$head" "$at" \
+      "$(printf '%s\n' "$out" | sed -n 2p)" >&2
+  else
+    printf 'pr-watch: ci unreadable %s observed %s\n' "$head" "$at" >&2
+  fi
+  return 0
+}
+
+# _pw_ci_classify <pr-number> — one CI classification of the PR's CURRENT head. Prints
+# "<verdict> <sha>" on stdout (none on 2/20) and returns the `ci` code for it — see the header.
+_pw_ci_classify() {
+  local n="$1" qslug pjson pfields head state gotslug baseref src at out verdict line
+  qslug="$(adb_pr_query_slug pr-watch "$OPT_PR")" \
+    || { echo "pr-watch: could not resolve which repository to read for PR #$n" >&2; return 20; }
+  pjson="$(adb_pr_snapshot pr-watch "$n" "$qslug")" \
+    || { echo "pr-watch: could not read PR #$n" >&2; return 20; }
+  pfields="$(printf '%s' "$pjson" \
+             | jq -r '(.head_sha // ""), (.state // "" | ascii_downcase), (.base_slug // "" | ascii_downcase), (.base_ref // "")' 2>/dev/null)" \
+    || { echo "pr-watch: could not parse PR #$n" >&2; return 20; }
+  { IFS= read -r head; IFS= read -r state; IFS= read -r gotslug; IFS= read -r baseref; } <<EOF
+$pfields
+EOF
+  [ -n "$head" ] \
+    || { echo "pr-watch: could not resolve the head SHA of PR #$n" >&2; return 20; }
+  adb_pr_slug_check pr-watch "$n" "$OPT_PR" "$gotslug"; src=$?
+  case "$src" in
+    0) ;;
+    2) return 2 ;;
+    *) return 20 ;;
+  esac
+  if [ "$state" != "open" ]; then
+    printf 'gone %s\n' "$head"
+    echo "pr-watch: PR #$n is no longer open — no CI left to watch" >&2
+    return 12
+  fi
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  out="$(_pw_ci_eval "$qslug" "$head" "$baseref")" || {
+    printf 'pr-watch: ci unreadable %s observed %s\n' "$head" "$at" >&2
+    return 20; }
+  verdict="${out%%$'\n'*}"
+  line="pr-watch: ci $verdict $head observed $at — $(printf '%s\n' "$out" | sed -n 2p)"
+  [ -n "$_ADB_PW_CI_SINK" ] && printf '%s\n%s\n%s\n' "$(printf '%s\n' "$out" | sed -n 3p)" "$line" \
+    "$(printf '%s\n' "$out" | sed -n 4p)" > "$_ADB_PW_CI_SINK"
+  [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$line" >&2
+  printf '%s %s\n' "$verdict" "$head"
+  case "$verdict" in
+    green)     return 0 ;;
+    not-green) return 40 ;;
+    no-ci)     return 41 ;;
+    *)         return 11 ;;
+  esac
+}
+
+cmd_ci() {
+  local n
+  [ -n "$OPT_PR" ] || { echo "pr-watch: ci requires --pr <number|url>" >&2; return 2; }
+  n="$(adb_pr_number "$OPT_PR")" \
+    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
+  adb_require_gh jq || return 20
+  _pw_ci_classify "$n"
+}
+
+# _pw_deadline — the monotonic instant `--max-secs` from now; why it is THIS clock is argued in
+# `cmd_wait`. _pw_nap <remaining> — sleep one `--interval`, never past what remains: a long interval
+# would otherwise overshoot the bound by up to one full interval, which makes `--max-secs` an
+# approximation rather than a bound. ONE HOME for both waits' bound, so the cases that pin `wait`'s
+# also pin `ci-wait`'s.
+_pw_deadline() { printf '%s' "$(( BASH_MONOSECONDS + OPT_MAX_SECS ))"; }
+_pw_nap() {
+  local remaining="$1" nap
+  nap="$OPT_INTERVAL"
+  [ "$nap" -gt "$remaining" ] && nap="$remaining"
+  sleep "$nap"
+}
+
+# cmd_ci_wait — poll the head's CI until it concludes, within `--max-secs` (default 3600, every 60s).
+#
+# NOT-GREEN RETURNS AT ONCE, whatever is still running: the red is already a finding, and the fix
+# moves the head anyway. `--no-fail-fast` waits instead until nothing on the head is running — for
+# a red whose run has not concluded, which `ci-health.sh` cannot classify yet. GREEN must hold for
+# `_ADB_PW_CI_SETTLE` consecutive polls over the same check set. A head that moves is reported and
+# its evidence starts again; the bound does not.
+cmd_ci_wait() {
+  local n rc out head deadline remaining unreadable=0 lasthead="" lastsig="" sig line greens=0 running heldred=0
+  [ -n "$OPT_PR" ] || { echo "pr-watch: ci-wait requires --pr <number|url>" >&2; return 2; }
+  n="$(adb_pr_number "$OPT_PR")" \
+    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
+  require_uint "$OPT_INTERVAL" --interval || return 2
+  require_uint "$OPT_MAX_SECS" --max-secs || return 2
+  adb_require_gh jq || return 20
+  deadline="$(_pw_deadline)"
+  _ADB_PW_CI_QUIET=1
+  _ADB_PW_CI_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-ci.XXXXXX" 2>/dev/null || printf '')"
+  [ -n "$_ADB_PW_CI_SINK" ] \
+    || echo "pr-watch: could not create a temp file, so polls cannot be compared — this wait will not report green" >&2
+  trap 'echo "pr-watch: interrupted — the head'"'"'s checks were not seen to conclude" >&2
+        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+        exit 11' INT TERM
+
+  while :; do
+    [ -n "$_ADB_PW_CI_SINK" ] && : > "$_ADB_PW_CI_SINK"
+    out="$(_pw_ci_classify "$n")"; rc=$?
+    head="${out##* }"
+    sig=""; line=""; running=""
+    if [ -n "$_ADB_PW_CI_SINK" ] && [ -s "$_ADB_PW_CI_SINK" ]; then
+      { IFS= read -r sig; IFS= read -r line; IFS= read -r running; } < "$_ADB_PW_CI_SINK"
+    fi
+    if [ -n "$out" ] && [ -n "$lasthead" ] && [ "$head" != "$lasthead" ]; then
+      echo "pr-watch: PR #$n head moved $lasthead -> $head; CI evidence for the earlier head no longer applies" >&2
+      greens=0
+    fi
+    # A red under `--no-fail-fast` is held until the line says nothing is still running.
+    heldred=0
+    if [ "$rc" -eq 40 ] && [ "$OPT_NO_FAIL_FAST" = "1" ] && [ "${running:-1}" != "0" ]; then
+      rc=11; heldred=1
+    fi
+    case "$rc" in
+      40|41|12|2)
+        [ -n "$line" ] && printf '%s\n' "$line" >&2
+        [ -n "$out" ] && printf '%s\n' "$out"
+        trap - INT TERM
+        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+        return "$rc" ;;
+      0)
+        unreadable=0
+        if [ "$greens" -gt 0 ] && [ -n "$sig" ] && [ "$sig" = "$lastsig" ]; then
+          greens=$(( greens + 1 ))
+        else
+          greens=1
+        fi
+        if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ]; then
+          [ -n "$line" ] && printf '%s\n' "$line" >&2
+          printf '%s\n' "$out"
+          trap - INT TERM
+          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+          return 0
+        fi ;;
+      20)
+        greens=0
+        unreadable=$(( unreadable + 1 ))
+        if [ "$unreadable" -ge "$_ADB_PW_MAX_UNREADABLE" ]; then
+          echo "pr-watch: $unreadable consecutive unreadable CI polls — giving up rather than guessing" >&2
+          trap - INT TERM
+          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+          return 20
+        fi
+        echo "pr-watch: unreadable CI poll $unreadable/$_ADB_PW_MAX_UNREADABLE — retrying" >&2 ;;
+      *)
+        unreadable=0; greens=0 ;;
+    esac
+    if [ -n "$out" ]; then lasthead="$head"; lastsig="$sig"; fi
+
+    remaining=$(( deadline - BASH_MONOSECONDS ))
+    if [ "$remaining" -le 0 ] && [ "$heldred" = "1" ]; then
+      # A red held for its siblings is still a red when the bound runs out.
+      printf '%s\n' "$line" >&2
+      printf '%s\n' "$out"
+      echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with checks still running beside the red; returning the red" >&2
+      trap - INT TERM
+      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+      return 40
+    fi
+    if [ "$remaining" -le 0 ]; then
+      # NOT CONCLUDED IS NOT GREEN — a green the settle rule has not confirmed included.
+      [ -n "$line" ] && printf '%s\n' "$line" >&2
+      [ -n "$lasthead" ] && printf 'indeterminate %s\n' "$lasthead"
+      echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired before the head's checks concluded; handing off (this is not green)" >&2
+      trap - INT TERM
+      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+      return 11
+    fi
+    _pw_nap "$remaining"
+  done
+}
+
 cmd_observe() {
-  local n want wrc
+  local n want wrc rc
   [ -n "$OPT_PR" ] || { echo "pr-watch: observe requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
   want="$(read_declared_bots)"; wrc=$?
   [ "$wrc" -eq 0 ] || return "$wrc"
   adb_require_gh jq || return 20
-  classify "$n" "$want"
+  _ADB_PW_SNAP_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-snap.XXXXXX" 2>/dev/null || printf '')"
+  classify "$n" "$want"; rc=$?
+  case "$rc" in 0|10|11) _pw_ci_note ;; esac
+  [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
+  return "$rc"
 }
 
 cmd_wait() {
-  local n want wrc rc out deadline remaining nap unreadable=0 lasthead="" head pending_from
+  local n want wrc rc out deadline remaining unreadable=0 lasthead="" head pending_from
 
   [ -n "$OPT_PR" ] || { echo "pr-watch: wait requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
@@ -1033,7 +1475,7 @@ cmd_wait() {
   # Compute the DEADLINE once rather than keeping a start-time and a duration and subtracting both
   # every pass: the name is then true, and it stays correct whatever the counter's origin happens
   # to be — which is why a shell whose clock did not start at 0 was never the problem worth solving.
-  deadline=$(( BASH_MONOSECONDS + OPT_MAX_SECS ))
+  deadline="$(_pw_deadline)"
 
   # QUIET THE REPEATED PENDING LINE FOR THE DURATION OF THE LOOP (#417). Set here rather than at
   # parse time so it covers exactly the polling, and `observe` — which classifies once — is unaffected.
@@ -1043,6 +1485,8 @@ cmd_wait() {
   # before and the handoff falls back to its generic wording, which is a lost diagnostic and never
   # a wrong verdict.
   _ADB_PW_PENDING_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-pending.XXXXXX" 2>/dev/null || printf '')"
+  # ...and where it leaves the head of each verdict, so the terminal CI line names that head (#448).
+  _ADB_PW_SNAP_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-snap.XXXXXX" 2>/dev/null || printf '')"
 
   # Report an interruption honestly rather than letting the shell's default status stand in for a
   # verdict: an operator ^C is "we stopped watching", which is `pending`, not `clean`. `exit`, not
@@ -1054,6 +1498,7 @@ cmd_wait() {
   # MOST often on a long wait. Reported by the declared reviewer on PR #419.
   trap 'echo "pr-watch: interrupted — no terminal verdict reached" >&2
         [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
+        [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
         exit 11' INT TERM
 
   while :; do
@@ -1067,7 +1512,9 @@ cmd_wait() {
         # where the contract promises "<verdict> <sha>" or nothing at all.
         [ -n "$out" ] && printf '%s\n' "$out"
         trap - INT TERM
+        case "$rc" in 0|10) _pw_ci_note ;; esac
         [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
+        [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
         return "$rc" ;;
       20)
         unreadable=$(( unreadable + 1 ))
@@ -1075,6 +1522,7 @@ cmd_wait() {
           echo "pr-watch: $unreadable consecutive unreadable polls — giving up rather than guessing" >&2
           trap - INT TERM
           [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
+          [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
           return 20
         fi
         echo "pr-watch: unreadable poll $unreadable/$_ADB_PW_MAX_UNREADABLE — retrying" >&2 ;;
@@ -1108,15 +1556,13 @@ cmd_wait() {
       else
         echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with no terminal signal; handing off" >&2
       fi
-      [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
       trap - INT TERM
+      _pw_ci_note
+      [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
+      [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
       return 11
     fi
-    # Never sleep past the deadline: a long interval would otherwise overshoot the bound by up to
-    # one full interval, which makes `--max-secs` an approximation rather than a bound.
-    nap="$OPT_INTERVAL"
-    [ "$nap" -gt "$remaining" ] && nap="$remaining"
-    sleep "$nap"
+    _pw_nap "$remaining"
   done
 }
 
@@ -1150,6 +1596,9 @@ parse_opts() {
         # through to the manifest instead of erroring. `0` is not empty and is unaffected.
         [ -n "$2" ] || { echo "pr-watch: --max-rounds must not be empty; it takes a positive integer, or 0 for uncapped (no round ceiling)" >&2; exit 2; }
         _ADB_PW_MAX_ROUNDS="$2"; shift ;;
+      --no-fail-fast)
+        [ "$SUB" = "ci-wait" ] || { echo "pr-watch: --no-fail-fast applies to ci-wait only" >&2; exit 2; }
+        OPT_NO_FAIL_FAST=1 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "pr-watch: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac
@@ -1162,7 +1611,10 @@ SUB="$1"; shift
 case "$SUB" in
   observe)        parse_opts "$@"; cmd_observe ;;
   wait)           parse_opts "$@"; cmd_wait ;;
+  ci)             parse_opts "$@"; cmd_ci ;;
+  # CI takes 25-45 minutes here, against a reviewer's few, so its wait has its own defaults.
+  ci-wait)        OPT_INTERVAL=60; OPT_MAX_SECS=3600; parse_opts "$@"; cmd_ci_wait ;;
   request-review) parse_opts "$@"; cmd_request_review ;;
   -h|--help)      usage; exit 0 ;;
-  *) echo "pr-watch: unknown subcommand '$SUB' (expected 'observe', 'wait' or 'request-review')" >&2; usage >&2; exit 2 ;;
+  *) echo "pr-watch: unknown subcommand '$SUB' (expected 'observe', 'wait', 'ci', 'ci-wait' or 'request-review')" >&2; usage >&2; exit 2 ;;
 esac

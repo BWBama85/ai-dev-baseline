@@ -197,8 +197,8 @@ if [ "$MODE" = mutation ]; then
   # it to 3s reproduces what a starved runner did to the retired bound, and the case that must
   # notice is the one whose first poll is deliberately slow.
   check_mut "deadline-beats-the-fixture" \
-    'deadline=$(( BASH_MONOSECONDS + OPT_MAX_SECS ))' \
-    'deadline=$(( BASH_MONOSECONDS + 3 ))' \
+    "printf '%s' \"\$(( BASH_MONOSECONDS + OPT_MAX_SECS ))\"" \
+    "printf '%s' \"\$(( BASH_MONOSECONDS + 3 ))\"" \
     'wait: a first poll outliving the retired bound no longer ends the watch'
   check_mutation_pool "pr-watch-wait" "$work/mw" mut_prep_watch mut_run 4
 
@@ -244,6 +244,91 @@ if [ "$MODE" = mutation ]; then
     'if false; then' \
     'status: a fresh Running status comment alone is pending'
   check_mutation_pool "pr-watch-pair" "$work/mp" mut_prep_common mut_run 3
+
+  # --- the head's CI (#448): PER-TEST rows, each running only the block that witnesses it --------
+  # Every literal is read from a quoted heredoc, so the code it names arrives byte-for-byte; the row
+  # table refuses one that is absent, repeated or multi-line before anything is built.
+  lit() { IFS= read -r REPLY; printf '%s' "$REPLY"; }
+  PWT=scripts/lib/pr-watch.sh
+  check_row ci-settle-dropped "$PWT" ci-wait "$(lit <<'L'
+        if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ]; then
+L
+)" '        if :; then' 'ci-wait: green is reported only after it held across two polls'
+  check_row ci-settle-ignores-set "$PWT" ci-wait "$(lit <<'L'
+        if [ "$greens" -gt 0 ] && [ -n "$sig" ] && [ "$sig" = "$lastsig" ]; then
+L
+)" '        if [ "$greens" -gt 0 ]; then' 'ci-wait: green must hold over an identical check set'
+  check_row ci-red-waits "$PWT" ci-wait '      40|41|12|2)' '      41|12|2)' \
+    'ci-wait: a red arriving mid-wait returns not-green at once'
+  check_row ci-expiry-says-green "$PWT" ci-wait "$(lit <<'L'
+      [ -n "$lasthead" ] && printf 'indeterminate %s\n' "$lasthead"
+L
+)" "$(lit <<'L'
+      [ -n "$out" ] && printf '%s\n' "$out"
+L
+)" 'ci-wait: ...and its stdout does not say green'
+  check_row ci-wait-narrates "$PWT" ci-wait "$(lit <<'L'
+  [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$line" >&2
+L
+)" "$(lit <<'L'
+  printf '%s\n' "$line" >&2
+L
+)" 'ci-wait: quiet while it polls'
+  check_row ci-allowlist-dropped "$PWT" ci-read "$(lit <<'L'
+      def clean: tostring | gsub("[^A-Za-z0-9 ._,:/()+=@#-]"; "?");
+L
+)" '      def clean: tostring;' 'ci: a job name is rendered through the allowlist'
+  check_row ci-filter-defaulted "$PWT" ci-read 'check-runs?filter=latest&per_page=100' \
+    'check-runs?per_page=100' 'ci: check runs are read with filter=latest'
+  check_row ci-incomplete-accepted "$PWT" ci-read "$(lit <<'L'
+      | if ($all | length) != $t then error("the list is incomplete") else . end
+L
+)" '      | .' 'ci: a check-run list shorter than its total_count is incomplete'
+  check_row ci-required-ignored "$PWT" ci-read "$(lit <<'L'
+           '{check_runs:$runs, statuses:$sts, required_contexts:$req}' 2>/dev/null)" \
+L
+)" "$(lit <<'L'
+           '{check_runs:$runs, statuses:$sts, required_contexts:[]}' 2>/dev/null)" \
+L
+)" 'ci: a required context that has not reported is not green'
+  check_row ci-base-defaulted "$PWT" ci-read "$(lit <<'L'
+  bpath="$(adb_url_path_segment "$base")" \
+L
+)" "$(lit <<'L'
+  bpath="$(adb_url_path_segment "${base:-main}")" \
+L
+)" 'ci: a pull request with no base branch cannot have its required checks read'
+  check_row ci-status-sha-unchecked "$PWT" ci-read "$(lit <<'L'
+      | if any(.[]; ((.sha // "") | ascii_downcase) != ($sha | ascii_downcase))
+L
+)" '      | if false' 'ci: a status document for another commit is unreadable'
+  check_row ci-permission-bypassed "$PWT" ci-read "$(lit <<'L'
+         && perm="$(printf '%s' "$pj" | jq -r '.permission // ""' 2>/dev/null)" || perm="" ;;
+L
+)" '         && perm=admin || perm="" ;;' 'ci: a no-ci marker from an author without write access is not honoured'
+  check_row ci-note-moves-rc "$PWT" ci-note "$(lit <<'L'
+  case "$rc" in 0|10|11) _pw_ci_note ;; esac
+L
+)" "$(lit <<'L'
+  case "$rc" in 0|10|11) _pw_ci_note; rc=$? ;; esac
+L
+)" 'observe: the reviewer exit code is unchanged by the CI read'
+  check_row ci-note-on-stdout "$PWT" ci-note "$(lit <<'L'
+      "$(printf '%s\n' "$out" | sed -n 2p)" >&2
+L
+)" "$(lit <<'L'
+      "$(printf '%s\n' "$out" | sed -n 2p)"
+L
+)" 'observe: the reviewer stdout is unchanged by the CI read'
+  check_row ci-note-per-poll "$PWT" ci-note '        lasthead="$head" ;;' \
+    '        lasthead="$head"; _pw_ci_note ;;' 'wait: the CI line is printed once, on the verdict'
+  check_row ci-held-red-dropped "$PWT" ci-wait "$(lit <<'L'
+    if [ "$rc" -eq 40 ] && [ "$OPT_NO_FAIL_FAST" = "1" ] && [ "${running:-1}" != "0" ]; then
+L
+)" '    if false; then' 'ci-wait --no-fail-fast: returns on the poll where the last sibling concluded'
+  mut_prep_root() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1; printf '%s' "$1"; }
+  mut_run_root()  { "$BASH" "$1/scripts/check-pr-watch.sh" 2>&1; }
+  check_mutation_rows "pr-watch-ci" "$work/mr" scripts/check-pr-watch.sh mut_prep_root mut_run_root 4
 
   check_summary "pr-watch-mutation"
   exit 0
@@ -319,6 +404,7 @@ WATCH_BACKSTOP=120
 #   STUB_FAIL_ACTIVITY=1   -> the ref-activity read fails
 #   STUB_EMPTY_ACTIVITY=1  -> the ref-activity read SUCCEEDS with an empty body (not `[]`)
 #   STUB_EMPTY_REVIEWS/COMMENTS/REACTIONS=1 -> that signal read SUCCEEDS with an empty body
+#   STUB_FAIL_CHECKRUNS/CISTATUS/BRANCH/WORKFLOWS=1 -> that head-CI read fails (#448)
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
 case "${1:-}" in
   auth) exit 0 ;;
@@ -415,6 +501,27 @@ cat <<'STUB'
     [ "${STUB_EMPTY_ACTIVITY:-0}" = "1" ] && exit 0
     fx activity
     exit 0 ;;
+  # THE HEAD-CI READS (#448), each answered from a per-poll fixture when one exists. They sit ABOVE
+  # the retired `*/commits/*` bait below, whose shape they share; with no fixture each answers an
+  # empty body, which the module must read as unreadable rather than as "no checks".
+  */commits/*/check-runs*)
+    [ "${STUB_FAIL_CHECKRUNS:-0}" = "1" ] && exit 1
+    fx checkruns; exit 0 ;;
+  */commits/*/status*)
+    [ "${STUB_FAIL_CISTATUS:-0}" = "1" ] && exit 1
+    fx cistatus; exit 0 ;;
+  */branches/*)
+    [ "${STUB_FAIL_BRANCH:-0}" = "1" ] && exit 1
+    fx branch; exit 0 ;;
+  */actions/workflows*)
+    [ "${STUB_FAIL_WORKFLOWS:-0}" = "1" ] && exit 1
+    fx workflows; exit 0 ;;
+  */actions/runs*)
+    fx wfruns; exit 0 ;;
+  */issues[?]*)
+    fx roadmap; exit 0 ;;
+  */collaborators/*/permission*)
+    fx permission; exit 0 ;;
   */commits/*)
     # RETIRED BY #175 and kept deliberately — as a BAITED route, not as a working dependency. It
     # still answers, with a committer date old enough to have produced a false `clean` under the old
@@ -478,6 +585,9 @@ reset_fx() {
   # #174/#169 fixtures: the truncation counters, the receipt read, and the raw-document override.
   rm -f "$S"/*-total.txt "$S/receipts.json" "$S/graphql-raw.json" "$S/posted" "$S/receipts-raw.json"
   rm -f "$S/rpolls" "$S"/rpr.[0-9]*.json
+  # #448's head-CI fixtures, default and per-poll alike: absent, every CI read is unreadable.
+  rm -f "$S"/checkruns*.json "$S"/cistatus*.json "$S"/branch*.json "$S"/workflows*.json \
+        "$S"/wfruns*.json "$S"/roadmap*.json "$S"/permission*.json
   printf '[]\n' > "$S/reviews.json"
   printf '[]\n' > "$S/reactions.json"
   printf '[]\n' > "$S/comments.json"
@@ -490,7 +600,7 @@ reset_fx() {
 # `pr_fx --head-slug ""` renders `head.repo` null — a deleted fork, which the anchor must degrade on.
 pr_fx() {
   check_pr_json "$S/pr.json" --sha "$HEAD_SHA" --state open --merged-at "" \
-    --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
+    --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" --base-ref main "$@"
 }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 # pr_poll_fx <n> [flags…] — `pr_fx` writing the per-poll fixture the gh stub prefers on poll <n>.
@@ -498,7 +608,7 @@ pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 pr_poll_fx() {
   local n="$1"; shift
   check_pr_json "$S/pr.$n.json" --sha "$HEAD_SHA" --state open --merged-at "" \
-    --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
+    --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" --base-ref main "$@"
 }
 # The committer date the module MUST NOT consult. Defaulted to a value old enough that reading it
 # would flip every staleness assertion below from `pending` to `clean`.
@@ -535,6 +645,8 @@ _w() {
     STUB_GRAPHQL_FAIL="${STUB_GRAPHQL_FAIL:-0}" STUB_EMPTY_GRAPHQL="${STUB_EMPTY_GRAPHQL:-0}" \
     STUB_GRAPHQL_RC="${STUB_GRAPHQL_RC:-0}" \
     STUB_FAIL_POST="${STUB_FAIL_POST:-0}" STUB_POST_AT="${STUB_POST_AT:-}" \
+    STUB_FAIL_CHECKRUNS="${STUB_FAIL_CHECKRUNS:-0}" STUB_FAIL_CISTATUS="${STUB_FAIL_CISTATUS:-0}" \
+    STUB_FAIL_BRANCH="${STUB_FAIL_BRANCH:-0}" STUB_FAIL_WORKFLOWS="${STUB_FAIL_WORKFLOWS:-0}" \
     bash "$PW" "$@" )
 }
 # w : stdout AND stderr, for asserting diagnostics.
@@ -543,9 +655,64 @@ w()    { OUT="${ _w "$@" 2>&1; }"; RC_=$?; }
 wout() { OUT="${ _w "$@" 2>/dev/null; }"; RC_=$?; }
 rc() { eq "$RC_" "$1" "$2"; }
 
+# HEAD-CI FIXTURES (#448), in the prelude so every block can build them. A check run is `name|status|conclusion|app|suite` (conclusion empty = null, app
+# empty = Actions, suite empty = 7001); a status is `context|state`. `CI_SHA` overrides the head a
+# fixture describes, which is how a moved head's evidence is written.
+ci_runs_into() {
+  local out="$1"; shift
+  printf '%s\n' "$@" | jq -R -s -c --arg sha "${CI_SHA:-$HEAD_SHA}" '
+    split("\n") | map(select(length > 0) | split("|")) | to_entries
+    | map(.value as $f | {id: (9000 + .key), name: $f[0], head_sha: $sha, status: $f[1],
+           conclusion: (if ($f[2] // "") == "" then null else $f[2] end),
+           app: {slug: (if ($f[3] // "") == "" then "github-actions" else $f[3] end)},
+           check_suite: {id: (if ($f[4] // "") == "" then 7001 else ($f[4] | tonumber) end)}})
+    | {total_count: length, check_runs: .}' > "$out"
+}
+ci_runs_fx()   { ci_runs_into "$S/checkruns.json" "$@"; }
+ci_status_into() {
+  local out="$1"; shift
+  printf '%s\n' "$@" | jq -R -s -c --arg sha "${CI_SHA:-$HEAD_SHA}" '
+    split("\n") | map(select(length > 0) | split("|") | {context: .[0], state: .[1]})
+    | {sha: $sha, state: "pending", total_count: length, statuses: .}' > "$out"
+}
+ci_status_fx() { ci_status_into "$S/cistatus.json" "$@"; }
+# ci_branch_fx <context…> — the base branch requires exactly these; `--unprotected` and `--ruleset`
+# are the two other answers `branch-required-contexts` distinguishes.
+ci_branch_fx() {
+  case "${1:-}" in
+    --unprotected) printf '{"name":"main","protected":false}\n' > "$S/branch.json" ;;
+    --ruleset)     printf '{"name":"main","protected":true,"protection":{"enabled":false,"required_status_checks":{"contexts":[]}}}\n' > "$S/branch.json" ;;
+    *) printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(length > 0))
+         | {name: "main", protected: true,
+            protection: {enabled: true, required_status_checks: {contexts: .}}}' > "$S/branch.json" ;;
+  esac
+}
+ci_workflows_fx() { jq -n -c --argjson n "$1" '{total_count: $n, workflows: [range($n) | {id: ., state: "active"}]}' > "$S/workflows.json"; }
+# ci_wfruns_fx <run-id|suite|attempt> …
+ci_wfruns_fx() {
+  printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("|")
+      | {id: (.[0] | tonumber), check_suite_id: (.[1] | tonumber), run_attempt: (.[2] | tonumber)})
+    | {total_count: length, workflow_runs: .}' > "$S/wfruns.json"
+}
+# ci_roadmap_fx <body> <author> <permission> — ONE open roadmap artifact, and its author's access.
+ci_roadmap_fx() {
+  jq -n -c --arg b "$1" --arg a "$2" '[{number: 31, body: $b, user: {login: $a}}]' > "$S/roadmap.json"
+  jq -n -c --arg p "$3" '{permission: $p}' > "$S/permission.json"
+}
+# ci_green_fx — the ordinary shape: one Actions check, required, concluded success, no statuses.
+ci_green_fx() { ci_runs_fx "ci|completed|success"; ci_status_fx; ci_branch_fx ci; }
+# cilines — the `pr-watch: ci ` lines in $OUT, counted.
+cilines() { printf '%s\n' "$OUT" | grep -c '^pr-watch: ci ' ; }
+
 reset_fx
 declare_bots "[\"$CODEX\"]"
 
+# BLOCKS (#468) — a mutant of the head-CI code runs only the block that witnesses it. Everything
+# before this line is the prelude every block shares; sections 1-13 are one block, because no
+# per-test row targets them (their rows run the whole suite, through the pools above).
+check_blocks_init "$ROOT/scripts/check-pr-watch.sh"
+
+if check_block legacy; then
 # ============================ 1. the clean signal ============================
 # The whole point of the module: a connector `+1` on the PR's opening post, with NO review object
 # anywhere, is a PASS. `pr-review.sh gate` cannot see this case at all (it reads only reviews), so
@@ -636,7 +803,10 @@ w observe --pr 1;  rc 11 "#175: a '+1' predating this head's ARRIVAL is not clea
 # ...and the proof that it is not merely outweighed: the committer date is never even fetched. This
 # is the assertion that would fail if a future edit re-introduced the client-supplied input as a
 # tie-breaker, a fallback, or a `max()` term.
-if called '/commits/'; then bad "#175: the head-commit endpoint must never be read"; else ok; fi
+# NARROWED BY #448 TO THE BARE COMMIT OBJECT: the head-CI read legitimately asks
+# `commits/<sha>/check-runs` and `commits/<sha>/status`, while the retired anchor read the commit
+# itself — `commits/<sha>` with nothing after it. The recorder logs the URL argument whole.
+if grep -qE '/commits/[^/?]+$' "$S/calls" 2>/dev/null; then bad "#175: the head-commit endpoint must never be read"; else ok; fi
 
 # THE CASE THAT RULES OUT A CHECK-SUITE ANCHOR, which is the obvious server-assigned candidate and
 # the one the issue proposed first. Check suites are scoped to the SHA, not to the REF: a commit
@@ -1457,7 +1627,10 @@ absent 'git switch'         "the detector must never move the working tree"
 # as prose, so the header may go on explaining WHY the committer date was rejected — which it must,
 # or the next reader reaches for the same obvious lower bound — without tripping this rule.
 absent 'commit\.committer\.date' "the staleness proof must never return to the client-supplied committer date"
-absent 'commits/\$head'          "the head-commit endpoint must not come back as an anchor read"
+# Narrowed by #448 the same way: `commits/$head/check-runs` is the CI read, and only a path ENDING
+# at the commit is the retired anchor.
+if grep -qE 'commits/\$\{?head\}?([^/A-Za-z0-9_}]|$)' "$PW"; then bad "the head-commit endpoint must not come back as an anchor read"; else ok; fi
+absent 'gh run rerun'            "the detector must never re-run CI — routing a red is the resolver's job (#448)"
 
 
 # ============================ 13. request-review (#169) ============================
@@ -1824,7 +1997,269 @@ w request-review --pr 1;  rc 0 "request-review: two spellings of one App still a
 eq "$(grep -c "requested a re-review" <<<"$OUT")" "1" "request-review: exactly one comment is posted"
 reset_fx
 
+fi
+
+# ============================ 14. the head's CI (#448) ============================
+# A red required check on the head the loop just pushed used to be invisible to both PR loops. These
+# cases pin the four claims the read makes: the verdict is `branch-health`'s and is never green on
+# doubt; observe/wait REPORT it on one stderr line without moving the reviewer's exit code or stdout;
+# `ci-wait` returns a red at once and a green only once it has held; and a name from a workflow
+# file reaches the summary only through the allowlist.
+#
+
+if check_block ci-read; then
+# --- `ci`: the verdicts ------------------------------------------------------------------------
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
+wout ci --pr 1;  rc 0 "ci: every check concluded success, every required context reported -> green (0)"
+eq "$OUT" "green $HEAD_SHA" "ci: stdout is '<verdict> <sha>'"
+w ci --pr 1
+has "$OUT" "pr-watch: ci green $HEAD_SHA observed " "ci: the CI line names the verdict, the head and when"
+has "$OUT" "1 check(s): 1 concluded, 0 running" "ci: the CI line counts the checks"
+if called 'check-runs?filter=latest'; then ok; else bad "ci: check runs are read with filter=latest, so a re-run replaces its earlier attempt"; fi
+
+# THE ISSUE'S OWN SHAPE (PR #446): everything green but one job that executed and failed.
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx "ci|completed|success" "pattern-ledger|completed|failure||7002"
+ci_status_fx; ci_branch_fx ci pattern-ledger; ci_wfruns_fx "33184516415|7002|1" "33184516000|7001|1"
+w ci --pr 1;  rc 40 "ci: a check that concluded failing -> not-green (40)"
+has "$OUT" "failing: pattern-ledger [run 33184516415, attempt 1]" "ci: names the failing job and the run ci-health classifies"
+wout ci --pr 1;  eq "$OUT" "not-green $HEAD_SHA" "ci: not-green stdout is '<verdict> <sha>'"
+
+# A red with siblings still running is still red — and the line says how many are still running.
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx "slow|in_progress|" "lint|completed|failure"; ci_status_fx; ci_branch_fx slow lint
+w ci --pr 1;  rc 40 "ci: a red beside a still-running sibling is not-green, not pending"
+has "$OUT" "2 check(s): 1 concluded, 1 running" "ci: the running sibling is counted, not dropped"
+has "$OUT" "lint [run ?]" "ci: a run that cannot be mapped is shown as unknown, never omitted"
+
+# A failure no Actions run owns — another Checks app, or a commit status — is named as external.
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx "ci|completed|success" "deploy|completed|failure|vercel"
+ci_status_fx "ci/circleci|failure"; ci_branch_fx ci
+w ci --pr 1;  rc 40 "ci: an external failing check or status is not-green too"
+has "$OUT" "deploy [external check]" "ci: a failing non-Actions check is named as external"
+has "$OUT" "ci/circleci [external status]" "ci: a failing commit status is named as external"
+
+# NOT CONCLUDED IS NOT GREEN, in each of the shapes `branch-health` answers `indeterminate` for.
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx "ci|in_progress|"; ci_status_fx; ci_branch_fx ci
+w ci --pr 1;  rc 11 "ci: a running check -> indeterminate (11)"
+has "$OUT" "still running" "ci: says the checks are still running"
+wout ci --pr 1;  eq "$OUT" "indeterminate $HEAD_SHA" "ci: indeterminate stdout is '<verdict> <sha>'"
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx "other|completed|success"; ci_status_fx; ci_branch_fx ci
+w ci --pr 1;  rc 11 "ci: a required context that has not reported is not green, however green the rest"
+has "$OUT" "required context(s) have not reported" "ci: names the missing required context"
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 2
+w ci --pr 1;  rc 11 "ci: an EMPTY check set on a repo with workflows is never green"
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx; ci_status_fx; ci_branch_fx --ruleset; ci_workflows_fx 0
+w ci --pr 1;  rc 11 "ci: a base branch protected by something unreadable, with nothing reported, is not green"
+reset_fx; declare_bots "[\"$CODEX\"]"
+CI_SHA="$OLD_SHA" ci_runs_fx "ci|completed|success"; ci_status_fx; ci_branch_fx ci
+w ci --pr 1;  rc 11 "ci: a check run describing another commit is stale evidence, not green"
+
+# --- the declared absence of CI: the roadmap artifact, under its author-permission rule ---------
+reset_fx; declare_bots "[\"$CODEX\"]"
+ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0
+w ci --pr 1;  rc 11 "ci: no CI evidence and no declaration -> indeterminate, never no-ci"
+ci_roadmap_fx $'Roadmap\n\n<!-- release-health: no-ci -->\n' "owner" "admin"
+w ci --pr 1;  rc 41 "ci: no evidence anywhere and a declared release-health: no-ci -> no-ci (41)"
+wout ci --pr 1;  eq "$OUT" "no-ci $HEAD_SHA" "ci: no-ci stdout is '<verdict> <sha>'"
+ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "drive-by" "read"
+w ci --pr 1;  rc 11 "ci: a no-ci marker from an author without write access is not honoured"
+has "$OUT" "not write" "ci: says why the declaration was ignored"
+ci_roadmap_fx $'<!-- release-health: skip-unreported -->\n' "owner" "admin"
+w ci --pr 1;  rc 11 "ci: skip-unreported is never honoured for a pull request's head"
+has "$OUT" "skip-unreported, which describes the default branch" "ci: says why skip-unreported does not apply"
+# The declaration is consulted only when nothing could have reported: an Actions check run means
+# the evidence answers, and the artifact is not even read.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
+ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "admin"
+wout ci --pr 1;  rc 0 "ci: a declaration never overrules evidence that reported"
+if called 'issues?labels=roadmap'; then bad "ci: the roadmap artifact is read only when nothing could have reported"; else ok; fi
+
+# --- every unreadable read is 20, never a verdict ----------------------------------------------
+reset_fx; declare_bots "[\"$CODEX\"]"
+w ci --pr 1;  rc 20 "ci: no check-run document at all is unreadable, not 'no checks'"
+has "$OUT" "pr-watch: ci unreadable $HEAD_SHA observed " "ci: an unreadable read is printed as unreadable"
+ci_green_fx
+STUB_FAIL_CHECKRUNS=1 w ci --pr 1;  rc 20 "ci: a failed check-runs read -> 20";  STUB_FAIL_CHECKRUNS=0
+STUB_FAIL_CISTATUS=1 w ci --pr 1;   rc 20 "ci: a failed status read -> 20";      STUB_FAIL_CISTATUS=0
+STUB_FAIL_BRANCH=1 w ci --pr 1;     rc 20 "ci: a failed base-branch read -> 20"; STUB_FAIL_BRANCH=0
+printf '{"total_count":2,"check_runs":[{"id":1,"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}\n' "$HEAD_SHA" > "$S/checkruns.json"
+w ci --pr 1;  rc 20 "ci: a check-run list shorter than its total_count is incomplete, not green"
+ci_runs_fx "ci|completed|success"
+CI_SHA="$OLD_SHA" ci_status_fx
+w ci --pr 1;  rc 20 "ci: a status document for another commit is unreadable"
+ci_status_fx; pr_fx --base-ref ""
+w ci --pr 1;  rc 20 "ci: a pull request with no base branch cannot have its required checks read"
+pr_fx; ci_runs_fx; ci_branch_fx --unprotected
+STUB_FAIL_WORKFLOWS=1 w ci --pr 1;  rc 20 "ci: a failed workflow inventory, when it is needed, -> 20";  STUB_FAIL_WORKFLOWS=0
+
+# --- names reach the summary only through the allowlist ---------------------------------------
+reset_fx; declare_bots "[\"$CODEX\"]"
+jq -n -c --arg sha "$HEAD_SHA" '{total_count: 2, check_runs: [
+    {id: 1, name: "test (ubuntu-latest, 3.11)", head_sha: $sha, status: "completed", conclusion: "failure", app: {slug: "github-actions"}, check_suite: {id: 7001}},
+    {id: 2, name: "evil`x`\n<!-- adb:marker -->|[link](u)", head_sha: $sha, status: "completed", conclusion: "failure", app: {slug: "github-actions"}, check_suite: {id: 7001}}]}' \
+  > "$S/checkruns.json"
+ci_status_fx; ci_branch_fx --unprotected; ci_wfruns_fx "555|7001|2"
+w ci --pr 1;  rc 40 "ci: the allowlist case is a red"
+has "$OUT" "test (ubuntu-latest, 3.11) [run 555, attempt 2]" "ci: a matrix name with spaces, commas and parens is shown verbatim"
+has "$OUT" "evil?x????-- adb:marker --???link?(u) [run 555, attempt 2]" "ci: a job name is rendered through the allowlist"
+eq "$(printf '%s\n' "$OUT" | grep -c 'adb:marker')" "1" "ci: a newline in a job name cannot start a line of its own"
+
+# --- `ci` is a read and nothing else -----------------------------------------------------------
+reset_fx; undeclare; ci_green_fx
+wout ci --pr 1;  rc 0 "ci: does not need [reviewers] bots — it asks no reviewer anything"
+declare_bots "[\"$CODEX\"]"
+reset_fx; pr_fx --state closed --merged-at "2026-07-25T05:00:00Z"; ci_green_fx
+wout ci --pr 1;  rc 12 "ci: a closed pull request has no CI left to watch"
+eq "$OUT" "gone $HEAD_SHA" "ci: gone stdout is '<verdict> <sha>'"
+w ci;                            rc 2 "ci: --pr is required"
+w ci-wait --pr 1 --interval 0;   rc 2 "ci-wait: a zero interval would busy-wait"
+w ci-wait --pr 1 --max-secs abc; rc 2 "ci-wait: a non-numeric bound is refused"
+if [ -f "$S/posted" ]; then bad "ci: nothing was posted to the pull request"; else ok; fi
+
+fi
+
+if check_block ci-note; then
+# --- observe / wait: the CI line rides the verdict and never moves it ---------------------------
+# THE REVIEWER VERDICT IS IDENTICAL WITH AND WITHOUT THE CHECKS READ — each reviewer state under
+# each CI state, against the same state with no CI fixture at all. A CI read that leaked into the
+# reviewer's exit code or stdout fails here on the pairing that exposed it.
+ci_state_fx() {
+  case "$1" in
+    green)   ci_green_fx ;;
+    red)     ci_runs_fx "ci|completed|failure"; ci_status_fx; ci_branch_fx ci ;;
+    running) ci_runs_fx "ci|in_progress|"; ci_status_fx; ci_branch_fx ci ;;
+    nodecl)  ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0 ;;
+    none)    : ;;
+  esac
+}
+rev_state_fx() {
+  case "$1" in
+    clean)    reaction_fx "$CODEX" "+1" "$AFTER_AT" ;;
+    findings) review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA" ;;
+    pending)  : ;;
+  esac
+}
+# The baseline is pinned to the reviewer's OWN code first: a defect in the shared path would move
+# both sides of every comparison below together, and they would still agree.
+for _rv in clean:0 findings:10 pending:11; do
+  _want="${_rv#*:}"; _rv="${_rv%%:*}"
+  reset_fx; declare_bots "[\"$CODEX\"]"; rev_state_fx "$_rv"
+  wout observe --pr 1; _base_rc="$RC_"; _base_out="$OUT"
+  eq "$_base_rc" "$_want" "observe: the reviewer exit code is unchanged by the CI read ($_rv, no CI fixture)"
+  for _ci in green red running nodecl; do
+    reset_fx; declare_bots "[\"$CODEX\"]"; rev_state_fx "$_rv"; ci_state_fx "$_ci"
+    wout observe --pr 1
+    eq "$RC_" "$_base_rc" "observe: the reviewer exit code is unchanged by the CI read ($_rv, CI $_ci)"
+    eq "$OUT" "$_base_out" "observe: the reviewer stdout is unchanged by the CI read ($_rv, CI $_ci)"
+  done
+done
+reset_fx; declare_bots "[\"$CODEX\"]"; reaction_fx "$CODEX" "+1" "$AFTER_AT"
+ci_runs_fx "ci|completed|success" "pattern-ledger|completed|failure"; ci_status_fx; ci_branch_fx ci
+w observe --pr 1;  rc 0 "observe: a clean reviewer over a red head is still the reviewer's 0"
+has "$OUT" "pr-watch: ci not-green $HEAD_SHA observed " "observe: ...and the red is reported beside it"
+has "$OUT" "failing: pattern-ledger" "observe: ...by name"
+eq "$(cilines)" "1" "observe: exactly one CI line"
+reset_fx; undeclare
+w observe --pr 1;  rc 17 "observe: an undeclared reviewer set is still 17"
+eq "$(cilines)" "0" "observe: a refusal carries no CI line — there is no verdict for it to ride"
+
+# `wait` reports CI ONCE, on the verdict it returns — never per poll.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
+printf '[]\n' > "$S/reviews.1.json"; printf '[]\n' > "$S/reviews.2.json"
+_reviews_into "$S/reviews.3.json" "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+w wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 10 "wait: the CI read does not change the verdict a later poll converges on"
+eq "$(cilines)" "1" "wait: the CI line is printed once, on the verdict — not once per poll"
+has "$OUT" "pr-watch: ci green $HEAD_SHA" "wait: the CI line describes the head of the returned verdict"
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|completed|failure"; ci_status_fx; ci_branch_fx ci
+w wait --pr 1 --interval 30 --max-secs 2;  rc 11 "wait: an expired bound is still the reviewer's 11 over a red head"
+has "$OUT" "pr-watch: ci not-green $HEAD_SHA" "wait: the deadline handoff carries the CI line too"
+
+fi
+
+if check_block ci-wait; then
+# --- ci-wait ------------------------------------------------------------------------------------
+# Every case below ends on a FIXTURE, with `$WATCH_BACKSTOP` as the runaway bound (#394), except the
+# two whose oracle is the deadline itself. Per-poll fixtures are keyed by the snapshot read count.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
+ci_runs_into "$S/checkruns.1.json" "ci|in_progress|"
+ci_runs_fx "ci|completed|success"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 0 "ci-wait: pending, then green that holds -> 0"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "ci-wait: green is reported only after it held across two polls"
+eq "$(cilines)" "1" "ci-wait: quiet while it polls — one CI line, at the end"
+wout ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  eq "$OUT" "green $HEAD_SHA" "ci-wait: stdout is the concluding '<verdict> <sha>'"
+
+# Green over a check set that is still GROWING is not settled: poll 2 adds a late-registering job.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
+ci_runs_into "$S/checkruns.1.json" "ci|completed|success"
+ci_runs_fx "ci|completed|success" "late|completed|success"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 0 "ci-wait: the grown set settles once it holds"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "ci-wait: green must hold over an identical check set"
+
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci; ci_wfruns_fx "777|7001|1"
+ci_runs_into "$S/checkruns.1.json" "ci|in_progress|"
+ci_runs_fx "ci|completed|failure"
+# Poll 4 closes the PR, so a waiter that does NOT return the red ends on this fixture, not the backstop.
+pr_poll_fx 4 --state closed --merged-at "2026-07-25T05:00:00Z"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 40 "ci-wait: a red arriving mid-wait returns not-green at once"
+has "$OUT" "failing: ci [run 777, attempt 1]" "ci-wait: the red's line names the job and its run"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "2" "ci-wait: the red is returned on the poll that saw it"
+
+# `--no-fail-fast` holds a red until nothing on the head is still running — the one case that needs
+# it is a red whose run has not concluded, which `ci-health.sh` cannot classify yet.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx slow lint; ci_wfruns_fx "888|7001|1"
+ci_runs_into "$S/checkruns.1.json" "slow|in_progress|" "lint|completed|failure"
+ci_runs_fx "slow|completed|success" "lint|completed|failure"
+pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP" --no-fail-fast;  rc 40 "ci-wait --no-fail-fast: a red is held until nothing is still running"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "2" "ci-wait --no-fail-fast: returns on the poll where the last sibling concluded"
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx slow lint
+ci_runs_fx "slow|in_progress|" "lint|completed|failure"
+w ci-wait --pr 1 --interval 30 --max-secs 2 --no-fail-fast;  rc 40 "ci-wait --no-fail-fast: a held red is still a red when the bound runs out"
+w ci --pr 1 --no-fail-fast;  rc 2 "ci: --no-fail-fast applies to ci-wait only"
+
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|in_progress|"; ci_status_fx; ci_branch_fx ci
+wout ci-wait --pr 1 --interval 30 --max-secs 2;  rc 11 "ci-wait: still running at the bound -> 11, never 0"
+eq "$OUT" "indeterminate $HEAD_SHA" "ci-wait: the expired bound prints indeterminate"
+w ci-wait --pr 1 --interval 30 --max-secs 2
+has "$OUT" "this is not green" "ci-wait: the handoff says the expiry is not green"
+# A green seen ONCE when the bound runs out has not settled, so it is not reported as green.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '3' > "$S/slow-1"
+wout ci-wait --pr 1 --interval 30 --max-secs 1;  rc 11 "ci-wait: a bound that expires is never green, even over one green read"
+eq "$OUT" "indeterminate $HEAD_SHA" "ci-wait: ...and its stdout does not say green"
+
+# The head moves under the wait: reported, and the old head's evidence counts for nothing.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_branch_fx ci
+pr_poll_fx 1 --sha "$OLD_SHA"
+CI_SHA="$OLD_SHA" ci_runs_into "$S/checkruns.1.json" "ci|completed|success"
+CI_SHA="$OLD_SHA" ci_status_into "$S/cistatus.1.json"
+ci_runs_fx "ci|completed|success"; ci_status_fx
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 0 "ci-wait: a moved head settles on its own evidence"
+has "$OUT" "head moved $OLD_SHA -> $HEAD_SHA" "ci-wait: reports that the head moved under it"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "ci-wait: the earlier head's green does not count toward the new head's"
+
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|in_progress|"; ci_status_fx; ci_branch_fx ci
+pr_poll_fx 2 --state closed --merged-at "2026-07-25T05:00:00Z"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 12 "ci-wait: a pull request that closes mid-wait stops it"
+reset_fx; declare_bots "[\"$CODEX\"]"
+STUB_FAIL_CHECKRUNS=1 w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 20 "ci-wait: gives up after consecutive unreadable polls"
+has "$OUT" "consecutive unreadable CI polls" "ci-wait: names why it gave up"
+STUB_FAIL_CHECKRUNS=0
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0
+ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "write"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 41 "ci-wait: a declared no-ci repo has nothing to wait for"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "1" "ci-wait: ...and says so on the first poll"
+reset_fx
+
+fi
+
 # ============================ the output contract (#437) ============================
+if check_block contract legacy; then
 # The header's Outputs: at most ONE stdout line, `<verdict> <head-sha>`, and none on a refusal.
 # Compared as BYTES — a `$( )` capture would accept a trailing blank line or a missing newline.
 # contract_is <want-rc> <want-stdout-line|''> <label> <subcommand…>
@@ -1843,6 +2278,14 @@ reset_fx; undeclare
 contract_is 17 "" "contract: a refusal prints nothing on stdout, not even a newline" observe --pr 1
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 contract_is 0 "requested $HEAD_SHA" "contract: request-review's stdout is '<word> <sha>'" request-review --pr 1
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
+contract_is 0 "green $HEAD_SHA" "contract: ci's stdout is '<verdict> <sha>'" ci --pr 1
+reset_fx; declare_bots "[\"$CODEX\"]"
+contract_is 20 "" "contract: an unreadable ci read prints nothing on stdout" ci --pr 1
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|completed|failure"; ci_status_fx; ci_branch_fx ci
+contract_is 11 "pending $HEAD_SHA" "contract: observe's stdout stays one reviewer line over a red head" observe --pr 1
 reset_fx
+fi
+check_blocks_done
 
 check_summary "pr-watch"
