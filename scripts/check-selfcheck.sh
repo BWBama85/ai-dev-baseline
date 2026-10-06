@@ -205,6 +205,9 @@ if [ "$MODE" = mutation ]; then
   check_mut "overrun-unreported" \
     '[ "${#OVERRAN[@]}" -gt 0 ] && printf '"'"'overran (past %ss): %s\n'"'"' "$OVERRUN" "${OVERRAN[*]}"' ':' \
     'the result block names a step that overran and passed'
+  check_mut "overrun-by-reap-time" \
+    '  if [ -n "${4:-}" ] && e="$(ended_at "$1")"; then el=$(( e - $4 )); fi' ':' \
+    'a step that ENDED inside the ceiling is not named'
   check_mut "digest-drops-overran" \
     '    summarize_overran "$log"' ':' \
     'a green digest still names a step that overran'
@@ -1294,6 +1297,29 @@ if mutate_line "$FXRACE/scripts/selfcheck.sh" \
   rm -f "$FXRACE/ctl/HOLD"
   eq "$CANCEL_TERMINATED" "1" \
     "a worker forked but not yet recorded in LIVE is still reaped ($CANCEL_DIAG)"
+fi
+
+# --- 10.5 an overrun is judged by the step's own end, not by its reaping (#445) ----------------
+# A gate injected just AFTER the step's start is recorded holds the parent, so a step that ends at once
+# is not reaped until the hold lifts. By then it is past the ceiling, and it must still not be named.
+# (After the start stamp, not after the fork: a hold before the stamp delays the start too, and the
+# reap would then not be late at all.)
+HOLD_T0_SED='s#^      pid_name\["\$pid"\]="\$name"; pid_out\["\$pid"\]="\$out"; pid_t0\["\$pid"\]="\$EPOCHSECONDS"$#&; while [ -f "$ADB_STUB_CTL/HOLD" ]; do sleep 0.05; done#'
+FXHOLD="$work/fx-hold"
+mkfx "$FXHOLD" || bad "10.5: could not build the hold fixture"
+if mutate_line "$FXHOLD/scripts/selfcheck.sh" \
+     '      pid_name["$pid"]="$name"; pid_out["$pid"]="$out"; pid_t0["$pid"]="$EPOCHSECONDS"' \
+     "$HOLD_T0_SED" "10.5 post-start gate" && mut_parses "$FXHOLD" "10.5"; then
+  : > "$FXHOLD/ctl/HOLD"
+  ( sleep 4; rm -f "$FXHOLD/ctl/HOLD" ) &
+  _hold=$!
+  OUT="$(ADB_STUB_CTL="$FXHOLD/ctl" ADB_SELFCHECK_OVERRUN_SECS=2 bash "$FXHOLD/scripts/selfcheck.sh" --only gates --jobs 4 2>&1)"; RC_=$?
+  wait "$_hold" 2>/dev/null
+  yes "$RC_" "10.5: a run held at dispatch still passes"
+  has "$OUT" "gates-line-1" "10.5: the held step ran"
+  _rs="$(printf '%s\n' "$OUT" | awk '/^=== gates ===$/ { p = 1; next } p && /^PASS \(/ { s = $0; sub(/.*[ (]/, "", s); sub(/s\)$/, "", s); print s; exit }')"
+  [ "${_rs:-0}" -ge 3 ] && ok || bad "10.5: the step was reaped at ${_rs:-?}s, not past the 2s ceiling — the case is not the one it names"
+  hasnt "$OUT" "overran" "a step that ENDED inside the ceiling is not named, however late it was reaped"
 fi
 
 # --- the negative half lives in `--mutation` --------------------------------------------------

@@ -1345,7 +1345,18 @@ run_step() {
   local name="$1" rc=0
   # shellcheck disable=SC2086  # deliberate word-split of a value `add` validated at registration
   ${STEP_CMD[$name]} </dev/null || rc=$?
+  # WHEN IT ENDED, stamped from inside the step: the dispatcher reaps one job per wait and may reap
+  # this one later, and an overrun is a fact about the step, not about its reaping (D122).
+  printf '%s\n' "$EPOCHSECONDS" > "$WORK/ended.$name" 2>/dev/null
   return "$rc"
+}
+
+# ended_at <name> — the step's own end stamp, or nothing while it is still running.
+ended_at() {
+  local e
+  e="$(cat "$WORK/ended.$1" 2>/dev/null)" || return 1
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$e"
 }
 
 # note_overrun <name> <elapsed-secs> [live] — remember a step that ran past the ceiling, and with
@@ -1363,8 +1374,10 @@ note_overrun() {
   printf 'selfcheck: still running past %ss: %s (%ss so far)\n' "$OVERRUN" "$name" "$el"
 }
 
-record() {   # name rc secs
-  note_overrun "$1" "$3"
+record() {   # name rc secs [started] — with <started>, the overrun is judged by the step's own end stamp
+  local el="$3" e
+  if [ -n "${4:-}" ] && e="$(ended_at "$1")"; then el=$(( e - $4 )); fi
+  note_overrun "$1" "$el"
   SLOW+=("$(printf '%06d %s' "$3" "$1")")
   if [ "$2" -eq 0 ]; then
     printf 'PASS (%ss)\n' "$3"
@@ -1402,7 +1415,9 @@ run_serial() {   # names...
       got=""
       if wait -f -n -p got "$pid" "$tick"; then rc=0; else rc=$?; fi
       if [ "${got:-}" = "$tick" ]; then
-        note_overrun "$name" "$(( EPOCHSECONDS - t0 ))" live; rc=0; continue
+        # Only a step that has not ENDED is still running; one the ticker beat to the reap is not.
+        ended_at "$name" >/dev/null || note_overrun "$name" "$(( EPOCHSECONDS - t0 ))" live
+        rc=0; continue
       fi
       kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null
       # Nothing reaped: a trapped signal interrupted the wait. The traps exit; loop rather than
@@ -1411,7 +1426,7 @@ run_serial() {   # names...
       break
     done
     unset "LIVE[$pid]"
-    record "$name" "$rc" "$(( EPOCHSECONDS - t0 ))"
+    record "$name" "$rc" "$(( EPOCHSECONDS - t0 ))" "$t0"
   done
   set +m
 }
@@ -1458,7 +1473,10 @@ run_pool() {   # names...
     if wait -f -n -p pid; then rc=0; else rc=$?; fi
     if [ -n "${pid:-}" ] && [ "$pid" = "$tick" ]; then
       tick=""
-      for p in "${!pid_name[@]}"; do note_overrun "${pid_name[$p]}" "$(( EPOCHSECONDS - ${pid_t0[$p]} ))" live; done
+      # An entry is not yet REAPED; only one with no end stamp is still RUNNING.
+      for p in "${!pid_name[@]}"; do
+        ended_at "${pid_name[$p]}" >/dev/null || note_overrun "${pid_name[$p]}" "$(( EPOCHSECONDS - ${pid_t0[$p]} ))" live
+      done
       continue
     fi
     if [ -z "${pid:-}" ]; then
@@ -1484,7 +1502,7 @@ run_pool() {   # names...
     name="${pid_name[$pid]}"; out="${pid_out[$pid]}"
     banner "$name"
     [ -s "$out" ] && cat "$out"
-    record "$name" "$rc" "$(( EPOCHSECONDS - ${pid_t0[$pid]} ))"
+    record "$name" "$rc" "$(( EPOCHSECONDS - ${pid_t0[$pid]} ))" "${pid_t0[$pid]}"
     rm -f "$out"
     # Forgotten once reaped, so the ticker's walk over `pid_name` is a walk over RUNNING steps.
     unset "pid_name[$pid]" "pid_out[$pid]" "pid_t0[$pid]"
