@@ -1529,13 +1529,26 @@ bw_watcher() {   # <shell-pid> <its-sleep> — <shell-pid>'s child whose own chi
     { p = $1; pp = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); par[p] = pp; cmd[p] = $0 }
     END { for (p in cmd) if (cmd[p] == want && par[par[p]] == top) { print par[p]; exit } }'
 }
-bw_live() {   # <pid> — true while it exists and is not a zombie
-  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$1" 2>/dev/null || return 1
-  case "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" in Z*|'') return 1 ;; esac
+bw_state() {   # <pid> — prints alive | dead | unknown; "dead" only on evidence, never on a failed read
+  local st
+  case "${1:-}" in ''|*[!0-9]*) printf 'unknown'; return ;; esac
+  kill -0 "$1" 2>/dev/null || { printf 'dead'; return; }
+  if ! st="$(ps -o state= -p "$1" 2>/dev/null)"; then
+    if kill -0 "$1" 2>/dev/null; then printf 'unknown'; else printf 'dead'; fi; return
+  fi
+  st="${st//[[:space:]]/}"
+  case "$st" in Z*) printf 'dead' ;; '') printf 'unknown' ;; *) printf 'alive' ;; esac
+}
+bw_left() {   # <pid> <what> — the assertion that a probe's watcher is gone
+  case "$(bw_state "$1")" in
+    dead)  ok ;;
+    alive) bad "$2 was left behind" ;;
+    *)     bad "$2: its state could not be read, so it cannot be shown gone" ;;
+  esac
 }
 bw_drop() {   # <pid> [group] — continue and kill a probe's watcher, and with `group` its whole group
-  bw_live "${1:-}" || return 0
+  [ "$(bw_state "${1:-}")" = dead ] && return 0
+  case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
   [ "${2:-}" = group ] && { kill -CONT -- "-$1"; kill -KILL -- "-$1"; } 2>/dev/null
   { kill -CONT "$1"; kill -KILL "$1"; } 2>/dev/null; return 0
 }
@@ -1543,91 +1556,98 @@ bw_await() {   # <file> <secs> — wait for <file> to be written, for at most <s
   local d=$(( EPOCHSECONDS + $2 ))
   while [ ! -s "$1" ] && [ "$EPOCHSECONDS" -lt "$d" ]; do sleep 0.2; done
 }
+# The six scenarios below each sleep through a window of their own, so they run CONCURRENTLY — five as
+# background drivers that write their outcome to a file, A in the foreground meanwhile — and are
+# asserted once all have answered or a shared deadline has passed, because a hang is the defect
+# several of them exist to catch.
+#
 # A: stopped INSIDE a fired bound's grace, continued two seconds later, under the caller's job control
 # (as selfcheck's pool worker has it). The call returns only once the escalation is done — never while
-# the watcher is stopped — and the TERM-proof member is reaped.
-gc_reset; rm -f "$work/bw-a"
-_btop=$BASHPID
-set -m
-( sleep 3; w="$(bw_watcher "$_btop" 'sleep 7')"
-  case "$w" in ''|*[!0-9]*) exit 0 ;; esac
-  kill -STOP "$w"; echo "$w" > "$work/bw-a"; sleep 2; kill -CONT "$w" ) &
-_bws=$!
-_bt0=$EPOCHSECONDS
-ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 7 "$gcp2" >/dev/null 2>&1
-_brc="$?:${_ADB_BOUNDED_FIRED:-unset}"; _bel=$(( EPOCHSECONDS - _bt0 ))
-set +m
-wait "$_bws" 2>/dev/null
-if [ -s "$work/bw-a" ]; then ok; else bad "watchdog: the stopped-in-grace probe never found the watcher — the case did not run"; fi
-eq "$_brc" "124:1" "watchdog: a fired bound whose watcher was stopped still returns 124"
-[ "$_bel" -ge 5 ] && ok || bad "watchdog: a fired bound returned while its watcher was STOPPED (${_bel}s in), before its group was reaped"
-eq "$(gc_alive)" "dead" "watchdog: a watcher stopped inside the grace still reaps the TERM-proof member"
-bw_drop "$(cat "$work/bw-a" 2>/dev/null)"; gc_reset
+# the watcher is stopped — and the TERM-proof member is reaped by then.
 # B: stopped inside the grace BEFORE the call reaches its wait on the watcher — the leader takes three
 # seconds to die on its TERM — and never continued; the watcher alone, or its whole group with the
 # `sleep` it is waiting on. The call wakes the GROUP and returns once the watcher is done.
+# C and D: the other two TERMs to the watcher are each followed by a wake. Where a stopped process
+# holds a TERM PENDING until it is continued (Linux; macOS ends it anyway), the unfired branch's wait
+# would otherwise never return (C) and a cancelled call would leave its stopped watcher behind (D).
+# Where it does not, both pass whatever the code does, which is why their rows are registered only
+# where it does.
+gc_reset
 gcp4="$work/gcprobe4.sh"
 printf '#!/usr/bin/env bash\ntrap '"'"'sleep 3; exit 0'"'"' TERM\nwhile :; do sleep 0.2; done\n' > "$gcp4"
 chmod +x "$gcp4"
+rm -f "$work"/bw-*.rc "$work"/bw-*.w
+_bdrv=()
 for _bm in pid group; do
-  rm -f "$work/bw-b.rc" "$work/bw-b.w"
   ( set -m
     _top=$BASHPID
     ( sleep 2; w="$(bw_watcher "$_top" 'sleep 7')"
       case "$w" in ''|*[!0-9]*) exit 0 ;; esac
       if [ "$_bm" = group ]; then kill -STOP -- "-$w"; else kill -STOP "$w"; fi
-      echo "$w" > "$work/bw-b.w" ) &
-    ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 7 "$gcp4" >/dev/null 2>&1; echo "$?" > "$work/bw-b.rc" ) &
-  _bwc=$!
-  bw_await "$work/bw-b.rc" 20
-  _bw="$(cat "$work/bw-b.w" 2>/dev/null)"
-  if [ -n "$_bw" ]; then ok; else bad "watchdog ($_bm): the stopped-before-the-wait probe never found the watcher — the case did not run"; fi
-  eq "$(cat "$work/bw-b.rc" 2>/dev/null)" "124" "watchdog ($_bm): a watcher stopped before the fired bound's wait is woken, and the call returns 124"
-  bw_drop "$_bw" group; kill -KILL "$_bwc" 2>/dev/null; wait "$_bwc" 2>/dev/null
+      echo "$w" > "$work/bw-b-$_bm.w" ) &
+    ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 7 "$gcp4" >/dev/null 2>&1; echo "$?" > "$work/bw-b-$_bm.rc" ) &
+  _bdrv+=("$!")
 done
-# C and D: the other two TERMs to the watcher are each followed by a wake. Where a stopped process
-# holds a TERM PENDING until it is continued (Linux; macOS ends it anyway), the unfired branch's wait
-# would otherwise never return (C, under its own deadline) and a cancelled call would leave its
-# stopped watcher behind (D). Where it does not, both pass whatever the code does, which is why their
-# rows are registered only where it does.
-# C: stopped BEFORE the bound fires and never continued; the command then finishes on its own.
 for _bm in plain monitor; do
-  rm -f "$work/bw-c2.rc" "$work/bw-c2.w"
   ( [ "$_bm" = monitor ] && set -m
     _top=$BASHPID
     ( sleep 1; w="$(bw_watcher "$_top" 'sleep 5')"
       case "$w" in ''|*[!0-9]*) exit 0 ;; esac
-      kill -STOP "$w"; echo "$w" > "$work/bw-c2.w" ) &
-    ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 12 1 sleep 2.5 >/dev/null 2>&1; echo "$?" > "$work/bw-c2.rc" ) &
-  _bwc=$!
-  bw_await "$work/bw-c2.rc" 15
-  _bw="$(cat "$work/bw-c2.w" 2>/dev/null)"
-  if [ -n "$_bw" ]; then ok; else bad "watchdog ($_bm): the stopped-before-firing probe never found the watcher — the case did not run"; fi
-  eq "$(cat "$work/bw-c2.rc" 2>/dev/null)" "0" "watchdog ($_bm): a watcher stopped before the bound fired is woken to take its TERM, and the call returns its command's status"
-  sleep 0.5
-  if bw_live "$_bw"; then bad "watchdog ($_bm): a watcher stopped before the bound fired was left behind"; else ok; fi
-  bw_drop "$_bw"; kill -KILL "$_bwc" 2>/dev/null; wait "$_bwc" 2>/dev/null
+      kill -STOP "$w"; echo "$w" > "$work/bw-c-$_bm.w" ) &
+    ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 12 1 sleep 2.5 >/dev/null 2>&1; echo "$?" > "$work/bw-c-$_bm.rc" ) &
+  _bdrv+=("$!")
 done
-# D: the CALLER is cancelled while its watcher is stopped; the reap trap wakes it to take its TERM.
-rm -f "$work/bw-d.w"
-( _top=$BASHPID
-  ( sleep 1; w="$(bw_watcher "$_top" 'sleep 5')"
-    case "$w" in ''|*[!0-9]*) exit 0 ;; esac
-    kill -STOP "$w"; echo "$w" > "$work/bw-d.w" ) &
-  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 sleep 20 >/dev/null 2>&1 ) &
-_bwc=$!
-bw_await "$work/bw-d.w" 10
-kill -TERM "$_bwc" 2>/dev/null
-_bdl=$(( EPOCHSECONDS + 10 )); while kill -0 "$_bwc" 2>/dev/null && [ "$EPOCHSECONDS" -lt "$_bdl" ]; do sleep 0.2; done
-if kill -0 "$_bwc" 2>/dev/null; then
-  bad "watchdog: a cancelled call was still running 10s after its TERM"; kill -KILL "$_bwc" 2>/dev/null
-fi
-wait "$_bwc" 2>/dev/null
-sleep 0.5
-_bw="$(cat "$work/bw-d.w" 2>/dev/null)"
-if [ -n "$_bw" ]; then ok; else bad "watchdog: the cancelled-while-stopped probe never found the watcher — the case did not run"; fi
-if bw_live "$_bw"; then bad "watchdog: a cancelled call left its stopped watcher behind"; else ok; fi
-bw_drop "$_bw"; kill -KILL "$_bwc" 2>/dev/null
+( ( _top=$BASHPID
+    ( sleep 1; w="$(bw_watcher "$_top" 'sleep 5')"
+      case "$w" in ''|*[!0-9]*) exit 0 ;; esac
+      kill -STOP "$w"; echo "$w" > "$work/bw-d.w" ) &
+    ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 sleep 20 >/dev/null 2>&1 ) &
+  c=$!
+  bw_await "$work/bw-d.w" 10
+  kill -TERM "$c" 2>/dev/null
+  d=$(( EPOCHSECONDS + 10 )); while kill -0 "$c" 2>/dev/null && [ "$EPOCHSECONDS" -lt "$d" ]; do sleep 0.2; done
+  if kill -0 "$c" 2>/dev/null; then echo running > "$work/bw-d.rc"; kill -KILL "$c" 2>/dev/null; else echo ended > "$work/bw-d.rc"; fi
+  wait "$c" 2>/dev/null ) &
+_bdrv+=("$!")
+# A runs in the FOREGROUND of this shell, under `set -m`, while the others run: only there is job control
+# live enough for a plain `wait` to return on a stop, which is the defect A exists to catch.
+_btop=$BASHPID
+set -m
+( sleep 3; w="$(bw_watcher "$_btop" 'sleep 7')"
+  case "$w" in ''|*[!0-9]*) exit 0 ;; esac
+  kill -STOP "$w"; echo "$w" > "$work/bw-a.w"; sleep 2; kill -CONT "$w" ) &
+_bws=$!
+_bt0=$EPOCHSECONDS
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 7 "$gcp2" >/dev/null 2>&1
+printf '%s:%s %s %s\n' "$?" "${_ADB_BOUNDED_FIRED:-unset}" "$(( EPOCHSECONDS - _bt0 ))" "$(gc_alive)" > "$work/bw-a.rc"
+set +m
+wait "$_bws" 2>/dev/null
+_bend=$(( EPOCHSECONDS + 25 ))
+for _bf in bw-a bw-b-pid bw-b-group bw-c-plain bw-c-monitor bw-d; do
+  while [ ! -s "$work/$_bf.rc" ] && [ "$EPOCHSECONDS" -lt "$_bend" ]; do sleep 0.2; done
+done
+_brc=""; _bel=""; _bmem=""
+{ read -r _brc _bel _bmem < "$work/bw-a.rc"; } 2>/dev/null
+if [ -s "$work/bw-a.w" ]; then ok; else bad "watchdog: the stopped-in-grace probe never found the watcher — the case did not run"; fi
+eq "$_brc" "124:1" "watchdog: a fired bound whose watcher was stopped still returns 124"
+[ "${_bel:-0}" -ge 5 ] && ok || bad "watchdog: a fired bound returned while its watcher was STOPPED (${_bel:-?}s in), before its group was reaped"
+eq "$_bmem" "dead" "watchdog: a watcher stopped inside the grace still reaps the TERM-proof member"
+for _bm in pid group; do
+  if [ -s "$work/bw-b-$_bm.w" ]; then ok; else bad "watchdog ($_bm): the stopped-before-the-wait probe never found the watcher — the case did not run"; fi
+  eq "$(cat "$work/bw-b-$_bm.rc" 2>/dev/null)" "124" "watchdog ($_bm): a watcher stopped before the fired bound's wait is woken, and the call returns 124"
+done
+for _bm in plain monitor; do
+  if [ -s "$work/bw-c-$_bm.w" ]; then ok; else bad "watchdog ($_bm): the stopped-before-firing probe never found the watcher — the case did not run"; fi
+  eq "$(cat "$work/bw-c-$_bm.rc" 2>/dev/null)" "0" "watchdog ($_bm): a watcher stopped before the bound fired is woken to take its TERM, and the call returns its command's status"
+  bw_left "$(cat "$work/bw-c-$_bm.w" 2>/dev/null)" "watchdog ($_bm): a watcher stopped before the bound fired"
+done
+if [ -s "$work/bw-d.w" ]; then ok; else bad "watchdog: the cancelled-while-stopped probe never found the watcher — the case did not run"; fi
+eq "$(cat "$work/bw-d.rc" 2>/dev/null)" "ended" "watchdog: a cancelled call ends within 10s of its TERM"
+bw_left "$(cat "$work/bw-d.w" 2>/dev/null)" "watchdog: a cancelled call's stopped watcher"
+for _bf in bw-a bw-b-pid bw-b-group bw-c-plain bw-c-monitor bw-d; do bw_drop "$(cat "$work/$_bf.w" 2>/dev/null)" group; done
+for _bp in "${_bdrv[@]}"; do kill -KILL "$_bp" 2>/dev/null; done
+for _bp in "${_bdrv[@]}"; do wait "$_bp" 2>/dev/null; done
+gc_reset
 # _ADB_BOUNDED_FIRED says whether the BOUND fired, never merely that the status was 124 (#445). In this
 # ORDER, so the second case also proves the flag is reset by every call rather than left over.
 ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 sleep 20
@@ -3349,22 +3369,37 @@ if [ "${1:-}" = "--mutation" ]; then
   #      HOLDS A TERM PENDING (Linux): where it does not (macOS) the TERM ends a stopped watcher anyway,
   #      both witnesses pass whatever the code does, and a row that cannot go red would be scored as a
   #      guard that cannot fail. Asked of the platform once, against a `sleep` that has finished its exec.
+  # 0 it holds the TERM · 1 the TERM ended it · 2 the probe could not tell, and then no table is built:
+  # a platform question that went unanswered must not read as "not this platform" and drop two rows.
   _cl_term_pends() {
-    local p st n=0
+    local p st n=0 rc=2
     sleep 30 & p=$!
-    while [ "$n" -lt 50 ]; do case "$(ps -o comm= -p "$p" 2>/dev/null)" in *sleep) break ;; esac; sleep 0.1; n=$(( n + 1 )); done
-    kill -STOP "$p" 2>/dev/null; sleep 0.2; kill -TERM "$p" 2>/dev/null; sleep 0.3
-    st="$(ps -o state= -p "$p" 2>/dev/null | tr -d ' ')"
+    until case "$(ps -o comm= -p "$p" 2>/dev/null)" in *sleep) true ;; *) false ;; esac; do
+      n=$(( n + 1 )); [ "$n" -lt 50 ] || { kill -KILL "$p" 2>/dev/null; wait "$p" 2>/dev/null; return 2; }
+      sleep 0.1
+    done
+    if kill -STOP "$p" 2>/dev/null && sleep 0.2 && kill -TERM "$p" 2>/dev/null; then
+      sleep 0.3
+      if st="$(ps -o state= -p "$p" 2>/dev/null)"; then
+        case "${st//[[:space:]]/}" in T*) rc=0 ;; Z*) rc=1 ;; esac
+      elif ! kill -0 "$p" 2>/dev/null; then rc=1
+      fi
+    fi
     kill -CONT "$p" 2>/dev/null; kill -KILL "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    case "$st" in T*) return 0 ;; *) return 1 ;; esac
+    return "$rc"
   }
-  if _cl_term_pends; then
+  _cl_term_pends; _ctp=$?
+  case "$_ctp" in 0|1) : ;; *)
+    echo "check-common-lib --mutation: could not tell whether a stopped process holds a TERM pending here — refusing to build a table that may silently lack two rows" >&2
+    exit 1 ;;
+  esac
+  if [ "$_ctp" -eq 0 ]; then
     mutate unfired-watcher-not-woken \
       "watchdog (plain): a watcher stopped before the bound fired is woken to take its TERM" \
       '' \
       '/^  else kill -TERM "\$watcher" 2>\/dev\/null; _adb_bounded_signal CONT "\$watcher"; fi$/s/ _adb_bounded_signal CONT "\$watcher";//'
     mutate reap-watcher-not-woken \
-      "watchdog: a cancelled call left its stopped watcher behind" \
+      "watchdog: a cancelled call's stopped watcher was left behind" \
       '' \
       '/^    && _adb_bounded_signal CONT "\$_ADB_BOUNDED_WATCHER"$/s/_adb_bounded_signal CONT "\$_ADB_BOUNDED_WATCHER"/:/'
   else

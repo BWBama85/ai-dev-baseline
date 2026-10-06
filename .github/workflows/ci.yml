@@ -386,7 +386,9 @@ jobs:
   common-lib:
     name: common-lib
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # Above the Linux jobs' 10: the mutation step runs the whole suite once per row, and each run
+    # waits out the stopped-watcher scenarios' windows (D122).
+    timeout-minutes: 20
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1526,8 +1528,9 @@ jobs:
     # help (D66). Since #423 the load-sensitive suites are lifted out of that contention into the
     # serial prologue, and since #339 the single most expensive step does not run here at all; the
     # headroom nonetheless stays as it was rather than being trimmed to a number this runner will
-    # not reproduce.
-    timeout-minutes: 45
+    # not reproduce. 45 until #445, which made `common-lib-mutation` heavier on a leg that had
+    # taken 38m50s (D122).
+    timeout-minutes: 55
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

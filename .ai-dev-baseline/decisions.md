@@ -9051,10 +9051,16 @@ survive is the part a later reader needs.
              | `AGENTS.md`, `README.md`, `docs/{design-principles,installation,repo-settings,roadmap-acceptance}.md`, `base/workflows/README.md`, `.claude/skills/release/*`, `.github/workflows/wsl-smoke.yml`, `scripts/lib/project-gates.sh` | that the gate exists, or the command | no figure, count, list or lane |
 
              CI ceilings: `implement-gate` (75 min) carries `session-context-mutation`, which only got
-             cheaper; `selfcheck-macos` (45) gains an estimated 2-3 minutes from the new
-             `check-selfcheck.sh` and `check-block-rows.sh` cases, against 21 and 29 minutes on PR #480
-             and PR #502, which un-gated the same harnesses; the nightly's 240 covers full-suite mode,
-             which is the old per-row cost.
+             cheaper; the nightly's 240 covers full-suite mode, which is the old per-row cost. Two were
+             raised (owner decision, after the local review found the first missing from this audit):
+             `common-lib` 10 → 20 — at `df4273c` it took 6m33s (plain suite 39 s, block rows 60 s,
+             mutation 287 s for 23 rows), and every run of the suite now also waits out the
+             stopped-watcher scenarios while ubuntu registers 29 rows; `selfcheck-macos` 45 → 55 — it
+             took 38m50s at `df4273c` with `common-lib-mutation` its second-slowest step at 555 s, and
+             that step gains three rows and the same per-run wait. The scenarios run concurrently, so a
+             run waits about as long as the longest of them (a 1 s bound and a 7 s grace) rather than
+             their sum. Both ceilings were sized from those figures, not from a run of this tree; the
+             first CI run on it is what confirms them.
 
              **#445's measurement criteria, disposition by criterion (owner decision 2026-10-05, after
              the local review asked for each one explicitly).**
