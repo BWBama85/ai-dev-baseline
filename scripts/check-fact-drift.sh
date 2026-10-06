@@ -1630,10 +1630,10 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 #
 # Each lane is listed BY HAND in CLAUDE.md golden rule 3 and in CONTRIBUTING.md, between
 # `<!-- adb:lane <name> -->` and `<!-- /adb:lane -->`. Each document must carry each lane's region
-# exactly once, and the region must hold exactly the lane's members in `selfcheck.sh --list`'s
-# order, backticked and separated by commas and blanks — NOTHING else. A comparison of the region's
-# members, not a pattern over prose: English joins a list in more ways than a pattern can enumerate,
-# and four of them got past the pattern this replaced (D122).
+# exactly once, and the region's text must EQUAL the lane as `selfcheck.sh --list` renders it — each
+# member backticked, in order, joined by ", " — with any run of whitespace, line breaks included,
+# read as one blank. Equality, not a grammar: English joins a list in more ways than a pattern or a
+# token extraction can enumerate, and each of the two this replaced let some through (D122).
 # The registry is read ONCE and its status checked: a pipeline would report awk's status, so a
 # --list that failed after printing some rows would still yield a plausible, wrong lane.
 if ! _sc_list="$(bash scripts/selfcheck.sh --list)"; then
@@ -1671,10 +1671,10 @@ for _lane in mutates-tree load-sensitive; do
       *"$_close"*) _region="${_region%%"$_close"*}" ;;
       *) check_note "[selfcheck-lane-$_lane] $_doc opens the lane's region and never closes it"; check_fail; continue ;;
     esac
-    _got="$(grep -oE '`[^`]+`' <<< "$_region" | tr -d '`')"
-    _rest="$(sed -E 's/`[^`]+`//g; s/[[:space:],]//g' <<< "$_region")"
-    if [ "$_got" != "$_want" ] || [ -n "$_rest" ]; then
-      check_note "[selfcheck-lane-$_lane] $_doc lists [$(printf '%s' "$_got" | tr '\n' ' ')] with [$_rest] beside it, where the runner's lane is [$(printf '%s' "$_want" | tr '\n' ' ')]"
+    _canon="$(printf '%s\n' "$_want" | awk '{ printf "%s`%s`", (NR > 1 ? ", " : ""), $0 }')"
+    _norm="$(printf '%s' "$_region" | tr -s '[:space:]' ' ' | sed -E 's/^ //; s/ $//')"
+    if [ "$_norm" != "$_canon" ]; then
+      check_note "[selfcheck-lane-$_lane] $_doc lists [$_norm], where the runner's lane renders as [$_canon]"
       check_fail
     fi
   done

@@ -1431,13 +1431,16 @@ has "$trapped" "MINE" "adb_run_bounded restores the caller's own TERM trap"
 # harness's own argv or the probe counts itself. Asking one recorded pid whether it is still alive
 # has neither failure mode. A ZOMBIE counts as dead: `kill -0` succeeds on one, and a grandchild
 # whose parent we just killed is reparented to init and reaped there.
+# The probes' bodies are LITERAL and the paths they write reach them through the environment: a path
+# spliced into generated shell is source, and a TMPDIR holding a quote would rewrite the probe.
 gcp="$work/gcprobe.sh"
 gcpid="$work/gcpid"
-cat > "$gcp" <<EOF
+export GC_PID_FILE="$gcpid"
+cat > "$gcp" <<'EOF'
 #!/usr/bin/env bash
 trap '' TERM
 sleep 60 &
-echo \$! > "$gcpid"
+echo $! > "$GC_PID_FILE"
 while :; do sleep 1; done
 EOF
 chmod +x "$gcp"
@@ -1472,10 +1475,10 @@ gc_reset
 # …and the other half of that shape: a leader that DIES on the TERM while a member of its group
 # ignores it. Only the watcher's group KILL, which a fired bound now waits for, reaches it (D122).
 gcp2="$work/gcprobe2.sh"
-cat > "$gcp2" <<EOF
+cat > "$gcp2" <<'EOF'
 #!/usr/bin/env bash
 ( trap '' TERM; exec sleep 60 ) &
-echo \$! > "$gcpid"
+echo $! > "$GC_PID_FILE"
 while :; do sleep 1; done
 EOF
 chmod +x "$gcp2"
@@ -1489,10 +1492,11 @@ gc_reset
 # …and a member that HANDLES TERM gets the grace it was promised: its two-second cleanup finishes
 # inside a five-second grace, rather than being cut off by a KILL the moment the leader is gone.
 gcmark="$work/gcmark"; rm -f "$gcmark"
+export GC_MARK_FILE="$gcmark"
 gcp3="$work/gcprobe3.sh"
-cat > "$gcp3" <<EOF
+cat > "$gcp3" <<'EOF'
 #!/usr/bin/env bash
-( trap 'sleep 2; echo cleaned > "$gcmark"; exit 0' TERM; while :; do sleep 0.2; done ) &
+( trap 'sleep 2; echo cleaned > "$GC_MARK_FILE"; exit 0' TERM; while :; do sleep 0.2; done ) &
 while :; do sleep 1; done
 EOF
 chmod +x "$gcp3"
@@ -1606,6 +1610,9 @@ _bwc=$!
 bw_await "$work/bw-d.w" 10
 kill -TERM "$_bwc" 2>/dev/null
 _bdl=$(( EPOCHSECONDS + 10 )); while kill -0 "$_bwc" 2>/dev/null && [ "$EPOCHSECONDS" -lt "$_bdl" ]; do sleep 0.2; done
+if kill -0 "$_bwc" 2>/dev/null; then
+  bad "watchdog: a cancelled call was still running 10s after its TERM"; kill -KILL "$_bwc" 2>/dev/null
+fi
 wait "$_bwc" 2>/dev/null
 sleep 0.5
 _bw="$(cat "$work/bw-d.w" 2>/dev/null)"
@@ -1620,7 +1627,7 @@ ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 sh -c 'exit 124'
 eq "$?:${_ADB_BOUNDED_FIRED:-unset}" "124:0" "watchdog: a child's own 124 is not a fired bound"
 # THE SWEEP IS CONDITIONAL ON THE BOUND HAVING FIRED on this path too — see the binary path's case below.
 livepid="$work/livepid-w"; rm -f "$livepid"
-ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 "$BASH" -c "sleep 45 & echo \$! > \"$livepid\"; exit 0" >/dev/null 2>&1
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 "$BASH" -c 'sleep 45 & echo $! > "$1"; exit 0' _ "$livepid" >/dev/null 2>&1
 eq "$?" "0" "watchdog: a command that finishes on its own still returns its own status"
 sleep 1
 survivor="$(cat "$livepid" 2>/dev/null)"
@@ -1651,7 +1658,7 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
   # turn a wall-clock BOUND into a reaper of successful work. Without this case, making the sweep
   # unconditional passes every other assertion here.
   livepid="$work/livepid"; rm -f "$livepid"
-  adb_run_bounded 30 1 "$BASH" -c "sleep 45 & echo \$! > \"$livepid\"; exit 0" >/dev/null 2>&1
+  adb_run_bounded 30 1 "$BASH" -c 'sleep 45 & echo $! > "$1"; exit 0' _ "$livepid" >/dev/null 2>&1
   eq "$?" "0" "timeout binary: a command that finishes on its own still returns its own status"
   sleep 1
   survivor="$(cat "$livepid" 2>/dev/null)"

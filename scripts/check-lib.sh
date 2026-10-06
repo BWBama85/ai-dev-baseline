@@ -358,7 +358,9 @@ _check_row_secs() {
 #     shell function and every callback here is one. `_check_run_as_caller` takes the override away
 #     again inside the bounded subshell, so the suite under test sees the environment it was given —
 #     several suites here exercise adb_run_bounded's binary path themselves. A suite that ignores
-#     TERM, or leaves a descendant that does, is reaped by that path's group sweep.
+#     TERM, or leaves a descendant IN ITS PROCESS GROUP that does, is reaped by the watcher's group
+#     KILL. A descendant that leads a group of its own (`set -m`, `setsid`) is outside that group,
+#     and nothing here reaches it: the run is still scored `hung`, but that process outlives it.
 #   * "Hung" is adb_run_bounded's own answer (`_ADB_BOUNDED_FIRED`), never inferred from the status:
 #     a suite that exits 124 on its own is scored as the exit it was.
 #   * The bound is approximate: the watchdog counts its own 5 s ticks (once the bound is 10 s or more)

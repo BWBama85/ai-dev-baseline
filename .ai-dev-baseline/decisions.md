@@ -8972,11 +8972,13 @@ survive is the part a later reader needs.
                step that ended in time, and a late start shrank a real overrun below the ceiling. A
                stamp that cannot be written is said in the step's own output, and the runner then
                falls back to the dispatcher's clock.
-             * The lane pins compare SETS, not substrings (owner decision in the review of PR #517).
-               Each document wraps each lane's list in `<!-- adb:lane <name> -->` …
+             * The lane pins compare TEXT EXACTLY, not substrings (owner decisions in the review of
+               PR #517). Each document wraps each lane's list in `<!-- adb:lane <name> -->` …
                `<!-- /adb:lane -->`; the pin requires exactly one such region per lane per document,
-               its backticked tokens equal to `--list`'s members in order, nothing else inside it
-               but commas and blanks, and the markers across each document alternating open, close. The macOS `--skip` pins are bounded at their end as well. Matched
+               its text — any whitespace run read as one blank — EQUAL to the lane rendered from
+               `--list` (each member backticked, in order, joined by ", "), and the markers across each
+               document alternating open, close. A comparison of the region's backticked tokens came
+               first and still passed a list with every separator removed. The macOS `--skip` pins are bounded at their end as well. Matched
                anywhere, the one-member `mutates-tree` lane passed on any other mention of
                `build-drift`; a list that gained a name still contained the pinned one; and a regex
                anchored to the lane's declaration still let a conjunction or emphasis through at the
@@ -9016,9 +9018,10 @@ survive is the part a later reader needs.
              digest's name lists now split into arrays — an unquoted expansion also globbed, in the
              existing `FAILED:` loop too: the old runner printed 14 omission notices for a two-token
              log, the new one 2. The lane pin goes red against copies of both documents on a member
-             dropped, a bare word or a conjunction added, emphasis inside the region, the region
-             deleted or duplicated, and a stray close or open — the stray close passing the pin it
-             replaced.
+             dropped, a bare word or a conjunction added, emphasis inside the region, the separators
+             removed or replaced, the members reordered, the region deleted or duplicated, and a stray
+             close or open; a list wrapped across lines still passes. The stray close and the missing
+             separators each passed the pin before it.
 
              **The consumer audit (scope item 2).** Every file that names `selfcheck` was read for
              a figure, a step count, a skip list or a lane. Disposition:

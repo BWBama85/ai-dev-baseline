@@ -4277,7 +4277,8 @@ adb_untrusted_block() {
 #
 # BOTH paths also agree on process CLEANUP: each puts the child in its OWN PROCESS GROUP and
 # signals the GROUP, so a grandchild dies with the bound instead of outliving it. GNU `timeout`
-# does that for us; the watchdog path does it with `set -m` (see the launch below).
+# does that for us; the watchdog path does it with `set -m` (see the launch below). A descendant
+# that moves itself into another group (`set -m`, `setsid`) is not in that group and is not reached.
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
 # Sets _ADB_BOUNDED_FIRED, so a caller can tell the bound's 124 from a child that exits 124 on its own
