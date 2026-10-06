@@ -771,4 +771,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/skill-description.awk:37` `25817a6` `PRRT_kwDOTfywrM6nU0_I` PR #508 2026-09-29 — the duplicate-key check listed known spellings, so a tab-separated description key passed as a second value
 - `partial-validation` `scripts/skill-description.awk:52` `3b7dc1d` `PRRT_kwDOTfywrM6nYJ_m` PR #508 2026-09-30 — an indented line before any key was exempt, so an orphan mapping could stand before the description the rule approved
 - `partial-validation` `scripts/skill-description.awk:43` `60e1dab` `PRRT_kwDOTfywrM6nY9if` PR #508 2026-09-30 — a tab-indented comment line was skipped as harmless though YAML forbids tabs in indentation
+- `precondition-ordering` `scripts/lib/common.sh:4488` `6243f9c` `PRRT_kwDOTfywrM6pQpoA` PR #517 2026-10-06 — a fired bound cleared its reap trap before waiting out the watcher grace, so a cancellation in that wait orphaned the child group
+- `false-guarantee` `scripts/check-fact-drift.sh:1651` `414b430` `PRRT_kwDOTfywrM6pQpoF` PR #517 2026-10-06 — the lane pin matched the member list anywhere, so the one-member mutates-tree lane passed on an unrelated mention
+- `stale-state-trusted` `scripts/selfcheck.sh:1461` `40e7282` `PRRT_kwDOTfywrM6pQpoH` PR #517 2026-10-06 — the overrun ticker reported every unreaped worker as running, so a finished but late-reaped step could be warned about and recorded
 <!-- adb:hits:end -->
