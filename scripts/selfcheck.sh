@@ -596,18 +596,19 @@ add pr-review           bash scripts/check-pr-review.sh
 # Unit tests for the async-reviewer status detector (scripts/lib/pr-watch.sh, #49): the two
 # terminal signals (a `+1` reaction = clean, a review at head = findings), the staleness rule that
 # stops a reaction left on an earlier head from reading as a pass, the declaration tri-state, every
-# unreadable path failing closed, and the bounded wait actually honouring its bound.
+# unreadable path failing closed, the bounded wait actually honouring its bound, and the head's CI
+# read (#448) — never green on doubt, and never moving the reviewer verdict.
 add pr-watch            bash scripts/check-pr-watch.sh
 
-# The negative half of the step above, for the bounded-wait cases (#394) and #447's pair rule. The
-# wait cases are the ones whose green means nothing on its own: the reported defect was a case that
-# reached its `rc` assertion after one poll, with the message it exists to assert never printed. Ten
-# mutations — five of the wait loop, two of the staleness rule it delegates to, three of the
-# `+1`/comment pairing and status-comment filter — plus an unmutated control, each
-# row required back RED on ITS OWN named witness, so "these cases can fire" is re-runnable rather
-# than a claim in a PR body.
+# The negative half of the step above, for the bounded-wait cases (#394), #447's pair rule and the
+# head-CI read (#448). The wait cases are the ones whose green means nothing on its own: the
+# reported defect was a case that reached its `rc` assertion after one poll, with the message it
+# exists to assert never printed. Whole-suite pools for the wait loop, the staleness rule it
+# delegates to and the `+1`/comment pairing, then per-test rows (#468) for the CI read, each
+# running only its block — every row required back RED on ITS OWN named witness, so "these cases
+# can fire" is re-runnable rather than a claim in a PR body. The count is printed by the run.
 add pr-watch-mutation   bash scripts/check-pr-watch.sh --mutation
-inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-watch.sh scripts/lib/role-dispatch.sh
+inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-watch.sh scripts/lib/role-dispatch.sh scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # Unit tests for the /resolve-pr-threads decision predicates (scripts/lib/pr-threads.sh, #416/#418):
 # argument-less PR inference refusing rather than guessing, the COMPLETE thread enumeration across a

@@ -9105,3 +9105,103 @@ survive is the part a later reader needs.
              has stopped making progress; a healthy row slowed past it by load is ended too, and its
              `hung` is applied and never RED.
 - baseline-issue: n/a
+
+## D123 — #448: the PR loops read the head's CI — observed on every verdict, waited on once, routed by class
+- date:      2026-10-06
+- category:  project-delta
+- unknown:   #448. Neither PR loop read GitHub CI; D86 (10) had routed "CI going green after the
+             push" to report-and-end, true only for an armed PR. On a bot-reviewed repo the arm is
+             withheld, so a red required check on a head the resolver pushed went unread through
+             every later round (PR #446; support-cases PR #26). The gap analysis returned five
+             BLOCKING questions: the stdout contract, the completion rule, failure routing, the
+             flaky arm, and where a PR-side `no-ci` comes from.
+- decision:  **Owner decisions 2026-10-06**, each the recommended option:
+             (a) Output. `observe`/`wait` keep D118's one-line stdout and their exit codes. The CI
+             observation is ONE stderr line on the verdict they return, never per poll, and a
+             failed read prints `ci unreadable`. The machine answer is two new subcommands, `ci`
+             and `ci-wait`, whose stdout is the same `<verdict> <sha>` shape and whose exit code is
+             the CI verdict: 0 green, 40 not-green, 41 no-ci, 11 not concluded, 12, 20, 2.
+             (b) Completion. not-green returns at once (fail fast). green must hold for two
+             consecutive polls over an identical check set, because check runs register
+             incrementally. An empty set is never green, and check runs are read `filter=latest`.
+             `--no-fail-fast` holds a red while a check is still running or a failing check's
+             workflow run has not concluded, for the one case that needs it: a red ci-health cannot
+             classify yet (24/25), including the moment after a re-run is requested.
+             (c) Routing. A failing Actions check maps to its run through `check_suite.id` =
+             the run's `check_suite_id` (verified live). ci-health 22 is a finding, diagnosed from
+             the log rather than assumed to be the diff's. 23 (no failing job executed a step) is
+             re-run once. 24/25 wait for the run, once.
+             20 or anything else is handed back. An external check or status is named and never
+             re-run.
+             (d) Flaky arm. The ledger class is NOT a flake registry. A red is a known flake only
+             when an OPEN issue already names that exact job or test and the log matches. Then that
+             issue is linked and the run re-run once. The resolver never files a de-flake issue
+             itself.
+             (e) Re-run bound. Only a run on `attempt 1` is re-run, decided on fresh reads (the
+             attempt ci-health just read, the PR's live state and head) rather than on the CI
+             line. The counter is GitHub's, so the bound survives a restarted session. The
+             guarantee is sequential, as `request-review`'s is.
+             (f) `no-ci`. The roadmap artifact's `release-health: no-ci`, through `health-decl`'s
+             author-permission rule. It is read only when no Actions check ran and no workflow is
+             active. `skip-unreported` is not honoured for a PR head.
+             (g) Defaults accepted. `--once` takes one reading and never waits. A CI fix is a pushed
+             round, so the round cap counts it. The head is read, not the test merge commit, and the
+             docs say so. Names pass an allowlist, `?`-substituted, cut at 100 and joined with `; `.
+             `ci-wait` defaults to every 60 s for up to 3600 s.
+             (h) **Owner decision 2026-10-06, from the independent review:** a green that settles
+             after the bound is not accepted (11), and the bound limits continued polling only — a
+             read that hangs is not bounded, as with `wait`. Wrapping every read in
+             `adb_run_bounded` was offered and declined.
+             (i) **Owner decision 2026-10-06, from the local review loop:** the predicates that say
+             what a check IS — on this commit, concluded, failing, pending — live once, as
+             `roadmap-lib.sh`'s `_adb_rm_ci_defs`, used by `branch-health` and by a new pure
+             `check-facts` that `pr-watch.sh` renders. A mirror plus an agreement test was offered
+             and declined.
+             (j) **Owner decision 2026-10-06, from the local review loop's second pass — a trust
+             boundary:** what is validated is that every record carries the fields its consumers
+             read and every list is complete, not that GitHub's values follow its grammar. An
+             unknown conclusion or status state classifies as failing, and an unknown check-run
+             status as still running — never green. GitHub's
+             1000-check-suite limit on the check-runs endpoint is outside what the read describes;
+             the suite-count check that could not prove it was removed. Enforcing the enums
+             (a new GitHub value would stall every wait) was offered and declined.
+             (k) **Owner decision 2026-10-06:** the local review loop's budget was raised to a
+             fourth pass for this run, after pass 3 found two of its own mutation rows defective (one
+             mutated into a program that did not parse; one could no longer fail beside a second
+             guard added in pass 2, which was removed so one defence is proven).
+             (l) **Owner decision 2026-10-07:** a fifth pass, after pass 4's harness run showed two
+             more rows unable to fail beside `check-facts`' member validation; their fixtures now
+             carry records only `pr-watch.sh`'s own check refuses. A workflow that fails to start
+             without creating a check run is NOT detected — it would extend the shared check model
+             — and is carried as MEDIUM.
+             (m) **Owner decision 2026-10-07:** `selfcheck-macos` skips `pr-watch-mutation`, as
+             #339 skips the other logic-only harnesses: the full local selfcheck measured it the
+             slowest step (4754s inside a 95m37s run), the macOS leg's last run took 47m41s of its
+             55, and the ubuntu `pr-watch` job runs it on every relevant PR — pinned by
+             `check-fact-drift.sh` as that harness's only per-PR execution. A sixth local review
+             pass covers this change.
+             (n) **Owner decision 2026-10-07, after three local passes in a row found defects in
+             `ci-wait`'s temp-file sink (a partial write, a failed create, permissions and symlinks):
+             the sink is gone.** It existed only because each poll ran in a `$( … )` subshell;
+             `_pw_ci_classify` now returns its verdict, line, signature and unsettled count in shell
+             variables and prints nothing, and `ci`/`ci-wait` decide what is shown when.
+             This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
+             by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
+- placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in
+             `observe`/`wait`); `scripts/lib/roadmap-lib.sh` (`_adb_rm_ci_defs`, `check-facts`,
+             `branch-health` on the shared defs); `scripts/check-roadmap.sh`; `scripts/lib/common.sh` (`adb_pr_snapshot` carries `base_ref`);
+             `scripts/check-pr-watch.sh` (section 14, blocks, per-test CI rows);
+             `scripts/check-lib.sh` (`--base-ref`); `scripts/selfcheck.sh` (`pr-watch-mutation`
+             inputs); `base/workflows/resolve-pr-threads.md` (0b's CI line, step 7b, step 6's CI
+             line, the scope exception); `base/workflows/implement-issue.md` (the wait table, step
+             11); `.github/workflows/ci.yml` (the `pr-watch` ceiling, `selfcheck-macos`'s skip);
+             `scripts/check-fact-drift.sh` (the skip and `pr-watch-mutation-wired` pins);
+             `docs/roles-and-agents.md`, `docs/repo-settings.md`, `docs/ci-runners.md`,
+             `CONTRIBUTING.md`, `CLAUDE.md`, `CHANGELOG.md`
+- reason:    The remote's verdict on a head is the other half of "never push red", and the
+             reviewer's wait is the poll the loop already makes. Reading CI there costs nothing per
+             poll. Waiting for it in every round would multiply the loop by the CI leg. #448
+             measured the two longest legs of run 33184516415 at 23m47s and 22m20s, and the review
+             found `selfcheck-macos` at 47m41s on run 37525965580. So the loop waits only at its
+             terminal exit, which is the last thing between the head and a merge.
+- baseline-issue: n/a

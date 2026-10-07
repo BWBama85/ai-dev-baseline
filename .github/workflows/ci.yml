@@ -506,13 +506,14 @@ jobs:
   pr-watch:
     name: pr-watch
     runs-on: ubuntu-26.04
-    # 25, not 10, because the mutation step below runs the whole suite once per row plus a control.
-    # Measured: 2m27s at this workstation's pool width, 3m36s with the pool forced to 2 — which is
-    # what a 2-core hosted runner gets — before that runner's own slower CPU is counted. The
-    # pr-threads harness after it (11 rows, #437) measured 2m13s with the pool forced to 2. A job that
-    # times out is a red CI leg that says nothing about the diff, which is the class of defect #394
-    # is about.
-    timeout-minutes: 25
+    # 75, because the mutation step below runs the whole suite once per pool row plus a control, and
+    # since #448 each head-CI row runs its block after a second full control. Measured on this
+    # workstation on 2026-10-07, at load average ~5.5: 32m11s with the pool forced to 2 (42 rows,
+    # ADB_POOL_JOBS=2) — before a hosted runner's slower CPU is counted, and beside the plain suite
+    # (~3m) and the pr-threads harness after it (11 rows, #437: 2m13s with the pool forced to 2). A
+    # job that times out is a red CI leg that says nothing about the diff, which is the class of
+    # defect #394 is about.
+    timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -543,7 +544,7 @@ jobs:
       # split does not earn one. It runs HERE and not only inside `selfcheck-macos`, because that
       # aggregate job is macOS: without this step every witness could regress on Linux unseen.
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: ...and those cases must be able to fail — 10 mutations, each observed RED (#394, #447)
+      - name: ...and those cases must be able to fail — every mutation observed RED (#394, #447, #448)
         run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation
 
       # Rides this job rather than adding one: a second job is a second required status context for
@@ -1584,14 +1585,14 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less FIVE steps. shellcheck is installed above for a reason: selfcheck
+      # The offline suite, less SIX steps. shellcheck is installed above for a reason: selfcheck
       # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
       # false in precisely the silent way this repo keeps writing guards against.
       #
-      # These five mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
+      # These six mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
       # jobs run each on every relevant PR, and check-fact-drift.sh pins those invocations because
       # they are each harness's ONLY per-PR execution after this skip. Their non-mutation halves
-      # still run here. Measurements and rationale: D87, D101.
+      # still run here. Measurements and rationale: D87, D101, D123.
       #
       # AND THE MUTATION GATE APPLIES HERE TOO (#441): the runner asks `scripts/mutation-gate.sh`
       # before dispatching any `*-mutation` step, against ADB_MUTATION_BASE (workflow `env:`), so an
@@ -1603,7 +1604,7 @@ jobs:
       - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent

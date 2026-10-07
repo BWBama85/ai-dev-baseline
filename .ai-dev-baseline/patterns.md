@@ -776,4 +776,10 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `scripts/selfcheck.sh:1461` `40e7282` `PRRT_kwDOTfywrM6pQpoH` PR #517 2026-10-06 — the overrun ticker reported every unreaped worker as running, so a finished but late-reaped step could be warned about and recorded
 - `reuse-missed` `scripts/lib/common.sh:4496` `d5ec6f7` `PRRT_kwDOTfywrM6pYSje` PR #517 2026-10-06 — the wake of a stopped watcher was a bare kill to its pid, so a wholly stopped group kept its sleep stopped; _adb_bounded_signal already signals group then pid
 - `path-divergence` `scripts/lib/common.sh:4416` `d5ec6f7` `PRRT_kwDOTfywrM6pYSjj` PR #517 2026-10-06 — the grace fix landed on the watchdog path only; the timeout path still swept the group the moment timeout returned
+- `stale-doc-claim` `base/workflows/resolve-pr-threads.md:332` `1b2e1fb` `PRRT_kwDOTfywrM6p690l` PR #521 2026-10-07 — the clean-pass reconcile snippet routed due=11 to step 8 and exit, skipping step 7b's CI wait
+- `stale-state-trusted` `base/workflows/resolve-pr-threads.md:1556` `1b2e1fb` `PRRT_kwDOTfywrM6p690r` PR #521 2026-10-07 — step 7b's success exits trusted stored SHAs without re-reading the live PR state and head
+- `stale-state-trusted` `base/workflows/resolve-pr-threads.md:1557` `1b2e1fb` `PRRT_kwDOTfywrM6p6903` PR #521 2026-10-07 — head recovery fast-forwarded the configured upstream instead of the fetched PR head
+- `false-guarantee` `base/workflows/resolve-pr-threads.md:1576` `1b2e1fb` `PRRT_kwDOTfywrM6p6909` PR #521 2026-10-07 — a red turning green took one ci reading, bypassing ci-wait's two-poll settlement
+- `precondition-ordering` `base/workflows/resolve-pr-threads.md:1613` `1b2e1fb` `PRRT_kwDOTfywrM6p691E` PR #521 2026-10-07 — a CI-fix round cleared SWEEP_HEAD in round-open and then reached 4d, which requires it
+- `third-party-default` `base/workflows/resolve-pr-threads.md:1633` `3daa740` `PRRT_kwDOTfywrM6p81pA` PR #521 2026-10-07 — a startup_failure re-run used gh run rerun --failed, which has no failed job to select
 <!-- adb:hits:end -->
