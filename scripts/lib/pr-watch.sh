@@ -1027,11 +1027,7 @@ adb_pw_count_receipts() {
 }
 
 # ================================================================================================
-# THE HEAD'S CI (#448)
-#
-# A pushed head has two verdicts, the reviewer's and the remote CI's, and before #448 neither PR loop
-# read the second: a required check could go red on the head a resolver round had just pushed while
-# every later round reported itself clean. This section is that read, in three shapes:
+# THE HEAD'S CI (#448, D123) — the remote's verdict on a pushed head, in three shapes:
 #
 #   observe / wait   ONE stderr line, about the classification they return — never one per poll:
 #                      pr-watch: ci <verdict> <sha> observed <UTC> — <detail>
@@ -1127,6 +1123,12 @@ _pw_ci_fail() { printf 'unreadable\n%s\n' "$1"; return 20; }
 # set are `check-facts`', both from `roadmap-lib.sh`'s one set of definitions; this function reads,
 # validates, and renders.
 #
+# THE TRUST BOUNDARY (owner decision, D123): what is validated is that every record carries the
+# fields its consumers read and that every list is complete — not that GitHub's values follow its
+# grammar. An unknown conclusion or state still classifies as failing, so it can never read green.
+# Nor is GitHub's 1000-check-suite limit on this endpoint detected: a head with that many suites is
+# outside what this read describes.
+#
 # ONE READ DEGRADES INSTEAD: the roadmap artifact's declaration. An unreadable one is read as no
 # declaration (`off`), which can only withhold green, and its reason is carried in the detail.
 #
@@ -1152,9 +1154,8 @@ _pw_ci_eval() {
   # failing check and leave the rest reading green. `filter=latest` is pinned rather than defaulted.
   ck="$(gh api --paginate "repos/$slug/commits/$head/check-runs?filter=latest&per_page=100" 2>/dev/null)" \
     || { _pw_ci_fail "could not read the check runs of $head"; return 20; }
-  # GitHub lists check runs from the 1000 most recent check suites only, so a list that reaches 1000
-  # suites cannot be proved whole however its counts agree. An EMPTY read is refused by the length
-  # test: with no page, the total is null and no length equals it — here and in the two reads below.
+  # An EMPTY read is refused by the length test: with no page, the total is null and no length equals
+  # it — here and in the two reads below.
   runs="$(printf '%s' "$ck" | jq -s -c '
       if all(.[]; (type == "object") and ((.check_runs | type) == "array")
                   and ((.total_count | type) == "number")) | not
@@ -1170,7 +1171,6 @@ _pw_ci_eval() {
                        and ((.check_suite.id | type) == "number")) | not
         then error("a check run lacks a field its consumers read") else . end
       | if ([$all[] | .id] | unique | length) != ($all | length) then error("a check run repeats") else . end
-      | if ([$all[] | .check_suite.id] | unique | length) >= 1000 then error("at the check-suite ceiling") else . end
       | [$all[] | {id, name, head_sha, status, conclusion,
                    app: {slug: (.app.slug // null)}, check_suite: {id: .check_suite.id}}]' 2>/dev/null)" \
     || { _pw_ci_fail "the check runs of $head are not a complete, well-formed list"; return 20; }
@@ -1321,9 +1321,15 @@ _pw_ci_note() {
 }
 
 # _pw_ci_say <line> [signature] [unsettled] — publish ONE CI line: into `ci-wait`'s sink with the
-# fields it compares, and onto stderr unless a wait is polling quietly.
+# fields it compares, and onto stderr unless a wait is polling quietly. Returns 1 when the sink
+# cannot be written — the line then goes to stderr whatever the mode, since nothing else will carry it.
 _pw_ci_say() {
-  [ -n "$_ADB_PW_CI_SINK" ] && printf '%s\n%s\n%s\n' "${2:-}" "$1" "${3:-}" > "$_ADB_PW_CI_SINK"
+  if [ -n "$_ADB_PW_CI_SINK" ] \
+     && ! printf '%s\n%s\n%s\n' "${2:-}" "$1" "${3:-}" > "$_ADB_PW_CI_SINK" 2>/dev/null; then
+    printf '%s\n' "$1" >&2
+    echo "pr-watch: could not record this CI observation for the wait — reading it as unreadable" >&2
+    return 1
+  fi
   [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$1" >&2
   return 0
 }
@@ -1355,15 +1361,17 @@ EOF
        return 20 ;;
   esac
   if [ "$state" != "open" ]; then
+    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch" \
+      || return 20
     printf 'gone %s\n' "$head"
-    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch"
     return 12
   fi
   out="$(_pw_ci_eval "$qslug" "$head" "$baseref")"; rc=$?
   verdict="${out%%$'\n'*}"
   line="pr-watch: ci $verdict $head observed $at — $(printf '%s\n' "$out" | sed -n 2p)"
   if [ "$rc" -ne 0 ]; then _pw_ci_say "$line"; return 20; fi
-  _pw_ci_say "$line" "$(printf '%s\n' "$out" | sed -n 3p)" "$(printf '%s\n' "$out" | sed -n 4p)"
+  _pw_ci_say "$line" "$(printf '%s\n' "$out" | sed -n 3p)" "$(printf '%s\n' "$out" | sed -n 4p)" \
+    || return 20
   printf '%s %s\n' "$verdict" "$head"
   case "$verdict" in
     green)     return 0 ;;
@@ -1378,7 +1386,8 @@ cmd_ci() {
   [ -n "$OPT_PR" ] || { echo "pr-watch: ci requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
-  adb_require_gh jq || return 20
+  adb_require_gh jq \
+    || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated"; return 20; }
   _pw_ci_classify "$n"
 }
 
@@ -1413,7 +1422,8 @@ cmd_ci_wait() {
     || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
   require_uint "$OPT_INTERVAL" --interval || return 2
   require_uint "$OPT_MAX_SECS" --max-secs || return 2
-  adb_require_gh jq || return 20
+  adb_require_gh jq \
+    || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated, so there is nothing to wait on"; return 20; }
   deadline="$(_pw_deadline)"
   # The sink is where every poll leaves its CI line and signature; without one there is neither a
   # line to report nor polls to compare, so the wait refuses rather than running blind.
@@ -1427,7 +1437,12 @@ cmd_ci_wait() {
         exit 11' INT TERM
 
   while :; do
-    [ -n "$_ADB_PW_CI_SINK" ] && : > "$_ADB_PW_CI_SINK"
+    if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then
+      echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not reset the temp file, so this wait cannot compare its polls" >&2
+      trap - INT TERM
+      rm -f "$_ADB_PW_CI_SINK"
+      return 20
+    fi
     out="$(_pw_ci_classify "$n")"; rc=$?
     head="${out##* }"
     remaining=$(( deadline - BASH_MONOSECONDS ))

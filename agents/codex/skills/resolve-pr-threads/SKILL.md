@@ -1569,7 +1569,7 @@ bash "$HOME/.codex/scripts/lib/ci-health.sh" classify --run <id>
 | --- | --- | --- |
 | `22` failed | a failing job executed — or the run failed at `startup_failure`, before any job ran | **a finding of this round.** Read the log and diagnose it — for a `startup_failure`, the run page and the workflow file, since there is no job log: `22` proves something ran or failed to start, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
 | `23` never ran | no failing job executed a step, so there is nothing to diagnose | re-run once (below), and say in the summary that this is **not green-by-retry**: there was never a result to override |
-| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.codex/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → the red is gone, report the CI line; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
+| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.codex/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → treat it exactly as the first wait's `0`, SHA comparison included; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
 | `20` / `2` / other | the run could not be read | report it and hand back |
 
 An `[external check]` or `[external status]` has no run to classify, and an Actions failure shown as
@@ -1598,8 +1598,9 @@ gh run rerun <id> --failed
 `gh run rerun` only REQUESTS the re-run, and until the new attempt's checks register, the head still
 shows the old red. So confirm it took — `bash "$HOME/.codex/scripts/lib/ci-health.sh" classify --run <id>` must now report
 `attempt 2` — then wait with `bash "$HOME/.codex/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds
-the red while that run has not concluded. If the attempt has not moved, hand back rather than wait
-on the old red.
+the red while that run has not concluded, and branch on it exactly as on this step's first wait: a
+`0` is held to the same SHA comparison, because a push during this wait is just as possible. If
+the attempt has not moved, hand back rather than wait on the old red.
 
 **A CI fix is a round like any other — so it OPENS one and REPORTS one.** Run step 3's `round-open`
 snippet first: on the clean-pass door nothing has opened this round, and step 6's row would

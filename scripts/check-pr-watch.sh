@@ -334,18 +334,18 @@ L
         | if ($all | length) != $t then error("the inventory is incomplete") else . end
 L
 )" '        | .' 'ci: a workflow inventory shorter than its total_count is unreadable'
-  check_row ci-suite-ceiling-ignored "$PWT" ci-read "$(lit <<'L'
-      | if ([$all[] | .check_suite.id] | unique | length) >= 1000 then error("at the check-suite ceiling") else . end
-L
-)" '      | .' 'ci: a check-run list at the 1000-suite ceiling cannot be proved whole'
   check_row ci-leading-zero-accepted "$PWT" ci-read "$(lit <<'L'
   case "$1" in 0?*) echo "pr-watch: $2 must not carry a leading zero (got '$1')" >&2; return 1 ;; esac
 L
 )" '  :' 'ci-wait: a leading-zero bound is refused'
   check_row ci-gone-silent "$PWT" ci-read "$(lit <<'L'
-    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch"
+    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch" \
 L
-)" '    :' 'ci: a closed pull request still prints its CI line'
+)" '    : \' 'ci: a closed pull request still prints its CI line'
+  check_row ci-auth-line-dropped "$PWT" ci-read "$(lit <<'L'
+    || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated"; return 20; }
+L
+)" '    || return 20' 'ci: an unauthenticated gh still prints its CI line'
   check_row ci-late-green-accepted "$PWT" ci-wait "$(lit <<'L'
         if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ] && [ "$remaining" -gt 0 ]; then
 L
@@ -2174,12 +2174,6 @@ w ci --pr 1;  rc 20 "ci: a workflow inventory shorter than its total_count is un
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected
 printf '' > "$S/workflows.json"
 w ci --pr 1;  rc 20 "ci: an EMPTY workflow inventory is unreadable, never zero workflows"
-# GitHub lists check runs from the 1000 most recent check suites only.
-reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
-jq -n -c --arg sha "$HEAD_SHA" '[range(1000) | {id: ., name: "j\(.)", head_sha: $sha, status: "completed",
-    conclusion: "success", app: {slug: "github-actions"}, check_suite: {id: (100000 + .)}}]
-  | {total_count: length, check_runs: .}' > "$S/checkruns.json"
-w ci --pr 1;  rc 20 "ci: a check-run list at the 1000-suite ceiling cannot be proved whole"
 # A RECORD MISSING A FIELD ITS CONSUMERS READ is unreadable, never a thinner set: each fixture below
 # reads green, or `no-ci`, if the bad record is taken at face value.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
@@ -2211,6 +2205,9 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 STUB_GRAPHQL_FAIL=1 w ci --pr 1;  rc 20 "ci: an unreadable pull request is 20"
 has "$OUT" "pr-watch: ci unreadable - observed " "ci: an unreadable pull request still prints its CI line"
 STUB_GRAPHQL_FAIL=0
+STUB_AUTH_FAIL=1 w ci --pr 1;  rc 20 "ci: an unauthenticated gh is 20"
+has "$OUT" "pr-watch: ci unreadable - observed " "ci: an unauthenticated gh still prints its CI line"
+STUB_AUTH_FAIL=0
 w ci-wait --pr 1 --max-secs 08;  rc 2 "ci-wait: a leading-zero bound is refused, not read as octal"
 
 # --- names reach the summary only through the allowlist ---------------------------------------
@@ -2376,6 +2373,9 @@ eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "1" "ci-wait: ...and say
 # Poll 2 costs 8s against a 5s bound, so it settles late whatever poll 1 cost under load.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '8' > "$S/slow-2"
 w ci-wait --pr 1 --interval 1 --max-secs 5;  rc 11 "ci-wait: a green that settles only after the bound is not accepted"
+# ...and the case only means something if poll 2 actually ran; a loaded first poll that eats the
+# bound would make both the code and its mutant return 11 without ever settling.
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "2" "ci-wait: the late-settling green was reached on poll 2"
 # ...and the expired bound's CI line, which callers paste as the CI state, does not say green either.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '3' > "$S/slow-1"
 w ci-wait --pr 1 --interval 30 --max-secs 1

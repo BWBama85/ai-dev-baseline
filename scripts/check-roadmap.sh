@@ -2801,6 +2801,8 @@ for _doc in \
   else bad "check-facts: agrees with branch-health about whether anything failed (verdict $_v, $_n failing)"; fi
 done
 facts '{"check_runs":[]}';  eq "$RC_" 2 "check-facts: a document without statuses is bad input, never 'nothing failed'"
+facts '{"check_runs":[],"statuses":[{}]}';  eq "$RC_" 2 "check-facts: a status with no state is bad input, never a concluded failure"
+facts '{"check_runs":[{}],"statuses":[]}';  eq "$RC_" 2 "check-facts: a check run with no status or head is bad input, never a count"
 facts '';                   eq "$RC_" 2 "check-facts: empty input is bad input"
 facts "${ hj "" ""; }" abc;  eq "$RC_" 2 "check-facts: a short sha is refused"
 

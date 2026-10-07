@@ -9157,6 +9157,13 @@ survive is the part a later reader needs.
              `roadmap-lib.sh`'s `_adb_rm_ci_defs`, used by `branch-health` and by a new pure
              `check-facts` that `pr-watch.sh` renders. A mirror plus an agreement test was offered
              and declined.
+             (j) **Owner decision 2026-10-06, from the local review loop's second pass — a trust
+             boundary:** what is validated is that every record carries the fields its consumers
+             read and every list is complete, not that GitHub's values follow its grammar. An
+             unknown conclusion or state still classifies as failing, never green. GitHub's
+             1000-check-suite limit on the check-runs endpoint is outside what the read describes;
+             the suite-count check that could not prove it was removed. Enforcing the enums
+             (a new GitHub value would stall every wait) was offered and declined.
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in

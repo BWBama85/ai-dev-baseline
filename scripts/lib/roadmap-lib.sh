@@ -680,11 +680,13 @@ cmd_branch_health() {
   printf '%s\n' "$out"
 }
 
-# --- check-facts (#448) -------------------------------------------------------------------------
+# --- check-facts (#448, D123) -------------------------------------------------------------------
 # The DISPLAY facts of one commit's checks, decided by the same definitions `branch-health` decides
 # with (`_adb_rm_ci_defs`): how many there are, how many concluded, and which failed. pr-watch.sh
-# renders them beside `branch-health`'s verdict, and re-deriving them there was a second definition
-# of "failing" that could disagree with the verdict it was printed beside.
+# renders them beside `branch-health`'s verdict.
+#
+# A member that lacks a field the definitions read is BAD INPUT (2), never a record defaulted into
+# a count: a status with no state would otherwise be counted as a concluded failure nobody reported.
 #
 #   check-facts <expected-sha>       {check_runs, statuses} on stdin, shaped as branch-health takes them
 #
@@ -709,6 +711,13 @@ cmd_check_facts() {
       then error("check_runs and statuses are both required") else . end
     | if ((.check_runs | type) != "array") or ((.statuses | type) != "array")
       then error("check_runs/statuses must be arrays") else . end
+    | if all(.check_runs[]; (type == "object") and ((.name | type) == "string")
+                            and ((.head_sha | type) == "string") and ((.status | type) == "string")
+                            and ((.conclusion | type) | IN("string", "null"))) | not
+      then error("a check run lacks a field the definitions read") else . end
+    | if all(.statuses[]; (type == "object") and ((.context | type) == "string")
+                          and ((.state | type) == "string")) | not
+      then error("a status lacks its context or state") else . end
     | ($sha | ascii_downcase) as $want
     | [.check_runs[] | adb_ci_mine($want)] as $mine
     | .statuses as $sts
