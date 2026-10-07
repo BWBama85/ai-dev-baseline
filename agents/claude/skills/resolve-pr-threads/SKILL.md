@@ -1550,7 +1550,7 @@ Make it the last command in its block and branch on its EXIT CODE:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `0`  | every check on the head concluded non-failing, every required context reported, and that held across two polls | report the CI line; exit through the door you came from |
+| `0`  | every check on the head concluded non-failing, every required context reported, and that held across two polls | **compare the SHA on its stdout with the head the door was about** (0b's `clean <sha>`, or the head this round pushed). Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
 | `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | report "no CI to wait for"; exit as above |
 | `40` | a check on the head concluded failing — returned at once, while siblings may still run | **route it** (below). Never report this exit clean, and never as "nothing to do" |
 | `11` | the bound expired before the checks concluded | report the CI line — it is **not green** — and hand back to the operator |
@@ -1568,25 +1568,45 @@ bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>
 
 | `ci-health` | What it proves | What to do |
 | --- | --- | --- |
-| `22` failed | the job executed, so a log exists | **a finding of this round.** Read the log and diagnose it: `22` proves the job ran, not that this diff broke it. A cause in this PR's diff → fix it exactly as step 4 fixes a thread (gates, commit, 4d's local review, push), then step 7's re-review request — the head moved — and back to 0b. A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
+| `22` failed | the job executed, so a log exists | **a finding of this round.** Read the log and diagnose it: `22` proves the job ran, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
 | `23` never ran | no failing job executed a step, so there is nothing to diagnose | re-run once (below), and say in the summary that this is **not green-by-retry**: there was never a result to override |
-| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let the run finish, once — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which returns only when nothing on the head is still running — then classify again |
+| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, once — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded — then classify again |
 | `20` / `2` / other | the run could not be read | report it and hand back |
 
-An `[external check]` or `[external status]` has no run to classify: report it by name for the
-operator, and never re-run it.
+An `[external check]` or `[external status]` has no run to classify, and an Actions failure shown as
+`[run ?]` could not be mapped to one: report each by name for the operator, never guess a run id,
+and never re-run it.
 
-**Re-run once, and only on a first attempt.** `attempt <n>` is GitHub's own counter, so this bound
-is held by the pull request rather than by the session: re-run only a run whose line reads
-`attempt 1`, then dispatch this step's wait again. A red on `attempt 2` or later is reported and
-handed back.
+**Re-run once, and only on a first attempt — decided on fresh reads, not on the CI line.** The line
+is a snapshot, and by now another actor may have re-run the run, pushed, or closed the pull request.
+Immediately before re-running, read the run's attempt from `ci-health`'s own reason line
+(`attempt N`, read when you classified it) and the PR's live state:
+
+```bash
+gh pr view "$PR_NUM" --json state,headRefOid
+```
+
+Re-run only when the attempt is `1`, the PR is `OPEN`, and its head is still the SHA on the CI line;
+otherwise report what changed and hand back. The guarantee is sequential, as `request-review`'s is:
+two sessions racing the same run can both re-run it, and nothing on GitHub serializes that.
 
 ```bash
 gh run rerun <id> --failed
 ```
 
-**A CI fix is a round like any other.** It pushes, so step 7 asks for a re-review and the round cap
-counts it; nothing here adds a second counter.
+`gh run rerun` only REQUESTS the re-run, and until the new attempt's checks register, the head still
+shows the old red. So confirm it took — `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>` must now report
+`attempt 2` — then wait with `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds
+the red while that run has not concluded. If the attempt has not moved, hand back rather than wait
+on the old red.
+
+**A CI fix is a round like any other — so it OPENS one.** Run step 3's `round-open` snippet first:
+on the clean-pass door nothing has opened this round, and step 6's row would otherwise carry an
+earlier round's figures. Then fix it as step 4 fixes a thread — gates, commit, 4d's local review,
+push — and go on to step 7: the head moved, so step 7 asks for a re-review and the round cap counts
+it; nothing here adds a second counter. **A CI red is not a review thread**: it has no thread id, so
+it is not recorded in the pattern ledger (4b) and not counted among the round's findings. Its record
+is the CI line in step 6's summary, with its `ci-health` class.
 
 ### 8. Restore the starting branch (never strand the tree)
 

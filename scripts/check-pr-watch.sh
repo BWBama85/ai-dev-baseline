@@ -106,10 +106,10 @@ check_exit_guard "check-pr-watch" "rm -rf \"$work\""
 # thing the section claims to catch, runs the WHOLE suite against the broken copy, and requires it
 # back at exit 1 carrying THAT CASE'S OWN witness (#213's `fires:` contract).
 #
-# SCOPED TO SECTION 11 AND #447's PAIR RULE, said plainly so nobody reads it as more: it proves the
-# BOUNDED-WAIT cases and the `+1`/comment pairing and status-comment filter can fire. It is not a
-# mutation suite for `pr-watch.sh` at large; the other classification sections are covered by their
-# own assertions and by nothing here.
+# SCOPED TO SECTION 11, #447's PAIR RULE AND THE HEAD-CI READ (#448), said plainly so nobody reads
+# it as more: it proves the BOUNDED-WAIT cases, the `+1`/comment pairing and status-comment filter,
+# and section 14's CI guards can fire. It is not a mutation suite for `pr-watch.sh` at large; the
+# other classification sections are covered by their own assertions and by nothing here.
 #
 # THREE POOLS, because `check_mutation_pool` builds one target path per call and these witnesses
 # live in two files — the wait loop's own reporting (`pr-watch.sh`), and the staleness rule and
@@ -251,9 +251,9 @@ if [ "$MODE" = mutation ]; then
   lit() { IFS= read -r REPLY; printf '%s' "$REPLY"; }
   PWT=scripts/lib/pr-watch.sh
   check_row ci-settle-dropped "$PWT" ci-wait "$(lit <<'L'
-        if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ]; then
+        if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ] && [ "$remaining" -gt 0 ]; then
 L
-)" '        if :; then' 'ci-wait: green is reported only after it held across two polls'
+)" '        if [ "$remaining" -gt 0 ]; then' 'ci-wait: green is reported only after it held across two polls'
   check_row ci-settle-ignores-set "$PWT" ci-wait "$(lit <<'L'
         if [ "$greens" -gt 0 ] && [ -n "$sig" ] && [ "$sig" = "$lastsig" ]; then
 L
@@ -268,10 +268,10 @@ L
 L
 )" 'ci-wait: ...and its stdout does not say green'
   check_row ci-wait-narrates "$PWT" ci-wait "$(lit <<'L'
-  [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$line" >&2
+  [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$1" >&2
 L
 )" "$(lit <<'L'
-  printf '%s\n' "$line" >&2
+  printf '%s\n' "$1" >&2
 L
 )" 'ci-wait: quiet while it polls'
   check_row ci-allowlist-dropped "$PWT" ci-read "$(lit <<'L'
@@ -326,6 +326,51 @@ L
     if [ "$rc" -eq 40 ] && [ "$OPT_NO_FAIL_FAST" = "1" ] && [ "${running:-1}" != "0" ]; then
 L
 )" '    if false; then' 'ci-wait --no-fail-fast: returns on the poll where the last sibling concluded'
+  check_row ci-status-incomplete-accepted "$PWT" ci-read "$(lit <<'L'
+      | if ($all | length) != $t then error("the status list is incomplete") else . end
+L
+)" '      | .' 'ci: a status list shorter than its total_count is incomplete'
+  check_row ci-inventory-incomplete-accepted "$PWT" ci-read "$(lit <<'L'
+        | if ($all | length) != $t then error("the inventory is incomplete") else . end
+L
+)" '        | .' 'ci: a workflow inventory shorter than its total_count is unreadable'
+  check_row ci-suite-ceiling-ignored "$PWT" ci-read "$(lit <<'L'
+      | if ([$all[] | .check_suite.id] | unique | length) >= 1000 then error("at the check-suite ceiling") else . end
+L
+)" '      | .' 'ci: a check-run list at the 1000-suite ceiling cannot be proved whole'
+  check_row ci-leading-zero-accepted "$PWT" ci-read "$(lit <<'L'
+  case "$1" in 0?*) echo "pr-watch: $2 must not carry a leading zero (got '$1')" >&2; return 1 ;; esac
+L
+)" '  :' 'ci-wait: a leading-zero bound is refused'
+  check_row ci-gone-silent "$PWT" ci-read "$(lit <<'L'
+    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch"
+L
+)" '    :' 'ci: a closed pull request still prints its CI line'
+  check_row ci-late-green-accepted "$PWT" ci-wait "$(lit <<'L'
+        if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ] && [ "$remaining" -gt 0 ]; then
+L
+)" '        if [ "$greens" -ge "$_ADB_PW_CI_SETTLE" ]; then' 'ci-wait: a green that settles only after the bound is not accepted'
+  check_row ci-expiry-line-green "$PWT" ci-wait "$(lit <<'L'
+          line="pr-watch: ci indeterminate ${line#pr-watch: ci green } — green on its last poll, not settled before the bound" ;;
+L
+)" '          : ;;' "ci-wait: the expired bound's CI line does not say green"
+  check_row ci-decl-reason-on-stderr "$PWT" ci-wait "$(lit <<'L'
+    *) if [ -n "$why" ]; then printf 'off
+roadmap #%s: %s' "$num" "$why"; else printf 'off'; fi ;;
+L
+)" "$(lit <<'L'
+    *) [ -n "$why" ] && printf 'pr-watch: ci — roadmap #%s: %s
+' "$num" "$why" >&2; printf 'off' ;;
+L
+)" 'ci-wait: the declaration reason rides the one CI line'
+  check_row ci-open-run-ignored "$PWT" ci-wait "$(lit <<'L'
+      | [$badruns[] | select((.app.slug // "") == $a) | runof | select(. != null and (.done | not))] as $openruns
+L
+)" '      | [] as $openruns' "ci-wait --no-fail-fast: returns once the red's run concluded"
+  check_row ci-signature-anonymous "$PWT" ci-wait "$(lit <<'L'
+        ( [ ($mine[] | [(.id // ""), (.app.slug // ""), (.name // ""), (.status // ""), (.conclusion // "")]),
+L
+)" '        ( [ ($mine[] | [(.name // ""), (.status // ""), (.conclusion // "")]),' 'ci-wait: a check replaced under the same name is a new check set'
   mut_prep_root() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1; printf '%s' "$1"; }
   mut_run_root()  { "$BASH" "$1/scripts/check-pr-watch.sh" 2>&1; }
   check_mutation_rows "pr-watch-ci" "$work/mr" scripts/check-pr-watch.sh mut_prep_root mut_run_root 4
@@ -657,12 +702,12 @@ rc() { eq "$RC_" "$1" "$2"; }
 
 # HEAD-CI FIXTURES (#448), in the prelude so every block can build them. A check run is `name|status|conclusion|app|suite` (conclusion empty = null, app
 # empty = Actions, suite empty = 7001); a status is `context|state`. `CI_SHA` overrides the head a
-# fixture describes, which is how a moved head's evidence is written.
+# fixture describes, which is how a moved head's evidence is written; `CI_ID_BASE` the check-run ids.
 ci_runs_into() {
   local out="$1"; shift
-  printf '%s\n' "$@" | jq -R -s -c --arg sha "${CI_SHA:-$HEAD_SHA}" '
+  printf '%s\n' "$@" | jq -R -s -c --arg sha "${CI_SHA:-$HEAD_SHA}" --argjson base "${CI_ID_BASE:-9000}" '
     split("\n") | map(select(length > 0) | split("|")) | to_entries
-    | map(.value as $f | {id: (9000 + .key), name: $f[0], head_sha: $sha, status: $f[1],
+    | map(.value as $f | {id: ($base + .key), name: $f[0], head_sha: $sha, status: $f[1],
            conclusion: (if ($f[2] // "") == "" then null else $f[2] end),
            app: {slug: (if ($f[3] // "") == "" then "github-actions" else $f[3] end)},
            check_suite: {id: (if ($f[4] // "") == "" then 7001 else ($f[4] | tonumber) end)}})
@@ -688,12 +733,17 @@ ci_branch_fx() {
   esac
 }
 ci_workflows_fx() { jq -n -c --argjson n "$1" '{total_count: $n, workflows: [range($n) | {id: ., state: "active"}]}' > "$S/workflows.json"; }
-# ci_wfruns_fx <run-id|suite|attempt> …
-ci_wfruns_fx() {
+# ci_lines_with <text> — how many lines of $OUT carry <text>.
+ci_lines_with() { printf '%s\n' "$OUT" | grep -cF -- "$1"; }
+# ci_wfruns_into <file> <run-id|suite|attempt[|status]> … — status defaults to completed.
+ci_wfruns_into() {
+  local out="$1"; shift
   printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("|")
-      | {id: (.[0] | tonumber), check_suite_id: (.[1] | tonumber), run_attempt: (.[2] | tonumber)})
-    | {total_count: length, workflow_runs: .}' > "$S/wfruns.json"
+      | {id: (.[0] | tonumber), check_suite_id: (.[1] | tonumber), run_attempt: (.[2] | tonumber),
+         status: (if (.[3] // "") == "" then "completed" else .[3] end)})
+    | {total_count: length, workflow_runs: .}' > "$out"
 }
+ci_wfruns_fx() { ci_wfruns_into "$S/wfruns.json" "$@"; }
 # ci_roadmap_fx <body> <author> <permission> — ONE open roadmap artifact, and its author's access.
 ci_roadmap_fx() {
   jq -n -c --arg b "$1" --arg a "$2" '[{number: 31, body: $b, user: {login: $a}}]' > "$S/roadmap.json"
@@ -2097,6 +2147,34 @@ ci_status_fx; pr_fx --base-ref ""
 w ci --pr 1;  rc 20 "ci: a pull request with no base branch cannot have its required checks read"
 pr_fx; ci_runs_fx; ci_branch_fx --unprotected
 STUB_FAIL_WORKFLOWS=1 w ci --pr 1;  rc 20 "ci: a failed workflow inventory, when it is needed, -> 20";  STUB_FAIL_WORKFLOWS=0
+# A SHORT LIST IS NOT A COMPLETE ONE, on every surface the verdict counts. Each fixture below would
+# read green, or `no-ci`, if its missing records were taken as absent.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
+printf '{"sha":"%s","state":"pending","total_count":2,"statuses":[]}\n' "$HEAD_SHA" > "$S/cistatus.json"
+w ci --pr 1;  rc 20 "ci: a status list shorter than its total_count is incomplete, not empty"
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected
+printf '{"total_count":2,"workflows":[]}\n' > "$S/workflows.json"
+ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "admin"
+w ci --pr 1;  rc 20 "ci: a workflow inventory shorter than its total_count is unreadable, never zero workflows"
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected
+printf '' > "$S/workflows.json"
+w ci --pr 1;  rc 20 "ci: an EMPTY workflow inventory is unreadable, never zero workflows"
+# GitHub lists check runs from the 1000 most recent check suites only.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
+jq -n -c --arg sha "$HEAD_SHA" '[range(1000) | {id: ., name: "j\(.)", head_sha: $sha, status: "completed",
+    conclusion: "success", app: {slug: "github-actions"}, check_suite: {id: (100000 + .)}}]
+  | {total_count: length, check_runs: .}' > "$S/checkruns.json"
+w ci --pr 1;  rc 20 "ci: a check-run list at the 1000-suite ceiling cannot be proved whole"
+
+# EVERY OUTCOME CARRIES A CI LINE, so a summary always has one to paste — a closed pull request and
+# an unreadable one included.
+reset_fx; declare_bots "[\"$CODEX\"]"; pr_fx --state closed --merged-at "2026-07-25T05:00:00Z"
+w ci --pr 1;  has "$OUT" "pr-watch: ci gone $HEAD_SHA observed " "ci: a closed pull request still prints its CI line"
+reset_fx; declare_bots "[\"$CODEX\"]"
+STUB_GRAPHQL_FAIL=1 w ci --pr 1;  rc 20 "ci: an unreadable pull request is 20"
+has "$OUT" "pr-watch: ci unreadable - observed " "ci: an unreadable pull request still prints its CI line"
+STUB_GRAPHQL_FAIL=0
+w ci-wait --pr 1 --max-secs 08;  rc 2 "ci-wait: a leading-zero bound is refused, not read as octal"
 
 # --- names reach the summary only through the allowlist ---------------------------------------
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -2254,6 +2332,46 @@ reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --
 ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "write"
 w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 41 "ci-wait: a declared no-ci repo has nothing to wait for"
 eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "1" "ci-wait: ...and says so on the first poll"
+
+# A green that settles only AFTER the bound is not accepted: poll 2 is slow enough to finish late.
+# Poll 2 costs 8s against a 5s bound, so it settles late whatever poll 1 cost under load.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '8' > "$S/slow-2"
+w ci-wait --pr 1 --interval 1 --max-secs 5;  rc 11 "ci-wait: a green that settles only after the bound is not accepted"
+# ...and the expired bound's CI line, which callers paste as the CI state, does not say green either.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '3' > "$S/slow-1"
+w ci-wait --pr 1 --interval 30 --max-secs 1
+eq "$(ci_lines_with 'pr-watch: ci green')" "0" "ci-wait: the expired bound's CI line does not say green"
+has "$OUT" "not settled before the bound" "ci-wait: ...it says the green was not settled"
+
+# The declaration's reason rides the ONE CI line — not a stderr line per poll — and passes the same
+# allowlist as a job name, since it echoes issue-body text.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0
+ci_roadmap_fx $'<!-- release-health: [click](https://example.com) & <x -->\n' "owner" "admin"
+w ci-wait --pr 1 --interval 1 --max-secs 3
+eq "$(ci_lines_with 'roadmap #31')" "1" "ci-wait: the declaration reason rides the one CI line"
+hasnt "$OUT" "<x" "ci-wait: the declaration reason is markup-neutralized"
+# An unreadable poll is an EVENT, and its CI line is printed once, when the wait ends.
+reset_fx; declare_bots "[\"$CODEX\"]"
+STUB_FAIL_CHECKRUNS=1 w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  STUB_FAIL_CHECKRUNS=0
+eq "$(ci_lines_with 'pr-watch: ci unreadable')" "1" "ci-wait: an unreadable poll's CI line is printed once, at the end"
+
+# `--no-fail-fast` also holds a red whose workflow run has not concluded — every check can read
+# concluded while the run is still finishing, and `ci-health` would answer 25.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci lint
+ci_runs_fx "ci|completed|success" "lint|completed|failure"
+ci_wfruns_into "$S/wfruns.1.json" "999|7001|2|in_progress"
+ci_wfruns_fx "999|7001|2"
+pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP" --no-fail-fast;  rc 40 "ci-wait --no-fail-fast: a red is held while its run has not concluded"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "2" "ci-wait --no-fail-fast: returns once the red's run concluded"
+
+# A check REPLACED under the same name — a re-run, or another app — is a new check set, so its first
+# green does not settle the wait.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
+CI_ID_BASE=100 ci_runs_into "$S/checkruns.1.json" "ci|completed|success"
+ci_runs_fx "ci|completed|success"
+w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 0 "ci-wait: the replaced check settles once it holds"
+eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "3" "ci-wait: a check replaced under the same name is a new check set"
 reset_fx
 
 fi

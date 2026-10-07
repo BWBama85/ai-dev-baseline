@@ -687,9 +687,10 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   `/resolve-pr-threads <PR#> --once`. Report only **observed** guard results, never predictions;
   any PR/issue status here comes from `bash "$HOME/.codex/scripts/lib/state-assert.sh" observe pr <N>`.
 - **CI line** (#448): one reading — `bash "$HOME/.codex/scripts/lib/pr-watch.sh" ci --pr <N>` — and its stderr line pasted
-  verbatim. Seconds after the push it is normally `indeterminate` with most checks still running:
-  say so with the counts, never "green" and never "none red". The wait for CI to conclude belongs
-  to `/resolve-pr-threads <PR#>`, the same hand-off as the reviewer's.
+  verbatim. Report what it observed: seconds after the push that is normally `indeterminate` with
+  most checks still running — say so with the counts, and never call a pending reading green or
+  "none red". The wait for CI to conclude belongs to `/resolve-pr-threads <PR#>`, the same hand-off
+  as the reviewer's.
 - `--squash` takes its subject from the **PR title** — it must satisfy the commit convention.
 
 Do not poll for bot reviews or CI here; report the state and end.

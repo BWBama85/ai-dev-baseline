@@ -9124,8 +9124,9 @@ survive is the part a later reader needs.
              (b) Completion. not-green returns at once (fail fast). green must hold for two
              consecutive polls over an identical check set, because check runs register
              incrementally. An empty set is never green, and check runs are read `filter=latest`.
-             `--no-fail-fast` waits until nothing is running, for the one case that needs it: a red
-             whose run has not concluded (ci-health 24/25).
+             `--no-fail-fast` holds a red while a check is still running or a failing check's
+             workflow run has not concluded, for the one case that needs it: a red ci-health cannot
+             classify yet (24/25), including the moment after a re-run is requested.
              (c) Routing. A failing Actions check maps to its run through `check_suite.id` =
              the run's `check_suite_id` (verified live). ci-health 22 is a finding, diagnosed from
              the log rather than assumed to be the diff's. 23 is re-run once. 24/25 wait for the run.
@@ -9135,8 +9136,10 @@ survive is the part a later reader needs.
              when an OPEN issue already names that exact job or test and the log matches. Then that
              issue is linked and the run re-run once. The resolver never files a de-flake issue
              itself.
-             (e) Re-run bound. Only a run on `attempt 1` is re-run. The counter is GitHub's, so the
-             bound survives a restarted session.
+             (e) Re-run bound. Only a run on `attempt 1` is re-run, decided on fresh reads (the
+             attempt ci-health just read, the PR's live state and head) rather than on the CI
+             line. The counter is GitHub's, so the bound survives a restarted session. The
+             guarantee is sequential, as `request-review`'s is.
              (f) `no-ci`. The roadmap artifact's `release-health: no-ci`, through `health-decl`'s
              author-permission rule. It is read only when no Actions check ran and no workflow is
              active. `skip-unreported` is not honoured for a PR head.
@@ -9144,6 +9147,10 @@ survive is the part a later reader needs.
              round, so the round cap counts it. The head is read, not the test merge commit, and the
              docs say so. Names pass an allowlist, `?`-substituted, cut at 100 and joined with `; `.
              `ci-wait` defaults to every 60 s for up to 3600 s.
+             (h) **Owner decision 2026-10-06, from the independent review:** a green that settles
+             after the bound is not accepted (11), and the bound limits continued polling only — a
+             read that hangs is not bounded, as with `wait`. Wrapping every read in
+             `adb_run_bounded` was offered and declined.
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in
@@ -9155,7 +9162,8 @@ survive is the part a later reader needs.
              11); `docs/roles-and-agents.md`, `docs/repo-settings.md`, `CLAUDE.md`, `CHANGELOG.md`
 - reason:    The remote's verdict on a head is the other half of "never push red", and the
              reviewer's wait is the poll the loop already makes. Reading CI there costs nothing per
-             poll. Waiting for it in every round would multiply the loop by the CI leg, which takes
-             25 to 45 minutes here, so the loop waits only at its terminal exit, which is the last
-             thing between the head and a merge.
+             poll. Waiting for it in every round would multiply the loop by the CI leg. #448
+             measured the two longest legs of run 33184516415 at 23m47s and 22m20s, and the review
+             found `selfcheck-macos` at 47m41s on run 37525965580. So the loop waits only at its
+             terminal exit, which is the last thing between the head and a merge.
 - baseline-issue: n/a
