@@ -1437,7 +1437,9 @@ cmd_ci_wait() {
   adb_require_gh jq \
     || { echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated, so there is nothing to wait on" >&2; return 20; }
   deadline="$(_pw_deadline)"
-  trap 'echo "pr-watch: interrupted — the head'"'"'s checks were not seen to conclude" >&2
+  # AN INTERRUPTED WAIT STILL REPORTS: the summary that pastes this line has nothing else to paste.
+  # It is never green — the wait did not see the checks conclude — and names the last poll's head.
+  trap 'printf "pr-watch: ci indeterminate %s observed %s — interrupted before the checks were seen to conclude\n" "${lasthead:--}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
         exit 11' INT TERM
 
   while :; do

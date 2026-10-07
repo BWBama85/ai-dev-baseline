@@ -382,6 +382,10 @@ L
 )" '        | .' 'ci: a workflow inventory that repeats an id is unreadable'
   check_row ci-runmap-ambiguous-accepted "$PWT" ci-wait '                       then error("a check suite maps to more than one run record") else . end' \
     '                       then . else . end' 'ci-wait --no-fail-fast: a run map naming one suite twice is unknown'
+  check_row ci-interrupt-silent "$PWT" ci-wait "$(lit <<'L'
+  trap 'printf "pr-watch: ci indeterminate %s observed %s — interrupted before the checks were seen to conclude\n" "${lasthead:--}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+L
+)" "  trap ': >&2" 'ci-wait: an interrupted wait still prints its CI line'
   check_row ci-signature-anonymous "$PWT" ci-wait "$(lit <<'L'
         ( [ (.runs[] | [.id, (.app.slug // ""), .name, .status, (.conclusion // "")]),
 L
@@ -2443,6 +2447,16 @@ reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
 ci_runs_fx "ci|completed|failure"; ci_wfruns_fx "999|7001|1" "999|7001|1|in_progress"
 w ci-wait --pr 1 --interval 1 --max-secs 2 --no-fail-fast
 has "$OUT" "while the red was still unsettled" "ci-wait --no-fail-fast: a run map naming one suite twice is unknown, not its first record"
+# An INTERRUPTED wait still prints its CI line — never green, naming the last poll's head — because the
+# summary that pastes it has nothing else to paste. `exec` makes the background pid the waiter itself.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|in_progress|"; ci_status_fx; ci_branch_fx ci
+( cd "$REPO" && exec env HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" bash "$PW" ci-wait --pr 1 --interval 30 --max-secs "$WATCH_BACKSTOP" ) > "$work/int.out" 2>&1 &
+_ip=$!
+_iw=0; until [ -s "$S/slept" ] || [ "$_iw" -ge 60 ]; do /bin/sleep 1; _iw=$((_iw + 1)); done
+kill -TERM "$_ip" 2>/dev/null; wait "$_ip"; _irc=$?
+eq "$_irc" "11" "ci-wait: an interrupted wait exits 11"
+has "$(cat "$work/int.out")" "pr-watch: ci indeterminate $HEAD_SHA observed " "ci-wait: an interrupted wait still prints its CI line"
+
 # The wait carries each poll in shell variables, never a temp file: one it cannot create changes nothing.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
 TMPDIR="$work/no-such-dir" w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP"
