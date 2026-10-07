@@ -307,10 +307,10 @@ L
 L
 )" '         && perm=admin || perm="" ;;' 'ci: a no-ci marker from an author without write access is not honoured'
   check_row ci-note-moves-rc "$PWT" ci-note "$(lit <<'L'
-  case "$rc" in 0|10|11) _pw_ci_note ;; esac
+  case "$rc" in 0|10|11) _pw_ci_note "${out##* }" ;; esac
 L
 )" "$(lit <<'L'
-  case "$rc" in 0|10|11) _pw_ci_note; rc=$? ;; esac
+  case "$rc" in 0|10|11) _pw_ci_note "${out##* }"; rc=$? ;; esac
 L
 )" 'observe: the reviewer exit code is unchanged by the CI read'
   check_row ci-note-on-stdout "$PWT" ci-note "$(lit <<'L'
@@ -320,6 +320,8 @@ L
       "$(printf '%s\n' "$out" | sed -n 2p)"
 L
 )" 'observe: the reviewer stdout is unchanged by the CI read'
+  check_row ci-note-stale-head "$PWT" ci-note '      _pw_ci_note "${out:+$head}"' '      _pw_ci_note "$lasthead"' \
+    "wait: an unreadable last poll never reports an earlier head's CI"
   check_row ci-note-per-poll "$PWT" ci-note '        lasthead="$head" ;;' \
     '        lasthead="$head"; _pw_ci_note ;;' 'wait: the CI line is printed once, on the verdict'
   check_row ci-held-red-dropped "$PWT" ci-wait "$(lit <<'L'
@@ -2303,6 +2305,12 @@ has "$OUT" "pr-watch: ci green $HEAD_SHA" "wait: the CI line describes the head 
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|completed|failure"; ci_status_fx; ci_branch_fx ci
 w wait --pr 1 --interval 30 --max-secs 2;  rc 11 "wait: an expired bound is still the reviewer's 11 over a red head"
 has "$OUT" "pr-watch: ci not-green $HEAD_SHA" "wait: the deadline handoff carries the CI line too"
+# An expiry whose LAST poll was unreadable reports no head's CI — not the earlier poll's, which was
+# green. Poll 2's PR read does not parse and finishes past the bound (6s against 4).
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '{ broken\n' > "$S/pr.2.json"; printf '6' > "$S/slow-2"
+w wait --pr 1 --interval 1 --max-secs 4;  rc 11 "wait: an expiry after an unreadable poll is still the reviewer's 11"
+eq "$(ci_lines_with 'pr-watch: ci green')" "0" "wait: an unreadable last poll never reports an earlier head's CI"
+has "$OUT" "pr-watch: ci unreadable - observed " "wait: ...it reports the CI as unreadable"
 
 fi
 

@@ -1314,16 +1314,21 @@ _pw_ci_eval() {
     || { _pw_ci_fail "could not render the CI state of $head"; return 20; }
 }
 
-# _pw_ci_note — the stderr CI line about the head `classify` just recorded in the snapshot sink.
+# _pw_ci_note <head> — the stderr CI line about <head>, the head of the verdict being returned, read
+# from what `classify` recorded in the snapshot sink. A sink that does not name <head> — an earlier
+# poll's, a write that failed, no head at all — is unreadable, never another head's CI.
 # ALWAYS returns 0: whatever this read finds, the reviewer verdict and its exit code stand.
 _pw_ci_note() {
-  local slug base head at out
+  local want="${1:-}" slug base head at out
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if [ -z "$_ADB_PW_SNAP_SINK" ] || [ ! -s "$_ADB_PW_SNAP_SINK" ]; then
+  head=""
+  if [ -n "$want" ] && [ -n "$_ADB_PW_SNAP_SINK" ] && [ -s "$_ADB_PW_SNAP_SINK" ]; then
+    { IFS= read -r slug; IFS= read -r base; IFS= read -r head; } < "$_ADB_PW_SNAP_SINK"
+  fi
+  if [ -z "$want" ] || [ "$head" != "$want" ]; then
     echo "pr-watch: ci unreadable - observed $at — the head this verdict is about was not recorded" >&2
     return 0
   fi
-  { IFS= read -r slug; IFS= read -r base; IFS= read -r head; } < "$_ADB_PW_SNAP_SINK"
   # `_pw_ci_eval` answers in the same two leading lines whether it read the state or not.
   out="$(_pw_ci_eval "$slug" "$head" "$base")"
   printf 'pr-watch: ci %s %s observed %s — %s\n' "${out%%$'\n'*}" "$head" "$at" \
@@ -1538,7 +1543,7 @@ cmd_ci_wait() {
 }
 
 cmd_observe() {
-  local n want wrc rc
+  local n want wrc rc out
   [ -n "$OPT_PR" ] || { echo "pr-watch: observe requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
@@ -1547,8 +1552,9 @@ cmd_observe() {
   adb_require_gh jq || return 20
   _ADB_PW_SNAP_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-snap.XXXXXX" 2>/dev/null || printf '')"
   trap '[ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"; exit 20' INT TERM
-  classify "$n" "$want"; rc=$?
-  case "$rc" in 0|10|11) _pw_ci_note ;; esac
+  out="$(classify "$n" "$want")"; rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  case "$rc" in 0|10|11) _pw_ci_note "${out##* }" ;; esac
   trap - INT TERM
   [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
   return "$rc"
@@ -1625,7 +1631,7 @@ cmd_wait() {
         # the config codes print no verdict line, so an unguarded print would emit a bare newline
         # where the contract promises "<verdict> <sha>" or nothing at all.
         [ -n "$out" ] && printf '%s\n' "$out"
-        case "$rc" in 0|10) _pw_ci_note ;; esac
+        case "$rc" in 0|10) _pw_ci_note "$head" ;; esac
         trap - INT TERM
         [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
         [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
@@ -1670,7 +1676,9 @@ cmd_wait() {
       else
         echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with no terminal signal; handing off" >&2
       fi
-      _pw_ci_note
+      # The head of the LAST poll, or none: an unreadable last poll named no head, and an earlier
+      # poll's is not the one this expiry reports.
+      _pw_ci_note "${out:+$head}"
       trap - INT TERM
       [ -n "$_ADB_PW_PENDING_SINK" ] && rm -f "$_ADB_PW_PENDING_SINK"
       [ -n "$_ADB_PW_SNAP_SINK" ] && rm -f "$_ADB_PW_SNAP_SINK"
