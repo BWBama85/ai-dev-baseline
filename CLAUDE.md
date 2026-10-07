@@ -146,12 +146,12 @@ those. The rules below are specific to this repo's code.
    guarantee — GitHub documents that a `schedule` may be delayed or dropped), one matrix job per
    harness; `check-mutation-gate.sh` pins its matrix to the registry.
 
-   **CI runs five steps fewer on the macOS leg** (#339; the second since PR #429, the third since
-   PR #443, the fourth since PR #463, the fifth since PR #504). `selfcheck-macos` passes
-   `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation`:
+   **CI runs six steps fewer on the macOS leg** (#339; the second since PR #429, the third since
+   PR #443, the fourth since PR #463, the fifth since PR #504, the sixth since #448). `selfcheck-macos` passes
+   `--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation`:
    each answers a logic question, not a platform one, and an ubuntu job runs it on every relevant
    PR — `adopt` for the first, `pattern-ledger` for the second, `implement-gate` for the third,
-   `install-guard` for the fourth, `implement-gate` again for the fifth — where `check-fact-drift.sh` pins all five invocations, because
+   `install-guard` for the fourth, `implement-gate` again for the fifth, `pr-watch` for the sixth — where `check-fact-drift.sh` pins all six invocations, because
    after the skip those jobs are each step's **only** per-PR execution. Measured on run 32451790033
    (green, `main`, 2026-08-21): the `adopt` step was 680s of a 1086s job that was the run's critical
    path; on run 32889697083 (2026-08-25) the ledger harness was 1932s of a 39.5-minute macOS job,

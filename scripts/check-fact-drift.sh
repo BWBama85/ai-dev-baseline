@@ -1553,15 +1553,19 @@ fact settings-fragment-mutation-wired 'regex:^[^#]*check-settings-fragment\.sh -
 # review-loop harness's only per-PR execution after the skip.
 fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# The sixth step `selfcheck-macos` skips by name (#448): the ubuntu `pr-watch` job is the pr-watch
+# harness's only per-PR execution after the skip.
+fact pr-watch-mutation-wired 'regex:^[^#]*check-pr-watch\.sh --mutation' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
 # Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
 # copy of a whole-suite-per-mutation harness to the 45-minute job.
 fact macos-logic-mutations-skipped \
-  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation([^,A-Za-z0-9_-]|$)' -- \
+  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation([^,A-Za-z0-9_-]|$)' -- \
   .github/workflows/ci.yml
-# …and every document that spells the list out says the same five names, so a contributor reading
+# …and every document that spells the list out says the same six names, so a contributor reading
 # any of them learns which harnesses the macOS leg does not run.
 # ENDED, not merely present: a list that gained a sixth name would otherwise still contain this one.
-fact macos-skip-list-documented 'regex:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation([^,A-Za-z0-9_-]|$)' -- \
+fact macos-skip-list-documented 'regex:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation([^,A-Za-z0-9_-]|$)' -- \
   CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
 # `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change

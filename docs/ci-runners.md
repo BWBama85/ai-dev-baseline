@@ -334,9 +334,9 @@ nightly matrix equal to the registry, every declared input a path that exists �
 `--mutation` mode breaks every gate rule whose failure is a wrong SKIP in a copy — and un-gates a
 copy of each workflow file — requiring the suite red on each row's own witness.
 
-**Less exactly five named steps — one since #339, one since PR #429, one since PR #443, one since
-PR #463, one since PR #504.** The job invokes
-`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation`. Each
+**Less exactly six named steps — one since #339, one since PR #429, one since PR #443, one since
+PR #463, one since PR #504, one since #448.** The job invokes
+`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation`. Each
 runs its suite once per injected defect — whole, or since #468 only the block that holds the row's
 witness — to answer a question about *logic* — can the guards
 fail closed? — and an ubuntu job already answers it on every relevant PR: `adopt` for the first
@@ -350,12 +350,14 @@ macOS leg's 45, having last completed in CI at 601s on 2026-09-05; on run 346522
 then passed in 31m3s while the step ran 2640s in `install-guard` and was cancelled at 45, so that
 job now allows 240 — D101), and `implement-gate` for the fifth (on run 36396924698 the macOS leg was
 cancelled at its 45-minute ceiling with `review-loop-mutation` its slowest step at 1556s, while
-`implement-gate` ran the same harness to completion). The registry is not
+`implement-gate` ran the same harness to completion), and `pr-watch` for the sixth (#448 grew it to
+42 mutation rows, 32m11s with the pool forced to 2, on a leg whose last run had taken 47m41s of its
+55). The registry is not
 smaller and the local suite is unchanged: these are per-invocation `--skip`s, the log names each
 twice, an unknown name is an error rather than a quiet no-op, and `check-fact-drift.sh` pins all
-five ubuntu invocations because those jobs are now each step's only per-PR execution. The
-non-mutation halves of all five — `adopt-readiness`, `pattern-ledger`, `session-context`,
-`settings-fragment` and `review-loop` — still run here, so each keeps macOS coverage.
+six ubuntu invocations because those jobs are now each step's only per-PR execution. The
+non-mutation halves of all six — `adopt-readiness`, `pattern-ledger`, `session-context`,
+`settings-fragment`, `review-loop` and `pr-watch` — still run here, so each keeps macOS coverage.
 
 **And the load-sensitive suites run in the serial prologue here, as everywhere** (#423).
 `session-currency`, `selfcheck-guard` and `selfcheck-guard-mutation` are the ones that flapped on

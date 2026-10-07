@@ -9174,6 +9174,12 @@ survive is the part a later reader needs.
              carry records only `pr-watch.sh`'s own check refuses. A workflow that fails to start
              without creating a check run is NOT detected — it would extend the shared check model
              — and is carried as MEDIUM.
+             (m) **Owner decision 2026-10-07:** `selfcheck-macos` skips `pr-watch-mutation`, as
+             #339 skips the other logic-only harnesses: the full local selfcheck measured it the
+             slowest step (4754s inside a 95m37s run), the macOS leg's last run took 47m41s of its
+             55, and the ubuntu `pr-watch` job runs it on every relevant PR — pinned by
+             `check-fact-drift.sh` as that harness's only per-PR execution. A sixth local review
+             pass covers this change.
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in
@@ -9183,7 +9189,10 @@ survive is the part a later reader needs.
              `scripts/check-lib.sh` (`--base-ref`); `scripts/selfcheck.sh` (`pr-watch-mutation`
              inputs); `base/workflows/resolve-pr-threads.md` (0b's CI line, step 7b, step 6's CI
              line, the scope exception); `base/workflows/implement-issue.md` (the wait table, step
-             11); `docs/roles-and-agents.md`, `docs/repo-settings.md`, `CLAUDE.md`, `CHANGELOG.md`
+             11); `.github/workflows/ci.yml` (the `pr-watch` ceiling, `selfcheck-macos`'s skip);
+             `scripts/check-fact-drift.sh` (the skip and `pr-watch-mutation-wired` pins);
+             `docs/roles-and-agents.md`, `docs/repo-settings.md`, `docs/ci-runners.md`,
+             `CONTRIBUTING.md`, `CLAUDE.md`, `CHANGELOG.md`
 - reason:    The remote's verdict on a head is the other half of "never push red", and the
              reviewer's wait is the poll the loop already makes. Reading CI there costs nothing per
              poll. Waiting for it in every round would multiply the loop by the CI leg. #448
