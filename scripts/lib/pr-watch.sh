@@ -155,8 +155,9 @@
 #                    poll's `pending <sha>` (11), or no line if that poll was unreadable
 #   request-review   requested|already|no-trigger|capped|gone <sha>
 #   ci               green|not-green|indeterminate|no-ci|gone <sha>
-#   ci-wait          the concluding poll's line; when the bound expires, `indeterminate <sha>` (11) —
-#                    or, under `--no-fail-fast` with a red still unsettled, `not-green <sha>` (40)
+#   ci-wait          the concluding poll's line; when the bound expires, `indeterminate <sha>` (11),
+#                    or no line if that poll was unreadable — or, under `--no-fail-fast` with a red
+#                    still unsettled, `not-green <sha>` (40)
 #
 # observe and wait ALSO print one stderr line about the head's CI on the verdict they return (#448),
 # never per poll and never changing the exit code:
@@ -1336,8 +1337,9 @@ _pw_ci_note() {
 _pw_ci_say() {
   if [ -n "$_ADB_PW_CI_SINK" ] \
      && ! printf '%s\n%s\n%s\n' "${2:-}" "$1" "${3:-}" > "$_ADB_PW_CI_SINK" 2>/dev/null; then
-    printf '%s\n' "$1" >&2
-    echo "pr-watch: could not record this CI observation for the wait — reading it as unreadable" >&2
+    # The observation itself is NOT printed: its verdict word may be `green`, and the line a caller
+    # pastes must say what the poll became — unreadable.
+    echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not record this CI observation for the wait" >&2
     return 1
   fi
   [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$1" >&2
@@ -1425,6 +1427,8 @@ _pw_nap() {
 #
 # THE BOUND LIMITS CONTINUED POLLING, exactly as `wait`'s does: a read that never returns is not
 # bounded by it. Owner decision 2026-10-06 (D123): documented here rather than wrapping every read.
+# And as in `wait`, the last nap ends AT the deadline and one final poll follows it — the one poll
+# that may start at the bound, and the last look before the wait reports it expired.
 cmd_ci_wait() {
   local n rc out head deadline remaining unreadable=0 lasthead="" lastsig="" sig line greens=0 running heldred=0
   [ -n "$OPT_PR" ] || { echo "pr-watch: ci-wait requires --pr <number|url>" >&2; return 2; }
@@ -1523,7 +1527,7 @@ cmd_ci_wait() {
           line="pr-watch: ci indeterminate ${line#pr-watch: ci green } — green on its last poll, not settled before the bound" ;;
       esac
       [ -n "$line" ] && printf '%s\n' "$line" >&2
-      [ -n "$lasthead" ] && printf 'indeterminate %s\n' "$lasthead"
+      [ -n "$out" ] && printf 'indeterminate %s\n' "$head"
       echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired before the head's checks concluded; handing off (this is not green)" >&2
       trap - INT TERM
       [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"

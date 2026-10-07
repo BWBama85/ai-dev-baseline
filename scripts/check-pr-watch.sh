@@ -261,7 +261,7 @@ L
   check_row ci-red-waits "$PWT" ci-wait '      40|41|12|2)' '      41|12|2)' \
     'ci-wait: a red arriving mid-wait returns not-green at once'
   check_row ci-expiry-says-green "$PWT" ci-wait "$(lit <<'L'
-      [ -n "$lasthead" ] && printf 'indeterminate %s\n' "$lasthead"
+      [ -n "$out" ] && printf 'indeterminate %s\n' "$head"
 L
 )" "$(lit <<'L'
       [ -n "$out" ] && printf '%s\n' "$out"
@@ -2356,6 +2356,16 @@ has "$OUT" "this is not green" "ci-wait: the handoff says the expiry is not gree
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '3' > "$S/slow-1"
 wout ci-wait --pr 1 --interval 30 --max-secs 1;  rc 11 "ci-wait: a bound that expires is never green, even over one green read"
 eq "$OUT" "indeterminate $HEAD_SHA" "ci-wait: ...and its stdout does not say green"
+
+# An expiry whose LAST poll was unreadable prints no head at all: the previous poll's head is not the
+# one the line describes. Poll 2 reads a new head whose checks do not parse, and finishes past the
+# bound (8s against 6), so the deadline lands on it.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_branch_fx ci; pr_poll_fx 1 --sha "$OLD_SHA"
+CI_SHA="$OLD_SHA" ci_runs_into "$S/checkruns.1.json" "ci|in_progress|"
+CI_SHA="$OLD_SHA" ci_status_into "$S/cistatus.1.json"
+printf '{}\n' > "$S/checkruns.json"; ci_status_fx; printf '8' > "$S/slow-2"
+wout ci-wait --pr 1 --interval 1 --max-secs 6;  rc 11 "ci-wait: an expiry after an unreadable poll is still 11"
+eq "$OUT" "" "ci-wait: an expiry after an unreadable poll prints no head"
 
 # The head moves under the wait: reported, and the old head's evidence counts for nothing.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_branch_fx ci
