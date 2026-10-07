@@ -422,7 +422,7 @@ so the async reviewer is the last sample rather than the first; `/implement-issu
 loop between step 9's triage and step 10's push. Since #448 the watcher also reads the head's
 **CI**: every verdict carries one line about it, and at the loop's terminal exit the resolver waits
 for the checks to conclude (`pr-watch.sh ci-wait`) and routes a red through `ci-health.sh` — a red
-that executed is a finding to fix, a run that never executed is re-run once. See `base/roles.md`. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended on a
+that executed is a finding to fix, and a run whose failing jobs never executed a step is re-run once. See `base/roles.md`. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended on a
 bot-reviewed repo. Whether the watcher should arm is an open decision, not an oversight: #49's
 own text says it must "never merge", while this page and `docs/repo-settings.md` were written
 expecting it to arm. That contradiction is #168, tracked rather than resolved by assumption.

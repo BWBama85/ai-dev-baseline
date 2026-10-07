@@ -1119,12 +1119,23 @@ _pw_ci_fail() { printf 'unreadable\n%s\n' "$1"; return 20; }
 #
 # Prints FOUR lines and returns 0: the verdict word (`branch-health`'s vocabulary), a one-line
 # display detail, a one-line signature of the check set, which `ci-wait` compares across polls, and
-# how many checks are still UNSETTLED — running, or failing in a workflow run that has not
-# concluded (`ci-wait --no-fail-fast` holds a red while this is non-zero). Returns 20 with two lines,
-# `unreadable` and the reason, when any read or parse fails — never a verdict.
+# how many checks are still UNSETTLED — running, or failing in a workflow run that has not concluded
+# or cannot be found (`ci-wait --no-fail-fast` holds a red while this is non-zero). Returns 20 with
+# two lines, `unreadable` and the reason, when any read or parse fails — never a verdict.
+#
+# NOTHING HERE DECIDES WHAT A CHECK IS. The verdict is `branch-health`'s and the counts and failing
+# set are `check-facts`', both from `roadmap-lib.sh`'s one set of definitions; this function reads,
+# validates, and renders.
 #
 # ONE READ DEGRADES INSTEAD: the roadmap artifact's declaration. An unreadable one is read as no
 # declaration (`off`), which can only withhold green, and its reason is carried in the detail.
+#
+# EVERY RECORD IS PROJECTED to the fields its consumers read, and those fields must be present: a
+# check run without an id, a name, its head, a status or a check suite cannot be counted, matched or
+# mapped, so it makes the read unreadable rather than silently thinner. The projection is also what
+# keeps a check run's free-text output out of what this file passes around. Bulk JSON travels on
+# STDIN, composed with the `printf` builtin, never as a `--argjson` argument, which an argument-size
+# limit can refuse on a large check set.
 #
 # Job and context names are workflow-controlled text and the detail is read by an agent and pasted
 # into a summary, so every name is rendered through an allowlist: characters outside
@@ -1132,7 +1143,7 @@ _pw_ci_fail() { printf 'unreadable\n%s\n' "$1"; return 20; }
 # no rendered name can contain, so the list stays unambiguous with matrix names like `test (a, b)`.
 _pw_ci_eval() {
   local slug="$1" head="$2" base="$3" aslug ck runs st sts bpath brj req hin nact wf=0 wfj decl=off
-  local declout declwhy="" hout verdict reason wr runmap='[]'
+  local declout declwhy="" hout verdict reason facts wr runmap=null
   # An EMPTY slug would attribute every check run of unknown provenance to Actions and skip the
   # workflow probe that keeps an unreported build out of `green` — refuse it, as branch-health does.
   aslug="$(adb_actions_app_slug 2>/dev/null)" && [ -n "$aslug" ] \
@@ -1146,16 +1157,22 @@ _pw_ci_eval() {
   # test: with no page, the total is null and no length equals it — here and in the two reads below.
   runs="$(printf '%s' "$ck" | jq -s -c '
       if all(.[]; (type == "object") and ((.check_runs | type) == "array")
-                    and ((.total_count | type) == "number")) | not
+                  and ((.total_count | type) == "number")) | not
         then error("not a check-runs page") else . end
       | if ([.[].total_count] | unique | length) != 1 then error("the pages disagree") else . end
       | .[0].total_count as $t
       | [.[].check_runs[]] as $all
-      | if all($all[]; type == "object") | not then error("a check run is not an object") else . end
       | if ($all | length) != $t then error("the list is incomplete") else . end
+      | if all($all[]; (type == "object") and ((.id | type) == "number")
+                       and ((.name | type) == "string") and ((.name | length) > 0)
+                       and ((.head_sha | type) == "string") and ((.status | type) == "string")
+                       and ((.conclusion | type) | IN("string", "null"))
+                       and ((.check_suite.id | type) == "number")) | not
+        then error("a check run lacks a field its consumers read") else . end
       | if ([$all[] | .id] | unique | length) != ($all | length) then error("a check run repeats") else . end
       | if ([$all[] | .check_suite.id] | unique | length) >= 1000 then error("at the check-suite ceiling") else . end
-      | $all' 2>/dev/null)" \
+      | [$all[] | {id, name, head_sha, status, conclusion,
+                   app: {slug: (.app.slug // null)}, check_suite: {id: .check_suite.id}}]' 2>/dev/null)" \
     || { _pw_ci_fail "the check runs of $head are not a complete, well-formed list"; return 20; }
   # Statuses are held to the same rule: each page repeats the full `total_count` (observed live),
   # so a missing page is a short list, and one context appears once.
@@ -1163,17 +1180,19 @@ _pw_ci_eval() {
     || { _pw_ci_fail "could not read the commit statuses of $head"; return 20; }
   sts="$(printf '%s' "$st" | jq -s -c --arg sha "$head" '
       if all(.[]; (type == "object") and ((.statuses | type) == "array")
-                    and ((.total_count | type) == "number")) | not
+                  and ((.total_count | type) == "number")) | not
         then error("not a status page") else . end
       | if any(.[]; ((.sha // "") | ascii_downcase) != ($sha | ascii_downcase))
         then error("a status page describes another commit") else . end
       | if ([.[].total_count] | unique | length) != 1 then error("the pages disagree") else . end
       | .[0].total_count as $t
       | [.[].statuses[]] as $all
-      | if all($all[]; type == "object") | not then error("a status is not an object") else . end
       | if ($all | length) != $t then error("the status list is incomplete") else . end
+      | if all($all[]; (type == "object") and ((.context | type) == "string")
+                       and ((.context | length) > 0) and ((.state | type) == "string")) | not
+        then error("a status lacks its context or state") else . end
       | if ([$all[] | .context] | unique | length) != ($all | length) then error("a context repeats") else . end
-      | $all' 2>/dev/null)" \
+      | [$all[] | {context, state}]' 2>/dev/null)" \
     || { _pw_ci_fail "the commit statuses of $head are not a complete, well-formed list for that commit"; return 20; }
   # REQUIRED CONTEXTS BELONG TO THE BASE BRANCH, and an unknown base is unreadable rather than "no
   # requirement": defaulting it would let an unreported required check read as nothing missing.
@@ -1186,12 +1205,11 @@ _pw_ci_eval() {
     || { _pw_ci_fail "could not classify the base branch required checks"; return 20; }
   case "$req" in '['*|null) : ;;
     *) _pw_ci_fail "the base branch required checks did not classify"; return 20 ;; esac
-  hin="$(jq -n -c --argjson runs "$runs" --argjson sts "$sts" --argjson req "$req" \
-           '{check_runs:$runs, statuses:$sts, required_contexts:$req}' 2>/dev/null)" \
-    || { _pw_ci_fail "could not assemble the CI read of $head"; return 20; }
+  hin="$(printf '{"check_runs":%s,"statuses":%s,"required_contexts":%s}' "$runs" "$sts" "$req")"
   # The Actions inventory is the second existence probe, and only needed when Actions has not
-  # reported — the rule /roadmap applies, for the reason its snippet gives. An EMPTY or short
-  # inventory is unreadable, never "no workflows": that answer is the one that reaches `no-ci`.
+  # reported — the rule /roadmap applies, for the reason its snippet gives. A short inventory, or one
+  # with a repeated id or a state this does not know, is unreadable, never "no active workflow":
+  # that answer is the one that reaches `no-ci`.
   nact="$(printf '%s' "$runs" | jq --arg a "$aslug" '[.[] | select((.app.slug // "") == $a)] | length' 2>/dev/null)"
   case "$nact" in ''|*[!0-9]*) _pw_ci_fail "could not attribute the check runs of $head"; return 20 ;; esac
   if [ "$nact" -eq 0 ]; then
@@ -1199,14 +1217,17 @@ _pw_ci_eval() {
       || { _pw_ci_fail "could not read the workflow inventory"; return 20; }
     wf="$(printf '%s' "$wfj" | jq -s '
         if all(.[]; (type == "object") and ((.workflows | type) == "array")
-                      and ((.total_count | type) == "number")) | not
+                    and ((.total_count | type) == "number")) | not
           then error("not a workflows page") else . end
         | if ([.[].total_count] | unique | length) != 1 then error("the pages disagree") else . end
         | .[0].total_count as $t
         | [.[].workflows[]] as $all
         | if ($all | length) != $t then error("the inventory is incomplete") else . end
-        | if all($all[]; (type == "object") and ((.state | type) == "string")) | not
-          then error("a workflow carries no state") else . end
+        | if all($all[]; (type == "object") and ((.id | type) == "number")
+                         and ((.state // "") | IN("active", "deleted", "disabled_fork",
+                                                  "disabled_inactivity", "disabled_manually"))) | not
+          then error("a workflow carries no id or an unknown state") else . end
+        | if ([$all[] | .id] | unique | length) != ($all | length) then error("a workflow repeats") else . end
         | [$all[] | select(.state == "active")] | length' 2>/dev/null)"
     case "$wf" in ''|*[!0-9]*) _pw_ci_fail "the workflow inventory is not a complete, well-formed list"; return 20 ;; esac
     if [ "$wf" -eq 0 ]; then
@@ -1223,47 +1244,52 @@ _pw_ci_eval() {
     green|not-green|indeterminate|no-ci|unreported-ok) : ;;
     *) _pw_ci_fail "branch-health answered a verdict this module does not know"; return 20 ;;
   esac
+  facts="$(printf '{"check_runs":%s,"statuses":%s}' "$runs" "$sts" \
+             | bash "$_ADB_PW_ROADMAP_LIB" check-facts "$head" 2>/dev/null)" && [ -n "$facts" ] \
+    || { _pw_ci_fail "check-facts could not describe the checks of $head"; return 20; }
   # WHICH RUN EACH FAILING ACTIONS CHECK BELONGS TO, so the caller can ask `ci-health.sh classify
   # --run` whether it executed. Matched by check suite: a check run's `check_suite.id` is its
-  # workflow run's `check_suite_id`, and a re-run keeps both. Display, plus the unsettled count —
-  # a failed read here renders `[run ?]` and leaves the verdict alone.
+  # workflow run's `check_suite_id`, and a re-run keeps both. An unreadable or incomplete runs read
+  # leaves the map `null`: every failing Actions check renders `[run ?]` and counts as UNSETTLED,
+  # because nothing can say its run has concluded.
   if [ "$verdict" = not-green ]; then
     wr="$(gh api --paginate "repos/$slug/actions/runs?head_sha=$head&per_page=100" 2>/dev/null)" \
-      && runmap="$(printf '%s' "$wr" | jq -s -c '[.[] | objects | (.workflow_runs // [])[] | objects
-                     | select(((.id | type) == "number") and ((.check_suite_id | type) == "number"))
-                     | {suite: .check_suite_id, id,
-                        attempt: (if (.run_attempt | type) == "number" then .run_attempt else null end),
-                        done: (.status == "completed")}]' 2>/dev/null)" \
-      || runmap='[]'
-    [ -n "$runmap" ] || runmap='[]'
+      && runmap="$(printf '%s' "$wr" | jq -s -c '
+                     if all(.[]; (type == "object") and ((.workflow_runs | type) == "array")
+                                 and ((.total_count | type) == "number")) | not
+                       then error("not a runs page") else . end
+                     | if ([.[].total_count] | unique | length) != 1 then error("the pages disagree") else . end
+                     | .[0].total_count as $t
+                     | [.[].workflow_runs[]] as $all
+                     | if ($all | length) != $t then error("the runs list is incomplete") else . end
+                     | if all($all[]; (type == "object") and ((.id | type) == "number")
+                                      and ((.check_suite_id | type) == "number")
+                                      and ((.status | type) == "string")) | not
+                       then error("a run lacks its id, suite or status") else . end
+                     | [$all[] | {suite: .check_suite_id, id,
+                                  attempt: (if (.run_attempt | type) == "number" then .run_attempt else null end),
+                                  done: (.status == "completed")}]' 2>/dev/null)" \
+      || runmap=null
+    [ -n "$runmap" ] || runmap=null
   fi
-  # The failing set mirrors `branch-health`'s own: a completed check whose conclusion is not
-  # success/skipped/neutral, a status that is neither success nor pending. It is DISPLAY, and the
-  # verdict above remains the predicate's.
-  jq -n -r --argjson runs "$runs" --argjson sts "$sts" --argjson rm "$runmap" \
-        --arg sha "$head" --arg a "$aslug" --arg v "$verdict" --arg why "$reason" --arg note "$declwhy" '
+  printf '{"facts":%s,"rm":%s,"runs":%s,"sts":%s}' "$facts" "$runmap" "$runs" "$sts" \
+    | jq -r --arg v "$verdict" --arg why "$reason" --arg note "$declwhy" '
       def clean: tostring | gsub("[^A-Za-z0-9 ._,:/()+=@#-]"; "?");
       def nm: clean | if length > 100 then .[0:97] + "..." else . end;
-      def runof: (.check_suite.id // null) as $s | ([$rm[] | select(.suite == $s)] | first);
-      ($sha | ascii_downcase) as $want
-      | [$runs[] | select((.head_sha // "" | ascii_downcase) == $want)] as $mine
-      | [$mine[] | select(((.status // "") == "completed") and ((.conclusion // null) != null))] as $rdone
-      | [$sts[] | select((.state // "") != "pending")] as $sdone
-      | (($mine | length) + ($sts | length)) as $total
-      | (($rdone | length) + ($sdone | length)) as $done
-      | [$rdone[] | select(.conclusion | IN("success","skipped","neutral") | not)] as $badruns
-      | [ ( $badruns[]
-            | (.name // "check" | nm) + " "
-              + (if (.app.slug // "") == $a then
+      .rm as $rm
+      | def runof: .suite as $s | if $rm == null then null else ([$rm[] | select(.suite == $s)] | first) end;
+      .facts as $f
+      | [ ( $f.failing[]
+            | (.name | nm) + " "
+              + (if .actions then
                    runof as $r
                    | if $r == null then "[run ?]"
                      else "[run \($r.id), attempt \($r.attempt // "?")]" end
                  else "[external check]" end) ),
-          ( $sts[] | select((.state // "") | IN("success","pending") | not)
-            | (.context // "status" | nm) + " [external status]" ) ] as $failing
-      | [$badruns[] | select((.app.slug // "") == $a) | runof | select(. != null and (.done | not))] as $openruns
+          ( $f.failing_statuses[] | nm + " [external status]" ) ] as $failing
+      | [ $f.failing[] | select(.actions) | runof | select(. == null or (.done | not)) ] as $unsettledruns
       | $v,
-        ( "\($total) check(s): \($done) concluded, \($total - $done) running"
+        ( "\($f.total) check(s): \($f.concluded) concluded, \($f.total - $f.concluded) running"
           + (if ($failing | length) > 0 then " — failing: " + ($failing | join("; ")) else "" end)
           + (if ($note | length) > 0
              then " — " + ($note | clean | if length > 200 then .[0:197] + "..." else . end)
@@ -1271,9 +1297,9 @@ _pw_ci_eval() {
           + (if ($v != "green") and ($v != "not-green") and (($why | length) > 0)
              then " — " + ($why | clean | if length > 300 then .[0:297] + "..." else . end)
              else "" end) ),
-        ( [ ($mine[] | [(.id // ""), (.app.slug // ""), (.name // ""), (.status // ""), (.conclusion // "")]),
-            ($sts[] | [(.context // ""), (.state // "")]) ] | sort | tojson | @base64 ),
-        (($total - $done) + ($openruns | length))' 2>/dev/null \
+        ( [ (.runs[] | [.id, (.app.slug // ""), .name, .status, (.conclusion // "")]),
+            (.sts[] | [.context, .state]) ] | sort | tojson | @base64 ),
+        (($f.total - $f.concluded) + ($unsettledruns | length))' 2>/dev/null \
     || { _pw_ci_fail "could not render the CI state of $head"; return 20; }
 }
 
@@ -1389,10 +1415,13 @@ cmd_ci_wait() {
   require_uint "$OPT_MAX_SECS" --max-secs || return 2
   adb_require_gh jq || return 20
   deadline="$(_pw_deadline)"
-  _ADB_PW_CI_QUIET=1
+  # The sink is where every poll leaves its CI line and signature; without one there is neither a
+  # line to report nor polls to compare, so the wait refuses rather than running blind.
   _ADB_PW_CI_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-ci.XXXXXX" 2>/dev/null || printf '')"
-  [ -n "$_ADB_PW_CI_SINK" ] \
-    || echo "pr-watch: could not create a temp file, so polls cannot be compared — this wait will not report green" >&2
+  if [ -z "$_ADB_PW_CI_SINK" ]; then
+    echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not create a temp file, so this wait cannot compare its polls" >&2; return 20
+  fi
+  _ADB_PW_CI_QUIET=1
   trap 'echo "pr-watch: interrupted — the head'"'"'s checks were not seen to conclude" >&2
         [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
         exit 11' INT TERM
@@ -1458,7 +1487,7 @@ cmd_ci_wait() {
       # A red held for its siblings is still a red when the bound runs out.
       printf '%s\n' "$line" >&2
       printf '%s\n' "$out"
-      echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with checks still running beside the red; returning the red" >&2
+      echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired while the red was still unsettled; returning the red" >&2
       trap - INT TERM
       [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
       return 40

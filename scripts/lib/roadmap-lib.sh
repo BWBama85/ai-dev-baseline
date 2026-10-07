@@ -30,6 +30,7 @@
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
 #   roadmap-lib.sh branch-health <expected-sha> <active-workflows> <health-decl off|skip-unreported|no-ci>
 #                                     # {check_runs,statuses,required_contexts} on stdin
+#   roadmap-lib.sh check-facts <expected-sha>                     # {check_runs,statuses} on stdin
 #   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health>
 #   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
@@ -53,6 +54,7 @@
 #   release-ready · read-complete · emit-verdict · health-optout
 #                                       one word (health-optout: `invalid <values>` on a bad marker)
 #   branch-health · health-decl         line 1 the verdict, line 2 (when there is one) its reason
+#   check-facts                         one line of JSON: the counts and the failing checks
 #   release-counts                      three lines: the release-ready counts, the open non-blocker
 #                                       numbers, the open blocker numbers
 #   deps-from-body · deps-ambiguous · decisions · open-issues   one value per line; empty = none
@@ -239,6 +241,20 @@ cmd_pr_targets_issue() {
     1) return 1 ;;
     *) die "pr-targets-issue: could not parse PR JSON (malformed input or not a JSON array)" ;;
   esac
+}
+
+# _adb_rm_ci_defs — the jq definitions of what a check run or a commit status IS: on this commit,
+# concluded, failing, pending. ONE HOME for every program that classifies one — `branch-health`'s
+# verdict and `check-facts`' display facts (#448) — so the failing list pr-watch prints can never
+# describe a different set than the verdict it is printed beside.
+_adb_rm_ci_defs() {
+  printf '%s' '
+def adb_ci_mine($want): select((.head_sha // "" | ascii_downcase) == $want);
+def adb_ci_run_done: ((.status // "") == "completed") and ((.conclusion // null) != null);
+def adb_ci_run_failing: adb_ci_run_done and (.conclusion | IN("success","skipped","neutral") | not);
+def adb_ci_status_pending: (.state // "") == "pending";
+def adb_ci_status_failing: (.state // "") | IN("success","pending") | not;
+'
 }
 
 # --- branch-health ---------------------------------------------------------------------------
@@ -486,7 +502,7 @@ cmd_branch_health() {
   # `--arg`, not `--argjson`: the declaration is a WORD now, and the jq program compares it as one.
   out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" \
                                      --arg decl "$decl" \
-                                     --arg aslug "$aslug" '
+                                     --arg aslug "$aslug" "$(_adb_rm_ci_defs)"'
     if type != "object" then error("not an object") else . end
     # ALL THREE keys must be PRESENT. Defaulting a missing key would convert a malformed or
     # truncated health response into empty collections, which reads as `no-ci` and lets
@@ -531,7 +547,7 @@ cmd_branch_health() {
     # NOTE: no apostrophe anywhere in this jq program — it is a single-quoted shell string, and
     # one stray apostrophe closes it and turns the whole file into a syntax error.
     | ($sha | ascii_downcase) as $want
-    | [$runs[] | select((.head_sha // "" | ascii_downcase) == $want)] as $mine
+    | [$runs[] | adb_ci_mine($want)] as $mine
     # Derived, not re-selected: the match is total, so the two sets partition $runs. Writing the
     # complement as its own filter would be a second home for the SHA rule (including the
     # normalization) that has to track the first by hand.
@@ -539,16 +555,16 @@ cmd_branch_health() {
     # "Finished" is defined ONCE, as a tag, and both buckets below read that tag. Writing the two
     # as separate hand-maintained complementary predicates would be a standing hazard: widen one
     # notion of "still running" and forget the other, and a check falls into NEITHER bucket and
-    # silently reads as GREEN.
-    | ([$mine[] | . + {_done: (((.status // "") == "completed") and ((.conclusion // null) != null))}]) as $tagged
+    # silently reads as GREEN. The tag is `adb_ci_run_done`, the shared definition (#448).
+    | ([$mine[] | . + {_done: adb_ci_run_done}]) as $tagged
     # Not yet completed, or completed with no conclusion => still unknown.
     | ([$tagged[] | select(._done | not)]) as $pending
-    | ([$sts[]    | select((.state // "") == "pending")]) as $stpending
+    | ([$sts[]    | select(adb_ci_status_pending)]) as $stpending
     # Only a FINISHED check can be bad. A still-running one has no conclusion, and scoring a null
     # conclusion as "not success" would report a RUNNING build as red — turning every mid-CI run
     # into a false `not-green` instead of the honest `indeterminate`.
-    | ([$tagged[] | select(._done) | select(.conclusion | IN("success","skipped","neutral") | not)]) as $bad
-    | ([$sts[]  | select((.state // "") | IN("success","pending") | not)]) as $stbad
+    | ([$tagged[] | select(adb_ci_run_failing)]) as $bad
+    | ([$sts[]  | select(adb_ci_status_failing)]) as $stbad
     # Check runs produced by GitHub ACTIONS, which is what the workflow inventory counts. Actions
     # check runs carry app.slug == "github-actions" ($aslug, from the one home in common.sh); another
     # Checks API app (a linter bot, a deploy provider) carries its own slug. A check run whose app
@@ -661,6 +677,50 @@ cmd_branch_health() {
       end
   ' 2>/dev/null)" || die "branch-health: could not parse the health JSON (malformed input)"
   [ -n "$out" ] || die "branch-health: could not parse the health JSON (malformed input)"
+  printf '%s\n' "$out"
+}
+
+# --- check-facts (#448) -------------------------------------------------------------------------
+# The DISPLAY facts of one commit's checks, decided by the same definitions `branch-health` decides
+# with (`_adb_rm_ci_defs`): how many there are, how many concluded, and which failed. pr-watch.sh
+# renders them beside `branch-health`'s verdict, and re-deriving them there was a second definition
+# of "failing" that could disagree with the verdict it was printed beside.
+#
+#   check-facts <expected-sha>       {check_runs, statuses} on stdin, shaped as branch-health takes them
+#
+# Prints ONE line of JSON — {total, concluded, failing:[{name, actions, suite}], failing_statuses:
+# [context]} — where `actions` says the check is GitHub Actions' (`adb_actions_app_slug`) and
+# `suite` is its check-suite id or null. Exit 0 for a computed answer, 2 on bad input. PURE.
+cmd_check_facts() {
+  [ "$#" -eq 1 ] || die "check-facts: needs exactly 1 arg: <expected-sha> (check JSON on stdin)"
+  local sha="$1" json out aslug
+  case "$sha" in
+    ''|*[!0-9a-fA-F]*) die "check-facts: <expected-sha> must be a hex commit sha (got '$sha')" ;;
+  esac
+  [ "${#sha}" -ge 7 ] || die "check-facts: <expected-sha> is too short to identify a commit (got '$sha')"
+  command -v jq >/dev/null 2>&1 || die "check-facts: jq is required"
+  aslug="$(adb_actions_app_slug 2>/dev/null)" || aslug=""
+  [ -n "$aslug" ] || die "check-facts: adb_actions_app_slug is unavailable or empty (broken install)"
+  json="$(cat)"
+  case "$json" in *[![:space:]]*) : ;; *) die "check-facts: empty input (the checks could not be read)" ;; esac
+  out="$(printf '%s' "$json" | jq -c --arg sha "$sha" --arg aslug "$aslug" "$(_adb_rm_ci_defs)"'
+    if type != "object" then error("not an object") else . end
+    | if (has("check_runs") | not) or (has("statuses") | not)
+      then error("check_runs and statuses are both required") else . end
+    | if ((.check_runs | type) != "array") or ((.statuses | type) != "array")
+      then error("check_runs/statuses must be arrays") else . end
+    | ($sha | ascii_downcase) as $want
+    | [.check_runs[] | adb_ci_mine($want)] as $mine
+    | .statuses as $sts
+    | { total: (($mine | length) + ($sts | length)),
+        concluded: (([$mine[] | select(adb_ci_run_done)] | length)
+                    + ([$sts[] | select(adb_ci_status_pending | not)] | length)),
+        failing: [$mine[] | select(adb_ci_run_failing)
+                  | {name: (.name // "check"), actions: ((.app.slug // "") == $aslug),
+                     suite: (.check_suite.id // null)}],
+        failing_statuses: [$sts[] | select(adb_ci_status_failing) | (.context // "status")] }' 2>/dev/null)" \
+    || die "check-facts: could not parse the check JSON (malformed input)"
+  [ -n "$out" ] || die "check-facts: could not parse the check JSON (malformed input)"
   printf '%s\n' "$out"
 }
 
@@ -1873,6 +1933,7 @@ main() {
     slug-ok)          cmd_slug_ok "$@" ;;
     pr-targets-issue) cmd_pr_targets_issue "$@" ;;
     branch-health)    cmd_branch_health "$@" ;;
+    check-facts)      cmd_check_facts "$@" ;;
     release-ready)    cmd_release_ready "$@" ;;
     release-counts)   cmd_release_counts "$@" ;;
     marker-title)     cmd_marker_title "$@" ;;

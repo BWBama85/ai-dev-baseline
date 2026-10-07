@@ -2768,4 +2768,40 @@ else
   bad "contract: could not create a scratch directory"
 fi
 
+# ============================================================================================
+# check-facts (#448) — the display facts, from the SAME definitions branch-health decides with
+# ============================================================================================
+# pr-watch.sh prints these beside branch-health's verdict. Before they shared `_adb_rm_ci_defs`, it
+# re-derived "concluded" and "failing" itself; these cases pin what the facts say, and that they can
+# never disagree with the verdict about whether anything failed.
+facts() { OUT="${ printf '%s' "$1" | bash "$RL" check-facts "${2:-$SHA}" 2>&1; }"; RC_=$?; }
+facts "${ hj "${ ck lint "$SHA" completed failure; },${ ck slow "$SHA" in_progress null; },${ ck deploy "$SHA" completed failure vercel; },${ ck old "$OTHER_SHA" completed failure; }" "${ st ci/circle error; },${ st ci/other pending; }"; }"
+eq "$RC_" 0 "check-facts: a computed answer is 0"
+eq "$(printf '%s' "$OUT" | jq -c '[.total, .concluded]')" '[5,3]' \
+   "check-facts: counts this commit's checks and statuses, a check on another commit not at all"
+eq "$(printf '%s' "$OUT" | jq -c '[.failing[] | [.name, .actions]]')" '[["lint",true],["deploy",false]]' \
+   "check-facts: names each failing check and whether Actions produced it"
+eq "$(printf '%s' "$OUT" | jq -c '.failing_statuses')" '["ci/circle"]' \
+   "check-facts: names each failing status, never a pending one"
+facts "${ hj "${ ck a "$SHA" completed neutral; },${ ck b "$SHA" completed skipped; }" ""; }"
+eq "$(printf '%s' "$OUT" | jq -c '.failing')" '[]' "check-facts: neutral and skipped are not failures, exactly as branch-health scores them"
+# THE AGREEMENT, over every shape a failure or its absence can take: not-green exactly when the
+# facts name a failure.
+for _doc in \
+  "${ hj "${ ck a "$SHA" completed success; }" ""; }" \
+  "${ hj "${ ck a "$SHA" completed failure; }" ""; }" \
+  "${ hj "${ ck a "$SHA" completed cancelled; },${ ck b "$SHA" in_progress null; }" ""; }" \
+  "${ hj "${ ck a "$SHA" completed success; }" "${ st x failure; }"; }" \
+  "${ hj "${ ck a "$SHA" completed success; }" "${ st x pending; }"; }" \
+  "${ hj "${ ck a "$OTHER_SHA" completed failure; }" ""; }"; do
+  _v="$(health "$_doc")"
+  facts "$_doc"
+  _n="$(printf '%s' "$OUT" | jq '(.failing | length) + (.failing_statuses | length)')"
+  if { [ "$_v" = not-green ] && [ "$_n" -gt 0 ]; } || { [ "$_v" != not-green ] && [ "$_n" -eq 0 ]; }; then ok
+  else bad "check-facts: agrees with branch-health about whether anything failed (verdict $_v, $_n failing)"; fi
+done
+facts '{"check_runs":[]}';  eq "$RC_" 2 "check-facts: a document without statuses is bad input, never 'nothing failed'"
+facts '';                   eq "$RC_" 2 "check-facts: empty input is bad input"
+facts "${ hj "" ""; }" abc;  eq "$RC_" 2 "check-facts: a short sha is refused"
+
 check_summary "roadmap"

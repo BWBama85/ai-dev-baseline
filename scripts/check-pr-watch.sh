@@ -285,10 +285,10 @@ L
 L
 )" '      | .' 'ci: a check-run list shorter than its total_count is incomplete'
   check_row ci-required-ignored "$PWT" ci-read "$(lit <<'L'
-           '{check_runs:$runs, statuses:$sts, required_contexts:$req}' 2>/dev/null)" \
+  hin="$(printf '{"check_runs":%s,"statuses":%s,"required_contexts":%s}' "$runs" "$sts" "$req")"
 L
 )" "$(lit <<'L'
-           '{check_runs:$runs, statuses:$sts, required_contexts:[]}' 2>/dev/null)" \
+  hin="$(printf '{"check_runs":%s,"statuses":%s,"required_contexts":[]}' "$runs" "$sts")"
 L
 )" 'ci: a required context that has not reported is not green'
   check_row ci-base-defaulted "$PWT" ci-read "$(lit <<'L'
@@ -364,13 +364,28 @@ L
 L
 )" 'ci-wait: the declaration reason rides the one CI line'
   check_row ci-open-run-ignored "$PWT" ci-wait "$(lit <<'L'
-      | [$badruns[] | select((.app.slug // "") == $a) | runof | select(. != null and (.done | not))] as $openruns
+      | [ $f.failing[] | select(.actions) | runof | select(. == null or (.done | not)) ] as $unsettledruns
 L
-)" '      | [] as $openruns' "ci-wait --no-fail-fast: returns once the red's run concluded"
+)" '      | [] as $unsettledruns' "ci-wait --no-fail-fast: returns once the red's run concluded"
+  check_row ci-lost-run-released "$PWT" ci-wait "$(lit <<'L'
+      | [ $f.failing[] | select(.actions) | runof | select(. == null or (.done | not)) ] as $unsettledruns
+L
+)" '      | [ $f.failing[] | select(.actions) | runof | select(. != null and (.done | not)) ] as $unsettledruns' \
+    'ci-wait --no-fail-fast: a red whose run cannot be found is held, not released'
+  check_row ci-check-fields-unchecked "$PWT" ci-read '        then error("a check run lacks a field its consumers read") else . end' \
+    '        then . else . end' 'ci: a check run with no id, name or check suite is unreadable'
+  check_row ci-status-fields-unchecked "$PWT" ci-read '        then error("a status lacks its context or state") else . end' \
+    '        then . else . end' 'ci: a status with no context is unreadable'
+  check_row ci-workflow-repeat-accepted "$PWT" ci-read "$(lit <<'L'
+        | if ([$all[] | .id] | unique | length) != ($all | length) then error("a workflow repeats") else . end
+L
+)" '        | .' 'ci: a workflow inventory that repeats an id is unreadable'
+  check_row ci-sink-failure-ignored "$PWT" ci-wait 'could not create a temp file, so this wait cannot compare its polls" >&2; return 20' \
+    'could not create a temp file, so this wait cannot compare its polls" >&2; :' 'ci-wait: a wait that cannot create its temp file refuses'
   check_row ci-signature-anonymous "$PWT" ci-wait "$(lit <<'L'
-        ( [ ($mine[] | [(.id // ""), (.app.slug // ""), (.name // ""), (.status // ""), (.conclusion // "")]),
+        ( [ (.runs[] | [.id, (.app.slug // ""), .name, .status, (.conclusion // "")]),
 L
-)" '        ( [ ($mine[] | [(.name // ""), (.status // ""), (.conclusion // "")]),' 'ci-wait: a check replaced under the same name is a new check set'
+)" '        ( [ (.runs[] | [.name, .status, (.conclusion // "")]),' 'ci-wait: a check replaced under the same name is a new check set'
   mut_prep_root() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1; printf '%s' "$1"; }
   mut_run_root()  { "$BASH" "$1/scripts/check-pr-watch.sh" 2>&1; }
   check_mutation_rows "pr-watch-ci" "$work/mr" scripts/check-pr-watch.sh mut_prep_root mut_run_root 4
@@ -2138,7 +2153,7 @@ ci_green_fx
 STUB_FAIL_CHECKRUNS=1 w ci --pr 1;  rc 20 "ci: a failed check-runs read -> 20";  STUB_FAIL_CHECKRUNS=0
 STUB_FAIL_CISTATUS=1 w ci --pr 1;   rc 20 "ci: a failed status read -> 20";      STUB_FAIL_CISTATUS=0
 STUB_FAIL_BRANCH=1 w ci --pr 1;     rc 20 "ci: a failed base-branch read -> 20"; STUB_FAIL_BRANCH=0
-printf '{"total_count":2,"check_runs":[{"id":1,"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}\n' "$HEAD_SHA" > "$S/checkruns.json"
+printf '{"total_count":2,"check_runs":[{"id":1,"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"check_suite":{"id":7001}}]}\n' "$HEAD_SHA" > "$S/checkruns.json"
 w ci --pr 1;  rc 20 "ci: a check-run list shorter than its total_count is incomplete, not green"
 ci_runs_fx "ci|completed|success"
 CI_SHA="$OLD_SHA" ci_status_fx
@@ -2165,6 +2180,28 @@ jq -n -c --arg sha "$HEAD_SHA" '[range(1000) | {id: ., name: "j\(.)", head_sha: 
     conclusion: "success", app: {slug: "github-actions"}, check_suite: {id: (100000 + .)}}]
   | {total_count: length, check_runs: .}' > "$S/checkruns.json"
 w ci --pr 1;  rc 20 "ci: a check-run list at the 1000-suite ceiling cannot be proved whole"
+# A RECORD MISSING A FIELD ITS CONSUMERS READ is unreadable, never a thinner set: each fixture below
+# reads green, or `no-ci`, if the bad record is taken at face value.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
+printf '{"total_count":1,"check_runs":[{"head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}\n' "$HEAD_SHA" > "$S/checkruns.json"
+w ci --pr 1;  rc 20 "ci: a check run with no id, name or check suite is unreadable"
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|completed|success"; ci_branch_fx --unprotected
+printf '{"sha":"%s","state":"success","total_count":1,"statuses":[{"state":"success"}]}\n' "$HEAD_SHA" > "$S/cistatus.json"
+w ci --pr 1;  rc 20 "ci: a status with no context is unreadable"
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected
+ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "admin"
+printf '{"total_count":2,"workflows":[{"id":7,"state":"disabled_manually"},{"id":7,"state":"disabled_manually"}]}\n' > "$S/workflows.json"
+w ci --pr 1;  rc 20 "ci: a workflow inventory that repeats an id is unreadable, never zero active workflows"
+printf '{"total_count":1,"workflows":[{"id":7,"state":"paused_by_someone"}]}\n' > "$S/workflows.json"
+w ci --pr 1;  rc 20 "ci: a workflow in a state this does not know is unreadable"
+# A large check set with large outputs is read on STDIN: an argument-size limit must not turn it
+# into an unreadable read. Twelve checks carrying ~200 KB of output each.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
+jq -n -c --arg sha "$HEAD_SHA" '("x" * 200000) as $big
+  | [range(12) | {id: ., name: "j\(.)", head_sha: $sha, status: "completed", conclusion: "success",
+                  app: {slug: "github-actions"}, check_suite: {id: (500 + .)}, output: {text: $big}}]
+  | {total_count: length, check_runs: .}' > "$S/checkruns.json"
+w ci --pr 1;  rc 0 "ci: a large check set is read whole, not refused by an argument limit"
 
 # EVERY OUTCOME CARRIES A CI LINE, so a summary always has one to paste — a closed pull request and
 # an unreadable one included.
@@ -2213,6 +2250,8 @@ ci_state_fx() {
     red)     ci_runs_fx "ci|completed|failure"; ci_status_fx; ci_branch_fx ci ;;
     running) ci_runs_fx "ci|in_progress|"; ci_status_fx; ci_branch_fx ci ;;
     nodecl)  ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0 ;;
+    noci)    ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0
+             ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "admin" ;;
     none)    : ;;
   esac
 }
@@ -2230,7 +2269,7 @@ for _rv in clean:0 findings:10 pending:11; do
   reset_fx; declare_bots "[\"$CODEX\"]"; rev_state_fx "$_rv"
   wout observe --pr 1; _base_rc="$RC_"; _base_out="$OUT"
   eq "$_base_rc" "$_want" "observe: the reviewer exit code is unchanged by the CI read ($_rv, no CI fixture)"
-  for _ci in green red running nodecl; do
+  for _ci in green red running nodecl noci; do
     reset_fx; declare_bots "[\"$CODEX\"]"; rev_state_fx "$_rv"; ci_state_fx "$_ci"
     wout observe --pr 1
     eq "$RC_" "$_base_rc" "observe: the reviewer exit code is unchanged by the CI read ($_rv, CI $_ci)"
@@ -2364,6 +2403,18 @@ ci_wfruns_fx "999|7001|2"
 pr_poll_fx 3 --state closed --merged-at "2026-07-25T05:00:00Z"
 w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP" --no-fail-fast;  rc 40 "ci-wait --no-fail-fast: a red is held while its run has not concluded"
 eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "2" "ci-wait --no-fail-fast: returns once the red's run concluded"
+
+# A red whose run CANNOT BE FOUND is unsettled too: nothing can say that run concluded, so
+# `--no-fail-fast` holds it to the bound rather than releasing it early.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
+ci_runs_fx "ci|completed|failure"
+w ci-wait --pr 1 --interval 1 --max-secs 2 --no-fail-fast;  rc 40 "ci-wait --no-fail-fast: a red whose run cannot be found is still a red at the bound"
+has "$OUT" "while the red was still unsettled" "ci-wait --no-fail-fast: a red whose run cannot be found is held, not released"
+# Without its temp file the wait could neither compare polls nor report a line, so it refuses.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
+TMPDIR="$work/no-such-dir" w ci-wait --pr 1 --interval 1 --max-secs 3
+rc 20 "ci-wait: a wait that cannot create its temp file refuses"
+has "$OUT" "pr-watch: ci unreadable - observed " "ci-wait: ...and still prints a CI line saying why"
 
 # A check REPLACED under the same name — a re-run, or another app — is a new check set, so its first
 # green does not settle the wait.

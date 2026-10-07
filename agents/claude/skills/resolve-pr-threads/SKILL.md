@@ -74,7 +74,7 @@ default set covers the common GitHub review bots:
 > auto-merge (that is #171's decision, and it remains out of scope).
 
 > **Re-running a CI run is the one other exception (#448), and it is as narrow.** Step 7b re-runs a
-> run once — only one that never executed (`ci-health` `23`), or one whose red an OPEN issue already
+> run once — only one whose failing jobs never executed a step (`ci-health` `23`), or one whose red an OPEN issue already
 > names as a known flake — and only while it is on its first attempt. It never re-runs a red that
 > executed as a way to reach green.
 
@@ -1550,7 +1550,7 @@ Make it the last command in its block and branch on its EXIT CODE:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `0`  | every check on the head concluded non-failing, every required context reported, and that held across two polls | **compare the SHA on its stdout with the head the door was about** (0b's `clean <sha>`, or the head this round pushed). Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
+| `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **compare the SHA on its stdout with the head the door was about** (0b's `clean <sha>`, or the head this round pushed). Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
 | `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | report "no CI to wait for"; exit as above |
 | `40` | a check on the head concluded failing — returned at once, while siblings may still run | **route it** (below). Never report this exit clean, and never as "nothing to do" |
 | `11` | the bound expired before the checks concluded | report the CI line — it is **not green** — and hand back to the operator |
@@ -1568,26 +1568,28 @@ bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>
 
 | `ci-health` | What it proves | What to do |
 | --- | --- | --- |
-| `22` failed | the job executed, so a log exists | **a finding of this round.** Read the log and diagnose it: `22` proves the job ran, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
+| `22` failed | a failing job executed — or the run failed at `startup_failure`, before any job ran | **a finding of this round.** Read the log and diagnose it — for a `startup_failure`, the run page and the workflow file, since there is no job log: `22` proves something ran or failed to start, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
 | `23` never ran | no failing job executed a step, so there is nothing to diagnose | re-run once (below), and say in the summary that this is **not green-by-retry**: there was never a result to override |
-| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, once — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded — then classify again |
+| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → the red is gone, report the CI line; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
 | `20` / `2` / other | the run could not be read | report it and hand back |
 
 An `[external check]` or `[external status]` has no run to classify, and an Actions failure shown as
 `[run ?]` could not be mapped to one: report each by name for the operator, never guess a run id,
 and never re-run it.
 
-**Re-run once, and only on a first attempt — decided on fresh reads, not on the CI line.** The line
-is a snapshot, and by now another actor may have re-run the run, pushed, or closed the pull request.
-Immediately before re-running, read the run's attempt from `ci-health`'s own reason line
-(`attempt N`, read when you classified it) and the PR's live state:
+**Re-run once, and only on a first attempt — decided on fresh reads, not on the CI line or an
+earlier classification.** Both are snapshots, and while you read the log or matched an issue another
+actor may have re-run the run, pushed, or closed the pull request. So IMMEDIATELY before re-running,
+read both again:
 
 ```bash
+bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>
 gh pr view "$PR_NUM" --json state,headRefOid
 ```
 
-Re-run only when the attempt is `1`, the PR is `OPEN`, and its head is still the SHA on the CI line;
-otherwise report what changed and hand back. The guarantee is sequential, as `request-review`'s is:
+Re-run only when `ci-health` still answers the same class with `attempt 1` in its reason line, the
+PR is `OPEN`, and its head is still the SHA on the CI line; otherwise report what changed and hand
+back. The guarantee is sequential, as `request-review`'s is:
 two sessions racing the same run can both re-run it, and nothing on GitHub serializes that.
 
 ```bash
@@ -1600,13 +1602,15 @@ shows the old red. So confirm it took — `bash "$HOME/.claude/scripts/lib/ci-he
 the red while that run has not concluded. If the attempt has not moved, hand back rather than wait
 on the old red.
 
-**A CI fix is a round like any other — so it OPENS one.** Run step 3's `round-open` snippet first:
-on the clean-pass door nothing has opened this round, and step 6's row would otherwise carry an
-earlier round's figures. Then fix it as step 4 fixes a thread — gates, commit, 4d's local review,
-push — and go on to step 7: the head moved, so step 7 asks for a re-review and the round cap counts
-it; nothing here adds a second counter. **A CI red is not a review thread**: it has no thread id, so
-it is not recorded in the pattern ledger (4b) and not counted among the round's findings. Its record
-is the CI line in step 6's summary, with its `ci-health` class.
+**A CI fix is a round like any other — so it OPENS one and REPORTS one.** Run step 3's `round-open`
+snippet first: on the clean-pass door nothing has opened this round, and step 6's row would
+otherwise carry an earlier round's figures. Then fix it as step 4 fixes a thread — gates, commit,
+4d's local review, push — then step 6's `round-row`, then step 7: the head moved, so step 7 asks for
+a re-review and the round cap counts it; nothing here adds a second counter. **A CI red is not a
+review thread**: it has no thread id, so it is not recorded in the pattern ledger (4b) and not
+counted among the round's findings. Its record is the round's row — append the red's CI line and
+its `ci-health` class to `ROUND_ROWS` beside the round's other lines, so a later green cannot erase
+it — and the CI line of step 6's summary.
 
 ### 8. Restore the starting branch (never strand the tree)
 

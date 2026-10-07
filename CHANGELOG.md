@@ -22,7 +22,7 @@ only by a published release, which is what these entries are the notes for.
   CI (`41`) comes from the roadmap artifact's `release-health: no-ci`. Failing jobs are named
   through an allowlist with the run and attempt `ci-health.sh` classifies.
   `/resolve-pr-threads` waits for CI at its terminal exit (new step 7b) and routes a red by class:
-  a red that executed is a finding, a run that never executed is re-run once on its first attempt.
+  a red that executed is a finding, and a run whose failing jobs never executed a step is re-run once, on its first attempt.
   Every exit's summary and `/implement-issue`'s close-out carry the CI line. D123 supersedes
   D86 (10).
 

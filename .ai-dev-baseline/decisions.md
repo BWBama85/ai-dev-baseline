@@ -9129,7 +9129,8 @@ survive is the part a later reader needs.
              classify yet (24/25), including the moment after a re-run is requested.
              (c) Routing. A failing Actions check maps to its run through `check_suite.id` =
              the run's `check_suite_id` (verified live). ci-health 22 is a finding, diagnosed from
-             the log rather than assumed to be the diff's. 23 is re-run once. 24/25 wait for the run.
+             the log rather than assumed to be the diff's. 23 (no failing job executed a step) is
+             re-run once. 24/25 wait for the run, once.
              20 or anything else is handed back. An external check or status is named and never
              re-run.
              (d) Flaky arm. The ledger class is NOT a flake registry. A red is a known flake only
@@ -9151,10 +9152,16 @@ survive is the part a later reader needs.
              after the bound is not accepted (11), and the bound limits continued polling only — a
              read that hangs is not bounded, as with `wait`. Wrapping every read in
              `adb_run_bounded` was offered and declined.
+             (i) **Owner decision 2026-10-06, from the local review loop:** the predicates that say
+             what a check IS — on this commit, concluded, failing, pending — live once, as
+             `roadmap-lib.sh`'s `_adb_rm_ci_defs`, used by `branch-health` and by a new pure
+             `check-facts` that `pr-watch.sh` renders. A mirror plus an agreement test was offered
+             and declined.
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in
-             `observe`/`wait`); `scripts/lib/common.sh` (`adb_pr_snapshot` carries `base_ref`);
+             `observe`/`wait`); `scripts/lib/roadmap-lib.sh` (`_adb_rm_ci_defs`, `check-facts`,
+             `branch-health` on the shared defs); `scripts/check-roadmap.sh`; `scripts/lib/common.sh` (`adb_pr_snapshot` carries `base_ref`);
              `scripts/check-pr-watch.sh` (section 14, blocks, per-test CI rows);
              `scripts/check-lib.sh` (`--base-ref`); `scripts/selfcheck.sh` (`pr-watch-mutation`
              inputs); `base/workflows/resolve-pr-threads.md` (0b's CI line, step 7b, step 6's CI
