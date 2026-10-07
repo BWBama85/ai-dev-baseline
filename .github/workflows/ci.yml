@@ -506,13 +506,14 @@ jobs:
   pr-watch:
     name: pr-watch
     runs-on: ubuntu-26.04
-    # 60, because the mutation step below runs the whole suite once per pool row plus a control, and
+    # 75, because the mutation step below runs the whole suite once per pool row plus a control, and
     # since #448 each head-CI row runs its block after a second full control. Measured on this
-    # workstation on 2026-10-06, under another session's load: 20m45s at its own pool width of 4
-    # (36 rows). The pr-threads harness after it (11 rows, #437) measured 2m13s with the pool
-    # forced to 2. A job that times out is a red CI leg that says nothing about the diff, which is
-    # the class of defect #394 is about.
-    timeout-minutes: 60
+    # workstation on 2026-10-07, at load average ~5.5: 32m11s with the pool forced to 2 (42 rows,
+    # ADB_POOL_JOBS=2) — before a hosted runner's slower CPU is counted, and beside the plain suite
+    # (~3m) and the pr-threads harness after it (11 rows, #437: 2m13s with the pool forced to 2). A
+    # job that times out is a red CI leg that says nothing about the diff, which is the class of
+    # defect #394 is about.
+    timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

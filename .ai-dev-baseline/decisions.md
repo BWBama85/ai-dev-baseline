@@ -9169,6 +9169,11 @@ survive is the part a later reader needs.
              fourth pass for this run, after pass 3 found two of its own mutation rows defective (one
              mutated into a program that did not parse; one could no longer fail beside a second
              guard added in pass 2, which was removed so one defence is proven).
+             (l) **Owner decision 2026-10-07:** a fifth pass, after pass 4's harness run showed two
+             more rows unable to fail beside `check-facts`' member validation; their fixtures now
+             carry records only `pr-watch.sh`'s own check refuses. A workflow that fails to start
+             without creating a check run is NOT detected — it would extend the shared check model
+             — and is carried as MEDIUM.
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in

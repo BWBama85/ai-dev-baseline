@@ -1556,7 +1556,7 @@ Make it the last command in its block and branch on its EXIT CODE:
 | ---- | ------- | ---------- |
 | `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **compare the SHA on its stdout with `REVIEWED_SHA`** — on the `0` door the `clean <sha>`, on the `30` door the `findings <sha>` that opened the round, since a round that pushed nothing left that head in place. Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
 | `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | report "no CI to wait for"; exit as above |
-| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **first compare the SHA on its stdout with `REVIEWED_SHA`, the checkout's `git rev-parse HEAD` and the live `gh pr view "$PR_NUM" --json headRefOid`.** All equal → **route it** (below). Any differs → somebody pushed during the wait: do not fix a head you have not checked out — return to 0b's wait, where that head's reviewer verdict and CI line arrive. Never report this exit clean, and never as "nothing to do" |
+| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **first compare the SHA on its stdout with `REVIEWED_SHA`, the checkout's `git rev-parse HEAD` and the live `gh pr view "$PR_NUM" --json headRefOid`.** All equal → **route it** (below). Any differs → somebody pushed during the wait: do not fix a head you have not checked out. Bring the checkout to the PR's head first — `git fetch origin` then `git merge --ff-only` onto it, and if it cannot fast-forward (the branch diverged), stop and hand back; never reset — then return to 0b's wait, where that head's reviewer verdict and CI line arrive. Never report this exit clean, and never as "nothing to do" |
 | `11` | the bound expired before the checks concluded | report the CI line — it is **not green** — and hand back to the operator |
 | `12` | the PR is no longer OPEN | report it; exit |
 | `20` | the CI state was unreadable on consecutive polls | report it, never as green, and hand back |
@@ -1575,6 +1575,7 @@ bash "$HOME/.gemini/scripts/lib/ci-health.sh" classify --run <id>
 | `22` failed | a failing job executed — or the run failed at `startup_failure`, before any job ran | **a finding of this round.** Read the log and diagnose it — for a `startup_failure`, the run page and the workflow file, since there is no job log: `22` proves something ran or failed to start, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
 | `23` never ran | no failing job executed a step, so there is nothing to diagnose | re-run once (below), and say in the summary that this is **not green-by-retry**: there was never a result to override |
 | `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.gemini/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → the same head check as the first wait's `40`, then classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → treat it exactly as the first wait's `0`, SHA comparison included; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
+| `0` green | the run passed after all — a re-run, or a check that concluded since the CI line was read | the red is gone: take one `bash "$HOME/.gemini/scripts/lib/pr-watch.sh" ci --pr "$PR_NUM"` reading and treat it as this step's first wait, SHA comparison included |
 | `20` / `2` / other | the run could not be read | report it and hand back |
 
 An `[external check]` or `[external status]` has no run to classify, and an Actions failure shown as
@@ -1609,13 +1610,14 @@ the attempt has not moved, hand back rather than wait on the old red.
 
 **A CI fix is a round like any other — so it OPENS one and REPORTS one.** Run step 3's `round-open`
 snippet first: on the clean-pass door nothing has opened this round, and step 6's row would
-otherwise carry an earlier round's figures. Then fix it as step 4 fixes a thread — gates, commit,
-4d's local review, push — then step 6's `round-row`, then step 7: the head moved, so step 7 asks for
-a re-review and the round cap counts it; nothing here adds a second counter. **A CI red is not a
-review thread**: it has no thread id, so it is not recorded in the pattern ledger (4b) and not
-counted among the round's findings. Its record is the round's row — append the red's CI line and
-its `ci-health` class to `ROUND_ROWS` beside the round's other lines, so a later green cannot erase
-it — and the CI line of step 6's summary.
+otherwise carry an earlier round's figures. Then, BEFORE touching code, append the red's CI line and
+its `ci-health` class to `ROUND_ROWS`, so a failure later in the round — a gate, the local review —
+still reports the red it was fixing. Then fix it as step 4 fixes a thread — gates, commit, 4d's local
+review, push — then step 6's `round-row`, then step 7: the head moved, so step 7 asks for a re-review
+and the round cap counts it; nothing here adds a second counter. **A CI red is not a review
+thread**: it has no thread id, so it is not recorded in the pattern ledger (4b) and not counted among
+the round's findings. Its record is that line in the round's row, and the CI line of step 6's
+summary.
 
 ### 8. Restore the starting branch (never strand the tree)
 

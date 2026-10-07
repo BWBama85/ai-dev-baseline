@@ -13,18 +13,19 @@ only by a published release, which is what these entries are the notes for.
 - **The PR loops read the head's CI (#448).** A required check that went red on a head the
   resolver had just pushed used to be invisible to every later round, which could report itself
   clean over it. `pr-watch.sh` now reads the head's check runs, statuses and the base branch's
-  required contexts through `roadmap-lib.sh branch-health`. `observe` and `wait` print one stderr
-  line about it on the verdict they return — `pr-watch: ci <verdict> <sha> observed <UTC> — <detail>`
-  — never per poll, and their stdout and exit code are unchanged. Two new subcommands answer about
-  CI alone: `ci` reads it once and `ci-wait` polls until it concludes (default every 60 s for up to
-  3600 s). A red returns at once (`40`, or `--no-fail-fast` to wait for the rest). A green is
-  reported only once it holds over two polls with the same check set, and the declared absence of
-  CI (`41`) comes from the roadmap artifact's `release-health: no-ci`. Failing jobs are named
-  through an allowlist with the run and attempt `ci-health.sh` classifies.
-  `/resolve-pr-threads` waits for CI at its terminal exit (new step 7b) and routes a red by class:
-  a red that executed is a finding, and a run whose failing jobs never executed a step is re-run once, on its first attempt.
-  Every exit's summary and `/implement-issue`'s close-out carry the CI line. D123 supersedes
-  D86 (10).
+  required contexts, judged by `roadmap-lib.sh branch-health` and described by its new pure
+  `check-facts` — both from one set of check definitions. `observe` and `wait` print one stderr line
+  about it on the verdict they return — `pr-watch: ci <verdict> <sha> observed <UTC> — <detail>` —
+  never per poll, and their stdout and exit code are unchanged. Two new subcommands answer about CI
+  alone: `ci` takes one reading, and `ci-wait` polls until the checks conclude (every 60 s for up to
+  3600 s by default). `ci-wait` returns a red at once (`40`, or with `--no-fail-fast` once its runs
+  conclude) and reports a green only once it holds over two polls with the same check set. The
+  declared absence of CI (`41`) comes from the roadmap artifact's `release-health: no-ci`. Failing
+  jobs are named through an allowlist with the run and attempt `ci-health.sh` classifies.
+  `/resolve-pr-threads` waits for CI at its terminal exit (new step 7b) and routes a red by class: a
+  red that executed is a finding, and a run whose failing jobs never executed a step is re-run once,
+  on its first attempt. Every exit's summary and `/implement-issue`'s close-out carry the CI line.
+  D123 supersedes D86 (10).
 
 - **No mutation harness or selfcheck step is awaited in silence, and session-context runs per block
   (#445).** A mutant that blocked (a FIFO opened with no writer, a `read` with no `-t`) used to

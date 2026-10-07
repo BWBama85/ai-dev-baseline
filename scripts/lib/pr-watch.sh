@@ -1268,6 +1268,8 @@ _pw_ci_eval() {
                                       and ((.check_suite_id | type) == "number")
                                       and ((.status | type) == "string")) | not
                        then error("a run lacks its id, suite or status") else . end
+                     | if ([$all[] | .check_suite_id] | unique | length) != ($all | length)
+                       then error("a check suite maps to more than one run record") else . end
                      | [$all[] | {suite: .check_suite_id, id,
                                   attempt: (if (.run_attempt | type) == "number" then .run_attempt else null end),
                                   done: (.status == "completed")}]' 2>/dev/null)" \

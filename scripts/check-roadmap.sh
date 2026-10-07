@@ -2771,9 +2771,9 @@ fi
 # ============================================================================================
 # check-facts (#448) — the display facts, from the SAME definitions branch-health decides with
 # ============================================================================================
-# pr-watch.sh prints these beside branch-health's verdict. Before they shared `_adb_rm_ci_defs`, it
-# re-derived "concluded" and "failing" itself; these cases pin what the facts say, and that they can
-# never disagree with the verdict about whether anything failed.
+# pr-watch.sh prints these beside branch-health's verdict. These cases pin what the facts say, and
+# that — sharing `_adb_rm_ci_defs` with the verdict — they never disagree with it about whether
+# anything failed.
 facts() { OUT="${ printf '%s' "$1" | bash "$RL" check-facts "${2:-$SHA}" 2>&1; }"; RC_=$?; }
 facts "${ hj "${ ck lint "$SHA" completed failure; },${ ck slow "$SHA" in_progress null; },${ ck deploy "$SHA" completed failure vercel; },${ ck old "$OTHER_SHA" completed failure; }" "${ st ci/circle error; },${ st ci/other pending; }"; }"
 eq "$RC_" 0 "check-facts: a computed answer is 0"

@@ -371,15 +371,17 @@ L
 )" '      | [ $f.failing[] | select(.actions) | runof | select(. != null and (.done | not)) ] as $unsettledruns' \
     'ci-wait --no-fail-fast: a red whose run cannot be found is held, not released'
   check_row ci-check-fields-unchecked "$PWT" ci-read '        then error("a check run lacks a field its consumers read") else . end' \
-    '        then . else . end' 'ci: a check run with no id, name or check suite is unreadable'
+    '        then . else . end' 'ci: a check run with no id or check suite is unreadable'
   check_row ci-status-fields-unchecked "$PWT" ci-read '        then error("a status lacks its context or state") else . end' \
-    '        then . else . end' 'ci: a status with no context is unreadable'
+    '        then . else . end' 'ci: a status with an empty context is unreadable'
   check_row ci-workflow-repeat-accepted "$PWT" ci-read "$(lit <<'L'
         | if ([$all[] | .id] | unique | length) != ($all | length) then error("a workflow repeats") else . end
 L
 )" '        | .' 'ci: a workflow inventory that repeats an id is unreadable'
   check_row ci-sink-failure-ignored "$PWT" ci-wait '    if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then' \
     '    if false; then' 'ci-wait: a wait that cannot create its temp file refuses'
+  check_row ci-runmap-ambiguous-accepted "$PWT" ci-wait '                       then error("a check suite maps to more than one run record") else . end' \
+    '                       then . else . end' 'ci-wait --no-fail-fast: a run map naming one suite twice is unknown'
   check_row ci-signature-anonymous "$PWT" ci-wait "$(lit <<'L'
         ( [ (.runs[] | [.id, (.app.slug // ""), .name, .status, (.conclusion // "")]),
 L
@@ -2062,10 +2064,10 @@ reset_fx
 
 fi
 
-# ============================ 14. the head's CI (#448) ============================
-# A red required check on the head the loop just pushed used to be invisible to both PR loops. These
-# cases pin the four claims the read makes: the verdict is `branch-health`'s and is never green on
-# doubt; observe/wait REPORT it on one stderr line without moving the reviewer's exit code or stdout;
+# ============================ 14. the head's CI (#448, D123) ============================
+# These cases pin the four claims the head-CI read makes: the verdict is `branch-health`'s and is
+# never green on doubt; observe/wait REPORT it on one stderr line without moving the reviewer's exit
+# code or stdout;
 # `ci-wait` returns a red at once and a green only once it has held; and a name from a workflow
 # file reaches the summary only through the allowlist.
 #
@@ -2175,11 +2177,14 @@ w ci --pr 1;  rc 20 "ci: an EMPTY workflow inventory is unreadable, never zero w
 # A RECORD MISSING A FIELD ITS CONSUMERS READ is unreadable, never a thinner set: each fixture below
 # reads green, or `no-ci`, if the bad record is taken at face value.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
-printf '{"total_count":1,"check_runs":[{"head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}\n' "$HEAD_SHA" > "$S/checkruns.json"
-w ci --pr 1;  rc 20 "ci: a check run with no id, name or check suite is unreadable"
+# These two records are ones `check-facts` would ACCEPT — a named run, a string context — so the
+# refusal they witness is this module's own: the fields IT reads (the id and suite it maps runs by;
+# a context that names something).
+printf '{"total_count":1,"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}\n' "$HEAD_SHA" > "$S/checkruns.json"
+w ci --pr 1;  rc 20 "ci: a check run with no id or check suite is unreadable"
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx "ci|completed|success"; ci_branch_fx --unprotected
-printf '{"sha":"%s","state":"success","total_count":1,"statuses":[{"state":"success"}]}\n' "$HEAD_SHA" > "$S/cistatus.json"
-w ci --pr 1;  rc 20 "ci: a status with no context is unreadable"
+printf '{"sha":"%s","state":"success","total_count":1,"statuses":[{"context":"","state":"success"}]}\n' "$HEAD_SHA" > "$S/cistatus.json"
+w ci --pr 1;  rc 20 "ci: a status with an empty context is unreadable"
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected
 ci_roadmap_fx $'<!-- release-health: no-ci -->\n' "owner" "admin"
 printf '{"total_count":2,"workflows":[{"id":7,"state":"disabled_manually"},{"id":7,"state":"disabled_manually"}]}\n' > "$S/workflows.json"
@@ -2416,6 +2421,12 @@ reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
 ci_runs_fx "ci|completed|failure"
 w ci-wait --pr 1 --interval 1 --max-secs 2 --no-fail-fast;  rc 40 "ci-wait --no-fail-fast: a red whose run cannot be found is still a red at the bound"
 has "$OUT" "while the red was still unsettled" "ci-wait --no-fail-fast: a red whose run cannot be found is held, not released"
+# A run map naming one check suite twice cannot say which record is that run, so the run is
+# unknown — held — never whichever record happens to come first.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
+ci_runs_fx "ci|completed|failure"; ci_wfruns_fx "999|7001|1" "999|7001|1|in_progress"
+w ci-wait --pr 1 --interval 1 --max-secs 2 --no-fail-fast
+has "$OUT" "while the red was still unsettled" "ci-wait --no-fail-fast: a run map naming one suite twice is unknown, not its first record"
 # Without its temp file the wait could neither compare polls nor report a line, so it refuses.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
 TMPDIR="$work/no-such-dir" w ci-wait --pr 1 --interval 1 --max-secs 3
