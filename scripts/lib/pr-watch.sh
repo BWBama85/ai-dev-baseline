@@ -155,7 +155,8 @@
 #                    poll's `pending <sha>` (11), or no line if that poll was unreadable
 #   request-review   requested|already|no-trigger|capped|gone <sha>
 #   ci               green|not-green|indeterminate|no-ci|gone <sha>
-#   ci-wait          the concluding poll's line; when the bound expires, `indeterminate <sha>` (11)
+#   ci-wait          the concluding poll's line; when the bound expires, `indeterminate <sha>` (11) —
+#                    or, under `--no-fail-fast` with a red still unsettled, `not-green <sha>` (40)
 #
 # observe and wait ALSO print one stderr line about the head's CI on the verdict they return (#448),
 # never per poll and never changing the exit code:
@@ -208,7 +209,8 @@
 #   12, 20 and 2 in the meanings above, and add two, disjoint from every code in this family:
 #   40 not-green  — a check on the head concluded failing. `ci-wait` returns it at once, while
 #                   siblings may still run — or, with `--no-fail-fast`, once nothing is still running
-#                   and every failing check's workflow run has concluded.
+#                   and every failing check's workflow run has concluded, or at the bound while
+#                   they have not: a 40 is never proof that the run concluded.
 #                   STDOUT: "not-green <sha>".
 #   41 no-ci      — the roadmap artifact declares `release-health: no-ci` and nothing reported:
 #                   there is no CI to wait for. Not green. STDOUT: "no-ci <sha>".
@@ -1169,7 +1171,7 @@ _pw_ci_eval() {
       | if all($all[]; (type == "object") and ((.id | type) == "number")
                        and ((.name | type) == "string") and ((.name | length) > 0)
                        and ((.head_sha | type) == "string") and ((.status | type) == "string")
-                       and ((.conclusion | type) | IN("string", "null"))
+                       and has("conclusion") and ((.conclusion | type) | IN("string", "null"))
                        and ((.check_suite.id | type) == "number")) | not
         then error("a check run lacks a field its consumers read") else . end
       | if ([$all[] | .id] | unique | length) != ($all | length) then error("a check run repeats") else . end

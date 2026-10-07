@@ -705,15 +705,18 @@ cmd_check_facts() {
   [ -n "$aslug" ] || die "check-facts: adb_actions_app_slug is unavailable or empty (broken install)"
   json="$(cat)"
   case "$json" in *[![:space:]]*) : ;; *) die "check-facts: empty input (the checks could not be read)" ;; esac
-  out="$(printf '%s' "$json" | jq -c --arg sha "$sha" --arg aslug "$aslug" "$(_adb_rm_ci_defs)"'
-    if type != "object" then error("not an object") else . end
+  # SLURPED, and exactly one document: the output contract is ONE line, and plain jq would answer
+  # each of several concatenated documents in turn.
+  out="$(printf '%s' "$json" | jq -c -s --arg sha "$sha" --arg aslug "$aslug" "$(_adb_rm_ci_defs)"'
+    if length != 1 then error("exactly one document is required") else .[0] end
+    | if type != "object" then error("not an object") else . end
     | if (has("check_runs") | not) or (has("statuses") | not)
       then error("check_runs and statuses are both required") else . end
     | if ((.check_runs | type) != "array") or ((.statuses | type) != "array")
       then error("check_runs/statuses must be arrays") else . end
     | if all(.check_runs[]; (type == "object") and ((.name | type) == "string")
                             and ((.head_sha | type) == "string") and ((.status | type) == "string")
-                            and ((.conclusion | type) | IN("string", "null"))) | not
+                            and has("conclusion") and ((.conclusion | type) | IN("string", "null"))) | not
       then error("a check run lacks a field the definitions read") else . end
     | if all(.statuses[]; (type == "object") and ((.context | type) == "string")
                           and ((.state | type) == "string")) | not

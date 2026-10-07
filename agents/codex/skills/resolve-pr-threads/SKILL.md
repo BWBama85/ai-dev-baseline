@@ -276,10 +276,11 @@ could not read.)
 
 It never changes the code you branch on. **Keep the SHA on `wait`'s stdout** (`<verdict> <sha>`) as
 `REVIEWED_SHA` — the head this verdict is about, and the one step 7b compares against. On a `10`
-that reads `not-green`, the red is part of this round: classify it as step 7b's table says, append
-its CI line and class to `ROUND_ROWS` before fixing (a later reading replaces the evidence), and fix
-a `22` caused by this PR's diff in step 4 beside the threads. A round's wait returns long before CI here concludes, so anything else — still running,
-not yet classifiable — is left to the terminal exit, where step 7b waits for it.
+that reads `not-green`, the red is part of this round, and only so far: classify it (`ci-health`,
+as step 7b names), append its CI line and class to `ROUND_ROWS` before fixing (a later reading
+replaces the evidence), and fix a `22` caused by this PR's diff in step 4 beside the threads.
+**Nothing else happens mid-round** — no re-run and no wait. Every other class, and anything still
+running, is left to the terminal exit, where step 7b's table re-runs, waits and settles.
 
 **A killed call is not a verdict — in EITHER mode.** If the shell tool times out mid-wait, or a
 background task is cancelled, you get no code and no answer. Do not treat that as "clean" or as "no

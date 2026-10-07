@@ -1558,7 +1558,7 @@ fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -
 fact pr-watch-mutation-wired 'regex:^[^#]*check-pr-watch\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 # Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
-# copy of a whole-suite-per-mutation harness to the 45-minute job.
+# copy of a whole-suite-per-mutation harness to the macOS job.
 fact macos-logic-mutations-skipped \
   'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation([^,A-Za-z0-9_-]|$)' -- \
   .github/workflows/ci.yml
