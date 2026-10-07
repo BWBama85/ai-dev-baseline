@@ -15,7 +15,7 @@ only by a published release, which is what these entries are the notes for.
   clean over it. `pr-watch.sh` now reads the head's check runs, statuses and the base branch's
   required contexts, judged by `roadmap-lib.sh branch-health` and described by its new pure
   `check-facts` — both from one set of check definitions. `observe` and `wait` print one stderr line
-  about it on the verdict they return — `pr-watch: ci <verdict> <sha> observed <UTC> — <detail>` —
+  about it on each open-PR verdict they return — `pr-watch: ci <verdict> <sha> observed <UTC> — <detail>` —
   never per poll, and their stdout and exit code are unchanged. Two new subcommands answer about CI
   alone: `ci` takes one reading, and `ci-wait` polls until the checks conclude (every 60 s for up to
   3600 s by default). `ci-wait` returns a red at once (`40`, or with `--no-fail-fast` once its runs

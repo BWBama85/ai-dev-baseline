@@ -1564,7 +1564,7 @@ fact macos-logic-mutations-skipped \
   .github/workflows/ci.yml
 # …and every document that spells the list out says the same six names, so a contributor reading
 # any of them learns which harnesses the macOS leg does not run.
-# ENDED, not merely present: a list that gained a sixth name would otherwise still contain this one.
+# ENDED, not merely present: a list that gained another name would otherwise still contain this one.
 fact macos-skip-list-documented 'regex:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation([^,A-Za-z0-9_-]|$)' -- \
   CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
 # THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through

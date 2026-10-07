@@ -1538,7 +1538,7 @@ exactly as it does today — one comment worse off, and no further rounds are at
 round read the second, so a required check could go red on a head this loop pushed while every later
 round reported itself clean — and the pull request then could not merge, with nothing saying why.
 
-**Observed on every verdict, waited on once.** 0b's CI line reports the head's CI on every verdict
+**Observed on every verdict, waited on once.** 0b's CI line reports the head's CI on every open-PR verdict
 without waiting for it. This step is the one place the loop **waits** for CI to conclude: the two
 doors that end it with nothing left for the reviewer — 0b's `0` once the reconcile pushed nothing,
 and step 7's `30`. Every other door takes one reading instead (step 6). **Under `--once` there is
@@ -1558,7 +1558,7 @@ Make it the last command in its block and branch on its EXIT CODE:
 | ---- | ------- | ---------- |
 | `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **the live check (below)**. It passes → report the CI line and exit through the door you came from. Another head → somebody pushed during the wait, and no reviewer has seen it: bring the checkout to that head (below), then return to 0b's wait — never out through the clean door |
 | `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | **the live check**, then report "no CI to wait for" and exit as above; another head is handled as on `0` |
-| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **the live check, and the checkout's `git rev-parse HEAD` must also be that head.** It passes → **route it** (below). Another head → somebody pushed during the wait: do not fix a head you have not checked out. Bring the checkout to the PR's head first (below), then return to 0b's wait, where that head's reviewer verdict and CI line arrive. Never report this exit clean, and never as "nothing to do" |
+| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **the live check, and the checkout's `git rev-parse HEAD` must also be that head.** It passes → **route it** (below). Another head → somebody pushed during the wait: do not fix a head you have not checked out. Bring the checkout to the PR's head first (below), then return to 0b's wait, where that head's reviewer verdict and CI line arrive. The PR and the reviewer agree but the CHECKOUT is behind → bring it to the PR's head (below) and route the red from there. Never report this exit clean, and never as "nothing to do" |
 | `11` | the bound expired before the checks concluded | report the CI line — it is **not green** — and hand back to the operator |
 | `12` | the PR is no longer OPEN | report it; exit |
 | `20` | the CI state was unreadable on consecutive polls | report it, never as green, and hand back |
@@ -1580,17 +1580,20 @@ exit. Another head → the row's own instruction for a moved head.
 **Bringing the checkout to the PR's head** fetches the PR's own ref and proves it is the live head
 BEFORE anything moves — never the branch's configured upstream, and never an assumed `origin`: in a
 fork checkout the PR lives on another remote, and `origin`'s PR of the same number is a different
-one. Each remote is asked for that ref until one serves exactly the head the live check read:
+one. Each remote is asked for that ref until a fetch that SUCCEEDED serves exactly the head the
+live check read, and the merge then names that verified SHA — never `FETCH_HEAD` again, which a
+later fetch can replace:
 
 ```bash
 LIVE_HEAD="<the head the live check just read>"
+SERVED=""
 for r in $(git remote); do
   git fetch --quiet "$r" "refs/pull/$PR_NUM/head" 2>/dev/null || continue
-  [ "$(git rev-parse FETCH_HEAD)" = "$LIVE_HEAD" ] && break
+  [ "$(git rev-parse FETCH_HEAD)" = "$LIVE_HEAD" ] && { SERVED="$r"; break; }
 done
-[ "$(git rev-parse FETCH_HEAD 2>/dev/null)" = "$LIVE_HEAD" ] \
-  || { echo "STOP: no remote serves PR #$PR_NUM's head $LIVE_HEAD — the checkout was not moved"; exit 1; }   # run step 8 first
-git merge --ff-only FETCH_HEAD \
+[ -n "$SERVED" ] \
+  || { echo "STOP: no remote served PR #$PR_NUM's head $LIVE_HEAD in this fetch — the checkout was not moved"; exit 1; }   # run step 8 first
+git merge --ff-only "$LIVE_HEAD" \
   || { echo "STOP: the branch diverged from PR #$PR_NUM's head — hand back; never reset"; exit 1; }   # run step 8 first
 ```
 
@@ -1653,7 +1656,8 @@ otherwise carry an earlier round's figures. `round-open` clears `SWEEP_HEAD`, wh
 starts from, the one 4d reviews from and pushes over. Then, BEFORE touching code, append the red's CI line and
 its `ci-health` class to `ROUND_ROWS`, so a failure later in the round — a gate, the local review —
 still reports the red it was fixing. Then fix it as step 4 fixes a thread — gates, commit, 4d's local
-review, push — then step 6's `round-row`, then step 7: the head moved, so step 7 asks for a re-review
+review, push — then step 6's ledger snapshot (`STATS_AFTER`, `SRC`) and the `round-row` that reads
+them, then step 7: the head moved, so step 7 asks for a re-review
 and the round cap counts it; nothing here adds a second counter. **A CI red is not a review
 thread**: it has no thread id, so it is not recorded in the pattern ledger (4b) and not counted among
 the round's findings. Its record is that line in the round's row, and the CI line of step 6's

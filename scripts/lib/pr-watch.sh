@@ -159,8 +159,9 @@
 #                    or no line if that poll was unreadable — or, under `--no-fail-fast` with a red
 #                    still unsettled, `not-green <sha>` (40)
 #
-# observe and wait ALSO print one stderr line about the head's CI on the verdict they return (#448),
-# never per poll and never changing the exit code:
+# observe and wait ALSO print one stderr line about the head's CI on every verdict about an OPEN pull
+# request they return (#448) — clean, findings, pending; not `gone` — never per poll and never
+# changing the exit code:
 #   pr-watch: ci <green|not-green|indeterminate|no-ci|unreadable> <sha> observed <UTC> — <detail>
 # `ci` and `ci-wait` print the same line beside their stdout answer, and also `gone` for a pull
 # request no longer open; a head that could not be read is written `-`. <detail> counts the checks and
@@ -1318,8 +1319,9 @@ _pw_ci_note() {
   local want="${1:-}" slug base head at out
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   head=""
+  # All three lines or none: a record cut short is not the head it half-names.
   if [ -n "$want" ] && [ -n "$_ADB_PW_SNAP_SINK" ] && [ -s "$_ADB_PW_SNAP_SINK" ]; then
-    { IFS= read -r slug; IFS= read -r base; IFS= read -r head; } < "$_ADB_PW_SNAP_SINK"
+    { IFS= read -r slug && IFS= read -r base && IFS= read -r head; } < "$_ADB_PW_SNAP_SINK" || head=""
   fi
   if [ -z "$want" ] || [ "$head" != "$want" ]; then
     echo "pr-watch: ci unreadable - observed $at — the head this verdict is about was not recorded" >&2
@@ -1422,7 +1424,7 @@ _pw_nap() {
 # per poll but the events (a moved head, an unreadable poll), and the CI line once, at the end.
 #
 # THE BOUND LIMITS CONTINUED POLLING, exactly as `wait`'s does: a read that never returns is not
-# bounded by it. Owner decision 2026-10-06 (D123): documented here rather than wrapping every read.
+# bounded by it (D123 h).
 # And as in `wait`, the last nap ends AT the deadline and one final poll follows it — the one poll
 # that may start at the bound, and the last look before the wait reports it expired.
 cmd_ci_wait() {
