@@ -332,7 +332,7 @@ bash "$HOME/.claude/scripts/lib/pattern-ledger.sh" due; DRC=$?
 case "$DRC" in
   0)  : ;;   # classes are owed a rule — promote them (step 4c's form) and commit the ledger. That
              # commit MOVES THE HEAD, so this is NOT an exit: see below.
-  11) : ;;   # nothing due. The ordinary case on a clean pass: step 8, then exit 0.
+  11) : ;;   # nothing due. The ordinary case on a clean pass: step 7b's CI wait, then step 8.
   # EVERY OTHER CODE IS TERMINAL, exactly as it is in 4c. A wildcard that only warned reported the
   # run clean while leaving an already-earned rule unwritten — the same swallowing this workflow
   # has now been corrected for three times, reintroduced in the arm added to fix the second.
@@ -1555,13 +1555,36 @@ Make it the last command in its block and branch on its EXIT CODE:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **compare the SHA on its stdout with `REVIEWED_SHA`** — on the `0` door the `clean <sha>`, on the `30` door the `findings <sha>` that opened the round, since a round that pushed nothing left that head in place. Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
-| `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | report "no CI to wait for"; exit as above |
-| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **first compare the SHA on its stdout with `REVIEWED_SHA`, the checkout's `git rev-parse HEAD` and the live `gh pr view "$PR_NUM" --json headRefOid`.** All equal → **route it** (below). Any differs → somebody pushed during the wait: do not fix a head you have not checked out. Bring the checkout to the PR's head first — `git fetch origin` then `git merge --ff-only` onto it, and if it cannot fast-forward (the branch diverged), stop and hand back; never reset — then return to 0b's wait, where that head's reviewer verdict and CI line arrive. Never report this exit clean, and never as "nothing to do" |
+| `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **the live check (below)**. It passes → report the CI line and exit through the door you came from. Another head → somebody pushed during the wait, and no reviewer has seen it: return to 0b's wait, never out through the clean door |
+| `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | **the live check**, then report "no CI to wait for" and exit as above |
+| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **the live check, and the checkout's `git rev-parse HEAD` must also be that head.** It passes → **route it** (below). Another head → somebody pushed during the wait: do not fix a head you have not checked out. Bring the checkout to the PR's head first (below), then return to 0b's wait, where that head's reviewer verdict and CI line arrive. Never report this exit clean, and never as "nothing to do" |
 | `11` | the bound expired before the checks concluded | report the CI line — it is **not green** — and hand back to the operator |
 | `12` | the PR is no longer OPEN | report it; exit |
 | `20` | the CI state was unreadable on consecutive polls | report it, never as green, and hand back |
 | `2`  | bad arguments | report the message; exit |
+
+**The live check — before ANY exit or fix from this step, after every wait in it.** The SHA on a
+wait's stdout is a snapshot, and the pull request can close or move the moment after it. So read the
+PR's state and head together, now:
+
+```bash
+gh pr view "$PR_NUM" --json state,headRefOid --jq '.state + " " + .headRefOid'
+```
+
+It passes when it prints `OPEN <sha>` with `<sha>` equal to both the SHA on the wait's stdout and
+`REVIEWED_SHA` — on the `0` door the `clean <sha>`, on the `30` door the `findings <sha>` that opened
+the round, since a round that pushed nothing left that head in place. Not `OPEN` → report it and
+exit. Another head → the row's own instruction for a moved head.
+
+**Bringing the checkout to the PR's head** names the head explicitly, never the branch's configured
+upstream, which may be absent or point elsewhere:
+
+```bash
+git fetch origin "refs/pull/$PR_NUM/head" && git merge --ff-only FETCH_HEAD
+```
+
+Then `git rev-parse HEAD` must equal the head the live check just read. A merge that cannot
+fast-forward — the branch diverged — stops and hands back; never reset.
 
 **Route a red by what happened, never by a guess (`base/practices/ci-discipline.md`).** The CI line
 names each failing check — `[run <id>, attempt <n>]` for an Actions job, `[external check]` or
@@ -1575,8 +1598,8 @@ bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>
 | --- | --- | --- |
 | `22` failed | a failing job executed — or the run failed at `startup_failure`, before any job ran | **a finding of this round.** Read the log and diagnose it — for a `startup_failure`, the run page and the workflow file, since there is no job log: `22` proves something ran or failed to start, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
 | `23` never ran | no failing job executed a step, so there is nothing to diagnose | re-run once (below), and say in the summary that this is **not green-by-retry**: there was never a result to override |
-| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → the same head check as the first wait's `40`, then classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → treat it exactly as the first wait's `0`, SHA comparison included; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
-| `0` green | the run passed after all — a re-run, or a check that concluded since the CI line was read | the red is gone: take one `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci --pr "$PR_NUM"` reading and treat it as this step's first wait, SHA comparison included |
+| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → the same head check as the first wait's `40`, then classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → treat it exactly as the first wait's `0`, the live check included; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
+| `0` green | the run passed after all — a re-run, or a check that concluded since the CI line was read | the red is gone, but green is only reported once it settles: run this step's `ci-wait` ONE more time and branch on it as on the first wait, the live check included — never on a single `ci` reading, which cannot tell a settled set from a still-registering one |
 | `20` / `2` / other | the run could not be read | report it and hand back |
 
 An `[external check]` or `[external status]` has no run to classify, and an Actions failure shown as
@@ -1606,12 +1629,14 @@ gh run rerun <id> --failed
 shows the old red. So confirm it took — `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>` must now report
 `attempt 2` — then wait with `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds
 the red while that run has not concluded, and branch on it exactly as on this step's first wait: a
-`0` is held to the same SHA comparison, because a push during this wait is just as possible. If
+`0` is held to the same live check, because a push or a close during this wait is just as possible. If
 the attempt has not moved, hand back rather than wait on the old red.
 
 **A CI fix is a round like any other — so it OPENS one and REPORTS one.** Run step 3's `round-open`
 snippet first: on the clean-pass door nothing has opened this round, and step 6's row would
-otherwise carry an earlier round's figures. Then, BEFORE touching code, append the red's CI line and
+otherwise carry an earlier round's figures. `round-open` clears `SWEEP_HEAD`, which 4d requires and
+4a — not run on this path — would set, so capture it next with 4a's own block: the head this fix
+starts from, the one 4d reviews from and pushes over. Then, BEFORE touching code, append the red's CI line and
 its `ci-health` class to `ROUND_ROWS`, so a failure later in the round — a gate, the local review —
 still reports the red it was fixing. Then fix it as step 4 fixes a thread — gates, commit, 4d's local
 review, push — then step 6's `round-row`, then step 7: the head moved, so step 7 asks for a re-review
