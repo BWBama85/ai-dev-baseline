@@ -272,9 +272,14 @@ prints one stderr line about the head it judged:
 pr-watch: ci <green|not-green|indeterminate|no-ci|unreadable> <sha> observed <UTC> — <detail>
 ```
 
-It never changes the code you branch on. On a `10` that reads `not-green`, the red is part of this
-round: classify it as step 7b's table says, and fix a `22` caused by this PR's diff in step 4 beside
-the threads. A round's wait returns long before CI here concludes, so anything else — still running,
+(`ci` and `ci-wait` may also print `gone` for a pull request no longer open, and `-` for a head they
+could not read.)
+
+It never changes the code you branch on. **Keep the SHA on `wait`'s stdout** (`<verdict> <sha>`) as
+`REVIEWED_SHA` — the head this verdict is about, and the one step 7b compares against. On a `10`
+that reads `not-green`, the red is part of this round: classify it as step 7b's table says, append
+its CI line and class to `ROUND_ROWS` before fixing (a later reading replaces the evidence), and fix
+a `22` caused by this PR's diff in step 4 beside the threads. A round's wait returns long before CI here concludes, so anything else — still running,
 not yet classifiable — is left to the terminal exit, where step 7b waits for it.
 
 **A killed call is not a verdict — in EITHER mode.** If the shell tool times out mid-wait, or a
@@ -1550,9 +1555,9 @@ Make it the last command in its block and branch on its EXIT CODE:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **compare the SHA on its stdout with the head the door was about** (0b's `clean <sha>`, or the head this round pushed). Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
+| `0`  | every check on the head concluded non-failing, every required context the base branch's protection lets us read reported (a ruleset it cannot describe is not checked context by context), and that held across two polls | **compare the SHA on its stdout with `REVIEWED_SHA`** — on the `0` door the `clean <sha>`, on the `30` door the `findings <sha>` that opened the round, since a round that pushed nothing left that head in place. Equal → report the CI line and exit through that door. Different → somebody pushed during the wait, and no reviewer has seen that head: return to 0b's wait, never out through the clean door |
 | `41` | the roadmap artifact declares `release-health: no-ci` and nothing reported | report "no CI to wait for"; exit as above |
-| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **route it** (below). Never report this exit clean, and never as "nothing to do" |
+| `40` | a check on the head concluded failing — returned at once, while siblings may still run | **first compare the SHA on its stdout with `REVIEWED_SHA`, the checkout's `git rev-parse HEAD` and the live `gh pr view "$PR_NUM" --json headRefOid`.** All equal → **route it** (below). Any differs → somebody pushed during the wait: do not fix a head you have not checked out — return to 0b's wait, where that head's reviewer verdict and CI line arrive. Never report this exit clean, and never as "nothing to do" |
 | `11` | the bound expired before the checks concluded | report the CI line — it is **not green** — and hand back to the operator |
 | `12` | the PR is no longer OPEN | report it; exit |
 | `20` | the CI state was unreadable on consecutive polls | report it, never as green, and hand back |
@@ -1570,7 +1575,7 @@ bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>
 | --- | --- | --- |
 | `22` failed | a failing job executed — or the run failed at `startup_failure`, before any job ran | **a finding of this round.** Read the log and diagnose it — for a `startup_failure`, the run page and the workflow file, since there is no job log: `22` proves something ran or failed to start, not that this diff broke it. A cause in this PR's diff → fix it as a round (below). A known flake — an **OPEN** issue already names this exact job or test, and the log matches it → link that issue in the summary and re-run once (below). Anything else → stop and hand back with the failing log line; do not re-run, and do not file an issue yourself |
 | `23` never ran | no failing job executed a step, so there is nothing to diagnose | re-run once (below), and say in the summary that this is **not green-by-retry**: there was never a result to override |
-| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → treat it exactly as the first wait's `0`, SHA comparison included; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
+| `24` / `25` | the run has not concluded, so whether the red job executed cannot be classified yet | let it conclude, ONCE — `bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds a red until nothing on the head is running and every failing check's run has concluded. Branch on THAT wait's code: `40` → the same head check as the first wait's `40`, then classify again, and if it is still `24`/`25` hand back rather than wait a second time; `0` → treat it exactly as the first wait's `0`, SHA comparison included; `11` → the bound expired, report it and hand back; `12`/`20` → as the table above. Never chain a further wait from here |
 | `20` / `2` / other | the run could not be read | report it and hand back |
 
 An `[external check]` or `[external status]` has no run to classify, and an Actions failure shown as

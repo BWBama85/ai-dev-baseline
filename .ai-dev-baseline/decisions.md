@@ -9160,10 +9160,15 @@ survive is the part a later reader needs.
              (j) **Owner decision 2026-10-06, from the local review loop's second pass — a trust
              boundary:** what is validated is that every record carries the fields its consumers
              read and every list is complete, not that GitHub's values follow its grammar. An
-             unknown conclusion or state still classifies as failing, never green. GitHub's
+             unknown conclusion or status state classifies as failing, and an unknown check-run
+             status as still running — never green. GitHub's
              1000-check-suite limit on the check-runs endpoint is outside what the read describes;
              the suite-count check that could not prove it was removed. Enforcing the enums
              (a new GitHub value would stall every wait) was offered and declined.
+             (k) **Owner decision 2026-10-06:** the local review loop's budget was raised to a
+             fourth pass for this run, after pass 3 found two of its own mutation rows defective (one
+             mutated into a program that did not parse; one could no longer fail beside a second
+             guard added in pass 2, which was removed so one defence is proven).
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in

@@ -160,7 +160,8 @@
 # observe and wait ALSO print one stderr line about the head's CI on the verdict they return (#448),
 # never per poll and never changing the exit code:
 #   pr-watch: ci <green|not-green|indeterminate|no-ci|unreadable> <sha> observed <UTC> — <detail>
-# `ci` and `ci-wait` print the same line beside their stdout answer. <detail> counts the checks and
+# `ci` and `ci-wait` print the same line beside their stdout answer, and also `gone` for a pull
+# request no longer open; a head that could not be read is written `-`. <detail> counts the checks and
 # names each failing one with its run (`[run <id>, attempt <n>]`) or as `[external check]` /
 # `[external status]`; names pass an allowlist and are joined with `; `.
 #
@@ -1125,7 +1126,8 @@ _pw_ci_fail() { printf 'unreadable\n%s\n' "$1"; return 20; }
 #
 # THE TRUST BOUNDARY (owner decision, D123): what is validated is that every record carries the
 # fields its consumers read and that every list is complete — not that GitHub's values follow its
-# grammar. An unknown conclusion or state still classifies as failing, so it can never read green.
+# grammar. An unknown conclusion or status state classifies as failing, and an unknown check-run
+# status as still running — neither can ever read green.
 # Nor is GitHub's 1000-check-suite limit on this endpoint detected: a head with that many suites is
 # outside what this read describes.
 #
@@ -1145,7 +1147,7 @@ _pw_ci_fail() { printf 'unreadable\n%s\n' "$1"; return 20; }
 # no rendered name can contain, so the list stays unambiguous with matrix names like `test (a, b)`.
 _pw_ci_eval() {
   local slug="$1" head="$2" base="$3" aslug ck runs st sts bpath brj req hin nact wf=0 wfj decl=off
-  local declout declwhy="" hout verdict reason facts wr runmap=null
+  local declout declwhy="" hout verdict reason facts wr runmap=null whyj notej
   # An EMPTY slug would attribute every check run of unknown provenance to Actions and skip the
   # workflow probe that keeps an unreported build out of `green` — refuse it, as branch-health does.
   aslug="$(adb_actions_app_slug 2>/dev/null)" && [ -n "$aslug" ] \
@@ -1272,11 +1274,15 @@ _pw_ci_eval() {
       || runmap=null
     [ -n "$runmap" ] || runmap=null
   fi
-  printf '{"facts":%s,"rm":%s,"runs":%s,"sts":%s}' "$facts" "$runmap" "$runs" "$sts" \
-    | jq -r --arg v "$verdict" --arg why "$reason" --arg note "$declwhy" '
+  # The reason can name every check still running, so it travels on stdin too, JSON-encoded there.
+  whyj="$(printf '%s' "$reason" | jq -Rs . 2>/dev/null)" && notej="$(printf '%s' "$declwhy" | jq -Rs . 2>/dev/null)" \
+    || { _pw_ci_fail "could not encode the CI reason for $head"; return 20; }
+  printf '{"facts":%s,"rm":%s,"runs":%s,"sts":%s,"why":%s,"note":%s}' \
+      "$facts" "$runmap" "$runs" "$sts" "$whyj" "$notej" \
+    | jq -r --arg v "$verdict" '
       def clean: tostring | gsub("[^A-Za-z0-9 ._,:/()+=@#-]"; "?");
       def nm: clean | if length > 100 then .[0:97] + "..." else . end;
-      .rm as $rm
+      .why as $why | .note as $note | .rm as $rm
       | def runof: .suite as $s | if $rm == null then null else ([$rm[] | select(.suite == $s)] | first) end;
       .facts as $f
       | [ ( $f.failing[]
@@ -1425,12 +1431,10 @@ cmd_ci_wait() {
   adb_require_gh jq \
     || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated, so there is nothing to wait on"; return 20; }
   deadline="$(_pw_deadline)"
-  # The sink is where every poll leaves its CI line and signature; without one there is neither a
-  # line to report nor polls to compare, so the wait refuses rather than running blind.
+  # The sink is where every poll leaves its CI line and signature; without a writable one there is
+  # neither a line to report nor polls to compare. ONE guard refuses that — the reset at the top of
+  # each poll — whether the file was never created (an empty path) or stopped being writable.
   _ADB_PW_CI_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-ci.XXXXXX" 2>/dev/null || printf '')"
-  if [ -z "$_ADB_PW_CI_SINK" ]; then
-    echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not create a temp file, so this wait cannot compare its polls" >&2; return 20
-  fi
   _ADB_PW_CI_QUIET=1
   trap 'echo "pr-watch: interrupted — the head'"'"'s checks were not seen to conclude" >&2
         [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
@@ -1438,9 +1442,9 @@ cmd_ci_wait() {
 
   while :; do
     if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then
-      echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not reset the temp file, so this wait cannot compare its polls" >&2
+      echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not write a temp file, so this wait cannot compare its polls" >&2
       trap - INT TERM
-      rm -f "$_ADB_PW_CI_SINK"
+      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
       return 20
     fi
     out="$(_pw_ci_classify "$n")"; rc=$?

@@ -355,12 +355,10 @@ L
 L
 )" '          : ;;' "ci-wait: the expired bound's CI line does not say green"
   check_row ci-decl-reason-on-stderr "$PWT" ci-wait "$(lit <<'L'
-    *) if [ -n "$why" ]; then printf 'off
-roadmap #%s: %s' "$num" "$why"; else printf 'off'; fi ;;
+    *) if [ -n "$why" ]; then printf 'off\nroadmap #%s: %s' "$num" "$why"; else printf 'off'; fi ;;
 L
 )" "$(lit <<'L'
-    *) [ -n "$why" ] && printf 'pr-watch: ci — roadmap #%s: %s
-' "$num" "$why" >&2; printf 'off' ;;
+    *) [ -n "$why" ] && printf 'pr-watch: ci — roadmap #%s: %s\n' "$num" "$why" >&2; printf 'off' ;;
 L
 )" 'ci-wait: the declaration reason rides the one CI line'
   check_row ci-open-run-ignored "$PWT" ci-wait "$(lit <<'L'
@@ -380,8 +378,8 @@ L
         | if ([$all[] | .id] | unique | length) != ($all | length) then error("a workflow repeats") else . end
 L
 )" '        | .' 'ci: a workflow inventory that repeats an id is unreadable'
-  check_row ci-sink-failure-ignored "$PWT" ci-wait 'could not create a temp file, so this wait cannot compare its polls" >&2; return 20' \
-    'could not create a temp file, so this wait cannot compare its polls" >&2; :' 'ci-wait: a wait that cannot create its temp file refuses'
+  check_row ci-sink-failure-ignored "$PWT" ci-wait '    if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then' \
+    '    if false; then' 'ci-wait: a wait that cannot create its temp file refuses'
   check_row ci-signature-anonymous "$PWT" ci-wait "$(lit <<'L'
         ( [ (.runs[] | [.id, (.app.slug // ""), .name, .status, (.conclusion // "")]),
 L
@@ -2196,6 +2194,13 @@ jq -n -c --arg sha "$HEAD_SHA" '("x" * 200000) as $big
                   app: {slug: "github-actions"}, check_suite: {id: (500 + .)}, output: {text: $big}}]
   | {total_count: length, check_runs: .}' > "$S/checkruns.json"
 w ci --pr 1;  rc 0 "ci: a large check set is read whole, not refused by an argument limit"
+# ...and so is the reason `branch-health` gives for it, which names every check still running:
+# 10,000 of them make a reason far past Linux's per-argument limit (MAX_ARG_STRLEN, 128 KiB).
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx --unprotected
+jq -n -c --arg sha "$HEAD_SHA" '[range(10000) | {id: ., name: "job-number-\(.)", head_sha: $sha,
+    status: "in_progress", conclusion: null, app: {slug: "github-actions"}, check_suite: {id: 900}}]
+  | {total_count: length, check_runs: .}' > "$S/checkruns.json"
+w ci --pr 1;  rc 11 "ci: a reason naming every running check is carried whole, not refused by an argument limit"
 
 # EVERY OUTCOME CARRIES A CI LINE, so a summary always has one to paste — a closed pull request and
 # an unreadable one included.
@@ -2370,9 +2375,10 @@ w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP";  rc 41 "ci-wait: a d
 eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "1" "ci-wait: ...and says so on the first poll"
 
 # A green that settles only AFTER the bound is not accepted: poll 2 is slow enough to finish late.
-# Poll 2 costs 8s against a 5s bound, so it settles late whatever poll 1 cost under load.
-reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '8' > "$S/slow-2"
-w ci-wait --pr 1 --interval 1 --max-secs 5;  rc 11 "ci-wait: a green that settles only after the bound is not accepted"
+# Poll 2 costs 12s against a 10s bound: it settles late, and poll 1 has nine seconds of slack under
+# load before it could eat the bound itself.
+reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx; printf '12' > "$S/slow-2"
+w ci-wait --pr 1 --interval 1 --max-secs 10;  rc 11 "ci-wait: a green that settles only after the bound is not accepted"
 # ...and the case only means something if poll 2 actually ran; a loaded first poll that eats the
 # bound would make both the code and its mutant return 11 without ever settling.
 eq "$( [ -f "$S/polls" ] && cat "$S/polls" || echo 0 )" "2" "ci-wait: the late-settling green was reached on poll 2"
