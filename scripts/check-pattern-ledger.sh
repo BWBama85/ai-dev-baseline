@@ -576,6 +576,23 @@ bash "$PL" promote --ledger "$work/l5m.md" --class edgec --rule "$CKPAD" >/dev/n
 eq "$?" 0 "promote accepts the rule that lands the checklist on exactly the budget"
 bash "$PL" promote --ledger "$work/l5n.md" --class edgec --rule "${CKPAD}p" >/dev/null 2>&1
 eq "$?" 19 "promote refuses the rule that lands it one byte over"
+# A FILTER THAT FAILS IS NEVER A SIZE OF 0. The stub `awk` runs the NF filter and then fails, and
+# only that program; on the exact-budget ledger a size read as 0 would let a 1024-byte rule in.
+NFA="$work/nf-awk"; mkdir -p "$NFA"
+CK_REAL_AWK="$(command -v awk)"; export CK_REAL_AWK
+cat > "$NFA/awk" <<'STUB'
+#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = 'NF { print }' ]; then "$CK_REAL_AWK" "$@"; exit 73; fi
+exec "$CK_REAL_AWK" "$@"
+STUB
+chmod +x "$NFA/awk"
+ck_fixture "$work/l5o.md" failc 16 0 || bad "fixture: could not build the failing-filter ledger"
+PATH="$NFA:$PATH" bash "$PL" promote --ledger "$work/l5o.md" --class failc --rule x >/dev/null 2>&1
+eq "$?" 20 "promote refuses (20) when the checklist region cannot be measured"
+PATH="$NFA:$PATH" bash "$PL" verify --ledger "$work/l5o.md" >/dev/null 2>&1
+eq "$?" 20 "…and so does verify"
+PATH="$NFA:$PATH" bash "$PL" checklist --ledger "$work/l5o.md" >/dev/null 2>&1
+eq "$?" 20 "…and checklist emits nothing (20) when it cannot filter the region"
 fi
 
 if check_block s6 s1; then
@@ -2564,6 +2581,14 @@ if [ "$MODE" = mutation ]; then
       'printf '"'"'%s'"'"' "$(( ${ adb_byte_len "$kept"; } + 1 ))"' \
       'printf '"'"'%s'"'"' "$(( ${ adb_byte_len "$kept"; } ))"' \
       '…and verify refuses the same byte'
+  check_row 'nf-bytes-filter-failure-is-zero' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')" || return 1' \
+      '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')"' \
+      'promote refuses (20) when the checklist region cannot be measured'
+  check_row 'checklist-filter-failure-emitted' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '    || { printf '"'"'pattern-ledger: could not filter the checklist region of %s — refusing to emit it\n'"'"' "$ledger" >&2; exit 20; }' \
+      '    || :' \
+      '…and checklist emits nothing (20) when it cannot filter the region'
   check_row 'promote-size-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
       '+ ${ adb_byte_len "$newrule"; } + 1 ))' \
       '+ ${ adb_byte_len "$newrule"; } ))' \

@@ -259,10 +259,11 @@ _adb_pl_ok_text() { adb_ledger_ok_text "$1" "$_ADB_PL_TEXT_MAX_BYTES"; }
 
 # _adb_pl_nf_bytes <text> — print the bytes `printf '%s\n' <text> | awk 'NF { print }'` writes:
 # each line awk counts fields on, with its newline, and 0 when there is none. The capture strips
-# exactly one newline, because every line awk prints is non-blank.
+# exactly one newline, because every line awk prints is non-blank. Returns 1, printing nothing,
+# when the filter fails: a size it could not measure is never 0.
 _adb_pl_nf_bytes() {
   local kept
-  kept="$(printf '%s\n' "$1" | awk 'NF { print }')"
+  kept="$(printf '%s\n' "$1" | awk 'NF { print }')" || return 1
   if [ -n "$kept" ]; then printf '%s' "$(( ${ adb_byte_len "$kept"; } + 1 ))"; else printf '0'; fi
 }
 
@@ -1128,7 +1129,9 @@ cmd_promote() {
   ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" \
     || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
   printf -v newrule -- '- `%s` — %s' "$OPT_CLASS" "$OPT_RULE"
-  newsize=$(( ${ _adb_pl_nf_bytes "$ckregion"; } + ${ adb_byte_len "$newrule"; } + 1 ))
+  newsize="${ _adb_pl_nf_bytes "$ckregion"; }" \
+    || { printf 'pattern-ledger: could not measure the checklist region of %s — nothing was promoted\n' "$ledger" >&2; exit 20; }
+  newsize=$(( newsize + ${ adb_byte_len "$newrule"; } + 1 ))
   if [ "$newsize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
     printf 'pattern-ledger: refusing to promote %s — the checklist would be %s bytes, over the %s-byte prompt budget. Retire or tighten a rule first.\n' \
       "$OPT_CLASS" "$newsize" "$_ADB_PL_CHECKLIST_MAX_BYTES" >&2
@@ -1165,7 +1168,8 @@ cmd_checklist() {
   # put there, and refuses loudly (21) rather than emitting a truncated or crowding payload.
   # Reported by the declared reviewer on PR #429.
   local emitted size
-  emitted="$(printf '%s\n' "$region" | awk 'NF { print }')"
+  emitted="$(printf '%s\n' "$region" | awk 'NF { print }')" \
+    || { printf 'pattern-ledger: could not filter the checklist region of %s — refusing to emit it\n' "$ledger" >&2; exit 20; }
   size=$(( ${ adb_byte_len "$emitted"; } + 1 ))
   if [ "$size" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
     printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — refusing to emit it into a prompt. Retire or tighten rules in %s.\n' \
@@ -1325,7 +1329,8 @@ cmd_verify() {
   # grammar can still be one `checklist` refuses to emit, and the diagnostic command has to say so.
   local ckregion cksize over=0
   ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || ckregion=""
-  cksize="${ _adb_pl_nf_bytes "$ckregion"; }"
+  cksize="${ _adb_pl_nf_bytes "$ckregion"; }" \
+    || { printf 'pattern-ledger: could not measure the checklist region of %s\n' "$ledger" >&2; exit 20; }
   if [ "$cksize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
     printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — `checklist` will refuse to emit it (21)\n' \
       "$cksize" "$_ADB_PL_CHECKLIST_MAX_BYTES" >&2; over=1
@@ -1599,7 +1604,8 @@ cmd_rule_sweep_report() {
       # NOTHING (21) — so no agent was ever handed these rules, and "N of M" would be a claim
       # about a sweep nobody could have performed. Refuse rather than report coverage against a
       # checklist the consumer never received.
-      emitted_sz="${ _adb_pl_nf_bytes "$region"; }"
+      emitted_sz="${ _adb_pl_nf_bytes "$region"; }" \
+        || { printf 'pattern-ledger: could not measure the checklist region of %s — no coverage reported\n' "$ledger" >&2; exit 20; }
       if [ "$emitted_sz" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
         printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — `checklist` emits nothing, so no run was given these rules and coverage cannot be reported. Retire or tighten rules in %s.\n' \
           "$emitted_sz" "$_ADB_PL_CHECKLIST_MAX_BYTES" "$ledger" >&2

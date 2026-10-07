@@ -602,8 +602,10 @@ only by a published release, which is what these entries are the notes for.
   and runs 13, with byte-identical output. `record` went from 11,006 external commands to 29. The
   validators match under a C locale scoped to the function, through the new `adb_byte_len`
   (`scripts/lib/common.sh`). Their refusal set is unchanged: exactly the bytes `LC_ALL=C tr -d
-  '[:cntrl:]'` deleted, now asserted over all 255 byte values. The function scope is what preserves
-  that set, since under a UTF-8 caller `[[:cntrl:]]` would also match U+0085. The four per-file NUL
+  '[:cntrl:]'` deleted, asserted over all 255 byte values for the two ledger predicates. The
+  function scope is what preserves that set, since under a UTF-8 caller `[[:cntrl:]]` would also
+  match U+0085. A checklist region whose filter fails is now refused (20) rather than measured as
+  empty. The four per-file NUL
   checks (`adb_toml_get`, `adb_bytes_whole`, the ledger and docs record readers) now share one
   primitive, `adb_nul_free`. It runs `tr -d '\000' | cmp -s` (two processes, where the old checks
   ran three to five plus one or two subshells) and reads BOTH statuses. A `tr` that fails after

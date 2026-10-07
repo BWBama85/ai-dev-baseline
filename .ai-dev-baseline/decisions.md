@@ -9239,7 +9239,9 @@ survive is the part a later reader needs.
              call these as `${ …; }`, which runs in the current shell. The checklist and rule-sweep
              size checks in `pattern-ledger.sh` keep their exact byte semantics: `checklist` counts
              one byte for an empty list, while `promote`/`verify`/`rule-sweep-report` count zero,
-             and both still filter through the same `awk 'NF'` (`_adb_pl_nf_bytes`).
+             and both still filter through the same `awk 'NF'` (`_adb_pl_nf_bytes`). A filter
+             that fails is refused (20) rather than measured as an empty list. The old pipelines,
+             and the first cut of this helper, counted it as 0 bytes; the local review found that.
              The four per-file NUL checks (`_adb_pl_region`, `_adb_dl_records`, `adb_toml_get`,
              `adb_bytes_whole`) share one primitive, `adb_nul_free`: `LC_ALL=C tr -d '\000' < f | cmp
              -s - f`, two processes where the old checks ran three (`adb_bytes_whole`, whose size was
