@@ -1633,6 +1633,9 @@ two sessions racing the same run can both re-run it, and nothing on GitHub seria
 gh run rerun <id> --failed
 ```
 
+…except a `startup_failure`, which never started a job, so `--failed` has nothing to select: re-run
+the whole run there, `gh run rerun <id>`.
+
 `gh run rerun` only REQUESTS the re-run, and until the new attempt's checks register, the head still
 shows the old red. So confirm it took — `{{CI_HEALTH_LIB}} classify --run <id>` must now report
 `attempt 2` — then wait with `{{PR_WATCH_LIB}} ci-wait --pr "$PR_NUM" --no-fail-fast`, which holds
