@@ -1058,10 +1058,6 @@ _ADB_PW_CI_SETTLE=2
 # Where `classify` records the slug, base branch and head of the verdict it returns, so the CI line
 # describes exactly that head. A file, for the reason `_ADB_PW_PENDING_SINK` is one.
 _ADB_PW_SNAP_SINK=""
-# Where `_pw_ci_classify` leaves the check-set signature and the CI line for `ci-wait`, which polls
-# inside `$( … )` too; `_ADB_PW_CI_QUIET` keeps that line off stderr until the wait ends (#417).
-_ADB_PW_CI_SINK=""
-_ADB_PW_CI_QUIET=0
 
 # _pw_ci_decl <slug> — the `release-health` declaration a head with no CI evidence is judged under.
 # Prints the declaration (`no-ci` or `off`) on line 1 and, when the artifact's marker was not
@@ -1336,64 +1332,50 @@ _pw_ci_note() {
   return 0
 }
 
-# _pw_ci_say <line> [signature] [unsettled] — publish ONE CI line: into `ci-wait`'s sink with the
-# fields it compares, and onto stderr unless a wait is polling quietly. The sink is published by
-# RENAME, so a write that fails partway never reaches it: the poll began by emptying it, and an
-# observation is either there whole or not at all. Returns 1 when it cannot be published.
-_pw_ci_say() {
-  if [ -n "$_ADB_PW_CI_SINK" ] \
-     && ! { printf '%s\n%s\n%s\n' "${2:-}" "$1" "${3:-}" > "$_ADB_PW_CI_SINK.next" 2>/dev/null \
-            && mv -f "$_ADB_PW_CI_SINK.next" "$_ADB_PW_CI_SINK" 2>/dev/null; }; then
-    rm -f "$_ADB_PW_CI_SINK.next" 2>/dev/null
-    # The observation itself is NOT printed: its verdict word may be `green`, and the line a caller
-    # pastes must say what the poll became — unreadable.
-    echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not record this CI observation for the wait" >&2
-    return 1
-  fi
-  [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$1" >&2
-  return 0
-}
-
-# _pw_ci_classify <pr-number> — one CI classification of the PR's CURRENT head. Prints
-# "<verdict> <sha>" on stdout (none on 2/20) and returns the `ci` code for it — see the header.
-# Every outcome but a usage error publishes a CI line, so every caller has one to report; a head
-# that could not be read is written `-`.
+# _pw_ci_classify <pr-number> — one CI classification of the PR's CURRENT head, returned in shell
+# variables rather than printed, so `ci-wait` can poll it without a subshell or a temp file:
+#   _PW_CI_WORD       the verdict word (`branch-health`'s), `gone`, or empty
+#   _PW_CI_HEAD       the head it is about; empty when no head could be read
+#   _PW_CI_LINE       the one CI line — `pr-watch: ci <word> <sha|-> observed <UTC> — <detail>` —
+#                     set for every outcome but a usage error
+#   _PW_CI_SIG / _PW_CI_UNSETTLED   the check-set signature and the unsettled count, on a verdict
+# Returns the `ci` code (the header's table). Prints NOTHING; its callers decide what is shown when.
 _pw_ci_classify() {
-  local n="$1" qslug pjson pfields head state gotslug baseref src at out rc verdict line
+  local n="$1" qslug pjson pfields head state gotslug baseref src at out rc
+  _PW_CI_WORD=""; _PW_CI_HEAD=""; _PW_CI_LINE=""; _PW_CI_SIG=""; _PW_CI_UNSETTLED=""
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   qslug="$(adb_pr_query_slug pr-watch "$OPT_PR")" \
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $at — could not resolve which repository to read for PR #$n"; return 20; }
+    || { _PW_CI_LINE="pr-watch: ci unreadable - observed $at — could not resolve which repository to read for PR #$n"; return 20; }
   pjson="$(adb_pr_snapshot pr-watch "$n" "$qslug")" \
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $at — could not read PR #$n"; return 20; }
+    || { _PW_CI_LINE="pr-watch: ci unreadable - observed $at — could not read PR #$n"; return 20; }
   pfields="$(printf '%s' "$pjson" \
              | jq -r '(.head_sha // ""), (.state // "" | ascii_downcase), (.base_slug // "" | ascii_downcase), (.base_ref // "")' 2>/dev/null)" \
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $at — could not parse PR #$n"; return 20; }
+    || { _PW_CI_LINE="pr-watch: ci unreadable - observed $at — could not parse PR #$n"; return 20; }
   { IFS= read -r head; IFS= read -r state; IFS= read -r gotslug; IFS= read -r baseref; } <<EOF
 $pfields
 EOF
   [ -n "$head" ] \
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $at — could not resolve the head SHA of PR #$n"; return 20; }
+    || { _PW_CI_LINE="pr-watch: ci unreadable - observed $at — could not resolve the head SHA of PR #$n"; return 20; }
   adb_pr_slug_check pr-watch "$n" "$OPT_PR" "$gotslug"; src=$?
   case "$src" in
     0) ;;
     2) return 2 ;;
-    *) _pw_ci_say "pr-watch: ci unreadable - observed $at — the repository read could not be confirmed as the one meant"
+    *) _PW_CI_LINE="pr-watch: ci unreadable - observed $at — the repository read could not be confirmed as the one meant"
        return 20 ;;
   esac
   if [ "$state" != "open" ]; then
-    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch" \
-      || return 20
-    printf 'gone %s\n' "$head"
+    _PW_CI_WORD=gone; _PW_CI_HEAD="$head"
+    _PW_CI_LINE="pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch"
     return 12
   fi
   out="$(_pw_ci_eval "$qslug" "$head" "$baseref")"; rc=$?
-  verdict="${out%%$'\n'*}"
-  line="pr-watch: ci $verdict $head observed $at — $(printf '%s\n' "$out" | sed -n 2p)"
-  if [ "$rc" -ne 0 ]; then _pw_ci_say "$line"; return 20; fi
-  _pw_ci_say "$line" "$(printf '%s\n' "$out" | sed -n 3p)" "$(printf '%s\n' "$out" | sed -n 4p)" \
-    || return 20
-  printf '%s %s\n' "$verdict" "$head"
-  case "$verdict" in
+  _PW_CI_LINE="pr-watch: ci ${out%%$'\n'*} $head observed $at — $(printf '%s\n' "$out" | sed -n 2p)"
+  [ "$rc" -eq 0 ] || return 20
+  _PW_CI_WORD="${out%%$'\n'*}"; _PW_CI_HEAD="$head"
+  _PW_CI_SIG="$(printf '%s\n' "$out" | sed -n 3p)"
+  _PW_CI_UNSETTLED="$(printf '%s\n' "$out" | sed -n 4p)"
+  case "$_PW_CI_UNSETTLED" in ''|*[!0-9]*) _PW_CI_UNSETTLED="" ;; esac
+  case "$_PW_CI_WORD" in
     green)     return 0 ;;
     not-green) return 40 ;;
     no-ci)     return 41 ;;
@@ -1402,13 +1384,16 @@ EOF
 }
 
 cmd_ci() {
-  local n
+  local n rc
   [ -n "$OPT_PR" ] || { echo "pr-watch: ci requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
     || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
   adb_require_gh jq \
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated"; return 20; }
-  _pw_ci_classify "$n"
+    || { echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated" >&2; return 20; }
+  _pw_ci_classify "$n"; rc=$?
+  [ -n "$_PW_CI_LINE" ] && printf '%s\n' "$_PW_CI_LINE" >&2
+  [ -n "$_PW_CI_HEAD" ] && printf '%s %s\n' "$_PW_CI_WORD" "$_PW_CI_HEAD"
+  return "$rc"
 }
 
 # _pw_deadline — the monotonic instant `--max-secs` from now; why it is THIS clock is argued in
@@ -1433,6 +1418,9 @@ _pw_nap() {
 # green completed after it is reported as not concluded. A head that moves is reported and its
 # evidence starts again; the bound does not.
 #
+# QUIET WHILE IT POLLS: each classification comes back in `_PW_CI_*` variables, so nothing is printed
+# per poll but the events (a moved head, an unreadable poll), and the CI line once, at the end.
+#
 # THE BOUND LIMITS CONTINUED POLLING, exactly as `wait`'s does: a read that never returns is not
 # bounded by it. Owner decision 2026-10-06 (D123): documented here rather than wrapping every read.
 # And as in `wait`, the last nap ends AT the deadline and one final poll follows it — the one poll
@@ -1445,32 +1433,17 @@ cmd_ci_wait() {
   require_uint "$OPT_INTERVAL" --interval || return 2
   require_uint "$OPT_MAX_SECS" --max-secs || return 2
   adb_require_gh jq \
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated, so there is nothing to wait on"; return 20; }
+    || { echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated, so there is nothing to wait on" >&2; return 20; }
   deadline="$(_pw_deadline)"
-  # The sink is where every poll leaves its CI line and signature; without a writable one there is
-  # neither a line to report nor polls to compare. ONE guard refuses that — the reset at the top of
-  # each poll — whether the file was never created (an empty path) or stopped being writable.
-  _ADB_PW_CI_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-ci.XXXXXX" 2>/dev/null || printf '')"
-  _ADB_PW_CI_QUIET=1
   trap 'echo "pr-watch: interrupted — the head'"'"'s checks were not seen to conclude" >&2
-        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
         exit 11' INT TERM
 
   while :; do
-    if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then
-      echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not write a temp file, so this wait cannot compare its polls" >&2
-      trap - INT TERM
-      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
-      return 20
-    fi
-    out="$(_pw_ci_classify "$n")"; rc=$?
-    head="${out##* }"
+    _pw_ci_classify "$n"; rc=$?
     remaining=$(( deadline - BASH_MONOSECONDS ))
-    sig=""; line=""; running=""
-    if [ -n "$_ADB_PW_CI_SINK" ] && [ -s "$_ADB_PW_CI_SINK" ]; then
-      { IFS= read -r sig; IFS= read -r line; IFS= read -r running; } < "$_ADB_PW_CI_SINK"
-    fi
-    case "$running" in ''|*[!0-9]*) running="" ;; esac
+    head="$_PW_CI_HEAD"; out=""
+    [ -n "$head" ] && out="$_PW_CI_WORD $head"
+    line="$_PW_CI_LINE"; sig="$_PW_CI_SIG"; running="$_PW_CI_UNSETTLED"
     if [ -n "$out" ] && [ -n "$lasthead" ] && [ "$head" != "$lasthead" ]; then
       echo "pr-watch: PR #$n head moved $lasthead -> $head; CI evidence for the earlier head no longer applies" >&2
       greens=0
@@ -1486,7 +1459,6 @@ cmd_ci_wait() {
         [ -n "$line" ] && printf '%s\n' "$line" >&2
         [ -n "$out" ] && printf '%s\n' "$out"
         trap - INT TERM
-        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
         return "$rc" ;;
       0)
         unreadable=0
@@ -1499,7 +1471,6 @@ cmd_ci_wait() {
           [ -n "$line" ] && printf '%s\n' "$line" >&2
           printf '%s\n' "$out"
           trap - INT TERM
-          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
           return 0
         fi ;;
       20)
@@ -1509,7 +1480,6 @@ cmd_ci_wait() {
           [ -n "$line" ] && printf '%s\n' "$line" >&2
           echo "pr-watch: $unreadable consecutive unreadable CI polls — giving up rather than guessing" >&2
           trap - INT TERM
-          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
           return 20
         fi
         echo "pr-watch: unreadable CI poll $unreadable/$_ADB_PW_MAX_UNREADABLE — retrying" >&2 ;;
@@ -1524,7 +1494,6 @@ cmd_ci_wait() {
       printf '%s\n' "$out"
       echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired while the red was still unsettled; returning the red" >&2
       trap - INT TERM
-      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
       return 40
     fi
     if [ "$remaining" -le 0 ]; then
@@ -1538,7 +1507,6 @@ cmd_ci_wait() {
       [ -n "$out" ] && printf 'indeterminate %s\n' "$head"
       echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired before the head's checks concluded; handing off (this is not green)" >&2
       trap - INT TERM
-      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
       return 11
     fi
     _pw_nap "$remaining"

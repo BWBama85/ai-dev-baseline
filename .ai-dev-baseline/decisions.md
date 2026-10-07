@@ -9180,6 +9180,11 @@ survive is the part a later reader needs.
              55, and the ubuntu `pr-watch` job runs it on every relevant PR — pinned by
              `check-fact-drift.sh` as that harness's only per-PR execution. A sixth local review
              pass covers this change.
+             (n) **Owner decision 2026-10-07, after three local passes in a row found defects in
+             `ci-wait`'s temp-file sink (a partial write, a failed create, permissions and symlinks):
+             the sink is gone.** It existed only because each poll ran in a `$( … )` subshell;
+             `_pw_ci_classify` now returns its verdict, line, signature and unsettled count in shell
+             variables and prints nothing, and `ci`/`ci-wait` decide what is shown when.
              This supersedes D86 (10) for the CI wait: its home is now `pr-watch.sh ci-wait`, driven
              by `/resolve-pr-threads` step 7b. `/implement-issue` still ends after one reading.
 - placement: `scripts/lib/pr-watch.sh` (`_pw_ci_*`, `ci`, `ci-wait`, the CI line in

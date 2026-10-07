@@ -268,10 +268,10 @@ L
 L
 )" 'ci-wait: ...and its stdout does not say green'
   check_row ci-wait-narrates "$PWT" ci-wait "$(lit <<'L'
-  [ "$_ADB_PW_CI_QUIET" = "1" ] || printf '%s\n' "$1" >&2
+    line="$_PW_CI_LINE"; sig="$_PW_CI_SIG"; running="$_PW_CI_UNSETTLED"
 L
 )" "$(lit <<'L'
-  printf '%s\n' "$1" >&2
+    line="$_PW_CI_LINE"; sig="$_PW_CI_SIG"; running="$_PW_CI_UNSETTLED"; printf '%s\n' "$line" >&2
 L
 )" 'ci-wait: quiet while it polls'
   check_row ci-allowlist-dropped "$PWT" ci-read "$(lit <<'L'
@@ -341,11 +341,11 @@ L
 L
 )" '  :' 'ci-wait: a leading-zero bound is refused'
   check_row ci-gone-silent "$PWT" ci-read "$(lit <<'L'
-    _pw_ci_say "pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch" \
+    _PW_CI_LINE="pr-watch: ci gone $head observed $at — PR #$n is no longer open, so there is no CI left to watch"
 L
-)" '    : \' 'ci: a closed pull request still prints its CI line'
+)" '    _PW_CI_LINE=""' 'ci: a closed pull request still prints its CI line'
   check_row ci-auth-line-dropped "$PWT" ci-read "$(lit <<'L'
-    || { _pw_ci_say "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated"; return 20; }
+    || { echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — gh or jq is unavailable or not authenticated" >&2; return 20; }
 L
 )" '    || return 20' 'ci: an unauthenticated gh still prints its CI line'
   check_row ci-late-green-accepted "$PWT" ci-wait "$(lit <<'L'
@@ -380,8 +380,6 @@ L
         | if ([$all[] | .id] | unique | length) != ($all | length) then error("a workflow repeats") else . end
 L
 )" '        | .' 'ci: a workflow inventory that repeats an id is unreadable'
-  check_row ci-sink-failure-ignored "$PWT" ci-wait '    if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then' \
-    '    if false; then' 'ci-wait: a wait that cannot create its temp file refuses'
   check_row ci-runmap-ambiguous-accepted "$PWT" ci-wait '                       then error("a check suite maps to more than one run record") else . end' \
     '                       then . else . end' 'ci-wait --no-fail-fast: a run map naming one suite twice is unknown'
   check_row ci-signature-anonymous "$PWT" ci-wait "$(lit <<'L'
@@ -2445,11 +2443,10 @@ reset_fx; declare_bots "[\"$CODEX\"]"; ci_status_fx; ci_branch_fx ci
 ci_runs_fx "ci|completed|failure"; ci_wfruns_fx "999|7001|1" "999|7001|1|in_progress"
 w ci-wait --pr 1 --interval 1 --max-secs 2 --no-fail-fast
 has "$OUT" "while the red was still unsettled" "ci-wait --no-fail-fast: a run map naming one suite twice is unknown, not its first record"
-# Without its temp file the wait could neither compare polls nor report a line, so it refuses.
+# The wait carries each poll in shell variables, never a temp file: one it cannot create changes nothing.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_green_fx
-TMPDIR="$work/no-such-dir" w ci-wait --pr 1 --interval 1 --max-secs 3
-rc 20 "ci-wait: a wait that cannot create its temp file refuses"
-has "$OUT" "pr-watch: ci unreadable - observed " "ci-wait: ...and still prints a CI line saying why"
+TMPDIR="$work/no-such-dir" w ci-wait --pr 1 --interval 1 --max-secs "$WATCH_BACKSTOP"
+rc 0 "ci-wait: needs no temp file to settle a green"
 
 # A check REPLACED under the same name — a re-run, or another app — is a new check set, so its first
 # green does not settle the wait.
