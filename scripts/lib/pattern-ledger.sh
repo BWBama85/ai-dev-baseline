@@ -371,7 +371,7 @@ _adb_pl_region() {
   # `partial<NUL>-validation` reached the validators as `partial-validation` and counted toward
   # that class's promotion, a record the writer could never have produced (D124 keeps the
   # history). The same rule as docs-lib's record reader.
-  adb_nul_free "$1" || return 1
+  adb_nul_free "$1" || { [ "$?" -eq 1 ] || printf 'pattern-ledger: could not read %s to scan it for NUL bytes\n' "$1" >&2; return 1; }
   awk -v b="$2" -v e="$3" '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == b { nb++; inb = 1; next }

@@ -9249,7 +9249,9 @@ survive is the part a later reader needs.
              that unread file. `cmp` 1 is a NUL, even when the `tr` behind it dies of SIGPIPE, and
              any other failure is unreadable, so `adb_toml_get` now returns 2 and `adb_bytes_whole`
              20 there. The brace group the statuses are read in keeps a caller's `errexit` from
-             ending it first.
+             ending it first. The ledger reader keeps one failure code for a region (owner decision
+             2026-10-07, local review): a failed read still exits 18, and it now says on stderr that
+             it could not read the file rather than leaving only "does not parse".
 
              **The measurements**, 2026-10-07, the maintainer's 10-core macOS (Darwin 25.6.0), bash
              5.3.20, `/usr/bin/time -l`. The machine could not be made idle: other sessions ran
@@ -9297,8 +9299,9 @@ survive is the part a later reader needs.
                their fixtures are small ledgers: pattern-ledger CPU −39%, docs-lib −66.5%.
              * `check-pattern-ledger.sh`'s sys still exceeds user (63.6 vs 42.9), so that criterion
                is unmet. These figures do not isolate what remains. The candidates are the suite's
-               own process work: every `bash "$PL"` call is an exec plus a parse of `common.sh` and
-               runs 10-29 external commands (above), and the fixtures fork too. #454 excludes the
+               own process work: every `bash "$PL"` call is an exec plus a parse of `common.sh`, the
+               four subcommands measured above run 10-29 external commands each on the real
+               ledger, and the fixtures fork too. #454 excludes the
                obvious cut, sourcing the library instead of spawning its entry point, because that
                would change what the suite proves.
              * `check-cleanup.sh` and `check-session-context.sh` exercise none of the rewritten
@@ -9335,7 +9338,8 @@ survive is the part a later reader needs.
 - reason:    A validator runs once per field per record on every read, so its cost is multiplied
              by the ledger's length on every `/implement-issue` gap dispatch and self-review sweep.
              The same property makes the in-process form safe only under an explicit C scope: the
-             byte unit and the control set were the pipeline's locale, never the caller's. The
-             equivalence over all 255 byte values is now asserted on both CI legs rather than
-             assumed.
+             byte unit and the control set were the pipeline's locale, never the caller's. That the
+             in-process validators refuse exactly the bytes the replaced pipeline did is now asserted
+             over all 255 byte values on both CI legs, rather than assumed. It says nothing about
+             the ledger's own reader, which matches a summary under the caller's locale (#522).
 - baseline-issue: n/a

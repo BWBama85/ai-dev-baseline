@@ -145,9 +145,12 @@ adb_byte_len() { local LC_ALL=C; printf '%s' "${#1}"; }
 # be read. A bash string cannot hold a NUL, so this reads the file, in two processes, and takes BOTH
 # statuses whatever the caller's `pipefail` or `errexit`: `cmp` 1 is a NUL (a `tr` stopped by the
 # SIGPIPE that follows is part of that answer); any other failure is a read that did not happen.
+# A path starting with `-` is read as `./-…`: `cmp` takes `-` as standard input and may take `-x`
+# as an option.
 adb_nul_free() {
-  local st
-  { LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1"; st="${PIPESTATUS[0]}:${PIPESTATUS[1]}"; } || :
+  local f="$1" st
+  case "$f" in -*) f="./$f" ;; esac
+  { LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; st="${PIPESTATUS[0]}:${PIPESTATUS[1]}"; } || :
   case "$st" in
     0:0)       return 0 ;;
     0:1|141:1) return 1 ;;

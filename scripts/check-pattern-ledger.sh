@@ -458,6 +458,19 @@ seed "$L5f" nulk 2 || bad "fixture: could not seed"
 perl -pe 's/`nulk`/`nu\x00lk`/' "$L5f" > "$L5f.tmp" && mv "$L5f.tmp" "$L5f"
 bash "$PL" due --ledger "$L5f" >/dev/null 2>&1
 eq "$?" 18 "a NUL inside a stored CLASS is refused rather than counted toward a promotion"
+# A NUL SCAN WHOSE READ FAILS refuses the ledger as before (18) and says it could not read it. The
+# stub `tr` writes its whole input and then fails, and only for the NUL-deleting call.
+NFB="$work/nf-bin"; mkdir -p "$NFB"
+NF_REAL_TR="$(command -v tr)"; export NF_REAL_TR
+cat > "$NFB/tr" <<'STUB'
+#!/bin/sh
+if [ "$1" = -d ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+exec "$NF_REAL_TR" "$@"
+STUB
+chmod +x "$NFB/tr"
+NFOUT="$(PATH="$NFB:$PATH" bash "$PL" classes --ledger "$L5" 2>&1 >/dev/null)"
+eq "$?" 18 "a NUL scan whose read fails refuses the ledger (18)"
+has "$NFOUT" "could not read" '…and names the failed read rather than leaving only "does not parse"'
 fi
 
 if check_block s5c; then
@@ -2340,9 +2353,13 @@ if [ "$MODE" = mutation ]; then
       '    :' \
       'a hand-edited summary opening an HTML comment is refused by the readers'
   check_row 'ledger-nul-normalized' 'scripts/lib/pattern-ledger.sh' 's5b' \
-      '  adb_nul_free "$1" || return 1' \
+      '  adb_nul_free "$1" || { [ "$?" -eq 1 ] || printf '"'"'pattern-ledger: could not read %s to scan it for NUL bytes\n'"'"' "$1" >&2; return 1; }' \
       '  :' \
       'a NUL byte at the end of a stored summary is refused, not normalized away'
+  check_row 'nul-read-failure-unnamed' 'scripts/lib/pattern-ledger.sh' 's5b' \
+      '[ "$?" -eq 1 ] || printf '"'"'pattern-ledger: could not read' \
+      '[ "$?" -eq 1 ] || : '"'"'pattern-ledger: could not read' \
+      '…and names the failed read rather than leaving only "does not parse"'
   check_row 'first-seen-by-row' 'scripts/lib/pattern-ledger.sh' 's8' \
       '        NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }' \
       '        NF && $1 != "" { if (!($1 in first)) { first[$1] = $5; firstd[$1] = $6 } }' \

@@ -964,7 +964,9 @@ adb_nul_free "$nf/nul-big";    eq "$?" 1 "nul-free: …and still found when tr d
 # A `tr` that emits its whole input and then FAILS: the comparison alone calls the file clean, so the
 # first process's status is read too, with and without the caller's `pipefail`. Only the NUL-deleting
 # call fails, so every other `tr` a caller runs first still answers.
-export NF_REAL_TR="${ command -v tr; }"
+NF_REAL_TR="${ command -v tr; }"
+[ -n "$NF_REAL_TR" ] || bad "nul-free: no tr on PATH — the failing-tr cases below assert NOTHING"
+export NF_REAL_TR
 cat > "$nf/bin/tr" <<'STUB'
 #!/bin/sh
 if [ "$1" = -d ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
@@ -983,6 +985,10 @@ eq "$?" 2 "nul-free: errexit cannot end the caller before it answers"
 eq "$?" 2 "toml-get: …which it reports as unreadable (2), never as a value"
 ( PATH="$nf/bin:$PATH"; adb_bytes_whole "$nf/clean.toml" 100 )
 eq "$?" 20 "bytes-whole: …and as not readable (20), never as a valid file"
+# A FILE NAMED `-` or `-s` is a file: `cmp` reads `-` as standard input and `-s` as an option.
+printf 'x\n' > "$nf/-"; printf 'x\n' > "$nf/-s"
+( cd "$nf" && adb_nul_free - && adb_nul_free -s )
+eq "$?" 0 "nul-free: files named - and -s are scanned as files, not as stdin or an option"
 
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working
