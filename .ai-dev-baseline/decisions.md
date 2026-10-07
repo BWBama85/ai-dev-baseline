@@ -9205,3 +9205,119 @@ survive is the part a later reader needs.
              found `selfcheck-macos` at 47m41s on run 37525965580. So the loop waits only at its
              terminal exit, which is the last thing between the head and a merge.
 - baseline-issue: n/a
+
+## D124 — #454: the per-value validators run in-process, the per-file NUL checks take two processes, and the suites' cost is measured again
+- date:      2026-10-07
+- category:  project-delta
+- unknown:   #454. The ledger and docs validators measured a value by spawning a pipeline per field
+             per record (`printf | wc -c | tr`, and a control-character test that was two such
+             pipelines compared), so `pattern-ledger.sh checklist` spent its time forking. The issue
+             asked for those sites in-process, a dated before/after table per suite, and shorter
+             test-side waits. Three of its acceptance criteria could not be met as written: a
+             child-process count with no reliable counter on this machine, "sys no longer exceeds
+             user" for `check-pattern-ledger.sh`, and `check-common-lib.sh`'s wall within 2× its CPU.
+- decision:  **Owner decisions 2026-10-07:** (1) proceed although the issue says "Blocked by #465":
+             every slice of #465 (#475, #487-#491, #438) has merged; (2) process cost is recorded as
+             the external commands one call runs, counted from an xtrace, which does not depend on
+             load, plus CPU-seconds per suite. `signals received` is not a process count here:
+             removing 15 external commands from one `record` call moved it from 15 to 16. PID deltas
+             are not one either: other sessions allocated ~430 PIDs/s; (3) the per-file NUL checks,
+             which #454 had scoped out, are rewritten too; (4) `check-common-lib.sh`'s timing
+             scenarios are measured, not restructured, and its 2× target is recorded unmet below;
+             (5) a pre-existing reader/writer disagreement found by the new pins is filed as #522,
+             not fixed here.
+
+             **What changed.** `adb_byte_len` (common.sh) prints a byte length under a C locale
+             scoped to the function by `local`. `adb_ledger_ok_span`, `adb_ledger_ok_text` and
+             `adb_rule_sweep_row` match `[[:cntrl:]]` and measure `${#}` under the same scope. The C
+             scope keeps the refusal set exactly the bytes `LC_ALL=C tr -d '[:cntrl:]'` deleted
+             (0x01-0x1F, 0x7F). Under a UTF-8 caller `[[:cntrl:]]` also matches U+0080-U+009F and
+             U+200B, so without that scope the set would silently tighten. `docs-lib.sh` keeps
+             `_adb_dl_bytes` as a wrapper. Its control test is `_adb_dl_printable`, kept out of
+             `_adb_dl_ok_field` so the length test does not inherit a C locale. The 5.3 libraries
+             call these as `${ …; }`, which runs in the current shell. The checklist and rule-sweep
+             size checks in `pattern-ledger.sh` keep their exact byte semantics: `checklist` counts
+             one byte for an empty list, while `promote`/`verify`/`rule-sweep-report` count zero,
+             and both still filter through the same `awk 'NF'` (`_adb_pl_nf_bytes`).
+             The four per-file NUL checks (`_adb_pl_region`, `_adb_dl_records`, `adb_toml_get`,
+             `adb_bytes_whole`) are `LC_ALL=C tr -d '\000' < f | cmp -s - f`: the same verdict, as
+             two processes instead of five plus two subshells.
+
+             **The measurements**, 2026-10-07, the maintainer's 10-core macOS (Darwin 25.6.0), bash
+             5.3.20, `/usr/bin/time -l`. The machine could not be made idle: other sessions ran
+             Python and node test jobs throughout, so the 1-minute load average is stamped on every
+             run. Each suite was run on `main` (`3fccd2f`, a separate worktree) and then on this
+             branch, back to back, as a PAIR. This is a record of what was observed, not a ranking
+             (D66).
+
+             External commands per call on this repo's 785-line ledger (xtrace, deterministic):
+
+             | call | `main` | after |
+             |---|---|---|
+             | `pattern-ledger.sh classes` | 5,551 | 10 |
+             | `pattern-ledger.sh checklist` | 5,558 | 13 |
+             | `pattern-ledger.sh verify` | 5,564 | 19 |
+             | `pattern-ledger.sh record` | 11,006 | 29 |
+             | `docs-lib.sh report`, 20 records | 274 | 68 |
+             | `docs-lib.sh consulted` | 14 | 2 |
+
+             `checklist` on the same ledger: 10.5-13.6 s before, 0.37-0.40 s after (three runs each,
+             load 6-12), and its output is `cmp`-identical.
+
+             Suites (s; wall, then user / sys; load at start):
+
+             | suite | before | after |
+             |---|---|---|
+             | `check-pattern-ledger.sh` | 199.5; 63.2 / 111.4 (18.5) | 153.2; 42.9 / 63.6 (9.0) |
+             | `check-docs-lib.sh` | 62.7; 24.3 / 42.6 (11.3) | 22.2; 9.6 / 12.8 (14.7) |
+             | `check-implement-lib.sh` | 299.8; 106.4 / 118.4 (25.4) | 237.4; 91.7 / 96.3 (9.6) |
+             | `check-common-lib.sh` | 68.3; 7.2 / 9.2 (13.1) | 76.2; 7.8 / 11.0 (10.0) |
+             | `check-session-context.sh` | 77.1; 30.6 / 28.8 (28.1) | 64.0; 27.7 / 24.8 (21.4) |
+             | `check-cleanup.sh` | 81.2; 34.8 / 36.1 (15.5) | 86.1; 36.8 / 38.3 (20.3) |
+
+             Both trees' suites passed. The after side adds assertions: pattern-ledger 485 → 508
+             and docs-lib 180 → 181 (the summaries' control-byte, multibyte and exact-budget
+             witnesses), and common-lib 903 → 918 (the byte-equivalence block). An earlier pair, taken
+             before the NUL rewrite under load 11-44, read pattern-ledger 325.5 → 199.7 s and docs-lib
+             53.0 → 23.3 s.
+
+             **What the numbers say.**
+             * The validators' cost is gone where it was paid per record: a call on the real ledger
+               runs two orders of magnitude fewer external commands. The suites save less because
+               their fixtures are small ledgers: pattern-ledger CPU −39%, docs-lib −62%.
+             * `check-pattern-ledger.sh`'s sys still exceeds user (63.6 vs 42.9). What remains is one
+               `bash` per assertion: each call is an exec plus a parse of `common.sh`. #454 excludes
+               sourcing a library instead of spawning its entry point, because that would change
+               what the suite proves. The criterion is unmet, and this is why.
+             * `check-cleanup.sh` and `check-session-context.sh` exercise none of the rewritten
+               paths per record. Their spread (±15%) is the noise floor of a loaded machine, and the
+               other rows should be read against it.
+             * `check-common-lib.sh` is about 4× its CPU, before and after. Its waiting is the
+               `adb_run_bounded` scenarios: about 55 s over ~25 sequential cases, each a 1-6 s bound,
+               grace or escalation window at the library's 1 s minimum. Reaching 2× needs them run
+               concurrently or sub-second bounds (owner decision 4: neither). The test-side bounds
+               #454 asked to shorten are already at seconds wherever a suite waits on one. Every
+               `ADB_*_SECS` a library reads is set by the suites that drive its firing, with two
+               kinds of exception. The currency bounds are never waited on:
+               `check-session-currency.sh` ran 47.9 s wall against 41.1 s CPU. The update lock's
+               stale bound is set through `_ADB_LOCK_STALE_SECS` directly. The concurrent-writer
+               sections take the 30 s lock wait as an upper bound only, and #454 leaves them alone.
+               The fixed sleeps in the five suites with the most `sleep` calls (`check-common-lib`,
+               `-selfcheck`, `-block-rows`, `-role-dispatch`, `-pr-watch`) are each the event under
+               test: a child that outlives a bound, a window two steps must overlap in, or a hold
+               past an overrun ceiling. The rest are polls with a deadline. None waits for nothing.
+- placement: `scripts/lib/common.sh` (`adb_byte_len`, `adb_ledger_ok_span`, `adb_ledger_ok_text`,
+             `adb_rule_sweep_row`, `adb_toml_get`, `adb_bytes_whole`); `scripts/lib/docs-lib.sh`
+             (`_adb_dl_bytes`, `_adb_dl_printable`, `_adb_dl_ok_field`, `_adb_dl_append`,
+             `_adb_dl_records`); `scripts/lib/pattern-ledger.sh` (`_adb_pl_nf_bytes`,
+             `_adb_pl_region`, `promote`, `checklist`, `verify`, `rule-sweep`, `rule-sweep-report`);
+             `scripts/check-common-lib.sh` (the byte-equivalence block); `scripts/check-pattern-ledger.sh`
+             (s5, s5d, s12 witnesses; eleven rows new or retargeted); `scripts/check-docs-lib.sh`
+             (locale-pinned witnesses; five rows new or retargeted); `CHANGELOG.md`
+- reason:    A validator runs once per field per record on every read, so its cost is multiplied
+             by the ledger's length on every `/implement-issue` gap dispatch and self-review sweep.
+             The same property makes the in-process form safe only under an explicit C scope: the
+             byte unit and the control set were the pipeline's locale, never the caller's. The
+             equivalence over all 255 byte values is now asserted on both CI legs rather than
+             assumed.
+- baseline-issue: n/a

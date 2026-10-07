@@ -594,6 +594,22 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **The ledger and docs validators measure a value in-process (#454).** A byte length was
+  `printf | wc -c | tr`, and a control-character test was two such pipelines compared. Each ran
+  once per field per record on every read of `.ai-dev-baseline/patterns.md`. `pattern-ledger.sh
+  checklist` on this repo's 785-line ledger took 10.5-13.6 s and ran 5,558 external commands; it
+  now takes 0.4 s and runs 13, with byte-identical output. `record` went from 11,006 external
+  commands to 29. The validators match under a C locale scoped to the function, via the new
+  `adb_byte_len` (`scripts/lib/common.sh`). Their refusal set is unchanged: exactly the bytes
+  `LC_ALL=C tr -d '[:cntrl:]'` deleted, now asserted over all 255 byte values. A UTF-8 caller
+  locale no longer decides whether U+0085 counts as a control character. The per-file NUL checks
+  (`adb_toml_get`, `adb_bytes_whole`, the ledger and docs record readers) are `tr -d '\000' | cmp
+  -s`: the same verdict, two processes instead of five plus two subshells. Suite and per-call
+  measurements, and the acceptance criteria this did not meet (the pattern-ledger suite's sys
+  time still exceeds its user time; `check-common-lib.sh` still waits about 4× its CPU), are in
+  D124. #522 tracks a reader/writer disagreement on C1 characters in summaries, found by the new
+  witnesses.
+
 - **One read per reviewer classification, instead of four (#174).** `pr-watch.sh` and
   `pr-review.sh` each read the pull-request object and then three paginated signal surfaces —
   reviews, issue comments, reactions. All four are now a single GraphQL document, taken once in

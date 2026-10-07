@@ -140,17 +140,25 @@ _ADB_DL_FIELD_MAX=512
 # bytes: two fields of 512 four-byte characters are ~4 KiB of record, which stdio splits and two
 # appenders then interleave. The reviewer reproduced six malformed lines from 200 concurrent calls
 # that all passed a 512-"byte" check. Reported by the declared reviewer on PR #429.
-_adb_dl_bytes() { printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '; }
+_adb_dl_bytes() { adb_byte_len "$1"; }
+
+# _adb_dl_printable <value> — 0 iff the value holds no ASCII control byte (0x01-0x1F, 0x7F), the
+# set `LC_ALL=C tr -d '[:cntrl:]'` deletes. Its own function so the C locale stays out of
+# `_adb_dl_ok_field`, whose length test must not depend on one.
+_adb_dl_printable() {
+  local LC_ALL=C
+  case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+}
 
 _adb_dl_ok_field() {
   [ -n "$1" ] || return 1
-  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1
+  [ "${ _adb_dl_bytes "$1"; }" -le "$_ADB_DL_FIELD_MAX" ] || return 1
   # THE DELIMITER TEST IS `adb_tsv_field_safe`'s — one home for exactly this question, and its
   # header records why the failure is FORGERY rather than corruption: a value carrying a delimiter
   # does not make the record malformed, it makes TWO records, the second entirely chosen by
   # whoever supplied the value. The control-character rule below is this module's own addition.
   adb_tsv_field_safe "$1" || return 1
-  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
+  _adb_dl_printable "$1"
 }
 
 # A server name is compared against a declaration, so it is held to a name charset rather than to
@@ -190,10 +198,11 @@ _adb_dl_file() {
 _ADB_DL_RECORD_MAX=2048
 
 _adb_dl_append() {
-  local f d
-  if [ "$(_adb_dl_bytes "$*")" -gt "$_ADB_DL_RECORD_MAX" ]; then
+  local f d sz
+  sz="${ _adb_dl_bytes "$*"; }"
+  if [ "$sz" -gt "$_ADB_DL_RECORD_MAX" ]; then
     printf 'docs-lib: refusing a %s-byte record — the append bound is %s bytes, because a record larger than one stdio buffer can be split and interleaved with another writer.\n' \
-      "$(_adb_dl_bytes "$*")" "$_ADB_DL_RECORD_MAX" >&2
+      "$sz" "$_ADB_DL_RECORD_MAX" >&2
     exit 19
   fi
   f="$(_adb_dl_file)" || exit 20
@@ -246,7 +255,7 @@ _adb_dl_records() {
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
   # can see the difference, so it has to be caught on the raw bytes.
   # Reported by the declared reviewer on PR #429.
-  [ "$(LC_ALL=C tr -d '\000' < "$f" | wc -c | tr -d ' ')" -eq "$(wc -c < "$f" | tr -d ' ')" ] || return 1
+  LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f" || return 1
   # ARITY IS CHECKED IN awk, BEFORE the shell loop, because `read` cannot check it. Tab is IFS
   # WHITESPACE, so `IFS=<tab> read` collapses adjacent tabs and strips trailing ones — which means
   # `probe<TAB>server<TAB>usable<TAB>evidence<TAB>` (an extra empty column) arrived at the loop
