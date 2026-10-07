@@ -923,7 +923,6 @@ bytes_check() {
   eq "${ adb_byte_len ""; }" 0 "adb_byte_len: the empty string is zero bytes"
   yes "$( adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 512); }"; echo $? )" "ledger text: 512 two-byte characters (1024 bytes) fit"
   no  "$( adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 513); }"; echo $? )" "ledger text: 513 two-byte characters (1026 bytes) do not"
-  eq "${#mb}|$LC_ALL" "1|$bytes_u8" "ledger text: …and the caller's locale is restored on return"
   sweep_tree="${ printf 'a%.0s' $(seq 1 64); }"
   yes "$( adb_rule_sweep_row 2026-10-07T00:00:00Z "$sweep_tree" a-class "${ printf 'é%.0s' $(seq 1 256); }" fired >/dev/null; echo $? )" \
       "sweep row: a 256-character, 512-byte site fits"
@@ -941,6 +940,7 @@ bytes_check() {
     if [ "$i" -eq 96 ]; then [ "$span" -eq 1 ] || span_bad+=" $i"; else [ "$span" -eq "$want" ] || span_bad+=" $i"; fi
   done
   eq "${text_bad:-none}" none "ledger text: refuses exactly the bytes LC_ALL=C tr -d '[:cntrl:]' deletes"
+  eq "${#mb}|$LC_ALL" "1|$bytes_u8" "ledger text/span: the caller's locale survives 510 calls in this shell"
   eq "${span_bad:-none}" none "ledger span: refuses exactly those bytes, plus the backtick"
   yes "$( adb_ledger_ok_text "n${ printf '\302\205'; }l"; echo $? )" "ledger text: U+0085 is two printable bytes, as tr always kept it"
   yes "$( adb_ledger_ok_span "n${ printf '\302\205'; }l"; echo $? )" "ledger span: …and so is it here"
@@ -950,6 +950,39 @@ if [ -z "$bytes_u8" ]; then
 else
   bytes_check
 fi
+
+# --- adb_nul_free: the per-file NUL check, and BOTH of its statuses (#454) ----------------------
+nf="$work/nulfree"; mkdir -p "$nf/bin"
+printf 'a = 1\n' > "$nf/clean.toml"
+printf 'a = 1\000\n' > "$nf/nul.toml"
+# The NUL first and a megabyte after it: `cmp` stops at the first difference, so `tr` is stopped by
+# SIGPIPE, and that is still the answer "a NUL", never "unreadable".
+{ printf '\000'; head -c 1048576 /dev/zero | tr '\000' a; } > "$nf/nul-big"
+adb_nul_free "$nf/clean.toml"; eq "$?" 0 "nul-free: a clean file has no NUL"
+adb_nul_free "$nf/nul.toml";   eq "$?" 1 "nul-free: a NUL is found"
+adb_nul_free "$nf/nul-big";    eq "$?" 1 "nul-free: …and still found when tr dies of the SIGPIPE that follows"
+# A `tr` that emits its whole input and then FAILS: the comparison alone calls the file clean, so the
+# first process's status is read too, with and without the caller's `pipefail`. Only the NUL-deleting
+# call fails, so every other `tr` a caller runs first still answers.
+export NF_REAL_TR="${ command -v tr; }"
+cat > "$nf/bin/tr" <<'STUB'
+#!/bin/sh
+if [ "$1" = -d ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+exec "$NF_REAL_TR" "$@"
+STUB
+chmod +x "$nf/bin/tr"
+( set +o pipefail; PATH="$nf/bin:$PATH"; adb_nul_free "$nf/clean.toml" )
+eq "$?" 2 "nul-free: a tr that fails after emitting everything is a read that did not happen (2)"
+( set -o pipefail; PATH="$nf/bin:$PATH"; adb_nul_free "$nf/clean.toml" )
+eq "$?" 2 "nul-free: …under pipefail too"
+# Under errexit with pipefail the failing pipeline would end the caller with tr's own 73; the
+# answer must be the function's 2.
+( set -e -o pipefail; PATH="$nf/bin:$PATH"; adb_nul_free "$nf/clean.toml" )
+eq "$?" 2 "nul-free: errexit cannot end the caller before it answers"
+( PATH="$nf/bin:$PATH"; adb_toml_get "$nf/clean.toml" "" a >/dev/null )
+eq "$?" 2 "toml-get: …which it reports as unreadable (2), never as a value"
+( PATH="$nf/bin:$PATH"; adb_bytes_whole "$nf/clean.toml" 100 )
+eq "$?" 20 "bytes-whole: …and as not readable (20), never as a valid file"
 
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working

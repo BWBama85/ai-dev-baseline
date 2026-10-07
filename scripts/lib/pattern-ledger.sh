@@ -369,9 +369,9 @@ _adb_pl_region() {
   # NUL BYTES ARE REFUSED ON THE RAW BYTES, BEFORE ANY COMMAND SUBSTITUTION. Every reader captures
   # this region with `$( … )`, and bash DISCARDS an embedded NUL there — so a stored class of
   # `partial<NUL>-validation` reached the validators as `partial-validation` and counted toward
-  # that class's promotion, a record the writer could never have produced. The same defect, and
-  # the same fix, as docs-lib's record reader. Reported by the declared reviewer on PR #429.
-  LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1" || return 1
+  # that class's promotion, a record the writer could never have produced (D124 keeps the
+  # history). The same rule as docs-lib's record reader.
+  adb_nul_free "$1" || return 1
   awk -v b="$2" -v e="$3" '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == b { nb++; inb = 1; next }

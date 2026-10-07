@@ -285,7 +285,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE NUL SCAN (PR #429).
   check_mut nul-normalized \
-    "  LC_ALL=C tr -d '\\000' < \"\$f\" | cmp -s - \"\$f\" || return 1" \
+    '  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 1; return 2; }' \
     "  :" \
     'a NUL in the FINAL field is refused — awk truncation cannot see it'
 
@@ -686,7 +686,7 @@ done
 # one, which is the same partial-validation shape corrected twice elsewhere in this diff: the check
 # covered less than the grammar it claimed to enforce.
 for bad in '[, "a"]' '["a",,]' '[,]' '["a", , "b"]'; do
-  D15="$(fixture "emptyelem$(printf '%s' "$bad" | tr -dc 'ab')$(printf '%s' "$bad" | wc -c | tr -d ' ')" "[mcp]
+  D15="$(fixture "emptyelem$(printf '%s' "$bad" | tr -dc 'ab')${ adb_byte_len "$bad"; }" "[mcp]
 required = $bad
 ")"
   dl mcp-required --manifest "$D15/agents.toml" >/dev/null 2>&1

@@ -138,8 +138,7 @@ _ADB_DL_FIELD_MAX=512
 #
 # `${#var}` counts CHARACTERS in the caller's locale, and the atomic-write guarantee is about
 # bytes: two fields of 512 four-byte characters are ~4 KiB of record, which stdio splits and two
-# appenders then interleave. The reviewer reproduced six malformed lines from 200 concurrent calls
-# that all passed a 512-"byte" check. Reported by the declared reviewer on PR #429.
+# appenders then interleave (D124 keeps the reproduction).
 _adb_dl_bytes() { adb_byte_len "$1"; }
 
 # _adb_dl_printable <value> — 0 iff the value holds no ASCII control byte (0x01-0x1F, 0x7F), the
@@ -253,9 +252,8 @@ _adb_dl_records() {
   # NUL BYTES ARE REJECTED BEFORE ANY SHELL PARSING. `read` and command substitution DISCARD them,
   # so a stored server of `contex<NUL>t7` normalizes to `context7` — a record the writer could
   # never have produced, silently becoming a usable probe for a DIFFERENT name. Nothing downstream
-  # can see the difference, so it has to be caught on the raw bytes.
-  # Reported by the declared reviewer on PR #429.
-  LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f" || return 1
+  # can see the difference, so it has to be caught on the raw bytes. A read that fails is 2.
+  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 1; return 2; }
   # ARITY IS CHECKED IN awk, BEFORE the shell loop, because `read` cannot check it. Tab is IFS
   # WHITESPACE, so `IFS=<tab> read` collapses adjacent tabs and strips trailing ones — which means
   # `probe<TAB>server<TAB>usable<TAB>evidence<TAB>` (an extra empty column) arrived at the loop

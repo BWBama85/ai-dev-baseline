@@ -2340,7 +2340,7 @@ if [ "$MODE" = mutation ]; then
       '    :' \
       'a hand-edited summary opening an HTML comment is refused by the readers'
   check_row 'ledger-nul-normalized' 'scripts/lib/pattern-ledger.sh' 's5b' \
-      '  LC_ALL=C tr -d '"'"'\000'"'"' < "$1" | cmp -s - "$1" || return 1' \
+      '  adb_nul_free "$1" || return 1' \
       '  :' \
       'a NUL byte at the end of a stored summary is refused, not normalized away'
   check_row 'first-seen-by-row' 'scripts/lib/pattern-ledger.sh' 's8' \
@@ -2556,7 +2556,7 @@ if [ "$MODE" = mutation ]; then
       '  :' \
       '11 a sweep file with no final newline is refused'
   check_row 'sweep-nul-unchecked' 'scripts/lib/common.sh' 's11' \
-      '  LC_ALL=C tr -d '"'"'\000'"'"' < "$f" | cmp -s - "$f" || return 18' \
+      '  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 18; return 20; }' \
       '  :' \
       '11 a sweep file carrying a NUL is refused'
   check_row 'sweep-name-unbound' 'scripts/lib/common.sh' 's11' \

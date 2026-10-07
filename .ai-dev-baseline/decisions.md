@@ -9209,9 +9209,10 @@ survive is the part a later reader needs.
 ## D124 — #454: the per-value validators run in-process, the per-file NUL checks take two processes, and the suites' cost is measured again
 - date:      2026-10-07
 - category:  project-delta
-- unknown:   #454. The ledger and docs validators measured a value by spawning a pipeline per field
-             per record (`printf | wc -c | tr`, and a control-character test that was two such
-             pipelines compared), so `pattern-ledger.sh checklist` spent its time forking. The issue
+- unknown:   #454. The ledger and docs validators measured a value by spawning a pipeline
+             (`printf | wc -c | tr`, and a control-character test that was two such pipelines
+             compared): per field of every ledger record on every read, and per field of each docs
+             record written or read. `pattern-ledger.sh checklist` spent its time forking. The issue
              asked for those sites in-process, a dated before/after table per suite, and shorter
              test-side waits. Three of its acceptance criteria could not be met as written: a
              child-process count with no reliable counter on this machine, "sys no longer exceeds
@@ -9240,14 +9241,23 @@ survive is the part a later reader needs.
              one byte for an empty list, while `promote`/`verify`/`rule-sweep-report` count zero,
              and both still filter through the same `awk 'NF'` (`_adb_pl_nf_bytes`).
              The four per-file NUL checks (`_adb_pl_region`, `_adb_dl_records`, `adb_toml_get`,
-             `adb_bytes_whole`) are `LC_ALL=C tr -d '\000' < f | cmp -s - f`: the same verdict, as
-             two processes instead of five plus two subshells.
+             `adb_bytes_whole`) share one primitive, `adb_nul_free`: `LC_ALL=C tr -d '\000' < f | cmp
+             -s - f`, two processes where the old checks ran three (`adb_bytes_whole`, whose size was
+             already in hand) to five, plus one or two subshells. It reads BOTH statuses, which the
+             old checks did not. The independent review injected a `tr` that writes its whole input
+             and then fails 73: without `pipefail`, old and new `adb_toml_get` alike returned 0 over
+             that unread file. `cmp` 1 is a NUL, even when the `tr` behind it dies of SIGPIPE, and
+             any other failure is unreadable, so `adb_toml_get` now returns 2 and `adb_bytes_whole`
+             20 there. The brace group the statuses are read in keeps a caller's `errexit` from
+             ending it first.
 
              **The measurements**, 2026-10-07, the maintainer's 10-core macOS (Darwin 25.6.0), bash
              5.3.20, `/usr/bin/time -l`. The machine could not be made idle: other sessions ran
              Python and node test jobs throughout, so the 1-minute load average is stamped on every
              run. Each suite was run on `main` (`3fccd2f`, a separate worktree) and then on this
-             branch, back to back, as a PAIR. This is a record of what was observed, not a ranking
+             branch (`3c5b747`), back to back, as a PAIR. The review fixes after `3c5b747`
+             (`adb_nul_free` reading both statuses, and the assertions that pin it) add no process to
+             any call and were not re-measured. This is a record of what was observed, not a ranking
              (D66).
 
              External commands per call on this repo's 785-line ledger (xtrace, deterministic):
@@ -9284,14 +9294,18 @@ survive is the part a later reader needs.
              **What the numbers say.**
              * The validators' cost is gone where it was paid per record: a call on the real ledger
                runs two orders of magnitude fewer external commands. The suites save less because
-               their fixtures are small ledgers: pattern-ledger CPU −39%, docs-lib −62%.
-             * `check-pattern-ledger.sh`'s sys still exceeds user (63.6 vs 42.9). What remains is one
-               `bash` per assertion: each call is an exec plus a parse of `common.sh`. #454 excludes
-               sourcing a library instead of spawning its entry point, because that would change
-               what the suite proves. The criterion is unmet, and this is why.
+               their fixtures are small ledgers: pattern-ledger CPU −39%, docs-lib −66.5%.
+             * `check-pattern-ledger.sh`'s sys still exceeds user (63.6 vs 42.9), so that criterion
+               is unmet. These figures do not isolate what remains. The candidates are the suite's
+               own process work: every `bash "$PL"` call is an exec plus a parse of `common.sh` and
+               runs 10-29 external commands (above), and the fixtures fork too. #454 excludes the
+               obvious cut, sourcing the library instead of spawning its entry point, because that
+               would change what the suite proves.
              * `check-cleanup.sh` and `check-session-context.sh` exercise none of the rewritten
-               paths per record. Their spread (±15%) is the noise floor of a loaded machine, and the
-               other rows should be read against it.
+               paths per record. Across the two pairs they varied by up to 40% in wall
+               (session-context 70.4 → 42.4 s in the first pair, 77.1 → 64.0 s in this one) with no
+               code change. That is observed variation under unlike loads, not a measured noise
+               floor; read the other rows against it.
              * `check-common-lib.sh` is about 4× its CPU, before and after. Its waiting is the
                `adb_run_bounded` scenarios: about 55 s over ~25 sequential cases, each a 1-6 s bound,
                grace or escalation window at the library's 1 s minimum. Reaching 2× needs them run
@@ -9306,14 +9320,18 @@ survive is the part a later reader needs.
                `-selfcheck`, `-block-rows`, `-role-dispatch`, `-pr-watch`) are each the event under
                test: a child that outlives a bound, a window two steps must overlap in, or a hold
                past an overrun ceiling. The rest are polls with a deadline. None waits for nothing.
-- placement: `scripts/lib/common.sh` (`adb_byte_len`, `adb_ledger_ok_span`, `adb_ledger_ok_text`,
+- placement: `scripts/lib/common.sh` (`adb_byte_len`, `adb_nul_free`, `adb_ledger_ok_span`, `adb_ledger_ok_text`,
              `adb_rule_sweep_row`, `adb_toml_get`, `adb_bytes_whole`); `scripts/lib/docs-lib.sh`
              (`_adb_dl_bytes`, `_adb_dl_printable`, `_adb_dl_ok_field`, `_adb_dl_append`,
              `_adb_dl_records`); `scripts/lib/pattern-ledger.sh` (`_adb_pl_nf_bytes`,
              `_adb_pl_region`, `promote`, `checklist`, `verify`, `rule-sweep`, `rule-sweep-report`);
-             `scripts/check-common-lib.sh` (the byte-equivalence block); `scripts/check-pattern-ledger.sh`
-             (s5, s5d, s12 witnesses; eleven rows new or retargeted); `scripts/check-docs-lib.sh`
-             (locale-pinned witnesses; five rows new or retargeted); `CHANGELOG.md`
+             `scripts/check-common-lib.sh` (the byte-equivalence and `adb_nul_free` blocks); `scripts/check-pattern-ledger.sh`
+             (s5, s5d, s12 witnesses; thirteen rows new or retargeted); `scripts/check-docs-lib.sh`
+             (locale-pinned witnesses; six rows new or retargeted); `CHANGELOG.md`. The comment
+             history these edits touched now lives here: on PR #429 the declared reviewer
+             reproduced six malformed docs records from 200 concurrent appends that had all passed a
+             512-"byte" check counting characters, and a stored class of `partial<NUL>-validation`
+             read as `partial-validation` and counted toward that class's promotion.
 - reason:    A validator runs once per field per record on every read, so its cost is multiplied
              by the ledger's length on every `/implement-issue` gap dispatch and self-review sweep.
              The same property makes the in-process form safe only under an explicit C scope: the

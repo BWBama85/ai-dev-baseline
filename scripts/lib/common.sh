@@ -141,6 +141,20 @@ adb_tsv_field_display() {
 # return. A 5.3 library calls it as `${ adb_byte_len "$v"; }`, which does not fork.
 adb_byte_len() { local LC_ALL=C; printf '%s' "${#1}"; }
 
+# adb_nul_free <file> — 0 when <file> holds no NUL byte · 1 when it holds one · 2 when it could not
+# be read. A bash string cannot hold a NUL, so this reads the file, in two processes, and takes BOTH
+# statuses whatever the caller's `pipefail` or `errexit`: `cmp` 1 is a NUL (a `tr` stopped by the
+# SIGPIPE that follows is part of that answer); any other failure is a read that did not happen.
+adb_nul_free() {
+  local st
+  { LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1"; st="${PIPESTATUS[0]}:${PIPESTATUS[1]}"; } || :
+  case "$st" in
+    0:0)       return 0 ;;
+    0:1|141:1) return 1 ;;
+    *)         return 2 ;;
+  esac
+}
+
 # --- symlink install / uninstall --------------------------------------------
 
 # Back up an existing path (unless it is already our correct symlink), then symlink.
@@ -4668,7 +4682,7 @@ adb_toml_get() {
   local file="$1" table="$2" key="$3"
   [ -f "$file" ] || return 1
   [ -r "$file" ] || return 2
-  LC_ALL=C tr -d '\000' < "$file" | cmp -s - "$file" || return 3
+  adb_nul_free "$file" || { [ "$?" -eq 1 ] && return 3; return 2; }
   awk -v tbl="$table" -v key="$key" '
     BEGIN { intbl = (tbl == "") }
     # A table header toggles whether we are inside the target table. The header name is
@@ -6908,7 +6922,7 @@ adb_bytes_whole() {
   sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 20
   case "$sz" in ''|*[!0-9]*) return 20 ;; esac
   [ "$sz" -gt 0 ] && [ "$sz" -le "$max" ] || return 18
-  LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f" || return 18
+  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 18; return 20; }
   last="$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')"
   [ "$last" = 0a ] || return 18
   return 0
