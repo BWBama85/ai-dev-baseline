@@ -1337,11 +1337,14 @@ _pw_ci_note() {
 }
 
 # _pw_ci_say <line> [signature] [unsettled] — publish ONE CI line: into `ci-wait`'s sink with the
-# fields it compares, and onto stderr unless a wait is polling quietly. Returns 1 when the sink
-# cannot be written — the line then goes to stderr whatever the mode, since nothing else will carry it.
+# fields it compares, and onto stderr unless a wait is polling quietly. The sink is published by
+# RENAME, so a write that fails partway never reaches it: the poll began by emptying it, and an
+# observation is either there whole or not at all. Returns 1 when it cannot be published.
 _pw_ci_say() {
   if [ -n "$_ADB_PW_CI_SINK" ] \
-     && ! printf '%s\n%s\n%s\n' "${2:-}" "$1" "${3:-}" > "$_ADB_PW_CI_SINK" 2>/dev/null; then
+     && ! { printf '%s\n%s\n%s\n' "${2:-}" "$1" "${3:-}" > "$_ADB_PW_CI_SINK.next" 2>/dev/null \
+            && mv -f "$_ADB_PW_CI_SINK.next" "$_ADB_PW_CI_SINK" 2>/dev/null; }; then
+    rm -f "$_ADB_PW_CI_SINK.next" 2>/dev/null
     # The observation itself is NOT printed: its verdict word may be `green`, and the line a caller
     # pastes must say what the poll became — unreadable.
     echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not record this CI observation for the wait" >&2
@@ -1450,14 +1453,14 @@ cmd_ci_wait() {
   _ADB_PW_CI_SINK="$(mktemp "${TMPDIR:-/tmp}/adb-pw-ci.XXXXXX" 2>/dev/null || printf '')"
   _ADB_PW_CI_QUIET=1
   trap 'echo "pr-watch: interrupted — the head'"'"'s checks were not seen to conclude" >&2
-        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
         exit 11' INT TERM
 
   while :; do
     if ! : > "$_ADB_PW_CI_SINK" 2>/dev/null; then
       echo "pr-watch: ci unreadable - observed $(date -u +%Y-%m-%dT%H:%M:%SZ) — could not write a temp file, so this wait cannot compare its polls" >&2
       trap - INT TERM
-      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
       return 20
     fi
     out="$(_pw_ci_classify "$n")"; rc=$?
@@ -1483,7 +1486,7 @@ cmd_ci_wait() {
         [ -n "$line" ] && printf '%s\n' "$line" >&2
         [ -n "$out" ] && printf '%s\n' "$out"
         trap - INT TERM
-        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+        [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
         return "$rc" ;;
       0)
         unreadable=0
@@ -1496,7 +1499,7 @@ cmd_ci_wait() {
           [ -n "$line" ] && printf '%s\n' "$line" >&2
           printf '%s\n' "$out"
           trap - INT TERM
-          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
           return 0
         fi ;;
       20)
@@ -1506,7 +1509,7 @@ cmd_ci_wait() {
           [ -n "$line" ] && printf '%s\n' "$line" >&2
           echo "pr-watch: $unreadable consecutive unreadable CI polls — giving up rather than guessing" >&2
           trap - INT TERM
-          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+          [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
           return 20
         fi
         echo "pr-watch: unreadable CI poll $unreadable/$_ADB_PW_MAX_UNREADABLE — retrying" >&2 ;;
@@ -1521,7 +1524,7 @@ cmd_ci_wait() {
       printf '%s\n' "$out"
       echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired while the red was still unsettled; returning the red" >&2
       trap - INT TERM
-      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
       return 40
     fi
     if [ "$remaining" -le 0 ]; then
@@ -1535,7 +1538,7 @@ cmd_ci_wait() {
       [ -n "$out" ] && printf 'indeterminate %s\n' "$head"
       echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired before the head's checks concluded; handing off (this is not green)" >&2
       trap - INT TERM
-      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK"
+      [ -n "$_ADB_PW_CI_SINK" ] && rm -f "$_ADB_PW_CI_SINK" "$_ADB_PW_CI_SINK.next"
       return 11
     fi
     _pw_nap "$remaining"

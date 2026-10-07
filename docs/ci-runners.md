@@ -350,9 +350,9 @@ macOS leg's 45, having last completed in CI at 601s on 2026-09-05; on run 346522
 then passed in 31m3s while the step ran 2640s in `install-guard` and was cancelled at 45, so that
 job now allows 240 — D101), and `implement-gate` for the fifth (on run 36396924698 the macOS leg was
 cancelled at its 45-minute ceiling with `review-loop-mutation` its slowest step at 1556s, while
-`implement-gate` ran the same harness to completion), and `pr-watch` for the sixth (#448 grew it to
-42 mutation rows, 32m11s with the pool forced to 2, on a leg whose last run had taken 47m41s of its
-55). The registry is not
+`implement-gate` ran the same harness to completion), and `pr-watch` for the sixth (#448 grew it past
+40 mutation rows — measured at 42, 32m11s with the pool forced to 2 — on a leg whose last run had
+taken 47m41s of its 55). The registry is not
 smaller and the local suite is unchanged: these are per-invocation `--skip`s, the log names each
 twice, an unknown name is an error rather than a quiet no-op, and `check-fact-drift.sh` pins all
 six ubuntu invocations because those jobs are now each step's only per-PR execution. The
