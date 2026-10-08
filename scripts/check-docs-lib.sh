@@ -615,10 +615,9 @@ printf 'probe\tcontext7\tusable\tev' > "$D10/state/docs-consulted.tsv"
 dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "…and so is a lone unterminated record"
 
-# THE BOUND IS IN BYTES, NOT CHARACTERS (PR #429). `${#var}` counts characters in the caller's
+# THE BOUND IS IN BYTES, NOT CHARACTERS (D124). `${#var}` counts characters in the caller's
 # locale, and the atomic-write guarantee is about bytes — 512 four-byte characters is 2 KiB, so a
-# record could pass a "512-byte" check and still be split across two writes. The reviewer produced
-# six malformed lines from 200 concurrent calls that all passed the character check.
+# record could pass a "512-byte" check and still be split across two writes.
 # UNDER A UTF-8 LOCALE THE HOST HAS, never the inherited one: under `C` a character IS a byte, and
 # a bound counting characters would pass this too.
 U8=""

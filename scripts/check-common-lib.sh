@@ -951,7 +951,7 @@ else
   bytes_check
 fi
 
-# --- adb_nul_free: the per-file NUL check, and BOTH of its statuses (#454) ----------------------
+# --- adb_nul_free: the per-file NUL check, and all three of its answers (#454) ------------------
 nf="$work/nulfree"; mkdir -p "$nf/bin"
 printf 'a = 1\n' > "$nf/clean.toml"
 printf 'a = 1\000\n' > "$nf/nul.toml"
