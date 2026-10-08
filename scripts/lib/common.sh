@@ -138,8 +138,10 @@ adb_tsv_field_display() {
 #
 # `${#var}` counts CHARACTERS in the current locale. The C locale, scoped to this function by
 # `local`, makes it count bytes with no `wc -c` pipeline, and the caller's locale is restored on
-# return. A 5.3 library calls it as `${ adb_byte_len "$v"; }`, which does not fork.
-adb_byte_len() { local LC_ALL=C; printf '%s' "${#1}"; }
+# return. A 5.3 library calls it as `${ adb_byte_len "$v"; }`, which does not fork. Returns 1,
+# printing nothing, when the C locale cannot be scoped (a caller's readonly `LC_ALL`): a character
+# count is never passed off as a byte count.
+adb_byte_len() { local LC_ALL=C || return 1; printf '%s' "${#1}"; }
 
 # adb_nul_free <file> — 0 when <file> holds no NUL byte · 1 when it holds one · 2 when it could not
 # be read. A bash string cannot hold a NUL, so the NULs are COUNTED, by a pipeline that reads to the
@@ -6888,9 +6890,10 @@ adb_ledger_ok_thread() {
 #
 # BOTH TEXT PREDICATES MATCH UNDER A FUNCTION-SCOPED C LOCALE: `[[:cntrl:]]` is then the ASCII
 # set (0x01-0x1F, 0x7F) that `LC_ALL=C tr -d '[:cntrl:]'` deletes, never widened to C1 code points
-# by a caller's UTF-8 locale, and `${#1}` counts bytes.
+# by a caller's UTF-8 locale, and `${#1}` counts bytes. A scope that cannot be set (a caller's
+# readonly `LC_ALL`) refuses the value.
 adb_ledger_ok_span() {
-  local LC_ALL=C
+  local LC_ALL=C || return 1
   [ -n "${1:-}" ] || return 1
   adb_tsv_field_safe "$1" || return 1
   case "$1" in *'`'*|*[[:cntrl:]]*) return 1 ;; esac
@@ -6899,7 +6902,7 @@ adb_ledger_ok_span() {
 # adb_ledger_ok_text <value> [max-bytes] — one printable line that cannot open or close a comment
 # or region in the Markdown it may be rendered into.
 adb_ledger_ok_text() {
-  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}" LC_ALL=C
+  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}" LC_ALL=C || return 1
   [ -n "${1:-}" ] || return 1
   adb_tsv_field_safe "$1" || return 1
   case "$1" in *'<!--'*|*'-->'*) return 1 ;; esac
@@ -7097,7 +7100,7 @@ adb_rule_sweep_ok_tree() {
 adb_rule_sweep_row() {
   # THE C LOCALE IS THE UNIT: both bounds below are the reader's, in BYTES, and `${#var}` counts
   # characters in any other locale.
-  local run="${1:-}" tree="${2:-}" class="${3:-}" site="${4:-}" result="${5:-}" row LC_ALL=C
+  local run="${1:-}" tree="${2:-}" class="${3:-}" site="${4:-}" result="${5:-}" row LC_ALL=C || return 19
   adb_rule_sweep_ok_run  "$run"  || return 19
   adb_rule_sweep_ok_tree "$tree" || return 19
   adb_ledger_ok_class "$class" || return 19

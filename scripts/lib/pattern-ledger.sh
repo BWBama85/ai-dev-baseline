@@ -262,9 +262,11 @@ _adb_pl_ok_text() { adb_ledger_ok_text "$1" "$_ADB_PL_TEXT_MAX_BYTES"; }
 # exactly one newline, because every line awk prints is non-blank. Returns 1, printing nothing,
 # when the filter fails: a size it could not measure is never 0.
 _adb_pl_nf_bytes() {
-  local kept
+  local kept kb
   kept="$(printf '%s\n' "$1" | awk 'NF { print }')" || return 1
-  if [ -n "$kept" ]; then printf '%s' "$(( ${ adb_byte_len "$kept"; } + 1 ))"; else printf '0'; fi
+  [ -n "$kept" ] || { printf '0'; return 0; }
+  kb="${ adb_byte_len "$kept"; }" || return 1
+  printf '%s' "$(( kb + 1 ))"
 }
 
 # --- the ledger file ----------------------------------------------------------------------------
@@ -1125,13 +1127,15 @@ cmd_promote() {
   # THE AGGREGATE BUDGET, AT THE WRITE. A rule that fits its own bound can still be the one that
   # pushes the emitted checklist past the prompt budget; refusing it here, naming the number, is
   # what keeps `checklist`'s 21 an event only a hand edit or a merge can cause.
-  local ckregion newsize newrule
+  local ckregion newsize newrule rulesz
   ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" \
     || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
   printf -v newrule -- '- `%s` — %s' "$OPT_CLASS" "$OPT_RULE"
   newsize="${ _adb_pl_nf_bytes "$ckregion"; }" \
     || { printf 'pattern-ledger: could not measure the checklist region of %s — nothing was promoted\n' "$ledger" >&2; exit 20; }
-  newsize=$(( newsize + ${ adb_byte_len "$newrule"; } + 1 ))
+  rulesz="${ adb_byte_len "$newrule"; }" \
+    || { printf 'pattern-ledger: could not measure the rule for %s — nothing was promoted\n' "$OPT_CLASS" >&2; exit 20; }
+  newsize=$(( newsize + rulesz + 1 ))
   if [ "$newsize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
     printf 'pattern-ledger: refusing to promote %s — the checklist would be %s bytes, over the %s-byte prompt budget. Retire or tighten a rule first.\n' \
       "$OPT_CLASS" "$newsize" "$_ADB_PL_CHECKLIST_MAX_BYTES" >&2
@@ -1170,7 +1174,9 @@ cmd_checklist() {
   local emitted size
   emitted="$(printf '%s\n' "$region" | awk 'NF { print }')" \
     || { printf 'pattern-ledger: could not filter the checklist region of %s — refusing to emit it\n' "$ledger" >&2; exit 20; }
-  size=$(( ${ adb_byte_len "$emitted"; } + 1 ))
+  size="${ adb_byte_len "$emitted"; }" \
+    || { printf 'pattern-ledger: could not measure the checklist of %s — refusing to emit it\n' "$ledger" >&2; exit 20; }
+  size=$(( size + 1 ))
   if [ "$size" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
     printf 'pattern-ledger: the promoted checklist is %s bytes, over the %s-byte prompt budget — refusing to emit it into a prompt. Retire or tighten rules in %s.\n' \
       "$size" "$_ADB_PL_CHECKLIST_MAX_BYTES" "$ledger" >&2
@@ -1544,9 +1550,10 @@ cmd_rule_sweep() {
   fi
   # THE FILE BOUND, IN BYTES ON BOTH SIDES, measured on the stage.
   cursz="$(LC_ALL=C wc -c < "$stage" | tr -d ' ')"
-  rowsz=$(( ${ adb_byte_len "$row"; } + 1 ))
+  rowsz="${ adb_byte_len "$row"; }" || rowsz="-"
   case "$cursz$rowsz" in ''|*[!0-9]*) exec {wfd}>&-; rm -f "$stage"
     printf 'pattern-ledger: rule-sweep: could not measure the record or the row — nothing was written\n' >&2; exit 20 ;; esac
+  rowsz=$(( rowsz + 1 ))
   if [ "$(( cursz + rowsz ))" -gt "$ADB_RULE_SWEEP_FILE_MAX" ]; then
     exec {wfd}>&-; rm -f "$stage"
     printf 'pattern-ledger: rule-sweep: %s would exceed the %s-byte record bound its reader enforces. Nothing was written; the existing record is still readable.\n' \

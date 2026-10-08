@@ -2592,16 +2592,16 @@ if [ "$MODE" = mutation ]; then
       'site="${4:-}" result="${5:-}" row' \
       '12 a 257-character, 514-byte site is refused — the field bound counts bytes'
   check_row 'byte-len-counts-characters' 'scripts/lib/common.sh' 's12' \
-      'adb_byte_len() { local LC_ALL=C; printf' \
+      'adb_byte_len() { local LC_ALL=C || return 1; printf' \
       'adb_byte_len() { printf' \
       '12 a multibyte row that would push the record past its BYTE bound is refused'
   check_row 'checklist-size-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
-      '  size=$(( ${ adb_byte_len "$emitted"; } + 1 ))' \
-      '  size=$(( ${ adb_byte_len "$emitted"; } ))' \
+      '  size=$(( size + 1 ))' \
+      '  size=$(( size ))' \
       'a checklist one byte over the budget is refused (21)'
   check_row 'nf-bytes-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
-      'printf '"'"'%s'"'"' "$(( ${ adb_byte_len "$kept"; } + 1 ))"' \
-      'printf '"'"'%s'"'"' "$(( ${ adb_byte_len "$kept"; } ))"' \
+      'printf '"'"'%s'"'"' "$(( kb + 1 ))"' \
+      'printf '"'"'%s'"'"' "$(( kb ))"' \
       '…and verify refuses the same byte'
   check_row 'nf-bytes-filter-failure-is-zero' 'scripts/lib/pattern-ledger.sh' 's5d' \
       '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')" || return 1' \
@@ -2616,8 +2616,8 @@ if [ "$MODE" = mutation ]; then
       '    || :' \
       '…and checklist emits nothing (20) when it cannot filter the region'
   check_row 'promote-size-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
-      '+ ${ adb_byte_len "$newrule"; } + 1 ))' \
-      '+ ${ adb_byte_len "$newrule"; } ))' \
+      'newsize=$(( newsize + rulesz + 1 ))' \
+      'newsize=$(( newsize + rulesz ))' \
       'promote refuses the rule that lands it one byte over'
   check_row 'sweep-final-newline-unchecked' 'scripts/lib/common.sh' 's11' \
       '  [ "$last" = 0a ] || return 18' \

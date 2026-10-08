@@ -949,6 +949,15 @@ if [ -z "$bytes_u8" ]; then
   bad "bytes: no UTF-8 locale on this host — the byte and control-set checks asserted NOTHING"
 else
   bytes_check
+  # A CALLER'S READONLY LC_ALL cannot be scoped over, so every byte measurement refuses rather than
+  # counting characters.
+  ( readonly LC_ALL="$bytes_u8"; adb_byte_len "é" ) >/dev/null 2>&1
+  no "$?" "adb_byte_len: a caller's readonly LC_ALL fails it, never a character count"
+  ( readonly LC_ALL="$bytes_u8"; adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 513); }" ) >/dev/null 2>&1
+  no "$?" "ledger text: …and 513 two-byte characters are refused there, not counted as 513"
+  ( readonly LC_ALL="$bytes_u8"
+    adb_rule_sweep_row 2026-10-07T00:00:00Z "${ printf 'a%.0s' $(seq 1 64); }" a-class "${ printf 'é%.0s' $(seq 1 257); }" fired ) >/dev/null 2>&1
+  no "$?" "sweep row: …and so is a 257-character, 514-byte site"
 fi
 
 # --- adb_nul_free: the per-file NUL check, and all three of its answers (#454) ------------------

@@ -145,7 +145,7 @@ _adb_dl_bytes() { adb_byte_len "$1"; }
 # set `LC_ALL=C tr -d '[:cntrl:]'` deletes. Its own function so the C locale stays out of
 # `_adb_dl_ok_field`, whose length test must not depend on one.
 _adb_dl_printable() {
-  local LC_ALL=C
+  local LC_ALL=C || return 1
   case "$1" in *[[:cntrl:]]*) return 1 ;; esac
 }
 
@@ -198,7 +198,7 @@ _ADB_DL_RECORD_MAX=2048
 
 _adb_dl_append() {
   local f d sz
-  sz="${ _adb_dl_bytes "$*"; }"
+  sz="${ _adb_dl_bytes "$*"; }" || { printf 'docs-lib: could not measure the record — nothing was written\n' >&2; exit 20; }
   if [ "$sz" -gt "$_ADB_DL_RECORD_MAX" ]; then
     printf 'docs-lib: refusing a %s-byte record — the append bound is %s bytes, because a record larger than one stdio buffer can be split and interleaved with another writer.\n' \
       "$sz" "$_ADB_DL_RECORD_MAX" >&2

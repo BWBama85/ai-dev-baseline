@@ -9233,7 +9233,10 @@ survive is the part a later reader needs.
              `adb_rule_sweep_row` match `[[:cntrl:]]` and measure `${#}` under the same scope. The C
              scope keeps the refusal set exactly the bytes `LC_ALL=C tr -d '[:cntrl:]'` deleted
              (0x01-0x1F, 0x7F). Under a UTF-8 caller `[[:cntrl:]]` also matches U+0080-U+009F and
-             U+200B, so without that scope the set would silently tighten. `docs-lib.sh` keeps
+             U+200B, so without that scope the set would silently tighten. Each scope fails closed. A sourced caller that has made
+             `LC_ALL` readonly makes `local` fail, and the validators then refuse the value and
+             `adb_byte_len` fails rather than count characters. Before that guard, the local review on
+             the resolver round got a 513-character, 1026-byte summary through. `docs-lib.sh` keeps
              `_adb_dl_bytes` as a wrapper. Its control test is `_adb_dl_printable`, kept out of
              `_adb_dl_ok_field` so the length test does not inherit a C locale. The 5.3 libraries
              call these as `${ …; }`, which runs in the current shell. The checklist and rule-sweep

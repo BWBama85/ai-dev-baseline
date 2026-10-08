@@ -339,7 +339,7 @@ if [ "$MODE" = mutation ]; then
     '        if (0) { hdr = substr(hdr, 1, i - 1); break }' \
     "a table header written as '[mcp] # documentation servers' is still the [mcp] table"
   check_mut byte-len-counts-characters \
-    'adb_byte_len() { local LC_ALL=C; printf' \
+    'adb_byte_len() { local LC_ALL=C || return 1; printf' \
     'adb_byte_len() { printf' \
     'a field of 512 MULTIBYTE characters is refused'
   check_mutation_pool check-docs-lib-common "$work/common" prep_common runner 6
