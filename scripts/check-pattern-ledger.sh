@@ -591,8 +591,9 @@ PATH="$NFA:$PATH" bash "$PL" promote --ledger "$work/l5o.md" --class failc --rul
 eq "$?" 20 "promote refuses (20) when the checklist region cannot be measured"
 PATH="$NFA:$PATH" bash "$PL" verify --ledger "$work/l5o.md" >/dev/null 2>&1
 eq "$?" 20 "…and so does verify"
-PATH="$NFA:$PATH" bash "$PL" checklist --ledger "$work/l5o.md" >/dev/null 2>&1
+PATH="$NFA:$PATH" bash "$PL" checklist --ledger "$work/l5o.md" > "$work/l5o.out" 2>/dev/null
 eq "$?" 20 "…and checklist emits nothing (20) when it cannot filter the region"
+eq "$(LC_ALL=C wc -c < "$work/l5o.out" | tr -d ' ')" 0 "…and nothing at all reaches its stdout"
 fi
 
 if check_block s6 s1; then
@@ -1029,8 +1030,9 @@ bash "$PL" record --ledger "$L7i" --class livec --site s.sh --fix abc1231 --pr 1
 mkdir -p "$L7i.lock/LIVE-TOKEN"
 printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$L7i.lock/meta"   # this suite is alive
 touch -t 200001010000 "$L7i.lock" 2>/dev/null                          # …and long past stale
-( _ADB_PL_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" --class livec \
+( ADB_PATTERN_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" --class livec \
     --site s2.sh --fix abc1232 --pr 1 --thread LV2 ) >/dev/null 2>&1
+eq "$?" 20 "a writer blocked by a stale-but-LIVE owner gives up at its own lock bound (20)"
 [ -d "$L7i.lock/LIVE-TOKEN" ] && ok || bad "a stale-but-LIVE owner's lock was reclaimed — age was treated as death"
 # …and the contender wrote nothing rather than proceeding beside the live owner.
 eq "$(bash "$PL" classes --ledger "$L7i" 2>/dev/null | awk -F'\t' '$2=="livec"{print $1}')" 1 \
@@ -1045,8 +1047,9 @@ eq "$?" 0 "a lock whose owner is provably gone IS reclaimed"
 L7j="$work/nometa.md"
 bash "$PL" record --ledger "$L7j" --class nmc --site s.sh --fix abc1231 --pr 1 --thread NM1 >/dev/null 2>&1
 mkdir -p "$L7j.lock/ORPHAN"; touch -t 200001010000 "$L7j.lock" 2>/dev/null
-( _ADB_PL_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7j" --class nmc \
+( ADB_PATTERN_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7j" --class nmc \
     --site s2.sh --fix abc1232 --pr 1 --thread NM2 ) >/dev/null 2>&1
+eq "$?" 20 "a writer blocked by an unprovable owner gives up at its own lock bound (20)"
 [ -d "$L7j.lock/ORPHAN" ] && ok || bad "a lock with no owner metadata was reclaimed — unprovable must mean alive"
 rm -rf "$L7i.lock" "$L7j.lock"
 

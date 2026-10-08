@@ -9322,7 +9322,11 @@ survive is the part a later reader needs.
                concurrently or sub-second bounds (owner decision 4: neither). The test-side bounds
                #454 asked to shorten are already at seconds wherever a suite waits on one. Every
                `ADB_*_SECS` a library reads is set by the suites that drive its firing, with two
-               kinds of exception. The currency bounds are never waited on:
+               kinds of exception. Two stale-lock tests in `check-pattern-ledger.sh` had set
+               the library's internal `_ADB_PL_LOCK_WAIT_SECS`, which `pattern-ledger.sh` overwrites
+               from the public `ADB_PATTERN_LOCK_WAIT_SECS`. Each therefore waited out its 25 s
+               `timeout`. They now set the public name, and assert the writer's own give-up (20).
+               This was found by the local review on the resolver round. The exceptions: the currency bounds are never waited on:
                `check-session-currency.sh` ran 47.9 s wall against 41.1 s CPU. The update lock's
                stale bound is set through `_ADB_LOCK_STALE_SECS` directly. The concurrent-writer
                sections take the 30 s lock wait as an upper bound only, and #454 leaves them alone.
