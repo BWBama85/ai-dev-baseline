@@ -9218,7 +9218,8 @@ survive is the part a later reader needs.
              child-process count with no reliable counter on this machine, "sys no longer exceeds
              user" for `check-pattern-ledger.sh`, and `check-common-lib.sh`'s wall within 2× its CPU.
 - decision:  **Owner decisions 2026-10-07:** (1) proceed although the issue says "Blocked by #465":
-             every slice of #465 (#475, #487-#491, #438) has merged; (2) process cost is recorded as
+             every slice of #465 (#475, #487-#491) has merged, as has the independent follow-up #438;
+             (2) process cost is recorded as
              the external commands one call runs, counted from an xtrace, which does not depend on
              load, plus CPU-seconds per suite. `signals received` is not a process count here:
              removing 15 external commands from one `record` call moved it from 15 to 16. PID deltas
