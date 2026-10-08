@@ -594,6 +594,25 @@ eq "$?" 20 "…and so does verify"
 PATH="$NFA:$PATH" bash "$PL" checklist --ledger "$work/l5o.md" > "$work/l5o.out" 2>/dev/null
 eq "$?" 20 "…and checklist emits nothing (20) when it cannot filter the region"
 eq "$(LC_ALL=C wc -c < "$work/l5o.out" | tr -d ' ')" 0 "…and nothing at all reaches its stdout"
+# VERIFY'S OWN BUDGET READ, failed alone: the stub fails only the NUL scan of the given ordinal, and
+# `verify` takes three — hits, rules, then the region it measures — so the third is that one.
+NFC="$work/nf-nth"; mkdir -p "$NFC"
+NF_REAL_TR="$(command -v tr)"; export NF_REAL_TR
+cat > "$NFC/tr" <<'STUB'
+#!/bin/sh
+if [ "$1" = -cd ] && [ "$2" = '\000' ]; then
+  n=$(( $(cat "$NF_TR_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NF_TR_COUNT"
+  if [ "$n" -eq "$NF_TR_FAIL_AT" ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+fi
+exec "$NF_REAL_TR" "$@"
+STUB
+chmod +x "$NFC/tr"
+rm -f "$work/nf-nth.count"
+NF_TR_COUNT="$work/nf-nth.count" NF_TR_FAIL_AT=0 PATH="$NFC:$PATH" bash "$PL" verify --ledger "$work/l5k.md" >/dev/null 2>&1
+eq "$(cat "$work/nf-nth.count" 2>/dev/null)" 3 "fixture: verify scans the ledger for NULs three times, the third for its budget"
+rm -f "$work/nf-nth.count"
+NF_TR_COUNT="$work/nf-nth.count" NF_TR_FAIL_AT=3 PATH="$NFC:$PATH" bash "$PL" verify --ledger "$work/l5k.md" >/dev/null 2>&1
+eq "$?" 18 "verify refuses (18) when its own checklist read fails, never measures it as empty"
 fi
 
 if check_block s6 s1; then
@@ -2588,6 +2607,10 @@ if [ "$MODE" = mutation ]; then
       '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')" || return 1' \
       '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')"' \
       'promote refuses (20) when the checklist region cannot be measured'
+  check_row 'verify-region-read-swallowed' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '|| { ckregion=""; bad=1; }' \
+      '|| ckregion=""' \
+      'verify refuses (18) when its own checklist read fails, never measures it as empty'
   check_row 'checklist-filter-failure-emitted' 'scripts/lib/pattern-ledger.sh' 's5d' \
       '    || { printf '"'"'pattern-ledger: could not filter the checklist region of %s — refusing to emit it\n'"'"' "$ledger" >&2; exit 20; }' \
       '    || :' \

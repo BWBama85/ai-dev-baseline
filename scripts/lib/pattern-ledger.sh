@@ -1328,7 +1328,7 @@ cmd_verify() {
   # THE PROMPT BUDGET, so `verify` and `checklist` agree: a region every rule of which is in the
   # grammar can still be one `checklist` refuses to emit, and the diagnostic command has to say so.
   local ckregion cksize over=0
-  ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || ckregion=""
+  ckregion="$(_adb_pl_region "$ledger" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || { ckregion=""; bad=1; }
   cksize="${ _adb_pl_nf_bytes "$ckregion"; }" \
     || { printf 'pattern-ledger: could not measure the checklist region of %s\n' "$ledger" >&2; exit 20; }
   if [ "$cksize" -gt "$_ADB_PL_CHECKLIST_MAX_BYTES" ]; then
