@@ -134,6 +134,29 @@ adb_tsv_field_display() {
   if adb_tsv_field_safe "$enc"; then printf '%s' "$enc"; else printf '<unrenderable-value>'; fi
 }
 
+# adb_byte_len <value> — print <value>'s length in BYTES, whatever the caller's locale.
+#
+# `${#var}` counts CHARACTERS in the current locale. The C locale, scoped to this function by
+# `local`, makes it count bytes with no `wc -c` pipeline, and the caller's locale is restored on
+# return. A 5.3 library calls it as `${ adb_byte_len "$v"; }`, which does not fork. Returns 1,
+# printing nothing, when the C locale cannot be scoped (a caller's readonly `LC_ALL`): a character
+# count is never passed off as a byte count.
+adb_byte_len() { local LC_ALL=C || return 1; printf '%s' "${#1}"; }
+
+# adb_nul_free <file> — 0 when <file> holds no NUL byte · 1 when it holds one · 2 when it could not
+# be read. A bash string cannot hold a NUL, so the NULs are COUNTED, by a pipeline that reads to the
+# end: nothing in it exits early, so a caller that ignores SIGPIPE cannot turn a NUL into a failed
+# read. Its subshell sets its own `pipefail`, so a `tr` that fails after writing everything is a
+# failed read whatever the caller's options, and the file reaches `tr` by redirection, never as an
+# operand.
+adb_nul_free() {
+  local n
+  n="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$1" | LC_ALL=C wc -c)" || return 2
+  n="${n//[!0-9]/}"
+  [ -n "$n" ] || return 2
+  [ "$n" -eq 0 ] || return 1
+}
+
 # --- symlink install / uninstall --------------------------------------------
 
 # Back up an existing path (unless it is already our correct symlink), then symlink.
@@ -4661,7 +4684,7 @@ adb_toml_get() {
   local file="$1" table="$2" key="$3"
   [ -f "$file" ] || return 1
   [ -r "$file" ] || return 2
-  [ "$(LC_ALL=C tr -d '\000' < "$file" | wc -c | tr -d ' ')" -eq "$(wc -c < "$file" | tr -d ' ')" ] || return 3
+  adb_nul_free "$file" || { [ "$?" -eq 1 ] && return 3; return 2; }
   awk -v tbl="$table" -v key="$key" '
     BEGIN { intbl = (tbl == "") }
     # A table header toggles whether we are inside the target table. The header name is
@@ -6864,22 +6887,27 @@ adb_ledger_ok_thread() {
 }
 
 # No backtick (the ledger's field separator), no TSV delimiter, nothing unprintable.
+#
+# BOTH TEXT PREDICATES MATCH UNDER A FUNCTION-SCOPED C LOCALE: `[[:cntrl:]]` is then the ASCII
+# set (0x01-0x1F, 0x7F) that `LC_ALL=C tr -d '[:cntrl:]'` deletes, never widened to C1 code points
+# by a caller's UTF-8 locale, and `${#1}` counts bytes. A scope that cannot be set (a caller's
+# readonly `LC_ALL`) refuses the value.
 adb_ledger_ok_span() {
+  local LC_ALL=C || return 1
   [ -n "${1:-}" ] || return 1
   adb_tsv_field_safe "$1" || return 1
-  case "$1" in *'`'*) return 1 ;; esac
-  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
+  case "$1" in *'`'*|*[[:cntrl:]]*) return 1 ;; esac
 }
 
 # adb_ledger_ok_text <value> [max-bytes] — one printable line that cannot open or close a comment
 # or region in the Markdown it may be rendered into.
 adb_ledger_ok_text() {
-  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}"
+  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}" LC_ALL=C || return 1
   [ -n "${1:-}" ] || return 1
   adb_tsv_field_safe "$1" || return 1
   case "$1" in *'<!--'*|*'-->'*) return 1 ;; esac
-  [ "$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')" -le "$max" ] || return 1
-  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)" -eq "$(printf '%s' "$1" | wc -c)" ]
+  case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+  [ "${#1}" -le "$max" ]
 }
 
 # adb_bytes_whole <file> <max-bytes> — the byte-level preconditions every whole-file reader
@@ -6897,7 +6925,7 @@ adb_bytes_whole() {
   sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 20
   case "$sz" in ''|*[!0-9]*) return 20 ;; esac
   [ "$sz" -gt 0 ] && [ "$sz" -le "$max" ] || return 18
-  [ "$(LC_ALL=C tr -d '\000' < "$f" | LC_ALL=C wc -c | tr -d ' ')" -eq "$sz" ] || return 18
+  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 18; return 20; }
   last="$(tail -c 1 "$f" | od -An -tx1 | tr -d ' \n')"
   [ "$last" = 0a ] || return 18
   return 0
@@ -7070,7 +7098,9 @@ adb_rule_sweep_ok_tree() {
 # Returns 0 (row on stdout, no trailing newline) · 19 (a field this module will not store, or a
 # record over the append bound).
 adb_rule_sweep_row() {
-  local run="${1:-}" tree="${2:-}" class="${3:-}" site="${4:-}" result="${5:-}" row
+  # THE C LOCALE IS THE UNIT: both bounds below are the reader's, in BYTES, and `${#var}` counts
+  # characters in any other locale.
+  local run="${1:-}" tree="${2:-}" class="${3:-}" site="${4:-}" result="${5:-}" row LC_ALL=C || return 19
   adb_rule_sweep_ok_run  "$run"  || return 19
   adb_rule_sweep_ok_tree "$tree" || return 19
   adb_ledger_ok_class "$class" || return 19
@@ -7079,14 +7109,12 @@ adb_rule_sweep_row() {
     fired)
       [ "$site" != "-" ] || return 19
       adb_ledger_ok_span "$site" || return 19
-      # The per-field bound, in BYTES. `${#var}` counts characters in the caller's locale, and the
-      # reader's bounds are bytes.
-      [ "$(printf '%s' "$site" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
+      [ "${#site}" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;
     *) return 19 ;;
   esac
-  row="$(printf 'rule\t%s\t%s\t%s\t%s\t%s' "$run" "$tree" "$class" "$site" "$result")"
+  printf -v row 'rule\t%s\t%s\t%s\t%s\t%s' "$run" "$tree" "$class" "$site" "$result"
   # THE WHOLE RECORD, not only its fields: bounded fields plus their separators still add up.
-  [ "$(printf '%s' "$row" | LC_ALL=C wc -c | tr -d ' ')" -le "$ADB_RULE_SWEEP_RECORD_MAX" ] || return 19
+  [ "${#row}" -le "$ADB_RULE_SWEEP_RECORD_MAX" ] || return 19
   printf '%s' "$row"
 }
 

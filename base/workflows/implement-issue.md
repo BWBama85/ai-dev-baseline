@@ -388,7 +388,7 @@ already learned (#421): sweep every promoted rule against the whole diff, then t
 pass, and name what you swept and what it found — "nothing" included.
 
 ```bash
-{{PATTERN_LEDGER_LIB}} checklist   # 0 = sweep it (empty = no ledger yet) · 18 = fix patterns.md · 21 = over budget, nothing emitted
+{{PATTERN_LEDGER_LIB}} checklist   # 0 = sweep it (empty = no ledger yet) · 18 = fix patterns.md · 20 = unreadable · 21 = over budget, nothing emitted
 ```
 
 **The sweep is PERFORMED here and RECORDED in step 9**, after the last triage commit (#490). It is

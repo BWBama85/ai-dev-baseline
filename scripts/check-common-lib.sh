@@ -902,6 +902,105 @@ eq "$(printf '%s\n' "$sh7e" | cut -f1 \
       | grep -Evc '^(in_git|root|cwd_is_root|parent_in_git|nested_in|foreign_doc|extra_doc|scan_truncated|warning)$')" \
    "0" "shape/unsafe: no record carries a key outside the schema (nothing was forged)"
 
+# --- the in-process byte and control-character predicates (#454) -------------------------------
+# `adb_byte_len` and the ledger validators match under a FUNCTION-SCOPED C locale instead of a
+# `wc -c`/`tr` pipeline. Every assertion runs under a UTF-8 CALLER locale: under `C` a character is
+# a byte, and each would pass whether or not the scope existed.
+bytes_u8=""
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if locale -a 2>/dev/null | grep -qx "$_l"; then bytes_u8="$_l"; break; fi
+done
+# The oracle is the pipeline the validators replaced, run ONCE over bytes 1..255: the bytes
+# `LC_ALL=C tr -d '[:cntrl:]'` keeps, as decimal values.
+bytes_all=""
+for (( _i = 1; _i < 256; _i++ )); do printf -v _o '%03o' "$_i"; printf -v _b "\\$_o"; bytes_all+="$_b"; done
+bytes_kept=" $(printf '%s' "$bytes_all" | LC_ALL=C tr -d '[:cntrl:]' | od -An -tu1 | tr -s ' \n' '  ') "
+bytes_check() {
+  local LC_ALL="$bytes_u8" mb="é" sweep_tree i o b want text span text_bad="" span_bad=""
+  eq "${#mb}" 1 "bytes: the caller's locale reads é as ONE character (the fixture is live)"
+  eq "${ adb_byte_len "$mb"; }" 2 "adb_byte_len: é is two bytes under a UTF-8 caller"
+  eq "${#mb}|$LC_ALL" "1|$bytes_u8" "adb_byte_len: …and the caller's locale is restored on return"
+  eq "${ adb_byte_len ""; }" 0 "adb_byte_len: the empty string is zero bytes"
+  yes "$( adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 512); }"; echo $? )" "ledger text: 512 two-byte characters (1024 bytes) fit"
+  no  "$( adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 513); }"; echo $? )" "ledger text: 513 two-byte characters (1026 bytes) do not"
+  sweep_tree="${ printf 'a%.0s' $(seq 1 64); }"
+  yes "$( adb_rule_sweep_row 2026-10-07T00:00:00Z "$sweep_tree" a-class "${ printf 'é%.0s' $(seq 1 256); }" fired >/dev/null; echo $? )" \
+      "sweep row: a 256-character, 512-byte site fits"
+  no  "$( adb_rule_sweep_row 2026-10-07T00:00:00Z "$sweep_tree" a-class "${ printf 'é%.0s' $(seq 1 257); }" fired >/dev/null; echo $? )" \
+      "sweep row: a 257-character, 514-byte site does not"
+  case " $bytes_kept " in *" 65 "*) ok ;; *) bad "bytes: the oracle kept nothing recognisable — [$bytes_kept]" ;; esac
+  case " $bytes_kept " in *" 1 "*|*" 127 "*) bad "bytes: the oracle kept a control byte — [$bytes_kept]" ;; *) ok ;; esac
+  for (( i = 1; i < 256; i++ )); do
+    printf -v o '%03o' "$i"; printf -v b "\\$o"
+    case "$bytes_kept" in *" $i "*) want=0 ;; *) want=1 ;; esac
+    adb_ledger_ok_text "a${b}z"; text=$?
+    adb_ledger_ok_span "a${b}z"; span=$?
+    [ "$text" -eq "$want" ] || text_bad+=" $i"
+    # A backtick is the span's field separator, refused whatever the control set says.
+    if [ "$i" -eq 96 ]; then [ "$span" -eq 1 ] || span_bad+=" $i"; else [ "$span" -eq "$want" ] || span_bad+=" $i"; fi
+  done
+  eq "${text_bad:-none}" none "ledger text: refuses exactly the bytes LC_ALL=C tr -d '[:cntrl:]' deletes"
+  eq "${#mb}|$LC_ALL" "1|$bytes_u8" "ledger text/span: the caller's locale survives 510 calls in this shell"
+  eq "${span_bad:-none}" none "ledger span: refuses exactly those bytes, plus the backtick"
+  yes "$( adb_ledger_ok_text "n${ printf '\302\205'; }l"; echo $? )" "ledger text: U+0085 is two printable bytes, as tr always kept it"
+  yes "$( adb_ledger_ok_span "n${ printf '\302\205'; }l"; echo $? )" "ledger span: …and so is it here"
+}
+if [ -z "$bytes_u8" ]; then
+  bad "bytes: no UTF-8 locale on this host — the byte and control-set checks asserted NOTHING"
+else
+  bytes_check
+  # A CALLER'S READONLY LC_ALL cannot be scoped over, so every byte measurement refuses rather than
+  # counting characters.
+  ( readonly LC_ALL="$bytes_u8"; adb_byte_len "é" ) >/dev/null 2>&1
+  no "$?" "adb_byte_len: a caller's readonly LC_ALL fails it, never a character count"
+  ( readonly LC_ALL="$bytes_u8"; adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 513); }" ) >/dev/null 2>&1
+  no "$?" "ledger text: …and 513 two-byte characters are refused there, not counted as 513"
+  ( readonly LC_ALL="$bytes_u8"
+    adb_rule_sweep_row 2026-10-07T00:00:00Z "${ printf 'a%.0s' $(seq 1 64); }" a-class "${ printf 'é%.0s' $(seq 1 257); }" fired ) >/dev/null 2>&1
+  no "$?" "sweep row: …and so is a 257-character, 514-byte site"
+fi
+
+# --- adb_nul_free: the per-file NUL check, and all three of its answers (#454) ------------------
+nf="$work/nulfree"; mkdir -p "$nf/bin"
+printf 'a = 1\n' > "$nf/clean.toml"
+printf 'a = 1\000\n' > "$nf/nul.toml"
+# The NUL first and a megabyte after it, which is where an early-exiting reader would leave `tr`
+# writing into a closed pipe.
+{ printf '\000'; head -c 1048576 /dev/zero | tr '\000' a; } > "$nf/nul-big"
+adb_nul_free "$nf/clean.toml"; eq "$?" 0 "nul-free: a clean file has no NUL"
+adb_nul_free "$nf/nul.toml";   eq "$?" 1 "nul-free: a NUL is found"
+adb_nul_free "$nf/nul-big";    eq "$?" 1 "nul-free: …and still found a megabyte before the end"
+( trap '' PIPE; adb_nul_free "$nf/nul-big" )
+eq "$?" 1 "nul-free: …and when the caller ignores SIGPIPE, never read as unreadable"
+# A `tr` that emits its whole input and then FAILS: the comparison alone calls the file clean, so the
+# first process's status is read too, with and without the caller's `pipefail`. Only the NUL-counting
+# call fails, so every other `tr` a caller runs first still answers.
+NF_REAL_TR="${ command -v tr; }"
+[ -n "$NF_REAL_TR" ] || bad "nul-free: no tr on PATH — the failing-tr cases below assert NOTHING"
+export NF_REAL_TR
+cat > "$nf/bin/tr" <<'STUB'
+#!/bin/sh
+if [ "$1" = -cd ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+exec "$NF_REAL_TR" "$@"
+STUB
+chmod +x "$nf/bin/tr"
+( set +o pipefail; PATH="$nf/bin:$PATH"; adb_nul_free "$nf/clean.toml" )
+eq "$?" 2 "nul-free: a tr that fails after emitting everything is a read that did not happen (2)"
+( set -o pipefail; PATH="$nf/bin:$PATH"; adb_nul_free "$nf/clean.toml" )
+eq "$?" 2 "nul-free: …under pipefail too"
+# Under errexit with pipefail the failing pipeline would end the caller with tr's own 73; the
+# answer must be the function's 2.
+( set -e -o pipefail; PATH="$nf/bin:$PATH"; adb_nul_free "$nf/clean.toml" )
+eq "$?" 2 "nul-free: errexit cannot end the caller before it answers"
+( PATH="$nf/bin:$PATH"; adb_toml_get "$nf/clean.toml" "" a >/dev/null )
+eq "$?" 2 "toml-get: …which it reports as unreadable (2), never as a value"
+( PATH="$nf/bin:$PATH"; adb_bytes_whole "$nf/clean.toml" 100 )
+eq "$?" 20 "bytes-whole: …and as not readable (20), never as a valid file"
+# A FILE NAMED `-` or `-s` is a file, never standard input or an option.
+printf 'x\n' > "$nf/-"; printf 'x\n' > "$nf/-s"
+( cd "$nf" && adb_nul_free - && adb_nul_free -s )
+eq "$?" 0 "nul-free: files named - and -s are scanned as files, not as stdin or an option"
+
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working
 # clone plus a second clone that advances origin, so behind/ahead/diverged are real.

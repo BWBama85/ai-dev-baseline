@@ -73,6 +73,14 @@ check_init check-pattern-ledger
 
 PL="$ROOT/scripts/lib/pattern-ledger.sh"
 
+# A UTF-8 LOCALE THE HOST HAS, for every fixture that tells bytes from characters: under `C` a
+# character IS a byte, and the defect is unreachable. Ubuntu runners carry `C.UTF-8`; macOS carries
+# `en_US.UTF-8`. Each block that needs one reports its absence as a failure, never a quiet skip.
+U8=""
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if locale -a 2>/dev/null | grep -qx "$_l"; then U8="$_l"; break; fi
+done
+
 # A ledger seeded with <n> hits of one class. Every fixture builds through the REAL `record`, so a
 # fixture can never encode a shape the writer would refuse — which is how a suite ends up proving
 # the parser against records the writer cannot produce.
@@ -80,7 +88,7 @@ seed() {   # <ledger> <class> <n> [pr]
   local l="$1" c="$2" n="$3" pr="${4:-100}" i rc
   for (( i = 1; i <= n; i++ )); do
     bash "$PL" record --ledger "$l" --class "$c" --site "s$i.sh:$i" \
-      --fix "$(printf 'abc123%d' "$i")" --pr "$pr" --thread "T-${c}-${i}" \
+      --fix "abc123$i" --pr "$pr" --thread "T-${c}-${i}" \
       --summary "hit $i of $c" --date 2026-08-24 >/dev/null 2>&1; rc=$?
     # 10 IS SUCCESS HERE. `record` is keyed on the thread id, so re-seeding a class to a higher
     # count legitimately re-offers the hits already present — which is exactly what the resolver
@@ -362,6 +370,27 @@ refused "a summary opening an HTML comment is refused" 19 --class guard-class --
         --fix abc1234 --pr 1 --thread T-g10 --summary 'quoted: <!-- hide the rest'
 refused "…and one closing one"                        19 --class guard-class --site a.sh \
         --fix abc1234 --pr 1 --thread T-g11 --summary 'quoted: --> stray close'
+# A CONTROL BYTE IN A SUMMARY OR A SITE. A TAB is refused by the delimiter test before the
+# control-character rule is reached, so it cannot witness that rule; 0x01 and DEL can.
+refused "a TAB in a summary is refused"           19 --class guard-class --site a.sh --fix abc1234 \
+        --pr 1 --thread T-g12 --summary "$(printf 'a\tb')"
+refused "a 0x01 byte in a summary is refused"     19 --class guard-class --site a.sh --fix abc1234 \
+        --pr 1 --thread T-g13 --summary "$(printf 'a\001b')"
+refused "a DEL byte in a summary is refused"      19 --class guard-class --site a.sh --fix abc1234 \
+        --pr 1 --thread T-g14 --summary "$(printf 'a\177b')"
+refused "a 0x01 byte in --site is refused"        19 --class guard-class --site "$(printf 'a\001b')" \
+        --fix abc1234 --pr 1 --thread T-g15
+# THE REFUSAL SET IS THE C LOCALE'S. Under a UTF-8 locale `[[:cntrl:]]` also matches U+0085, which
+# the writer's `LC_ALL=C tr -d '[:cntrl:]'` always kept as two printable bytes; a caller's locale
+# must not tighten it. A site only: the raw reader's awk matches a summary's control characters
+# under the CALLER's locale, so there a U+0085 summary is written and then refused on re-read (#522).
+if [ -z "$U8" ]; then
+  bad "5 fixture: no UTF-8 locale on this host — the control-set check asserted NOTHING"
+else
+  LC_ALL="$U8" bash "$PL" record --ledger "$work/l5nel.md" --class nel-class --site "n$(printf '\302\205')l.sh" \
+    --fix ddd4444 --pr 1 --thread T-n1 --date 2026-08-24 >/dev/null 2>&1
+  eq "$?" 0 "a site carrying U+0085 is accepted under a UTF-8 locale — the control set is C's"
+fi
 
 # A backtick IS legal in a summary, and that is not an oversight: it sits after every parsed field,
 # so it cannot move one, and review findings routinely quote identifiers. Asserted so a future
@@ -429,6 +458,19 @@ seed "$L5f" nulk 2 || bad "fixture: could not seed"
 perl -pe 's/`nulk`/`nu\x00lk`/' "$L5f" > "$L5f.tmp" && mv "$L5f.tmp" "$L5f"
 bash "$PL" due --ledger "$L5f" >/dev/null 2>&1
 eq "$?" 18 "a NUL inside a stored CLASS is refused rather than counted toward a promotion"
+# A NUL SCAN WHOSE READ FAILS refuses the ledger as before (18) and says it could not read it. The
+# stub `tr` writes its whole input and then fails, and only for the NUL-counting call.
+NFB="$work/nf-bin"; mkdir -p "$NFB"
+NF_REAL_TR="$(command -v tr)"; export NF_REAL_TR
+cat > "$NFB/tr" <<'STUB'
+#!/bin/sh
+if [ "$1" = -cd ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+exec "$NF_REAL_TR" "$@"
+STUB
+chmod +x "$NFB/tr"
+NFOUT="$(PATH="$NFB:$PATH" bash "$PL" classes --ledger "$L5" 2>&1 >/dev/null)"
+eq "$?" 18 "a NUL scan whose read fails refuses the ledger (18)"
+has "$NFOUT" "could not read" '…and names the failed read rather than leaving only "does not parse"'
 fi
 
 if check_block s5c; then
@@ -468,6 +510,20 @@ bash "$PL" promote --ledger "$L5h" --class bigc --rule "$OKR" >/dev/null 2>&1
 eq "$?" 0 "…while a 1024-byte rule is accepted"
 bash "$PL" record --ledger "$L5h" --class bigc --site s.sh --fix abc1234 --pr 1 --thread BIGSUM --summary "$BIG" >/dev/null 2>&1
 eq "$?" 19 "…and a 1025-byte SUMMARY is refused by the same bound"
+# THE BOUND COUNTS BYTES whatever the caller's locale: 512 two-byte characters fill it exactly, and
+# 513 are 1026 bytes though only 513 characters.
+if [ -z "$U8" ]; then
+  bad "5d fixture: no UTF-8 locale on this host — the byte-bound checks asserted NOTHING"
+else
+  MB512="$(printf 'é%.0s' $(seq 1 512))"
+  LC_ALL="$U8" bash "$PL" record --ledger "$L5h" --class bigc --site s.sh --fix abc1234 --pr 1 \
+    --thread MB512 --summary "$MB512" --date 2026-08-24 >/dev/null 2>&1
+  eq "$?" 0 "a summary of 512 two-byte characters (1024 bytes) is accepted"
+  MBERR="$(LC_ALL="$U8" bash "$PL" record --ledger "$L5h" --class bigc --site s.sh --fix abc1234 --pr 1 \
+    --thread MB513 --summary "${MB512}é" --date 2026-08-24 2>&1 >/dev/null)"
+  eq "$?" 19 "a 513-character, 1026-byte summary is refused — the bound counts bytes"
+  has "$MBERR" "refusing summary — one printable line" "…with the summary refusal's own message"
+fi
 L5i="$work/l5i.md"
 i=0; last=0
 while [ "$i" -lt 20 ]; do
@@ -488,6 +544,75 @@ eq "$(bash "$PL" checklist --ledger "$L5j" 2>/dev/null | wc -c | tr -d ' ')" 0 "
 bash "$PL" verify --ledger "$L5j" >/dev/null 2>&1
 eq "$?" 21 "…and verify says 21 too, so the diagnostic agrees with the reader"
 has "$(bash "$PL" verify --ledger "$L5j" 2>&1 >/dev/null)" "prompt budget" "…naming the budget"
+# THE BUDGET IS EXACT, AND COUNTS ONLY WHAT IS EMITTED. Each rule line below is 1024 bytes with its
+# newline (a 14-byte prefix, 1009 bytes of rule), so N of them is N KiB; the blank and the
+# whitespace-only line among them are never emitted and must never be counted.
+CKPAD="$(printf 'p%.0s' $(seq 1 1009))"
+ck_fixture() {   # <ledger> <class-to-seed> <rule-lines> <extra-bytes-on-the-last>
+  local l="$1" extra
+  extra="$(printf 'p%.0s' $(seq 1 "$4"))"; [ "$4" -gt 0 ] || extra=""
+  seed "$l" "$2" 2 || return 1
+  awk -v pad="$CKPAD" -v n="$3" -v x="$extra" '{ print }
+    /<!-- adb:checklist:begin -->/ { print ""; print " \t "
+      for (i = 1; i <= n; i++) printf "- `xc-%02d` — %s%s\n", i, pad, (i == n ? x : "") }' "$l" > "$l.tmp" \
+    && mv "$l.tmp" "$l"
+}
+ck_fixture "$work/l5k.md" exactc 16 0 || bad "fixture: could not build the exact-budget ledger"
+eq "$(awk '/<!-- adb:checklist:begin -->/ { f = 1; next } /<!-- adb:checklist:end -->/ { f = 0 } f' "$work/l5k.md" \
+      | awk 'NF { print }' | LC_ALL=C wc -c | tr -d ' ')" 16384 "fixture: the exact-budget checklist emits 16384 bytes"
+bash "$PL" checklist --ledger "$work/l5k.md" >/dev/null 2>&1
+eq "$?" 0 "a checklist of exactly the budget is emitted — blank lines are not counted"
+eq "$(bash "$PL" checklist --ledger "$work/l5k.md" 2>/dev/null | LC_ALL=C wc -c | tr -d ' ')" 16384 "…all 16384 bytes of it"
+bash "$PL" verify --ledger "$work/l5k.md" >/dev/null 2>&1
+eq "$?" 0 "…and verify agrees it fits"
+ck_fixture "$work/l5l.md" overc 16 1 || bad "fixture: could not build the one-over ledger"
+bash "$PL" checklist --ledger "$work/l5l.md" >/dev/null 2>&1
+eq "$?" 21 "a checklist one byte over the budget is refused (21)"
+bash "$PL" verify --ledger "$work/l5l.md" >/dev/null 2>&1
+eq "$?" 21 "…and verify refuses the same byte"
+ck_fixture "$work/l5m.md" edgec 15 0 || bad "fixture: could not build the promote-edge ledger"
+cp "$work/l5m.md" "$work/l5n.md"
+bash "$PL" promote --ledger "$work/l5m.md" --class edgec --rule "$CKPAD" >/dev/null 2>&1
+eq "$?" 0 "promote accepts the rule that lands the checklist on exactly the budget"
+bash "$PL" promote --ledger "$work/l5n.md" --class edgec --rule "${CKPAD}p" >/dev/null 2>&1
+eq "$?" 19 "promote refuses the rule that lands it one byte over"
+# A FILTER THAT FAILS IS NEVER A SIZE OF 0. The stub `awk` runs the NF filter and then fails, and
+# only that program; on the exact-budget ledger a size read as 0 would let a 1024-byte rule in.
+NFA="$work/nf-awk"; mkdir -p "$NFA"
+CK_REAL_AWK="$(command -v awk)"; export CK_REAL_AWK
+cat > "$NFA/awk" <<'STUB'
+#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = 'NF { print }' ]; then "$CK_REAL_AWK" "$@"; exit 73; fi
+exec "$CK_REAL_AWK" "$@"
+STUB
+chmod +x "$NFA/awk"
+ck_fixture "$work/l5o.md" failc 16 0 || bad "fixture: could not build the failing-filter ledger"
+PATH="$NFA:$PATH" bash "$PL" promote --ledger "$work/l5o.md" --class failc --rule x >/dev/null 2>&1
+eq "$?" 20 "promote refuses (20) when the checklist region cannot be measured"
+PATH="$NFA:$PATH" bash "$PL" verify --ledger "$work/l5o.md" >/dev/null 2>&1
+eq "$?" 20 "…and so does verify"
+PATH="$NFA:$PATH" bash "$PL" checklist --ledger "$work/l5o.md" > "$work/l5o.out" 2>/dev/null
+eq "$?" 20 "…and checklist emits nothing (20) when it cannot filter the region"
+eq "$(LC_ALL=C wc -c < "$work/l5o.out" | tr -d ' ')" 0 "…and nothing at all reaches its stdout"
+# VERIFY'S OWN BUDGET READ, failed alone: the stub fails only the NUL scan of the given ordinal, and
+# `verify` takes three — hits, rules, then the region it measures — so the third is that one.
+NFC="$work/nf-nth"; mkdir -p "$NFC"
+NF_REAL_TR="$(command -v tr)"; export NF_REAL_TR
+cat > "$NFC/tr" <<'STUB'
+#!/bin/sh
+if [ "$1" = -cd ] && [ "$2" = '\000' ]; then
+  n=$(( $(cat "$NF_TR_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NF_TR_COUNT"
+  if [ "$n" -eq "$NF_TR_FAIL_AT" ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+fi
+exec "$NF_REAL_TR" "$@"
+STUB
+chmod +x "$NFC/tr"
+rm -f "$work/nf-nth.count"
+NF_TR_COUNT="$work/nf-nth.count" NF_TR_FAIL_AT=0 PATH="$NFC:$PATH" bash "$PL" verify --ledger "$work/l5k.md" >/dev/null 2>&1
+eq "$(cat "$work/nf-nth.count" 2>/dev/null)" 3 "fixture: verify scans the ledger for NULs three times, the third for its budget"
+rm -f "$work/nf-nth.count"
+NF_TR_COUNT="$work/nf-nth.count" NF_TR_FAIL_AT=3 PATH="$NFC:$PATH" bash "$PL" verify --ledger "$work/l5k.md" >/dev/null 2>&1
+eq "$?" 18 "verify refuses (18) when its own checklist read fails, never measures it as empty"
 fi
 
 if check_block s6 s1; then
@@ -924,8 +1049,9 @@ bash "$PL" record --ledger "$L7i" --class livec --site s.sh --fix abc1231 --pr 1
 mkdir -p "$L7i.lock/LIVE-TOKEN"
 printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$$" > "$L7i.lock/meta"   # this suite is alive
 touch -t 200001010000 "$L7i.lock" 2>/dev/null                          # …and long past stale
-( _ADB_PL_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" --class livec \
+( ADB_PATTERN_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" --class livec \
     --site s2.sh --fix abc1232 --pr 1 --thread LV2 ) >/dev/null 2>&1
+eq "$?" 20 "a writer blocked by a stale-but-LIVE owner gives up at its own lock bound (20)"
 [ -d "$L7i.lock/LIVE-TOKEN" ] && ok || bad "a stale-but-LIVE owner's lock was reclaimed — age was treated as death"
 # …and the contender wrote nothing rather than proceeding beside the live owner.
 eq "$(bash "$PL" classes --ledger "$L7i" 2>/dev/null | awk -F'\t' '$2=="livec"{print $1}')" 1 \
@@ -940,8 +1066,9 @@ eq "$?" 0 "a lock whose owner is provably gone IS reclaimed"
 L7j="$work/nometa.md"
 bash "$PL" record --ledger "$L7j" --class nmc --site s.sh --fix abc1231 --pr 1 --thread NM1 >/dev/null 2>&1
 mkdir -p "$L7j.lock/ORPHAN"; touch -t 200001010000 "$L7j.lock" 2>/dev/null
-( _ADB_PL_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7j" --class nmc \
+( ADB_PATTERN_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7j" --class nmc \
     --site s2.sh --fix abc1232 --pr 1 --thread NM2 ) >/dev/null 2>&1
+eq "$?" 20 "a writer blocked by an unprovable owner gives up at its own lock bound (20)"
 [ -d "$L7j.lock/ORPHAN" ] && ok || bad "a lock with no owner metadata was reclaimed — unprovable must mean alive"
 rm -rf "$L7i.lock" "$L7j.lock"
 
@@ -1696,6 +1823,20 @@ bash "$PL" rule-sweep --state "$ST12" --run "$RS_RUN" --tree "$RS_TREE" --rule a
 eq "$?" 19 "12 the writer refuses a result outside fired|clean"
 bash "$PL" rule-sweep --state "$ST12" --run "$(printf 'a\tb')" --tree "$RS_TREE" --rule alpha-one --result clean >/dev/null 2>&1
 eq "$?" 19 "12 the writer refuses a run identity carrying the field separator"
+# THE SITE BOUND, IN BYTES. A fresh state per case, so a refusal is the bound's and never a
+# duplicate's.
+RS_SB="$(printf 'a%.0s' $(seq 1 512))"
+bash "$PL" rule-sweep --state "$work/st12s1" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_SB" --result fired >/dev/null 2>&1
+eq "$?" 0 "12 a 512-byte site is accepted"
+bash "$PL" rule-sweep --state "$work/st12s2" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "${RS_SB}a" --result fired >/dev/null 2>&1
+eq "$?" 19 "12 a 513-byte site is refused by the field bound"
+if [ -z "$U8" ]; then
+  bad "12 fixture: no UTF-8 locale on this host — the site byte-bound check asserted NOTHING"
+else
+  LC_ALL="$U8" bash "$PL" rule-sweep --state "$work/st12s3" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one \
+    --site "$(printf 'é%.0s' $(seq 1 257))" --result fired >/dev/null 2>&1
+  eq "$?" 19 "12 a 257-character, 514-byte site is refused — the field bound counts bytes"
+fi
 
 # MARKUP IS ESCAPED BY THE RENDERER. The record file is swept, so this report is the only
 # surviving copy of the sweep — a site that opens an HTML comment would hide it and everything
@@ -2009,13 +2150,7 @@ eq "$?" 18 "12 an exact duplicate over a record already past its bound is refuse
 # THE FILE BOUND IS BYTES ON BOTH SIDES. `${#row}` counted characters in the caller's locale while
 # the file size and the reader's bound are bytes, so a multibyte site near the limit slipped past.
 ST12M="$work/st12m"; mkdir -p "$ST12M"
-# A UTF-8 LOCALE THE HOST HAS, or the fixture proves nothing: under `C` a character IS a byte, and
-# the defect is unreachable. Ubuntu runners carry `C.UTF-8`; macOS carries `en_US.UTF-8`.
-RS_U8=""
-for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
-  if locale -a 2>/dev/null | grep -qx "$_l"; then RS_U8="$_l"; break; fi
-done
-if [ -z "$RS_U8" ]; then
+if [ -z "$U8" ]; then
   bad "12 fixture: no UTF-8 locale on this host — the byte-bound check asserted NOTHING"
 else
   RS_MB_SITE="$(printf 'é%.0s' $(seq 1 200))"   # 200 characters, 400 bytes
@@ -2027,7 +2162,7 @@ else
     out = 0; i = 0
     while (1) { s = "rule\t" r "\t" t "\tpad-class\tp/" i ".sh:1\tfired\n"; if (out + length(s) > n) break; printf "%s", s; out += length(s); i++ }
   }' > "$ST12M/rule-sweep.tsv"
-  LC_ALL="$RS_U8" bash "$PL" rule-sweep --state "$ST12M" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_MB_SITE" --result fired >/dev/null 2>&1
+  LC_ALL="$U8" bash "$PL" rule-sweep --state "$ST12M" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$RS_MB_SITE" --result fired >/dev/null 2>&1
   eq "$?" 19 "12 a multibyte row that would push the record past its BYTE bound is refused"
 fi
 
@@ -2036,12 +2171,12 @@ fi
 # NO MUTATION ROW: the failure is BSD-sed-only, and the mutation harness runs on the ubuntu leg, where
 # GNU sed accepts the byte with or without `LC_ALL=C` — a row would stay green there and assert
 # nothing. This unit is what speaks for macOS, on the macOS leg.
-if [ -z "${RS_U8:-}" ]; then
+if [ -z "$U8" ]; then
   bad "12 fixture: no UTF-8 locale on this host — the non-UTF-8 rendering check asserted NOTHING"
 else
   ST12Z="$work/st12z"
   bash "$PL" rule-sweep --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" --rule alpha-one --site "$(printf 'lat\xe9n.sh:3')" --result fired >/dev/null 2>&1
-  RSZ="$(LC_ALL="$RS_U8" bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
+  RSZ="$(LC_ALL="$U8" bash "$PL" rule-sweep-report --ledger "$L12" --state "$ST12Z" --run "$RS_RUN" --tree "$RS_TREE" 2>/dev/null)"
   has "$RSZ" "$(printf 'lat\xe9n.sh:3')" "12 a site carrying a non-UTF-8 byte is rendered under a UTF-8 locale, not dropped"
 fi
 
@@ -2257,9 +2392,13 @@ if [ "$MODE" = mutation ]; then
       '    :' \
       'a hand-edited summary opening an HTML comment is refused by the readers'
   check_row 'ledger-nul-normalized' 'scripts/lib/pattern-ledger.sh' 's5b' \
-      '  [ "$(LC_ALL=C tr -d '"'"'\000'"'"' < "$1" | wc -c | tr -d '"'"' '"'"')" -eq "$(LC_ALL=C wc -c < "$1" | tr -d '"'"' '"'"')" ] || return 1' \
+      '  adb_nul_free "$1" || { [ "$?" -eq 1 ] || printf '"'"'pattern-ledger: could not read %s to scan it for NUL bytes\n'"'"' "$1" >&2; return 1; }' \
       '  :' \
       'a NUL byte at the end of a stored summary is refused, not normalized away'
+  check_row 'nul-read-failure-unnamed' 'scripts/lib/pattern-ledger.sh' 's5b' \
+      '[ "$?" -eq 1 ] || printf '"'"'pattern-ledger: could not read' \
+      '[ "$?" -eq 1 ] || : '"'"'pattern-ledger: could not read' \
+      '…and names the failed read rather than leaving only "does not parse"'
   check_row 'first-seen-by-row' 'scripts/lib/pattern-ledger.sh' 's8' \
       '        NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }' \
       '        NF && $1 != "" { if (!($1 in first)) { first[$1] = $5; firstd[$1] = $6 } }' \
@@ -2425,15 +2564,67 @@ if [ "$MODE" = mutation ]; then
       '  case "$1" in *'"'"'<!-- adb:'"'"'*) return 1 ;; esac' \
       'a summary opening an HTML comment is refused'
   check_row 'rule-bound-removed' 'scripts/lib/common.sh' 's5d' \
-      '  [ "$(printf '"'"'%s'"'"' "$1" | LC_ALL=C wc -c | tr -d '"'"' '"'"')" -le "$max" ] || return 1' \
+      '  [ "${#1}" -le "$max" ]' \
       '  :' \
       'a 1025-byte rule is refused by the per-text bound'
+  check_row 'text-bound-counts-characters' 'scripts/lib/common.sh' 's5d' \
+      '  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}" LC_ALL=C' \
+      '  local max="${2:-$ADB_LEDGER_TEXT_MAX_BYTES}"' \
+      'a 513-character, 1026-byte summary is refused — the bound counts bytes'
+  check_row 'text-control-allowed' 'scripts/lib/common.sh' 's5' \
+      '  case "$1" in *[[:cntrl:]]*) return 1 ;; esac' \
+      '  :' \
+      'a 0x01 byte in a summary is refused'
+  check_row 'span-control-allowed' 'scripts/lib/common.sh' 's5' \
+      '*'"'"'`'"'"'*|*[[:cntrl:]]*)' \
+      '*'"'"'`'"'"'*)' \
+      'a 0x01 byte in --site is refused'
+  check_row 'span-control-set-widened' 'scripts/lib/common.sh' 's5' \
+      '  local LC_ALL=C' \
+      '  :' \
+      'a site carrying U+0085 is accepted under a UTF-8 locale — the control set is C'"'"'s'
+  check_row 'sweep-site-bound-removed' 'scripts/lib/common.sh' 's12' \
+      '      [ "${#site}" -le "$ADB_RULE_SWEEP_FIELD_MAX" ] || return 19 ;;' \
+      '      : ;;' \
+      '12 a 513-byte site is refused by the field bound'
+  check_row 'sweep-site-bound-counts-characters' 'scripts/lib/common.sh' 's12' \
+      'site="${4:-}" result="${5:-}" row LC_ALL=C' \
+      'site="${4:-}" result="${5:-}" row' \
+      '12 a 257-character, 514-byte site is refused — the field bound counts bytes'
+  check_row 'byte-len-counts-characters' 'scripts/lib/common.sh' 's12' \
+      'adb_byte_len() { local LC_ALL=C || return 1; printf' \
+      'adb_byte_len() { printf' \
+      '12 a multibyte row that would push the record past its BYTE bound is refused'
+  check_row 'checklist-size-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '  size=$(( size + 1 ))' \
+      '  size=$(( size ))' \
+      'a checklist one byte over the budget is refused (21)'
+  check_row 'nf-bytes-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      'printf '"'"'%s'"'"' "$(( kb + 1 ))"' \
+      'printf '"'"'%s'"'"' "$(( kb ))"' \
+      '…and verify refuses the same byte'
+  check_row 'nf-bytes-filter-failure-is-zero' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')" || return 1' \
+      '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')"' \
+      'promote refuses (20) when the checklist region cannot be measured'
+  check_row 'verify-region-read-swallowed' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '|| { ckregion=""; bad=1; }' \
+      '|| ckregion=""' \
+      'verify refuses (18) when its own checklist read fails, never measures it as empty'
+  check_row 'checklist-filter-failure-emitted' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      '    || { printf '"'"'pattern-ledger: could not filter the checklist region of %s — refusing to emit it\n'"'"' "$ledger" >&2; exit 20; }' \
+      '    || :' \
+      '…and checklist emits nothing (20) when it cannot filter the region'
+  check_row 'promote-size-newline-dropped' 'scripts/lib/pattern-ledger.sh' 's5d' \
+      'newsize=$(( newsize + rulesz + 1 ))' \
+      'newsize=$(( newsize + rulesz ))' \
+      'promote refuses the rule that lands it one byte over'
   check_row 'sweep-final-newline-unchecked' 'scripts/lib/common.sh' 's11' \
       '  [ "$last" = 0a ] || return 18' \
       '  :' \
       '11 a sweep file with no final newline is refused'
   check_row 'sweep-nul-unchecked' 'scripts/lib/common.sh' 's11' \
-      '  [ "$(LC_ALL=C tr -d '"'"'\000'"'"' < "$f" | LC_ALL=C wc -c | tr -d '"'"' '"'"')" -eq "$sz" ] || return 18' \
+      '  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 18; return 20; }' \
       '  :' \
       '11 a sweep file carrying a NUL is refused'
   check_row 'sweep-name-unbound' 'scripts/lib/common.sh' 's11' \

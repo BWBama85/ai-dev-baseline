@@ -140,9 +140,16 @@ if [ "$MODE" = mutation ]; then
   # stayed GREEN while proving nothing — measured, on this suite. This is the guard with sole
   # responsibility for every other unprintable byte, and one assertion below drives it with 0x01.
   check_mut control-char-allowed \
-    "tr -d '[:cntrl:]'" \
-    "tr -d ''" \
+    '  case "$1" in *[[:cntrl:]]*) return 1 ;; esac' \
+    '  :' \
     'a control character in evidence is refused'
+
+  # THE C LOCALE OF THE CONTROL TEST. Without it a caller's UTF-8 locale widens `[[:cntrl:]]` to
+  # C1 code points, refusing evidence the record has always accepted.
+  check_mut control-set-widened \
+    '  local LC_ALL=C' \
+    '  :' \
+    'evidence carrying U+0085 is accepted under a UTF-8 locale'
 
   # THE READ-SIDE VALIDATION, added after the review reproduced a clean verdict from a record the
   # writer would never have produced. Without a row here, deleting it again is invisible.
@@ -212,7 +219,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE FIELD BOUND (PR #429).
   check_mut field-bound-removed \
-    '  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
+    '  [ "${ _adb_dl_bytes "$1"; }" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     '  :' \
     'a 600-byte field is refused by the FIELD bound, though the record bound would allow it'
 
@@ -224,7 +231,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE BYTE MEASUREMENT (PR #429). Restores `${#1}`, which counts characters.
   check_mut bound-counts-characters \
-    '  [ "$(_adb_dl_bytes "$1")" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
+    '  [ "${ _adb_dl_bytes "$1"; }" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     '  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     'a field of 512 MULTIBYTE characters is refused'
 
@@ -278,7 +285,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE NUL SCAN (PR #429).
   check_mut nul-normalized \
-    "  [ \"\$(LC_ALL=C tr -d '\\000' < \"\$f\" | wc -c | tr -d ' ')\" -eq \"\$(wc -c < \"\$f\" | tr -d ' ')\" ] || return 1" \
+    '  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 1; return 2; }' \
     "  :" \
     'a NUL in the FINAL field is refused — awk truncation cannot see it'
 
@@ -331,6 +338,10 @@ if [ "$MODE" = mutation ]; then
     '        if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
     '        if (0) { hdr = substr(hdr, 1, i - 1); break }' \
     "a table header written as '[mcp] # documentation servers' is still the [mcp] table"
+  check_mut byte-len-counts-characters \
+    'adb_byte_len() { local LC_ALL=C || return 1; printf' \
+    'adb_byte_len() { printf' \
+    'a field of 512 MULTIBYTE characters is refused'
   check_mutation_pool check-docs-lib-common "$work/common" prep_common runner 6
 
   check_summary check-docs-lib
@@ -604,13 +615,27 @@ printf 'probe\tcontext7\tusable\tev' > "$D10/state/docs-consulted.tsv"
 dl verdict --state "$D10/state" --manifest "$D10/agents.toml" >/dev/null 2>&1
 eq "$?" 18 "…and so is a lone unterminated record"
 
-# THE BOUND IS IN BYTES, NOT CHARACTERS (PR #429). `${#var}` counts characters in the caller's
+# THE BOUND IS IN BYTES, NOT CHARACTERS (D124). `${#var}` counts characters in the caller's
 # locale, and the atomic-write guarantee is about bytes — 512 four-byte characters is 2 KiB, so a
-# record could pass a "512-byte" check and still be split across two writes. The reviewer produced
-# six malformed lines from 200 concurrent calls that all passed the character check.
-MBIG="$(awk 'BEGIN { s = ""; for (i = 0; i < 512; i++) s = s "é"; print s }')"
-dl probe-record --state "$D10/state" --server context7 --result usable --evidence "$MBIG" >/dev/null 2>&1
-eq "$?" 19 "a field of 512 MULTIBYTE characters is refused — the bound counts bytes"
+# record could pass a "512-byte" check and still be split across two writes.
+# UNDER A UTF-8 LOCALE THE HOST HAS, never the inherited one: under `C` a character IS a byte, and
+# a bound counting characters would pass this too.
+U8=""
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if locale -a 2>/dev/null | grep -qx "$_l"; then U8="$_l"; break; fi
+done
+if [ -z "$U8" ]; then
+  bad "fixture: no UTF-8 locale on this host — the byte-bound and control-set checks asserted NOTHING"
+else
+  MBIG="$(awk 'BEGIN { s = ""; for (i = 0; i < 512; i++) s = s "é"; print s }')"
+  LC_ALL="$U8" dl probe-record --state "$D10/state" --server context7 --result usable --evidence "$MBIG" >/dev/null 2>&1
+  eq "$?" 19 "a field of 512 MULTIBYTE characters is refused — the bound counts bytes"
+  # THE CONTROL SET IS THE C LOCALE'S: U+0085 is a control character to a UTF-8 `[[:cntrl:]]` and
+  # two printable bytes to `LC_ALL=C tr -d '[:cntrl:]'`, which is what the record always accepted.
+  LC_ALL="$U8" dl probe-record --state "$D10/state" --server context7 --result usable \
+    --evidence "$(printf 'n\302\205l')" >/dev/null 2>&1
+  eq "$?" 0 "evidence carrying U+0085 is accepted under a UTF-8 locale"
+fi
 ABIG="$(awk 'BEGIN { s = ""; for (i = 0; i < 500; i++) s = s "a"; print s }')"
 dl probe-record --state "$D10/state" --server context7 --result usable --evidence "$ABIG" >/dev/null 2>&1
 eq "$?" 0 "…while 500 ASCII characters still fit"
@@ -660,7 +685,7 @@ done
 # one, which is the same partial-validation shape corrected twice elsewhere in this diff: the check
 # covered less than the grammar it claimed to enforce.
 for bad in '[, "a"]' '["a",,]' '[,]' '["a", , "b"]'; do
-  D15="$(fixture "emptyelem$(printf '%s' "$bad" | tr -dc 'ab')$(printf '%s' "$bad" | wc -c | tr -d ' ')" "[mcp]
+  D15="$(fixture "emptyelem$(printf '%s' "$bad" | tr -dc 'ab')${ adb_byte_len "$bad"; }" "[mcp]
 required = $bad
 ")"
   dl mcp-required --manifest "$D15/agents.toml" >/dev/null 2>&1
