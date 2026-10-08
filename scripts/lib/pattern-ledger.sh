@@ -35,7 +35,7 @@
 #   record · promote · rule-sweep   one confirmation line (`recorded …`, `promoted …`, `rule-sweep …`)
 #   classes            <count>TAB<class>TAB<promoted 0|1>, one line per class
 #   due                <class>TAB<count>, one line per class owed a rule; nothing on 11
-#   checklist          the promoted rules, one per line; nothing on 18/21
+#   checklist          the promoted rules, one per line; nothing on 18/20/21
 #   stats              <key>TAB<value>: ledger (present|absent), hits, classes, recurring, promoted,
 #                      threshold, threshold-source; with --pr also pr-hits, pr-recurring, pr-new-classes
 #   verify             one `ok …` line

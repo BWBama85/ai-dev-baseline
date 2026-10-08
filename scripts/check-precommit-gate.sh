@@ -544,10 +544,10 @@ hasnt "$OUT" "another session" "stale foreign marker → no claim that a run hol
 #      symlink to the real binary further along PATH. Hence a symlink farm of exactly the tools
 #      the gate and the gate-runner need, with jq deliberately absent.
 nojq="$work/nojq"; mkdir -p "$nojq"
-# `tr` and `cmp` are in the farm because the gate reads `[gates]` through `adb_toml_get`, whose
+# `tr` and `wc` are in the farm because the gate reads `[gates]` through `adb_toml_get`, whose
 # NUL-byte scan (`adb_nul_free`) runs both; a reader whose scan cannot run reports the manifest as
 # unreadable — which is correct, and is also not the case this fixture is about.
-for _t in git sh bash sed awk sort date mktemp rm tail cat dirname touch true false uname grep tr head env wc cmp; do
+for _t in git sh bash sed awk sort date mktemp rm tail cat dirname touch true false uname grep tr head env wc; do
   _p="$(command -v "$_t" 2>/dev/null)" && ln -sf "$_p" "$nojq/$_t"
 done
 if [ -e "$nojq/jq" ]; then bad "12d fixture is broken: jq leaked into the no-jq farm"; else

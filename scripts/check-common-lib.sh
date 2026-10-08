@@ -955,21 +955,23 @@ fi
 nf="$work/nulfree"; mkdir -p "$nf/bin"
 printf 'a = 1\n' > "$nf/clean.toml"
 printf 'a = 1\000\n' > "$nf/nul.toml"
-# The NUL first and a megabyte after it: `cmp` stops at the first difference, so `tr` is stopped by
-# SIGPIPE, and that is still the answer "a NUL", never "unreadable".
+# The NUL first and a megabyte after it, which is where an early-exiting reader would leave `tr`
+# writing into a closed pipe.
 { printf '\000'; head -c 1048576 /dev/zero | tr '\000' a; } > "$nf/nul-big"
 adb_nul_free "$nf/clean.toml"; eq "$?" 0 "nul-free: a clean file has no NUL"
 adb_nul_free "$nf/nul.toml";   eq "$?" 1 "nul-free: a NUL is found"
-adb_nul_free "$nf/nul-big";    eq "$?" 1 "nul-free: …and still found when tr dies of the SIGPIPE that follows"
+adb_nul_free "$nf/nul-big";    eq "$?" 1 "nul-free: …and still found a megabyte before the end"
+( trap '' PIPE; adb_nul_free "$nf/nul-big" )
+eq "$?" 1 "nul-free: …and when the caller ignores SIGPIPE, never read as unreadable"
 # A `tr` that emits its whole input and then FAILS: the comparison alone calls the file clean, so the
-# first process's status is read too, with and without the caller's `pipefail`. Only the NUL-deleting
+# first process's status is read too, with and without the caller's `pipefail`. Only the NUL-counting
 # call fails, so every other `tr` a caller runs first still answers.
 NF_REAL_TR="${ command -v tr; }"
 [ -n "$NF_REAL_TR" ] || bad "nul-free: no tr on PATH — the failing-tr cases below assert NOTHING"
 export NF_REAL_TR
 cat > "$nf/bin/tr" <<'STUB'
 #!/bin/sh
-if [ "$1" = -d ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+if [ "$1" = -cd ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
 exec "$NF_REAL_TR" "$@"
 STUB
 chmod +x "$nf/bin/tr"
@@ -985,7 +987,7 @@ eq "$?" 2 "nul-free: errexit cannot end the caller before it answers"
 eq "$?" 2 "toml-get: …which it reports as unreadable (2), never as a value"
 ( PATH="$nf/bin:$PATH"; adb_bytes_whole "$nf/clean.toml" 100 )
 eq "$?" 20 "bytes-whole: …and as not readable (20), never as a valid file"
-# A FILE NAMED `-` or `-s` is a file: `cmp` reads `-` as standard input and `-s` as an option.
+# A FILE NAMED `-` or `-s` is a file, never standard input or an option.
 printf 'x\n' > "$nf/-"; printf 'x\n' > "$nf/-s"
 ( cd "$nf" && adb_nul_free - && adb_nul_free -s )
 eq "$?" 0 "nul-free: files named - and -s are scanned as files, not as stdin or an option"

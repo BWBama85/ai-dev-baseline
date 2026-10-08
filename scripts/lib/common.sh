@@ -142,20 +142,17 @@ adb_tsv_field_display() {
 adb_byte_len() { local LC_ALL=C; printf '%s' "${#1}"; }
 
 # adb_nul_free <file> — 0 when <file> holds no NUL byte · 1 when it holds one · 2 when it could not
-# be read. A bash string cannot hold a NUL, so this reads the file, in two processes, and takes BOTH
-# statuses whatever the caller's `pipefail` or `errexit`: `cmp` 1 is a NUL (a `tr` stopped by the
-# SIGPIPE that follows is part of that answer); any other failure is a read that did not happen.
-# A path starting with `-` is read as `./-…`: `cmp` takes `-` as standard input and may take `-x`
-# as an option.
+# be read. A bash string cannot hold a NUL, so the NULs are COUNTED, by a pipeline that reads to the
+# end: nothing in it exits early, so a caller that ignores SIGPIPE cannot turn a NUL into a failed
+# read. Its subshell sets its own `pipefail`, so a `tr` that fails after writing everything is a
+# failed read whatever the caller's options, and the file reaches `tr` by redirection, never as an
+# operand.
 adb_nul_free() {
-  local f="$1" st
-  case "$f" in -*) f="./$f" ;; esac
-  { LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; st="${PIPESTATUS[0]}:${PIPESTATUS[1]}"; } || :
-  case "$st" in
-    0:0)       return 0 ;;
-    0:1|141:1) return 1 ;;
-    *)         return 2 ;;
-  esac
+  local n
+  n="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$1" | LC_ALL=C wc -c)" || return 2
+  n="${n//[!0-9]/}"
+  [ -n "$n" ] || return 2
+  [ "$n" -eq 0 ] || return 1
 }
 
 # --- symlink install / uninstall --------------------------------------------

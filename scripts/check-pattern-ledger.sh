@@ -459,12 +459,12 @@ perl -pe 's/`nulk`/`nu\x00lk`/' "$L5f" > "$L5f.tmp" && mv "$L5f.tmp" "$L5f"
 bash "$PL" due --ledger "$L5f" >/dev/null 2>&1
 eq "$?" 18 "a NUL inside a stored CLASS is refused rather than counted toward a promotion"
 # A NUL SCAN WHOSE READ FAILS refuses the ledger as before (18) and says it could not read it. The
-# stub `tr` writes its whole input and then fails, and only for the NUL-deleting call.
+# stub `tr` writes its whole input and then fails, and only for the NUL-counting call.
 NFB="$work/nf-bin"; mkdir -p "$NFB"
 NF_REAL_TR="$(command -v tr)"; export NF_REAL_TR
 cat > "$NFB/tr" <<'STUB'
 #!/bin/sh
-if [ "$1" = -d ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
+if [ "$1" = -cd ] && [ "$2" = '\000' ]; then "$NF_REAL_TR" "$@"; exit 73; fi
 exec "$NF_REAL_TR" "$@"
 STUB
 chmod +x "$NFB/tr"

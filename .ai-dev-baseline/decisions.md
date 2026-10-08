@@ -9243,15 +9243,19 @@ survive is the part a later reader needs.
              that fails is refused (20) rather than measured as an empty list. The old pipelines,
              and the first cut of this helper, counted it as 0 bytes; the local review found that.
              The four per-file NUL checks (`_adb_pl_region`, `_adb_dl_records`, `adb_toml_get`,
-             `adb_bytes_whole`) share one primitive, `adb_nul_free`: `LC_ALL=C tr -d '\000' < f | cmp
-             -s - f`, two processes where the old checks ran three (`adb_bytes_whole`, whose size was
-             already in hand) to five, plus one or two subshells. It reads BOTH statuses, which the
-             old checks did not. The independent review injected a `tr` that writes its whole input
-             and then fails 73: without `pipefail`, old and new `adb_toml_get` alike returned 0 over
-             that unread file. `cmp` 1 is a NUL, even when the `tr` behind it dies of SIGPIPE, and
-             any other failure is unreadable, so `adb_toml_get` now returns 2 and `adb_bytes_whole`
-             20 there. The brace group the statuses are read in keeps a caller's `errexit` from
-             ending it first. The ledger reader keeps one failure code for a region (owner decision
+             `adb_bytes_whole`) share one primitive, `adb_nul_free`. It COUNTS the NULs,
+             `n="$(set -o pipefail; LC_ALL=C tr -cd '\000' < f | LC_ALL=C wc -c)"`: two processes in
+             one subshell, where the old checks ran three (`adb_bytes_whole`, whose size was already
+             in hand) to five, plus one or two subshells. Nothing in it exits early, the file
+             reaches `tr` by redirection, and the subshell sets its own `pipefail`. So the answer
+             depends on neither the caller's options nor its signal dispositions. That is the third
+             shape. The first cut compared `tr -d '\000' < f | cmp -s - f`, and the reviews found
+             three ways the early-exiting `cmp` let the caller decide. With `pipefail` off, a `tr`
+             that writes its whole input and then fails read as clean, as it did in the old
+             `adb_toml_get`. A file named `-` became `cmp`'s standard input. And a caller that
+             ignores SIGPIPE turned a NUL into a failed read (owner decision 2026-10-07, local
+             review: restructure rather than patch a third time). A failed read is 2, so
+             `adb_toml_get` returns 2 and `adb_bytes_whole` 20 there. The ledger reader keeps one failure code for a region (owner decision
              2026-10-07, local review): a failed read still exits 18, and it now says on stderr that
              it could not read the file rather than leaving only "does not parse".
 
@@ -9260,18 +9264,19 @@ survive is the part a later reader needs.
              Python and node test jobs throughout, so the 1-minute load average is stamped on every
              run. Each suite was run on `main` (`3fccd2f`, a separate worktree) and then on this
              branch (`3c5b747`), back to back, as a PAIR. The review fixes after `3c5b747`
-             (`adb_nul_free` reading both statuses, and the assertions that pin it) add no process to
-             any call and were not re-measured. This is a record of what was observed, not a ranking
+             (`adb_nul_free`'s final shape, and the assertions that pin it) add no external command
+             to any call and were not re-measured as suites. The per-call counts below are re-taken on
+             the final tree. This is a record of what was observed, not a ranking
              (D66).
 
              External commands per call on this repo's 785-line ledger (xtrace, deterministic):
 
              | call | `main` | after |
              |---|---|---|
-             | `pattern-ledger.sh classes` | 5,551 | 10 |
+             | `pattern-ledger.sh classes` | 5,551 | 11 |
              | `pattern-ledger.sh checklist` | 5,558 | 13 |
              | `pattern-ledger.sh verify` | 5,564 | 19 |
-             | `pattern-ledger.sh record` | 11,006 | 29 |
+             | `pattern-ledger.sh record` | 11,006 | 28 |
              | `docs-lib.sh report`, 20 records | 274 | 68 |
              | `docs-lib.sh consulted` | 14 | 2 |
 
@@ -9302,7 +9307,7 @@ survive is the part a later reader needs.
              * `check-pattern-ledger.sh`'s sys still exceeds user (63.6 vs 42.9), so that criterion
                is unmet. These figures do not isolate what remains. The candidates are the suite's
                own process work: every `bash "$PL"` call is an exec plus a parse of `common.sh`, the
-               four subcommands measured above run 10-29 external commands each on the real
+               four subcommands measured above run 11-28 external commands each on the real
                ledger, and the fixtures fork too. #454 excludes the
                obvious cut, sourcing the library instead of spawning its entry point, because that
                would change what the suite proves.
@@ -9331,8 +9336,8 @@ survive is the part a later reader needs.
              `_adb_dl_records`); `scripts/lib/pattern-ledger.sh` (`_adb_pl_nf_bytes`,
              `_adb_pl_region`, `promote`, `checklist`, `verify`, `rule-sweep`, `rule-sweep-report`);
              `scripts/check-common-lib.sh` (the byte-equivalence and `adb_nul_free` blocks);
-             `scripts/check-precommit-gate.sh` (its no-jq PATH farm links `cmp`, which the NUL scan
-             now runs); `scripts/check-pattern-ledger.sh`
+             `scripts/check-precommit-gate.sh` (its no-jq PATH farm's comment names the NUL scan's
+             two tools); `base/workflows/implement-issue.md` (`checklist`'s 20); `scripts/check-pattern-ledger.sh`
              (s5, s5b, s5d, s12 witnesses; sixteen rows: thirteen new, three retargeted); `scripts/check-docs-lib.sh`
              (locale-pinned witnesses; six rows new or retargeted); `CHANGELOG.md`. The comment
              history these edits touched now lives here: on PR #429 the declared reviewer
