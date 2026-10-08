@@ -9232,8 +9232,9 @@ survive is the part a later reader needs.
              scoped to the function by `local`. `adb_ledger_ok_span`, `adb_ledger_ok_text` and
              `adb_rule_sweep_row` match `[[:cntrl:]]` and measure `${#}` under the same scope. The C
              scope keeps the refusal set exactly the bytes `LC_ALL=C tr -d '[:cntrl:]'` deleted
-             (0x01-0x1F, 0x7F). Under a UTF-8 caller `[[:cntrl:]]` also matches U+0080-U+009F and
-             U+200B, so without that scope the set would silently tighten. Each scope fails closed. A sourced caller that has made
+             (0x01-0x1F, 0x7F). Under a UTF-8 caller `[[:cntrl:]]` also matches U+0080-U+009F (and,
+             on macOS, U+200B, which glibc classes as punctuation), so without that scope the set
+             would silently tighten. Each scope fails closed. A sourced caller that has made
              `LC_ALL` readonly makes `local` fail, and the validators then refuse the value and
              `adb_byte_len` fails rather than count characters. Before that guard, the local review on
              the resolver round got a 513-character, 1026-byte summary through. `docs-lib.sh` keeps
@@ -9345,7 +9346,7 @@ survive is the part a later reader needs.
              `scripts/check-common-lib.sh` (the byte-equivalence and `adb_nul_free` blocks);
              `scripts/check-precommit-gate.sh` (its no-jq PATH farm's comment names the NUL scan's
              two tools); `base/workflows/implement-issue.md` (`checklist`'s 20); `scripts/check-pattern-ledger.sh`
-             (s5, s5b, s5d, s12 witnesses; sixteen rows: thirteen new, three retargeted); `scripts/check-docs-lib.sh`
+             (s5, s5b, s5d, s12 witnesses; seventeen rows: fourteen new, three retargeted); `scripts/check-docs-lib.sh`
              (locale-pinned witnesses; six rows new or retargeted); `CHANGELOG.md`. The comment
              history these edits touched now lives here: on PR #429 the declared reviewer
              reproduced six malformed docs records from 200 concurrent appends that had all passed a

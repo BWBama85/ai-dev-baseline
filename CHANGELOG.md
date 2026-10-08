@@ -600,8 +600,9 @@ only by a published release, which is what these entries are the notes for.
   validators run per field of each docs record written or read. `pattern-ledger.sh checklist` on
   this repo's 785-line ledger took 10.5-13.6 s and ran 5,558 external commands. It now takes 0.4 s
   and runs 13, with byte-identical output. `record` went from 11,006 external commands to 28. The
-  validators measure lengths with the new `adb_byte_len` (`scripts/lib/common.sh`) and match
-  `[[:cntrl:]]` directly, both under a C locale scoped to the function. Their refusal set is unchanged: exactly the bytes `LC_ALL=C tr -d
+  ledger predicates take `${#}` and match `[[:cntrl:]]` themselves, under a C locale scoped to the
+  function. The docs validators and the checklist sizes use the new `adb_byte_len`
+  (`scripts/lib/common.sh`), which applies the same scope. Their refusal set is unchanged: exactly the bytes `LC_ALL=C tr -d
   '[:cntrl:]'` deleted, asserted over all 255 byte values for the two ledger predicates. The
   function scope is what preserves that set, since under a UTF-8 caller `[[:cntrl:]]` would also
   match U+0085. A checklist region whose filter fails is now refused (20) rather than measured as
