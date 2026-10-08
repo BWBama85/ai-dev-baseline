@@ -9330,8 +9330,10 @@ survive is the part a later reader needs.
              (`_adb_dl_bytes`, `_adb_dl_printable`, `_adb_dl_ok_field`, `_adb_dl_append`,
              `_adb_dl_records`); `scripts/lib/pattern-ledger.sh` (`_adb_pl_nf_bytes`,
              `_adb_pl_region`, `promote`, `checklist`, `verify`, `rule-sweep`, `rule-sweep-report`);
-             `scripts/check-common-lib.sh` (the byte-equivalence and `adb_nul_free` blocks); `scripts/check-pattern-ledger.sh`
-             (s5, s5d, s12 witnesses; thirteen rows new or retargeted); `scripts/check-docs-lib.sh`
+             `scripts/check-common-lib.sh` (the byte-equivalence and `adb_nul_free` blocks);
+             `scripts/check-precommit-gate.sh` (its no-jq PATH farm links `cmp`, which the NUL scan
+             now runs); `scripts/check-pattern-ledger.sh`
+             (s5, s5b, s5d, s12 witnesses; sixteen rows: thirteen new, three retargeted); `scripts/check-docs-lib.sh`
              (locale-pinned witnesses; six rows new or retargeted); `CHANGELOG.md`. The comment
              history these edits touched now lives here: on PR #429 the declared reviewer
              reproduced six malformed docs records from 200 concurrent appends that had all passed a
