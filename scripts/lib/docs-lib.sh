@@ -691,10 +691,12 @@ SNAP
       # made the mandatory field unreadable by the audience it exists for.
       # Reported by the declared reviewer on PR #429.
       printf -- '- MCP preflight: every required server answered a real query.\n'
+      # `&&` ends the read's line, not `\`, so the line can carry the marker check-docs-lib.sh's
+      # mutation row names: the DEGRADED arm below reads the evidence with the same command.
       while IFS= read -r _srv; do
         [ -n "$_srv" ] || continue
-        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')" \
-          && _ev="$(_adb_dl_md "$_ev")" \
+        _ev="$(printf '%s\n' "$_ADB_DL_SNAPSHOT" | awk -F'\t' -v n="$_srv" '$1 == "probe" && $2 == n { e = $4 } END { print e }')" &&   # row-evidence-clean
+          _ev="$(_adb_dl_md "$_ev")" \
           || { printf 'docs-lib: could not render the probe evidence for %s\n' "$_srv" >&2; return 20; }
         printf -- '  - `%s` — %s\n' "$_srv" "$_ev"
       done <<SERVERS

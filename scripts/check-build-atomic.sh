@@ -58,6 +58,10 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
+# `shmutant_mutate`, the inline mutations' literal rewrite: the vendored shmutant (#519), sourced
+# here and never by check-lib.sh, which must stay evaluable on bash 3.2 (D35, D125).
+# shellcheck source=/dev/null
+. scripts/shmutant.sh
 
 work="$(mktemp -d)" || { echo "check-build-atomic: mktemp failed" >&2; exit 1; }
 check_exit_guard "check-build-atomic" "rm -rf \"$work\""
@@ -329,7 +333,7 @@ mutate_line "$d/scripts/build.sh" '  build_publish "$pfile"' '\|^  build_publish
 # The empty-procedure check reads what was just written, so it follows the write to its new target.
 empty_check="END { exit !found }' \"\$tmp\""
 if [ "$(grep -Fc -- "$empty_check" "$d/scripts/build.sh")" = 1 ] \
-   && check_mutate_literal "$d/scripts/build.sh" "$empty_check" "END { exit !found }' \"\$pfile\""; then ok
+   && shmutant_mutate "$d/scripts/build.sh" "$empty_check" "END { exit !found }' \"\$pfile\""; then ok
 else bad "mut-proc-naive: the empty-procedure check is not exactly one line reading \$tmp — the mutation no longer describes the code"; mutated=0; fi
 if [ "$mutated" -eq 1 ]; then
   proc_src "$d" ""

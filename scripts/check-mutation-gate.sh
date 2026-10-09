@@ -28,7 +28,8 @@
 #      every path, so a caller can never read a missing line as an answer;
 #   5. the shipped registry: every `*-mutation` step declares inputs, and each declares its own
 #      harness script, `scripts/check-lib.sh` and `scripts/lib/common.sh` — the two files every
-#      harness sources — so a change to the shared scaffold can never be gated away;
+#      harness sources — so a change to the shared scaffold can never be gated away; a step whose
+#      suite runs `check_shmutant_pool` also declares the vendored `scripts/shmutant.sh` (#519);
 #   6. the wiring: every `--mutation` invocation in `.github/workflows/ci.yml` goes through the
 #      gate, and the scheduled workflow's matrix names every `*-mutation` step in the registry, so a
 #      harness cannot be gated per-PR without also being run unconditionally on the schedule.
@@ -77,11 +78,11 @@ check_exit_guard "check-mutation-gate" "rm -rf \"$work\""
 # The copy carries every top-level path the shipped registry's inputs name (section 5 asserts each
 # exists), plus `.github` for the wiring pins — small trees, all of them; `.git` is not copied.
 if [ "$MODE" = mutation ]; then
+  # Built ONCE per pool; shmutant clones it for every row, and `shmutant_target` names the file a
+  # row mutates — the gate, ci.yml or the scheduled workflow, one pool each (#519).
   mut_prepare() {
-    local d="$1"
-    check_copy_subtrees "$ROOT" "$d" scripts .github bin agents .claude base templates >/dev/null 2>&1 || return 1
-    cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$d/" 2>/dev/null || return 1
-    printf '%s' "$d/scripts/mutation-gate.sh"
+    check_copy_subtrees "$ROOT" "$1" scripts .github bin agents .claude base templates >/dev/null 2>&1 || return 1
+    cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null || return 1
   }
   mkdir -p "$work/gate" "$work/ci" "$work/nightly"
   mut_run() {
@@ -93,7 +94,7 @@ if [ "$MODE" = mutation ]; then
 
   # THE CONTROL, first: an unmutated copy must pass, or every row below is red for the wrong reason.
   mut_ctl="$work/control"
-  if mut_prepare "$mut_ctl" >/dev/null; then
+  if mut_prepare "$mut_ctl"; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes (else every row below is red for the wrong reason)"
     has "$mut_out" "check-mutation-gate: PASS" "control: …and says PASS"
@@ -101,51 +102,59 @@ if [ "$MODE" = mutation ]; then
     bad "control: could not build the tree copy"
   fi
 
-  check_mut always-skip \
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/shmutant.sh" || bad "check-mutation-gate: scripts/shmutant.sh could not be sourced"
+  shmutant_target scripts/mutation-gate.sh
+  # Four witnesses below begin with `…`, as their assertion labels do. shmutant matches a witness as a
+  # whole TOKEN, and a non-ASCII neighbour extends one, so a witness starting at the letter after the
+  # ellipsis is not carried by the label's FAIL: line. check-lib's harness matched a substring, so
+  # those rows were written without it (#519).
+  shmutant_mut always-skip \
     'if [ "$nhits" -gt 0 ]; then' \
     'if [ "$nhits" -gt 999999 ]; then' \
     'a COMMITTED change to an input since the base: exit 0 (run)'
-  # `check_mutate_literal` matches within ONE line and replaces the FIRST hit, so each row is a
-  # single-line literal, and the two `return 11` sites are told apart by order: the merge-base
-  # branch comes first in `gate_decide`, so the first hit is the one this row is about.
-  check_mut always-run \
+  # A literal is matched within ONE line, and shmutant refuses one that starts at more than one
+  # position (its rewrite takes the first, which may not be the copy a row means). `gate_decide`'s
+  # merge-base `return 11` is a whole line that recurs below it, and its override test is a prefix
+  # of `rows`' own, so each of those two sites carries a `# row-*` marker the literal includes.
+  shmutant_mut always-run \
     '  return 10' \
     '  return 0' \
     'untouched inputs: exit 10 (skip)'
-  check_mut unresolvable-base-skips \
-    '    return 11' \
-    '    return 10' \
+  shmutant_mut unresolvable-base-skips \
+    '    return 11   # row-mb-unresolved' \
+    '    return 10   # row-mb-unresolved' \
     'a base that does not resolve: RUN on the fail-closed code (11), never skip'
-  check_mut override-ignored \
-    'if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then' \
-    'if [ -n "${ADB_MUTATION_RUN_ALL_NEVER:-}" ]; then' \
+  shmutant_mut override-ignored \
+    'if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-step-override' \
+    'if [ -n "${ADB_MUTATION_RUN_ALL_NEVER:-}" ]; then   # row-step-override' \
     'ADB_MUTATION_RUN_ALL=1: run, on its own distinct code (12)'
-  check_mut skip-line-unstated-base \
+  shmutant_mut skip-line-unstated-base \
     '"$step" "$base" "${mb:0:12}" "$nchanged" "$inputs"' \
     '"$step" "(unstated)" "${mb:0:12}" "$nchanged" "$inputs"' \
-    'and names the base it compared against'
-  check_mut untracked-ignored \
+    '…and names the base it compared against'
+  shmutant_mut untracked-ignored \
     'for f in "${tracked[@]}" "${untracked[@]}"; do' \
     'for f in "${tracked[@]}"; do' \
     'an UNTRACKED file under a directory input: run'
-  check_mut run-accepts-foreign-command \
+  shmutant_mut run-accepts-foreign-command \
     '[ "$regcmd" = "$want" ] || {' \
     '[ "$regcmd" = "$regcmd" ] || {' \
     'a command that is not the registry'"'"'s own for that step is REFUSED'
-  check_mut run-swallows-harness-status \
+  shmutant_mut run-swallows-harness-status \
     '    exec $regcmd ;;' \
     '    $regcmd; exit 0 ;;' \
     'passes its OWN exit status through (7)'
 
-  check_mut rename-collapsed \
+  shmutant_mut rename-collapsed \
     'diff --name-only -z --no-renames' \
     'diff --name-only -z' \
     'a RENAMED file input counts as touched'
-  check_mut quoted-path \
+  shmutant_mut quoted-path \
     'diff --name-only -z --no-renames' \
     'diff --name-only --no-renames' \
     'a tracked NON-ASCII file input, modified: run'
-  check_mut directory-boundary \
+  shmutant_mut directory-boundary \
     '"$p"|"$p"/*) printf' \
     '"$p"|"$p"*) printf' \
     'a sibling that merely shares a FILE input'"'"'s prefix'
@@ -153,83 +162,83 @@ if [ "$MODE" = mutation ]; then
   # --- the PER-ROW decision (#470). Every one of these is a wrong SKIP or a lost fail-closed
   # answer — the direction that costs coverage rather than minutes — and each is anchored on a
   # `# row-*` marker so it names one site regardless of what is added above it.
-  check_mut rows-gate-everything \
+  shmutant_mut rows-gate-everything \
     'then decisions+=(run); run=$((run + 1))   # row-match' \
     'then decisions+=(skip); run=$((run + 1))   # row-match' \
-    'the rows that mutate the changed file run'
-  check_mut rows-never-gate \
+    '…the rows that mutate the changed file run'
+  shmutant_mut rows-never-gate \
     'else decisions+=(skip); skip=$((skip + 1)); fi' \
     'else decisions+=(run); skip=$((skip + 1)); fi' \
-    'and a row mutating an untouched file is gated'
-  check_mut rows-shared-input-ignored \
+    '…and a row mutating an untouched file is gated'
+  shmutant_mut rows-shared-input-ignored \
     'if [ -n "$hits" ]; then   # row-shared' \
     'if false; then   # row-shared' \
     'names the shared input that forced it'
-  check_mut rows-undeclared-target-allowed \
+  shmutant_mut rows-undeclared-target-allowed \
     'if [ "$is_target" -eq 0 ]; then   # row-target-undeclared' \
     'if false; then   # row-target-undeclared' \
     'a row target outside the declared inputs fails closed'
-  check_mut rows-unregistered-suite-gated \
+  shmutant_mut rows-unregistered-suite-gated \
     'if ! inputs="$(gate_registry_inputs "$suite" suite 2>&1)"; then   # row-registry' \
     'if inputs="$(gate_registry_inputs "$suite" suite 2>&1)"; then   # row-registry' \
-    'naming the registry as the reason'
-  check_mut rows-override-ignored \
+    '…naming the registry as the reason'
+  shmutant_mut rows-override-ignored \
     'if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-override' \
     'if false; then   # row-override' \
     'ADB_MUTATION_RUN_ALL → exit 12'
-  check_mut rows-empty-stdin-decides \
+  shmutant_mut rows-empty-stdin-decides \
     'if [ "$n" -eq 0 ]; then   # row-usage' \
     'if false; then   # row-usage' \
     'no rows on stdin is USAGE (2), never a decision'
-  check_mutation_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
+  check_shmutant_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
 
   # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
   # the same suite, a different target per pool. A pin that cannot go red on the exact edit it
   # exists to refuse is the silent guard `self-review.md` warns about.
-  mut_prepare_ci() { mut_prepare "$1" >/dev/null || return 1; printf '%s' "$1/.github/workflows/ci.yml"; }
-  check_mut_reset
-  check_mut ci-ungated-inline \
+  shmutant_reset
+  shmutant_target .github/workflows/ci.yml
+  shmutant_mut ci-ungated-inline \
     'run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation' \
     'run: bash scripts/check-common-lib.sh --mutation' \
     'ci.yml still invokes a mutation harness directly'
   # A `run: |` block's body line is an indented bare command with no `run:` on it — the shape a
   # `run: bash` grep misses. Rendered as one line here because the literal edit is single-line;
   # the scan does not care what precedes the line, which is the point.
-  check_mut ci-ungated-block-body \
+  shmutant_mut ci-ungated-block-body \
     '        run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation' \
     '          bash scripts/check-pr-watch.sh --mutation' \
     'ci.yml still invokes a mutation harness directly'
-  check_mut ci-foreign-command \
+  shmutant_mut ci-foreign-command \
     'run adopt-mutation -- bash scripts/check-adopt.sh --mutation' \
     'run adopt-mutation -- bash scripts/check-adopt-readiness.sh --mutation' \
     'runs the registry'"'"'s own command'
-  check_mutation_pool "check-mutation-gate (ci.yml)" "$work/ci" mut_prepare_ci mut_run 4
+  check_shmutant_pool "check-mutation-gate (ci.yml)" "$work/ci" mut_prepare mut_run 4
 
-  mut_prepare_nightly() { mut_prepare "$1" >/dev/null || return 1; printf '%s' "$1/.github/workflows/mutation-nightly.yml"; }
-  check_mut_reset
-  check_mut nightly-drops-a-step \
+  shmutant_reset
+  shmutant_target .github/workflows/mutation-nightly.yml
+  shmutant_mut nightly-drops-a-step \
     '          - fact-mutation' \
     '          - fact-mutation-retired' \
     'matrix is exactly the registry'
-  check_mut nightly-duplicates-a-step \
+  shmutant_mut nightly-duplicates-a-step \
     '          - docs-lib-mutation' \
     '          - fact-mutation' \
     'matrix is exactly the registry'
-  check_mut nightly-override-off \
+  shmutant_mut nightly-override-off \
     "ADB_MUTATION_RUN_ALL: '1'" \
     "ADB_MUTATION_RUN_ALL: '0'" \
     'forces every harness'
   # Two leading spaces: the header comment mentions `schedule:` too, and the FIRST hit is the one
   # that is edited — the trigger line is the only one indented exactly so.
-  check_mut nightly-per-block \
+  shmutant_mut nightly-per-block \
     "ADB_MUTATION_FULL_SUITE: '1'" \
     "ADB_MUTATION_FULL_SUITE: '0'" \
     'runs every mutant against the full suite'
-  check_mut nightly-unscheduled \
+  shmutant_mut nightly-unscheduled \
     '  schedule:' \
     '  schedul3:' \
     'has no schedule'
-  check_mutation_pool "check-mutation-gate (nightly)" "$work/nightly" mut_prepare_nightly mut_run 4
+  check_shmutant_pool "check-mutation-gate (nightly)" "$work/nightly" mut_prepare mut_run 4
   check_summary "check-mutation-gate-mutation"
 fi
 
@@ -611,6 +620,21 @@ done <<< "$LIST"
 # prints — the silent-guard shape. One row-driving suite exists today; zero means the grep stopped
 # matching, not that the rule stopped applying.
 [ "$_rowsteps" -ge 1 ] && ok   || bad "no registered step was found driving check_mutation_rows — this pin scanned nothing, which is indistinguishable from it passing"
+
+# …and the same rule for the vendored harness (#519): a suite that runs its whole-suite pool through
+# `check_shmutant_pool` EXECUTES `scripts/shmutant.sh`, so a step gated on inputs that omit it would
+# skip exactly the run that proves a new pin of it still kills every row. Derived from the suites.
+_shmsteps=0
+while IFS="$(printf '\t')" read -r _s _cmd _ _ _in; do
+  [ -n "$_s" ] || continue
+  [ "$_in" != "-" ] || continue
+  _suite="$(printf '%s' "$_cmd" | awk '{print $2}')"
+  [ -f "$ROOT/$_suite" ] || continue
+  grep -q '^[[:space:]]*check_shmutant_pool ' "$ROOT/$_suite" || continue
+  _shmsteps=$((_shmsteps + 1))
+  case ",$_in," in *,scripts/shmutant.sh,*) ok ;; *) bad "$_s runs check_shmutant_pool, so its verdict depends on scripts/shmutant.sh — it must declare it as an input" ;; esac
+done <<< "$LIST"
+[ "$_shmsteps" -ge 1 ] && ok || bad "no registered step was found running check_shmutant_pool — this pin scanned nothing, which is indistinguishable from it passing"
 
 MUT_STEPS="$(printf '%s\n' "$LIST" | awk -F'\t' '$1 ~ /-mutation$/ {print $1}')"
 [ -n "$MUT_STEPS" ] && ok || bad "the shipped registry names no *-mutation step (the scan matched nothing)"

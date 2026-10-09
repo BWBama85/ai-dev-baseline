@@ -45,6 +45,10 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
+# `shmutant_mutate`, the inline mutations' literal rewrite: the vendored shmutant (#519), sourced
+# here and never by check-lib.sh, which must stay evaluable on bash 3.2 (D35, D125).
+# shellcheck source=/dev/null
+. scripts/shmutant.sh
 
 AGENTS='claude:CLAUDE.md codex:AGENTS.md gemini:GEMINI.md'
 POINTER_PREFIX='**Procedure:** '
@@ -440,7 +444,7 @@ RULE
   mkfixture "$d" || bad "mut-nosplit: fixture"
   split_line='if (emit && (class == "" || (class == "procedure") == proc)) print'
   eq "$(grep -Fc -- "$split_line" "$d/scripts/build.sh")" "1" "mut-nosplit: the split line is unique in build.sh"
-  if check_mutate_literal "$d/scripts/build.sh" "$split_line" 'if (emit) print'; then
+  if shmutant_mutate "$d/scripts/build.sh" "$split_line" 'if (emit) print'; then
     printf '# p\n\nRULE-LINE\n<!-- adb:procedure -->\n\nPROC-LINE\n<!-- adb:end -->\n' > "$d/base/practices/10-fixture.md"
     run_build "$d" || bad "mut-nosplit: the mutated build failed — the mutation broke the script rather than its split"
     before="$fail"; verify_tree "$d" > /dev/null 2>&1; after="$fail"; fail="$before"

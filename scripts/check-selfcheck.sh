@@ -98,10 +98,10 @@ check_exit_guard "check-selfcheck" "cancel_sweep; rm -rf \"$work\""
 # claim to cover it. So each row breaks the dispatcher's reaping in ONE way, runs the WHOLE suite
 # against the broken copy, and requires it back at exit 1 carrying THAT CASE'S OWN assertion text.
 #
-# Every row is a single literal edit, which is what lets them ride `check_mutation_pool` rather
-# than a harness of their own: the shared one already encodes the discipline — the edit must
-# APPLY, the child must exit EXACTLY 1, and the failure must be the row's own witness rather than
-# an accidental one somewhere else in the suite.
+# Every row is a single literal edit, which is what lets them ride the vendored shmutant (#519)
+# rather than a harness of their own: it already encodes the discipline — the edit must APPLY, the
+# child must exit EXACTLY 1, and the failure must be the row's own witness rather than an
+# accidental one somewhere else in the suite.
 #
 # THE SHORTENED DEADLINE IS PAID FOR BY THE CONTROL. These runs lower `ADB_CANCEL_DEADLINE_SECS`,
 # and a deadline too short to let a CORRECT dispatcher finish reaping would redden every row for
@@ -115,16 +115,14 @@ check_exit_guard "check-selfcheck" "cancel_sweep; rm -rf \"$work\""
 if [ "$MODE" = mutation ]; then
   export ADB_CANCEL_DEADLINE_SECS=8
 
-  # mut_prepare <copy-dir> — a throwaway tree the nested suite can run in, and the path to mutate.
-  # `scripts` alone: that is this suite's whole mutation surface, and copying the repo's contents
-  # (with its ~66MB .git) four times over is the cost check_copy_subtrees exists to avoid.
+  # mut_prepare <dir> — a throwaway tree the nested suite can run in, built ONCE; shmutant clones
+  # it for every row. `scripts` alone: that is this suite's whole mutation surface, and copying the
+  # repo's contents (with its ~66MB .git) is the cost check_copy_subtrees exists to avoid.
   mut_prepare() {
-    local d="$1"
-    check_copy_subtrees "$ROOT" "$d" scripts >/dev/null 2>&1 || return 1
-    printf '%s' "$d/scripts/selfcheck.sh"
+    check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1
   }
 
-  # mut_run <copy-dir> — the nested suite, guarded by a parse check. A mutation that stops the
+  # mut_run <root> — the nested suite, guarded by a parse check. A mutation that stops the
   # runner PARSING has changed whether it runs at all rather than how it reaps: its fixture stages
   # no workers, and the nested suite would still fail on the right witness, crediting the row for
   # a defect it never exercised. Returning 9 makes the pool report an ABORT, which is what it was.
@@ -138,7 +136,7 @@ if [ "$MODE" = mutation ]; then
   # THE CONTROL, first. Every row below reads a FAILURE, and a copy that cannot pass at all would
   # satisfy all four while exercising nothing.
   mut_ctl="$work/control"
-  if mut_prepare "$mut_ctl" >/dev/null; then
+  if mut_prepare "$mut_ctl"; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes at the same deadline the rows use (else every row below is red for the wrong reason)"
     # BOTH HALVES, and neither alone (review finding). This was `*"83 passed"*|*" 0 failed"*` — an
@@ -157,24 +155,29 @@ if [ "$MODE" = mutation ]; then
     bad "control: could not build the unmutated copy"
   fi
 
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/shmutant.sh" || bad "selfcheck-guard: scripts/shmutant.sh could not be sourced"
+  shmutant_target scripts/selfcheck.sh
   # One row per case. The first two share an edit deliberately: "cancellation signals nothing" is
   # one defect, and BOTH the pool case and the serial case are required to see it.
   #
   # `for p in ""` empties the TERM loop, which also leaves `had` at 0 and so skips the KILL loop —
-  # one edit, nothing signalled at all.
-  check_mut "pool-unreapable" \
-    'for p in "${!LIVE[@]}"; do' 'for p in ""; do' \
+  # one edit, nothing signalled at all. The KILL loop below it opens with the same words, so the
+  # TERM loop carries a `# row-term-loop` marker: shmutant refuses a literal that starts at more than
+  # one position, since its rewrite takes the first and that may not be the copy a row means.
+  shmutant_mut "pool-unreapable" \
+    'for p in "${!LIVE[@]}"; do   # row-term-loop' 'for p in ""; do   # row-term-loop' \
     'cancellation terminates the workers instead of orphaning them'
-  check_mut "serial-unreapable" \
-    'for p in "${!LIVE[@]}"; do' 'for p in ""; do' \
+  shmutant_mut "serial-unreapable" \
+    'for p in "${!LIVE[@]}"; do   # row-term-loop' 'for p in ""; do   # row-term-loop' \
     'cancelling --serial terminates the running step instead of leaving it behind'
   # TERM survives; only the escalation goes. Every polite stub dies on the first TERM, so this is
   # invisible to the other three cases and visible to the deaf one — which is why that case exists.
-  check_mut "no-kill-escalation" \
+  shmutant_mut "no-kill-escalation" \
     '_adb_bounded_signal KILL "$p"' ':' \
     'the TERM -> grace -> KILL escalation stops a worker that ignores TERM'
   # The fix itself, removed: `_cleanup` is back to reaping only what `LIVE` happens to hold.
-  check_mut "live-only-reaping" \
+  shmutant_mut "live-only-reaping" \
     'LIVE["$j"]=1' ':' \
     'a worker forked but not yet recorded in LIVE is still reaped'
   # The two LANE pins (#423). Both are single literal edits, so they ride the same harness. A lane
@@ -182,14 +185,14 @@ if [ "$MODE" = mutation ]; then
   # array changes no behaviour any other assertion watches — every step still runs, and every step
   # still passes — so without these rows the pins would be the kind of check that cannot answer
   # wrong.
-  check_mut "lane-emptied" \
+  shmutant_mut "lane-emptied" \
     'ISOLATED_STEPS=(session-currency install-migration install-guard selfcheck-guard selfcheck-guard-mutation install-dry-run)' \
     'ISOLATED_STEPS=()' \
     'the load-sensitive lane is exactly the suites'
   # lane_reason stops recognising the isolated lane while lane_of still does, so the two fields
   # disagree — the one defect a single-array design could not have had, and the reason the guard
   # asks BOTH questions rather than trusting one.
-  check_mut "lane-reason-lost" \
+  shmutant_mut "lane-reason-lost" \
     'for _p in "${ISOLATED_STEPS[@]}"; do [ "$1" = "$_p" ] && { printf '"'"'load-sensitive\n'"'"'; return 0; }; done' \
     ':' \
     "--list's lane and its reason never disagree about any step"
@@ -199,20 +202,20 @@ if [ "$MODE" = mutation ]; then
   # forgets them all leave every step green. Two of 8e's assertions are not rows: a ticker left
   # running would make every nested run wait out a full tick, and a ticker reaped as a step corrupts
   # the pool's running count. Their observation is in D122.
-  check_mut "overrun-silent" \
+  shmutant_mut "overrun-silent" \
     'printf '"'"'selfcheck: still running past %ss: %s (%ss so far)\n'"'"' "$OVERRUN" "$name" "$el"' ':' \
     'a step past the ceiling is named LIVE'
-  check_mut "overrun-unreported" \
+  shmutant_mut "overrun-unreported" \
     '[ "${#OVERRAN[@]}" -gt 0 ] && printf '"'"'overran (past %ss): %s\n'"'"' "$OVERRUN" "${OVERRAN[*]}"' ':' \
     'the result block names a step that overran and passed'
-  check_mut "overrun-by-reap-time" \
+  shmutant_mut "overrun-by-reap-time" \
     '  if s="$(stamp_of started "$1")" && e="$(stamp_of ended "$1")"; then el=$(( e - s )); fi' ':' \
     'a step that ENDED inside the ceiling is not named'
-  check_mut "digest-drops-overran" \
+  shmutant_mut "digest-drops-overran" \
     '    summarize_overran "$log"' ':' \
     'a green digest still names a step that overran'
 
-  check_mutation_pool "selfcheck-guard" "$work" mut_prepare mut_run 4
+  check_shmutant_pool "selfcheck-guard" "$work/pool" mut_prepare mut_run 4
   check_summary "selfcheck-guard-mutation"
   exit 0
 fi

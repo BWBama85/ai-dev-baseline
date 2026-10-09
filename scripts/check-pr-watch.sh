@@ -111,13 +111,13 @@ check_exit_guard "check-pr-watch" "rm -rf \"$work\""
 # and section 14's CI guards can fire. It is not a mutation suite for `pr-watch.sh` at large; the
 # other classification sections are covered by their own assertions and by nothing here.
 #
-# THREE POOLS, because `check_mutation_pool` builds one target path per call and these witnesses
-# live in two files — the wait loop's own reporting (`pr-watch.sh`), and the staleness rule and
-# #447's pair rule it delegates to (`common.sh`). That is the harness's shape, not a judgement about
-# the rows.
+# THREE POOLS, because the harness these rows were written for built one target path per pool and
+# these witnesses live in two files — the wait loop's own reporting (`pr-watch.sh`), and the
+# staleness rule and #447's pair rule it delegates to (`common.sh`). shmutant could carry both files
+# in one table (`shmutant_target` per group); the port to it (#519) is 1:1 and keeps the shape.
 #
 # THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. Every row below reads a
-# FAILURE, and `_check_mut_witness` only asks whether SOME `FAIL:` line carries the row's witness —
+# FAILURE, and a row is killed when SOME `FAIL:` line carries its witness —
 # so a copied baseline that already fails on that witness would credit the row for a defect the
 # mutation never caused. Checking that the literal APPLIED proves the edit landed, not that it is
 # what turned the suite red. The unmutated `pr-watch` step reddens the whole selfcheck if the tree
@@ -143,17 +143,15 @@ if [ "$MODE" = mutation ]; then
     "$BASH" "$d/scripts/check-pr-watch.sh" 2>&1
   }
   # `scripts` alone is this suite's whole mutation surface, so the subtree copier rather than the
-  # worktree one: five copies of the repo's ~66MB .git would be spent moving a tree about to be
-  # deleted (check_copy_subtrees' own header measures that).
-  mut_prep_watch()  { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1
-                      printf '%s' "$1/scripts/lib/pr-watch.sh"; }
-  mut_prep_common() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1 || return 1
-                      printf '%s' "$1/scripts/lib/common.sh"; }
+  # worktree one: copies of the repo's ~66MB .git would be spent moving a tree about to be deleted
+  # (check_copy_subtrees' own header measures that). Built ONCE per pool; shmutant clones it per row,
+  # and `shmutant_target` names the file each row mutates (#519).
+  mut_prep() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1; }
 
-  # THE CONTROL. `mut_prep_watch` is used only to build an unmutated copy here; which file it names
-  # is irrelevant, because nothing is written to it.
+  # THE CONTROL: the same tree, unmutated. (The pools run no baseline of their own —
+  # check_shmutant_pool sets SHMUTANT_BASELINE=0 — so this is the one that proves the copy green.)
   mut_ctl="$work/control"
-  if mut_prep_watch "$mut_ctl" >/dev/null; then
+  if mut_prep "$mut_ctl"; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes (else every row below is red for the wrong reason)"
     case "$mut_out" in
@@ -165,9 +163,12 @@ if [ "$MODE" = mutation ]; then
   fi
 
   # --- the wait loop's own reporting and bounding ----------------------------------------------
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/shmutant.sh" || bad "pr-watch: scripts/shmutant.sh could not be sourced"
+  shmutant_target scripts/lib/pr-watch.sh
   # The head move goes unreported. The rest of the watch is untouched, so ONLY the two assertions
   # that read that line can catch it — which is the point.
-  check_mut "head-move-unreported" \
+  shmutant_mut "head-move-unreported" \
     'head moved $lasthead -> $head; any earlier signal no longer applies' \
     'head changed; any earlier signal no longer applies' \
     'wait: reports that the head moved under it'
@@ -175,75 +176,77 @@ if [ "$MODE" = mutation ]; then
   # Deleting the clamp leaves the requested 3000, which overshoots both the bound and what remains —
   # the same assertion `nap-is-the-bound` trips, from the other direction. Two defects, one witness:
   # a row proves THAT assertion fires for THAT defect, not that it owns it.
-  check_mut "nap-unclamped" \
+  shmutant_mut "nap-unclamped" \
     '[ "$nap" -gt "$remaining" ] && nap="$remaining"' \
     ':' \
     'wait: sleeps what REMAINS, not the original bound'
   # The interval is ignored and the nap becomes a constant. Caught ONLY by the two-bound tracking
   # assertion — the ceilings above are satisfied by any constant that happens to sit under them,
   # which is exactly how the earlier single-scenario version of that case passed a flat zero.
-  check_mut "nap-constant" \
+  shmutant_mut "nap-constant" \
     'nap="$OPT_INTERVAL"' \
     'nap=0' \
     'wait: the nap TRACKS the remaining bound'
   # The nap becomes the ORIGINAL bound rather than what is left of it, so the watcher oversleeps the
   # deadline by exactly however long the poll before it cost. Invisible to every ceiling that
   # compares against `--max-secs` itself, which is why the scenario forces latency into poll 1.
-  check_mut "nap-is-the-bound" \
+  shmutant_mut "nap-is-the-bound" \
     'nap="$remaining"' \
     'nap="$OPT_MAX_SECS"' \
     'wait: sleeps what REMAINS, not the original bound'
   # THE DEFECT #394 REPORTS, injected at its source: a deadline the fixture cannot outlive. Pinning
   # it to 3s reproduces what a starved runner did to the retired bound, and the case that must
   # notice is the one whose first poll is deliberately slow.
-  check_mut "deadline-beats-the-fixture" \
+  shmutant_mut "deadline-beats-the-fixture" \
     "printf '%s' \"\$(( BASH_MONOSECONDS + OPT_MAX_SECS ))\"" \
     "printf '%s' \"\$(( BASH_MONOSECONDS + 3 ))\"" \
     'wait: a first poll outliving the retired bound no longer ends the watch'
-  check_mutation_pool "pr-watch-wait" "$work/mw" mut_prep_watch mut_run 4
+  check_shmutant_pool "pr-watch-wait" "$work/mw" mut_prep mut_run 4
 
   # --- the staleness rule the wait delegates to -------------------------------------------------
-  # A SECOND TABLE, so the table must be cleared first: `check_mut` appends, and a stale row would
-  # be re-run against the wrong target and scored as "did not apply".
+  # A SECOND TABLE, so the table must be cleared first: `shmutant_mut` appends, and a stale row would
+  # be re-run against the wrong target and scored `unapplied`.
   #
-  # Both witnesses below are the DISTINCTIVE PREFIX of their assertion rather than the whole label
-  # (`check_mut` allows either): the labels carry an apostrophe, and quoting one inside a literal
-  # here costs more legibility than the extra words buy. No other assertion in this suite starts
-  # with either phrase.
-  check_mut_reset
+  # Both witnesses below are the DISTINCTIVE PREFIX of their assertion rather than the whole label:
+  # the labels carry an apostrophe, and quoting one inside a literal here costs more legibility than
+  # the extra words buy. shmutant matches a witness as a whole TOKEN, so each prefix ends where its
+  # label continues with a space or punctuation. No other assertion in this suite starts with either.
+  shmutant_reset
+  shmutant_target scripts/lib/common.sh
   # The staleness comparison loses its backslash — the exact regression common.sh's own comment
   # warns about, and the one that turns every signal fresh with no error anywhere.
-  check_mut "staleness-disarmed" \
+  shmutant_mut "staleness-disarmed" \
     'elif [ "$val" \> "$anchor" ]; then' \
     'elif [ "$val" > "$anchor" ]; then' \
     'wait: a signal from the PREVIOUS head'
   # The verdict stays right and the REASON stops being said. `at $val predates this head` rather
   # than the shorter phrase, because the shorter one also appears in the comment above the echo and
   # a row that edits a comment tests nothing.
-  check_mut "staleness-unexplained" \
+  shmutant_mut "staleness-unexplained" \
     'at $val predates this head' \
     'at $val is not evidence about this head' \
     'wait: says WHY the previous era'
-  check_mutation_pool "pr-watch-staleness" "$work/ms" mut_prep_common mut_run 4
+  check_shmutant_pool "pr-watch-staleness" "$work/ms" mut_prep mut_run 4
 
   # --- the #447 pair rule and status-comment filter ---------------------------------------------
-  check_mut_reset
+  shmutant_reset
+  shmutant_target scripts/lib/common.sh
   # The `+1` no longer has to be as new as the comment, so a reviewer speaking again reads clean.
-  check_mut "pair-ignores-order" \
+  shmutant_mut "pair-ignores-order" \
     'if [ -n "$pnew" ] && ! [ "$cnew" \> "$pnew" ]; then' \
     'if [ -n "$pnew" ]; then' \
     'pair: a comment NEWER than the'
   # The `+1` is no longer required at all, so a lone task-mode comment stops reading as findings.
-  check_mut "pair-without-plus1" \
+  shmutant_mut "pair-without-plus1" \
     'if [ -n "$pnew" ] && ! [ "$cnew" \> "$pnew" ]; then' \
     'if :; then' \
     'task mode: an issue comment from the reviewer, newer than the head -> findings'
   # The status marker is recognised and then kept, so a Running review reads as findings again.
-  check_mut "status-comment-kept" \
+  shmutant_mut "status-comment-kept" \
     'if [ "$status" = "true" ]; then' \
     'if false; then' \
     'status: a fresh Running status comment alone is pending'
-  check_mutation_pool "pr-watch-pair" "$work/mp" mut_prep_common mut_run 3
+  check_shmutant_pool "pr-watch-pair" "$work/mp" mut_prep mut_run 3
 
   # --- the head's CI (#448): PER-TEST rows, each running only the block that witnesses it --------
   # Every literal is read from a quoted heredoc, so the code it names arrives byte-for-byte; the row

@@ -8,6 +8,25 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Changed
+
+- **The whole-suite mutation pool is the vendored shmutant (#519, phase 1).** `scripts/check-lib.sh`
+  still carried the harness [shmutant](https://github.com/BWBama85/shmutant) was extracted from, so
+  the two copies drifted and fixes made upstream never reached this repo. `scripts/shmutant.sh` is
+  now v0.2.0, copied byte for byte and never edited here; `scripts/shmutant.sh.sha256` records its
+  digest and the new `check-shmutant-pin.sh` registry step fails when the file stops matching it.
+  The nine suites that ran `check_mutation_pool` (205 rows) and the four that called
+  `check_mutate_literal` directly (8 calls) now run through shmutant: a suite sources it itself and
+  hands its table to `check-lib.sh`'s new `check_shmutant_pool`, which carries the 1800 s row deadline
+  and the pool width into the call, refuses a verdict stream it cannot read whole, and fails on every
+  verdict but `killed`. `check_mut`, `check_mut_reset`, `check_mutation_pool` and `_check_mut_one`
+  are gone. Rows port 1:1. Seven literals that start more than once in their target, which shmutant
+  refuses, name the same site and defect through a longer literal or a `# row-*` marker. Each ported
+  `*-mutation` step declares `scripts/shmutant.sh` as an input, and `check-mutation-gate.sh` pins
+  that. In CI a failed pool's stream and failing rows' output are uploaded as an artifact.
+  `check-bash-floor.sh --entrypoints` gains a `vendored` class for the file (D125). The per-block
+  rows (`check_mutation_rows`) are phase 2, #525.
+
 ### Added
 
 - **The PR loops read the head's CI (#448).** A required check that went red on a head the

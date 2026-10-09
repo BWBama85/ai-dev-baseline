@@ -10,8 +10,9 @@
 #   3. git fixture helpers (§ further down) — check_git, check_make_repo_pair,
 #      check_make_stub_repo, check_write_stub: throwaway repos and executable stubs.
 #   4. PR payload builders (§ further down) — check_pr_*_json, check_pr_json, check_declare_bots.
-#   5. mutation harness (§ with check_mutate_line) — check_mutate_literal, check_mut,
-#      check_mutation_pool: a defect per row into a tree COPY, require RED (family 2's counters).
+#   5. mutation harness (§ with check_mutate_line) — check_mutate_literal and the shared scoring
+#      the per-block rows use, plus check_shmutant_pool: the whole-suite pool, which is the vendored
+#      scripts/shmutant.sh (#519) — the CALLER sources it, never this file — scored into family 2.
 #   6. blocks and per-test rows (§ #468) — check_blocks_init, check_block, check_row,
 #      check_mutation_rows: a mutant runs only the block that witnesses it, plus its dependencies.
 #
@@ -221,6 +222,11 @@ check_mutate_line() {
 # Inject one defect per row into a COPY of the tree and require the suite under test to come back
 # RED. A SIBLING of `check_mutate_line` above, not a replacement: that one applies a `sed` script
 # and needs whole-line uniqueness, this one takes an arbitrary literal substring. (D68)
+#
+# What remains here is what the per-block rows (`check_mutation_rows`, below) still use: the literal
+# rewrite, the witness test, the verdict taxonomy and the row deadline. The whole-suite pool that
+# shared them moved to the vendored shmutant in #519 (`check_shmutant_pool`, further down); #525
+# moves the rows too, and these go with them.
 
 # check_mutate_literal <file> <old> <new> — replace the FIRST occurrence of literal <old> with
 # <new>, in place. Returns:
@@ -243,24 +249,6 @@ check_mutate_literal() {
   return 0
 }
 
-# check_mut <name> <old-literal> <new-literal> <witness> — append one table row. Fixed strings,
-# never regexes. The witness is the assertion label (or a distinctive fragment) the child must fail
-# on, since red for the wrong reason is not evidence (#213's `fires:<witness>` contract).
-CHECK_MUT_NAMES=(); CHECK_MUT_OLD=(); CHECK_MUT_NEW=(); CHECK_MUT_WIT=()
-check_mut() {
-  CHECK_MUT_NAMES+=("$1"); CHECK_MUT_OLD+=("$2"); CHECK_MUT_NEW+=("$3"); CHECK_MUT_WIT+=("$4")
-}
-
-# check_mut_reset — empty the table, for a suite that runs `check_mutation_pool` more than once.
-# A second pool call is how a suite whose witnesses live in TWO files covers both, since a pool
-# builds ONE target path for every row it runs; without this the first table's rows would be
-# re-run against the second target and scored "did not apply". It lives here, beside the arrays it
-# clears, so a caller neither reaches into check-lib's state nor carries a `disable=SC2034` for
-# assignments ShellCheck cannot see used across the source boundary.
-check_mut_reset() {
-  CHECK_MUT_NAMES=(); CHECK_MUT_OLD=(); CHECK_MUT_NEW=(); CHECK_MUT_WIT=()
-}
-
 # _check_mut_witness <output> <witness> — true when some line of <output> begins with `FAIL: ` and
 # carries <witness>. Per LINE, so a mid-label witness cannot match a passing assertion's echo.
 # `case` over a here-string, never `printf | grep -q`: pipefail promotes grep's early-exit SIGPIPE.
@@ -275,34 +263,8 @@ _check_mut_witness() {
   return 1
 }
 
-# _check_mut_one <index> <workdir> <prepare-fn> <run-fn> — one row, start to verdict. Writes
-# `<verdict>|<why>` to `<workdir>/mut-<i>/verdict`: it runs in a background subshell, where an
-# incremented counter would die with it (#259). Its own status is always 0 — the pool reaps exactly
-# one job per `wait -n`, so a non-zero worker would miscount the pool. (D68)
-_check_mut_one() {   # <index> <workdir> <prepare-fn> <run-fn>
-  local i="$1" copy="$2/mut-$1" prep="$3" run="$4" tgt out src rc
-  if ! tgt="$("$prep" "$copy")" || [ -z "$tgt" ]; then
-    printf 'bad|could not build the tree copy\n' > "$copy/verdict" 2>/dev/null; return 0
-  fi
-  check_mutate_literal "$tgt" "${CHECK_MUT_OLD[$i]}" "${CHECK_MUT_NEW[$i]}"; rc=$?
-  case "$rc" in
-    0) ;;
-    2) printf 'bad|the injection did not apply — this row tests NOTHING\n' > "$copy/verdict"; return 0 ;;
-    *) printf 'bad|the rewrite failed\n' > "$copy/verdict"; return 0 ;;
-  esac
-  # The status AND the witness: matching printed text alone accepts a child that prints the expected
-  # line and then exits 0. Exactly 1 is a failed assertion; anything else is the suite dying. (D68)
-  # The output goes BESIDE the copy, never into it: the copy is the tree the suite is scanning.
-  _check_run_bounded "$2/mut-$1.out" "$run" "$copy"; src=$?
-  if [ "$CHECK_RUN_HUNG" -eq 1 ]; then _check_hung_verdict "$copy/verdict"; return 0; fi
-  # READ IN FULL OR NOT AT ALL: a read that failed part-way can still carry the witness.
-  if ! out="$(cat "$2/mut-$1.out")"; then printf 'bad|its output could not be read back, so it has no verdict\n' > "$copy/verdict"; return 0; fi
-  _check_mut_score "$copy/verdict" "$out" "$src" "${CHECK_MUT_WIT[$i]}"
-  return 0
-}
-
-# _check_mut_score <verdict-file> <output> <status> <witness> — the ONE verdict taxonomy, shared by
-# both pools. Status exactly 1 AND a `FAIL:` line carrying the witness is the only green-for-the-row
+# _check_mut_score <verdict-file> <output> <status> <witness> — the ONE verdict taxonomy of the
+# per-block rows (shmutant's pool has its own, #519). Status exactly 1 AND a `FAIL:` line carrying the witness is the only green-for-the-row
 # answer; everything else is named. (D68)
 _check_mut_score() {
   local vf="$1" out="$2" src="$3" wit="$4"
@@ -323,8 +285,9 @@ _check_mut_score() {
 }
 
 # --- the row deadline (#445) -------------------------------------------------------------------
-# Every suite run THESE TWO POOLS make is bounded: each mutant, each block's unmutated control and the
-# full unmutated control. Without it, a mutant that BLOCKS (a FIFO opened with no writer, a `read`
+# Every suite run the per-block rows make is bounded: each mutant, each block's unmutated control and
+# the full unmutated control — and `check_shmutant_pool` hands the SAME bound to shmutant as
+# SHMUTANT_TIMEOUT (#519). Without it, a mutant that BLOCKS (a FIFO opened with no writer, a `read`
 # with no -t, a lock never released) is indistinguishable from one still running, and the harness
 # waits on it for as long as the operator does. The bound is a hang backstop, not a budget:
 # ADB_MUTATION_ROW_TIMEOUT_SECS, default 1800, sized for a suite running several times its idle time
@@ -399,25 +362,58 @@ _check_run_as_caller() {
 }
 
 # _check_hung_verdict <verdict-file> — the row deadline's verdict. A hung mutant DID reach the code, so
-# the pools count it as applied; it is never counted RED, because no assertion caught anything.
+# the rows count it as applied; it is never counted RED, because no assertion caught anything.
 _check_hung_verdict() {
   printf 'bad|hung — no verdict within %ss (the row deadline, ADB_MUTATION_ROW_TIMEOUT_SECS), so the suite was terminated: the defect was neither caught nor missed\n' \
     "$CHECK_ROW_SECS" > "$1"
 }
 
-# check_mutation_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run every table row
-# through a bounded pool, scoring into family 2's counters. Width from `adb_pool_size`
-# (min(cpu, cap)); the cap is a parameter because the two adopt suites differ deliberately (D66).
-# The parent scores every index and asserts rows-scored == table size (D68). Callbacks:
-#   <prepare-fn> <copy-dir>  build the tree copy; PRINT the path to mutate, nothing else. Non-zero
-#                            or empty stdout fails that row.
-#   <run-fn>     <copy-dir>  run the suite in <copy-dir>. Its output AND exit status are the verdict.
-check_mutation_pool() {
-  local label="$1" wd="$2" prep="$3" run="$4" cap="$5"
-  local n i pool running=0 applied=0 red=0 scored=0 verdict why
-  n="${#CHECK_MUT_NAMES[@]}"
-  if [ "$n" -eq 0 ]; then
-    bad "$label --mutation: the mutation table is EMPTY — this harness proves nothing"
+# --- the whole-suite pool, through the vendored shmutant (#519) ----------------------------------
+# check_shmutant_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run the table the caller
+# declared with `shmutant_target` / `shmutant_mut` through `shmutant_pool`, then score every row into
+# family 2's counters: `killed` is one `ok`, every other verdict one `FAIL:` line naming the row.
+#
+# THE CALLER SOURCES scripts/shmutant.sh — never this file (D35, D125). check-lib.sh must stay
+# evaluable on bash 3.2 and shmutant needs 5.3, so this only CALLS what the caller loaded, and fails
+# when it is absent. Call it as a plain command, never as `check_shmutant_pool … ||`, after `&&` or as
+# an `if` condition: bash ignores errexit inside a function in those positions, so a callback's own
+# `set -e` would silently stop meaning anything (shmutant's docs/integrating.md §4).
+#
+# This repository's settings are carried through, so the port changes the harness and nothing it decides:
+#   SHMUTANT_TIMEOUT   the row deadline (ADB_MUTATION_ROW_TIMEOUT_SECS, default 1800, D122), not
+#                      shmutant's 300, which scores a slow suite's rows `timeout`;
+#   SHMUTANT_JOBS      adb_pool_size <cap> — the width the pool had, ADB_POOL_JOBS included;
+#   SHMUTANT_BASELINE  0 — the pools never ran an uninjected baseline. A suite that needs one keeps its
+#                      own control, and a suite that cannot select would otherwise pay one full run
+#                      per distinct witness (a selector defaults to its witness);
+#   SHMUTANT_STREAM    <workdir>.tsv, beside the workdir (shmutant refuses one inside it), so the
+#                      records never mix into the suite's own output;
+#   SHMUTANT_RED_STATUS / SHMUTANT_RED_PREFIX  1 and `FAIL: ` — check-lib's own red, pinned rather
+#                      than inherited from shmutant's defaults or from the caller's environment;
+#   SHMUTANT_COUNTS    0 — the suites report no per-unit counts, and an exported 1 would make the
+#                      pool refuse (it needs the baseline, which is off).
+# All are locals: they end with this call, and the pool reads them by dynamic scope. This call
+# exports none of them — but a name the caller's own environment already exported keeps that
+# attribute on the local (bash), so a row's suite would see it at the value set here. No suite a row
+# runs reads them. SHMUTANT_KEEP is left to the operator: keeping every clone is a debugging choice,
+# not a verdict.
+#
+# The pool's status is captured on its own line, before the stream is read, and must agree with the
+# records: 0 only when every row record is `killed`, 1 only when one is not, 2 (a harness error) fails
+# however many records exist. Every record is validated whole first — a stream this file cannot read
+# is a failure, never a partial verdict — and the row records must be exactly the table's rows, by
+# name and in order (shmutant emits them in table order).
+#
+# ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): when the pool did not pass, the stream and each failing
+# row's `mut-<n>/output` — the full output of the run that produced its verdict — are copied into a
+# fresh `<dir>/<label>.XXXXXX`, because the workdir dies with the suite's own EXIT cleanup.
+check_shmutant_pool() {
+  local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
+  local n pool rc parsed rec kind rest verdict name detail rows=0 killed=0 sums=0 sum_rows="" sum_killed="" tab art i
+  local -a failing=()
+  tab="$(printf '\t')"
+  if ! command -v shmutant_pool >/dev/null 2>&1; then
+    bad "$label --mutation: shmutant_pool is unavailable — the suite must source scripts/shmutant.sh before the pool"
     return 1
   fi
   if ! command -v adb_pool_size >/dev/null 2>&1; then
@@ -426,44 +422,89 @@ check_mutation_pool() {
   fi
   _check_row_secs "$label" || return 1
   pool="$(adb_pool_size "$cap")"
-
-  for (( i = 0; i < n; i++ )); do
-    mkdir -p "$wd/mut-$i"
-    _check_mut_one "$i" "$wd" "$prep" "$run" &
-    running=$((running + 1))
-    # `wait -n` alone: a `|| wait` fallback drains every child while decrementing once, degrading
-    # the pool to serial silently. `_check_mut_one` always returns 0, so nothing needs it. (D68)
-    if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
-  done
-  wait
-
-  for (( i = 0; i < n; i++ )); do
-    scored=$((scored + 1))
-    if [ ! -f "$wd/mut-$i/verdict" ]; then
-      bad "mutation '${CHECK_MUT_NAMES[$i]}': produced NO verdict — its worker died without reporting"
-      continue
-    fi
-    IFS='|' read -r verdict why < "$wd/mut-$i/verdict"
-    if [ "$verdict" = ok ]; then
-      ok; red=$((red + 1)); applied=$((applied + 1))
-    else
-      bad "mutation '${CHECK_MUT_NAMES[$i]}': $why"
-      # `applied` counts rows whose defect reached the code; a row that never got that far tested
-      # nothing at all, which is worse than a guard that missed one.
-      case "$why" in
-        *"did not apply"*|*"could not build"*|*"rewrite failed"*) : ;;
-        *) applied=$((applied + 1)) ;;
-      esac
-    fi
-  done
-  if [ "$scored" -ne "$n" ]; then
-    bad "$label --mutation: scored $scored of $n row(s) — the harness skipped rows and would have reported on none of them"
+  # shellcheck disable=SC2154  # SHMUTANT_ROWS_NAME is shmutant's table, declared by the caller's source
+  n="${#SHMUTANT_ROWS_NAME[@]}"
+  rm -f "$wd.tsv"
+  # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope
+  local SHMUTANT_TIMEOUT="$CHECK_ROW_SECS" SHMUTANT_JOBS="$pool" SHMUTANT_BASELINE=0 SHMUTANT_STREAM="$wd.tsv" \
+        SHMUTANT_RED_STATUS=1 SHMUTANT_RED_PREFIX='FAIL: ' SHMUTANT_COUNTS=0
+  shmutant_pool "$label" "$wd" "$prep" "$run" "$cap"
+  rc=$?
+  # One line per record, operative fields first and the free-text detail last, so the loop below never
+  # depends on how `read` splits an empty field. Anything off the record grammar is `malformed <line>`.
+  if [ ! -e "$wd.tsv" ]; then
+    parsed=""
+  elif ! parsed="$(awk -F'\t' '
+      $1 != "shmutant" || $2 != "1" { print "malformed\t" NR; next }
+      $3 == "row"      { if (NF != 9 || $4 == "" || $5 == "") print "malformed\t" NR
+                         else print "row\t" $4 "\t" $5 "\t" $9
+                         next }
+      $3 == "baseline" { if (NF != 7 || $5 == "") print "malformed\t" NR
+                         else if ($5 != "green") print "baseline\t" $5 "\t" $4 "\t" $7
+                         next }
+      $3 == "summary"  { if (NF != 8 || $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/) print "malformed\t" NR
+                         else print "summary\t" $5 "\t" $6
+                         next }
+                       { print "malformed\t" NR }' "$wd.tsv")"; then
+    bad "$label --mutation: the verdict stream $wd.tsv could not be read — no row has a verdict"
+    return 1
   fi
-  # SAY THE WIDTH IT ACTUALLY USED. A pool that degrades to one finishes with the same counts and
-  # the same verdict as a healthy one — the only difference is how long it took, which nothing reads.
-  printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; row deadline %ss)\n' \
-    "$label" "$applied" "$n" "$red" "$pool" "$CHECK_ROW_SECS"
-  [ "$applied" -eq "$n" ] || bad "$label --mutation: only $applied of $n mutations actually applied — the rest tested nothing"
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    kind="${rec%%"$tab"*}"; rest="${rec#*"$tab"}"
+    case "$kind" in
+      row)
+        verdict="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
+        name="${rest%%"$tab"*}"; detail="${rest#*"$tab"}"
+        if [ "$name" != "${SHMUTANT_ROWS_NAME[$rows]-}" ]; then
+          bad "$label --mutation: row verdict $rows names '$name', but the table's row $rows is '${SHMUTANT_ROWS_NAME[$rows]-<none>}' — the stream is not this table's"
+          failing+=("$rows")
+        elif [ "$verdict" = killed ]; then
+          ok; killed=$((killed + 1))
+        else
+          bad "mutation '$name': $verdict — $detail"
+          failing+=("$rows")
+        fi
+        rows=$((rows + 1)) ;;
+      baseline)
+        bad "$label --mutation: an uninjected baseline was not green (${rest%%"$tab"*}) — every row under it proves nothing" ;;
+      summary)
+        sums=$((sums + 1)); sum_rows="${rest%%"$tab"*}"; sum_killed="${rest#*"$tab"}" ;;
+      *)
+        bad "$label --mutation: record ${rest} of $wd.tsv is not in shmutant's v1 grammar — refusing to score from it" ;;
+    esac
+  done <<EOF
+$parsed
+EOF
+  case "$rc" in
+    0) [ "$killed" -eq "$rows" ] || bad "$label --mutation: shmutant_pool returned 0 while $((rows - killed)) row(s) were not killed" ;;
+    1) [ "$killed" -lt "$rows" ] || bad "$label --mutation: shmutant_pool returned 1 (a row not killed) but every row record says killed" ;;
+    2) bad "$label --mutation: shmutant_pool reported a HARNESS ERROR (status 2) — the reason is on its stderr above; no verdict here proves anything" ;;
+    *) bad "$label --mutation: shmutant_pool returned $rc, which is not one of its statuses (0/1/2)" ;;
+  esac
+  if [ "$rc" -ne 2 ]; then
+    [ "$rows" -eq "$n" ] || bad "$label --mutation: the stream carries $rows row verdict(s) for a table of $n — the harness skipped rows"
+    [ "$sums" -eq 1 ] && [ "$sum_rows" = "$n" ] && [ "$sum_killed" = "$killed" ] \
+      || bad "$label --mutation: the stream's summary record is missing, repeated, or counts other than its $n row(s) and $killed kill(s)"
+  fi
+  if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ] && { [ "$rc" -ne 0 ] || [ "${#failing[@]}" -gt 0 ]; }; then
+    if mkdir -p "$ADB_MUTATION_ARTIFACTS" 2>/dev/null && art="$(mktemp -d "$ADB_MUTATION_ARTIFACTS/$label.XXXXXX")"; then
+      [ ! -f "$wd.tsv" ] || cp "$wd.tsv" "$art/verdicts.tsv"
+      for i in "${failing[@]}"; do
+        [ ! -f "$wd/mut-$i/output" ] || cp "$wd/mut-$i/output" "$art/mut-$i.output" \
+          || printf '%s --mutation: the output of row %s could not be kept in %s\n' "$label" "$i" "$art" >&2
+      done
+      printf '%s --mutation: the failing rows'"'"' output is kept in %s\n' "$label" "$art"
+    else
+      printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take a copy of the failing rows'"'"' output\n' \
+        "$label" "$ADB_MUTATION_ARTIFACTS" >&2
+    fi
+  fi
+  # SAY THE WIDTH IT ACTUALLY USED, as the pool always did: a pool that degrades to one finishes with
+  # the same counts as a healthy one, and only this line says it took longer for a reason.
+  printf '\n%s --mutation: %d/%d mutation(s) killed on their own witness (shmutant; pool=%s; row deadline %ss)\n' \
+    "$label" "$killed" "$n" "$pool" "$CHECK_ROW_SECS"
+  [ "$rc" -eq 0 ] && [ "$killed" -eq "$n" ]
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------

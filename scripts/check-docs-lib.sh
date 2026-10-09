@@ -97,16 +97,20 @@ dl() { HOME="$FHOME" bash "$DL" "$@"; }
 
 # ============================= --mutation: the guards must be seen RED ===========================
 if [ "$MODE" = mutation ]; then
+  # The rows run through the vendored shmutant (#519); this file sources it, never check-lib.sh (D35).
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/shmutant.sh" || bad "check-docs-lib: scripts/shmutant.sh could not be sourced"
+  shmutant_target scripts/lib/docs-lib.sh
   # THE ROW THAT MATTERS MOST: silence stops adjudicating as failure. An agent that never probed
   # would then get the same clean verdict as one that probed successfully, which is precisely the
   # silent fall-back `[mcp] required` exists to end.
-  check_mut silence-is-clean \
+  shmutant_mut silence-is-clean \
     '      *)               bad="${bad}${s} (no probe recorded) " ;;' \
     '      *)               : ;;' \
     'a declared server with NO probe is DEGRADED'
 
   # A degraded result stops counting as degraded.
-  check_mut degraded-ignored \
+  shmutant_mut degraded-ignored \
     '      degraded|absent) bad="${bad}${s} (${res}) " ;;' \
     '      degraded|absent) : ;;' \
     'a degraded probe is DEGRADED'
@@ -116,21 +120,23 @@ if [ "$MODE" = mutation ]; then
   # RETARGETED when `_adb_dl_mcp_key` was rewritten to use the shared layered read: the old row's
   # literal no longer existed, so it applied to nothing and the harness caught it as a row that
   # tests NOTHING — which is the harness doing its job on its own table.
-  check_mut malformed-reads-as-none \
-    '>&2; return 18 ;;' \
-    '>&2; return 1 ;;' \
+  # LENGTHENED when the harness became shmutant, which refuses a literal that starts at more than one
+  # position: `>&2; return 18 ;;` ends two later arms too. The defect and its site are unchanged.
+  shmutant_mut malformed-reads-as-none \
+    '"$(adb_display_value "$raw")" >&2; return 18 ;;' \
+    '"$(adb_display_value "$raw")" >&2; return 1 ;;' \
     'a malformed [mcp] required is 18, never "none declared"'
 
   # The report stops refusing silence: an unstated disposition would render as an empty block
   # somebody pastes into a PR body without noticing.
-  check_mut report-accepts-silence \
+  shmutant_mut report-accepts-silence \
     '  if [ "$n_consulted" -eq 0 ] && [ "$n_none" -eq 0 ]; then' \
     '  if false; then' \
     'a run that stated NO disposition is refused'
 
   # The evidence requirement dropped: "usable" with nothing behind it is indistinguishable from a
   # guess, which is the defect third-party-claims.md's record-what-answered rule names.
-  check_mut evidence-optional \
+  shmutant_mut evidence-optional \
     '  [ -n "$OPT_EVIDENCE" ] || die "probe-record: --evidence is required"' \
     '  OPT_EVIDENCE="${OPT_EVIDENCE:-x}"' \
     'probe-record demands evidence'
@@ -139,14 +145,14 @@ if [ "$MODE" = mutation ]; then
   # newline ARE control characters, so disabling only that `case` changes no behaviour and the row
   # stayed GREEN while proving nothing — measured, on this suite. This is the guard with sole
   # responsibility for every other unprintable byte, and one assertion below drives it with 0x01.
-  check_mut control-char-allowed \
+  shmutant_mut control-char-allowed \
     '  case "$1" in *[[:cntrl:]]*) return 1 ;; esac' \
     '  :' \
     'a control character in evidence is refused'
 
   # THE C LOCALE OF THE CONTROL TEST. Without it a caller's UTF-8 locale widens `[[:cntrl:]]` to
   # C1 code points, refusing evidence the record has always accepted.
-  check_mut control-set-widened \
+  shmutant_mut control-set-widened \
     '  local LC_ALL=C' \
     '  :' \
     'evidence carrying U+0085 is accepted under a UTF-8 locale'
@@ -155,13 +161,13 @@ if [ "$MODE" = mutation ]; then
   # writer would never have produced. Without a row here, deleting it again is invisible.
   # RETARGETED when the read gained a distinct unreadable status (PR #429): the `|| {` form no
   # longer exists in `verdict`, and the first remaining occurrence would have been `report`'s.
-  check_mut readers-skip-validation \
+  shmutant_mut readers-skip-validation \
     '    _adb_dl_records "$f" >/dev/null; _rrc=$?' \
     '    _rrc=0' \
     'verdict refuses a probe record with no evidence'
 
   # THE SIBLING-KEY DUPLICATE SCAN (PR #429).
-  check_mut sibling-key-unchecked \
+  shmutant_mut sibling-key-unchecked \
     '    if [ "${_dupother:-0}" -gt 1 ]; then' \
     '    if false; then' \
     'a duplicated SIBLING key ([mcp] optional, twice) refuses mcp-required as malformed TOML'
@@ -180,69 +186,71 @@ if [ "$MODE" = mutation ]; then
   # THE UNTERMINATED-FINAL-RECORD CHECK (P1, PR #429). The row restores the superseded predicate
   # — "does the file contain any newline" — rather than deleting the test, because that spelling is
   # what shipped and is what a careless edit would reach for again.
-  check_mut final-newline-unchecked \
+  shmutant_mut final-newline-unchecked \
     '  [ "$(tail -c 1 "$f" | wc -l | tr -d '"'"' '"'"')" -eq 1 ] || return 1' \
     '  [ "$(wc -l < "$f" | tr -d '"'"' '"'"')" -gt 0 ] || return 1' \
     'an unterminated final record is refused, not silently skipped then read by awk'
 
   # THE EMPTY-INTERIOR-ELEMENT RULE (PR #429). Restores the superseded predicate — "every empty
   # element is fine" — rather than deleting the check, because that spelling is what shipped.
-  check_mut empty-elements-allowed \
+  shmutant_mut empty-elements-allowed \
     '              if (n == 1) continue                      # []' \
     '              continue' \
     'an empty interior array element ([, "a"]) is refused'
 
   # THE EMPTY-QUOTED-NAME CHECK (PR #429). Restores the permissive `.*` that shipped — the
   # spelling a later edit would reach for, and the one that cannot tell `[""]` from `[]`.
-  check_mut empty-name-skipped \
+  shmutant_mut empty-name-skipped \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
     '            if (e !~ /^".*"$/) { bad = 1; exit }' \
     'an empty quoted server name is refused, not silently dropped'
 
-  # THE EVIDENCE RENDER (PR #429).
-  check_mut evidence-not-rendered \
-    "'\$1 == \"probe\" && \$2 == n { e = \$4 } END { print e }'" \
-    "'\$1 == \"probe\" && \$2 == n { e = \"\" } END { print e }'" \
+  # THE EVIDENCE RENDER (PR #429). The DEGRADED arm reads the evidence with a byte-identical line,
+  # so the clean arm's carries a `# row-evidence-clean` marker the literal includes: shmutant refuses
+  # a literal that starts at more than one position, since its rewrite takes the first.
+  shmutant_mut evidence-not-rendered \
+    "'\$1 == \"probe\" && \$2 == n { e = \$4 } END { print e }')\" &&   # row-evidence-clean" \
+    "'\$1 == \"probe\" && \$2 == n { e = \"\" } END { print e }')\" &&   # row-evidence-clean" \
     "the report renders each required server's probe evidence"
 
   # THE REPORT'"'"'S STATUS ON A MALFORMED MANIFEST (PR #429).
-  check_mut report-status-swallowed \
+  shmutant_mut report-status-swallowed \
     '    _report_rc=18' \
     '    :' \
     'report refuses to return success over a malformed manifest'
 
   # THE DUPLICATE-KEY SCAN (PR #429).
-  check_mut duplicate-key-unchecked \
+  shmutant_mut duplicate-key-unchecked \
     '    if [ "${_dupkeys:-0}" -gt 1 ]; then' \
     '    if false; then' \
     'a key declared twice in [mcp] is refused'
 
   # THE FIELD BOUND (PR #429).
-  check_mut field-bound-removed \
+  shmutant_mut field-bound-removed \
     '  [ "${ _adb_dl_bytes "$1"; }" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     '  :' \
     'a 600-byte field is refused by the FIELD bound, though the record bound would allow it'
 
   # THE ARITY PASS (PR #429). Removing it returns the check to `read`, which folds tabs.
-  check_mut arity-via-read \
+  shmutant_mut arity-via-read \
     "    \$1 == \"probe\"       { if (NF != 4) { bad = 1; exit } next }" \
     "    \$1 == \"probe\"       { next }" \
     'verdict refuses a record with a trailing empty column'
 
   # THE BYTE MEASUREMENT (PR #429). Restores `${#1}`, which counts characters.
-  check_mut bound-counts-characters \
+  shmutant_mut bound-counts-characters \
     '  [ "${ _adb_dl_bytes "$1"; }" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     '  [ "${#1}" -le "$_ADB_DL_FIELD_MAX" ] || return 1' \
     'a field of 512 MULTIBYTE characters is refused'
 
   # THE REPEATED-TABLE COUNT (PR #429). Restores the key-only count that shipped.
-  check_mut repeated-table-unchecked \
+  shmutant_mut repeated-table-unchecked \
     '    if [ "${_duptbls:-0}" -gt 1 ]; then' \
     '    if false; then' \
     'a repeated [mcp] table header is refused'
 
   # THE SCANNER'"'"'S OWN HEADER NORMALIZATION (PR #429) — distinct from the shared reader's.
-  check_mut scanner-header-comment \
+  shmutant_mut scanner-header-comment \
     '                            if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
     '                            if (0) { hdr = substr(hdr, 1, i - 1); break }' \
     'a repeated COMMENTED [mcp] header is refused'
@@ -253,45 +261,45 @@ if [ "$MODE" = mutation ]; then
   # RETARGETED when the report stopped inlining its own awk `md()` and began rendering through the
   # shared `adb_md_escape` (#490): the delegation is this module's half of the escaping, so turning
   # it into a pass-through is the same defect in one line.
-  check_mut evidence-not-escaped \
+  shmutant_mut evidence-not-escaped \
     '_adb_dl_md() { adb_md_escape "$1"; }' \
     '_adb_dl_md() { printf '"'"'%s'"'"' "$1"; }' \
     'the rendered report contains no raw HTML comment opener'
 
   # THE SNAPSHOT EXPORTED again: the environment counts against the OS argument limit, so a large
   # record made every command the report runs fail.
-  check_mut docs-snapshot-exported \
+  shmutant_mut docs-snapshot-exported \
     '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"' \
     '  [ -f "$f" ] && _ADB_DL_SNAPSHOT="$(cat "$f")"; export _ADB_DL_SNAPSHOT' \
     'a large record of valid appends still reports its last record'
 
   # THE WRITER'S LINK GUARD: without it an append follows the link and writes its target.
-  check_mut docs-writer-follows-link \
+  shmutant_mut docs-writer-follows-link \
     '  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then' \
     '  if false; then' \
     'the docs writer refuses a symlinked record (20)'
 
   # THE READER'S LINK GUARD: without it a dangling link reads as absent.
-  check_mut docs-reader-dangling-as-absent \
+  shmutant_mut docs-reader-dangling-as-absent \
     '  [ -L "$f" ] && return 2' \
     '  :' \
     'a dangling symlinked docs record is refused (20), never read as absent'
 
   # THE REGULAR-FILE GUARD (#490): without it a FIFO blocks the report forever.
-  check_mut docs-fifo-read \
+  shmutant_mut docs-fifo-read \
     '  [ -f "$f" ] || return 2' \
     '  :' \
     "a FIFO at the docs record's path is refused (20), never read"
 
   # THE NUL SCAN (PR #429).
-  check_mut nul-normalized \
+  shmutant_mut nul-normalized \
     '  adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 1; return 2; }' \
     "  :" \
     'a NUL in the FINAL field is refused — awk truncation cannot see it'
 
   # THE NUL-MANIFEST ARM (PR #429). Restores the fold-into-"none declared" that shipped: the
   # manifest took the command-substitution path unscanned, so the byte was simply dropped.
-  check_mut nul-manifest-as-none \
+  shmutant_mut nul-manifest-as-none \
     '    *) _adb_dl_manifest_read_failed 3 "$key"; return 18 ;;' \
     '    *) return 1 ;;' \
     'a NUL byte in the manifest is refused as malformed TOML, not normalized to a clean name'
@@ -302,7 +310,7 @@ if [ "$MODE" = mutation ]; then
   # runs wherever permissions apply.
 
   # THE QUOTED-ARRAY GRAMMAR (PR #429).
-  check_mut unquoted-array-accepted \
+  shmutant_mut unquoted-array-accepted \
     '            if (e !~ /^"[A-Za-z0-9_.-]+"$/) { bad = 1; exit }' \
     '            if (0) { bad = 1; exit }' \
     'an unquoted array element ([context7]) is refused as malformed TOML'
@@ -311,38 +319,33 @@ if [ "$MODE" = mutation ]; then
   # three failed in EVERY mutation child — so every row "went red" whatever it changed, and the
   # witness check was the only thing separating a real detection from that noise. A row whose own
   # witness never fires then reports honestly, which is how this was found.
+  # Built ONCE per pool; shmutant clones it for every row.
   prep() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/scripts/lib/docs-lib.sh"
+    check_copy_subtrees "$ROOT" "$1" scripts base templates >/dev/null 2>&1
   }
-  # A SECOND TARGET NEEDS A SECOND POOL. `check_mutation_pool` builds ONE path for every row it
-  # runs, which is why `check_mut_reset` exists — the header-comment rule lives in the SHARED
-  # reader, and a row aimed at the wrong file applies to nothing and reports so.
-  prep_common() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/scripts/lib/common.sh"
-  }
-  # THE ROW'S WITNESS TRAVELS WITH IT, so a child can skip a test no row but its own depends on.
-  # The copy directory is `mut-<index>` into the table the pool is running.
-  runner() { local i="${1##*/mut-}"; ( cd "$1/tree" && CDL_ROW_WITNESS="${CHECK_MUT_WIT[$i]}" bash scripts/check-docs-lib.sh 2>&1 ); }
+  # THE ROW'S WITNESS TRAVELS WITH IT, so a child can skip a test no row but its own depends on. It
+  # arrives as the run's selector, which defaults to the row's witness.
+  runner() { ( cd "$1" && CDL_ROW_WITNESS="$2" bash scripts/check-docs-lib.sh 2>&1 ); }
 
-  check_mutation_pool check-docs-lib "$work" prep runner 6
+  check_shmutant_pool check-docs-lib "$work/pool" prep runner 6
 
-  # THE SHARED READER'"'"'S HALF, in its own pool against its own file.
-  check_mut_reset
-  check_mut missing-bracket-accepted \
+  # THE SHARED READER'"'"'S HALF, in its own pool against its own file — a second pool rather than a
+  # second `shmutant_target` in the first, which is the shape these rows had before the port (#519).
+  shmutant_reset
+  shmutant_target scripts/lib/common.sh
+  shmutant_mut missing-bracket-accepted \
     '      if (hdr !~ /\]$/) { intbl = 0; next }' \
     '      if (0) { intbl = 0; next }' \
     "a table header with no closing bracket is not the table"
-  check_mut header-comment-literal \
+  shmutant_mut header-comment-literal \
     '        if (c == "#" && !inq) { hdr = substr(hdr, 1, i - 1); break }' \
     '        if (0) { hdr = substr(hdr, 1, i - 1); break }' \
     "a table header written as '[mcp] # documentation servers' is still the [mcp] table"
-  check_mut byte-len-counts-characters \
+  shmutant_mut byte-len-counts-characters \
     'adb_byte_len() { local LC_ALL=C || return 1; printf' \
     'adb_byte_len() { printf' \
     'a field of 512 MULTIBYTE characters is refused'
-  check_mutation_pool check-docs-lib-common "$work/common" prep_common runner 6
+  check_shmutant_pool check-docs-lib-common "$work/pool-common" prep runner 6
 
   check_summary check-docs-lib
   exit 0

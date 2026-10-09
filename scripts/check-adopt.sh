@@ -916,123 +916,132 @@ fi
 #
 # Every mutation is applied to a COPY of the tree (self-review.md's copy rule). The working tree is
 # never touched, so this cannot be the thing that eats an uncommitted edit.
-# The table, the rewrite, the pool and the scoring live in check-lib.sh. This copy of the verdict
-# had DIVERGED: it captured no exit status, so "N mutations proven RED" was a claim about what the
-# child PRINTED, never about whether it FAILED. Back-ported here (D68). What stays local: the tree
-# copy, the file to mutate, how the child is invoked, and the table itself.
-
-# <copy> — build the tree copy and print the file to mutate. `install.sh`/`uninstall.sh` come along
-# because the suite reads them; a copy failure for those is not fatal to the row.
+# The table, the rewrite, the pool and the verdicts are the vendored shmutant's (#519), scored by
+# check-lib.sh's `check_shmutant_pool`. A local copy of the verdict had DIVERGED once: it captured no
+# exit status, so "N mutations proven RED" was a claim about what the child PRINTED, never about
+# whether it FAILED (D68). What stays local: the tree copy, how the child is invoked, and the table.
+#
+# The table is declared only in `--mutation` mode — this file sources shmutant there and nowhere
+# else — and the pool is a plain command inside that block, never the right side of `&&`, where
+# bash would ignore errexit inside every callback (shmutant's docs/integrating.md §4).
+if [ "$MUTATE" = "1" ]; then
+# <dir> — build the tree copy ONCE; shmutant clones it for every row. `install.sh`/`uninstall.sh`
+# come along because the suite reads them; a copy failure for those is not fatal.
 _ad_mut_prepare() {
   check_copy_subtrees "$ROOT" "$1" scripts base agents >/dev/null 2>&1 || return 1
   cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null
-  printf '%s\n' "$1/scripts/lib/adopt-lib.sh"
+  return 0
 }
-# <copy> — run the suite recursively. NOT `--mutation`, or the child would recurse.
+# <root> — run the suite recursively. NOT `--mutation`, or the child would recurse.
 _ad_mut_run() { ( cd "$1" && bash scripts/check-adopt.sh ); }
 
-check_mut prescribed-arm-order \
+# shellcheck source=/dev/null
+. "$ROOT/scripts/shmutant.sh" || bad "check-adopt: scripts/shmutant.sh could not be sourced"
+shmutant_target scripts/lib/adopt-lib.sh
+shmutant_mut prescribed-arm-order \
     'if [ "$prescribed" = yes ]; then' \
     'if [ "$prescribed" = SWAPPED ]; then' \
     'a PRESCRIBED HOME that collides is keep'
-check_mut differs-becomes-remove \
+shmutant_mut differs-becomes-remove \
     "printf 'move%scollides with a baseline skill" \
     "printf 'remove%scollides with a baseline skill" \
     'collides but DIFFERS -> move, never remove'
-check_mut skill-compares-only-SKILL.md \
+shmutant_mut skill-compares-only-SKILL.md \
     'pl="$(_ad_dir_manifest "$proj")"; bl="$(_ad_dir_manifest "$base")"' \
     'pl=x; bl=x' \
     'an extra project-only file makes a skill differ'
-check_mut cmp-error-becomes-differs \
-    "    *) printf 'unknown" \
-    "    *) printf 'differs" \
+# LENGTHENED for shmutant, which refuses a literal that starts at more than one position: the shorter
+# one is also a substring of a later, deeper-indented arm. The defect and its site are unchanged.
+shmutant_mut cmp-error-becomes-differs \
+    "    *) printf 'unknown\\n' ;;" \
+    "    *) printf 'differs\\n' ;;" \
     'a cmp FAILURE (rc>1) is unknown'
-check_mut role-token-substring \
+shmutant_mut role-token-substring \
     'local bounded="(^|[^A-Za-z0-9_-])${agent}([^A-Za-z0-9_-]|\$)"' \
     'local bounded="$agent"' \
     'must NOT infer that agent'
-check_mut roles-default-instead-of-none \
+shmutant_mut roles-default-instead-of-none \
     '_ad_emit "$role" none "no signal' \
     '_ad_emit "$role" codex "no signal' \
     'a project with no signal proposes NOTHING'
-check_mut propose-renders-any-key \
+shmutant_mut propose-renders-any-key \
     'gap_analysis|review|debug|primary|release|issue_author|survey) ;;' \
     '*) ;;' \
     'propose must never render a non-role record as a TOML key'
-check_mut plan-order-remove-before-move \
+shmutant_mut plan-order-remove-before-move \
     'for verdict in escalate move remove keep; do' \
     'for verdict in escalate remove move keep; do' \
     'plan ordering must be escalate < move < remove < keep'
-check_mut plan-drops-unknown-verdict \
+shmutant_mut plan-drops-unknown-verdict \
     '    bad_n=$((bad_n + 1))' \
     '    continue' \
     'an UNRECOGNISED verdict is reported'
-check_mut agent-token-unvalidated \
+shmutant_mut agent-token-unvalidated \
     '*[!a-z0-9-]*|-*) die "$who: invalid agent token' \
     'NEVERMATCHES) die "$who: invalid agent token' \
     'rejects the traversal/invalid token'
-check_mut ignore-error-is-not-ignored \
+shmutant_mut ignore-error-is-not-ignored \
     'elif [ "$igrc" -eq 1 ]; then' \
     'elif [ "$igrc" -ge 1 ]; then' \
     'a git ERROR is reported as undetermined'
-check_mut ignore-second-probe-dropped \
+shmutant_mut ignore-second-probe-dropped \
     'git -C "$root" check-ignore -q --no-index ".$a/state/adb-adopt-probe" 2>/dev/null' \
     'true' \
     'a blanket *.json IS reported'
-check_mut credential-value-echoed \
+shmutant_mut credential-value-echoed \
     "| grep -oE '^(ghp_|gho_|ghu_|ghs_|github_pat_|sk-|xox[baprs]-|AKIA)' | head -n 1)\"" \
     '| head -n 1)"' \
     'must NEVER echo the credential itself'
-check_mut tracked-list-status-ignored \
+shmutant_mut tracked-list-status-ignored \
     'if ! git -C "$root" ls-files -z ".$a" >/dev/null 2>&1; then' \
     'if false; then' \
     'the distributable-config axis did NOT run'
-check_mut pin-accepts-short-commit \
+shmutant_mut pin-accepts-short-commit \
     '    40|64) ;;' \
     '    40|64|10) ;;' \
     'pin-render rejects'
-check_mut pin-version-unvalidated \
+shmutant_mut pin-version-unvalidated \
     '*[!A-Za-z0-9._+-]*) die "pin-render: <version>' \
     'NEVERMATCHES) die "pin-render: <version>' \
     'rejects a version containing a quote'
-check_mut pin-drift-unquoted \
+shmutant_mut pin-drift-unquoted \
     'printf '"'"'git -C %s log --oneline %s..HEAD\n'"'"' "$(adb_display_value "$root")" "$(adb_display_value "$commit")"' \
     'printf '"'"'git -C %s log --oneline %s..HEAD\n'"'"' "$root" "$(adb_display_value "$commit")"' \
     'pin-drift must not emit the raw unquoted path'
-check_mut foreign-pin-kept \
+shmutant_mut foreign-pin-kept \
     'if [ "$kind" = foreign-pin ]; then' \
     'if false; then' \
     'a foreign framework pin is MOVE'
-check_mut other-classified-as-keep \
+shmutant_mut other-classified-as-keep \
     'if [ "$kind" = other ]; then' \
     'if false; then' \
     'escalates on collision=no'
-check_mut scan-drops-other \
+shmutant_mut scan-drops-other \
     '_ad_emit other "$rel" "${rel##*/}" "$a"' \
     ':' \
     'an unmodelled file under the agent dir is emitted as'
-check_mut stack-node-before-wordpress \
+shmutant_mut stack-node-before-wordpress \
     "if grep -rqIl --include='*.php' -e 'add_action' -e 'wp_enqueue' \"\$r\" 2>/dev/null; then" \
     'if false; then' \
     'is php-wordpress, not node'
 
-check_mut skill-ignores-symlinks \
+shmutant_mut skill-ignores-symlinks \
     'find . \( -type f -o -type l \) -print 2>/dev/null' \
     'find . -type f -print 2>/dev/null' \
     'a project-only SYMLINK makes a skill differ'
-check_mut scan-drops-vendored-lib \
+shmutant_mut scan-drops-vendored-lib \
     '[ -d "$root/.$a/scripts/lib" ] && _ad_emit lib ".$a/scripts/lib" lib "$a"' \
     ':' \
     'a vendored scripts/lib is emitted as ONE lib artifact'
-check_mut plan-prints-raw-path \
+shmutant_mut plan-prints-raw-path \
     'printf '"'"'%s. %s (%s) — %s\n'"'"' "$n" "$(adb_display_value "$adoptpath")" "$kind" "$reason"' \
     'printf '"'"'%s. %s (%s) — %s\n'"'"' "$n" "$adoptpath" "$kind" "$reason"' \
     'must not print a raw control byte'
-check_mut pin-drift-trusts-the-file \
+shmutant_mut pin-drift-trusts-the-file \
     '  _ad_check_commit "$commit" pin-drift' \
     '  :' \
     'pin-drift refuses a pin whose commit is HEAD'
-check_mut ignore-axis-needs-agent-dir \
+shmutant_mut ignore-axis-needs-agent-dir \
     '    _ad_ignore_axis "$root" "$a"' \
     '    [ -d "$root/.$a" ] && _ad_ignore_axis "$root" "$a"' \
     'runs even when .<agent>/ does not exist yet'
@@ -1040,6 +1049,7 @@ check_mut ignore-axis-needs-agent-dir \
 # Width from `adb_pool_size` (min(cpu, 8)); each row costs a full suite run (D66, D68).
 # `--mutation` as a flag, not an env var: `selfcheck.sh`'s `add` takes a command's words, so an
 # env-var prefix would be executed as a command name.
-[ "$MUTATE" = "1" ] && check_mutation_pool "check-adopt" "$WORK" _ad_mut_prepare _ad_mut_run 8
+check_shmutant_pool "check-adopt" "$WORK/pool" _ad_mut_prepare _ad_mut_run 8
+fi
 
 check_summary "check-adopt"
