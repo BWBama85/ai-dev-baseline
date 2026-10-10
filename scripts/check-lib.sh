@@ -419,7 +419,7 @@ _check_hung_verdict() {
 # Rows are declared BEFORE the call. shmutant also accepts rows declared inside `prepare`; this adapter
 # does not, because it reads the table's size first and checks the stream against it.
 check_shmutant_pool() {
-  local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
+  local label="$1" wd="$2" prep="$3" run="$4" cap="$5"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
   local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art="" arts i f0="$fail" whole=1 snap=""
   local -a verdicts=() names=() details=()
@@ -433,9 +433,18 @@ check_shmutant_pool() {
     return 1
   fi
   _check_row_secs "$label" || return 1
+  case "$wd" in ''|/) bad "$label --mutation: the workdir must name a directory of its own, got '$wd'"; return 1 ;; esac
+  wd="${wd%/}"
   # ABSOLUTE, before the pool: shmutant lets `prepare` change directory, and a relative path read
   # afterwards would name another place.
   case "$wd" in /*) ;; *) wd="$PWD/$wd" ;; esac
+  pool="$(adb_pool_size "$cap")"
+  # shellcheck disable=SC2154  # SHMUTANT_ROWS_NAME is shmutant's table, declared by the caller's source
+  n="${#SHMUTANT_ROWS_NAME[@]}"
+  if [ "$n" -eq 0 ]; then
+    bad "$label --mutation: the mutation table is EMPTY — this harness proves nothing"
+    return 1
+  fi
   if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ]; then
     arts="$ADB_MUTATION_ARTIFACTS"
     case "$arts" in /*) ;; *) arts="$PWD/$arts" ;; esac
@@ -446,13 +455,6 @@ check_shmutant_pool() {
       printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take this pool'"'"'s workdir — its evidence will not be kept\n' \
         "$label" "$ADB_MUTATION_ARTIFACTS" >&2
     fi
-  fi
-  pool="$(adb_pool_size "$cap")"
-  # shellcheck disable=SC2154  # SHMUTANT_ROWS_NAME is shmutant's table, declared by the caller's source
-  n="${#SHMUTANT_ROWS_NAME[@]}"
-  if [ "$n" -eq 0 ]; then
-    bad "$label --mutation: the mutation table is EMPTY — this harness proves nothing"
-    return 1
   fi
   rm -f "$wd.tsv"
   # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope

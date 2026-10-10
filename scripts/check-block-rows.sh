@@ -583,7 +583,10 @@ shm() {   # <name> <rows> [ENV=val...] — sets $out and $rc
   rm -f "$work/prep-$nm.log"
   # The stream lands beside the workdir, and shmutant requires that directory to exist already.
   mkdir -p "$work/shm-$nm"
-  out="$(env ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
+  # `-u ADB_MUTATION_ARTIFACTS`: selfcheck-macos exports it to the whole suite, and a fixture that
+  # inherited it would run its pool somewhere other than the path it asserts on. A case that wants
+  # the evidence directory passes it explicitly, after this.
+  out="$(env -u ADB_MUTATION_ARTIFACTS ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
            ADB_T_WD="$work/shm-$nm/pool" ADB_T_PREP_LOG="$work/prep-$nm.log" ADB_T_SEEN="$work/seen-$nm" \
            "$@" "$BASH" "$work/shm-driver.sh" 2>&1)"; rc=$?
 }
@@ -693,10 +696,16 @@ eq "$rc" 0 "shmutant: a relative workdir still scores after a prepare that chang
 # A caller under `set -e` still gets the verdict scored and named before its shell acts on the status.
 shm errexit "shmutant_mut cosmetic '# a comment nothing reads' '# a comment nobody reads' 'add-sum'" ADB_T_ERREXIT=1
 has "$out" "FAIL: mutation 'cosmetic': survived" "shmutant: a caller's errexit does not end the shell before the survivor is named"
-# An EMPTY table proves nothing, whatever a pool would say about it.
-shm empty ""
+# An EMPTY table proves nothing, whatever a pool would say about it — and it is refused before an
+# evidence directory is made, so a refusal leaves nothing to upload.
+shm empty "" ADB_MUTATION_ARTIFACTS="$work/artifacts-empty"
 eq "$rc" 1 "shmutant: an empty table fails the suite"
 has "$out" "the mutation table is EMPTY" "shmutant: …saying so, before any pool runs"
+eq "$(find "$work/artifacts-empty" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')" 0 "shmutant: …and leaves no evidence directory behind"
+# A workdir of `/` is not a directory of the pool's own: `<workdir>.tsv` would land at the root.
+shm rootwd "$CAUGHT" ADB_T_WD=/
+eq "$rc" 1 "shmutant: a workdir of / is refused"
+has "$out" "the workdir must name a directory of its own" "shmutant: …saying why"
 # shmutant ESCAPES a backslash in a field; the adapter must accept the records its own pool writes.
 shm escaped-name "shmutant_mut 'slash\\name' '0 - \$1' '0 + \$1' 'neg-value'"
 eq "$rc" 0 "shmutant: a row whose name holds a backslash round-trips through the stream"

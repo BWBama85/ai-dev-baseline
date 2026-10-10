@@ -9448,8 +9448,9 @@ survive is the part a later reader needs.
              `check-block-rows.sh` case 10g, which tested the old pool's deadline, is replaced by
              tests of the adapter: five verdicts through real pools, the deadline reaching shmutant
              as a named `timeout`, a harness error, a bad bound refused before anything is built, a
-             suite that never sourced shmutant, the artifact copy, a hostile exported environment, a
-             backslash in a row name, an empty table, a caller under `set -e`, the evidence cut, and
+             suite that never sourced shmutant, the evidence directory (kept for a failed pool, removed for
+             a passing one, resolved before `prepare` can change directory), a hostile exported
+             environment, a backslash in a row name, an empty table, a caller under `set -e`, and
              twenty-four forged streams or statuses from a stub `shmutant_pool` (a FIFO in the
              stream's place among them), each required to fail on its own reason with the adapter
              itself returning non-zero. They run under `$BASH`: a bare `bash` on a macOS PATH without
