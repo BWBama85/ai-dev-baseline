@@ -10,6 +10,28 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **No mutation harness runs per pull request (#456, D126).** Each `--mutation` harness costs
+  `rows × suite`, and the per-PR input gate (#441) never held one back on the branch that needed it
+  most — one editing the harness's library. `ci.yml` now carries no `--mutation` step (ten removed),
+  `selfcheck-macos` skips every `*-mutation` step by a list read from the registry at run time
+  (`mutation-gate.sh steps --csv`), and the jobs that carried them are back to 10-15 minute ceilings
+  with their names, and so the required contexts, unchanged. The harnesses run in
+  `mutation-nightly.yml`: daily against `main`, by `workflow_dispatch` (`step=<name>` for one,
+  validated before the matrix exists), or on a PR labelled `run-mutations`, against its head commit.
+  The matrix is the registry, read by a plan job (`mutation-gate.sh steps --json`). Every PR's
+  `common-lib` job summary states the last scheduled run's verdict and age
+  (`scripts/mutation-nightly-status.sh`; STALE past 48h, never a gate), and `/implement-issue`'s
+  close-out dispatches the harnesses `mutation-gate.sh touched` names. A plain local
+  `selfcheck.sh` is unchanged. The trade: a guard a PR breaks is caught by the next nightly or an
+  on-demand run, not by that PR's CI.
+- **The shell lint is a pool, in one script at all three sites (#455, D127).** The turn-end gate,
+  selfcheck's `shellcheck` step and CI's `shellcheck` job each ran one shellcheck over every file;
+  they now call `scripts/shellcheck-pool.sh`: one process per file, largest first, across
+  `adb_pool_size` workers (`ADB_SHELLCHECK_JOBS` caps it), output whole and in order, red once, a
+  last line naming the files and workers, and a lint over nothing refused rather than passed. Paths
+  are NUL-delimited end to end, which fixes the gate's word-split on a path with a space. The gate's
+  PASS line now reads `shellcheck PASS (Ns, N file(s), W worker(s))`, and the "~3s" its header and
+  `CLAUDE.md` quoted is gone — it grows with the branch, and the PASS lines print their own time.
 - **The whole-suite mutation pool is the vendored shmutant (#519, phase 1).** `scripts/check-lib.sh`
   still carried the harness [shmutant](https://github.com/BWBama85/shmutant) was extracted from, so
   the two copies drifted and fixes made upstream never reached this repo. `scripts/shmutant.sh` is

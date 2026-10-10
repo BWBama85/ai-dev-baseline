@@ -20,8 +20,12 @@
 #
 # The decision that number justified is unchanged and never depended on its size. One command, two
 # cadences, wildly different budgets: the mirror costs minutes per run and a turn-end gate must
-# cost seconds, so this gate runs the FAST subset that catches what a turn actually breaks
-# (~3s measured), and the full mirror stays where it belongs.
+# cost seconds, so this gate runs the FAST subset that catches what a turn actually breaks, and the
+# full mirror stays where it belongs. Its own cost grows with the BRANCH, not the turn: the lint
+# below re-checks every shell file the branch has changed against the default branch, so a long
+# branch pays more per turn than a fresh one. The per-check PASS lines print their own seconds;
+# read those, not a figure here (#455 — the three-second figure that stood here was 13.5s on a
+# 74-file branch).
 #
 # WHAT THIS DOES NOT COVER, stated rather than implied: everything else `selfcheck.sh` runs — every
 # check-*.sh suite, install dry-run, the migration and guard checks. This is a turn-end smoke test,
@@ -158,19 +162,45 @@ skip() { printf 'precommit-gate: %-16s SKIP (%s)\n' "$1" "$2" >&2; }
 # lints them; a `*.sh`-only filter silently skipped them and deferred the failure to push time.
 # (This comment deliberately does not begin with the tool's name: a comment starting `# shellcheck`
 # is parsed as a DIRECTIVE, and this gate rejected itself for it on first run.)
-sh_changed=""
-while IFS= read -r f; do
+#
+# NUL-DELIMITED FROM ENUMERATION TO INVOCATION (#455). The set is read again with `-z` rather than
+# re-split from `$changed`, which is newline-joined text: a path carrying a space was word-split into
+# two names that do not exist, and one carrying a newline would be two lines. `sort -zu` is the same
+# de-duplication `$changed` gets, on whole names.
+sh_files=()
+while IFS= read -r -d '' f; do
   case "$f" in
-    *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_changed="${sh_changed:+$sh_changed }$f" ;;
+    *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_files+=("$f") ;;
   esac
-done <<EOF
-$changed
-EOF
-if [ -z "$sh_changed" ]; then
+done < <( { git diff -z --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null
+            git diff -z --no-renames --name-only 2>/dev/null
+            git diff -z --no-renames --name-only --cached 2>/dev/null
+            git ls-files -z --others --exclude-standard 2>/dev/null; } | sort -zu )
+
+# THE LINT IS A POOL (#455): one shellcheck per file across `adb_pool_size` workers, through the same
+# `scripts/shellcheck-pool.sh` selfcheck and CI call. A single process over the branch's whole change
+# set was most of this gate's cost, and grew with the branch. The PASS line carries the pool's own
+# count line, so a lint over zero files can never read as a pass — and a pool that exits 0 WITHOUT
+# naming exactly the files it was given is a FAIL, not a pass.
+lint_shell() {
+  local t0=$SECONDS out rc last want="${#sh_files[@]}"
+  out="$(printf '%s\0' "${sh_files[@]}" | bash "$repo_root/scripts/shellcheck-pool.sh" -0 2>&1)"; rc=$?
+  last="${out##*$'\n'}"
+  if [ "$rc" -eq 0 ]; then
+    case "$last" in
+      "shellcheck-pool: $want file(s), "*" worker(s)")
+        printf 'precommit-gate: %-16s PASS (%ss, %s)\n' shellcheck "$(( SECONDS - t0 ))" "${last#shellcheck-pool: }" >&2
+        return 0 ;;
+    esac
+    out="${out:+$out$'\n'}the pool exited 0 without reporting that it linted the $want file(s) it was given"
+  fi
+  printf 'precommit-gate: %-16s FAIL (%ss)\n%s\n' shellcheck "$(( SECONDS - t0 ))" "$out" >&2
+  fail=1
+}
+if [ "${#sh_files[@]}" -eq 0 ]; then
   :
 elif command -v shellcheck >/dev/null 2>&1; then
-  # shellcheck disable=SC2086  # deliberate word-split: a space-separated file list
-  run shellcheck shellcheck --severity=warning -e SC1091 $sh_changed
+  lint_shell
 else
   # OPTIONAL dependency, exactly as selfcheck.sh treats it. Turning a missing optional tool into a
   # blocking exit 2 would wedge every turn that touches a .sh file on a dev box without it.

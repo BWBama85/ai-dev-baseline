@@ -9544,3 +9544,116 @@ survive is the part a later reader needs.
              selection, shmutant's speed lever, needs units the pool suites do not have, so it is
              not claimed here, and the per-block rows that do select move in #525.
 - baseline-issue: n/a
+
+## D126 — #456: no mutation harness runs per pull request; they run nightly, by dispatch and by label
+- date:      2026-10-10
+- category:  project-delta
+- unknown:   #456 — superseding D91's per-PR half (the input gate stays for the local runner; its CI
+             wiring is retired). Every PR touching a library still ran that library's `--mutation` harness, at
+             `rows × suite`, because D91's gate holds a harness back only when the diff misses its
+             inputs — and a branch editing a library hits them for its whole life. The issue's own
+             figures (run 33146396645, 2026-08-28; #452's branch, 34 runs and 18h54m of CI in three
+             days) predate #519, and the issue required re-measuring after the port. Two questions had
+             no answer in the repo: where an agent's on-demand dispatch goes when self-review (step 8)
+             precedes the push (step 10), and how a `step` input yields one job rather than a matrix
+             of skipped ones.
+- decision:  **Owner decision 2026-10-10:** the dispatch goes in `/implement-issue`'s close-out,
+             after the push, and only where the repo carries both `scripts/mutation-gate.sh` and
+             `mutation-nightly.yml`; a new `mutation-gate.sh touched` names the harnesses, the agent
+             dispatches each against the PR branch and links the runs, and the wait is
+             `/resolve-pr-threads`' CI hand-off. The review-before-push guard is untouched.
+
+             **ci.yml carries no `--mutation` invocation** — the ten gated steps (common-lib,
+             pr-watch, pr-threads, session-context, review-loop, settings-fragment, fact, adopt,
+             adopt-readiness, pattern-ledger; the issue counted eight), the per-PR artifact uploads
+             that only they fed, and the `fetch-depth: 0` checkouts that existed only for the gate.
+             `selfcheck-macos` skips every `*-mutation` step by `skip="$(bash
+             scripts/mutation-gate.sh steps --csv)"`, so the six-name list it had (#339 onwards) is
+             gone and a new harness cannot land unskipped. Job names are unchanged, so required
+             contexts are too.
+
+             **The nightly's matrix is the registry, by construction.** The issue kept the
+             "matrix equals registry" pin; a `step` input that yields ONE job needs a matrix built
+             before expansion (a job-level `if:` is evaluated before the matrix context exists), so
+             a plan job emits it from `mutation-gate.sh steps --json [--only <step>]`, and the pin
+             became one on that wiring — the equality now holds without a list to compare. `--only`
+             refuses (2) an unregistered name, so a typo fails the plan job. The label trigger is
+             `pull_request` with `types: [labeled]` only: never `pull_request_target`; the plan runs
+             for `run-mutations` alone; both jobs check out the PR's head commit rather than the
+             merge commit; it fires once per labelling. `repo-settings.sh` discovery skips a trigger
+             without `opened` and `synchronize`, and `check-mutation-gate.sh` asks discovery itself.
+
+             **The PR's line.** `scripts/mutation-nightly-status.sh` in the `common-lib` job (which
+             gains `actions: read`) prints the last SCHEDULED run on the default branch — a dispatch
+             or label run is not "the nightly" — with URL, conclusion, age and commit; STALE past
+             48h; `no nightly result found`; `unreadable (…)` for a gh failure. Every field is
+             validated against GitHub's shape before it reaches Markdown, and it exits 0 on all of
+             them.
+
+             **What it costs — measured on the ported harnesses.** Run 38081150119 (`main`,
+             2026-10-10, #519's merge, which touched the shared harness and so ran nearly every one):
+
+             | job | job total | harness step(s) | left |
+             |---|---|---|---|
+             | `pr-watch` | 1937 s | 1629 + 98 s | ~210 s |
+             | `implement-gate` | 989 s | 139 + 767 s | ~83 s |
+             | `install-guard` | 918 s | 816 s | ~102 s |
+             | `pattern-ledger` | 704 s | 621 s | ~83 s |
+             | `common-lib` | 601 s | 462 s | ~139 s |
+             | `adopt` | 548 s | 84 + 426 s | ~38 s |
+
+             Ceilings follow: `pr-watch`, `implement-gate`, `install-guard` 15; `pattern-ledger`,
+             `common-lib`, `adopt` 10. `selfcheck-macos` (2248 s there) keeps 65 until a run without
+             harnesses is measured. The issue's targets (`pattern-ledger` under 4 min,
+             `implement-gate` under 2, critical path under 15) are to be read off this PR's own run.
+- placement: `.github/workflows/ci.yml`, `.github/workflows/mutation-nightly.yml`;
+             `scripts/mutation-gate.sh` (`steps`, `touched`); `scripts/mutation-nightly-status.sh`
+             (new); `scripts/check-mutation-gate.sh` (sections 6-8, its `--mutation` rows, the
+             `nightly-status` pool); `scripts/selfcheck.sh` (`mutation-gate-mutation`'s inputs);
+             `scripts/check-fact-drift.sh` (the per-harness pins retargeted to the registry, the
+             skip spelling, the gated form retired); `base/workflows/implement-issue.md` §11 and its
+             renders; `CLAUDE.md`, `CONTRIBUTING.md`, `docs/ci-runners.md`, `CHANGELOG.md`.
+- reason:    A harness re-proves, per push, that an assertion can still go red. That proof is a
+             discipline at the moment a guard is written, and the nightly re-proves it daily for
+             every harness; per PR it cost tens of minutes of critical path for one bit per row, on
+             exactly the branches that pushed most. The trade is stated rather than hidden: a guard a
+             PR breaks is caught within a day or on request, not by that PR. A literal row breaks
+             loudly the moment its line changes, and the plain suite still runs on every PR.
+- baseline-issue: n/a
+
+## D127 — #455: the shell lint is one script, one shellcheck per file across a pool, at all three sites
+- date:      2026-10-10
+- category:  project-delta
+- unknown:   #455. The turn-end gate's lint was one serial shellcheck over the branch's whole change
+             set — 10.35 of its 13.5s on a 74-file branch — and `selfcheck.sh` and CI had the same
+             shape over the tree. The issue left the shape to the owner (an inline pool at each site,
+             recommended, or a helper) and proposed contiguous batches, with CI on `xargs -P`.
+- decision:  **Owner decision 2026-10-10: one script, all three sites** — `scripts/shellcheck-pool.sh`,
+             a gated entry point, so `wait -n` is legal there (never in `common.sh`, D30), and CI gets
+             the same ordered-output contract instead of `xargs`' interleaving.
+
+             **Per file, not contiguous batches — a measured deviation.** On this tree (90 files, 10
+             cores, 2026-10-10): one serial process ~28 s; eight contiguous batches 25.6 s, because
+             lint cost is uneven (the largest suites 4-6 s each, an entry point 0.1 s) and the batch
+             that drew the heavy files set the wall time; one process per file, dispatched largest
+             first through a `wait -n` pool, 18 s at load average ~10 from other work (≈114 s of CPU
+             over 8 workers, so ~14 s unloaded). Output stays in the order given, each file's whole.
+
+             Width is `adb_pool_size` capped by `ADB_SHELLCHECK_JOBS` (a cap, never a raise). The
+             last line always names files and workers (the width used, min(W, N)); a lint over zero
+             files is 2, never a pass; a linter failure (rc ≥ 2) is named apart from a finding and
+             counted as not linted, so a dispatch that drops a file is red on the count alone. Paths
+             are NUL-delimited from `git -z` to the linter, which retires the gate's word-split on a
+             path with a space. The gate's PASS line carries the count line, and a pool that exits 0
+             without it is a FAIL. The "~3s" in the gate header and `CLAUDE.md` became a qualitative
+             statement (`check-fact-drift.sh` refuses the figure's return).
+
+             What is not measured offline: the gate on #452's 74-file branch and the CI job's
+             duration, which the issue's test plan asks for and this PR's run will show.
+- placement: `scripts/shellcheck-pool.sh` (new); `.claude/scripts/precommit-gate.sh`;
+             `scripts/selfcheck.sh` (`step_shellcheck`); `.github/workflows/ci.yml` (`shellcheck`);
+             `scripts/check-precommit-gate.sh` (§17o-17r, §18 — a stub linter, so the contract holds
+             on every host); `scripts/check-fact-drift.sh`; `CLAUDE.md`, `CHANGELOG.md`.
+- reason:    One lint, three callers, one contract: three inline copies would be the drift golden
+             rule 4 forbids, and the per-file pool is what actually spends the cores.
+- baseline-issue: n/a

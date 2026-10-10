@@ -645,6 +645,35 @@ eq "$alias_body" "1" "implement-issue-gate.sh DELEGATES to adb_owners_compatible
 copies="$(grep -rlE '\[ -n "\$a" \] \|\| return 0' "$ROOT/scripts" "$ROOT/agents" 2>/dev/null | sort)"
 eq "$copies" "$ROOT/scripts/lib/common.sh" "the three-way ownership comparison is spelled in exactly one file"
 
+# --- THE STUB LINTER sections 17o-17r and 18 drive (#455) ---------------------------------
+# A stand-in for shellcheck, so the POOL's contract — width, order, attribution, the zero-file
+# guard — is asserted the same way on every host, with or without the real linter installed. Per
+# file it handed: a line `SLEEP=<s>` sleeps first; `CRASH` exits 3 (the linter failing, not a
+# finding); an `unused=` line is a finding in shellcheck's own shape, exit 1. Every invocation
+# records its pid and how many lints were running beside it, which is how genuine concurrency and
+# the width ceiling are observed rather than inferred from wall time.
+scstub="$work/scstub"; mkdir -p "$scstub" "$work/scstate/running"
+cat > "$scstub/shellcheck" <<'STUB'
+#!/usr/bin/env bash
+st="${SCSTUB_STATE:?}"
+f="${!#}"
+mkdir "$st/running/$$"
+printf '%s\n' "$$" >> "$st/pids"
+printf '%s\n' "$(find "$st/running" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" >> "$st/concurrency"
+s="$(sed -n 's/^SLEEP=//p' "$f" | head -1)"; [ -n "$s" ] && sleep "$s"
+rc=0
+if grep -q '^CRASH' "$f"; then rc=3
+elif n="$(grep -n '^unused=' "$f" | head -1 | cut -d: -f1)" && [ -n "$n" ]; then
+  printf '\nIn %s line %s:\nunused=1\n^-- SC2034 (warning): unused appears unused.\n' "$f" "$n"
+  printf 'trailer for %s\n' "$f"
+  rc=1
+fi
+rmdir "$st/running/$$"
+exit "$rc"
+STUB
+chmod +x "$scstub/shellcheck"
+export SCSTUB_STATE="$work/scstate"
+
 # --- 17. THIS REPOSITORY'S OWN PROJECT GATE (#299) ---------------------------
 # Everything above drives the GLOBAL gate, and every project-gate case there substitutes a
 # purpose-built stub — a marker-and-exit-0, an exit-2, a parameterized exit code, a stdin recorder.
@@ -925,8 +954,166 @@ if fx_setup; then
     has "$POUT" "command not found" "mut-floorprobe: without the probe the bootstrap DOES call a missing function (so 17f can fail)"
   fi
   fx_reset
+  # --- 17o-17r. THE CHANGED-FILE LINT IS A POOL (#455) ---------------------------------------
+  # Driven through a STUB shellcheck on PATH (section 18 defines it; the real one's diagnostics are
+  # not what this repo owns, the plumbing around them is): a file holding an `unused=` line is a
+  # finding, reported in shellcheck's own `In <file> line <n>:` shape. Thirty changed shell files,
+  # one with a SPACE in its name and the finding in it — the case the word-split at the old
+  # `$sh_changed` invocation broke.
+  fx_base="$(fx_git rev-parse HEAD)"
+  mkdir -p "$fx/lintfx"
+  for i in $(seq 1 29); do printf '#!/usr/bin/env bash\necho %s\n' "$i" > "$fx/lintfx/f$i.sh"; done
+  printf '#!/usr/bin/env bash\nunused=1\n' > "$fx/lintfx/with space.sh"
+  fx_git add lintfx && fx_git commit -q -m "thirty shell files"
+  eq "$?" "0" "lint pool: the fixture branch carries thirty changed shell files"
+
+  # 17o. A finding in the spaced file → exit 2, the check named, the file and line named.
+  POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  eq "$PRC" "2" "lint pool: a finding in one of thirty changed files → exit 2"
+  has "$POUT" "shellcheck       FAIL" "lint pool: the failing check is named"
+  has "$POUT" "In lintfx/with space.sh line 2:" "lint pool: a path with a space is linted whole, and its finding names the file and line"
+  has "$POUT" "shellcheck-pool: FAIL — 30 file(s)" "lint pool: the FAIL carries the pool's own count of what it linted"
+
+  # 17p. The finding fixed → PASS, and the PASS line says how many files and workers.
+  printf '#!/usr/bin/env bash\necho fixed\n' > "$fx/lintfx/with space.sh"
+  fx_git commit -qam "fix the finding"
+  POUT="$(cd "$fx" && ADB_POOL_JOBS=4 PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  eq "$PRC" "0" "lint pool: thirty clean files → exit 0"
+  has "$POUT" "file(s), 4 worker(s))" "lint pool: the PASS line states the worker count"
+  if [[ "$POUT" =~ shellcheck\ +PASS\ \([0-9]+s,\ 30\ file\(s\),\ 4\ worker\(s\)\) ]]; then ok; else
+    bad "lint pool: want 'shellcheck PASS (Ns, 30 file(s), 4 worker(s))', the gate printed: $POUT"
+  fi
+
+  # 17q. ADB_SHELLCHECK_JOBS=1 forces a serial lint, and the line says so.
+  POUT="$(cd "$fx" && ADB_SHELLCHECK_JOBS=1 PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  eq "$PRC" "0" "lint pool: ADB_SHELLCHECK_JOBS=1 → still green"
+  has "$POUT" "30 file(s), 1 worker(s))" "lint pool: ADB_SHELLCHECK_JOBS=1 → the PASS line reports one worker"
+
+  # 17r. A pool that exits 0 WITHOUT naming what it linted is a FAIL — the guard that ran nothing.
+  # Observed failing: the fixture's pool loses its success line and the gate must refuse the green.
+  if check_mutate_line "$fx/scripts/shellcheck-pool.sh" "printf '%s: %s file(s), %s worker(s)\n' \"\$ME\" \"\$n\" \"\$width\"" \
+       's#^printf .%s: %s file(s), %s worker(s).n. "\$ME" "\$n" "\$width"$#:#' "mut-poolsilent"; then
+    POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+    eq "$PRC" "2" "mut-poolsilent: a pool that exits 0 without its count line → the gate blocks"
+    # 31, not 30: the mutated pool is itself a changed shell file on this branch, so the gate hands
+    # it to the lint too.
+    has "$POUT" "without reporting that it linted the 31 file(s)" "mut-poolsilent: …and says why"
+  fi
+  fx_reset
+  fx_git reset -q --hard "$fx_base" || bad "lint pool: could not return the fixture to its baseline"
 else
   bad "project-gate fixture setup failed — none of the #299 cases ran, which is not a pass"
+fi
+
+# --- 18. scripts/shellcheck-pool.sh ITSELF (#455) ---------------------------------------------
+# The contract the three call sites (the gate above, selfcheck's `shellcheck` step, CI's job) rely
+# on, asserted against the REAL script through the stub linter: width from adb_pool_size capped by
+# ADB_SHELLCHECK_JOBS, genuine concurrency up to and never past it, output in the order given and
+# contiguous per file, red once, a linter failure distinct from a finding, the zero-file refusal,
+# NUL-safe input, and no scratch or worker left behind.
+pool="$ROOT/scripts/shellcheck-pool.sh"
+pfx="$work/poolfx"; mkdir -p "$pfx"
+sc_reset() { rm -rf "$SCSTUB_STATE"; mkdir -p "$SCSTUB_STATE/running"; : > "$SCSTUB_STATE/pids"; : > "$SCSTUB_STATE/concurrency"; }
+max_conc() { sort -n "$SCSTUB_STATE/concurrency" | tail -1; }
+# run_pool <env…> -- <file…>: sets QOUT/QRC; the scratch dir lands in its own TMPDIR, checked empty.
+run_pool() {
+  local envs=()
+  while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
+  rm -rf "$work/pooltmp"; mkdir -p "$work/pooltmp"
+  QOUT="$(cd "$pfx" && env "${envs[@]}" TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" "$@" 2>&1)"; QRC=$?
+}
+for i in $(seq 1 12); do printf 'SLEEP=0.3\necho %s\n' "$i" > "$pfx/c$i.sh"; done
+
+# 18a. Twelve clean files, width 4 → green, the count line, genuine concurrency, never past 4.
+sc_reset; run_pool ADB_POOL_JOBS=4 -- c{1..12}.sh
+eq "$QRC" "0" "pool: twelve clean files → exit 0"
+eq "${QOUT##*$'\n'}" "shellcheck-pool: 12 file(s), 4 worker(s)" "pool: the last line names the files and the workers"
+# A RANGE, not exactly 4: the pool never exceeds its width (a new lint starts only after one is
+# reaped), but whether all four overlap at one instant depends on the host's load, and an assertion
+# that flakes on a busy runner says nothing about the diff.
+mc="$(max_conc)"
+if [ "${mc:-0}" -ge 2 ] && [ "${mc:-0}" -le 4 ]; then ok; else
+  bad "pool: lints must genuinely overlap (>= 2 at once) and never exceed the width of 4 — saw $mc"
+fi
+eq "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" "12" "pool: one linter process per file"
+eq "$(find "$work/pooltmp" -mindepth 1 | wc -l | tr -d ' ')" "0" "pool: no scratch directory is left behind"
+
+# 18b. The cap: ADB_SHELLCHECK_JOBS lowers the width and never raises it; the lower of the two wins.
+sc_reset; run_pool ADB_POOL_JOBS=4 ADB_SHELLCHECK_JOBS=1 -- c{1..6}.sh
+eq "${QOUT##*$'\n'}" "shellcheck-pool: 6 file(s), 1 worker(s)" "pool: ADB_SHELLCHECK_JOBS=1 → one worker"
+eq "$(max_conc)" "1" "pool: …and the lint is genuinely serial"
+sc_reset; run_pool ADB_POOL_JOBS=2 ADB_SHELLCHECK_JOBS=6 -- c{1..6}.sh
+eq "${QOUT##*$'\n'}" "shellcheck-pool: 6 file(s), 2 worker(s)" "pool: ADB_SHELLCHECK_JOBS cannot raise the width past the pool budget"
+sc_reset; run_pool ADB_POOL_JOBS=8 -- c1.sh c2.sh
+eq "${QOUT##*$'\n'}" "shellcheck-pool: 2 file(s), 2 worker(s)" "pool: never more workers than files"
+
+# 18c. Two red files, the FIRST slower to finish → its output still comes first, each contiguous,
+# and the status is red once, with one FAIL line.
+printf 'SLEEP=0.8\nunused=1\n' > "$pfx/r1.sh"; printf 'unused=1\n' > "$pfx/r2.sh"
+sc_reset; run_pool ADB_POOL_JOBS=4 -- r1.sh c1.sh r2.sh
+eq "$QRC" "1" "pool: two red files → exit 1"
+eq "$(printf '%s\n' "$QOUT" | grep -c '^shellcheck-pool: FAIL')" "1" "pool: red ONCE, not once per red file"
+eq "$(printf '%s\n' "$QOUT" | grep -E '^(In |trailer for )' | tr '\n' '|')" \
+   "In r1.sh line 2:|trailer for r1.sh|In r2.sh line 1:|trailer for r2.sh|" \
+   "pool: output is in the order the files were given and contiguous per file, though r1 finished last"
+
+# 18d. The linter FAILING is not a finding: named, red, and counted as not linted.
+printf 'CRASH\n' > "$pfx/x.sh"
+sc_reset; run_pool -- c1.sh x.sh c2.sh
+eq "$QRC" "1" "pool: a linter that crashes on one file → exit 1"
+has "$QOUT" "shellcheck-pool: x.sh did not complete — shellcheck exited 3" "pool: …named as a lint that did not complete"
+eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — linted 2 of 3 file(s), 3 worker(s)" "pool: …and the count says how many were actually linted"
+
+# 18e. Nothing to lint is a refusal, never a pass — by argument and by empty NUL stdin.
+run_pool -- ; eq "$QRC" "2" "pool: no files → exit 2"
+QOUT="$(cd "$pfx" && PATH="$scstub:$PATH" bash "$pool" -0 < /dev/null 2>&1)"; QRC=$?
+eq "$QRC" "2" "pool: -0 with nothing on stdin → exit 2"
+has "$QOUT" "not a pass" "pool: …and says a lint over nothing is not a pass"
+
+# 18f. NUL-delimited input: a name with a space AND a newline arrives whole.
+nl_name=$'odd\nname with space.sh'
+printf 'unused=1\n' > "$pfx/$nl_name"
+sc_reset
+QOUT="$(cd "$pfx" && printf '%s\0' c1.sh "$nl_name" | TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" -0 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: -0 → the oddly-named file is linted and its finding is red"
+has "$QOUT" "In $nl_name line 1:" "pool: …under its whole name, never split on the space or the newline"
+eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — 2 file(s), 2 worker(s)" "pool: …counted as one file"
+
+# 18g. Interrupted → its workers go with it. TERM the pool mid-lint; every linter it started is gone.
+for i in 1 2 3; do printf 'SLEEP=5\n' > "$pfx/s$i.sh"; done
+sc_reset
+( cd "$pfx" && exec env TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" s1.sh s2.sh s3.sh >/dev/null 2>&1 ) &
+qpid=$!
+for _ in $(seq 1 50); do [ "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" -ge 3 ] && break; sleep 0.1; done
+eq "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" "3" "pool interrupt: all three lints started before the signal"
+kill -TERM "$qpid" 2>/dev/null; wait "$qpid"; qrc=$?
+eq "$qrc" "143" "pool interrupt: TERM → the pool exits 143"
+sleep 0.2
+alive=""
+while IFS= read -r p; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive="$alive $p"; done < "$SCSTUB_STATE/pids"
+eq "$alive" "" "pool interrupt: no linter it started outlives it"
+
+# 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
+# file is caught by the linted-count check alone — and with that check neutered, the same slip
+# passes green while linting 11 of 12. One defect, one defence, both answers seen.
+pcopy="$work/poolcopy"; mkdir -p "$pcopy/scripts/lib"
+cp "$pool" "$pcopy/scripts/"; cp "$ROOT/scripts/lib/common.sh" "$pcopy/scripts/lib/"
+if check_mutate_line "$pcopy/scripts/shellcheck-pool.sh" '  while [ "$next" -lt "$n" ] && [ "${#slot[@]}" -lt "$width" ]; do' \
+     's#^  while \[ "\$next" -lt "\$n" \] && #  while [ "$next" -lt $(( n - 1 )) ] \&\& #' "mut-dropfile"; then
+  # Dropping a file from DISPATCH also leaves the flush loop waiting on it; the copy stops at the
+  # `lost track` refusal and reports a shortfall — red, which is the guard's answer.
+  sc_reset; QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 PATH="$scstub:$PATH" bash "$pcopy/scripts/shellcheck-pool.sh" c{1..12}.sh 2>&1)"; QRC=$?
+  eq "$QRC" "1" "mut-dropfile: a pool that never dispatches its last file is red"
+  # Fewer than 12, not exactly 11: output is flushed in INPUT order and dispatch is largest-first,
+  # so the undispatched file can sit anywhere in the order and the count stops at the first gap.
+  if [[ "$QOUT" =~ linted\ ([0-9]+)\ of\ 12\ file ]] && [ "${BASH_REMATCH[1]}" -lt 12 ]; then ok; else
+    bad "mut-dropfile: the count guard must name a shortfall of the 12 files — got: $QOUT"
+  fi
+  if check_mutate_line "$pcopy/scripts/shellcheck-pool.sh" 'if [ "$linted" -ne "$n" ]; then' \
+       's#^if \[ "\$linted" -ne "\$n" \]; then$#if false; then#' "mut-noguard"; then
+    sc_reset; QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 PATH="$scstub:$PATH" bash "$pcopy/scripts/shellcheck-pool.sh" c{1..12}.sh 2>&1)"; QRC=$?
+    eq "$QRC" "0" "mut-noguard: without the count guard the same slip passes green (so 18h's guard is what catches it)"
+  fi
 fi
 
 check_summary "precommit-gate"

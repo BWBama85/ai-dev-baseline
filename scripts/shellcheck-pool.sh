@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — lint a set of shell files with a bounded pool of shellcheck processes (#455).
+#
+# The linter is single-threaded per invocation, and this repo used to hand it every file at once in
+# three places: the turn-end gate (`.claude/scripts/precommit-gate.sh`), selfcheck's `shellcheck`
+# step, and CI's `shellcheck` job. One process over the whole set left every other core idle — 10 of
+# the gate's 13.5s per turn on a large branch. This is the ONE home for the lint all three now call,
+# so they cannot drift into three shapes (owner decision on #455: one script, not three inline pools).
+#
+# THE CONTRACT:
+#   - ONE shellcheck PER FILE, at most W running at a time, W = `adb_pool_size` capped by
+#     ADB_SHELLCHECK_JOBS (default 8), and never more workers than files;
+#   - every file's output is captured whole to its own file and emitted IN THE ORDER THE FILES WERE
+#     GIVEN, each as soon as it and everything before it has finished — so diagnostics never
+#     interleave, and the output is the same whatever order the lints finish in;
+#   - the status is red ONCE if any file was red, never once per file;
+#   - the last line always names what was linted — `shellcheck-pool: N file(s), W worker(s)` — so a
+#     run that linted nothing can never look like one that passed. "Workers" is the width actually
+#     used, min(W, N), not the configured ceiling.
+#
+# WHY PER FILE AND NOT CONTIGUOUS BATCHES, which is what #455 first proposed: measured on this tree
+# (90 files, 10 cores, 2026-10-10) one serial process took ~28s, eight contiguous batches 25.6s —
+# because a lint's cost is very uneven (the largest suites cost 4-6s each, an entry point 0.1s), and
+# the batch that drew the heavy files set the wall time. Dispatching file by file through a `wait -n`
+# pool keeps every worker busy until the queue drains, at ~0.1s of start-up per file — and the queue
+# is DISPATCHED LARGEST FILE FIRST (bytes, a good proxy for lint cost), so a heavy file is never the
+# one left starting after the others have finished. Dispatch order is not output order: output still
+# follows the order the files were given.
+#
+# THE POLICY FLAGS LIVE HERE, once, for all three callers: `--severity=warning` drops the style and
+# info tiers so the lint fails on correctness findings, not nits; `-e SC1091` because the gates
+# source their libraries through dynamically resolved paths the linter cannot follow statically.
+#
+# Usage:
+#   bash scripts/shellcheck-pool.sh [--] <file>...   lint the named files
+#   bash scripts/shellcheck-pool.sh -0               lint the NUL-delimited paths on stdin (no word-splitting
+#                                           anywhere: a path may carry a space, a tab or a newline)
+# Exit: 0 clean · 1 findings, or a lint that did not complete · 2 usage, or nothing to lint ·
+#       3 the pool could not be set up (no shellcheck, no scratch directory).
+#
+# Environment:
+#   ADB_SHELLCHECK_JOBS  a CAP on the pool width, read through `adb_pool_size` — it lowers the width,
+#                        never raises it past the cpu count. `ADB_SHELLCHECK_JOBS=1` forces a serial
+#                        lint, which is how a hang is attributed to one invocation.
+#   ADB_POOL_JOBS        the repo-wide budget `adb_pool_size` already honours; the lower of the two wins.
+
+# bash 5.3 runtime floor (#256) — FIRST, before `set -u`. Same stanza as every other entry point.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
+adb_require_bash "$@"
+set -uo pipefail
+
+ME="shellcheck-pool"
+usage() { printf 'usage: %s [--] <file>... | %s -0  (NUL-delimited paths on stdin)\n' "$ME" "$ME" >&2; exit 2; }
+
+files=()
+case "${1:-}" in
+  -0) [ "$#" -eq 1 ] || usage
+      mapfile -d '' -t files ;;
+  --) shift; files=("$@") ;;
+  -*) usage ;;
+  *)  files=("$@") ;;
+esac
+
+n="${#files[@]}"
+[ "$n" -gt 0 ] || { printf '%s: no files to lint — a lint over nothing is not a pass\n' "$ME" >&2; exit 2; }
+command -v shellcheck >/dev/null 2>&1 || { printf '%s: shellcheck is not installed\n' "$ME" >&2; exit 3; }
+
+width="$(adb_pool_size "${ADB_SHELLCHECK_JOBS:-8}")"
+[ "$width" -le "$n" ] || width="$n"
+
+tmp="$(mktemp -d)" || { printf '%s: cannot create a scratch directory\n' "$ME" >&2; exit 3; }
+declare -A slot=()   # pid -> file index, for every lint still running
+# An interrupted lint takes its workers with it: an orphaned shellcheck would keep a core busy after
+# the caller has already given up on the answer.
+cleanup() { local p; for p in "${!slot[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "$tmp"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The dispatch queue: file indices, largest file first. A file that cannot be sized sorts as 0 and is
+# still linted (its shellcheck reports why it could not be read).
+order=()
+mapfile -t order < <(
+  for (( i = 0; i < n; i++ )); do
+    sz="$(wc -c < "${files[i]}" 2>/dev/null)" || sz=0
+    printf '%s %s\n' "${sz//[!0-9]/}" "$i"
+  done | sort -k1,1nr -k2,2n | awk '{print $2}')
+[ "${#order[@]}" -eq "$n" ] || { printf '%s: could not order the %s file(s) for dispatch\n' "$ME" "$n" >&2; exit 3; }
+
+status=()            # file index -> shellcheck's exit status, once reaped
+red=0 linted=0 next=0 flushed=0
+# Emit every finished file whose predecessors have all been emitted. Called after each reap, so the
+# output streams in input order rather than arriving all at once at the end.
+flush() {
+  while [ "$flushed" -lt "$n" ] && [ -n "${status[flushed]+set}" ]; do
+    cat "$tmp/$flushed.out"
+    case "${status[flushed]}" in
+      0) linted=$(( linted + 1 )) ;;
+      1) linted=$(( linted + 1 )); red=1 ;;   # findings: the file was linted, and is red
+      *) red=1                                 # the linter itself failed: not a verdict
+         printf '%s: %s did not complete — shellcheck exited %s\n' "$ME" "${files[flushed]}" "${status[flushed]}" ;;
+    esac
+    flushed=$(( flushed + 1 ))
+  done
+}
+
+while [ "$flushed" -lt "$n" ]; do
+  while [ "$next" -lt "$n" ] && [ "${#slot[@]}" -lt "$width" ]; do
+    i="${order[next]}"
+    shellcheck --severity=warning -e SC1091 -- "${files[i]}" >"$tmp/$i.out" 2>&1 &
+    slot[$!]="$i"
+    next=$(( next + 1 ))
+  done
+  done_pid=""
+  wait -n -p done_pid "${!slot[@]}"; st=$?
+  # No pid means nothing was reaped — a wait that returned without a child is not a lint result,
+  # and looping on it would spin. Every file not yet reaped is then unaccounted for, which is red.
+  # `${done_pid:-}`: with no child to reap, `wait -p` UNSETS the variable rather than leaving it
+  # empty, and under `set -u` a bare expansion would kill the pool before it could say so.
+  if [ -z "${done_pid:-}" ] || [ -z "${slot[$done_pid]+set}" ]; then
+    printf '%s: lost track of %s running lint(s) — wait returned %s with no child\n' "$ME" "${#slot[@]}" "$st"
+    break
+  fi
+  status[${slot[$done_pid]}]="$st"
+  unset 'slot[$done_pid]'
+  flush
+done
+
+# THE GUARD THAT RAN NOTHING: every file handed in must have been linted to a verdict. A dispatch
+# slip that dropped a file, or a lint that died, is red even if nothing reported a finding.
+if [ "$linted" -ne "$n" ]; then
+  printf '%s: FAIL — linted %s of %s file(s), %s worker(s)\n' "$ME" "$linted" "$n" "$width"
+  exit 1
+fi
+if [ "$red" -ne 0 ]; then
+  printf '%s: FAIL — %s file(s), %s worker(s)\n' "$ME" "$n" "$width"
+  exit 1
+fi
+printf '%s: %s file(s), %s worker(s)\n' "$ME" "$n" "$width"
+exit 0

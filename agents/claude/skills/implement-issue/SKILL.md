@@ -689,6 +689,22 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   "none red". The wait for CI to conclude belongs to `/resolve-pr-threads <PR#>`, the same hand-off
   as the reviewer's.
 - `--squash` takes its subject from the **PR title** — it must satisfy the commit convention.
+- **Mutation harnesses** (#456) — only where the repo carries BOTH `scripts/mutation-gate.sh` and
+  `.github/workflows/mutation-nightly.yml` with a `step` dispatch input; anywhere else, skip this
+  line silently. There, no harness runs in the PR's own CI, so after the push ask which ones this
+  change gives something new to say, and dispatch each against the PR branch:
+
+  ```bash
+  bash scripts/mutation-gate.sh touched     # stdout: one step per line · 0 decided (maybe none) · 11/12 every step, listed · 3 unreadable
+  gh workflow run mutation-nightly.yml --ref "<PR branch>" -f step=<step>   # once per listed step
+  ```
+
+  Then add each run's URL and the head SHA it tested (`gh run list --workflow mutation-nightly.yml
+  --branch "<PR branch>" --event workflow_dispatch --limit <n> --json url,headSha`) to the PR body
+  with `gh pr edit`, and name them in the close-out. Waiting for them is `/resolve-pr-threads`'
+  CI hand-off, like any check — never a wait here. More than three listed: label the PR
+  `run-mutations` instead, which runs every harness against its head once. Rc 3 or a failed
+  dispatch: report it under **Needs attention**, naming the steps that did not run.
 
 Do not poll for bot reviews or CI here; report the state and end.
 
