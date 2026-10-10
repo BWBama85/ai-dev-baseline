@@ -2579,8 +2579,7 @@ eq "${ ev $'owner-action\ntracker-only'; }" "${ ev $'owner-action\ntracker-only'
 # fail on its own label. A row that stays green means nothing here can detect that defect.
 #
 # The rows run through the vendored shmutant (#519), sourced HERE rather than by check-lib.sh, which
-# must stay evaluable on bash 3.2 (D35, D125). This suite was the port's pilot: its four rows run
-# inline in the plain `roadmap` step, so the adapter is proven end to end before the larger callers.
+# must stay evaluable on bash 3.2 (D35, D125). They run inline in the plain `roadmap` step.
 # shellcheck source=/dev/null
 . "$ROOT/scripts/shmutant.sh" || bad "emit-verdict: scripts/shmutant.sh could not be sourced"
 ev_prepare() {   # <dir> — build the library copy ONCE; shmutant clones it for every row

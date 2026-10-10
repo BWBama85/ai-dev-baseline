@@ -917,9 +917,8 @@ fi
 # Every mutation is applied to a COPY of the tree (self-review.md's copy rule). The working tree is
 # never touched, so this cannot be the thing that eats an uncommitted edit.
 # The table, the rewrite, the pool and the verdicts are the vendored shmutant's (#519), scored by
-# check-lib.sh's `check_shmutant_pool`. A local copy of the verdict had DIVERGED once: it captured no
-# exit status, so "N mutations proven RED" was a claim about what the child PRINTED, never about
-# whether it FAILED (D68). What stays local: the tree copy, how the child is invoked, and the table.
+# check-lib.sh's `check_shmutant_pool` on the child's exit status as well as its output (D68). What
+# stays local: the tree copy, how the child is invoked, and the table.
 #
 # The table is declared only in `--mutation` mode — this file sources shmutant there and nowhere
 # else — and the pool is a plain command inside that block, never the right side of `&&`, where
@@ -950,8 +949,8 @@ shmutant_mut skill-compares-only-SKILL.md \
     'pl="$(_ad_dir_manifest "$proj")"; bl="$(_ad_dir_manifest "$base")"' \
     'pl=x; bl=x' \
     'an extra project-only file makes a skill differ'
-# LENGTHENED for shmutant, which refuses a literal that starts at more than one position: the shorter
-# one is also a substring of a later, deeper-indented arm. The defect and its site are unchanged.
+# The literal runs to the end of its line: a shorter one is also a substring of a later, deeper-
+# indented arm, and shmutant refuses a literal that starts at more than one position (D125).
 shmutant_mut cmp-error-becomes-differs \
     "    *) printf 'unknown\\n' ;;" \
     "    *) printf 'differs\\n' ;;" \

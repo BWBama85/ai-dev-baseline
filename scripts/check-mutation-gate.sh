@@ -84,7 +84,7 @@ if [ "$MODE" = mutation ]; then
     check_copy_subtrees "$ROOT" "$1" scripts .github bin agents .claude base templates >/dev/null 2>&1 || return 1
     cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null || return 1
   }
-  mkdir -p "$work/gate" "$work/ci" "$work/nightly"
+  mkdir -p "$work/gate" "$work/ci" "$work/nightly" "$work/registry"
   mut_run() {
     local d="$1"
     bash -n "$d/scripts/mutation-gate.sh" 2>/dev/null \
@@ -107,8 +107,7 @@ if [ "$MODE" = mutation ]; then
   shmutant_target scripts/mutation-gate.sh
   # Four witnesses below begin with `…`, as their assertion labels do. shmutant matches a witness as a
   # whole TOKEN, and a non-ASCII neighbour extends one, so a witness starting at the letter after the
-  # ellipsis is not carried by the label's FAIL: line. check-lib's harness matched a substring, so
-  # those rows were written without it (#519).
+  # ellipsis is not carried by the label's FAIL: line (D125).
   shmutant_mut always-skip \
     'if [ "$nhits" -gt 0 ]; then' \
     'if [ "$nhits" -gt 999999 ]; then' \
@@ -239,6 +238,16 @@ if [ "$MODE" = mutation ]; then
     '  schedul3:' \
     'has no schedule'
   check_shmutant_pool "check-mutation-gate (nightly)" "$work/nightly" mut_prepare mut_run 4
+
+  # SECTION 5's shmutant pin, against a copy of the registry: a ported step that stops declaring the
+  # vendored harness it runs would be gated off a change to it, which only this pin reports.
+  shmutant_reset
+  shmutant_target scripts/selfcheck.sh
+  shmutant_mut registry-drops-shmutant \
+    'inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh ' \
+    'inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh ' \
+    'adopt-mutation runs check_shmutant_pool, so its verdict depends on scripts/shmutant.sh'
+  check_shmutant_pool "check-mutation-gate (registry)" "$work/registry" mut_prepare mut_run 4
   check_summary "check-mutation-gate-mutation"
 fi
 

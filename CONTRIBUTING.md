@@ -246,9 +246,9 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
   Quote expansions, single-purpose commands. Must pass
   `shellcheck --severity=warning -e SC1091`. Justify any `# shellcheck disable=` with
   a one-line reason.
-  - Every entry point gates its own interpreter as its first statement, in one of **three**
-    classifications that `check-bash-floor.sh --entrypoints` enforces (it fails the build on a
-    file that is unclassified or uses the wrong form):
+  - Every entry point is in one of **four** classifications that `check-bash-floor.sh
+    --entrypoints` enforces (it fails the build on a file that is unclassified or uses the wrong
+    form); the first two gate their own interpreter as their first statement:
     - **gate** (the overwhelming majority; `--entrypoints` prints the live count) —
       `adb_require_bash`: re-exec, else exit non-zero with your platform's install command.
     - **advisory** (3) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
@@ -257,6 +257,9 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
       It never runs its body under a sub-floor interpreter (D31).
     - **exempt** (1) — `check-bash-floor.sh` calls neither: it is the observer, and an observer
       that upgrades its own interpreter has destroyed the observation (D31).
+    - **vendored** (1) — `scripts/shmutant.sh`, a third-party file pinned by digest and never
+      edited here (D125). It enforces its own 5.3 floor, and the lint fails if it ever calls the
+      gate, because that would mean it was edited.
   - **`scripts/lib/common.sh` must stay parseable below the floor** — it holds the gate, and a
     caller cannot reach a function until sourcing finishes, so a 5.3-only construct there makes
     the gate unreachable on exactly the hosts it exists for (D30). D35 extends that to

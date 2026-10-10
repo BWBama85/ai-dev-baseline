@@ -209,13 +209,10 @@ gate_decide() {
   return 10
 }
 
-# NOTE ON ORDER: these sit AFTER `gate_decide` because `check-mutation-gate.sh`'s mutation rows
-# for the step-level decision were anchored by POSITION — the literal rewrite takes the FIRST
-# occurrence, so a function inserted above `gate_decide` silently re-targeted them at code they were
-# never written about. The rows below anchor on `# row-*` markers instead, which is what that
-# lesson is worth: a literal that must be unique should say so in the source. Since #519 shmutant
-# REFUSES a literal that starts at more than one position, so `gate_decide`'s two recurring sites
-# carry markers too (`row-step-override`, `row-mb-unresolved`).
+# `check-mutation-gate.sh`'s mutation rows name their sites by literal, and shmutant refuses a
+# literal that starts at more than one position (D125). A site whose line recurs therefore carries a
+# `# row-*` marker the row's literal includes — the ones below, and `gate_decide`'s
+# `row-step-override` and `row-mb-unresolved`. Keep each marker on its line.
 
 # gate_registry_row <selector> <kind> — print the whole registry row for the step named by
 # <selector> (kind `step`) or for the step whose command is `bash <selector> --mutation` (kind

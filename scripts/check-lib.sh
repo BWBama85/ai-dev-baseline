@@ -223,10 +223,9 @@ check_mutate_line() {
 # RED. A SIBLING of `check_mutate_line` above, not a replacement: that one applies a `sed` script
 # and needs whole-line uniqueness, this one takes an arbitrary literal substring. (D68)
 #
-# What remains here is what the per-block rows (`check_mutation_rows`, below) still use: the literal
-# rewrite, the witness test, the verdict taxonomy and the row deadline. The whole-suite pool that
-# shared them moved to the vendored shmutant in #519 (`check_shmutant_pool`, further down); #525
-# moves the rows too, and these go with them.
+# What remains here serves the per-block rows (`check_mutation_rows`, below) only: the literal
+# rewrite, the witness test, the verdict taxonomy and the row deadline. The whole-suite pool is
+# `check_shmutant_pool`, further down (D125); #525 retires these with the rows.
 
 # check_mutate_literal <file> <old> <new> — replace the FIRST occurrence of literal <old> with
 # <new>, in place. Returns:
@@ -372,6 +371,7 @@ _check_hung_verdict() {
 # check_shmutant_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run the table the caller
 # declared with `shmutant_target` / `shmutant_mut` through `shmutant_pool`, then score every row into
 # family 2's counters: `killed` is one `ok`, every other verdict one `FAIL:` line naming the row.
+# Returns 0 only when nothing here recorded a failure.
 #
 # THE CALLER SOURCES scripts/shmutant.sh — never this file (D35, D125). check-lib.sh must stay
 # evaluable on bash 3.2 and shmutant needs 5.3, so this only CALLS what the caller loaded, and fails
@@ -399,25 +399,30 @@ _check_hung_verdict() {
 # not a verdict.
 #
 # The pool's status is captured on its own line, before the stream is read, and must agree with the
-# records: 0 only when every row record is `killed`, 1 only when one is not, 2 (a harness error) fails
-# however many records exist. Every record is validated whole first — a stream this file cannot read
-# is a failure, never a partial verdict — and the row records must be exactly the table's rows, by
-# name and in order (shmutant emits them in table order).
+# records. The stream is refused WHOLE unless every byte rule (common.sh's `adb_bytes_whole`) and
+# every record rule holds — shmutant's v1 grammar, field by field, escapes included; no baseline record,
+# since none is run — and its row records must be exactly the table's rows, by name, target and
+# selector, in order. Status 2 (a harness error) fails however many records exist. This reads the
+# table shmutant keeps (`SHMUTANT_ROWS_*`) and its field encoding (`_check_shm_esc`); both are the
+# pinned v0.2.0's, and an upgrade re-runs check-block-rows.sh, which pins each.
 #
-# ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): when the pool did not pass, the stream and each failing
-# row's `mut-<n>/output` — the full output of the run that produced its verdict — are copied into a
-# fresh `<dir>/<label>.XXXXXX`, because the workdir dies with the suite's own EXIT cleanup.
+# ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): on ANY failure recorded here, the stream and every failing
+# row's `mut-<n>/output` — every row's, when the failure is the stream's or the harness's rather than
+# a row's — are copied into a fresh `<dir>/<label>.XXXXXX`, because the workdir dies with the suite's
+# own EXIT cleanup. A copy that fails is named; the line saying where the evidence is says when it is
+# incomplete.
 check_shmutant_pool() {
   local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
-  local n pool rc parsed rec kind rest verdict name detail rows=0 killed=0 sums=0 sum_rows="" sum_killed="" tab art i
+  local n pool rc parsed="" rec kind rest verdict name tgt sel detail rows=0 killed=0 sums=0
+  local sum_label="" sum_rows="" sum_killed="" tab art i f0="$fail" whole=1 lost="" out
   local -a failing=()
   tab="$(printf '\t')"
   if ! command -v shmutant_pool >/dev/null 2>&1; then
     bad "$label --mutation: shmutant_pool is unavailable — the suite must source scripts/shmutant.sh before the pool"
     return 1
   fi
-  if ! command -v adb_pool_size >/dev/null 2>&1; then
-    bad "$label --mutation: adb_pool_size is unavailable — source scripts/lib/common.sh before check-lib.sh"
+  if ! command -v adb_pool_size >/dev/null 2>&1 || ! command -v adb_bytes_whole >/dev/null 2>&1; then
+    bad "$label --mutation: adb_pool_size or adb_bytes_whole is unavailable — source scripts/lib/common.sh before check-lib.sh"
     return 1
   fi
   _check_row_secs "$label" || return 1
@@ -430,24 +435,34 @@ check_shmutant_pool() {
         SHMUTANT_RED_STATUS=1 SHMUTANT_RED_PREFIX='FAIL: ' SHMUTANT_COUNTS=0
   shmutant_pool "$label" "$wd" "$prep" "$run" "$cap"
   rc=$?
-  # One line per record, operative fields first and the free-text detail last, so the loop below never
-  # depends on how `read` splits an empty field. Anything off the record grammar is `malformed <line>`.
-  if [ ! -e "$wd.tsv" ]; then
-    parsed=""
-  elif ! parsed="$(awk -F'\t' '
-      $1 != "shmutant" || $2 != "1" { print "malformed\t" NR; next }
-      $3 == "row"      { if (NF != 9 || $4 == "" || $5 == "") print "malformed\t" NR
-                         else print "row\t" $4 "\t" $5 "\t" $9
-                         next }
-      $3 == "baseline" { if (NF != 7 || $5 == "") print "malformed\t" NR
-                         else if ($5 != "green") print "baseline\t" $5 "\t" $4 "\t" $7
-                         next }
-      $3 == "summary"  { if (NF != 8 || $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/) print "malformed\t" NR
-                         else print "summary\t" $5 "\t" $6
-                         next }
-                       { print "malformed\t" NR }' "$wd.tsv")"; then
-    bad "$label --mutation: the verdict stream $wd.tsv could not be read — no row has a verdict"
-    return 1
+  # An absent or empty stream carries no records (status 2 can leave either); anything else must be
+  # whole — no NUL, a final newline, inside a bound no real table approaches — before a byte is read.
+  if [ -s "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
+    if ! adb_bytes_whole "$wd.tsv" 16777216; then
+      bad "$label --mutation: the verdict stream $wd.tsv is not whole (a NUL, no final newline, unreadable, or past 16 MiB) — refusing to score from it"
+      whole=0
+    # One line per record, operative fields first and the free-text detail last, so the loop below never
+    # depends on how `read` splits an empty field. Anything off the record grammar is `malformed <line>`.
+    elif ! parsed="$(awk -F'\t' '
+        function esc_ok(f,   s) { s = f; gsub(/\\[\\tn]/, "", s); return index(s, "\\") == 0 }
+        function secs_ok(f) { return f ~ /^[0-9]+\.[0-9][0-9][0-9]$/ }
+        { for (k = 1; k <= NF; k++) if (!esc_ok($k)) { print "malformed\t" NR; next } }
+        $1 != "shmutant" || $2 != "1" { print "malformed\t" NR; next }
+        $3 == "row" {
+          if (NF != 9 || $5 == "" || $6 == "" || $7 == "" || !secs_ok($8) ||
+              $4 !~ /^(killed|survived|accidental|aborted|unapplied|unprepared|baseline|timeout|unsettled|lost)$/)
+            print "malformed\t" NR
+          else print "row\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $9
+          next }
+        $3 == "summary" {
+          if (NF != 8 || $4 == "" || $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/ || $7 !~ /^[0-9]+$/ || !secs_ok($8))
+            print "malformed\t" NR
+          else print "summary\t" $4 "\t" $5 "\t" $6
+          next }
+        { print "malformed\t" NR }' "$wd.tsv")"; then
+      bad "$label --mutation: the verdict stream $wd.tsv could not be read — no row has a verdict"
+      whole=0; parsed=""
+    fi
   fi
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
@@ -455,10 +470,14 @@ check_shmutant_pool() {
     case "$kind" in
       row)
         verdict="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
-        name="${rest%%"$tab"*}"; detail="${rest#*"$tab"}"
-        if [ "$name" != "${SHMUTANT_ROWS_NAME[$rows]-}" ]; then
-          bad "$label --mutation: row verdict $rows names '$name', but the table's row $rows is '${SHMUTANT_ROWS_NAME[$rows]-<none>}' — the stream is not this table's"
-          failing+=("$rows")
+        name="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
+        tgt="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
+        sel="${rest%%"$tab"*}"; detail="${rest#*"$tab"}"
+        if [ "$name" != "$(_check_shm_esc "${SHMUTANT_ROWS_NAME[$rows]-}")" ] \
+           || [ "$tgt" != "$(_check_shm_esc "${SHMUTANT_ROWS_FILE[$rows]-}")" ] \
+           || [ "$sel" != "$(_check_shm_esc "${SHMUTANT_ROWS_SEL[$rows]-}")" ]; then
+          bad "$label --mutation: row verdict $rows names '$name' on '$tgt' (selector '$sel'), which is not the table's row $rows ('${SHMUTANT_ROWS_NAME[$rows]-<none>}') — the stream is not this table's"
+          whole=0
         elif [ "$verdict" = killed ]; then
           ok; killed=$((killed + 1))
         else
@@ -466,12 +485,13 @@ check_shmutant_pool() {
           failing+=("$rows")
         fi
         rows=$((rows + 1)) ;;
-      baseline)
-        bad "$label --mutation: an uninjected baseline was not green (${rest%%"$tab"*}) — every row under it proves nothing" ;;
       summary)
-        sums=$((sums + 1)); sum_rows="${rest%%"$tab"*}"; sum_killed="${rest#*"$tab"}" ;;
+        sums=$((sums + 1))
+        sum_label="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
+        sum_rows="${rest%%"$tab"*}"; sum_killed="${rest#*"$tab"}" ;;
       *)
-        bad "$label --mutation: record ${rest} of $wd.tsv is not in shmutant's v1 grammar — refusing to score from it" ;;
+        bad "$label --mutation: record ${rest} of $wd.tsv is not in shmutant's v1 grammar (or is a baseline record, and none was run) — refusing to score from it"
+        whole=0 ;;
     esac
   done <<EOF
 $parsed
@@ -479,24 +499,35 @@ EOF
   case "$rc" in
     0) [ "$killed" -eq "$rows" ] || bad "$label --mutation: shmutant_pool returned 0 while $((rows - killed)) row(s) were not killed" ;;
     1) [ "$killed" -lt "$rows" ] || bad "$label --mutation: shmutant_pool returned 1 (a row not killed) but every row record says killed" ;;
-    2) bad "$label --mutation: shmutant_pool reported a HARNESS ERROR (status 2) — the reason is on its stderr above; no verdict here proves anything" ;;
-    *) bad "$label --mutation: shmutant_pool returned $rc, which is not one of its statuses (0/1/2)" ;;
+    2) bad "$label --mutation: shmutant_pool reported a HARNESS ERROR (status 2) — the reason is on its stderr above; no verdict here proves anything"; whole=0 ;;
+    *) bad "$label --mutation: shmutant_pool returned $rc, which is not one of its statuses (0/1/2)"; whole=0 ;;
   esac
   if [ "$rc" -ne 2 ]; then
-    [ "$rows" -eq "$n" ] || bad "$label --mutation: the stream carries $rows row verdict(s) for a table of $n — the harness skipped rows"
-    [ "$sums" -eq 1 ] && [ "$sum_rows" = "$n" ] && [ "$sum_killed" = "$killed" ] \
-      || bad "$label --mutation: the stream's summary record is missing, repeated, or counts other than its $n row(s) and $killed kill(s)"
+    [ "$rows" -eq "$n" ] || { bad "$label --mutation: the stream carries $rows row verdict(s) for a table of $n — the harness skipped rows"; whole=0; }
+    if [ "$sums" -ne 1 ] || [ "$sum_label" != "$(_check_shm_esc "$label")" ] || [ "$sum_rows" != "$n" ] || [ "$sum_killed" != "$killed" ]; then
+      bad "$label --mutation: the stream's summary record is missing, repeated, or names another pool or other than its $n row(s) and $killed kill(s)"
+      whole=0
+    fi
   fi
-  if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ] && { [ "$rc" -ne 0 ] || [ "${#failing[@]}" -gt 0 ]; }; then
+  if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ] && [ "$fail" -ne "$f0" ]; then
+    # A failure of the stream or the harness belongs to no single row, so every row's output is kept.
+    [ "$whole" -eq 1 ] || { failing=(); for (( i = 0; i < n; i++ )); do failing+=("$i"); done; }
     if mkdir -p "$ADB_MUTATION_ARTIFACTS" 2>/dev/null && art="$(mktemp -d "$ADB_MUTATION_ARTIFACTS/$label.XXXXXX")"; then
-      [ ! -f "$wd.tsv" ] || cp "$wd.tsv" "$art/verdicts.tsv"
+      if [ -e "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
+        cp "$wd.tsv" "$art/verdicts.tsv" 2>/dev/null || lost="$lost verdicts.tsv"
+      fi
       for i in "${failing[@]}"; do
-        [ ! -f "$wd/mut-$i/output" ] || cp "$wd/mut-$i/output" "$art/mut-$i.output" \
-          || printf '%s --mutation: the output of row %s could not be kept in %s\n' "$label" "$i" "$art" >&2
+        out="$wd/mut-$i/output"
+        if [ -f "$out" ]; then cp "$out" "$art/mut-$i.output" 2>/dev/null || lost="$lost mut-$i/output"
+        else lost="$lost mut-$i/output(absent)"; fi
       done
-      printf '%s --mutation: the failing rows'"'"' output is kept in %s\n' "$label" "$art"
+      if [ -z "$lost" ]; then
+        printf '%s --mutation: the evidence of this failure is kept in %s\n' "$label" "$art"
+      else
+        printf '%s --mutation: the evidence of this failure is kept in %s, INCOMPLETELY — not kept:%s\n' "$label" "$art" "$lost" >&2
+      fi
     else
-      printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take a copy of the failing rows'"'"' output\n' \
+      printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take a copy of this failure'"'"'s evidence\n' \
         "$label" "$ADB_MUTATION_ARTIFACTS" >&2
     fi
   fi
@@ -504,7 +535,16 @@ EOF
   # the same counts as a healthy one, and only this line says it took longer for a reason.
   printf '\n%s --mutation: %d/%d mutation(s) killed on their own witness (shmutant; pool=%s; row deadline %ss)\n' \
     "$label" "$killed" "$n" "$pool" "$CHECK_ROW_SECS"
-  [ "$rc" -eq 0 ] && [ "$killed" -eq "$n" ]
+  [ "$fail" -eq "$f0" ]
+}
+
+# _check_shm_esc <value> — <value> in the verdict stream's field encoding: backslash, tab and newline
+# escaped, exactly as shmutant's `_shmutant_esc` writes them, so a table value compares with the field
+# that carries it rather than with its decoding.
+_check_shm_esc() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//$'\t'/\\t}"; s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------

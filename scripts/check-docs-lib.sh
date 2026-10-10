@@ -116,12 +116,9 @@ if [ "$MODE" = mutation ]; then
     'a degraded probe is DEGRADED'
 
   # A malformed declaration reads as "none declared" — the flattering answer, which reports a
-  # project that asked for a preflight as one that declined.
-  # RETARGETED when `_adb_dl_mcp_key` was rewritten to use the shared layered read: the old row's
-  # literal no longer existed, so it applied to nothing and the harness caught it as a row that
-  # tests NOTHING — which is the harness doing its job on its own table.
-  # LENGTHENED when the harness became shmutant, which refuses a literal that starts at more than one
-  # position: `>&2; return 18 ;;` ends two later arms too. The defect and its site are unchanged.
+  # project that asked for a preflight as one that declined. The literal carries the
+  # `adb_display_value` call because `>&2; return 18 ;;` alone also ends two later arms, and shmutant
+  # refuses a literal that starts at more than one position (D125).
   shmutant_mut malformed-reads-as-none \
     '"$(adb_display_value "$raw")" >&2; return 18 ;;' \
     '"$(adb_display_value "$raw")" >&2; return 1 ;;' \
@@ -329,8 +326,7 @@ if [ "$MODE" = mutation ]; then
 
   check_shmutant_pool check-docs-lib "$work/pool" prep runner 6
 
-  # THE SHARED READER'"'"'S HALF, in its own pool against its own file — a second pool rather than a
-  # second `shmutant_target` in the first, which is the shape these rows had before the port (#519).
+  # THE SHARED READER'"'"'S HALF, in its own pool against its own file, under its own label.
   shmutant_reset
   shmutant_target scripts/lib/common.sh
   shmutant_mut missing-bracket-accepted \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — the vendored scripts/shmutant.sh is exactly the release it pins (#519, D125).
 #
-# Usage: bash scripts/check-shmutant-pin.sh [--self-test]   (exit 0 = pass, 1 = fail)
+# Usage: bash scripts/check-shmutant-pin.sh [--self-test]   (exit 0 = pass, 1 = fail, 2 = usage)
 #
 # scripts/shmutant.sh is a THIRD-PARTY file: BWBama85/shmutant's single-file harness, vendored byte
 # for byte from tag v0.2.0 (commit 303e451) and never edited here. A defect found in it is filed at

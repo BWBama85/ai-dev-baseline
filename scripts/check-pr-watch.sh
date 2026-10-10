@@ -111,10 +111,9 @@ check_exit_guard "check-pr-watch" "rm -rf \"$work\""
 # and section 14's CI guards can fire. It is not a mutation suite for `pr-watch.sh` at large; the
 # other classification sections are covered by their own assertions and by nothing here.
 #
-# THREE POOLS, because the harness these rows were written for built one target path per pool and
-# these witnesses live in two files — the wait loop's own reporting (`pr-watch.sh`), and the
-# staleness rule and #447's pair rule it delegates to (`common.sh`). shmutant could carry both files
-# in one table (`shmutant_target` per group); the port to it (#519) is 1:1 and keeps the shape.
+# THREE POOLS, one per group of rows, across two files — the wait loop's own reporting
+# (`pr-watch.sh`), and the staleness rule and #447's pair rule it delegates to (`common.sh`). That is
+# the harness's shape, not a judgement about the rows (D125).
 #
 # THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. Every row below reads a
 # FAILURE, and a row is killed when SOME `FAIL:` line carries its witness —

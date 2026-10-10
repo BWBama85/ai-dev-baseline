@@ -524,7 +524,9 @@ cat > "$work/shm-driver.sh" <<'EOF'
 # shellcheck source=/dev/null
 [ -n "${ADB_T_NO_SHMUTANT:-}" ] || . "$ADB_T_SHMUTANT"
 prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/"; }
-run() { ADB_T_LIB="$ADB_T_LIB" bash "$1/suite.sh"; }
+# "$BASH", never a bare `bash`: on macOS a PATH without Homebrew first resolves /bin/bash 3.2, which
+# shmutant refuses to load and the fixture suite was never written for.
+run() { ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
 if [ -n "${ADB_T_STUB:-}" ]; then
   # A stand-in for shmutant_pool: it records what it was handed, then writes the stream ADB_T_STUB
   # names and returns the status that goes with it.
@@ -548,6 +550,15 @@ if [ -n "${ADB_T_STUB:-}" ]; then
       bad-summary)  printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 0)" >> "$SHMUTANT_STREAM"; return 0 ;;
       no-stream)    return 0 ;;
       wrong-name)   printf '%s\n%s\n' "$(printf "$r" killed | awk 'BEGIN { FS = OFS = "\t" } { $5 = "another"; print }')" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      wrong-target) printf '%s\n%s\n' "$(printf "$r" killed | awk 'BEGIN { FS = OFS = "\t" } { $6 = "other.sh"; print }')" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      wrong-select) printf '%s\n%s\n' "$(printf "$r" killed | awk 'BEGIN { FS = OFS = "\t" } { $7 = "sq-value"; print }')" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      bad-seconds)  printf '%s\n%s\n' "$(printf "$r" killed | awk 'BEGIN { FS = OFS = "\t" } { $8 = "soon"; print }')" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      bad-verdict)  printf '%s\n%s\n' "$(printf "$r" kiled)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      bad-escape)   printf '%s\n%s\n' "$(printf "$r" killed | awk 'BEGIN { FS = OFS = "\t" } { $9 = "a \\q b"; print }')" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      baseline-rec) printf 'shmutant\t1\tbaseline\tneg-value\tgreen\t0.100\tgreen before injection\n%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      other-label)  printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1 | awk 'BEGIN { FS = OFS = "\t" } { $4 = "another-pool"; print }')" >> "$SHMUTANT_STREAM"; return 0 ;;
+      nul)          { printf '%s\n' "$(printf "$r" killed)"; printf 'shmutant\t1\tsummary\tfix\000ture\t1\t1\t4\t0.200\n'; } >> "$SHMUTANT_STREAM"; return 0 ;;
+      unterminated) printf '%s\n%s' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
       rc2)          return 2 ;;
       rc7)          printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 7 ;;
     esac
@@ -556,6 +567,7 @@ fi
 [ -n "${ADB_T_NO_SHMUTANT:-}" ] || shmutant_target lib.sh
 eval "${ADB_T_ROWS:-}"
 check_shmutant_pool "fixture" "$ADB_T_WD" prep run 4
+printf 'adapter-rc=%s\n' "$?"
 check_summary shm-driver
 EOF
 shm() {   # <name> <rows> [ENV=val...] — sets $out and $rc
@@ -565,11 +577,12 @@ shm() {   # <name> <rows> [ENV=val...] — sets $out and $rc
   mkdir -p "$work/shm-$nm"
   out="$(env ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
            ADB_T_WD="$work/shm-$nm/pool" ADB_T_PREP_LOG="$work/prep-$nm.log" ADB_T_SEEN="$work/seen-$nm" \
-           "$@" bash "$work/shm-driver.sh" 2>&1)"; rc=$?
+           "$@" "$BASH" "$work/shm-driver.sh" 2>&1)"; rc=$?
 }
 CAUGHT="shmutant_mut caught '0 - \$1' '0 + \$1' 'neg-value'"
 shm killed "$CAUGHT"
 eq "$rc" 0 "shmutant: a killed row passes the suite"
+has "$out" "adapter-rc=0" "shmutant: …and the adapter itself returns 0"
 has "$out" "1/1 mutation(s) killed on their own witness (shmutant; pool=" "shmutant: the tally names the harness and its width"
 has "$out" "row deadline 1800s" "shmutant: the default row deadline is this repository's 1800s, not shmutant's 300"
 eq "$(cat "$work/prep-killed.log" 2>/dev/null)" "copy" "shmutant: prepare ran ONCE for the pool"
@@ -622,14 +635,28 @@ eq "$(cat "$work/seen-stub-ok.env" 2>/dev/null)" "unexported" "stub: …as local
 for _c in garbage:"is not in shmutant's v1 grammar" short-field:"is not in shmutant's v1 grammar" \
           version:"is not in shmutant's v1 grammar" rc1-killed:"returned 1 (a row not killed) but every row record says killed" \
           rc0-survived:"returned 0 while 1 row(s) were not killed" no-row:"carries 0 row verdict(s) for a table of 1" \
-          no-summary:"summary record is missing" bad-summary:"summary record is missing, repeated, or counts other" \
+          no-summary:"summary record is missing" bad-summary:"summary record is missing, repeated, or names another pool or other than" \
           no-stream:"carries 0 row verdict(s) for a table of 1" rc2:"HARNESS ERROR (status 2)" rc7:"returned 7, which is not one of its statuses" \
-          wrong-name:"names 'another', but the table's row 0 is 'caught'"; do
+          wrong-name:"which is not the table's row 0 ('caught')" wrong-target:"which is not the table's row 0 ('caught')" \
+          wrong-select:"which is not the table's row 0 ('caught')" bad-seconds:"is not in shmutant's v1 grammar" \
+          bad-verdict:"is not in shmutant's v1 grammar" bad-escape:"is not in shmutant's v1 grammar" \
+          baseline-rec:"or is a baseline record, and none was run" other-label:"names another pool" \
+          nul:"is not whole (a NUL" unterminated:"is not whole (a NUL, no final newline"; do
   _m="${_c%%:*}"; _w="${_c#*:}"
   shm "stub-$_m" "$CAUGHT" ADB_T_STUB="$_m"
   eq "$rc" 1 "stub $_m: the suite fails"
   has "$out" "$_w" "stub $_m: …saying why"
+  has "$out" "adapter-rc=1" "stub $_m: …and the adapter itself returns non-zero, whatever its caller does next"
 done
+# A failure of the STREAM keeps its evidence too — the stream itself, and every row's output, named
+# as absent when there is none (a stub runs no row).
+shm stub-garbage-art "$CAUGHT" ADB_T_STUB=garbage ADB_MUTATION_ARTIFACTS="$work/artifacts-garbage"
+_art="$(find "$work/artifacts-garbage" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"
+[ -n "$_art" ] && [ -f "$_art/verdicts.tsv" ] && ok || bad "shmutant: a malformed stream was not kept as evidence"
+has "$out" "INCOMPLETELY — not kept: mut-0/output(absent)" "shmutant: …and the evidence it could not keep is named, not implied"
+# shmutant ESCAPES a backslash in a field; the adapter must accept the records its own pool writes.
+shm escaped-name "shmutant_mut 'slash\\name' '0 - \$1' '0 + \$1' 'neg-value'"
+eq "$rc" 0 "shmutant: a row whose name holds a backslash round-trips through the stream"
 
 # 10g'. an output that cannot be read back is not scored: a read that failed part-way can still
 # carry the witness, so the row gets its own verdict instead of a RED it did not earn.

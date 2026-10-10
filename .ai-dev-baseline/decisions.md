@@ -9407,8 +9407,9 @@ survive is the part a later reader needs.
 
              **Where it is sourced.** Never by `check-lib.sh`, which must stay evaluable on bash 3.2
              (D35): a suite sources `scripts/shmutant.sh` itself — in its `--mutation` block for the
-             eight `*-mutation` suites, and at the top for `check-roadmap.sh` (its four rows run in the
-             plain step) and the four suites that call `shmutant_mutate` inline. `check-adopt.sh` and
+             eight `*-mutation` suites; in `check-roadmap.sh`'s plain path, just before its inline
+             mutation section (its four rows run in the plain step); and after `check-lib.sh` in the
+             four suites that call `shmutant_mutate` inline. `check-adopt.sh` and
              `check-adopt-readiness.sh` used to declare their rows in every mode and run the pool
              behind `[ "$MUTATE" … ] &&`; the table and the pool now sit in an explicit `--mutation`
              block, so the pool is a plain command and a callback's `set -e` keeps its meaning.
@@ -9427,21 +9428,29 @@ survive is the part a later reader needs.
              check-lib's own 1, `FAIL: ` and 0, so an exported knob in the operator's environment
              cannot change a verdict (an exported `SHMUTANT_COUNTS=1` would make the pool refuse,
              since counts need the baseline). The pool's status is captured on its own line before
-             the stream is read, and must agree with the records. Every record is validated whole
-             (version 1, its type, its field count, a non-empty verdict and name, a numeric
-             summary), the row records must be exactly the table's rows, by name and in order, and
-             the one summary must count the same rows and kills. Status 2 fails however many records
-             exist. Every verdict but `killed`
+             the stream is read, and must agree with the records. The stream is refused whole unless
+             it passes `adb_bytes_whole` (no NUL, a final newline, a bound) and every record holds to
+             shmutant's v1 grammar field by field — version, type, field count, a verdict from its
+             vocabulary, a well-formed duration, only the three escapes it writes, and no baseline
+             record, since none is run. The row records must be exactly the table's rows by name,
+             target and selector, in order, compared through shmutant's own field encoding so a
+             name holding a backslash round-trips, and the one summary must name this pool and count
+             the same rows and kills. Status 2 fails however many records exist, and the adapter
+             returns non-zero whenever it recorded a failure. Every verdict but `killed`
              is one `FAIL:` line naming the row, so `selfcheck --summarize` and the counters see it.
              `check-block-rows.sh` case 10g, which tested the old pool's deadline, is replaced by
              tests of the adapter: five verdicts through real pools, the deadline reaching shmutant
              as a named `timeout`, a harness error, a bad bound refused before anything is built, a
-             suite that never sourced shmutant, the artifact copy, a hostile exported environment,
-             and twelve forged streams or statuses from a stub `shmutant_pool`, each required to
-             fail on its own reason.
+             suite that never sourced shmutant, the artifact copy, a hostile exported environment, a
+             backslash in a row name, and twenty-one forged streams or statuses from a stub
+             `shmutant_pool`, each required to fail on its own reason with the adapter itself
+             returning non-zero. They run under `$BASH`: a bare `bash` on a macOS PATH without
+             Homebrew first is 3.2, which shmutant refuses to load.
 
-             **Evidence in CI.** With `ADB_MUTATION_ARTIFACTS=<dir>`, a failed pool's stream and each
-             failing row's `mut-<n>/output` are copied into a fresh `<dir>/<label>.XXXXXX`, and every
+             **Evidence in CI.** With `ADB_MUTATION_ARTIFACTS=<dir>`, on any failure the adapter
+             records, the stream and each failing row's `mut-<n>/output` — every row's, when the
+             failure is the stream's or the harness's rather than a row's — are copied into a fresh
+             `<dir>/<label>.XXXXXX`, a copy that fails or has nothing to copy is named, and every
              job that runs a ported pool (and the nightly) uploads that directory with
              `actions/upload-artifact@v7` on `failure()`. The issue named `SHMUTANT_KEEP=1` for this;
              it is not used, because shmutant never removes `mut-<n>/output` (only the clone trees),
@@ -9452,7 +9461,8 @@ survive is the part a later reader needs.
              as an input, and `check-mutation-gate.sh` section 5 requires it of every step whose suite
              calls `check_shmutant_pool`, derived from the suites as its `check_mutation_rows` pin is.
              `roadmap` declares nothing: it is a plain step that always runs, and an input set would
-             gate it.
+             gate it. The pin is itself a mutation row (`registry-drops-shmutant`, against a copy of
+             the registry), so it is observed failing on every run of that harness.
 
              **What did not change.** Which defects are tested. All 205 rows kept their names and
              literals except the seven of decision (1). Four witnesses in `check-mutation-gate.sh`
@@ -9462,6 +9472,14 @@ survive is the part a later reader needs.
              substring match had scored it RED. The issue's rule — fix the witness, never the
              verdict — is what was applied; the rows' defects and sites are unchanged. `check_mutate_literal` and the shared scoring internals
              stay in `check-lib.sh`, because `check_mutation_rows` still uses them; #525 removes them.
+
+             **Defects found in shmutant** are filed upstream, never patched here (owner decision
+             2026-10-09): BWBama85/shmutant#26 (a failed read of a run's output is accepted as a clean
+             scan; it can mislabel a failing verdict, never fabricate a kill) and #27 (a `.shmutant`
+             with content after the marker line is accepted, against its docs). Neither changes a
+             verdict in this repository. Two lesser observations from the same review (a metadata
+             read that may hide a failure, unreproduced; the `checksum` subcommand ignoring its
+             tool's status, which nothing here calls) were not filed.
 - placement: `scripts/shmutant.sh` (vendored, v0.2.0), `scripts/shmutant.sh.sha256`,
              `scripts/check-shmutant-pin.sh` (new; registry step `shmutant-pin`, CI `shellcheck` job);
              `scripts/check-lib.sh` (`check_shmutant_pool`; the pool family removed);
