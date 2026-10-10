@@ -214,14 +214,16 @@ add() {
 # suites read `base/` or `agents/` files as fixtures; a change there that breaks the suite breaks
 # its PLAIN step, which is never gated. What the mutation harness adds is "can the guard fail?",
 # and that is decided by the code it mutates and the code that judges the mutation. So: the harness
-# script, the two shared files, every `scripts/lib/*.sh` the suite exercises, and — for
+# script, the two shared files, every `scripts/lib/*.sh` the suite exercises, the vendored
+# `scripts/shmutant.sh` for a suite whose whole-suite pool runs through it (#519), and — for
 # `bootstrap-mutation` — the entry-point site set it reverts one at a time. Wrong in the direction
 # of listing too much costs minutes; wrong in the other direction costs a day, because the
 # scheduled workflow (`.github/workflows/mutation-nightly.yml`) runs every harness unconditionally.
 #
 # ONE HOME. `scripts/mutation-gate.sh` reads this through `--list` (field 5); `scripts/check-mutation-gate.sh`
 # pins that every `*-mutation` step declares inputs naming its own harness plus the two shared
-# files, that every declared path exists, and that the nightly matrix names every step here.
+# files (and `scripts/shmutant.sh` where its suite runs `check_shmutant_pool`), that every declared
+# path exists, and that the nightly matrix names every step here.
 #
 # AND ONE HOME FOR THE PER-ROW GATE TOO (#470, D108). A harness built on per-test rows asks the
 # same question once more per row, and it asks it of THIS set: a row's inputs are the file that
@@ -608,7 +610,7 @@ add pr-watch            bash scripts/check-pr-watch.sh
 # running only its block — every row required back RED on ITS OWN named witness, so "these cases
 # can fire" is re-runnable rather than a claim in a PR body. The count is printed by the run.
 add pr-watch-mutation   bash scripts/check-pr-watch.sh --mutation
-inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-watch.sh scripts/lib/role-dispatch.sh scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh scripts/mutation-gate.sh scripts/selfcheck.sh
+inputs pr-watch-mutation        scripts/check-pr-watch.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/pr-watch.sh scripts/lib/role-dispatch.sh scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # Unit tests for the /resolve-pr-threads decision predicates (scripts/lib/pr-threads.sh, #416/#418):
 # argument-less PR inference refusing rather than guessing, the COMPLETE thread enumeration across a
@@ -626,7 +628,7 @@ add pr-threads          bash scripts/check-pr-threads.sh
 # than through the held descriptor, and `--verbose`'s write status dropped — plus an unmutated
 # control, each required back RED on ITS OWN witness.
 add pr-threads-mutation bash scripts/check-pr-threads.sh --mutation
-inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/pr-threads.sh scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
+inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/pr-threads.sh scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
 
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
 # mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,
@@ -674,7 +676,7 @@ add docs-lib            bash scripts/check-docs-lib.sh
 # fall-back to training-data recall that the declaration exists to end. The live count is printed by
 # `--mutation` itself rather than written here, for the reason the step above gives.
 add docs-lib-mutation   bash scripts/check-docs-lib.sh --mutation
-inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh base/workflows/implement-issue.md base/practices/third-party-claims.md templates/agents.toml
+inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/cleanup-lib.sh scripts/lib/implement-lib.sh base/workflows/implement-issue.md base/practices/third-party-claims.md templates/agents.toml
 
 # Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge
 # detection against a real fixture (#106 — `--merged` alone is blind to it, so the sweep was a
@@ -698,7 +700,7 @@ add adopt               bash scripts/check-adopt.sh
 # witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
 # message's claim that mutations "were observed" with something the repo can re-run.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
-inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh install.sh uninstall.sh
+inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh install.sh uninstall.sh
 
 # The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
 # question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's
@@ -716,7 +718,7 @@ add adopt-readiness     bash scripts/check-adopt-readiness.sh
 # count that grepped a display string, and a jq filter whose failure was swallowed into "every
 # milestone is dispositioned").
 add adopt-readiness-mutation bash scripts/check-adopt-readiness.sh --mutation
-inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/project-gates.sh bin/baseline
+inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/project-gates.sh bin/baseline
 
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
@@ -779,6 +781,11 @@ add bash-floor          bash scripts/check-bash-floor.sh
 # exactly what a clean repo reports, and no other check in this suite would notice.
 add bash-floor-guard    bash scripts/check-bash-floor-guard.sh
 
+# The vendored mutation harness (#519, D125) is a third-party file pinned by digest and never edited
+# here: this fails when scripts/shmutant.sh stops matching scripts/shmutant.sh.sha256, and drives each
+# rule of that check red on copies (a one-byte edit among them). Seconds, in one `mktemp -d`.
+add shmutant-pin        bash scripts/check-shmutant-pin.sh --self-test
+
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it
 # must never fast-forward over dirty/ahead/diverged/detached/non-default state).
 add baseline            bash scripts/check-baseline.sh
@@ -811,7 +818,7 @@ add review-loop         bash scripts/check-review-loop.sh
 
 # ...and each of those refusals is injected with its own defect and required RED on its own witness.
 add review-loop-mutation bash scripts/check-review-loop.sh --mutation
-inputs review-loop-mutation     scripts/check-review-loop.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/implement-lib.sh scripts/lib/role-dispatch.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md templates/agents.toml
+inputs review-loop-mutation     scripts/check-review-loop.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/implement-lib.sh scripts/lib/role-dispatch.sh scripts/lib/cleanup-lib.sh scripts/lib/run-state.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md templates/agents.toml
 
 # The SessionStart run-state hook and its library (#431): a compacted or resumed session gets the
 # in-flight run's facts read back — phase, phase history, branch, issue numbers, artifact paths,
@@ -944,7 +951,7 @@ add selfcheck-guard     bash scripts/check-selfcheck.sh
 # mutated copy and reads its exit status and its FAIL line, so a case whose assertion was deleted
 # fails here instead of quietly covering nothing (#387).
 add selfcheck-guard-mutation bash scripts/check-selfcheck.sh --mutation
-inputs selfcheck-guard-mutation scripts/check-selfcheck.sh scripts/check-lib.sh scripts/lib/common.sh scripts/selfcheck.sh scripts/mutation-gate.sh
+inputs selfcheck-guard-mutation scripts/check-selfcheck.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/selfcheck.sh scripts/mutation-gate.sh
 
 # THE MUTATION-HARNESS GATE is a guard (#441): a gate that answers SKIP wrongly is invisible, since
 # the step it skipped is green either way. Its suite drives every rule to both answers against
@@ -963,7 +970,7 @@ add mutation-gate       bash scripts/check-mutation-gate.sh
 # BOTH WORKFLOW FILES ARE INPUTS: the rows that un-gate them are literal edits to copies of those
 # files, so a workflow refactor can stop a row applying — a red only this harness would show.
 add mutation-gate-mutation bash scripts/check-mutation-gate.sh --mutation
-inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh .github/workflows/ci.yml .github/workflows/mutation-nightly.yml
+inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh .github/workflows/ci.yml .github/workflows/mutation-nightly.yml
 
 add install-dry-run     step_install_dry_run
 
@@ -1301,7 +1308,7 @@ _cleanup() {
     case "$j" in ''|*[!0-9]*) continue ;; esac
     LIVE["$j"]=1
   done
-  for p in "${!LIVE[@]}"; do
+  for p in "${!LIVE[@]}"; do   # row-term-loop
     # `_adb_bounded_signal` (scripts/lib/common.sh, sourced above) IS this rule: guard the pid,
     # signal the GROUP, then the bare pid as the fallback for a worker whose `set -m` did not take.
     # It used to be restated here, and the restatement is exactly what the one-home law is for —

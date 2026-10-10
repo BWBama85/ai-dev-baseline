@@ -2577,13 +2577,16 @@ eq "${ ev $'owner-action\ntracker-only'; }" "${ ev $'owner-action\ntracker-only'
 # go red. Each row injects one plausible superseded shape into a COPY of the library — never the
 # tracked tree (self-review.md's copy rule) — and requires the assertion that claims to cover it to
 # fail on its own label. A row that stays green means nothing here can detect that defect.
-ev_prepare() {   # <copy-dir> — build the library copy; print the file to mutate
-  local copy="$1"
-  mkdir -p "$copy/lib" || return 1
-  cp "$ROOT/scripts/lib/roadmap-lib.sh" "$ROOT/scripts/lib/common.sh" "$copy/lib/" || return 1
-  printf '%s\n' "$copy/lib/roadmap-lib.sh"
+#
+# The rows run through the vendored shmutant (#519), sourced HERE rather than by check-lib.sh, which
+# must stay evaluable on bash 3.2 (D35, D125). They run inline in the plain `roadmap` step.
+# shellcheck source=/dev/null
+. "$ROOT/scripts/shmutant.sh" || bad "emit-verdict: scripts/shmutant.sh could not be sourced"
+ev_prepare() {   # <dir> — build the library copy ONCE; shmutant clones it for every row
+  mkdir -p "$1/lib" || return 1
+  cp "$ROOT/scripts/lib/roadmap-lib.sh" "$ROOT/scripts/lib/common.sh" "$1/lib/" || return 1
 }
-ev_run() {       # <copy-dir> — re-run 9b-a..c against the mutated copy; FAIL: lines + exit 1
+ev_run() {       # <root> <select> — re-run 9b-a..c against the mutated copy; FAIL: lines + exit 1
   local lib="$1/lib/roadmap-lib.sh" f=0
   _ev_eq() {     # <label> <stdin> <want>
     local got; got="$(printf '%s\n' "$2" | bash "$lib" emit-verdict 2>/dev/null)"
@@ -2600,27 +2603,28 @@ ev_run() {       # <copy-dir> — re-run 9b-a..c against the mutated copy; FAIL:
   _ev_rc "empty member set is an ERROR" '' 2
   return "$f"
 }
+shmutant_target lib/roadmap-lib.sh
 # The plausible wrong reading of the rule, not a scramble of it: "a bundle containing ANY
 # owner-action member is withheld". It withholds a batch that is genuinely emittable, which is the
 # direction that costs work rather than merely mislabelling it.
-check_mut 'ready-yields-to-any-owner-action' \
+shmutant_mut 'ready-yields-to-any-owner-action' \
   'if   [ "$impl"  -gt 0 ]; then printf' \
   'if   [ "$impl"  -gt 0 ] && [ "$owner" -eq 0 ]; then printf' \
   'READY WINS'
-check_mut 'owner-action-folded-into-tracker-only' \
+shmutant_mut 'owner-action-folded-into-tracker-only' \
   '      owner-action)  owner=$((owner + 1)) ;;' \
   '      owner-action)  : ;;' \
   'OWNER-ACTION beats tracker-only'
-check_mut 'unknown-word-skipped-instead-of-refused' \
+shmutant_mut 'unknown-word-skipped-instead-of-refused' \
   '      *) die "emit-verdict: unknown classification' \
   '      *) continue ;; *) die "emit-verdict: unknown classification' \
   'unknown word is an ERROR'
-check_mut 'empty-set-answers-instead-of-refusing' \
+shmutant_mut 'empty-set-answers-instead-of-refusing' \
   '  [ "$seen" -gt 0 ] || die "emit-verdict: no member classifications' \
   '  [ "$seen" -ge 0 ] || die "emit-verdict: no member classifications' \
   'empty member set is an ERROR'
 ev_work="$(mktemp -d "${TMPDIR:-/tmp}/adb-emit-verdict-mut.XXXXXX")" || exit 1
-check_mutation_pool "emit-verdict" "$ev_work" ev_prepare ev_run 4
+check_shmutant_pool "emit-verdict" "$ev_work/pool" ev_prepare ev_run 4
 rm -rf "$ev_work"
 
 # ============================================================================================

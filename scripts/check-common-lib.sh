@@ -223,7 +223,7 @@ eq "$nl_now" "$src" "adb_link repoints a link whose target is the source plus a 
 eq "$(adb_md_escape '<!-- a & b -->')" '&lt;!-- a &amp; b --&gt;' "adb_md_escape neutralizes HTML"
 eq "$(adb_md_escape '![x](https://h/p) [y](z)')" '!\[x\](https://h/p) \[y\](z)' "adb_md_escape neutralizes link and image syntax"
 eq "$(adb_md_escape 'a\[b')" 'a\\\[b' "adb_md_escape escapes a pre-escaped bracket so it cannot come back live"
-eq "$(adb_md_escape 'lib/check_mut.sh:12 *x*')" 'lib/check_mut.sh:12 *x*' "adb_md_escape leaves paths and emphasis readable"
+eq "$(adb_md_escape 'lib/check_row.sh:12 *x*')" 'lib/check_row.sh:12 *x*' "adb_md_escape leaves paths and emphasis readable"
 
 # real file at dest gets backed up (mirrored absolute path under backup dir)
 dest2="$work/real.txt"; echo preexisting > "$dest2"

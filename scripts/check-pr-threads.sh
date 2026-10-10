@@ -89,15 +89,16 @@ if [ "$MODE" = mutation ]; then
   }
   # `scripts` plus the workflow the suite pins are its whole surface, so the subtree copier rather
   # than the worktree one: copies of the repo's .git would be spent moving a tree about to be deleted.
-  mut_prep() { check_copy_subtrees "$ROOT" "$1" scripts base/workflows >/dev/null 2>&1 || return 1
-               printf '%s' "$1/scripts/lib/pr-threads.sh"; }
+  # Built ONCE; shmutant clones it for every row (#519).
+  mut_prep() { check_copy_subtrees "$ROOT" "$1" scripts base/workflows >/dev/null 2>&1; }
 
-  # THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. `_check_mut_witness`
-  # only asks whether SOME `FAIL:` line carries the row's witness, so a copied baseline that already
-  # fails on that witness would credit the row for a defect the mutation never caused — and this
-  # mode is runnable standalone, where no sibling selfcheck step is watching the unmutated tree.
+  # THE CONTROL RUNS FIRST, and the reason is causal rather than ceremonial. A row is killed when
+  # SOME `FAIL:` line carries its witness, so a copied baseline that already fails on that witness
+  # would credit the row for a defect the mutation never caused — and this mode is runnable
+  # standalone, where no sibling selfcheck step is watching the unmutated tree. (The pool runs no
+  # baseline of its own: check_shmutant_pool sets SHMUTANT_BASELINE=0, and this is why.)
   mut_ctl="$work/control"
-  if mut_prep "$mut_ctl" >/dev/null; then
+  if mut_prep "$mut_ctl"; then
     mut_out="$(mut_run "$mut_ctl" 2>&1)"; mut_rc=$?
     yes "$mut_rc" "control: an UNMUTATED copy passes (else every row below is red for the wrong reason)"
     case "$mut_out" in
@@ -108,29 +109,32 @@ if [ "$MODE" = mutation ]; then
     bad "control: could not build the unmutated copy"
   fi
 
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/shmutant.sh" || bad "pr-threads: scripts/shmutant.sh could not be sourced"
+  shmutant_target scripts/lib/pr-threads.sh
   # #418 ITSELF, injected at its source: the cursor loop stops after page one. The 154-thread
   # fixture then reads 100 of 154 — and the threads it drops are the NEWEST, which is why the
   # witness is the identity assertion and not merely the count.
-  check_mut "no-pagination" \
+  shmutant_mut "no-pagination" \
     '[ "$more" = "true" ] || break' \
     'break' \
     'list: a 154-thread PR carries its NEWEST thread'
   # The cursor is computed but never SENT, so every request re-fetches page one. This is the row
   # that proves the stub is keyed on the cursor rather than on a call counter: without it a stub
   # that served page 2 on the second call regardless would keep this green.
-  check_mut "cursor-dropped" \
+  shmutant_mut "cursor-dropped" \
     'curarg=(-f "endCursor=$cursor")' \
     'curarg=()' \
     'list: a 154-thread PR carries its NEWEST thread'
   # THE COMPLETENESS PROOF ITSELF. With the comparison disabled a short read reports a count — the
   # "0 remaining" over unaddressed findings that #418 observed live.
-  check_mut "short-read-silent" \
+  shmutant_mut "short-read-silent" \
     'if [ "$got" -ne "$total" ]; then' \
     'if false; then' \
     'remaining: a short read REFUSES rather than reporting a count'
   # ...and its identity half: a page served twice satisfies `read >= totalCount` while carrying
   # none of the newest threads, so arithmetic alone is not completeness.
-  check_mut "duplicate-page-accepted" \
+  shmutant_mut "duplicate-page-accepted" \
     'if [ "$uniq" -ne "$got" ]; then' \
     'if false; then' \
     'list: a repeated page is refused, not counted as completeness'
@@ -139,41 +143,41 @@ if [ "$MODE" = mutation ]; then
   # `remaining` reports a number instead of refusing. This row is what proves the new witness case
   # can fire — the other rows all use uniformly-unresolved fixtures, where truncation shows up in
   # the count immediately and the incident could not have happened.
-  check_mut "short-read-on-the-418-shape" \
+  shmutant_mut "short-read-on-the-418-shape" \
     'echo "pr-threads: PR #$n — read $got of totalCount $total review threads; refusing to report an incomplete enumeration" >&2' \
     'echo "pr-threads: nothing to see here" >&2' \
     'the #418 shape: the refusal names the exact live shortfall'
   # The node-level check, injected out. A malformed node then passes the completeness proof and is
   # dropped by the count — the shape the declared reviewer named on PR #419.
-  check_mut "node-validation-dropped" \
+  shmutant_mut "node-validation-dropped" \
     'if any($t.nodes[]; (.isResolved | type) != "boolean")' \
     'if (false)' \
     'a node with NO isResolved is unreadable — never a count with that thread dropped'
   # #437: the document is opt-in. With the default printing it, every call site's stdout is the
   # whole thread set again — bodies included.
-  check_mut "default-prints-document" \
+  shmutant_mut "default-prints-document" \
     'if [ "$OPT_VERBOSE" -eq 1 ]; then' \
     'if true; then' \
     'list: the default prints the terse contract, not the document'
   # ...and an unwritable --out must refuse, never quietly degrade to stdout.
-  check_mut "out-falls-back-to-stdout" \
+  shmutant_mut "out-falls-back-to-stdout" \
     "|| { printf 'pr-threads: --out %s cannot be written (could not stage a file beside it)\\n' \"\$dshow\" >&2; return 2; }" \
     '|| { OPT_OUT=""; }' \
     'list --out into a missing directory is 2'
   # --out's choice of the STRICT publisher (D118), and --verbose's write status.
-  check_mut "strict-publish-dropped" \
+  shmutant_mut "strict-publish-dropped" \
     'adb_publish_json "$_ADB_PT_STAGE" "$dest" --strict >&2' \
     'adb_publish_json "$_ADB_PT_STAGE" "$dest" >&2' \
     'list --out: an unreadable destination mode is refused (2)'
-  check_mut "stage-written-by-path" \
+  shmutant_mut "stage-written-by-path" \
     "printf '%s\\n' \"\$out\" 1>&\"\$fd\" 2>/dev/null \\" \
     "printf '%s\\n' \"\$out\" > \"\$_ADB_PT_STAGE\"; :  \\" \
     'list --out: a stage removed during the read is refused (2)'
-  check_mut "verbose-write-status-dropped" \
+  shmutant_mut "verbose-write-status-dropped" \
     "printf '%s\\n' \"\$out\"; return" \
     "printf '%s\\n' \"\$out\"; return 0" \
     'list --verbose: a failed write to stdout is still exit 0'
-  check_mutation_pool "pr-threads" "$work/mt" mut_prep mut_run 11
+  check_shmutant_pool "pr-threads" "$work/mt" mut_prep mut_run 11
   check_summary "check-pr-threads --mutation"
   exit 0
 fi

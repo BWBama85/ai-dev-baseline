@@ -47,7 +47,8 @@ those. The rules below are specific to this repo's code.
    `*-mutation` step" survives contact: this said "three" while five did it, and the obvious
    generalization is false too, since `bootstrap-mutation` and `fact-mutation` walk their rows
    synchronously. The live answer is the code — a step pools iff its suite reaches
-   `check_mutation_pool` or `check_mutation_rows` (#468), or hand-rolls a `wait -n`.
+   `check_shmutant_pool` (the vendored shmutant's pool, #519) or `check_mutation_rows` (#468), or
+   hand-rolls a `wait -n`.
    Making it a bound on processes was built and measured and is *not* shipped: every configuration tried came out slower
    than leaving it alone, and D66 carries the table. What did ship is the sizing primitive
    (`adb_pool_size`), which is what stops a harness inventing its own number.
@@ -96,9 +97,11 @@ those. The rules below are specific to this repo's code.
      gated out — and `mutation-nightly.yml` is the backstop that runs every row unconditionally.
      A row target the step does not declare refuses gating for the whole step and says which.
    - **Nothing is awaited in silence** (#445, D122). Every suite run the two shared harness pools
-     make (`check_mutation_pool`, `check_mutation_rows`) — each mutant, each block's control, the
-     full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a hang backstop and
-     not a budget), and its expiry is a named `hung` verdict: applied, never RED. A run a harness
+     make — each mutant, each block's control, the full control — is bounded by
+     `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a hang backstop and not a budget), and its expiry
+     is a named verdict, never RED: `hung` in `check_mutation_rows`, and `timeout` in
+     `check_shmutant_pool`, which carries the bound into the vendored shmutant as `SHMUTANT_TIMEOUT`
+     because shmutant's own default is 300 (#519). A run a harness
      makes outside those pools, or a harness with a pool of its own, is not; above all of them, a
      step still running past `ADB_SELFCHECK_OVERRUN_SECS` (default 1800) is named live, once per
      multiple of it, and again on the `result` block's `overran` line. That warning reports and
@@ -246,7 +249,11 @@ those. The rules below are specific to this repo's code.
    **Every other entry point calls the gate**, and `check-bash-floor.sh --entrypoints`
    fails the build if one does not — a new script cannot join the suite without it. On
    macOS a 5.3 is reachable only through `PATH`, which non-interactive shells routinely
-   lack, so the gate **re-execs** into a known-good interpreter before failing.
+   lack, so the gate **re-execs** into a known-good interpreter before failing. The one
+   file that is neither a gate nor the observer is the **vendored** `scripts/shmutant.sh`
+   (#519, D125): a third-party file pinned by digest and never edited here, which enforces
+   its own 5.3 floor. It is a class of its own rather than a second exemption, and the lint
+   fails if it ever calls the gate, because that would mean it was edited.
 
    **Source the shared primitives, never copy them** — link/unlink/backup,
    default-branch, TOML-read, version-compare, pool sizing (`adb_pool_size`) and the bash floor
@@ -289,6 +296,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) *signalled a clean pass* for the PR's **current head commit**? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Reads the same three surfaces and the same shared classifier as `pr-watch.sh`, so the two can no longer disagree about what a signal means; `COMMENTED` is **21** ("review complete, attention required"), not a satisfied review (#167). Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-skill). Since #260 the mirror is a step **registry** dispatched through a bounded `wait -n` pool — see golden rule 3 for the flags and the serial prologue |
+| `scripts/shmutant.sh` · `scripts/shmutant.sh.sha256` · `scripts/check-shmutant-pin.sh` | The **vendored mutation harness** (#519, D125) — [BWBama85/shmutant](https://github.com/BWBama85/shmutant) `v0.2.0`, the tool this repo's in-tree harness was extracted into, copied byte for byte and **never edited here**: a defect found in it is filed upstream, and an upgrade is a newer release copied over it plus its digest, in one PR. `shmutant.sh.sha256` records that digest in the release's own `CHECKSUMS` line format, and `check-shmutant-pin.sh` (a registry step, so CI runs it) fails when the file no longer matches — digesting it with `adb_sha256`, never with the file's own `checksum` subcommand, which an edited file could forge. Every whole-suite mutation pool, and every inline literal rewrite (`shmutant_mutate`), runs through it: a suite sources it itself — never through `check-lib.sh`, which must stay 3.2-evaluable (D35) — and a pool hands its table to `check-lib.sh`'s `check_shmutant_pool`, which carries this repo's row deadline, pool width and no-baseline setting into the call, refuses a verdict stream it cannot read whole, and turns every verdict but `killed` into a `FAIL:` line. The per-block rows (`check_mutation_rows`) are still check-lib's own until #525 |
 | `scripts/mutation-gate.sh` · `scripts/check-mutation-gate.sh` | The **mutation-harness gate** (#441, D91) — *does this change give a `--mutation` harness anything new to say?* A harness's verdict depends on a small declared input set (`selfcheck.sh --list`, field 5 — the ONE home; the gate carries no table of its own), so on a change touching none of it the gate prints a stated SKIP naming the base, the merge-base, the count compared and the inputs, and exits 0; otherwise it runs the harness and the harness's status is the step's. `run <step> -- <command>` is CI's form and **refuses** (2) an unregistered step, a step with no inputs, or a command that is not the registry's own for it. Fails **closed**: no repository, an unresolvable base, no merge-base → RUN, on its own exit code (11), never a skip. The suite drives every rule to both answers in throwaway repositories and pins the wiring (every ci.yml `--mutation` line gated; the nightly matrix equal to the registry); `--mutation` breaks every gate rule whose failure is a wrong SKIP in a copy, and un-gates a copy of each workflow file, requiring the suite red on each row's own witness. Never mutates the tracked tree |
 | `scripts/check-selfcheck.sh` | The runner above is a guard too, so it gets what guards get here (#260). A job pool's failure mode is silence — a dispatcher that drops a worker's status, or reaps a job and blames the wrong step, prints what a clean run prints — so this drives the **real** `selfcheck.sh` over a throwaway fixture of stub steps and requires a deliberately failing step to still fail the run, attributed by name and exit code. Also pins collect-all, output atomicity, the concurrency bound (both that it is respected *and* that the pool is genuinely concurrent), `--serial` ordering, the prologue running alone, cancellation reaping workers instead of orphaning them, and — since #339/#423 — `--skip`'s fail-closed contract plus the proof that a skipped step **never executed** (asked of the event log, not of the printed output), the exact membership of both prologue lanes, and every `--summarize` case including the two that must SAY they found nothing. Never mutates the tracked tree |
 | `scripts/check-build-atomic.sh` | `build.sh` must publish a generated file by **rename**, never by truncating it in place (#268). `build-drift` proves the artifacts MATCH; it cannot prove anything about the write, because a *successful* build is exactly where the two shapes are indistinguishable — and it runs against the tracked tree, so it cannot inject a failure without damaging the checkout it is checking. This faults a copied `build.sh` mid-render inside a `mktemp -d` fixture and requires the destination to survive byte-exact (compared with `cmp`, since `[ "$(cat f)" = … ]` strips trailing newlines and cannot see a dropped final one). Observed failing: three mutations of the publish mechanism (naive publish · fixed temp name · EXIT trap dropped), each required to make the assertion above it go red, and each verifying its own edit applied — plus, since #434, the same fault and a naive-publish mutation on the procedure path, whose tracked rules file must survive a render that fails part-way. Never mutates the tracked tree |

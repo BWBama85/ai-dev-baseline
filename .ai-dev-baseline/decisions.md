@@ -9361,3 +9361,186 @@ survive is the part a later reader needs.
              over all 255 byte values on both CI legs, rather than assumed. It says nothing about
              the ledger's own reader, which matches a summary under the caller's locale (#522).
 - baseline-issue: n/a
+
+## D125 — #519: the whole-suite mutation pool is the vendored shmutant, pinned by digest and classified `vendored`
+- date:      2026-10-09
+- category:  project-delta
+- unknown:   #519, phase 1. `scripts/check-lib.sh` still carried the harness that BWBama85/shmutant was
+             extracted from on 2026-09-09, so the two copies drifted, and hardening done upstream
+             (process reaping, leak checks, the v0.2.0 uniqueness and baseline guarantees) never
+             reached this repo. The issue asked for shmutant v0.2.0 vendored and pinned, the
+             whole-suite pool family (`check_mut`, `check_mut_reset`, `check_mutation_pool`,
+             `_check_mut_one`) and the direct `check_mutate_literal` callers ported 1:1, and the
+             per-block rows left to #525. Four questions had no answer in the repo: where a
+             vendored file sits in `check-bash-floor.sh --entrypoints`' forced classification, how
+             seven row literals that occur more than once in their target satisfy v0.2.0's refusal
+             of exactly that, what proves a ported step still fails, and whether the pool keeps
+             the baseline shmutant runs by default.
+- decision:  **Owner decisions 2026-10-09:** (1) the five rows whose first-occurrence line is wholly a
+             substring of a later line take a trailing `# row-<name>` marker, the convention
+             `mutation-gate.sh` already uses, and their literals include it; the other two are
+             lengthened. Same site, same defect. (2) The gate's teeth are shown with BOTH verdicts a
+             ported step must fail on: a weakened witness, scored `accidental`, and an injection that
+             changes no behaviour, scored `survived`. The issue's test plan asked for `survived` from
+             a weakened witness, which v0.2.0 cannot produce while the suite still goes red.
+
+             **The vendored file.** `scripts/shmutant.sh` is v0.2.0 (tag commit `303e451`), byte for
+             byte: SHA-256 `b7652a23…cf16`, verified against the tag's `CHECKSUMS`, the release's
+             two assets and the raw file at the tag. `scripts/shmutant.sh.sha256` records it in that
+             `CHECKSUMS` line format, so `cd scripts && shasum -a 256 -c shmutant.sh.sha256` checks it
+             by hand. `scripts/check-shmutant-pin.sh` is the offline check: the record is one
+             newline-terminated `<64 lowercase hex>  shmutant.sh` line or it is refused whole, the
+             file is a regular file, and the digest is `adb_sha256`'s, never the vendored file's own
+             `checksum` subcommand, which an edited file could forge. `--self-test` checks the shipped
+             pair itself first (CI and the registry run only that mode, and `cp` would turn a linked
+             file into a regular copy), then drives every rule red on copies, a one-byte in-place
+             edit included. It is a registry step and a step of
+             CI's `shellcheck` job, not a job of its own (a new job is a new required context).
+             It sits in `scripts/`, never `scripts/lib/`, which installs into a user's home.
+
+             **The `vendored` class.** `check-bash-floor.sh --entrypoints` forces every
+             bash-shebang file into `gate`, `advisory` or `exempt`, and the vendored file is none of
+             them: it cannot call `adb_require_bash` without being edited, and `exempt` is one file
+             with one reason (the observer, D31). Folding a second file under it would make
+             "exempt" a class a future script reaches for. So `vendored` is a fourth class, a list
+             (`VENDORED_ENTRYPOINTS`) rather than a name pattern, and the lint fails if a listed
+             file ever calls the gate, because that means it was edited. Its floor is its own:
+             shmutant re-execs into a 5.3 or refuses, as `adb_require_bash` does.
+
+             **Where it is sourced.** Never by `check-lib.sh`, which must stay evaluable on bash 3.2
+             (D35): a suite sources `scripts/shmutant.sh` itself — in its `--mutation` block for the
+             eight `*-mutation` suites; in `check-roadmap.sh`'s plain path, just before its inline
+             mutation section (its four rows run in the plain step); and after `check-lib.sh` in the
+             four suites that call `shmutant_mutate` inline. `check-adopt.sh` and
+             `check-adopt-readiness.sh` used to declare their rows in every mode and run the pool
+             behind `[ "$MUTATE" … ] &&`; the table and the pool now sit in an explicit `--mutation`
+             block, so the pool is a plain command and a callback's `set -e` keeps its meaning.
+
+             **The adapter.** `check-lib.sh`'s `check_shmutant_pool` replaces `check_mutation_pool`. It
+             uses only 3.2-parseable constructs and calls what the suite loaded. It carries this
+             repository's settings as locals, which end with the call and which it does not export
+             (a name the caller's environment already exported keeps that attribute on the local —
+             bash's rule, measured — and no suite a row runs reads them):
+             `SHMUTANT_TIMEOUT` is the row deadline (`ADB_MUTATION_ROW_TIMEOUT_SECS`, 1800, D122),
+             not shmutant's 300; `SHMUTANT_JOBS` is `adb_pool_size <cap>`, the width the pool had;
+             `SHMUTANT_BASELINE=0`, because the pools never ran an uninjected baseline, the suites
+             that need one keep their hand-written control, and a suite that cannot select would
+             otherwise pay one full run per distinct witness; `SHMUTANT_STREAM` is `<workdir>.tsv`;
+             and `SHMUTANT_RED_STATUS`, `SHMUTANT_RED_PREFIX` and `SHMUTANT_COUNTS` are pinned to
+             check-lib's own 1, `FAIL: ` and 0, so an exported knob in the operator's environment
+             cannot change a verdict (an exported `SHMUTANT_COUNTS=1` would make the pool refuse,
+             since counts need the baseline). The caller's errexit is suspended around the call, so
+             a status of 1 reaches the scoring instead of ending the shell. The pool's status is
+             captured on its own line before the stream is read, and must agree with the records. The stream is refused whole unless
+             it passes `adb_bytes_whole` (no NUL, a final newline, a bound) and every record holds to
+             shmutant's v1 grammar field by field — version, type, field count, a verdict from its
+             vocabulary, a well-formed duration, only the three escapes it writes, and no baseline
+             record, since none is run. The row records must be exactly the table's rows by name,
+             target and selector, in order, compared through shmutant's own encoder (`_shmutant_esc`)
+             so a name holding a backslash round-trips, and the one summary must name this pool,
+             count the same rows and kills, and report the width it was given. NOTHING IS SCORED
+             UNTIL ALL OF THAT HOLDS: the records are checked first and scored second, so a killed
+             row counts as an `ok` only from a stream trusted whole, a row that was not killed is
+             named either way, and an untrusted tally says its kills are not counted. Status 2,
+             an empty table and a status that disagrees with its records are never trusted, and
+             the adapter returns non-zero whenever it recorded a failure. Every verdict but `killed`
+             is one `FAIL:` line naming the row, so `selfcheck --summarize` and the counters see it.
+             `check-block-rows.sh` case 10g, which tested the old pool's deadline, is replaced by
+             tests of the adapter: five verdicts through real pools, the deadline reaching shmutant
+             as a named `timeout`, a harness error, a bad bound refused before anything is built, a
+             suite that never sourced shmutant, the evidence directory (kept for a failed pool, removed for
+             a passing one, resolved before `prepare` can change directory), a hostile exported
+             environment, a backslash in a row name, an empty table, a caller under `set -e`, and
+             twenty-four forged streams or statuses from a stub `shmutant_pool` (a FIFO in the
+             stream's place among them), each required to fail on its own reason with the adapter
+             itself returning non-zero. They run under `$BASH`: a bare `bash` on a macOS PATH without
+             Homebrew first is 3.2, which shmutant refuses to load.
+
+             **Evidence in CI.** With `ADB_MUTATION_ARTIFACTS=<dir>`, the adapter points the pool's
+             workdir at a fresh `<dir>/<label>.XXXXXX/pool` instead of the caller's, so shmutant
+             itself leaves the stream and every row's `mut-<n>/output` there — outside the suite's
+             own work directory, which its EXIT cleanup removes — and a pool that passes removes
+             its directory again. Every job that runs a ported pool (and the nightly) uploads
+             `<dir>` with `actions/upload-artifact@v7` on `failure()`. The issue named
+             `SHMUTANT_KEEP=1` for this; it is not used, because shmutant never removes
+             `mut-<n>/output` (only the clone trees), and keeping every clone would hold one tree
+             copy per row. An earlier cut COPIED the failing rows' output out of the workdir instead
+             — bounded, owner-only, named when partial — and four consecutive reviews found defects
+             in that copier (an unchecked size probe, umask modes, predictable staging names). The
+             owner chose on 2026-10-10 to remove it rather than harden it: nothing is copied now,
+             so there is no copier to be wrong. What that costs is an artifact holding every row's
+             output, killed rows included, and uncut.
+
+             **The gate.** Each of the eight ported `*-mutation` steps declares `scripts/shmutant.sh`
+             as an input, and `check-mutation-gate.sh` section 5 requires it of every step whose suite
+             calls `check_shmutant_pool`, derived from the suites as its `check_mutation_rows` pin is.
+             `roadmap` declares nothing: it is a plain step that always runs, and an input set would
+             gate it. The pin is itself a mutation row (`registry-drops-shmutant`, against a copy of
+             the registry), so it is observed failing on every run of that harness.
+
+             **What did not change.** Which defects are tested. All 205 rows kept their names and
+             literals except the seven of decision (1). Four witnesses in `check-mutation-gate.sh`
+             changed, each by gaining the `…` its assertion label opens with: shmutant matches a
+             witness as a whole token and a non-ASCII neighbour extends one, so the witness that
+             started at the letter after the ellipsis scored `accidental` where check-lib's
+             substring match had scored it RED. The issue's rule — fix the witness, never the
+             verdict — is what was applied; the rows' defects and sites are unchanged. `check_mutate_literal` and the shared scoring internals
+             stay in `check-lib.sh`, because `check_mutation_rows` still uses them; #525 removes them.
+
+             **Defects found in shmutant** are filed upstream, never patched here (owner decisions
+             2026-10-09 and 2026-10-10): BWBama85/shmutant#26 (a failed read of a run's output is
+             accepted as a clean scan; it can mislabel a failing verdict, never fabricate a kill),
+             #27 (a `.shmutant` with content after the marker line is accepted, against its docs),
+             #29 (a failed metadata read still yields a successful, content-only target
+             fingerprint) and #30 (the `checksum` subcommand ignores its digest tool's status, which
+             nothing here calls). #29 and #30 were held back until a review reproduced them by fault
+             injection. None was observed changing a verdict in this port's runs; they are not proved
+             unable to — #26 can turn an unreadable-output harness error into `aborted` or
+             `accidental`, and #29 can let a callback's change to a target's metadata pass unseen.
+             **What it costs — measured, not predicted.** Each ported step, run directly on the
+             maintainer's 10-core macOS machine on 2026-10-09, once on `2278789` and once on
+             `932e047`, the two runs of a pair back to back so they share the machine's load (load
+             averages 5-21 throughout, from other work on the host):
+
+             | step | before | after | change |
+             |---|---|---|---|
+             | `roadmap` (4 rows inline) | 32.4 s | 32.7 s | +0.9% |
+             | `pr-threads-mutation` | 71.1 s | 86.5 s | +21.7% |
+             | `adopt-mutation` | 74.8 s | 82.0 s | +9.6% |
+             | `mutation-gate-mutation` | 101.3 s | 117.1 s | +15.6% |
+             | `docs-lib-mutation` | 97.1 s | 109.1 s | +12.4% |
+             | `selfcheck-guard-mutation` | 215.5 s | 230.1 s | +6.8% |
+             | `pr-watch-mutation` (per-block rows gated on both sides) | 950.0 s | 1041.2 s | +9.6% |
+             | `adopt-readiness-mutation` | 643.7 s | 711.5 s | +10.5% |
+             | `review-loop-mutation` | 1347.5 s | 1362.4 s | +1.1% |
+
+             The 1:1 port is slower, as #519 expected: shmutant fingerprints the prepared tree before
+             and after every clone, and the cost shows most where a suite run is short. `pr-watch`'s
+             first pair (1043.2 s against 1833.4 s) is not in the table: the per-row gate (#470) held
+             back all 33 of its untouched per-block rows on `2278789`, where the tree matched its base,
+             and ran them on `932e047`, where `check-lib.sh` had changed. It was re-run with
+             `ADB_MUTATION_BASE=HEAD` on both sides. Against the CI ceilings, using the last runs
+             that forced every harness (37525965580, 37657746297): `pr-watch` 32m15s of 75,
+             `implement-gate` 32m43s of 75 and `adopt` 10m30s of 45 keep their ceilings;
+             `selfcheck-macos`, 47m41s of 55, moves to 65.
+- placement: `scripts/shmutant.sh` (vendored, v0.2.0), `scripts/shmutant.sh.sha256`,
+             `scripts/check-shmutant-pin.sh` (new; registry step `shmutant-pin`, CI `shellcheck` job);
+             `scripts/check-lib.sh` (`check_shmutant_pool`; the pool family removed);
+             `scripts/check-bash-floor.sh` + `scripts/check-bash-floor-guard.sh` (the `vendored`
+             class); the nine pool suites (`check-roadmap`, `check-pr-threads`, `check-pr-watch`,
+             `check-selfcheck`, `check-mutation-gate` — also its section-5 pin — `check-docs-lib`,
+             `check-adopt`, `check-adopt-readiness`, `check-review-loop`); the four inline callers
+             (`check-build-atomic`, `check-practice-split`, `check-render-size`,
+             `check-workflow-render`); `scripts/check-block-rows.sh` (case 10g); the markers in
+             `scripts/mutation-gate.sh`, `scripts/selfcheck.sh` and `scripts/lib/docs-lib.sh`;
+             `scripts/selfcheck.sh` (eight input sets, one step); `.github/workflows/ci.yml` and
+             `mutation-nightly.yml` (the artifact upload); `CLAUDE.md`, `CONTRIBUTING.md`,
+             `docs/ci-runners.md`, `CHANGELOG.md`.
+- reason:    One harness in two copies is the drift this repository's single-source rule exists to
+             prevent, and the copy that kept being hardened was the other one. Vendoring a pinned
+             release rather than a submodule or an install step keeps the harness offline and
+             reviewable: an upgrade is a diff of one file and one digest. A 1:1 port keeps every
+             row's verdict comparable before and after, which is what makes the swap checkable;
+             selection, shmutant's speed lever, needs units the pool suites do not have, so it is
+             not claimed here, and the per-block rows that do select move in #525.
+- baseline-issue: n/a

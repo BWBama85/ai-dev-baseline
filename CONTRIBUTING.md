@@ -134,6 +134,19 @@ and `.github/workflows/mutation-nightly.yml` runs every `*-mutation` step uncond
 dropped) at catching what a wrong input set hides. `check-mutation-gate.sh` pins
 both: every `--mutation` line in `ci.yml` is gated, and the nightly matrix equals the registry.
 
+**The whole-suite pool is the vendored [shmutant](https://github.com/BWBama85/shmutant)** (#519,
+D125): `scripts/shmutant.sh`, pinned by digest (`scripts/shmutant.sh.sha256`, checked by
+`check-shmutant-pin.sh`) and never edited here — a defect in it is filed upstream. A suite sources it
+itself (never through `check-lib.sh`, which must stay bash-3.2 evaluable), declares rows with
+`shmutant_target <file>` and `shmutant_mut <name> <old> <new> <witness>`, and runs them with
+`check_shmutant_pool <label> <workdir> <prepare> <run> <cap>` as a plain command, never after `&&` or
+before `||`. `prepare <dir>` builds the tree ONCE, and every row gets a clone of it; `run <root>
+<select>` runs the suite in the clone. A literal must start at exactly one position in its target,
+so a site whose line recurs carries a `# row-<name>` marker the literal includes. A witness is
+matched as a whole token on a `FAIL:` line, and every verdict but `killed` is a failure. With
+`ADB_MUTATION_ARTIFACTS=<dir>` (CI sets it), each pool's workdir runs there, so a failed pool leaves
+its verdict stream and every row's output behind, and a passing one removes itself.
+
 A suite whose harness runs the whole suite per mutant can instead declare **blocks** and **per-test
 rows** (#468, D103): `if check_block <id> [<dep>…]; then … fi` at the start of a line, a
 `check_blocks_done` line after the last block, and `check_row <name> <target> <block> <old> <new>
@@ -146,8 +159,9 @@ row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a sui
 
 **Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each
 block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a
-backstop for a hang rather than a budget), and a run that reaches it is scored `hung — no verdict
-within Ns`: it counts as applied, never as RED. One level up, a step still running past
+backstop for a hang rather than a budget), and a run that reaches it is never RED: the per-block
+rows score it `hung — no verdict within Ns`, and the shmutant pool, which receives the bound as
+`SHMUTANT_TIMEOUT`, scores it `timeout`. One level up, a step still running past
 `ADB_SELFCHECK_OVERRUN_SECS` (default 1800) is named while it runs, once per multiple of that
 ceiling, and again on the `result` block's `overran` line. That warning never kills anything — the
 step keeps its own verdict — so on a slow machine raise the ceiling rather than reading it as a red.
@@ -232,9 +246,9 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
   Quote expansions, single-purpose commands. Must pass
   `shellcheck --severity=warning -e SC1091`. Justify any `# shellcheck disable=` with
   a one-line reason.
-  - Every entry point gates its own interpreter as its first statement, in one of **three**
-    classifications that `check-bash-floor.sh --entrypoints` enforces (it fails the build on a
-    file that is unclassified or uses the wrong form):
+  - Every entry point is in one of **four** classifications that `check-bash-floor.sh
+    --entrypoints` enforces (it fails the build on a file that is unclassified or uses the wrong
+    form); the first two gate their own interpreter as their first statement:
     - **gate** (the overwhelming majority; `--entrypoints` prints the live count) —
       `adb_require_bash`: re-exec, else exit non-zero with your platform's install command.
     - **advisory** (3) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
@@ -243,6 +257,9 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
       It never runs its body under a sub-floor interpreter (D31).
     - **exempt** (1) — `check-bash-floor.sh` calls neither: it is the observer, and an observer
       that upgrades its own interpreter has destroyed the observation (D31).
+    - **vendored** (1) — `scripts/shmutant.sh`, a third-party file pinned by digest and never
+      edited here (D125). It enforces its own 5.3 floor, and the lint fails if it ever calls the
+      gate, because that would mean it was edited.
   - **`scripts/lib/common.sh` must stay parseable below the floor** — it holds the gate, and a
     caller cannot reach a function until sourcing finishes, so a 5.3-only construct there makes
     the gate unreachable on exactly the hosts it exists for (D30). D35 extends that to

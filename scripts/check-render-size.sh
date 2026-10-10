@@ -34,6 +34,10 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
+# `shmutant_mutate`, the inline mutations' literal rewrite: the vendored shmutant (#519), sourced
+# here and never by check-lib.sh, which must stay evaluable on bash 3.2 (D35, D125).
+# shellcheck source=/dev/null
+. scripts/shmutant.sh
 
 REPO="$PWD"
 WORK="$(mktemp -d)" || { echo "check-render-size: FATAL — cannot create a scratch directory" >&2; exit 1; }
@@ -236,7 +240,7 @@ assert_undescribed
 
 # ------- MUTATIONS: a figure that counts the key, and a reader that passes a missing one ---------
 fx="$(mk_fixture mut-desc-key)" || bad "fixture: could not build the description-key mutation tree"
-check_mutate_literal "$fx/scripts/skill-description.awk" '  seen = 1' '  v = $0; seen = 1'; mrc=$?
+shmutant_mutate "$fx/scripts/skill-description.awk" '  seen = 1' '  v = $0; seen = 1'; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_desc_figure 2>&1 )"
      has "$out" "mutant-rc=0" "mut-desc-key: the mutated command still runs"
@@ -249,7 +253,7 @@ case "$mrc" in
 esac
 fx="$(mk_fixture mut-undesc)" || bad "fixture: could not build the undescribed mutation tree"
 printf -- '---\nname: beta\n---\n\nbody\n' > "$fx/agents/codex/skills/beta/SKILL.md"
-check_mutate_literal "$fx/scripts/skill-description.awk" 'if (r == "" && !seen) r = "no description line"' ''; mrc=$?
+shmutant_mutate "$fx/scripts/skill-description.awk" 'if (r == "" && !seen) r = "no description line"' ''; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC"; assert_undescribed 2>&1 )"
      has "$out" "mutant-rc=0" "mut-undesc: the mutant passes a skill with no description line as zero words, which is the defect"
@@ -419,7 +423,7 @@ eq "$(col agents/codex/skills/alpha/SKILL.md 5)" "2" "fence-shapes: CRLF line en
 # reads every `#` line in the file — the whole-file count the report exists NOT to be.
 fx="$(mk_fixture mut-fence)" || bad "fixture: could not build the fence-mutation tree"
 write_fenced "$fx/$ALPHA"
-check_mutate_literal "$fx/scripts/render-size.sh" 'md_fence_len && shell && ' ''; mrc=$?
+shmutant_mutate "$fx/scripts/render-size.sh" 'md_fence_len && shell && ' ''; mrc=$?
 case "$mrc" in
   0) # The assertion runs in a SUBSHELL: its FAIL is the evidence, not a failure of this suite.
      out="$( run_rs "$fx"; echo "mutant-rc=$RS_RC mutant-count=$(col "$ALPHA" 5)"; assert_fenced_three 2>&1 )"
@@ -569,7 +573,7 @@ has "$RS_ERR" "wc returned 5 for its description" "counts: …naming the descrip
 
 # ------- MUTATION: a pipeline that answers for awk alone must turn the tr witness RED ------------
 fx="$(mk_fixture mut-pipefail)" || bad "fixture: could not build the pipefail-mutation tree"
-check_mutate_literal "$fx/scripts/render-size.sh" 'set -o pipefail; ' ''; mrc=$?
+shmutant_mutate "$fx/scripts/render-size.sh" 'set -o pipefail; ' ''; mrc=$?
 case "$mrc" in
   0) out="$( run_shim "$fx" "$WORK/shim-tr"; echo "mutant-rc=$RS_RC"; assert_tr_heard 2>&1 )"
      has "$out" "mutant-rc=0" "mut-pipefail: the mutant reports a figure over a tr that failed, which is the defect"
@@ -583,7 +587,7 @@ esac
 
 # ------- MUTATION: a --since half that measures the working tree must turn the delta RED --------
 fx="$(mk_since_repo mut-since)" || bad "fixture: could not build the since-mutation repository"
-check_mutate_literal "$fx/scripts/render-size.sh" 'measure "$REF_DIR/$f" ' 'measure "$f" '; mrc=$?
+shmutant_mutate "$fx/scripts/render-size.sh" 'measure "$REF_DIR/$f" ' 'measure "$f" '; mrc=$?
 case "$mrc" in
   0) out="$( run_rs "$fx" --since HEAD~1; echo "mutant-rc=$RS_RC mutant-delta=$(col "$ALPHA" 6)"; assert_grown_ten 2>&1 )"
      has "$out" "mutant-rc=0" "mut-since: the mutated command still runs"

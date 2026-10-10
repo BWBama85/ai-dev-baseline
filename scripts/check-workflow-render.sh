@@ -43,6 +43,10 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
+# `shmutant_mutate`, the inline mutations' literal rewrite: the vendored shmutant (#519), sourced
+# here and never by check-lib.sh, which must stay evaluable on bash 3.2 (D35, D125).
+# shellcheck source=/dev/null
+. scripts/shmutant.sh
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -350,7 +354,7 @@ desc_mut() {
     && cp "$ROOT/scripts/skill-description.awk" "$d/scripts/skill-description.awk" || { bad "one-home: could not copy the scripts"; return; }
   printf '# index\n' > "$d/base/practices/00-index.md"; printf '# dummy practice\n' > "$d/base/practices/aaa.md"
   printf -- '---\nname: fixture\ndescription: Use it: now\nuser-invocable: true\n---\n\n# /fixture\nbody ok\n' > "$d/base/workflows/fixture.md"
-  check_mutate_literal "$d/scripts/skill-description.awk" 'if (v ~ /:( |$)/) { r = "a colon YAML reads as a mapping"; done = 1; next }' ''; mrc=$?
+  shmutant_mutate "$d/scripts/skill-description.awk" 'if (v ~ /:( |$)/) { r = "a colon YAML reads as a mapping"; done = 1; next }' ''; mrc=$?
   case "$mrc" in
     0) bash "$d/scripts/build.sh" >"$d/build.log" 2>&1
        yes "$?" "one-home: with the mapping rule removed from the fixture's scripts/skill-description.awk, build.sh admits [Use it: now]" ;;
