@@ -647,10 +647,12 @@ for _c in garbage:"is not in shmutant's v1 grammar" short-field:"is not in shmut
           bad-verdict:"is not in shmutant's v1 grammar" bad-escape:"is not in shmutant's v1 grammar" \
           baseline-rec:"or is a baseline record, and none was run" other-label:"names another pool" \
           nul:"is not whole (a NUL" unterminated:"is not whole (a NUL, no final newline" \
-          zero-jobs:"is not in shmutant's v1 grammar" other-jobs:"or a width other than the 4 it was given" \
+          zero-jobs:"is not in shmutant's v1 grammar" other-jobs:"or a width other than the 2 it was given" \
           fifo:"is not a regular file, or could not be read into a snapshot"; do
   _m="${_c%%:*}"; _w="${_c#*:}"
-  shm "stub-$_m" "$CAUGHT" ADB_T_STUB="$_m"
+  # The width is PINNED (ADB_POOL_JOBS=2), so the summary's expected width is the same on every host —
+  # adb_pool_size is min(cpu, cap), and a 3-core runner would otherwise expect 3 where this one has 4.
+  shm "stub-$_m" "$CAUGHT" ADB_T_STUB="$_m" ADB_POOL_JOBS=2
   eq "$rc" 1 "stub $_m: the suite fails"
   has "$out" "$_w" "stub $_m: …saying why"
   has "$out" "adapter-rc=1" "stub $_m: …and the adapter itself returns non-zero, whatever its caller does next"
