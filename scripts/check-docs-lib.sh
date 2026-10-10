@@ -154,10 +154,8 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     'evidence carrying U+0085 is accepted under a UTF-8 locale'
 
-  # THE READ-SIDE VALIDATION, added after the review reproduced a clean verdict from a record the
-  # writer would never have produced. Without a row here, deleting it again is invisible.
-  # RETARGETED when the read gained a distinct unreadable status (PR #429): the `|| {` form no
-  # longer exists in `verdict`, and the first remaining occurrence would have been `report`'s.
+  # THE READ-SIDE VALIDATION: a reader must refuse a record the writer would never have produced.
+  # The literal is `verdict`'s read, not `report`'s, which follows it.
   shmutant_mut readers-skip-validation \
     '    _adb_dl_records "$f" >/dev/null; _rrc=$?' \
     '    _rrc=0' \
@@ -312,11 +310,8 @@ if [ "$MODE" = mutation ]; then
     '            if (0) { bad = 1; exit }' \
     'an unquoted array element ([context7]) is refused as malformed TOML'
 
-  # `templates` IS COPIED because three assertions read `templates/agents.toml`. Without it those
-  # three failed in EVERY mutation child — so every row "went red" whatever it changed, and the
-  # witness check was the only thing separating a real detection from that noise. A row whose own
-  # witness never fires then reports honestly, which is how this was found.
-  # Built ONCE per pool; shmutant clones it for every row.
+  # `templates` IS COPIED because three assertions read `templates/agents.toml`; without it every
+  # row would go red whatever it changed. Built ONCE per pool; shmutant clones it for every row.
   prep() {
     check_copy_subtrees "$ROOT" "$1" scripts base templates >/dev/null 2>&1
   }

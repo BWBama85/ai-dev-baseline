@@ -9455,17 +9455,20 @@ survive is the part a later reader needs.
              itself returning non-zero. They run under `$BASH`: a bare `bash` on a macOS PATH without
              Homebrew first is 3.2, which shmutant refuses to load.
 
-             **Evidence in CI.** With `ADB_MUTATION_ARTIFACTS=<dir>`, on any failure the adapter
-             records, the stream and each failing row's `mut-<n>/output` — every row's, when the
-             stream is not trusted — are copied into a fresh `<dir>/<label>.XXXXXX`: regular,
-             non-link files only (a FIFO in the stream's place would block `cp`), each cut at
-             16 MiB, and whatever was cut, failed or was absent named on the line that says where
-             the rest is. Every
-             job that runs a ported pool (and the nightly) uploads that directory with
-             `actions/upload-artifact@v7` on `failure()`. The issue named `SHMUTANT_KEEP=1` for this;
-             it is not used, because shmutant never removes `mut-<n>/output` (only the clone trees),
-             and keeping every clone would hold one tree copy per row while the suite's own EXIT
-             cleanup removed the workdir anyway. The copy is what survives that cleanup.
+             **Evidence in CI.** With `ADB_MUTATION_ARTIFACTS=<dir>`, the adapter points the pool's
+             workdir at a fresh `<dir>/<label>.XXXXXX/pool` instead of the caller's, so shmutant
+             itself leaves the stream and every row's `mut-<n>/output` there — outside the suite's
+             own work directory, which its EXIT cleanup removes — and a pool that passes removes
+             its directory again. Every job that runs a ported pool (and the nightly) uploads
+             `<dir>` with `actions/upload-artifact@v7` on `failure()`. The issue named
+             `SHMUTANT_KEEP=1` for this; it is not used, because shmutant never removes
+             `mut-<n>/output` (only the clone trees), and keeping every clone would hold one tree
+             copy per row. An earlier cut COPIED the failing rows' output out of the workdir instead
+             — bounded, owner-only, named when partial — and four consecutive reviews found defects
+             in that copier (an unchecked size probe, umask modes, predictable staging names). The
+             owner chose on 2026-10-10 to remove it rather than harden it: nothing is copied now,
+             so there is no copier to be wrong. What that costs is an artifact holding every row's
+             output, killed rows included, and uncut.
 
              **The gate.** Each of the eight ported `*-mutation` steps declares `scripts/shmutant.sh`
              as an input, and `check-mutation-gate.sh` section 5 requires it of every step whose suite
@@ -9490,7 +9493,9 @@ survive is the part a later reader needs.
              #29 (a failed metadata read still yields a successful, content-only target
              fingerprint) and #30 (the `checksum` subcommand ignores its digest tool's status, which
              nothing here calls). #29 and #30 were held back until a review reproduced them by fault
-             injection. None of the four changes a verdict in this repository.
+             injection. None was observed changing a verdict in this port's runs; they are not proved
+             unable to — #26 can turn an unreadable-output harness error into `aborted` or
+             `accidental`, and #29 can let a callback's change to a target's metadata pass unseen.
              **What it costs — measured, not predicted.** Each ported step, run directly on the
              maintainer's 10-core macOS machine on 2026-10-09, once on `2278789` and once on
              `932e047`, the two runs of a pair back to back so they share the machine's load (load

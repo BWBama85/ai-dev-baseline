@@ -84,8 +84,8 @@ jobs:
           set -uo pipefail
           bash scripts/selfcheck.sh --only "${{ matrix.step }}" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
         env:
-          # A failed whole-suite pool keeps its verdict stream and each failing row's output here
-          # (#519); the upload step below publishes it.
+          # Each whole-suite pool's workdir runs here (#519): a failed one leaves its verdict stream
+          # and every row's output, a passing one removes itself. The upload step below publishes it.
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # A SEPARATE STEP, as in ci.yml's `selfcheck-macos`: a step that is killed never reaches its
@@ -107,9 +107,8 @@ jobs:
           fi
           exit 0
 
-      # THE EVIDENCE OF A FAILED POOL (#519): the stream and the failing rows' output (cut at 16 MiB,
-      # with INCOMPLETE.txt naming any cut), which the job summary above cannot carry. `failure()`
-      # only; `ignore` when the harness kept nothing.
+      # THE EVIDENCE OF A FAILED POOL (#519): its verdict stream and every row's output, which the job
+      # summary above cannot carry. `failure()` only; `ignore` when the harness kept nothing.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7

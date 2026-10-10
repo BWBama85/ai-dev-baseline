@@ -23,7 +23,7 @@ only by a published release, which is what these entries are the notes for.
   are gone. Rows port 1:1. Seven literals that start more than once in their target, which shmutant
   refuses, name the same site and defect through a longer literal or a `# row-*` marker. Each ported
   `*-mutation` step declares `scripts/shmutant.sh` as an input, and `check-mutation-gate.sh` pins
-  that. In CI a failed pool's stream and failing rows' output are uploaded as an artifact.
+  that. In CI a failed pool's workdir — its stream and every row's output — is uploaded as an artifact.
   `check-bash-floor.sh --entrypoints` gains a `vendored` class for the file (D125). The per-block
   rows (`check_mutation_rows`) are phase 2, #525.
 

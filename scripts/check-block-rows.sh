@@ -620,14 +620,23 @@ has "$out" "ADB_MUTATION_ROW_TIMEOUT_SECS must be a positive integer" "shmutant:
 shm unsourced "" ADB_T_NO_SHMUTANT=1
 eq "$rc" 1 "shmutant: a suite that never sourced shmutant fails"
 has "$out" "shmutant_pool is unavailable" "shmutant: …saying what is missing"
-# The failing rows' output survives the suite's own cleanup when CI asks for it, and only then.
+# When CI asks for it, the pool's workdir IS the evidence: shmutant leaves the stream and every row's
+# output under ADB_MUTATION_ARTIFACTS, outside the suite's own cleanup, and nothing is copied.
 shm art "shmutant_mut cosmetic '# a comment nothing reads' '# a comment nobody reads' 'add-sum'" ADB_MUTATION_ARTIFACTS="$work/artifacts"
 _art="$(find "$work/artifacts" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"
-[ -n "$_art" ] && [ -f "$_art/verdicts.tsv" ] && [ -f "$_art/mut-0.output" ] && ok \
-  || bad "shmutant: ADB_MUTATION_ARTIFACTS did not receive the stream and the failing row's output"
-has "$(cat "$_art/mut-0.output" 2>/dev/null)" "fixture: " "shmutant: the kept output is the run's own — the suite's summary line"
+[ -n "$_art" ] && [ -f "$_art/pool.tsv" ] && [ -f "$_art/pool/mut-0/output" ] && ok \
+  || bad "shmutant: ADB_MUTATION_ARTIFACTS did not hold the stream and the row's output"
+has "$(cat "$_art/pool/mut-0/output" 2>/dev/null)" "fixture: " "shmutant: the kept output is the run's own — the suite's summary line"
+has "$out" "is kept in $_art" "shmutant: …and the log says where"
+# A pool that passes removes its own directory, so what remains is the evidence of a failure.
 shm art-green "$CAUGHT" ADB_MUTATION_ARTIFACTS="$work/artifacts-green"
-[ ! -e "$work/artifacts-green" ] && ok || bad "shmutant: a green pool still wrote artifacts"
+eq "$(find "$work/artifacts-green" -mindepth 1 -maxdepth 1 -name 'fixture.*' 2>/dev/null | wc -l | tr -d ' ')" 0 \
+  "shmutant: a green pool leaves nothing under ADB_MUTATION_ARTIFACTS"
+# A RELATIVE ADB_MUTATION_ARTIFACTS means the invocation's directory, whatever prepare does to it.
+shm relart "shmutant_mut cosmetic '# a comment nothing reads' '# a comment nobody reads' 'add-sum'" \
+  ADB_T_CWD="$work/shm-relart" ADB_MUTATION_ARTIFACTS=arts ADB_T_PREP_CD=1
+[ -n "$(find "$work/shm-relart/arts" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null)" ] && ok \
+  || bad "shmutant: a relative ADB_MUTATION_ARTIFACTS was not resolved against the invocation's directory"
 # The settings are PINNED, not inherited: an operator's exported shmutant knobs cannot change the verdict
 # (a counts run needs the baseline, which is off, so an exported SHMUTANT_COUNTS=1 used to be a refusal).
 shm hostile-env "$CAUGHT" SHMUTANT_COUNTS=1 SHMUTANT_BASELINE=1 SHMUTANT_RED_PREFIX='NOPE: ' SHMUTANT_RED_STATUS=9 SHMUTANT_TIMEOUT=1
@@ -660,31 +669,22 @@ for _c in garbage:"is not in shmutant's v1 grammar" short-field:"is not in shmut
   has "$out" "$_w" "stub $_m: …saying why"
   has "$out" "adapter-rc=1" "stub $_m: …and the adapter itself returns non-zero, whatever its caller does next"
 done
-# A failure of the STREAM keeps its evidence too — the stream itself, and every row's output, named
-# as absent when there is none (a stub runs no row).
+# A failure of the STREAM keeps its evidence too: the stream the pool wrote stays where it was written.
 shm stub-garbage-art "$CAUGHT" ADB_T_STUB=garbage ADB_MUTATION_ARTIFACTS="$work/artifacts-garbage"
 _art="$(find "$work/artifacts-garbage" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"
-[ -n "$_art" ] && [ -f "$_art/verdicts.tsv" ] && ok || bad "shmutant: a malformed stream was not kept as evidence"
-has "$out" "INCOMPLETELY — not kept: mut-0/output(absent)" "shmutant: …and the evidence it could not keep is named, not implied"
-has "$(cat "$_art/INCOMPLETE.txt" 2>/dev/null)" "mut-0/output(absent)" "shmutant: …in the artifact itself too (INCOMPLETE.txt), not only in the job log"
+[ -n "$_art" ] && [ -f "$_art/pool.tsv" ] && ok || bad "shmutant: a malformed stream was not kept as evidence"
 # A record that cannot be trusted scores NOTHING: the killed row beside the garbage is not an `ok`.
 has "$out" "the stream was NOT trusted — its 1 kill(s) of 1 are not counted" "shmutant: an untrusted stream's kills are named as uncounted"
 has "$out" "shm-driver: 0 passed" "shmutant: …and none of them reached the pass counter"
-# A status that disagrees with its records is the harness's failure, so EVERY row's output is evidence.
-shm stub-rc1-art "$CAUGHT" ADB_T_STUB=rc1-killed ADB_MUTATION_ARTIFACTS="$work/artifacts-rc1"
-has "$out" "not kept: mut-0/output(absent)" "shmutant: a status disagreement keeps (or names) every row's output, not only the stream"
-# A stream that is absent is named among what could not be kept, never silently skipped.
-shm stub-rc2-art "$CAUGHT" ADB_T_STUB=rc2 ADB_MUTATION_ARTIFACTS="$work/artifacts-rc2"
-has "$out" "not kept: verdicts.tsv(absent)" "shmutant: an absent stream is named, not omitted from the evidence line"
-# A stream replaced by a link to a FIFO is refused WITHOUT being opened: cp would block on it.
+# A stream replaced by a link to a FIFO is refused WITHOUT being opened — a read would block on it —
+# and the pool's directory is still kept.
 shm stub-fifo-art "$CAUGHT" ADB_T_STUB=fifo ADB_MUTATION_ARTIFACTS="$work/artifacts-fifo"
-has "$out" "verdicts.tsv(not-a-regular-file)" "shmutant: a FIFO in the stream's place is named, never copied"
-# A stream the adapter cannot read is refused, and its evidence is named as a partial read — never kept
-# and passed off as the whole stream. (Root reads through mode 000, so the case means nothing there.)
+eq "$rc" 1 "shmutant: a FIFO in the stream's place fails the suite, and does not hang it"
+has "$out" "is kept in" "shmutant: …and its evidence directory is kept"
+# A stream the adapter cannot read is refused, never scored. (Root reads through mode 000.)
 if [ "$(id -u)" -ne 0 ]; then
-  shm stub-unreadable "$CAUGHT" ADB_T_STUB=unreadable ADB_MUTATION_ARTIFACTS="$work/artifacts-unreadable"
+  shm stub-unreadable "$CAUGHT" ADB_T_STUB=unreadable
   has "$out" "could not be read into a snapshot" "shmutant: an unreadable stream is refused"
-  has "$out" "verdicts.tsv(partial-read)" "shmutant: …and the snapshot it got is named as a partial read"
   chmod 600 "$work/shm-stub-unreadable/pool.tsv" 2>/dev/null
 fi
 # A RELATIVE workdir survives a prepare that changes directory: the adapter makes it absolute first.
@@ -697,27 +697,6 @@ has "$out" "FAIL: mutation 'cosmetic': survived" "shmutant: a caller's errexit d
 shm empty ""
 eq "$rc" 1 "shmutant: an empty table fails the suite"
 has "$out" "the mutation table is EMPTY" "shmutant: …saying so, before any pool runs"
-# Evidence is cut at 16 MiB, and the cut is reported rather than passed off as the whole output.
-head -c 16777217 /dev/zero > "$work/big.out"
-printf 'old\n' > "$work/big.kept"; chmod 644 "$work/big.kept"
-_check_keep "$work/big.out" "$work/big.kept"; eq "$?" 1 "evidence: an output past 16 MiB is not kept whole"
-case "$(ls -l "$work/big.kept" 2>/dev/null)" in -rw-------*) ok ;; *) bad "evidence: a cut copy over an existing 0644 file is not owner-only: $(ls -l "$work/big.kept" 2>/dev/null)" ;; esac
-eq "$CHECK_KEEP_WHY" "(cut at 16 MiB)" "evidence: …and says it was cut"
-eq "$(wc -c < "$work/big.kept" | tr -d ' ')" 16777216 "evidence: …at exactly 16 MiB"
-printf 'small\n' > "$work/small.out"; chmod 644 "$work/small.out"
-_check_keep "$work/small.out" "$work/small.kept"; eq "$?" 0 "evidence: a small output is kept whole"
-cmp -s "$work/small.out" "$work/small.kept" && ok || bad "evidence: a small output was not kept byte for byte"
-# Owner-only whatever the source's mode or the umask: evidence is run state, never widened.
-case "$(ls -l "$work/small.kept" 2>/dev/null)" in -rw-------*) ok ;; *) bad "evidence: a kept copy is not owner-only (0600): $(ls -l "$work/small.kept" 2>/dev/null)" ;; esac
-eq "$(find "$work" -maxdepth 1 -name '*.part' | wc -l | tr -d ' ')" 0 "evidence: no staging file is left behind"
-# A copy that cannot be written is named as failed, never reported as kept.
-mkdir -p "$work/ro-art" && chmod 555 "$work/ro-art"
-if [ ! -w "$work/ro-art" ]; then
-  _check_keep "$work/small.out" "$work/ro-art/kept"; eq "$?" 1 "evidence: an unwritable destination is not reported as kept"
-  eq "$CHECK_KEEP_WHY" "(copy failed)" "evidence: …and says the copy failed"
-fi
-chmod 755 "$work/ro-art"
-rm -f "$work/big.out" "$work/big.kept"
 # shmutant ESCAPES a backslash in a field; the adapter must accept the records its own pool writes.
 shm escaped-name "shmutant_mut 'slash\\name' '0 - \$1' '0 + \$1' 'neg-value'"
 eq "$rc" 0 "shmutant: a row whose name holds a backslash round-trips through the stream"

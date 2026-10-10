@@ -411,17 +411,18 @@ _check_hung_verdict() {
 # harness error) is never trusted. This reads the table shmutant keeps (`SHMUTANT_ROWS_*`) and its
 # encoder; both are the pinned v0.2.0's, and check-block-rows.sh pins each.
 #
-# ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): on ANY failure recorded here, the stream and every failing
-# row's `mut-<n>/output` — every row's, when the stream is not trusted — are copied into a fresh
-# `<dir>/<label>.XXXXXX`, because the workdir dies with the suite's own EXIT cleanup. Only regular,
-# non-link files are copied (a refused stream may be a FIFO, which `cp` would block on), each one cut
-# at 16 MiB (a mutant that printed until its deadline wrote an unbounded output, D122), and whatever
-# could not be kept, or was cut, is named on the line that says where the rest is.
+# ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): the pool's workdir is `<dir>/<label>.XXXXXX/pool` instead
+# of the caller's, so shmutant itself leaves the stream and every row's `mut-<n>/output` there —
+# outside the suite's own work directory, which its EXIT cleanup removes — and nothing is copied.
+# A pool that passes removes its directory again, so what remains is the evidence of a failure.
+#
+# Rows are declared BEFORE the call. shmutant also accepts rows declared inside `prepare`; this adapter
+# does not, because it reads the table's size first and checks the stream against it.
 check_shmutant_pool() {
   local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
-  local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art i f0="$fail" whole=1 lost="" out snap="" snap_ok=1
-  local -a verdicts=() names=() details=() failing=()
+  local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art="" arts i f0="$fail" whole=1 snap=""
+  local -a verdicts=() names=() details=()
   tab="$(printf '\t')"
   if ! command -v shmutant_pool >/dev/null 2>&1 || ! command -v _shmutant_esc >/dev/null 2>&1; then
     bad "$label --mutation: shmutant_pool is unavailable — the suite must source scripts/shmutant.sh before the pool"
@@ -432,9 +433,20 @@ check_shmutant_pool() {
     return 1
   fi
   _check_row_secs "$label" || return 1
-  # ABSOLUTE, before the pool: shmutant lets `prepare` change directory, and a relative workdir read
+  # ABSOLUTE, before the pool: shmutant lets `prepare` change directory, and a relative path read
   # afterwards would name another place.
   case "$wd" in /*) ;; *) wd="$PWD/$wd" ;; esac
+  if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ]; then
+    arts="$ADB_MUTATION_ARTIFACTS"
+    case "$arts" in /*) ;; *) arts="$PWD/$arts" ;; esac
+    if mkdir -p "$arts" 2>/dev/null && art="$(mktemp -d "$arts/$label.XXXXXX" 2>/dev/null)"; then
+      wd="$art/pool"
+    else
+      art=""
+      printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take this pool'"'"'s workdir — its evidence will not be kept\n' \
+        "$label" "$ADB_MUTATION_ARTIFACTS" >&2
+    fi
+  fi
   pool="$(adb_pool_size "$cap")"
   # shellcheck disable=SC2154  # SHMUTANT_ROWS_NAME is shmutant's table, declared by the caller's source
   n="${#SHMUTANT_ROWS_NAME[@]}"
@@ -458,7 +470,7 @@ check_shmutant_pool() {
   # bytes and score another.
   if [ -s "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
     if [ -L "$wd.tsv" ] || [ ! -f "$wd.tsv" ] || ! snap="$(mktemp "$wd.snap.XXXXXX" 2>/dev/null)" \
-       || ! { head -c 16777217 "$wd.tsv" > "$snap" 2>/dev/null || { snap_ok=0; false; }; }; then
+       || ! head -c 16777217 "$wd.tsv" > "$snap" 2>/dev/null; then
       bad "$label --mutation: the verdict stream $wd.tsv is not a regular file, or could not be read into a snapshot — refusing to score from it"
       whole=0
     elif ! adb_bytes_whole "$snap" 16777216; then
@@ -538,43 +550,16 @@ EOF
       [ "$whole" -eq 0 ] || ok
     else
       bad "mutation '${names[$i]}': ${verdicts[$i]} — ${details[$i]}"
-      failing+=("$i")
     fi
   done
-  if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ] && [ "$fail" -ne "$f0" ]; then
-    # A stream that is not trusted belongs to no single row, so every row's output is kept.
-    [ "$whole" -eq 1 ] || { failing=(); for (( i = 0; i < n; i++ )); do failing+=("$i"); done; }
-    if mkdir -p "$ADB_MUTATION_ARTIFACTS" 2>/dev/null && art="$(mktemp -d "$ADB_MUTATION_ARTIFACTS/$label.XXXXXX")"; then
-      # The stream as JUDGED — the snapshot — when there is one; the path only when none was taken.
-      if [ -n "$snap" ] && [ -f "$snap" ]; then
-        _check_keep "$snap" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
-        # A snapshot whose read failed part-way is a PREFIX of the stream, kept and named as one.
-        [ "$snap_ok" -eq 1 ] || lost="$lost verdicts.tsv(partial-read)"
-      elif [ -f "$wd.tsv" ] && [ ! -L "$wd.tsv" ]; then
-        _check_keep "$wd.tsv" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
-      elif [ -e "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
-        lost="$lost verdicts.tsv(not-a-regular-file)"
-      else
-        lost="$lost verdicts.tsv(absent)"
-      fi
-      for i in "${failing[@]}"; do
-        out="$wd/mut-$i/output"
-        if [ -f "$out" ] && [ ! -L "$out" ]; then _check_keep "$out" "$art/mut-$i.output" || lost="$lost mut-$i/output$CHECK_KEEP_WHY"
-        else lost="$lost mut-$i/output(absent)"; fi
-      done
-      if [ -z "$lost" ]; then
-        printf '%s --mutation: the evidence of this failure is kept in %s\n' "$label" "$art"
-      else
-        # …and the same words beside the evidence, so the artifact says what it is missing on its own.
-        printf 'not kept, or kept only in part:%s\n' "$lost" > "$art/INCOMPLETE.txt" 2>/dev/null
-        printf '%s --mutation: the evidence of this failure is kept in %s, INCOMPLETELY — not kept:%s\n' "$label" "$art" "$lost" >&2
-      fi
+  [ -z "$snap" ] || rm -f "$snap"
+  if [ -n "$art" ]; then
+    if [ "$fail" -eq "$f0" ]; then
+      rm -rf "$art"
     else
-      printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take a copy of this failure'"'"'s evidence\n' \
-        "$label" "$ADB_MUTATION_ARTIFACTS" >&2
+      printf '%s --mutation: the evidence of this failure — the stream and every row'"'"'s mut-<n>/output — is kept in %s\n' "$label" "$art"
     fi
   fi
-  [ -z "$snap" ] || rm -f "$snap"
   # SAY THE WIDTH IT ACTUALLY USED, as the pool always did — read back from the stream once it is
   # trusted: a pool that degrades to one finishes with the same counts as a healthy one.
   if [ "$whole" -eq 1 ]; then
@@ -585,34 +570,6 @@ EOF
       "$label" "$killed" "$n" "$pool" "$CHECK_ROW_SECS"
   fi
   [ "$fail" -eq "$f0" ]
-}
-
-# _check_keep <src> <dst> — copy one piece of evidence, cut at 16 MiB, owner-only (0600) whatever the
-# umask. Returns 1 when it was cut or could not be copied whole, with the reason in CHECK_KEEP_WHY
-# (`(cut at 16 MiB)`, `(copy failed)`).
-#
-# ONE BOUNDED READ, then a decision about the bytes it got — never a size probe followed by a second,
-# unbounded read, which a file still growing would slip past. `head -c <cap+1>` stops at one byte
-# past the cap: fewer bytes than that means it reached end of file, so the copy is whole; the extra
-# byte means there was more, so the copy is cut. Every status is checked, the measurement's included.
-CHECK_KEEP_WHY=""
-_check_keep() {
-  local cap=16777216 n
-  CHECK_KEEP_WHY="(copy failed)"
-  ( umask 077; head -c "$((cap + 1))" "$1" > "$2.part" ) 2>/dev/null || { rm -f "$2.part"; return 1; }
-  n="$(wc -c < "$2.part" 2>/dev/null)" || { rm -f "$2.part"; return 1; }
-  n="${n//[!0-9]/}"
-  [ -n "$n" ] || { rm -f "$2.part"; return 1; }
-  if [ "$n" -le "$cap" ]; then
-    mv "$2.part" "$2" 2>/dev/null || { rm -f "$2.part"; return 1; }
-    CHECK_KEEP_WHY=""; return 0
-  fi
-  # Cut through a second staging file and renamed into place, so the copy is created owner-only even
-  # where <dst> already existed with a wider mode.
-  ( umask 077; head -c "$cap" "$2.part" > "$2.cut" ) 2>/dev/null && mv "$2.cut" "$2" 2>/dev/null \
-    || { rm -f "$2.part" "$2.cut"; return 1; }
-  rm -f "$2.part"
-  CHECK_KEEP_WHY="(cut at 16 MiB)"; return 1
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------

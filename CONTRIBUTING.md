@@ -144,8 +144,8 @@ before `||`. `prepare <dir>` builds the tree ONCE, and every row gets a clone of
 <select>` runs the suite in the clone. A literal must start at exactly one position in its target,
 so a site whose line recurs carries a `# row-<name>` marker the literal includes. A witness is
 matched as a whole token on a `FAIL:` line, and every verdict but `killed` is a failure. With
-`ADB_MUTATION_ARTIFACTS=<dir>` (CI sets it), a failed pool's verdict stream and its failing rows'
-output are kept there.
+`ADB_MUTATION_ARTIFACTS=<dir>` (CI sets it), each pool's workdir runs there, so a failed pool leaves
+its verdict stream and every row's output behind, and a passing one removes itself.
 
 A suite whose harness runs the whole suite per mutant can instead declare **blocks** and **per-test
 rows** (#468, D103): `if check_block <id> [<dep>…]; then … fi` at the start of a line, a
