@@ -564,6 +564,8 @@ if [ -n "${ADB_T_STUB:-}" ]; then
       nul)          { printf '%s\n' "$(printf "$r" killed)"; printf 'shmutant\t1\tsummary\tfix\000ture\t1\t1\t4\t0.200\n'; } >> "$SHMUTANT_STREAM"; return 0 ;;
       zero-jobs)    printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1 | awk 'BEGIN { FS = OFS = "\t" } { $7 = 0; print }')" >> "$SHMUTANT_STREAM"; return 0 ;;
       other-jobs)   printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1 | awk 'BEGIN { FS = OFS = "\t" } { $7 = 99; print }')" >> "$SHMUTANT_STREAM"; return 0 ;;
+      lock-art)     printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"
+                    chmod 555 "${SHMUTANT_STREAM%/*/*}"; return 0 ;;   # the evidence root: its pool dir can no longer be unlinked
       unreadable)   printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; chmod 000 "$SHMUTANT_STREAM"; return 0 ;;
       fifo)         rm -f "$SHMUTANT_STREAM"; mkfifo "$SHMUTANT_STREAM.fifo" && ln -s "$SHMUTANT_STREAM.fifo" "$SHMUTANT_STREAM"; return 0 ;;
       unterminated) printf '%s\n%s' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
@@ -631,6 +633,27 @@ _art="$(find "$work/artifacts" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*'
   || bad "shmutant: ADB_MUTATION_ARTIFACTS did not hold the stream and the row's output"
 has "$(cat "$_art/pool/mut-0/output" 2>/dev/null)" "fixture: " "shmutant: the kept output is the run's own — the suite's summary line"
 has "$out" "is kept in $_art" "shmutant: …and the log says where"
+# An evidence location that cannot be used REFUSES the pool: falling back to the caller's workdir would
+# lose a failure's evidence to the suite's own cleanup. The pool never runs (prepare is never called).
+printf 'not a directory\n' > "$work/artifacts-file"
+shm art-unusable "$CAUGHT" ADB_MUTATION_ARTIFACTS="$work/artifacts-file"
+eq "$rc" 1 "shmutant: an unusable ADB_MUTATION_ARTIFACTS fails the suite"
+has "$out" "cannot take this pool's workdir" "shmutant: …saying why"
+[ ! -e "$work/prep-art-unusable.log" ] && ok || bad "shmutant: the pool ran although its evidence could not be kept"
+# A stale stream that cannot be removed stops the pool: shmutant would APPEND to it.
+mkdir -p "$work/shm-stale-stream/pool.tsv"
+shm stale-stream "$CAUGHT"
+eq "$rc" 1 "shmutant: a stale stream that cannot be removed fails the suite"
+has "$out" "a stale verdict stream" "shmutant: …saying why"
+rmdir "$work/shm-stale-stream/pool.tsv" 2>/dev/null
+# A passing pool's directory that cannot be removed is a failure: it would read as a failed pool's
+# evidence in the upload. (Root unlinks through mode 555.)
+if [ "$(id -u)" -ne 0 ]; then
+  shm stub-lock-art "$CAUGHT" ADB_T_STUB=lock-art ADB_POOL_JOBS=2 ADB_MUTATION_ARTIFACTS="$work/artifacts-lock"
+  eq "$rc" 1 "shmutant: a passing pool whose evidence directory cannot be removed fails the suite"
+  has "$out" "could not be removed — it would read as a failed pool's evidence" "shmutant: …saying why"
+  chmod 755 "$work/artifacts-lock" 2>/dev/null
+fi
 # A pool that passes removes its own directory, so what remains is the evidence of a failure.
 shm art-green "$CAUGHT" ADB_MUTATION_ARTIFACTS="$work/artifacts-green"
 eq "$(find "$work/artifacts-green" -mindepth 1 -maxdepth 1 -name 'fixture.*' 2>/dev/null | wc -l | tr -d ' ')" 0 \

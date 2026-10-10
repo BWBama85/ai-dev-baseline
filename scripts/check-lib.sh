@@ -414,7 +414,8 @@ _check_hung_verdict() {
 # ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): the pool's workdir is `<dir>/<label>.XXXXXX/pool` instead
 # of the caller's, so shmutant itself leaves the stream and every row's `mut-<n>/output` there —
 # outside the suite's own work directory, which its EXIT cleanup removes — and nothing is copied.
-# A pool that passes removes its directory again, so what remains is the evidence of a failure.
+# A pool that passes removes its directory again, so what remains is the evidence of a failure. A
+# location that cannot be used refuses the pool, and a directory that cannot be removed is a failure.
 #
 # Rows are declared BEFORE the call. shmutant also accepts rows declared inside `prepare`; this adapter
 # does not, because it reads the table's size first and checks the stream against it.
@@ -448,15 +449,20 @@ check_shmutant_pool() {
   if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ]; then
     arts="$ADB_MUTATION_ARTIFACTS"
     case "$arts" in /*) ;; *) arts="$PWD/$arts" ;; esac
-    if mkdir -p "$arts" 2>/dev/null && art="$(mktemp -d "$arts/$label.XXXXXX" 2>/dev/null)"; then
-      wd="$art/pool"
-    else
-      art=""
-      printf '%s --mutation: ADB_MUTATION_ARTIFACTS=%s could not take this pool'"'"'s workdir — its evidence will not be kept\n' \
-        "$label" "$ADB_MUTATION_ARTIFACTS" >&2
+    # REFUSED, never a fallback: a pool run in the caller's workdir instead would have its evidence
+    # removed by the suite's own cleanup, leaving a red job with nothing to upload.
+    if ! mkdir -p "$arts" 2>/dev/null || ! art="$(mktemp -d "$arts/$label.XXXXXX" 2>/dev/null)"; then
+      bad "$label --mutation: ADB_MUTATION_ARTIFACTS=$ADB_MUTATION_ARTIFACTS cannot take this pool's workdir, so its evidence could not be kept — refusing to run the pool"
+      return 1
     fi
+    wd="$art/pool"
   fi
-  rm -f "$wd.tsv"
+  # A stream left from an earlier run would be APPENDED to (shmutant opens it for appending), so one
+  # that cannot be removed stops the pool rather than having its records read as this one's.
+  if ! rm -f "$wd.tsv" 2>/dev/null || [ -e "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
+    bad "$label --mutation: a stale verdict stream $wd.tsv could not be removed — refusing to run the pool"
+    return 1
+  fi
   # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope
   local SHMUTANT_TIMEOUT="$CHECK_ROW_SECS" SHMUTANT_JOBS="$pool" SHMUTANT_BASELINE=0 SHMUTANT_STREAM="$wd.tsv" \
         SHMUTANT_RED_STATUS=1 SHMUTANT_RED_PREFIX='FAIL: ' SHMUTANT_COUNTS=0
@@ -554,10 +560,13 @@ EOF
       bad "mutation '${names[$i]}': ${verdicts[$i]} — ${details[$i]}"
     fi
   done
-  [ -z "$snap" ] || rm -f "$snap"
+  [ -z "$snap" ] || rm -f "$snap" 2>/dev/null \
+    || bad "$label --mutation: the stream snapshot $snap could not be removed"
   if [ -n "$art" ]; then
     if [ "$fail" -eq "$f0" ]; then
-      rm -rf "$art"
+      # A passing pool's directory that stays would read as a FAILED pool's evidence in the upload.
+      rm -rf "$art" 2>/dev/null && [ ! -e "$art" ] \
+        || bad "$label --mutation: the passing pool's evidence directory $art could not be removed — it would read as a failed pool's evidence"
     else
       printf '%s --mutation: the evidence of this failure — the stream and every row'"'"'s mut-<n>/output — is kept in %s\n' "$label" "$art"
     fi
