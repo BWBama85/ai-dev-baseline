@@ -676,6 +676,19 @@ has "$out" "verdicts.tsv(not-a-regular-file)" "shmutant: a FIFO in the stream's 
 # A caller under `set -e` still gets the verdict scored and named before its shell acts on the status.
 shm errexit "shmutant_mut cosmetic '# a comment nothing reads' '# a comment nobody reads' 'add-sum'" ADB_T_ERREXIT=1
 has "$out" "FAIL: mutation 'cosmetic': survived" "shmutant: a caller's errexit does not end the shell before the survivor is named"
+# An EMPTY table proves nothing, whatever a pool would say about it.
+shm empty ""
+eq "$rc" 1 "shmutant: an empty table fails the suite"
+has "$out" "the mutation table is EMPTY" "shmutant: …saying so, before any pool runs"
+# Evidence is cut at 16 MiB, and the cut is reported rather than passed off as the whole output.
+head -c 16777217 /dev/zero > "$work/big.out"
+_check_keep "$work/big.out" "$work/big.kept"; eq "$?" 1 "evidence: an output past 16 MiB is not kept whole"
+eq "$CHECK_KEEP_WHY" "(cut at 16 MiB)" "evidence: …and says it was cut"
+eq "$(wc -c < "$work/big.kept" | tr -d ' ')" 16777216 "evidence: …at exactly 16 MiB"
+printf 'small\n' > "$work/small.out"
+_check_keep "$work/small.out" "$work/small.kept"; eq "$?" 0 "evidence: a small output is kept whole"
+cmp -s "$work/small.out" "$work/small.kept" && ok || bad "evidence: a small output was not kept byte for byte"
+rm -f "$work/big.out" "$work/big.kept"
 # shmutant ESCAPES a backslash in a field; the adapter must accept the records its own pool writes.
 shm escaped-name "shmutant_mut 'slash\\name' '0 - \$1' '0 + \$1' 'neg-value'"
 eq "$rc" 0 "shmutant: a row whose name holds a backslash round-trips through the stream"

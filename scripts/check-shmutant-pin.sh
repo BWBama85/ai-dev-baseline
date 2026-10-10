@@ -18,14 +18,14 @@
 #   * its digest comes from common.sh's `adb_sha256` — NEVER from the vendored file's own
 #     `checksum` subcommand, which an edited file could make print any digest it liked.
 #
-# An upgrade is two edits in one PR — the file and the record — so it is visible in review. What
-# this check cannot tell is whether the recorded digest is the one the upstream release published;
-# that was verified when the pin was taken (D125), against the tag's CHECKSUMS and the release's
-# assets, and it is re-verified on every upgrade the same way.
+# An upgrade is two edits in one PR — the file and the record — so it is visible in review. This
+# cannot tell whether the recorded digest is the one the release published; that is checked when a
+# pin is taken (D125).
 #
-# --self-test drives every rule red on copies under one `mktemp -d`: a one-byte edit to the file, a
-# record with a second line, without its newline, with uppercase hex, naming another file, a link
-# in the file's place, and each of the two files missing. Never touches the tracked tree.
+# --self-test checks the SHIPPED pair first, exactly as the plain mode does (CI and the registry run
+# only this mode), then drives every rule red on copies under one `mktemp -d`: a one-byte edit to
+# the file, a record with a second line, without its newline, with uppercase hex, naming another
+# file, a link in the file's place, and each of the two files missing. Never touches the tracked tree.
 
 # bash 5.3 runtime floor (#256) — FIRST, before `set -u` and before the cd; the load is confirmed
 # by probing for the function, not by the source's exit status.
@@ -94,6 +94,10 @@ fi
 # ================================ --self-test ====================================================
 work="$(mktemp -d)" || { echo "check-shmutant-pin: FATAL — cannot create a scratch directory" >&2; exit 1; }
 check_exit_guard "check-shmutant-pin" "rm -rf \"$work\""
+
+# THE SHIPPED PAIR, before any copy: `cp` follows a link, so a copy of a linked file is a regular
+# file, and a self-test that only judged copies would pass a tracked tree the plain mode refuses.
+if out="$(pin_verdict scripts)"; then ok; else bad "shmutant-pin: $out"; fi
 
 # fresh <name> — a copy of the shipped pair under $work/<name>; prints the directory.
 fresh() {

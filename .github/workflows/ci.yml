@@ -519,7 +519,8 @@ jobs:
     # ADB_POOL_JOBS=2) — before a hosted runner's slower CPU is counted, and beside the plain suite
     # (~3m) and the pr-threads harness after it (11 rows, #437: 2m13s with the pool forced to 2). A
     # job that times out is a red CI leg that says nothing about the diff, which is the class of
-    # defect #394 is about.
+    # defect #394 is about. Rechecked for #519: forced, 32m15s (run 37657746297), and the
+    # whole-suite pools measured 1-22% slower through shmutant (D125) — inside the 75.
     timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1079,7 +1080,8 @@ jobs:
     # With both forced on, and session-context still whole-suite, it took 36m37s and 30m53s on PR
     # #504, too close to the 45 it had. The mutation gate keeps
     # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
-    # bound is for the runs that do.
+    # bound is for the runs that do. Rechecked for #519: forced, 32m43s (run 37525965580), and the
+    # whole-suite pools measured 1-22% slower through shmutant (D125) — inside the 75.
     timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1330,7 +1332,9 @@ jobs:
     # non-mutation steps — and the second grew with the review round that took it from 21 defects
     # to 37. A hosted runner is slower and has fewer cores, and a timeout here would read as a real
     # failure rather than as the capacity problem it is, so the ceiling moves with the work rather
-    # than staying at a number chosen when there was one harness of 21.
+    # than staying at a number chosen when there was one harness of 21. Rechecked for #519: forced,
+    # 10m30s (run 37525965580), and the whole-suite pools measured 1-22% slower through shmutant
+    # (D125) — inside the 45.
     timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

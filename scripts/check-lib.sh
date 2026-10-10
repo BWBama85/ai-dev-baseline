@@ -414,8 +414,9 @@ _check_hung_verdict() {
 # ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): on ANY failure recorded here, the stream and every failing
 # row's `mut-<n>/output` — every row's, when the stream is not trusted — are copied into a fresh
 # `<dir>/<label>.XXXXXX`, because the workdir dies with the suite's own EXIT cleanup. Only regular,
-# non-link files are copied (a refused stream may be a FIFO, which `cp` would block on), and whatever
-# could not be kept is named on the line that says where the rest is.
+# non-link files are copied (a refused stream may be a FIFO, which `cp` would block on), each one cut
+# at 16 MiB (a mutant that printed until its deadline wrote an unbounded output, D122), and whatever
+# could not be kept, or was cut, is named on the line that says where the rest is.
 check_shmutant_pool() {
   local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
@@ -434,6 +435,10 @@ check_shmutant_pool() {
   pool="$(adb_pool_size "$cap")"
   # shellcheck disable=SC2154  # SHMUTANT_ROWS_NAME is shmutant's table, declared by the caller's source
   n="${#SHMUTANT_ROWS_NAME[@]}"
+  if [ "$n" -eq 0 ]; then
+    bad "$label --mutation: the mutation table is EMPTY — this harness proves nothing"
+    return 1
+  fi
   rm -f "$wd.tsv"
   # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope
   local SHMUTANT_TIMEOUT="$CHECK_ROW_SECS" SHMUTANT_JOBS="$pool" SHMUTANT_BASELINE=0 SHMUTANT_STREAM="$wd.tsv" \
@@ -531,7 +536,7 @@ EOF
     [ "$whole" -eq 1 ] || { failing=(); for (( i = 0; i < n; i++ )); do failing+=("$i"); done; }
     if mkdir -p "$ADB_MUTATION_ARTIFACTS" 2>/dev/null && art="$(mktemp -d "$ADB_MUTATION_ARTIFACTS/$label.XXXXXX")"; then
       if [ -f "$wd.tsv" ] && [ ! -L "$wd.tsv" ]; then
-        cp "$wd.tsv" "$art/verdicts.tsv" 2>/dev/null || lost="$lost verdicts.tsv"
+        _check_keep "$wd.tsv" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
       elif [ -e "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
         lost="$lost verdicts.tsv(not-a-regular-file)"
       else
@@ -539,7 +544,7 @@ EOF
       fi
       for i in "${failing[@]}"; do
         out="$wd/mut-$i/output"
-        if [ -f "$out" ] && [ ! -L "$out" ]; then cp "$out" "$art/mut-$i.output" 2>/dev/null || lost="$lost mut-$i/output"
+        if [ -f "$out" ] && [ ! -L "$out" ]; then _check_keep "$out" "$art/mut-$i.output" || lost="$lost mut-$i/output$CHECK_KEEP_WHY"
         else lost="$lost mut-$i/output(absent)"; fi
       done
       if [ -z "$lost" ]; then
@@ -562,6 +567,22 @@ EOF
       "$label" "$killed" "$n" "$pool" "$CHECK_ROW_SECS"
   fi
   [ "$fail" -eq "$f0" ]
+}
+
+# _check_keep <src> <dst> — copy one piece of evidence, cut at 16 MiB. Returns 1 when it was cut or
+# could not be copied whole, with the reason in CHECK_KEEP_WHY (`(cut at 16 MiB)`, `(copy failed)`).
+CHECK_KEEP_WHY=""
+_check_keep() {
+  local sz
+  CHECK_KEEP_WHY=""
+  sz="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+  case "$sz" in ''|*[!0-9]*) CHECK_KEEP_WHY="(copy failed)"; return 1 ;; esac
+  if [ "$sz" -le 16777216 ]; then
+    cp "$1" "$2" 2>/dev/null && return 0
+    CHECK_KEEP_WHY="(copy failed)"; return 1
+  fi
+  head -c 16777216 "$1" > "$2" 2>/dev/null || { CHECK_KEEP_WHY="(copy failed)"; return 1; }
+  CHECK_KEEP_WHY="(cut at 16 MiB)"; return 1
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------

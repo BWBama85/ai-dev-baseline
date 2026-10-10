@@ -9391,8 +9391,10 @@ survive is the part a later reader needs.
              by hand. `scripts/check-shmutant-pin.sh` is the offline check: the record is one
              newline-terminated `<64 lowercase hex>  shmutant.sh` line or it is refused whole, the
              file is a regular file, and the digest is `adb_sha256`'s, never the vendored file's own
-             `checksum` subcommand, which an edited file could forge. `--self-test` drives every rule
-             red on copies, a one-byte in-place edit included. It is a registry step and a step of
+             `checksum` subcommand, which an edited file could forge. `--self-test` checks the shipped
+             pair itself first (CI and the registry run only that mode, and `cp` would turn a linked
+             file into a regular copy), then drives every rule red on copies, a one-byte in-place
+             edit included. It is a registry step and a step of
              CI's `shellcheck` job, not a job of its own (a new job is a new required context).
              It sits in `scripts/`, never `scripts/lib/`, which installs into a user's home.
 
@@ -9427,30 +9429,38 @@ survive is the part a later reader needs.
              and `SHMUTANT_RED_STATUS`, `SHMUTANT_RED_PREFIX` and `SHMUTANT_COUNTS` are pinned to
              check-lib's own 1, `FAIL: ` and 0, so an exported knob in the operator's environment
              cannot change a verdict (an exported `SHMUTANT_COUNTS=1` would make the pool refuse,
-             since counts need the baseline). The pool's status is captured on its own line before
-             the stream is read, and must agree with the records. The stream is refused whole unless
+             since counts need the baseline). The caller's errexit is suspended around the call, so
+             a status of 1 reaches the scoring instead of ending the shell. The pool's status is
+             captured on its own line before the stream is read, and must agree with the records. The stream is refused whole unless
              it passes `adb_bytes_whole` (no NUL, a final newline, a bound) and every record holds to
              shmutant's v1 grammar field by field — version, type, field count, a verdict from its
              vocabulary, a well-formed duration, only the three escapes it writes, and no baseline
              record, since none is run. The row records must be exactly the table's rows by name,
-             target and selector, in order, compared through shmutant's own field encoding so a
-             name holding a backslash round-trips, and the one summary must name this pool and count
-             the same rows and kills. Status 2 fails however many records exist, and the adapter
-             returns non-zero whenever it recorded a failure. Every verdict but `killed`
+             target and selector, in order, compared through shmutant's own encoder (`_shmutant_esc`)
+             so a name holding a backslash round-trips, and the one summary must name this pool,
+             count the same rows and kills, and report the width it was given. NOTHING IS SCORED
+             UNTIL ALL OF THAT HOLDS: the records are checked first and scored second, so a killed
+             row counts as an `ok` only from a stream trusted whole, a row that was not killed is
+             named either way, and an untrusted tally says its kills are not counted. Status 2,
+             an empty table and a status that disagrees with its records are never trusted, and
+             the adapter returns non-zero whenever it recorded a failure. Every verdict but `killed`
              is one `FAIL:` line naming the row, so `selfcheck --summarize` and the counters see it.
              `check-block-rows.sh` case 10g, which tested the old pool's deadline, is replaced by
              tests of the adapter: five verdicts through real pools, the deadline reaching shmutant
              as a named `timeout`, a harness error, a bad bound refused before anything is built, a
              suite that never sourced shmutant, the artifact copy, a hostile exported environment, a
-             backslash in a row name, and twenty-one forged streams or statuses from a stub
-             `shmutant_pool`, each required to fail on its own reason with the adapter itself
-             returning non-zero. They run under `$BASH`: a bare `bash` on a macOS PATH without
+             backslash in a row name, an empty table, a caller under `set -e`, the evidence cut, and
+             twenty-four forged streams or statuses from a stub `shmutant_pool` (a FIFO in the
+             stream's place among them), each required to fail on its own reason with the adapter
+             itself returning non-zero. They run under `$BASH`: a bare `bash` on a macOS PATH without
              Homebrew first is 3.2, which shmutant refuses to load.
 
              **Evidence in CI.** With `ADB_MUTATION_ARTIFACTS=<dir>`, on any failure the adapter
              records, the stream and each failing row's `mut-<n>/output` — every row's, when the
-             failure is the stream's or the harness's rather than a row's — are copied into a fresh
-             `<dir>/<label>.XXXXXX`, a copy that fails or has nothing to copy is named, and every
+             stream is not trusted — are copied into a fresh `<dir>/<label>.XXXXXX`: regular,
+             non-link files only (a FIFO in the stream's place would block `cp`), each cut at
+             16 MiB, and whatever was cut, failed or was absent named on the line that says where
+             the rest is. Every
              job that runs a ported pool (and the nightly) uploads that directory with
              `actions/upload-artifact@v7` on `failure()`. The issue named `SHMUTANT_KEEP=1` for this;
              it is not used, because shmutant never removes `mut-<n>/output` (only the clone trees),

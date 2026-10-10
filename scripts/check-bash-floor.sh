@@ -1225,8 +1225,7 @@ agents/claude/scripts/session-context.sh
 EXEMPT_ENTRYPOINTS="
 scripts/check-bash-floor.sh
 "
-# The vendored harness (#519). NOT exempt: exempt is one file with one reason (the observer), and
-# folding a second file under it would make "exempt" a class a future script can reach for.
+# The vendored harness (#519) — a class of its own, not a second exemption (D125).
 VENDORED_ENTRYPOINTS="
 scripts/shmutant.sh
 "
