@@ -1621,8 +1621,9 @@ jobs:
     # serial prologue, and since #339 the single most expensive step does not run here at all; the
     # headroom nonetheless stays as it was rather than being trimmed to a number this runner will
     # not reproduce. 45 until #445, which made `common-lib-mutation` heavier on a leg that had
-    # taken 38m50s (D122).
-    timeout-minutes: 55
+    # taken 38m50s (D122). 65 since #519: run 37525965580 took 47m41s with every harness forced, and
+    # the five whole-suite pools this leg runs measured 7-22% slower through shmutant (D125).
+    timeout-minutes: 65
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
