@@ -658,6 +658,11 @@ fi
 shm art-green "$CAUGHT" ADB_MUTATION_ARTIFACTS="$work/artifacts-green"
 eq "$(find "$work/artifacts-green" -mindepth 1 -maxdepth 1 -name 'fixture.*' 2>/dev/null | wc -l | tr -d ' ')" 0 \
   "shmutant: a green pool leaves nothing under ADB_MUTATION_ARTIFACTS"
+# …unless the operator asked shmutant to keep its clones: SHMUTANT_KEEP=1 keeps the directory.
+shm keep-art "$CAUGHT" SHMUTANT_KEEP=1 ADB_MUTATION_ARTIFACTS="$work/artifacts-keep"
+eq "$rc" 0 "shmutant: SHMUTANT_KEEP=1 with a passing pool still passes"
+[ -n "$(find "$work/artifacts-keep" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null)" ] && ok \
+  || bad "shmutant: SHMUTANT_KEEP=1 did not keep the passing pool's directory"
 # A RELATIVE ADB_MUTATION_ARTIFACTS means the invocation's directory, whatever prepare does to it.
 shm relart "shmutant_mut cosmetic '# a comment nothing reads' '# a comment nobody reads' 'add-sum'" \
   ADB_T_CWD="$work/shm-relart" ADB_MUTATION_ARTIFACTS=arts ADB_T_PREP_CD=1

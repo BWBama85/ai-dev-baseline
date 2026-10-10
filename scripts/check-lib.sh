@@ -473,9 +473,9 @@ check_shmutant_pool() {
   [ "$errexit" -eq 0 ] || set -e
   # An absent or empty stream carries no records (status 2 can leave either); anything else must be
   # whole — no NUL, a final newline, inside a bound no real table approaches. It is judged as ONE
-  # bounded snapshot (`<workdir>.snap.*`, one byte past the bound), and the checks, the parse and the
-  # evidence all read that snapshot: checking the path and then reopening it would judge one set of
-  # bytes and score another.
+  # bounded snapshot (`<workdir>.snap.*`, one byte past the bound), and the checks and the parse both
+  # read that snapshot: checking the path and then reopening it would judge one set of bytes and score
+  # another. The evidence kept for a failure is the stream as shmutant wrote it.
   if [ -s "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
     if [ -L "$wd.tsv" ] || [ ! -f "$wd.tsv" ] || ! snap="$(mktemp "$wd.snap.XXXXXX" 2>/dev/null)" \
        || ! head -c 16777217 "$wd.tsv" > "$snap" 2>/dev/null; then
@@ -564,9 +564,14 @@ EOF
     || bad "$label --mutation: the stream snapshot $snap could not be removed"
   if [ -n "$art" ]; then
     if [ "$fail" -eq "$f0" ]; then
-      # A passing pool's directory that stays would read as a FAILED pool's evidence in the upload.
-      rm -rf "$art" 2>/dev/null && [ ! -e "$art" ] \
-        || bad "$label --mutation: the passing pool's evidence directory $art could not be removed — it would read as a failed pool's evidence"
+      # A passing pool's directory that stays would read as a FAILED pool's evidence in the upload —
+      # unless the operator asked shmutant to keep its clones (SHMUTANT_KEEP=1), which is kept.
+      if [ "${SHMUTANT_KEEP:-0}" = 1 ]; then
+        printf '%s --mutation: SHMUTANT_KEEP=1 — the passing pool'"'"'s directory is kept in %s\n' "$label" "$art"
+      else
+        rm -rf "$art" 2>/dev/null && [ ! -e "$art" ] \
+          || bad "$label --mutation: the passing pool's evidence directory $art could not be removed — it would read as a failed pool's evidence"
+      fi
     else
       printf '%s --mutation: the evidence of this failure — the stream and every row'"'"'s mut-<n>/output — is kept in %s\n' "$label" "$art"
     fi

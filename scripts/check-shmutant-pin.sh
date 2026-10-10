@@ -38,6 +38,9 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -u
+# `nocasematch` (inheritable through an exported BASHOPTS) would make the record's `[[ =~ ]]` grammar
+# accept `SHMUTANT.SH` and uppercase hex; the grammar is case-exact, so the option is off here.
+shopt -u nocasematch
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
@@ -141,6 +144,8 @@ d="$(fresh uppercase)" && tr 'a-f' 'A-F' < scripts/shmutant.sh.sha256 > "$d/shmu
 refuses uppercase "$d" "64 lowercase hex"
 d="$(fresh oversize)" && { printf '%0200d  shmutant.sh\n' 0 > "$d/shmutant.sh.sha256"; }
 refuses oversize "$d" "not exactly one newline-terminated line"
+d="$(fresh upper-name)" && sed 's/shmutant\.sh$/SHMUTANT.SH/' scripts/shmutant.sh.sha256 > "$d/shmutant.sh.sha256"
+refuses upper-name "$d" "64 lowercase hex"
 d="$(fresh other-name)" && sed 's/shmutant\.sh$/other.sh/' scripts/shmutant.sh.sha256 > "$d/shmutant.sh.sha256"
 refuses other-name "$d" "64 lowercase hex"
 d="$(fresh one-space)" && sed 's/  / /' scripts/shmutant.sh.sha256 > "$d/shmutant.sh.sha256"

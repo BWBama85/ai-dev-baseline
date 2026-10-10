@@ -142,9 +142,8 @@ if [ "$MODE" = mutation ]; then
     "$BASH" "$d/scripts/check-pr-watch.sh" 2>&1
   }
   # `scripts` alone is this suite's whole mutation surface, so the subtree copier rather than the
-  # worktree one: copies of the repo's ~66MB .git would be spent moving a tree about to be deleted
-  # (check_copy_subtrees' own header measures that). Built ONCE per pool; shmutant clones it per row,
-  # and `shmutant_target` names the file each row mutates (#519).
+  # worktree one, which copies every top-level entry. Built ONCE per pool; shmutant clones it per
+  # row, and `shmutant_target` names the file each row mutates (#519).
   mut_prep() { check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1; }
 
   # THE CONTROL: the same tree, unmutated. (The pools run no baseline of their own —

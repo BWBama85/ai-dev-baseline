@@ -116,8 +116,8 @@ if [ "$MODE" = mutation ]; then
   export ADB_CANCEL_DEADLINE_SECS=8
 
   # mut_prepare <dir> — a throwaway tree the nested suite can run in, built ONCE; shmutant clones
-  # it for every row. `scripts` alone: that is this suite's whole mutation surface, and copying the
-  # repo's contents (with its ~66MB .git) is the cost check_copy_subtrees exists to avoid.
+  # it for every row. `scripts` alone: that is this suite's whole mutation surface, and every row
+  # pays for what the tree holds (check_copy_subtrees' header).
   mut_prepare() {
     check_copy_subtrees "$ROOT" "$1" scripts >/dev/null 2>&1
   }
