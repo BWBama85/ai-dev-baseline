@@ -420,7 +420,7 @@ _check_hung_verdict() {
 check_shmutant_pool() {
   local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
-  local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art i f0="$fail" whole=1 lost="" out
+  local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art i f0="$fail" whole=1 lost="" out snap=""
   local -a verdicts=() names=() details=() failing=()
   tab="$(printf '\t')"
   if ! command -v shmutant_pool >/dev/null 2>&1 || ! command -v _shmutant_esc >/dev/null 2>&1; then
@@ -449,9 +449,16 @@ check_shmutant_pool() {
   rc=$?
   [ "$errexit" -eq 0 ] || set -e
   # An absent or empty stream carries no records (status 2 can leave either); anything else must be
-  # whole — no NUL, a final newline, inside a bound no real table approaches — before a byte is read.
+  # whole — no NUL, a final newline, inside a bound no real table approaches. It is judged as ONE
+  # bounded snapshot (`<workdir>.snap.*`, one byte past the bound), and the checks, the parse and the
+  # evidence all read that snapshot: checking the path and then reopening it would judge one set of
+  # bytes and score another.
   if [ -s "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
-    if ! adb_bytes_whole "$wd.tsv" 16777216; then
+    if [ -L "$wd.tsv" ] || [ ! -f "$wd.tsv" ] || ! snap="$(mktemp "$wd.snap.XXXXXX" 2>/dev/null)" \
+       || ! head -c 16777217 "$wd.tsv" > "$snap" 2>/dev/null; then
+      bad "$label --mutation: the verdict stream $wd.tsv is not a regular file, or could not be read into a snapshot — refusing to score from it"
+      whole=0
+    elif ! adb_bytes_whole "$snap" 16777216; then
       bad "$label --mutation: the verdict stream $wd.tsv is not whole (a NUL, no final newline, not a regular file, or past 16 MiB) — refusing to score from it"
       whole=0
     # One line per record, operative fields first and the free-text detail last, so the loop below never
@@ -472,7 +479,7 @@ check_shmutant_pool() {
             print "malformed\t" NR
           else print "summary\t" $4 "\t" $5 "\t" $6 "\t" $7
           next }
-        { print "malformed\t" NR }' "$wd.tsv")"; then
+        { print "malformed\t" NR }' "$snap")"; then
       bad "$label --mutation: the verdict stream $wd.tsv could not be read — no row has a verdict"
       whole=0; parsed=""
     fi
@@ -535,7 +542,10 @@ EOF
     # A stream that is not trusted belongs to no single row, so every row's output is kept.
     [ "$whole" -eq 1 ] || { failing=(); for (( i = 0; i < n; i++ )); do failing+=("$i"); done; }
     if mkdir -p "$ADB_MUTATION_ARTIFACTS" 2>/dev/null && art="$(mktemp -d "$ADB_MUTATION_ARTIFACTS/$label.XXXXXX")"; then
-      if [ -f "$wd.tsv" ] && [ ! -L "$wd.tsv" ]; then
+      # The stream as JUDGED — the snapshot — when there is one; the path only when none was taken.
+      if [ -n "$snap" ] && [ -f "$snap" ]; then
+        _check_keep "$snap" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
+      elif [ -f "$wd.tsv" ] && [ ! -L "$wd.tsv" ]; then
         _check_keep "$wd.tsv" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
       elif [ -e "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
         lost="$lost verdicts.tsv(not-a-regular-file)"
@@ -557,6 +567,7 @@ EOF
         "$label" "$ADB_MUTATION_ARTIFACTS" >&2
     fi
   fi
+  [ -z "$snap" ] || rm -f "$snap"
   # SAY THE WIDTH IT ACTUALLY USED, as the pool always did — read back from the stream once it is
   # trusted: a pool that degrades to one finishes with the same counts as a healthy one.
   if [ "$whole" -eq 1 ]; then
@@ -569,19 +580,28 @@ EOF
   [ "$fail" -eq "$f0" ]
 }
 
-# _check_keep <src> <dst> — copy one piece of evidence, cut at 16 MiB. Returns 1 when it was cut or
-# could not be copied whole, with the reason in CHECK_KEEP_WHY (`(cut at 16 MiB)`, `(copy failed)`).
+# _check_keep <src> <dst> — copy one piece of evidence, cut at 16 MiB, owner-only (0600) whatever the
+# umask. Returns 1 when it was cut or could not be copied whole, with the reason in CHECK_KEEP_WHY
+# (`(cut at 16 MiB)`, `(copy failed)`).
+#
+# ONE BOUNDED READ, then a decision about the bytes it got — never a size probe followed by a second,
+# unbounded read, which a file still growing would slip past. `head -c <cap+1>` stops at one byte
+# past the cap: fewer bytes than that means it reached end of file, so the copy is whole; the extra
+# byte means there was more, so the copy is cut. Every status is checked, the measurement's included.
 CHECK_KEEP_WHY=""
 _check_keep() {
-  local sz
-  CHECK_KEEP_WHY=""
-  sz="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
-  case "$sz" in ''|*[!0-9]*) CHECK_KEEP_WHY="(copy failed)"; return 1 ;; esac
-  if [ "$sz" -le 16777216 ]; then
-    cp "$1" "$2" 2>/dev/null && return 0
-    CHECK_KEEP_WHY="(copy failed)"; return 1
+  local cap=16777216 n
+  CHECK_KEEP_WHY="(copy failed)"
+  ( umask 077; head -c "$((cap + 1))" "$1" > "$2.part" ) 2>/dev/null || { rm -f "$2.part"; return 1; }
+  n="$(wc -c < "$2.part" 2>/dev/null)" || { rm -f "$2.part"; return 1; }
+  n="${n//[!0-9]/}"
+  [ -n "$n" ] || { rm -f "$2.part"; return 1; }
+  if [ "$n" -le "$cap" ]; then
+    mv "$2.part" "$2" 2>/dev/null || { rm -f "$2.part"; return 1; }
+    CHECK_KEEP_WHY=""; return 0
   fi
-  head -c 16777216 "$1" > "$2" 2>/dev/null || { CHECK_KEEP_WHY="(copy failed)"; return 1; }
+  ( umask 077; head -c "$cap" "$2.part" > "$2" ) 2>/dev/null || { rm -f "$2.part"; return 1; }
+  rm -f "$2.part"
   CHECK_KEEP_WHY="(cut at 16 MiB)"; return 1
 }
 

@@ -648,7 +648,7 @@ for _c in garbage:"is not in shmutant's v1 grammar" short-field:"is not in shmut
           baseline-rec:"or is a baseline record, and none was run" other-label:"names another pool" \
           nul:"is not whole (a NUL" unterminated:"is not whole (a NUL, no final newline" \
           zero-jobs:"is not in shmutant's v1 grammar" other-jobs:"or a width other than the 4 it was given" \
-          fifo:"is not whole (a NUL, no final newline, not a regular file"; do
+          fifo:"is not a regular file, or could not be read into a snapshot"; do
   _m="${_c%%:*}"; _w="${_c#*:}"
   shm "stub-$_m" "$CAUGHT" ADB_T_STUB="$_m"
   eq "$rc" 1 "stub $_m: the suite fails"
@@ -685,9 +685,19 @@ head -c 16777217 /dev/zero > "$work/big.out"
 _check_keep "$work/big.out" "$work/big.kept"; eq "$?" 1 "evidence: an output past 16 MiB is not kept whole"
 eq "$CHECK_KEEP_WHY" "(cut at 16 MiB)" "evidence: …and says it was cut"
 eq "$(wc -c < "$work/big.kept" | tr -d ' ')" 16777216 "evidence: …at exactly 16 MiB"
-printf 'small\n' > "$work/small.out"
+printf 'small\n' > "$work/small.out"; chmod 644 "$work/small.out"
 _check_keep "$work/small.out" "$work/small.kept"; eq "$?" 0 "evidence: a small output is kept whole"
 cmp -s "$work/small.out" "$work/small.kept" && ok || bad "evidence: a small output was not kept byte for byte"
+# Owner-only whatever the source's mode or the umask: evidence is run state, never widened.
+case "$(ls -l "$work/small.kept" 2>/dev/null)" in -rw-------*) ok ;; *) bad "evidence: a kept copy is not owner-only (0600): $(ls -l "$work/small.kept" 2>/dev/null)" ;; esac
+eq "$(find "$work" -maxdepth 1 -name '*.part' | wc -l | tr -d ' ')" 0 "evidence: no staging file is left behind"
+# A copy that cannot be written is named as failed, never reported as kept.
+mkdir -p "$work/ro-art" && chmod 555 "$work/ro-art"
+if [ ! -w "$work/ro-art" ]; then
+  _check_keep "$work/small.out" "$work/ro-art/kept"; eq "$?" 1 "evidence: an unwritable destination is not reported as kept"
+  eq "$CHECK_KEEP_WHY" "(copy failed)" "evidence: …and says the copy failed"
+fi
+chmod 755 "$work/ro-art"
 rm -f "$work/big.out" "$work/big.kept"
 # shmutant ESCAPES a backslash in a field; the adapter must accept the records its own pool writes.
 shm escaped-name "shmutant_mut 'slash\\name' '0 - \$1' '0 + \$1' 'neg-value'"

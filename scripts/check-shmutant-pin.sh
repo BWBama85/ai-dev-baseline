@@ -24,8 +24,9 @@
 #
 # --self-test checks the SHIPPED pair first, exactly as the plain mode does (CI and the registry run
 # only this mode), then drives every rule red on copies under one `mktemp -d`: a one-byte edit to
-# the file, a record with a second line, without its newline, with uppercase hex, naming another
-# file, a link in the file's place, and each of the two files missing. Never touches the tracked tree.
+# the file, a record with a second line, without its newline, past its size, with uppercase hex,
+# naming another file, a link in the file's place, and each of the two files missing. Never touches
+# the tracked tree.
 
 # bash 5.3 runtime floor (#256) — FIRST, before `set -u` and before the cd; the load is confirmed
 # by probing for the function, not by the source's exit status.
@@ -52,21 +53,27 @@ esac
 # pin_verdict <dir> — does <dir>/shmutant.sh match <dir>/shmutant.sh.sha256? Prints the digest on
 # success, the reason on failure; returns 0 or 1. The ONE predicate both modes ask.
 pin_verdict() {
-  local d="$1" rec want got
+  local d="$1" rec want got snap
   if [ -L "$d/shmutant.sh" ] || [ ! -f "$d/shmutant.sh" ]; then
     printf '%s/shmutant.sh is missing, or is not a regular file\n' "$d"; return 1
   fi
   if [ -L "$d/shmutant.sh.sha256" ] || [ ! -f "$d/shmutant.sh.sha256" ]; then
     printf '%s/shmutant.sh.sha256 is missing, or is not a regular file — the pin has no record\n' "$d"; return 1
   fi
-  # WHOLE OR NOTHING: `$(…)` strips trailing newlines, so the final newline and the line count are
-  # asked of the file itself, before its content is read — the final byte (and no NUL, and a size
-  # a one-line record can have) by common.sh's shared whole-file rule, rather than a second copy.
-  if ! adb_bytes_whole "$d/shmutant.sh.sha256" 128 \
-     || [ "$(wc -l < "$d/shmutant.sh.sha256" | tr -d ' ')" != 1 ]; then
-    printf '%s/shmutant.sh.sha256 is not exactly one newline-terminated line\n' "$d"; return 1
+  # ONE BOUNDED SNAPSHOT of the record, one byte past what a one-line record can be, and every check
+  # below reads it — checking the path and then reopening it would judge one set of bytes and read
+  # another. WHOLE OR NOTHING: `$(…)` strips trailing newlines, so the final newline and the line
+  # count are asked of the snapshot itself, before its content is read — the final byte (and no NUL,
+  # and the size) by common.sh's shared whole-file rule, rather than a second copy.
+  snap="$(mktemp)" || { printf 'a snapshot of %s/shmutant.sh.sha256 could not be made\n' "$d"; return 1; }
+  if ! head -c 129 "$d/shmutant.sh.sha256" > "$snap" 2>/dev/null; then
+    rm -f "$snap"; printf '%s/shmutant.sh.sha256 could not be read\n' "$d"; return 1
   fi
-  rec="$(cat "$d/shmutant.sh.sha256")" || { printf '%s/shmutant.sh.sha256 could not be read\n' "$d"; return 1; }
+  if ! adb_bytes_whole "$snap" 128 || [ "$(wc -l < "$snap" | tr -d ' ')" != 1 ]; then
+    rm -f "$snap"; printf '%s/shmutant.sh.sha256 is not exactly one newline-terminated line\n' "$d"; return 1
+  fi
+  rec="$(cat "$snap")" || { rm -f "$snap"; printf '%s/shmutant.sh.sha256 could not be read\n' "$d"; return 1; }
+  rm -f "$snap"
   if [[ ! "$rec" =~ ^([0-9a-f]{64})\ \ shmutant\.sh$ ]]; then
     printf '%s/shmutant.sh.sha256 is not `<64 lowercase hex>  shmutant.sh`: [%s]\n' "$d" "$rec"; return 1
   fi
@@ -132,6 +139,8 @@ d="$(fresh no-newline)" && printf '%s' "$(cat "$d/shmutant.sh.sha256")" > "$d/sh
 refuses no-newline "$d" "not exactly one newline-terminated line"
 d="$(fresh uppercase)" && tr 'a-f' 'A-F' < scripts/shmutant.sh.sha256 > "$d/shmutant.sh.sha256"
 refuses uppercase "$d" "64 lowercase hex"
+d="$(fresh oversize)" && { printf '%0200d  shmutant.sh\n' 0 > "$d/shmutant.sh.sha256"; }
+refuses oversize "$d" "not exactly one newline-terminated line"
 d="$(fresh other-name)" && sed 's/shmutant\.sh$/other.sh/' scripts/shmutant.sh.sha256 > "$d/shmutant.sh.sha256"
 refuses other-name "$d" "64 lowercase hex"
 d="$(fresh one-space)" && sed 's/  / /' scripts/shmutant.sh.sha256 > "$d/shmutant.sh.sha256"
