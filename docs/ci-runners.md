@@ -291,8 +291,8 @@ one would be invisible.
 **Every mutation harness is gated on its inputs, on both legs (#441, D91).** A `--mutation`
 harness runs its suite once per injected defect to prove that suite can go red, and its
 verdict depends on a small declared input set — the library it mutates, its suite,
-`scripts/check-lib.sh`, `scripts/lib/common.sh` — recorded in `scripts/selfcheck.sh --list` (field
-5). On a change touching none of it, the harness re-derives the answer it already gave on `main`,
+`scripts/check-lib.sh`, `scripts/lib/common.sh`, and for a whole-suite pool the vendored
+`scripts/shmutant.sh` that runs it (#519) — recorded in `scripts/selfcheck.sh --list` (field 5). On a change touching none of it, the harness re-derives the answer it already gave on `main`,
 at ~40 minutes of critical path per PR before #441 (`pattern-ledger-mutation` alone was 37m25s on
 run 32923514377). So each ubuntu `--mutation` step now goes through
 `scripts/mutation-gate.sh run <step> -- <command>`, and `selfcheck-macos` inherits the same gate

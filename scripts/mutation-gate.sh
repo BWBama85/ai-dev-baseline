@@ -179,7 +179,7 @@ gate_decide() {
   local step="$1" basearg="$2" base mb hits nhits nchanged inputs
   shift 2
   inputs="$(printf '%s, ' "$@")"; inputs="${inputs%, }"
-  if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then
+  if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-step-override
     printf 'RUN: %s — ADB_MUTATION_RUN_ALL is set; the gate is overridden and every harness runs\n' "$step"
     return 12
   fi
@@ -189,7 +189,7 @@ gate_decide() {
   if ! mb="$(gate_mb "$base" 2>&1)"; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the harness runs)\n' \
       "$step" "${mb:-merge-base unavailable}"
-    return 11
+    return 11   # row-mb-unresolved
   fi
   if ! gate_changed "$mb"; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the harness runs)\n' \
@@ -209,11 +209,10 @@ gate_decide() {
   return 10
 }
 
-# NOTE ON ORDER: these sit AFTER `gate_decide` because `check-mutation-gate.sh`'s mutation rows
-# for the step-level decision are anchored by POSITION — `check_mutate_literal` rewrites the FIRST
-# occurrence, so a function inserted above `gate_decide` silently re-targets them at code they were
-# never written about. The rows below anchor on `# row-*` markers instead, which is what that
-# lesson is worth: a literal that must be unique should say so in the source.
+# `check-mutation-gate.sh`'s mutation rows name their sites by literal, and shmutant refuses a
+# literal that starts at more than one position (D125). A site whose line recurs therefore carries a
+# `# row-*` marker the row's literal includes — the ones below, and `gate_decide`'s
+# `row-step-override` and `row-mb-unresolved`. Keep each marker on its line.
 
 # gate_registry_row <selector> <kind> — print the whole registry row for the step named by
 # <selector> (kind `step`) or for the step whose command is `bash <selector> --mutation` (kind

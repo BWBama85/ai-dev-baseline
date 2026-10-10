@@ -1205,6 +1205,10 @@ EOF
 #               for the two files whose own contract forbids a non-zero exit. Naming them here
 #               is what stops "advisory" becoming a dial a future script can quietly pick.
 #   exempt    — must NOT call it at all, and there is exactly one.
+#   vendored  — a THIRD-PARTY file vendored byte for byte and never edited here (D125). It cannot
+#               call adb_require_bash without being edited, so it must not: a call would mean the
+#               pinned copy is no longer the release, which scripts/check-shmutant-pin.sh refuses on
+#               its own terms. Its floor is its own — shmutant re-execs or refuses below 5.3 itself.
 #
 # Matched on the path RELATIVE to the scanned root, so the guard can build a fixture tree at the
 # same paths and drive each rule red.
@@ -1220,6 +1224,10 @@ agents/claude/scripts/session-context.sh
 # script would re-exec to 5.3 and report a clean floor on a machine that has none on PATH.
 EXEMPT_ENTRYPOINTS="
 scripts/check-bash-floor.sh
+"
+# The vendored harness (#519) — a class of its own, not a second exemption (D125).
+VENDORED_ENTRYPOINTS="
+scripts/shmutant.sh
 "
 
 # Print every file under $1 whose first line is a bash shebang, as a path relative to $1.
@@ -1318,7 +1326,7 @@ first_code_line() {
 
 entrypoint_lint() {
   root="${1%/}"
-  eps=0 gates=0 advisories=0 exempts=0
+  eps=0 gates=0 advisories=0 exempts=0 vendored=0
   prefix="$(scan_prefix "$root")"
 
   scanned="$(scan_entrypoints "$root")" || {
@@ -1344,6 +1352,10 @@ $key
 $EXEMPT_ENTRYPOINTS" in *"
 $key
 "*) kind=exempt ;; esac
+    case "
+$VENDORED_ENTRYPOINTS" in *"
+$key
+"*) kind=vendored ;; esac
 
     # COMMAND POSITION, not "appears somewhere". A bare token search accepts the call inside a
     # string — a fixture whose only content was `printf 'adb_require_bash "$@"'` was classified
@@ -1359,6 +1371,15 @@ $key
       exempts=$((exempts + 1))
       if [ -n "$call_gate" ] || [ -n "$call_adv" ]; then
         check_note "$key is the EXEMPT observer but calls the floor gate (line ${call_gate:-$call_adv}) — re-exec'ing here would make its own negative test stop testing"
+        check_fail
+      fi
+      continue
+    fi
+
+    if [ "$kind" = vendored ]; then
+      vendored=$((vendored + 1))
+      if [ -n "$call_gate" ] || [ -n "$call_adv" ]; then
+        check_note "$key is VENDORED (a third-party file never edited here) but calls the floor gate (line ${call_gate:-$call_adv}) — it was edited, so it is no longer the pinned release"
         check_fail
       fi
       continue
@@ -1426,8 +1447,8 @@ EOF
   fi
   # SAY WHAT IT CHECKED, not merely that it passed: a scanner that goes blind reports the same
   # clean verdict as a clean repo, and a count is what makes the difference readable in a log.
-  printf 'bash-floor: %d entry point(s) — %d gate, %d advisory, %d exempt\n' \
-    "$eps" "$gates" "$advisories" "$exempts"
+  printf 'bash-floor: %d entry point(s) — %d gate, %d advisory, %d exempt, %d vendored\n' \
+    "$eps" "$gates" "$advisories" "$exempts" "$vendored"
 }
 
 case "${1:-}" in
@@ -1442,7 +1463,7 @@ case "${1:-}" in
     ;;
   --entrypoints)
     entrypoint_lint "${2:-.}"
-    check_result "every entry point calls the bash >= $FLOOR runtime gate"
+    check_result "every entry point is classified, and every gate and advisory calls the bash >= $FLOOR runtime gate"
     ;;
   --sub-floor)
     # EXTRA ARGUMENTS ARE A USAGE ERROR, not something to ignore. This mode's one argument selects

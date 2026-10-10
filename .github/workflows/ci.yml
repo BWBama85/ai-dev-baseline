@@ -108,6 +108,12 @@ jobs:
       - name: The selfcheck runner must be observed failing on a red step under parallelism (#260)
         run: bash scripts/check-selfcheck.sh
 
+      # The vendored mutation harness is a third-party file pinned by digest (#519, D125): this
+      # fails when scripts/shmutant.sh is no longer the release its record names, and drives every
+      # rule of that check red on copies. Seconds; this job took 1m44s of its 10 on run 37657746297.
+      - name: The vendored shmutant.sh must be exactly its pinned release (#519)
+        run: bash scripts/check-shmutant-pin.sh --self-test
+
   build-drift:
     name: build-drift
     runs-on: ubuntu-26.04
@@ -512,7 +518,8 @@ jobs:
     # ADB_POOL_JOBS=2) — before a hosted runner's slower CPU is counted, and beside the plain suite
     # (~3m) and the pr-threads harness after it (11 rows, #437: 2m13s with the pool forced to 2). A
     # job that times out is a red CI leg that says nothing about the diff, which is the class of
-    # defect #394 is about.
+    # defect #394 is about. Rechecked for #519: forced, 32m15s (run 37657746297), and the
+    # whole-suite pools measured 1-22% slower through shmutant (D125) — inside the 75.
     timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -546,6 +553,10 @@ jobs:
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: ...and those cases must be able to fail — every mutation observed RED (#394, #447, #448)
         run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # Rides this job rather than adding one: a second job is a second required status context for
       # branch protection to grow. One job, two libraries of the same PR-review loop.
@@ -557,6 +568,26 @@ jobs:
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: ...and that proof must be able to fail — every mutation observed RED (#418, #437)
         run: bash scripts/mutation-gate.sh run pr-threads-mutation -- bash scripts/check-pr-threads.sh --mutation
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
+
+      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
+      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
+      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
+      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
+      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      - name: Upload a failed mutation pool's evidence (#519)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-artifacts-pr-watch
+          path: ${{ runner.temp }}/mutation-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+          # A re-run of the job uploads under the same name; without this the upload itself fails.
+          overwrite: true
 
   state-assert:
     name: state-assert
@@ -702,6 +733,26 @@ jobs:
 
       - name: /roadmap predicates — in-flight targeting (#69) + release readiness, offline (#45)
         run: bash scripts/check-roadmap.sh
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
+
+      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
+      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
+      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
+      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
+      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      - name: Upload a failed mutation pool's evidence (#519)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-artifacts-roadmap
+          path: ${{ runner.temp }}/mutation-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+          # A re-run of the job uploads under the same name; without this the upload itself fails.
+          overwrite: true
 
   roadmap-e2e:
     name: roadmap-e2e
@@ -1030,7 +1081,8 @@ jobs:
     # With both forced on, and session-context still whole-suite, it took 36m37s and 30m53s on PR
     # #504, too close to the 45 it had. The mutation gate keeps
     # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
-    # bound is for the runs that do.
+    # bound is for the runs that do. Rechecked for #519: forced, 32m43s (run 37525965580), and the
+    # whole-suite pools measured 1-22% slower through shmutant (D125) — inside the 75.
     timeout-minutes: 75
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1074,6 +1126,26 @@ jobs:
       # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
       - name: ...and its refusals must be able to fail — each mutation observed RED (#491)
         run: bash scripts/mutation-gate.sh run review-loop-mutation -- bash scripts/check-review-loop.sh --mutation
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
+
+      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
+      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
+      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
+      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
+      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      - name: Upload a failed mutation pool's evidence (#519)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-artifacts-implement-gate
+          path: ${{ runner.temp }}/mutation-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+          # A re-run of the job uploads under the same name; without this the upload itself fails.
+          overwrite: true
 
   install-migration:
     name: install-migration
@@ -1262,7 +1334,9 @@ jobs:
     # non-mutation steps — and the second grew with the review round that took it from 21 defects
     # to 37. A hosted runner is slower and has fewer cores, and a timeout here would read as a real
     # failure rather than as the capacity problem it is, so the ceiling moves with the work rather
-    # than staying at a number chosen when there was one harness of 21.
+    # than staying at a number chosen when there was one harness of 21. Rechecked for #519: forced,
+    # 10m30s (run 37525965580), and the whole-suite pools measured 1-22% slower through shmutant
+    # (D125) — inside the 45.
     timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1298,6 +1372,10 @@ jobs:
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: /adopt guards must be able to fail — every decision mutated, each observed RED (#20)
         run: bash scripts/mutation-gate.sh run adopt-mutation -- bash scripts/check-adopt.sh --mutation
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # The completion contract rides THIS job rather than a new one, for the reason stated above:
       # a second job is a second required status context for branch protection to grow, and this
@@ -1313,6 +1391,26 @@ jobs:
       # Gated on its inputs (#441) — see the `common-lib` job for the contract.
       - name: ...and its guards must be able to fail — 38 mutations, each observed RED (#81)
         run: bash scripts/mutation-gate.sh run adopt-readiness-mutation -- bash scripts/check-adopt-readiness.sh --mutation
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
+
+      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
+      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
+      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
+      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
+      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      - name: Upload a failed mutation pool's evidence (#519)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-artifacts-adopt
+          path: ${{ runner.temp }}/mutation-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+          # A re-run of the job uploads under the same name; without this the upload itself fails.
+          overwrite: true
 
   pattern-ledger:
     name: pattern-ledger
@@ -1530,8 +1628,9 @@ jobs:
     # serial prologue, and since #339 the single most expensive step does not run here at all; the
     # headroom nonetheless stays as it was rather than being trimmed to a number this runner will
     # not reproduce. 45 until #445, which made `common-lib-mutation` heavier on a leg that had
-    # taken 38m50s (D122).
-    timeout-minutes: 55
+    # taken 38m50s (D122). 65 since #519: run 37525965580 took 47m41s with every harness forced, and
+    # the five ported `*-mutation` steps this leg runs measured 7-22% slower through shmutant (D125).
+    timeout-minutes: 65
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1605,6 +1704,10 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+        env:
+          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
+          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
       # signal, an OOM — never reaches its own trailing code, so a digest written inline is absent
@@ -1627,3 +1730,18 @@ jobs:
           bash scripts/selfcheck.sh --summarize "$log" >> "$GITHUB_STEP_SUMMARY" \
             || echo "selfcheck failed and the digest could not be produced — open the job log." >> "$GITHUB_STEP_SUMMARY"
           exit 0
+
+      # THE EVIDENCE OF A FAILED POOL (#519) — the whole-suite harnesses this job runs leave a failed
+      # pool's verdict stream and every row's output in ADB_MUTATION_ARTIFACTS (set on the suite step);
+      # this publishes it. Three of them (docs-lib, selfcheck-guard, mutation-gate) have no ubuntu step, so
+      # this is their only per-PR evidence. `failure()` only; `ignore` when nothing was kept.
+      - name: Upload a failed mutation pool's evidence (#519)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-artifacts-selfcheck-macos
+          path: ${{ runner.temp }}/mutation-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+          # A re-run of the job uploads under the same name; without this the upload itself fails.
+          overwrite: true

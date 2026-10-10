@@ -1897,6 +1897,23 @@ ep_lint "$d"
 eq "$EPRC" "1" "entrypoints: the exempt observer calling the gate is itself an error"
 has "$EPOUT" "stop testing" "entrypoints: the message says what wiring it in would break"
 
+# THE VENDORED CLASS (#519, D125): a third-party file that cannot call the gate without being edited.
+# Both directions, so the class is neither an oversight nor a second exemption a script can pick.
+d="$work/ep-vendored"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\n' > "$d/scripts/shmutant.sh"
+ep_lint "$d"
+eq "$EPRC" "0" "entrypoints: the vendored harness is allowed NOT to call the gate"
+has "$EPOUT" "0 exempt, 1 vendored" "entrypoints: and is reported as vendored, not as exempt or skipped"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\n' > "$d/scripts/shmutant.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a vendored file calling the gate is an error — it was edited"
+has "$EPOUT" "no longer the pinned release" "entrypoints: the message says what the call means"
+# …and the class is a LIST, not a name pattern: another file of the same shape is still a gate.
+d="$work/ep-vendored-other"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\n' > "$d/scripts/othertool.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: an unlisted third-party-looking file is a gate like any other"
+
 # A call inside an UNINVOKED FUNCTION is not a call. The entry point defines it, never runs it, and
 # executes its real body on the sub-floor interpreter — while a command-position match anywhere in
 # the file reported PASS. Found in review; the scan now stops at the first function definition,
@@ -1931,6 +1948,7 @@ if git rev-parse --show-toplevel >/dev/null 2>&1; then
   EPOUT="$(bash "$LINT" --entrypoints scripts 2>&1)"; EPRC=$?
   eq "$EPRC" "0" "entrypoints: scanning scripts/ keeps the observer exemption"
   has "$EPOUT" "1 exempt" "entrypoints: and still counts it as exempt"
+  has "$EPOUT" "1 vendored" "entrypoints: and classifies the vendored harness as vendored"
 fi
 
 d="$work/ep-empty"; mkdir -p "$d"

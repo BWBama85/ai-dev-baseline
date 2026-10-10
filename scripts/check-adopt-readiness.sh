@@ -897,179 +897,185 @@ else bad "bin/baseline: the 'adopt' dispatch must precede the wrong-clone guard"
 # witness. Red for the wrong reason is not evidence.
 #
 # Every mutation is applied to a COPY (self-review.md's copy rule); the working tree is untouched.
-# The table, the rewrite, the pool and the scoring live in check-lib.sh (D68). What stays here is
-# local: the tree copy, the file to mutate, how the child is invoked, and the table itself.
-
-# <copy> — build the tree copy and print the file to mutate. `base` too: the suite reads
+# The table, the rewrite, the pool and the verdicts are the vendored shmutant's (#519), scored by
+# check-lib.sh's `check_shmutant_pool` (D68). What stays here is local: the tree copy, how the child
+# is invoked, and the table itself — declared only in `--mutation` mode, the one mode that sources
+# shmutant, with the pool a plain command in that block rather than the right side of `&&`, where
+# bash would ignore errexit inside every callback (shmutant's docs/integrating.md §4).
+if [ "$MUTATE" -eq 1 ]; then
+# <dir> — build the tree copy ONCE; shmutant clones it for every row. `base` too: the suite reads
 # base/workflows/adopt.md.
 _ar_mut_prepare() {
-  check_copy_subtrees "$ROOT" "$1" scripts base >/dev/null 2>&1 || return 1
-  printf '%s\n' "$1/scripts/lib/adopt-readiness.sh"
+  check_copy_subtrees "$ROOT" "$1" scripts base >/dev/null 2>&1
 }
-# <copy> — run the suite recursively. ADB_STATE_DIR keeps the child's receipt inside its own copy.
+# <root> — run the suite recursively. ADB_STATE_DIR keeps the child's receipt inside its own clone.
 # NOT `--mutation`, or the child would recurse.
 _ar_mut_run() { ( cd "$1" && ADB_STATE_DIR="$1/state" bash scripts/check-adopt-readiness.sh ); }
+
+# shellcheck source=/dev/null
+. "$ROOT/scripts/shmutant.sh" || bad "check-adopt-readiness: scripts/shmutant.sh could not be sourced"
+shmutant_target scripts/lib/adopt-readiness.sh
 
 # THE FAIL-CLOSED MUTATIONS. Each turns one guard toward the flattering answer.
 #
 # The witness is the assertion's FULL label, prefix included, and every literal is ONE line —
-# `check_mutate_literal` matches per record, so a two-line literal can never match (D68).
-check_mut missing-rung-is-skipped \
+# shmutant matches a literal within one line, so a two-line literal can never match (D68).
+shmutant_mut missing-rung-is-skipped \
     'unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
     'continue; unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
     'verdict: a rung nobody reported is unknown, not absent'
-check_mut unknown-status-accepted \
+shmutant_mut unknown-status-accepted \
     '*) die "verdict: rung '"'"'$rung'"'"' has status' \
     '*) st=ok ;; esac; case x in y) die "verdict: rung '"'"'$rung'"'"' has status' \
     'verdict: an unknown STATUS is rejected (never a pass)'
-check_mut duplicate-rung-last-wins \
+shmutant_mut duplicate-rung-last-wins \
     '[ -n "${seen[$rung]:-}" ] && die "verdict: rung' \
     '[ -n "${seen[$rung]:-}" ] && : "verdict: rung' \
     'verdict: a duplicated rung is rejected (no silent last-wins)'
-check_mut indeterminate-becomes-green \
+shmutant_mut indeterminate-becomes-green \
     "printf 'VERDICT: indeterminate" \
     "return 0; printf 'VERDICT: indeterminate" \
     'verdict: unknown-only is indeterminate'
-check_mut red-becomes-green \
+shmutant_mut red-becomes-green \
     "printf 'VERDICT: red" \
     "return 0; printf 'VERDICT: red" \
     'verdict: any todo is red'
-check_mut no-gate-is-silent \
+shmutant_mut no-gate-is-silent \
     '_ar_emit gates todo "NO GATE was detected' \
     '_ar_emit gates na "NO GATE was detected' \
     'probe: NO detectable gate is todo (loud), not a silent pass'
-check_mut gate-count-greps-status \
+shmutant_mut gate-count-greps-status \
     'grun="$(printf '"'"'%s'"'"' "$gdetect" | grep -c . || true)"' \
     'grun=0' \
     'probe: a fresh passing receipt makes the gates rung ok'
-check_mut receipt-ignores-head \
+shmutant_mut receipt-ignores-head \
     'if [ "$r_sha" != "$sha" ];' \
     'if false;' \
     'receipt: a new HEAD makes the receipt stale'
-check_mut receipt-ignores-gate-config \
+shmutant_mut receipt-ignores-gate-config \
     'if [ "$r_digest" != "$digest" ];' \
     'if false;' \
     'receipt: a changed gate CONFIGURATION makes the receipt stale'
-check_mut receipt-failure-reads-as-ok \
+shmutant_mut receipt-failure-reads-as-ok \
     'if [ "$r_outcome" = fail ];' \
     'if false;' \
     'receipt: a recorded failure is 12, not 11'
-check_mut receipt-truncated-reads-as-ok \
+shmutant_mut receipt-truncated-reads-as-ok \
     'case "$r_outcome" in pass|fail) ;; *) printf' \
     'case "$r_outcome" in pass|fail|"") ;; *) printf' \
     'receipt: a receipt with no outcome column is none, not ok'
-check_mut disposition-jq-rebinding-returns \
+shmutant_mut disposition-jq-rebinding-returns \
     'select( ($d | index("milestone:" + $m.title)) == null )' \
     'select( ($d | index("milestone:" + .title)) == null )' \
     'tracker: an undispositioned thematic milestone is todo'
-check_mut disposition-jq-failure-unchecked \
+shmutant_mut disposition-jq-failure-unchecked \
     'if ! undecided="$(printf' \
     'if undecided="$(printf' \
     'tracker: an undispositioned thematic milestone is todo'
-check_mut disposition-convention-filter-drops-all \
+shmutant_mut disposition-convention-filter-drops-all \
     'select($m.title != $rel and $m.title != $bak)' \
     'select(false)' \
     'tracker: an undispositioned thematic milestone is todo'
-check_mut armed-not-checked \
+shmutant_mut armed-not-checked \
     'elif [ "$armed" != true ]; then' \
     'elif false; then' \
     'tracker: an unarmed release milestone is todo'
-check_mut settings-typo-accepted \
+shmutant_mut settings-typo-accepted \
     '*)  die "tracker: .settings must be' \
     '*)  _ar_emit settings ok "x" ;; esac; case x in y) die "tracker: .settings must be' \
     'tracker: an unrecognized settings verdict is rejected, not accepted'
-check_mut newline-forges-a-record \
+shmutant_mut newline-forges-a-record \
     'detail="${detail//$'"'"'\n'"'"'/ }"' \
     'detail="$detail"' \
     'tracker: a newline in a milestone title does not forge an extra record'
-check_mut release-absent-collapses-to-todo \
+shmutant_mut release-absent-collapses-to-todo \
     'relcmd="$(_fact release_command string)"; rc=$?' \
     'relcmd=""; rc=0' \
     'tracker: an UNREAD release-command marker is unknown'
-check_mut receipt-ignores-the-worktree \
+shmutant_mut receipt-ignores-the-worktree \
     'if [ "$r_tree" != "$tree" ];' \
     'if false;' \
     'receipt: an UNCOMMITTED edit makes the receipt stale'
-check_mut receipt-skips-turn-end-gates \
+shmutant_mut receipt-skips-turn-end-gates \
     'run "$root" "" turn-end || { outcome=fail; rc=1; }' \
     'true' \
     'receipt: a failing turn-end gate is EXECUTED, not skipped'
-check_mut receipt-shared-temp-name \
+shmutant_mut receipt-shared-temp-name \
     'tmp="$(mktemp "$(dirname "$path")/.adopt-receipt.XXXXXX")"' \
     'tmp="$(dirname "$path")/.adopt-receipt.tmp"; :' \
     'receipt: a pre-planted temp symlink is not written through'
-check_mut detector-failure-is-na \
+shmutant_mut detector-failure-is-na \
     'if [ "$gstat" -ne 0 ]; then' \
     'if false; then' \
     'probe: a FAILED gate detector is unknown, never a recorded N/A'
-check_mut agent-token-validated-only-when-installed \
+shmutant_mut agent-token-validated-only-when-installed \
     'die "probe: invalid agent token' \
     ': "probe: invalid agent token' \
     'probe: rejects a traversal token even with NO install present'
-check_mut harness-checks-only-the-directory \
+shmutant_mut harness-checks-only-the-directory \
     '      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"' \
     '      :' \
     'probe: an agent home with no root doc is todo, not ok'
-check_mut blocker-label-coerced \
+shmutant_mut blocker-label-coerced \
     'printf '"'"'%s'"'"' "$json" | jq -e --arg k "$k" --arg t "$t" '"'"'.[$k]|type == $t'"'"' >/dev/null 2>&1 || return 2' \
     ':' \
     'tracker: a STRING blocker_label is malformed, not true'
-check_mut milestones-not-observed \
+shmutant_mut milestones-not-observed \
     'elif [ -n "$missing" ]; then' \
     'elif false; then' \
     'tracker: the label without the milestones is todo, NOT ok'
-check_mut release-ambiguity-ignored \
+shmutant_mut release-ambiguity-ignored \
     'if [ -n "$rc_count" ] && [ "$rc_count" -gt 1 ]; then' \
     'if false; then' \
     'tracker: two declared release-command markers are refused'
-check_mut roadmap-split-brain-ok \
+shmutant_mut roadmap-split-brain-ok \
     'elif [ "$rc_n" -gt 1 ]; then' \
     'elif false; then' \
     'tracker: two roadmap artifacts is todo'
-check_mut worktree-digest-hashes-only-status \
+shmutant_mut worktree-digest-hashes-only-status \
     '    git -C "$root" diff HEAD 2>/dev/null || return 1' \
     '    :' \
     'receipt: editing an ALREADY-MODIFIED path makes the receipt stale'
-check_mut untracked-content-not-hashed \
+shmutant_mut untracked-content-not-hashed \
     '          cat -- "$root/$f" 2>/dev/null || printf '"'"'<unreadable>'"'"'' \
     '          :' \
     'receipt: an untracked file whose CONTENT changed makes the receipt stale'
-check_mut gate-key-is-a-decision \
+shmutant_mut gate-key-is-a-decision \
     '    [ "$_v" = na ] && gkeys=$((gkeys + 1))' \
     '    gkeys=$((gkeys + 1))' \
     'probe: an UNSUPPORTED [gates.state] value is a typo, not a recorded decision'
-check_mut probe-does-not-resolve-the-root \
+shmutant_mut probe-does-not-resolve-the-root \
     '  if _rr="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$_rr" ]; then root="$_rr"; fi' \
     '  :' \
     'probe: running from a SUBDIRECTORY still reads the project root'
-check_mut skills-dir-presence-is-enough \
+shmutant_mut skills-dir-presence-is-enough \
     '  [ -n "$(find "$1" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null)" ]' \
     '  :' \
     'probe: EMPTY skills/scripts dirs must not satisfy the harness rung'
-check_mut primary-presence-is-enough \
+shmutant_mut primary-presence-is-enough \
     '  tok="$( cd "$root" 2>/dev/null && bash "$_AR_LIB_DIR/role-dispatch.sh" resolve primary 2>/dev/null )" || return 1' \
     '  tok=claude' \
     'probe: an INVALID [roles] primary is todo, not ok'
-check_mut dispositions-type-unchecked \
+shmutant_mut dispositions-type-unchecked \
     '    _fact dispositions array >/dev/null; rc_dp=$?' \
     '    :' \
     'tracker: a STRING dispositions is refused, not substring-matched'
-check_mut release-resolution-ignored \
+shmutant_mut release-resolution-ignored \
     '    resolved="$(_fact release_command_resolved boolean)" || resolved=""' \
     '    resolved=true' \
     'tracker: a marker whose skill is MISSING is todo, not ok'
-check_mut status-takes-an-option-as-root \
+shmutant_mut status-takes-an-option-as-root \
     '    -*|'"'"''"'"') : ;;' \
     '    NEVERMATCHES) : ;;' \
     'status: an option-only invocation resolves the root from $PWD'
-check_mut unterminated-final-record-dropped \
+shmutant_mut unterminated-final-record-dropped \
     'while IFS= read -r line || [ -n "$line" ]; do' \
     'while IFS= read -r line; do' \
     'e2e: probe+tracker cover the whole contract'
 
 # Width from `adb_pool_size` (min(cpu, 4)); `ADB_POOL_JOBS` is the operator/test seam. The cap is
 # 4 because that is what it already was — nothing measured justifies moving it (D66).
-[ "$MUTATE" -eq 1 ] && \
-  check_mutation_pool "check-adopt-readiness" "$WORK" _ar_mut_prepare _ar_mut_run 4
+check_shmutant_pool "check-adopt-readiness" "$WORK/pool" _ar_mut_prepare _ar_mut_run 4
+fi
 
 check_summary "check-adopt-readiness"

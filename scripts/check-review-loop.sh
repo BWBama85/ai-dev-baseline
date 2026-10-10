@@ -53,230 +53,228 @@ RW="$ROOT/base/workflows/resolve-pr-threads.md"
 
 # ============================= --mutation: every refusal must be seen RED ========================
 if [ "$MODE" = mutation ]; then
-  check_mut budget-cap-ignored \
+  # The rows run through the vendored shmutant (#519); this file sources it, never check-lib.sh (D35).
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/shmutant.sh" || bad "check-review-loop: scripts/shmutant.sh could not be sourced"
+  shmutant_target scripts/lib/implement-lib.sh
+  shmutant_mut budget-cap-ignored \
     '  if [ "$RL_PASSES" -ge "$RL_BUD" ]; then' \
     '  if false; then' \
     'a spent budget never dispatches a fourth time'
-  check_mut failed-dispatch-reads-clean \
+  shmutant_mut failed-dispatch-reads-clean \
     '    *)  why=dispatch; frc="$drc"; [ "${#frc}" -le 3 ] || frc=999 ;;' \
     '    *)  : ;;' \
     'a forged clean reply left behind by a FAILED dispatch is never recorded'
-  check_mut verdict-read-failure-accepted \
+  shmutant_mut verdict-read-failure-accepted \
     '      why=verdict; frc="$rc"' \
     '      :' \
     '…recorded as a verdict failure, rc 19'
-  check_mut moved-tree-accepted \
+  shmutant_mut moved-tree-accepted \
     '    if [ -n "$tree2" ] && [ "$tree2" != "$tree1" ]; then why=moved; fi' \
     '    :' \
     'a tree that moved during the pass fails it'
-  check_mut unbound-tree-accepted \
+  shmutant_mut unbound-tree-accepted \
     '    tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || { tree2=""; why=unbound; }' \
     '    tree2="$(_il_tree_digest "$RL_ROOT" "$RL_BASE")" || tree2="$tree1"' \
     'a tree that cannot be digested after the pass fails it'
-  check_mut dirty-pass-accepted \
+  shmutant_mut dirty-pass-accepted \
     '  if [ "$RL_PRE_CLEAN" -ne 0 ]; then' \
     '  if false; then' \
     'a pass over a dirty worktree is refused (27)'
-  check_mut dirty-report-accepted \
+  shmutant_mut dirty-report-accepted \
     '  rc="$RL_PRE_CLEAN"' \
     '  rc=0' \
     'report on a dirty worktree is 27, never converged'
-  check_mut stale-convergence-accepted \
+  shmutant_mut stale-convergence-accepted \
     '    if [ "$cur" = "${RL_TREE[L]}" ]; then' \
     '    if true; then' \
     'an edit after a converged pass invalidates it'
-  check_mut exhausted-edit-accepted \
+  shmutant_mut exhausted-edit-accepted \
     '  if [ "$cur" != "${RL_TREE[L]}" ]; then' \
     '  if false; then' \
     'a commit after an EXHAUSTED pass blocks'
-  check_mut undercarried-exhaustion-pushes \
+  shmutant_mut undercarried-exhaustion-pushes \
     '  if [ "$c" -lt "${RL_REQ[L]}" ]; then' \
     '  if false; then' \
     'an exhaustion with fewer carries than declared BLOCKS'
-  check_mut carried-high-pushes \
+  shmutant_mut carried-high-pushes \
     '    case "${RL_CSEV[i]}" in critical|high) hard=$((hard + 1)) ;; esac' \
     '    :' \
     'a carried HIGH blocks'
-  check_mut failed-final-pushes \
+  shmutant_mut failed-final-pushes \
     '"$passes" "$after"; return 39' \
     '"$passes" "$after"; return 33' \
     'a failed final pass BLOCKS'
-  check_mut disable-after-pass-excuses \
+  shmutant_mut disable-after-pass-excuses \
     '  if [ "$L" -eq 0 ]; then' \
     '  if true; then' \
     'local_passes = 0 after a failed final pass still BLOCKS'
-  check_mut unavailable-does-not-exhaust \
+  shmutant_mut unavailable-does-not-exhaust \
     '  [ "$1" -eq 0 ] || [ "$RL_LAST" = none ] || [ "$RL_PASSES" -ge "$1" ]' \
     '  [ "$RL_PASSES" -ge "$1" ]' \
     'a reviewer lost after a pass with findings exhausts the loop'
-  check_mut disabled-dispatches \
+  shmutant_mut disabled-dispatches \
     '  if [ "$RL_BUD" -eq 0 ]; then' \
     '  if false; then' \
     'local_passes = 0 is 35'
-  check_mut report-invents-empty \
+  shmutant_mut report-invents-empty \
     '  if [ ! -e "$RL_REC" ] && [ ! -L "$RL_REC" ]; then' \
     '  if false; then' \
     'report with nothing recorded is 11'
-  check_mut published-without-begin \
+  shmutant_mut published-without-begin \
     '    if [ "$RL_OPEN_KIND" != begin ] || [ "$RL_OPEN_TOKEN" != "$RL_TOKEN" ]; then' \
     '    if false; then' \
     '--published with no begun pass is refused (17)'
-  check_mut begin-keeps-old-reply \
+  shmutant_mut begin-keeps-old-reply \
     '    if ! mv -f "$RL_DIR/review.md" "$aside" 2>/dev/null || [ -e "$RL_DIR/review.md" ] || [ -L "$RL_DIR/review.md" ]; then' \
     '    if false; then' \
     'begin removes the previous reply'
-  check_mut interrupted-left-open \
+  shmutant_mut interrupted-left-open \
     '  if [ -n "$RL_OPEN" ] && [ "$keep_open" -eq 0 ]; then' \
     '  if false; then' \
     'a pass killed mid-dispatch is recorded failed on the next call'
-  check_mut record-race-accepted \
+  shmutant_mut record-race-accepted \
     '  if [ "$RL_OPEN" != "$n" ]; then' \
     '  if false; then' \
     'a record that changed underneath a pass refuses to record its result'
-  check_mut pass-past-budget-accepted \
+  shmutant_mut pass-past-budget-accepted \
     '        [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18' \
     '        :' \
     'a pass numbered past the budget it ran under refuses the record'
-  check_mut unknown-row-accepted \
+  shmutant_mut unknown-row-accepted \
     '      *) return 18 ;;' \
     '      *) : ;;' \
     'an unknown row kind refuses the whole record'
-  check_mut torn-record-accepted \
+  shmutant_mut torn-record-accepted \
     '  adb_bytes_whole "$f" "$_IL_LOOP_MAX_BYTES" || return $?' \
     '  :' \
     'a record with no final newline is refused'
-  check_mut overcarry-accepted \
+  shmutant_mut overcarry-accepted \
     '  if [ "$c" -ge "${RL_REQ[L]}" ]; then' \
     '  if false; then' \
     'a carry past the declared count is refused (17)'
-  check_mut duplicate-carry-appended \
+  shmutant_mut duplicate-carry-appended \
     '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_COCC[i]}" = "$RL_OCC" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     '    if false; then' \
     'the identical carry is a no-op (10)'
-  check_mut carry-before-exhaustion \
+  shmutant_mut carry-before-exhaustion \
     '|| ! _il_loop_exhausted "$bud"; then' \
     '; then' \
     'carry against a loop that is NOT exhausted is refused (17)'
-  check_mut carry-bound-ignored \
+  shmutant_mut carry-bound-ignored \
     '  [ $(( sz + ${#2} + 1 )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19' \
     '  :' \
     'a carry that would take the record past its bound is refused (19)'
-  check_mut control-char-finding \
+  shmutant_mut control-char-finding \
     '  [[ "$t" =~ [[:cntrl:]] ]] && return 1' \
     '  :' \
     'a finding carrying a TAB is refused (19)'
-  check_mut severity-open \
+  shmutant_mut severity-open \
     '    *) echo "implement-lib: review-loop carry: --severity must be critical|high|medium|low" >&2; return 19 ;; esac' \
     '    *) : ;; esac' \
     'a severity outside the closed set is refused (19)'
-  check_mut malformed-budget-defaults \
+  shmutant_mut malformed-budget-defaults \
     '    2) return 18 ;;' \
     '    2) printf '"'"'%s default\n'"'"' "$_IL_LOOP_DEFAULT" ;;' \
     'review-loop refuses to run on an unusable budget (18)'
-  check_mut round-head-foreign \
+  shmutant_mut round-head-foreign \
     "      1) printf 'implement-lib: review-loop: HEAD does not descend from the round head %s — this is not that round'\"'\"'s history\\n' \"\$head\" >&2; return 16 ;;" \
     '      1) RL_BASE="$head" ;;' \
     'review-loop refuses a HEAD that does not descend from the round head'
-  check_mut dirty-disabled-pushes \
+  shmutant_mut dirty-disabled-pushes \
     '  rc="$RL_PRE_CLEAN"' \
     '  rc=0' \
     'a disabled loop over a dirty worktree is 27'
-  check_mut begin-loses-reply \
+  shmutant_mut begin-loses-reply \
     '    mv -f "$aside" "$RL_DIR/review.md" 2>/dev/null' \
     '    :' \
     'puts the previous reply back rather than losing it'
-  check_mut validated-verdict-unbound \
+  shmutant_mut validated-verdict-unbound \
     '    if [ "$rc" -eq 0 ] && [ -n "$expect" ] && [ "$vout" != "$expect" ]; then rc=20; fi' \
     '    :' \
     'a reply replaced after dispatch-review validated it never records the replacement'
-  check_mut dotdot-site-accepted \
+  shmutant_mut dotdot-site-accepted \
     '  case "$path" in *:*|.|./|*/|/*|-*|..|../*|*/..|*/../*) return 1 ;; esac' \
     '  case "$path" in *:*|.|./|*/|/*|-*) return 1 ;; esac' \
     'a site that climbs out of the repository (..) is refused (19)'
-  check_mut begin-twice-accepted \
+  shmutant_mut begin-twice-accepted \
     '  if [ "$kind" = begin ] && [ "$RL_OPEN_KIND" = begin ]; then' \
     '  if false; then' \
     'a second begin over an unfinished native pass is refused (17)'
-  check_mut occurrence-not-in-identity \
+  shmutant_mut occurrence-not-in-identity \
     '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_COCC[i]}" = "$RL_OCC" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     'an identical second finding is carried with --occurrence 2'
-  check_mut carried-text-not-spanned \
+  shmutant_mut carried-text-not-spanned \
     '    out="${out}${sep}${RL_CSEV[i]} \`${site}\`${occ}: \`${txt}\`"' \
     '    out="${out}${sep}${RL_CSEV[i]} ${site}${occ}: ${RL_CTXT[i]}"' \
     'a carried closing keyword is rendered inside a code span'
-  check_mut off-while-open-appended \
+  shmutant_mut off-while-open-appended \
     '    [ -n "$RL_OPEN" ] || { _il_loop_append "$RL_REC" "off"$'"'"'\t'"'"'"$RL_BSRC"; rc=$?; }' \
     '    _il_loop_append "$RL_REC" "off"$'"'"'\t'"'"'"$RL_BSRC"; rc=$?' \
     'writes no row the reader refuses while a native pass is open'
-  check_mut finding-nul-accepted \
+  shmutant_mut finding-nul-accepted \
     '    if [ "$_fnul" != 0 ] || [ "$_fnl" -gt 1 ] || { [ "$_fnl" = 1 ] && [ "$(tail -c 1 "$_ff" | od -An -tx1 | tr -d '"'"' \n'"'"')" != 0a ]; }; then' \
     '    if [ "$_fnl" -gt 1 ]; then' \
     'refuses a NUL byte rather than storing the line with it dropped'
-  check_mut open-pr-ungated \
+  shmutant_mut open-pr-ungated \
     '  if ! _il_open_pr_loop_gate "$dir"; then' \
     '  if false; then' \
     'open-pr refuses (39) when no loop is recorded'
-  check_mut open-pr-tip-unpinned \
+  shmutant_mut open-pr-tip-unpinned \
     '  if [ "$(git rev-parse "refs/heads/$branch" 2>/dev/null)" != "$_tip" ] || [ "$(git rev-parse HEAD 2>/dev/null)" != "$_tip" ]; then' \
     '  if false; then' \
     'open-pr refuses (39) when the tip moved across the verdict read'
-  check_mut site-not-in-identity \
+  shmutant_mut site-not-in-identity \
     '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[2]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[3]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"' \
     '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[2]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"' \
     'same-text findings at different sites leave a readable, fully carried record'
-  check_mut local-head-accepts-foreign \
+  shmutant_mut local-head-accepts-foreign \
     "        1) printf 'implement-lib: dispatch-review: HEAD %s does not descend from PR %s'\"'\"'s head %s — this is not that pull request plus local commits; sync the branch and re-run.\\n' \"\$lhead\" \"\$crit_pr\" \"\$phead\" >&2; return 16 ;;" \
     '        1) : ;;' \
     '--local-head refuses a HEAD that does not descend from the PR head'
   # The byte bound on a finding holds only under `local LC_ALL=C`; the row needs a UTF-8 locale to
   # have a witness, so it is registered only where one exists.
   if locale -a 2>/dev/null | grep -qx -e C.UTF-8 -e en_US.UTF-8 -e C.utf8 -e en_US.utf8; then
-    check_mut finding-bound-in-characters \
+    shmutant_mut finding-bound-in-characters \
       '  local LC_ALL=C t="$1"' \
       '  local t="$1"' \
       'a finding past 300 BYTES is refused (19)'
   fi
 
+  # Built ONCE per pool; shmutant clones it for every row, and `shmutant_target` names the file.
   prep() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/scripts/lib/implement-lib.sh"
+    check_copy_subtrees "$ROOT" "$1" scripts base templates >/dev/null 2>&1
   }
-  runner() { ( cd "$1/tree" && bash scripts/check-review-loop.sh 2>&1 ); }
-  check_mutation_pool check-review-loop "$work" prep runner 6
+  runner() { ( cd "$1" && bash scripts/check-review-loop.sh 2>&1 ); }
+  check_shmutant_pool check-review-loop "$work/pool" prep runner 6
 
   # The budget reader is role-dispatch's, so its rows run in their own pool against that file.
-  check_mut_reset
-  check_mut out-of-range-accepted \
+  shmutant_reset
+  shmutant_target scripts/lib/role-dispatch.sh
+  shmutant_mut out-of-range-accepted \
     '  if [ "${#raw}" -gt 2 ] || [ "$raw" -gt "$_ADB_RD_LOCAL_PASSES_MAX" ]; then' \
     '  if false; then' \
     'local_passes = 11 is out of range'
-  check_mut empty-reads-as-malformed \
+  shmutant_mut empty-reads-as-malformed \
     "    ''|'\"\"'|\"''\")" \
     "    '__never__')" \
     'an empty value names itself as empty'
-  prep_rd() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/scripts/lib/role-dispatch.sh"
-  }
-  check_mutation_pool check-review-loop-rd "$work/rd" prep_rd runner 6
+  check_shmutant_pool check-review-loop-rd "$work/pool-rd" prep runner 6
 
   # The resolver's pre-push live check is prose the resolver executes, so its row runs against the
   # workflow source.
-  check_mut_reset
-  check_mut empty-push-sha-accepted \
+  shmutant_reset
+  shmutant_target base/workflows/resolve-pr-threads.md
+  shmutant_mut empty-push-sha-accepted \
     '  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first' \
     '  :' \
     'refuses a push SHA that is not 40 hex'
-  check_mut live-pr-check-dropped \
+  shmutant_mut live-pr-check-dropped \
     '  [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \' \
     '  true \' \
     '…and refuses the push unless the PR is OPEN at the round head'
-  prep_rw() {
-    check_copy_subtrees "$ROOT" "$1/tree" scripts base templates >/dev/null 2>&1 || return 1
-    printf '%s\n' "$1/tree/base/workflows/resolve-pr-threads.md"
-  }
-  check_mutation_pool check-review-loop-rw "$work/rw" prep_rw runner 6
+  check_shmutant_pool check-review-loop-rw "$work/pool-rw" prep runner 6
 
   check_summary check-review-loop
   exit 0

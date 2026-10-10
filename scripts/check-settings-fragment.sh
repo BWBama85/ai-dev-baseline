@@ -4051,7 +4051,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '  [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable' \
     '  :' \
     'must FAIL (1), not report success'
-  # SINGLE LINE: check_mutate_literal matches within one record, so a two-line literal tests nothing.
+  # SINGLE LINE: a row's literal is matched within one record, so a two-line literal tests nothing.
   check_row 'the handlers are not re-armed before the pending read' 'scripts/lib/common.sh' 'round-35-a-release-that-lied-a-signal-dr' \
     '  _adb_arm_lock_traps   # armed-before-read' \
     '  :   # armed-before-read' \
