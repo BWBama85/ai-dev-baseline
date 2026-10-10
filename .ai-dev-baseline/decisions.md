@@ -9490,6 +9490,32 @@ survive is the part a later reader needs.
              verdict in this repository. Two lesser observations from the same review (a metadata
              read that may hide a failure, unreproduced; the `checksum` subcommand ignoring its
              tool's status, which nothing here calls) were not filed.
+             **What it costs — measured, not predicted.** Each ported step, run directly on the
+             maintainer's 10-core macOS machine on 2026-10-09, once on `2278789` and once on
+             `932e047`, the two runs of a pair back to back so they share the machine's load (load
+             averages 5-21 throughout, from other work on the host):
+
+             | step | before | after | change |
+             |---|---|---|---|
+             | `roadmap` (4 rows inline) | 32.4 s | 32.7 s | +0.9% |
+             | `pr-threads-mutation` | 71.1 s | 86.5 s | +21.7% |
+             | `adopt-mutation` | 74.8 s | 82.0 s | +9.6% |
+             | `mutation-gate-mutation` | 101.3 s | 117.1 s | +15.6% |
+             | `docs-lib-mutation` | 97.1 s | 109.1 s | +12.4% |
+             | `selfcheck-guard-mutation` | 215.5 s | 230.1 s | +6.8% |
+             | `pr-watch-mutation` (per-block rows gated on both sides) | 950.0 s | 1041.2 s | +9.6% |
+             | `adopt-readiness-mutation` | 643.7 s | 711.5 s | +10.5% |
+             | `review-loop-mutation` | 1347.5 s | 1362.4 s | +1.1% |
+
+             The 1:1 port is slower, as #519 expected: shmutant fingerprints the prepared tree before
+             and after every clone, and the cost shows most where a suite run is short. `pr-watch`'s
+             first pair (1043.2 s against 1833.4 s) is not in the table: the per-row gate (#470) held
+             back all 33 of its untouched per-block rows on `2278789`, where the tree matched its base,
+             and ran them on `932e047`, where `check-lib.sh` had changed. It was re-run with
+             `ADB_MUTATION_BASE=HEAD` on both sides. Against the CI ceilings, using the last runs
+             that forced every harness (37525965580, 37657746297): `pr-watch` 32m15s of 75,
+             `implement-gate` 32m43s of 75 and `adopt` 10m30s of 45 keep their ceilings;
+             `selfcheck-macos`, 47m41s of 55, moves to 65.
 - placement: `scripts/shmutant.sh` (vendored, v0.2.0), `scripts/shmutant.sh.sha256`,
              `scripts/check-shmutant-pin.sh` (new; registry step `shmutant-pin`, CI `shellcheck` job);
              `scripts/check-lib.sh` (`check_shmutant_pool`; the pool family removed);
