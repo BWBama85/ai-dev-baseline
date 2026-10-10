@@ -420,7 +420,7 @@ _check_hung_verdict() {
 check_shmutant_pool() {
   local label="$1" wd="${2%/}" prep="$3" run="$4" cap="$5"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
-  local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art i f0="$fail" whole=1 lost="" out snap=""
+  local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art i f0="$fail" whole=1 lost="" out snap="" snap_ok=1
   local -a verdicts=() names=() details=() failing=()
   tab="$(printf '\t')"
   if ! command -v shmutant_pool >/dev/null 2>&1 || ! command -v _shmutant_esc >/dev/null 2>&1; then
@@ -432,6 +432,9 @@ check_shmutant_pool() {
     return 1
   fi
   _check_row_secs "$label" || return 1
+  # ABSOLUTE, before the pool: shmutant lets `prepare` change directory, and a relative workdir read
+  # afterwards would name another place.
+  case "$wd" in /*) ;; *) wd="$PWD/$wd" ;; esac
   pool="$(adb_pool_size "$cap")"
   # shellcheck disable=SC2154  # SHMUTANT_ROWS_NAME is shmutant's table, declared by the caller's source
   n="${#SHMUTANT_ROWS_NAME[@]}"
@@ -455,7 +458,7 @@ check_shmutant_pool() {
   # bytes and score another.
   if [ -s "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
     if [ -L "$wd.tsv" ] || [ ! -f "$wd.tsv" ] || ! snap="$(mktemp "$wd.snap.XXXXXX" 2>/dev/null)" \
-       || ! head -c 16777217 "$wd.tsv" > "$snap" 2>/dev/null; then
+       || ! { head -c 16777217 "$wd.tsv" > "$snap" 2>/dev/null || { snap_ok=0; false; }; }; then
       bad "$label --mutation: the verdict stream $wd.tsv is not a regular file, or could not be read into a snapshot — refusing to score from it"
       whole=0
     elif ! adb_bytes_whole "$snap" 16777216; then
@@ -545,6 +548,8 @@ EOF
       # The stream as JUDGED — the snapshot — when there is one; the path only when none was taken.
       if [ -n "$snap" ] && [ -f "$snap" ]; then
         _check_keep "$snap" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
+        # A snapshot whose read failed part-way is a PREFIX of the stream, kept and named as one.
+        [ "$snap_ok" -eq 1 ] || lost="$lost verdicts.tsv(partial-read)"
       elif [ -f "$wd.tsv" ] && [ ! -L "$wd.tsv" ]; then
         _check_keep "$wd.tsv" "$art/verdicts.tsv" || lost="$lost verdicts.tsv$CHECK_KEEP_WHY"
       elif [ -e "$wd.tsv" ] || [ -L "$wd.tsv" ]; then
@@ -560,6 +565,8 @@ EOF
       if [ -z "$lost" ]; then
         printf '%s --mutation: the evidence of this failure is kept in %s\n' "$label" "$art"
       else
+        # …and the same words beside the evidence, so the artifact says what it is missing on its own.
+        printf 'not kept, or kept only in part:%s\n' "$lost" > "$art/INCOMPLETE.txt" 2>/dev/null
         printf '%s --mutation: the evidence of this failure is kept in %s, INCOMPLETELY — not kept:%s\n' "$label" "$art" "$lost" >&2
       fi
     else
@@ -600,7 +607,10 @@ _check_keep() {
     mv "$2.part" "$2" 2>/dev/null || { rm -f "$2.part"; return 1; }
     CHECK_KEEP_WHY=""; return 0
   fi
-  ( umask 077; head -c "$cap" "$2.part" > "$2" ) 2>/dev/null || { rm -f "$2.part"; return 1; }
+  # Cut through a second staging file and renamed into place, so the copy is created owner-only even
+  # where <dst> already existed with a wider mode.
+  ( umask 077; head -c "$cap" "$2.part" > "$2.cut" ) 2>/dev/null && mv "$2.cut" "$2" 2>/dev/null \
+    || { rm -f "$2.part" "$2.cut"; return 1; }
   rm -f "$2.part"
   CHECK_KEEP_WHY="(cut at 16 MiB)"; return 1
 }

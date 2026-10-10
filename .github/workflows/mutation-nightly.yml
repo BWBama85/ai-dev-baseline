@@ -107,8 +107,9 @@ jobs:
           fi
           exit 0
 
-      # THE EVIDENCE OF A FAILED POOL (#519): the stream and the failing rows' full output, which the
-      # job summary above cannot carry. `failure()` only; `ignore` when the harness kept nothing.
+      # THE EVIDENCE OF A FAILED POOL (#519): the stream and the failing rows' output (cut at 16 MiB,
+      # with INCOMPLETE.txt naming any cut), which the job summary above cannot carry. `failure()`
+      # only; `ignore` when the harness kept nothing.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7

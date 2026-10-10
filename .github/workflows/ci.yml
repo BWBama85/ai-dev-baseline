@@ -110,8 +110,7 @@ jobs:
 
       # The vendored mutation harness is a third-party file pinned by digest (#519, D125): this
       # fails when scripts/shmutant.sh is no longer the release its record names, and drives every
-      # rule of that check red on copies. A step here rather than a job of its own, for the reason
-      # the runner step above gives; this job's charter is the tracked shell suite as a whole.
+      # rule of that check red on copies.
       - name: The vendored shmutant.sh must be exactly its pinned release (#519)
         run: bash scripts/check-shmutant-pin.sh --self-test
 
@@ -575,9 +574,10 @@ jobs:
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's full output
-      # into ADB_MUTATION_ARTIFACTS (set on the steps above), and this publishes it. `failure()` only,
-      # and `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's output,
+      # cut at 16 MiB (INCOMPLETE.txt names any cut), into ADB_MUTATION_ARTIFACTS (set on the steps
+      # above), and this publishes it. `failure()` only, and `ignore` when nothing was kept: a red
+      # that came from somewhere else has nothing to add.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -739,9 +739,10 @@ jobs:
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's full output
-      # into ADB_MUTATION_ARTIFACTS (set on the steps above), and this publishes it. `failure()` only,
-      # and `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's output,
+      # cut at 16 MiB (INCOMPLETE.txt names any cut), into ADB_MUTATION_ARTIFACTS (set on the steps
+      # above), and this publishes it. `failure()` only, and `ignore` when nothing was kept: a red
+      # that came from somewhere else has nothing to add.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -1131,9 +1132,10 @@ jobs:
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's full output
-      # into ADB_MUTATION_ARTIFACTS (set on the steps above), and this publishes it. `failure()` only,
-      # and `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's output,
+      # cut at 16 MiB (INCOMPLETE.txt names any cut), into ADB_MUTATION_ARTIFACTS (set on the steps
+      # above), and this publishes it. `failure()` only, and `ignore` when nothing was kept: a red
+      # that came from somewhere else has nothing to add.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -1395,9 +1397,10 @@ jobs:
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's full output
-      # into ADB_MUTATION_ARTIFACTS (set on the steps above), and this publishes it. `failure()` only,
-      # and `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
+      # once the job ends; `check_shmutant_pool` copies the stream and every failing row's output,
+      # cut at 16 MiB (INCOMPLETE.txt names any cut), into ADB_MUTATION_ARTIFACTS (set on the steps
+      # above), and this publishes it. `failure()` only, and `ignore` when nothing was kept: a red
+      # that came from somewhere else has nothing to add.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7

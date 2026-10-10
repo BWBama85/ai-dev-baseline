@@ -9483,13 +9483,14 @@ survive is the part a later reader needs.
              verdict — is what was applied; the rows' defects and sites are unchanged. `check_mutate_literal` and the shared scoring internals
              stay in `check-lib.sh`, because `check_mutation_rows` still uses them; #525 removes them.
 
-             **Defects found in shmutant** are filed upstream, never patched here (owner decision
-             2026-10-09): BWBama85/shmutant#26 (a failed read of a run's output is accepted as a clean
-             scan; it can mislabel a failing verdict, never fabricate a kill) and #27 (a `.shmutant`
-             with content after the marker line is accepted, against its docs). Neither changes a
-             verdict in this repository. Two lesser observations from the same review (a metadata
-             read that may hide a failure, unreproduced; the `checksum` subcommand ignoring its
-             tool's status, which nothing here calls) were not filed.
+             **Defects found in shmutant** are filed upstream, never patched here (owner decisions
+             2026-10-09 and 2026-10-10): BWBama85/shmutant#26 (a failed read of a run's output is
+             accepted as a clean scan; it can mislabel a failing verdict, never fabricate a kill),
+             #27 (a `.shmutant` with content after the marker line is accepted, against its docs),
+             #29 (a failed metadata read still yields a successful, content-only target
+             fingerprint) and #30 (the `checksum` subcommand ignores its digest tool's status, which
+             nothing here calls). #29 and #30 were held back until a review reproduced them by fault
+             injection. None of the four changes a verdict in this repository.
              **What it costs — measured, not predicted.** Each ported step, run directly on the
              maintainer's 10-core macOS machine on 2026-10-09, once on `2278789` and once on
              `932e047`, the two runs of a pair back to back so they share the machine's load (load

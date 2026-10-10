@@ -25,8 +25,8 @@
 # --self-test checks the SHIPPED pair first, exactly as the plain mode does (CI and the registry run
 # only this mode), then drives every rule red on copies under one `mktemp -d`: a one-byte edit to
 # the file, a record with a second line, without its newline, past its size, with uppercase hex,
-# naming another file, a link in the file's place, and each of the two files missing. Never touches
-# the tracked tree.
+# naming another file, holding a NUL, a link in either file's place, and each of the two files
+# missing. Never touches the tracked tree.
 
 # bash 5.3 runtime floor (#256) — FIRST, before `set -u` and before the cd; the load is confirmed
 # by probing for the function, not by the source's exit status.
@@ -147,6 +147,10 @@ d="$(fresh one-space)" && sed 's/  / /' scripts/shmutant.sh.sha256 > "$d/shmutan
 refuses one-space "$d" "64 lowercase hex"
 d="$(fresh linked)" && mv "$d/shmutant.sh" "$d/real.sh" && ln -s real.sh "$d/shmutant.sh"
 refuses linked "$d" "not a regular file"
+d="$(fresh linked-record)" && mv "$d/shmutant.sh.sha256" "$d/real.sha256" && ln -s real.sha256 "$d/shmutant.sh.sha256"
+refuses linked-record "$d" "the pin has no record"
+d="$(fresh nul-record)" && { cut -c1-64 scripts/shmutant.sh.sha256 | tr -d '\n'; printf '  shmutant.sh\000\n'; } > "$d/shmutant.sh.sha256"
+refuses nul-record "$d" "not exactly one newline-terminated line"
 d="$(fresh no-file)" && rm -f "$d/shmutant.sh"
 refuses no-file "$d" "is missing"
 d="$(fresh no-record)" && rm -f "$d/shmutant.sh.sha256"

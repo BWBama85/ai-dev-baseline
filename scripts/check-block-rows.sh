@@ -523,7 +523,9 @@ cat > "$work/shm-driver.sh" <<'EOF'
 . "$ADB_T_LIB"
 # shellcheck source=/dev/null
 [ -n "${ADB_T_NO_SHMUTANT:-}" ] || . "$ADB_T_SHMUTANT"
-prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/"; }
+[ -z "${ADB_T_CWD:-}" ] || cd "$ADB_T_CWD" || exit 3
+# ADB_T_PREP_CD: a prepare that changes directory, which shmutant permits.
+prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/" || return 1; [ -z "${ADB_T_PREP_CD:-}" ] || cd /; }
 # "$BASH", never a bare `bash`: on macOS a PATH without Homebrew first resolves /bin/bash 3.2, which
 # shmutant refuses to load and the fixture suite was never written for.
 run() { ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
@@ -562,6 +564,7 @@ if [ -n "${ADB_T_STUB:-}" ]; then
       nul)          { printf '%s\n' "$(printf "$r" killed)"; printf 'shmutant\t1\tsummary\tfix\000ture\t1\t1\t4\t0.200\n'; } >> "$SHMUTANT_STREAM"; return 0 ;;
       zero-jobs)    printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1 | awk 'BEGIN { FS = OFS = "\t" } { $7 = 0; print }')" >> "$SHMUTANT_STREAM"; return 0 ;;
       other-jobs)   printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1 | awk 'BEGIN { FS = OFS = "\t" } { $7 = 99; print }')" >> "$SHMUTANT_STREAM"; return 0 ;;
+      unreadable)   printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; chmod 000 "$SHMUTANT_STREAM"; return 0 ;;
       fifo)         rm -f "$SHMUTANT_STREAM"; mkfifo "$SHMUTANT_STREAM.fifo" && ln -s "$SHMUTANT_STREAM.fifo" "$SHMUTANT_STREAM"; return 0 ;;
       unterminated) printf '%s\n%s' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
       rc2)          return 2 ;;
@@ -663,6 +666,7 @@ shm stub-garbage-art "$CAUGHT" ADB_T_STUB=garbage ADB_MUTATION_ARTIFACTS="$work/
 _art="$(find "$work/artifacts-garbage" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"
 [ -n "$_art" ] && [ -f "$_art/verdicts.tsv" ] && ok || bad "shmutant: a malformed stream was not kept as evidence"
 has "$out" "INCOMPLETELY — not kept: mut-0/output(absent)" "shmutant: …and the evidence it could not keep is named, not implied"
+has "$(cat "$_art/INCOMPLETE.txt" 2>/dev/null)" "mut-0/output(absent)" "shmutant: …in the artifact itself too (INCOMPLETE.txt), not only in the job log"
 # A record that cannot be trusted scores NOTHING: the killed row beside the garbage is not an `ok`.
 has "$out" "the stream was NOT trusted — its 1 kill(s) of 1 are not counted" "shmutant: an untrusted stream's kills are named as uncounted"
 has "$out" "shm-driver: 0 passed" "shmutant: …and none of them reached the pass counter"
@@ -675,6 +679,17 @@ has "$out" "not kept: verdicts.tsv(absent)" "shmutant: an absent stream is named
 # A stream replaced by a link to a FIFO is refused WITHOUT being opened: cp would block on it.
 shm stub-fifo-art "$CAUGHT" ADB_T_STUB=fifo ADB_MUTATION_ARTIFACTS="$work/artifacts-fifo"
 has "$out" "verdicts.tsv(not-a-regular-file)" "shmutant: a FIFO in the stream's place is named, never copied"
+# A stream the adapter cannot read is refused, and its evidence is named as a partial read — never kept
+# and passed off as the whole stream. (Root reads through mode 000, so the case means nothing there.)
+if [ "$(id -u)" -ne 0 ]; then
+  shm stub-unreadable "$CAUGHT" ADB_T_STUB=unreadable ADB_MUTATION_ARTIFACTS="$work/artifacts-unreadable"
+  has "$out" "could not be read into a snapshot" "shmutant: an unreadable stream is refused"
+  has "$out" "verdicts.tsv(partial-read)" "shmutant: …and the snapshot it got is named as a partial read"
+  chmod 600 "$work/shm-stub-unreadable/pool.tsv" 2>/dev/null
+fi
+# A RELATIVE workdir survives a prepare that changes directory: the adapter makes it absolute first.
+shm reldir "$CAUGHT" ADB_T_CWD="$work/shm-reldir" ADB_T_WD=pool ADB_T_PREP_CD=1
+eq "$rc" 0 "shmutant: a relative workdir still scores after a prepare that changed directory"
 # A caller under `set -e` still gets the verdict scored and named before its shell acts on the status.
 shm errexit "shmutant_mut cosmetic '# a comment nothing reads' '# a comment nobody reads' 'add-sum'" ADB_T_ERREXIT=1
 has "$out" "FAIL: mutation 'cosmetic': survived" "shmutant: a caller's errexit does not end the shell before the survivor is named"
@@ -684,7 +699,9 @@ eq "$rc" 1 "shmutant: an empty table fails the suite"
 has "$out" "the mutation table is EMPTY" "shmutant: …saying so, before any pool runs"
 # Evidence is cut at 16 MiB, and the cut is reported rather than passed off as the whole output.
 head -c 16777217 /dev/zero > "$work/big.out"
+printf 'old\n' > "$work/big.kept"; chmod 644 "$work/big.kept"
 _check_keep "$work/big.out" "$work/big.kept"; eq "$?" 1 "evidence: an output past 16 MiB is not kept whole"
+case "$(ls -l "$work/big.kept" 2>/dev/null)" in -rw-------*) ok ;; *) bad "evidence: a cut copy over an existing 0644 file is not owner-only: $(ls -l "$work/big.kept" 2>/dev/null)" ;; esac
 eq "$CHECK_KEEP_WHY" "(cut at 16 MiB)" "evidence: …and says it was cut"
 eq "$(wc -c < "$work/big.kept" | tr -d ' ')" 16777216 "evidence: …at exactly 16 MiB"
 printf 'small\n' > "$work/small.out"; chmod 644 "$work/small.out"

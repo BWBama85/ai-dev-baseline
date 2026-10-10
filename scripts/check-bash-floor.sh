@@ -1463,7 +1463,7 @@ case "${1:-}" in
     ;;
   --entrypoints)
     entrypoint_lint "${2:-.}"
-    check_result "every entry point calls the bash >= $FLOOR runtime gate"
+    check_result "every entry point is classified, and every gate and advisory calls the bash >= $FLOOR runtime gate"
     ;;
   --sub-floor)
     # EXTRA ARGUMENTS ARE A USAGE ERROR, not something to ignore. This mode's one argument selects
