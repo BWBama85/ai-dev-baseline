@@ -783,4 +783,6 @@ One line per resolved review thread, newest last.
 - `precondition-ordering` `base/workflows/resolve-pr-threads.md:1613` `1b2e1fb` `PRRT_kwDOTfywrM6p691E` PR #521 2026-10-07 — a CI-fix round cleared SWEEP_HEAD in round-open and then reached 4d, which requires it
 - `third-party-default` `base/workflows/resolve-pr-threads.md:1633` `3daa740` `PRRT_kwDOTfywrM6p81pA` PR #521 2026-10-07 — a startup_failure re-run used gh run rerun --failed, which has no failed job to select
 - `toctou` `scripts/check-lib.sh:581` `da2772a` `PRRT_kwDOTfywrM6rA4Fo` PR #527 2026-10-10 — evidence copy measured with an unchecked wc, then copied unbounded: the size bound and a failed read were not enforced
+- `evidence-discarded` `scripts/check-lib.sh:456` `a84255c` `PRRT_kwDOTfywrM6rFnyp` PR #527 2026-10-10 — an unusable evidence directory only warned and fell back to the caller workdir, whose cleanup removed a failure evidence
+- `status-swallowed` `scripts/check-lib.sh:560` `a84255c` `PRRT_kwDOTfywrM6rFnyw` PR #527 2026-10-10 — a passing pool evidence directory was removed with an unchecked rm, so a leftover would read as a failed pool evidence
 <!-- adb:hits:end -->
