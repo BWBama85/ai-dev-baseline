@@ -315,7 +315,9 @@ plan job through `mutation-gate.sh steps --json`, so there is no list in that fi
 - **Dispatched** (`workflow_dispatch`): no input runs every harness; `step=<name>` runs exactly that
   one, on the ref chosen at dispatch. The plan job validates the name with `steps --only` before
   the matrix exists, so a typo fails there rather than producing a run of nothing.
-- **Labelled**: a pull request labelled `run-mutations` runs every harness against its head commit
+- **Labelled**: a pull request labelled `run-mutations` (the label must exist in the repository;
+  GitHub starts no workflow for a label applied with Actions' own `GITHUB_TOKEN`, nor for a PR with
+  merge conflicts) runs every harness against its head commit
   (not the merge commit `pull_request` checks out by default) — once per labelling; remove and re-add
   the label after a push to run again. The trigger is `pull_request` narrowed to `types: [labeled]`:
   never `pull_request_target`, so a fork's code runs with the read-only token, and without `opened`

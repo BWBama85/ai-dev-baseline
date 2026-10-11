@@ -209,6 +209,10 @@ if [ "$MODE" = mutation ]; then
     "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]+-mutation\$/'" \
     "awk -F'\\t' '\$1 ~ /^[a-z0-9-]+-mutation\$/'" \
     'is listed, not dropped'
+  shmutant_mut steps-filter-status-dropped \
+    '|| { printf '"'"'the registry filter failed — refusing a list it may have cut short\n'"'"' >&2; return 1; }   # row-filter' \
+    '|| true   # row-filter' \
+    'a registry filter that fails part-way'
   shmutant_mut steps-empty-only-widens \
     '--only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage;' \
     '--only) [ "$#" -ge 2 ] || usage;' \
@@ -253,6 +257,14 @@ if [ "$MODE" = mutation ]; then
     'printf '"'"'steps=%s\n'"'"' "$steps" >> "$GITHUB_OUTPUT"' \
     'printf '"'"'steps=%s\n'"'"' "$steps" >> /dev/null' \
     'does not publish the list'
+  shmutant_mut nightly-dispatch-input-dropped \
+    "ONLY: \${{ github.event_name == 'workflow_dispatch' && inputs.step || '' }}" \
+    "ONLY: ''" \
+    'does not bind ONLY'
+  shmutant_mut nightly-runner-constant-step \
+    'bash scripts/selfcheck.sh --only "${{ matrix.step }}"' \
+    'bash scripts/selfcheck.sh --only "fact-mutation"' \
+    'does not run its own'
   shmutant_mut nightly-dispatch-unvalidated \
     'steps="$(bash scripts/mutation-gate.sh steps --json --only "$ONLY")" || exit 1' \
     'steps="[\"$ONLY\"]"' \
@@ -707,6 +719,14 @@ gate "$NR" steps --json
 eq "$RC_" "3" "steps: an unreadable registry → exit 3, never an empty list"
 gate "$NR" touched
 eq "$RC_" "3" "touched: an unreadable registry → exit 3"
+# A registry FILTER that fails part-way is exit 3 too, never the rows it managed to print: an awk
+# that emits its output and then fails stands in for it (#456 review).
+awkfail="$work/awkfail"; mkdir -p "$awkfail"; realawk="$(command -v awk)"
+printf '#!/usr/bin/env bash\ncase "$*" in *"-mutation\$/"*) %q "$@"; exit 2 ;; esac\nexec %q "$@"\n' "$realawk" "$realawk" > "$awkfail/awk"
+chmod +x "$awkfail/awk"
+OUT="$(cd "$R" && PATH="$awkfail:$PATH" bash scripts/mutation-gate.sh steps --json 2>&1)"; RC_=$?
+eq "$RC_" "3" "steps: a registry filter that fails part-way → exit 3, never the partial list"
+has "$OUT" "refusing a list it may have cut short" "steps: …and says why"
 
 # touched: clean against the base → nothing listed, every decision line on stderr.
 T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
@@ -789,6 +809,14 @@ ns 0 "$(rec "$URL" completed bogus "$SHA")"
 has "$NOUT" "unreadable (the run conclusion has an unexpected shape)" "nightly-status: a conclusion outside GitHub's vocabulary is refused"
 ns 0 '[{"url":"'"$URL"'","status":"completed","conclusion":"success","createdAt":"'"$created"'","headSha":12345}]'
 has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: a field of the wrong JSON type is refused"
+# A timestamp that only PARSES is not valid: `fromdateiso8601` normalizes Feb 30 to Mar 2.
+created_ok="$created"; created='2025-02-30T08:53:20Z'
+ns 0 "$(rec "$URL" completed success "$SHA")"
+has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: an impossible date (Feb 30) is refused, not normalized"
+created='2025-10-9T08:53:20Z'
+ns 0 "$(rec "$URL" completed success "$SHA")"
+has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: an unpadded timestamp is refused"
+created="$created_ok"
 ns 0 "$(rec "$URL" completed success 'not-a-sha')"
 has "$NOUT" "unreadable (the run's commit has an unexpected shape)" "nightly-status: a commit of an unexpected shape is refused"
 NOUT="$(bash "$NS" extra 2>&1)"; NRC=$?
@@ -916,6 +944,13 @@ if [ -f "$NIGHTLY" ]; then
   grep -qE '^      steps: \$\{\{ steps\.plan\.outputs\.steps \}\}$' "$NIGHTLY" && ok \
     || bad "the plan job does not export its step's output (outputs.steps: \${{ steps.plan.outputs.steps }})"
   grep -qE '^    needs: plan$' "$NIGHTLY" && ok || bad "the matrix job does not need the plan job"
+  # …and the two CONSUMER links: the dispatch input reaches the plan through `ONLY`, and each matrix
+  # job runs ITS OWN step. A constant at either would run every harness for a one-step dispatch, or
+  # one harness in every matrix job (review finding).
+  grep -qE "^          ONLY: \\$\\{\\{ github\\.event_name == 'workflow_dispatch' && inputs\\.step \\|\\| '' \\}\\}$" "$NIGHTLY" && ok \
+    || bad "the plan step does not bind ONLY to the dispatch input"
+  grep -qE '^          bash scripts/selfcheck\.sh --only "\$\{\{ matrix\.step \}\}" 2>&1 \| tee ' "$NIGHTLY" && ok \
+    || bad "the matrix job does not run its own matrix.step"
   grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json --only "\$ONLY"\)" \|\| exit 1$' "$NIGHTLY" && ok \
     || bad "the plan job does not validate a dispatched step through 'mutation-gate.sh steps --json --only' (with a failure exit)"
   grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json\)" \|\| exit 1$' "$NIGHTLY" && ok \

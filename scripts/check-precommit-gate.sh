@@ -661,7 +661,9 @@ mkdir "$st/running/$$"
 printf '%s\n' "$$" >> "$st/pids"
 printf '%s\n' "$(find "$st/running" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" >> "$st/concurrency"
 grep -q '^IGNORETERM' "$f" && trap '' TERM
-s="$(sed -n 's/^SLEEP=//p' "$f" | head -1)"; [ -n "$s" ] && sleep "$s"
+# The sleep is a DESCENDANT, recorded: interrupt cases require it gone too, not only this process.
+s="$(sed -n 's/^SLEEP=//p' "$f" | head -1)"
+if [ -n "$s" ]; then sleep "$s" & printf '%s\n' "$!" >> "$st/pids"; wait "$!"; fi
 rc=0
 if grep -q '^CRASH' "$f"; then rc=3
 elif n="$(grep -n '^unused=' "$f" | head -1 | cut -d: -f1)" && [ -n "$n" ]; then
@@ -1007,12 +1009,12 @@ if fx_setup; then
   realgit="$(command -v git)"
   printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in *...HEAD) [ "$1" = diff ] && exit 128 ;; esac; done\nexec %q "$@"\n' "$realgit" > "$gitfail/git"
   chmod +x "$gitfail/git"
-  # An untracked file keeps the change set non-empty without the failed read, so the gate reaches
-  # the lint rather than its empty-set no-op.
-  printf 'untracked\n' > "$fx/untracked-note.txt"
+  # NO compensating untracked file: with the branch diff failing, the rest of the set is EMPTY, and
+  # the gate must block on the failed read before its empty-set no-op can answer 0.
   POUT="$(cd "$fx" && PATH="$gitfail:$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
-  eq "$PRC" "2" "lint pool: a failed changed-file read → the gate blocks"
-  has "$POUT" "could not enumerate the changed shell files (git diff" "lint pool: …naming the read that failed"
+  eq "$PRC" "2" "lint pool: a failed changed-file read → the gate blocks, even when nothing else changed"
+  has "$POUT" "could not enumerate the changed files (git diff" "lint pool: …naming the read that failed"
+  hasnt "$POUT" "build-drift" "lint pool: …before any check runs on a partial set"
   fx_reset
   fx_git reset -q --hard "$fx_base" || bad "lint pool: could not return the fixture to its baseline"
 else
@@ -1049,7 +1051,7 @@ mc="$(max_conc)"
 if [ "${mc:-0}" -ge 2 ] && [ "${mc:-0}" -le 4 ]; then ok; else
   bad "pool: lints must genuinely overlap (>= 2 at once) and never exceed the width of 4 — saw $mc"
 fi
-eq "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" "12" "pool: one linter process per file"
+eq "$(wc -l < "$SCSTUB_STATE/concurrency" | tr -d ' ')" "12" "pool: one linter process per file"
 eq "$(find "$work/pooltmp" -mindepth 1 | wc -l | tr -d ' ')" "0" "pool: no scratch directory is left behind"
 
 # 18b. The cap: ADB_SHELLCHECK_JOBS lowers the width and never raises it; the lower of the two wins.
@@ -1098,27 +1100,27 @@ for i in 1 2 3; do printf 'SLEEP=5\n' > "$pfx/s$i.sh"; done
 sc_reset
 ( cd "$pfx" && exec env ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" s1.sh s2.sh s3.sh >/dev/null 2>&1 ) &
 qpid=$!
-for _ in $(seq 1 50); do [ "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" -ge 3 ] && break; sleep 0.1; done
-eq "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" "3" "pool interrupt: all three lints started before the signal"
+# Six pids: each of the three linters and the sleep it started.
+for _ in $(seq 1 50); do [ "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" -ge 6 ] && break; sleep 0.1; done
+eq "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" "6" "pool interrupt: all three lints, and what each started, were running before the signal"
 kill -TERM "$qpid" 2>/dev/null; wait "$qpid"; qrc=$?
 eq "$qrc" "143" "pool interrupt: TERM → the pool exits 143"
 sleep 0.2
 alive=""
 while IFS= read -r p; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive="$alive $p"; done < "$SCSTUB_STATE/pids"
-eq "$alive" "" "pool interrupt: no linter it started outlives it"
+eq "$alive" "" "pool interrupt: no linter it started, and nothing a linter started, outlives it"
 
 # 18g2. …including a linter that IGNORES TERM: the pool escalates to KILL after a bounded grace.
 printf 'IGNORETERM\nSLEEP=8\n' > "$pfx/t1.sh"
 sc_reset
 ( cd "$pfx" && exec env ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" t1.sh >/dev/null 2>&1 ) &
 qpid=$!
-for _ in $(seq 1 50); do [ -s "$SCSTUB_STATE/pids" ] && break; sleep 0.1; done
-sleep 0.3   # past the stub's `trap '' TERM`, so the signal is genuinely ignored
+for _ in $(seq 1 50); do [ "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" -ge 2 ] && break; sleep 0.1; done
 kill -TERM "$qpid" 2>/dev/null; wait "$qpid"
 sleep 0.2
 alive=""
 while IFS= read -r p; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive="$alive $p"; done < "$SCSTUB_STATE/pids"
-eq "$alive" "" "pool interrupt: a linter that ignores TERM is KILLed, not left running"
+eq "$alive" "" "pool interrupt: a linter that ignores TERM is KILLed, with its descendant, not left running"
 
 # 18g3. An output that cannot be read back is red and NOT counted as linted: its findings would be
 # lost. A `cat` that fails, first on PATH, stands in for the unreadable file.
@@ -1129,6 +1131,16 @@ QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$catfail:$scst
 eq "$QRC" "1" "pool: an output that cannot be read back → exit 1, never a pass"
 has "$QOUT" "its lint output could not be read back" "pool: …named as such"
 eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — linted 0 of 1 file(s), 1 worker(s)" "pool: …and not counted as linted"
+
+# 18g4. A scratch removal that FAILS is red: a green verdict must not hide a directory it could not
+# clean. An `rm` that fails, first on PATH, stands in for the fault.
+rmfail="$work/rmfail"; mkdir -p "$rmfail"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$rmfail/rm"; chmod +x "$rmfail/rm"
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$rmfail:$scstub:$PATH" bash "$pool" c1.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: a scratch removal that fails → exit 1, never a pass"
+has "$QOUT" "could not remove the scratch" "pool: …and says so"
+/bin/rm -rf "$work/pooltmp"; mkdir -p "$work/pooltmp"
 
 # 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
 # file is caught by the linted-count check alone — and with that check neutered, the same slip

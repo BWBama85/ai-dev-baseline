@@ -17,7 +17,13 @@
 #     run that linted nothing can never look like one that passed. "Workers" is the width actually
 #     used, min(W, N), not the configured ceiling.
 #   - NOT bounded in time: a lint that hangs holds the files after it, as the single process this
-#     replaced did. `ADB_SHELLCHECK_JOBS=1` is how a hang is attributed to one file.
+#     replaced did. `ADB_SHELLCHECK_JOBS=1` is how a hang is attributed to one file. Scratch holds
+#     each file's diagnostics until it is emitted; that is bounded by the total lint output of the
+#     files given, which every caller consumes whole anyway (the gate captures it, CI prints it);
+#   - each file is linted ALONE, so the linter never follows a `source` into another file of the
+#     same set (it does so only for files named in one invocation). The repo's sources point at
+#     `/dev/null` or are excluded by SC1091, so nothing is lost today; a check that needs
+#     cross-file following belongs in a suite, not here.
 #
 # THE POLICY FLAGS LIVE HERE, once, for all three callers: `--severity=warning` drops the style and
 # info tiers so the lint fails on correctness findings, not nits; `-e SC1091` because the gates
@@ -36,7 +42,8 @@
 #
 # Environment:
 #   ADB_SHELLCHECK_JOBS  a CAP on the pool width, read through `adb_pool_size` — it lowers the width,
-#                        never raises it past the cpu count. `ADB_SHELLCHECK_JOBS=1` forces a serial
+#                        never raises it past the budget `adb_pool_size` gives (the cpu count, or
+#                        ADB_POOL_JOBS where that is set). `ADB_SHELLCHECK_JOBS=1` forces a serial
 #                        lint, which is how a hang is attributed to one invocation.
 #   ADB_POOL_JOBS        the repo-wide budget `adb_pool_size` already honours; the lower of the two wins.
 
@@ -71,30 +78,33 @@ width="$(adb_pool_size "${ADB_SHELLCHECK_JOBS:-8}")"
 
 tmp="$(mktemp -d)" || { printf '%s: cannot create a scratch directory\n' "$ME" >&2; exit 3; }
 declare -A slot=()   # pid -> file index, for every lint still running
-# An interrupted lint takes its workers with it: an orphaned shellcheck would keep a core busy after
-# the caller has already given up on the answer. `jobs -p`, not only the slot table, so a worker
-# started but not yet recorded (the `&` and the assignment are two statements) is reaped too; TERM,
-# a bounded grace, then KILL for anything that ignored it.
+# An interrupted lint takes its workers WITH THEIR DESCENDANTS: an orphaned shellcheck — or anything
+# a linter started — would keep a core busy after the caller has given up on the answer. So every
+# worker runs in its OWN PROCESS GROUP (job control on, `set -m`, as `selfcheck.sh`'s pool does), and
+# cleanup signals the group through the shared `_adb_bounded_signal`: TERM, a bounded grace, then
+# KILL for anything that ignored it. `jobs -p`, not only the slot table, so a worker started but not
+# yet recorded (the `&` and the assignment are two statements) is reaped too.
 cleanup() {
   local p alive i
   local -a kids=()
   mapfile -t kids < <(jobs -p)
   if [ "${#kids[@]}" -gt 0 ]; then
-    for p in "${kids[@]}"; do kill -TERM "$p" 2>/dev/null; done
+    for p in "${kids[@]}"; do _adb_bounded_signal TERM "$p"; done
     for (( i = 0; i < 20; i++ )); do
       alive=0
-      for p in "${kids[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+      for p in "${kids[@]}"; do kill -0 -- "-$p" 2>/dev/null && alive=1; done
       [ "$alive" -eq 0 ] && break
       sleep 0.1
     done
-    for p in "${kids[@]}"; do kill -KILL "$p" 2>/dev/null; done
+    for p in "${kids[@]}"; do _adb_bounded_signal KILL "$p"; done
     wait 2>/dev/null
   fi
-  rm -rf "$tmp"
+  [ -z "$tmp" ] || rm -rf "$tmp"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+set -m
 
 # The dispatch queue: file indices, largest file first. A file that cannot be sized sorts as 0 and is
 # still linted (its shellcheck reports why it could not be read).
@@ -124,7 +134,9 @@ flush() {
            printf '%s: %s did not complete — shellcheck exited %s\n' "$ME" "${files[flushed]}" "${status[flushed]}" ;;
       esac
     fi
-    rm -f "$tmp/$flushed.out"   # emitted: its bytes need not wait for the end of the run
+    # Emitted: its bytes need not wait for the end of the run. A removal that fails is red — a
+    # scratch directory that cannot be cleaned is a fault, never something a green verdict hides.
+    rm -f "$tmp/$flushed.out" || { red=1; printf '%s: could not remove the scratch output for %s\n' "$ME" "${files[flushed]}"; }
     flushed=$(( flushed + 1 ))
   done
 }
@@ -132,7 +144,7 @@ flush() {
 while [ "$flushed" -lt "$n" ]; do
   while [ "$next" -lt "$n" ] && [ "${#slot[@]}" -lt "$width" ]; do
     i="${order[next]}"
-    shellcheck --severity=warning -e SC1091 -- "${files[i]}" >"$tmp/$i.out" 2>&1 &
+    shellcheck --severity=warning -e SC1091 -- "${files[i]}" </dev/null >"$tmp/$i.out" 2>&1 &
     slot[$!]="$i"
     next=$(( next + 1 ))
   done
@@ -150,6 +162,12 @@ while [ "$flushed" -lt "$n" ]; do
   unset 'slot[$done_pid]'
   flush
 done
+
+# The scratch directory is removed BEFORE the verdict, so a removal that fails can still turn it red
+# (an EXIT trap's failure cannot change the status the script already chose).
+if rm -rf "$tmp"; then tmp=""; else
+  red=1; printf '%s: could not remove the scratch directory %s\n' "$ME" "$tmp"
+fi
 
 # THE GUARD THAT RAN NOTHING: every file handed in must have been linted to a verdict. A dispatch
 # slip that dropped a file, or a lint that died, is red even if nothing reported a finding.

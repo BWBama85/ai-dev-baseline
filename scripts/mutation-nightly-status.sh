@@ -80,6 +80,11 @@ fields="$(printf '%s' "$json" | jq -r --arg now "${ADB_NIGHTLY_NOW:-}" '
   | if ([$r.url, $r.status, $r.createdAt, $r.headSha] | all(type == "string"))
        and (($r.conclusion | type) == "string" or $r.conclusion == null) | not
     then error("types") else . end
+  # THE TIMESTAMP ROUND-TRIPS, or it is refused: `fromdateiso8601` NORMALIZES (Feb 30 reads as
+  # Mar 2, an unpadded field parses), so a parse alone is not validation. Re-rendering it must give
+  # back exactly the string GitHub sent — which also pins the shape to YYYY-MM-DDTHH:MM:SSZ.
+  | if (try ($r.createdAt | fromdateiso8601 | todateiso8601) catch "") != $r.createdAt
+    then error("timestamp") else . end
   | (if $now == "" then now else ($now | tonumber) end) as $t
   | [ ($r.url // ""), ($r.status // ""), ($r.conclusion // ""), ($r.headSha // ""),
       ((try ($t - ($r.createdAt | fromdateiso8601)) catch -1) | floor | tostring) ]

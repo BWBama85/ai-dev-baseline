@@ -265,7 +265,8 @@ gate_mutation_rows() {
     || { printf 'scripts/selfcheck.sh --list failed — cannot read the registry\n' >&2; return 1; }
   # The registry's own name grammar (`selfcheck.sh`'s `add` accepts [A-Za-z0-9_-]): a narrower one
   # here would drop a valid harness from both the nightly matrix and the macOS skip list, silently.
-  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[A-Za-z0-9_-]+-mutation$/')"
+  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[A-Za-z0-9_-]+-mutation$/')" \
+    || { printf 'the registry filter failed — refusing a list it may have cut short\n' >&2; return 1; }   # row-filter
   [ -n "$rows" ] || { printf 'the registry names no *-mutation step\n' >&2; return 1; }
   printf '%s\n' "$rows"
 }
@@ -425,6 +426,9 @@ case "$sub" in
       printf '%s: steps: %s\n' "$ME" "$rows" >&2; exit 3
     fi
     mapfile -t names < <(printf '%s\n' "$rows" | cut -f1)
+    wait "$!" || { printf '%s: steps: could not read the step names from the registry rows\n' "$ME" >&2; exit 3; }
+    [ "${#names[@]}" -eq "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" ] \
+      || { printf '%s: steps: the step names do not match the registry rows one for one\n' "$ME" >&2; exit 3; }
     if [ -n "$only" ]; then
       found=""
       for nm in "${names[@]}"; do [ "$nm" = "$only" ] && found=1; done

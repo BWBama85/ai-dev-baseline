@@ -155,7 +155,7 @@ jobs:
           log="$RUNNER_TEMP/selfcheck.log"
           {
             printf '## %s went RED (%s run)\n\n' "${{ matrix.step }}" "${{ github.event_name }}"
-            printf 'No harness runs per pull request (#456), so no PR check saw this. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
+            printf 'No harness runs in the per-PR CI (#456); this run is where the red was seen. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f "$log" ]; then
             bash scripts/selfcheck.sh --summarize "$log" >> "$GITHUB_STEP_SUMMARY" \

@@ -135,11 +135,36 @@ branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
 
 base_ref="origin/$default_branch"
 git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1 || base_ref="$default_branch"
-changed="$( { git diff --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null
-              git diff --no-renames --name-only 2>/dev/null
-              git diff --no-renames --name-only --cached 2>/dev/null
-              git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | sed '/^$/d' )"
-[ -z "$changed" ] && exit 0
+# THE CHANGE SET, NUL-delimited and with EVERY PRODUCER'S STATUS CHECKED (#455). It used to be
+# newline-joined text read with each git call's errors discarded: a path with a space was word-split
+# at the lint, and a read that failed shrank the set — to nothing, in which case the gate exited 0
+# below having checked nothing. Each source is read whole and its status taken from `wait "$!"` (a
+# process substitution reports nothing on its own); a failed read BLOCKS, naming it, before the
+# empty-set no-op can be reached.
+changed=()
+enum_err=""
+declare -A _seen=()
+for _src in "diff ${base_ref}...HEAD" "diff" "diff --cached" "ls-files --others"; do
+  _part=()
+  case "$_src" in
+    "diff ${base_ref}...HEAD") mapfile -d '' -t _part < <(git diff -z --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null) ;;
+    diff)                      mapfile -d '' -t _part < <(git diff -z --no-renames --name-only 2>/dev/null) ;;
+    "diff --cached")           mapfile -d '' -t _part < <(git diff -z --no-renames --name-only --cached 2>/dev/null) ;;
+    "ls-files --others")       mapfile -d '' -t _part < <(git ls-files -z --others --exclude-standard 2>/dev/null) ;;
+  esac
+  wait "$!" || { enum_err="${enum_err:+$enum_err; }git $_src failed"; continue; }
+  for f in "${_part[@]}"; do
+    [ -n "$f" ] && [ -z "${_seen[$f]+x}" ] || continue
+    _seen["$f"]=1
+    changed+=("$f")
+  done
+done
+if [ -n "$enum_err" ]; then
+  printf 'precommit-gate: could not enumerate the changed files (%s) — a partial set is never checked as if whole\n' "$enum_err" >&2
+  printf 'precommit-gate: blocking stop — fix the read above, or run `bash scripts/selfcheck.sh` by hand.\n' >&2
+  exit 2
+fi
+[ "${#changed[@]}" -eq 0 ] && exit 0
 
 fail=0
 run() {  # run <label> <cmd...>; report per-check so a red or slow one is attributable
@@ -159,35 +184,13 @@ skip() { printf 'precommit-gate: %-16s SKIP (%s)\n' "$1" "$2" >&2; }
 # extensionless `bin/` entrypoints — because `bin/baseline` and `bin/agent-init` are shell and CI
 # lints them; a `*.sh`-only filter silently skipped them and deferred the failure to push time.
 # (This comment deliberately does not begin with the tool's name: a comment starting `# shellcheck`
-# is parsed as a DIRECTIVE, and this gate rejected itself for it on first run.)
-#
-# NUL-DELIMITED FROM ENUMERATION TO INVOCATION (#455). The set is read again with `-z` rather than
-# re-split from `$changed`, which is newline-joined text: a path carrying a space was word-split into
-# two names that do not exist, and one carrying a newline would be two lines.
-#
-# EVERY PRODUCER'S STATUS IS CHECKED: a git read that fails part-way would leave a partial set, and
-# the lint would pass over the files it never saw. Each is read whole into its own array and its
-# status taken from `wait "$!"` — a process substitution reports nothing on its own. A failure
-# is a lint FAIL naming the read, never a smaller set.
+# is parsed as a DIRECTIVE, and this gate rejected itself for it on first run.) Read from the checked,
+# NUL-safe set above, so no name is ever word-split.
 sh_files=()
-enum_err=""
-declare -A _sh_seen=()
-for _src in "diff ${base_ref}...HEAD" "diff" "diff --cached" "ls-files --others"; do
-  _part=()
-  case "$_src" in
-    "diff ${base_ref}...HEAD") mapfile -d '' -t _part < <(git diff -z --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null) ;;
-    diff)                      mapfile -d '' -t _part < <(git diff -z --no-renames --name-only 2>/dev/null) ;;
-    "diff --cached")           mapfile -d '' -t _part < <(git diff -z --no-renames --name-only --cached 2>/dev/null) ;;
-    "ls-files --others")       mapfile -d '' -t _part < <(git ls-files -z --others --exclude-standard 2>/dev/null) ;;
+for f in "${changed[@]}"; do
+  case "$f" in
+    *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_files+=("$f") ;;
   esac
-  wait "$!" || { enum_err="${enum_err:+$enum_err; }git $_src failed"; continue; }
-  for f in "${_part[@]}"; do
-    [ -n "$f" ] && [ -z "${_sh_seen[$f]+x}" ] || continue
-    _sh_seen["$f"]=1
-    case "$f" in
-      *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_files+=("$f") ;;
-    esac
-  done
 done
 
 # THE LINT IS A POOL (#455): one shellcheck per file across `adb_pool_size` workers, through the same
@@ -209,10 +212,7 @@ lint_shell() {
   printf 'precommit-gate: %-16s FAIL (%ss)\n%s\n' shellcheck "$(( SECONDS - t0 ))" "$out" >&2
   fail=1
 }
-if [ -n "$enum_err" ]; then
-  printf 'precommit-gate: %-16s FAIL (0s)\ncould not enumerate the changed shell files (%s) — a partial set is never linted as if whole\n' shellcheck "$enum_err" >&2
-  fail=1
-elif [ "${#sh_files[@]}" -eq 0 ]; then
+if [ "${#sh_files[@]}" -eq 0 ]; then
   :
 elif command -v shellcheck >/dev/null 2>&1; then
   lint_shell

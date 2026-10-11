@@ -692,9 +692,10 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   "none red". The wait for CI to conclude belongs to `/resolve-pr-threads <PR#>`, the same hand-off
   as the reviewer's.
 - `--squash` takes its subject from the **PR title** — it must satisfy the commit convention.
-- **Mutation harnesses** (#456) — only where the repo carries BOTH `scripts/mutation-gate.sh` and
-  `.github/workflows/mutation-nightly.yml` with a `step` dispatch input; anywhere else, skip this
-  line silently. There, no harness runs in the PR's own CI. The runs below are **advisory
+- **Mutation harnesses** (#456) — only where the repo carries `scripts/mutation-gate.sh` with a
+  `touched` subcommand, `.github/workflows/mutation-nightly.yml` with a `step` dispatch input, AND a
+  `.github/workflows/ci.yml` that runs no `--mutation` step (`grep -E '^[^#]*--mutation'` finds
+  none); anywhere else, skip this line silently. There, no harness runs in the PR's own CI. The runs below are **advisory
   evidence, never a merge gate** (D126): they are not required checks, `open-pr` may already have
   armed auto-merge, and a guard the PR breaks is otherwise caught by the next nightly — say so in
   the close-out rather than implying the merge waited for them. Ask which harnesses this change
@@ -715,8 +716,11 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   instead, which runs every harness against its head once per labelling — if the label is already
   on the PR, remove and re-add it (`gh pr edit <N> --remove-label run-mutations`, then
   `--add-label`), because a label that stays on does not run again; correlate that run the same way
-  with `--event pull_request`. A PR from a fork takes the label path: a dispatch can only reach a
-  branch of this repository. Add each verified run's URL and `$HEAD_SHA` to the PR body with
+  with `--event pull_request`. The label path needs the label to EXIST (`gh label list --search
+  run-mutations`) and the PR to be free of merge conflicts, and a label applied with Actions'
+  `GITHUB_TOKEN` starts no workflow — none of those is a dispatch failure; with no label, fall back
+  to one dispatch per step and say why. A PR from a fork takes the label path: a dispatch can only
+  reach a branch of this repository. Add each verified run's URL and `$HEAD_SHA` to the PR body with
   `gh pr edit`, and name them in the close-out — their outcome, when it lands, is read with
   `gh run view <id> --json status,conclusion`. Rc 3, a failed dispatch, or a run that never
   registered: report it under **Needs attention**, naming the steps that did not run.

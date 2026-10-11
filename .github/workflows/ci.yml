@@ -34,10 +34,8 @@ permissions:
   contents: read
 
 env:
-  # THE BASE A PER-PR REPORT DIFFS AGAINST. It began as the mutation gate's base (#441): the gate
-  # decided, per `--mutation` harness, whether the change touched that harness's declared inputs.
-  # Since #456 (D126) no harness runs in this file at all — they run in `mutation-nightly.yml` — so
-  # its remaining reader is the `render-size` job's delta report (#432):
+  # THE BASE A PER-PR REPORT DIFFS AGAINST — read by the `render-size` job's delta report (#432).
+  # (It was the per-PR mutation gate's base until #456 took the harnesses off this file, D126.)
   #   pull_request → the PR's base branch, as `origin/<base>`;
   #   push (main)  → the previous tip, `github.event.before`. Forty zeros on a branch's first push
   #                  and a vanished sha after a force-push; the reader says so rather than guessing.
@@ -78,6 +76,9 @@ jobs:
           # explicitly alongside the *.sh glob. NUL-delimited from git to the
           # linter, so no path is ever word-split (#455).
           mapfile -d '' -t files < <(git ls-files -z '*.sh' 'bin/agent-init' 'bin/baseline')
+          # `mapfile` reports nothing about its producer: a git that failed part-way would leave a
+          # partial list that lints green. Its status is taken explicitly.
+          wait "$!" || { echo "::error::git ls-files failed — the shell file list is incomplete"; exit 1; }
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no tracked shell files found via 'git ls-files'"
             exit 1
@@ -1261,11 +1262,9 @@ jobs:
   pattern-ledger:
     name: pattern-ledger
     runs-on: ubuntu-26.04
-    # THIS JOB WAS CREATED FOR THE LEDGER'S MUTATION HARNESS (PR #429), which outgrew the macOS
-    # aggregate: on run 32889697083 it was 1932s of `selfcheck-macos`, and its ceiling here grew to
-    # 120 (D111). Since #456 that harness runs in `mutation-nightly.yml`, not per PR (621s of a 704s
-    # job on run 38081150119), so what is left is the suite itself — about 80s there — and the
-    # ceiling is back to the Linux jobs' 10. The job stays: its name is a required check context.
+    # 10: the suite alone, about 80s on run 38081150119. The ledger's mutation harness, which this job
+    # was created for (D87, D111), runs in `mutation-nightly.yml` since #456 (D126). The job stays:
+    # its name is a required check context.
     timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
