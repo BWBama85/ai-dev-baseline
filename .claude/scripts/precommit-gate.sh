@@ -135,12 +135,10 @@ branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
 
 base_ref="origin/$default_branch"
 git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1 || base_ref="$default_branch"
-# THE CHANGE SET, NUL-delimited and with EVERY PRODUCER'S STATUS CHECKED (#455). It used to be
-# newline-joined text read with each git call's errors discarded: a path with a space was word-split
-# at the lint, and a read that failed shrank the set — to nothing, in which case the gate exited 0
-# below having checked nothing. Each source is read whole and its status taken from `wait "$!"` (a
-# process substitution reports nothing on its own); a failed read BLOCKS, naming it, before the
-# empty-set no-op can be reached.
+# THE CHANGE SET, NUL-delimited and with EVERY PRODUCER'S STATUS CHECKED (#455, D127): a read that
+# failed would shrink the set — to nothing, and the gate would exit 0 having checked nothing. Each
+# source is read whole and its status taken from `wait "$!"` (a process substitution reports nothing
+# on its own); a failed read BLOCKS, naming it, before the empty-set no-op can be reached.
 changed=()
 enum_err=""
 declare -A _seen=()

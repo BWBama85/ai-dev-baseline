@@ -1610,11 +1610,9 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
 
 # --- what the TURN-END gate costs (#455) ---------------------------------------------------------
 #
-# The project gate was documented as "~3s" in its own header and in CLAUDE.md's precommit-gate row,
-# and measured 13.5s on a 74-file branch: the changed-file lint re-checks every shell file the branch
-# has touched, so its cost grows with the branch and a bare figure ages as the branch does. Both
-# sites now describe it qualitatively and point at the PASS lines, which print their own seconds.
-# The retired figure is refused there, in the spellings it had.
+# The gate's cost grows with the branch (its lint re-checks every shell file the branch touched), so
+# its header and CLAUDE.md's precommit-gate row describe it qualitatively and point at the PASS
+# lines, which print their own seconds (D127). The retired bare figure is refused there.
 fact precommit-gate-cost-stale 'absent:~ ?3 ?s([^0-9a-z]|$)' \
   'fires:practice-index · fact-drift, ~3s) and says so' 'fires:actually breaks (~3s measured)' \
   -- CLAUDE.md .claude/scripts/precommit-gate.sh

@@ -1060,6 +1060,8 @@ eq "${QOUT##*$'\n'}" "shellcheck-pool: 6 file(s), 1 worker(s)" "pool: ADB_SHELLC
 eq "$(max_conc)" "1" "pool: …and the lint is genuinely serial"
 sc_reset; run_pool ADB_POOL_JOBS=2 ADB_SHELLCHECK_JOBS=6 -- c{1..6}.sh
 eq "${QOUT##*$'\n'}" "shellcheck-pool: 6 file(s), 2 worker(s)" "pool: ADB_SHELLCHECK_JOBS cannot raise the width past the pool budget"
+sc_reset; run_pool ADB_POOL_JOBS=16 ADB_SHELLCHECK_JOBS=32 -- c{1..12}.sh
+eq "${QOUT##*$'\n'}" "shellcheck-pool: 12 file(s), 8 worker(s)" "pool: a large ADB_SHELLCHECK_JOBS cannot lift the eight-worker ceiling"
 sc_reset; run_pool ADB_POOL_JOBS=8 -- c1.sh c2.sh
 eq "${QOUT##*$'\n'}" "shellcheck-pool: 2 file(s), 2 worker(s)" "pool: never more workers than files"
 

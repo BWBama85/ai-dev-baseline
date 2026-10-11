@@ -20,10 +20,10 @@
 #     replaced did. `ADB_SHELLCHECK_JOBS=1` is how a hang is attributed to one file. Scratch holds
 #     each file's diagnostics until it is emitted; that is bounded by the total lint output of the
 #     files given, which every caller consumes whole anyway (the gate captures it, CI prints it);
-#   - each file is linted ALONE, so the linter never follows a `source` into another file of the
-#     same set (it does so only for files named in one invocation). The repo's sources point at
-#     `/dev/null` or are excluded by SC1091, so nothing is lost today; a check that needs
-#     cross-file following belongs in a suite, not here.
+#   - each file is linted ALONE: by default the linter follows a `source` only into files named in
+#     the same invocation, so that no longer happens within the set (a `.shellcheckrc` enabling
+#     external sources still can). The repo's sources point at `/dev/null` or are excluded by
+#     SC1091, so nothing is lost today.
 #
 # THE POLICY FLAGS LIVE HERE, once, for all three callers: `--severity=warning` drops the style and
 # info tiers so the lint fails on correctness findings, not nits; `-e SC1091` because the gates
@@ -41,9 +41,8 @@
 #       3 the pool could not be set up (no shellcheck, no scratch directory).
 #
 # Environment:
-#   ADB_SHELLCHECK_JOBS  a CAP on the pool width, read through `adb_pool_size` — it lowers the width,
-#                        never raises it past the budget `adb_pool_size` gives (the cpu count, or
-#                        ADB_POOL_JOBS where that is set). `ADB_SHELLCHECK_JOBS=1` forces a serial
+#   ADB_SHELLCHECK_JOBS  a CAP on the pool width — it lowers the ordinary `adb_pool_size` budget
+#                        (min(cpu, 8), or ADB_POOL_JOBS under the same ceiling), never raises it. `ADB_SHELLCHECK_JOBS=1` forces a serial
 #                        lint, which is how a hang is attributed to one invocation.
 #   ADB_POOL_JOBS        the repo-wide budget `adb_pool_size` already honours; the lower of the two wins.
 
@@ -73,13 +72,20 @@ n="${#files[@]}"
 [ "$n" -gt 0 ] || { printf '%s: no files to lint — a lint over nothing is not a pass\n' "$ME" >&2; exit 2; }
 command -v shellcheck >/dev/null 2>&1 || { printf '%s: shellcheck is not installed\n' "$ME" >&2; exit 3; }
 
-width="$(adb_pool_size "${ADB_SHELLCHECK_JOBS:-8}")"
+# The ordinary budget FIRST (min(cpu, 8), or ADB_POOL_JOBS under the same cap), then lowered by
+# ADB_SHELLCHECK_JOBS read through the same helper: passing the shellcheck cap AS the budget's cap
+# would let a large value lift the eight-worker ceiling.
+width="$(adb_pool_size)"
+sc_cap="$(adb_pool_size "${ADB_SHELLCHECK_JOBS:-8}")"
+[ "$sc_cap" -ge "$width" ] || width="$sc_cap"
 [ "$width" -le "$n" ] || width="$n"
 
 tmp="$(mktemp -d)" || { printf '%s: cannot create a scratch directory\n' "$ME" >&2; exit 3; }
 declare -A slot=()   # pid -> file index, for every lint still running
-# An interrupted lint takes its workers WITH THEIR DESCENDANTS: an orphaned shellcheck — or anything
-# a linter started — would keep a core busy after the caller has given up on the answer. So every
+# An interrupted lint takes its RUNNING workers with their descendants: an orphaned shellcheck — or
+# anything a running linter started — would keep a core busy after the caller has given up on the
+# answer. (A descendant a linter leaves behind after it has already exited is not tracked; the
+# linter does not do that.) So every
 # worker runs in its OWN PROCESS GROUP (job control on, `set -m`, as `selfcheck.sh`'s pool does), and
 # cleanup signals the group through the shared `_adb_bounded_signal`: TERM, a bounded grace, then
 # KILL for anything that ignored it. `jobs -p`, not only the slot table, so a worker started but not
@@ -114,6 +120,7 @@ mapfile -t order < <(
     sz="$(wc -c < "${files[i]}" 2>/dev/null)" || sz=0
     printf '%s %s\n' "${sz//[!0-9]/}" "$i"
   done | sort -k1,1nr -k2,2n | awk '{print $2}')
+wait "$!" || { printf '%s: could not order the %s file(s) for dispatch (the sort failed)\n' "$ME" "$n" >&2; exit 3; }
 [ "${#order[@]}" -eq "$n" ] || { printf '%s: could not order the %s file(s) for dispatch\n' "$ME" "$n" >&2; exit 3; }
 
 status=()            # file index -> shellcheck's exit status, once reaped

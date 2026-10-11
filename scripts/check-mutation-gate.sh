@@ -206,7 +206,7 @@ if [ "$MODE" = mutation ]; then
     '        11|12) [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '…and lists EVERY harness, never none'
   shmutant_mut steps-narrow-name-grammar \
-    "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]+-mutation\$/'" \
+    "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]*-mutation\$/'" \
     "awk -F'\\t' '\$1 ~ /^[a-z0-9-]+-mutation\$/'" \
     'is listed, not dropped'
   shmutant_mut steps-filter-status-dropped \
@@ -237,6 +237,14 @@ if [ "$MODE" = mutation ]; then
     '          bash scripts/selfcheck.sh --skip "$skip" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
     '          bash scripts/selfcheck.sh --skip adopt-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
     'without skipping the registry'
+  shmutant_mut ci-macos-skip-overwritten \
+    'echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"' \
+    'skip="adopt-mutation"' \
+    'assigns the macOS skip list exactly once'
+  shmutant_mut ci-status-line-unwired \
+    '        run: bash scripts/mutation-nightly-status.sh' \
+    '        run: "true"' \
+    'no longer runs scripts/mutation-nightly-status.sh'
   shmutant_mut ci-macos-skip-unread \
     'skip="$(bash scripts/mutation-gate.sh steps --csv)" ||' \
     'skip="adopt-mutation" ||' \
@@ -521,7 +529,10 @@ printf '#!/usr/bin/env bash\necho rows-ran\n' > "$R/scripts/check-rows.sh"
   printf 'add bare                bash scripts/check-bare.sh\n'
   # A name the registry's grammar allows and a lowercase-only reader would drop (#456 review).
   printf 'add New_guard-mutation  bash scripts/check-bare.sh --mutation\n'
-  printf 'inputs New_guard-mutation scripts/check-bare.sh scripts/check-lib.sh scripts/lib/common.sh\n'; } > "$work/reg.frag"
+  printf 'inputs New_guard-mutation scripts/check-bare.sh scripts/check-lib.sh scripts/lib/common.sh\n'
+  # …and the shortest name it allows, a bare `-mutation`, which a `+` in the reader's regex dropped.
+  printf 'add -mutation           bash scripts/check-bare.sh --mutation-bare\n'
+  printf 'inputs -mutation        scripts/check-bare.sh scripts/check-lib.sh scripts/lib/common.sh\n'; } > "$work/reg.frag"
 awk -v frag="$work/reg.frag" '
   /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
   { print }
@@ -701,6 +712,7 @@ gate "$R" steps --json --only gated-mutation
 eq "$OUT" '["gated-mutation"]' "steps --json --only <step>: exactly that one, as a JSON array"
 gate "$R" steps
 has "$OUT" "New_guard-mutation" "steps: a harness name with an underscore and a capital — the registry's grammar — is listed, not dropped"
+printf '%s\n' "$OUT" | grep -qx -- '-mutation' && ok || bad "steps: the bare name '-mutation' the registry allows is listed, not dropped"
 gate "$R" steps --only no-such-mutation
 eq "$RC_" "2" "steps --only <unknown>: refused (2), so a dispatch typo fails before any job starts"
 has "$OUT" "is not a registered *-mutation step" "…and says why"
@@ -906,6 +918,8 @@ printf 'check-mutation-gate: %s harness invocation(s) in ci.yml\n' "$n_inv"
 # THE macOS LEG runs the whole registry less every `*-mutation` step, and the list it skips is READ
 # from the registry at run time — never hand-copied, so a new harness cannot land unskipped. Every
 # active `selfcheck.sh` line there that runs steps (not `--summarize`/`--list`) must skip that list.
+# ONE assignment, so nothing between it and the consumer can overwrite what the consumer receives.
+eq "$(grep -cE '^[^#]*(^|[[:space:];])skip=' "$CI")" "1" "ci.yml assigns the macOS skip list exactly once (nothing can overwrite it before selfcheck reads it)"
 grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \
   || bad "ci.yml's selfcheck-macos does not build its --skip from 'bash scripts/mutation-gate.sh steps --csv' (with a failure branch)"
 runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list)' || true)"
@@ -914,6 +928,12 @@ while IFS= read -r line; do
   [ -n "$line" ] || continue
   case "$line" in *'selfcheck.sh --skip "$skip"'*) ok ;; *) bad "ci.yml runs selfcheck.sh without skipping the registry's *-mutation steps: $line" ;; esac
 done <<< "$runs_all"
+# THE LAST-NIGHTLY LINE is wired into a PR job, survives an earlier red step, and may read runs.
+grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' "$CI" && ok \
+  || bad "ci.yml no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
+grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" "$CI" && ok \
+  || bad "the last-nightly step does not run past an earlier red step (!cancelled() and a successful checkout)"
+grep -qE '^      actions: read$' "$CI" && ok || bad "no ci.yml job grants 'actions: read', which the last-nightly line needs to list runs"
 # The list it reads is exactly the registry's set — the subcommand is the one home, asserted here.
 eq "$(bash "$ROOT/scripts/mutation-gate.sh" steps --csv | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
    "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \

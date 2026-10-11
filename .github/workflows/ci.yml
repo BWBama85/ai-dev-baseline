@@ -397,8 +397,8 @@ jobs:
   common-lib:
     name: common-lib
     runs-on: ubuntu-26.04
-    # Back to the Linux jobs' 10 since #456: the 20 it had was for its mutation step, which no longer
-    # runs per PR (it took 462s of a 601s job on run 38081150119; the two suites left took 133s).
+    # The Linux jobs' 10: two suites, about 133s on run 38081150119. Its mutation harness runs in
+    # `mutation-nightly.yml` since #456 (D126).
     timeout-minutes: 10
     # `actions: read` for the last-nightly line below, which lists this repository's workflow runs.
     permissions:

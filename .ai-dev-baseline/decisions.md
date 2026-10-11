@@ -9560,8 +9560,10 @@ survive is the part a later reader needs.
 - decision:  **Owner decision 2026-10-10:** the dispatch goes in `/implement-issue`'s close-out,
              after the push, and only where the repo carries both `scripts/mutation-gate.sh` and
              `mutation-nightly.yml`; a new `mutation-gate.sh touched` names the harnesses, the agent
-             dispatches each against the PR branch and links the runs, and the wait is
-             `/resolve-pr-threads`' CI hand-off. The review-before-push guard is untouched.
+             dispatches each against the PR branch, correlates and links the runs. The runs are
+             advisory evidence, not waited on and not a merge gate (the owner's second decision,
+             under "reason" below). The review-before-push guard is untouched. This replaces the
+             issue's "dispatch and wait from self-review", which cannot test an unpushed commit.
 
              **ci.yml carries no `--mutation` invocation** — the ten gated steps (common-lib,
              pr-watch, pr-threads, session-context, review-loop, settings-fragment, fact, adopt,
@@ -9573,9 +9575,10 @@ survive is the part a later reader needs.
              contexts are too.
 
              **The nightly's matrix is the registry, by construction.** The issue kept the
-             "matrix equals registry" pin; a `step` input that yields ONE job needs a matrix built
+             "matrix equals registry" pin; a `step` input that yields ONE harness job needs a matrix built
              before expansion (a job-level `if:` is evaluated before the matrix context exists), so
-             a plan job emits it from `mutation-gate.sh steps --json [--only <step>]`, and the pin
+             a plan job emits it from `mutation-gate.sh steps --json [--only <step>]` — so a one-step
+             dispatch is TWO jobs, the plan and one harness, not the issue's literal "one job" — and the pin
              became one on that wiring — the equality now holds without a list to compare. `--only`
              refuses (2) an unregistered name, so a typo fails the plan job. The label trigger is
              `pull_request` with `types: [labeled]` only: never `pull_request_target`; the plan runs

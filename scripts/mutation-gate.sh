@@ -265,7 +265,7 @@ gate_mutation_rows() {
     || { printf 'scripts/selfcheck.sh --list failed — cannot read the registry\n' >&2; return 1; }
   # The registry's own name grammar (`selfcheck.sh`'s `add` accepts [A-Za-z0-9_-]): a narrower one
   # here would drop a valid harness from both the nightly matrix and the macOS skip list, silently.
-  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[A-Za-z0-9_-]+-mutation$/')" \
+  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[A-Za-z0-9_-]*-mutation$/')" \
     || { printf 'the registry filter failed — refusing a list it may have cut short\n' >&2; return 1; }   # row-filter
   [ -n "$rows" ] || { printf 'the registry names no *-mutation step\n' >&2; return 1; }
   printf '%s\n' "$rows"
@@ -439,7 +439,7 @@ case "$sub" in
       }
       names=("$only")
     fi
-    # Every name matched ^[A-Za-z0-9_-]+-mutation$ in the registry read, so none needs JSON escaping.
+    # Every name matched ^[A-Za-z0-9_-]*-mutation$ in the registry read, so none needs JSON escaping.
     case "$fmt" in
       lines) printf '%s\n' "${names[@]}" ;;
       csv)   (IFS=,; printf '%s\n' "${names[*]}") ;;
