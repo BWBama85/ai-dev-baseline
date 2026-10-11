@@ -205,6 +205,14 @@ if [ "$MODE" = mutation ]; then
     '        11|12) printf '"'"'%s\n'"'"' "$step"; [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '        11|12) [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '…and lists EVERY harness, never none'
+  shmutant_mut steps-narrow-name-grammar \
+    "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]+-mutation\$/'" \
+    "awk -F'\\t' '\$1 ~ /^[a-z0-9-]+-mutation\$/'" \
+    'is listed, not dropped'
+  shmutant_mut steps-empty-only-widens \
+    '--only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage;' \
+    '--only) [ "$#" -ge 2 ] || usage;' \
+    'never widened to every harness'
   check_shmutant_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
 
   # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
@@ -237,6 +245,14 @@ if [ "$MODE" = mutation ]; then
     'step: ${{ fromJSON(needs.plan.outputs.steps) }}' \
     'step: [fact-mutation]' \
     'matrix is not read from the plan job'
+  shmutant_mut nightly-plan-output-constant \
+    '      steps: ${{ steps.plan.outputs.steps }}' \
+    '      steps: '"'"'["fact-mutation"]'"'"'' \
+    'does not export its'
+  shmutant_mut nightly-plan-not-published \
+    'printf '"'"'steps=%s\n'"'"' "$steps" >> "$GITHUB_OUTPUT"' \
+    'printf '"'"'steps=%s\n'"'"' "$steps" >> /dev/null' \
+    'does not publish the list'
   shmutant_mut nightly-dispatch-unvalidated \
     'steps="$(bash scripts/mutation-gate.sh steps --json --only "$ONLY")" || exit 1' \
     'steps="[\"$ONLY\"]"' \
@@ -490,7 +506,10 @@ printf '#!/usr/bin/env bash\necho rows-ran\n' > "$R/scripts/check-rows.sh"
   printf 'inputs gated-mutation   scripts/check-gated.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/stub.sh\n'
   printf 'add rows-mutation       bash scripts/check-rows.sh --mutation\n'
   printf 'inputs rows-mutation    scripts/check-rows.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/stub.sh scripts/lib/other.sh\n'
-  printf 'add bare                bash scripts/check-bare.sh\n'; } > "$work/reg.frag"
+  printf 'add bare                bash scripts/check-bare.sh\n'
+  # A name the registry's grammar allows and a lowercase-only reader would drop (#456 review).
+  printf 'add New_guard-mutation  bash scripts/check-bare.sh --mutation\n'
+  printf 'inputs New_guard-mutation scripts/check-bare.sh scripts/check-lib.sh scripts/lib/common.sh\n'; } > "$work/reg.frag"
 awk -v frag="$work/reg.frag" '
   /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
   { print }
@@ -668,6 +687,8 @@ has "$OUT" "gated-mutation" "steps: …lists a registered *-mutation step"
 hasnt "$OUT" "bare" "steps: …and never a step that is not a *-mutation step"
 gate "$R" steps --json --only gated-mutation
 eq "$OUT" '["gated-mutation"]' "steps --json --only <step>: exactly that one, as a JSON array"
+gate "$R" steps
+has "$OUT" "New_guard-mutation" "steps: a harness name with an underscore and a capital — the registry's grammar — is listed, not dropped"
 gate "$R" steps --only no-such-mutation
 eq "$RC_" "2" "steps --only <unknown>: refused (2), so a dispatch typo fails before any job starts"
 has "$OUT" "is not a registered *-mutation step" "…and says why"
@@ -675,9 +696,11 @@ gate "$R" steps --only bare
 eq "$RC_" "2" "steps --only <a step that is not a harness>: refused too"
 gate "$R" steps --csv
 case "$OUT" in *gated-mutation*rows-mutation*|*rows-mutation*gated-mutation*) ok ;; *) bad "steps --csv: want both fixture harnesses comma-joined, got: $OUT" ;; esac
-[[ "$OUT" =~ ^[a-z0-9,-]+$ ]] && ok || bad "steps --csv: one line, names and commas only — got: $OUT"
+[[ "$OUT" =~ ^[A-Za-z0-9_,-]+$ ]] && ok || bad "steps --csv: one line, names and commas only — got: $OUT"
 gate "$R" steps --bogus
 eq "$RC_" "2" "steps --bogus: usage"
+gate "$R" steps --json --only ''
+eq "$RC_" "2" "steps --only '': usage, never widened to every harness"
 # A registry that cannot be read is exit 3, never an empty list — a matrix of nothing is green.
 NR="$work/noreg"; mkrepo "$NR" || bad "fixture setup: could not build the registry-less repository"
 gate "$NR" steps --json
@@ -760,6 +783,12 @@ has "$NOUT" "unreadable (the run URL has an unexpected shape)" "nightly-status: 
 hasnt "$(cat "$work/ns-summary")" "evil.example" "nightly-status: …and none of it reaches the summary"
 ns 0 "$(rec "$URL" completed 'success**' "$SHA")"
 has "$NOUT" "unreadable (the run conclusion has an unexpected shape)" "nightly-status: a conclusion of an unexpected shape is refused"
+ns 0 "$(rec "$URL" completed success '0123456')"
+has "$NOUT" "unreadable (the run's commit has an unexpected shape)" "nightly-status: an abbreviated commit is refused (GitHub reports the full 40 hex)"
+ns 0 "$(rec "$URL" completed bogus "$SHA")"
+has "$NOUT" "unreadable (the run conclusion has an unexpected shape)" "nightly-status: a conclusion outside GitHub's vocabulary is refused"
+ns 0 '[{"url":"'"$URL"'","status":"completed","conclusion":"success","createdAt":"'"$created"'","headSha":12345}]'
+has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: a field of the wrong JSON type is refused"
 ns 0 "$(rec "$URL" completed success 'not-a-sha')"
 has "$NOUT" "unreadable (the run's commit has an unexpected shape)" "nightly-status: a commit of an unexpected shape is refused"
 NOUT="$(bash "$NS" extra 2>&1)"; NRC=$?
@@ -877,6 +906,16 @@ if [ -f "$NIGHTLY" ]; then
   grep -qE '^      step:$' "$NIGHTLY" && ok || bad "the scheduled workflow's workflow_dispatch has no 'step' input (#456)"
   grep -qE '^[[:space:]]*step: \$\{\{ fromJSON\(needs\.plan\.outputs\.steps\) \}\}[[:space:]]*$' "$NIGHTLY" && ok \
     || bad "the scheduled workflow's matrix is not read from the plan job (step: \${{ fromJSON(needs.plan.outputs.steps) }})"
+  # …and the WHOLE connection behind it, link by link: the plan step publishes the list it read, the
+  # job exports that step's output, and the matrix job needs the plan. A constant at any link would
+  # pass a pin that checked only the two ends (review finding).
+  grep -qE '^      - name: Read the harness list from the registry$' "$NIGHTLY" \
+    && grep -qE '^        id: plan$' "$NIGHTLY" && ok || bad "the plan job's registry step is not 'id: plan'"
+  grep -qE '^          printf .steps=%s\\n. "\$steps" >> "\$GITHUB_OUTPUT"$' "$NIGHTLY" && ok \
+    || bad "the plan step does not publish the list it read to GITHUB_OUTPUT"
+  grep -qE '^      steps: \$\{\{ steps\.plan\.outputs\.steps \}\}$' "$NIGHTLY" && ok \
+    || bad "the plan job does not export its step's output (outputs.steps: \${{ steps.plan.outputs.steps }})"
+  grep -qE '^    needs: plan$' "$NIGHTLY" && ok || bad "the matrix job does not need the plan job"
   grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json --only "\$ONLY"\)" \|\| exit 1$' "$NIGHTLY" && ok \
     || bad "the plan job does not validate a dispatched step through 'mutation-gate.sh steps --json --only' (with a failure exit)"
   grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json\)" \|\| exit 1$' "$NIGHTLY" && ok \

@@ -17,8 +17,10 @@
 #   - older than 48h                        → the age plus `STALE` — GitHub documents that a
 #                                             schedule may be delayed or dropped under load
 #   - gh failed (auth, network, API)        → `unreadable (…)`, distinct from absence
-#   - a field of an unexpected shape        → `unreadable (…)` — the summary renders Markdown, so
-#                                             nothing reaches it that was not validated first
+#   - a field of an unexpected type or shape → `unreadable (…)` — the summary renders Markdown, so
+#                                             nothing reaches it that was not validated first:
+#                                             strings where strings belong, status and conclusion
+#                                             from GitHub's vocabulary, a full 40-hex commit
 #
 # IT REPORTS, IT DOES NOT GATE: the exit is 0 on every one of those, and 2 only for usage. A reporter
 # that could turn a pull request red would be a gate on the nightly, which is exactly what #456 took
@@ -75,6 +77,9 @@ esac
 # run's conclusion — would shift every field after it.
 fields="$(printf '%s' "$json" | jq -r --arg now "${ADB_NIGHTLY_NOW:-}" '
   .[0] as $r
+  | if ([$r.url, $r.status, $r.createdAt, $r.headSha] | all(type == "string"))
+       and (($r.conclusion | type) == "string" or $r.conclusion == null) | not
+    then error("types") else . end
   | (if $now == "" then now else ($now | tonumber) end) as $t
   | [ ($r.url // ""), ($r.status // ""), ($r.conclusion // ""), ($r.headSha // ""),
       ((try ($t - ($r.createdAt | fromdateiso8601)) catch -1) | floor | tostring) ]
@@ -86,9 +91,16 @@ IFS=$'\x1f' read -r url status conclusion sha age <<< "$fields"
 # anything else is reported as unreadable rather than rendered.
 [[ "$url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$ ]] \
   || emit "last nightly on $branch: unreadable (the run URL has an unexpected shape)"
-[[ "$status" =~ ^[a-z_]+$ ]] || emit "last nightly on $branch: unreadable (the run status has an unexpected shape)"
-[[ "$conclusion" =~ ^[a-z_]*$ ]] || emit "last nightly on $branch: unreadable (the run conclusion has an unexpected shape)"
-[[ "$sha" =~ ^[0-9a-f]{7,40}$ ]] || emit "last nightly on $branch: unreadable (the run's commit has an unexpected shape)"
+# GitHub's documented workflow-run vocabulary — a word outside it is unreadable, not rendered.
+case "$status" in
+  completed|in_progress|queued|requested|waiting|pending|action_required) : ;;
+  *) emit "last nightly on $branch: unreadable (the run status has an unexpected shape)" ;;
+esac
+case "$conclusion" in
+  ''|success|failure|cancelled|skipped|timed_out|action_required|neutral|stale|startup_failure) : ;;
+  *) emit "last nightly on $branch: unreadable (the run conclusion has an unexpected shape)" ;;
+esac
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || emit "last nightly on $branch: unreadable (the run's commit has an unexpected shape)"
 [[ "$age" =~ ^[0-9]+$ ]] || emit "last nightly on $branch: unreadable (the run's creation time did not parse)"
 
 verdict="$conclusion"

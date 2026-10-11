@@ -411,6 +411,7 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v4
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
@@ -428,8 +429,11 @@ jobs:
       # verdict went: the last SCHEDULED run on the default branch, its conclusion and its age, STALE
       # past 48h, `no nightly result found` or `unreadable (…)` rather than silence. It REPORTS and
       # never gates: the script exits 0 on every one of those. It rides this job rather than adding
-      # one, because a new job is a new status context for branch protection to grow.
+      # one, because a new job is a new status context for branch protection to grow. `!cancelled()`
+      # rather than the default `success()`: a red suite earlier in this job must not take the line
+      # off the PR with it. It needs only the checkout, so it runs whenever that step succeeded.
       - name: "Mutation harnesses: not run per-PR — the last nightly's verdict (#456)"
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         run: bash scripts/mutation-nightly-status.sh
         env:
           GH_TOKEN: ${{ github.token }}

@@ -140,8 +140,8 @@ those. The rules below are specific to this repo's code.
    **In CI no mutation harness runs per pull request** (#456, D126, superseding D91's per-PR half).
    Each costs `rows × suite`, and on a branch that edits a library the per-PR gate above never held
    one back: on #452's branch that was 34 runs and 18h54m of CI in three days, and on run 38081150119
-   (`main`, 2026-10-10) the harness steps were 400-1630s of jobs whose plain suites took one to three
-   minutes. So `ci.yml` carries no `--mutation` invocation at all, and `selfcheck-macos` skips every
+   (`main`, 2026-10-10) the harness steps were most of every job that carried one — 1727s of
+   `pr-watch`'s 1937s, 621s of `pattern-ledger`'s 704s (D126 has the table). So `ci.yml` carries no `--mutation` invocation at all, and `selfcheck-macos` skips every
    `*-mutation` step by a list it reads from the registry at run time (`mutation-gate.sh steps --csv`
    — never hand-copied, so a new harness cannot land unskipped). The job names, and so the required
    contexts, are unchanged. The harnesses run in `.github/workflows/mutation-nightly.yml`, whose

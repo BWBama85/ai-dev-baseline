@@ -660,6 +660,7 @@ f="${!#}"
 mkdir "$st/running/$$"
 printf '%s\n' "$$" >> "$st/pids"
 printf '%s\n' "$(find "$st/running" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" >> "$st/concurrency"
+grep -q '^IGNORETERM' "$f" && trap '' TERM
 s="$(sed -n 's/^SLEEP=//p' "$f" | head -1)"; [ -n "$s" ] && sleep "$s"
 rc=0
 if grep -q '^CRASH' "$f"; then rc=3
@@ -1000,6 +1001,19 @@ if fx_setup; then
     has "$POUT" "without reporting that it linted the 31 file(s)" "mut-poolsilent: …and says why"
   fi
   fx_reset
+  # 17s. A changed-file READ that fails is a lint FAIL naming it, never a smaller set linted as whole.
+  # A git wrapper first on PATH fails the branch diff alone; every other git call passes through.
+  gitfail="$work/gitfail"; mkdir -p "$gitfail"
+  realgit="$(command -v git)"
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in *...HEAD) [ "$1" = diff ] && exit 128 ;; esac; done\nexec %q "$@"\n' "$realgit" > "$gitfail/git"
+  chmod +x "$gitfail/git"
+  # An untracked file keeps the change set non-empty without the failed read, so the gate reaches
+  # the lint rather than its empty-set no-op.
+  printf 'untracked\n' > "$fx/untracked-note.txt"
+  POUT="$(cd "$fx" && PATH="$gitfail:$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  eq "$PRC" "2" "lint pool: a failed changed-file read → the gate blocks"
+  has "$POUT" "could not enumerate the changed shell files (git diff" "lint pool: …naming the read that failed"
+  fx_reset
   fx_git reset -q --hard "$fx_base" || bad "lint pool: could not return the fixture to its baseline"
 else
   bad "project-gate fixture setup failed — none of the #299 cases ran, which is not a pass"
@@ -1059,7 +1073,7 @@ eq "$(printf '%s\n' "$QOUT" | grep -E '^(In |trailer for )' | tr '\n' '|')" \
 
 # 18d. The linter FAILING is not a finding: named, red, and counted as not linted.
 printf 'CRASH\n' > "$pfx/x.sh"
-sc_reset; run_pool -- c1.sh x.sh c2.sh
+sc_reset; run_pool ADB_POOL_JOBS=4 -- c1.sh x.sh c2.sh
 eq "$QRC" "1" "pool: a linter that crashes on one file → exit 1"
 has "$QOUT" "shellcheck-pool: x.sh did not complete — shellcheck exited 3" "pool: …named as a lint that did not complete"
 eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — linted 2 of 3 file(s), 3 worker(s)" "pool: …and the count says how many were actually linted"
@@ -1074,7 +1088,7 @@ has "$QOUT" "not a pass" "pool: …and says a lint over nothing is not a pass"
 nl_name=$'odd\nname with space.sh'
 printf 'unused=1\n' > "$pfx/$nl_name"
 sc_reset
-QOUT="$(cd "$pfx" && printf '%s\0' c1.sh "$nl_name" | TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" -0 2>&1)"; QRC=$?
+QOUT="$(cd "$pfx" && printf '%s\0' c1.sh "$nl_name" | ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" -0 2>&1)"; QRC=$?
 eq "$QRC" "1" "pool: -0 → the oddly-named file is linted and its finding is red"
 has "$QOUT" "In $nl_name line 1:" "pool: …under its whole name, never split on the space or the newline"
 eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — 2 file(s), 2 worker(s)" "pool: …counted as one file"
@@ -1082,7 +1096,7 @@ eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — 2 file(s), 2 worker(s)" "pool: �
 # 18g. Interrupted → its workers go with it. TERM the pool mid-lint; every linter it started is gone.
 for i in 1 2 3; do printf 'SLEEP=5\n' > "$pfx/s$i.sh"; done
 sc_reset
-( cd "$pfx" && exec env TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" s1.sh s2.sh s3.sh >/dev/null 2>&1 ) &
+( cd "$pfx" && exec env ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" s1.sh s2.sh s3.sh >/dev/null 2>&1 ) &
 qpid=$!
 for _ in $(seq 1 50); do [ "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" -ge 3 ] && break; sleep 0.1; done
 eq "$(wc -l < "$SCSTUB_STATE/pids" | tr -d ' ')" "3" "pool interrupt: all three lints started before the signal"
@@ -1092,6 +1106,29 @@ sleep 0.2
 alive=""
 while IFS= read -r p; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive="$alive $p"; done < "$SCSTUB_STATE/pids"
 eq "$alive" "" "pool interrupt: no linter it started outlives it"
+
+# 18g2. …including a linter that IGNORES TERM: the pool escalates to KILL after a bounded grace.
+printf 'IGNORETERM\nSLEEP=8\n' > "$pfx/t1.sh"
+sc_reset
+( cd "$pfx" && exec env ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" t1.sh >/dev/null 2>&1 ) &
+qpid=$!
+for _ in $(seq 1 50); do [ -s "$SCSTUB_STATE/pids" ] && break; sleep 0.1; done
+sleep 0.3   # past the stub's `trap '' TERM`, so the signal is genuinely ignored
+kill -TERM "$qpid" 2>/dev/null; wait "$qpid"
+sleep 0.2
+alive=""
+while IFS= read -r p; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive="$alive $p"; done < "$SCSTUB_STATE/pids"
+eq "$alive" "" "pool interrupt: a linter that ignores TERM is KILLed, not left running"
+
+# 18g3. An output that cannot be read back is red and NOT counted as linted: its findings would be
+# lost. A `cat` that fails, first on PATH, stands in for the unreadable file.
+catfail="$work/catfail"; mkdir -p "$catfail"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$catfail/cat"; chmod +x "$catfail/cat"
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$catfail:$scstub:$PATH" bash "$pool" c1.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: an output that cannot be read back → exit 1, never a pass"
+has "$QOUT" "its lint output could not be read back" "pool: …named as such"
+eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — linted 0 of 1 file(s), 1 worker(s)" "pool: …and not counted as linted"
 
 # 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
 # file is caught by the linted-count check alone — and with that check neutered, the same slip

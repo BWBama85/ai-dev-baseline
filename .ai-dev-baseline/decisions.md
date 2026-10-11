@@ -9617,8 +9617,12 @@ survive is the part a later reader needs.
              discipline at the moment a guard is written, and the nightly re-proves it daily for
              every harness; per PR it cost tens of minutes of critical path for one bit per row, on
              exactly the branches that pushed most. The trade is stated rather than hidden: a guard a
-             PR breaks is caught within a day or on request, not by that PR. A literal row breaks
-             loudly the moment its line changes, and the plain suite still runs on every PR.
+             PR breaks is caught by the next successful scheduled or on-demand run, not by that PR —
+             with no guaranteed bound, since a schedule can be delayed or dropped. The plain suite
+             still runs on every PR. **Owner decision 2026-10-10 (review round 1):** the close-out's
+             dispatched runs are ADVISORY EVIDENCE, not a merge gate — `open-pr` may already have
+             armed auto-merge, and the runs are correlated (head SHA, creation time, the job's harness
+             name) and linked, not waited on.
 - baseline-issue: n/a
 
 ## D127 — #455: the shell lint is one script, one shellcheck per file across a pool, at all three sites
@@ -9637,7 +9641,7 @@ survive is the part a later reader needs.
              lint cost is uneven (the largest suites 4-6 s each, an entry point 0.1 s) and the batch
              that drew the heavy files set the wall time; one process per file, dispatched largest
              first through a `wait -n` pool, 18 s at load average ~10 from other work (≈114 s of CPU
-             over 8 workers, so ~14 s unloaded). Output stays in the order given, each file's whole.
+             over 8 workers puts an idealized LOWER BOUND near 14 s; not measured unloaded). Output stays in the order given, each file's whole.
 
              Width is `adb_pool_size` capped by `ADB_SHELLCHECK_JOBS` (a cap, never a raise). The
              last line always names files and workers (the width used, min(W, N)); a lint over zero
@@ -9648,8 +9652,11 @@ survive is the part a later reader needs.
              without it is a FAIL. The "~3s" in the gate header and `CLAUDE.md` became a qualitative
              statement (`check-fact-drift.sh` refuses the figure's return).
 
-             What is not measured offline: the gate on #452's 74-file branch and the CI job's
-             duration, which the issue's test plan asks for and this PR's run will show.
+             NOT MET OR NOT YET MEASURED, said rather than implied: the issue's "gate under 5s on
+             #452's 74-file branch" is not demonstrated — #452 has merged, and the closest local
+             workload (the whole 90-file tree) took 18 s under load; a 74-file branch of the same
+             files is CPU-bound near its lower bound, so the target depends on which files the branch
+             touches. The CI `shellcheck` job's duration is read off this PR's own run.
 - placement: `scripts/shellcheck-pool.sh` (new); `.claude/scripts/precommit-gate.sh`;
              `scripts/selfcheck.sh` (`step_shellcheck`); `.github/workflows/ci.yml` (`shellcheck`);
              `scripts/check-precommit-gate.sh` (§17o-17r, §18 — a stub linter, so the contract holds

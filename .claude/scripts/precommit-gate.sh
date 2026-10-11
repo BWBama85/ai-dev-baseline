@@ -22,10 +22,8 @@
 # cadences, wildly different budgets: the mirror costs minutes per run and a turn-end gate must
 # cost seconds, so this gate runs the FAST subset that catches what a turn actually breaks, and the
 # full mirror stays where it belongs. Its own cost grows with the BRANCH, not the turn: the lint
-# below re-checks every shell file the branch has changed against the default branch, so a long
-# branch pays more per turn than a fresh one. The per-check PASS lines print their own seconds;
-# read those, not a figure here (#455 — the three-second figure that stood here was 13.5s on a
-# 74-file branch).
+# below re-checks every shell file the branch has changed against the default branch. The per-check
+# PASS lines print their own seconds; read those, not a figure here (#455, D127).
 #
 # WHAT THIS DOES NOT COVER, stated rather than implied: everything else `selfcheck.sh` runs — every
 # check-*.sh suite, install dry-run, the migration and guard checks. This is a turn-end smoke test,
@@ -165,39 +163,56 @@ skip() { printf 'precommit-gate: %-16s SKIP (%s)\n' "$1" "$2" >&2; }
 #
 # NUL-DELIMITED FROM ENUMERATION TO INVOCATION (#455). The set is read again with `-z` rather than
 # re-split from `$changed`, which is newline-joined text: a path carrying a space was word-split into
-# two names that do not exist, and one carrying a newline would be two lines. `sort -zu` is the same
-# de-duplication `$changed` gets, on whole names.
+# two names that do not exist, and one carrying a newline would be two lines.
+#
+# EVERY PRODUCER'S STATUS IS CHECKED: a git read that fails part-way would leave a partial set, and
+# the lint would pass over the files it never saw. Each is read whole into its own array and its
+# status taken from `wait "$!"` — a process substitution reports nothing on its own. A failure
+# is a lint FAIL naming the read, never a smaller set.
 sh_files=()
-while IFS= read -r -d '' f; do
-  case "$f" in
-    *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_files+=("$f") ;;
+enum_err=""
+declare -A _sh_seen=()
+for _src in "diff ${base_ref}...HEAD" "diff" "diff --cached" "ls-files --others"; do
+  _part=()
+  case "$_src" in
+    "diff ${base_ref}...HEAD") mapfile -d '' -t _part < <(git diff -z --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null) ;;
+    diff)                      mapfile -d '' -t _part < <(git diff -z --no-renames --name-only 2>/dev/null) ;;
+    "diff --cached")           mapfile -d '' -t _part < <(git diff -z --no-renames --name-only --cached 2>/dev/null) ;;
+    "ls-files --others")       mapfile -d '' -t _part < <(git ls-files -z --others --exclude-standard 2>/dev/null) ;;
   esac
-done < <( { git diff -z --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null
-            git diff -z --no-renames --name-only 2>/dev/null
-            git diff -z --no-renames --name-only --cached 2>/dev/null
-            git ls-files -z --others --exclude-standard 2>/dev/null; } | sort -zu )
+  wait "$!" || { enum_err="${enum_err:+$enum_err; }git $_src failed"; continue; }
+  for f in "${_part[@]}"; do
+    [ -n "$f" ] && [ -z "${_sh_seen[$f]+x}" ] || continue
+    _sh_seen["$f"]=1
+    case "$f" in
+      *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_files+=("$f") ;;
+    esac
+  done
+done
 
 # THE LINT IS A POOL (#455): one shellcheck per file across `adb_pool_size` workers, through the same
-# `scripts/shellcheck-pool.sh` selfcheck and CI call. A single process over the branch's whole change
-# set was most of this gate's cost, and grew with the branch. The PASS line carries the pool's own
-# count line, so a lint over zero files can never read as a pass — and a pool that exits 0 WITHOUT
-# naming exactly the files it was given is a FAIL, not a pass.
+# `scripts/shellcheck-pool.sh` selfcheck and CI call. The PASS line carries the pool's own count
+# line, so a lint over zero files can never read as a pass — and a pool that exits 0 WITHOUT naming
+# exactly the files it was given, and a worker count between 1 and that number, is a FAIL.
 lint_shell() {
-  local t0=$SECONDS out rc last want="${#sh_files[@]}"
+  local t0=$SECONDS out rc last want="${#sh_files[@]}" w
   out="$(printf '%s\0' "${sh_files[@]}" | bash "$repo_root/scripts/shellcheck-pool.sh" -0 2>&1)"; rc=$?
   last="${out##*$'\n'}"
-  if [ "$rc" -eq 0 ]; then
-    case "$last" in
-      "shellcheck-pool: $want file(s), "*" worker(s)")
-        printf 'precommit-gate: %-16s PASS (%ss, %s)\n' shellcheck "$(( SECONDS - t0 ))" "${last#shellcheck-pool: }" >&2
-        return 0 ;;
-    esac
-    out="${out:+$out$'\n'}the pool exited 0 without reporting that it linted the $want file(s) it was given"
+  if [ "$rc" -eq 0 ] && [[ "$last" =~ ^shellcheck-pool:\ ([0-9]+)\ file\(s\),\ ([0-9]+)\ worker\(s\)$ ]]; then
+    w="${BASH_REMATCH[2]}"
+    if [ "${BASH_REMATCH[1]}" = "$want" ] && [ "$w" -ge 1 ] && [ "$w" -le "$want" ]; then
+      printf 'precommit-gate: %-16s PASS (%ss, %s)\n' shellcheck "$(( SECONDS - t0 ))" "${last#shellcheck-pool: }" >&2
+      return 0
+    fi
   fi
+  [ "$rc" -eq 0 ] && out="${out:+$out$'\n'}the pool exited 0 without reporting that it linted the $want file(s) it was given"
   printf 'precommit-gate: %-16s FAIL (%ss)\n%s\n' shellcheck "$(( SECONDS - t0 ))" "$out" >&2
   fail=1
 }
-if [ "${#sh_files[@]}" -eq 0 ]; then
+if [ -n "$enum_err" ]; then
+  printf 'precommit-gate: %-16s FAIL (0s)\ncould not enumerate the changed shell files (%s) — a partial set is never linted as if whole\n' shellcheck "$enum_err" >&2
+  fail=1
+elif [ "${#sh_files[@]}" -eq 0 ]; then
   :
 elif command -v shellcheck >/dev/null 2>&1; then
   lint_shell

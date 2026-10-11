@@ -263,7 +263,9 @@ gate_mutation_rows() {
   local reg rows
   reg="$(bash "$ROOT/scripts/selfcheck.sh" --list)" \
     || { printf 'scripts/selfcheck.sh --list failed — cannot read the registry\n' >&2; return 1; }
-  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[a-z0-9-]+-mutation$/')"
+  # The registry's own name grammar (`selfcheck.sh`'s `add` accepts [A-Za-z0-9_-]): a narrower one
+  # here would drop a valid harness from both the nightly matrix and the macOS skip list, silently.
+  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[A-Za-z0-9_-]+-mutation$/')"
   [ -n "$rows" ] || { printf 'the registry names no *-mutation step\n' >&2; return 1; }
   printf '%s\n' "$rows"
 }
@@ -413,7 +415,9 @@ case "$sub" in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --json|--csv|--lines) fmt="${1#--}"; shift ;;
-        --only) [ "$#" -ge 2 ] || usage; only="$2"; shift 2 ;;
+        # An EMPTY selector is usage, never "all": the dispatch path passes an empty input as no
+        # `--only` at all, so an empty one here is a caller bug that must not widen to every harness.
+        --only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; only="$2"; shift 2 ;;
         *) usage ;;
       esac
     done
@@ -431,7 +435,7 @@ case "$sub" in
       }
       names=("$only")
     fi
-    # Every name matched ^[a-z0-9-]+-mutation$ in the registry read, so none needs JSON escaping.
+    # Every name matched ^[A-Za-z0-9_-]+-mutation$ in the registry read, so none needs JSON escaping.
     case "$fmt" in
       lines) printf '%s\n' "${names[@]}" ;;
       csv)   (IFS=,; printf '%s\n' "${names[*]}") ;;

@@ -328,11 +328,13 @@ plan job through `mutation-gate.sh steps --json`, so there is no list in that fi
 label run, which can test fewer harnesses — marked STALE past 48h, `no nightly result found` when
 there is none, and `unreadable (…)` when gh fails, which is not the same thing. It reports and never
 gates. **The trade, said plainly:** a guard a PR breaks is caught by the next nightly or an on-demand
-run, not by that PR's CI. What keeps that acceptable is that a literal-string row says "did not
-apply" the moment its target line changes, and the plain suite still runs on every PR, so the class
-only a harness sees — an assertion that silently stopped being able to fail — is reported within a
-day, or on request. `/implement-issue`'s close-out asks `mutation-gate.sh touched` which harnesses a
-change gives something new to say, dispatches each against the PR head and links the runs.
+run, not by that PR's CI — and only once such a run actually happens: a schedule can be delayed or
+dropped, so detection has no guaranteed bound. The plain suite still runs on every PR; the class
+only a harness sees — an assertion that silently stopped being able to fail, or a row whose literal
+no longer matches its target — surfaces at the next successful scheduled or on-demand run.
+`/implement-issue`'s close-out asks `mutation-gate.sh touched` which harnesses a change gives
+something new to say, dispatches each against the PR head and links the runs, as evidence rather
+than a merge gate.
 
 **The local runner is unchanged.** A plain `bash scripts/selfcheck.sh` still selects the whole
 registry and still gates each harness on its inputs (#441), and per row (#470, D108): a row runs

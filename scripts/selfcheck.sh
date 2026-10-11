@@ -1549,7 +1549,8 @@ done
 
 # ======================================= the gate (#441) =======================================
 # A step that declares inputs runs only when the change under test touches one of them. The
-# DECISION is `scripts/mutation-gate.sh`'s — one home, the same one CI's per-job steps ask — and
+# DECISION is `scripts/mutation-gate.sh`'s — one home (CI asked it per job until #456 took the
+# harnesses off the per-PR path) — and
 # this runner only relays it: the gate's own line is printed for every step it skips, so a reader
 # sees what was compared and against what, never a bare name.
 #

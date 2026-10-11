@@ -71,6 +71,12 @@ jobs:
     outputs:
       steps: ${{ steps.plan.outputs.steps }}
     steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -149,7 +155,7 @@ jobs:
           log="$RUNNER_TEMP/selfcheck.log"
           {
             printf '## %s went RED (%s run)\n\n' "${{ matrix.step }}" "${{ github.event_name }}"
-            printf 'No harness runs per pull request (#456), so this is the first run to see the change that broke it. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
+            printf 'No harness runs per pull request (#456), so no PR check saw this. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f "$log" ]; then
             bash scripts/selfcheck.sh --summarize "$log" >> "$GITHUB_STEP_SUMMARY" \
