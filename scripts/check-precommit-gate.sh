@@ -1176,6 +1176,18 @@ QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$wcfail:$scstu
 eq "$QRC" "1" "pool: an output size that cannot be read → exit 1, never a pass"
 has "$QOUT" "the disk cap cannot be enforced" "pool: …and says why"
 
+# 18g8. A CAPTURE that fails is red and not counted as linted, whatever the linter returned: its
+# diagnostics are incomplete. A `head` that consumes its input and fails when asked to cut (`-c`),
+# first on PATH, stands in for the fault; every other `head` call passes through.
+headfail="$work/headfail"; mkdir -p "$headfail"; realhead="$(command -v head)"
+printf '#!/usr/bin/env bash\nif [ "$1" = -c ]; then cat >/dev/null; exit 1; fi\nexec %q "$@"\n' "$realhead" > "$headfail/head"
+chmod +x "$headfail/head"
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$headfail:$scstub:$PATH" bash "$pool" c1.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: an output capture that fails → exit 1, never a pass"
+has "$QOUT" "its lint output could not be captured" "pool: …named as a capture failure"
+eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — linted 0 of 1 file(s), 1 worker(s)" "pool: …and not counted as linted"
+
 # 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
 # file is caught by the linted-count check alone — and with that check neutered, the same slip
 # passes green while linting 11 of 12. One defect, one defence, both answers seen.

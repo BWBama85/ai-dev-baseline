@@ -147,6 +147,9 @@ flush() {
       printf '%s: %s — its lint output could not be read back\n' "$ME" "${files[flushed]}"
     else
       case "${status[flushed]}" in
+        125) red=1
+           printf '%s: %s — its lint output could not be captured, so its diagnostics are incomplete; not counted as linted\n' \
+             "$ME" "${files[flushed]}" ;;
         cut) red=1
            printf '%s: %s produced more than ADB_SHELLCHECK_MAX_BYTES=%s bytes of diagnostics — cut there, not counted as linted\n' \
              "$ME" "${files[flushed]}" "$max_bytes" ;;
@@ -168,9 +171,12 @@ while [ "$flushed" -lt "$n" ]; do
   while [ "$next" -lt "$n" ] && [ "${#slot[@]}" -lt "$width" ]; do
     i="${order[next]}"
     # The linter's output is cut at the cap AS IT IS WRITTEN; its status is the linter's own
-    # (PIPESTATUS), and one killed by the cut (SIGPIPE) is a failed lint, red like any other.
+    # (PIPESTATUS), and one killed by the cut (SIGPIPE) is a failed lint, red like any other. The
+    # WRITER's status is checked too: a capture that failed lost diagnostics whatever the linter
+    # said, so it returns 125, which flush reports as a capture failure — never as a lint verdict.
     ( shellcheck --severity=warning -e SC1091 -- "${files[i]}" </dev/null 2>&1 | head -c "$(( max_bytes + 1 ))" >"$tmp/$i.out"
-      exit "${PIPESTATUS[0]}" ) &
+      ps=("${PIPESTATUS[@]}"); [ "${ps[1]}" -eq 0 ] || exit 125
+      exit "${ps[0]}" ) &
     slot[$!]="$i"
     next=$(( next + 1 ))
   done

@@ -182,8 +182,8 @@ skip() { printf 'precommit-gate: %-16s SKIP (%s)\n' "$1" "$2" >&2; }
 # extensionless `bin/` entrypoints — because `bin/baseline` and `bin/agent-init` are shell and CI
 # lints them; a `*.sh`-only filter silently skipped them and deferred the failure to push time.
 # (This comment deliberately does not begin with the tool's name: a comment starting `# shellcheck`
-# is parsed as a DIRECTIVE, and this gate rejected itself for it on first run.) Read from the checked,
-# NUL-safe set above, so no name is ever word-split.
+# is parsed as a DIRECTIVE.) Read from the checked, NUL-safe set above, so no name is ever
+# word-split.
 sh_files=()
 for f in "${changed[@]}"; do
   case "$f" in
