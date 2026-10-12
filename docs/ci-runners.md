@@ -300,8 +300,9 @@ its whole life. On #452's branch it was 34 runs and 18h54m of CI wall time in th
 list it reads from the registry at run time — `skip="$(bash scripts/mutation-gate.sh steps --csv)"`,
 then `selfcheck.sh --skip "$skip"` — never a hand-copied list, so a new harness cannot land
 unskipped, and an unreadable registry fails the step rather than skipping nothing. The plain suites
-behind every harness still run here and on ubuntu. The job names are unchanged, so the required
-contexts are too.
+behind every harness still run here, as every plain suite does; most also have an ubuntu job, but
+not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names are unchanged, so
+the required contexts are too.
 
 **Where they run instead: `mutation-nightly.yml`, three ways.** Its matrix is the registry, read by a
 plan job through `mutation-gate.sh steps --json`, so there is no list in that file to drift.

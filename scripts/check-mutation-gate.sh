@@ -239,8 +239,16 @@ if [ "$MODE" = mutation ]; then
     'without skipping the registry'
   shmutant_mut ci-macos-skip-overwritten \
     'echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"' \
-    'skip="adopt-mutation"' \
-    'assigns the macOS skip list exactly once'
+    'read -r skip <<< "adopt-mutation"' \
+    'HANDS selfcheck exactly'
+  shmutant_mut ci-status-permission-dropped \
+    '      actions: read' \
+    '      actions: none' \
+    "does not grant 'actions: read'"
+  shmutant_mut ci-selfcheck-only-harness \
+    '        run: bash scripts/mutation-nightly-status.sh' \
+    '        run: bash scripts/selfcheck.sh --only fact-mutation' \
+    'through selfcheck --only'
   shmutant_mut ci-status-line-unwired \
     '        run: bash scripts/mutation-nightly-status.sh' \
     '        run: "true"' \
@@ -265,6 +273,10 @@ if [ "$MODE" = mutation ]; then
     'printf '"'"'steps=%s\n'"'"' "$steps" >> "$GITHUB_OUTPUT"' \
     'printf '"'"'steps=%s\n'"'"' "$steps" >> /dev/null' \
     'does not publish the list'
+  shmutant_mut nightly-plan-not-needed \
+    '    needs: plan' \
+    '    needs: []' \
+    'does not need the plan job'
   shmutant_mut nightly-dispatch-input-dropped \
     "ONLY: \${{ github.event_name == 'workflow_dispatch' && inputs.step || '' }}" \
     "ONLY: ''" \
@@ -918,8 +930,23 @@ printf 'check-mutation-gate: %s harness invocation(s) in ci.yml\n' "$n_inv"
 # THE macOS LEG runs the whole registry less every `*-mutation` step, and the list it skips is READ
 # from the registry at run time — never hand-copied, so a new harness cannot land unskipped. Every
 # active `selfcheck.sh` line there that runs steps (not `--summarize`/`--list`) must skip that list.
-# ONE assignment, so nothing between it and the consumer can overwrite what the consumer receives.
-eq "$(grep -cE '^[^#]*(^|[[:space:];])skip=' "$CI")" "1" "ci.yml assigns the macOS skip list exactly once (nothing can overwrite it before selfcheck reads it)"
+# …and WHAT THE CONSUMER RECEIVES is checked by RUNNING the step's own script, not by reading its
+# spelling: a later `skip=`, a `read -r skip`, any reassignment between the read and the call would
+# pass a pin on the text. Its `run: |` body is extracted, its `bash scripts/selfcheck.sh` replaced by
+# a recorder of the arguments it was given, and the `--skip` value must equal the registry's set.
+macos_body="$(awk '
+  /^      - name: The offline suite on Homebrew bash/ { f = 1; next }
+  f && /^        run: \|$/ { b = 1; next }
+  b && /^        [a-z]+:/ { exit }
+  b && /^      - / { exit }
+  b { sub(/^          /, ""); print }
+' "$CI")"
+[ -n "$macos_body" ] && ok || bad "could not extract the macOS suite step's run block from ci.yml (the scan matched nothing)"
+recv="$(cd "$ROOT" && RUNNER_TEMP="$work" bash -c "$(printf '%s\n' "$macos_body" | sed 's#bash scripts/selfcheck\.sh#printf "SELFCHECK-ARG:%s\\n"#')" 2>/dev/null | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}')"
+eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls selfcheck with --skip"
+eq "$(printf '%s\n' "$recv" | sed -n 2p | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
+   "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
+   "the macOS suite step HANDS selfcheck exactly the registry's *-mutation steps to skip"
 grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \
   || bad "ci.yml's selfcheck-macos does not build its --skip from 'bash scripts/mutation-gate.sh steps --csv' (with a failure branch)"
 runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list)' || true)"
@@ -928,12 +955,18 @@ while IFS= read -r line; do
   [ -n "$line" ] || continue
   case "$line" in *'selfcheck.sh --skip "$skip"'*) ok ;; *) bad "ci.yml runs selfcheck.sh without skipping the registry's *-mutation steps: $line" ;; esac
 done <<< "$runs_all"
-# THE LAST-NIGHTLY LINE is wired into a PR job, survives an earlier red step, and may read runs.
-grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' "$CI" && ok \
-  || bad "ci.yml no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
-grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" "$CI" && ok \
+# THE LAST-NIGHTLY LINE is wired into a PR job, survives an earlier red step, and may read runs —
+# each asked of THAT JOB's block, so a permission or condition elsewhere in the file cannot stand in.
+cl_job="$(awk '/^  common-lib:$/{f=1; print; next} f && /^  [a-z][a-z0-9-]*:$/{exit} f{print}' "$CI")"
+[ -n "$cl_job" ] && ok || bad "could not extract the common-lib job from ci.yml (the scan matched nothing)"
+printf '%s\n' "$cl_job" | grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' && ok \
+  || bad "the common-lib job no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
+printf '%s\n' "$cl_job" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \
   || bad "the last-nightly step does not run past an earlier red step (!cancelled() and a successful checkout)"
-grep -qE '^      actions: read$' "$CI" && ok || bad "no ci.yml job grants 'actions: read', which the last-nightly line needs to list runs"
+printf '%s\n' "$cl_job" | grep -qE '^        id: checkout$' && ok \
+  || bad "the common-lib job's checkout carries no 'id: checkout', so the last-nightly condition reads an unknown step"
+printf '%s\n' "$cl_job" | grep -qE '^      actions: read$' && ok \
+  || bad "the common-lib job does not grant 'actions: read', which the last-nightly line needs to list runs"
 # The list it reads is exactly the registry's set — the subcommand is the one home, asserted here.
 eq "$(bash "$ROOT/scripts/mutation-gate.sh" steps --csv | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
    "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \

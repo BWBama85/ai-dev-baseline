@@ -977,20 +977,16 @@ if fx_setup; then
   has "$POUT" "In lintfx/with space.sh line 2:" "lint pool: a path with a space is linted whole, and its finding names the file and line"
   has "$POUT" "shellcheck-pool: FAIL — 30 file(s)" "lint pool: the FAIL carries the pool's own count of what it linted"
 
-  # 17p. The finding fixed → PASS, and the PASS line says how many files and workers.
+  # 17p. The finding fixed → PASS, and the PASS line carries the pool's count line. Under
+  # ADB_SHELLCHECK_JOBS=1, so this one gate run also shows the cap reaching the pool through the gate
+  # (§18 covers the width rules themselves; every run of the full gate here costs a full build).
   printf '#!/usr/bin/env bash\necho fixed\n' > "$fx/lintfx/with space.sh"
   fx_git commit -qam "fix the finding"
-  POUT="$(cd "$fx" && ADB_POOL_JOBS=4 PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  POUT="$(cd "$fx" && ADB_POOL_JOBS=4 ADB_SHELLCHECK_JOBS=1 PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
   eq "$PRC" "0" "lint pool: thirty clean files → exit 0"
-  has "$POUT" "file(s), 4 worker(s))" "lint pool: the PASS line states the worker count"
-  if [[ "$POUT" =~ shellcheck\ +PASS\ \([0-9]+s,\ 30\ file\(s\),\ 4\ worker\(s\)\) ]]; then ok; else
-    bad "lint pool: want 'shellcheck PASS (Ns, 30 file(s), 4 worker(s))', the gate printed: $POUT"
+  if [[ "$POUT" =~ shellcheck\ +PASS\ \([0-9]+s,\ 30\ file\(s\),\ 1\ worker\(s\)\) ]]; then ok; else
+    bad "lint pool: want 'shellcheck PASS (Ns, 30 file(s), 1 worker(s))', the gate printed: $POUT"
   fi
-
-  # 17q. ADB_SHELLCHECK_JOBS=1 forces a serial lint, and the line says so.
-  POUT="$(cd "$fx" && ADB_SHELLCHECK_JOBS=1 PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
-  eq "$PRC" "0" "lint pool: ADB_SHELLCHECK_JOBS=1 → still green"
-  has "$POUT" "30 file(s), 1 worker(s))" "lint pool: ADB_SHELLCHECK_JOBS=1 → the PASS line reports one worker"
 
   # 17r. A pool that exits 0 WITHOUT naming what it linted is a FAIL — the guard that ran nothing.
   # Observed failing: the fixture's pool loses its success line and the gate must refuse the green.

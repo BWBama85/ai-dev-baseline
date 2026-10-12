@@ -1513,7 +1513,8 @@ jobs:
       # platform ones, and each costs `rows × suite`; they run in `mutation-nightly.yml` — on a
       # schedule against the default branch, by dispatch, or on a PR labelled `run-mutations` — and
       # the `common-lib` job states the last nightly's verdict on every PR. Their plain suites still
-      # run here and on ubuntu.
+      # run here, as every plain suite does; most also have an ubuntu job, but not all (`docs-lib`
+      # and `bootstrap` run per PR only on this leg).
       #
       # THE SKIP LIST IS READ FROM THE REGISTRY, never hand-copied (`mutation-gate.sh steps --csv`),
       # so a new harness cannot land unskipped; an unreadable registry fails the step rather than
