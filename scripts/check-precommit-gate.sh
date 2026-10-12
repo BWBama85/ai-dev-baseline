@@ -661,6 +661,7 @@ mkdir "$st/running/$$"
 printf '%s\n' "$$" >> "$st/pids"
 printf '%s\n' "$(find "$st/running" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" >> "$st/concurrency"
 grep -q '^IGNORETERM' "$f" && trap '' TERM
+b="$(sed -n 's/^BIG=//p' "$f" | head -1)"; [ -n "$b" ] && head -c "$b" /dev/zero | tr '\0' 'x'
 # The sleep is a DESCENDANT, recorded: interrupt cases require it gone too, not only this process.
 s="$(sed -n 's/^SLEEP=//p' "$f" | head -1)"
 if [ -n "$s" ]; then sleep "$s" & printf '%s\n' "$!" >> "$st/pids"; wait "$!"; fi
@@ -1155,6 +1156,25 @@ sc_reset
 QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 ADB_SHELLCHECK_MAX_BYTES=not-a-number TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" slow.sh f1.sh f2.sh 2>&1)"; QRC=$?
 hasnt "$QOUT" "ADB_SHELLCHECK_MAX_BYTES" "pool: a malformed cap falls back to the default, which these few diagnostics do not reach"
 eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — 3 file(s), 3 worker(s)" "pool: …and the run reaches its ordinary verdict"
+
+# 18g6. …and the cap holds WHILE a worker writes, not only once it has exited: one linter pouring
+# out far more than the cap is cut at it and the run is red, naming the file.
+printf 'BIG=200000\n' > "$pfx/big.sh"
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 ADB_SHELLCHECK_MAX_BYTES=100 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" big.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: one worker writing past the cap → exit 1"
+has "$QOUT" "big.sh produced more than ADB_SHELLCHECK_MAX_BYTES=100 bytes" "pool: …named, and cut at the cap"
+[ "${#QOUT}" -lt 2000 ] && ok || bad "pool: the over-cap output was not cut (${#QOUT} bytes reached the caller)"
+
+# 18g7. A size read that FAILS stops the run: a benign zero would leave the cap unenforced. A `wc`
+# that answers the dispatch-order read and fails every read after it stands in for the fault.
+wcfail="$work/wcfail"; mkdir -p "$wcfail"; realwc="$(command -v wc)"
+printf '#!/usr/bin/env bash\nc="%s/wc.calls"; n=$(( $(cat "$c" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$c"\n[ "$n" -le 1 ] && exec %q "$@"\nexit 1\n' "$work" "$realwc" > "$wcfail/wc"
+chmod +x "$wcfail/wc"; rm -f "$work/wc.calls"
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$wcfail:$scstub:$PATH" bash "$pool" c1.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: an output size that cannot be read → exit 1, never a pass"
+has "$QOUT" "the disk cap cannot be enforced" "pool: …and says why"
 
 # 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
 # file is caught by the linted-count check alone — and with that check neutered, the same slip

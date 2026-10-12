@@ -245,6 +245,10 @@ if [ "$MODE" = mutation ]; then
     "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" \
     '        # condition removed' \
     'does not run past an earlier red step'
+  shmutant_mut ci-checkout-id-dropped \
+    '        id: checkout' \
+    '        # id removed' \
+    "carries no 'id: checkout'"
   shmutant_mut ci-status-permission-dropped \
     '      actions: read' \
     '      actions: none' \
@@ -281,6 +285,14 @@ if [ "$MODE" = mutation ]; then
     'steps="$(bash scripts/mutation-gate.sh steps --json)" || exit 1' \
     "steps='[\"fact-mutation\"]'" \
     'PUBLISHES exactly'
+  shmutant_mut nightly-plan-merge-commit \
+    "ref: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-plan-ref" \
+    "ref: ''   # row-plan-ref" \
+    "labelled PR's HEAD commit"
+  shmutant_mut nightly-harness-merge-commit \
+    "ref: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-harness-ref" \
+    "ref: ''   # row-harness-ref" \
+    "labelled PR's HEAD commit"
   shmutant_mut nightly-plan-not-needed \
     '    needs: plan' \
     '    needs: []' \
@@ -980,9 +992,9 @@ printf '%s\n' "$cl_job" | grep -qE '^        run: bash scripts/mutation-nightly-
 # makes the condition read an unknown outcome. Each step is the block from its `      - ` line.
 step_of() {  # step_of <job-text> <ERE matching a line inside the step> — prints that whole step
   printf '%s\n' "$1" | awk -v pat="$2" '
-    /^      - /   { if (hit) { printf "%s", blk; exit } blk = ""; hit = 0 }
+    /^      - /   { if (hit) { printf "%s", blk; done = 1; exit } blk = ""; hit = 0 }
     { blk = blk $0 "\n"; if ($0 ~ pat) hit = 1 }
-    END { if (hit) printf "%s", blk }'
+    END { if (hit && !done) printf "%s", blk }'
 }
 rep_step="$(step_of "$cl_job" '^        run: bash scripts/mutation-nightly-status\.sh$')"
 printf '%s\n' "$rep_step" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \

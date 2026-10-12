@@ -81,7 +81,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           # The labelled PR's own HEAD, so the registry read is the PR's registry.
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-plan-ref
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -128,7 +128,7 @@ jobs:
         with:
           # A labelled PR is tested at its HEAD commit, which is what a reader of the PR means by
           # "this change"; the schedule and a dispatch take the ref the run was started on.
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-harness-ref
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime

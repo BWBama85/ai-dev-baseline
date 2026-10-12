@@ -18,11 +18,12 @@
 #     used, min(W, N), not the configured ceiling.
 #   - NOT bounded in time: a lint that hangs holds the files after it, as the single process this
 #     replaced did. `ADB_SHELLCHECK_JOBS=1` is how a hang is attributed to one file;
-#   - BOUNDED ON DISK: a finished file's diagnostics wait in scratch until every file before it has
-#     been emitted, so a slow early file holds back everything finished after it. That STAGED total
-#     is capped at ADB_SHELLCHECK_MAX_BYTES (default 64 MiB); passing it stops dispatching, reaps the
-#     running workers and fails red, naming the cap. Scratch is then at most the cap plus one
-#     file's output per running worker;
+#   - BOUNDED ON DISK, by ADB_SHELLCHECK_MAX_BYTES (default 64 MiB), at two points: each worker's
+#     output is cut at the cap AS IT IS WRITTEN (`head -c`), and a lint whose output reached it is
+#     red; and the STAGED total — finished files waiting behind a slower earlier one — is checked
+#     after every reap, stopping the run red when it passes the cap. Scratch therefore never holds
+#     more than the cap staged plus the cap per running worker. On a stop, whatever was staged is
+#     emitted (out of order, and labelled so) rather than discarded;
 #   - each file is linted ALONE: by default the linter follows a `source` only into files named in
 #     the same invocation, so that no longer happens within the set (a `.shellcheckrc` enabling
 #     external sources still can). The repo's sources point at `/dev/null` or are excluded by
@@ -146,6 +147,9 @@ flush() {
       printf '%s: %s — its lint output could not be read back\n' "$ME" "${files[flushed]}"
     else
       case "${status[flushed]}" in
+        cut) red=1
+           printf '%s: %s produced more than ADB_SHELLCHECK_MAX_BYTES=%s bytes of diagnostics — cut there, not counted as linted\n' \
+             "$ME" "${files[flushed]}" "$max_bytes" ;;
         0) linted=$(( linted + 1 )) ;;
         1) linted=$(( linted + 1 )); red=1 ;;   # findings: the file was linted, and is red
         *) red=1                                 # the linter itself failed: not a verdict
@@ -163,7 +167,10 @@ flush() {
 while [ "$flushed" -lt "$n" ]; do
   while [ "$next" -lt "$n" ] && [ "${#slot[@]}" -lt "$width" ]; do
     i="${order[next]}"
-    shellcheck --severity=warning -e SC1091 -- "${files[i]}" </dev/null >"$tmp/$i.out" 2>&1 &
+    # The linter's output is cut at the cap AS IT IS WRITTEN; its status is the linter's own
+    # (PIPESTATUS), and one killed by the cut (SIGPIPE) is a failed lint, red like any other.
+    ( shellcheck --severity=warning -e SC1091 -- "${files[i]}" </dev/null 2>&1 | head -c "$(( max_bytes + 1 ))" >"$tmp/$i.out"
+      exit "${PIPESTATUS[0]}" ) &
     slot[$!]="$i"
     next=$(( next + 1 ))
   done
@@ -178,17 +185,28 @@ while [ "$flushed" -lt "$n" ]; do
     break
   fi
   i="${slot[$done_pid]}"
-  status[$i]="$st"
   unset 'slot[$done_pid]'
-  # Its output is final now: count it as staged until flush emits it. An output whose size cannot be
-  # read is left at 0 here; the flush that cannot read it back is what turns it red.
-  sz="$(wc -c < "$tmp/$i.out" 2>/dev/null)" || sz=0
-  sz="${sz//[!0-9]/}"; staged_size[$i]="${sz:-0}"; staged=$(( staged + ${sz:-0} ))
+  # Its output is final now: count it as staged until flush emits it. A size that cannot be read
+  # STOPS the run: a benign zero would let the cap go unenforced.
+  sz="$(wc -c < "$tmp/$i.out" 2>/dev/null)" && sz="${sz//[!0-9]/}" && [ -n "$sz" ] || {
+    red=1; printf '%s: could not read the size of %s'"'"'s lint output — stopping, the disk cap cannot be enforced\n' "$ME" "${files[i]}"
+    break; }
+  # A CUT OUTPUT IS ITS OWN STATE, whatever the linter returned: its diagnostics are incomplete, so
+  # the file is red and is not counted as linted.
+  if [ "$sz" -gt "$max_bytes" ]; then st="cut"; fi
+  status[$i]="$st"
+  staged_size[$i]="$sz"; staged=$(( staged + sz ))
   flush
   if [ "$staged" -gt "$max_bytes" ]; then
     red=1
-    printf '%s: staged diagnostics reached %s bytes, past ADB_SHELLCHECK_MAX_BYTES=%s — stopping; %s file(s) were never linted\n' \
-      "$ME" "$staged" "$max_bytes" "$(( n - flushed ))"
+    printf '%s: staged diagnostics reached %s bytes, past ADB_SHELLCHECK_MAX_BYTES=%s — stopping\n' "$ME" "$staged" "$max_bytes"
+    # What finished is emitted rather than discarded — out of order, and said so.
+    for k in "${!staged_size[@]}"; do
+      printf '%s: --- %s (finished; emitted out of order because the run stopped) ---\n' "$ME" "${files[k]}"
+      cat "$tmp/$k.out" 2>/dev/null || printf '%s: (its output could not be read back)\n' "$ME"
+    done
+    printf '%s: %s file(s) emitted in order, %s finished but held back (above), %s still running or never started\n' \
+      "$ME" "$flushed" "${#staged_size[@]}" "$(( n - flushed - ${#staged_size[@]} ))"
     break
   fi
 done

@@ -9611,7 +9611,8 @@ survive is the part a later reader needs.
              `implement-gate` under 2, critical path under 15) are to be read off this PR's own run.
              **Owner decisions 2026-10-12 (PR #528's review rounds).** (1) The acceptance target
              "critical path under 15 minutes" is REVISED, not met: PR #528's run 38171915284 measured
-             1357 s, all of it `selfcheck-macos` (58 plain steps, 3339 pool step-seconds on 3 cores),
+             1357 s from first job start to last finish, of which `selfcheck-macos` alone spans 1351 s
+             (58 plain steps, 3339 pool step-seconds on 3 cores),
              so it needs restructuring the macOS leg, which #529 tracks; #456 still closes on what
              it changed. `pattern-ledger` (94 s) and `implement-gate` (113 s) met theirs. (2) The
              wiring pins verify the two DATA paths by executing the workflow's own scripts — the
@@ -9666,15 +9667,17 @@ survive is the part a later reader needs.
              statement (`check-fact-drift.sh` refuses the figure's return).
 
              **Owner decisions 2026-10-12 (PR #528's review rounds).** (1) The two performance
-             targets are REVISED, not met. "Gate under 5s on #452's 74-file branch" cannot be
-             reproduced (#452 has merged); the measured workload is the whole 90-file tree, 18 s
-             under load, and a branch's cost depends on which files it touches. "`shellcheck` job
+             targets are REVISED, not met. "Gate under 5s on #452's 74-file branch" was not measured:
+             the branch's 74-file change set is no longer a live branch to run the gate on, and was
+             not reconstructed; the measured workload is the whole 90-file tree, 18 s under load,
+             and a branch's cost depends on which files it touches. "`shellcheck` job
              under 30 s" is dropped: PR #528's run 38171915284 took 99 s (the lint step 42 s, down
              from 75 s on run 38081150119; the runner self-test beside it 49 s), and the job is not
-             on the critical path. (2) Scratch is CAPPED: a finished file's diagnostics wait until
-             every earlier file is emitted, so a slow early file could hold the rest on disk; the
-             staged total is bounded by `ADB_SHELLCHECK_MAX_BYTES` (default 64 MiB), and passing it
-             stops dispatching and fails red naming the cap.
+             on the critical path. (2) Scratch is CAPPED by `ADB_SHELLCHECK_MAX_BYTES` (default
+             64 MiB) at two points: each worker's output is cut at the cap as it is written (a lint
+             that reached it is red), and the staged total — finished files waiting behind a slower
+             earlier one — stops the run red when it passes the cap, emitting what had finished
+             rather than discarding it. A size that cannot be read stops the run too.
 - placement: `scripts/shellcheck-pool.sh` (new); `.claude/scripts/precommit-gate.sh`;
              `scripts/selfcheck.sh` (`step_shellcheck`); `.github/workflows/ci.yml` (`shellcheck`);
              `scripts/check-precommit-gate.sh` (§17o-17r, §18 — a stub linter, so the contract holds
