@@ -353,7 +353,7 @@ if [ "$MODE" = mutation ]; then
     'no nightly result found (gh run list failed' \
     'as unreadable, distinct from absence'
   shmutant_mut status-parse-status-dropped \
-    '|| emit "last nightly on $branch: unreadable (gh returned a document that does not parse)"' \
+    '|| emit "last nightly on $branch_md: unreadable (gh returned a document that does not parse)"' \
     '|| :' \
     'parses part-way is unreadable'
   shmutant_mut status-url-unvalidated \
