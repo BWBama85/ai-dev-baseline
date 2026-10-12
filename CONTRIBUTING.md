@@ -90,13 +90,15 @@ included, touches one of them against the merge-base with `origin/main`. Held-ba
 before the run and in the `result` block (`gated (inputs unchanged): …`), with the base and inputs
 each was compared on. `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the whole registry,
 every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
-the step. The decision is `scripts/mutation-gate.sh`'s — the same one CI asks per job.
+the step. The decision is `scripts/mutation-gate.sh`'s (CI no longer asks it: since #456 no harness
+runs per pull request).
 
 Since #470 the same question is also asked **per row** for a harness built on per-test rows: a row
 runs when your change touches the file that row mutates, or an input no row targets at all, and is
 otherwise gated — never built, never scored, and named in the harness's tally. The same override
-and the same fail-closed rules apply, and the nightly runs every row regardless, which is what
-bounds a target set that turns out to be too narrow.
+and the same fail-closed rules apply, and the nightly runs every row regardless — so a target set
+that turns out to be too narrow is caught by the next scheduled or on-demand run that happens,
+with no guaranteed bound, since a schedule can be delayed or dropped.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for
@@ -118,21 +120,17 @@ same installer writes and cost seconds, so isolating them is nearly free. Everyt
 temporary directory and runs in the pool. Under `--serial` the prologue steps simply take their
 declared places, and `--only` / `--skip` can leave any of them out.
 
-CI's macOS leg runs six steps fewer: it passes
-`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation`,
-which the ubuntu `adopt`, `pattern-ledger`, `install-guard`, `implement-gate` (two of them) and
-`pr-watch` jobs already run on every relevant PR (#339, PR #429, PR #443, PR #463, PR #504, #448). Your local run is unaffected in *coverage* — a plain
-`bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above — but
-it does get **longer** when the gate lets everything through, because the six isolated steps no
-longer overlap with anything. The dated range above includes that cost; the `result` block is still
-the current answer, as it says.
-
-In CI the same gate wraps every ubuntu `--mutation` step (`mutation-gate.sh run <step> -- <command>`,
-a step-level wrapper rather than a job-level `if:`, so no check context appears or disappears),
-and `.github/workflows/mutation-nightly.yml` runs every `*-mutation` step unconditionally against
-`main` on a daily schedule — a daily attempt (GitHub documents that a `schedule` may be delayed or
-dropped) at catching what a wrong input set hides. `check-mutation-gate.sh` pins
-both: every `--mutation` line in `ci.yml` is gated, and the nightly matrix equals the registry.
+**CI runs no mutation harness per pull request** (#456, D126). `ci.yml` carries no `--mutation`
+step, and the macOS leg skips every `*-mutation` step by a list read from the registry at run time
+(`skip="$(bash scripts/mutation-gate.sh steps --csv)"`, then `selfcheck.sh --skip "$skip"`). They
+run in `.github/workflows/mutation-nightly.yml` — daily against `main`, by `workflow_dispatch`
+(`step=<name>` for one harness), or on a PR you label `run-mutations` — and every PR's `common-lib`
+job summary states the last scheduled run's verdict and age. **If your change edits a guard or a
+library a harness mutates, run that harness on demand** (`bash scripts/mutation-gate.sh touched`
+names them; `gh workflow run mutation-nightly.yml --ref <branch> -f step=<name>`) and link the run
+in the PR: the PR's own CI no longer will. Your local run is unaffected in *coverage* — a plain
+`bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above.
+`check-mutation-gate.sh` pins the wiring, and the nightly's matrix is the registry by construction.
 
 **The whole-suite pool is the vendored [shmutant](https://github.com/BWBama85/shmutant)** (#519,
 D125): `scripts/shmutant.sh`, pinned by digest (`scripts/shmutant.sh.sha256`, checked by

@@ -30,9 +30,14 @@
 #      harness script, `scripts/check-lib.sh` and `scripts/lib/common.sh` — the two files every
 #      harness sources — so a change to the shared scaffold can never be gated away; a step whose
 #      suite runs `check_shmutant_pool` also declares the vendored `scripts/shmutant.sh` (#519);
-#   6. the wiring: every `--mutation` invocation in `.github/workflows/ci.yml` goes through the
-#      gate, and the scheduled workflow's matrix names every `*-mutation` step in the registry, so a
-#      harness cannot be gated per-PR without also being run unconditionally on the schedule.
+#   6. the wiring (#456): `.github/workflows/ci.yml` carries no `--mutation` invocation, direct or
+#      gated, and its macOS leg skips the registry's `*-mutation` set read at run time; the
+#      scheduled workflow's matrix is read from the registry by its plan job, a dispatched `step`
+#      is validated there, and its label trigger adds no required context (asked of discovery);
+#   7. `steps` and `touched` (#456): the registry's harness list in every format and its refusals,
+#      and the per-change answer of which harnesses to dispatch;
+#   8. `scripts/mutation-nightly-status.sh` (#456): every shape of the last nightly's verdict is
+#      stated, none gates, and nothing unvalidated reaches the Markdown summary.
 #
 # Never mutates the tracked tree. Usage: bash scripts/check-mutation-gate.sh (0 = pass, 1 = fail)
 
@@ -79,12 +84,13 @@ check_exit_guard "check-mutation-gate" "rm -rf \"$work\""
 # exists), plus `.github` for the wiring pins — small trees, all of them; `.git` is not copied.
 if [ "$MODE" = mutation ]; then
   # Built ONCE per pool; shmutant clones it for every row, and `shmutant_target` names the file a
-  # row mutates — the gate, ci.yml or the scheduled workflow, one pool each (#519).
+  # row mutates — the gate, ci.yml, the scheduled workflow or the last-nightly reporter, one pool
+  # each (#519).
   mut_prepare() {
     check_copy_subtrees "$ROOT" "$1" scripts .github bin agents .claude base templates >/dev/null 2>&1 || return 1
     cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null || return 1
   }
-  mkdir -p "$work/gate" "$work/ci" "$work/nightly" "$work/registry"
+  mkdir -p "$work/gate" "$work/ci" "$work/nightly" "$work/status" "$work/registry"
   mut_run() {
     local d="$1"
     bash -n "$d/scripts/mutation-gate.sh" 2>/dev/null \
@@ -189,6 +195,28 @@ if [ "$MODE" = mutation ]; then
     'if [ "$n" -eq 0 ]; then   # row-usage' \
     'if false; then   # row-usage' \
     'no rows on stdin is USAGE (2), never a decision'
+  # --- `steps` and `touched` (#456): a wrong answer here is a dispatch typo that runs nothing, or a
+  # change whose harnesses the close-out never dispatches.
+  shmutant_mut steps-only-unvalidated \
+    '      [ -n "$found" ] || {' \
+    '      [ -n "$found" ] || [ -n "$only" ] || {' \
+    'steps --only <unknown>: refused (2)'
+  shmutant_mut touched-failclosed-lists-none \
+    '        11|12) printf '"'"'%s\n'"'"' "$step"; [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
+    '        11|12) [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
+    '…and lists EVERY harness, never none'
+  shmutant_mut steps-narrow-name-grammar \
+    "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]*-mutation\$/'" \
+    "awk -F'\\t' '\$1 ~ /^[a-z0-9-]+-mutation\$/'" \
+    'is listed, not dropped'
+  shmutant_mut steps-filter-status-dropped \
+    '|| { printf '"'"'the registry filter failed — refusing a list it may have cut short\n'"'"' >&2; return 1; }   # row-filter' \
+    '|| true   # row-filter' \
+    'a registry filter that fails part-way'
+  shmutant_mut steps-empty-only-widens \
+    '--only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage;' \
+    '--only) [ "$#" -ge 2 ] || usage;' \
+    'never widened to every harness'
   check_shmutant_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
 
   # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
@@ -196,48 +224,143 @@ if [ "$MODE" = mutation ]; then
   # exists to refuse is the silent guard `self-review.md` warns about.
   shmutant_reset
   shmutant_target .github/workflows/ci.yml
-  shmutant_mut ci-ungated-inline \
-    'run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation' \
-    'run: bash scripts/check-common-lib.sh --mutation' \
-    'ci.yml still invokes a mutation harness directly'
-  # A `run: |` block's body line is an indented bare command with no `run:` on it — the shape a
-  # `run: bash` grep misses. Rendered as one line here because the literal edit is single-line;
-  # the scan does not care what precedes the line, which is the point.
-  shmutant_mut ci-ungated-block-body \
-    '        run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation' \
-    '          bash scripts/check-pr-watch.sh --mutation' \
-    'ci.yml still invokes a mutation harness directly'
-  shmutant_mut ci-foreign-command \
-    'run adopt-mutation -- bash scripts/check-adopt.sh --mutation' \
-    'run adopt-mutation -- bash scripts/check-adopt-readiness.sh --mutation' \
-    'runs the registry'"'"'s own command'
+  # A harness back on the per-PR path, in each of the three spellings the pins refuse.
+  shmutant_mut ci-gated-harness-restored \
+    '        run: bash scripts/mutation-nightly-status.sh' \
+    '        run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation' \
+    'runs a mutation harness through the per-PR gate'
+  shmutant_mut ci-direct-harness-restored \
+    '        run: bash scripts/mutation-nightly-status.sh' \
+    '        run: bash scripts/check-common-lib.sh --mutation' \
+    'invokes a mutation harness directly'
+  shmutant_mut ci-macos-hand-listed-skip \
+    '          bash scripts/selfcheck.sh --skip "$skip" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
+    '          bash scripts/selfcheck.sh --skip adopt-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
+    'without skipping the registry'
+  shmutant_mut ci-macos-skip-overwritten \
+    'echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"' \
+    'read -r skip <<< "adopt-mutation"' \
+    'HANDS selfcheck exactly'
+  shmutant_mut ci-status-condition-moved \
+    "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" \
+    '        # condition removed' \
+    'does not run past an earlier red step'
+  shmutant_mut ci-checkout-id-dropped \
+    '        id: checkout' \
+    '        # id removed' \
+    "carries no 'id: checkout'"
+  shmutant_mut ci-status-permission-dropped \
+    '      actions: read' \
+    '      actions: none' \
+    "does not grant 'actions: read'"
+  shmutant_mut ci-selfcheck-only-harness \
+    '        run: bash scripts/mutation-nightly-status.sh' \
+    '        run: bash scripts/selfcheck.sh --only fact-mutation' \
+    'through selfcheck --only'
+  shmutant_mut ci-status-line-unwired \
+    '        run: bash scripts/mutation-nightly-status.sh' \
+    '        run: "true"' \
+    'no longer runs scripts/mutation-nightly-status.sh'
+  shmutant_mut ci-macos-skip-unread \
+    'skip="$(bash scripts/mutation-gate.sh steps --csv)" ||' \
+    'skip="adopt-mutation" ||' \
+    'does not build its --skip'
   check_shmutant_pool "check-mutation-gate (ci.yml)" "$work/ci" mut_prepare mut_run 4
 
   shmutant_reset
   shmutant_target .github/workflows/mutation-nightly.yml
-  shmutant_mut nightly-drops-a-step \
-    '          - fact-mutation' \
-    '          - fact-mutation-retired' \
-    'matrix is exactly the registry'
-  shmutant_mut nightly-duplicates-a-step \
-    '          - docs-lib-mutation' \
-    '          - fact-mutation' \
-    'matrix is exactly the registry'
+  shmutant_mut nightly-static-matrix \
+    'step: ${{ fromJSON(needs.plan.outputs.steps) }}' \
+    'step: [fact-mutation]' \
+    'matrix is not read from the plan job'
+  shmutant_mut nightly-plan-output-constant \
+    '      steps: ${{ steps.plan.outputs.steps }}' \
+    '      steps: '"'"'["fact-mutation"]'"'"'' \
+    'does not export its'
+  shmutant_mut nightly-plan-not-published \
+    'printf '"'"'steps=%s\n'"'"' "$steps" >> "$GITHUB_OUTPUT"' \
+    'printf '"'"'steps=%s\n'"'"' "$steps" >> /dev/null' \
+    'does not publish the list'
+  shmutant_mut nightly-plan-overwritten \
+    'steps="$(bash scripts/mutation-gate.sh steps --json)" || exit 1' \
+    "steps='[\"fact-mutation\"]'" \
+    'PUBLISHES exactly'
+  shmutant_mut nightly-plan-merge-commit \
+    "ref: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-plan-ref" \
+    "ref: ''   # row-plan-ref" \
+    "labelled PR's HEAD commit"
+  shmutant_mut nightly-harness-merge-commit \
+    "ref: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-harness-ref" \
+    "ref: ''   # row-harness-ref" \
+    "labelled PR's HEAD commit"
+  shmutant_mut nightly-plan-not-needed \
+    '    needs: plan' \
+    '    needs: []' \
+    'does not need the plan job'
+  shmutant_mut nightly-dispatch-input-dropped \
+    "ONLY: \${{ github.event_name == 'workflow_dispatch' && inputs.step || '' }}" \
+    "ONLY: ''" \
+    'does not bind ONLY'
+  shmutant_mut nightly-runner-constant-step \
+    'bash scripts/selfcheck.sh --only "${{ matrix.step }}"' \
+    'bash scripts/selfcheck.sh --only "fact-mutation"' \
+    'does not run its own'
+  shmutant_mut nightly-dispatch-unvalidated \
+    'steps="$(bash scripts/mutation-gate.sh steps --json --only "$ONLY")" || exit 1' \
+    'steps="[\"$ONLY\"]"' \
+    'does not validate a dispatched step'
+  shmutant_mut nightly-label-widened \
+    '    types: [labeled]' \
+    '    types: [labeled, opened, synchronize]' \
+    'narrowed to'
+  shmutant_mut nightly-pull-request-target \
+    '  pull_request:' \
+    '  pull_request_target:' \
+    'must not use pull_request_target'
+  shmutant_mut nightly-any-label \
+    "github.event.label.name == 'run-mutations')" \
+    "github.event.label.name != '')" \
+    'only for the run-mutations label'
   shmutant_mut nightly-override-off \
     "ADB_MUTATION_RUN_ALL: '1'" \
     "ADB_MUTATION_RUN_ALL: '0'" \
     'forces every harness'
-  # Two leading spaces: the header comment mentions `schedule:` too, and the FIRST hit is the one
-  # that is edited — the trigger line is the only one indented exactly so.
   shmutant_mut nightly-per-block \
     "ADB_MUTATION_FULL_SUITE: '1'" \
     "ADB_MUTATION_FULL_SUITE: '0'" \
     'runs every mutant against the full suite'
+  # Two leading spaces: the header comment mentions `schedule:` too, and only the trigger line is
+  # indented exactly so.
   shmutant_mut nightly-unscheduled \
     '  schedule:' \
     '  schedul3:' \
     'has no schedule'
   check_shmutant_pool "check-mutation-gate (nightly)" "$work/nightly" mut_prepare mut_run 4
+
+  # THE LAST-NIGHTLY LINE (#456): each rule whose failure is a misleading line on every PR.
+  shmutant_reset
+  shmutant_target scripts/mutation-nightly-status.sh
+  shmutant_mut status-any-event \
+    '--branch "$branch" --event schedule --limit 1' \
+    '--branch "$branch" --limit 1' \
+    'SCHEDULED runs only'
+  shmutant_mut status-never-stale \
+    '[ "$age" -le "$STALE_SECS" ] || stale=' \
+    '[ "$age" -le 999999999 ] || stale=' \
+    'one second past 48h is STALE'
+  shmutant_mut status-gh-failure-as-absence \
+    'unreadable (gh run list failed' \
+    'no nightly result found (gh run list failed' \
+    'as unreadable, distinct from absence'
+  shmutant_mut status-parse-status-dropped \
+    '|| emit "last nightly on $branch_md: unreadable (gh returned a document that does not parse)"' \
+    '|| :' \
+    'parses part-way is unreadable'
+  shmutant_mut status-url-unvalidated \
+    '[[ "$url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$ ]]' \
+    '[[ "$url" =~ ^https:// ]]' \
+    'a URL carrying Markdown is refused'
+  check_shmutant_pool "check-mutation-gate (nightly-status)" "$work/status" mut_prepare mut_run 4
 
   # SECTION 5's shmutant pin, against a copy of the registry: a ported step that stops declaring the
   # vendored harness it runs would be gated off a change to it, which only this pin reports.
@@ -439,7 +562,13 @@ printf '#!/usr/bin/env bash\necho rows-ran\n' > "$R/scripts/check-rows.sh"
   printf 'inputs gated-mutation   scripts/check-gated.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/stub.sh\n'
   printf 'add rows-mutation       bash scripts/check-rows.sh --mutation\n'
   printf 'inputs rows-mutation    scripts/check-rows.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/stub.sh scripts/lib/other.sh\n'
-  printf 'add bare                bash scripts/check-bare.sh\n'; } > "$work/reg.frag"
+  printf 'add bare                bash scripts/check-bare.sh\n'
+  # A name the registry's grammar allows and a lowercase-only reader would drop (#456 review).
+  printf 'add New_guard-mutation  bash scripts/check-bare.sh --mutation\n'
+  printf 'inputs New_guard-mutation scripts/check-bare.sh scripts/check-lib.sh scripts/lib/common.sh\n'
+  # …and the shortest name it allows, a bare `-mutation`, which a `+` in the reader's regex dropped.
+  printf 'add -mutation           bash scripts/check-bare.sh --mutation-bare\n'
+  printf 'inputs -mutation        scripts/check-bare.sh scripts/check-lib.sh scripts/lib/common.sh\n'; } > "$work/reg.frag"
 awk -v frag="$work/reg.frag" '
   /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
   { print }
@@ -608,6 +737,142 @@ $ARMS
 ARMSEOF
 [ "$n_arms" -ge 4 ] && ok || bad "only $n_arms dispatch arm(s) were checked against the usage text — the scan is reading the wrong block"
 
+# ============================== 7. `steps` and `touched` (#456) ==================================
+# `steps` is the ONE list both workflows read; `touched` is the close-out's question "which harnesses
+# does this change give something new to say?". Asked of the registry fixture built in section 4.
+gate "$R" steps
+eq "$RC_" "0" "steps: reads the registry"
+has "$OUT" "gated-mutation" "steps: …lists a registered *-mutation step"
+hasnt "$OUT" "bare" "steps: …and never a step that is not a *-mutation step"
+gate "$R" steps --json --only gated-mutation
+eq "$OUT" '["gated-mutation"]' "steps --json --only <step>: exactly that one, as a JSON array"
+gate "$R" steps
+has "$OUT" "New_guard-mutation" "steps: a harness name with an underscore and a capital — the registry's grammar — is listed, not dropped"
+printf '%s\n' "$OUT" | grep -qx -- '-mutation' && ok || bad "steps: the bare name '-mutation' the registry allows is listed, not dropped"
+gate "$R" steps --only no-such-mutation
+eq "$RC_" "2" "steps --only <unknown>: refused (2), so a dispatch typo fails before any job starts"
+has "$OUT" "is not a registered *-mutation step" "…and says why"
+gate "$R" steps --only bare
+eq "$RC_" "2" "steps --only <a step that is not a harness>: refused too"
+gate "$R" steps --csv
+case "$OUT" in *gated-mutation*rows-mutation*|*rows-mutation*gated-mutation*) ok ;; *) bad "steps --csv: want both fixture harnesses comma-joined, got: $OUT" ;; esac
+[[ "$OUT" =~ ^[A-Za-z0-9_,-]+$ ]] && ok || bad "steps --csv: one line, names and commas only — got: $OUT"
+gate "$R" steps --bogus
+eq "$RC_" "2" "steps --bogus: usage"
+gate "$R" steps --json --only ''
+eq "$RC_" "2" "steps --only '': usage, never widened to every harness"
+# A registry that cannot be read is exit 3, never an empty list — a matrix of nothing is green.
+NR="$work/noreg"; mkrepo "$NR" || bad "fixture setup: could not build the registry-less repository"
+gate "$NR" steps --json
+eq "$RC_" "3" "steps: an unreadable registry → exit 3, never an empty list"
+gate "$NR" touched
+eq "$RC_" "3" "touched: an unreadable registry → exit 3"
+# A registry FILTER that fails part-way is exit 3 too, never the rows it managed to print: an awk
+# that emits its output and then fails stands in for it (#456 review).
+awkfail="$work/awkfail"; mkdir -p "$awkfail"; realawk="$(command -v awk)"
+printf '#!/usr/bin/env bash\ncase "$*" in *"-mutation\$/"*) %q "$@"; exit 2 ;; esac\nexec %q "$@"\n' "$realawk" "$realawk" > "$awkfail/awk"
+chmod +x "$awkfail/awk"
+OUT="$(cd "$R" && PATH="$awkfail:$PATH" bash scripts/mutation-gate.sh steps --json 2>&1)"; RC_=$?
+eq "$RC_" "3" "steps: a registry filter that fails part-way → exit 3, never the partial list"
+has "$OUT" "refusing a list it may have cut short" "steps: …and says why"
+
+# touched: clean against the base → nothing listed, every decision line on stderr.
+T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "0" "touched: a clean change → exit 0 (decided)"
+eq "$T_OUT" "" "touched: …and lists no harness"
+T_ERR="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>&1 >/dev/null)"
+has "$T_ERR" "SKIP: gated-mutation" "touched: …stating each step's decision on stderr"
+# A change on one input lists exactly the harnesses that declare it.
+printf 'dirty\n' >> "$R/scripts/check-gated.sh"
+T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "0" "touched: a change on one harness's input → exit 0"
+eq "$T_OUT" "gated-mutation" "touched: …lists exactly that harness"
+check_git "$R" checkout -q -- scripts/check-gated.sh
+# Fail-closed and override: every harness listed, each on its own code.
+T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched --base no-such-ref 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "11" "touched: an unresolvable base → exit 11 (fail-closed)"
+eq "$(printf '%s\n' "$T_OUT" | LC_ALL=C sort | tr '\n' ' ')" "$(cd "$R" && bash scripts/mutation-gate.sh steps | LC_ALL=C sort | tr '\n' ' ')" \
+   "touched: …and lists EVERY harness, never none"
+T_OUT="$(cd "$R" && ADB_MUTATION_RUN_ALL=1 bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "12" "touched: ADB_MUTATION_RUN_ALL → exit 12"
+eq "$(printf '%s\n' "$T_OUT" | grep -c .)" "$(cd "$R" && bash scripts/mutation-gate.sh steps | grep -c .)" "touched: …listing every harness"
+
+# ============================== 8. mutation-nightly-status.sh (#456) =============================
+# Driven through a stub `gh` on PATH; the clock is pinned with ADB_NIGHTLY_NOW. The script runs from
+# the shipped tree (it reads nothing there but the default branch).
+NS="$ROOT/scripts/mutation-nightly-status.sh"
+ghs="$work/ghstub"; mkdir -p "$ghs"
+cat > "$ghs/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${GH_STUB_ARGS:?}"
+[ "${GH_STUB_RC:-0}" -eq 0 ] || { echo "gh: HTTP 401" >&2; exit "$GH_STUB_RC"; }
+printf '%s\n' "${GH_STUB_JSON:-[]}"
+STUB
+chmod +x "$ghs/gh"
+T0=1760000000   # 2025-10-09T08:53:20Z
+created="$(jq -rn --argjson t "$T0" '$t | todateiso8601')"
+URL="https://github.com/BWBama85/ai-dev-baseline/actions/runs/123456"
+rec() { jq -cn --arg u "$1" --arg s "$2" --arg c "$3" --arg t "$created" --arg h "$4" \
+          '[{url:$u, status:$s, conclusion:$c, createdAt:$t, headSha:$h}]'; }
+ns() {  # ns <now-offset-secs> <json> [gh-rc] → NOUT/NRC; summary to $work/ns-summary
+  : > "$work/ns-summary"
+  NOUT="$(GH_STUB_ARGS="$work/ns-args" GH_STUB_JSON="$2" GH_STUB_RC="${3:-0}" ADB_NIGHTLY_NOW=$(( T0 + $1 )) \
+          GITHUB_STEP_SUMMARY="$work/ns-summary" PATH="$ghs:$PATH" bash "$NS" 2>&1)"; NRC=$?
+}
+SHA=0123456789abcdef0123456789abcdef01234567
+ns $(( 5 * 3600 )) "$(rec "$URL" completed success "$SHA")"
+eq "$NRC" "0" "nightly-status: a green nightly → exit 0"
+eq "$NOUT" "mutation harnesses: not run per-PR (nightly + on demand); last nightly on main: $URL success 5h ago at 0123456789ab" \
+   "nightly-status: the line names the URL, conclusion, age and commit"
+eq "$(cat "$work/ns-summary")" "- $NOUT" "nightly-status: …and the same line lands in the job summary"
+has "$(cat "$work/ns-args")" "--workflow mutation-nightly.yml" "nightly-status: asks for the nightly workflow"
+has "$(cat "$work/ns-args")" "--event schedule" "nightly-status: …its SCHEDULED runs only, never a dispatch or a label run"
+has "$(cat "$work/ns-args")" "--branch main" "nightly-status: …on the default branch"
+ns 172800 "$(rec "$URL" completed failure "$SHA")"
+eq "$NRC" "0" "nightly-status: a RED nightly still exits 0 (it reports, it does not gate)"
+has "$NOUT" "$URL failure 48h ago" "nightly-status: …and says failure"
+hasnt "$NOUT" "STALE" "nightly-status: exactly 48h is not stale"
+ns 172801 "$(rec "$URL" completed success "$SHA")"
+has "$NOUT" "STALE (older than 48h" "nightly-status: one second past 48h is STALE"
+ns 600 "$(rec "$URL" in_progress "" "$SHA")"
+has "$NOUT" "in_progress (not finished) 10m ago" "nightly-status: an unfinished run is named as such, never as a verdict"
+ns 0 '[]'
+eq "$NRC" "0" "nightly-status: no scheduled run → exit 0"
+has "$NOUT" "last nightly on main: no nightly result found" "nightly-status: …and says so"
+ns 0 '' 1
+eq "$NRC" "0" "nightly-status: gh failing → still exit 0"
+has "$NOUT" "unreadable (gh run list failed" "nightly-status: …reported as unreadable, distinct from absence"
+hasnt "$NOUT" "no nightly result found" "nightly-status: …never as 'no nightly'"
+ns 0 '[] INVALID'
+has "$NOUT" "unreadable (gh returned a document that does not parse)" "nightly-status: a document that parses part-way is unreadable, never 'no nightly'"
+hasnt "$NOUT" "no nightly result found" "nightly-status: …and never reported as absence"
+ns 0 '{"not":"an array"}'
+has "$NOUT" "unreadable (gh returned an unexpected document)" "nightly-status: a non-array document is unreadable"
+# NOTHING UNVALIDATED REACHES MARKDOWN.
+ns 0 "$(rec 'https://github.com/a/b/actions/runs/1) [click](https://evil.example' completed success "$SHA")"
+has "$NOUT" "unreadable (the run URL has an unexpected shape)" "nightly-status: a URL carrying Markdown is refused"
+hasnt "$(cat "$work/ns-summary")" "evil.example" "nightly-status: …and none of it reaches the summary"
+ns 0 "$(rec "$URL" completed 'success**' "$SHA")"
+has "$NOUT" "unreadable (the run conclusion has an unexpected shape)" "nightly-status: a conclusion of an unexpected shape is refused"
+ns 0 "$(rec "$URL" completed success '0123456')"
+has "$NOUT" "unreadable (the run's commit has an unexpected shape)" "nightly-status: an abbreviated commit is refused (GitHub reports the full 40 hex)"
+ns 0 "$(rec "$URL" completed bogus "$SHA")"
+has "$NOUT" "unreadable (the run conclusion has an unexpected shape)" "nightly-status: a conclusion outside GitHub's vocabulary is refused"
+ns 0 '[{"url":"'"$URL"'","status":"completed","conclusion":"success","createdAt":"'"$created"'","headSha":12345}]'
+has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: a field of the wrong JSON type is refused"
+# A timestamp that only PARSES is not valid: `fromdateiso8601` normalizes Feb 30 to Mar 2.
+created_ok="$created"; created='2025-02-30T08:53:20Z'
+ns 0 "$(rec "$URL" completed success "$SHA")"
+has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: an impossible date (Feb 30) is refused, not normalized"
+created='2025-10-9T08:53:20Z'
+ns 0 "$(rec "$URL" completed success "$SHA")"
+has "$NOUT" "unreadable (the run record did not parse)" "nightly-status: an unpadded timestamp is refused"
+created="$created_ok"
+ns 0 "$(rec "$URL" completed success 'not-a-sha')"
+has "$NOUT" "unreadable (the run's commit has an unexpected shape)" "nightly-status: a commit of an unexpected shape is refused"
+NOUT="$(bash "$NS" extra 2>&1)"; NRC=$?
+eq "$NRC" "2" "nightly-status: an argument is usage (2)"
+
 # ============================== 5. the shipped registry =========================================
 LIST="$(bash "$ROOT/scripts/selfcheck.sh" --list)" || bad "the shipped registry could not be listed"
 # A suite that drives `check_mutation_rows` EXECUTES `scripts/mutation-gate.sh` (#470), which in
@@ -670,64 +935,175 @@ EOF
 printf 'check-mutation-gate: %s *-mutation step(s) in the shipped registry checked\n' "$n_mut"
 
 # ============================== 6. the wiring ===================================================
-# Every `--mutation` invocation in ci.yml goes through the gate. The rule is about the INVOCATION,
-# whatever YAML shape carries it: `run: bash …`, a `run: |` block's own line, a folded scalar — any
-# non-comment line that invokes a harness's --mutation mode must be a gate line. A scan keyed on
-# `run: bash` alone would pass a block scalar restoring one harness to unconditional execution
-# (reviewer finding).
-direct="$(grep -nE 'bash scripts/check-[a-z-]+\.sh --mutation' "$ROOT/.github/workflows/ci.yml" \
+# SINCE #456 (D126) NO HARNESS RUNS PER PULL REQUEST. The per-PR gate's wiring (#441) is retired on
+# the CI side: ci.yml carries NO `--mutation` invocation, direct or gated, and the macOS leg skips
+# every `*-mutation` step by a list it reads from the registry. The harnesses run in
+# `mutation-nightly.yml` — scheduled, dispatched, or on a labelled PR — whose matrix IS the registry.
+#
+# The rule is about the INVOCATION, whatever YAML shape carries it: `run: bash …`, a `run: |`
+# block's own line, a folded scalar — any non-comment line that invokes a harness's --mutation mode.
+CI="$ROOT/.github/workflows/ci.yml"
+direct="$(grep -nE 'bash scripts/check-[a-z-]+\.sh --mutation' "$CI" \
            | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'mutation-gate\.sh run ' || true)"
-[ -z "$direct" ] && ok || bad "ci.yml still invokes a mutation harness directly, outside the gate:$direct"
-wired="$(grep -cE '^[^#]*mutation-gate\.sh run [a-z-]+-mutation -- bash scripts/check-[a-z-]+\.sh --mutation' "$ROOT/.github/workflows/ci.yml" || true)"
-[ "${wired:-0}" -gt 0 ] && ok || bad "ci.yml carries no gated mutation invocation at all (the scan matched nothing)"
-printf 'check-mutation-gate: %s gated invocation(s) in ci.yml\n' "$wired"
-# …and every gated line names a step the registry knows, with the registry's own command — the
-# same refusal the gate makes at run time, asked here so a typo fails the PR rather than the job.
+[ -z "$direct" ] && ok || bad "ci.yml invokes a mutation harness directly — harnesses run in mutation-nightly.yml since #456:$direct"
+gated="$(grep -nE '^[^#]*mutation-gate\.sh run [a-z-]+-mutation' "$CI" || true)"
+[ -z "$gated" ] && ok || bad "ci.yml runs a mutation harness through the per-PR gate — harnesses run in mutation-nightly.yml since #456:$gated"
+# …and a `selfcheck.sh --only <x>-mutation` would be the same harness by a third spelling.
+only="$(grep -nE '^[^#]*selfcheck\.sh .*--only[ =][^ ]*-mutation' "$CI" || true)"
+[ -z "$only" ] && ok || bad "ci.yml runs a mutation harness through selfcheck --only:$only"
+n_inv=$(( $(printf '%s' "$direct" | grep -c . || true) + $(printf '%s' "$gated" | grep -c . || true) + $(printf '%s' "$only" | grep -c . || true) ))
+printf 'check-mutation-gate: %s harness invocation(s) in ci.yml\n' "$n_inv"
+
+# THE macOS LEG runs the whole registry less every `*-mutation` step, and the list it skips is READ
+# from the registry at run time — never hand-copied, so a new harness cannot land unskipped. Every
+# active `selfcheck.sh` line there that runs steps (not `--summarize`/`--list`) must skip that list.
+# …and WHAT THE CONSUMER RECEIVES is checked by RUNNING the step's own script, not by reading its
+# spelling: a later `skip=`, a `read -r skip`, any reassignment between the read and the call would
+# pass a pin on the text. Its `run: |` body is extracted, its `bash scripts/selfcheck.sh` replaced by
+# a recorder of the arguments it was given, and the `--skip` value must equal the registry's set.
+# WORKFLOW STRUCTURE COMES FROM THE SHARED READER, `adb_wf_jobs` (common.sh) — its JOB/RANGE/STEP
+# records — never from a second boundary parser here. A job is its RANGE; a step runs from its STEP
+# line to the line before the next one (or the job's end).
+wf_job_text() {  # wf_job_text <file> <job-key> — the job's lines; 1 when it is not found
+  local recs n start end
+  recs="$(adb_wf_jobs "$1")" || return 1
+  n="$(printf '%s\n' "$recs" | awk -F'\t' -v k="$2" '$1 == "JOB" && $3 == k { print $2; exit }')"
+  [ -n "$n" ] || return 1
+  read -r start end < <(printf '%s\n' "$recs" | awk -F'\t' -v n="$n" '$1 == "RANGE" && $2 == n { print $3, $4; exit }')
+  [ -n "${start:-}" ] && [ -n "${end:-}" ] || return 1
+  sed -n "${start},${end}p" "$1"
+}
+wf_step_text() {  # wf_step_text <file> <job-key> <ERE> — the step of that job holding a matching line
+  local recs n end i s e
+  local -a at=()
+  recs="$(adb_wf_jobs "$1")" || return 1
+  n="$(printf '%s\n' "$recs" | awk -F'\t' -v k="$2" '$1 == "JOB" && $3 == k { print $2; exit }')"
+  [ -n "$n" ] || return 1
+  end="$(printf '%s\n' "$recs" | awk -F'\t' -v n="$n" '$1 == "RANGE" && $2 == n { print $4; exit }')"
+  mapfile -t at < <(printf '%s\n' "$recs" | awk -F'\t' -v n="$n" '$1 == "STEP" && $2 == n { print $4 }')
+  for (( i = 0; i < ${#at[@]}; i++ )); do
+    s="${at[i]}"
+    if (( i + 1 < ${#at[@]} )); then e=$(( at[i+1] - 1 )); else e="$end"; fi
+    if sed -n "${s},${e}p" "$1" | grep -qE -- "$3"; then sed -n "${s},${e}p" "$1"; return 0; fi
+  done
+  return 1
+}
+wf_run_body() {  # stdin: one step's text — prints its `run: |` body, de-indented by its own depth
+  awk '
+    !b && /^[[:space:]]*run:[[:space:]]*\|[[:space:]]*$/ { match($0, /^ */); ind = RLENGTH + 2; b = 1; next }
+    b { if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+        match($0, /^ */); if (RLENGTH < ind) exit
+        print substr($0, ind + 1) }'
+}
+macos_body="$(wf_step_text "$CI" selfcheck-macos '^[[:space:]]*- name: The offline suite on Homebrew bash' | wf_run_body)"
+[ -n "$macos_body" ] && ok || bad "could not extract the macOS suite step's run block from ci.yml (the scan matched nothing)"
+recv="$(cd "$ROOT" && RUNNER_TEMP="$work" bash -c "$(printf '%s\n' "$macos_body" | sed 's#bash scripts/selfcheck\.sh#printf "SELFCHECK-ARG:%s\\n"#')" 2>/dev/null | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}')"
+eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls selfcheck with --skip"
+eq "$(printf '%s\n' "$recv" | sed -n 2p | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
+   "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
+   "the macOS suite step HANDS selfcheck exactly the registry's *-mutation steps to skip"
+grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \
+  || bad "ci.yml's selfcheck-macos does not build its --skip from 'bash scripts/mutation-gate.sh steps --csv' (with a failure branch)"
+runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list)' || true)"
+[ -n "$runs_all" ] && ok || bad "ci.yml carries no selfcheck.sh invocation that runs the registry (the scan matched nothing)"
 while IFS= read -r line; do
   [ -n "$line" ] || continue
-  s="$(printf '%s' "$line" | sed -E 's/.*mutation-gate\.sh run ([a-z-]+-mutation) -- (.*)$/\1/')"
-  c="$(printf '%s' "$line" | sed -E 's/.*mutation-gate\.sh run ([a-z-]+-mutation) -- (.*)$/\2/')"
-  regc="$(printf '%s\n' "$LIST" | awk -F'\t' -v s="$s" '$1 == s {print $2}')"
-  eq "$regc" "$c" "ci.yml's gated line for $s runs the registry's own command"
-done <<EOF
-$(grep -E '^[^#]*mutation-gate\.sh run [a-z-]+-mutation -- ' "$ROOT/.github/workflows/ci.yml")
-EOF
+  case "$line" in *'selfcheck.sh --skip "$skip"'*) ok ;; *) bad "ci.yml runs selfcheck.sh without skipping the registry's *-mutation steps: $line" ;; esac
+done <<< "$runs_all"
+# THE LAST-NIGHTLY LINE is wired into a PR job, survives an earlier red step, and may read runs —
+# each asked of THAT JOB's block, so a permission or condition elsewhere in the file cannot stand in.
+cl_job="$(wf_job_text "$CI" common-lib)"
+[ -n "$cl_job" ] && ok || bad "could not extract the common-lib job from ci.yml (the scan matched nothing)"
+printf '%s\n' "$cl_job" | grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' && ok \
+  || bad "the common-lib job no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
+# …and the condition and the checkout id belong to THEIR STEPS, not merely to the job: a condition
+# moved onto another step leaves the reporter on the default `success()`, and an id on the wrong step
+# makes the condition read an unknown outcome. Each step is asked of `wf_step_text`.
+rep_step="$(wf_step_text "$CI" common-lib '^[[:space:]]*run: bash scripts/mutation-nightly-status\.sh$')"
+printf '%s\n' "$rep_step" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \
+  || bad "the last-nightly step does not run past an earlier red step (!cancelled() and a successful checkout)"
+co_step="$(wf_step_text "$CI" common-lib '^[[:space:]]*uses: actions/checkout@')"
+printf '%s\n' "$co_step" | grep -qE '^        id: checkout$' && ok \
+  || bad "the common-lib job's checkout carries no 'id: checkout', so the last-nightly condition reads an unknown step"
+printf '%s\n' "$cl_job" | grep -qE '^      actions: read$' && ok \
+  || bad "the common-lib job does not grant 'actions: read', which the last-nightly line needs to list runs"
+# The list it reads is exactly the registry's set — the subcommand is the one home, asserted here.
+eq "$(bash "$ROOT/scripts/mutation-gate.sh" steps --csv | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
+   "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
+   "mutation-gate.sh steps --csv is exactly the registry's *-mutation steps (the macOS skip list)"
 
-# The scheduled workflow runs EVERY *-mutation step unconditionally: its matrix is the registry's
-# list, and the run sets the override. A step gated per-PR and absent here would be a harness that
-# never runs anywhere until its inputs change — which is exactly "never" for a shared-helper
-# regression the filter cannot see.
+# THE SCHEDULED WORKFLOW runs every *-mutation step unconditionally, and its matrix is READ from the
+# registry by its plan job — so a harness cannot exist in the registry and be absent from the
+# schedule. What is pinned is that wiring; the list itself has no copy in the file to drift.
 NIGHTLY="$ROOT/.github/workflows/mutation-nightly.yml"
 [ -f "$NIGHTLY" ] && ok || bad "the scheduled workflow $NIGHTLY is missing"
 if [ -f "$NIGHTLY" ]; then
-  has "$(cat "$NIGHTLY")" "ADB_MUTATION_RUN_ALL: '1'" "the scheduled workflow forces every harness (ADB_MUTATION_RUN_ALL)"
-  # Per-PR runs score a per-test row against its own block (#468); the schedule is the one run that
-  # scores every row against the whole suite, which is what catches a block that under-declares.
-  has "$(cat "$NIGHTLY")" "ADB_MUTATION_FULL_SUITE: '1'" "the scheduled workflow runs every mutant against the full suite (ADB_MUTATION_FULL_SUITE)"
-  grep -qE '^[[:space:]]*schedule:' "$NIGHTLY" && ok || bad "the scheduled workflow has no schedule: trigger"
-  grep -qE '^[[:space:]]*pull_request' "$NIGHTLY" && bad "the scheduled workflow must not carry a pull_request trigger (it would become a discoverable required context)" || ok
-  # THE MATRIX ITSELF — `strategy.matrix.step` by indentation — not every `- name` in the file: a
-  # step listed anywhere else would satisfy a whole-file grep while the matrix had lost it
-  # (reviewer finding). Equality, both directions, and no duplicates: a name the registry does not
-  # know fails the schedule on a name `--only` refuses, and a duplicate runs one harness twice.
-  matrix_items() {
-    awk '
-      function ind(s) { match(s, /^ */); return RLENGTH }
-      /^[[:space:]]*(#.*)?$/ { next }
-      !inm && /^[[:space:]]*matrix:[[:space:]]*$/ { inm = 1; mi = ind($0); next }
-      inm && !ins && ind($0) <= mi { inm = 0 }
-      inm && !ins && /^[[:space:]]*step:[[:space:]]*$/ { ins = 1; si = ind($0); next }
-      ins {
-        if (ind($0) <= si) { ins = 0; inm = 0; next }
-        if (match($0, /^[[:space:]]*- /)) { v = substr($0, RLENGTH + 1); sub(/[[:space:]]+(#.*)?$/, "", v); print v }
-      }
-    ' "$1"
+  nt="$(cat "$NIGHTLY")"
+  has "$nt" "ADB_MUTATION_RUN_ALL: '1'" "the scheduled workflow forces every harness (ADB_MUTATION_RUN_ALL)"
+  # Per-block runs score a per-test row against its own block (#468); this workflow scores every row
+  # against the whole suite, which is what catches a block that under-declares.
+  has "$nt" "ADB_MUTATION_FULL_SUITE: '1'" "the scheduled workflow runs every mutant against the full suite (ADB_MUTATION_FULL_SUITE)"
+  grep -qE '^  schedule:' "$NIGHTLY" && ok || bad "the scheduled workflow has no schedule: trigger"
+  grep -qE '^      step:$' "$NIGHTLY" && ok || bad "the scheduled workflow's workflow_dispatch has no 'step' input (#456)"
+  grep -qE '^[[:space:]]*step: \$\{\{ fromJSON\(needs\.plan\.outputs\.steps\) \}\}[[:space:]]*$' "$NIGHTLY" && ok \
+    || bad "the scheduled workflow's matrix is not read from the plan job (step: \${{ fromJSON(needs.plan.outputs.steps) }})"
+  # …and the WHOLE connection behind it, link by link: the plan step publishes the list it read, the
+  # job exports that step's output, and the matrix job needs the plan. A constant at any link would
+  # pass a pin that checked only the two ends (review finding).
+  grep -qE '^      - name: Read the harness list from the registry$' "$NIGHTLY" \
+    && grep -qE '^        id: plan$' "$NIGHTLY" && ok || bad "the plan job's registry step is not 'id: plan'"
+  grep -qE '^          printf .steps=%s\\n. "\$steps" >> "\$GITHUB_OUTPUT"$' "$NIGHTLY" && ok \
+    || bad "the plan step does not publish the list it read to GITHUB_OUTPUT"
+  grep -qE '^      steps: \$\{\{ steps\.plan\.outputs\.steps \}\}$' "$NIGHTLY" && ok \
+    || bad "the plan job does not export its step's output (outputs.steps: \${{ steps.plan.outputs.steps }})"
+  grep -qE '^    needs: plan$' "$NIGHTLY" && ok || bad "the matrix job does not need the plan job"
+  # …and the two CONSUMER links: the dispatch input reaches the plan through `ONLY`, and each matrix
+  # job runs ITS OWN step. A constant at either would run every harness for a one-step dispatch, or
+  # one harness in every matrix job (review finding).
+  grep -qE "^          ONLY: \\$\\{\\{ github\\.event_name == 'workflow_dispatch' && inputs\\.step \\|\\| '' \\}\\}$" "$NIGHTLY" && ok \
+    || bad "the plan step does not bind ONLY to the dispatch input"
+  grep -qE '^          bash scripts/selfcheck\.sh --only "\$\{\{ matrix\.step \}\}" 2>&1 \| tee ' "$NIGHTLY" && ok \
+    || bad "the matrix job does not run its own matrix.step"
+  # WHAT THE PLAN PUBLISHES, by RUNNING its script: the plan step's `run: |` body is executed with a
+  # scratch GITHUB_OUTPUT, for no input, a one-step input and an unregistered one. A reassignment
+  # between the registry read and the publish would pass every spelling check above.
+  plan_body="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*- name: Read the harness list from the registry$' | wf_run_body)"
+  [ -n "$plan_body" ] && ok || bad "could not extract the plan step's run block from the scheduled workflow (the scan matched nothing)"
+  run_plan() {  # run_plan <ONLY> — sets PLAN_RC and PLAN_OUT (the published `steps=` value)
+    : > "$work/plan-output"
+    (cd "$ROOT" && ONLY="$1" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
+    PLAN_OUT="$(sed -n 's/^steps=//p' "$work/plan-output")"
   }
-  items="$(matrix_items "$NIGHTLY")"
-  [ -n "$items" ] && ok || bad "the scheduled workflow's strategy.matrix.step is empty or unparsed (the scan matched nothing)"
-  eq "$(printf '%s\n' "$items" | LC_ALL=C sort | tr '\n' ' ')" "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
-    "the scheduled workflow's matrix is exactly the registry's *-mutation steps"
-  eq "$(printf '%s\n' "$items" | LC_ALL=C sort | uniq -d | tr '\n' ' ')" "" "…with no duplicates"
+  run_plan ""
+  eq "$PLAN_RC" "0" "the plan step succeeds with no dispatch input"
+  eq "$PLAN_OUT" "$(bash "$ROOT/scripts/mutation-gate.sh" steps --json)" "the plan PUBLISHES exactly the registry's *-mutation steps as the matrix"
+  run_plan fact-mutation
+  eq "$PLAN_OUT" '["fact-mutation"]' "the plan PUBLISHES exactly the one dispatched step"
+  run_plan no-such-mutation
+  no "$PLAN_RC" "the plan step FAILS on an unregistered dispatch input rather than publishing a matrix"
+  eq "$PLAN_OUT" "" "…and publishes nothing for it"
+  grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json --only "\$ONLY"\)" \|\| exit 1$' "$NIGHTLY" && ok \
+    || bad "the plan job does not validate a dispatched step through 'mutation-gate.sh steps --json --only' (with a failure exit)"
+  grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json\)" \|\| exit 1$' "$NIGHTLY" && ok \
+    || bad "the plan job does not read the full matrix through 'mutation-gate.sh steps --json' (with a failure exit)"
+  # The input reaches the shell through env, never interpolated into the script body.
+  if grep -nE '^[[:space:]]*(run:|[a-z]).*\$\{\{ *(inputs|github\.event\.inputs)\.step' "$NIGHTLY" | grep -vE '^[0-9]+:[[:space:]]*ONLY:' | grep -q .; then
+    bad "the dispatch input is interpolated outside the plan step's env (script injection)"
+  else ok; fi
+  # THE LABEL TRIGGER (#456): `pull_request` narrowed to `labeled` alone — never
+  # `pull_request_target`, never `opened`/`synchronize` — and the plan runs only for `run-mutations`.
+  grep -qE '^[^#]*pull_request_target' "$NIGHTLY" && bad "the scheduled workflow must not use pull_request_target (it would run a fork's code with a write token)" || ok
+  eq "$(awk '/^  pull_request:/{f=1; next} f && /^    types:/{print; exit} f && /^  [a-z]/{exit}' "$NIGHTLY")" \
+     "    types: [labeled]" "the scheduled workflow's pull_request trigger is narrowed to 'types: [labeled]'"
+  has "$nt" "github.event.label.name == 'run-mutations'" "the plan job runs on a pull_request only for the run-mutations label"
+  eq "$(grep -cE "ref: \\\$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.sha \|\| '' \}\}" "$NIGHTLY")" "2" \
+     "both jobs check out a labelled PR's HEAD commit, not its merge commit"
+  # …and DISCOVERY ITSELF agrees nothing here is a required context, asked of repo-settings.sh
+  # rather than inferred from the trigger's spelling: zero contexts on stdout.
+  dd="$work/nightly-discovery"; mkdir -p "$dd"; cp "$NIGHTLY" "$dd/"
+  disc="$(bash "$ROOT/scripts/lib/repo-settings.sh" checks --workflow-dir "$dd" 2>/dev/null)"; drc=$?
+  eq "$drc" "0" "repo-settings discovery reads the scheduled workflow"
+  eq "$disc" "" "repo-settings discovery finds no required context in the scheduled workflow"
 fi
 
 check_summary "check-mutation-gate"

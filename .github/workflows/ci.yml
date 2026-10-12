@@ -34,18 +34,13 @@ permissions:
   contents: read
 
 env:
-  # THE BASE THE MUTATION GATE DIFFS AGAINST (#441). `scripts/mutation-gate.sh` decides, per
-  # `--mutation` harness, whether the change under test touched that harness's declared inputs
-  # (`scripts/selfcheck.sh --list`, field 5), and it needs to know what "the change" is relative to:
-  #   pull_request → the PR's base branch, as `origin/<base>` — present because every job that
-  #                  runs a harness checks out with `fetch-depth: 0`;
+  # THE BASE A PER-PR REPORT DIFFS AGAINST — read by the `render-size` job's delta report (#432).
+  # (It was the per-PR mutation gate's base until #456 took the harnesses off this file, D126.)
+  #   pull_request → the PR's base branch, as `origin/<base>`;
   #   push (main)  → the previous tip, `github.event.before`. Forty zeros on a branch's first push
-  #                  and a vanished sha after a force-push, and BOTH are fine here, unlike for the
-  #                  claim lint below: the gate fails CLOSED, so an unresolvable base means every
-  #                  harness RUNS and the line says why. The failure direction is minutes, never
-  #                  coverage.
-  # The scheduled unconditional leg is `mutation-nightly.yml`, which sets ADB_MUTATION_RUN_ALL
-  # instead of a base.
+  #                  and a vanished sha after a force-push; the reader says so rather than guessing.
+  # The name is kept because `scripts/mutation-gate.sh` and the local runner read the same variable
+  # for the same question (`ADB_MUTATION_BASE=<ref>` moves the base in a local run).
   ADB_MUTATION_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
 
 jobs:
@@ -78,8 +73,12 @@ jobs:
           # a not-yet-present agents/*/adapter.sh is picked up automatically
           # once it lands (and never fails this step by being globbed while
           # absent). The bin/ commands have no .sh extension, so they're named
-          # explicitly alongside the *.sh glob.
-          mapfile -t files < <(git ls-files '*.sh' 'bin/agent-init' 'bin/baseline')
+          # explicitly alongside the *.sh glob. NUL-delimited from git to the
+          # linter, so no path is ever word-split (#455).
+          mapfile -d '' -t files < <(git ls-files -z '*.sh' 'bin/agent-init' 'bin/baseline')
+          # `mapfile` reports nothing about its producer: a git that failed part-way would leave a
+          # partial list that lints green. Its status is taken explicitly.
+          wait "$!" || { echo "::error::git ls-files failed — the shell file list is incomplete"; exit 1; }
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no tracked shell files found via 'git ls-files'"
             exit 1
@@ -87,6 +86,12 @@ jobs:
           echo "Linting ${#files[@]} shell file(s):"
           printf '  %s\n' "${files[@]}"
 
+          # THROUGH THE POOL (#455) — the same script the turn-end gate and
+          # selfcheck call: one shellcheck per file across `adb_pool_size`
+          # workers, each file's output emitted whole and in the order listed
+          # above, red once if any file is red, and a last line naming how many
+          # files and workers it used. The policy flags live there, once:
+          #
           # SC1091 ("not following sourced files") is expected: precommit-gate.sh
           # and implement-issue-gate.sh source lib/project-gates.sh via a
           # dynamically resolved relative path shellcheck can't statically follow.
@@ -94,7 +99,7 @@ jobs:
           # --severity=warning drops style/info-level nits (shellcheck's lowest
           # two tiers, e.g. SC2015/SC2016/SC2295-class suggestions) so this gate
           # fails on real correctness findings (warning/error), not style.
-          shellcheck --severity=warning -e SC1091 "${files[@]}"
+          printf '%s\0' "${files[@]}" | bash scripts/shellcheck-pool.sh -0
 
       # The RUNNER that dispatches every other job's local counterpart is itself a guard now (#260),
       # so it gets the treatment guards get here: a deliberately failing step must be observed still
@@ -392,9 +397,13 @@ jobs:
   common-lib:
     name: common-lib
     runs-on: ubuntu-26.04
-    # Above the Linux jobs' 10: the mutation step runs the whole suite once per row, and each run
-    # waits out the stopped-watcher scenarios' windows (D122).
-    timeout-minutes: 20
+    # The Linux jobs' 10: two suites, about 133s on run 38081150119. Its mutation harness runs in
+    # `mutation-nightly.yml` since #456 (D126).
+    timeout-minutes: 10
+    # `actions: read` for the last-nightly line below, which lists this repository's workflow runs.
+    permissions:
+      contents: read
+      actions: read
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -403,13 +412,8 @@ jobs:
         run: bash --version
 
       - name: Checkout
-        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
-        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
-        # neither the base nor a merge-base, so the gate would fail closed and run everything on
-        # every PR, which is exactly the cost it exists to remove.
+        id: checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -420,26 +424,20 @@ jobs:
       - name: Test the mutation harness's blocks and per-test rows (#468)
         run: bash scripts/check-block-rows.sh
 
-      # ...and the install-manifest guards are guards, so every rule is injected with its own defect
-      # and must make the suite go red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is
-      # not evidence — and a mutation whose edit silently fails to apply reports itself observed
-      # while having checked nothing, which is the failure this mode was built after hitting.
-      #
-      # THIS STEP RIDES THE EXISTING JOB rather than adding one, for the reason the `adopt` job
-      # states: a second job is a second required status context for branch protection to grow, and
-      # this split does not earn one.
-      #
-      # THROUGH THE GATE (#441). `mutation-gate.sh run <step> -- <command>` looks the step up in
-      # `scripts/selfcheck.sh --list`, refuses a step it does not know or a command that is not the
-      # registry's own for it, and then runs the harness ONLY when this change touches the step's
-      # declared inputs — printing a stated SKIP (base, merge-base, count compared, inputs) to the
-      # log and the job summary otherwise. A skip is a green step of THIS job, so the job's check
-      # context reports exactly as before; nothing here is a job-level `if:`, and branch protection
-      # sees no new or missing context. The harness still runs unconditionally once a day:
-      # `.github/workflows/mutation-nightly.yml`. Every other `--mutation` step in this file is the
-      # same shape and says so by pointing here.
-      - name: ...and the manifest guards must be able to fail — every mutation observed RED (#324, #437)
-        run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation
+      # THE MUTATION HARNESSES' LAST VERDICT, on every PR (#456, D126). No `--mutation` harness runs
+      # per pull request any more — `mutation-nightly.yml` runs them all on a schedule, by dispatch
+      # (`step=<name>` for one) or on a PR labelled `run-mutations` — so this states where the
+      # verdict went: the last SCHEDULED run on the default branch, its conclusion and its age, STALE
+      # past 48h, `no nightly result found` or `unreadable (…)` rather than silence. It REPORTS and
+      # never gates: the script exits 0 on every one of those. It rides this job rather than adding
+      # one, because a new job is a new status context for branch protection to grow. `!cancelled()`
+      # rather than the default `success()`: a red suite earlier in this job must not take the line
+      # off the PR with it. It needs only the checkout, so it runs whenever that step succeeded.
+      - name: "Mutation harnesses: not run per-PR — the last nightly's verdict (#456)"
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: bash scripts/mutation-nightly-status.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   agent-init:
     name: agent-init
@@ -512,15 +510,9 @@ jobs:
   pr-watch:
     name: pr-watch
     runs-on: ubuntu-26.04
-    # 75, because the mutation step below runs the whole suite once per pool row plus a control, and
-    # since #448 each head-CI row runs its block after a second full control. Measured on this
-    # workstation on 2026-10-07, at load average ~5.5: 32m11s with the pool forced to 2 (42 rows,
-    # ADB_POOL_JOBS=2) — before a hosted runner's slower CPU is counted, and beside the plain suite
-    # (~3m) and the pr-threads harness after it (11 rows, #437: 2m13s with the pool forced to 2). A
-    # job that times out is a red CI leg that says nothing about the diff, which is the class of
-    # defect #394 is about. Rechecked for #519: forced, 32m15s (run 37657746297), and the
-    # whole-suite pools measured 1-22% slower through shmutant (D125) — inside the 75.
-    timeout-minutes: 75
+    # 15 since #456: the 75 it had was for its two mutation steps, which no longer run per PR (1727s
+    # of a 1937s job on run 38081150119). What is left is the two plain suites, ~3.5 minutes there.
+    timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -529,13 +521,7 @@ jobs:
         run: bash --version
 
       - name: Checkout
-        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
-        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
-        # neither the base nor a merge-base, so the gate would fail closed and run everything on
-        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -543,51 +529,10 @@ jobs:
       - name: Unit-test the async-reviewer status detector (#49)
         run: bash scripts/check-pr-watch.sh
 
-      # ...and the bounded-wait cases are guards whose failure mode is SILENCE (#394), so each is
-      # injected with its own defect and must make the suite go red ON ITS OWN NAMED WITNESS.
-      #
-      # THIS STEP RIDES THE EXISTING JOB rather than adding one, for the reason `common-lib` states:
-      # a second job is a second required status context for branch protection to grow, and this
-      # split does not earn one. It runs HERE and not only inside `selfcheck-macos`, because that
-      # aggregate job is macOS: without this step every witness could regress on Linux unseen.
-      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: ...and those cases must be able to fail — every mutation observed RED (#394, #447, #448)
-        run: bash scripts/mutation-gate.sh run pr-watch-mutation -- bash scripts/check-pr-watch.sh --mutation
-        env:
-          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
-          # row's output, a passing one removes itself. The upload step at the end publishes it.
-          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
-
       # Rides this job rather than adding one: a second job is a second required status context for
       # branch protection to grow. One job, two libraries of the same PR-review loop.
       - name: Unit-test the /resolve-pr-threads decision predicates (#416, #418)
         run: bash scripts/check-pr-threads.sh
-
-      # ...and the completeness proof must be able to fail (#418). Its failure mode is SILENCE: the
-      # shipped defect printed exactly what a clean run prints.
-      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: ...and that proof must be able to fail — every mutation observed RED (#418, #437)
-        run: bash scripts/mutation-gate.sh run pr-threads-mutation -- bash scripts/check-pr-threads.sh --mutation
-        env:
-          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
-          # row's output, a passing one removes itself. The upload step at the end publishes it.
-          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
-
-      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
-      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
-      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
-      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
-      - name: Upload a failed mutation pool's evidence (#519)
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: mutation-artifacts-pr-watch
-          path: ${{ runner.temp }}/mutation-artifacts
-          if-no-files-found: ignore
-          retention-days: 14
-          # A re-run of the job uploads under the same name; without this the upload itself fails.
-          overwrite: true
 
   state-assert:
     name: state-assert
@@ -637,8 +582,7 @@ jobs:
         run: bash scripts/check-render-size.sh
 
       # HOW MUCH THIS CHANGE ADDED TO WHAT EVERY INVOCATION LOADS (#432): the same report against
-      # the merge-base with ADB_MUTATION_BASE (workflow `env:` — the base the mutation gate diffs
-      # against), as a table in the job summary, so regrowth is visible on every pull request.
+      # the merge-base with ADB_MUTATION_BASE (workflow `env:`), as a table in the job summary, so regrowth is visible on every pull request.
       # A REPORT: it never fails the job (the step above already fails on mechanics); it runs under
       # `!cancelled()` rather than `always()` so a cancelled run does not keep it alive; and only a
       # hex sha reaches the summary page — the configured base is a branch NAME, which goes to the
@@ -1076,14 +1020,10 @@ jobs:
   implement-gate:
     name: implement-gate
     runs-on: ubuntu-26.04
-    # 75: the job carries two mutation harnesses — session-context (#431; per block since #445) and
-    # review-loop (#491; whole suite per row) — on a runner whose pool adb_pool_size caps at 4 cores.
-    # With both forced on, and session-context still whole-suite, it took 36m37s and 30m53s on PR
-    # #504, too close to the 45 it had. The mutation gate keeps
-    # both off a PR that does not touch their inputs, so the ordinary job stays under a minute; the
-    # bound is for the runs that do. Rechecked for #519: forced, 32m43s (run 37525965580), and the
-    # whole-suite pools measured 1-22% slower through shmutant (D125) — inside the 75.
-    timeout-minutes: 75
+    # 15 since #456: the 75 it had was for its two mutation harnesses (session-context, review-loop),
+    # which no longer run per PR — 906s of a 989s job on run 38081150119. The three suites left took
+    # about 90s there.
+    timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1092,11 +1032,7 @@ jobs:
         run: bash --version
 
       - name: Checkout
-        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441) — see
-        # the `common-lib` job for why a one-commit checkout would make the gate fail closed.
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -1114,38 +1050,10 @@ jobs:
       - name: SessionStart run-state hook — source gate, ownership, containment, phaseHistory (#431)
         run: bash scripts/check-session-context.sh
 
-      # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
-      - name: ...and its guards must be able to fail — each mutation observed RED (#431)
-        run: bash scripts/mutation-gate.sh run session-context-mutation -- bash scripts/check-session-context.sh --mutation
-
       # The local convergence loop (#491) runs between the review and the push of the same
       # /implement-issue run this job's hooks enforce, so it rides this job rather than adding one.
       - name: Local convergence loop — budget, tree binding, carry and block (#491)
         run: bash scripts/check-review-loop.sh
-
-      # THROUGH THE GATE (#441) — the `common-lib` job's mutation step says why.
-      - name: ...and its refusals must be able to fail — each mutation observed RED (#491)
-        run: bash scripts/mutation-gate.sh run review-loop-mutation -- bash scripts/check-review-loop.sh --mutation
-        env:
-          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
-          # row's output, a passing one removes itself. The upload step at the end publishes it.
-          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
-
-      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
-      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
-      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
-      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
-      - name: Upload a failed mutation pool's evidence (#519)
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: mutation-artifacts-implement-gate
-          path: ${{ runner.temp }}/mutation-artifacts
-          if-no-files-found: ignore
-          retention-days: 14
-          # A re-run of the job uploads under the same name; without this the upload itself fails.
-          overwrite: true
 
   install-migration:
     name: install-migration
@@ -1174,9 +1082,9 @@ jobs:
   install-guard:
     name: install-guard
     runs-on: ubuntu-26.04
-    # 120: this job carries settings-fragment-mutation. 15 was outgrown, and so was the 45 that
-    # replaced it — the step ran 2640s and was cancelled on run 34652254652 (D101).
-    timeout-minutes: 240
+    # 15 since #456: the 240 it had was for settings-fragment-mutation (D101), which no longer runs
+    # per PR — 816s of a 918s job on run 38081150119. The two suites left took about 100s there.
+    timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1185,12 +1093,7 @@ jobs:
         run: bash --version
 
       - name: Checkout
-        # fetch-depth: 0 → the mutation gate below needs a merge-base against origin/<base>
-        # to decide whether this change touched the harness's declared inputs. It fails CLOSED
-        # without one, so a shallow clone would silently run every harness on every push.
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -1203,9 +1106,6 @@ jobs:
       # made required (docs/repo-settings.md).
       - name: The settings fragment must own only its own leaves (#248)
         run: bash scripts/check-settings-fragment.sh
-
-      - name: ...and every one of those rules must be observed failing (#248)
-        run: bash scripts/mutation-gate.sh run settings-fragment-mutation -- bash scripts/check-settings-fragment.sh --mutation
 
   pinned-install:
     name: pinned-install
@@ -1264,9 +1164,9 @@ jobs:
         run: bash scripts/check-fact-drift.sh
 
       # The claim lint's own guard suite (#212). Needs no range and no network, so it runs on every
-      # event. Rides THIS job rather than taking its own for the reason stated below on the mutation
-      # steps: a new job is a new check context that branch protection would not require, which is
-      # exactly the drift `repo-settings.sh required-drift` exists to flag.
+      # event. Rides THIS job rather than taking its own: a new job is a new check context that
+      # branch protection would not require, which is exactly the drift `repo-settings.sh
+      # required-drift` exists to flag.
       - name: The claim lint must be observed going RED on every rule it owns (#212)
         run: bash scripts/check-claims.sh --self-test
 
@@ -1298,23 +1198,19 @@ jobs:
         run: bash scripts/check-claims.sh --live --range "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
 
       # The negative half of that lint fails SILENTLY: an `absent:` pattern matching nothing passes
-      # forever while checking nothing (#173, #213). Inject each rule's declared `fires:` witnesses
-      # into a COPY of every file it pins and require the real lint to come back red. Steps of the
-      # SAME job rather than new jobs on purpose — a new job is a new check context that branch
-      # protection would not require, which `repo-settings.sh required-drift` exists to flag.
-      # NOTE the quoting on both names: an unquoted YAML scalar containing `: ` is a parse error,
-      # and a workflow that does not parse runs NO jobs at all.
-      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: "Every absent: pin must be observed FAILING under its own superseded spellings (#213)"
-        run: bash scripts/mutation-gate.sh run fact-mutation -- bash scripts/check-fact-drift.sh --mutation
-
+      # forever while checking nothing (#173, #213). Its proof — each rule's `fires:` witnesses
+      # injected into a COPY of every file it pins, the real lint required to come back red — is the
+      # `fact-mutation` harness, which since #456 runs in `mutation-nightly.yml` rather than per PR.
+      # What stays here is the guard rails' own self-test, which is cheap. NOTE the quoting on the
+      # name: an unquoted YAML scalar containing `: ` is a parse error, and a workflow that does not
+      # parse runs NO jobs at all.
       - name: "...and the witness/mutation guard rails must themselves be observed failing (#213)"
         run: bash scripts/check-fact-drift.sh --self-test
 
       # #3's "release stays project-owned" lint used to be a step of its own here. Since #375 it is
       # a section of check-fact-drift.sh — three of its five groups were already that file's `fact`
       # grammar, and its `roll` boundary needed the `fires:` witnesses and the `--mutation` proof
-      # that only that file can give it — so the two steps above now run it. NOT a new job, then or
+      # that only that file can give it — so the steps above now run it. NOT a new job, then or
       # now: a new job is a new check context branch protection would not require.
 
       # The other half of the same decision: #3 says the PROJECT supplies its own release skill,
@@ -1329,15 +1225,10 @@ jobs:
   adopt:
     name: adopt
     runs-on: ubuntu-26.04
-    # TWO mutation harnesses now run here (#81), each re-running its whole suite once per injected
-    # defect: ~123s and ~441s locally on a 10-core machine, so ~9.5 minutes of the job before the
-    # non-mutation steps — and the second grew with the review round that took it from 21 defects
-    # to 37. A hosted runner is slower and has fewer cores, and a timeout here would read as a real
-    # failure rather than as the capacity problem it is, so the ceiling moves with the work rather
-    # than staying at a number chosen when there was one harness of 21. Rechecked for #519: forced,
-    # 10m30s (run 37525965580), and the whole-suite pools measured 1-22% slower through shmutant
-    # (D125) — inside the 45.
-    timeout-minutes: 45
+    # 10 since #456: the 45 it had was for its two mutation harnesses (adopt, adopt-readiness), which
+    # no longer run per PR — 510s of a 548s job on run 38081150119. The two suites left took about a
+    # minute there.
+    timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1346,13 +1237,7 @@ jobs:
         run: bash --version
 
       - name: Checkout
-        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
-        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
-        # neither the base nor a merge-base, so the gate would fail closed and run everything on
-        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -1367,74 +1252,20 @@ jobs:
       - name: /adopt predicates — classifier, hygiene axes, pin, and the read-only boundary (#20)
         run: bash scripts/check-adopt.sh
 
-      # ...and the suite is a guard, so every load-bearing decision is injected with its own defect
-      # and must make it go red ON ITS OWN NAMED WITNESS. Red for the wrong reason is not evidence.
-      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: /adopt guards must be able to fail — every decision mutated, each observed RED (#20)
-        run: bash scripts/mutation-gate.sh run adopt-mutation -- bash scripts/check-adopt.sh --mutation
-        env:
-          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
-          # row's output, a passing one removes itself. The upload step at the end publishes it.
-          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
-
       # The completion contract rides THIS job rather than a new one, for the reason stated above:
       # a second job is a second required status context for branch protection to grow, and this
-      # split does not earn one. Registering only in selfcheck.sh would exercise these on macOS
-      # alone — and since #339 the second of them runs ONLY here: `selfcheck-macos` skips
-      # `adopt-readiness-mutation` by name, because asking a logic question twice on two platforms
-      # answers it no better. So this step is now the only per-PR execution of it, which is why
-      # check-fact-drift.sh pins the invocation: dropping it here would end that coverage outright
-      # rather than halve it.
+      # split does not earn one. Registering only in selfcheck.sh would exercise it on macOS alone.
+      # Its mutation harness, like every other, runs in `mutation-nightly.yml` since #456.
       - name: adoption completion contract — the twelve rungs and the fail-closed verdict (#81)
         run: bash scripts/check-adopt-readiness.sh
-
-      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: ...and its guards must be able to fail — 38 mutations, each observed RED (#81)
-        run: bash scripts/mutation-gate.sh run adopt-readiness-mutation -- bash scripts/check-adopt-readiness.sh --mutation
-        env:
-          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
-          # row's output, a passing one removes itself. The upload step at the end publishes it.
-          ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
-
-      # THE EVIDENCE OF A FAILED POOL (#519). A row's verdict is a claim about a run nobody can see
-      # once the job ends; with ADB_MUTATION_ARTIFACTS set (on the steps above) `check_shmutant_pool`
-      # runs each pool's workdir there, so shmutant leaves the stream and every row's output in it,
-      # and a pool that passes removes its own. This publishes what is left. `failure()` only, and
-      # `ignore` when nothing was kept: a red that came from somewhere else has nothing to add.
-      - name: Upload a failed mutation pool's evidence (#519)
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: mutation-artifacts-adopt
-          path: ${{ runner.temp }}/mutation-artifacts
-          if-no-files-found: ignore
-          retention-days: 14
-          # A re-run of the job uploads under the same name; without this the upload itself fails.
-          overwrite: true
 
   pattern-ledger:
     name: pattern-ledger
     runs-on: ubuntu-26.04
-    # THIS JOB EXISTS BECAUSE THE MACOS AGGREGATE COULD NO LONGER AFFORD ITS SLOWEST STEP. The
-    # ledger's mutation harness USED TO re-run the whole `check-pattern-ledger.sh` suite once per
-    # injected row; since PR #502 each row runs only the block holding its witness (#468 mode), and
-    # rows whose target the change does not touch are gated out (#470). The rows grew with PR #429's
-    # review rounds: on run 32889697083 that one step was
-    # 1932s of the `selfcheck-macos` job, and the two pushes after it were cancelled by that job's
-    # 45-minute ceiling with the step still running. Same disposition as `adopt-readiness-mutation`
-    # (#339, D87): a mutation harness answers a LOGIC question, not a platform one, so it runs
-    # ONCE, here, and `selfcheck-macos` skips it by name — which makes the step below the harness's
-    # ONLY per-PR execution, and is why check-fact-drift.sh pins the invocation. The ceiling is
-    # sized for the harness on a hosted runner's core count, not inherited from a job that runs
-    # no harness.
-    #
-    # 60 -> 120 (D111). The harness re-runs the whole suite once per row, and the rows grow with
-    # every review round this project records — so its duration climbs on its own, with no change
-    # to the code under test. Measured: 1932s when this job was created (run 32889697083),
-    # 43m07s green on `main` (run 35623007068, 2026-09-21), and cancelled at this ceiling on the
-    # very next pull request (run 35667001548, 56m55s into the step). A 23% margin did not survive
-    # ordinary runner variance. This is the same shape D101 recorded for `install-guard` twice.
-    timeout-minutes: 120
+    # 10: the suite alone, about 80s on run 38081150119. The ledger's mutation harness, which this job
+    # was created for (D87, D111), runs in `mutation-nightly.yml` since #456 (D126). The job stays:
+    # its name is a required check context.
+    timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -1443,25 +1274,13 @@ jobs:
         run: bash --version
 
       - name: Checkout
-        # fetch-depth: 0 because this job runs a mutation harness through the gate (#441), which
-        # diffs against the merge-base with the PR's base branch — and a one-commit checkout has
-        # neither the base nor a merge-base, so the gate would fail closed and run everything on
-        # every PR, which is exactly the cost it exists to remove.
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Pattern-ledger predicates — grammar, readers, promotion, lock, prompt budget (#421)
         run: bash scripts/check-pattern-ledger.sh
-
-      # ...and the suite is a guard, so every load-bearing decision is injected with its own defect
-      # and must make it go red ON ITS OWN NAMED WITNESS. Red for the wrong reason is not evidence.
-      # Gated on its inputs (#441) — see the `common-lib` job for the contract.
-      - name: Pattern-ledger guards must be able to fail — every row mutated, each observed RED (#421)
-        run: bash scripts/mutation-gate.sh run pattern-ledger-mutation -- bash scripts/check-pattern-ledger.sh --mutation
 
   practice-index:
     name: practice-index
@@ -1630,6 +1449,9 @@ jobs:
     # not reproduce. 45 until #445, which made `common-lib-mutation` heavier on a leg that had
     # taken 38m50s (D122). 65 since #519: run 37525965580 took 47m41s with every harness forced, and
     # the five ported `*-mutation` steps this leg runs measured 7-22% slower through shmutant (D125).
+    # Since #456 this leg runs NO mutation harness. The first run without them took 1351s (run
+    # 38171915284, D126), so 65 is now headroom over ~23 minutes on a loaded 3-core runner; it is
+    # re-sized with the leg itself in #529, not trimmed ahead of that.
     timeout-minutes: 65
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1684,29 +1506,31 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      # The offline suite, less SIX steps. shellcheck is installed above for a reason: selfcheck
-      # SKIPs that step when the binary is absent, so without it "the suite on macOS" would be
-      # false in precisely the silent way this repo keeps writing guards against.
+      # The offline suite, less every `*-mutation` step. shellcheck is installed above for a reason:
+      # selfcheck SKIPs that step when the binary is absent, so without it "the suite on macOS" would
+      # be false in precisely the silent way this repo keeps writing guards against.
       #
-      # These six mutation harnesses answer LOGIC questions, not platform ones. Dedicated ubuntu
-      # jobs run each on every relevant PR, and check-fact-drift.sh pins those invocations because
-      # they are each harness's ONLY per-PR execution after this skip. Their non-mutation halves
-      # still run here. Measurements and rationale: D87, D101, D123.
+      # NO MUTATION HARNESS RUNS PER PULL REQUEST (#456, D126). They answer LOGIC questions, not
+      # platform ones, and each costs `rows × suite`; they run in `mutation-nightly.yml` — on a
+      # schedule against the default branch, by dispatch, or on a PR labelled `run-mutations` — and
+      # the `common-lib` job states the last nightly's verdict on every PR. Their plain suites still
+      # run here, as every plain suite does; most also have an ubuntu job, but not all (`docs-lib`
+      # and `bootstrap` run per PR only on this leg).
       #
-      # AND THE MUTATION GATE APPLIES HERE TOO (#441): the runner asks `scripts/mutation-gate.sh`
-      # before dispatching any `*-mutation` step, against ADB_MUTATION_BASE (workflow `env:`), so an
-      # untouched harness is held back by name — the log's GATED line and the result block's
-      # `gated (inputs unchanged):` say which, and why. The fetch-depth above is what makes the
-      # merge-base resolvable; without it the gate fails closed and runs them all.
+      # THE SKIP LIST IS READ FROM THE REGISTRY, never hand-copied (`mutation-gate.sh steps --csv`),
+      # so a new harness cannot land unskipped; an unreadable registry fails the step rather than
+      # skipping nothing. `check-mutation-gate.sh` pins this line.
       #
-      # `pipefail` is load-bearing: without it this step reports tee's cheerful 0 and gates nothing.
-      - name: The offline suite on Homebrew bash, less the steps the ubuntu leg already runs
+      # `pipefail` is load-bearing: without it this step reports tee's cheerful 0.
+      - name: The offline suite on Homebrew bash, less the mutation harnesses (they run nightly)
         run: |
           set -uo pipefail
-          bash scripts/selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          skip="$(bash scripts/mutation-gate.sh steps --csv)" || { echo "::error::could not read the *-mutation steps from the registry"; exit 1; }
+          echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"
+          bash scripts/selfcheck.sh --skip "$skip" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
         env:
-          # Each pool's workdir runs here (#519): a failed one leaves its verdict stream and every
-          # row's output, a passing one removes itself. The upload step at the end publishes it.
+          # A plain suite that runs a pool (`check-roadmap.sh`'s, for one) leaves a failed pool's
+          # verdict stream and every row's output here (#519). The upload step at the end publishes it.
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
 
       # A SEPARATE STEP, not a tail on the one above (review finding). A step that is KILLED — a
@@ -1731,10 +1555,9 @@ jobs:
             || echo "selfcheck failed and the digest could not be produced — open the job log." >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
-      # THE EVIDENCE OF A FAILED POOL (#519) — the whole-suite harnesses this job runs leave a failed
-      # pool's verdict stream and every row's output in ADB_MUTATION_ARTIFACTS (set on the suite step);
-      # this publishes it. Three of them (docs-lib, selfcheck-guard, mutation-gate) have no ubuntu step, so
-      # this is their only per-PR evidence. `failure()` only; `ignore` when nothing was kept.
+      # THE EVIDENCE OF A FAILED POOL (#519) — a plain suite here that runs a pool leaves a failed
+      # pool's verdict stream and every row's output in ADB_MUTATION_ARTIFACTS (set on the suite
+      # step); this publishes it. `failure()` only; `ignore` when nothing was kept.
       - name: Upload a failed mutation pool's evidence (#519)
         if: failure()
         uses: actions/upload-artifact@v7

@@ -1510,8 +1510,10 @@ fact pr-primitives-no-copies 'absent:^_sa_local_slug\(\)' \
 # real dispatcher over a fixture and requires every registered step to execute and its status to
 # reach the exit code. Neither half is sufficient alone; do not delete one on the strength of the
 # other.
+# Since #456 the harness half runs in `mutation-nightly.yml`, whose matrix is READ from the
+# registry — so the registry line is now the whole wiring, and ci.yml carries no `--mutation` line.
 fact fact-mutation-wired 'regex:^[^#]*check-fact-drift\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
+  scripts/selfcheck.sh
 # The self-test mode, pinned the same way and for the same reason (#377). It was
 # `check-fact-guard.sh` until the fold, and the rule moved with it rather than being retired:
 # a mode is exactly as easy to un-wire as a file was.
@@ -1523,63 +1525,39 @@ fact fact-selftest-wired 'regex:^[^#]*check-fact-drift\.sh --self-test' -- \
 # local mirror or CI fails here.
 fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
-# Same family, and it became load-bearing when #339 stopped running this step on the macOS leg.
-# Before that, the ubuntu invocation and the selfcheck registration were redundant halves of one
-# coverage; now `.github/workflows/ci.yml` holds the ONLY per-PR execution of it — `selfcheck-macos`
-# passes `--skip adopt-readiness-mutation`, so the registry entry alone no longer runs anywhere on
-# a pull request. Dropping the ubuntu step would therefore end the coverage outright rather than
-# halve it, and would do so silently: every remaining job stays green, because the thing that
-# stopped happening is a check.
-#
-# BOTH FILES stay pinned, not just the workflow. The registry entry is what a plain local
-# `selfcheck.sh` runs, which is the other half of golden rule 3's promise, and un-wiring it there
-# would leave contributors' pre-push gate quietly one guard short.
-fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
-# The second step `selfcheck-macos` skips by name (PR #429), for the same reason and with the
-# same consequence: the ubuntu `pattern-ledger` job is now the ledger harness's only per-PR
-# execution, and dropping it there would end that coverage silently.
-fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
-# The third step `selfcheck-macos` skips by name, for the same reason: the ubuntu
-# `implement-gate` job is the session-context harness's only per-PR execution after the skip.
-fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
-# The fourth step `selfcheck-macos` skips by name (D101): the ubuntu `install-guard` job is the
-# settings-fragment harness's only per-PR execution after the skip.
-fact settings-fragment-mutation-wired 'regex:^[^#]*check-settings-fragment\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
-# The fifth step `selfcheck-macos` skips by name (#491): the ubuntu `implement-gate` job is the
-# review-loop harness's only per-PR execution after the skip.
-fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
-# The sixth step `selfcheck-macos` skips by name (#448): the ubuntu `pr-watch` job is the pr-watch
-# harness's only per-PR execution after the skip.
-fact pr-watch-mutation-wired 'regex:^[^#]*check-pr-watch\.sh --mutation' -- \
-  scripts/selfcheck.sh .github/workflows/ci.yml
-# Keep the macOS invocation itself fail-closed. Dropping one name would silently restore a second
-# copy of a whole-suite-per-mutation harness to the macOS job.
-fact macos-logic-mutations-skipped \
-  'regex:^[^#]*selfcheck\.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation([^,A-Za-z0-9_-]|$)' -- \
-  .github/workflows/ci.yml
-# …and every document that spells the list out says the same six names, so a contributor reading
-# any of them learns which harnesses the macOS leg does not run.
-# ENDED, not merely present: a list that gained another name would otherwise still contain this one.
-fact macos-skip-list-documented 'regex:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation([^,A-Za-z0-9_-]|$)' -- \
-  CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
-# THE GATE ON ALL OF THEM (#441). Every `--mutation` invocation in ci.yml goes through
-# `scripts/mutation-gate.sh run <step> -- <command>`, which runs the harness only when the change
-# touches the step's declared inputs and prints a stated SKIP otherwise. The positive pin says at
-# least one is wired that way; the `absent:` pin is the one that matters — a bare
-# `run: bash scripts/check-<x>.sh --mutation` is the pre-#441 shape, unconditional and ~40 minutes
-# of critical path, and it is exactly what a copy-paste of an older step would reintroduce. The
-# per-step closure (every gated line names a registered step with the registry's own command, and
-# the nightly matrix names every step) is `scripts/check-mutation-gate.sh`'s.
-fact mutation-gate-wired 'regex:^[^#]*mutation-gate\.sh run [a-z-]*-mutation -- bash scripts/check-[a-z-]*\.sh --mutation' -- \
+# THE MUTATION HARNESSES' REGISTRATIONS (#339, #456). Until #456 these pinned each harness's ubuntu
+# step in ci.yml, because after `selfcheck-macos` skipped it that step was its only per-PR execution.
+# Since #456 (D126) no harness runs per PR: `mutation-nightly.yml` builds its matrix from the
+# registry, so a harness un-registered from `scripts/selfcheck.sh` would silently stop running
+# ANYWHERE — on the schedule, by dispatch and on a labelled PR alike. The registry line is the
+# wiring now, and it is what stays pinned. A plain local `selfcheck.sh` still selects every one.
+fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mutation' -- scripts/selfcheck.sh
+fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- scripts/selfcheck.sh
+fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mutation' -- scripts/selfcheck.sh
+fact settings-fragment-mutation-wired 'regex:^[^#]*check-settings-fragment\.sh --mutation' -- scripts/selfcheck.sh
+fact review-loop-mutation-wired 'regex:^[^#]*check-review-loop\.sh --mutation' -- scripts/selfcheck.sh
+fact pr-watch-mutation-wired 'regex:^[^#]*check-pr-watch\.sh --mutation' -- scripts/selfcheck.sh
+# THE macOS LEG skips EVERY `*-mutation` step, by a list READ from the registry at run time — never
+# a hand-copied one, which is how a new harness would land unskipped. `check-mutation-gate.sh`
+# pins the line's whole shape; this pins the one spelling the documents share.
+fact macos-mutations-skipped 'fixed:mutation-gate.sh steps --csv' -- \
+  .github/workflows/ci.yml CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
+# The hand-written lists it replaced, refused wherever they were spelled: the six-name list (#448)
+# and the three-name list it grew from (#339, PR #429). A list that came back would be a copy the
+# registry no longer governs.
+fact macos-skip-list-retired 'absent:--skip adopt-readiness-mutation,pattern-ledger-mutation' \
+  'fires:selfcheck.sh --skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation 2>&1' \
+  'fires:--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation' -- \
+  .github/workflows/ci.yml CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
+# NO HARNESS IN ci.yml (#456). The per-PR gate's form (#441) and the pre-#441 direct form are both
+# refused there: either one is a harness back on every pull request. The per-step closure (nothing
+# by `--only` either, the macOS skip read from the registry, the nightly's matrix read from it too)
+# is `scripts/check-mutation-gate.sh`'s.
+fact mutation-gate-invocation-retired 'absent:^[^#]*mutation-gate\.sh run [a-z-]*-mutation' \
+  'fires:        run: bash scripts/mutation-gate.sh run common-lib-mutation -- bash scripts/check-common-lib.sh --mutation' -- \
   .github/workflows/ci.yml
 # BOTH YAML SHAPES: the inline `run: bash …` and the bare, indented command line a `run: |` block
-# body is made of. The gated line matches neither — its harness command sits after `-- `, not
-# after `run: ` and not at the start of the line.
+# body is made of.
 fact mutation-direct-invocation-retired 'absent:^([^#]*run: *|[[:space:]]*)bash scripts/check-[a-z-]*\.sh --mutation' \
   'fires:        run: bash scripts/check-common-lib.sh --mutation' \
   'fires:        run: bash scripts/check-pattern-ledger.sh --mutation' \
@@ -1629,6 +1607,15 @@ fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
   'fires:66-72s after' 'fires:measured at 66–72s a turn' 'fires:even 66s per turn is the wrong trade' \
   -- $_sc_cost_docs agents.toml .claude/scripts/precommit-gate.sh \
      docs/per-project-overrides.md .github/workflows/ci.yml
+
+# --- what the TURN-END gate costs (#455) ---------------------------------------------------------
+#
+# The gate's cost grows with the branch (its lint re-checks every shell file the branch touched), so
+# its header and CLAUDE.md's precommit-gate row describe it qualitatively and point at the PASS
+# lines, which print their own seconds (D127). The retired bare figure is refused there.
+fact precommit-gate-cost-stale 'absent:~ ?3 ?s([^0-9a-z]|$)' \
+  'fires:practice-index · fact-drift, ~3s) and says so' 'fires:actually breaks (~3s measured)' \
+  -- CLAUDE.md .claude/scripts/precommit-gate.sh
 
 # --- the serial prologue's lanes, as the two contributor contracts list them (#445) -------------
 #

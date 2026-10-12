@@ -20,8 +20,10 @@
 #
 # The decision that number justified is unchanged and never depended on its size. One command, two
 # cadences, wildly different budgets: the mirror costs minutes per run and a turn-end gate must
-# cost seconds, so this gate runs the FAST subset that catches what a turn actually breaks
-# (~3s measured), and the full mirror stays where it belongs.
+# cost seconds, so this gate runs the FAST subset that catches what a turn actually breaks, and the
+# full mirror stays where it belongs. Its own cost grows with the BRANCH, not the turn: the lint
+# below re-checks every shell file the branch has changed against the default branch. The per-check
+# PASS lines print their own seconds; read those, not a figure here (#455, D127).
 #
 # WHAT THIS DOES NOT COVER, stated rather than implied: everything else `selfcheck.sh` runs — every
 # check-*.sh suite, install dry-run, the migration and guard checks. This is a turn-end smoke test,
@@ -133,11 +135,34 @@ branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
 
 base_ref="origin/$default_branch"
 git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1 || base_ref="$default_branch"
-changed="$( { git diff --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null
-              git diff --no-renames --name-only 2>/dev/null
-              git diff --no-renames --name-only --cached 2>/dev/null
-              git ls-files --others --exclude-standard 2>/dev/null; } | sort -u | sed '/^$/d' )"
-[ -z "$changed" ] && exit 0
+# THE CHANGE SET, NUL-delimited and with EVERY PRODUCER'S STATUS CHECKED (#455, D127): a read that
+# failed would shrink the set — to nothing, and the gate would exit 0 having checked nothing. Each
+# source is read whole and its status taken from `wait "$!"` (a process substitution reports nothing
+# on its own); a failed read BLOCKS, naming it, before the empty-set no-op can be reached.
+changed=()
+enum_err=""
+declare -A _seen=()
+for _src in "diff ${base_ref}...HEAD" "diff" "diff --cached" "ls-files --others"; do
+  _part=()
+  case "$_src" in
+    "diff ${base_ref}...HEAD") mapfile -d '' -t _part < <(git diff -z --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null) ;;
+    diff)                      mapfile -d '' -t _part < <(git diff -z --no-renames --name-only 2>/dev/null) ;;
+    "diff --cached")           mapfile -d '' -t _part < <(git diff -z --no-renames --name-only --cached 2>/dev/null) ;;
+    "ls-files --others")       mapfile -d '' -t _part < <(git ls-files -z --others --exclude-standard 2>/dev/null) ;;
+  esac
+  wait "$!" || { enum_err="${enum_err:+$enum_err; }git $_src failed"; continue; }
+  for f in "${_part[@]}"; do
+    [ -n "$f" ] && [ -z "${_seen[$f]+x}" ] || continue
+    _seen["$f"]=1
+    changed+=("$f")
+  done
+done
+if [ -n "$enum_err" ]; then
+  printf 'precommit-gate: could not enumerate the changed files (%s) — a partial set is never checked as if whole\n' "$enum_err" >&2
+  printf 'precommit-gate: blocking stop — fix the read above, or run `bash scripts/selfcheck.sh` by hand.\n' >&2
+  exit 2
+fi
+[ "${#changed[@]}" -eq 0 ] && exit 0
 
 fail=0
 run() {  # run <label> <cmd...>; report per-check so a red or slow one is attributable
@@ -157,20 +182,38 @@ skip() { printf 'precommit-gate: %-16s SKIP (%s)\n' "$1" "$2" >&2; }
 # extensionless `bin/` entrypoints — because `bin/baseline` and `bin/agent-init` are shell and CI
 # lints them; a `*.sh`-only filter silently skipped them and deferred the failure to push time.
 # (This comment deliberately does not begin with the tool's name: a comment starting `# shellcheck`
-# is parsed as a DIRECTIVE, and this gate rejected itself for it on first run.)
-sh_changed=""
-while IFS= read -r f; do
+# is parsed as a DIRECTIVE.) Read from the checked, NUL-safe set above, so no name is ever
+# word-split.
+sh_files=()
+for f in "${changed[@]}"; do
   case "$f" in
-    *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_changed="${sh_changed:+$sh_changed }$f" ;;
+    *.sh|bin/baseline|bin/agent-init) [ -e "$f" ] && sh_files+=("$f") ;;
   esac
-done <<EOF
-$changed
-EOF
-if [ -z "$sh_changed" ]; then
+done
+
+# THE LINT IS A POOL (#455): one shellcheck per file across `adb_pool_size` workers, through the same
+# `scripts/shellcheck-pool.sh` selfcheck and CI call. The PASS line carries the pool's own count
+# line, so a lint over zero files can never read as a pass — and a pool that exits 0 WITHOUT naming
+# exactly the files it was given, and a worker count between 1 and that number, is a FAIL.
+lint_shell() {
+  local t0=$SECONDS out rc last want="${#sh_files[@]}" w
+  out="$(printf '%s\0' "${sh_files[@]}" | bash "$repo_root/scripts/shellcheck-pool.sh" -0 2>&1)"; rc=$?
+  last="${out##*$'\n'}"
+  if [ "$rc" -eq 0 ] && [[ "$last" =~ ^shellcheck-pool:\ ([0-9]+)\ file\(s\),\ ([0-9]+)\ worker\(s\)$ ]]; then
+    w="${BASH_REMATCH[2]}"
+    if [ "${BASH_REMATCH[1]}" = "$want" ] && [ "$w" -ge 1 ] && [ "$w" -le "$want" ]; then
+      printf 'precommit-gate: %-16s PASS (%ss, %s)\n' shellcheck "$(( SECONDS - t0 ))" "${last#shellcheck-pool: }" >&2
+      return 0
+    fi
+  fi
+  [ "$rc" -eq 0 ] && out="${out:+$out$'\n'}the pool exited 0 without reporting that it linted the $want file(s) it was given"
+  printf 'precommit-gate: %-16s FAIL (%ss)\n%s\n' shellcheck "$(( SECONDS - t0 ))" "$out" >&2
+  fail=1
+}
+if [ "${#sh_files[@]}" -eq 0 ]; then
   :
 elif command -v shellcheck >/dev/null 2>&1; then
-  # shellcheck disable=SC2086  # deliberate word-split: a space-separated file list
-  run shellcheck shellcheck --severity=warning -e SC1091 $sh_changed
+  lint_shell
 else
   # OPTIONAL dependency, exactly as selfcheck.sh treats it. Turning a missing optional tool into a
   # blocking exit 2 would wedge every turn that touches a .sh file on a dev box without it.

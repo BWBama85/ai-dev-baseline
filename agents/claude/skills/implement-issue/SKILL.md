@@ -689,6 +689,43 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   "none red". The wait for CI to conclude belongs to `/resolve-pr-threads <PR#>`, the same hand-off
   as the reviewer's.
 - `--squash` takes its subject from the **PR title** — it must satisfy the commit convention.
+- **Mutation harnesses** (#456) — only where the repo carries `scripts/mutation-gate.sh` with a
+  `touched` subcommand, `.github/workflows/mutation-nightly.yml` with a `step` dispatch input, AND a
+  `.github/workflows/ci.yml` that runs no `--mutation` step (`grep -E '^[^#]*--mutation'` finds
+  none); anywhere else, skip this line silently. There, no harness runs in the PR's own CI. The runs below are **advisory
+  evidence, never a merge gate** (D126): they are not required checks, `open-pr` may already have
+  armed auto-merge, and a guard the PR breaks is otherwise caught by the next nightly — say so in
+  the close-out rather than implying the merge waited for them. Ask which harnesses this change
+  gives something new to say, then start them against the pushed head:
+
+  ```bash
+  bash scripts/mutation-gate.sh touched   # stdout: one step per line · 0 decided (maybe none) · 11/12 every step, listed · 3 unreadable
+  HEAD_SHA="$(git rev-parse HEAD)"; SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # The dispatch names a BRANCH, which can move: confirm its remote tip is the head you mean first.
+  TIP="$(git ls-remote origin "refs/heads/<PR branch>")" || { echo "STOP: could not read the branch tip"; exit 1; }
+  [ "${TIP%%[[:space:]]*}" = "$HEAD_SHA" ] || { echo "STOP: the branch moved — re-read the head before dispatching"; exit 1; }
+  gh workflow run mutation-nightly.yml --ref "<PR branch>" -f step=<step>   # once per listed step
+  ```
+
+  **Correlate before you cite**: a run is this dispatch's only if it is for `$HEAD_SHA`, created at
+  or after `$SINCE`, and its matrix job is named for the step — `gh run list --workflow
+  mutation-nightly.yml --commit "$HEAD_SHA" --event workflow_dispatch --created ">=$SINCE" --limit 100
+  --json databaseId,url,headSha` (100 rows that all match means the list may be cut — say so), then `gh run view <id> --json jobs --jq '.jobs[].name'` must show
+  `mutation-nightly (<step>)`. That is MATCHING evidence, not identity: when more than one run
+  matches (another dispatch of the same step at the same head), link every match and say the
+  evidence is ambiguous rather than picking one. A run that does not register within a few minutes
+  is reported as **not started**, never assumed. More than three steps listed: label the PR `run-mutations`
+  instead, which runs every harness against its head once per labelling — if the label is already
+  on the PR, remove and re-add it (`gh pr edit <N> --remove-label run-mutations`, then
+  `--add-label`), because a label that stays on does not run again; correlate that run the same way
+  with `--event pull_request`. The label path needs the label to EXIST (`gh label list --search
+  run-mutations`) and the PR to be free of merge conflicts, and a label applied with Actions'
+  `GITHUB_TOKEN` starts no workflow — none of those is a dispatch failure; with no label, fall back
+  to one dispatch per step and say why. A PR from a fork takes the label path: a dispatch can only
+  reach a branch of this repository. Add each verified run's URL and `$HEAD_SHA` to the PR body with
+  `gh pr edit`, and name them in the close-out — their outcome, when it lands, is read with
+  `gh run view <id> --json status,conclusion`. Rc 3, a failed dispatch, or a run that never
+  registered: report it under **Needs attention**, naming the steps that did not run.
 
 Do not poll for bot reviews or CI here; report the state and end.
 

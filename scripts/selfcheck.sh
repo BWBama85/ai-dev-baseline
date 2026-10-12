@@ -258,11 +258,11 @@ inputs() {
 
 step_shellcheck() {
   command -v shellcheck >/dev/null 2>&1 || { echo "SKIP (shellcheck not installed)"; return 0; }
-  # Enumerate tracked shell files (+ the extensionless bin/ commands).
-  local files
-  files="$(git ls-files '*.sh' 'bin/agent-init' 'bin/baseline')"
-  # shellcheck disable=SC2086
-  shellcheck --severity=warning -e SC1091 $files
+  # Enumerate tracked shell files (+ the extensionless bin/ commands), NUL-delimited end to end, and
+  # lint them through the pool the turn-end gate and CI also call (#455): one process per file across
+  # `adb_pool_size` workers instead of one process over the whole tree. Its last line names how many
+  # files and workers it used.
+  git ls-files -z '*.sh' 'bin/agent-init' 'bin/baseline' | bash scripts/shellcheck-pool.sh -0
 }
 
 step_build_drift() {
@@ -970,7 +970,7 @@ add mutation-gate       bash scripts/check-mutation-gate.sh
 # BOTH WORKFLOW FILES ARE INPUTS: the rows that un-gate them are literal edits to copies of those
 # files, so a workflow refactor can stop a row applying — a red only this harness would show.
 add mutation-gate-mutation bash scripts/check-mutation-gate.sh --mutation
-inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh .github/workflows/ci.yml .github/workflows/mutation-nightly.yml
+inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/mutation-gate.sh scripts/selfcheck.sh .github/workflows/ci.yml .github/workflows/mutation-nightly.yml scripts/mutation-nightly-status.sh scripts/lib/repo-settings.sh
 
 add install-dry-run     step_install_dry_run
 
@@ -1549,7 +1549,8 @@ done
 
 # ======================================= the gate (#441) =======================================
 # A step that declares inputs runs only when the change under test touches one of them. The
-# DECISION is `scripts/mutation-gate.sh`'s — one home, the same one CI's per-job steps ask — and
+# DECISION is `scripts/mutation-gate.sh`'s — one home (CI asked it per job until #456 took the
+# harnesses off the per-PR path) — and
 # this runner only relays it: the gate's own line is printed for every step it skips, so a reader
 # sees what was compared and against what, never a bare name.
 #

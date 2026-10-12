@@ -24,10 +24,11 @@
 #         2   usage (nothing decided)
 #       0, 11 and 12 all mean RUN; only 10 means skip.
 #   mutation-gate.sh run <step> -- <command>…
-#       CI's form. Looks the step up in `selfcheck.sh --list`, refuses (2) an unknown step, a step
-#       with no declared inputs, or a <command> that is not the registry's own command for that
-#       step — so a workflow line cannot name one harness and run another — then either execs the
-#       command (its status is the step's) or prints the SKIP and exits 0.
+#       CI's form until #456 (no CI step uses it since). Looks the step up in `selfcheck.sh
+#       --list`, refuses (2) an unknown step, a step with no declared inputs, or a <command> that
+#       is not the registry's own command for that step — so a workflow line cannot name one
+#       harness and run another — then either execs the command (its status is the step's) or
+#       prints the SKIP and exits 0.
 #   mutation-gate.sh rows <suite-path> [--base <ref>]     < <row-id><TAB><target> lines
 #       Decide PER ROW (#470), which is the same question one axis finer: a harness re-runs its
 #       whole row table once per injected defect, and each row's defect lands in ONE named file.
@@ -48,6 +49,21 @@
 #   mutation-gate.sh base [--base <ref>]
 #       Print the resolved merge-base the diff is taken against, or exit 3 with the reason it
 #       could not be resolved.
+#   mutation-gate.sh steps [--json|--csv|--lines] [--only <step>]
+#       The registry's `*-mutation` steps (#456) — the ONE source both workflows read instead of
+#       hand-copying the list: `mutation-nightly.yml` builds its matrix from `--json`, and
+#       `selfcheck-macos` builds its `--skip` from `--csv`, so a new harness can never land in one
+#       and not the other. `--only` narrows to one step and REFUSES (2) a name that is not a
+#       registered `*-mutation` step, so a dispatch input is validated before any job starts. Exits 3
+#       when the registry cannot be read or names no `*-mutation` step: an empty list would be a
+#       matrix that runs nothing and a skip that skips nothing, both green.
+#   mutation-gate.sh touched [--base <ref>]
+#       Which harnesses does this change give something new to say (#456)? Asks the same decision
+#       `run` asks, for every `*-mutation` step, and prints each step that would RUN, one per line on
+#       stdout; each step's decision line goes to stderr. Exits 0 (decided — possibly nothing), 11
+#       (the diff could not be established: every step is listed, fail-closed), 12 (the override is
+#       set: every step listed), 3 (the registry could not be read). Since #456 no harness runs per
+#       pull request, so this is how `/implement-issue`'s close-out learns which ones to dispatch.
 #
 # Environment:
 #   ADB_MUTATION_RUN_ALL   non-empty → every decision is RUN, and the line says the override fired.
@@ -94,6 +110,8 @@ usage: bash scripts/$ME should-run <step> [--base <ref>] -- <input-path>...
        bash scripts/$ME run <step> -- <command>...
        bash scripts/$ME rows <suite-path> [--base <ref>]   < <row-id><TAB><target> lines
        bash scripts/$ME base [--base <ref>]
+       bash scripts/$ME steps [--json|--csv|--lines] [--only <step>]
+       bash scripts/$ME touched [--base <ref>]
 EOF
   exit 2
 }
@@ -238,6 +256,21 @@ gate_registry_row() {
   printf '%s\n' "$row"
 }
 
+# gate_mutation_rows — every registry row whose step name ends `-mutation`, in registry order.
+# Non-zero with a reason on stderr when the registry cannot be read, or names none (fail closed: an
+# empty list read as "no harnesses" is a matrix that runs nothing).
+gate_mutation_rows() {
+  local reg rows
+  reg="$(bash "$ROOT/scripts/selfcheck.sh" --list)" \
+    || { printf 'scripts/selfcheck.sh --list failed — cannot read the registry\n' >&2; return 1; }
+  # The registry's own name grammar (`selfcheck.sh`'s `add` accepts [A-Za-z0-9_-]): a narrower one
+  # here would drop a valid harness from both the nightly matrix and the macOS skip list, silently.
+  rows="$(printf '%s\n' "$reg" | awk -F'\t' '$1 ~ /^[A-Za-z0-9_-]*-mutation$/')" \
+    || { printf 'the registry filter failed — refusing a list it may have cut short\n' >&2; return 1; }   # row-filter
+  [ -n "$rows" ] || { printf 'the registry names no *-mutation step\n' >&2; return 1; }
+  printf '%s\n' "$rows"
+}
+
 # gate_registry_inputs <selector> <kind> — that row's declared inputs (field 5), comma-joined.
 gate_registry_inputs() {
   local row inputs
@@ -377,6 +410,71 @@ case "$sub" in
     done
     gate_rows "$suite" "$basearg"
     exit $? ;;
+
+  steps)
+    fmt=lines only=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --json|--csv|--lines) fmt="${1#--}"; shift ;;
+        # An EMPTY selector is usage, never "all": the dispatch path passes an empty input as no
+        # `--only` at all, so an empty one here is a caller bug that must not widen to every harness.
+        --only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; only="$2"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    if ! rows="$(gate_mutation_rows 2>&1)"; then
+      printf '%s: steps: %s\n' "$ME" "$rows" >&2; exit 3
+    fi
+    mapfile -t names < <(printf '%s\n' "$rows" | cut -f1)
+    wait "$!" || { printf '%s: steps: could not read the step names from the registry rows\n' "$ME" >&2; exit 3; }
+    [ "${#names[@]}" -eq "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" ] \
+      || { printf '%s: steps: the step names do not match the registry rows one for one\n' "$ME" >&2; exit 3; }
+    if [ -n "$only" ]; then
+      found=""
+      for nm in "${names[@]}"; do [ "$nm" = "$only" ] && found=1; done
+      [ -n "$found" ] || {
+        printf '%s: steps: %s is not a registered *-mutation step (registered: %s)\n' \
+          "$ME" "$only" "$(IFS=,; printf '%s' "${names[*]}")" >&2
+        exit 2
+      }
+      names=("$only")
+    fi
+    # Every name matched ^[A-Za-z0-9_-]*-mutation$ in the registry read, so none needs JSON escaping.
+    case "$fmt" in
+      lines) printf '%s\n' "${names[@]}" ;;
+      csv)   (IFS=,; printf '%s\n' "${names[*]}") ;;
+      json)  printf '['; sep=""; for nm in "${names[@]}"; do printf '%s"%s"' "$sep" "$nm"; sep=","; done; printf ']\n' ;;
+    esac
+    exit 0 ;;
+
+  touched)
+    basearg=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --base) [ "$#" -ge 2 ] || usage; basearg="$2"; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    if ! rows="$(gate_mutation_rows 2>&1)"; then
+      printf '%s: touched: %s\n' "$ME" "$rows" >&2; exit 3
+    fi
+    worst=0
+    while IFS=$'\t' read -r step _ _ _ inputs; do
+      [ -n "$inputs" ] && [ "$inputs" != "-" ] || {
+        # A harness that declares nothing cannot be gated, so it always has something to say.
+        printf 'RUN: %s — the step declares no inputs\n' "$step" >&2; printf '%s\n' "$step"; continue; }
+      IFS=',' read -r -a inarr <<< "$inputs"
+      line="$(gate_decide "$step" "$basearg" "${inarr[@]}")"; rc=$?
+      printf '%s\n' "$line" >&2
+      case "$rc" in
+        10) : ;;
+        0)  printf '%s\n' "$step" ;;
+        11|12) printf '%s\n' "$step"; [ "$rc" -gt "$worst" ] && worst="$rc" ;;
+        *)  printf '%s: touched %s: the decision failed (rc %s) — listing it, never guessing a skip\n' "$ME" "$step" "$rc" >&2
+            printf '%s\n' "$step"; worst=11 ;;
+      esac
+    done <<< "$rows"
+    exit "$worst" ;;
 
   should-run)
     [ "$#" -ge 1 ] || usage

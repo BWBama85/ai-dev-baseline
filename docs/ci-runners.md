@@ -288,76 +288,65 @@ construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). Mirro
 individually would need another hand-added job every time a `check-*.sh` lands, and the forgotten
 one would be invisible.
 
-**Every mutation harness is gated on its inputs, on both legs (#441, D91).** A `--mutation`
-harness runs its suite once per injected defect to prove that suite can go red, and its
-verdict depends on a small declared input set — the library it mutates, its suite,
-`scripts/check-lib.sh`, `scripts/lib/common.sh`, and for a whole-suite pool the vendored
-`scripts/shmutant.sh` that runs it (#519) — recorded in `scripts/selfcheck.sh --list` (field 5). On a change touching none of it, the harness re-derives the answer it already gave on `main`,
-at ~40 minutes of critical path per PR before #441 (`pattern-ledger-mutation` alone was 37m25s on
-run 32923514377). So each ubuntu `--mutation` step now goes through
-`scripts/mutation-gate.sh run <step> -- <command>`, and `selfcheck-macos` inherits the same gate
-through the runner: the harness runs when the diff against the merge-base with the base branch
-touches an input, and otherwise it is held back with a stated SKIP — base, merge-base, count
-compared, inputs. On ubuntu that line is the gated step's output and is appended to the job
-summary; on macOS it is the runner's `GATED` header line and `gated (inputs unchanged):` result
-line in the captured log (that job's summary step renders failures only).
+**No mutation harness runs per pull request — on either leg (#456, D126).** A `--mutation`
+harness runs its suite once per injected defect to prove that suite can go red, so it costs
+`rows × suite`. From #441 (D91) to #456 each ran per PR behind a gate that held it back when the
+diff did not touch its declared inputs (`scripts/selfcheck.sh --list`, field 5). That gate never
+helps the branch that needs it most: a branch editing a library touches that library's harness for
+its whole life. On #452's branch it was 34 runs and 18h54m of CI wall time in three days; on run
+38081150119 (`main`, 2026-10-10) the harness steps were 1727s of a 1937s `pr-watch` job, 906s of
+989s in `implement-gate`, 816s of 918s in `install-guard`, 621s of 704s in `pattern-ledger`. So
+`ci.yml` carries no `--mutation` invocation at all, and this job skips every `*-mutation` step by a
+list it reads from the registry at run time — `skip="$(bash scripts/mutation-gate.sh steps --csv)"`,
+then `selfcheck.sh --skip "$skip"` — never a hand-copied list, so a new harness cannot land
+unskipped, and an unreadable registry fails the step rather than skipping nothing. The plain suites
+behind every harness still run here, as every plain suite does; most also have an ubuntu job, but
+not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names are unchanged, so
+the required contexts are too.
 
-Three properties are load-bearing. **It is step-level, not job-level.** A job-level `if:` would
-skip the plain suite that shares the job, could not print the SKIP (the runner never starts), and
-is a shape `repo-settings.sh` discovery deliberately excludes — so the job's check context reports
-exactly as it did, and branch protection sees no new or missing context; verified against the live
-required set when #441 landed (`baseline repo status`). **It fails closed.** No repository, an
-unresolvable base (a push whose `github.event.before` is forty zeros), no merge-base (a shallow
-checkout): the harness runs, on the gate's own exit code, and the line says why. The
-harness-carrying jobs check out with `fetch-depth: 0` so that is the exception, not the rule.
-**The gate can be wrong, and the bound on that is a day.** `mutation-nightly.yml` sets
-`ADB_MUTATION_RUN_ALL=1` and runs every `*-mutation` step against `main` on a daily schedule, one
-matrix job per harness (a matrix is fine there and not here — discovery never reads a workflow
-with no `pull_request` trigger); a red one is reported in that job's summary and in the failure
-notification GitHub sends to whoever last edited the cron line — provided that account has Actions
-notifications enabled, a user setting this repository cannot read. GitHub documents that a
-`schedule` may be delayed or dropped under load, so this is a daily *attempt*, not a guarantee.
-It also sets `ADB_MUTATION_FULL_SUITE=1`, so a harness built on per-test rows (#468, D103) scores
-every row against the whole suite there, where a pull request scores it against its own block.
+**Where they run instead: `mutation-nightly.yml`, three ways.** Its matrix is the registry, read by a
+plan job through `mutation-gate.sh steps --json`, so there is no list in that file to drift.
 
-That daily re-run is what makes the **per-row** gate (#470, D108) tolerable — a detection
-opportunity rather than a bound, for the reason stated just above: a `schedule` may be delayed or
-dropped, so nothing here guarantees when a wrongly-gated row is noticed. A row is
-gated when the change touches neither the file that row mutates nor any declared input no row
-targets; `ADB_MUTATION_RUN_ALL=1` turns it off, so the nightly runs every row of every harness.
-The residual imprecision is named rather than denied: a row whose block *executes* another row's
-target can have its verdict changed by a diff that gates it out, and the nightly is the only thing
-that catches it. `ADB_MUTATION_FULL_SUITE` governs breadth per mutant and the gate governs which
-mutants — they are independent, and the nightly turns gating off with `RUN_ALL`, not with this.
-`scripts/check-mutation-gate.sh` pins the wiring — every `--mutation` line in `ci.yml` gated, the
-nightly matrix equal to the registry, every declared input a path that exists — and its
-`--mutation` mode breaks every gate rule whose failure is a wrong SKIP in a copy — and un-gates a
-copy of each workflow file — requiring the suite red on each row's own witness.
+- **Scheduled**, daily, every harness against `main`, with `ADB_MUTATION_RUN_ALL=1` (nothing gated)
+  and `ADB_MUTATION_FULL_SUITE=1` (a per-test-row harness, #468 / D103, scores every row against
+  the whole suite rather than its own block). GitHub documents that a `schedule` may be delayed or
+  dropped under load, so this is a daily *attempt*, not a guarantee. A red one is reported in that
+  job's summary and in the failure notification GitHub sends to whoever last edited the cron line —
+  provided that account has Actions notifications enabled, a user setting this repository cannot read.
+- **Dispatched** (`workflow_dispatch`): no input runs every harness; `step=<name>` runs exactly that
+  one, on the ref chosen at dispatch. The plan job validates the name with `steps --only` before
+  the matrix exists, so a typo fails there rather than producing a run of nothing.
+- **Labelled**: a pull request labelled `run-mutations` (the label must exist in the repository;
+  GitHub starts no workflow for a label applied with Actions' own `GITHUB_TOKEN`, nor for a PR with
+  merge conflicts) runs every harness against its head commit
+  (not the merge commit `pull_request` checks out by default) — once per labelling; remove and re-add
+  the label after a push to run again. The trigger is `pull_request` narrowed to `types: [labeled]`:
+  never `pull_request_target`, so a fork's code runs with the read-only token, and without `opened`
+  and `synchronize` it is a trigger `repo-settings.sh` discovery skips, so nothing in that file can
+  become a required context. `check-mutation-gate.sh` asks discovery itself rather than trusting this.
 
-**Less exactly six named steps — one since #339, one since PR #429, one since PR #443, one since
-PR #463, one since PR #504, one since #448.** The job invokes
-`--skip adopt-readiness-mutation,pattern-ledger-mutation,session-context-mutation,settings-fragment-mutation,review-loop-mutation,pr-watch-mutation`. Each
-runs its suite once per injected defect — whole, or since #468 only the block that holds the row's
-witness — to answer a question about *logic* — can the guards
-fail closed? — and an ubuntu job already answers it on every relevant PR: `adopt` for the first
-(on run 32451790033 it was 680s of a 1086s job that was the run's critical path),
-`pattern-ledger` for the second (on run 32889697083 it was 1932s of a 39.5-minute job, and the
-two pushes after it were cancelled by the job's 45-minute ceiling with that step still running),
-`implement-gate` for the third (on run 33043334817 it took 1370s there while its duplicate
-remained the sole unfinished macOS step at that job's 45-minute ceiling), and `install-guard` for
-the fourth (on run 34564598749 it was cancelled at that job's then 15-minute ceiling and at the
-macOS leg's 45, having last completed in CI at 601s on 2026-09-05; on run 34652254652 the macOS leg
-then passed in 31m3s while the step ran 2640s in `install-guard` and was cancelled at 45, so that
-job now allows 240 — D101), and `implement-gate` for the fifth (on run 36396924698 the macOS leg was
-cancelled at its 45-minute ceiling with `review-loop-mutation` its slowest step at 1556s, while
-`implement-gate` ran the same harness to completion), and `pr-watch` for the sixth (#448 grew it past
-40 mutation rows — measured at 42, 32m11s with the pool forced to 2 — on a leg whose last run had
-taken 47m41s of its 55). The registry is not
-smaller and the local suite is unchanged: these are per-invocation `--skip`s, the log names each
-twice, an unknown name is an error rather than a quiet no-op, and `check-fact-drift.sh` pins all
-six ubuntu invocations because those jobs are now each step's only per-PR execution. The
-non-mutation halves of all six — `adopt-readiness`, `pattern-ledger`, `session-context`,
-`settings-fragment`, `review-loop` and `pr-watch` — still run here, so each keeps macOS coverage.
+**What a PR shows instead.** The `common-lib` job prints one line into its summary,
+`mutation harnesses: not run per-PR (nightly + on demand); last nightly on main: <url> <conclusion>
+<age>` (`scripts/mutation-nightly-status.sh`), from the last *scheduled* run — never a dispatch or a
+label run, which can test fewer harnesses — marked STALE past 48h, `no nightly result found` when
+there is none, and `unreadable (…)` when gh fails, which is not the same thing. It reports and never
+gates. **The trade, said plainly:** a guard a PR breaks is caught by the next nightly or an on-demand
+run, not by that PR's CI — and only once such a run actually happens: a schedule can be delayed or
+dropped, so detection has no guaranteed bound. The plain suite still runs on every PR; the class
+only a harness sees — an assertion that silently stopped being able to fail, or a row whose literal
+no longer matches its target — surfaces at the next successful scheduled or on-demand run.
+`/implement-issue`'s close-out asks `mutation-gate.sh touched` which harnesses a change gives
+something new to say, dispatches each against the PR head and links the runs, as evidence rather
+than a merge gate.
+
+**The local runner is unchanged.** A plain `bash scripts/selfcheck.sh` still selects the whole
+registry and still gates each harness on its inputs (#441), and per row (#470, D108): a row runs
+only when the change touches the file it mutates or a declared input no row targets, an
+approximation the nightly backstops by gating nothing. `scripts/check-mutation-gate.sh` pins the
+wiring — no `--mutation` line in `ci.yml`, direct or gated; this job's skip read from the registry;
+the nightly's matrix read from it too, a dispatched step validated, the label trigger adding no
+required context — and its `--mutation` mode breaks every gate rule whose failure is a wrong SKIP,
+and each wiring pin, in a copy, requiring the suite red on each row's own witness.
 
 **And the load-sensitive suites run in the serial prologue here, as everywhere** (#423).
 `session-currency`, `selfcheck-guard` and `selfcheck-guard-mutation` are the ones that flapped on

@@ -1,27 +1,51 @@
 name: Mutation nightly
 
-# THE UNCONDITIONAL LEG of the mutation harnesses (#441, D91). Per pull request every `--mutation`
-# harness is gated on its declared inputs (`scripts/mutation-gate.sh`); this file sets the override
-# so the gate answers RUN for everything, and runs every `*-mutation` step in the registry against
-# the default branch on a daily schedule. A daily ATTEMPT: GitHub documents that a `schedule` may be
-# delayed or dropped under load.
+# WHERE THE MUTATION HARNESSES RUN (#441, D91; per-PR half superseded by #456, D126). No `--mutation`
+# harness runs per pull request any more: `ci.yml` carries none, and `selfcheck-macos` skips every
+# `*-mutation` step. This file is where they run, in three ways:
+#
+#   - SCHEDULED, daily, every harness against the default branch. A daily ATTEMPT: GitHub documents
+#     that a `schedule` may be delayed or dropped under load. Every PR's job summary states the last
+#     scheduled run's verdict and age (`scripts/mutation-nightly-status.sh`), and says STALE past 48h.
+#   - ON DEMAND, by `workflow_dispatch`: no input runs every harness; `step: <name>` runs exactly
+#     that one, on the ref chosen at dispatch. The name is validated by `mutation-gate.sh steps
+#     --only` before the matrix exists, so a typo fails the plan job instead of running nothing.
+#   - ON A PULL REQUEST LABELLED `run-mutations`: every harness against the PR's HEAD commit (not the
+#     merge commit `pull_request` checks out by default). Once per labelling — a later push does not
+#     re-run it; remove and re-add the label to run again. `pull_request`, never
+#     `pull_request_target`: a fork's code runs with the read-only token, as every other PR check does.
 #
 # ITS OWN FILE, for the two reasons `wsl-smoke.yml` states (a `schedule:` fires a whole file;
-# discovery skips a workflow with no `pull_request` trigger, so nothing here can become a required
-# context). ONE JOB PER HARNESS as a matrix, which is fine here and not in `ci.yml` for the same
-# reason. THE MATRIX IS PINNED TO THE REGISTRY by `scripts/check-mutation-gate.sh`: every
-# `*-mutation` step `selfcheck.sh --list` reports must appear below, once, and nothing else may.
+# discovery must not turn anything here into a required context). The label trigger keeps the second
+# true: it narrows `pull_request` to `types: [labeled]`, and `repo-settings.sh` discovery skips a
+# trigger that lacks both `opened` and `synchronize` — `check-mutation-gate.sh` asks discovery
+# itself, rather than trusting this comment.
+#
+# THE MATRIX IS THE REGISTRY, by construction: the plan job reads it from `selfcheck.sh --list`
+# through `mutation-gate.sh steps --json`, so no list of harnesses lives in this file to drift.
+# `check-mutation-gate.sh` pins that wiring.
 #
 # WHO SEES A RED RUN: GitHub sends scheduled-workflow failure notifications to the user who last
 # modified the cron line below, PROVIDED that user has Actions notifications enabled — a setting
 # this repository cannot read. The `if: failure()` step names the failed harness in the job
-# summary, which is the artifact the notification links to.
+# summary, which is the artifact the notification links to. A dispatched or labelled run reports to
+# whoever started it, in the run and, for a label, in the PR's checks.
 on:
   schedule:
     # Daily, at a minute that is not :00 — GitHub's own guidance: the top of the hour is the
     # contended slot, where a schedule is delayed or dropped.
     - cron: '23 5 * * *'
   workflow_dispatch:
+    inputs:
+      step:
+        description: 'One *-mutation step to run (empty = every harness)'
+        required: false
+        default: ''
+        type: string
+  pull_request:
+    # labeled ONLY — see the header: without `opened` and `synchronize` this trigger is not one
+    # discovery treats as a required context, and it fires once per labelling, not per push.
+    types: [labeled]
 
 permissions:
   contents: read
@@ -33,35 +57,19 @@ env:
   ADB_MUTATION_FULL_SUITE: '1'
 
 jobs:
-  mutation-nightly:
-    name: mutation-nightly (${{ matrix.step }})
+  # THE PLAN: which harnesses this run carries, read from the registry. Runs on the default branch's
+  # schedule, on a dispatch, and on a PR only when the label just added is `run-mutations` (any
+  # other label is a no-op run whose matrix job never starts).
+  plan:
+    name: mutation-nightly (plan)
     runs-on: ubuntu-26.04
     # UPSTREAM ONLY, as `wsl-smoke.yml`: a fork that enables Actions would otherwise run this daily.
-    if: github.repository == 'BWBama85/ai-dev-baseline'
-    # Sized for the largest harness on a hosted runner, not for the median: full-suite
-    # `settings-fragment-mutation` took 160 minutes for 230 rows in `install-guard` (D101). A job
-    # that times out is a red that says nothing about the harness, the class of defect #394 is about.
-    timeout-minutes: 240
-    strategy:
-      # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
-      # the others were about to give.
-      fail-fast: false
-      matrix:
-        step:
-          - common-lib-mutation
-          - pr-watch-mutation
-          - pr-threads-mutation
-          - pattern-ledger-mutation
-          - docs-lib-mutation
-          - adopt-mutation
-          - adopt-readiness-mutation
-          - bootstrap-mutation
-          - fact-mutation
-          - selfcheck-guard-mutation
-          - mutation-gate-mutation
-          - session-context-mutation
-          - settings-fragment-mutation
-          - review-loop-mutation
+    if: >-
+      github.repository == 'BWBama85/ai-dev-baseline'
+      && (github.event_name != 'pull_request' || github.event.label.name == 'run-mutations')
+    timeout-minutes: 10
+    outputs:
+      steps: ${{ steps.plan.outputs.steps }}
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -71,6 +79,56 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The labelled PR's own HEAD, so the registry read is the PR's registry.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-plan-ref
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      # The input reaches the shell through `env`, never interpolated into the script, and
+      # `--only` refuses (2) anything that is not a registered *-mutation step.
+      - name: Read the harness list from the registry
+        id: plan
+        env:
+          ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.step || '' }}
+        run: |
+          set -uo pipefail
+          if [ -n "$ONLY" ]; then
+            steps="$(bash scripts/mutation-gate.sh steps --json --only "$ONLY")" || exit 1
+          else
+            steps="$(bash scripts/mutation-gate.sh steps --json)" || exit 1
+          fi
+          printf 'steps=%s\n' "$steps" >> "$GITHUB_OUTPUT"
+          printf 'harnesses: %s\n' "$steps"
+
+  mutation-nightly:
+    name: mutation-nightly (${{ matrix.step }})
+    needs: plan
+    runs-on: ubuntu-26.04
+    # Sized for the largest harness on a hosted runner, not for the median: full-suite
+    # `settings-fragment-mutation` took 160 minutes for 230 rows in `install-guard` (D101). A job
+    # that times out is a red that says nothing about the harness, the class of defect #394 is about.
+    timeout-minutes: 240
+    strategy:
+      # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
+      # the others were about to give.
+      fail-fast: false
+      matrix:
+        step: ${{ fromJSON(needs.plan.outputs.steps) }}
+    steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # A labelled PR is tested at its HEAD commit, which is what a reader of the PR means by
+          # "this change"; the schedule and a dispatch take the ref the run was started on.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-harness-ref
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -96,8 +154,8 @@ jobs:
           set -uo pipefail
           log="$RUNNER_TEMP/selfcheck.log"
           {
-            printf '## %s went RED on the scheduled unconditional run\n\n' "${{ matrix.step }}"
-            printf 'Its per-PR gate skips it unless its declared inputs change, so this red may be a shared-helper regression the gate could not see. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
+            printf '## %s went RED (%s run)\n\n' "${{ matrix.step }}" "${{ github.event_name }}"
+            printf 'No harness runs in the per-PR CI (#456); this run is where the red was seen. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f "$log" ]; then
             bash scripts/selfcheck.sh --summarize "$log" >> "$GITHUB_STEP_SUMMARY" \
