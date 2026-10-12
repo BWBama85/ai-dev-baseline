@@ -90,13 +90,15 @@ included, touches one of them against the merge-base with `origin/main`. Held-ba
 before the run and in the `result` block (`gated (inputs unchanged): …`), with the base and inputs
 each was compared on. `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the whole registry,
 every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
-the step. The decision is `scripts/mutation-gate.sh`'s — the same one CI asks per job.
+the step. The decision is `scripts/mutation-gate.sh`'s (CI no longer asks it: since #456 no harness
+runs per pull request).
 
 Since #470 the same question is also asked **per row** for a harness built on per-test rows: a row
 runs when your change touches the file that row mutates, or an input no row targets at all, and is
 otherwise gated — never built, never scored, and named in the harness's tally. The same override
-and the same fail-closed rules apply, and the nightly runs every row regardless, which is what
-bounds a target set that turns out to be too narrow.
+and the same fail-closed rules apply, and the nightly runs every row regardless — so a target set
+that turns out to be too narrow is caught by the next scheduled or on-demand run that happens,
+with no guaranteed bound, since a schedule can be delayed or dropped.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for

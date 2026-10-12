@@ -9609,6 +9609,16 @@ survive is the part a later reader needs.
              `common-lib`, `adopt` 10. `selfcheck-macos` (2248 s there) keeps 65 until a run without
              harnesses is measured. The issue's targets (`pattern-ledger` under 4 min,
              `implement-gate` under 2, critical path under 15) are to be read off this PR's own run.
+             **Owner decisions 2026-10-12 (PR #528's review rounds).** (1) The acceptance target
+             "critical path under 15 minutes" is REVISED, not met: PR #528's run 38171915284 measured
+             1357 s, all of it `selfcheck-macos` (58 plain steps, 3339 pool step-seconds on 3 cores),
+             so it needs restructuring the macOS leg, which #529 tracks; #456 still closes on what
+             it changed. `pattern-ledger` (94 s) and `implement-gate` (113 s) met theirs. (2) The
+             wiring pins verify the two DATA paths by executing the workflow's own scripts — the
+             macOS skip list selfcheck receives and the matrix the plan publishes — and scope each
+             step-level condition to its step. Past that, a finding that a deliberate hand-edit of
+             a workflow could slip past a pin is out of scope: these pins guard against accidental
+             drift, the boundary D102 drew for a doctored receipt.
 - placement: `.github/workflows/ci.yml`, `.github/workflows/mutation-nightly.yml`;
              `scripts/mutation-gate.sh` (`steps`, `touched`); `scripts/mutation-nightly-status.sh`
              (new); `scripts/check-mutation-gate.sh` (sections 6-8, its `--mutation` rows, the
@@ -9655,11 +9665,16 @@ survive is the part a later reader needs.
              without it is a FAIL. The "~3s" in the gate header and `CLAUDE.md` became a qualitative
              statement (`check-fact-drift.sh` refuses the figure's return).
 
-             NOT MET OR NOT YET MEASURED, said rather than implied: the issue's "gate under 5s on
-             #452's 74-file branch" is not demonstrated — #452 has merged, and the closest local
-             workload (the whole 90-file tree) took 18 s under load; a 74-file branch of the same
-             files is CPU-bound near its lower bound, so the target depends on which files the branch
-             touches. The CI `shellcheck` job's duration is read off this PR's own run.
+             **Owner decisions 2026-10-12 (PR #528's review rounds).** (1) The two performance
+             targets are REVISED, not met. "Gate under 5s on #452's 74-file branch" cannot be
+             reproduced (#452 has merged); the measured workload is the whole 90-file tree, 18 s
+             under load, and a branch's cost depends on which files it touches. "`shellcheck` job
+             under 30 s" is dropped: PR #528's run 38171915284 took 99 s (the lint step 42 s, down
+             from 75 s on run 38081150119; the runner self-test beside it 49 s), and the job is not
+             on the critical path. (2) Scratch is CAPPED: a finished file's diagnostics wait until
+             every earlier file is emitted, so a slow early file could hold the rest on disk; the
+             staged total is bounded by `ADB_SHELLCHECK_MAX_BYTES` (default 64 MiB), and passing it
+             stops dispatching and fails red naming the cap.
 - placement: `scripts/shellcheck-pool.sh` (new); `.claude/scripts/precommit-gate.sh`;
              `scripts/selfcheck.sh` (`step_shellcheck`); `.github/workflows/ci.yml` (`shellcheck`);
              `scripts/check-precommit-gate.sh` (§17o-17r, §18 — a stub linter, so the contract holds

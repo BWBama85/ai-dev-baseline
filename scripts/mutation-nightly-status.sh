@@ -65,7 +65,11 @@ json="$(gh run list --workflow mutation-nightly.yml --branch "$branch" --event s
           --json url,status,conclusion,createdAt,headSha 2>/dev/null)" \
   || emit "last nightly on $branch: unreadable (gh run list failed — auth, network or API; this is not the same as no run)"
 
-n="$(printf '%s' "$json" | jq -r 'if type == "array" then length else "bad" end' 2>/dev/null)"
+# THE READ'S STATUS IS CHECKED, not only its output: jq prints a document's answer as it parses it,
+# so `[]` followed by garbage prints `0` and THEN fails — and that `0` would report "no nightly"
+# for a response that did not parse.
+n="$(printf '%s' "$json" | jq -r 'if type == "array" then length else "bad" end' 2>/dev/null)" \
+  || emit "last nightly on $branch: unreadable (gh returned a document that does not parse)"
 case "$n" in
   0) emit "last nightly on $branch: no nightly result found" ;;
   1) : ;;

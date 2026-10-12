@@ -241,6 +241,10 @@ if [ "$MODE" = mutation ]; then
     'echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"' \
     'read -r skip <<< "adopt-mutation"' \
     'HANDS selfcheck exactly'
+  shmutant_mut ci-status-condition-moved \
+    "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" \
+    '        # condition removed' \
+    'does not run past an earlier red step'
   shmutant_mut ci-status-permission-dropped \
     '      actions: read' \
     '      actions: none' \
@@ -273,6 +277,10 @@ if [ "$MODE" = mutation ]; then
     'printf '"'"'steps=%s\n'"'"' "$steps" >> "$GITHUB_OUTPUT"' \
     'printf '"'"'steps=%s\n'"'"' "$steps" >> /dev/null' \
     'does not publish the list'
+  shmutant_mut nightly-plan-overwritten \
+    'steps="$(bash scripts/mutation-gate.sh steps --json)" || exit 1' \
+    "steps='[\"fact-mutation\"]'" \
+    'PUBLISHES exactly'
   shmutant_mut nightly-plan-not-needed \
     '    needs: plan' \
     '    needs: []' \
@@ -332,6 +340,10 @@ if [ "$MODE" = mutation ]; then
     'unreadable (gh run list failed' \
     'no nightly result found (gh run list failed' \
     'as unreadable, distinct from absence'
+  shmutant_mut status-parse-status-dropped \
+    '|| emit "last nightly on $branch: unreadable (gh returned a document that does not parse)"' \
+    '|| :' \
+    'parses part-way is unreadable'
   shmutant_mut status-url-unvalidated \
     '[[ "$url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$ ]]' \
     '[[ "$url" =~ ^https:// ]]' \
@@ -819,6 +831,9 @@ ns 0 '' 1
 eq "$NRC" "0" "nightly-status: gh failing → still exit 0"
 has "$NOUT" "unreadable (gh run list failed" "nightly-status: …reported as unreadable, distinct from absence"
 hasnt "$NOUT" "no nightly result found" "nightly-status: …never as 'no nightly'"
+ns 0 '[] INVALID'
+has "$NOUT" "unreadable (gh returned a document that does not parse)" "nightly-status: a document that parses part-way is unreadable, never 'no nightly'"
+hasnt "$NOUT" "no nightly result found" "nightly-status: …and never reported as absence"
 ns 0 '{"not":"an array"}'
 has "$NOUT" "unreadable (gh returned an unexpected document)" "nightly-status: a non-array document is unreadable"
 # NOTHING UNVALIDATED REACHES MARKDOWN.
@@ -937,8 +952,7 @@ printf 'check-mutation-gate: %s harness invocation(s) in ci.yml\n' "$n_inv"
 macos_body="$(awk '
   /^      - name: The offline suite on Homebrew bash/ { f = 1; next }
   f && /^        run: \|$/ { b = 1; next }
-  b && /^        [a-z]+:/ { exit }
-  b && /^      - / { exit }
+  b && /^ {0,9}[^ ]/ { exit }   # the first non-blank line indented less than the block ends it
   b { sub(/^          /, ""); print }
 ' "$CI")"
 [ -n "$macos_body" ] && ok || bad "could not extract the macOS suite step's run block from ci.yml (the scan matched nothing)"
@@ -961,9 +975,20 @@ cl_job="$(awk '/^  common-lib:$/{f=1; print; next} f && /^  [a-z][a-z0-9-]*:$/{e
 [ -n "$cl_job" ] && ok || bad "could not extract the common-lib job from ci.yml (the scan matched nothing)"
 printf '%s\n' "$cl_job" | grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' && ok \
   || bad "the common-lib job no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
-printf '%s\n' "$cl_job" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \
+# …and the condition and the checkout id belong to THEIR STEPS, not merely to the job: a condition
+# moved onto another step leaves the reporter on the default `success()`, and an id on the wrong step
+# makes the condition read an unknown outcome. Each step is the block from its `      - ` line.
+step_of() {  # step_of <job-text> <ERE matching a line inside the step> — prints that whole step
+  printf '%s\n' "$1" | awk -v pat="$2" '
+    /^      - /   { if (hit) { printf "%s", blk; exit } blk = ""; hit = 0 }
+    { blk = blk $0 "\n"; if ($0 ~ pat) hit = 1 }
+    END { if (hit) printf "%s", blk }'
+}
+rep_step="$(step_of "$cl_job" '^        run: bash scripts/mutation-nightly-status\.sh$')"
+printf '%s\n' "$rep_step" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \
   || bad "the last-nightly step does not run past an earlier red step (!cancelled() and a successful checkout)"
-printf '%s\n' "$cl_job" | grep -qE '^        id: checkout$' && ok \
+co_step="$(step_of "$cl_job" '^        uses: actions/checkout@')"
+printf '%s\n' "$co_step" | grep -qE '^        id: checkout$' && ok \
   || bad "the common-lib job's checkout carries no 'id: checkout', so the last-nightly condition reads an unknown step"
 printf '%s\n' "$cl_job" | grep -qE '^      actions: read$' && ok \
   || bad "the common-lib job does not grant 'actions: read', which the last-nightly line needs to list runs"
@@ -1004,6 +1029,29 @@ if [ -f "$NIGHTLY" ]; then
     || bad "the plan step does not bind ONLY to the dispatch input"
   grep -qE '^          bash scripts/selfcheck\.sh --only "\$\{\{ matrix\.step \}\}" 2>&1 \| tee ' "$NIGHTLY" && ok \
     || bad "the matrix job does not run its own matrix.step"
+  # WHAT THE PLAN PUBLISHES, by RUNNING its script: the plan step's `run: |` body is executed with a
+  # scratch GITHUB_OUTPUT, for no input, a one-step input and an unregistered one. A reassignment
+  # between the registry read and the publish would pass every spelling check above.
+  plan_body="$(awk '
+    /^      - name: Read the harness list from the registry$/ { f = 1; next }
+    f && /^        run: \|$/ { b = 1; next }
+    b && /^ {0,9}[^ ]/ { exit }   # the first non-blank line indented less than the block ends it
+    b { sub(/^          /, ""); print }
+  ' "$NIGHTLY")"
+  [ -n "$plan_body" ] && ok || bad "could not extract the plan step's run block from the scheduled workflow (the scan matched nothing)"
+  run_plan() {  # run_plan <ONLY> — sets PLAN_RC and PLAN_OUT (the published `steps=` value)
+    : > "$work/plan-output"
+    (cd "$ROOT" && ONLY="$1" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
+    PLAN_OUT="$(sed -n 's/^steps=//p' "$work/plan-output")"
+  }
+  run_plan ""
+  eq "$PLAN_RC" "0" "the plan step succeeds with no dispatch input"
+  eq "$PLAN_OUT" "$(bash "$ROOT/scripts/mutation-gate.sh" steps --json)" "the plan PUBLISHES exactly the registry's *-mutation steps as the matrix"
+  run_plan fact-mutation
+  eq "$PLAN_OUT" '["fact-mutation"]' "the plan PUBLISHES exactly the one dispatched step"
+  run_plan no-such-mutation
+  no "$PLAN_RC" "the plan step FAILS on an unregistered dispatch input rather than publishing a matrix"
+  eq "$PLAN_OUT" "" "…and publishes nothing for it"
   grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json --only "\$ONLY"\)" \|\| exit 1$' "$NIGHTLY" && ok \
     || bad "the plan job does not validate a dispatched step through 'mutation-gate.sh steps --json --only' (with a failure exit)"
   grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json\)" \|\| exit 1$' "$NIGHTLY" && ok \

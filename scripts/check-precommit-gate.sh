@@ -1140,6 +1140,22 @@ eq "$QRC" "1" "pool: a scratch removal that fails → exit 1, never a pass"
 has "$QOUT" "could not remove the scratch" "pool: …and says so"
 /bin/rm -rf "$work/pooltmp"; mkdir -p "$work/pooltmp"
 
+# 18g5. STAGED DIAGNOSTICS ARE CAPPED ON DISK: a slow FIRST file holds back the output of every
+# file finished after it, so the staged total is bounded by ADB_SHELLCHECK_MAX_BYTES. Past it the
+# pool stops dispatching, reaps what runs, and fails red naming the cap. A malformed cap falls back
+# to the default rather than to no cap at all.
+printf 'SLEEP=2\necho slow\n' > "$pfx/slow.sh"
+for i in 1 2 3 4 5; do printf 'unused=1\n' > "$pfx/f$i.sh"; done
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 ADB_SHELLCHECK_MAX_BYTES=100 TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" slow.sh f1.sh f2.sh f3.sh f4.sh f5.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: staged diagnostics past the byte cap → exit 1"
+has "$QOUT" "past ADB_SHELLCHECK_MAX_BYTES=100" "pool: …and the failure names the cap"
+eq "$(find "$work/pooltmp" -mindepth 1 | wc -l | tr -d ' ')" "0" "pool: …and leaves no scratch behind"
+sc_reset
+QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 ADB_SHELLCHECK_MAX_BYTES=not-a-number TMPDIR="$work/pooltmp" PATH="$scstub:$PATH" bash "$pool" slow.sh f1.sh f2.sh 2>&1)"; QRC=$?
+hasnt "$QOUT" "ADB_SHELLCHECK_MAX_BYTES" "pool: a malformed cap falls back to the default, which these few diagnostics do not reach"
+eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — 3 file(s), 3 worker(s)" "pool: …and the run reaches its ordinary verdict"
+
 # 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
 # file is caught by the linted-count check alone — and with that check neutered, the same slip
 # passes green while linting 11 of 12. One defect, one defence, both answers seen.

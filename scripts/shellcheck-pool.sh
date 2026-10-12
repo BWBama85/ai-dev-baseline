@@ -17,9 +17,12 @@
 #     run that linted nothing can never look like one that passed. "Workers" is the width actually
 #     used, min(W, N), not the configured ceiling.
 #   - NOT bounded in time: a lint that hangs holds the files after it, as the single process this
-#     replaced did. `ADB_SHELLCHECK_JOBS=1` is how a hang is attributed to one file. Scratch holds
-#     each file's diagnostics until it is emitted; that is bounded by the total lint output of the
-#     files given, which every caller consumes whole anyway (the gate captures it, CI prints it);
+#     replaced did. `ADB_SHELLCHECK_JOBS=1` is how a hang is attributed to one file;
+#   - BOUNDED ON DISK: a finished file's diagnostics wait in scratch until every file before it has
+#     been emitted, so a slow early file holds back everything finished after it. That STAGED total
+#     is capped at ADB_SHELLCHECK_MAX_BYTES (default 64 MiB); passing it stops dispatching, reaps the
+#     running workers and fails red, naming the cap. Scratch is then at most the cap plus one
+#     file's output per running worker;
 #   - each file is linted ALONE: by default the linter follows a `source` only into files named in
 #     the same invocation, so that no longer happens within the set (a `.shellcheckrc` enabling
 #     external sources still can). The repo's sources point at `/dev/null` or are excluded by
@@ -42,9 +45,12 @@
 #
 # Environment:
 #   ADB_SHELLCHECK_JOBS  a CAP on the pool width — it lowers the ordinary `adb_pool_size` budget
-#                        (min(cpu, 8), or ADB_POOL_JOBS under the same ceiling), never raises it. `ADB_SHELLCHECK_JOBS=1` forces a serial
-#                        lint, which is how a hang is attributed to one invocation.
+#                        (min(cpu, 8), or ADB_POOL_JOBS under the same ceiling), never raises it.
+#                        `ADB_SHELLCHECK_JOBS=1` forces a serial lint, which is how a hang is
+#                        attributed to one invocation.
 #   ADB_POOL_JOBS        the repo-wide budget `adb_pool_size` already honours; the lower of the two wins.
+#   ADB_SHELLCHECK_MAX_BYTES  the staged-diagnostics cap above, in bytes (a positive integer; any
+#                        other value falls back to the 64 MiB default rather than to "no cap").
 
 # bash 5.3 runtime floor (#256) — FIRST, before `set -u`. Same stanza as every other entry point.
 # shellcheck source=/dev/null
@@ -125,6 +131,11 @@ wait "$!" || { printf '%s: could not order the %s file(s) for dispatch (the sort
 
 status=()            # file index -> shellcheck's exit status, once reaped
 red=0 linted=0 next=0 flushed=0
+max_bytes="${ADB_SHELLCHECK_MAX_BYTES:-}"
+case "$max_bytes" in ''|*[!0-9]*|0*) max_bytes=67108864 ;; esac
+[ "${#max_bytes}" -le 15 ] || max_bytes=67108864
+staged=0
+declare -A staged_size=()   # file index -> bytes, for finished files not yet emitted
 # Emit every finished file whose predecessors have all been emitted. Called after each reap, so the
 # output streams in input order rather than arriving all at once at the end.
 flush() {
@@ -144,6 +155,7 @@ flush() {
     # Emitted: its bytes need not wait for the end of the run. A removal that fails is red — a
     # scratch directory that cannot be cleaned is a fault, never something a green verdict hides.
     rm -f "$tmp/$flushed.out" || { red=1; printf '%s: could not remove the scratch output for %s\n' "$ME" "${files[flushed]}"; }
+    staged=$(( staged - ${staged_size[$flushed]:-0} )); unset 'staged_size[$flushed]'
     flushed=$(( flushed + 1 ))
   done
 }
@@ -165,9 +177,20 @@ while [ "$flushed" -lt "$n" ]; do
     printf '%s: lost track of %s running lint(s) — wait returned %s with no child\n' "$ME" "${#slot[@]}" "$st"
     break
   fi
-  status[${slot[$done_pid]}]="$st"
+  i="${slot[$done_pid]}"
+  status[$i]="$st"
   unset 'slot[$done_pid]'
+  # Its output is final now: count it as staged until flush emits it. An output whose size cannot be
+  # read is left at 0 here; the flush that cannot read it back is what turns it red.
+  sz="$(wc -c < "$tmp/$i.out" 2>/dev/null)" || sz=0
+  sz="${sz//[!0-9]/}"; staged_size[$i]="${sz:-0}"; staged=$(( staged + ${sz:-0} ))
   flush
+  if [ "$staged" -gt "$max_bytes" ]; then
+    red=1
+    printf '%s: staged diagnostics reached %s bytes, past ADB_SHELLCHECK_MAX_BYTES=%s — stopping; %s file(s) were never linted\n' \
+      "$ME" "$staged" "$max_bytes" "$(( n - flushed ))"
+    break
+  fi
 done
 
 # The scratch directory is removed BEFORE the verdict, so a removal that fails can still turn it red
