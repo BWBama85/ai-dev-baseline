@@ -218,12 +218,20 @@ while [ "$flushed" -lt "$n" ]; do
   if [ -n "$stop_reason" ]; then
     red=1
     printf '%s: %s — stopping\n' "$ME" "$stop_reason"
+    # Workers that FINISHED while this one was being handled are still in the slot table: reap
+    # each (a finished child no longer answers `kill -0`) so its output is drained with the rest.
+    # Only the ones still running are left to the EXIT trap.
+    for p in "${!slot[@]}"; do
+      kill -0 "$p" 2>/dev/null && continue
+      wait "$p"; k="${slot[$p]}"; unset 'slot[$p]'
+      staged_size[$k]=0
+    done
     for k in "${!staged_size[@]}"; do
       printf '%s: --- %s (finished; emitted out of order because the run stopped) ---\n' "$ME" "${files[k]}"
       cat "$tmp/$k.out" 2>/dev/null || printf '%s: (its output could not be read back)\n' "$ME"
     done
-    printf '%s: %s file(s) emitted in order, %s finished but held back (above), %s still running or never started\n' \
-      "$ME" "$flushed" "${#staged_size[@]}" "$(( n - flushed - ${#staged_size[@]} ))"
+    printf '%s: %s file(s) emitted in order, %s finished but held back (above), %s still running (stopped), %s never started\n' \
+      "$ME" "$flushed" "${#staged_size[@]}" "${#slot[@]}" "$(( n - next ))"
     break
   fi
 done

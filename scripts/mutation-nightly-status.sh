@@ -57,23 +57,27 @@ emit() {
 }
 
 branch="$(adb_default_branch "$PWD" 2>/dev/null)"   # its git chatter is not this line's business
-case "$branch" in ''|*[!A-Za-z0-9._/-]*) emit "last nightly: unreadable (the default branch could not be resolved)" ;; esac
-command -v gh >/dev/null 2>&1 || emit "last nightly on $branch: unreadable (gh is not installed)"
-command -v jq >/dev/null 2>&1 || emit "last nightly on $branch: unreadable (jq is not installed)"
+# GIT'S OWN RULE decides whether it is a branch name (a valid one may be non-ASCII); the Markdown
+# summary gets an ESCAPED copy, so nothing in the name can act as markup there.
+[ -n "$branch" ] && git check-ref-format --branch "$branch" >/dev/null 2>&1 \
+  || emit "last nightly: unreadable (the default branch could not be resolved)"
+branch_md="$(adb_md_escape "$branch")"
+command -v gh >/dev/null 2>&1 || emit "last nightly on $branch_md: unreadable (gh is not installed)"
+command -v jq >/dev/null 2>&1 || emit "last nightly on $branch_md: unreadable (jq is not installed)"
 
 json="$(gh run list --workflow mutation-nightly.yml --branch "$branch" --event schedule --limit 1 \
           --json url,status,conclusion,createdAt,headSha 2>/dev/null)" \
-  || emit "last nightly on $branch: unreadable (gh run list failed — auth, network or API; this is not the same as no run)"
+  || emit "last nightly on $branch_md: unreadable (gh run list failed — auth, network or API; this is not the same as no run)"
 
 # THE READ'S STATUS IS CHECKED, not only its output: jq prints a document's answer as it parses it,
 # so `[]` followed by garbage prints `0` and THEN fails — and that `0` would report "no nightly"
 # for a response that did not parse.
 n="$(printf '%s' "$json" | jq -r 'if type == "array" then length else "bad" end' 2>/dev/null)" \
-  || emit "last nightly on $branch: unreadable (gh returned a document that does not parse)"
+  || emit "last nightly on $branch_md: unreadable (gh returned a document that does not parse)"
 case "$n" in
-  0) emit "last nightly on $branch: no nightly result found" ;;
+  0) emit "last nightly on $branch_md: no nightly result found" ;;
   1) : ;;
-  *) emit "last nightly on $branch: unreadable (gh returned an unexpected document)" ;;
+  *) emit "last nightly on $branch_md: unreadable (gh returned an unexpected document)" ;;
 esac
 
 # One jq pass; the age is computed here so no date(1) dialect is involved. Joined on US (0x1f), NOT a
@@ -93,24 +97,24 @@ fields="$(printf '%s' "$json" | jq -r --arg now "${ADB_NIGHTLY_NOW:-}" '
   | [ ($r.url // ""), ($r.status // ""), ($r.conclusion // ""), ($r.headSha // ""),
       ((try ($t - ($r.createdAt | fromdateiso8601)) catch -1) | floor | tostring) ]
   | map(tostring | gsub("[\u001f\n]"; "?")) | join("\u001f")' 2>/dev/null)" \
-  || emit "last nightly on $branch: unreadable (the run record did not parse)"
+  || emit "last nightly on $branch_md: unreadable (the run record did not parse)"
 IFS=$'\x1f' read -r url status conclusion sha age <<< "$fields"
 
 # VALIDATED BEFORE IT REACHES MARKDOWN. Each field is checked against the shape GitHub gives it;
 # anything else is reported as unreadable rather than rendered.
 [[ "$url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$ ]] \
-  || emit "last nightly on $branch: unreadable (the run URL has an unexpected shape)"
+  || emit "last nightly on $branch_md: unreadable (the run URL has an unexpected shape)"
 # GitHub's documented workflow-run vocabulary — a word outside it is unreadable, not rendered.
 case "$status" in
   completed|in_progress|queued|requested|waiting|pending|action_required) : ;;
-  *) emit "last nightly on $branch: unreadable (the run status has an unexpected shape)" ;;
+  *) emit "last nightly on $branch_md: unreadable (the run status has an unexpected shape)" ;;
 esac
 case "$conclusion" in
   ''|success|failure|cancelled|skipped|timed_out|action_required|neutral|stale|startup_failure) : ;;
-  *) emit "last nightly on $branch: unreadable (the run conclusion has an unexpected shape)" ;;
+  *) emit "last nightly on $branch_md: unreadable (the run conclusion has an unexpected shape)" ;;
 esac
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || emit "last nightly on $branch: unreadable (the run's commit has an unexpected shape)"
-[[ "$age" =~ ^[0-9]+$ ]] || emit "last nightly on $branch: unreadable (the run's creation time did not parse)"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || emit "last nightly on $branch_md: unreadable (the run's commit has an unexpected shape)"
+[[ "$age" =~ ^[0-9]+$ ]] || emit "last nightly on $branch_md: unreadable (the run's creation time did not parse)"
 
 verdict="$conclusion"
 [ "$status" = completed ] || verdict="$status (not finished)"
@@ -120,4 +124,4 @@ agetext="${hours}h ago"
 [ "$hours" -gt 0 ] || agetext="$(( age / 60 ))m ago"
 stale=""
 [ "$age" -le "$STALE_SECS" ] || stale=" — STALE (older than 48h; a schedule can be delayed or dropped)"
-emit "last nightly on $branch: $url $verdict ${agetext} at ${sha:0:12}${stale}"
+emit "last nightly on $branch_md: $url $verdict ${agetext} at ${sha:0:12}${stale}"

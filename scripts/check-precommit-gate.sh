@@ -1171,7 +1171,7 @@ has "$QOUT" "big.sh produced more than ADB_SHELLCHECK_MAX_BYTES=100 bytes" "pool
 # 18g7. A size read that FAILS stops the run: a benign zero would leave the cap unenforced. A `wc`
 # that answers the dispatch-order read and fails every read after it stands in for the fault.
 wcfail="$work/wcfail"; mkdir -p "$wcfail"; realwc="$(command -v wc)"
-printf '#!/usr/bin/env bash\nc="%s/wc.calls"; n=$(( $(cat "$c" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$c"\n[ "$n" -le "${WC_OK:-1}" ] && exec %q "$@"\nexit 1\n' "$work" "$realwc" > "$wcfail/wc"
+printf '#!/usr/bin/env bash\nc="%s/wc.calls"; n=$(( $(cat "$c" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$c"\n[ "$n" -le "${WC_OK:-1}" ] && exec %q "$@"\nsleep "${WC_DELAY:-0}"; exit 1\n' "$work" "$realwc" > "$wcfail/wc"
 chmod +x "$wcfail/wc"; rm -f "$work/wc.calls"
 sc_reset
 QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$wcfail:$scstub:$PATH" bash "$pool" c1.sh 2>&1)"; QRC=$?
@@ -1190,6 +1190,16 @@ eq "$QRC" "1" "pool: a size read failing mid-run → exit 1"
 eq "$(printf '%s\n' "$QOUT" | grep -c '^In g[123]\.sh line 1:')" "3" \
    "pool: …and every finished file's diagnostics are still emitted, the unsized one included"
 eq "$(printf '%s\n' "$QOUT" | grep -c 'emitted out of order because the run stopped')" "3" "pool: …each labelled as emitted out of order"
+
+# 18g7c. …including workers that FINISHED while the failing read was being handled: they are still
+# in the slot table, not yet sized, and must be drained too. The failing read waits a second first,
+# so the other fast workers have certainly exited by the time the stop runs.
+rm -f "$work/wc.calls"; sc_reset
+QOUT="$(cd "$pfx" && WC_OK=4 WC_DELAY=1 ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$wcfail:$scstub:$PATH" bash "$pool" slow.sh g1.sh g2.sh g3.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: a stop while other workers finish → exit 1"
+eq "$(printf '%s\n' "$QOUT" | grep -c '^In g[123]\.sh line 1:')" "3" \
+   "pool: …and workers that finished during the stop are reaped and drained, not discarded"
+has "$QOUT" "1 still running (stopped)" "pool: …and only the genuinely running one is reported as such"
 
 # 18g8. A CAPTURE that fails is red and not counted as linted, whatever the linter returned: its
 # diagnostics are incomplete. A `head` that consumes its input and fails when asked to cut (`-c`),

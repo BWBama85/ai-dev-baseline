@@ -702,7 +702,8 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   bash scripts/mutation-gate.sh touched   # stdout: one step per line · 0 decided (maybe none) · 11/12 every step, listed · 3 unreadable
   HEAD_SHA="$(git rev-parse HEAD)"; SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # The dispatch names a BRANCH, which can move: confirm its remote tip is the head you mean first.
-  [ "$(git ls-remote origin "refs/heads/<PR branch>" | cut -f1)" = "$HEAD_SHA" ] || echo "STOP: the branch moved — re-read the head"
+  TIP="$(git ls-remote origin "refs/heads/<PR branch>")" || { echo "STOP: could not read the branch tip"; exit 1; }
+  [ "${TIP%%[[:space:]]*}" = "$HEAD_SHA" ] || { echo "STOP: the branch moved — re-read the head before dispatching"; exit 1; }
   gh workflow run mutation-nightly.yml --ref "<PR branch>" -f step=<step>   # once per listed step
   ```
 
