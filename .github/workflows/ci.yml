@@ -1449,8 +1449,9 @@ jobs:
     # not reproduce. 45 until #445, which made `common-lib-mutation` heavier on a leg that had
     # taken 38m50s (D122). 65 since #519: run 37525965580 took 47m41s with every harness forced, and
     # the five ported `*-mutation` steps this leg runs measured 7-22% slower through shmutant (D125).
-    # Since #456 this leg runs NO mutation harness, so those figures no longer size it; the 65 is
-    # deliberately left until a run without them has been measured, rather than trimmed to a guess.
+    # Since #456 this leg runs NO mutation harness. The first run without them took 1351s (run
+    # 38171915284, D126), so 65 is now headroom over ~23 minutes on a loaded 3-core runner; it is
+    # re-sized with the leg itself in #529, not trimmed ahead of that.
     timeout-minutes: 65
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

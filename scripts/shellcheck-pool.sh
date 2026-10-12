@@ -135,7 +135,7 @@ red=0 linted=0 next=0 flushed=0
 max_bytes="${ADB_SHELLCHECK_MAX_BYTES:-}"
 case "$max_bytes" in ''|*[!0-9]*|0*) max_bytes=67108864 ;; esac
 [ "${#max_bytes}" -le 15 ] || max_bytes=67108864
-staged=0
+staged=0 stop_reason=""
 declare -A staged_size=()   # file index -> bytes, for finished files not yet emitted
 # Emit every finished file whose predecessors have all been emitted. Called after each reap, so the
 # output streams in input order rather than arriving all at once at the end.
@@ -159,11 +159,17 @@ flush() {
            printf '%s: %s did not complete — shellcheck exited %s\n' "$ME" "${files[flushed]}" "${status[flushed]}" ;;
       esac
     fi
-    # Emitted: its bytes need not wait for the end of the run. A removal that fails is red — a
-    # scratch directory that cannot be cleaned is a fault, never something a green verdict hides.
-    rm -f "$tmp/$flushed.out" || { red=1; printf '%s: could not remove the scratch output for %s\n' "$ME" "${files[flushed]}"; }
-    staged=$(( staged - ${staged_size[$flushed]:-0} )); unset 'staged_size[$flushed]'
+    # Emitted: its bytes need not wait for the end of the run. A removal that FAILS leaves them on
+    # disk, so they stay counted and the run stops: the cap cannot be enforced over files that
+    # cannot be cleared.
+    if rm -f "$tmp/$flushed.out"; then
+      staged=$(( staged - ${staged_size[$flushed]:-0} ))
+    else
+      stop_reason="could not remove the scratch output for ${files[flushed]} — the disk cap cannot be enforced"
+    fi
+    unset 'staged_size[$flushed]'
     flushed=$(( flushed + 1 ))
+    [ -z "$stop_reason" ] || return 0
   done
 }
 
@@ -194,19 +200,24 @@ while [ "$flushed" -lt "$n" ]; do
   unset 'slot[$done_pid]'
   # Its output is final now: count it as staged until flush emits it. A size that cannot be read
   # STOPS the run: a benign zero would let the cap go unenforced.
-  sz="$(wc -c < "$tmp/$i.out" 2>/dev/null)" && sz="${sz//[!0-9]/}" && [ -n "$sz" ] || {
-    red=1; printf '%s: could not read the size of %s'"'"'s lint output — stopping, the disk cap cannot be enforced\n' "$ME" "${files[i]}"
-    break; }
-  # A CUT OUTPUT IS ITS OWN STATE, whatever the linter returned: its diagnostics are incomplete, so
-  # the file is red and is not counted as linted.
-  if [ "$sz" -gt "$max_bytes" ]; then st="cut"; fi
-  status[$i]="$st"
-  staged_size[$i]="$sz"; staged=$(( staged + sz ))
-  flush
-  if [ "$staged" -gt "$max_bytes" ]; then
+  if sz="$(wc -c < "$tmp/$i.out" 2>/dev/null)" && sz="${sz//[!0-9]/}" && [ -n "$sz" ]; then
+    # A CUT OUTPUT IS ITS OWN STATE, whatever the linter returned: its diagnostics are incomplete,
+    # so the file is red and is not counted as linted.
+    if [ "$sz" -gt "$max_bytes" ]; then st="cut"; fi
+    status[$i]="$st"
+    staged_size[$i]="$sz"; staged=$(( staged + sz ))
+    flush
+    [ -n "$stop_reason" ] || [ "$staged" -le "$max_bytes" ] \
+      || stop_reason="staged diagnostics reached $staged bytes, past ADB_SHELLCHECK_MAX_BYTES=$max_bytes"
+  else
+    status[$i]="$st"; staged_size[$i]=0
+    stop_reason="could not read the size of ${files[i]}'s lint output — the disk cap cannot be enforced"
+  fi
+  # EVERY STOP TAKES ONE PATH: what finished is emitted rather than discarded — out of order, and
+  # said so — and the run ends red. Running workers are reaped by the EXIT trap.
+  if [ -n "$stop_reason" ]; then
     red=1
-    printf '%s: staged diagnostics reached %s bytes, past ADB_SHELLCHECK_MAX_BYTES=%s — stopping\n' "$ME" "$staged" "$max_bytes"
-    # What finished is emitted rather than discarded — out of order, and said so.
+    printf '%s: %s — stopping\n' "$ME" "$stop_reason"
     for k in "${!staged_size[@]}"; do
       printf '%s: --- %s (finished; emitted out of order because the run stopped) ---\n' "$ME" "${files[k]}"
       cat "$tmp/$k.out" 2>/dev/null || printf '%s: (its output could not be read back)\n' "$ME"

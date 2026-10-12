@@ -704,13 +704,15 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   ```bash
   bash scripts/mutation-gate.sh touched   # stdout: one step per line · 0 decided (maybe none) · 11/12 every step, listed · 3 unreadable
   HEAD_SHA="$(git rev-parse HEAD)"; SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # The dispatch names a BRANCH, which can move: confirm its remote tip is the head you mean first.
+  [ "$(git ls-remote origin "refs/heads/<PR branch>" | cut -f1)" = "$HEAD_SHA" ] || echo "STOP: the branch moved — re-read the head"
   gh workflow run mutation-nightly.yml --ref "<PR branch>" -f step=<step>   # once per listed step
   ```
 
   **Correlate before you cite**: a run is this dispatch's only if it is for `$HEAD_SHA`, created at
   or after `$SINCE`, and its matrix job is named for the step — `gh run list --workflow
-  mutation-nightly.yml --commit "$HEAD_SHA" --event workflow_dispatch --created ">=$SINCE" --json
-  databaseId,url,headSha`, then `gh run view <id> --json jobs --jq '.jobs[].name'` must show
+  mutation-nightly.yml --commit "$HEAD_SHA" --event workflow_dispatch --created ">=$SINCE" --limit 100
+  --json databaseId,url,headSha` (100 rows that all match means the list may be cut — say so), then `gh run view <id> --json jobs --jq '.jobs[].name'` must show
   `mutation-nightly (<step>)`. That is MATCHING evidence, not identity: when more than one run
   matches (another dispatch of the same step at the same head), link every match and say the
   evidence is ambiguous rather than picking one. A run that does not register within a few minutes

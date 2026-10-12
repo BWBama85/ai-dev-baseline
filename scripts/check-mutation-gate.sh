@@ -961,12 +961,41 @@ printf 'check-mutation-gate: %s harness invocation(s) in ci.yml\n' "$n_inv"
 # spelling: a later `skip=`, a `read -r skip`, any reassignment between the read and the call would
 # pass a pin on the text. Its `run: |` body is extracted, its `bash scripts/selfcheck.sh` replaced by
 # a recorder of the arguments it was given, and the `--skip` value must equal the registry's set.
-macos_body="$(awk '
-  /^      - name: The offline suite on Homebrew bash/ { f = 1; next }
-  f && /^        run: \|$/ { b = 1; next }
-  b && /^ {0,9}[^ ]/ { exit }   # the first non-blank line indented less than the block ends it
-  b { sub(/^          /, ""); print }
-' "$CI")"
+# WORKFLOW STRUCTURE COMES FROM THE SHARED READER, `adb_wf_jobs` (common.sh) — its JOB/RANGE/STEP
+# records — never from a second boundary parser here. A job is its RANGE; a step runs from its STEP
+# line to the line before the next one (or the job's end).
+wf_job_text() {  # wf_job_text <file> <job-key> — the job's lines; 1 when it is not found
+  local recs n start end
+  recs="$(adb_wf_jobs "$1")" || return 1
+  n="$(printf '%s\n' "$recs" | awk -F'\t' -v k="$2" '$1 == "JOB" && $3 == k { print $2; exit }')"
+  [ -n "$n" ] || return 1
+  read -r start end < <(printf '%s\n' "$recs" | awk -F'\t' -v n="$n" '$1 == "RANGE" && $2 == n { print $3, $4; exit }')
+  [ -n "${start:-}" ] && [ -n "${end:-}" ] || return 1
+  sed -n "${start},${end}p" "$1"
+}
+wf_step_text() {  # wf_step_text <file> <job-key> <ERE> — the step of that job holding a matching line
+  local recs n end i s e
+  local -a at=()
+  recs="$(adb_wf_jobs "$1")" || return 1
+  n="$(printf '%s\n' "$recs" | awk -F'\t' -v k="$2" '$1 == "JOB" && $3 == k { print $2; exit }')"
+  [ -n "$n" ] || return 1
+  end="$(printf '%s\n' "$recs" | awk -F'\t' -v n="$n" '$1 == "RANGE" && $2 == n { print $4; exit }')"
+  mapfile -t at < <(printf '%s\n' "$recs" | awk -F'\t' -v n="$n" '$1 == "STEP" && $2 == n { print $4 }')
+  for (( i = 0; i < ${#at[@]}; i++ )); do
+    s="${at[i]}"
+    if (( i + 1 < ${#at[@]} )); then e=$(( at[i+1] - 1 )); else e="$end"; fi
+    if sed -n "${s},${e}p" "$1" | grep -qE -- "$3"; then sed -n "${s},${e}p" "$1"; return 0; fi
+  done
+  return 1
+}
+wf_run_body() {  # stdin: one step's text — prints its `run: |` body, de-indented by its own depth
+  awk '
+    !b && /^[[:space:]]*run:[[:space:]]*\|[[:space:]]*$/ { match($0, /^ */); ind = RLENGTH + 2; b = 1; next }
+    b { if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+        match($0, /^ */); if (RLENGTH < ind) exit
+        print substr($0, ind + 1) }'
+}
+macos_body="$(wf_step_text "$CI" selfcheck-macos '^[[:space:]]*- name: The offline suite on Homebrew bash' | wf_run_body)"
 [ -n "$macos_body" ] && ok || bad "could not extract the macOS suite step's run block from ci.yml (the scan matched nothing)"
 recv="$(cd "$ROOT" && RUNNER_TEMP="$work" bash -c "$(printf '%s\n' "$macos_body" | sed 's#bash scripts/selfcheck\.sh#printf "SELFCHECK-ARG:%s\\n"#')" 2>/dev/null | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}')"
 eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls selfcheck with --skip"
@@ -983,23 +1012,17 @@ while IFS= read -r line; do
 done <<< "$runs_all"
 # THE LAST-NIGHTLY LINE is wired into a PR job, survives an earlier red step, and may read runs —
 # each asked of THAT JOB's block, so a permission or condition elsewhere in the file cannot stand in.
-cl_job="$(awk '/^  common-lib:$/{f=1; print; next} f && /^  [a-z][a-z0-9-]*:$/{exit} f{print}' "$CI")"
+cl_job="$(wf_job_text "$CI" common-lib)"
 [ -n "$cl_job" ] && ok || bad "could not extract the common-lib job from ci.yml (the scan matched nothing)"
 printf '%s\n' "$cl_job" | grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' && ok \
   || bad "the common-lib job no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
 # …and the condition and the checkout id belong to THEIR STEPS, not merely to the job: a condition
 # moved onto another step leaves the reporter on the default `success()`, and an id on the wrong step
-# makes the condition read an unknown outcome. Each step is the block from its `      - ` line.
-step_of() {  # step_of <job-text> <ERE matching a line inside the step> — prints that whole step
-  printf '%s\n' "$1" | awk -v pat="$2" '
-    /^      - /   { if (hit) { printf "%s", blk; done = 1; exit } blk = ""; hit = 0 }
-    { blk = blk $0 "\n"; if ($0 ~ pat) hit = 1 }
-    END { if (hit && !done) printf "%s", blk }'
-}
-rep_step="$(step_of "$cl_job" '^        run: bash scripts/mutation-nightly-status\.sh$')"
+# makes the condition read an unknown outcome. Each step is asked of `wf_step_text`.
+rep_step="$(wf_step_text "$CI" common-lib '^[[:space:]]*run: bash scripts/mutation-nightly-status\.sh$')"
 printf '%s\n' "$rep_step" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \
   || bad "the last-nightly step does not run past an earlier red step (!cancelled() and a successful checkout)"
-co_step="$(step_of "$cl_job" '^        uses: actions/checkout@')"
+co_step="$(wf_step_text "$CI" common-lib '^[[:space:]]*uses: actions/checkout@')"
 printf '%s\n' "$co_step" | grep -qE '^        id: checkout$' && ok \
   || bad "the common-lib job's checkout carries no 'id: checkout', so the last-nightly condition reads an unknown step"
 printf '%s\n' "$cl_job" | grep -qE '^      actions: read$' && ok \
@@ -1044,12 +1067,7 @@ if [ -f "$NIGHTLY" ]; then
   # WHAT THE PLAN PUBLISHES, by RUNNING its script: the plan step's `run: |` body is executed with a
   # scratch GITHUB_OUTPUT, for no input, a one-step input and an unregistered one. A reassignment
   # between the registry read and the publish would pass every spelling check above.
-  plan_body="$(awk '
-    /^      - name: Read the harness list from the registry$/ { f = 1; next }
-    f && /^        run: \|$/ { b = 1; next }
-    b && /^ {0,9}[^ ]/ { exit }   # the first non-blank line indented less than the block ends it
-    b { sub(/^          /, ""); print }
-  ' "$NIGHTLY")"
+  plan_body="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*- name: Read the harness list from the registry$' | wf_run_body)"
   [ -n "$plan_body" ] && ok || bad "could not extract the plan step's run block from the scheduled workflow (the scan matched nothing)"
   run_plan() {  # run_plan <ONLY> — sets PLAN_RC and PLAN_OUT (the published `steps=` value)
     : > "$work/plan-output"

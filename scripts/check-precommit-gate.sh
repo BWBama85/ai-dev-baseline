@@ -659,7 +659,9 @@ st="${SCSTUB_STATE:?}"
 f="${!#}"
 mkdir "$st/running/$$"
 printf '%s\n' "$$" >> "$st/pids"
-printf '%s\n' "$(find "$st/running" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" >> "$st/concurrency"
+# Counted with awk, NOT wc: §18 stubs `wc` to fail on a schedule, and a stub that called it would
+# spend that schedule on its own bookkeeping.
+printf '%s\n' "$(find "$st/running" -mindepth 1 -maxdepth 1 | awk 'END { print NR }')" >> "$st/concurrency"
 grep -q '^IGNORETERM' "$f" && trap '' TERM
 b="$(sed -n 's/^BIG=//p' "$f" | head -1)"; [ -n "$b" ] && head -c "$b" /dev/zero | tr '\0' 'x'
 # The sleep is a DESCENDANT, recorded: interrupt cases require it gone too, not only this process.
@@ -1169,12 +1171,25 @@ has "$QOUT" "big.sh produced more than ADB_SHELLCHECK_MAX_BYTES=100 bytes" "pool
 # 18g7. A size read that FAILS stops the run: a benign zero would leave the cap unenforced. A `wc`
 # that answers the dispatch-order read and fails every read after it stands in for the fault.
 wcfail="$work/wcfail"; mkdir -p "$wcfail"; realwc="$(command -v wc)"
-printf '#!/usr/bin/env bash\nc="%s/wc.calls"; n=$(( $(cat "$c" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$c"\n[ "$n" -le 1 ] && exec %q "$@"\nexit 1\n' "$work" "$realwc" > "$wcfail/wc"
+printf '#!/usr/bin/env bash\nc="%s/wc.calls"; n=$(( $(cat "$c" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$c"\n[ "$n" -le "${WC_OK:-1}" ] && exec %q "$@"\nexit 1\n' "$work" "$realwc" > "$wcfail/wc"
 chmod +x "$wcfail/wc"; rm -f "$work/wc.calls"
 sc_reset
 QOUT="$(cd "$pfx" && ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$wcfail:$scstub:$PATH" bash "$pool" c1.sh 2>&1)"; QRC=$?
 eq "$QRC" "1" "pool: an output size that cannot be read → exit 1, never a pass"
 has "$QOUT" "the disk cap cannot be enforced" "pool: …and says why"
+
+# 18g7b. …and that stop still EMITS what had finished: a slow first file holds three finished red
+# ones back, the THIRD reap's size read fails, and all three outputs reach the caller rather than
+# being deleted with the scratch. Order-independent on purpose: which red file finishes first is a
+# race, so the count is asserted, not the names. Four dispatch-order reads and two reaps succeed.
+printf 'SLEEP=3\necho slow\n' > "$pfx/slow.sh"
+for g in g1 g2 g3; do printf 'unused=1\n' > "$pfx/$g.sh"; done
+rm -f "$work/wc.calls"; sc_reset
+QOUT="$(cd "$pfx" && WC_OK=6 ADB_POOL_JOBS=4 TMPDIR="$work/pooltmp" PATH="$wcfail:$scstub:$PATH" bash "$pool" slow.sh g1.sh g2.sh g3.sh 2>&1)"; QRC=$?
+eq "$QRC" "1" "pool: a size read failing mid-run → exit 1"
+eq "$(printf '%s\n' "$QOUT" | grep -c '^In g[123]\.sh line 1:')" "3" \
+   "pool: …and every finished file's diagnostics are still emitted, the unsized one included"
+eq "$(printf '%s\n' "$QOUT" | grep -c 'emitted out of order because the run stopped')" "3" "pool: …each labelled as emitted out of order"
 
 # 18g8. A CAPTURE that fails is red and not counted as linted, whatever the linter returned: its
 # diagnostics are incomplete. A `head` that consumes its input and fails when asked to cut (`-c`),
@@ -1190,7 +1205,7 @@ eq "${QOUT##*$'\n'}" "shellcheck-pool: FAIL — linted 0 of 1 file(s), 1 worker(
 
 # 18h. THE ZERO-FILE GUARD IS LOAD-BEARING, observed on a copy: a dispatch slip that drops the last
 # file is caught by the linted-count check alone — and with that check neutered, the same slip
-# passes green while linting 11 of 12. One defect, one defence, both answers seen.
+# passes green while linting fewer than 12. One defect, one defence, both answers seen.
 pcopy="$work/poolcopy"; mkdir -p "$pcopy/scripts/lib"
 cp "$pool" "$pcopy/scripts/"; cp "$ROOT/scripts/lib/common.sh" "$pcopy/scripts/lib/"
 if check_mutate_line "$pcopy/scripts/shellcheck-pool.sh" '  while [ "$next" -lt "$n" ] && [ "${#slot[@]}" -lt "$width" ]; do' \
