@@ -19,6 +19,7 @@
         "objects.githubusercontent.com",
         "raw.githubusercontent.com"
       ]
-    }
+    },
+    "excludedCommands": ["git *", "gh *"]
   }
 }

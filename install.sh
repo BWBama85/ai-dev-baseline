@@ -137,7 +137,7 @@ done
 # THE SECOND SETTINGS SURFACE (#248, D95-D98): the non-hook fragment. Deliberately a separate
 # function from wire_hooks and not a generalization of it — the two own different THINGS. Hooks
 # own whole groups under `.hooks`, keyed by our command path; this owns individual LEAF PATHS
-# anywhere else in the file, so an adopter's `sandbox.excludedCommands` survives beside our
+# anywhere else in the file, so an adopter's `sandbox.filesystem.allowWrite` survives beside our
 # `sandbox.enabled`. All the ownership arithmetic lives in adb_claude_settings_merge; this
 # function is the I/O, the version probe and the reporting.
 #
@@ -504,6 +504,13 @@ _adb_wire_settings_locked() {
       adb_info "  sandbox  NOT written — you already have: $blockers"
       adb_info "           The policy applies whole or not at all, so none of it was written."
       adb_info "           Remove or rename those keys and re-run ./install.sh to take it."
+      # A SATISFIABLE KEY HAS A SECOND WAY OUT (#462, D129): keep it and add what we ship to it. A
+      # hint, not a decision, so a read that fails only loses the line.
+      local _sat_hint
+      _sat_hint="$(printf '%s' "$result" | jq -r --argjson sat "$(adb_claude_settings_satisfiable | jq -cs .)" --slurpfile f "$payload" '
+          [ .blocked[] | . as $p | select($sat | map(. == $p) | any)
+            | "\(join(".")) needs \($f[0] | getpath($p) | map("\"" + tostring + "\"") | join(" and "))" ] | join("; ")' 2>/dev/null)" || _sat_hint=""
+      [ -n "$_sat_hint" ] && adb_info "           Or keep yours and add what the policy ships — $_sat_hint. An array holding all of it is yours, and is not in the way."
     fi
     # AND WHAT THE REFUSAL IS ABOUT TO STOP OWNING. A leaf we no longer ship that the operator has
     # edited lands in `.kept` — the refusal then writes a `skipped-blocked` receipt carrying NO
@@ -656,11 +663,15 @@ _adb_wire_settings_locked() {
   # success, so `pipefail` had nothing to catch. For `.wrote` that publishes every sandbox key under
   # a rowless `installed` receipt: uninstall cannot remove them and the next install reads them as
   # the operator's. Validate both as arrays before anything is written. (PR review)
-  local wrote_json created_json
+  # `.satisfied` is read the same way (#462, D129): a lost one renders a record missing a path the
+  # payload ships, which every later reader refuses as incomplete.
+  local wrote_json created_json satisfied_json
   if ! wrote_json="$(printf '%s' "$result" | jq -c '.wrote')" \
      || ! created_json="$(printf '%s' "$result" | jq -c '.created')" \
+     || ! satisfied_json="$(printf '%s' "$result" | jq -c '.satisfied')" \
      || ! printf '%s' "$wrote_json" | jq -e 'type == "array"' >/dev/null 2>&1 \
-     || ! printf '%s' "$created_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+     || ! printf '%s' "$created_json" | jq -e 'type == "array"' >/dev/null 2>&1 \
+     || ! printf '%s' "$satisfied_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
     adb_info "  WARN   could not read back what the merge decided — sandbox settings NOT written"
     adb_info "         (an incomplete ownership record is worse than none: the keys could never be removed)"
     return 1
@@ -678,7 +689,7 @@ _adb_wire_settings_locked() {
     return 1   # digest-unavailable-install
   fi
   if ! { adb_claude_settings_source_row "$REPO"
-         adb_claude_settings_leaf_rows "$payload" "$wrote_json" "$created_json"; } \
+         adb_claude_settings_leaf_rows "$payload" "$wrote_json" "$created_json" "$satisfied_json"; } \
        | adb_claude_settings_receipt_render installed "$version" "$floor" \
              "$_paydig" > "$rtmp" \
      || [ ! -s "$rtmp" ]; then
@@ -746,16 +757,17 @@ _adb_wire_settings_locked() {
   # leave the new sandbox values installed with no ownership record and skip the rollback below,
   # which is a worse outcome than the interruption it exists to handle. Deferred, not ignored: a
   # Ctrl-C is honoured the moment the pair is complete. (PR review)
-  # THE THREE LISTS ARE READ BEFORE THE TRANSACTION, not printed after it. `.kept` names a leaf the
+  # THE LISTS ARE READ BEFORE THE TRANSACTION, not printed after it. `.kept` names a leaf the
   # payload has RETIRED that the operator edited: the merge leaves that value active and the receipt
   # about to be published no longer records it, so this line is the only thing that ever identifies
   # it. Read afterwards, a failed `jq` returned success having named nothing, and neither a later
   # update nor uninstall could tell the operator what to remove. Read here, the run refuses with
   # nothing written and the OLD receipt — which still names the key — intact. (PR review)
-  local _b_wrote _b_pruned _b_kept
+  local _b_wrote _b_pruned _b_kept _b_sat
   if ! _b_wrote="$(_adb_result_field "$result" -r '.wrote | map(join(".")) | join(", ")')" \
      || ! _b_pruned="$(_adb_result_field "$result" -r '.pruned | map(join(".")) | join(", ")')" \
-     || ! _b_kept="$(_adb_result_field "$result" -r '.kept | map(join(".")) | join(", ")')"; then
+     || ! _b_kept="$(_adb_result_field "$result" -r '.kept | map(join(".")) | join(", ")')" \
+     || ! _b_sat="$(_adb_result_field "$result" -r '.satisfied | map(join(".")) | join(", ")')"; then
     rm -f "$tmp" "$rtmp" "$pre"
     adb_info "  WARN   could not read back what the merge decided — sandbox settings NOT written."
     adb_info "         The kept list is the only thing that names a retired key you have edited."
@@ -805,13 +817,15 @@ _adb_wire_settings_locked() {
   rm -f "$pre"
 
   # THE HEADLINE CANNOT OVERSTATE ANY MORE, and that is the contract doing the work rather than a
-  # check: a `write` verdict means every shipped leaf was applied, because anything already there
-  # would have refused the lot.
+  # check: a `write` verdict means every shipped leaf is in effect — written, or already satisfied by
+  # a value of the operator's (#462, D129) — because anything else already there would have refused
+  # the lot.
   adb_info "  sandbox  least-privilege settings applied to ~/.claude/settings.json (claude v$version, floor v$floor, backed up)"
   # Printed from what was captured before the transaction, not re-read here.
   [ -n "$_b_wrote" ]  && [ "$_b_wrote" != null ]  && adb_info "           wrote: $_b_wrote"
   [ -n "$_b_pruned" ] && [ "$_b_pruned" != null ] && adb_info "           pruned (no longer shipped): $_b_pruned"
   [ -n "$_b_kept" ]   && [ "$_b_kept" != null ]   && adb_info "           kept (no longer shipped, and you edited it since we wrote it): $_b_kept"
+  [ -n "$_b_sat" ]    && [ "$_b_sat" != null ]    && adb_info "           already satisfied by your own value (left as it is, and yours — uninstall keeps it): $_b_sat"
   return 0
 }
 
@@ -955,6 +969,24 @@ _adb_carry_rows() {
     adb_info "           are no longer as this install left them." >&2
     return 0
   fi
+  # ...AND EVERY SATISFIED ROW STILL HOLDS (#462, D129). The currency check asks the same question, so
+  # carrying a row that no longer holds left a record `baseline update` reads as diverged on every visit,
+  # and a self-heal that only carried it again looped. One that no longer holds relinquishes, as a
+  # diverged owned leaf does. A fragment that cannot measure it (2) carries the row unchecked: a damaged
+  # fragment must not cost ownership, and the next readable payload asks again.
+  local _sh=0
+  _adb_claude_settings_satisfied_hold "$receipt" "$live" "$frag" || _sh=$?
+  case "$_sh" in
+    0|2) ;;
+    1)
+      adb_info "  sandbox  ownership relinquished — your own sandbox.excludedCommands no longer holds every" >&2
+      adb_info "           entry the policy ships, so the record of it is no longer true." >&2
+      return 0 ;;   # carry-satisfied-lapsed
+    *)
+      adb_info "  sandbox  ownership was neither proved nor given up — the satisfied rows could not be" >&2
+      adb_info "           read back, so the existing record is kept and this run writes none." >&2
+      return "$_sh" ;;
+  esac
   printf '%s\n' "$rows"
 }
 
@@ -966,7 +998,9 @@ _adb_carry_rows() {
 # because BOTH non-writing paths (the opt-out and the version skips) must preserve ownership, and a
 # second copy of this grep is a second chance to lose it. Carrying the leaves without the
 # containers is exactly that loss in miniature: uninstall then removes the keys and leaves the
-# objects it made behind.
+# objects it made behind. `satisfied` rows travel with them (#462, D129): completeness subtracts
+# those paths from what the payload ships, so a carry that dropped one would read the record as
+# missing a `leaf` row it never had.
 #
 # PROVENANCE IS NOT CARRIED. `source` names the clone that LAST WROTE the receipt, and every render
 # appends the current one — carrying it verbatim let a receipt keep naming clone A after clone B
@@ -996,7 +1030,7 @@ _adb_owned_rows() {
     return 20   # owned-rows-unresolvable
   fi
   [ -f "$1" ] || return 0
-  rows="$(grep -E "^(leaf|container)$(printf '\t')" "$1" 2>/dev/null)"; grc=$?
+  rows="$(grep -E "^(leaf|container|satisfied)$(printf '\t')" "$1" 2>/dev/null)"; grc=$?
   [ "$grc" -le 1 ] || return 20
   [ -n "$rows" ] && printf '%s\n' "$rows"
   return 0
