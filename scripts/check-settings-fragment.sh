@@ -5154,7 +5154,7 @@ if [ "$MUTATION" -eq 1 ]; then
   check_row 'a non-string element beside the shipped entries satisfies' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '  and all($have[]; type == "string")   # satisfies-strings' \
     '  and true   # satisfies-strings' \
-    'of ["git *","gh *",null] does not hold every shipped entry'
+    'does not hold every shipped entry and must still refuse the lot'
   check_row 'a satisfied row with a field after its path is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '      | if ($rest | index("\t")) == null then $rest' \
     '      | if true then ($rest | split("\t") | first)' \
