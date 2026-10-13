@@ -339,9 +339,10 @@ adb_settings_unreadable_record() {
     echo "baseline: $receipt exists but could not be READ, so it is unknown whether the sandbox" >&2
     echo "          settings are current. Fix its permissions and re-run 'baseline update'." >&2
   else
-    echo "baseline: $receipt is readable but its 'disposition' line is missing or unrecognised, so" >&2
-    echo "          it cannot be classified. No permission change will help; repair that line and" >&2
-    echo "          re-run 'baseline update'. Its 'leaf' rows still name the keys we own." >&2
+    echo "baseline: $receipt is readable but damaged: its 'disposition' line is missing or" >&2
+    echo "          unrecognised, or a row in it is malformed, repeated or contradicts another (a key" >&2
+    echo "          recorded as both ours and yours). No permission change will help; repair the" >&2
+    echo "          record and re-run 'baseline update'. Its 'leaf' rows still name the keys we own." >&2
   fi
 }
 
