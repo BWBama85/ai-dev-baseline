@@ -302,8 +302,8 @@ What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
 - **Excluded is not auto-approved.** A sandboxed command can run without asking; an excluded one
   goes through the regular permission flow. In Manual mode a `git`/`gh` command that is not
   read-only prompts unless one of your allow rules covers it, auto mode sends it to the classifier,
-  and `bypassPermissions` runs it unless one of your ask rules matches it. The installer ships no
-  allow rules.
+  and `bypassPermissions` runs it unless one of your ask rules matches it. A matching deny rule
+  blocks it in every mode, allow rules included. The installer ships no allow rules.
 - **Matching changed in newer CLIs.** Before v2.1.277 a compound command was taken out whole when
   only one part matched, and before v2.1.290 a short-form `git clone` option kept the exemption, so
   between the v2.1.187 floor and those versions the exclusion is broader than described here.
@@ -317,7 +317,8 @@ What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
 place. To take them out, either delete them by hand, which the next install reads as your opt-out
 and does not rewrite, or run `./uninstall.sh`. Uninstall removes only the keys this install still
 owns, so it leaves any it has already given up. It also deletes the ownership record, so a later
-`./install.sh` applies the policy again.
+`./install.sh` applies the policy again — unless a key uninstall left behind (one you edited, or one
+already given up) is still in your file, which blocks the whole policy as any key of yours does.
 
 ### Run markers are session-owned
 
