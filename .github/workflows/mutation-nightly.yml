@@ -107,9 +107,11 @@ jobs:
     needs: plan
     runs-on: ubuntu-26.04
     # Sized for the largest harness on a hosted runner, not for the median: full-suite
-    # `settings-fragment-mutation` took 160 minutes for 230 rows in `install-guard` (D101). A job
+    # `settings-fragment-mutation` took 198 minutes on 2026-10-11 and was cancelled at the former
+    # 240 on 2026-10-12 and 2026-10-13, before #462 added rows to it. 360 is GitHub's maximum for a
+    # hosted-runner job, so the next step is splitting the work (#532), not a bigger number. A job
     # that times out is a red that says nothing about the harness, the class of defect #394 is about.
-    timeout-minutes: 240
+    timeout-minutes: 360
     strategy:
       # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
       # the others were about to give.

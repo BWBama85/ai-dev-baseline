@@ -1678,11 +1678,9 @@ awk '/verdict="\$\(_adb_result_field/{f=1}
      f && /write\|refuse\|remove\)/{print "ok"; exit}
      f && /if \[ "\$verdict" = refuse \]/{exit}' "$ROOT/install.sh" | grep -q ok && ok \
   || bad "...and the verdict must be one of the KNOWN values before the write path is taken — that branch publishes keys and must be chosen, not fallen into"
-# ...and the row writer's two path enumerations, which fail the same way one level out.
-# BOTH GUARDS, COUNTED, and the pin watches the `|| return 1` rather than the assignment — the
-# assignment survives the mutation that deletes the guard, which is how the first version of this
-# pin passed over a real defect. Three enumerations (written, created, and since #462 satisfied), so a
-# count: deleting any one leaves the others to answer for it.
+# ...and the row writer's path enumerations, which fail the same way one level out. EVERY GUARD,
+# COUNTED — written, created and (#462) satisfied — and the pin watches the `|| return 1`, not the
+# assignment, which survives the mutation that deletes the guard.
 [ "$(awk '/^adb_claude_settings_leaf_rows\(\)/{f=1} f && /_paths="\$\(printf/ && /\|\| return 1/{n++} f && /^}/{exit} END{print n+0}' \
      "$ROOT/scripts/lib/common.sh")" -eq 3 ] && ok \
   || bad "every leaf-row enumeration must be captured AND checked before any row is printed — inside the heredoc a failed jq walks zero paths and the writer still returns 0"
@@ -3932,6 +3930,20 @@ r="$(m "$(cat "$work/sat.json")" "$work/sat-receipt" --remove)"
 [ "$(printf '%s' "$r" | jq -c '.settings.sandbox')" = '{"excludedCommands":["git *","gh *","docker *"]}' ] && ok \
   || bad "uninstall must leave a satisfied key exactly where it is; sandbox: $(printf '%s' "$r" | jq -c '.settings.sandbox')"
 
+# THE ROW WRITER ENFORCES ITS OWN CONTRACT: every list an array, every satisfied path one the reader
+# accepts. A `null` walked as no rows, and an unreadable row, are records nothing can use.
+adb_claude_settings_leaf_rows "$PAYLOAD" '[]' '[]' 'null' >/dev/null 2>&1 \
+  && bad "the row writer must refuse a satisfied list that is not an array" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[]' '[]' '[["sandbox","enabled"]]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse a satisfied path the reader would reject as damage" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" 'null' '[]' '[]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse a written list that is not an array — its siblings get the same rule" || ok
+
+# A satisfied-row read that could not be PERFORMED is 25, never 20: uninstall proceeds past 20 because
+# the removal merge refuses an unreadable receipt, and the removal never reads these rows.
+_src=0; ( _adb_claude_settings_satisfied_json() { return 20; }; _adb_claude_settings_rows_complete "$work/sat-receipt" "$PAYLOAD" ) || _src=$?
+[ "$_src" -eq 25 ] && ok || bad "a satisfied-row read that could not be performed must answer 25 — 20 is what uninstall proceeds past; rc $_src"
+
 # DAMAGE. Completeness subtracts satisfied paths from the payload, so a stray one would excuse a missing
 # leaf row, and one recorded as both owned and satisfied would let uninstall delete the operator's list.
 # The stray row REPLACES the lost leaf row, count and all — the shape that would pass every count, path
@@ -3996,6 +4008,20 @@ jq '.sandbox.excludedCommands += ["docker *"] | .sandbox.enabled = false' "$xe_h
 HOME="$xe_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
 [ "$(grep -c "^leaf$ADB_TAB" "$xe_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
   || bad "an extended array beside a real edit is a takeover and must still relinquish every row"
+# ...and when the hand-over CANNOT BE CHECKED — the clone's fragment is damaged — the record is KEPT,
+# never relinquished: four unchanged owned keys would otherwise stay installed with nothing owning them.
+xu_home="$work/sat-handover-unchecked"; rm -rf "$xu_home"; mkdir -p "$xu_home/.claude"
+echo '{}' > "$xu_home/.claude/settings.json"
+HOME="$xu_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq '.sandbox.excludedCommands += ["docker *"]' "$xu_home/.claude/settings.json" > "$work/xu.tmp" && mv "$work/xu.tmp" "$xu_home/.claude/settings.json"
+cp "$xu_home/.claude/.adb-settings-owned" "$work/xu-before"
+xu_clone="$work/xu-clone"; rm -rf "$xu_clone"; mkdir -p "$xu_clone"
+( cd "$ROOT" && cp -R . "$xu_clone" ) >/dev/null 2>&1; rm -rf "$xu_clone/.git"
+printf '{"sandbox":' > "$xu_clone/agents/claude/settings.fragment.json"
+HOME="$xu_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+grep -v '^source' "$work/xu-before" > "$work/xu-a"; grep -v '^source' "$xu_home/.claude/.adb-settings-owned" > "$work/xu-b"
+cmp -s "$work/xu-a" "$work/xu-b" && ok \
+  || bad "a hand-over that could not be checked must KEEP the existing record — relinquishing strands four unchanged owned keys"
 
 # AN UNSATISFIED excludedCommands REFUSES — and the refusal names the other way out, which for this key
 # is the one an operator wants: keep their list and add what the policy ships to it.
@@ -4139,8 +4165,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
     'must be skipped while its neighbours survive'
   check_row 'the path enumerations are not checked' 'scripts/lib/common.sh' 'the-merge-result-is-read-through-one-che' \
-    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)" || return 1' \
-    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'.[]?'"'"' 2>/dev/null)"' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'if type == "array" then .[] else error("not an array") end'"'"' 2>/dev/null)" || return 1' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'if type == "array" then .[] else error("not an array") end'"'"' 2>/dev/null)"' \
     'must be captured AND checked before any row is printed'
   check_row 'a per-leaf extraction failure becomes an empty value' 'scripts/lib/common.sh' 'and-so-is-each-leaf-value-one-level-down' \
     '    if ! v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)" || [ -z "$v" ]; then' \
@@ -5124,13 +5150,25 @@ if [ "$MUTATION" -eq 1 ]; then
     '      | unique   # satisfied-no-duplicate' \
     'recorded twice must be DAMAGED'
   check_row 'the carry relinquishes an extended satisfiable leaf' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
-    '    _xfer="$(_adb_carry_handover "$probe" "$_rrows" "$live" "$frag")" || _xfer=""' \
-    '    _xfer=""' \
+    '    _xfer="$(_adb_carry_handover "$probe" "$_rrows" "$live" "$frag")" || _xrc=$?' \
+    '    _xfer=""; _xrc=1' \
     'must HAND OVER an excludedCommands the operator extended'
   check_row 'the carry hands over when another leaf diverged too' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '         and ($unproved | all(. as $p' \
     '         and ($unproved | any(. as $p' \
     'beside a real edit is a takeover and must still relinquish'
+  check_row 'an unperformed satisfied-row read answers 20, which uninstall proceeds past' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '  case "$_src" in 0) ;; 21) return 21 ;; *) return 25 ;; esac   # satisfied-complete' \
+    '  case "$_src" in 0) ;; *) return "$_src" ;; esac   # satisfied-complete' \
+    'could not be performed must answer 25'
+  check_row 'the row writer walks a non-array or unreadable satisfied list' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    "  satisfied_paths=\"\$(printf '%s' \"\$satisfiedj\" | jq -c --argjson s \"\$_satl\" 'if type == \"array\" then .[] | (. as \$p | if (\$s | map(. == \$p) | any) then \$p else error(\"not satisfiable\") end) else error(\"not an array\") end' 2>/dev/null)\" || return 1   # leaf-rows-satisfied-contract" \
+    "  satisfied_paths=\"\$(printf '%s' \"\$satisfiedj\" | jq -c '.[]?' 2>/dev/null)\" || return 1   # leaf-rows-satisfied-contract" \
+    'must refuse a satisfied path the reader would reject'
+  check_row 'an unchecked hand-over relinquishes instead of keeping the record' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '        return 25 ;;   # handover-unchecked' \
+    '        return 0 ;;   # handover-unchecked' \
+    'a hand-over that could not be checked must KEEP'
   check_row 'a key recorded both owned and satisfied is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '  [ "$_both" = "0" ] || return 21   # satisfied-and-owned' \
     '  :   # satisfied-and-owned' \

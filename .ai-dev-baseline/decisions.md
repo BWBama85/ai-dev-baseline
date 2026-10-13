@@ -9821,11 +9821,19 @@ survive is the part a later reader needs.
              digest names the payload, and otherwise strands nothing, because nothing is ever
              removed by one.
 
+             **The nightly bound rises to 360 minutes** (owner, 2026-10-13). The nightly
+             `settings-fragment-mutation` job was already being cancelled at its 240-minute
+             `timeout-minutes` (2026-10-12 and 2026-10-13), and this change adds rows and installer
+             fixtures to that suite. 360 is GitHub's maximum for a hosted-runner job, so the real
+             fix is splitting the work, which is #532.
+
              **The floor stays v2.1.187.** `excludedCommands` is present by v2.1.34 in the vendor
-             CHANGELOG (re-checked 2026-10-13). Its MATCHING tightened later — v2.1.277 (a compound
-             command was exempted whole when one part matched), v2.1.281 and v2.1.290 (a short-form
-             `git clone` option kept the exemption) — so between the floor and those versions the
-             exclusion is broader than documented. Raising the floor would narrow nothing for those
+             CHANGELOG (re-checked 2026-10-13). Its MATCHING changed later. v2.1.277 stopped a
+             compound command being exempted whole when one part matched, and v2.1.290 stopped a
+             short-form `git clone` option keeping the exemption, so between the floor and those
+             versions the exclusion is broader than documented. v2.1.281 went the other way: before
+             it, entries failed to match `git rev-parse --git-dir`, builtin-named programs and some
+             commit messages. Raising the floor would narrow nothing for those
              CLIs. Below the floor the installer writes no NEW policy: a fresh install gets no sandbox
              at all, and an established one keeps the keys it already has, the exclusion included.
              The installation guide states the range.
@@ -9845,7 +9853,7 @@ survive is the part a later reader needs.
              and renderer) · `install.sh` (`.satisfied` read back, recorded and reported; the carry
              grep) · `scripts/check-settings-fragment.sh` · `docs/installation.md` ("Why `git` and
              `gh` run outside the sandbox") · `base/practices/untrusted-content.md` · `CLAUDE.md` ·
-             `CHANGELOG.md`
+             `CHANGELOG.md` · `.github/workflows/mutation-nightly.yml` (`timeout-minutes`)
 - reason:    ACCEPTANCE WITNESS, run 2026-10-13 on macOS 26.6.2, Claude Code 2.1.296, `gh` 2.101.0
              built with go1.27.1, `GITHUB_TOKEN`/`SSL_CERT_FILE`/`GODEBUG` unset, no managed
              settings on the machine. Each run was a nested `claude -p --setting-sources project

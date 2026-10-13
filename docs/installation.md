@@ -302,17 +302,20 @@ What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
   goes through the regular permission flow. In Manual mode a `git`/`gh` command that is not
   read-only prompts unless one of your allow rules covers it, auto mode sends it to the classifier,
   and `bypassPermissions` runs it. The installer ships no allow rules.
-- **Matching got stricter in newer CLIs.** Before v2.1.277 a compound command was taken out
-  whole when only one part matched; v2.1.281 and v2.1.290 fixed further mismatches, the last a
-  short-form `git clone` option that kept the exemption. Between the v2.1.187 floor and those
-  versions the exclusion is broader than described here. The floor is not raised for it, because a
+- **Matching changed in newer CLIs.** Before v2.1.277 a compound command was taken out whole when
+  only one part matched, and before v2.1.290 a short-form `git clone` option kept the exemption, so
+  between the v2.1.187 floor and those versions the exclusion is broader than described here.
+  (v2.1.281 went the other way: before it, some calls such as `git rev-parse --git-dir` did not
+  match at all.) The floor is not raised for it, because a
   higher floor would narrow nothing on those CLIs. Below the floor the installer writes no *new*
   policy: a fresh install gets no sandbox at all, and an established one keeps the keys it has.
 
 `--no-sandbox` is **not** a way out of an installed sandbox. It records the opt-out so
 `baseline update` stops re-applying the policy, and it leaves the keys already in your settings in
-place. To take them out, run `./uninstall.sh`, or delete them by hand; the next install reads a
-deletion as your opt-out.
+place. To take them out, either delete them by hand, which the next install reads as your opt-out
+and does not rewrite, or run `./uninstall.sh`. Uninstall removes only the keys this install still
+owns, so it leaves any it has already given up. It also deletes the ownership record, so a later
+`./install.sh` applies the policy again.
 
 ### Run markers are session-owned
 

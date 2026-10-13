@@ -936,13 +936,18 @@ adb_claude_settings_floor() { printf '2.1.187'; }
 # because widening it widens what an install leaves alone.
 adb_claude_settings_satisfiable() { printf '%s\n' '["sandbox","excludedCommands"]'; }
 
-# The ONE spelling of "this live value satisfies that shipped one", as a jq definition every reader
-# that asks prepends to its program: the merge, the currency check and the carry. Both are arrays,
-# every live element is a STRING (the vendor reads the array as command patterns, so a `null` beside
-# the right entries is not a configuration that works), and every shipped element is present by `==` —
-# never `contains`, which matches strings by substring, so `"git *x"` would have "contained" `git *`.
-adb_claude_settings_satisfies_jq() {
-  printf '%s\n' 'def satisfies_value($have; $ship):
+# The jq definitions the settings readers share, prepended to each program that asks — the merge,
+# the currency check and the carry — so each question has ONE spelling:
+#   member($xs; $x)  path membership by `==`. Never `index/1`, which searches an array argument as a
+#                    SUBSEQUENCE: `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason.
+#   satisfies_value($have; $ship)  a live value satisfies a shipped one (#462, D129): both arrays,
+#                    every live element a STRING (the vendor reads them as command patterns, so a
+#                    `null` beside the right entries is not a working configuration), and every
+#                    shipped element present by `==` — never `contains`, which matches strings by
+#                    substring, so `"git *x"` would have "contained" `git *`.
+adb_claude_settings_jq_defs() {
+  printf '%s\n' 'def member($xs; $x): ($xs | map(. == $x) | any);
+def satisfies_value($have; $ship):
   ($have | type) == "array" and ($ship | type) == "array"
   and all($have[]; type == "string")   # satisfies-strings
   and all($ship[]; . as $e | $have | any(. == $e));   # satisfies-elementwise'
@@ -1156,7 +1161,10 @@ _adb_claude_settings_rows_complete() {
   # delete a value the satisfied row says is the operator's.
   local sat _src _both
   sat="$(_adb_claude_settings_satisfied_json "$receipt")"; _src=$?
-  case "$_src" in 0) ;; 20|21) return "$_src" ;; *) return 25 ;; esac   # satisfied-complete
+  # 21 is damage; anything else is a check this run could not perform (25) — never 20, which
+  # `uninstall.sh` proceeds past because the removal merge refuses an unreadable receipt, and the
+  # removal never reads these rows.
+  case "$_src" in 0) ;; 21) return 21 ;; *) return 25 ;; esac   # satisfied-complete
   _both="$(printf '%s' "$owned" | jq --argjson s "$sat" '[.[].p] - ([.[].p] - $s) | length' 2>/dev/null)" || return 25
   [ "$_both" = "0" ] || return 21   # satisfied-and-owned
   # THE RECORDED COUNT ANSWERS FIRST, and needs no payload at all. A malformed row is skipped by the
@@ -1346,7 +1354,7 @@ _adb_claude_settings_satisfied_hold() {
   satv="$(jq -c --argjson sat "$sat" '. as $f | [ $sat[] | . as $p | ($f | getpath($p)) as $v
             | select(($v | type) == "array") | {p: $p, v: $v} ]' "$payload" 2>/dev/null)" || return 2
   [ "$satv" != "[]" ] || return 0
-  jq -se --argjson satv "$satv" "$(adb_claude_settings_satisfies_jq)"'
+  jq -se --argjson satv "$satv" "$(adb_claude_settings_jq_defs)"'
     if length != 1 then error("not one value") else .[0] end
     | . as $doc
     | $satv
@@ -1708,7 +1716,7 @@ adb_claude_settings_merge() {
   fi
   local satisfiable satdef
   satisfiable="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || { _adb_merge_cleanup "$work_empty"; return 1; }
-  satdef="$(adb_claude_settings_satisfies_jq)"
+  satdef="$(adb_claude_settings_jq_defs)"
   jq -n -e \
      --slurpfile cur "$settings" \
      --slurpfile frag "$payload" \
@@ -1716,10 +1724,7 @@ adb_claude_settings_merge() {
      --argjson created "$created" \
      --argjson satisfiable "$satisfiable" \
      --arg mode "$mode" "$satdef"'
-    # `member`, spelled out, because jq'"'"'s `index/1` searches an array argument as a SUBSEQUENCE:
-    # `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason. Every path membership test here
-    # is an explicit equality scan.
-    def member($xs; $x): ($xs | map(. == $x) | any);
+    # `member` and `satisfies_value` come from `adb_claude_settings_jq_defs`, prepended above.
     # PRESENCE, not "is it null": the parent must be an object that HAS the final key.
     def present($p): (getpath($p[0:-1]) | type) == "object" and (getpath($p[0:-1]) | has($p[-1]));
     # Walked in order and stopped on the first answer, because `getpath` raises through a scalar.
@@ -1954,10 +1959,13 @@ adb_claude_settings_leaf_rows() {
   # leaf row strands the written value for good: the payload digest still looks current, so no
   # later update repairs the ownership, and uninstall has nothing to remove it by. Same failure as
   # the per-value read below, one level out. (PR review)
-  local wrote_paths created_paths satisfied_paths
-  wrote_paths="$(printf '%s' "$written" | jq -c '.[]?' 2>/dev/null)" || return 1
-  created_paths="$(printf '%s' "$createdj" | jq -c '.[]?' 2>/dev/null)" || return 1
-  satisfied_paths="$(printf '%s' "$satisfiedj" | jq -c '.[]?' 2>/dev/null)" || return 1
+  # EACH ARGUMENT MUST BE AN ARRAY, and a satisfied path one the reader accepts: `.[]?` walked a
+  # `null` as no rows and returned success, and a row the reader rejects is a record nothing can read.
+  local wrote_paths created_paths satisfied_paths _satl
+  _satl="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || return 1
+  wrote_paths="$(printf '%s' "$written" | jq -c 'if type == "array" then .[] else error("not an array") end' 2>/dev/null)" || return 1
+  created_paths="$(printf '%s' "$createdj" | jq -c 'if type == "array" then .[] else error("not an array") end' 2>/dev/null)" || return 1
+  satisfied_paths="$(printf '%s' "$satisfiedj" | jq -c --argjson s "$_satl" 'if type == "array" then .[] | (. as $p | if ($s | map(. == $p) | any) then $p else error("not satisfiable") end) else error("not an array") end' 2>/dev/null)" || return 1   # leaf-rows-satisfied-contract
   local v
   while IFS= read -r p; do
     [ -n "$p" ] || continue
