@@ -369,7 +369,12 @@ bugs. So the merge gate never defaults; it reads the key as a tri-state:
 - **undeclared** → unknowable, so the guard fails closed and reports what to add.
 
 **A repo with no bot reviewer should declare `bots = []`** — one line that keeps `gh pr merge
---auto` working. A repo that *is* bot-reviewed should list its reviewers.
+--auto` working. A repo that *is* bot-reviewed should list its reviewers. **Check before you
+write `[]`**, because it is the one value that disarms the guard: `/adopt` reads the reviews GitHub
+recorded on the repo's recent pull requests and proposes the Apps it finds (#459), and
+`baseline adopt status`'s `reviewers` rung goes red when `bots = []` is declared while an App is
+reviewing — the measured case, where a hand-written `[]` let a PR merge three minutes before its
+Codex reviewer posted six findings.
 
 ### How a declared login is matched (#173)
 

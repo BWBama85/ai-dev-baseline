@@ -574,6 +574,118 @@ warnkeys="$(printf '%s\n' "$warnprop" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)[[:
 hasnt "$warnkeys" "warning" "propose must never render a non-role record as a TOML key"
 has   "$warnprop" '# NOTE'  "...it surfaces the unusable record as a comment instead"
 
+# --- 7b. propose renders EVERY section the template ships (#459) ---------------------------------
+# DERIVED FROM THE TEMPLATE, never a list in this file: a section added to templates/agents.toml
+# and forgotten by `propose` must fail here, which a hand-copied list could not do. A header counts
+# live (`[x]`) or commented (`# [x]`) — the template itself ships most of its sections commented.
+TEMPLATE="$ROOT/templates/agents.toml"
+mapfile -t tsections < <(sed -n 's/^#\{0,1\}[[:space:]]*\[\([a-z][a-z0-9_.-]*\)\][[:space:]]*\(#.*\)\{0,1\}$/\1/p' "$TEMPLATE" | awk '!seen[$0]++')
+if [ "${#tsections[@]}" -ge 8 ]; then ok
+else bad "propose: the template section list could not be derived (got ${#tsections[@]}: ${tsections[*]})"; fi
+for s in "${tsections[@]}"; do
+  if printf '%s\n' "$prop" | grep -Eq "^(# )?\[$(printf '%s' "$s" | sed 's/\./\\./g')\]"; then ok
+  else bad "propose: renders the template section [$s] (live or commented with its reason)"; fi
+done
+# `[updates]` is GLOBAL ONLY — a project copy is ignored — so it must never be proposed live.
+eq "$(adb_toml_get "$WORK/proposed.toml" updates session_start >/dev/null 2>&1; echo $?)" 1 \
+   "propose: [updates] is never live in a project proposal (it is global-only)"
+
+# --- 7c. [reviewers] is inferred from the OBSERVED PR history, and never from its absence --------
+OBS="$WORK/observed"; mkdir -p "$OBS"
+printf 'prs\t3\t100\nreviewer\tchatgpt-codex-connector\t35,38,40\ndelete-branch-on-merge\tfalse\n' > "$OBS/codex.tsv"
+printf 'prs\t12\t100\n' > "$OBS/none.tsv"
+printf 'prs\t0\t100\n' > "$OBS/empty-history.tsv"
+: > "$OBS/unread.tsv"
+propose_obs() { bash "$AD" roles-infer "$FX" | bash "$AD" propose --observed "$1"; }
+propose_obs "$OBS/codex.tsv" > "$WORK/p-codex.toml"
+eq "$(adb_toml_get "$WORK/p-codex.toml" reviewers bots)" '["chatgpt-codex-connector"]' \
+   "propose: a repo whose PRs an App reviewed proposes that App in bots"
+has "$(cat "$WORK/p-codex.toml")" "reviewed #35, #38, #40" "propose: the bots line names the PRs as evidence"
+# ...and the round trip through the GUARD'S OWN reader, not just the TOML one: a line the pre-arm
+# guard rejects as malformed would be worse than no line.
+eq "$(cd "$WORK" && cp p-codex.toml agents.toml && HOME="$WORK/nohome" bash "$ROOT/scripts/lib/role-dispatch.sh" bots --comparable)" \
+   "chatgpt-codex-connector" "propose: the proposed bots line reads back through role-dispatch bots --comparable"
+rm -f "$WORK/agents.toml"
+propose_obs "$OBS/none.tsv" > "$WORK/p-none.toml"
+eq "$(adb_toml_get "$WORK/p-none.toml" reviewers bots)" '[]' \
+   "propose: a READ history with no App reviewer proposes bots = []"
+has "$(cat "$WORK/p-none.toml")" "12 pull request(s)" "propose: bots = [] says how much history it was read from"
+# THE TWO ABSENCES. `bots = []` disarms the pre-arm guard (#134), so neither an empty history nor an
+# unread one may produce it — both must leave the key ABSENT to the reader.
+propose_obs "$OBS/empty-history.tsv" > "$WORK/p-empty.toml"
+eq "$(adb_toml_get "$WORK/p-empty.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a repo with no PRs proposes a COMMENTED bots, never []"
+propose_obs "$OBS/unread.tsv" > "$WORK/p-unread.toml"
+eq "$(adb_toml_get "$WORK/p-unread.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
+   "propose: an UNREAD history never proposes bots = []"
+has "$(cat "$WORK/p-unread.toml")" "could not be read" "...and says the history could not be read"
+bash "$AD" roles-infer "$FX" | bash "$AD" propose > "$WORK/p-noobs.toml"
+eq "$(adb_toml_get "$WORK/p-noobs.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
+   "propose: with NO observation given, bots stays commented"
+# THE OBSERVATION IS REFUSED WHOLE. Each of these is a damaged file that, read leniently, shrinks to
+# a well-formed history with no reviewer in it — which is exactly the input that proposes `[]`.
+printf 'prs\t2\t100\ngarbage line\n' > "$OBS/bad-kind.tsv"
+printf 'prs\t2\t100\nreviewer\tcodex-bot\t1' > "$OBS/cut-off.tsv"
+printf 'prs\t5\t\t100\n' > "$OBS/doubled-tab.tsv"
+printf 'prs\t5\t100\t\n' > "$OBS/trailing-tab.tsv"
+printf 'reviewer\tchatgpt-codex-connector\t3\n' > "$OBS/no-prs.tsv"
+for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs; do
+  propose_obs "$OBS/$bad_obs.tsv" > "$WORK/p-$bad_obs.toml"
+  eq "$(adb_toml_get "$WORK/p-$bad_obs.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
+     "propose: a damaged observation ($bad_obs) is refused whole, never read as bots = []"
+done
+
+# --- 7d. the interview's answers (#459): validated twice, override inference, refuse ambiguity ----
+an() { HOME="$WORK/nohome" bash "$AD" answer "$@"; }
+eq "$(an primary codex)" "primary${TAB}codex" "answer: a valid answer prints one record"
+for bad_ans in "primary nope" "review codex,,gemini" "release maybe" "bots 'a b'" "gate.te.st x" \
+               "gate-state.lint yes" "colour blue"; do
+  # shellcheck disable=SC2086  # deliberate word splitting: each case is an argv
+  eq "$(eval an $bad_ans >/dev/null 2>&1; echo $?)" 2 "answer: rejects [$bad_ans]"
+done
+eq "$(an gate.test 'pytest -k "not slow"' >/dev/null 2>&1; echo $?)" 2 \
+   "answer: a gate command with a quote is refused (it cannot round-trip through agents.toml)"
+eq "$(an gate.test 'echo a\b' >/dev/null 2>&1; echo $?)" 2 "answer: a gate command with a backslash is refused"
+eq "$(an gate.lint '')" "gate.lint${TAB}" "answer: an empty gate command is a deliberate disable"
+ANS="$WORK/answers.tsv"
+{ an primary claude; an review codex,gemini; an bots none; an release none; an gate.test 'bash scripts/check.sh origin/main'
+  an gate-state.lint na; } > "$ANS"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --observed "$OBS/codex.tsv" --answers "$ANS" > "$WORK/p-ans.toml"
+eq "$(adb_toml_get "$WORK/p-ans.toml" roles primary)" '"claude"' "propose: an answered primary is live"
+eq "$(adb_toml_get "$WORK/p-ans.toml" roles review)" '["codex", "gemini"]' "propose: an answered review OVERRIDES the inferred one, as a list"
+eq "$(adb_toml_get "$WORK/p-ans.toml" reviewers bots)" '[]' "propose: an answered bots = none OVERRIDES the observation"
+eq "$(adb_toml_get "$WORK/p-ans.toml" roles release >/dev/null 2>&1; echo $?)" 1 "propose: release = none stays commented"
+has "$(cat "$WORK/p-ans.toml")" "cuts no releases" "...and records the owner's answer"
+eq "$(adb_toml_unquote "$(adb_toml_get "$WORK/p-ans.toml" gates test)")" "bash scripts/check.sh origin/main" \
+   "propose: an answered bespoke gate is live in [gates]"
+eq "$(adb_toml_get "$WORK/p-ans.toml" gates.state lint)" '"na"' "propose: an answered N/A axis is live in [gates.state]"
+# THE ANSWERS FILE IS RE-VALIDATED: it sits in a state dir anything can write, so what `answer`
+# accepted is not proof of what `propose` is handed.
+printf 'primary\tnot-an-agent\n' > "$WORK/planted.tsv"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted.tsv" > "$WORK/p-planted.toml"
+eq "$(adb_toml_get "$WORK/p-planted.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a hand-planted invalid answer is refused, not rendered"
+has "$(cat "$WORK/p-planted.toml")" "was refused" "...and it is named in a NOTE"
+printf 'primary\tclaude\nprimary\tcodex\n' > "$WORK/twice.tsv"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/twice.tsv" > "$WORK/p-twice.toml"
+eq "$(adb_toml_get "$WORK/p-twice.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a key answered twice applies neither answer"
+has "$(cat "$WORK/p-twice.toml")" "more than once" "...and names the repeat"
+
+# --- 7e. [gates]: a detected gate is SHOWN, not pinned; nothing detected is loud ------------------
+printf 'test\tpnpm test\nlint\tpnpm lint\n' > "$WORK/gates.tsv"
+bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/gates.tsv" > "$WORK/p-gates.toml"
+has "$(cat "$WORK/p-gates.toml")" '# test      = "pnpm test"' "propose: a DETECTED gate is listed"
+eq "$(adb_toml_get "$WORK/p-gates.toml" gates test >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a DETECTED gate is listed commented, not pinned"
+: > "$WORK/no-gates.tsv"
+has "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/no-gates.tsv")" "NO GATE WAS DETECTED" \
+    "propose: nothing detected names the bespoke-gate case loudly"
+printf 'test\tpnpm test\nnot a gate line\n' > "$WORK/bad-gates.tsv"
+pg="$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/bad-gates.tsv")"
+hasnt "$pg" 'pnpm test' "propose: a malformed gate list is refused whole"
+has   "$pg" 'could not be read' "...and says so rather than listing half of it"
+
 # --- 8. stack: every label the pin accepts is reachable, and unknown is a real answer ------------
 mk() { mkdir -p "$WORK/stack-$1" && printf '%s' "${2:-}" > "$WORK/stack-$1/${3:-x}"; printf '%s' "$WORK/stack-$1"; }
 eq "$(bash "$AD" stack "$(mk node '{}' package.json)")"        node   "package.json -> node"
@@ -660,6 +772,79 @@ drift="$(bash "$AD" pin-drift "$WORK/upstream.toml" "$ROOT")"
 has "$drift" "b6158eff2604875e1e522a57df71d7dfced7ace5..HEAD" "pin-drift names the pinned commit"
 has "$drift" "git -C $ROOT" "pin-drift targets the baseline clone"
 eq "$(bash "$AD" pin-drift "$WORK/upstream.toml" "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "pin-drift on a missing baseline exits 2"
+
+# --- 9b. pin-describe (#464): the version DESCRIBES the commit, from one resolved object ----------
+# The defect this replaces wrote `describe --tags --abbrev=0` — the nearest tag NAME — so a clone 13
+# commits past v3.0.0 pinned `version = "v3.0.0"` beside a commit that is not v3.0.0. The assertion
+# with teeth is therefore not a string match but a ROUND TRIP: git itself must resolve the written
+# version back to the written commit. `--abbrev=0` fails it (v1.0.0 resolves to the tagged commit).
+PD="$WORK/pin-describe"; mkdir -p "$PD"
+pd_clone() {  # <dir> <commits-after-tag> — a clone with v1.0.0 and N commits on top of it
+  git init -q "$1" >/dev/null 2>&1; check_git "$1" commit -q --allow-empty -m tagged
+  check_git "$1" tag v1.0.0
+  local i; for ((i = 0; i < $2; i++)); do check_git "$1" commit -q --allow-empty -m "c$i"; done
+}
+pd_field() { printf '%s\n' "$1" | cut -f"$2"; }
+pd_clone "$PD/off" 3
+out="$(bash "$AD" pin-describe "$PD/off")"
+eq "$(pd_field "$out" 2)" "$(git -C "$PD/off" rev-parse HEAD)" "pin-describe: the commit is the clone's full HEAD"
+if [[ "$(pd_field "$out" 1)" =~ ^v1\.0\.0-3-g[0-9a-f]{12,}$ ]]; then ok
+else bad "pin-describe: an off-tag clone pins the offset, not the bare tag (got $(pd_field "$out" 1))"; fi
+eq "$(git -C "$PD/off" rev-parse --verify --quiet "$(pd_field "$out" 1)^{commit}")" "$(pd_field "$out" 2)" \
+   "pin-describe: the written version resolves back to the written commit"
+pd_clone "$PD/on" 0
+eq "$(pd_field "$(bash "$AD" pin-describe "$PD/on")" 1)" "v1.0.0" "pin-describe: a clone sitting ON the tag pins the bare tag (no -0-g suffix)"
+check_git "$PD/on" tag -a v1.1.0 -m release
+eq "$(pd_field "$(bash "$AD" pin-describe "$PD/on")" 1)" "v1.1.0" "pin-describe: an annotated tag is described too"
+# NO TAGS AT ALL is the one legitimately empty version, and pin-render must still take it.
+git init -q "$PD/tagless" >/dev/null 2>&1; check_git "$PD/tagless" commit -q --allow-empty -m only
+out="$(bash "$AD" pin-describe "$PD/tagless")"; rc=$?
+eq "$rc" 0 "pin-describe: a tagless clone exits 0"
+eq "$(pd_field "$out" 1)" "" "pin-describe: a tagless clone pins an EMPTY version"
+yes "$(bash "$AD" pin-render "" "$(pd_field "$out" 2)" 2026-08-12 shell >/dev/null 2>&1; echo $?)" \
+    "pin-describe: pin-render accepts the tagless result"
+# TAGS THAT CANNOT DESCRIBE HEAD are not "no tags": a shallow clone whose tags are unreachable used
+# to pin `version = ""` through `|| echo ''`, saying "no release yet" about a clone it could not read.
+git init -q "$PD/unreach" >/dev/null 2>&1; check_git "$PD/unreach" commit -q --allow-empty -m main
+pd_main="$(git -C "$PD/unreach" symbolic-ref --short HEAD)"
+check_git "$PD/unreach" checkout -q --orphan other; check_git "$PD/unreach" commit -q --allow-empty -m other
+check_git "$PD/unreach" tag v9.9.9; check_git "$PD/unreach" checkout -q "$pd_main"
+out="$(bash "$AD" pin-describe "$PD/unreach" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 2 "pin-describe: tags present but none reachable is an ERROR, not an empty version"
+has "$out" "$PD/unreach" "...naming the baseline root"
+git init -q "$PD/unborn" >/dev/null 2>&1
+eq "$(bash "$AD" pin-describe "$PD/unborn" >/dev/null 2>&1; echo $?)" 2 "pin-describe: an unborn clone is an error"
+eq "$(bash "$AD" pin-describe "$PD/nope" >/dev/null 2>&1; echo $?)" 2 "pin-describe: a missing root is an error"
+# A TAG NAME OUTSIDE THE PIN'S GRAMMAR is pin-render's to refuse — one guard, not two.
+pd_clone "$PD/slash" 0; check_git "$PD/slash" tag release/2.0
+check_git "$PD/slash" tag -d v1.0.0 >/dev/null
+out="$(bash "$AD" pin-describe "$PD/slash")"
+eq "$(pd_field "$out" 1)" "release/2.0" "pin-describe: a tag outside the version grammar is reported as it is"
+eq "$(bash "$AD" pin-render "$(pd_field "$out" 1)" "$(pd_field "$out" 2)" 2026-08-12 shell >/dev/null 2>&1; echo $?)" 2 \
+   "pin-describe: ...and pin-render refuses it rather than the grammar being widened"
+# GIT FAILING is an error naming the root — never the empty version. Two stubs, because the two
+# reads fail differently: one before anything resolves, one after HEAD did.
+REALGIT="$(command -v git)"
+mkdir -p "$PD/gitdead" "$PD/gittags"
+printf '#!/bin/sh\nexit 128\n' > "$PD/gitdead/git"; chmod +x "$PD/gitdead/git"
+printf '#!/bin/sh\ncase " $* " in *" for-each-ref "*) exit 128 ;; esac\nexec "%s" "$@"\n' "$REALGIT" > "$PD/gittags/git"
+chmod +x "$PD/gittags/git"
+out="$(PATH="$PD/gitdead:$PATH" bash "$AD" pin-describe "$PD/off" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 2 "pin-describe: a git that fails is an error, not an empty version"
+has "$out" "$PD/off" "...naming the baseline root"
+eq "$(PATH="$PD/gittags:$PATH" bash "$AD" pin-describe "$PD/off" >/dev/null 2>&1; echo $?)" 2 \
+   "pin-describe: a tag listing that fails is an error, not 'no tags'"
+# ONE RESOLVED OBJECT. The stub lets `rev-parse` answer, then moves HEAD before anything else runs —
+# the `git pull` landing between the two reads. A describe of HEAD would now name the NEW commit.
+pd_clone "$PD/race" 2
+printf '#!/bin/sh\ncase " $* " in *" rev-parse "*) "%s" "$@"; rc=$?; "%s" -C "%s" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m moved >/dev/null 2>&1; exit $rc ;; esac\nexec "%s" "$@"\n' \
+  "$REALGIT" "$REALGIT" "$PD/race" "$REALGIT" > "$PD/gittags/race-git"
+mkdir -p "$PD/gitrace"; mv "$PD/gittags/race-git" "$PD/gitrace/git"; chmod +x "$PD/gitrace/git"
+out="$(PATH="$PD/gitrace:$PATH" bash "$AD" pin-describe "$PD/race")"
+if [ "$(git -C "$PD/race" rev-parse HEAD~1)" = "$(pd_field "$out" 2)" ]; then ok
+else bad "pin-describe: the race fixture did not move HEAD after the resolve — it is not testing anything"; fi
+eq "$(git -C "$PD/race" rev-parse --verify --quiet "$(pd_field "$out" 1)^{commit}")" "$(pd_field "$out" 2)" \
+   "pin-describe: the version describes the SAME commit even when HEAD moves between the reads"
 
 # --- 10. hygiene: each axis fires, and the ignore axis is proven able to STAY SILENT ------------
 HY="$WORK/hygiene"; mkdir -p "$HY/.claude/state" "$HY/src"
@@ -750,6 +935,43 @@ bare_out="$(bash "$AD" hygiene "$BARE" --agents claude | grep '^ignore-risk' || 
 has   "$bare_out" "COULD NOT BE DETERMINED" "a git ERROR is reported as undetermined, not as a fact"
 hasnt "$bare_out" "is NOT gitignored"       "a git ERROR must NOT be reported as 'not gitignored'"
 
+# --- 10b. agent-doc and branch-hygiene (#459) -----------------------------------------------------
+# HOME is a throwaway, so a global manifest on the developer's machine cannot supply a role the
+# fixture never declared — the axis layers the project manifest over the global one, as dispatch does.
+AG="$WORK/agent-doc"; mkdir -p "$AG"; git -C "$AG" init -q >/dev/null 2>&1
+printf '# conventions\n' > "$AG/CLAUDE.md"
+printf '[roles]\nprimary = "claude"\nreview  = ["codex"]\n' > "$AG/agents.toml"
+hyg() { HOME="$WORK/nohome" bash "$AD" hygiene "$AG" --agents claude "$@"; }
+out="$(hyg)"
+has   "$out" "agent-doc${TAB}warn${TAB}AGENTS.md" "hygiene: agent-doc fires for review = codex with no AGENTS.md"
+has   "$out" "CLAUDE.md" "...naming the root doc the conventions actually live in"
+hasnt "$out" "agent-doc${TAB}warn${TAB}CLAUDE.md" "hygiene: agent-doc is silent for an agent whose root doc is present"
+# The measured workaround — AGENTS.md as a symlink to CLAUDE.md — works, so it is PRESENT.
+ln -s CLAUDE.md "$AG/AGENTS.md"
+hasnt "$(hyg)" "agent-doc${TAB}" "hygiene: a root-doc symlink that resolves counts as present"
+rm -f "$AG/AGENTS.md"; ln -s missing.md "$AG/AGENTS.md"
+has "$(hyg)" "DANGLING" "hygiene: agent-doc names a DANGLING root-doc symlink"
+rm -f "$AG/AGENTS.md"
+# --agents narrows which config TREES are read, never which roles exist.
+has "$(HOME="$WORK/nohome" bash "$AD" hygiene "$AG" --agents gemini)" "agent-doc${TAB}warn${TAB}AGENTS.md" \
+    "hygiene: --agents does not narrow the agent-doc axis"
+# A project with no agents.toml yet is checked against the PROPOSAL, via --manifest.
+printf '[roles]\nprimary = "claude"\ngap_analysis = "gemini"\n' > "$WORK/proposal.toml"
+has "$(hyg --manifest "$WORK/proposal.toml")" "agent-doc${TAB}warn${TAB}GEMINI.md" \
+    "hygiene: --manifest checks the roles of the manifest it names"
+cp "$AG/agents.toml" "$WORK/nul.toml"; printf '\000' >> "$WORK/nul.toml"
+has "$(hyg --manifest "$WORK/nul.toml")" "agent-doc axis did NOT run" \
+    "hygiene: an unreadable manifest is a warning, never a clean agent-doc axis"
+# branch-hygiene: off is reported, on is silent, unread is a WARNING — three distinguishable answers.
+printf 'delete-branch-on-merge\tfalse\n' > "$WORK/dbm-off.tsv"
+printf 'delete-branch-on-merge\ttrue\n'  > "$WORK/dbm-on.tsv"
+printf 'prs\t3\t100\n'                   > "$WORK/dbm-unread.tsv"
+has   "$(hyg --observed "$WORK/dbm-off.tsv")" "branch-hygiene${TAB}note" "hygiene: branch-hygiene reports delete_branch_on_merge off"
+hasnt "$(hyg --observed "$WORK/dbm-on.tsv")"  "branch-hygiene" "hygiene: branch-hygiene is silent when it is on"
+has   "$(hyg --observed "$WORK/dbm-unread.tsv")" "branch-hygiene axis did NOT run" \
+      "hygiene: an unread delete_branch_on_merge is a warning, not silence"
+has   "$(hyg)" "branch-hygiene axis did NOT run" "hygiene: no observation at all is a warning too"
+
 # --- 11. plan: the ORDERING is the decision ------------------------------------------------------
 # move strictly before remove is the assertion with teeth. Reversed, the plan has the operator
 # delete a forked skill before its delta has been re-homed, and a run that stops in between has
@@ -811,7 +1033,7 @@ if [ -f "$WF" ]; then
   # code block. A guard satisfied by the documentation OF a call rather than by the call is exactly
   # the can't-fail shape this suite exists to reject; review caught it.
   wf_code="$(awk '/^```bash$/ { inb = 1; next } /^```/ { inb = 0; next } inb { print }' "$WF")"
-  for sub in scan classify prescribed delta roles-infer propose hygiene pin-render plan resolve baseline; do
+  for sub in scan classify prescribed delta roles-infer propose answer hygiene pin-describe pin-render plan resolve baseline; do
     case "$wf_code" in
       *"adopt-lib.sh\" $sub"*|*"ADOPT_LIB}} $sub"*) ok ;;
       *) bad "base/workflows/adopt.md no longer INVOKES '$sub' in a fenced block (prose mentioning it does not count)" ;;
@@ -898,6 +1120,66 @@ else
   else ok; fi
 fi
 
+# --- 14b. the workflow's propose → interview → hygiene → pin wiring, EXECUTED (#459, #464) --------
+# Each library predicate above is tested; what is not, unless it runs, is the prose that hands one's
+# output to the next — a fenced block that dropped `--observed`, split the pin's fields with `read`,
+# or left a stale pin behind for `--apply` would pass every assertion above. So the documented
+# blocks are extracted and run, with the live read (`observe`) replaced by a stub.
+WFS="$WORK/wf-snippets"; mkdir -p "$WFS/state" "$WFS/stub"
+printf '#!/bin/sh\ncase "$1" in observe) printf '"'"'prs\\t3\\t100\\nreviewer\\tchatgpt-codex-connector\\t35,38,40\\ndelete-branch-on-merge\\tfalse\\n'"'"' ;; *) exit 2 ;; esac\n' > "$WFS/stub/readiness-ok"
+printf '#!/bin/sh\nexit 2\n' > "$WFS/stub/readiness-dead"
+wf_run() {  # <snippet> <readiness-stub> [<baseline>] — run one documented block; its exit status is returned
+  local body
+  body="$(check_wf_snippet "$WF" "$1")"
+  [ -n "$body" ] || { bad "adopt.md has no ADB-SNIPPET: $1 block"; return 99; }
+  body="${body//\{\{ADOPT_LIB\}\}/bash \"$AD\"}"
+  body="${body//\{\{ADOPT_READINESS\}\}/bash \"$WFS/stub/$2\"}"
+  body="${body//\{\{GATE_RUNNER\}\}/bash \"$ROOT/scripts/lib/project-gates.sh\"}"
+  body="${body//\{\{STATE_DIR\}\}/$WFS/state}"
+  ( PROJECT="$FX" BASELINE="${3:-}" HOME="$WORK/nohome" bash -c "$body" ) >/dev/null 2>&1
+}
+wf_run propose readiness-ok; eq "$?" 0 "workflow: the propose block runs"
+eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" reviewers bots)" '["chatgpt-codex-connector"]' \
+   "workflow: the propose block hands the observation to propose (bots inferred from PR history)"
+wf_run propose readiness-dead; eq "$?" 0 "workflow: a failed GitHub read does not stop the propose block"
+eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
+   "workflow: a failed GitHub read leaves bots COMMENTED, never []"
+wf_run propose readiness-ok
+wf_run interview readiness-ok; eq "$?" 0 "workflow: the interview block runs"
+eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" roles primary)" '"claude"' \
+   "workflow: the interview's answers land in the proposal --apply reads"
+eq "$(adb_toml_unquote "$(adb_toml_get "$WFS/state/adopt-agents.toml" gates test)")" "bash scripts/check.sh" \
+   "workflow: an answered bespoke gate lands in the proposal"
+# A REFUSED ANSWER leaves the previous answers WHOLE — the block publishes by rename.
+cp "$WFS/state/adopt-answers.tsv" "$WFS/answers-before"
+INTERVIEW_BAD="$(check_wf_snippet "$WF" interview | sed 's/answer review codex/answer review nope/')"
+INTERVIEW_BAD="${INTERVIEW_BAD//\{\{ADOPT_LIB\}\}/bash \"$AD\"}"
+INTERVIEW_BAD="${INTERVIEW_BAD//\{\{STATE_DIR\}\}/$WFS/state}"
+( HOME="$WORK/nohome" bash -c "$INTERVIEW_BAD" ) >/dev/null 2>&1
+no "$?" "workflow: a refused interview answer stops the block"
+if cmp -s "$WFS/answers-before" "$WFS/state/adopt-answers.tsv" && [ ! -e "$WFS/state/adopt-answers.tsv.tmp" ]; then ok
+else bad "workflow: a refused interview answer must leave the previous answers file whole, and no temp behind"; fi
+wf_run hygiene readiness-ok
+has "$(cat "$WFS/state/adopt-hygiene.tsv")" "branch-hygiene${TAB}note" \
+    "workflow: the hygiene block hands the observation to hygiene"
+# The pin: the written version must DESCRIBE the written commit — the acceptance assertion #464 asks
+# for, run through the block rather than the library, so a block that split the record wrongly fails.
+wf_run pin readiness-ok "$PD/off"; eq "$?" 0 "workflow: the pin block runs"
+pv="$(bash "$AD" pin-read "$WFS/state/adopt-upstream.toml" version)"
+pc="$(bash "$AD" pin-read "$WFS/state/adopt-upstream.toml" commit)"
+eq "$(git -C "$PD/off" rev-parse --verify --quiet "$pv^{commit}")" "$pc" "workflow: the written version describes the written commit"
+# The EMPTY version of a tagless clone survives the hand-off: split with `IFS=<tab> read`, the
+# leading empty field would vanish and the commit would land in `version`.
+wf_run pin readiness-ok "$PD/tagless"; eq "$?" 0 "workflow: the pin block runs for a tagless baseline"
+eq "$(bash "$AD" pin-read "$WFS/state/adopt-upstream.toml" version)" "" "workflow: a tagless baseline pins an empty version"
+eq "$(bash "$AD" pin-read "$WFS/state/adopt-upstream.toml" commit)" "$(git -C "$PD/tagless" rev-parse HEAD)" \
+   "workflow: ...and its commit, not the commit in the version field"
+# A FAILURE STOPS THE RUN AND LEAVES NO PIN — not even the previous run's, which --apply would write.
+printf 'STALE PIN\n' > "$WFS/state/adopt-upstream.toml"
+wf_run pin readiness-ok "$PD/unreach"; no "$?" "workflow: an unidentifiable baseline stops the pin block"
+if [ -e "$WFS/state/adopt-upstream.toml" ]; then bad "workflow: a failed pin block must leave NO pin for --apply to write (a stale one survived)"
+else ok; fi
+
 # --- the mutation harness (`--mutation`) --------------------------------------------------------
 # EVERY LOAD-BEARING DECISION IN adopt-lib.sh IS INJECTED WITH ITS OWN DEFECT, AND THE SUITE ABOVE
 # MUST COME BACK RED FOR EACH.
@@ -927,7 +1209,7 @@ if [ "$MUTATE" = "1" ]; then
 # <dir> — build the tree copy ONCE; shmutant clones it for every row. `install.sh`/`uninstall.sh`
 # come along because the suite reads them; a copy failure for those is not fatal.
 _ad_mut_prepare() {
-  check_copy_subtrees "$ROOT" "$1" scripts base agents >/dev/null 2>&1 || return 1
+  check_copy_subtrees "$ROOT" "$1" scripts base agents templates >/dev/null 2>&1 || return 1
   cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null
   return 0
 }
@@ -1044,6 +1326,107 @@ shmutant_mut ignore-axis-needs-agent-dir \
     '    _ad_ignore_axis "$root" "$a"' \
     '    [ -d "$root/.$a" ] && _ad_ignore_axis "$root" "$a"' \
     'runs even when .<agent>/ does not exist yet'
+
+shmutant_mut pin-describe-abbrev-zero \
+    '    version="$(git -C "$root" describe --tags --abbrev=12 "$commit" 2>/dev/null)" && [ -n "$version" ] \' \
+    '    version="$(git -C "$root" describe --tags --abbrev=0 "$commit" 2>/dev/null)" && [ -n "$version" ] \' \
+    'pin-describe: an off-tag clone pins the offset, not the bare tag'
+shmutant_mut pin-describe-describes-head \
+    '    version="$(git -C "$root" describe --tags --abbrev=12 "$commit" 2>/dev/null)" && [ -n "$version" ] \' \
+    '    version="$(git -C "$root" describe --tags --abbrev=12 HEAD 2>/dev/null)" && [ -n "$version" ] \' \
+    'pin-describe: the version describes the SAME commit even when HEAD moves between the reads'
+shmutant_mut pin-describe-unreachable-is-empty \
+    '      || die "pin-describe: $(adb_display_value "$root") has tags, but none describes' \
+    '      || : "pin-describe: $(adb_display_value "$root") has tags, but none describes' \
+    'pin-describe: tags present but none reachable is an ERROR, not an empty version'
+shmutant_mut pin-describe-taglist-failure-is-none \
+    '    || die "pin-describe: could not list the tags in' \
+    '    || : "pin-describe: could not list the tags in' \
+    "pin-describe: a tag listing that fails is an error, not 'no tags'"
+shmutant_mut propose-bots-from-unread-history \
+    '  if [ -z "$_AD_OBS_PRS" ]; then' \
+    '  if false; then' \
+    'propose: an UNREAD history never proposes bots = []'
+shmutant_mut propose-bots-from-empty-history \
+    '  if [ "$_AD_OBS_PRS" -eq 0 ]; then' \
+    '  if false; then' \
+    'propose: a repo with no PRs proposes a COMMENTED bots, never []'
+shmutant_mut observed-skips-unknown-kind \
+    '      *) _AD_OBS_ERR="line $n: not a record this grammar has (wrong kind or field count)"; return 1 ;;' \
+    '      *) continue ;;' \
+    'propose: a damaged observation (bad-kind) is refused whole'
+shmutant_mut observed-final-byte-unchecked \
+    "  [ \"\$(tail -c 1 \"\$1\" | od -An -c | tr -d ' ')\" = '\\n' ]" \
+    '  :' \
+    'propose: a damaged observation (cut-off) is refused whole'
+shmutant_mut observed-split-by-ifs \
+    '    mapfile -t -d "$TAB" fl < <(printf '"'"'%s'"'"' "$line")' \
+    '    IFS="$TAB" read -r -a fl <<< "$line"' \
+    'propose: a damaged observation (doubled-tab) is refused whole'
+shmutant_mut answers-duplicate-last-wins \
+    '    if [ -n "${dup[$k]:-}" ]; then' \
+    '    if false; then' \
+    'propose: a key answered twice applies neither answer'
+shmutant_mut answers-not-revalidated \
+    '    if ! reason="$(_ad_answer_check "$k" "$v")"; then' \
+    '    if false; then' \
+    'propose: a hand-planted invalid answer is refused'
+shmutant_mut answer-gate-quote-accepted \
+    "          *'\"'*|*'\\'*) printf" \
+    '          NEVERMATCHES) printf' \
+    'answer: a gate command with a quote is refused'
+shmutant_mut answered-primary-ignored \
+    '  if [ -n "${_AD_ANS[primary]:-}" ]; then' \
+    '  if false; then' \
+    'propose: an answered primary is live'
+shmutant_mut detected-gate-pinned \
+    "      printf '# %-9s = \"%s\"   # DETECTED" \
+    "      printf '%-9s = \"%s\"   # DETECTED" \
+    'propose: a DETECTED gate is listed commented, not pinned'
+shmutant_mut gate-list-read-in-part \
+    '          have_gates=0; gates_why="a line is not <label>TAB<command>"; glines=(); break' \
+    '          continue' \
+    'propose: a malformed gate list is refused whole'
+shmutant_mut propose-drops-a-section \
+    '# [mcp]                        # NOT INFERRED: name the MCP servers' \
+    '# mcp-section-gone             # NOT INFERRED: name the MCP servers' \
+    'propose: renders the template section [mcp]'
+shmutant_mut agent-doc-absent-silent \
+    '    elif [ ! -e "$root/$doc" ]; then' \
+    '    elif false; then' \
+    'hygiene: agent-doc fires for review = codex with no AGENTS.md'
+shmutant_mut agent-doc-dangling-unnamed \
+    '    if [ -L "$root/$doc" ] && [ ! -e "$root/$doc" ]; then' \
+    '    if false; then' \
+    'hygiene: agent-doc names a DANGLING root-doc symlink'
+shmutant_mut branch-hygiene-off-silent \
+    '    false) _ad_emit branch-hygiene note -' \
+    '    false) : branch-hygiene note -' \
+    'hygiene: branch-hygiene reports delete_branch_on_merge off'
+shmutant_mut branch-hygiene-unread-silent \
+    '    *)     _ad_emit warning "the branch-hygiene axis did NOT run: delete_branch_on_merge was not read' \
+    '    *)     : warning "the branch-hygiene axis did NOT run: delete_branch_on_merge was not read' \
+    'hygiene: an unread delete_branch_on_merge is a warning, not silence'
+
+# The workflow's hand-offs are behaviour too, and section 14b executes them — so they are mutated
+# the same way, in the one source every agent's skill renders from.
+shmutant_target base/workflows/adopt.md
+shmutant_mut workflow-propose-skips-observe \
+    '( cd "$PROJECT" && {{ADOPT_READINESS}} observe ) > "{{STATE_DIR}}/adopt-observed.tsv" \' \
+    '( cd "$PROJECT" && : ) > "{{STATE_DIR}}/adopt-observed.tsv" \' \
+    'workflow: the propose block hands the observation to propose'
+shmutant_mut workflow-hygiene-drops-observed \
+    '  --observed "{{STATE_DIR}}/adopt-observed.tsv" > "{{STATE_DIR}}/adopt-hygiene.tsv"' \
+    '  > "{{STATE_DIR}}/adopt-hygiene.tsv"' \
+    'workflow: the hygiene block hands the observation to hygiene'
+shmutant_mut workflow-pin-split-by-read \
+    '{{ADOPT_LIB}} pin-render "${PIN_ID%%"$TABC"*}" "${PIN_ID#*"$TABC"}" \' \
+    'IFS="$TABC" read -r PV PC <<< "$PIN_ID"; {{ADOPT_LIB}} pin-render "$PV" "$PC" \' \
+    'workflow: the pin block runs for a tagless baseline'
+shmutant_mut workflow-pin-stale-survives \
+    'rm -f "{{STATE_DIR}}/adopt-upstream.toml"' \
+    ': "{{STATE_DIR}}/adopt-upstream.toml"' \
+    'workflow: a failed pin block must leave NO pin'
 
 # Width from `adb_pool_size` (min(cpu, 8)); each row costs a full suite run (D66, D68).
 # `--mutation` as a flag, not an env var: `selfcheck.sh`'s `add` takes a command's words, so an

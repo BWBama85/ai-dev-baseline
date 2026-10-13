@@ -689,9 +689,12 @@ add cleanup             bash scripts/check-cleanup.sh
 # keep/remove/move/escalate classifier, tested from the side that costs something — a prescribed
 # home that COLLIDES with a baseline artifact must be `keep` (reverse those two arms and every
 # adopting project is told to delete its own precommit-gate policy), and a colliding artifact that
-# DIFFERS must be `move`, never `remove`. Plus the four hygiene axes, the role-inference "cannot
-# infer" result, the pin's validation and round-trip, and a byte-level assertion that no read-only
-# subcommand alters the project it scanned. Offline; every fixture is a mktemp -d tree.
+# DIFFERS must be `move`, never `remove`. Plus the six hygiene axes, the role-inference "cannot
+# infer" result, a proposal that renders every template section and infers `[reviewers]` only from
+# a READ history (#459), the interview's answers, `pin-describe`'s one-object version (#464), the
+# pin's validation and round-trip, the workflow's own propose/interview/hygiene/pin blocks EXECUTED,
+# and a byte-level assertion that no read-only subcommand alters the project it scanned. Offline;
+# every fixture is a mktemp -d tree.
 add adopt               bash scripts/check-adopt.sh
 
 # ...and that suite is a guard, so it gets what guards get here: every load-bearing decision in
@@ -700,25 +703,26 @@ add adopt               bash scripts/check-adopt.sh
 # witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
 # message's claim that mutations "were observed" with something the repo can re-run.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
-inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh install.sh uninstall.sh
+inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh scripts/lib/project-gates.sh base/workflows/adopt.md templates/agents.toml install.sh uninstall.sh
 
 # The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
 # question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's
 # failure mode is silence (it passes green having checked nothing), so the suite drives every one
-# of the twelve rungs to every result class and asserts a NAMED verdict word and exit code for
+# of the contract's rungs to every result class and asserts a NAMED verdict word and exit code for
 # each, plus the fail-closed core: empty stdin, a rung nobody reported, an unknown status, a
 # duplicate and a malformed fact must every one of them be NON-green. Offline — `probe` reads the
-# filesystem and `tracker` reads a JSON object the caller assembled, which is exactly why the gh
-# reads live in the workflow instead.
+# filesystem and `tracker` reads a JSON object the caller assembled, which is exactly why the two
+# live reads (`facts`, `observe`) are subcommands of their own, driven here through a stubbed gh.
 add adopt-readiness     bash scripts/check-adopt-readiness.sh
 
-# ...and the same guards-get-mutated rule, for the same reason: thirty-eight defects, each injected
+# ...and the same guards-get-mutated rule, for the same reason: every defect in its table (the count
+# is printed by `--mutation`, never quoted here, because a quoted count goes stale), each injected
 # into a TREE COPY, each required to make the suite red ON ITS OWN NAMED ASSERTION. Two of them
 # are regressions of real fail-OPEN bugs this suite caught while it was being written (a gate
 # count that grepped a display string, and a jq filter whose failure was swallowed into "every
 # milestone is dispositioned").
 add adopt-readiness-mutation bash scripts/check-adopt-readiness.sh --mutation
-inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/project-gates.sh bin/baseline
+inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/adopt-lib.sh scripts/lib/project-gates.sh scripts/lib/role-dispatch.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh base/workflows/adopt.md bin/baseline
 
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness

@@ -1227,7 +1227,9 @@ jobs:
     runs-on: ubuntu-26.04
     # 10 since #456: the 45 it had was for its two mutation harnesses (adopt, adopt-readiness), which
     # no longer run per PR — 510s of a 548s job on run 38081150119. The two suites left took about a
-    # minute there.
+    # minute there. Re-measured when #459/#464 grew both suites (check-adopt 241 -> 343 assertions,
+    # the readiness suite 186 -> 235): 13s + 28s on a 10-core macOS workstation on 2026-10-12, so
+    # still about a minute on the runner, and 10 still leaves an order of magnitude of headroom.
     timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1249,14 +1251,14 @@ jobs:
       #
       # ONE job carrying BOTH invocations, matching `fact-drift`: a second job is a second required
       # status context for branch protection to grow, which is a cost the split does not earn.
-      - name: /adopt predicates — classifier, hygiene axes, pin, and the read-only boundary (#20)
+      - name: /adopt predicates — classifier, proposal, hygiene axes, pin, and the read-only boundary (#20)
         run: bash scripts/check-adopt.sh
 
       # The completion contract rides THIS job rather than a new one, for the reason stated above:
       # a second job is a second required status context for branch protection to grow, and this
       # split does not earn one. Registering only in selfcheck.sh would exercise it on macOS alone.
       # Its mutation harness, like every other, runs in `mutation-nightly.yml` since #456.
-      - name: adoption completion contract — the twelve rungs and the fail-closed verdict (#81)
+      - name: adoption completion contract — every rung and the fail-closed verdict (#81)
         run: bash scripts/check-adopt-readiness.sh
 
   pattern-ledger:
