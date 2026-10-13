@@ -3872,8 +3872,9 @@ r="$(m '{"sandbox":{"excludedCommands":["docker *","gh *","git *"]}}' "$work/emp
 
 # Anything short of EVERY shipped entry still blocks the lot. `["git","gh"]` is the recipe the docs
 # carried before #462 (exact-match patterns); `["git *x",…]` would "contain" `git *` under jq's
-# substring `contains`; a string is not the array the vendor reads.
-for ec in '["docker *"]' '["git","gh"]' '["git *x","gh *"]' '"git * gh *"' '["gh *"]'; do
+# substring `contains`; a string is not the array the vendor reads, and neither is an array holding
+# a `null` or an object beside the right entries — the vendor reads every element as a pattern.
+for ec in '["docker *"]' '["git","gh"]' '["git *x","gh *"]' '"git * gh *"' '["gh *"]' '["git *","gh *",null]' '["git *","gh *",{"x":1}]'; do
   r="$(m "{\"sandbox\":{\"excludedCommands\":$ec}}" "$work/empty-receipt")"
   [ "$(verdict "$r")" = refuse ] && [ "$(names "$r" blocked)" = "sandbox.excludedCommands" ] && ok \
     || bad "an excludedCommands of $ec does not hold every shipped entry and must still refuse the lot; verdict $(verdict "$r"), blocked $(names "$r" blocked)"
@@ -3920,6 +3921,9 @@ _src=0; adb_claude_settings_leaves_intact "$work/sat-receipt" "$work/sat.json" "
 jq '.sandbox.excludedCommands = ["docker *","git *"]' "$work/sat.json" > "$work/sat-short.json"
 _src=0; adb_claude_settings_leaves_intact "$work/sat-receipt" "$work/sat-short.json" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 1 ] && ok || bad "a satisfied key that has lost a shipped entry must read as DIVERGED, so the next update re-decides it; rc $_src"
+jq '.sandbox.excludedCommands += [null]' "$work/sat.json" > "$work/sat-null.json"
+_src=0; adb_claude_settings_leaves_intact "$work/sat-receipt" "$work/sat-null.json" "$PAYLOAD" || _src=$?
+[ "$_src" -eq 1 ] && ok || bad "a satisfied key that gained a non-string element no longer satisfies and must read as DIVERGED; rc $_src"
 jq 'del(.sandbox.excludedCommands)' "$work/sat.json" > "$work/sat-gone.json"
 _src=0; adb_claude_settings_leaves_intact "$work/sat-receipt" "$work/sat-gone.json" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 1 ] && ok || bad "a satisfied key that is gone must read as DIVERGED; rc $_src"
@@ -3947,6 +3951,12 @@ _src=0; _adb_claude_settings_rows_complete "$work/sat-both" "$PAYLOAD" || _src=$
 grep -v "^satisfied${ADB_TAB}" "$work/sat-receipt" > "$work/sat-lost"
 _src=0; _adb_claude_settings_rows_complete "$work/sat-lost" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 23 ] && ok || bad "a receipt that lost its satisfied row records that key nowhere and must be INCOMPLETE (23); rc $_src"
+{ grep -v "^satisfied${ADB_TAB}" "$work/sat-receipt"; printf 'satisfied%s["sandbox","excludedCommands"]%sgarbage\n' "$ADB_TAB" "$ADB_TAB"; } > "$work/sat-extra"
+_src=0; _adb_claude_settings_rows_complete "$work/sat-extra" "$PAYLOAD" || _src=$?
+[ "$_src" -eq 21 ] && ok || bad "a satisfied row carrying a field after its path must be DAMAGED (21) — the row is validated whole; rc $_src"
+{ cat "$work/sat-receipt"; printf 'satisfied%s["sandbox","excludedCommands"]\n' "$ADB_TAB"; } > "$work/sat-dup"
+_src=0; _adb_claude_settings_rows_complete "$work/sat-dup" "$PAYLOAD" || _src=$?
+[ "$_src" -eq 21 ] && ok || bad "a satisfied path recorded twice must be DAMAGED (21), not folded into one; rc $_src"
 { cat "$work/sat-receipt"; printf 'satisfied%s["sandbox",\n' "$ADB_TAB"; } > "$work/sat-badjson"
 _src=0; _adb_claude_settings_rows_complete "$work/sat-badjson" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 21 ] && ok || bad "a satisfied row whose path is not JSON must be DAMAGED (21), never skipped; rc $_src"
@@ -3965,6 +3975,27 @@ grep -q "^satisfied${ADB_TAB}" "$sc_home/.claude/.adb-settings-owned" \
   && bad "a satisfied key that has lapsed must not be CARRIED by the opt-out — currency reads it as diverged, and every update would re-run the installer to carry it again" || ok
 _src=0; adb_claude_settings_leaves_intact "$sc_home/.claude/.adb-settings-owned" "$sc_home/.claude/settings.json" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 0 ] && ok || bad "after the opt-out relinquished a lapsed satisfied key, currency must read the record as intact — anything else loops; rc $_src"
+
+# ...AND HANDS OVER AN EXTENDED ONE, exactly as the write path does: our array, extended, still
+# satisfies, so the opt-out carries the other four leaves and records that key as the operator's.
+xo_home="$work/sat-handover"; rm -rf "$xo_home"; mkdir -p "$xo_home/.claude"
+echo '{}' > "$xo_home/.claude/settings.json"
+HOME="$xo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq '.sandbox.excludedCommands += ["docker *"]' "$xo_home/.claude/settings.json" > "$work/xo.tmp" && mv "$work/xo.tmp" "$xo_home/.claude/settings.json"
+HOME="$xo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/sat-handover.log" 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$xo_home/.claude/.adb-settings-owned" || true)" -eq 4 ] \
+  && grep -qxF "satisfied${ADB_TAB}[\"sandbox\",\"excludedCommands\"]" "$xo_home/.claude/.adb-settings-owned" && ok \
+  || bad "the opt-out must HAND OVER an excludedCommands the operator extended, keeping the other four leaves — relinquishing all five is the takeover the write path does not do"
+_src=0; adb_claude_settings_leaves_intact "$xo_home/.claude/.adb-settings-owned" "$xo_home/.claude/settings.json" "$PAYLOAD" || _src=$?
+[ "$_src" -eq 0 ] && ok || bad "after the hand-over the record must read as intact; rc $_src"
+# ...but only when that is the WHOLE divergence: an extended array beside a real edit still relinquishes.
+xe_home="$work/sat-handover-edit"; rm -rf "$xe_home"; mkdir -p "$xe_home/.claude"
+echo '{}' > "$xe_home/.claude/settings.json"
+HOME="$xe_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+jq '.sandbox.excludedCommands += ["docker *"] | .sandbox.enabled = false' "$xe_home/.claude/settings.json" > "$work/xe.tmp" && mv "$work/xe.tmp" "$xe_home/.claude/settings.json"
+HOME="$xe_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+[ "$(grep -c "^leaf$ADB_TAB" "$xe_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
+  || bad "an extended array beside a real edit is a takeover and must still relinquish every row"
 
 # AN UNSATISFIED excludedCommands REFUSES — and the refusal names the other way out, which for this key
 # is the one an operator wants: keep their list and add what the policy ships to it.
@@ -5057,8 +5088,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '      | ( [ $leaves[] | select( member($ownedp; .) | not ) ]   # blocked-excludes-satisfied' \
     'holding every shipped entry must not refuse the install'
   check_row 'satisfaction is tested with jq contains, which matches strings by substring' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
-    '        and ( ($doc | getpath($p)) as $have | all($ship[]; . as $e | $have | any(. == $e)) );   # satisfies-elementwise' \
-    '        and ( ($doc | getpath($p)) | contains($ship) );   # satisfies-elementwise' \
+    '  and all($ship[]; . as $e | $have | any(. == $e));   # satisfies-elementwise' \
+    '  and ($have | contains($ship));   # satisfies-elementwise' \
     'does not hold every shipped entry and must still refuse the lot'
   check_row 'our own untouched excludedCommands is handed to the operator' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '                      | ($rec == null) or (($settings | getpath($p)) != $rec.v) ) ] ) as $satisfied   # satisfied-moves-only-on-change' \
@@ -5073,13 +5104,33 @@ if [ "$MUTATION" -eq 1 ]; then
     '      | ( [ $owned[] | select( member($leaves; .p) ) ]   # diverged-excludes-satisfied' \
     'must not be read as a takeover'
   check_row 'currency stops asking whether a satisfied key still satisfies' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
-    '                       and all($s.v[]; . as $e | $have | any(. == $e)) )   # satisfied-hold' \
-    '                       and true )   # satisfied-hold' \
+    '    | all( . as $s | ( try satisfies_value($doc | getpath($s.p); $s.v) catch false ) )   # satisfied-hold' \
+    '    | all( . as $s | true )   # satisfied-hold' \
     'has lost a shipped entry must read as DIVERGED'
   check_row 'a satisfied row for an unsatisfiable key is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '      | if ($sat | map(. == $pj) | any) then $pj' \
     '      | if true then $pj' \
     'cannot be satisfied must be refused as DAMAGED'
+  check_row 'a non-string element beside the shipped entries satisfies' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '  and all($have[]; type == "string")   # satisfies-strings' \
+    '  and true   # satisfies-strings' \
+    'of ["git *","gh *",null] does not hold every shipped entry'
+  check_row 'a satisfied row with a field after its path is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '      | if ($rest | index("\t")) == null then $rest' \
+    '      | if true then ($rest | split("\t") | first)' \
+    'carrying a field after its path must be DAMAGED'
+  check_row 'a satisfied path recorded twice is folded into one' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '      | if length == (unique | length) then . else error("receipt: a satisfied path is recorded twice") end   # satisfied-no-duplicate' \
+    '      | unique   # satisfied-no-duplicate' \
+    'recorded twice must be DAMAGED'
+  check_row 'the carry relinquishes an extended satisfiable leaf' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '    _xfer="$(_adb_carry_handover "$probe" "$_rrows" "$live" "$frag")" || _xfer=""' \
+    '    _xfer=""' \
+    'must HAND OVER an excludedCommands the operator extended'
+  check_row 'the carry hands over when another leaf diverged too' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '         and ($unproved | all(. as $p' \
+    '         and ($unproved | any(. as $p' \
+    'beside a real edit is a takeover and must still relinquish'
   check_row 'a key recorded both owned and satisfied is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '  [ "$_both" = "0" ] || return 21   # satisfied-and-owned' \
     '  :   # satisfied-and-owned' \
@@ -5089,8 +5140,8 @@ if [ "$MUTATION" -eq 1 ]; then
     "'(\$s - \$r) | length' 2>/dev/null)\"; _cdrc=\$?" \
     'must be COMPLETE'
   check_row 'a satisfied path is not JSON and is skipped' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
-    '      | (try ($p | fromjson) catch error("receipt: satisfied path is not JSON")) as $pj' \
-    '      | (try ($p | fromjson) catch empty) as $pj' \
+    '      | (try fromjson catch error("receipt: satisfied path is not JSON")) as $pj' \
+    '      | (try fromjson catch empty) as $pj' \
     'whose path is not JSON must be DAMAGED'
   check_row 'the carry re-records a satisfied row that has lapsed' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '  _adb_claude_settings_satisfied_hold "$receipt" "$live" "$frag" || _sh=$?' \

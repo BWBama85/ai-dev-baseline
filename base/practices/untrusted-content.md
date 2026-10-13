@@ -119,7 +119,7 @@ than none:
   "absent", but it is a long way from "enforced", and these gaps are load-bearing:
 
   - **`git` and `gh` are outside it.** Since #462 the same settings exclude `git *` and
-    `gh *`, because `gh` fails TLS verification under the macOS sandbox and `git` over
+    `gh *`, because `gh` can fail TLS verification under the macOS sandbox and `git` over
     SSH cannot get out of it. A call made only of those commands runs with the
     workstation's full access, the credential denials included — and those are the two
     commands most likely to touch credentials.

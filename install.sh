@@ -965,15 +965,29 @@ _adb_carry_rows() {
   case "$proved" in ''|*[!0-9]*) proved=0 ;; esac
   case "$recorded" in ''|*[!0-9]*) recorded=0 ;; esac
   if [ "$proved" -ne "$recorded" ]; then
-    adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2
-    adb_info "           are no longer as this install left them." >&2
-    return 0
+    # AN EXTENDED SATISFIABLE LEAF IS HANDED OVER, NOT TAKEN OVER — the merge's rule, on this path
+    # too (#462, D129). Only when EVERY unproved row is one: those rows travel as `satisfied`.
+    local _xfer _xp _q
+    _xfer="$(_adb_carry_handover "$probe" "$_rrows" "$live" "$frag")" || _xfer=""
+    if [ -z "$_xfer" ] || ! _xp="$(printf '%s' "$_xfer" | jq -c '.[]' 2>/dev/null)" || [ -z "$_xp" ]; then
+      adb_info "  sandbox  ownership relinquished — $((recorded - proved)) of $recorded recorded key(s)" >&2
+      adb_info "           are no longer as this install left them." >&2
+      return 0
+    fi
+    rows="$(printf '%s\n' "$rows" | ADB_XP="$_xp" awk -F '\t' '
+        BEGIN { n = split(ENVIRON["ADB_XP"], a, "\n"); for (i = 1; i <= n; i++) x[a[i]] = 1 }
+        !($1 == "leaf" && ($2 in x))')"
+    while IFS= read -r _q; do
+      [ -n "$_q" ] && rows="$rows$(printf '\nsatisfied\t%s' "$_q")"
+    done <<EOF
+$_xp
+EOF
+    adb_info "  sandbox  yours now: $(printf '%s' "$_xfer" | jq -r 'map(join(".")) | join(", ")' 2>/dev/null) — it still holds every entry the policy ships." >&2
   fi
-  # ...AND EVERY SATISFIED ROW STILL HOLDS (#462, D129). The currency check asks the same question, so
-  # carrying a row that no longer holds left a record `baseline update` reads as diverged on every visit,
-  # and a self-heal that only carried it again looped. One that no longer holds relinquishes, as a
-  # diverged owned leaf does. A fragment that cannot measure it (2) carries the row unchecked: a damaged
-  # fragment must not cost ownership, and the next readable payload asks again.
+  # ...AND EVERY SATISFIED ROW STILL HOLDS (#462, D129): the currency check asks the same question,
+  # so a row that no longer holds is never carried — it relinquishes, as a diverged owned leaf does.
+  # A fragment that cannot measure it (2) carries the row unchecked: a damaged fragment must not cost
+  # ownership.
   local _sh=0
   _adb_claude_settings_satisfied_hold "$receipt" "$live" "$frag" || _sh=$?
   case "$_sh" in
@@ -988,6 +1002,26 @@ _adb_carry_rows() {
       return "$_sh" ;;
   esac
   printf '%s\n' "$rows"
+}
+
+# The recorded leaf paths a carry may HAND OVER rather than relinquish (#462, D129), as one JSON array
+# on stdout — printed only when EVERY row the removal probe did not prove is a satisfiable leaf whose
+# live value satisfies the shipped one. Otherwise nothing, and the caller relinquishes.
+# Usage: _adb_carry_handover <probe-json> <receipt-leaf-rows> <settings> <payload>
+_adb_carry_handover() {
+  local probe="$1" rrows="$2" live="$3" frag="$4" rec sat
+  [ -s "$frag" ] || return 1
+  rec="$(printf '%s\n' "$rrows" | cut -f1 | jq -cs . 2>/dev/null)" || return 1
+  sat="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || return 1
+  jq -c -n --argjson probe "$probe" --argjson rec "$rec" --argjson sat "$sat" \
+     --slurpfile live "$live" --slurpfile frag "$frag" "$(adb_claude_settings_satisfies_jq)"'
+    def member($xs; $x): ($xs | map(. == $x) | any);
+    ($rec - $probe.pruned) as $unproved
+    | if ($unproved | length) > 0 and ($live | length) == 1 and ($frag | length) == 1
+         and ($unproved | all(. as $p
+               | member($sat; $p)
+                 and (try satisfies_value($live[0] | getpath($p); $frag[0] | getpath($p)) catch false)))   # handover-all-unproved
+      then $unproved else empty end' 2>/dev/null
 }
 
 # Record a skip, and SAY SO WHEN IT CANNOT BE RECORDED. The receipt is the entire reason a skip is

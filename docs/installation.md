@@ -270,11 +270,12 @@ them, and the digest of the fragment applied:
 
 Inside the sandbox, the framework's own path to GitHub breaks in two independent ways:
 
-- **On macOS, `gh` fails TLS verification before it reads any token.** It is a Go program, and
-  under Seatbelt it cannot reach the system trust service:
+- **On macOS, `gh` can fail TLS verification, so its request never reaches GitHub.** It is a Go
+  program, and under Seatbelt it may not reach the system trust service. It failed on every macOS
+  machine probed for #462, and the vendor says such tools *may* fail:
   `tls: failed to verify certificate: x509: OSStatus -26276`. Inside the sandbox
-  `gh auth status` then reports **`The token in keyring is invalid`**. The token is fine, so do
-  not re-authenticate, and do not move it to plaintext storage. `git` over HTTPS with the
+  `gh auth status` then reports **`The token in keyring is invalid`**. GitHub never saw the token,
+  let alone rejected it, so do not re-authenticate, and do not move it to plaintext storage. `git` over HTTPS with the
   keychain credential helper can fail the same way, with `fatal: failed to store: 100001`.
 - **`git` over SSH cannot get out, and the credentials are denied besides.** The connection is
   refused at the sandbox's own proxy (`This proxy requires authentication, and this client did not
@@ -304,8 +305,9 @@ What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
 - **Matching got stricter in newer CLIs.** Before v2.1.277 a compound command was taken out
   whole when only one part matched; v2.1.281 and v2.1.290 fixed further mismatches, the last a
   short-form `git clone` option that kept the exemption. Between the v2.1.187 floor and those
-  versions the exclusion is broader than described here. The floor is not raised for it, because
-  below the floor nothing is sandboxed at all.
+  versions the exclusion is broader than described here. The floor is not raised for it, because a
+  higher floor would narrow nothing on those CLIs. Below the floor the installer writes no *new*
+  policy: a fresh install gets no sandbox at all, and an established one keeps the keys it has.
 
 `--no-sandbox` is **not** a way out of an installed sandbox. It records the opt-out so
 `baseline update` stops re-applying the policy, and it leaves the keys already in your settings in

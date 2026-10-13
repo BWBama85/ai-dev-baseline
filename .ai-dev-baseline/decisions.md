@@ -9780,9 +9780,11 @@ survive is the part a later reader needs.
 - unknown:   #462. D96 shipped `sandbox.enabled` with a `~/.ssh` deny and a `GITHUB_TOKEN` scrub,
              recorded that this blocks the framework's own `git`/`gh` path, and reserved the fix — a
              key that WIDENS what runs unsandboxed — for the owner. The issue's evidence comments
-             then showed the conflict was wider than its body: on macOS every sandboxed `gh` call
-             fails TLS verification (`x509: OSStatus -26276`) before any token is read, so it is not
-             an SSH-only problem. The gap analysis returned three BLOCKING questions about
+             then showed the conflict was wider than its body: on every macOS machine probed, a
+             sandboxed `gh` call failed TLS verification (`x509: OSStatus -26276`), so its request
+             never reached GitHub — not an SSH-only problem, and not a credential one (`gh` reads its
+             token before the handshake: `AddAuthTokenHeader`, `api/http_client.go`, v2.101.0). The
+             vendor says such tools MAY fail; nothing here claims more than was observed. The gap analysis returned three BLOCKING questions about
              implementing the decision as written.
 - decision:  **Owner decision 2026-09-22 (on #462): Option 1, ship `sandbox.excludedCommands` for
              `git` and `gh`.** Three refinements were asked of the owner on 2026-10-13 and decided
@@ -9823,9 +9825,10 @@ survive is the part a later reader needs.
              CHANGELOG (re-checked 2026-10-13). Its MATCHING tightened later — v2.1.277 (a compound
              command was exempted whole when one part matched), v2.1.281 and v2.1.290 (a short-form
              `git clone` option kept the exemption) — so between the floor and those versions the
-             exclusion is broader than documented. Raising the floor would not narrow anything for
-             those CLIs: below the floor the installer writes no sandbox at all. The installation
-             guide states the range.
+             exclusion is broader than documented. Raising the floor would narrow nothing for those
+             CLIs. Below the floor the installer writes no NEW policy: a fresh install gets no sandbox
+             at all, and an established one keeps the keys it already has, the exclusion included.
+             The installation guide states the range.
 
              **Not shipped:** `sandbox.enableWeakerNetworkIsolation` (#505's closing note — it does
              make wrapped `gh` work on this machine). The vendor documents it for MITM-proxy setups,
@@ -9844,15 +9847,18 @@ survive is the part a later reader needs.
              `gh` run outside the sandbox") · `base/practices/untrusted-content.md` · `CLAUDE.md` ·
              `CHANGELOG.md`
 - reason:    ACCEPTANCE WITNESS, run 2026-10-13 on macOS 26.6.2, Claude Code 2.1.296, `gh` 2.101.0
-             built with go1.27.1, `GITHUB_TOKEN`/`SSL_CERT_FILE`/`GODEBUG` unset. Each run was a
-             nested `claude -p --setting-sources project --settings <file>
-             --permission-mode bypassPermissions` in an empty directory, so no user-scope setting
-             reached it (the maintainer's own `enableWeakerNetworkIsolation: true` would otherwise
-             have masked the failure). The settings file was this fragment with
-             `allowUnsandboxedCommands: false`, so a failure could not be retried outside the
-             sandbox. The session ran `gh api /user --jq .login` and
+             built with go1.27.1, `GITHUB_TOKEN`/`SSL_CERT_FILE`/`GODEBUG` unset, no managed
+             settings on the machine. Each run was a nested `claude -p --setting-sources project
+             --settings <file> --permission-mode bypassPermissions` in an empty directory. That
+             loads the project source, which was empty, and the `--settings` file, and excludes the
+             user and local settings files, so the maintainer's own `~/.claude/settings.json` (whose
+             `enableWeakerNetworkIsolation: true` would have masked the failure) did not apply. The
+             `--settings` file was the `~/.claude/settings.json` that THIS BRANCH'S `install.sh`
+             wrote into a scratch HOME, plus `allowUnsandboxedCommands: false`, so a failure could
+             not be retried outside the sandbox. (A first run on the fragment file alone gave the
+             same three results.) The session ran `gh api /user --jq .login` and
              `git ls-remote git@github.com:BWBama85/ai-dev-baseline.git HEAD`:
-               shipped `["git *","gh *"]` → `BWBama85`; the remote HEAD.
+               installer-written `["git *","gh *"]` → `BWBama85`; the remote HEAD.
                no `excludedCommands`      → `x509: OSStatus -26276`; SSH refused at the sandbox
                                             proxy ("This proxy requires authentication").
                the literal `["git","gh"]` → the same two failures.

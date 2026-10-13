@@ -936,6 +936,18 @@ adb_claude_settings_floor() { printf '2.1.187'; }
 # because widening it widens what an install leaves alone.
 adb_claude_settings_satisfiable() { printf '%s\n' '["sandbox","excludedCommands"]'; }
 
+# The ONE spelling of "this live value satisfies that shipped one", as a jq definition every reader
+# that asks prepends to its program: the merge, the currency check and the carry. Both are arrays,
+# every live element is a STRING (the vendor reads the array as command patterns, so a `null` beside
+# the right entries is not a configuration that works), and every shipped element is present by `==` —
+# never `contains`, which matches strings by substring, so `"git *x"` would have "contained" `git *`.
+adb_claude_settings_satisfies_jq() {
+  printf '%s\n' 'def satisfies_value($have; $ship):
+  ($have | type) == "array" and ($ship | type) == "array"
+  and all($have[]; type == "string")   # satisfies-strings
+  and all($ship[]; . as $e | $have | any(. == $e));   # satisfies-elementwise'
+}
+
 # Candidate `claude` binaries, most specific first. Same shape and the same reason as
 # adb_bash_candidates: a non-interactive installer shell routinely lacks the PATH entry that
 # makes the CLI reachable, and a version we could not read is NOT evidence that the keys would
@@ -1334,15 +1346,11 @@ _adb_claude_settings_satisfied_hold() {
   satv="$(jq -c --argjson sat "$sat" '. as $f | [ $sat[] | . as $p | ($f | getpath($p)) as $v
             | select(($v | type) == "array") | {p: $p, v: $v} ]' "$payload" 2>/dev/null)" || return 2
   [ "$satv" != "[]" ] || return 0
-  jq -se --argjson satv "$satv" '
+  jq -se --argjson satv "$satv" "$(adb_claude_settings_satisfies_jq)"'
     if length != 1 then error("not one value") else .[0] end
     | . as $doc
     | $satv
-    | all( . as $s
-           | ( try ( ($doc | getpath($s.p)) as $have
-                     | ($have | type) == "array"
-                       and all($s.v[]; . as $e | $have | any(. == $e)) )   # satisfied-hold
-               catch false ) )
+    | all( . as $s | ( try satisfies_value($doc | getpath($s.p); $s.v) catch false ) )   # satisfied-hold
   ' "$settings" >/dev/null 2>&1
   case $? in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
@@ -1565,8 +1573,8 @@ adb_claude_settings_receipt_containers() {
 # The SATISFIED leaves a receipt records (#462, D129) as one JSON array of paths: shipped leaves the
 # operator's own value already covered, so this install wrote none of them and owns none of them.
 # Read only under the dispositions that carry rows, exactly as the leaf and container readers are.
-# A row is validated whole: a path that is not on `adb_claude_settings_satisfiable` is DAMAGE (21),
-# never skipped — completeness subtracts these paths from what the payload ships, so a stray one would
+# A row is validated whole: a field after the path, a path recorded twice, or a path that is not on
+# `adb_claude_settings_satisfiable` is DAMAGE (21), never skipped — completeness subtracts these paths from what the payload ships, so a stray one would
 # excuse a missing `leaf` row, and uninstall would then strand the key that row should have named.
 # Usage: _adb_claude_settings_satisfied_json <receipt>
 # Returns: 0 (the array on stdout, `[]` for none); 20 unreadable; 21 damaged; 2 no jq.
@@ -1584,10 +1592,12 @@ _adb_claude_settings_satisfied_json() {
   _out="$(printf '%s\n' "$_rbody" | jq -R -n -c --argjson sat "$_sat" '[ [inputs][]   # satisfied-one-evaluation
       | select(startswith("satisfied\t"))
       | ltrimstr("satisfied\t") as $rest
-      | (($rest | index("\t")) as $i | if $i == null then $rest else $rest[:$i] end) as $p
-      | (try ($p | fromjson) catch error("receipt: satisfied path is not JSON")) as $pj
+      | if ($rest | index("\t")) == null then $rest
+        else error("receipt: satisfied row carries a field after its path") end   # satisfied-one-field
+      | (try fromjson catch error("receipt: satisfied path is not JSON")) as $pj
       | if ($sat | map(. == $pj) | any) then $pj
-        else error("receipt: satisfied path is not satisfiable") end ] | unique   # satisfied-path-predicate
+        else error("receipt: satisfied path is not satisfiable") end ]   # satisfied-path-predicate
+      | if length == (unique | length) then . else error("receipt: a satisfied path is recorded twice") end   # satisfied-no-duplicate
     ' 2>/dev/null)"; _jrc=$?
   case "$_jrc" in
     0) printf '%s' "$_out" ;;
@@ -1621,9 +1631,9 @@ EOF
 
 # THE MERGE, AND IT IS ALL-OR-NOTHING (owner decision, round 6 of #248's review). Prints one JSON
 # object on stdout:
-#   {verdict, settings, wrote:[], created:[], blocked:[], diverged:[], pruned:[], kept:[]}
+#   {verdict, settings, wrote:[], created:[], blocked:[], diverged:[], pruned:[], kept:[], satisfied:[]}
 # `verdict` is `write`, `insync`, `refuse` or `remove`; every list but `settings` holds leaf paths
-# (`created` holds container paths). This is the ONE home for what "ours" means, so install.sh and
+# (`created` holds container paths; `satisfied` is filled on `write` only). This is the ONE home for what "ours" means, so install.sh and
 # uninstall.sh cannot drift about it.
 #
 # WHY ALL-OR-NOTHING. The earlier contract applied per leaf: write what it could, skip what the
@@ -1633,13 +1643,16 @@ EOF
 # independently, "is this mine, theirs, mine-but-edited, or mine-but-deleted". The states are gone:
 #
 #   * FIRST INSTALL writes the whole fragment only when EVERY leaf is absent and every ancestor is
-#     traversable. Anything already there BLOCKS the lot, and the refusal names it. An adopter is
+#     traversable. Anything already there BLOCKS the lot, and the refusal names it — except a leaf
+#     on `adb_claude_settings_satisfiable` whose live value already SATISFIES the shipped one (#462,
+#     D129), which is left as it is and reported in `satisfied`. An adopter is
 #     told exactly what is in the way rather than given a partial policy that reports protection it
 #     does not have.
 #   * AN ESTABLISHED INSTALL updates only while every recorded leaf is still present with the value
 #     recorded for it. Any divergence — an edit, or a deletion, which is the documented by-hand
 #     opt-out — means the operator has taken the surface over: nothing is written, and the refusal
-#     names what diverged. That is also why no tombstone is needed. A deleted leaf is not
+#     names what diverged. The one exception is the satisfiable leaf the operator has EXTENDED: it
+#     still satisfies, so it moves to `satisfied` rather than diverging. That is also why no tombstone is needed. A deleted leaf is not
 #     remembered as "ours, removed"; it simply makes the surface theirs, so it is never rewritten
 #     and never later deleted on the strength of a record.
 #   * A RETIRED leaf — recorded, no longer shipped — is still pruned when its value matches, and
@@ -1693,15 +1706,16 @@ adb_claude_settings_merge() {
   elif [ ! -s "$payload" ]; then
     return 1
   fi
-  local satisfiable
+  local satisfiable satdef
   satisfiable="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || { _adb_merge_cleanup "$work_empty"; return 1; }
+  satdef="$(adb_claude_settings_satisfies_jq)"
   jq -n -e \
      --slurpfile cur "$settings" \
      --slurpfile frag "$payload" \
      --argjson owned "$owned" \
      --argjson created "$created" \
      --argjson satisfiable "$satisfiable" \
-     --arg mode "$mode" '
+     --arg mode "$mode" "$satdef"'
     # `member`, spelled out, because jq'"'"'s `index/1` searches an array argument as a SUBSEQUENCE:
     # `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason. Every path membership test here
     # is an explicit equality scan.
@@ -1725,15 +1739,13 @@ adb_claude_settings_merge() {
     def missing_ancestors($p): . as $doc
       | [ range(1; ($p | length)) as $i | $p[0:$i] ]
       | map(. as $a | select( ($doc | anc_ok($a)) and ($doc | present($a) | not) ));
-    # SATISFIED (#462, D129): a satisfiable leaf whose live value is an ARRAY holding every shipped
-    # element. Element by element with `==`, never `contains`, which tests STRINGS by substring:
-    # `["git *x"]` would have "contained" `"git *"`. Ancestors first, since `getpath` raises through a
+    # SATISFIED (#462, D129): a satisfiable leaf whose live value satisfies the shipped one, by the
+    # shared definition prepended to this program. Ancestors first, since `getpath` raises through a
     # scalar, and `and` stops at the first false.
     def satisfies($p; $ship): . as $doc
       | member($satisfiable; $p)
         and ($doc | anc_ok($p)) and ($doc | present($p))
-        and (($doc | getpath($p) | type) == "array") and (($ship | type) == "array")
-        and ( ($doc | getpath($p)) as $have | all($ship[]; . as $e | $have | any(. == $e)) );   # satisfies-elementwise
+        and satisfies_value($doc | getpath($p); $ship);
 
     ( if ($cur | length) != 1 then error("settings.json must hold exactly one JSON value") else . end )
   | ( if ($cur[0] | type) != "object" then error("settings.json must hold a JSON object") else . end )

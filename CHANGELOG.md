@@ -11,7 +11,7 @@ only by a published release, which is what these entries are the notes for.
 ### Changed
 
 - **The sandbox fragment takes `git` and `gh` out of the sandbox (#462, D129).** Under the shipped
-  sandbox, `gh` fails TLS verification on macOS before reading any token
+  sandbox, `gh` can fail TLS verification on macOS, so its requests never reach GitHub
   (`x509: OSStatus -26276`, while `gh auth status` misreports `The token in keyring is invalid`), and
   `git` over SSH is refused. The fragment now ships `sandbox.excludedCommands: ["git *", "gh *"]`.
   The `["git", "gh"]` the issue named matches only the bare commands, and a witness shows it
