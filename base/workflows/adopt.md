@@ -399,7 +399,7 @@ plan*, so the project ends with one upstream, not two.
 # run, and the previous run's pin is removed first so step 11 can never apply a stale one. Split by
 # expansion, never `IFS=<tab> read`, which drops a tagless clone's EMPTY version field; a record with
 # no tab is refused here, and anything else malformed lands in <commit>, which pin-render validates.
-rm -f "{{STATE_DIR}}/adopt-upstream.toml"
+rm -f -- "{{STATE_DIR}}/adopt-upstream.toml"
 [ ! -e "{{STATE_DIR}}/adopt-upstream.toml" ] || { echo "STOP: could not remove the previous run's pin"; exit 1; }
 TABC="$(printf '\t')"
 PIN_ID="$({{ADOPT_LIB}} pin-describe "$BASELINE")" \
@@ -679,7 +679,10 @@ read), and whether the interview ran, with the answers it recorded or why it was
 hygiene finding, including any axis that could not look; every `escalate` as a question for the
 owner; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
 with its outstanding and undetermined rungs. The scratch files under `{{STATE_DIR}}` are swept, so
-this report is the only copy of that evidence a later reader will have.
+this report is the only copy of that evidence a later reader will have. Every value in it that came
+from the scanned project or from GitHub — a gate command, a login, a path, a proposal line — is
+quoted inside a fenced block (with a fence longer than any backtick run it contains), never inline,
+so it cannot be read as Markdown or HTML.
 
 End by saying plainly **what was written and what was not** — that the plan's `move` and `remove`
 steps are the operator's to execute, and that this run did not perform them.

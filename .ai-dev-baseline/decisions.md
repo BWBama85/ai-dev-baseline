@@ -9750,6 +9750,13 @@ survive is the part a later reader needs.
              grammar stays `pin-render`'s alone (one guard). The workflow splits the record by
              expansion, never `IFS=<tab> read` (which drops a tagless clone's empty field), and
              removes a previous run's pin before rendering.
+             **Owner decision 2026-10-12 (local review pass 2): a DELIBERATE swap of a record file
+             inside the agent's own state dir, between the reader's regular-file check and its copy
+             (a symlink or a FIFO), is OUT OF SCOPE** — anything able to do that can rewrite
+             `adopt-agents.toml` itself, which `--apply` copies into the project, so hardening this
+             read would protect nothing that file does not already expose (the scoping D102 applied
+             to a hand-edited receipt). The snapshot guards an accidentally damaged file. The loop's
+             budget stays `local_passes = 3`, carrying per its own rules.
 - placement: `scripts/lib/adopt-lib.sh` (`propose`, `answers`, `hygiene`, `pin-describe`);
              `scripts/lib/adopt-readiness.sh` (`observe`, `facts`, the `reviewers` rung);
              `base/workflows/adopt.md` (steps 5, 5b, 6, 8, 13) and its three renders;

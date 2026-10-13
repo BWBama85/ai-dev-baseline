@@ -261,21 +261,33 @@ _ad_gate_label_ok() {
 
 # _ad_snapshot_lines <file> — load <file> into _AD_SNAP (one element per line), or return 1.
 #
-# ONE SNAPSHOT IS VALIDATED AND PARSED: at most 1 MiB + 1 bytes are copied into a private temp, the
-# byte rules (`adb_bytes_whole`: at most 1 MiB, no NUL, a final newline — or empty, which means
+# ONE SNAPSHOT IS VALIDATED AND PARSED: at most the bound + 1 bytes are copied into a private temp,
+# the byte rules (`adb_bytes_whole`: within the bound, no NUL, a final newline — or empty, which means
 # "nothing recorded") are checked on that copy, and the lines are read from the same copy. Checking
 # the path and then reopening it would let a replacement in between defeat every one of those rules.
-# The file must be a regular non-link file, because the state dir it lives in is agent-writable.
+# The file must be a regular non-link file. A DELIBERATE swap of it between that check and the copy
+# is out of scope (owner decision, D128): anything able to do that inside the agent's own state dir
+# can rewrite adopt-agents.toml itself, which --apply copies into the project. The rules here guard
+# against an accidentally damaged file — a cut-off write, a NUL byte, a runaway size.
+#
+# _ad_record_max — the one byte bound for every record file, read by this reader AND by `answers`,
+# so the writer can never publish what the reader refuses. ADB_ADOPT_RECORD_MAX_BYTES lowers it
+# (a test seam: argv cannot carry a 1 MiB answer on every platform); anything but digits is ignored.
+_ad_record_max() {
+  case "${ADB_ADOPT_RECORD_MAX_BYTES:-}" in ''|*[!0-9]*) printf '1048576' ;; *) printf '%s' "$ADB_ADOPT_RECORD_MAX_BYTES" ;; esac
+}
 _AD_SNAP=()
 _ad_snapshot_lines() {
-  local f="$1" tmp rc=0
+  local f="$1" tmp rc=0 max
   _AD_SNAP=()
+  max="$(_ad_record_max)"
   [ -f "$f" ] && [ ! -L "$f" ] && [ -r "$f" ] || return 1
   tmp="$(mktemp "${TMPDIR:-/tmp}/adb-adopt-snap.XXXXXX")" || return 1
-  head -c 1048577 -- "$f" > "$tmp" 2>/dev/null || rc=1
-  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" 1048576 || rc=1; fi
+  head -c "$((max + 1))" -- "$f" > "$tmp" 2>/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" "$max" || rc=1; fi
   [ "$rc" -ne 0 ] || mapfile -t _AD_SNAP < "$tmp" || rc=1
-  rm -f "$tmp"
+  # A snapshot that cannot be removed fails the read: leaving private copies behind is not a success.
+  rm -f "$tmp" && [ ! -e "$tmp" ] || rc=1
   [ "$rc" -eq 0 ] || _AD_SNAP=()
   return "$rc"
 }
@@ -425,13 +437,16 @@ _ad_answer_check() {
 #
 # Publication is `adb_publish_json` (generic despite its name): a stage beside <file>, the existing
 # file's mode carried onto it (`--strict`: a mode it cannot read or apply refuses the write), a
-# non-regular <file> refused, and a rename. A refused pair leaves the previous file untouched.
+# non-regular <file> refused, and a rename. A refused pair, or a total past the 1 MiB its reader
+# accepts, leaves the previous file untouched. That <file> is the state dir's is the WORKFLOW's
+# calling convention; this subcommand writes wherever it is pointed.
 cmd_answers() {
   [ "$#" -ge 1 ] && [ -n "$1" ] || die "answers: needs <file> [<key>=<value>…]"
   local file="$1" pair k v reason stage dir
   shift
   local -A given=()
-  dir="$(dirname -- "$file")"
+  # Parameter expansion, not `$(dirname …)`: a substitution strips a trailing newline from the name.
+  case "$file" in */*) dir="${file%/*}"; [ -n "$dir" ] || dir=/ ;; *) dir=. ;; esac
   [ -d "$dir" ] || die "answers: not a directory: $(adb_display_value "$dir")"
   for pair in "$@"; do
     case "$pair" in *=*) ;; *) die "answers: not <key>=<value>: $(adb_tsv_field_display "$pair")" ;; esac
@@ -444,6 +459,9 @@ cmd_answers() {
   for pair in "$@"; do
     printf '%s\t%s\n' "${pair%%=*}" "${pair#*=}" >> "$stage" || { rm -f "$stage"; die "answers: could not write the stage — nothing was published"; }
   done
+  # The reader's bound is the writer's: a file `propose` would refuse whole is never published.
+  [ -s "$stage" ] && ! adb_bytes_whole "$stage" "$(_ad_record_max)" \
+    && { rm -f "$stage"; die "answers: the answers exceed the $(_ad_record_max) bytes their reader accepts — nothing was published"; }
   adb_publish_json "$stage" "$file" --allow-empty --strict \
     || die "answers: could not publish $(adb_display_value "$file") (not a regular file, or its mode could not be carried) — the previous answers are unchanged"
 }
@@ -1264,52 +1282,44 @@ _ad_render_review_answer() {
 # the pre-arm guard (#134), so it is proposed live ONLY from a history that was read whole and
 # shows no App; an unread, empty or truncated history leaves the line commented.
 _ad_render_reviewers() {  # <have_obs> <file> <why>
-  local have="$1" file="$2" why="$3" rec login prs ev="" logins="" n=0
-  if [ -n "${_AD_ANS[bots]:-}" ]; then
-    local out="" t
-    if [ "${_AD_ANS[bots]}" != none ]; then
-      while IFS= read -r t; do out="${out:+$out, }\"$t\""; done < <(printf '%s\n' "${_AD_ANS[bots]}" | tr ',' '\n')
-    fi
-    printf '\n[reviewers]\nbots = [%s]     # answered in the /adopt interview\n' "$out"
-    return 0
-  fi
-  if [ "$have" -ne 1 ]; then
-    if [ -z "$file" ]; then why="no PR history was given to /adopt (adopt-readiness.sh observe)"
-    else why="the PR-history observation could not be read ($why)"; fi
-    printf '\n[reviewers]                    # NOT INFERRED: %s.\n' "$why"
-    printf '# bots = []                    # [] DISARMS the pre-arm guard (#134) — declare it only if no App reviews PRs here.\n'
-    return 0
-  fi
-  if [ -z "$_AD_OBS_PRS" ]; then
-    printf '\n[reviewers]                    # NOT INFERRED: the PR history could not be read (gh failed, or this repo is not on GitHub).\n'
-    printf '# bots = []                    # [] DISARMS the pre-arm guard (#134) — declare it only if no App reviews PRs here.\n'
-    return 0
-  fi
-  if [ "$_AD_OBS_PRS" -eq 0 ]; then
-    printf '\n[reviewers]                    # NOT INFERRED: this repo has no pull requests yet, so there is no history to read.\n'
-    printf '# bots = []                    # declare the App that WILL review, or [] if none will.\n'
-    return 0
-  fi
-  for rec in "${_AD_OBS_REVIEWERS[@]}"; do
+  local have="$1" file="$2" why="$3" rec login prs ev="" logins="" n=0 scope="" trunc="" summary="" live=0
+  # WHAT THE OBSERVATION SAYS is computed first and printed on every path — an interview answer that
+  # overrides it included — because the proposal is the evidence a later reader has left.
+  for rec in "${_AD_OBS_REVIEWERS[@]+"${_AD_OBS_REVIEWERS[@]}"}"; do
     login="${rec%%"$TAB"*}"; prs="${rec#*"$TAB"}"
     logins="${logins:+$logins, }\"$login\""
     ev="${ev:+$ev; }$login reviewed $(_ad_pr_list "$prs")"
     n=$((n + 1))
   done
-  local scope="the most recent $_AD_OBS_PRS pull request(s), a read bounded at $_AD_OBS_WINDOW"
-  local trunc=""
   [ -z "$_AD_OBS_TRUNC" ] || trunc=" — $(_ad_pr_list "$_AD_OBS_TRUNC") had more reviews than were read"
-  if [ "$n" -eq 0 ] && [ -n "$trunc" ]; then
-    printf '\n[reviewers]                    # NOT INFERRED: no App was seen on %s, but%s, so absence is not established.\n' "$scope" "$trunc"
+  if [ "$have" -ne 1 ]; then
+    if [ -z "$file" ]; then summary="no PR history was given to /adopt (adopt-readiness.sh observe)"
+    else summary="the PR-history observation could not be read ($why)"; fi
+  elif [ -z "$_AD_OBS_PRS" ]; then
+    summary="the PR history could not be read (gh failed, or this repo is not on GitHub)"
+  elif [ "$_AD_OBS_PRS" -eq 0 ]; then
+    summary="this repo has no pull requests yet, so there is no history to read"
+  else
+    scope="the most recent $_AD_OBS_PRS pull request(s), a read bounded at $_AD_OBS_WINDOW"
+    if [ "$n" -gt 0 ]; then summary="$ev ($scope)$trunc"; live=1
+    elif [ -n "$trunc" ]; then summary="no App was seen on $scope, but$trunc, so absence is not established"
+    else summary="no GitHub App reviewed $scope"; live=1
+    fi
+  fi
+  if [ -n "${_AD_ANS[bots]:-}" ]; then
+    local out="" t
+    if [ "${_AD_ANS[bots]}" != none ]; then
+      while IFS= read -r t; do out="${out:+$out, }\"$t\""; done < <(printf '%s\n' "${_AD_ANS[bots]}" | tr ',' '\n')
+    fi
+    printf '\n[reviewers]\nbots = [%s]     # answered in the /adopt interview\n# observed: %s\n' "$out" "$summary"
+    return 0
+  fi
+  if [ "$live" -ne 1 ]; then
+    printf '\n[reviewers]                    # NOT INFERRED: %s.\n' "$summary"
     printf '# bots = []                    # [] DISARMS the pre-arm guard (#134) — declare it only if no App reviews PRs here.\n'
     return 0
   fi
-  printf '\n[reviewers]\n'
-  if [ "$n" -eq 0 ]; then
-    printf 'bots = []     # observed: no GitHub App reviewed %s%s\n' "$scope" "$trunc"
-  else
-    printf 'bots = [%s]     # observed: %s (%s)%s\n' "$logins" "$ev" "$scope" "$trunc"
-  fi
+  printf '\n[reviewers]\nbots = [%s]     # observed: %s\n' "$logins" "$summary"
 }
 
 # [gates] and [gates.state].
@@ -1512,6 +1522,14 @@ _ad_agent_doc_axis() {  # <root> <manifest>
       1) continue ;;
       *) _ad_emit warning "the agent-doc axis did NOT run: $manifest or $global could not be read as TOML (rc $rc)"
          return 0 ;;
+    esac
+    # A list that is empty or unclosed names no agent, and role-dispatch refuses it: say so rather
+    # than letting the role vanish from the axis. A scalar "" is the documented skip and is silent.
+    case "$raw" in
+      \[*) if [ -z "$(adb_toml_array "$raw")" ] || [ "${raw%]}" = "$raw" ]; then
+              _ad_emit warning "$role declares an empty or unparsable list ($(adb_tsv_field_display "$raw")) — role-dispatch refuses it, and the agent-doc axis cannot check it"
+              continue
+            fi ;;
     esac
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue

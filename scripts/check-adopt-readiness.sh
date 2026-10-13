@@ -731,6 +731,8 @@ eq $? 2 "tracker: an unrecognized bots_state is rejected, not accepted"
 # A DECLARED LOGIN OUTSIDE GitHub's grammar is a malformed declaration, never an empty one.
 out="$(tr_out '{"bots_state":"declared","bots_declared":[""],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
 hasnt "$out" "reviewers${TAB}ok" "tracker: an empty-string declared login is malformed, not bots = []"
+out="$(tr_out '{"bots_state":"declared","bots_declared":["bad!"],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}todo" "tracker: a declared entry that is not a GitHub login is todo"
 # THE HISTORY IS ONE FACT: every field present, and the counts consistent with one another.
 out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":4,"reviews_truncated":[],"reviewer_logins":[]}')"
 has "$out" "reviewers${TAB}unknown" "tracker: a history with no read bound is unknown"
@@ -747,8 +749,9 @@ has "$out" "reviewers${TAB}unknown" "tracker: a declared login unseen over a tru
 out="$(tr_out '{"bots_state":"declared","bots_declared":["chatgpt-codex-connector"],"pr_history":4,"pr_window":100,"reviews_truncated":[35],"reviewer_logins":["chatgpt-codex-connector"]}')"
 has "$out" "reviewers${TAB}ok" "tracker: a declared App SEEN over a truncated history is still ok"
 has "$out" "#35 had more reviews than were read" "...and the truncation is named in the detail"
+# Against a baseline that is otherwise OK, so only the malformed list can make it unknown.
 for bad_trunc in '[0]' '[35,35]' '[1,2,3,4,5]'; do
-  out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[],\"pr_history\":4,\"pr_window\":100,\"reviews_truncated\":$bad_trunc,\"reviewer_logins\":[]}")"
+  out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[\"chatgpt-codex-connector\"],\"pr_history\":4,\"pr_window\":100,\"reviews_truncated\":$bad_trunc,\"reviewer_logins\":[\"chatgpt-codex-connector\"]}")"
   has "$out" "reviewers${TAB}unknown" "tracker: a malformed truncated list ($bad_trunc) is unknown"
 done
 
@@ -875,6 +878,9 @@ has "$obs" "reviewer${TAB}chatgpt-codex-connector${TAB}35,38,40" "observe: an Ap
 hasnt "$obs" "BWBama85" "observe: a human reviewer is not an App reviewer"
 has "$obs" "truncated${TAB}40" "observe: a PR whose reviews ran past the bound is named"
 has "$obs" "delete-branch-on-merge${TAB}false" "observe: delete_branch_on_merge is recorded"
+# THE NAME IS A STRING: `-F` would type a repository named `123` or `true` as a number or a boolean.
+has   "$(cat "$WORK/gh-gql-args.log")" "-f name=widget" "observe: the repository name is passed as a string (-f), never typed (-F)"
+hasnt "$(cat "$WORK/gh-gql-args.log")" "-F name=" "observe: ...and never with -F"
 # "MOST RECENT" IS A PINNED ORDER, not a default the API happens to apply today.
 has "$(cat "$WORK/gh-gql-args.log")" "orderBy: {field: CREATED_AT, direction: ASC}" \
     "observe: the read pins its order (orderBy CREATED_AT)"
@@ -896,13 +902,19 @@ hasnt "$obs" "prs${TAB}" "observe: a pull request whose reviews are null drops t
 printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
 # EVERY REVIEW NODE IS VALIDATED: a null node, an author with no __typename, or a count smaller than
 # the nodes returned is a response this reader does not understand — never a complete history.
-for bad_gql in '.data.repository.pullRequests.nodes[0].reviews.nodes = [null]' \
-               'del(.data.repository.pullRequests.nodes[0].reviews.nodes[1].author.__typename)' \
-               '.data.repository.pullRequests.nodes[0].reviews.totalCount = -1'; do
-  printf '%s\n' "$RV_GQL" | jq -c "$bad_gql" > "$WORK/gh-gql.json"
+while IFS='|' read -r gql_case gql_edit; do
+  printf '%s\n' "$RV_GQL" | jq -c "$gql_edit" > "$WORK/gh-gql.json"
   obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"
-  hasnt "$obs" "prs${TAB}" "observe: a malformed review response ($bad_gql) drops the whole history read"
-done
+  hasnt "$obs" "prs${TAB}" "observe: a malformed review response ($gql_case) drops the whole history read"
+done <<'GQL'
+null-node|.data.repository.pullRequests.nodes[0].reviews.nodes = [null]
+missing-author|.data.repository.pullRequests.nodes[0].reviews.nodes = [{}]
+no-typename|del(.data.repository.pullRequests.nodes[0].reviews.nodes[1].author.__typename)
+negative-count|.data.repository.pullRequests.nodes[0].reviews.totalCount = -1
+fractional-count|.data.repository.pullRequests.nodes[0].reviews.totalCount = 2.5
+duplicate-pr|.data.repository.pullRequests.nodes[1].number = 35
+past-window|.data.repository.pullRequests.nodes = [range(0; 101) | {number: (. + 1), reviews: {totalCount: 0, nodes: []}}]
+GQL
 printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
 # A FAILED GraphQL read emits NO history record — never `prs 0`, which reads as "no pull requests".
 stub_gh "$WORK/gh-nogql" '
@@ -1281,10 +1293,26 @@ shmutant_mut observe-truncation-unreported \
     '          ( $p[] | select(.reviews.totalCount > (.reviews.nodes | length)) | "truncated\t\(.number)" )' \
     '          empty' \
     'observe: a PR whose reviews ran past the bound is named'
-shmutant_mut observe-null-reviews-accepted \
-    '          then error("a pull request without a readable reviews connection") else . end' \
-    '          then . else . end' \
-    'observe: a pull request whose reviews are null drops the whole history read'
+shmutant_mut observe-missing-author-accepted \
+    '          def node_ok: type == "object" and has("author")' \
+    '          def node_ok: type == "object"' \
+    'observe: a malformed review response (missing-author)'
+shmutant_mut observe-fractional-count-accepted \
+    '                     and (.reviews.totalCount | int) and .reviews.totalCount >= 0' \
+    '                     and true' \
+    'observe: a malformed review response (fractional-count)'
+shmutant_mut observe-duplicate-pr-accepted \
+    '             or ([ $p[].number ] | length != (unique | length))' \
+    '             or false' \
+    'observe: a malformed review response (duplicate-pr)'
+shmutant_mut observe-past-window-accepted \
+    '          if ($p | type) != "array" or ($p | length) > $w' \
+    '          if ($p | type) != "array"' \
+    'observe: a malformed review response (past-window)'
+shmutant_mut observe-name-typed \
+    '  if raw="$(gh api graphql -f owner="$owner" -f name="$name"' \
+    '  if raw="$(gh api graphql -f owner="$owner" -F name="$name"' \
+    'observe: the repository name is passed as a string (-f), never typed (-F)'
 shmutant_mut observe-order-unpinned \
     '                       orderBy: {field: CREATED_AT, direction: ASC}) {' \
     '                       ) {' \
@@ -1298,13 +1326,9 @@ shmutant_mut reviewers-truncated-absence-claimed \
     '            elif false; then' \
     'tracker: bots = [] over a truncated history is unknown'
 shmutant_mut reviewers-declared-grammar-unchecked \
-    "        if [ \"\$rc\" -eq 0 ] && ! printf '%s' \"\$json\" | jq -e '.bots_declared" \
-    "        if false && ! printf '%s' \"\$json\" | jq -e '.bots_declared" \
-    'tracker: an empty-string declared login is malformed, not bots = []'
-shmutant_mut observe-review-nodes-unvalidated \
-    '          then error("a review node outside the shape the query asked for") else . end' \
-    '          then . else . end' \
-    'observe: a malformed review response (.data.repository.pullRequests.nodes[0].reviews.nodes = [null])'
+    "        elif ! printf '%s' \"\$json\" | jq -e '.bots_declared | all(test(" \
+    "        elif false && ! printf '%s' \"\$json\" | jq -e '.bots_declared | all(test(" \
+    'tracker: a declared entry that is not a GitHub login is todo'
 shmutant_mut tracker-truncation-ids-unchecked \
     '         and (.reviews_truncated | length == (unique | length))' \
     '         and true' \

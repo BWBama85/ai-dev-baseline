@@ -910,10 +910,14 @@ cmd_tracker() {
           _ar_emit reviewers todo "no [reviewers] bots is declared, so the pre-arm guard never arms auto-merge — declare the async reviewer logins, or bots = [] if there are none"
         fi ;;
       declared)
+        # A list of strings READ successfully but holding a non-login is a malformed DECLARATION
+        # (`todo`); a list that is absent or not of strings is a malformed FACT (`unknown`).
         _fact bots_declared array >/dev/null; rc=$?
-        if [ "$rc" -eq 0 ] && ! printf '%s' "$json" | jq -e '.bots_declared | all(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$"))' >/dev/null 2>&1; then rc=2; fi
+        if [ "$rc" -eq 0 ] && ! printf '%s' "$json" | jq -e '.bots_declared | all(type == "string")' >/dev/null 2>&1; then rc=2; fi
         if [ "$rc" -ne 0 ]; then
           _ar_emit reviewers unknown "$(_why "$rc" bots_declared "the declared reviewer logins were not read")"
+        elif ! printf '%s' "$json" | jq -e '.bots_declared | all(test("^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$"))' >/dev/null 2>&1; then
+          _ar_emit reviewers todo "[reviewers] bots declares an entry that is not a GitHub login ($(printf '%s' "$json" | jq -r '[.bots_declared[] | select(test("^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$") | not) | @json] | join(", ")')) — fix agents.toml"
         elif [ "$rc_p" -ne 0 ]; then
           _ar_emit reviewers unknown "$(_why "$rc_p" "pr_history/pr_window/reviewer_logins/reviews_truncated" "the pull-request history could not be read — a declaration compared against nothing is not a pass")"
         elif [ "$prs" -eq 0 ]; then
@@ -1306,8 +1310,10 @@ _AR_PR_WINDOW=100
 _ar_observe() {  # <owner/name> — the records; a read that fails is omitted, never defaulted
   local repo="$1" owner name raw recs dbm
   owner="${repo%%/*}"; name="${repo#*/}"
+  # `-f` for the strings, `-F` only for the integer: `-F` converts `123`, `true` or `null` into a
+  # non-string JSON value, and a repository may be named any of them.
   # shellcheck disable=SC2016  # $owner/$name/$window are GraphQL variables, not shell expansions
-  if raw="$(gh api graphql -F owner="$owner" -F name="$name" -F window="$_AR_PR_WINDOW" -f query='
+  if raw="$(gh api graphql -f owner="$owner" -f name="$name" -F window="$_AR_PR_WINDOW" -f query='
       query($owner: String!, $name: String!, $window: Int!) {
         repository(owner: $owner, name: $name) {
           pullRequests(last: $window, states: [OPEN, CLOSED, MERGED],
@@ -1320,22 +1326,26 @@ _ar_observe() {  # <owner/name> — the records; a read that fails is omitted, n
     # already have printed the first half of the history.
     if recs="$(printf '%s' "$raw" | jq -r --argjson w "$_AR_PR_WINDOW" '
         .data.repository.pullRequests.nodes as $p
-        | if ($p | type) != "array" then error("no pull request list") else . end
-        | if any($p[]; (type != "object")
-                       or (.number | type) != "number" or .number < 1 or .number != (.number | floor)
-                       or (.reviews | type) != "object"
-                       or (.reviews.totalCount | type) != "number"
-                       or (.reviews.nodes | type) != "array"
-                       or .reviews.totalCount < (.reviews.nodes | length))
-          then error("a pull request without a readable reviews connection") else . end
-        # EVERY REVIEW NODE IS READ, so every one is validated: a null node, or an author with no
-        # `__typename` or `login`, is a response this reader does not understand — never "a human".
-        | if any($p[].reviews.nodes[];
-                 (type != "object")
-                 or (.author != null and ((.author | type) != "object"
-                                          or (.author.__typename | type) != "string"
-                                          or (.author.login | type) != "string")))
-          then error("a review node outside the shape the query asked for") else . end
+        # THE RESPONSE IS VALIDATED WHOLE before one record is formed: every field the query asked
+        # for is present and of its schema type (`Int!` counts are integers, `number` is positive),
+        # nothing exceeds the bounds it was asked for, and no pull request appears twice. A review
+        # node with no `author` key is malformed — only an EXPLICIT null author is a deleted user.
+        | def int: type == "number" and . == floor;
+          def node_ok: type == "object" and has("author")
+                       and (.author == null
+                            or (.author | type == "object" and (.__typename | type) == "string"
+                                and (.login | type) == "string"));
+          def pr_ok: type == "object" and (.number | int) and .number >= 1
+                     and (.reviews | type) == "object"
+                     and (.reviews.totalCount | int) and .reviews.totalCount >= 0
+                     and (.reviews.nodes | type) == "array"
+                     and (.reviews.nodes | length) <= 100
+                     and .reviews.totalCount >= (.reviews.nodes | length)
+                     and all(.reviews.nodes[]; node_ok);
+          if ($p | type) != "array" or ($p | length) > $w
+             or ([ $p[] | pr_ok ] | all | not)
+             or ([ $p[].number ] | length != (unique | length))
+          then error("a response outside the shape the query asked for") else . end
         | [ $p[] | .number as $n | .reviews.nodes[]
             | select(.author != null and .author.__typename == "Bot")
             | {l: .author.login, n: $n} ] as $bots

@@ -586,11 +586,13 @@ has   "$warnprop" '# NOTE'  "...it surfaces the unusable record as a comment ins
 # and forgotten by `propose` must fail here, which a hand-copied list could not do. A header counts
 # live (`[x]`) or commented (`# [x]`) — the template itself ships most of its sections commented.
 TEMPLATE="$ROOT/templates/agents.toml"
-mapfile -t tsections < <(sed -n 's/^#\{0,1\}[[:space:]]*\[\([a-z][a-z0-9_.-]*\)\][[:space:]]*\(#.*\)\{0,1\}$/\1/p' "$TEMPLATE" | awk '!seen[$0]++')
+# EVERY header spelling is collected, not only the lowercase ones in today's template, so a section
+# named `[_x]` or `[Foo]` cannot fall outside the check.
+mapfile -t tsections < <(sed -n 's/^#\{0,1\}[[:space:]]*\[\([^][[:space:]][^][]*\)\][[:space:]]*\(#.*\)\{0,1\}$/\1/p' "$TEMPLATE" | awk '!seen[$0]++')
 if [ "${#tsections[@]}" -ge 8 ]; then ok
 else bad "propose: the template section list could not be derived (got ${#tsections[@]}: ${tsections[*]})"; fi
 for s in "${tsections[@]}"; do
-  if printf '%s\n' "$prop" | grep -Eq "^(# )?\[$(printf '%s' "$s" | sed 's/\./\\./g')\]"; then ok
+  if printf '%s\n' "$prop" | grep -Fq -e "[$s]" && printf '%s\n' "$prop" | grep -Eq "^(# )?\[$(printf '%s' "$s" | sed 's/[][\.*^$()+?{}|]/\\&/g')\]"; then ok
   else bad "propose: renders the template section [$s] (live or commented with its reason)"; fi
 done
 # `[updates]` is GLOBAL ONLY — a project copy is ignored — so it must never be proposed live.
@@ -702,6 +704,19 @@ eq "$(adb_file_mode "$AF")" 640 "answers: publication keeps the existing file's 
 eq "$(cat "$AF")" "release${TAB}claude" "answers: publication replaces the whole file, never merges"
 HOME="$WORK/nohome" bash "$AD" answers "$AF" >/dev/null 2>&1
 eq "$(wc -c < "$AF" | tr -d ' ')" 0 "answers: no pair publishes an EMPTY file (nothing answered yet)"
+# THE WRITER'S BOUND IS THE READER'S: a file `propose` would refuse whole is never published. Lowered
+# through the shared seam, because argv cannot carry a 1 MiB answer on every platform.
+cp "$AF" "$WORK/answers-pub.before"
+eq "$(ADB_ADOPT_RECORD_MAX_BYTES=64 HOME="$WORK/nohome" bash "$AD" answers "$AF" gate.test="$(printf '%080d' 0)" >/dev/null 2>&1; echo $?)" 2 \
+   "answers: answers past the reader's bound are refused"
+if cmp -s "$AF" "$WORK/answers-pub.before"; then ok; else bad "answers: answers past the reader's bound leave the previous file whole"; fi
+printf 'gate.test\t%080d\n' 0 > "$WORK/big-answers.tsv"
+ADB_ADOPT_RECORD_MAX_BYTES=64 bash "$AD" roles-infer "$FX" | ADB_ADOPT_RECORD_MAX_BYTES=64 HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/big-answers.tsv" > "$WORK/p-big.toml"
+eq "$(adb_toml_get "$WORK/p-big.toml" gates test >/dev/null 2>&1; echo $?)" 1 "propose: an answers file past the bound is refused whole"
+# A directory whose name ends in a newline is still the directory named.
+NLD="$WORK/nl$(printf '\nx')"; NLD="${NLD%x}"; mkdir -p "$NLD"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$NLD/a.tsv" primary=claude >/dev/null 2>&1; echo $?)" 0 \
+   "answers: a directory name ending in a newline is not mistaken for another"
 mkdir -p "$WORK/answers-dir.tsv"
 eq "$(HOME="$WORK/nohome" bash "$AD" answers "$WORK/answers-dir.tsv" primary=claude >/dev/null 2>&1; echo $?)" 2 \
    "answers: a non-regular destination is refused"
@@ -712,6 +727,8 @@ bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --observed
 eq "$(adb_toml_get "$WORK/p-ans.toml" roles primary)" '"claude"' "propose: an answered primary is live"
 eq "$(adb_toml_get "$WORK/p-ans.toml" roles review)" '["codex", "gemini"]' "propose: an answered review OVERRIDES the inferred one, as a list"
 eq "$(adb_toml_get "$WORK/p-ans.toml" reviewers bots)" '[]' "propose: an answered bots = none OVERRIDES the observation"
+has "$(cat "$WORK/p-ans.toml")" "# observed: chatgpt-codex-connector reviewed #35, #38, #40" \
+    "propose: an answered bots keeps the observed evidence beside it"
 eq "$(adb_toml_get "$WORK/p-ans.toml" roles release >/dev/null 2>&1; echo $?)" 1 "propose: release = none stays commented"
 has "$(cat "$WORK/p-ans.toml")" "cuts no releases" "...and records the owner's answer"
 eq "$(adb_toml_unquote "$(adb_toml_get "$WORK/p-ans.toml" gates test)")" "bash scripts/check.sh origin/main" \
@@ -1046,6 +1063,9 @@ has "$(HOME="$WORK/nohome" bash "$AD" hygiene "$AG" --agents gemini)" "agent-doc
 printf '[roles]\nprimary = "claude"\ngap_analysis = "gemini"\n' > "$WORK/proposal.toml"
 has "$(hyg --manifest "$WORK/proposal.toml")" "agent-doc${TAB}warn${TAB}GEMINI.md" \
     "hygiene: --manifest checks the roles of the manifest it names"
+printf '[roles]\nprimary = "claude"\nreview = []\n' > "$WORK/empty-review.toml"
+has "$(hyg --manifest "$WORK/empty-review.toml")" "empty or unparsable list" \
+    "hygiene: a role declared as an empty list is reported, not silently dropped"
 printf '[roles]\nprimary = "claude"\nreview = ["zed"]\n' > "$WORK/unknown-agent.toml"
 has "$(hyg --manifest "$WORK/unknown-agent.toml")" "does not model" \
     "hygiene: a role naming an agent the manifest does not model is reported, not skipped"
@@ -1123,9 +1143,10 @@ if [ -f "$WF" ]; then
   # code block. A guard satisfied by the documentation OF a call rather than by the call is exactly
   # the can't-fail shape this suite exists to reject; review caught it.
   wf_code="$(awk '/^```bash$/ { inb = 1; next } /^```/ { inb = 0; next } inb { print }' "$WF")"
-  for sub in scan classify prescribed delta roles-infer propose answer hygiene pin-describe pin-render plan resolve baseline; do
+  for sub in scan classify prescribed delta roles-infer propose answers hygiene pin-describe pin-render plan resolve baseline; do
+    # A TOKEN BOUNDARY after the name, so `answer` cannot be satisfied by `answers` or the reverse.
     case "$wf_code" in
-      *"adopt-lib.sh\" $sub"*|*"ADOPT_LIB}} $sub"*) ok ;;
+      *"adopt-lib.sh\" $sub"[[:space:]\)]*|*"ADOPT_LIB}} $sub"[[:space:]\)]*) ok ;;
       *) bad "base/workflows/adopt.md no longer INVOKES '$sub' in a fenced block (prose mentioning it does not count)" ;;
     esac
   done
@@ -1457,12 +1478,12 @@ shmutant_mut pin-describe-taglist-failure-is-none \
     '    || : "pin-describe: could not list the tags in' \
     "pin-describe: a tag listing that fails is an error, not 'no tags'"
 shmutant_mut propose-bots-from-unread-history \
-    '  if [ -z "$_AD_OBS_PRS" ]; then' \
-    '  if false; then' \
+    '  elif [ -z "$_AD_OBS_PRS" ]; then' \
+    '  elif false; then' \
     'propose: an UNREAD history never proposes bots = []'
 shmutant_mut propose-bots-from-empty-history \
-    '  if [ "$_AD_OBS_PRS" -eq 0 ]; then' \
-    '  if false; then' \
+    '  elif [ "$_AD_OBS_PRS" -eq 0 ]; then' \
+    '  elif false; then' \
     'propose: a repo with no PRs proposes a COMMENTED bots, never []'
 shmutant_mut observed-skips-unknown-kind \
     '      *) _AD_OBS_ERR="line $n: not a record kind this grammar has"; return 1 ;;' \
@@ -1484,6 +1505,18 @@ shmutant_mut answers-write-before-validating \
     '    reason="$(_ad_answer_check "$k" "$v")" || die "answers: $reason — nothing was written"' \
     '    reason="$(_ad_answer_check "$k" "$v")" || :' \
     'answers: a refused pair leaves the previous answers file whole'
+shmutant_mut answered-bots-drops-evidence \
+    "    printf '\\n[reviewers]\\nbots = [%s]     # answered in the /adopt interview\\n# observed: %s\\n' \"\$out\" \"\$summary\"" \
+    "    printf '\\n[reviewers]\\nbots = [%s]     # answered in the /adopt interview\\n' \"\$out\"" \
+    'propose: an answered bots keeps the observed evidence beside it'
+shmutant_mut answers-unbounded \
+    '  [ -s "$stage" ] && ! adb_bytes_whole "$stage" "$(_ad_record_max)" \' \
+    '  false \' \
+    "answers: answers past the reader's bound are refused"
+shmutant_mut role-empty-list-silent \
+    '      \[*) if [ -z "$(adb_toml_array "$raw")" ] || [ "${raw%]}" = "$raw" ]; then' \
+    '      \[*) if false; then' \
+    'hygiene: a role declared as an empty list is reported, not silently dropped'
 shmutant_mut answers-mode-dropped \
     '  adb_publish_json "$stage" "$file" --allow-empty --strict \' \
     '  mv "$stage" "$file" \' \
@@ -1513,8 +1546,8 @@ shmutant_mut answer-gate-label-own-grammar \
     '      true \' \
     'answer: a gate label the gate runner would ignore is refused'
 shmutant_mut propose-truncated-history-empty \
-    '  if [ "$n" -eq 0 ] && [ -n "$trunc" ]; then' \
-    '  if false; then' \
+    '    elif [ -n "$trunc" ]; then summary="no App was seen on $scope, but$trunc, so absence is not established"' \
+    '    elif false; then summary="no App was seen on $scope, but$trunc, so absence is not established"' \
     'propose: a truncated history with no App seen proposes a COMMENTED bots'
 shmutant_mut agent-doc-directory-present \
     '    elif [ -e "$root/$doc" ] && [ ! -f "$root/$doc" ]; then' \
@@ -1589,8 +1622,8 @@ shmutant_mut workflow-stale-gates-read \
     '  : "{{STATE_DIR}}/adopt-gates.tsv"' \
     'workflow: a stale gates file never reaches this run'"'"'s proposal'
 shmutant_mut workflow-pin-stale-survives \
-    'rm -f "{{STATE_DIR}}/adopt-upstream.toml"' \
-    ': "{{STATE_DIR}}/adopt-upstream.toml"' \
+    'rm -f -- "{{STATE_DIR}}/adopt-upstream.toml"' \
+    ': -- "{{STATE_DIR}}/adopt-upstream.toml"' \
     'workflow: a failed pin block must leave NO pin'
 
 # Width from `adb_pool_size` (min(cpu, 8)); each row costs a full suite run (D66, D68).
