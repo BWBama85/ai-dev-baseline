@@ -1275,6 +1275,10 @@ eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" roles primary >/dev/null 2>&1;
    "workflow: a previous run's read-only answers never reach this run's proposal"
 hasnt "$(cat "$WFS/state/adopt-agents.toml")" "stale-gate-command" \
       "workflow: a stale gates file never reaches this run's proposal"
+# ...and a FAILED detection reads as unread, never as the loud "no gate was detected", which is the
+# answer an empty file left behind by the truncating redirect would give.
+has   "$(cat "$WFS/state/adopt-agents.toml")" "NOT DETECTED" "workflow: a failed gate detection reads as unread in the proposal"
+hasnt "$(cat "$WFS/state/adopt-agents.toml")" "NO GATE WAS DETECTED" "workflow: ...never as no gate detected"
 chmod 600 "$WFS/state/adopt-answers.tsv"
 wf_run propose readiness-ok
 wf_run interview readiness-ok; eq "$?" 0 "workflow: the interview block runs"
@@ -1627,10 +1631,10 @@ shmutant_mut workflow-interview-failure-unchecked \
     '  || { echo "STOP: an answer was refused or could not be recorded' \
     '  || true; false && { echo "STOP: an answer was refused or could not be recorded' \
     'workflow: a refused interview answer stops the block'
-shmutant_mut workflow-stale-gates-read \
+shmutant_mut workflow-stale-gates-kept \
     '  rm -f "{{STATE_DIR}}/adopt-gates.tsv"' \
     '  : "{{STATE_DIR}}/adopt-gates.tsv"' \
-    'workflow: a stale gates file never reaches this run'"'"'s proposal'
+    'workflow: a failed gate detection does not stop the propose block'
 shmutant_mut workflow-pin-stale-survives \
     'rm -f -- "{{STATE_DIR}}/adopt-upstream.toml"' \
     ': -- "{{STATE_DIR}}/adopt-upstream.toml"' \

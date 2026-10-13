@@ -731,6 +731,7 @@ out="$(tr_out '{"bots_state":"declared","bots_declared":[""],"pr_history":4,"pr_
 hasnt "$out" "reviewers${TAB}ok" "tracker: an empty-string declared login is malformed, not bots = []"
 out="$(tr_out '{"bots_state":"declared","bots_declared":["bad!"],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
 has "$out" "reviewers${TAB}todo" "tracker: a declared entry that is not a GitHub login is todo"
+has "$out" "not a GitHub login" "tracker: a declared entry that is not a GitHub login is named as such"
 # THE HISTORY IS ONE FACT: every field present, and the counts consistent with one another.
 out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":4,"reviews_truncated":[],"reviewer_logins":[]}')"
 has "$out" "reviewers${TAB}unknown" "tracker: a history with no read bound is unknown"
@@ -1326,7 +1327,7 @@ shmutant_mut reviewers-truncated-absence-claimed \
 shmutant_mut reviewers-declared-grammar-unchecked \
     "        elif ! printf '%s' \"\$json\" | jq -e '.bots_declared | all(test(" \
     "        elif false && ! printf '%s' \"\$json\" | jq -e '.bots_declared | all(test(" \
-    'tracker: a declared entry that is not a GitHub login is todo'
+    'tracker: a declared entry that is not a GitHub login is named as such'
 shmutant_mut tracker-truncation-ids-unchecked \
     '         and (.reviews_truncated | length == (unique | length))' \
     '         and true' \
