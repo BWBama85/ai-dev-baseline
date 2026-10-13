@@ -3952,11 +3952,33 @@ adb_claude_settings_leaf_rows "$PAYLOAD" '[]' '[]' '[["sandbox","excludedCommand
   && bad "the row writer must refuse a satisfied path listed twice — its reader rejects the duplicate" || ok
 adb_claude_settings_leaf_rows "$PAYLOAD" '[["sandbox","excludedCommands"]]' '[]' '[["sandbox","excludedCommands"]]' >/dev/null 2>&1 \
   && bad "the row writer must refuse a path both written and satisfied — completeness rejects that record" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[[]]' '[]' '[]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse an EMPTY written path — it reads as ownership of the document root" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[["sandbox","enabled"],["sandbox","enabled"]]' '[]' '[]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse a written path listed twice — completeness rejects the duplicate" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[]' '' '' >/dev/null 2>&1 \
+  && bad "the row writer must refuse an explicitly EMPTY created or satisfied list — only an omitted one defaults to []" || ok
 
 # A satisfied-row read that could not be PERFORMED is 25, never 20: uninstall proceeds past 20 because
 # the removal merge refuses an unreadable receipt, and the removal never reads these rows.
 _src=0; ( _adb_claude_settings_satisfied_json() { return 20; }; _adb_claude_settings_rows_complete "$work/sat-receipt" "$PAYLOAD" ) || _src=$?
 [ "$_src" -eq 25 ] && ok || bad "a satisfied-row read that could not be performed must answer 25 — 20 is what uninstall proceeds past; rc $_src"
+
+# A SATISFIED-ONLY RECORD OUTLIVES A PAYLOAD CHANGE: an install against a payload that shipped only
+# the satisfiable key writes no leaf, and a later payload that adds a key must reconcile that record,
+# not read it as rows that went missing. A zero-leaf record WITHOUT satisfied rows still refuses.
+jq '{sandbox: {excludedCommands: .sandbox.excludedCommands}}' "$PAYLOAD" > "$work/only-ex.json"
+printf '{"sandbox":{"excludedCommands":["docker *","gh *","git *"]}}' > "$work/so.json"
+r="$(adb_claude_settings_merge "$work/so.json" "$work/only-ex.json" "$work/empty-receipt")"
+adb_claude_settings_leaf_rows "$work/only-ex.json" "$(printf '%s' "$r" | jq -c .wrote)" "$(printf '%s' "$r" | jq -c .created)" "$(printf '%s' "$r" | jq -c .satisfied)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$work/only-ex.json")" > "$work/so-receipt"
+grep -q '^leaves 0$' "$work/so-receipt" && grep -q "^satisfied${ADB_TAB}" "$work/so-receipt" && ok \
+  || bad "precondition: the satisfied-only record must carry no leaf row and one satisfied row"
+_src=0; _adb_claude_settings_rows_complete "$work/so-receipt" "$PAYLOAD" || _src=$?
+[ "$_src" -eq 0 ] && ok || bad "a satisfied-only record must stay COMPLETE when the payload changes — the merge reconciles it; rc $_src"
+grep -v "^satisfied${ADB_TAB}" "$work/so-receipt" > "$work/so-rowless"
+_src=0; _adb_claude_settings_rows_complete "$work/so-rowless" "$PAYLOAD" || _src=$?
+[ "$_src" -eq 23 ] && ok || bad "a zero-leaf installed record with NO satisfied rows must still refuse on a changed payload; rc $_src"
 
 # DAMAGE. Completeness subtracts satisfied paths from the payload, so a stray one would excuse a missing
 # leaf row, and one recorded as both owned and satisfied would let uninstall delete the operator's list.
@@ -4036,6 +4058,15 @@ HOME="$xu_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claud
 grep -v '^source' "$work/xu-before" > "$work/xu-a"; grep -v '^source' "$xu_home/.claude/.adb-settings-owned" > "$work/xu-b"
 cmp -s "$work/xu-a" "$work/xu-b" && ok \
   || bad "a hand-over that could not be checked must KEEP the existing record — relinquishing strands four unchanged owned keys"
+# ...and a SATISFIED row the same damaged fragment cannot recheck is carried, but SAID to be unverified.
+sv_home="$work/sat-carry-unverified"; rm -rf "$sv_home"; mkdir -p "$sv_home/.claude"
+echo '{"sandbox":{"excludedCommands":["docker *","gh *","git *"]}}' > "$sv_home/.claude/settings.json"
+HOME="$sv_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+HOME="$sv_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claude --no-hooks --no-sandbox >"$work/sat-unverified.log" 2>&1
+grep -q "^satisfied${ADB_TAB}" "$sv_home/.claude/.adb-settings-owned" && ok \
+  || bad "precondition: a satisfied row the fragment cannot recheck is still carried"
+grep -q "carried UNVERIFIED" "$work/sat-unverified.log" && ok \
+  || bad "a satisfied row carried without a recheck must be SAID to be unverified — silence reads as a verified carry"
 
 # AN UNSATISFIED excludedCommands REFUSES — and the refusal names the other way out, which for this key
 # is the one an operator wants: keep their list and add what the policy ships to it.
@@ -4179,8 +4210,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
     'must be skipped while its neighbours survive'
   check_row 'the path enumerations are not checked' 'scripts/lib/common.sh' 'the-merge-result-is-read-through-one-che' \
-    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -n -c '"'"'[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end'"'"' 2>/dev/null)" || return 1' \
-    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -n -c '"'"'[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end'"'"' 2>/dev/null)"' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -n -c "$_pathsprog" 2>/dev/null)" || return 1' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -n -c "$_pathsprog" 2>/dev/null)"' \
     'must be captured AND checked before any row is printed'
   check_row 'a per-leaf extraction failure becomes an empty value' 'scripts/lib/common.sh' 'and-so-is-each-leaf-value-one-level-down' \
     '    if ! v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)" || [ -z "$v" ]; then' \
@@ -5183,6 +5214,22 @@ if [ "$MUTATION" -eq 1 ]; then
     '        return 25 ;;   # handover-unchecked' \
     '        return 0 ;;   # handover-unchecked' \
     'a hand-over that could not be checked must KEEP'
+  check_row 'a satisfied-only record reads as lost rows after a payload change' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '            if [ "$sat" != "[]" ]; then return 0; fi   # zero-satisfied-outlives-payload' \
+    '            :   # zero-satisfied-outlives-payload' \
+    'must stay COMPLETE when the payload changes'
+  check_row 'the row writer emits a written path twice' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '      and (.[0] | length) == (.[0] | unique | length)' \
+    '      and true' \
+    'must refuse a written path listed twice'
+  check_row 'an explicitly empty created list defaults to []' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '  local payload="$1" written="$2" createdj="${3-[]}" satisfiedj="${4-[]}" p' \
+    '  local payload="$1" written="$2" createdj="${3:-[]}" satisfiedj="${4:-[]}" p' \
+    'only an omitted one defaults to []'
+  check_row 'an unverified satisfied carry is silent' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '      adb_info "  sandbox  your sandbox.excludedCommands is carried UNVERIFIED — the policy fragment could not be" >&2' \
+    '      :' \
+    'must be SAID to be unverified'
   check_row 'a key recorded both owned and satisfied is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '  [ "$_both" = "0" ] || return 21   # satisfied-and-owned' \
     '  :   # satisfied-and-owned' \

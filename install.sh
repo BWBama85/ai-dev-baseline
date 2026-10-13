@@ -994,7 +994,13 @@ _adb_carry_rows() {
       return 20   # handover-rewrite-failed
     fi
     _nleaf="$(printf '%s\n' "$_newrows" | grep -c "^leaf$(printf '\t')" || true)"
-    _want=$(( recorded - $(printf '%s' "$_xfer" | jq 'length' 2>/dev/null || printf '%s' "$recorded") ))
+    local _nx
+    if ! _nx="$(printf '%s' "$_xfer" | jq 'length' 2>/dev/null)" || [ -z "$_nx" ]; then
+      adb_info "  sandbox  ownership was neither proved nor given up — the hand-over could not be counted," >&2
+      adb_info "           so the existing record is kept and this run writes none." >&2
+      return 20   # handover-count-unread
+    fi
+    _want=$(( recorded - _nx ))
     if [ "$_nleaf" != "$_want" ]; then
       adb_info "  sandbox  ownership was neither proved nor given up — the rewritten record would hold" >&2
       adb_info "           $_nleaf leaf row(s), not $_want, so the existing one is kept and this run writes none." >&2
@@ -1010,7 +1016,11 @@ _adb_carry_rows() {
   local _sh=0
   _adb_claude_settings_satisfied_hold "$receipt" "$live" "$frag" || _sh=$?
   case "$_sh" in
-    0|2) ;;
+    0) ;;
+    2)
+      adb_info "  sandbox  your sandbox.excludedCommands is carried UNVERIFIED — the policy fragment could not be" >&2
+      adb_info "           read to recheck it; the next run with a readable fragment asks again." >&2
+      ;;   # carry-satisfied-unverified
     1)
       adb_info "  sandbox  ownership relinquished — your own sandbox.excludedCommands no longer holds every" >&2
       adb_info "           entry the policy ships, so the record of it is no longer true." >&2

@@ -302,7 +302,8 @@ What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
 - **Excluded is not auto-approved.** A sandboxed command can run without asking; an excluded one
   goes through the regular permission flow. In Manual mode a `git`/`gh` command that is not
   read-only prompts unless one of your allow rules covers it, auto mode sends it to the classifier,
-  and `bypassPermissions` runs it. The installer ships no allow rules.
+  and `bypassPermissions` runs it unless one of your ask rules matches it. The installer ships no
+  allow rules.
 - **Matching changed in newer CLIs.** Before v2.1.277 a compound command was taken out whole when
   only one part matched, and before v2.1.290 a short-form `git clone` option kept the exemption, so
   between the v2.1.187 floor and those versions the exclusion is broader than described here.

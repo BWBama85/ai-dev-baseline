@@ -1213,7 +1213,15 @@ _adb_claude_settings_rows_complete() {
           _zrdig="$(adb_claude_settings_payload_digest "$receipt" 2>/dev/null)"; _zrdrc=$?
           [ "$_zrdrc" -eq 0 ] || return 25   # zero-digest-reread-failed
           _zpdig="$(adb_sha256 "$payload" 2>/dev/null)" || _zpdig=""
-          [ -n "$_zrdig" ] && [ "$_zrdig" = "$_zpdig" ] || return 23   # installed-zero-other-payload
+          [ -n "$_zrdig" ] || return 23
+          if [ "$_zrdig" != "$_zpdig" ]; then
+            # A SATISFIED-ONLY RECORD OUTLIVES A PAYLOAD CHANGE (#462, D129): its satisfied rows are a
+            # complete write whose every shipped leaf was the operator's, a shape the lost-rows record
+            # this refuses cannot take — a truncation keeps the header and loses rows. The merge then
+            # reconciles it against the new payload.
+            if [ "$sat" != "[]" ]; then return 0; fi   # zero-satisfied-outlives-payload
+            return 23   # installed-zero-other-payload
+          fi
           # A PAYLOAD THAT SHIPS NOTHING ANSWERS 1 WITH NO OUTPUT; only a reader that could not run
           # at all (no jq) is uncertainty. Reading 1 as a failure refused the one record this arm
           # exists to accept. (PR review)
@@ -1944,7 +1952,7 @@ EOF
 # no value is recorded, because nothing is ever removed or compared by it as ours.
 # Usage: adb_claude_settings_leaf_rows <payload.json> <written-json-array> [created-json-array] [satisfied-json-array]
 adb_claude_settings_leaf_rows() {
-  local payload="$1" written="$2" createdj="${3:-[]}" satisfiedj="${4:-[]}" p
+  local payload="$1" written="$2" createdj="${3-[]}" satisfiedj="${4-[]}" p
   command -v jq >/dev/null 2>&1 || return 2
   [ -s "$payload" ] || return 1
   # EACH VALUE IS CAPTURED AND CHECKED. Inline, a `jq` that failed emitted `leaf<TAB><path><TAB>`
@@ -1959,17 +1967,22 @@ adb_claude_settings_leaf_rows() {
   # leaf row strands the written value for good: the payload digest still looks current, so no
   # later update repairs the ownership, and uninstall has nothing to remove it by. Same failure as
   # the per-value read below, one level out. (PR review)
-  # EACH ARGUMENT IS EXACTLY ONE JSON ARRAY — no input, or two documents, is not one — and the
-  # satisfied list is what its reader accepts: satisfiable paths, none twice, none also written. A
-  # record the writer emits and its reader refuses is a state no later run can clear.
+  # EACH ARGUMENT IS EXACTLY ONE JSON ARRAY OF PATHS THE READERS ACCEPT — no input, two documents,
+  # an empty or non-string path, or a path listed twice is refused — and the satisfied list is also
+  # satisfiable and disjoint from the written one. A record the writer emits and a reader refuses is
+  # a state no later run can clear. Only an OMITTED created or satisfied list defaults to `[]`.
   local wrote_paths created_paths satisfied_paths _satl _wl _satprog
   _satl="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || return 1
   _satprog="$(adb_claude_settings_jq_defs)"'
       [inputs] | if length == 1 and (.[0] | type) == "array" then .[0] else error("not one array") end
       | if (length == (unique | length)) and all(.[]; member($s; .) and (member($w; .) | not)) then .[]   # leaf-rows-satisfied-contract
         else error("a satisfied path that is unsatisfiable, repeated, or also written") end'
-  wrote_paths="$(printf '%s' "$written" | jq -n -c '[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end' 2>/dev/null)" || return 1
-  created_paths="$(printf '%s' "$createdj" | jq -n -c '[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end' 2>/dev/null)" || return 1
+  local _pathsprog='[inputs] | if length == 1 and (.[0] | type) == "array"
+      and all(.[0][]; type == "array" and length > 0 and all(.[]; type == "string"))
+      and (.[0] | length) == (.[0] | unique | length)
+    then .[0][] else error("not one array of distinct non-empty string paths") end'   # leaf-rows-path-grammar
+  wrote_paths="$(printf '%s' "$written" | jq -n -c "$_pathsprog" 2>/dev/null)" || return 1
+  created_paths="$(printf '%s' "$createdj" | jq -n -c "$_pathsprog" 2>/dev/null)" || return 1
   _wl="$(printf '%s' "$wrote_paths" | jq -cs . 2>/dev/null)" || return 1
   satisfied_paths="$(printf '%s' "$satisfiedj" | jq -n -c --argjson s "$_satl" --argjson w "$_wl" "$_satprog" 2>/dev/null)" || return 1
   local v
