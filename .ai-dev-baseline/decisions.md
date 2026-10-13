@@ -9824,8 +9824,10 @@ survive is the part a later reader needs.
              **The nightly bound rises to 360 minutes** (owner, 2026-10-13). The nightly
              `settings-fragment-mutation` job was already being cancelled at its 240-minute
              `timeout-minutes` (2026-10-12 and 2026-10-13), and this change adds rows and installer
-             fixtures to that suite. 360 is GitHub's maximum for a hosted-runner job, so the real
-             fix is splitting the work, which is #532.
+             fixtures to that suite: 262 rows become 285, and one sequential suite run on macOS takes
+             172 s against `main`'s 145 s, about x1.29 the whole-suite work, so an ESTIMATED 310+
+             minutes. 360 is GitHub's maximum for a hosted-runner job, so the real fix is splitting
+             the work, which is #532.
 
              **The floor stays v2.1.187.** `excludedCommands` is present by v2.1.34 in the vendor
              CHANGELOG (re-checked 2026-10-13). Its MATCHING changed later. v2.1.277 stopped a

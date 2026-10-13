@@ -821,10 +821,16 @@ echo '{"model":"opus"}' > "$diag_home/.claude/settings.json"
 HOME="$diag_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 jq 'del(.sandbox.enabled)' "$diag_home/.claude/settings.json" > "$work/dg.json" && mv "$work/dg.json" "$diag_home/.claude/settings.json"
 HOME="$diag_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/diag.log" 2>&1
+_diag_ok=1
 grep -qi "relinquish" "$work/diag.log" && ok \
-  || bad "the operator must be TOLD that ownership was relinquished — the message is the only signal that a safety-relevant state changed"
+  || { _diag_ok=0; bad "the operator must be TOLD that ownership was relinquished — the message is the only signal that a safety-relevant state changed"; }
 [ "$(grep -c "^leaf$ADB_TAB" "$diag_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
-  || bad "...and the rows must still be dropped"
+  || { _diag_ok=0; bad "...and the rows must still be dropped"; }
+# THE EVIDENCE GOES WITH THE FAILURE: `$work` is deleted on exit, so an unshown log is a red nobody
+# can explain afterwards.
+[ "$_diag_ok" -eq 1 ] || { printf '  --- the --no-sandbox run said:\n'; sed 's/^/  | /' "$work/diag.log"
+  printf '  --- and left this record:\n'; sed 's/^/  | /' "$diag_home/.claude/.adb-settings-owned" 2>&1
+  ls -la "$diag_home/.claude" 2>&1 | sed 's/^/  | /'; } >&2
 # EVERY diagnostic in that function, not only the one the fixture above happens to reach. The
 # behavioural check proves one message escapes the capture; a diagnostic added later without `>&2`
 # would be swallowed exactly as these five were, and nothing would say so. The set is closed and
@@ -3938,6 +3944,14 @@ adb_claude_settings_leaf_rows "$PAYLOAD" '[]' '[]' '[["sandbox","enabled"]]' >/d
   && bad "the row writer must refuse a satisfied path the reader would reject as damage" || ok
 adb_claude_settings_leaf_rows "$PAYLOAD" 'null' '[]' '[]' >/dev/null 2>&1 \
   && bad "the row writer must refuse a written list that is not an array — its siblings get the same rule" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '' '[]' '[]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse an EMPTY written argument — no input is not one array" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[] []' '[]' '[]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse TWO documents where one array is required" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[]' '[]' '[["sandbox","excludedCommands"],["sandbox","excludedCommands"]]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse a satisfied path listed twice — its reader rejects the duplicate" || ok
+adb_claude_settings_leaf_rows "$PAYLOAD" '[["sandbox","excludedCommands"]]' '[]' '[["sandbox","excludedCommands"]]' >/dev/null 2>&1 \
+  && bad "the row writer must refuse a path both written and satisfied — completeness rejects that record" || ok
 
 # A satisfied-row read that could not be PERFORMED is 25, never 20: uninstall proceeds past 20 because
 # the removal merge refuses an unreadable receipt, and the removal never reads these rows.
@@ -4015,8 +4029,8 @@ echo '{}' > "$xu_home/.claude/settings.json"
 HOME="$xu_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 jq '.sandbox.excludedCommands += ["docker *"]' "$xu_home/.claude/settings.json" > "$work/xu.tmp" && mv "$work/xu.tmp" "$xu_home/.claude/settings.json"
 cp "$xu_home/.claude/.adb-settings-owned" "$work/xu-before"
-xu_clone="$work/xu-clone"; rm -rf "$xu_clone"; mkdir -p "$xu_clone"
-( cd "$ROOT" && cp -R . "$xu_clone" ) >/dev/null 2>&1; rm -rf "$xu_clone/.git"
+xu_clone="$work/xu-clone"; rm -rf "$xu_clone"
+check_copy_worktree "$ROOT" "$xu_clone" >/dev/null 2>&1 && ok || bad "precondition: the clone copy for the unchecked hand-over must succeed"
 printf '{"sandbox":' > "$xu_clone/agents/claude/settings.fragment.json"
 HOME="$xu_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
 grep -v '^source' "$work/xu-before" > "$work/xu-a"; grep -v '^source' "$xu_home/.claude/.adb-settings-owned" > "$work/xu-b"
@@ -4165,8 +4179,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '($pj | length) >= 0 and ($pj | all(.[]; type == "string")))   # container-path-predicate' \
     'must be skipped while its neighbours survive'
   check_row 'the path enumerations are not checked' 'scripts/lib/common.sh' 'the-merge-result-is-read-through-one-che' \
-    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'if type == "array" then .[] else error("not an array") end'"'"' 2>/dev/null)" || return 1' \
-    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -c '"'"'if type == "array" then .[] else error("not an array") end'"'"' 2>/dev/null)"' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -n -c '"'"'[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end'"'"' 2>/dev/null)" || return 1' \
+    '  wrote_paths="$(printf '"'"'%s'"'"' "$written" | jq -n -c '"'"'[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end'"'"' 2>/dev/null)"' \
     'must be captured AND checked before any row is printed'
   check_row 'a per-leaf extraction failure becomes an empty value' 'scripts/lib/common.sh' 'and-so-is-each-leaf-value-one-level-down' \
     '    if ! v="$(jq -c --argjson path "$p" '"'"'getpath($path)'"'"' "$payload" 2>/dev/null)" || [ -z "$v" ]; then' \
@@ -5161,9 +5175,9 @@ if [ "$MUTATION" -eq 1 ]; then
     '  case "$_src" in 0) ;; 21) return 21 ;; *) return 25 ;; esac   # satisfied-complete' \
     '  case "$_src" in 0) ;; *) return "$_src" ;; esac   # satisfied-complete' \
     'could not be performed must answer 25'
-  check_row 'the row writer walks a non-array or unreadable satisfied list' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
-    "  satisfied_paths=\"\$(printf '%s' \"\$satisfiedj\" | jq -c --argjson s \"\$_satl\" 'if type == \"array\" then .[] | (. as \$p | if (\$s | map(. == \$p) | any) then \$p else error(\"not satisfiable\") end) else error(\"not an array\") end' 2>/dev/null)\" || return 1   # leaf-rows-satisfied-contract" \
-    "  satisfied_paths=\"\$(printf '%s' \"\$satisfiedj\" | jq -c '.[]?' 2>/dev/null)\" || return 1   # leaf-rows-satisfied-contract" \
+  check_row 'the row writer emits a satisfied list its reader rejects' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
+    '      | if (length == (unique | length)) and all(.[]; member($s; .) and (member($w; .) | not)) then .[]   # leaf-rows-satisfied-contract' \
+    '      | if true then .[]   # leaf-rows-satisfied-contract' \
     'must refuse a satisfied path the reader would reject'
   check_row 'an unchecked hand-over relinquishes instead of keeping the record' 'install.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '        return 25 ;;   # handover-unchecked' \

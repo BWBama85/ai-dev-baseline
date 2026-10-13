@@ -1001,7 +1001,7 @@ _adb_carry_rows() {
       return 20   # handover-count-mismatch
     fi
     rows="$_newrows"
-    adb_info "  sandbox  yours now: $(printf '%s' "$_xfer" | jq -r 'map(join(".")) | join(", ")' 2>/dev/null) — it still holds every entry the policy ships." >&2
+    adb_info "  sandbox  handing over to you, once this run's record is written: $(printf '%s' "$_xfer" | jq -r 'map(join(".")) | join(", ")' 2>/dev/null) — it still holds every entry the policy ships." >&2
   fi
   # ...AND EVERY SATISFIED ROW STILL HOLDS (#462, D129): the currency check asks the same question,
   # so a row that no longer holds is never carried — it relinquishes, as a diverged owned leaf does.

@@ -939,7 +939,7 @@ adb_claude_settings_satisfiable() { printf '%s\n' '["sandbox","excludedCommands"
 # The jq definitions the settings readers share, prepended to each program that asks — the merge,
 # the currency check and the carry — so each question has ONE spelling:
 #   member($xs; $x)  path membership by `==`. Never `index/1`, which searches an array argument as a
-#                    SUBSEQUENCE: `[["a","b"]] | index(["a","b"])` is 0 for the wrong reason.
+#                    SUBSEQUENCE: `["a","b"] | index(["a","b"])` is 0 though no element is `["a","b"]`.
 #   satisfies_value($have; $ship)  a live value satisfies a shipped one (#462, D129): both arrays,
 #                    every live element a STRING (the vendor reads them as command patterns, so a
 #                    `null` beside the right entries is not a working configuration), and every
@@ -1959,13 +1959,19 @@ adb_claude_settings_leaf_rows() {
   # leaf row strands the written value for good: the payload digest still looks current, so no
   # later update repairs the ownership, and uninstall has nothing to remove it by. Same failure as
   # the per-value read below, one level out. (PR review)
-  # EACH ARGUMENT MUST BE AN ARRAY, and a satisfied path one the reader accepts: `.[]?` walked a
-  # `null` as no rows and returned success, and a row the reader rejects is a record nothing can read.
-  local wrote_paths created_paths satisfied_paths _satl
+  # EACH ARGUMENT IS EXACTLY ONE JSON ARRAY — no input, or two documents, is not one — and the
+  # satisfied list is what its reader accepts: satisfiable paths, none twice, none also written. A
+  # record the writer emits and its reader refuses is a state no later run can clear.
+  local wrote_paths created_paths satisfied_paths _satl _wl _satprog
   _satl="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || return 1
-  wrote_paths="$(printf '%s' "$written" | jq -c 'if type == "array" then .[] else error("not an array") end' 2>/dev/null)" || return 1
-  created_paths="$(printf '%s' "$createdj" | jq -c 'if type == "array" then .[] else error("not an array") end' 2>/dev/null)" || return 1
-  satisfied_paths="$(printf '%s' "$satisfiedj" | jq -c --argjson s "$_satl" 'if type == "array" then .[] | (. as $p | if ($s | map(. == $p) | any) then $p else error("not satisfiable") end) else error("not an array") end' 2>/dev/null)" || return 1   # leaf-rows-satisfied-contract
+  _satprog="$(adb_claude_settings_jq_defs)"'
+      [inputs] | if length == 1 and (.[0] | type) == "array" then .[0] else error("not one array") end
+      | if (length == (unique | length)) and all(.[]; member($s; .) and (member($w; .) | not)) then .[]   # leaf-rows-satisfied-contract
+        else error("a satisfied path that is unsatisfiable, repeated, or also written") end'
+  wrote_paths="$(printf '%s' "$written" | jq -n -c '[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end' 2>/dev/null)" || return 1
+  created_paths="$(printf '%s' "$createdj" | jq -n -c '[inputs] | if length == 1 and (.[0] | type) == "array" then .[0][] else error("not one array") end' 2>/dev/null)" || return 1
+  _wl="$(printf '%s' "$wrote_paths" | jq -cs . 2>/dev/null)" || return 1
+  satisfied_paths="$(printf '%s' "$satisfiedj" | jq -n -c --argjson s "$_satl" --argjson w "$_wl" "$_satprog" 2>/dev/null)" || return 1
   local v
   while IFS= read -r p; do
     [ -n "$p" ] || continue

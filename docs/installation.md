@@ -236,9 +236,10 @@ the next `baseline update` applies the settings by itself once you upgrade the C
 
 #### It applies whole, or not at all
 
-The fragment is installed **only when every key it ships is absent**. If any of them is already in
-your `settings.json` — whatever the value — nothing is written and the installer names what is in
-the way. There is no partial application: a half-applied policy reports protection it does not
+The fragment is installed **only when every key it ships is absent**, with one exception: an
+`excludedCommands` of yours that already holds every shipped entry (below). If any other key is
+already in your `settings.json`, whatever its value, nothing is written and the installer names
+what is in the way. There is no partial application: a half-applied policy reports protection it does not
 have, and `sandbox.enabled` without the credential rules (or the reverse) is exactly that.
 
 Your own keys are never in the way unless they *are* one of ours: `sandbox.filesystem.allowWrite`
