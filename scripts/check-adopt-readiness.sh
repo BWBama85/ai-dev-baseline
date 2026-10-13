@@ -686,10 +686,8 @@ has "$out" "settings${TAB}na" "tracker: a no-CI repo can declare settings N/A"
 printf '%s' '{"settings":"probably-fine"}' | ar tracker >/dev/null 2>&1
 eq $? 2 "tracker: an unrecognized settings verdict is rejected, not accepted"
 
-# --- reviewers (#459): a DECLARATION is checked against what GitHub recorded, both ways.
-# The measured configuration first: `bots = []` hand-written on a repo the Codex App had reviewed
-# since July. Every other rung was green on it, and a PR merged three minutes before the reviewer
-# spoke. This is the rung that exists to go red there.
+# --- reviewers (#459, D128): a DECLARATION is checked against what GitHub recorded, both ways —
+# `bots = []` while an App reviews is red, and the corrected declaration is ok.
 RV_OBS='"pr_history":3,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["chatgpt-codex-connector"]'
 out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[],$RV_OBS}")"
 has "$out" "reviewers${TAB}todo" "tracker: bots = [] while an App reviews is todo"

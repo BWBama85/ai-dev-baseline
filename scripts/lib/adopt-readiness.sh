@@ -1336,6 +1336,7 @@ _ar_observe() {  # <owner/name> — the records; a read that fails is omitted, n
                             or (.author | type == "object" and (.__typename | type) == "string"
                                 and (.login | type) == "string"));
           def pr_ok: type == "object" and (.number | int) and .number >= 1
+                     and .number <= 999999999999999
                      and (.reviews | type) == "object"
                      and (.reviews.totalCount | int) and .reviews.totalCount >= 0
                      and (.reviews.nodes | type) == "array"

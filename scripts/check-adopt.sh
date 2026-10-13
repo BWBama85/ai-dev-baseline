@@ -653,6 +653,16 @@ for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs read-past-bound 
      "propose: a damaged observation ($bad_obs) is refused whole, never read as bots = []"
 done
 
+# THE WRITER'S PR-NUMBER RANGE IS THE READER'S: `observe` accepts up to 15 digits, and so does this.
+printf 'prs\t1\t100\nreviewer\tapp\t2147483647\n' > "$OBS/big-pr.tsv"
+propose_obs "$OBS/big-pr.tsv" > "$WORK/p-big-pr.toml"
+eq "$(adb_toml_get "$WORK/p-big-pr.toml" reviewers bots)" '["app"]' "propose: a 10-digit pull request number is read, as observe writes it"
+# THE BOUND SEAM ONLY LOWERS: an octal-looking or oversized value is the default, never a crash.
+for seam in 010 08 99999999; do
+  ADB_ADOPT_RECORD_MAX_BYTES="$seam" bash "$AD" roles-infer "$FX" | ADB_ADOPT_RECORD_MAX_BYTES="$seam" bash "$AD" propose --observed "$OBS/codex.tsv" > "$WORK/p-seam.toml"
+  eq "$(adb_toml_get "$WORK/p-seam.toml" reviewers bots)" '["chatgpt-codex-connector"]' \
+     "propose: ADB_ADOPT_RECORD_MAX_BYTES=$seam falls back to the default bound"
+done
 # A TRUNCATED history cannot establish an absence: the reviews that were not read could hold the App.
 printf 'prs\t3\t100\ntruncated\t35\n' > "$OBS/truncated.tsv"
 propose_obs "$OBS/truncated.tsv" > "$WORK/p-trunc.toml"
@@ -778,7 +788,7 @@ has "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/no-gates
 # evidence, never as a line that breaks when the operator uncomments it.
 printf 'test\tpytest -k "not slow"\n' > "$WORK/quoted-gates.tsv"
 pq="$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/quoted-gates.tsv")"
-has   "$pq" 'write the line by hand' "propose: a detected gate carrying a quote is shown as evidence"
+has   "$pq" 'put it in a script' "propose: a detected gate carrying a quote is shown as evidence"
 hasnt "$pq" '# test      = "pytest' "propose: ...never as a key line that breaks when uncommented"
 printf 'test\tpnpm test\n9bad\tx\n' > "$WORK/bad-label-gates.tsv"
 hasnt "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/bad-label-gates.tsv")" 'pnpm test' \
@@ -1534,7 +1544,7 @@ shmutant_mut detected-gate-quote-rendered-as-key \
     "        NEVERMATCHES) printf '#   %s (DETECTED" \
     'propose: a detected gate carrying a quote is shown as evidence'
 shmutant_mut snapshot-skips-byte-rules \
-    '  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" 1048576 || rc=1; fi' \
+    '  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" "$max" || rc=1; fi' \
     '  :' \
     'propose: a damaged observation (cut-off) is refused whole'
 shmutant_mut answer-control-bytes-accepted \
@@ -1602,8 +1612,8 @@ shmutant_mut branch-hygiene-unread-silent \
 # the same way, in the one source every agent's skill renders from.
 shmutant_target base/workflows/adopt.md
 shmutant_mut workflow-propose-skips-observe \
-    '( cd "$PROJECT" && {{ADOPT_READINESS}} observe ) > "{{STATE_DIR}}/adopt-observed.tsv" \' \
-    '( cd "$PROJECT" && : ) > "{{STATE_DIR}}/adopt-observed.tsv" \' \
+    'if ! ( cd "$PROJECT" && {{ADOPT_READINESS}} observe ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \
+    'if ! ( cd "$PROJECT" && : ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \
     'workflow: the propose block hands the observation to propose'
 shmutant_mut workflow-hygiene-drops-observed \
     '  --observed "{{STATE_DIR}}/adopt-observed.tsv" > "{{STATE_DIR}}/adopt-hygiene.tsv"' \

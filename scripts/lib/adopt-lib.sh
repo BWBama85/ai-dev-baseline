@@ -14,8 +14,9 @@
 # the word `remove`; it removes nothing, and no subcommand that could is defined. The only writes
 # /adopt performs at all are the two artifacts that DO NOT YET EXIST — `agents.toml` and the
 # upstream pin — and even those are the workflow's, on explicit approval, from content `propose`
-# and `pin-render` merely PRINT. The one subcommand that writes a file, `answers`, writes the
-# interview's scratch file in the agent's own state dir, never in the project.
+# and `pin-render` merely PRINT. The one subcommand that writes a file is `answers`: it publishes the
+# file it is given, and the workflow gives it the interview's scratch file in the agent's own state
+# dir — a calling convention, not something this file enforces.
 #
 # That boundary is what makes the fail-closed convention below sufficient. A predicate whose
 # wrong answer would delete a project's forked skill needs backup, rollback, and partial-failure
@@ -27,8 +28,10 @@
 # and read-only: `check-ignore` and `ls-files` in `hygiene`, where asking git itself is the whole
 # point — reimplementing .gitignore precedence is how you get a confidently wrong answer about
 # negations — and `pin-describe`, which asks the BASELINE clone what it is (#464). `scan`,
-# `hygiene` and `pin-describe` read the filesystem: deterministic and offline, not pure. Everything
-# else is a pure function of its arguments, its stdin and the files it is handed. The workflow
+# `hygiene` and `pin-describe` read the filesystem: deterministic and offline, not pure. `answers`
+# writes the file it is given, and the record readers copy their input into a private temp before
+# parsing it. Everything else is a pure function of its arguments, its stdin and the files it is
+# handed. The workflow
 # owns every live read — what GitHub records about the project (#459) reaches this file as an
 # `adopt-readiness.sh observe` file, never as a `gh` call made here.
 #
@@ -272,9 +275,12 @@ _ad_gate_label_ok() {
 #
 # _ad_record_max — the one byte bound for every record file, read by this reader AND by `answers`,
 # so the writer can never publish what the reader refuses. ADB_ADOPT_RECORD_MAX_BYTES lowers it
-# (a test seam: argv cannot carry a 1 MiB answer on every platform); anything but digits is ignored.
+# (a test seam: argv cannot carry a 1 MiB answer on every platform).
 _ad_record_max() {
-  case "${ADB_ADOPT_RECORD_MAX_BYTES:-}" in ''|*[!0-9]*) printf '1048576' ;; *) printf '%s' "$ADB_ADOPT_RECORD_MAX_BYTES" ;; esac
+  # It may only LOWER the bound: a decimal with no leading zero (bash would read `010` as octal),
+  # at most 1048576; anything else is the default.
+  local v="${ADB_ADOPT_RECORD_MAX_BYTES:-}"
+  if [[ "$v" =~ ^[1-9][0-9]{0,6}$ ]] && [ "$v" -le 1048576 ]; then printf '%s' "$v"; else printf '1048576'; fi
 }
 _AD_SNAP=()
 _ad_snapshot_lines() {
@@ -346,13 +352,13 @@ _ad_observed_read() {  # <file> — 0 parsed (globals set), 1 unusable (_AD_OBS_
         own=()
         IFS=, read -r -a ids <<< "${ADB_SWEEP_F[2]}"
         for id in "${ids[@]}"; do
-          [[ "$id" =~ ^[1-9][0-9]{0,8}$ ]] && [ -z "${own[$id]:-}" ] \
+          [[ "$id" =~ ^[1-9][0-9]{0,14}$ ]] && [ -z "${own[$id]:-}" ] \
             || { _AD_OBS_ERR="line $n: reviewer ${ADB_SWEEP_F[1]} names pull request $id twice, or not as a positive number"; return 1; }
           own[$id]=1; pr_seen[$id]=1
         done
         _AD_OBS_REVIEWERS+=("${ADB_SWEEP_F[1]}$TAB${ADB_SWEEP_F[2]}") ;;
       truncated)
-        [[ "${ADB_SWEEP_F[1]}" =~ ^[1-9][0-9]{0,8}$ ]] && [ -z "${trunc_seen[${ADB_SWEEP_F[1]}]:-}" ] \
+        [[ "${ADB_SWEEP_F[1]}" =~ ^[1-9][0-9]{0,14}$ ]] && [ -z "${trunc_seen[${ADB_SWEEP_F[1]}]:-}" ] \
           || { _AD_OBS_ERR="line $n: a malformed or repeated truncated record"; return 1; }
         trunc_seen[${ADB_SWEEP_F[1]}]=1; pr_seen[${ADB_SWEEP_F[1]}]=1
         _AD_OBS_TRUNC="${_AD_OBS_TRUNC:+$_AD_OBS_TRUNC,}${ADB_SWEEP_F[1]}" ;;
@@ -424,7 +430,7 @@ _ad_answer_check() {
         # This repo's TOML reader keeps backslash escapes verbatim, so a `"` or `\` cannot
         # round-trip through the basic string the command is written into.
         case "$v" in
-          *'"'*|*'\'*) printf '%s contains a quote or a backslash, which cannot round-trip through agents.toml — write that gate by hand' "$k"; return 1 ;;
+          *'"'*|*'\'*) printf '%s contains a double quote or a backslash, which agents.toml cannot hold (its reader keeps escapes verbatim) — put the command in a script and declare that' "$k"; return 1 ;;
         esac
       fi ;;
     *) printf 'unknown interview key %s (primary|review|bots|release|gate.<label>|gate-state.<label>)' "$(adb_tsv_field_display "$k")"; return 1 ;;
@@ -1356,7 +1362,7 @@ _ad_render_gates() {  # <have_gates> <file> <why> <label\tcommand>…
       # A command carrying `"` or `\` cannot round-trip through this repo's TOML reader, so it is
       # shown as evidence rather than as a line that would break when uncommented.
       case "$cmd" in
-        *'"'*|*'\'*) printf '#   %s (DETECTED, already run by project-gates.sh): %s   — it carries a quote or a backslash; to pin it, write the line by hand\n' "$label" "$cmd" ;;
+        *'"'*|*'\'*) printf '#   %s (DETECTED, already run by project-gates.sh): %s   — it carries a quote or a backslash, which agents.toml cannot hold; to pin it, put it in a script and declare that\n' "$label" "$cmd" ;;
         *)           printf '# %-9s = "%s"   # DETECTED: project-gates.sh already runs this — uncomment only to pin it\n' "$label" "$cmd" ;;
       esac
     done
