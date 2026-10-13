@@ -629,11 +629,22 @@ printf 'prs\t2\t100\nreviewer\tcodex-bot\t1' > "$OBS/cut-off.tsv"
 printf 'prs\t5\t\t100\n' > "$OBS/doubled-tab.tsv"
 printf 'prs\t5\t100\t\n' > "$OBS/trailing-tab.tsv"
 printf 'reviewer\tchatgpt-codex-connector\t3\n' > "$OBS/no-prs.tsv"
-for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs; do
+printf 'prs\t101\t100\n' > "$OBS/read-past-bound.tsv"
+printf 'prs\t2\t0\n' > "$OBS/zero-bound.tsv"
+printf 'prs\t0\t100\nreviewer\tchatgpt-codex-connector\t3\n' > "$OBS/reviewer-without-history.tsv"
+printf 'prs\t2\t100\nreviewer\tco\000dex\t1\n' > "$OBS/nul.tsv"   # stripped by `read`, it is a valid login
+for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs read-past-bound zero-bound reviewer-without-history nul; do
   propose_obs "$OBS/$bad_obs.tsv" > "$WORK/p-$bad_obs.toml"
   eq "$(adb_toml_get "$WORK/p-$bad_obs.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
      "propose: a damaged observation ($bad_obs) is refused whole, never read as bots = []"
 done
+
+# A TRUNCATED history cannot establish an absence: the reviews that were not read could hold the App.
+printf 'prs\t3\t100\ntruncated\t35\n' > "$OBS/truncated.tsv"
+propose_obs "$OBS/truncated.tsv" > "$WORK/p-trunc.toml"
+eq "$(adb_toml_get "$WORK/p-trunc.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a truncated history with no App seen proposes a COMMENTED bots"
+has "$(cat "$WORK/p-trunc.toml")" "#35 had more reviews than were read" "...and names the truncated pull request"
 
 # --- 7d. the interview's answers (#459): validated twice, override inference, refuse ambiguity ----
 an() { HOME="$WORK/nohome" bash "$AD" answer "$@"; }
@@ -647,6 +658,12 @@ eq "$(an gate.test 'pytest -k "not slow"' >/dev/null 2>&1; echo $?)" 2 \
    "answer: a gate command with a quote is refused (it cannot round-trip through agents.toml)"
 eq "$(an gate.test 'echo a\b' >/dev/null 2>&1; echo $?)" 2 "answer: a gate command with a backslash is refused"
 eq "$(an gate.lint '')" "gate.lint${TAB}" "answer: an empty gate command is a deliberate disable"
+# A VALUE CARRYING A NEWLINE would forge a second record; a control byte breaks the TOML line.
+eq "$(an review "$(printf 'codex\nclaude')" >/dev/null 2>&1; echo $?)" 2 "answer: a review answer carrying a newline is refused"
+eq "$(an gate.test "$(printf 'make \033[1m')" >/dev/null 2>&1; echo $?)" 2 "answer: a gate command carrying a control byte is refused"
+# The gate label is the GATE RUNNER'S grammar: a label it ignores would read as a gate and run nothing.
+eq "$(an gate.123 'exit 0' >/dev/null 2>&1; echo $?)" 2 "answer: a gate label the gate runner would ignore is refused"
+eq "$(an gate-state.9x na >/dev/null 2>&1; echo $?)" 2 "answer: a gate-state label the gate runner would ignore is refused"
 ANS="$WORK/answers.tsv"
 { an primary claude; an review codex,gemini; an bots none; an release none; an gate.test 'bash scripts/check.sh origin/main'
   an gate-state.lint na; } > "$ANS"
@@ -666,6 +683,14 @@ bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers 
 eq "$(adb_toml_get "$WORK/p-planted.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
    "propose: a hand-planted invalid answer is refused, not rendered"
 has "$(cat "$WORK/p-planted.toml")" "was refused" "...and it is named in a NOTE"
+printf 'primary\tco\000dex\n' > "$WORK/nul-answer.tsv"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/nul-answer.tsv" > "$WORK/p-nul.toml"
+eq "$(adb_toml_get "$WORK/p-nul.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
+   "propose: an answers file carrying a NUL byte is refused whole"
+printf 'primary\tclaude\nprimary\tnot-an-agent\n' > "$WORK/twice-invalid.tsv"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/twice-invalid.tsv" > "$WORK/p-twice-invalid.toml"
+eq "$(adb_toml_get "$WORK/p-twice-invalid.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a key answered twice applies neither answer, even when one of them is invalid"
 printf 'primary\tclaude\nprimary\tcodex\n' > "$WORK/twice.tsv"
 bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/twice.tsv" > "$WORK/p-twice.toml"
 eq "$(adb_toml_get "$WORK/p-twice.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
@@ -678,9 +703,22 @@ bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/gates.tsv" > "$
 has "$(cat "$WORK/p-gates.toml")" '# test      = "pnpm test"' "propose: a DETECTED gate is listed"
 eq "$(adb_toml_get "$WORK/p-gates.toml" gates test >/dev/null 2>&1; echo $?)" 1 \
    "propose: a DETECTED gate is listed commented, not pinned"
+# EVERY HEADER IS LIVE, so a line the operator uncomments lands in its own table — not, as a commented
+# `# [gates]` header allowed, in whichever table happened to come before it.
+sed -e 's/^# test      = "pnpm test"/test = "pnpm test"/' -e 's/^# lint      = "na"/lint = "na"/' \
+  "$WORK/p-gates.toml" > "$WORK/p-gates-uncommented.toml"
+eq "$(adb_toml_get "$WORK/p-gates-uncommented.toml" gates test)" '"pnpm test"' \
+   "propose: an uncommented detected gate lands in [gates], not the table above it"
+eq "$(adb_toml_get "$WORK/p-gates-uncommented.toml" gates.state lint)" '"na"' \
+   "propose: an uncommented N/A axis lands in [gates.state], not in [gates] as a command"
+eq "$(adb_toml_get "$WORK/p-gates-uncommented.toml" gates lint >/dev/null 2>&1; echo $?)" 1 \
+   "propose: ...and never becomes a gate command named na"
 : > "$WORK/no-gates.tsv"
 has "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/no-gates.tsv")" "NO GATE WAS DETECTED" \
     "propose: nothing detected names the bespoke-gate case loudly"
+printf 'test\tpnpm test\n9bad\tx\n' > "$WORK/bad-label-gates.tsv"
+hasnt "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/bad-label-gates.tsv")" 'pnpm test' \
+      "propose: a gate list with a label the runner would ignore is refused whole"
 printf 'test\tpnpm test\nnot a gate line\n' > "$WORK/bad-gates.tsv"
 pg="$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/bad-gates.tsv")"
 hasnt "$pg" 'pnpm test' "propose: a malformed gate list is refused whole"
@@ -951,7 +989,9 @@ ln -s CLAUDE.md "$AG/AGENTS.md"
 hasnt "$(hyg)" "agent-doc${TAB}" "hygiene: a root-doc symlink that resolves counts as present"
 rm -f "$AG/AGENTS.md"; ln -s missing.md "$AG/AGENTS.md"
 has "$(hyg)" "DANGLING" "hygiene: agent-doc names a DANGLING root-doc symlink"
-rm -f "$AG/AGENTS.md"
+rm -f "$AG/AGENTS.md"; mkdir "$AG/AGENTS.md"
+has "$(hyg)" "AGENTS.md${TAB}is not a regular file" "hygiene: a DIRECTORY named AGENTS.md is not a root doc"
+rmdir "$AG/AGENTS.md"
 # --agents narrows which config TREES are read, never which roles exist.
 has "$(HOME="$WORK/nohome" bash "$AD" hygiene "$AG" --agents gemini)" "agent-doc${TAB}warn${TAB}AGENTS.md" \
     "hygiene: --agents does not narrow the agent-doc axis"
@@ -1152,13 +1192,24 @@ eq "$(adb_toml_unquote "$(adb_toml_get "$WFS/state/adopt-agents.toml" gates test
    "workflow: an answered bespoke gate lands in the proposal"
 # A REFUSED ANSWER leaves the previous answers WHOLE — the block publishes by rename.
 cp "$WFS/state/adopt-answers.tsv" "$WFS/answers-before"
-INTERVIEW_BAD="$(check_wf_snippet "$WF" interview | sed 's/answer review codex/answer review nope/')"
+INTERVIEW_BAD="$(check_wf_snippet "$WF" interview | sed "s/answer review 'codex'/answer review 'nope'/")"
 INTERVIEW_BAD="${INTERVIEW_BAD//\{\{ADOPT_LIB\}\}/bash \"$AD\"}"
 INTERVIEW_BAD="${INTERVIEW_BAD//\{\{STATE_DIR\}\}/$WFS/state}"
 ( HOME="$WORK/nohome" bash -c "$INTERVIEW_BAD" ) >/dev/null 2>&1
 no "$?" "workflow: a refused interview answer stops the block"
-if cmp -s "$WFS/answers-before" "$WFS/state/adopt-answers.tsv" && [ ! -e "$WFS/state/adopt-answers.tsv.tmp" ]; then ok
+if cmp -s "$WFS/answers-before" "$WFS/state/adopt-answers.tsv" && [ -z "$(find "$WFS/state" -name '.adopt-answers.*')" ]; then ok
 else bad "workflow: a refused interview answer must leave the previous answers file whole, and no temp behind"; fi
+# A FAILED PUBLICATION stops the block before it re-renders — never a proposal built from the old answers.
+mkdir -p "$WFS/mvdead"; printf '#!/bin/sh\nexit 1\n' > "$WFS/mvdead/mv"; chmod +x "$WFS/mvdead/mv"
+printf 'SENTINEL — must not be re-rendered\n' > "$WFS/state/adopt-agents.toml"
+cp "$WFS/state/adopt-agents.toml" "$WFS/agents-before"
+INTERVIEW_OK="$(check_wf_snippet "$WF" interview)"
+INTERVIEW_OK="${INTERVIEW_OK//\{\{ADOPT_LIB\}\}/bash \"$AD\"}"
+INTERVIEW_OK="${INTERVIEW_OK//\{\{STATE_DIR\}\}/$WFS/state}"
+( PATH="$WFS/mvdead:$PATH" HOME="$WORK/nohome" bash -c "$INTERVIEW_OK" ) >/dev/null 2>&1
+no "$?" "workflow: a failed publication of the answers stops the block"
+if cmp -s "$WFS/agents-before" "$WFS/state/adopt-agents.toml"; then ok
+else bad "workflow: a failed publication of the answers stops the block before re-rendering the proposal"; fi
 wf_run hygiene readiness-ok
 has "$(cat "$WFS/state/adopt-hygiene.tsv")" "branch-hygiene${TAB}note" \
     "workflow: the hygiene block hands the observation to hygiene"
@@ -1276,7 +1327,7 @@ shmutant_mut credential-value-echoed \
 shmutant_mut tracked-list-status-ignored \
     'if ! git -C "$root" ls-files -z ".$a" >/dev/null 2>&1; then' \
     'if false; then' \
-    'the distributable-config axis did NOT run'
+    'a failed tracked-file read is REPORTED, never rendered as a clean scan'
 shmutant_mut pin-accepts-short-commit \
     '    40|64) ;;' \
     '    40|64|10) ;;' \
@@ -1352,21 +1403,45 @@ shmutant_mut propose-bots-from-empty-history \
     '  if false; then' \
     'propose: a repo with no PRs proposes a COMMENTED bots, never []'
 shmutant_mut observed-skips-unknown-kind \
-    '      *) _AD_OBS_ERR="line $n: not a record this grammar has (wrong kind or field count)"; return 1 ;;' \
+    '      *) _AD_OBS_ERR="line $n: not a record kind this grammar has"; return 1 ;;' \
     '      *) continue ;;' \
     'propose: a damaged observation (bad-kind) is refused whole'
-shmutant_mut observed-final-byte-unchecked \
-    "  [ \"\$(tail -c 1 \"\$1\" | od -An -c | tr -d ' ')\" = '\\n' ]" \
+shmutant_mut record-file-bytes-unchecked \
+    '  adb_bytes_whole "$1" 1048576' \
     '  :' \
     'propose: a damaged observation (cut-off) is refused whole'
-shmutant_mut observed-split-by-ifs \
-    '    mapfile -t -d "$TAB" fl < <(printf '"'"'%s'"'"' "$line")' \
-    '    IFS="$TAB" read -r -a fl <<< "$line"' \
-    'propose: a damaged observation (doubled-tab) is refused whole'
+shmutant_mut observed-field-count-unchecked \
+    '    adb_sweep_split "$line" "$want" || { _AD_OBS_ERR="line $n: a $kind record with the wrong field count"; return 1; }' \
+    '    adb_sweep_split "$line" "$want" || :' \
+    'propose: a damaged observation (trailing-tab) is refused whole'
+shmutant_mut observed-counts-inconsistent \
+    '        [ "$_AD_OBS_WINDOW" -ge 1 ] && [ "$_AD_OBS_PRS" -le "$_AD_OBS_WINDOW" ] \' \
+    '        true \' \
+    'propose: a damaged observation (read-past-bound) is refused whole'
 shmutant_mut answers-duplicate-last-wins \
-    '    if [ -n "${dup[$k]:-}" ]; then' \
+    '    if [ "${count[$k]}" -gt 1 ]; then' \
     '    if false; then' \
     'propose: a key answered twice applies neither answer'
+shmutant_mut answer-control-bytes-accepted \
+    '  _ad_toml_text_ok "$k" && _ad_toml_text_ok "$v" \' \
+    '  true \' \
+    'answer: a review answer carrying a newline is refused'
+shmutant_mut answer-gate-label-own-grammar \
+    '      _ad_gate_label_ok "${k#*.}" \' \
+    '      true \' \
+    'answer: a gate label the gate runner would ignore is refused'
+shmutant_mut propose-truncated-history-empty \
+    '  if [ "$n" -eq 0 ] && [ -n "$trunc" ]; then' \
+    '  if false; then' \
+    'propose: a truncated history with no App seen proposes a COMMENTED bots'
+shmutant_mut agent-doc-directory-present \
+    '    elif [ -e "$root/$doc" ] && [ ! -f "$root/$doc" ]; then' \
+    '    elif false; then' \
+    'hygiene: a DIRECTORY named AGENTS.md is not a root doc'
+shmutant_mut gates-state-header-commented \
+    "  printf '\\n[gates.state]\\n'" \
+    "  printf '\\n# [gates.state]\\n'" \
+    'propose: an uncommented N/A axis lands in [gates.state]'
 shmutant_mut answers-not-revalidated \
     '    if ! reason="$(_ad_answer_check "$k" "$v")"; then' \
     '    if false; then' \
@@ -1388,7 +1463,7 @@ shmutant_mut gate-list-read-in-part \
     '          continue' \
     'propose: a malformed gate list is refused whole'
 shmutant_mut propose-drops-a-section \
-    '# [mcp]                        # NOT INFERRED: name the MCP servers' \
+    '[mcp]                          # NOT INFERRED: name the MCP servers' \
     '# mcp-section-gone             # NOT INFERRED: name the MCP servers' \
     'propose: renders the template section [mcp]'
 shmutant_mut agent-doc-absent-silent \
@@ -1423,6 +1498,10 @@ shmutant_mut workflow-pin-split-by-read \
     '{{ADOPT_LIB}} pin-render "${PIN_ID%%"$TABC"*}" "${PIN_ID#*"$TABC"}" \' \
     'IFS="$TABC" read -r PV PC <<< "$PIN_ID"; {{ADOPT_LIB}} pin-render "$PV" "$PC" \' \
     'workflow: the pin block runs for a tagless baseline'
+shmutant_mut workflow-interview-publish-unchecked \
+    'mv "$ANSWERS_TMP" "$ANSWERS" || {' \
+    'mv "$ANSWERS_TMP" "$ANSWERS" || true; false && {' \
+    'workflow: a failed publication of the answers stops the block before re-rendering the proposal'
 shmutant_mut workflow-pin-stale-survives \
     'rm -f "{{STATE_DIR}}/adopt-upstream.toml"' \
     ': "{{STATE_DIR}}/adopt-upstream.toml"' \

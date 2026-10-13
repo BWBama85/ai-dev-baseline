@@ -118,10 +118,8 @@ _AR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P)" |
 # red contract rather than a contract. It is dropped, and this paragraph is why.
 #
 # Adding a rung means adding a row here and a producer for it; `verdict` needs no change,
-# because it reads the contract rather than a second list of its own. `reviewers` is the one rung
-# that is not from #81's list: #459 measured `manifest` and `settings` going green on a
-# `[reviewers] bots = []` that GitHub's own records contradicted, so a rung that can fail on a
-# WRONG declaration — not merely an absent one — was added.
+# because it reads the contract rather than a second list of its own. `reviewers` (#459, D128) is the
+# one rung not from #81's list: it fails on a WRONG declaration, not merely an absent one.
 _ar_contract() {
   cat <<EOF
 harness${TAB}agent${TAB}the baseline is installed and this project's agents can resolve its skills
@@ -631,8 +629,9 @@ cmd_probe() {
 #                       [reviewers] bots — the layered declaration the pre-arm guard acts on
 #   bots_declared       ["login", …]        the declared logins, in the guards' comparison form
 #   pr_history          N                   pull requests read for the observation (0 = none exist)
-#   pr_window           N                   the bound that read stopped at
+#   pr_window           N                   the bound that read stopped at (>= 1, >= pr_history)
 #   reviewer_logins     ["login", …]        GitHub Apps that REVIEWED those pull requests
+#   reviews_truncated   [N, …]              pull requests whose reviews ran past the read bound
 cmd_tracker() {
   local rc _rc
   [ "$#" -eq 0 ] || die "tracker: takes no arguments (facts JSON on stdin)"
@@ -863,63 +862,64 @@ cmd_tracker() {
     *)  die "tracker: .settings must be ok|todo|na|unknown (got '$st')" ;;
   esac
 
-  # --- reviewers (#459) ---
-  # A DECLARATION IS CHECKED AGAINST WHAT GITHUB RECORDED, because a wrong one is worse than none.
-  # `bots = []` disarms the pre-arm guard (#134): measured on an adoption, it was hand-written from a
-  # wrong assumption, every rung went green on it, and auto-merge armed three minutes before the
-  # repo's Codex reviewer posted six findings. So this rung is `todo` when:
-  #   - `bots = []` is declared while a GitHub App reviewed the observed pull requests;
-  #   - a declared login reviewed NONE of them — a typo, a retired reviewer, or one not yet
-  #     installed; the guard would wait for it on every head and never arm;
-  #   - nothing is declared — the guard then fails closed and never arms, by design;
-  #   - the declaration is malformed.
-  # An App that reviewed but is NOT declared, beside a non-empty declaration, stays `ok` and is NAMED:
-  # retiring a reviewer is a legitimate choice, and red on it would stay red for 100 pull requests.
-  # No pull request at all is `na` — nothing contradicts the owner's word yet. History that could not
-  # be read is `unknown`: a declaration compared against nothing is not a pass.
+  # --- reviewers (#459, D128) ---
+  # `[reviewers] bots` checked against the Apps GitHub recorded reviewing. `todo`: `bots = []` while an
+  # App reviewed; a declared login that reviewed none of the observed PRs (the guard would wait for it
+  # on every head); nothing declared (the guard never arms); a malformed declaration. An App that
+  # reviewed but is not declared, beside a non-empty declaration, is `ok` and NAMED (a retirement is
+  # legitimate). No PRs is `na`. An unread or inconsistent history is `unknown`, and so is an ABSENCE
+  # claimed over a history with truncated reviews — the missing reviews could hold the App.
   #
-  # THE MATCH IS THE GUARDS' OWN (`adb_reviewer_match_jq`), and the declaration is role-dispatch's
-  # own reading of it (`bots --comparable`, layered repo over global), so this rung cannot agree with
-  # a spelling the guard would reject. An observed login is a GitHub App, so it is compared in its
-  # REST spelling, `<login>[bot]` — which a bare declaration and a `[bot]` one both accept.
-  local bstate prs obs rc_p rc_o window
+  # The declaration is role-dispatch's own reading and the match is the guards' own
+  # (`adb_reviewer_match_jq`); an observed App is compared in its REST spelling, `<login>[bot]`.
+  local bstate prs obs rc_p window trunc
   bstate="$(_fact bots_state string)"; rc=$?
   if [ "$rc" -ne 0 ]; then
     _ar_emit reviewers unknown "$(_why "$rc" bots_state "the [reviewers] bots declaration was not read")"
   else
-    prs="$(_count pr_history)"; rc_p=$?
-    _fact reviewer_logins array >/dev/null; rc_o=$?
-    if [ "$rc_o" -eq 0 ] && ! printf '%s' "$json" | jq -e '.reviewer_logins | all(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$"))' >/dev/null 2>&1; then
-      rc_o=2
+    # The history is read as ONE fact: every field present and well-typed, and the counts consistent
+    # with one another. 0 read · 1 a field absent · 2 a field malformed or the counts disagree.
+    rc_p=0
+    prs="$(_count pr_history)" || rc_p=$?
+    if [ "$rc_p" -eq 0 ]; then window="$(_count pr_window)" || rc_p=$?; fi
+    if [ "$rc_p" -eq 0 ]; then _fact reviewer_logins array >/dev/null || rc_p=$?; fi
+    if [ "$rc_p" -eq 0 ]; then _fact reviews_truncated array >/dev/null || rc_p=$?; fi
+    if [ "$rc_p" -eq 0 ] && ! printf '%s' "$json" | jq -e '
+         (.reviewer_logins | all(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$")))
+         and (.reviews_truncated | all(type == "number" and . >= 0 and . == floor))
+         and .pr_window >= 1 and .pr_history <= .pr_window
+         and (.pr_history > 0 or ((.reviewer_logins | length) == 0 and (.reviews_truncated | length) == 0))' >/dev/null 2>&1; then
+      rc_p=2
     fi
-    window="$(_count pr_window)" || window="?"
-    obs=""
-    [ "$rc_p" -ne 0 ] || [ "$rc_o" -ne 0 ] \
-      || obs="$(printf '%s' "$json" | jq -r '.reviewer_logins | join(", ")')"
+    obs="" trunc=""
+    if [ "$rc_p" -eq 0 ]; then
+      obs="$(printf '%s' "$json" | jq -r '.reviewer_logins | join(", ")')"
+      trunc="$(printf '%s' "$json" | jq -r '.reviews_truncated | map("#" + tostring) | join(", ")')"
+    fi
     case "$bstate" in
       malformed)
         _ar_emit reviewers todo "[reviewers] bots is malformed, so the pre-arm guard refuses it — fix agents.toml (bots = [] declares that no App reviews here)" ;;
       undeclared)
-        if [ "$rc_p" -eq 0 ] && [ "$rc_o" -eq 0 ] && [ -n "$obs" ]; then
+        if [ "$rc_p" -eq 0 ] && [ -n "$obs" ]; then
           _ar_emit reviewers todo "no [reviewers] bots is declared, so the pre-arm guard never arms auto-merge — GitHub Apps reviewed this repo's pull requests ($obs); declare them"
-        elif [ "$rc_p" -eq 0 ] && [ "$rc_o" -eq 0 ] && [ "$prs" -gt 0 ]; then
+        elif [ "$rc_p" -eq 0 ] && [ "$prs" -gt 0 ] && [ -z "$trunc" ]; then
           _ar_emit reviewers todo "no [reviewers] bots is declared, so the pre-arm guard never arms auto-merge — no App reviewed the last $prs pull request(s); declare bots = [] if none reviews here"
         else
           _ar_emit reviewers todo "no [reviewers] bots is declared, so the pre-arm guard never arms auto-merge — declare the async reviewer logins, or bots = [] if there are none"
         fi ;;
       declared)
         _fact bots_declared array >/dev/null; rc=$?
-        if [ "$rc" -eq 0 ] && ! printf '%s' "$json" | jq -e '.bots_declared | all(type == "string")' >/dev/null 2>&1; then rc=2; fi
+        if [ "$rc" -eq 0 ] && ! printf '%s' "$json" | jq -e '.bots_declared | all(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*(\\[bot\\])?$"))' >/dev/null 2>&1; then rc=2; fi
         if [ "$rc" -ne 0 ]; then
           _ar_emit reviewers unknown "$(_why "$rc" bots_declared "the declared reviewer logins were not read")"
-        elif [ "$rc_p" -ne 0 ] || [ "$rc_o" -ne 0 ]; then
-          rc=$(( rc_p > rc_o ? rc_p : rc_o ))
-          _ar_emit reviewers unknown "$(_why "$rc" "pr_history/reviewer_logins" "the pull-request history could not be read — a declaration compared against nothing is not a pass")"
+        elif [ "$rc_p" -ne 0 ]; then
+          _ar_emit reviewers unknown "$(_why "$rc_p" "pr_history/pr_window/reviewer_logins/reviews_truncated" "the pull-request history could not be read — a declaration compared against nothing is not a pass")"
         elif [ "$prs" -eq 0 ]; then
           _ar_emit reviewers na "this repo has no pull request yet, so nothing contradicts the declaration — it stands on the owner's word until the first one is reviewed"
         else
-          local unseen extra decl_list
-          # `if !`, never `2>/dev/null` on its own: a jq that failed must not read as "nothing unseen".
+          local unseen extra decl_list partly=""
+          [ -z "$trunc" ] || partly="$trunc had more reviews than were read"
+          # `if !`: a jq that failed must not read as "nothing unseen".
           if ! unseen="$(printf '%s' "$json" | jq -r "$(adb_reviewer_match_jq)"'
                  [ .reviewer_logins[] | . + "[bot]" ] as $obs
                  | [ .bots_declared[] as $d | select(any($obs[]; adb_declared_reviewer([$d])) | not) | $d ]
@@ -933,12 +933,16 @@ cmd_tracker() {
             decl_list="$(printf '%s' "$json" | jq -r '.bots_declared | join(", ")')"
             if [ -z "$decl_list" ] && [ -n "$obs" ]; then
               _ar_emit reviewers todo "bots = [] declares that no App reviews here, but $obs reviewed this repo's last $prs pull request(s) — the pre-arm guard arms auto-merge before they speak (#134); declare them"
+            elif [ -n "$unseen" ] && [ -n "$trunc" ]; then
+              _ar_emit reviewers unknown "declared reviewer(s) $unseen were not seen on the last $prs pull request(s), but $partly — that absence is not established"
             elif [ -n "$unseen" ]; then
               _ar_emit reviewers todo "declared reviewer(s) $unseen reviewed none of the last $prs pull request(s) (read bounded at $window) — a typo, a retired reviewer, or one not yet installed; the pre-arm guard would wait for it on every head"
+            elif [ -z "$decl_list" ] && [ -n "$trunc" ]; then
+              _ar_emit reviewers unknown "bots = [] and no App was seen on the last $prs pull request(s), but $partly — that absence is not established"
             elif [ -z "$decl_list" ]; then
               _ar_emit reviewers ok "bots = [], and no App reviewed the last $prs pull request(s)"
             else
-              _ar_emit reviewers ok "every declared reviewer ($decl_list) reviewed at least one of the last $prs pull request(s)${extra:+ — also observed but NOT declared: $extra (deliberate if retired)}"
+              _ar_emit reviewers ok "every declared reviewer ($decl_list) reviewed at least one of the last $prs pull request(s)${extra:+ — also observed but NOT declared: $extra (deliberate if retired)}${partly:+ ($partly)}"
             fi
           fi
         fi ;;
@@ -1250,9 +1254,9 @@ cmd_facts() {
     *)  out="$(printf '%s' "$out" | jq --arg c "$am" '. + {settings:"unknown", settings_detail:("repo settings could not be read (rc " + $c + ")")}')" ;;
   esac
 
-  # The reviewers rung (#459) — two halves, each from the reader that owns it. The DECLARATION is
-  # role-dispatch's own (`bots --comparable`: layered, normalized, 17 undeclared / 18 malformed), so
-  # this rung reads exactly what the pre-arm guard reads; any other status omits it -> `unknown`.
+  # The reviewers rung (#459): the DECLARATION is role-dispatch's own reading (`bots --comparable`,
+  # 17 undeclared / 18 malformed), so the rung reads what the pre-arm guard reads; any other status
+  # omits it, which is `unknown`.
   local bots brc
   bots="$(bash "$_AR_LIB_DIR/role-dispatch.sh" bots --comparable 2>/dev/null)"; brc=$?
   case "$brc" in
@@ -1262,9 +1266,10 @@ cmd_facts() {
     18) out="$(printf '%s' "$out" | jq '. + {bots_state: "malformed"}')" ;;
     *)  : ;;
   esac
-  # The OBSERVED half is `observe`'s read — the same records `/adopt` proposed from — folded in only
-  # when its `prs` record is present, because without it the reviewer list is not the whole set.
-  local obs n w logins
+  # The OBSERVED half is `observe`'s reader, folded in only when its `prs` record is present —
+  # without it the reviewer list is not the whole set. Truncation travels too: it decides whether an
+  # absence can be claimed at all.
+  local obs n w logins trunc
   obs="$(_ar_observe "$repo")"
   n="$(printf '%s\n' "$obs" | awk -F'\t' '$1 == "prs" {print $2; exit}')"
   w="$(printf '%s\n' "$obs" | awk -F'\t' '$1 == "prs" {print $3; exit}')"
@@ -1273,67 +1278,66 @@ cmd_facts() {
   case "$n:$w" in *[!0-9:]*|:*|*:) n="" ;; esac
   if [ -n "$n" ]; then
     logins="$(printf '%s\n' "$obs" | awk -F'\t' '$1 == "reviewer" {print $2}')"
-    out="$(printf '%s' "$out" | jq --argjson n "$n" --argjson w "$w" --arg l "$logins" \
-             '. + {pr_history: $n, pr_window: $w, reviewer_logins: ($l | split("\n") | map(select(length > 0)))}')"
+    trunc="$(printf '%s\n' "$obs" | awk -F'\t' '$1 == "truncated" && $2 ~ /^[0-9]+$/ {print $2}')"
+    out="$(printf '%s' "$out" | jq --argjson n "$n" --argjson w "$w" --arg l "$logins" --arg t "$trunc" \
+             '. + {pr_history: $n, pr_window: $w,
+                   reviewer_logins: ($l | split("\n") | map(select(length > 0))),
+                   reviews_truncated: ($t | split("\n") | map(select(length > 0) | tonumber))}')"
   fi
 
   printf '%s\n' "$out"
 }
 
-# --- observe: what GitHub records about the repo (#459) ---------------------------------------------
-# `/adopt` used to infer every role from grep hits in the project's config files and never asked
-# the one place the strongest reviewer signal lives — the repo's own pull requests. Measured: the
-# Codex GitHub App had reviewed a repo's PRs for two months, `/adopt` found "no signal", and the
-# operator hand-wrote `bots = []`. This read is what `adopt-lib.sh propose` infers `[reviewers]`
-# from, what `hygiene` reads `delete_branch_on_merge` from, and what `facts` feeds the `reviewers`
-# rung — ONE read, so the proposal and the verdict cannot be computed from two different histories.
+# --- observe: what GitHub records about the repo (#459, D128) --------------------------------------
+# The records `adopt-lib.sh propose --observed` and `hygiene --observed` read, and that `facts`
+# folds into the `reviewers` rung. The same READER serves both; `/adopt` calls it at step 5 and again
+# through `facts` at step 12, so the verdict is computed from a fresh read, not the proposal's.
 #
-# WHO COUNTS AS A REVIEWER, decided rather than guessed (owner decision, #459): an author of a
-# PULL REQUEST REVIEW whose GraphQL `__typename` is `Bot`. `gh pr list --json reviews` cannot answer
-# it — it returns a bare login with no type, and a GitHub App's login is bare in GraphQL, so an App
-# and a human are indistinguishable there. Comment-only bots do NOT count: `github-actions`, deploy
-# previews and coverage reporters comment on every PR, and proposing one would make the guard wait
-# for a review that never comes.
-#
-# THE READ IS BOUNDED AND SAYS SO: the 100 most recent pull requests in every state, and up to 100
-# reviews on each — one GraphQL page, no pagination to fail part-way. The bound travels in the `prs`
-# record and a pull request whose reviews ran past it is named in a `truncated` record, so a
-# consumer can say how much it looked at. A FAILED read emits no `prs` record at all — never a zero.
+# A reviewer is an author of a PULL REQUEST REVIEW whose GraphQL `__typename` is `Bot` (owner
+# decision, D128): `gh pr list --json reviews` returns a bare login with no type, and comment-only
+# bots (CI, previews, coverage) are not reviewers. The read is ONE GraphQL page — the 100 most
+# recently CREATED pull requests in every state (`orderBy` pinned, not left to a default), up to 100
+# reviews each. A pull request whose reviews ran past that is named in a `truncated` record. Any
+# connection or field the query asked for that comes back missing or mistyped drops the whole
+# history read, which then emits no `prs` record — never a zero, and never a partial list.
 _AR_PR_WINDOW=100
 _ar_observe() {  # <owner/name> — the records; a read that fails is omitted, never defaulted
   local repo="$1" owner name raw recs dbm
   owner="${repo%%/*}"; name="${repo#*/}"
-  # shellcheck disable=SC2016  # $owner/$name are GraphQL variables, not shell expansions
+  # shellcheck disable=SC2016  # $owner/$name/$window are GraphQL variables, not shell expansions
   if raw="$(gh api graphql -F owner="$owner" -F name="$name" -F window="$_AR_PR_WINDOW" -f query='
       query($owner: String!, $name: String!, $window: Int!) {
         repository(owner: $owner, name: $name) {
-          pullRequests(last: $window, states: [OPEN, CLOSED, MERGED]) {
+          pullRequests(last: $window, states: [OPEN, CLOSED, MERGED],
+                       orderBy: {field: CREATED_AT, direction: ASC}) {
             nodes { number reviews(first: 100) { totalCount nodes { author { __typename login } } } }
           }
         }
       }' 2>/dev/null)"; then
-    # PARSED WHOLE, emitted only on success: jq streams its output, so a filter that fails half-way
-    # would otherwise have printed the records before the failure — the first half of a history,
-    # indistinguishable from the whole of a shorter one. A Bot login outside GitHub's grammar is a
-    # response this reader does not understand, and the whole read is dropped rather than trimmed.
+    # Parsed whole and emitted only on success: jq streams, so a filter failing half-way would
+    # already have printed the first half of the history.
     if recs="$(printf '%s' "$raw" | jq -r --argjson w "$_AR_PR_WINDOW" '
         .data.repository.pullRequests.nodes as $p
         | if ($p | type) != "array" then error("no pull request list") else . end
-        | [ $p[] | .number as $n | (.reviews.nodes // [])[]
+        | if any($p[]; (.number | type) != "number"
+                       or (.reviews | type) != "object"
+                       or (.reviews.totalCount | type) != "number"
+                       or (.reviews.nodes | type) != "array")
+          then error("a pull request without a readable reviews connection") else . end
+        | [ $p[] | .number as $n | .reviews.nodes[]
             | select(.author != null and .author.__typename == "Bot")
             | {l: .author.login, n: $n} ] as $bots
-        | if any($bots[]; (.l | type) != "string" or (.l | test("^[A-Za-z0-9][A-Za-z0-9-]*$") | not) or (.n | type) != "number")
+        | if any($bots[]; (.l | type) != "string" or (.l | test("^[A-Za-z0-9][A-Za-z0-9-]*$") | not))
           then error("a reviewer login outside the grammar") else . end
         | "prs\t\($p | length)\t\($w)",
           ( $bots | group_by(.l | ascii_downcase)[]
             | "reviewer\t\(.[0].l)\t\([.[].n] | unique | map(tostring) | join(","))" ),
-          ( $p[] | select((.reviews.totalCount // 0) > ((.reviews.nodes // []) | length)) | "truncated\t\(.number)" )
+          ( $p[] | select(.reviews.totalCount > (.reviews.nodes | length)) | "truncated\t\(.number)" )
       ' 2>/dev/null)"; then
       printf '%s\n' "$recs"
     fi
   fi
-  # `delete_branch_on_merge` is only in the response for a token that can see it; anything but a
-  # boolean is "not read", and the consumer says so.
+  # The field is only present for a token that can see it; anything but a boolean is "not read".
   dbm="$(gh api "repos/$repo" --jq '.delete_branch_on_merge' 2>/dev/null)" || dbm=""
   case "$dbm" in true|false) printf 'delete-branch-on-merge\t%s\n' "$dbm" ;; esac
   return 0

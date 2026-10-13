@@ -1227,9 +1227,9 @@ jobs:
     runs-on: ubuntu-26.04
     # 10 since #456: the 45 it had was for its two mutation harnesses (adopt, adopt-readiness), which
     # no longer run per PR — 510s of a 548s job on run 38081150119. The two suites left took about a
-    # minute there. Re-measured when #459/#464 grew both suites (check-adopt 241 -> 343 assertions,
-    # the readiness suite 186 -> 235): 13s + 28s on a 10-core macOS workstation on 2026-10-12, so
-    # still about a minute on the runner, and 10 still leaves an order of magnitude of headroom.
+    # minute there. #459/#464 grew both suites; MEASURED after that on a 10-core macOS workstation on
+    # 2026-10-12: 13s + 28s. The runner figure is an extrapolation from that, not a measurement: about
+    # a minute, which 10 still covers by an order of magnitude.
     timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

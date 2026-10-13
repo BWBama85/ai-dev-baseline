@@ -59,8 +59,8 @@ only by a published release, which is what these entries are the notes for.
   `templates/agents.toml` ships, each live with its evidence or commented with the reason. `bots` is
   inferred from the GitHub Apps that reviewed the 100 most recent pull requests, read by the new
   `adopt-readiness.sh observe` (GraphQL review authors typed `Bot`; a comment-only bot is not a
-  reviewer), and `bots = []` is proposed only from a history that was read and showed none, never
-  from an empty or unread one. A one-message interview after the scan asks who drives, who reviews,
+  reviewer), and `bots = []` is proposed only from a history that was read whole and showed none,
+  never from an empty, unread or truncated one. A one-message interview after the scan asks who drives, who reviews,
   what the gates are and who cuts releases, pre-filled from what was inferred; answers are validated
   by `adopt-lib.sh answer` and override the inference (`--no-interview` skips it). Two new hygiene
   axes: `agent-doc` (a role's agent cannot see the project's root doc) and `branch-hygiene`

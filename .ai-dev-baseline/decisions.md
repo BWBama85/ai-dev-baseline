@@ -9704,9 +9704,11 @@ survive is the part a later reader needs.
              `Bot`, over the 100 most recent pull requests in every state, up to 100 reviews each —
              one GraphQL page, read by `adopt-readiness.sh observe`. Comment-only bots do not count
              (CI, deploy previews and coverage reporters comment on every PR). The bound travels in
-             the `prs` record; a PR whose reviews ran past it is named (`truncated`); a failed read
+             the `prs` record (pinned `orderBy: CREATED_AT`, never a default); a PR whose reviews
+             ran past it is named (`truncated`); a failed read, or a missing or mistyped connection,
              emits no `prs` record, and `propose` then leaves `bots` commented — `[]` is proposed
-             only from a history that was read and showed no App.
+             only from a history that was read WHOLE and showed no App. An absence over a truncated
+             history is not claimed: `propose` comments it, and the rung reads it `unknown`.
              (2) "Does it deploy?" becomes "does this project cut releases, and which agent cuts
              them?" → `[roles] release`, live on an agent, commented with the owner's answer on
              `none`. The interview's other three questions are primary, who reviews (`[roles] review`
@@ -9729,7 +9731,12 @@ survive is the part a later reader needs.
              neither answer; a gate command with `"` or `\` is refused, because this repo's TOML
              reader keeps escapes verbatim and the gate would read back as a different command. The
              interview runs once per invocation, after the scan, and is skipped by `--no-interview`
-             or when no human can answer. `agent-doc` resolves roles from the project's manifest (the
+             or when no human can answer. Every section HEADER is rendered live, keys commented where
+             nothing was established, so a key the operator uncomments lands in its own table — a
+             commented `# [gates.state]` let an uncommented `lint = "na"` become a gate command
+             named `na`. Answer and record files are read through `adb_bytes_whole` (1 MiB, no NUL,
+             final newline) and split with `adb_sweep_split`; a gate label must pass the gate
+             runner's own `_adb_valid_label`, and no value may carry a control character. `agent-doc` resolves roles from the project's manifest (the
              proposal when there is none) layered over the global one, without built-in defaults; a
              root-doc symlink that resolves is present. `branch-hygiene` reads the observation and
              says "did NOT run" when the setting was not read. #464: `pin-describe` resolves

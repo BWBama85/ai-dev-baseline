@@ -703,7 +703,7 @@ add adopt               bash scripts/check-adopt.sh
 # witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
 # message's claim that mutations "were observed" with something the repo can re-run.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
-inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh scripts/lib/project-gates.sh base/workflows/adopt.md templates/agents.toml install.sh uninstall.sh
+inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh scripts/lib/project-gates.sh base/workflows/adopt.md base/practices/handling-the-unknown.md templates/agents.toml agents install.sh uninstall.sh
 
 # The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
 # question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's
