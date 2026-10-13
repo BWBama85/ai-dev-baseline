@@ -26,7 +26,7 @@
 #                              #   the PROJECT you are standing in, never on the install-source
 #                              #   clone ('baseline pinned -h' for more)
 #   baseline adopt status      # the ADOPTION COMPLETION CONTRACT (#81): is this project actually
-#                              #   ready to run the loop? Twelve rungs, fail-closed — a fact that
+#                              #   ready to run the loop? Every rung fail-closed — a fact that
 #                              #   could not be established is never a pass. Re-runnable any time;
 #                              #   exits 0 green / 10 red / 11 indeterminate
 #   baseline -h | --help

@@ -14,7 +14,9 @@
 # the word `remove`; it removes nothing, and no subcommand that could is defined. The only writes
 # /adopt performs at all are the two artifacts that DO NOT YET EXIST — `agents.toml` and the
 # upstream pin — and even those are the workflow's, on explicit approval, from content `propose`
-# and `pin-render` merely PRINT.
+# and `pin-render` merely PRINT. The one subcommand that writes a file is `answers`: it publishes the
+# file it is given, and the workflow gives it the interview's scratch file in the agent's own state
+# dir — a calling convention, not something this file enforces.
 #
 # That boundary is what makes the fail-closed convention below sufficient. A predicate whose
 # wrong answer would delete a project's forked skill needs backup, rollback, and partial-failure
@@ -22,11 +24,16 @@
 # reading the plan needs to be right, and to say when it is not sure. This file is the second
 # kind, deliberately (#20's v1 boundary; see the decision log).
 #
-# NETWORK PURITY. No subcommand here ever calls `gh`, and none calls `git` for anything but
-# `check-ignore` (in `hygiene`, where asking git itself is the whole point — reimplementing
-# .gitignore precedence is how you get a confidently wrong answer about negations). `scan` and
-# `hygiene` read the filesystem: deterministic and offline, not pure. Everything else is a pure
-# function of its arguments and stdin. The workflow owns every live read.
+# NETWORK PURITY. No subcommand here ever calls `gh`. `git` is called for two things, both local
+# and read-only: `check-ignore` and `ls-files` in `hygiene`, where asking git itself is the whole
+# point — reimplementing .gitignore precedence is how you get a confidently wrong answer about
+# negations — and `pin-describe`, which asks the BASELINE clone what it is (#464). `scan`,
+# `hygiene` and `pin-describe` read the filesystem: deterministic and offline, not pure. `answers`
+# writes the file it is given, and the record readers copy their input into a private temp before
+# parsing it. Everything else is a pure function of its arguments, its stdin and the files it is
+# handed. The workflow
+# owns every live read — what GitHub records about the project (#459) reaches this file as an
+# `adopt-readiness.sh observe` file, never as a `gh` call made here.
 #
 # EXIT STATUS IS FAIL-CLOSED, and the reason differs from /cleanup's. There the wrong answer
 # destroys work; here it MISINFORMS — an operator acting on a plan that said `remove` about an
@@ -50,16 +57,22 @@
 #   adopt-lib.sh delta       <kind> <project-path> <baseline-path>   # same|differs|unknown
 #   adopt-lib.sh classify    <kind> <collision yes|no> <delta same|differs|unknown> <prescribed yes|no>
 #   adopt-lib.sh roles-infer <project-root>                 # propose [roles] from evidence
-#   adopt-lib.sh propose                                    # roles-infer TSV on stdin -> agents.toml
+#   adopt-lib.sh propose     [--observed <f>] [--gates <f>] [--answers <f>]
+#                                                          # roles-infer TSV on stdin -> agents.toml,
+#                                                          #   every section the template ships
+#   adopt-lib.sh answers     <file> [<key>=<value>…]        # validate the interview answers, publish <file>
 #   adopt-lib.sh stack       <project-root>                 # the project's stack label
-#   adopt-lib.sh hygiene     <project-root> [--agents a,b]  # the four #29 axes  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
+#   adopt-lib.sh hygiene     <project-root> [--agents a,b] [--manifest <f>] [--observed <f>]
+#                                                          # the six adoption-hygiene axes
+#   adopt-lib.sh pin-describe <baseline-root>               # <version>TAB<commit>, one resolved object
 #   adopt-lib.sh pin-render  <version> <commit> <adopted-date> <stack> [agents]
 #   adopt-lib.sh pin-read    <pin-file> <key>
 #   adopt-lib.sh pin-drift   <pin-file> <baseline-root>     # the drift command, printed
 #   adopt-lib.sh plan                                       # classified TSV on stdin
 #   adopt-lib.sh -h | --help
 #
-# Requires: awk, sed, git (hygiene's ignore axis only). jq is NOT required.
+# Requires: awk, sed, git (hygiene's ignore and tracked-file axes, and pin-describe). jq is NOT
+# required.
 
 set -u
 
@@ -214,6 +227,285 @@ _ad_agents_from_baseline() {
     a="${d%/}"; a="${a##*/}"
     printf '%s\n' "$a"
   done
+}
+
+# _ad_agent_rootdoc <agent> — print the root-doc basename that agent reads (CLAUDE.md, AGENTS.md, …),
+# or nothing for an agent the install manifest does not model. Returns 1 when the manifest itself
+# could not be enumerated. Read from `adb_agent_manifest` (the row whose destination sits directly
+# in the agent's home, as `shipped` classifies it); the sentinel roots are never resolved on disk.
+_ad_agent_rootdoc() {
+  local a="$1" src dest rel manifest
+  manifest="$(adb_agent_manifest "$a" /ADB_ROOTDOC_REPO /ADB_ROOTDOC_HOME)" || return 1
+  while IFS="$TAB" read -r src dest; do
+    rel="${dest#/ADB_ROOTDOC_HOME/."$a"/}"
+    [ "$rel" != "$dest" ] || continue
+    case "$rel" in
+      */*) continue ;;
+      *.md) printf '%s\n' "$rel"; return 0 ;;
+    esac
+  done <<< "$manifest"
+  return 0
+}
+
+# _ad_known_agent <token> — is this an agent token the baseline models? The set is the derived
+# default set, never a literal (see `_ad_default_agents`).
+_ad_known_agent() {
+  case "$1" in ''|*[!a-z0-9-]*) return 1 ;; esac   # ONE token: a list must never match as a substring
+  case ",$(_ad_default_agents)," in *",$1,"*) return 0 ;; esac
+  return 1
+}
+
+# _ad_gate_label_ok <label> — the GATE RUNNER's own label rule, asked of `project-gates.sh` in a
+# subshell so none of its definitions leak into this one. A label it would ignore must never be
+# proposed: the declaration would read as a gate and enforce nothing.
+_ad_gate_label_ok() {
+  ( . "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" >/dev/null 2>&1 && _adb_valid_label "$1" )
+}
+
+# _ad_snapshot_lines <file> — load <file> into _AD_SNAP (one element per line), or return 1.
+#
+# ONE SNAPSHOT IS VALIDATED AND PARSED: at most the bound + 1 bytes are copied into a private temp,
+# the byte rules (`adb_bytes_whole`: within the bound, no NUL, a final newline — or empty, which means
+# "nothing recorded") are checked on that copy, and the lines are read from the same copy. Checking
+# the path and then reopening it would let a replacement in between defeat every one of those rules.
+# The file must be a regular non-link file. A DELIBERATE swap of it between that check and the copy
+# is out of scope (owner decision, D128): anything able to do that inside the agent's own state dir
+# can rewrite adopt-agents.toml itself, which --apply copies into the project. The rules here guard
+# against an accidentally damaged file — a cut-off write, a NUL byte, a runaway size.
+#
+# _ad_record_max — the one byte bound for every record file, read by this reader AND by `answers`,
+# so the writer can never publish what the reader refuses. ADB_ADOPT_RECORD_MAX_BYTES lowers it
+# (a test seam: argv cannot carry a 1 MiB answer on every platform).
+_ad_record_max() {
+  # It may only LOWER the bound: a decimal with no leading zero (bash would read `010` as octal),
+  # at most 1048576; anything else is the default.
+  local v="${ADB_ADOPT_RECORD_MAX_BYTES:-}"
+  if [[ "$v" =~ ^[1-9][0-9]{0,6}$ ]] && [ "$v" -le 1048576 ]; then printf '%s' "$v"; else printf '1048576'; fi
+}
+_AD_SNAP=()
+_ad_snapshot_lines() {
+  local f="$1" tmp rc=0 max
+  _AD_SNAP=()
+  max="$(_ad_record_max)"
+  [ -f "$f" ] && [ ! -L "$f" ] && [ -r "$f" ] || return 1
+  tmp="$(mktemp "${TMPDIR:-/tmp}/adb-adopt-snap.XXXXXX")" || return 1
+  head -c "$((max + 1))" -- "$f" > "$tmp" 2>/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" "$max" || rc=1; fi
+  [ "$rc" -ne 0 ] || mapfile -t _AD_SNAP < "$tmp" || rc=1
+  # A snapshot that cannot be removed fails the read: leaving private copies behind is not a success.
+  rm -f "$tmp" && [ ! -e "$tmp" ] || rc=1
+  [ "$rc" -eq 0 ] || _AD_SNAP=()
+  return "$rc"
+}
+
+# _ad_toml_text_ok <value> — no control character, which TOML forbids in a basic string and in a
+# comment alike (tab is legal there, but no field here may carry one).
+_ad_toml_text_ok() {
+  ! [[ "$1" =~ [[:cntrl:]] ]]
+}
+
+# --- the live observation (#459, D128) -------------------------------------------------------------
+# `adopt-readiness.sh observe` writes what GitHub records about the project; it reaches `propose` and
+# `hygiene` as a FILE because this library never calls `gh`. Every line must match:
+#
+#   prs<TAB><read><TAB><window>               pull requests read (0..window), and the read's bound (>=1)
+#   reviewer<TAB><login><TAB><n,n,…>          a GitHub App that REVIEWED those pull requests
+#   truncated<TAB><n>                         a pull request whose reviews ran past the read bound
+#   delete-branch-on-merge<TAB>true|false     the repository setting
+#
+# A failed read OMITS its record, so no `prs` record means "not read", never "none". The file is
+# refused WHOLE on any line outside the grammar or any inconsistent count.
+_AD_OBS_ERR="" _AD_OBS_PRS="" _AD_OBS_WINDOW="" _AD_OBS_DBM="" _AD_OBS_TRUNC=""
+_AD_OBS_REVIEWERS=()
+_ad_observed_read() {  # <file> — 0 parsed (globals set), 1 unusable (_AD_OBS_ERR says why)
+  local f="$1" line n=0 kind want id
+  local -A obs_seen=() pr_seen=() trunc_seen=() own=()
+  local -a ids=()
+  _AD_OBS_ERR="" _AD_OBS_PRS="" _AD_OBS_WINDOW="" _AD_OBS_DBM="" _AD_OBS_TRUNC=""
+  _AD_OBS_REVIEWERS=()
+  _ad_snapshot_lines "$f" || { _AD_OBS_ERR="missing, unreadable, over 1 MiB, carrying a NUL byte, or its last line is cut off"; return 1; }
+  for line in "${_AD_SNAP[@]}"; do
+    n=$((n + 1))
+    [ -n "$line" ] || continue
+    kind="${line%%"$TAB"*}"
+    case "$kind" in
+      prs|reviewer) want=3 ;;
+      truncated|delete-branch-on-merge) want=2 ;;
+      *) _AD_OBS_ERR="line $n: not a record kind this grammar has"; return 1 ;;
+    esac
+    # Every tab is a field boundary, empty fields included — `IFS=<tab> read` would fold them.
+    adb_sweep_split "$line" "$want" || { _AD_OBS_ERR="line $n: a $kind record with the wrong field count"; return 1; }
+    case "$kind" in
+      prs)
+        [[ "${ADB_SWEEP_F[1]}" =~ ^[0-9]{1,6}$ ]] && [[ "${ADB_SWEEP_F[2]}" =~ ^[0-9]{1,6}$ ]] \
+          || { _AD_OBS_ERR="line $n: a malformed prs record"; return 1; }
+        [ -z "$_AD_OBS_PRS" ] || { _AD_OBS_ERR="line $n: a second prs record"; return 1; }
+        _AD_OBS_PRS="$((10#${ADB_SWEEP_F[1]}))"; _AD_OBS_WINDOW="$((10#${ADB_SWEEP_F[2]}))"
+        [ "$_AD_OBS_WINDOW" -ge 1 ] && [ "$_AD_OBS_PRS" -le "$_AD_OBS_WINDOW" ] \
+          || { _AD_OBS_ERR="line $n: $_AD_OBS_PRS pull request(s) read of a bound of $_AD_OBS_WINDOW"; return 1; } ;;
+      reviewer)
+        [[ "${ADB_SWEEP_F[1]}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] && [[ "${ADB_SWEEP_F[2]}" =~ ^[0-9]+(,[0-9]+)*$ ]] \
+          || { _AD_OBS_ERR="line $n: a malformed reviewer record"; return 1; }
+        [ -z "${obs_seen[${ADB_SWEEP_F[1],,}]:-}" ] || { _AD_OBS_ERR="line $n: reviewer ${ADB_SWEEP_F[1]} is listed twice"; return 1; }
+        obs_seen[${ADB_SWEEP_F[1],,}]=1
+        # Each pull request a reviewer is credited with is a positive number, named once.
+        own=()
+        IFS=, read -r -a ids <<< "${ADB_SWEEP_F[2]}"
+        for id in "${ids[@]}"; do
+          [[ "$id" =~ ^[1-9][0-9]{0,14}$ ]] && [ -z "${own[$id]:-}" ] \
+            || { _AD_OBS_ERR="line $n: reviewer ${ADB_SWEEP_F[1]} names pull request $id twice, or not as a positive number"; return 1; }
+          own[$id]=1; pr_seen[$id]=1
+        done
+        _AD_OBS_REVIEWERS+=("${ADB_SWEEP_F[1]}$TAB${ADB_SWEEP_F[2]}") ;;
+      truncated)
+        [[ "${ADB_SWEEP_F[1]}" =~ ^[1-9][0-9]{0,14}$ ]] && [ -z "${trunc_seen[${ADB_SWEEP_F[1]}]:-}" ] \
+          || { _AD_OBS_ERR="line $n: a malformed or repeated truncated record"; return 1; }
+        trunc_seen[${ADB_SWEEP_F[1]}]=1; pr_seen[${ADB_SWEEP_F[1]}]=1
+        _AD_OBS_TRUNC="${_AD_OBS_TRUNC:+$_AD_OBS_TRUNC,}${ADB_SWEEP_F[1]}" ;;
+      delete-branch-on-merge)
+        case "${ADB_SWEEP_F[1]}" in true|false) ;; *) _AD_OBS_ERR="line $n: delete-branch-on-merge must be true|false"; return 1 ;; esac
+        [ -z "$_AD_OBS_DBM" ] || { _AD_OBS_ERR="line $n: a repeated delete-branch-on-merge record"; return 1; }
+        _AD_OBS_DBM="${ADB_SWEEP_F[1]}" ;;
+    esac
+  done
+  # Reviewer and truncation records need a history behind them, naming no more distinct pull
+  # requests than that history read.
+  if [ "${#pr_seen[@]}" -gt 0 ]; then
+    [ -n "$_AD_OBS_PRS" ] || { _AD_OBS_ERR="reviewer records with no prs record"; return 1; }
+    [ "${#pr_seen[@]}" -le "$_AD_OBS_PRS" ] \
+      || { _AD_OBS_ERR="the records name ${#pr_seen[@]} distinct pull request(s), more than the $_AD_OBS_PRS read"; return 1; }
+  fi
+  return 0
+}
+
+# _ad_pr_list <n,n,…> — `#35, #38, #40`, capped at five so one busy reviewer cannot bury the line.
+_ad_pr_list() {
+  local -a ns=()
+  local out="" i
+  IFS=, read -r -a ns <<< "$1"
+  for ((i = 0; i < ${#ns[@]} && i < 5; i++)); do out="${out:+$out, }#${ns[i]}"; done
+  [ "${#ns[@]}" -le 5 ] || out="$out and $(( ${#ns[@]} - 5 )) more"
+  printf '%s' "$out"
+}
+
+# --- interview answers (#459, D128) ----------------------------------------------------------------
+# Each accepted answer is a `<key>TAB<value>` record. The keys are a closed set, and each changes a
+# line `propose` writes:
+#
+#   primary            <agent>                 [roles] primary
+#   review             <agent>[,<agent>…]       [roles] review
+#   bots               <login>[,<login>…]|none  [reviewers] bots — none is []
+#   release            <agent>|none             [roles] release — none: this project cuts no releases
+#   gate.<label>       <command>|""             [gates] <label> — "" disables it
+#   gate-state.<label> na                       [gates.state] <label>
+#
+# _ad_answer_check <key> <value> — 0, or 1 with the reason on stdout. The one validator for `answers`
+# and for `propose`, which re-reads the agent-writable file rather than trusting what `answers` wrote.
+_ad_answer_check() {
+  local k="$1" v="$2" t
+  # A control character in either field would forge a record or break the TOML line it lands in.
+  _ad_toml_text_ok "$k" && _ad_toml_text_ok "$v" \
+    || { printf '%s carries a control character (a newline, tab or escape)' "$(adb_tsv_field_display "$k")"; return 1; }
+  case "$k" in
+    primary)
+      _ad_known_agent "$v" || { printf 'primary must be one agent token (%s), got %s' "$(_ad_default_agents)" "$(adb_tsv_field_display "$v")"; return 1; } ;;
+    review)
+      [ -n "$v" ] || { printf 'review needs at least one agent token'; return 1; }
+      # An empty element (`codex,`) is an unknown token like any other, so it needs no rule of its own.
+      while IFS= read -r t; do
+        _ad_known_agent "$t" || { printf 'review names an unknown agent token: %s' "$(adb_tsv_field_display "$t")"; return 1; }
+      done < <(printf '%s\n' "$v" | tr ',' '\n') ;;
+    release)
+      [ "$v" = none ] || _ad_known_agent "$v" \
+        || { printf 'release must be an agent token or none, got %s' "$(adb_tsv_field_display "$v")"; return 1; } ;;
+    bots)
+      [ "$v" = none ] || [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?(,[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?)*$ ]] \
+        || { printf 'bots must be GitHub logins (an optional [bot] suffix), comma-separated, or none; got %s' "$(adb_tsv_field_display "$v")"; return 1; } ;;
+    gate.*|gate-state.*)
+      _ad_gate_label_ok "${k#*.}" \
+        || { printf 'the gate label in %s is one the gate runner would ignore (a letter, then letters, digits, _ or -)' "$(adb_tsv_field_display "$k")"; return 1; }
+      if [ "${k%%.*}" = gate-state ]; then
+        [ "$v" = na ] || { printf '%s may only be na (a recorded N/A), got %s' "$k" "$(adb_tsv_field_display "$v")"; return 1; }
+      else
+        # This repo's TOML reader keeps backslash escapes verbatim, so a `"` or `\` cannot
+        # round-trip through the basic string the command is written into.
+        case "$v" in
+          *'"'*|*'\'*) printf '%s contains a double quote or a backslash, which agents.toml cannot hold (its reader keeps escapes verbatim) — put the command in a script and declare that' "$k"; return 1 ;;
+        esac
+      fi ;;
+    *) printf 'unknown interview key %s (primary|review|bots|release|gate.<label>|gate-state.<label>)' "$(adb_tsv_field_display "$k")"; return 1 ;;
+  esac
+  return 0
+}
+
+# answers <file> [<key>=<value>…] — validate EVERY pair, then publish them as <file>'s whole
+# content, or publish nothing and exit 2. No pair publishes an empty file: "nothing answered yet".
+#
+# Publication is `adb_publish_json` (generic despite its name): a stage beside <file>, the existing
+# file's mode carried onto it (`--strict`: a mode it cannot read or apply refuses the write), a
+# non-regular <file> refused, and a rename. A refused pair, or a total past the 1 MiB its reader
+# accepts, leaves the previous file untouched. That <file> is the state dir's is the WORKFLOW's
+# calling convention; this subcommand writes wherever it is pointed.
+cmd_answers() {
+  [ "$#" -ge 1 ] && [ -n "$1" ] || die "answers: needs <file> [<key>=<value>…]"
+  local file="$1" pair k v reason stage dir
+  shift
+  local -A given=()
+  # Parameter expansion, not `$(dirname …)`: a substitution strips a trailing newline from the name.
+  case "$file" in */*) dir="${file%/*}"; [ -n "$dir" ] || dir=/ ;; *) dir=. ;; esac
+  [ -d "$dir" ] || die "answers: not a directory: $(adb_display_value "$dir")"
+  for pair in "$@"; do
+    case "$pair" in *=*) ;; *) die "answers: not <key>=<value>: $(adb_tsv_field_display "$pair")" ;; esac
+    k="${pair%%=*}"; v="${pair#*=}"
+    reason="$(_ad_answer_check "$k" "$v")" || die "answers: $reason — nothing was written"
+    [ -z "${given[$k]:-}" ] || die "answers: $k is answered twice — nothing was written"
+    given[$k]=1
+  done
+  stage="$(mktemp "$dir/.adopt-answers.XXXXXX")" || die "answers: could not create a stage in $(adb_display_value "$dir")"
+  for pair in "$@"; do
+    printf '%s\t%s\n' "${pair%%=*}" "${pair#*=}" >> "$stage" || { rm -f "$stage"; die "answers: could not write the stage — nothing was published"; }
+  done
+  # The reader's bound is the writer's: a file `propose` would refuse whole is never published.
+  [ -s "$stage" ] && ! adb_bytes_whole "$stage" "$(_ad_record_max)" \
+    && { rm -f "$stage"; die "answers: the answers exceed the $(_ad_record_max) bytes their reader accepts — nothing was published"; }
+  adb_publish_json "$stage" "$file" --allow-empty --strict \
+    || die "answers: could not publish $(adb_display_value "$file") (not a regular file, or its mode could not be carried) — the previous answers are unchanged"
+}
+
+# _ad_answers_read <file> — load the answers into _AD_ANS; every refused line lands in _AD_ANS_NOTES.
+# A key that appears more than once — valid or not — applies NO answer: the workflow writes the file
+# in one block, so a repeat is a caller bug, and either order-based rule would pick one silently.
+declare -A _AD_ANS=()
+_AD_ANS_NOTES=()
+_ad_answers_read() {
+  local f="$1" line k v reason
+  local -a lines=()
+  local -A count=() noted=()
+  _AD_ANS=(); _AD_ANS_NOTES=()
+  _ad_snapshot_lines "$f" || { _AD_ANS_NOTES+=("the interview answers file could not be read whole — no answer was applied"); return 1; }
+  lines=("${_AD_SNAP[@]}")
+  for line in "${lines[@]}"; do
+    k="${line%%"$TAB"*}"
+    [ -n "$k" ] || continue
+    count[$k]=$(( ${count[$k]:-0} + 1 ))
+  done
+  for line in "${lines[@]}"; do
+    [ -n "$line" ] || continue
+    k="${line%%"$TAB"*}"; v="${line#*"$TAB"}"
+    if [ "$k" = "$line" ] || [ -z "$k" ]; then
+      _AD_ANS_NOTES+=("an answer line is not <key>TAB<value>: $(adb_display_value "$line")"); continue
+    fi
+    if [ "${count[$k]}" -gt 1 ]; then
+      [ -n "${noted[$k]:-}" ] || _AD_ANS_NOTES+=("$(adb_tsv_field_display "$k") was answered more than once — no answer for it was applied")
+      noted[$k]=1
+      continue
+    fi
+    if ! reason="$(_ad_answer_check "$k" "$v")"; then
+      _AD_ANS_NOTES+=("an interview answer was refused — $reason"); continue
+    fi
+    _AD_ANS[$k]="$v"
+  done
+  return 0
 }
 
 # --- resolve / baseline ---------------------------------------------------------------------------
@@ -824,29 +1116,80 @@ EOF
 # an `ambiguous` or `none` role is emitted COMMENTED, saying why, for the operator to uncomment.
 #
 # The result is a file that is correct to write as-is: it asserts only what the project's own
-# config already demonstrated.
-cmd_propose() {
-  [ "$#" -eq 0 ] || die "propose: takes no arguments (roles-infer TSV on stdin)"
-  local role tok ev
-  local -a recs=()
-  mapfile -t recs || die "propose: could not read the roles-infer records on stdin"
-  cat <<'HDR'
-# ai-dev-baseline — agent role manifest, PROPOSED by /adopt from this project's own config.
+# config already demonstrated, what GitHub recorded about it, and what its owner answered.
 #
-# Every uncommented line below was inferred from evidence found in this repo; the evidence is
-# named in the trailing comment. Every COMMENTED line is a role /adopt could not infer — it is
-# left for you to decide rather than guessed, because a guessed role reads later exactly like a
-# chosen one. Uncomment and fill in what you want; delete what you do not.
+# EVERY SECTION `templates/agents.toml` SHIPS IS RENDERED, live or commented with the reason (#459,
+# D128): an absent section reads as "nothing to decide". The list transcribes the template, and
+# `check-adopt.sh` derives it from the template and fails when one is missing here.
+#
+# Inputs, each optional; an input that was not given is said to be missing, never treated as empty:
+#   stdin            `roles-infer` records
+#   --observed <f>   `adopt-readiness.sh observe` output — the PR history, for [reviewers]
+#   --gates <f>      `project-gates.sh detect` output — `<label>TAB<command>`, for [gates]
+#   --answers <f>    the interview's `answers` records — they OVERRIDE an inferred value, and the
+#                    trailing comment says the owner answered rather than that the repo showed it
+cmd_propose() {
+  local observed="" gates="" answers="" have_obs=0 have_gates=0 obs_why="" gates_why=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --observed|--gates|--answers)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || die "propose: $1 needs a file"
+        case "$1" in --observed) observed="$2" ;; --gates) gates="$2" ;; --answers) answers="$2" ;; esac
+        shift 2 ;;
+      *) die "propose: unknown argument: $1 (roles-infer TSV on stdin; options --observed/--gates/--answers)" ;;
+    esac
+  done
+  local role tok ev rec line k v
+  local -a recs=() glines=()
+  mapfile -t recs || die "propose: could not read the roles-infer records on stdin"
+  if [ -n "$observed" ]; then
+    if _ad_observed_read "$observed"; then have_obs=1; else obs_why="$_AD_OBS_ERR"; fi
+  fi
+  # The gate list is validated WHOLE, like the observation: rendering the lines it understood would
+  # present a partial gate set as the whole one.
+  if [ -n "$gates" ]; then
+    if _ad_snapshot_lines "$gates"; then
+      have_gates=1
+      for line in "${_AD_SNAP[@]}"; do
+        [ -n "$line" ] || continue
+        if ! adb_sweep_split "$line" 2 || [ -z "${ADB_SWEEP_F[1]}" ] \
+           || ! _ad_gate_label_ok "${ADB_SWEEP_F[0]}" || ! _ad_toml_text_ok "${ADB_SWEEP_F[1]}"; then
+          have_gates=0; gates_why="a line is not <label>TAB<command>"; glines=(); break
+        fi
+        glines+=("${ADB_SWEEP_F[0]}$TAB${ADB_SWEEP_F[1]}")
+      done
+    else
+      gates_why="missing, unreadable, over 1 MiB, carrying a NUL byte, or its last line is cut off"
+    fi
+  fi
+  _AD_ANS=(); _AD_ANS_NOTES=()
+  [ -z "$answers" ] || _ad_answers_read "$answers"
+
+  cat <<'HDR'
+# ai-dev-baseline — agent role manifest, PROPOSED by /adopt.
+#
+# Every uncommented line carries its evidence in the trailing comment: a file in this repo, the
+# reviewers GitHub recorded on its pull requests, or an answer its owner gave in the /adopt
+# interview. Every COMMENTED line is something /adopt could not establish — left for you to decide
+# rather than guessed, because a guessed line reads later exactly like a chosen one. Every section
+# templates/agents.toml ships is here, so nothing is left to discover after adoption.
 #
 # Agent tokens: claude | codex | gemini      Full model: docs/roles-and-agents.md
-
-[roles]
 HDR
-  # `primary` is never inferred. Nothing in a project's config says which agent DRIVES it — that
+  # Printed as built: every value a note quotes was already passed through adb_tsv_field_display or
+  # adb_display_value where it was recorded, so no note can carry a newline out of its comment line.
+  for line in "${_AD_ANS_NOTES[@]}"; do printf '# NOTE: %s\n' "$line"; done
+  printf '\n[roles]\n'
+  # `primary` is never INFERRED. Nothing in a project's config says which agent DRIVES it — that
   # is a fact about the operator, not about the repo — so proposing one from a stray `codex exec`
-  # would be the exact overreach the header above forbids.
-  printf '# primary    = "claude"    # WHO DRIVES: not inferable from repo config — set this yourself.\n'
-  local rec
+  # would be the exact overreach the header above forbids. The owner may ANSWER it, which is a
+  # different thing: that is the operator saying it, not the repo being read as saying it.
+  if [ -n "${_AD_ANS[primary]:-}" ]; then
+    printf '%-13s = "%s"       # answered in the /adopt interview\n' primary "${_AD_ANS[primary]}"
+  else
+    printf '# primary    = "claude"    # WHO DRIVES: not inferable from repo config — set this yourself.\n'
+  fi
+  local answered_review=0
   for rec in "${recs[@]}"; do
     IFS="$TAB" read -r role tok ev <<< "$rec"
     [ -n "$role" ] || continue
@@ -860,6 +1203,11 @@ HDR
       *) printf '# NOTE: /adopt could not produce a proposal for one role — %s\n' \
                 "$(adb_display_value "$rec")"; continue ;;
     esac
+    if [ "$role" = review ] && [ -n "${_AD_ANS[review]:-}" ]; then
+      _ad_render_review_answer; answered_review=1; continue
+    fi
+    # The evidence quotes a scanned file's path, and a control byte is illegal even in a TOML comment.
+    _ad_toml_text_ok "$ev" || ev="$(adb_display_value "$ev")"
     case "$tok" in
       none|ambiguous)
         printf '# %-11s = ""          # NOT INFERRED: %s\n' "$role" "$ev" ;;
@@ -874,7 +1222,161 @@ HDR
         fi ;;
     esac
   done
+  [ "$answered_review" -eq 1 ] || [ -z "${_AD_ANS[review]:-}" ] || _ad_render_review_answer
+  # `release` — the interview's "does this project cut releases, and who cuts them?" (#459). It is
+  # never inferred: the release executor is project-owned (D14), and nothing in a config says who.
+  case "${_AD_ANS[release]:-}" in
+    "")   printf '# release      = ""          # NOT INFERRED: who cuts a release — defaults to primary when unset; the /adopt interview asks\n' ;;
+    none) printf '# release      = ""          # ANSWERED: this project cuts no releases (the /adopt interview) — left unset\n' ;;
+    *)    printf '%-13s = "%s"       # answered in the /adopt interview\n' release "${_AD_ANS[release]}" ;;
+  esac
+
+  # EVERY HEADER BELOW IS LIVE, keys commented where nothing was established: an empty table is
+  # harmless, and a key the operator uncomments then lands in its own table rather than the one
+  # above it. [roles.effort] is rendered here, LAST among the [roles*] blocks, as the template asks.
+  cat <<'EFF'
+
+[roles.effort]                 # NOT INFERRED: reasoning effort per dispatched role is the
+                               # operator's preference, not a repo signal; unset inherits each
+                               # agent's own config. Keep this table LAST among [roles*] blocks.
+# review       = "medium"
+EFF
+
+  _ad_render_reviewers "$have_obs" "$observed" "$obs_why"
+
+  cat <<'REPO'
+
+[repo]                         # NOT INFERRED: an unattended write to branch protection is opt-in
+                               # only — nothing in a repo can consent to it (templates/agents.toml).
+# reconcile-required-checks = true
+
+[mcp]                          # NOT INFERRED: name the MCP servers this project's agents should
+                               # expect; /implement-issue then probes each one (step 5b).
+# required = ["context7"]
+# optional = []
+REPO
+
+  _ad_render_gates "$have_gates" "$gates" "$gates_why" "${glines[@]+"${glines[@]}"}"
+
+  cat <<'REST'
+
+[updates]                      # GLOBAL ONLY: anything in a project agents.toml's [updates] is
+                               # IGNORED. Set it in ~/.config/ai-dev-baseline/agents.toml instead.
+# session_start = "auto"
+
+[gates.scope]                  # NOT INFERRED: scope a gate to a changed-files condition only when
+                               # it needs one.
+# build = "apps/**,packages/**"
+
+[gates.cadence]                # NOT INFERRED: a gate that is a whole CI suite belongs to "full",
+                               # not to every turn-end.
+# test = "full"
+REST
   return 0
+}
+
+# The `review` interview answer: a LIST in the schema, whatever was answered.
+_ad_render_review_answer() {
+  local out="" t
+  while IFS= read -r t; do out="${out:+$out, }\"$t\""; done < <(printf '%s\n' "${_AD_ANS[review]}" | tr ',' '\n')
+  printf '%-13s = [%s]     # answered in the /adopt interview\n' review "$out"
+}
+
+# [reviewers] — inferred from the PR history `adopt-readiness.sh observe` read (#459, D128).
+#
+# An App seen reviewing is proposed live, with the pull requests as evidence. `bots = []` disarms
+# the pre-arm guard (#134), so it is proposed live ONLY from a history that was read whole and
+# shows no App; an unread, empty or truncated history leaves the line commented.
+_ad_render_reviewers() {  # <have_obs> <file> <why>
+  local have="$1" file="$2" why="$3" rec login prs ev="" logins="" n=0 scope="" trunc="" summary="" live=0
+  # WHAT THE OBSERVATION SAYS is computed first and printed on every path — an interview answer that
+  # overrides it included — because the proposal is the evidence a later reader has left.
+  for rec in "${_AD_OBS_REVIEWERS[@]+"${_AD_OBS_REVIEWERS[@]}"}"; do
+    login="${rec%%"$TAB"*}"; prs="${rec#*"$TAB"}"
+    logins="${logins:+$logins, }\"$login\""
+    ev="${ev:+$ev; }$login reviewed $(_ad_pr_list "$prs")"
+    n=$((n + 1))
+  done
+  [ -z "$_AD_OBS_TRUNC" ] || trunc=" — $(_ad_pr_list "$_AD_OBS_TRUNC") had more reviews than were read"
+  if [ "$have" -ne 1 ]; then
+    if [ -z "$file" ]; then summary="no PR history was given to /adopt (adopt-readiness.sh observe)"
+    else summary="the PR-history observation could not be read ($why)"; fi
+  elif [ -z "$_AD_OBS_PRS" ]; then
+    summary="the PR history could not be read (gh failed, or this repo is not on GitHub)"
+  elif [ "$_AD_OBS_PRS" -eq 0 ]; then
+    summary="this repo has no pull requests yet, so there is no history to read"
+  else
+    scope="the most recent $_AD_OBS_PRS pull request(s), a read bounded at $_AD_OBS_WINDOW"
+    if [ "$n" -gt 0 ]; then summary="$ev ($scope)$trunc"; live=1
+    elif [ -n "$trunc" ]; then summary="no App was seen on $scope, but$trunc, so absence is not established"
+    else summary="no GitHub App reviewed $scope"; live=1
+    fi
+  fi
+  if [ -n "${_AD_ANS[bots]:-}" ]; then
+    local out="" t
+    if [ "${_AD_ANS[bots]}" != none ]; then
+      while IFS= read -r t; do out="${out:+$out, }\"$t\""; done < <(printf '%s\n' "${_AD_ANS[bots]}" | tr ',' '\n')
+    fi
+    printf '\n[reviewers]\nbots = [%s]     # answered in the /adopt interview\n# observed: %s\n' "$out" "$summary"
+    return 0
+  fi
+  if [ "$live" -ne 1 ]; then
+    printf '\n[reviewers]                    # NOT INFERRED: %s.\n' "$summary"
+    printf '# bots = []                    # [] DISARMS the pre-arm guard (#134) — declare it only if no App reviews PRs here.\n'
+    return 0
+  fi
+  printf '\n[reviewers]\nbots = [%s]     # observed: %s\n' "$logins" "$summary"
+}
+
+# [gates] and [gates.state].
+#
+# The `[gates]` HEADER IS ALWAYS LIVE, as the template ships it, so a commented line the operator
+# uncomments lands in [gates] and not in the table above it. A DETECTED gate is listed commented:
+# the detector already runs it, and a live line would pin today's command. Nothing detected is the
+# loud placeholder for the bespoke-gate case (#81: enforcement must not end up silently off).
+_ad_render_gates() {  # <have_gates> <file> <why> <label\tcommand>…
+  local have="$1" file="$2" why="$3" rec label cmd live=0 k
+  shift 3
+  local -a answered=()
+  for k in "${!_AD_ANS[@]}"; do
+    case "$k" in gate.*) answered+=("${k#gate.}") ;; esac
+  done
+  [ "${#answered[@]}" -eq 0 ] || live=1
+  printf '\n[gates]\n'
+  for label in $(printf '%s\n' "${answered[@]+"${answered[@]}"}" | LC_ALL=C sort); do
+    if [ -z "${_AD_ANS[gate.$label]}" ]; then
+      printf '%-9s = ""     # answered: deliberately DISABLED in the /adopt interview\n' "$label"
+    else
+      printf '%-9s = "%s"     # answered in the /adopt interview\n' "$label" "${_AD_ANS[gate.$label]}"
+    fi
+  done
+  if [ "$have" -ne 1 ]; then
+    if [ -z "$file" ]; then why="gate detection was not run"; else why="the gate detection output could not be read ($why)"; fi
+    printf '#                              # NOT DETECTED: %s — run project-gates.sh detect.\n' "$why"
+  elif [ "$#" -eq 0 ]; then
+    [ "$live" -eq 1 ] || printf '# test      = "<your gate command>"   # NO GATE WAS DETECTED. If this project has a bespoke gate (a scripts/check.sh, a make target), declare it here; "" disables an axis on purpose, and [gates.state] declares one N/A. Adoption must not finish with enforcement silently off.\n'
+  else
+    for rec in "$@"; do
+      label="${rec%%"$TAB"*}"; cmd="${rec#*"$TAB"}"
+      [ -z "${_AD_ANS[gate.$label]+x}" ] || continue
+      # A command carrying `"` or `\` cannot round-trip through this repo's TOML reader, so it is
+      # shown as evidence rather than as a line that would break when uncommented.
+      case "$cmd" in
+        *'"'*|*'\'*) printf '#   %s (DETECTED, already run by project-gates.sh): %s   — it carries a quote or a backslash, which agents.toml cannot hold; to pin it, put it in a script and declare that\n' "$label" "$cmd" ;;
+        *)           printf '# %-9s = "%s"   # DETECTED: project-gates.sh already runs this — uncomment only to pin it\n' "$label" "$cmd" ;;
+      esac
+    done
+  fi
+  live=0
+  for k in "${!_AD_ANS[@]}"; do case "$k" in gate-state.*) live=1 ;; esac; done
+  printf '\n[gates.state]\n'
+  if [ "$live" -eq 1 ]; then
+    for label in $(for k in "${!_AD_ANS[@]}"; do case "$k" in gate-state.*) printf '%s\n' "${k#gate-state.}" ;; esac; done | LC_ALL=C sort); do
+      printf '%-9s = "na"     # answered in the /adopt interview: this project genuinely has no %s\n' "$label" "$label"
+    done
+  else
+    printf '# lint      = "na"             # NOT INFERRED: declare an axis this project genuinely lacks N/A — reported, never a failure or a miss.\n'
+  fi
 }
 
 # --- stack ---------------------------------------------------------------------------------------
@@ -1000,10 +1502,96 @@ _ad_ignore_axis() {  # <project-root> <agent>
 }
 
 
+# --- AXIS 5, agent-doc (#459, D128) -------------------------------------------------------------
+# A role resolves to an agent whose ROOT DOC is not a readable file in the repo, so that agent works
+# here without the project's conventions. Reported only; how to mirror them is #6's to decide.
+#
+# The roles are the ones DECLARED: <manifest> (the project's agents.toml, or the proposal when it has
+# none) layered over the global manifest, as role-dispatch.sh layers them. Built-in defaults are NOT
+# applied (an undeclared role falls back to `primary`, which is counted when it is declared), so a
+# role resolved only by a built-in default is outside this axis — the report says "declared".
+# `--agents` does not narrow it: that filter picks config TREES, and a role names an agent regardless.
+# A symlink resolving to a regular file is present (`AGENTS.md -> CLAUDE.md` works); a dangling link,
+# a directory, or an unreadable file is not.
+_ad_agent_doc_axis() {  # <root> <manifest>
+  local root="$1" manifest="$2" global role raw rc tok doc present="" d
+  local -A roles_of=()
+  local -a order=()
+  global="$(adb_global_manifest)"
+  for d in CLAUDE.md AGENTS.md GEMINI.md; do
+    [ -f "$root/$d" ] && [ -r "$root/$d" ] && present="${present:+$present, }$d"
+  done
+  for role in primary gap_analysis review debug survey issue_author release; do
+    raw="$(adb_toml_layered_get "$manifest" "$global" roles "$role" 2>/dev/null)"; rc=$?
+    case "$rc" in
+      0) ;;
+      1) continue ;;
+      *) _ad_emit warning "the agent-doc axis did NOT run: $manifest or $global could not be read as TOML (rc $rc)"
+         return 0 ;;
+    esac
+    # A list that is empty or unclosed names no agent, and role-dispatch refuses it: say so rather
+    # than letting the role vanish from the axis. A scalar "" is the documented skip and is silent.
+    case "$raw" in
+      \[*) if [ -z "$(adb_toml_array "$raw")" ] || [ "${raw%]}" = "$raw" ]; then
+              _ad_emit warning "$role declares an empty or unparsable list ($(adb_tsv_field_display "$raw")) — role-dispatch refuses it, and the agent-doc axis cannot check it"
+              continue
+            fi ;;
+    esac
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      [ -n "${roles_of[$tok]:-}" ] || order+=("$tok")
+      roles_of[$tok]="${roles_of[$tok]:+${roles_of[$tok]}, }$role"
+    done < <(case "$raw" in \[*) adb_toml_array "$raw" ;; *) adb_toml_unquote "$raw"; printf '\n' ;; esac)
+  done
+  for tok in "${order[@]+"${order[@]}"}"; do
+    if ! doc="$(_ad_agent_rootdoc "$tok")"; then
+      _ad_emit warning "the agent-doc axis could not resolve $tok's root doc from the install manifest — ${roles_of[$tok]} were NOT checked"
+      continue
+    fi
+    if [ -z "$doc" ]; then
+      _ad_emit warning "${roles_of[$tok]} name $(adb_tsv_field_display "$tok"), which the install manifest does not model — the agent-doc axis cannot check it (role-dispatch refuses it too)"
+      continue
+    fi
+    if [ -L "$root/$doc" ] && [ ! -e "$root/$doc" ]; then
+      _ad_emit agent-doc warn "$doc" "is a DANGLING symlink — ${roles_of[$tok]} resolve to $tok, which reads $doc and finds nothing; repoint it or replace it (#6 owns how conventions are mirrored across agents)"
+    elif [ -e "$root/$doc" ] && [ ! -f "$root/$doc" ]; then
+      _ad_emit agent-doc warn "$doc" "is not a regular file — ${roles_of[$tok]} resolve to $tok, which cannot read the project's conventions from it"
+    elif [ -f "$root/$doc" ] && [ ! -r "$root/$doc" ]; then
+      _ad_emit agent-doc warn "$doc" "exists but cannot be read — ${roles_of[$tok]} resolve to $tok, which cannot read the project's conventions through it"
+    elif [ ! -e "$root/$doc" ]; then
+      _ad_emit agent-doc warn "$doc" "is absent — ${roles_of[$tok]} resolve to $tok, which reads $doc and so sees ${present:+none of the conventions in }${present:-no project root doc at all}; mirror them for it (#6 owns the mechanism — a symlink to the doc that holds them is one measured workaround)"
+    fi
+  done
+}
+
+# --- AXIS 6, branch-hygiene (#459, D128) ------------------------------------------------------------
+# `delete_branch_on_merge` off, read from the observation file. Reported as the owner's choice and
+# never applied — `baseline repo apply` is bounded to two settings. An unread setting is a `warning`,
+# so "could not look" never prints what "looked, and it is on" prints.
+_ad_branch_hygiene_axis() {  # <have_observation> <file>
+  if [ "$1" -ne 1 ]; then
+    if [ -n "$2" ]; then
+      _ad_emit warning "the branch-hygiene axis did NOT run: the observation in $2 could not be read ($_AD_OBS_ERR)"
+    else
+      _ad_emit warning "the branch-hygiene axis did NOT run: no observation file was given (adopt-readiness.sh observe)"
+    fi
+    return 0
+  fi
+  case "$_AD_OBS_DBM" in
+    true)  : ;;
+    false) _ad_emit branch-hygiene note - "delete_branch_on_merge is OFF — merged head branches stay on the remote until somebody deletes them (/cleanup remote does it by hand). An owner choice: enable it in the repo's settings, or leave it; baseline repo apply deliberately does not set it" ;;
+    *)     _ad_emit warning "the branch-hygiene axis did NOT run: delete_branch_on_merge was not read (the repo settings read failed, or this repo is not on GitHub)" ;;
+  esac
+}
+
 # --- hygiene -------------------------------------------------------------------------------------
-# The four adoption-hygiene axes #29 contributed, as `<axis>TAB<severity>TAB<path>TAB<detail>`.  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
-# Severity is `warn` or `note`; neither is a failure, and this subcommand exits 0 unless its
-# arguments are bad. These are things a human must look at, not verdicts.
+# The adoption-hygiene axes, as `<axis>TAB<severity>TAB<path>TAB<detail>`: the four #29  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
+# contributed (product-code, distributable, precedence, ignore-risk) plus agent-doc and
+# branch-hygiene (#459). Severity is `warn` or `note`; neither is a failure, and this subcommand
+# exits 0 unless its arguments are bad. These are things a human must look at, not verdicts.
+#
+# `--manifest <file>` names the agents.toml whose roles the agent-doc axis reads (default: the
+# project's own); `--observed <file>` is the `adopt-readiness.sh observe` output branch-hygiene reads.
 #
 # WHAT THIS IS NOT: a secret scanner. The credential axis matches a short, closed list of
 # high-confidence prefixes and refuses to guess beyond it, and it REDACTS what it matched rather
@@ -1011,11 +1599,13 @@ _ad_ignore_axis() {  # <project-root> <agent>
 # applies to a log). A novel credential format will not be caught. Saying so is better than
 # implying a coverage this cannot have.
 cmd_hygiene() {
-  local root="" agents="" a f rel line
+  local root="" agents="" manifest="" observed="" a f rel line have_obs=0
   local -a _ad_tracked=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --agents) [ "$#" -ge 2 ] && [ -n "$2" ] || die "hygiene: --agents needs a non-empty value"; agents="$2"; shift 2 ;;
+      --manifest) [ "$#" -ge 2 ] && [ -n "$2" ] || die "hygiene: --manifest needs a file"; manifest="$2"; shift 2 ;;
+      --observed) [ "$#" -ge 2 ] && [ -n "$2" ] || die "hygiene: --observed needs a file"; observed="$2"; shift 2 ;;
       -*) die "hygiene: unknown option: $1" ;;
       *) [ -z "$root" ] || die "hygiene: takes exactly one <project-root>"; root="$1"; shift ;;
     esac
@@ -1024,6 +1614,12 @@ cmd_hygiene() {
   [ -d "$root" ] || die "hygiene: not a directory: $root"
   [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" hygiene
+  [ -n "$manifest" ] || manifest="$root/agents.toml"
+  if [ -n "$observed" ] && _ad_observed_read "$observed"; then have_obs=1; fi
+
+  # AXES 5 AND 6 are about the project as a whole, not about one agent's tree, so they run once.
+  _ad_agent_doc_axis "$root" "$manifest"
+  _ad_branch_hygiene_axis "$have_obs" "$observed"
 
   # AXIS 1 — harness config vs PRODUCT CODE. Reported so the operator knows the scan stopped at
   # the boundary; `scan` never descended here in the first place. support-workstation's
@@ -1156,6 +1752,37 @@ EOF
 # have drifted. A COMMIT is a better snapshot than a snapshot — the install is a symlink into a
 # real git clone, so the inherited tree is recoverable exactly, forever, from one 40-byte field.
 # `pin-drift` prints the command that does it.
+#
+# --- pin-describe (#464, D128) --------------------------------------------------------------------
+# Print `<version>TAB<commit>` for the baseline clone at <baseline-root>; exit 0, or 2 naming the root.
+#
+#   - HEAD is resolved ONCE to a full object name, and `describe` is asked about that name, never
+#     about HEAD again — so a clone that moves mid-call cannot split the pair across two trees.
+#   - The version DESCRIBES the commit: `describe --tags` without `--abbrev=0`, so `v3.0.0` only on
+#     the tag and `v3.0.0-13-g<sha>` past it. `--abbrev=12` is a minimum (git lengthens it when
+#     shorter would be ambiguous); `commit` remains the load-bearing field.
+#   - No tags at all is an empty version, which `pin-render` accepts. Tags that cannot describe the
+#     commit (a shallow clone) or a `git` that fails is exit 2 — never that same empty version.
+#   - The tag name's grammar is `pin-render`'s alone. Git refuses control characters in ref names,
+#     so no tag can forge a field or a record here.
+cmd_pin_describe() {
+  [ "$#" -eq 1 ] || die "pin-describe: needs <baseline-root>"
+  local root="$1" commit tag version
+  [ -d "$root" ] || die "pin-describe: not a directory: $(adb_display_value "$root")"
+  commit="$(git -C "$root" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" \
+    || die "pin-describe: could not resolve HEAD to a commit in $(adb_display_value "$root") — not a git clone, an unborn branch, or git failed; no pin is rendered from a guess"
+  _ad_check_commit "$commit" pin-describe
+  tag="$(git -C "$root" for-each-ref --count=1 --format='%(refname)' refs/tags 2>/dev/null)" \
+    || die "pin-describe: could not list the tags in $(adb_display_value "$root") — git failed; an empty version would read as 'no release yet'"
+  if [ -z "$tag" ]; then
+    version=""
+  else
+    version="$(git -C "$root" describe --tags --abbrev=12 "$commit" 2>/dev/null)" && [ -n "$version" ] \
+      || die "pin-describe: $(adb_display_value "$root") has tags, but none describes $commit (a shallow clone whose tags are unreachable, or git failed) — refusing to pin an empty version"
+  fi
+  printf '%s\t%s\n' "$version" "$commit"
+}
+
 cmd_pin_render() {
   [ "$#" -ge 4 ] && [ "$#" -le 5 ] || die "pin-render: needs <version> <commit> <adopted-date> <stack> [agents]"
   local version="$1" commit="$2" adopted="$3" stack="$4" agents="${5:-}" a out="" seen="" y m d
@@ -1214,6 +1841,8 @@ EOF
 # It records WHICH baseline this project inherited, so drift can be reviewed and an update can be
 # taken deliberately instead of discovered. \`commit\` is the load-bearing field: the install is a
 # symlink into a git clone, so that one value recovers the exact inherited tree at any time.
+# \`version\` describes that same commit: a bare tag (\`v3.0.0\`) only when the commit IS the release,
+# otherwise \`v3.0.0-13-g<sha>\` — 13 commits past it, so v3.0.0's notes are not the whole story.
 # See: adopt-lib.sh pin-drift .ai-dev-baseline/upstream.toml <baseline-root>
 
 [upstream]
@@ -1360,8 +1989,10 @@ main() {
     classify)    cmd_classify "$@" ;;
     roles-infer) cmd_roles_infer "$@" ;;
     propose)     cmd_propose "$@" ;;
+    answers)     cmd_answers "$@" ;;
     stack)       cmd_stack "$@" ;;
     hygiene)     cmd_hygiene "$@" ;;
+    pin-describe) cmd_pin_describe "$@" ;;
     pin-render)  cmd_pin_render "$@" ;;
     pin-read)    cmd_pin_read "$@" ;;
     pin-drift)   cmd_pin_drift "$@" ;;

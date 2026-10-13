@@ -9685,3 +9685,85 @@ survive is the part a later reader needs.
 - reason:    One lint, three callers, one contract: three inline copies would be the drift golden
              rule 4 forbids, and the per-file pool is what actually spends the cores.
 - baseline-issue: n/a
+
+## D128 — #459/#464: /adopt reads who reviews from GitHub, proposes every section, interviews the owner, and pins a version that describes its commit
+- date:      2026-10-12
+- category:  project-delta
+- unknown:   #459. `/adopt` proposed `[roles]` only, inferred nothing about `[reviewers]`, and its
+             readiness contract went green on a `bots = []` GitHub's own records contradicted — the
+             measured adoption armed auto-merge three minutes before its Codex reviewer posted six
+             findings. The issue left three things open, and the gap analysis returned them as
+             BLOCKING: what signal identifies a bot reviewer (`gh pr list --json reviews` returns a
+             bare login with no type, and an App's GraphQL login is bare too), how much history
+             justifies `bots = []`, and where the interview's "does it deploy?" answer lands when
+             `/adopt` may write only `agents.toml` and the pin. #464: the pin's `version` came from
+             `git describe --tags --abbrev=0` — the nearest tag name — read in a separate `git` call
+             from `commit`.
+- decision:  **Owner decisions 2026-10-12, all three as recommended.**
+             (1) A reviewer is an author of a PULL REQUEST REVIEW whose GraphQL `__typename` is
+             `Bot`, over the 100 most recent pull requests in every state, up to 100 reviews each —
+             one GraphQL page, read by `adopt-readiness.sh observe`. Comment-only bots do not count
+             (CI, deploy previews and coverage reporters comment on every PR). The bound travels in
+             the `prs` record (pinned `orderBy: CREATED_AT`, never a default); a PR whose reviews
+             ran past it is named (`truncated`); a failed read, or a missing or mistyped connection,
+             emits no `prs` record, and `propose` then leaves `bots` commented — `[]` is proposed
+             only from a history that was read WHOLE and showed no App. An absence over a truncated
+             history is not claimed: `propose` comments it, and the rung reads it `unknown`.
+             (2) "Does it deploy?" becomes "does this project cut releases, and which agent cuts
+             them?" → `[roles] release`, live on an agent, commented with the owner's answer on
+             `none`. The interview's other three questions are primary, who reviews (`[roles] review`
+             and `[reviewers] bots`) and the gates.
+             (3) The `reviewers` rung (owner: `owner`) is `todo` when `bots = []` is declared while an
+             App reviewed, when a declared login reviewed none of the observed PRs, when nothing is
+             declared, or when the declaration is malformed; an App that reviewed but is not declared
+             beside a non-empty declaration stays `ok` and is NAMED (a retirement is legitimate); no
+             PRs is `na`; an unread history is `unknown`. It reads the declaration through
+             `role-dispatch.sh bots --comparable` (layered repo over global, as the guard reads it)
+             and compares with `adb_reviewer_match_jq`, an observed App in its REST spelling
+             `<login>[bot]`, so the rung cannot accept a spelling the guard rejects.
+
+             **Also decided in the implementation, within the issue's scope.** `propose` renders
+             every section `templates/agents.toml` ships (the suite derives the list from the
+             template); a DETECTED gate is listed COMMENTED, because the detector already runs it and
+             a live line would pin today's command, and one carrying `"` or `\` is shown as evidence
+             rather than as a key line; `[updates]` carries no key and says it is global-only.
+             Interview answers are `<key>TAB<value>` records published by `adopt-lib.sh answers` —
+             every pair validated before anything is written, through `adb_publish_json`
+             (mode carried, `--strict`), so the workflow's prose carries no staging of its own — and
+             RE-validated by `propose` (the state dir is agent-writable); a key answered twice applies
+             neither answer; a gate command with `"` or `\` is refused, because this repo's TOML
+             reader keeps escapes verbatim and the gate would read back as a different command. The
+             interview runs once per invocation, after the scan, and is skipped by `--no-interview`
+             or when no human can answer. Every section HEADER is rendered live, keys commented where
+             nothing was established, so a key the operator uncomments lands in its own table — a
+             commented `# [gates.state]` let an uncommented `lint = "na"` become a gate command
+             named `na`. Answer and record files are read as ONE bounded snapshot (a private copy of
+             at most 1 MiB, validated by `adb_bytes_whole` — no NUL, a final newline — and parsed
+             from that same copy) and split with `adb_sweep_split`; a gate label must pass the gate
+             runner's own `_adb_valid_label`, and no value may carry a control character. `agent-doc`
+             reads the DECLARED roles from the project's manifest (the proposal when there is none)
+             layered over the global one, without built-in defaults, and names a token the manifest
+             does not model; a root-doc symlink resolving to a regular file is present. `branch-hygiene` reads the observation and
+             says "did NOT run" when the setting was not read. #464: `pin-describe` resolves
+             `HEAD^{commit}` once and describes THAT name with `--abbrev=12`; no tags is an empty
+             version, tags that cannot describe the commit or a failing `git` is exit 2; the tag
+             grammar stays `pin-render`'s alone (one guard). The workflow splits the record by
+             expansion, never `IFS=<tab> read` (which drops a tagless clone's empty field), and
+             removes a previous run's pin before rendering.
+             **Owner decision 2026-10-12 (local review pass 2): a DELIBERATE swap of a record file
+             inside the agent's own state dir, between the reader's regular-file check and its copy
+             (a symlink or a FIFO), is OUT OF SCOPE** — anything able to do that can rewrite
+             `adopt-agents.toml` itself, which `--apply` copies into the project, so hardening this
+             read would protect nothing that file does not already expose (the scoping D102 applied
+             to a hand-edited receipt). The snapshot guards an accidentally damaged file. The loop's
+             budget stays `local_passes = 3`, carrying per its own rules.
+- placement: `scripts/lib/adopt-lib.sh` (`propose`, `answers`, `hygiene`, `pin-describe`);
+             `scripts/lib/adopt-readiness.sh` (`observe`, `facts`, the `reviewers` rung);
+             `base/workflows/adopt.md` (steps 5, 5b, 6, 8, 13) and its three renders;
+             `scripts/check-adopt.sh`, `scripts/check-adopt-readiness.sh`; `scripts/selfcheck.sh`
+             inputs; `docs/installation.md`, `docs/roles-and-agents.md`, `CLAUDE.md`, `CHANGELOG.md`.
+- reason:    The one place the strongest reviewer signal lives is the repo's own PR history, and a
+             proposal that declares nothing, or a verifier that checks only presence, lets the merge
+             guard be switched off by a line nobody questioned. The pin's two fact fields now come
+             from one object, so they can no longer name different trees.
+- baseline-issue: n/a

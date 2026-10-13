@@ -10,7 +10,7 @@ own section, [Release-pinned, per project](#release-pinned-per-project).
 |---|---|---|
 | What it is | a permanent clone symlinked into `~/.<agent>` | one released version vendored into one project tree |
 | Scope | every project on the machine | exactly the project it is installed in |
-| Version | whatever the clone's `main` says right now | the release named in `.ai-dev-baseline/upstream.toml` |
+| Version | whatever the clone's `main` says right now — `/adopt` records it in `.ai-dev-baseline/upstream.toml` as `git describe --tags` of the clone's commit (`v3.0.0-13-g<sha>` when it sat 13 commits past `v3.0.0`) beside that full commit | the release named in `.ai-dev-baseline/upstream.toml` (`mode = "pinned"`) |
 | Updating | `git pull` reaches every project at once | `baseline pinned upgrade --to X.Y.Z`, never on its own |
 | Needs a clone | yes, forever | no |
 | Committed to the project | no | yes — the payload ships with the repo |

@@ -26,8 +26,9 @@
 #          issues parked in an undispositioned one.
 #      Neither was visible by reading. Both are pinned below.
 #
-# OFFLINE and HERMETIC — and the second word had to be earned. The library never calls gh:
-# `probe` reads the filesystem, `tracker` reads a JSON object the caller assembled. Every fixture
+# OFFLINE and HERMETIC — and the second word had to be earned. `probe` reads the filesystem and
+# `tracker` reads a JSON object the caller assembled; the two subcommands that DO call gh, `facts`
+# and `observe`, are driven here only through a `gh` stub on PATH. Every fixture
 # is a `mktemp -d` tree. But "hermetic" also means the suite must not read the HOST, and for one
 # round it did: it inherited `$HOME` (so `adb_install_source` found the developer's install and
 # never CI's absence) and `$PATH` (so the PHP adapter resolved whatever toolchain the machine
@@ -40,10 +41,11 @@
 # WHAT THIS SUITE CANNOT PROVE, said plainly rather than implied away:
 #   - that a real adoption of one of #81's four surveyed repositories comes out green. Those
 #     repos are not here and CI cannot see them; the live acceptance run is manual.
-#   - that the tracker FACTS are gathered correctly. This proves what the library does with the
-#     facts it is handed; the gh reads that produce them live in the workflow, and their
-#     correctness rides on the readers that already own them (roadmap-lib, release-convention,
-#     repo-settings), each with its own suite.
+#   - that the live QUERIES are the right ones. `facts` and `observe` are exercised against a stub
+#     returning the response shapes they were written for, which proves what they do with a
+#     response — omitting a failed or malformed read, never defaulting it — not that GitHub sends
+#     that response. The delegated verdicts ride on the readers that own them (roadmap-lib,
+#     release-convention, repo-settings), each with its own suite.
 #   - that a green contract means the project is GOOD. It means every rung the contract names
 #     was met. The contract is a floor.
 #
@@ -154,7 +156,10 @@ mkrepo() {  # <dir>
 # --- 1. the contract is DATA, and it is the single source the verdict reads ----------------------
 out="$(ar contract)"
 n="$(printf '%s\n' "$out" | grep -c .)"
-eq "$n" "12" "contract: 12 rungs"
+eq "$n" "13" "contract: 13 rungs"
+# Every count below is derived from the contract rather than restated, so the next rung moves one
+# literal (the line above) instead of six.
+NRUNGS="$n"
 # Every row must be three tab fields with a legal owner. A malformed row would make `verdict`
 # read a rung name of "" and silently accept anything.
 bad_rows="$(printf '%s\n' "$out" | awk -F"$TAB" 'NF!=3 || ($2!="agent" && $2!="owner") || $1=="" || $3=="" {print}' | wc -l | tr -d ' ')"
@@ -194,7 +199,7 @@ verdict_is "$(records unknown)" indeterminate 11 "verdict: unknown-only is indet
 # Mixed: one todo among otherwise-green rungs must be RED, not green. This is the assertion that
 # a verdict which ignored its inputs would fail.
 mixed="$(records ok | sed "1s/${TAB}ok${TAB}/${TAB}todo${TAB}/")"
-verdict_is "$mixed" red 10 "verdict: a single todo among 11 ok rungs is red"
+verdict_is "$mixed" red 10 "verdict: a single todo among otherwise-ok rungs is red"
 
 # PRECEDENCE: red outranks indeterminate when both are present. Both withhold ready; only red
 # has a deterministic next move.
@@ -210,13 +215,13 @@ verdict_is "" indeterminate 11 "verdict: EMPTY stdin is indeterminate, never gre
 short="$(records ok | grep -v '^gates')"
 verdict_is "$short" indeterminate 11 "verdict: a rung nobody reported is unknown, not absent"
 out="$(printf '%s' "$short" | ar verdict)"
-has "$out" "11 of 12 rungs evaluated" "verdict: the evaluated count exposes the missing rung"
+has "$out" "$((NRUNGS - 1)) of $NRUNGS rungs evaluated" "verdict: the evaluated count exposes the missing rung"
 has "$out" "not reported" "verdict: the missing rung is named as unreported"
 
-# THE COUNT IS THE ANTI-SILENCE DEVICE. "0 of 12" must be visible; a verifier that checked
+# THE COUNT IS THE ANTI-SILENCE DEVICE. "0 of N" must be visible; a verifier that checked
 # nothing must not read like one that found nothing wrong.
 out="$(printf '' | ar verdict)"
-has "$out" "0 of 12 rungs evaluated" "verdict: zero-examined is stated, not implied"
+has "$out" "0 of $NRUNGS rungs evaluated" "verdict: zero-examined is stated, not implied"
 
 # --- 2b. verdict: every rejectable input is observed being REJECTED -------------------------------
 # Each of these would otherwise degrade toward a pass, so each must be a usage error (2).
@@ -227,7 +232,7 @@ printf 'gates\tOK\t\n'         | ar verdict >/dev/null 2>&1; eq $? 2 "verdict: s
 ar verdict extra >/dev/null 2>&1; eq $? 2 "verdict: rejects arguments"
 # A record with NO detail column is legal — detail is optional — and must not shift the status.
 out="$(printf 'gates\tok\n' | ar verdict)"
-has "$out" "1 of 12 rungs evaluated" "verdict: a two-field record parses (detail is optional)"
+has "$out" "1 of $NRUNGS rungs evaluated" "verdict: a two-field record parses (detail is optional)"
 
 # The report must name the OWNER of each outstanding rung — that is the issue's "who must
 # decide it", and it is the half a bare pass/fail cannot carry.
@@ -554,7 +559,7 @@ tr_out() { printf '%s' "$1" | ar tracker; }
 # makes "a caller that forgot a read" safe, and it is asserted per-rung rather than in aggregate
 # so a single rung regressing to a default cannot hide behind the others.
 out="$(tr_out '{}')"
-for r in milestones slate unmilestoned dispositions roadmap settings release; do
+for r in milestones slate unmilestoned dispositions roadmap settings reviewers release; do
   case "$out" in
     *"$r${TAB}unknown"*) ok ;;
     *) bad "tracker: '$r' must be unknown when its fact is absent" ;;
@@ -653,7 +658,7 @@ facts="$(printf '%s' '{"release_milestone":"Next release","backlog_milestone":"B
         "milestones":[{"title":"Audit\nResults","open_issues":3}],"dispositions":[]}')"
 out="$(tr_out "$facts")"
 n="$(printf '%s\n' "$out" | grep -c .)"
-eq "$n" "7" "tracker: a newline in a milestone title does not forge an extra record"
+eq "$n" "8" "tracker: a newline in a milestone title does not forge an extra record"
 rc=0; printf '%s\n' "$out" | ar verdict >/dev/null 2>&1 || rc=$?
 eq "$rc" "10" "tracker: a newline-bearing title still reaches a clean red verdict, not a usage error"
 
@@ -680,6 +685,74 @@ has "$out" "settings${TAB}na" "tracker: a no-CI repo can declare settings N/A"
 # An unrecognized settings word is an ERROR, never a pass — the same rule release-ready applies.
 printf '%s' '{"settings":"probably-fine"}' | ar tracker >/dev/null 2>&1
 eq $? 2 "tracker: an unrecognized settings verdict is rejected, not accepted"
+
+# --- reviewers (#459, D128): a DECLARATION is checked against what GitHub recorded, both ways —
+# `bots = []` while an App reviews is red, and the corrected declaration is ok.
+RV_OBS='"pr_history":3,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["chatgpt-codex-connector"]'
+out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[],$RV_OBS}")"
+has "$out" "reviewers${TAB}todo" "tracker: bots = [] while an App reviews is todo"
+has "$out" "chatgpt-codex-connector" "...naming the App that reviewed"
+out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[\"chatgpt-codex-connector\"],$RV_OBS}")"
+has "$out" "reviewers${TAB}ok" "tracker: the corrected declaration is ok"
+# THE GUARDS' ASYMMETRIC MATCH: an observed App is `<login>[bot]` in REST, which a bare declaration
+# and a `[bot]` one both accept.
+out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[\"chatgpt-codex-connector[bot]\"],$RV_OBS}")"
+has "$out" "reviewers${TAB}ok" "tracker: a [bot]-suffixed declaration matches the observed App"
+out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[\"gemini-code-assist\"],$RV_OBS}")"
+has "$out" "reviewers${TAB}todo" "tracker: a declared login no PR has seen is todo"
+has "$out" "gemini-code-assist" "...naming the login nothing observed"
+# An App that reviewed but is not declared, beside a non-empty declaration, is a legitimate
+# retirement — ok, and NAMED, rather than red for the next hundred pull requests (owner decision).
+out="$(tr_out '{"bots_state":"declared","bots_declared":["chatgpt-codex-connector"],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["chatgpt-codex-connector","copilot-pull-request-reviewer"]}')"
+has "$out" "reviewers${TAB}ok" "tracker: an extra observed App beside a declared one stays ok"
+has "$out" "copilot-pull-request-reviewer" "...and is named in the detail"
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}ok" "tracker: bots = [] with no App in the history is ok"
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":0,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}na" "tracker: no pull request yet is na"
+out="$(tr_out '{"bots_state":"undeclared","pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}todo" "tracker: an undeclared bots is todo"
+has "$out" "bots = []" "...and names the declaration the history supports"
+out="$(tr_out '{"bots_state":"malformed"}')"
+has "$out" "reviewers${TAB}todo" "tracker: a malformed bots is todo"
+# FAIL-CLOSED: a declaration compared against nothing is not a pass, and a malformed observation is
+# not an empty one.
+out="$(tr_out '{"bots_state":"declared","bots_declared":[]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: a declaration with UNREAD history is unknown"
+has "$out" "could not be read" "tracker: an unread-history unknown says the history could not be read"
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["not a login"]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: a reviewer login outside GitHub's grammar is malformed, not empty"
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":"4","pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: a STRING pr_history is malformed, not a count"
+printf '%s' '{"bots_state":"maybe"}' | ar tracker >/dev/null 2>&1
+eq $? 2 "tracker: an unrecognized bots_state is rejected, not accepted"
+# A DECLARED LOGIN OUTSIDE GitHub's grammar is a malformed declaration, never an empty one.
+out="$(tr_out '{"bots_state":"declared","bots_declared":[""],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+hasnt "$out" "reviewers${TAB}ok" "tracker: an empty-string declared login is malformed, not bots = []"
+out="$(tr_out '{"bots_state":"declared","bots_declared":["bad!"],"pr_history":4,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}todo" "tracker: a declared entry that is not a GitHub login is todo"
+has "$out" "not a GitHub login" "tracker: a declared entry that is not a GitHub login is named as such"
+# THE HISTORY IS ONE FACT: every field present, and the counts consistent with one another.
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":4,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: a history with no read bound is unknown"
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":101,"pr_window":100,"reviews_truncated":[],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: more pull requests read than the bound allows is unknown"
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":0,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["chatgpt-codex-connector"]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: reviewers beside a history of zero pull requests is unknown"
+# AN ABSENCE OVER A TRUNCATED HISTORY IS NOT ESTABLISHED: the unread reviews could hold the App.
+out="$(tr_out '{"bots_state":"declared","bots_declared":[],"pr_history":4,"pr_window":100,"reviews_truncated":[35],"reviewer_logins":[]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: bots = [] over a truncated history is unknown"
+has "$out" "#35" "...naming the truncated pull request"
+out="$(tr_out '{"bots_state":"declared","bots_declared":["gemini-code-assist"],"pr_history":4,"pr_window":100,"reviews_truncated":[35],"reviewer_logins":["chatgpt-codex-connector"]}')"
+has "$out" "reviewers${TAB}unknown" "tracker: a declared login unseen over a truncated history is unknown"
+out="$(tr_out '{"bots_state":"declared","bots_declared":["chatgpt-codex-connector"],"pr_history":4,"pr_window":100,"reviews_truncated":[35],"reviewer_logins":["chatgpt-codex-connector"]}')"
+has "$out" "reviewers${TAB}ok" "tracker: a declared App SEEN over a truncated history is still ok"
+has "$out" "#35 had more reviews than were read" "...and the truncation is named in the detail"
+# Against a baseline that is otherwise OK, so only the malformed list can make it unknown.
+for bad_trunc in '[0]' '[35,35]' '[1,2,3,4,5]'; do
+  out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[\"chatgpt-codex-connector\"],\"pr_history\":4,\"pr_window\":100,\"reviews_truncated\":$bad_trunc,\"reviewer_logins\":[\"chatgpt-codex-connector\"]}")"
+  has "$out" "reviewers${TAB}unknown" "tracker: a malformed truncated list ($bad_trunc) is unknown"
+done
 
 # --- release
 out="$(tr_out '{"release_command":"/release","release_command_resolved":true}')"
@@ -751,7 +824,7 @@ case "$*" in
 esac'
 out="$( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar facts 2>/dev/null )"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1; yes $? "facts: a partial read still emits valid JSON"
-for k in unmilestoned roadmap_count slate_armed milestones; do
+for k in unmilestoned roadmap_count slate_armed milestones pr_history reviewer_logins; do
   printf '%s' "$out" | jq -e --arg k "$k" 'has($k)' >/dev/null 2>&1
   no $? "facts: '$k' is OMITTED when its read fails (never defaulted to 0)"
 done
@@ -779,13 +852,115 @@ if grep -q 'milestone:"Ship "now""' "$WORK/gh-args.log"; then
   bad "facts: a quoted milestone title reached a search query unescaped"
 else ok; fi
 
+# --- observe + facts: the reviewer history (#459), through a stubbed gh -------------------------
+# The read is GraphQL's typed review authors, because `gh pr list --json reviews` returns a bare
+# login with no type and a GitHub App's login is bare there too. So the fixture carries the shapes
+# that tell them apart: an App review, a HUMAN review, a deleted (null) author, and a pull request
+# whose reviews ran past the read bound.
+RV_GQL='{"data":{"repository":{"pullRequests":{"nodes":[
+  {"number":35,"reviews":{"totalCount":2,"nodes":[{"author":{"__typename":"Bot","login":"chatgpt-codex-connector"}},{"author":{"__typename":"User","login":"BWBama85"}}]}},
+  {"number":38,"reviews":{"totalCount":2,"nodes":[{"author":null},{"author":{"__typename":"Bot","login":"chatgpt-codex-connector"}}]}},
+  {"number":40,"reviews":{"totalCount":150,"nodes":[{"author":{"__typename":"Bot","login":"chatgpt-codex-connector"}}]}}]}}}}'
+printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
+stub_gh "$WORK/gh-reviews" '
+case "$*" in
+  *"repo view"*) echo "acme/widget" ;;
+  *graphql*) printf "%s\n" "$*" > "'"$WORK"'/gh-gql-args.log"; cat "'"$WORK"'/gh-gql.json" ;;
+  *"repos/acme/widget --jq .delete_branch_on_merge"*) echo false ;;
+  *) exit 5 ;;
+esac'
+d="$WORK/observe"; mkrepo "$d"
+obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"; rc=$?
+eq "$rc" 0 "observe: a readable repo exits 0"
+has "$obs" "prs${TAB}3${TAB}100" "observe: the history record says how many PRs were read, and the bound"
+has "$obs" "reviewer${TAB}chatgpt-codex-connector${TAB}35,38,40" "observe: an App reviewer is recorded with its PR numbers"
+hasnt "$obs" "BWBama85" "observe: a human reviewer is not an App reviewer"
+has "$obs" "truncated${TAB}40" "observe: a PR whose reviews ran past the bound is named"
+has "$obs" "delete-branch-on-merge${TAB}false" "observe: delete_branch_on_merge is recorded"
+# THE NAME IS A STRING: `-F` would type a repository named `123` or `true` as a number or a boolean.
+has   "$(cat "$WORK/gh-gql-args.log")" "-f name=widget" "observe: the repository name is passed as a string (-f), never typed (-F)"
+hasnt "$(cat "$WORK/gh-gql-args.log")" "-F name=" "observe: ...and never with -F"
+# "MOST RECENT" IS A PINNED ORDER, not a default the API happens to apply today.
+has "$(cat "$WORK/gh-gql-args.log")" "orderBy: {field: CREATED_AT, direction: ASC}" \
+    "observe: the read pins its order (orderBy CREATED_AT)"
+# ...and the file it writes is one `adopt-lib.sh` reads — the same grammar on both sides.
+printf '%s\n' "$obs" > "$WORK/obs.tsv"
+has "$(printf 'review\tnone\tx\n' | bash "$ROOT/scripts/lib/adopt-lib.sh" propose --observed "$WORK/obs.tsv")" \
+    'bots = ["chatgpt-codex-connector"]' "observe: its output is what adopt-lib propose reads"
+# A LOGIN OUTSIDE GITHUB'S GRAMMAR drops the whole review read — never a trimmed list, which would
+# read as a smaller history. The settings record still arrives: it is a separate read.
+printf '%s\n' "${RV_GQL/BWBama85/x y}" | sed 's/"User","login":"x y"/"Bot","login":"x y"/' > "$WORK/gh-gql.json"
+obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"
+hasnt "$obs" "prs${TAB}" "observe: a login outside the grammar drops the whole review read"
+has "$obs" "delete-branch-on-merge${TAB}false" "...while the separate settings read still arrives"
+printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
+# A NULL reviews connection is a response this reader does not understand — never "no reviews".
+printf '%s\n' "$RV_GQL" | jq -c '.data.repository.pullRequests.nodes[1].reviews = null' > "$WORK/gh-gql.json"
+obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"
+hasnt "$obs" "prs${TAB}" "observe: a pull request whose reviews are null drops the whole history read"
+printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
+# EVERY REVIEW NODE IS VALIDATED: a null node, an author with no __typename, or a count smaller than
+# the nodes returned is a response this reader does not understand — never a complete history.
+while IFS='|' read -r gql_case gql_edit; do
+  printf '%s\n' "$RV_GQL" | jq -c "$gql_edit" > "$WORK/gh-gql.json"
+  obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"
+  hasnt "$obs" "prs${TAB}" "observe: a malformed review response ($gql_case) drops the whole history read"
+done <<'GQL'
+null-node|.data.repository.pullRequests.nodes[0].reviews.nodes = [null]
+missing-author|.data.repository.pullRequests.nodes[0].reviews.nodes = [{}]
+no-typename|del(.data.repository.pullRequests.nodes[0].reviews.nodes[1].author.__typename)
+negative-count|.data.repository.pullRequests.nodes[0].reviews.totalCount = -1
+fractional-count|.data.repository.pullRequests.nodes[0].reviews.totalCount = 2.5
+duplicate-pr|.data.repository.pullRequests.nodes[1].number = 35
+past-window|.data.repository.pullRequests.nodes = [range(0; 101) | {number: (. + 1), reviews: {totalCount: 0, nodes: []}}]
+GQL
+printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
+# A FAILED GraphQL read emits NO history record — never `prs 0`, which reads as "no pull requests".
+stub_gh "$WORK/gh-nogql" '
+case "$*" in
+  *"repo view"*) echo "acme/widget" ;;
+  *) exit 5 ;;
+esac'
+obs="$( cd "$d" && PATH="$WORK/gh-nogql:$PATH" ar observe )"
+hasnt "$obs" "prs${TAB}" "observe: a failed history read is omitted, never a zero"
+( cd "$d" && PATH="$WORK/gh-dead:$PATH" ar observe >/dev/null 2>&1 ); eq $? 2 "observe: an unresolvable repository is a hard error"
+ar observe extra >/dev/null 2>&1; eq $? 2 "observe: rejects arguments"
+
+# THE ACCEPTANCE FIXTURE — the measured 2026-09-02 configuration, end to end through `status`:
+# `bots = []` in the project while the Codex App reviews its pull requests is OUTSTANDING; corrected,
+# it is not. Driven through the documented entry point, so facts must carry the declaration (read
+# through role-dispatch, the guard's own reader) and the observation together.
+d="$WORK/sf-copy"; mkrepo "$d"
+printf '[roles]\nprimary = "claude"\n\n[reviewers]\nbots = []\n' > "$d/agents.toml"
+check_git "$d" add agents.toml; check_git "$d" commit -qm manifest
+fx="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar facts 2>/dev/null )"
+eq "$(printf '%s' "$fx" | jq -c '[.bots_state, .bots_declared, .pr_history, .reviewer_logins]')" \
+   '["declared",[],3,["chatgpt-codex-connector"]]' "facts: carries the declaration and the observed reviewers"
+eq "$(printf '%s' "$fx" | jq -c '.reviews_truncated')" '[40]' "facts: carries the truncated pull requests"
+out="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar status . 2>/dev/null )"
+has "$out" "[owner] reviewers" "status: bots = [] with Codex reviewing is OUTSTANDING (the measured configuration)"
+printf '[roles]\nprimary = "claude"\n\n[reviewers]\nbots = ["chatgpt-codex-connector"]\n' > "$d/agents.toml"
+check_git "$d" add agents.toml; check_git "$d" commit -qm corrected
+out="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar status . 2>/dev/null )"
+hasnt "$out" "] reviewers" "status: the corrected declaration is no longer outstanding or undetermined"
+trk="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar facts 2>/dev/null | ar tracker )"
+has "$trk" "reviewers${TAB}ok" "facts->tracker: the corrected declaration is ok"
+# UNDECLARED and MALFORMED reach the rung as themselves, not as an unread fact.
+printf '[roles]\nprimary = "claude"\n' > "$d/agents.toml"
+eq "$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar facts 2>/dev/null | jq -r .bots_state )" undeclared \
+   "facts: an undeclared bots is reported as undeclared"
+printf '[roles]\nprimary = "claude"\n\n[reviewers]\nbots = "codex"\n' > "$d/agents.toml"
+eq "$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar facts 2>/dev/null | jq -r .bots_state )" malformed \
+   "facts: a malformed bots is reported as malformed"
+check_git "$d" checkout -q -- agents.toml
+
 # `status` COMPOSES AND RETURNS verdict's CODE. A half-adopted project must be non-green through
 # the real entry point, not merely through hand-assembled records.
 d="$WORK/status-e2e"; mkrepo "$d"
 printf '[roles]\nprimary = "claude"\n[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
 check_git "$d" add agents.toml; check_git "$d" commit -qm gates
 out="$( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar status . 2>/dev/null )"; rc=$?
-has "$out" "of 12 rungs evaluated" "status: composes into one report"
+has "$out" "of $NRUNGS rungs evaluated" "status: composes into one report"
 has "$out" "VERDICT:" "status: renders a verdict"
 case "$rc" in 10|11) ok ;; *) bad "status: a half-adopted project must be non-green (rc=$rc)" ;; esac
 # A dead tracker must not make `status` fail loudly — the offline half is still worth reporting,
@@ -817,10 +992,12 @@ facts='{"release_milestone":"Next release","backlog_milestone":"Backlog","blocke
         "milestones":[{"title":"Next release","open_issues":4},{"title":"Backlog","open_issues":2}],
         "dispositions":[],
         "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1,
-        "release_command_resolved":true}'
+        "release_command_resolved":true,
+        "bots_state":"declared","bots_declared":["chatgpt-codex-connector"],
+        "pr_history":3,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["chatgpt-codex-connector"]}'
 combined="$( { ar probe "$d"; printf '%s' "$facts" | ar tracker; } )"
 out="$(printf '%s' "$combined" | ar verdict)"; rc=$?
-has "$out" "12 of 12 rungs evaluated" "e2e: probe+tracker cover the whole contract"
+has "$out" "$NRUNGS of $NRUNGS rungs evaluated" "e2e: probe+tracker cover the whole contract"
 has "$out" "VERDICT: green" "e2e: a fully adopted fixture is green"
 eq "$rc" "0" "e2e: green exits 0"
 
@@ -830,7 +1007,9 @@ facts_bad='{"release_milestone":"Next release","backlog_milestone":"Backlog","bl
         "milestones":[{"title":"Next release","open_issues":0},{"title":"Backlog","open_issues":2}],
         "dispositions":[],
         "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1,
-        "release_command_resolved":true}'
+        "release_command_resolved":true,
+        "bots_state":"declared","bots_declared":["chatgpt-codex-connector"],
+        "pr_history":3,"pr_window":100,"reviews_truncated":[],"reviewer_logins":["chatgpt-codex-connector"]}'
 combined="$( { ar probe "$d"; printf '%s' "$facts_bad" | ar tracker; } )"
 out="$(printf '%s' "$combined" | ar verdict)"; rc=$?
 has "$out" "VERDICT: red" "e2e: an empty release milestone makes the whole contract red"
@@ -874,7 +1053,7 @@ else bad "read-only: the receipt lands in the state dir"; fi
 # Matched through the PLACEHOLDER, which is how the workflow actually spells the invocation —
 # `{{ADOPT_READINESS}} probe`, rendered per agent by scripts/build.sh. Grepping for a bare
 # `readiness probe` would pass on prose that merely mentions the step and fail on the real call.
-for sub in contract probe facts tracker verdict "receipt run" status; do
+for sub in contract probe facts observe tracker verdict "receipt run" status; do
   if grep -q "ADOPT_READINESS}} $sub" "$WF"; then ok
   else bad "workflow: adopt.md must call '{{ADOPT_READINESS}} $sub'"; fi
 done
@@ -906,7 +1085,7 @@ if [ "$MUTATE" -eq 1 ]; then
 # <dir> — build the tree copy ONCE; shmutant clones it for every row. `base` too: the suite reads
 # base/workflows/adopt.md.
 _ar_mut_prepare() {
-  check_copy_subtrees "$ROOT" "$1" scripts base >/dev/null 2>&1
+  check_copy_subtrees "$ROOT" "$1" scripts base bin >/dev/null 2>&1
 }
 # <root> — run the suite recursively. ADB_STATE_DIR keeps the child's receipt inside its own clone.
 # NOT `--mutation`, or the child would recurse.
@@ -1072,6 +1251,91 @@ shmutant_mut unterminated-final-record-dropped \
     'while IFS= read -r line || [ -n "$line" ]; do' \
     'while IFS= read -r line; do' \
     'e2e: probe+tracker cover the whole contract'
+
+shmutant_mut reviewers-empty-declaration-ok \
+    '            if [ -z "$decl_list" ] && [ -n "$obs" ]; then' \
+    '            if false; then' \
+    'tracker: bots = [] while an App reviews is todo'
+shmutant_mut reviewers-unseen-ignored \
+    '            elif [ -n "$unseen" ]; then' \
+    '            elif false; then' \
+    'tracker: a declared login no PR has seen is todo'
+shmutant_mut reviewers-unread-history-compared \
+    '        elif [ "$rc_p" -ne 0 ]; then' \
+    '        elif false; then' \
+    'tracker: an unread-history unknown says the history could not be read'
+shmutant_mut reviewers-zero-history-compared \
+    '        elif [ "$prs" -eq 0 ]; then' \
+    '        elif false; then' \
+    'tracker: no pull request yet is na'
+shmutant_mut reviewers-match-raw-login \
+    '                 [ .reviewer_logins[] | . + "[bot]" ] as $obs' \
+    '                 [ .reviewer_logins[] ] as $obs' \
+    'tracker: a [bot]-suffixed declaration matches the observed App'
+shmutant_mut reviewers-undeclared-unhandled \
+    '      undeclared)' \
+    '      undeclared-NEVER)' \
+    'tracker: an undeclared bots is todo'
+shmutant_mut reviewers-history-unvalidated \
+    "    if [ \"\$rc_p\" -eq 0 ] && ! printf '%s' \"\$json\" | jq -e '" \
+    "    if false && ! printf '%s' \"\$json\" | jq -e '" \
+    "tracker: a reviewer login outside GitHub's grammar is malformed, not empty"
+shmutant_mut observe-typename-ignored \
+    '            | select(.author != null and .author.__typename == "Bot")' \
+    '            | select(.author != null)' \
+    'observe: a human reviewer is not an App reviewer'
+shmutant_mut observe-login-grammar-trimmed \
+    '          then error("a reviewer login outside the grammar") else . end' \
+    '          then . else . end' \
+    'observe: a login outside the grammar drops the whole review read'
+shmutant_mut observe-truncation-unreported \
+    '          ( $p[] | select(.reviews.totalCount > (.reviews.nodes | length)) | "truncated\t\(.number)" )' \
+    '          empty' \
+    'observe: a PR whose reviews ran past the bound is named'
+shmutant_mut observe-missing-author-accepted \
+    '          def node_ok: type == "object" and has("author")' \
+    '          def node_ok: type == "object"' \
+    'observe: a malformed review response (missing-author)'
+shmutant_mut observe-fractional-count-accepted \
+    '                     and (.reviews.totalCount | int) and .reviews.totalCount >= 0' \
+    '                     and true' \
+    'observe: a malformed review response (fractional-count)'
+shmutant_mut observe-duplicate-pr-accepted \
+    '             or ([ $p[].number ] | length != (unique | length))' \
+    '             or false' \
+    'observe: a malformed review response (duplicate-pr)'
+shmutant_mut observe-past-window-accepted \
+    '          if ($p | type) != "array" or ($p | length) > $w' \
+    '          if ($p | type) != "array"' \
+    'observe: a malformed review response (past-window)'
+shmutant_mut observe-name-typed \
+    '  if raw="$(gh api graphql -f owner="$owner" -f name="$name"' \
+    '  if raw="$(gh api graphql -f owner="$owner" -F name="$name"' \
+    'observe: the repository name is passed as a string (-f), never typed (-F)'
+shmutant_mut observe-order-unpinned \
+    '                       orderBy: {field: CREATED_AT, direction: ASC}) {' \
+    '                       ) {' \
+    'observe: the read pins its order (orderBy CREATED_AT)'
+shmutant_mut facts-truncation-dropped \
+    '                   reviews_truncated: ($t | split("\n") | map(select(length > 0) | tonumber))}'"'"')"' \
+    '                   reviews_truncated: []}'"'"')"' \
+    'facts: carries the truncated pull requests'
+shmutant_mut reviewers-truncated-absence-claimed \
+    '            elif [ -z "$decl_list" ] && [ -n "$trunc" ]; then' \
+    '            elif false; then' \
+    'tracker: bots = [] over a truncated history is unknown'
+shmutant_mut reviewers-declared-grammar-unchecked \
+    "        elif ! printf '%s' \"\$json\" | jq -e '.bots_declared | all(test(" \
+    "        elif false && ! printf '%s' \"\$json\" | jq -e '.bots_declared | all(test(" \
+    'tracker: a declared entry that is not a GitHub login is named as such'
+shmutant_mut tracker-truncation-ids-unchecked \
+    '         and (.reviews_truncated | length == (unique | length))' \
+    '         and true' \
+    'tracker: a malformed truncated list ([35,35]) is unknown'
+shmutant_mut facts-ignores-declaration \
+    '  bots="$(bash "$_AR_LIB_DIR/role-dispatch.sh" bots --comparable 2>/dev/null)"; brc=$?' \
+    '  bots=""; brc=0' \
+    'status: the corrected declaration is no longer outstanding'
 
 # Width from `adb_pool_size` (min(cpu, 4)); `ADB_POOL_JOBS` is the operator/test seam. The cap is
 # 4 because that is what it already was — nothing measured justifies moving it (D66).

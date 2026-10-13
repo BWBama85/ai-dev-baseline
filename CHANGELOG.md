@@ -51,6 +51,23 @@ only by a published release, which is what these entries are the notes for.
 
 ### Added
 
+- **`/adopt` proposes every `agents.toml` section, infers `[reviewers]` from the repo's pull
+  requests, and interviews the owner (#459, D128).** The proposal used to be `[roles]` alone, so
+  every other section was hand-written afterwards; on one measured adoption the operator wrote
+  `[reviewers] bots = []` while the Codex App had reviewed the repo's PRs for two months, and a PR
+  merged three minutes before the reviewer posted six findings. `propose` now renders every section
+  `templates/agents.toml` ships, each live with its evidence or commented with the reason. `bots` is
+  inferred from the GitHub Apps that reviewed the 100 most recent pull requests, read by the new
+  `adopt-readiness.sh observe` (GraphQL review authors typed `Bot`; a comment-only bot is not a
+  reviewer), and `bots = []` is proposed only from a history that was read whole and showed none,
+  never from an empty, unread or truncated one. A one-message interview after the scan asks who drives, who reviews,
+  what the gates are and who cuts releases, pre-filled from what was inferred; answers are validated
+  by `adopt-lib.sh answers` (every pair checked before the file is published, its mode kept) and override the inference (`--no-interview` skips it). Two new hygiene
+  axes: `agent-doc` (a role's agent cannot see the project's root doc) and `branch-hygiene`
+  (`delete_branch_on_merge` off, reported and never applied). A new completion-contract rung,
+  `reviewers`, is red when `bots = []` is declared while an App reviews, when a declared login
+  reviewed none of the observed PRs, or when nothing is declared; it reads the declaration through
+  the merge guard's own reader and match.
 - **The PR loops read the head's CI (#448).** A required check that went red on a head the
   resolver had just pushed used to be invisible to every later round, which could report itself
   clean over it. `pr-watch.sh` now reads the head's check runs, statuses and the base branch's
@@ -227,6 +244,15 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **The upstream pin's `version` describes the commit it was written with (#464).** `/adopt`
+  derived it with `git describe --tags --abbrev=0`, the nearest tag NAME, so a clone 13 commits past
+  v3.0.0 pinned `version = "v3.0.0"` beside a `commit` that was not v3.0.0. The new
+  `adopt-lib.sh pin-describe` resolves the baseline once and prints both fields from that one
+  object: `v3.0.0` only when the clone sits on the tag, otherwise `v3.0.0-13-g<sha>`. A `git` that
+  fails, or tags that cannot describe the clone (a shallow clone), is now an error rather than the
+  empty version that means "no tag yet". **Adopters: check your own pin** — if its `version` is a
+  bare tag, `git -C <baseline-clone> describe --tags <commit>` says whether it was really that
+  release; correcting it is a one-line commit in your repo.
 - **A Codex clean pass that arrives with a comment is clean, and the connector's review-status
   comment no longer reads as a finished review (#447).** The connector reports a clean pass as a
   `+1` and a same-second comment. The shared classifier ranked the comment above the `+1`, so
