@@ -9824,7 +9824,7 @@ survive is the part a later reader needs.
              **The nightly bound rises to 360 minutes** (owner, 2026-10-13). The nightly
              `settings-fragment-mutation` job was already being cancelled at its 240-minute
              `timeout-minutes` (2026-10-12 and 2026-10-13), and this change adds rows and installer
-             fixtures to that suite: 262 rows become 289, and one sequential suite run on macOS took
+             fixtures to that suite: 262 rows become 290, and one sequential suite run on macOS took
              172 s against `main`'s 145 s at 285 rows. Scaled onto a hosted run that was cancelled, that
              is an ESTIMATE of 310+ minutes, not a bound, and the headroom under 360 stays unknown
              until a hosted run completes. 360 is GitHub's maximum for a hosted-runner job, so the real fix is splitting

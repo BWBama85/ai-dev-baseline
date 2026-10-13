@@ -507,8 +507,8 @@ _adb_wire_settings_locked() {
       # A SATISFIABLE KEY HAS A SECOND WAY OUT (#462, D129): keep it and add what we ship to it. A
       # hint, not a decision, so a read that fails only loses the line.
       local _sat_hint
-      _sat_hint="$(printf '%s' "$result" | jq -r --argjson sat "$(adb_claude_settings_satisfiable | jq -cs .)" --slurpfile f "$payload" '
-          [ .blocked[] | . as $p | select($sat | map(. == $p) | any)
+      _sat_hint="$(printf '%s' "$result" | jq -r --argjson sat "$(adb_claude_settings_satisfiable | jq -cs .)" --slurpfile f "$payload" "$(adb_claude_settings_jq_defs)"'
+          [ .blocked[] | . as $p | select(member($sat; $p))
             | "\(join(".")) needs \($f[0] | getpath($p) | map("\"" + tostring + "\"") | join(" and "))" ] | join("; ")' 2>/dev/null)" || _sat_hint=""
       [ -n "$_sat_hint" ] && adb_info "           Or keep yours and add what the policy ships — $_sat_hint. An array holding all of it is yours, and is not in the way."
     fi

@@ -3862,6 +3862,11 @@ if check_block an-operator-s-own-excludedcommands-can-s the-merge-s-verdicts-und
 # most likely to extend. Under D100 alone either would refuse the whole policy, so an array holding
 # every shipped entry counts as satisfied: left exactly as it is, recorded as theirs, never removed.
 sat_names() { printf '%s' "$1" | jq -r '.satisfied | map(join(".")) | join(",")'; }
+# What a failed installer fixture saw, printed before `$work` is deleted on exit.
+sat_evidence() {   # sat_evidence <installer-log> <home>
+  { printf '  --- the installer said:\n'; sed 's/^/  | /' "$1" 2>&1
+    printf '  --- and left this record:\n'; sed 's/^/  | /' "$2/.claude/.adb-settings-owned" 2>&1; } >&2
+}
 
 # A pre-existing superset is satisfied: the rest is written, that key is not.
 r="$(m '{"sandbox":{"excludedCommands":["docker *","gh *","git *"]}}' "$work/empty-receipt")"
@@ -4020,7 +4025,7 @@ grep -q "^satisfied${ADB_TAB}" "$sc_home/.claude/.adb-settings-owned" && ok || b
 jq '.sandbox.excludedCommands = ["docker *","git *"]' "$sc_home/.claude/settings.json" > "$work/sc.tmp" && mv "$work/sc.tmp" "$sc_home/.claude/settings.json"
 HOME="$sc_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/sat-carry.log" 2>&1
 grep -q "^satisfied${ADB_TAB}" "$sc_home/.claude/.adb-settings-owned" \
-  && bad "a satisfied key that has lapsed must not be CARRIED by the opt-out — currency reads it as diverged, and every update would re-run the installer to carry it again" || ok
+  && { bad "a satisfied key that has lapsed must not be CARRIED by the opt-out — currency reads it as diverged, and every update would re-run the installer to carry it again"; sat_evidence "$work/sat-carry.log" "$sc_home"; } || ok
 _src=0; adb_claude_settings_leaves_intact "$sc_home/.claude/.adb-settings-owned" "$sc_home/.claude/settings.json" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 0 ] && ok || bad "after the opt-out relinquished a lapsed satisfied key, currency must read the record as intact — anything else loops; rc $_src"
 
@@ -4033,17 +4038,24 @@ jq '.sandbox.excludedCommands += ["docker *"]' "$xo_home/.claude/settings.json" 
 HOME="$xo_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/sat-handover.log" 2>&1
 [ "$(grep -c "^leaf$ADB_TAB" "$xo_home/.claude/.adb-settings-owned" || true)" -eq 4 ] \
   && grep -qxF "satisfied${ADB_TAB}[\"sandbox\",\"excludedCommands\"]" "$xo_home/.claude/.adb-settings-owned" && ok \
-  || bad "the opt-out must HAND OVER an excludedCommands the operator extended, keeping the other four leaves — relinquishing all five is the takeover the write path does not do"
+  || { bad "the opt-out must HAND OVER an excludedCommands the operator extended, keeping the other four leaves — relinquishing all five is the takeover the write path does not do"; sat_evidence "$work/sat-handover.log" "$xo_home"; }
 _src=0; adb_claude_settings_leaves_intact "$xo_home/.claude/.adb-settings-owned" "$xo_home/.claude/settings.json" "$PAYLOAD" || _src=$?
 [ "$_src" -eq 0 ] && ok || bad "after the hand-over the record must read as intact; rc $_src"
+# ...and the updater, which tells a relinquishment from a downgrade by the rows a record carries before
+# and after a self-heal, must still count FIVE: a hand-over moves a row, it gives nothing up.
+xo_rows="$(HOME="$xo_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
+  adb_settings_row_count')"
+[ "$xo_rows" = 5 ] && ok \
+  || bad "after a hand-over the record still accounts for five keys — the updater read ${xo_rows:-nothing}, and fewer reports a relinquishment that never happened"
 # ...but only when that is the WHOLE divergence: an extended array beside a real edit still relinquishes.
 xe_home="$work/sat-handover-edit"; rm -rf "$xe_home"; mkdir -p "$xe_home/.claude"
 echo '{}' > "$xe_home/.claude/settings.json"
 HOME="$xe_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
 jq '.sandbox.excludedCommands += ["docker *"] | .sandbox.enabled = false' "$xe_home/.claude/settings.json" > "$work/xe.tmp" && mv "$work/xe.tmp" "$xe_home/.claude/settings.json"
-HOME="$xe_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+HOME="$xe_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-sandbox >"$work/sat-handover-edit.log" 2>&1
 [ "$(grep -c "^leaf$ADB_TAB" "$xe_home/.claude/.adb-settings-owned" || true)" -eq 0 ] && ok \
-  || bad "an extended array beside a real edit is a takeover and must still relinquish every row"
+  || { bad "an extended array beside a real edit is a takeover and must still relinquish every row"; sat_evidence "$work/sat-handover-edit.log" "$xe_home"; }
 # ...and when the hand-over CANNOT BE CHECKED — the clone's fragment is damaged — the record is KEPT,
 # never relinquished: four unchanged owned keys would otherwise stay installed with nothing owning them.
 xu_home="$work/sat-handover-unchecked"; rm -rf "$xu_home"; mkdir -p "$xu_home/.claude"
@@ -4054,10 +4066,10 @@ cp "$xu_home/.claude/.adb-settings-owned" "$work/xu-before"
 xu_clone="$work/xu-clone"; rm -rf "$xu_clone"
 check_copy_worktree "$ROOT" "$xu_clone" >/dev/null 2>&1 && ok || bad "precondition: the clone copy for the unchecked hand-over must succeed"
 printf '{"sandbox":' > "$xu_clone/agents/claude/settings.fragment.json"
-HOME="$xu_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claude --no-hooks --no-sandbox >/dev/null 2>&1
+HOME="$xu_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claude --no-hooks --no-sandbox >"$work/xu.log" 2>&1
 grep -v '^source' "$work/xu-before" > "$work/xu-a"; grep -v '^source' "$xu_home/.claude/.adb-settings-owned" > "$work/xu-b"
 cmp -s "$work/xu-a" "$work/xu-b" && ok \
-  || bad "a hand-over that could not be checked must KEEP the existing record — relinquishing strands four unchanged owned keys"
+  || { bad "a hand-over that could not be checked must KEEP the existing record — relinquishing strands four unchanged owned keys"; sat_evidence "$work/xu.log" "$xu_home"; }
 # ...and a SATISFIED row the same damaged fragment cannot recheck is carried, but SAID to be unverified.
 sv_home="$work/sat-carry-unverified"; rm -rf "$sv_home"; mkdir -p "$sv_home/.claude"
 echo '{"sandbox":{"excludedCommands":["docker *","gh *","git *"]}}' > "$sv_home/.claude/settings.json"
@@ -4066,7 +4078,7 @@ HOME="$sv_home" PATH="$work/bin:$PATH" bash "$xu_clone/install.sh" --agent claud
 grep -q "^satisfied${ADB_TAB}" "$sv_home/.claude/.adb-settings-owned" && ok \
   || bad "precondition: a satisfied row the fragment cannot recheck is still carried"
 grep -q "carried UNVERIFIED" "$work/sat-unverified.log" && ok \
-  || bad "a satisfied row carried without a recheck must be SAID to be unverified — silence reads as a verified carry"
+  || { bad "a satisfied row carried without a recheck must be SAID to be unverified — silence reads as a verified carry"; sat_evidence "$work/sat-unverified.log" "$sv_home"; }
 
 # AN UNSATISFIED excludedCommands REFUSES — and the refusal names the other way out, which for this key
 # is the one an operator wants: keep their list and add what the policy ships to it.
@@ -4076,7 +4088,7 @@ HOME="$sr_home" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --
 [ "$(adb_claude_settings_disposition "$sr_home/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
   || bad "precondition: an excludedCommands short of the shipped entries must still refuse the lot"
 grep -qF 'sandbox.excludedCommands needs "git *" and "gh *"' "$work/sat-refuse.log" && ok \
-  || bad "a refusal over excludedCommands must name the entries to add — removing the operator's own list is not the only way out"
+  || { bad "a refusal over excludedCommands must name the entries to add — removing the operator's own list is not the only way out"; sat_evidence "$work/sat-refuse.log" "$sr_home"; }
 fi
 
 check_blocks_done
@@ -5179,7 +5191,7 @@ if [ "$MUTATION" -eq 1 ]; then
     '    | all( . as $s | true )   # satisfied-hold' \
     'has lost a shipped entry must read as DIVERGED'
   check_row 'a satisfied row for an unsatisfiable key is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
-    '      | if ($sat | map(. == $pj) | any) then $pj' \
+    '      | if member($sat; $pj) then $pj' \
     '      | if true then $pj' \
     'cannot be satisfied must be refused as DAMAGED'
   check_row 'a non-string element beside the shipped entries satisfies' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
@@ -5230,6 +5242,10 @@ if [ "$MUTATION" -eq 1 ]; then
     '      adb_info "  sandbox  your sandbox.excludedCommands is carried UNVERIFIED — the policy fragment could not be" >&2' \
     '      :' \
     'must be SAID to be unverified'
+  check_row 'the updater reads a hand-over as a relinquishment' 'bin/baseline' 'an-operator-s-own-excludedcommands-can-s' \
+    "  n=\"\$(grep -c -E \"^(leaf|satisfied)\$(printf '\\t')\" \"\$r\" 2>/dev/null)\"; grc=\$?" \
+    "  n=\"\$(grep -c -E \"^(leaf)\$(printf '\\t')\" \"\$r\" 2>/dev/null)\"; grc=\$?" \
+    'still accounts for five keys'
   check_row 'a key recorded both owned and satisfied is accepted' 'scripts/lib/common.sh' 'an-operator-s-own-excludedcommands-can-s' \
     '  [ "$_both" = "0" ] || return 21   # satisfied-and-owned' \
     '  :   # satisfied-and-owned' \

@@ -107,7 +107,7 @@ jobs:
     needs: plan
     runs-on: ubuntu-26.04
     # Sized for the largest harness: full-suite `settings-fragment-mutation`, which already exceeded
-    # 240 minutes and which #462 grew (289 rows against 262, and a longer suite run). Scaled from
+    # 240 minutes and which #462 grew (290 rows against 262, and a longer suite run). Scaled from
     # macOS timings, an ESTIMATE of 310+ minutes — not a bound, and the headroom under 360 is UNKNOWN
     # until a hosted run completes (D129). 360 is GitHub's hosted-job maximum; the fix is splitting
     # the work (#532).

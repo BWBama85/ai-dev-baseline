@@ -102,7 +102,7 @@ than none:
     A `codex exec` or `agy -p` dispatch — the cross-agent path this file exists for —
     runs with the workstation's own privileges exactly as before.
   - **It is opt-out-able and version-gated.** `install.sh --no-sandbox` declines it, and
-    a CLI below the floor gets nothing at all (by design: an inert key would report
+    a CLI below the floor gets no new policy (by design: an inert key would report
     protection it never applied). Neither state is detectable from an agent's prose.
   - **It bounds sandboxed Bash, not the agent.** In-process tools follow their permission
     rules instead, and unless `allowUnsandboxedCommands` is set to `false` a blocked command can

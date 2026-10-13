@@ -1605,13 +1605,14 @@ _adb_claude_settings_satisfied_json() {
   esac
   _rbody="$(cat "$receipt" 2>/dev/null)" || return 20   # receipt-open-failed-satisfied
   _sat="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || return 2
-  _out="$(printf '%s\n' "$_rbody" | jq -R -n -c --argjson sat "$_sat" '[ [inputs][]   # satisfied-one-evaluation
+  _out="$(printf '%s\n' "$_rbody" | jq -R -n -c --argjson sat "$_sat" "$(adb_claude_settings_jq_defs)"'
+      [ [inputs][]   # satisfied-one-evaluation
       | select(startswith("satisfied\t"))
       | ltrimstr("satisfied\t") as $rest
       | if ($rest | index("\t")) == null then $rest
         else error("receipt: satisfied row carries a field after its path") end   # satisfied-one-field
       | (try fromjson catch error("receipt: satisfied path is not JSON")) as $pj
-      | if ($sat | map(. == $pj) | any) then $pj
+      | if member($sat; $pj) then $pj
         else error("receipt: satisfied path is not satisfiable") end ]   # satisfied-path-predicate
       | if length == (unique | length) then . else error("receipt: a satisfied path is recorded twice") end   # satisfied-no-duplicate
     ' 2>/dev/null)"; _jrc=$?

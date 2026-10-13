@@ -318,7 +318,8 @@ place. To take them out, either delete them by hand, which the next install read
 and does not rewrite, or run `./uninstall.sh`. Uninstall removes only the keys this install still
 owns, so it leaves any it has already given up. It also deletes the ownership record, so a later
 `./install.sh` applies the policy again — unless a key uninstall left behind (one you edited, or one
-already given up) is still in your file, which blocks the whole policy as any key of yours does.
+already given up) is still in your file, which blocks the whole policy as any key of yours does. An
+`excludedCommands` that still holds every shipped entry is the exception here too.
 
 ### Run markers are session-owned
 
