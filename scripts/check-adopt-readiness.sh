@@ -26,8 +26,9 @@
 #          issues parked in an undispositioned one.
 #      Neither was visible by reading. Both are pinned below.
 #
-# OFFLINE and HERMETIC — and the second word had to be earned. The library never calls gh:
-# `probe` reads the filesystem, `tracker` reads a JSON object the caller assembled. Every fixture
+# OFFLINE and HERMETIC — and the second word had to be earned. `probe` reads the filesystem and
+# `tracker` reads a JSON object the caller assembled; the two subcommands that DO call gh, `facts`
+# and `observe`, are driven here only through a `gh` stub on PATH. Every fixture
 # is a `mktemp -d` tree. But "hermetic" also means the suite must not read the HOST, and for one
 # round it did: it inherited `$HOME` (so `adb_install_source` found the developer's install and
 # never CI's absence) and `$PATH` (so the PHP adapter resolved whatever toolchain the machine
@@ -40,10 +41,11 @@
 # WHAT THIS SUITE CANNOT PROVE, said plainly rather than implied away:
 #   - that a real adoption of one of #81's four surveyed repositories comes out green. Those
 #     repos are not here and CI cannot see them; the live acceptance run is manual.
-#   - that the tracker FACTS are gathered correctly. This proves what the library does with the
-#     facts it is handed; the gh reads that produce them live in the workflow, and their
-#     correctness rides on the readers that already own them (roadmap-lib, release-convention,
-#     repo-settings), each with its own suite.
+#   - that the live QUERIES are the right ones. `facts` and `observe` are exercised against a stub
+#     returning the response shapes they were written for, which proves what they do with a
+#     response — omitting a failed or malformed read, never defaulting it — not that GitHub sends
+#     that response. The delegated verdicts ride on the readers that own them (roadmap-lib,
+#     release-convention, repo-settings), each with its own suite.
 #   - that a green contract means the project is GOOD. It means every rung the contract names
 #     was met. The contract is a floor.
 #
@@ -745,6 +747,10 @@ has "$out" "reviewers${TAB}unknown" "tracker: a declared login unseen over a tru
 out="$(tr_out '{"bots_state":"declared","bots_declared":["chatgpt-codex-connector"],"pr_history":4,"pr_window":100,"reviews_truncated":[35],"reviewer_logins":["chatgpt-codex-connector"]}')"
 has "$out" "reviewers${TAB}ok" "tracker: a declared App SEEN over a truncated history is still ok"
 has "$out" "#35 had more reviews than were read" "...and the truncation is named in the detail"
+for bad_trunc in '[0]' '[35,35]' '[1,2,3,4,5]'; do
+  out="$(tr_out "{\"bots_state\":\"declared\",\"bots_declared\":[],\"pr_history\":4,\"pr_window\":100,\"reviews_truncated\":$bad_trunc,\"reviewer_logins\":[]}")"
+  has "$out" "reviewers${TAB}unknown" "tracker: a malformed truncated list ($bad_trunc) is unknown"
+done
 
 # --- release
 out="$(tr_out '{"release_command":"/release","release_command_resolved":true}')"
@@ -887,6 +893,16 @@ printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
 printf '%s\n' "$RV_GQL" | jq -c '.data.repository.pullRequests.nodes[1].reviews = null' > "$WORK/gh-gql.json"
 obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"
 hasnt "$obs" "prs${TAB}" "observe: a pull request whose reviews are null drops the whole history read"
+printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
+# EVERY REVIEW NODE IS VALIDATED: a null node, an author with no __typename, or a count smaller than
+# the nodes returned is a response this reader does not understand — never a complete history.
+for bad_gql in '.data.repository.pullRequests.nodes[0].reviews.nodes = [null]' \
+               'del(.data.repository.pullRequests.nodes[0].reviews.nodes[1].author.__typename)' \
+               '.data.repository.pullRequests.nodes[0].reviews.totalCount = -1'; do
+  printf '%s\n' "$RV_GQL" | jq -c "$bad_gql" > "$WORK/gh-gql.json"
+  obs="$( cd "$d" && PATH="$WORK/gh-reviews:$PATH" ar observe )"
+  hasnt "$obs" "prs${TAB}" "observe: a malformed review response ($bad_gql) drops the whole history read"
+done
 printf '%s\n' "$RV_GQL" > "$WORK/gh-gql.json"
 # A FAILED GraphQL read emits NO history record — never `prs 0`, which reads as "no pull requests".
 stub_gh "$WORK/gh-nogql" '
@@ -1285,6 +1301,14 @@ shmutant_mut reviewers-declared-grammar-unchecked \
     "        if [ \"\$rc\" -eq 0 ] && ! printf '%s' \"\$json\" | jq -e '.bots_declared" \
     "        if false && ! printf '%s' \"\$json\" | jq -e '.bots_declared" \
     'tracker: an empty-string declared login is malformed, not bots = []'
+shmutant_mut observe-review-nodes-unvalidated \
+    '          then error("a review node outside the shape the query asked for") else . end' \
+    '          then . else . end' \
+    'observe: a malformed review response (.data.repository.pullRequests.nodes[0].reviews.nodes = [null])'
+shmutant_mut tracker-truncation-ids-unchecked \
+    '         and (.reviews_truncated | length == (unique | length))' \
+    '         and true' \
+    'tracker: a malformed truncated list ([35,35]) is unknown'
 shmutant_mut facts-ignores-declaration \
     '  bots="$(bash "$_AR_LIB_DIR/role-dispatch.sh" bots --comparable 2>/dev/null)"; brc=$?' \
     '  bots=""; brc=0' \

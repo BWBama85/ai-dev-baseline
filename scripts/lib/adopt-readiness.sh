@@ -886,7 +886,9 @@ cmd_tracker() {
     if [ "$rc_p" -eq 0 ]; then _fact reviews_truncated array >/dev/null || rc_p=$?; fi
     if [ "$rc_p" -eq 0 ] && ! printf '%s' "$json" | jq -e '
          (.reviewer_logins | all(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9-]*$")))
-         and (.reviews_truncated | all(type == "number" and . >= 0 and . == floor))
+         and (.reviews_truncated | all(type == "number" and . >= 1 and . == floor))
+         and (.reviews_truncated | length == (unique | length))
+         and (.reviews_truncated | length) <= .pr_history
          and .pr_window >= 1 and .pr_history <= .pr_window
          and (.pr_history > 0 or ((.reviewer_logins | length) == 0 and (.reviews_truncated | length) == 0))' >/dev/null 2>&1; then
       rc_p=2
@@ -1319,15 +1321,25 @@ _ar_observe() {  # <owner/name> — the records; a read that fails is omitted, n
     if recs="$(printf '%s' "$raw" | jq -r --argjson w "$_AR_PR_WINDOW" '
         .data.repository.pullRequests.nodes as $p
         | if ($p | type) != "array" then error("no pull request list") else . end
-        | if any($p[]; (.number | type) != "number"
+        | if any($p[]; (type != "object")
+                       or (.number | type) != "number" or .number < 1 or .number != (.number | floor)
                        or (.reviews | type) != "object"
                        or (.reviews.totalCount | type) != "number"
-                       or (.reviews.nodes | type) != "array")
+                       or (.reviews.nodes | type) != "array"
+                       or .reviews.totalCount < (.reviews.nodes | length))
           then error("a pull request without a readable reviews connection") else . end
+        # EVERY REVIEW NODE IS READ, so every one is validated: a null node, or an author with no
+        # `__typename` or `login`, is a response this reader does not understand — never "a human".
+        | if any($p[].reviews.nodes[];
+                 (type != "object")
+                 or (.author != null and ((.author | type) != "object"
+                                          or (.author.__typename | type) != "string"
+                                          or (.author.login | type) != "string")))
+          then error("a review node outside the shape the query asked for") else . end
         | [ $p[] | .number as $n | .reviews.nodes[]
             | select(.author != null and .author.__typename == "Bot")
             | {l: .author.login, n: $n} ] as $bots
-        | if any($bots[]; (.l | type) != "string" or (.l | test("^[A-Za-z0-9][A-Za-z0-9-]*$") | not))
+        | if any($bots[]; .l | test("^[A-Za-z0-9][A-Za-z0-9-]*$") | not)
           then error("a reviewer login outside the grammar") else . end
         | "prs\t\($p | length)\t\($w)",
           ( $bots | group_by(.l | ascii_downcase)[]

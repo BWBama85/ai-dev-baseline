@@ -542,6 +542,13 @@ printf 'gap analysis is run by codex-exec\n' > "$SUBSTR/.claude/skills/x/SKILL.m
 eq "$(bash "$AD" roles-infer "$SUBSTR" | awk -F"$TAB" '$1=="gap_analysis"{print $2}')" none \
    "...and a dash-joined identifier is NOT the bare token either"
 
+# A CONTROL BYTE IN THE EVIDENCE PATH is illegal even in a TOML comment, so it is rendered escaped.
+ESCD="$WORK/esc-evidence"; mkdir -p "$ESCD/.claude/skills/x$(printf '\033')y"
+printf 'gap analysis is run by codex exec\n' > "$ESCD/.claude/skills/x$(printf '\033')y/SKILL.md"
+if bash "$AD" roles-infer "$ESCD" | bash "$AD" propose | LC_ALL=C grep -q "$(printf '\033')"; then
+  bad "propose: a control byte in an evidence path is escaped, never written into the TOML"
+else ok; fi
+
 AMB="$WORK/ambiguous"; mkdir -p "$AMB/.claude/skills/x"
 printf 'the code-review pass runs codex exec\nthe code-review pass also runs gemini\n' > "$AMB/.claude/skills/x/SKILL.md"
 eq "$(bash "$AD" roles-infer "$AMB" | awk -F"$TAB" '$1=="review"{print $2}')" ambiguous \
@@ -633,7 +640,12 @@ printf 'prs\t101\t100\n' > "$OBS/read-past-bound.tsv"
 printf 'prs\t2\t0\n' > "$OBS/zero-bound.tsv"
 printf 'prs\t0\t100\nreviewer\tchatgpt-codex-connector\t3\n' > "$OBS/reviewer-without-history.tsv"
 printf 'prs\t2\t100\nreviewer\tco\000dex\t1\n' > "$OBS/nul.tsv"   # stripped by `read`, it is a valid login
-for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs read-past-bound zero-bound reviewer-without-history nul; do
+printf 'prs\t1\t100\nreviewer\tapp\t1,2,3\n' > "$OBS/more-prs-than-read.tsv"
+printf 'prs\t3\t100\nreviewer\tapp\t5,5\n' > "$OBS/repeated-pr.tsv"
+printf 'prs\t3\t100\ntruncated\t0\n' > "$OBS/zero-truncated.tsv"
+printf 'prs\t3\t100\ntruncated\t5\ntruncated\t5\n' > "$OBS/repeated-truncated.tsv"
+for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs read-past-bound zero-bound reviewer-without-history nul \
+               more-prs-than-read repeated-pr zero-truncated repeated-truncated; do
   propose_obs "$OBS/$bad_obs.tsv" > "$WORK/p-$bad_obs.toml"
   eq "$(adb_toml_get "$WORK/p-$bad_obs.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
      "propose: a damaged observation ($bad_obs) is refused whole, never read as bots = []"
@@ -647,7 +659,14 @@ eq "$(adb_toml_get "$WORK/p-trunc.toml" reviewers bots >/dev/null 2>&1; echo $?)
 has "$(cat "$WORK/p-trunc.toml")" "#35 had more reviews than were read" "...and names the truncated pull request"
 
 # --- 7d. the interview's answers (#459): validated twice, override inference, refuse ambiguity ----
-an() { HOME="$WORK/nohome" bash "$AD" answer "$@"; }
+# an <key> <value> — publish ONE answer through `answers` into a scratch file and print the record.
+an() {
+  local f rc
+  f="$(mktemp "$WORK/an.XXXXXX")" || return 99
+  HOME="$WORK/nohome" bash "$AD" answers "$f" "$1=$2"; rc=$?
+  [ "$rc" -ne 0 ] || cat "$f"
+  rm -f "$f"; return "$rc"
+}
 eq "$(an primary codex)" "primary${TAB}codex" "answer: a valid answer prints one record"
 for bad_ans in "primary nope" "review codex,,gemini" "release maybe" "bots 'a b'" "gate.te.st x" \
                "gate-state.lint yes" "colour blue"; do
@@ -664,6 +683,28 @@ eq "$(an gate.test "$(printf 'make \033[1m')" >/dev/null 2>&1; echo $?)" 2 "answ
 # The gate label is the GATE RUNNER'S grammar: a label it ignores would read as a gate and run nothing.
 eq "$(an gate.123 'exit 0' >/dev/null 2>&1; echo $?)" 2 "answer: a gate label the gate runner would ignore is refused"
 eq "$(an gate-state.9x na >/dev/null 2>&1; echo $?)" 2 "answer: a gate-state label the gate runner would ignore is refused"
+# ONE agent token, never a list that happens to be a substring of the supported set.
+eq "$(an primary 'claude,codex' >/dev/null 2>&1; echo $?)" 2 "answer: primary = a two-agent list is refused"
+eq "$(an release 'claude,codex' >/dev/null 2>&1; echo $?)" 2 "answer: release = a two-agent list is refused"
+# THE PUBLISHER: every pair validated before anything is written, the existing mode carried, the
+# whole file replaced (never merged), a repeated key and a non-regular destination refused.
+AF="$WORK/answers-pub.tsv"
+HOME="$WORK/nohome" bash "$AD" answers "$AF" primary=claude bots=none >/dev/null 2>&1
+cp "$AF" "$WORK/answers-pub.before"
+HOME="$WORK/nohome" bash "$AD" answers "$AF" primary=codex review=nope >/dev/null 2>&1
+eq "$?" 2 "answers: a refused pair is exit 2"
+if cmp -s "$AF" "$WORK/answers-pub.before"; then ok; else bad "answers: a refused pair leaves the previous answers file whole"; fi
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AF" primary=claude primary=codex >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a key given twice is refused"
+chmod 640 "$AF"
+HOME="$WORK/nohome" bash "$AD" answers "$AF" release=claude >/dev/null 2>&1
+eq "$(adb_file_mode "$AF")" 640 "answers: publication keeps the existing file's mode"
+eq "$(cat "$AF")" "release${TAB}claude" "answers: publication replaces the whole file, never merges"
+HOME="$WORK/nohome" bash "$AD" answers "$AF" >/dev/null 2>&1
+eq "$(wc -c < "$AF" | tr -d ' ')" 0 "answers: no pair publishes an EMPTY file (nothing answered yet)"
+mkdir -p "$WORK/answers-dir.tsv"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$WORK/answers-dir.tsv" primary=claude >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a non-regular destination is refused"
 ANS="$WORK/answers.tsv"
 { an primary claude; an review codex,gemini; an bots none; an release none; an gate.test 'bash scripts/check.sh origin/main'
   an gate-state.lint na; } > "$ANS"
@@ -676,7 +717,7 @@ has "$(cat "$WORK/p-ans.toml")" "cuts no releases" "...and records the owner's a
 eq "$(adb_toml_unquote "$(adb_toml_get "$WORK/p-ans.toml" gates test)")" "bash scripts/check.sh origin/main" \
    "propose: an answered bespoke gate is live in [gates]"
 eq "$(adb_toml_get "$WORK/p-ans.toml" gates.state lint)" '"na"' "propose: an answered N/A axis is live in [gates.state]"
-# THE ANSWERS FILE IS RE-VALIDATED: it sits in a state dir anything can write, so what `answer`
+# THE ANSWERS FILE IS RE-VALIDATED: it sits in a state dir anything can write, so what `answers`
 # accepted is not proof of what `propose` is handed.
 printf 'primary\tnot-an-agent\n' > "$WORK/planted.tsv"
 bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted.tsv" > "$WORK/p-planted.toml"
@@ -716,6 +757,12 @@ eq "$(adb_toml_get "$WORK/p-gates-uncommented.toml" gates lint >/dev/null 2>&1; 
 : > "$WORK/no-gates.tsv"
 has "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/no-gates.tsv")" "NO GATE WAS DETECTED" \
     "propose: nothing detected names the bespoke-gate case loudly"
+# A detected command carrying a quote cannot round-trip through the TOML reader, so it is shown as
+# evidence, never as a line that breaks when the operator uncomments it.
+printf 'test\tpytest -k "not slow"\n' > "$WORK/quoted-gates.tsv"
+pq="$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/quoted-gates.tsv")"
+has   "$pq" 'write the line by hand' "propose: a detected gate carrying a quote is shown as evidence"
+hasnt "$pq" '# test      = "pytest' "propose: ...never as a key line that breaks when uncommented"
 printf 'test\tpnpm test\n9bad\tx\n' > "$WORK/bad-label-gates.tsv"
 hasnt "$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/bad-label-gates.tsv")" 'pnpm test' \
       "propose: a gate list with a label the runner would ignore is refused whole"
@@ -999,6 +1046,9 @@ has "$(HOME="$WORK/nohome" bash "$AD" hygiene "$AG" --agents gemini)" "agent-doc
 printf '[roles]\nprimary = "claude"\ngap_analysis = "gemini"\n' > "$WORK/proposal.toml"
 has "$(hyg --manifest "$WORK/proposal.toml")" "agent-doc${TAB}warn${TAB}GEMINI.md" \
     "hygiene: --manifest checks the roles of the manifest it names"
+printf '[roles]\nprimary = "claude"\nreview = ["zed"]\n' > "$WORK/unknown-agent.toml"
+has "$(hyg --manifest "$WORK/unknown-agent.toml")" "does not model" \
+    "hygiene: a role naming an agent the manifest does not model is reported, not skipped"
 cp "$AG/agents.toml" "$WORK/nul.toml"; printf '\000' >> "$WORK/nul.toml"
 has "$(hyg --manifest "$WORK/nul.toml")" "agent-doc axis did NOT run" \
     "hygiene: an unreadable manifest is a warning, never a clean agent-doc axis"
@@ -1168,13 +1218,13 @@ fi
 WFS="$WORK/wf-snippets"; mkdir -p "$WFS/state" "$WFS/stub"
 printf '#!/bin/sh\ncase "$1" in observe) printf '"'"'prs\\t3\\t100\\nreviewer\\tchatgpt-codex-connector\\t35,38,40\\ndelete-branch-on-merge\\tfalse\\n'"'"' ;; *) exit 2 ;; esac\n' > "$WFS/stub/readiness-ok"
 printf '#!/bin/sh\nexit 2\n' > "$WFS/stub/readiness-dead"
-wf_run() {  # <snippet> <readiness-stub> [<baseline>] — run one documented block; its exit status is returned
+wf_run() {  # <snippet> <readiness-stub> [<baseline>] [<gate-runner>] — run one documented block; its status is returned
   local body
   body="$(check_wf_snippet "$WF" "$1")"
   [ -n "$body" ] || { bad "adopt.md has no ADB-SNIPPET: $1 block"; return 99; }
   body="${body//\{\{ADOPT_LIB\}\}/bash \"$AD\"}"
   body="${body//\{\{ADOPT_READINESS\}\}/bash \"$WFS/stub/$2\"}"
-  body="${body//\{\{GATE_RUNNER\}\}/bash \"$ROOT/scripts/lib/project-gates.sh\"}"
+  body="${body//\{\{GATE_RUNNER\}\}/${4:-bash \"$ROOT/scripts/lib/project-gates.sh\"}}"
   body="${body//\{\{STATE_DIR\}\}/$WFS/state}"
   ( PROJECT="$FX" BASELINE="${3:-}" HOME="$WORK/nohome" bash -c "$body" ) >/dev/null 2>&1
 }
@@ -1184,6 +1234,17 @@ eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" reviewers bots)" '["chatgpt-co
 wf_run propose readiness-dead; eq "$?" 0 "workflow: a failed GitHub read does not stop the propose block"
 eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
    "workflow: a failed GitHub read leaves bots COMMENTED, never []"
+# STALE INPUTS NEVER SURVIVE A RE-RUN: a read-only answers file from an earlier run is replaced by an
+# empty one, and a gates file a failed detection could not overwrite is removed rather than read.
+printf 'primary\tcodex\nbots\tnone\n' > "$WFS/state/adopt-answers.tsv"; chmod 400 "$WFS/state/adopt-answers.tsv"
+printf 'test\tstale-gate-command\n' > "$WFS/state/adopt-gates.tsv"
+printf '#!/bin/sh\nexit 3\n' > "$WFS/stub/gates-dead"; chmod +x "$WFS/stub/gates-dead"
+wf_run propose readiness-ok "" "$WFS/stub/gates-dead"; eq "$?" 0 "workflow: a failed gate detection does not stop the propose block"
+eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
+   "workflow: a previous run's read-only answers never reach this run's proposal"
+hasnt "$(cat "$WFS/state/adopt-agents.toml")" "stale-gate-command" \
+      "workflow: a stale gates file never reaches this run's proposal"
+chmod 600 "$WFS/state/adopt-answers.tsv"
 wf_run propose readiness-ok
 wf_run interview readiness-ok; eq "$?" 0 "workflow: the interview block runs"
 eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" roles primary)" '"claude"' \
@@ -1192,12 +1253,13 @@ eq "$(adb_toml_unquote "$(adb_toml_get "$WFS/state/adopt-agents.toml" gates test
    "workflow: an answered bespoke gate lands in the proposal"
 # A REFUSED ANSWER leaves the previous answers WHOLE — the block publishes by rename.
 cp "$WFS/state/adopt-answers.tsv" "$WFS/answers-before"
-INTERVIEW_BAD="$(check_wf_snippet "$WF" interview | sed "s/answer review 'codex'/answer review 'nope'/")"
+INTERVIEW_BAD="$(check_wf_snippet "$WF" interview | sed "s/review='codex'/review='nope'/")"
 INTERVIEW_BAD="${INTERVIEW_BAD//\{\{ADOPT_LIB\}\}/bash \"$AD\"}"
 INTERVIEW_BAD="${INTERVIEW_BAD//\{\{STATE_DIR\}\}/$WFS/state}"
 ( HOME="$WORK/nohome" bash -c "$INTERVIEW_BAD" ) >/dev/null 2>&1
 no "$?" "workflow: a refused interview answer stops the block"
-if cmp -s "$WFS/answers-before" "$WFS/state/adopt-answers.tsv" && [ -z "$(find "$WFS/state" -name '.adopt-answers.*')" ]; then ok
+if cmp -s "$WFS/answers-before" "$WFS/state/adopt-answers.tsv" && [ -z "$(find "$WFS/state" -name '.adopt-answers.*')" ] \
+   && ! grep -q nope "$WFS/state/adopt-answers.tsv"; then ok
 else bad "workflow: a refused interview answer must leave the previous answers file whole, and no temp behind"; fi
 # A FAILED PUBLICATION stops the block before it re-renders — never a proposal built from the old answers.
 mkdir -p "$WFS/mvdead"; printf '#!/bin/sh\nexit 1\n' > "$WFS/mvdead/mv"; chmod +x "$WFS/mvdead/mv"
@@ -1406,10 +1468,6 @@ shmutant_mut observed-skips-unknown-kind \
     '      *) _AD_OBS_ERR="line $n: not a record kind this grammar has"; return 1 ;;' \
     '      *) continue ;;' \
     'propose: a damaged observation (bad-kind) is refused whole'
-shmutant_mut record-file-bytes-unchecked \
-    '  adb_bytes_whole "$1" 1048576' \
-    '  :' \
-    'propose: a damaged observation (cut-off) is refused whole'
 shmutant_mut observed-field-count-unchecked \
     '    adb_sweep_split "$line" "$want" || { _AD_OBS_ERR="line $n: a $kind record with the wrong field count"; return 1; }' \
     '    adb_sweep_split "$line" "$want" || :' \
@@ -1422,6 +1480,30 @@ shmutant_mut answers-duplicate-last-wins \
     '    if [ "${count[$k]}" -gt 1 ]; then' \
     '    if false; then' \
     'propose: a key answered twice applies neither answer'
+shmutant_mut answers-write-before-validating \
+    '    reason="$(_ad_answer_check "$k" "$v")" || die "answers: $reason — nothing was written"' \
+    '    reason="$(_ad_answer_check "$k" "$v")" || :' \
+    'answers: a refused pair leaves the previous answers file whole'
+shmutant_mut answers-mode-dropped \
+    '  adb_publish_json "$stage" "$file" --allow-empty --strict \' \
+    '  mv "$stage" "$file" \' \
+    "answers: publication keeps the existing file's mode"
+shmutant_mut known-agent-substring \
+    "  case \"\$1\" in ''|*[!a-z0-9-]*) return 1 ;; esac   # ONE token" \
+    '  : # ONE token' \
+    'answer: primary = a two-agent list is refused'
+shmutant_mut observed-pr-ids-unchecked \
+    '    [ "${#pr_seen[@]}" -le "$_AD_OBS_PRS" ] \' \
+    '    true \' \
+    'propose: a damaged observation (more-prs-than-read) is refused whole'
+shmutant_mut detected-gate-quote-rendered-as-key \
+    "        *'\"'*|*'\\'*) printf '#   %s (DETECTED" \
+    "        NEVERMATCHES) printf '#   %s (DETECTED" \
+    'propose: a detected gate carrying a quote is shown as evidence'
+shmutant_mut snapshot-skips-byte-rules \
+    '  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" 1048576 || rc=1; fi' \
+    '  :' \
+    'propose: a damaged observation (cut-off) is refused whole'
 shmutant_mut answer-control-bytes-accepted \
     '  _ad_toml_text_ok "$k" && _ad_toml_text_ok "$v" \' \
     '  true \' \
@@ -1498,10 +1580,14 @@ shmutant_mut workflow-pin-split-by-read \
     '{{ADOPT_LIB}} pin-render "${PIN_ID%%"$TABC"*}" "${PIN_ID#*"$TABC"}" \' \
     'IFS="$TABC" read -r PV PC <<< "$PIN_ID"; {{ADOPT_LIB}} pin-render "$PV" "$PC" \' \
     'workflow: the pin block runs for a tagless baseline'
-shmutant_mut workflow-interview-publish-unchecked \
-    'mv "$ANSWERS_TMP" "$ANSWERS" || {' \
-    'mv "$ANSWERS_TMP" "$ANSWERS" || true; false && {' \
-    'workflow: a failed publication of the answers stops the block before re-rendering the proposal'
+shmutant_mut workflow-interview-failure-unchecked \
+    '  || { echo "STOP: an answer was refused or could not be recorded' \
+    '  || true; false && { echo "STOP: an answer was refused or could not be recorded' \
+    'workflow: a refused interview answer stops the block'
+shmutant_mut workflow-stale-gates-read \
+    '  rm -f "{{STATE_DIR}}/adopt-gates.tsv"' \
+    '  : "{{STATE_DIR}}/adopt-gates.tsv"' \
+    'workflow: a stale gates file never reaches this run'"'"'s proposal'
 shmutant_mut workflow-pin-stale-survives \
     'rm -f "{{STATE_DIR}}/adopt-upstream.toml"' \
     ': "{{STATE_DIR}}/adopt-upstream.toml"' \

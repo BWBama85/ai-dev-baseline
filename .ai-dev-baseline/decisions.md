@@ -9725,8 +9725,11 @@ survive is the part a later reader needs.
              **Also decided in the implementation, within the issue's scope.** `propose` renders
              every section `templates/agents.toml` ships (the suite derives the list from the
              template); a DETECTED gate is listed COMMENTED, because the detector already runs it and
-             a live line would pin today's command; `[updates]` is rendered commented as global-only.
-             Interview answers are `<key>TAB<value>` records written by `adopt-lib.sh answer` and
+             a live line would pin today's command, and one carrying `"` or `\` is shown as evidence
+             rather than as a key line; `[updates]` carries no key and says it is global-only.
+             Interview answers are `<key>TAB<value>` records published by `adopt-lib.sh answers` —
+             every pair validated before anything is written, through `adb_publish_json`
+             (mode carried, `--strict`), so the workflow's prose carries no staging of its own — and
              RE-validated by `propose` (the state dir is agent-writable); a key answered twice applies
              neither answer; a gate command with `"` or `\` is refused, because this repo's TOML
              reader keeps escapes verbatim and the gate would read back as a different command. The
@@ -9734,18 +9737,20 @@ survive is the part a later reader needs.
              or when no human can answer. Every section HEADER is rendered live, keys commented where
              nothing was established, so a key the operator uncomments lands in its own table — a
              commented `# [gates.state]` let an uncommented `lint = "na"` become a gate command
-             named `na`. Answer and record files are read through `adb_bytes_whole` (1 MiB, no NUL,
-             final newline) and split with `adb_sweep_split`; a gate label must pass the gate
-             runner's own `_adb_valid_label`, and no value may carry a control character. `agent-doc` resolves roles from the project's manifest (the
-             proposal when there is none) layered over the global one, without built-in defaults; a
-             root-doc symlink that resolves is present. `branch-hygiene` reads the observation and
+             named `na`. Answer and record files are read as ONE bounded snapshot (a private copy of
+             at most 1 MiB, validated by `adb_bytes_whole` — no NUL, a final newline — and parsed
+             from that same copy) and split with `adb_sweep_split`; a gate label must pass the gate
+             runner's own `_adb_valid_label`, and no value may carry a control character. `agent-doc`
+             reads the DECLARED roles from the project's manifest (the proposal when there is none)
+             layered over the global one, without built-in defaults, and names a token the manifest
+             does not model; a root-doc symlink resolving to a regular file is present. `branch-hygiene` reads the observation and
              says "did NOT run" when the setting was not read. #464: `pin-describe` resolves
              `HEAD^{commit}` once and describes THAT name with `--abbrev=12`; no tags is an empty
              version, tags that cannot describe the commit or a failing `git` is exit 2; the tag
              grammar stays `pin-render`'s alone (one guard). The workflow splits the record by
              expansion, never `IFS=<tab> read` (which drops a tagless clone's empty field), and
              removes a previous run's pin before rendering.
-- placement: `scripts/lib/adopt-lib.sh` (`propose`, `answer`, `hygiene`, `pin-describe`);
+- placement: `scripts/lib/adopt-lib.sh` (`propose`, `answers`, `hygiene`, `pin-describe`);
              `scripts/lib/adopt-readiness.sh` (`observe`, `facts`, the `reviewers` rung);
              `base/workflows/adopt.md` (steps 5, 5b, 6, 8, 13) and its three renders;
              `scripts/check-adopt.sh`, `scripts/check-adopt-readiness.sh`; `scripts/selfcheck.sh`

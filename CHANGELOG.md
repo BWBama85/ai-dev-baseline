@@ -62,7 +62,7 @@ only by a published release, which is what these entries are the notes for.
   reviewer), and `bots = []` is proposed only from a history that was read whole and showed none,
   never from an empty, unread or truncated one. A one-message interview after the scan asks who drives, who reviews,
   what the gates are and who cuts releases, pre-filled from what was inferred; answers are validated
-  by `adopt-lib.sh answer` and override the inference (`--no-interview` skips it). Two new hygiene
+  by `adopt-lib.sh answers` (every pair checked before the file is published, its mode kept) and override the inference (`--no-interview` skips it). Two new hygiene
   axes: `agent-doc` (a role's agent cannot see the project's root doc) and `branch-hygiene`
   (`delete_branch_on_merge` off, reported and never applied). A new completion-contract rung,
   `reviewers`, is red when `bots = []` is declared while an App reviews, when a declared login

@@ -14,7 +14,8 @@
 # the word `remove`; it removes nothing, and no subcommand that could is defined. The only writes
 # /adopt performs at all are the two artifacts that DO NOT YET EXIST — `agents.toml` and the
 # upstream pin — and even those are the workflow's, on explicit approval, from content `propose`
-# and `pin-render` merely PRINT.
+# and `pin-render` merely PRINT. The one subcommand that writes a file, `answers`, writes the
+# interview's scratch file in the agent's own state dir, never in the project.
 #
 # That boundary is what makes the fail-closed convention below sufficient. A predicate whose
 # wrong answer would delete a project's forked skill needs backup, rollback, and partial-failure
@@ -56,7 +57,7 @@
 #   adopt-lib.sh propose     [--observed <f>] [--gates <f>] [--answers <f>]
 #                                                          # roles-infer TSV on stdin -> agents.toml,
 #                                                          #   every section the template ships
-#   adopt-lib.sh answer      <key> <value>                  # one validated interview answer record
+#   adopt-lib.sh answers     <file> [<key>=<value>…]        # validate the interview answers, publish <file>
 #   adopt-lib.sh stack       <project-root>                 # the project's stack label
 #   adopt-lib.sh hygiene     <project-root> [--agents a,b] [--manifest <f>] [--observed <f>]
 #                                                          # the six adoption-hygiene axes
@@ -246,6 +247,7 @@ _ad_agent_rootdoc() {
 # _ad_known_agent <token> — is this an agent token the baseline models? The set is the derived
 # default set, never a literal (see `_ad_default_agents`).
 _ad_known_agent() {
+  case "$1" in ''|*[!a-z0-9-]*) return 1 ;; esac   # ONE token: a list must never match as a substring
   case ",$(_ad_default_agents)," in *",$1,"*) return 0 ;; esac
   return 1
 }
@@ -257,15 +259,25 @@ _ad_gate_label_ok() {
   ( . "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" >/dev/null 2>&1 && _adb_valid_label "$1" )
 }
 
-# _ad_record_file_ok <file> — the byte rules every record file this library reads must pass: a
-# regular non-link file of at most 1 MiB, with no NUL byte and a final newline (`adb_bytes_whole`) —
-# or empty, which is a legitimate "nothing recorded". The files sit in an agent-writable state dir,
-# so the bound and the NUL test are what keep a planted file from being parsed at all; a missing
-# final newline is a write that stopped part-way, and `while read` would drop that line silently.
-_ad_record_file_ok() {
-  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 1
-  [ -s "$1" ] || return 0
-  adb_bytes_whole "$1" 1048576
+# _ad_snapshot_lines <file> — load <file> into _AD_SNAP (one element per line), or return 1.
+#
+# ONE SNAPSHOT IS VALIDATED AND PARSED: at most 1 MiB + 1 bytes are copied into a private temp, the
+# byte rules (`adb_bytes_whole`: at most 1 MiB, no NUL, a final newline — or empty, which means
+# "nothing recorded") are checked on that copy, and the lines are read from the same copy. Checking
+# the path and then reopening it would let a replacement in between defeat every one of those rules.
+# The file must be a regular non-link file, because the state dir it lives in is agent-writable.
+_AD_SNAP=()
+_ad_snapshot_lines() {
+  local f="$1" tmp rc=0
+  _AD_SNAP=()
+  [ -f "$f" ] && [ ! -L "$f" ] && [ -r "$f" ] || return 1
+  tmp="$(mktemp "${TMPDIR:-/tmp}/adb-adopt-snap.XXXXXX")" || return 1
+  head -c 1048577 -- "$f" > "$tmp" 2>/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" 1048576 || rc=1; fi
+  [ "$rc" -ne 0 ] || mapfile -t _AD_SNAP < "$tmp" || rc=1
+  rm -f "$tmp"
+  [ "$rc" -eq 0 ] || _AD_SNAP=()
+  return "$rc"
 }
 
 # _ad_toml_text_ok <value> — no control character, which TOML forbids in a basic string and in a
@@ -288,12 +300,13 @@ _ad_toml_text_ok() {
 _AD_OBS_ERR="" _AD_OBS_PRS="" _AD_OBS_WINDOW="" _AD_OBS_DBM="" _AD_OBS_TRUNC=""
 _AD_OBS_REVIEWERS=()
 _ad_observed_read() {  # <file> — 0 parsed (globals set), 1 unusable (_AD_OBS_ERR says why)
-  local f="$1" line n=0 kind want
-  local -A obs_seen=()
+  local f="$1" line n=0 kind want id
+  local -A obs_seen=() pr_seen=() trunc_seen=() own=()
+  local -a ids=()
   _AD_OBS_ERR="" _AD_OBS_PRS="" _AD_OBS_WINDOW="" _AD_OBS_DBM="" _AD_OBS_TRUNC=""
   _AD_OBS_REVIEWERS=()
-  _ad_record_file_ok "$f" || { _AD_OBS_ERR="missing, unreadable, over 1 MiB, carrying a NUL byte, or its last line is cut off"; return 1; }
-  while IFS= read -r line; do
+  _ad_snapshot_lines "$f" || { _AD_OBS_ERR="missing, unreadable, over 1 MiB, carrying a NUL byte, or its last line is cut off"; return 1; }
+  for line in "${_AD_SNAP[@]}"; do
     n=$((n + 1))
     [ -n "$line" ] || continue
     kind="${line%%"$TAB"*}"
@@ -317,20 +330,32 @@ _ad_observed_read() {  # <file> — 0 parsed (globals set), 1 unusable (_AD_OBS_
           || { _AD_OBS_ERR="line $n: a malformed reviewer record"; return 1; }
         [ -z "${obs_seen[${ADB_SWEEP_F[1],,}]:-}" ] || { _AD_OBS_ERR="line $n: reviewer ${ADB_SWEEP_F[1]} is listed twice"; return 1; }
         obs_seen[${ADB_SWEEP_F[1],,}]=1
+        # Each pull request a reviewer is credited with is a positive number, named once.
+        own=()
+        IFS=, read -r -a ids <<< "${ADB_SWEEP_F[2]}"
+        for id in "${ids[@]}"; do
+          [[ "$id" =~ ^[1-9][0-9]{0,8}$ ]] && [ -z "${own[$id]:-}" ] \
+            || { _AD_OBS_ERR="line $n: reviewer ${ADB_SWEEP_F[1]} names pull request $id twice, or not as a positive number"; return 1; }
+          own[$id]=1; pr_seen[$id]=1
+        done
         _AD_OBS_REVIEWERS+=("${ADB_SWEEP_F[1]}$TAB${ADB_SWEEP_F[2]}") ;;
       truncated)
-        [[ "${ADB_SWEEP_F[1]}" =~ ^[0-9]+$ ]] || { _AD_OBS_ERR="line $n: a malformed truncated record"; return 1; }
+        [[ "${ADB_SWEEP_F[1]}" =~ ^[1-9][0-9]{0,8}$ ]] && [ -z "${trunc_seen[${ADB_SWEEP_F[1]}]:-}" ] \
+          || { _AD_OBS_ERR="line $n: a malformed or repeated truncated record"; return 1; }
+        trunc_seen[${ADB_SWEEP_F[1]}]=1; pr_seen[${ADB_SWEEP_F[1]}]=1
         _AD_OBS_TRUNC="${_AD_OBS_TRUNC:+$_AD_OBS_TRUNC,}${ADB_SWEEP_F[1]}" ;;
       delete-branch-on-merge)
         case "${ADB_SWEEP_F[1]}" in true|false) ;; *) _AD_OBS_ERR="line $n: delete-branch-on-merge must be true|false"; return 1 ;; esac
         [ -z "$_AD_OBS_DBM" ] || { _AD_OBS_ERR="line $n: a repeated delete-branch-on-merge record"; return 1; }
         _AD_OBS_DBM="${ADB_SWEEP_F[1]}" ;;
     esac
-  done < "$f"
-  # Reviewer or truncation records need a history behind them, and an empty history has none.
-  if [ "${#_AD_OBS_REVIEWERS[@]}" -gt 0 ] || [ -n "$_AD_OBS_TRUNC" ]; then
+  done
+  # Reviewer and truncation records need a history behind them, naming no more distinct pull
+  # requests than that history read.
+  if [ "${#pr_seen[@]}" -gt 0 ]; then
     [ -n "$_AD_OBS_PRS" ] || { _AD_OBS_ERR="reviewer records with no prs record"; return 1; }
-    [ "$_AD_OBS_PRS" -gt 0 ] || { _AD_OBS_ERR="reviewer records beside a history of zero pull requests"; return 1; }
+    [ "${#pr_seen[@]}" -le "$_AD_OBS_PRS" ] \
+      || { _AD_OBS_ERR="the records name ${#pr_seen[@]} distinct pull request(s), more than the $_AD_OBS_PRS read"; return 1; }
   fi
   return 0
 }
@@ -356,8 +381,8 @@ _ad_pr_list() {
 #   gate.<label>       <command>|""             [gates] <label> — "" disables it
 #   gate-state.<label> na                       [gates.state] <label>
 #
-# _ad_answer_check <key> <value> — 0, or 1 with the reason on stdout. The one validator for `answer`
-# and for `propose`, which re-reads the agent-writable file rather than trusting what `answer` said.
+# _ad_answer_check <key> <value> — 0, or 1 with the reason on stdout. The one validator for `answers`
+# and for `propose`, which re-reads the agent-writable file rather than trusting what `answers` wrote.
 _ad_answer_check() {
   local k="$1" v="$2" t
   # A control character in either field would forge a record or break the TOML line it lands in.
@@ -395,11 +420,32 @@ _ad_answer_check() {
   return 0
 }
 
-cmd_answer() {
-  [ "$#" -eq 2 ] || die "answer: needs <key> <value> (an empty value is \"\")"
-  local reason
-  reason="$(_ad_answer_check "$1" "$2")" || die "answer: $reason"
-  printf '%s\t%s\n' "$1" "$2"
+# answers <file> [<key>=<value>…] — validate EVERY pair, then publish them as <file>'s whole
+# content, or publish nothing and exit 2. No pair publishes an empty file: "nothing answered yet".
+#
+# Publication is `adb_publish_json` (generic despite its name): a stage beside <file>, the existing
+# file's mode carried onto it (`--strict`: a mode it cannot read or apply refuses the write), a
+# non-regular <file> refused, and a rename. A refused pair leaves the previous file untouched.
+cmd_answers() {
+  [ "$#" -ge 1 ] && [ -n "$1" ] || die "answers: needs <file> [<key>=<value>…]"
+  local file="$1" pair k v reason stage dir
+  shift
+  local -A given=()
+  dir="$(dirname -- "$file")"
+  [ -d "$dir" ] || die "answers: not a directory: $(adb_display_value "$dir")"
+  for pair in "$@"; do
+    case "$pair" in *=*) ;; *) die "answers: not <key>=<value>: $(adb_tsv_field_display "$pair")" ;; esac
+    k="${pair%%=*}"; v="${pair#*=}"
+    reason="$(_ad_answer_check "$k" "$v")" || die "answers: $reason — nothing was written"
+    [ -z "${given[$k]:-}" ] || die "answers: $k is answered twice — nothing was written"
+    given[$k]=1
+  done
+  stage="$(mktemp "$dir/.adopt-answers.XXXXXX")" || die "answers: could not create a stage in $(adb_display_value "$dir")"
+  for pair in "$@"; do
+    printf '%s\t%s\n' "${pair%%=*}" "${pair#*=}" >> "$stage" || { rm -f "$stage"; die "answers: could not write the stage — nothing was published"; }
+  done
+  adb_publish_json "$stage" "$file" --allow-empty --strict \
+    || die "answers: could not publish $(adb_display_value "$file") (not a regular file, or its mode could not be carried) — the previous answers are unchanged"
 }
 
 # _ad_answers_read <file> — load the answers into _AD_ANS; every refused line lands in _AD_ANS_NOTES.
@@ -412,8 +458,8 @@ _ad_answers_read() {
   local -a lines=()
   local -A count=() noted=()
   _AD_ANS=(); _AD_ANS_NOTES=()
-  _ad_record_file_ok "$f" || { _AD_ANS_NOTES+=("the interview answers file could not be read whole — no answer was applied"); return 1; }
-  mapfile -t lines < "$f"
+  _ad_snapshot_lines "$f" || { _AD_ANS_NOTES+=("the interview answers file could not be read whole — no answer was applied"); return 1; }
+  lines=("${_AD_SNAP[@]}")
   for line in "${lines[@]}"; do
     k="${line%%"$TAB"*}"
     [ -n "$k" ] || continue
@@ -1056,7 +1102,7 @@ EOF
 #   stdin            `roles-infer` records
 #   --observed <f>   `adopt-readiness.sh observe` output — the PR history, for [reviewers]
 #   --gates <f>      `project-gates.sh detect` output — `<label>TAB<command>`, for [gates]
-#   --answers <f>    the interview's `answer` records — they OVERRIDE an inferred value, and the
+#   --answers <f>    the interview's `answers` records — they OVERRIDE an inferred value, and the
 #                    trailing comment says the owner answered rather than that the repo showed it
 cmd_propose() {
   local observed="" gates="" answers="" have_obs=0 have_gates=0 obs_why="" gates_why=""
@@ -1078,16 +1124,16 @@ cmd_propose() {
   # The gate list is validated WHOLE, like the observation: rendering the lines it understood would
   # present a partial gate set as the whole one.
   if [ -n "$gates" ]; then
-    if _ad_record_file_ok "$gates"; then
+    if _ad_snapshot_lines "$gates"; then
       have_gates=1
-      while IFS= read -r line; do
+      for line in "${_AD_SNAP[@]}"; do
         [ -n "$line" ] || continue
         if ! adb_sweep_split "$line" 2 || [ -z "${ADB_SWEEP_F[1]}" ] \
            || ! _ad_gate_label_ok "${ADB_SWEEP_F[0]}" || ! _ad_toml_text_ok "${ADB_SWEEP_F[1]}"; then
           have_gates=0; gates_why="a line is not <label>TAB<command>"; glines=(); break
         fi
         glines+=("${ADB_SWEEP_F[0]}$TAB${ADB_SWEEP_F[1]}")
-      done < "$gates"
+      done
     else
       gates_why="missing, unreadable, over 1 MiB, carrying a NUL byte, or its last line is cut off"
     fi
@@ -1136,6 +1182,8 @@ HDR
     if [ "$role" = review ] && [ -n "${_AD_ANS[review]:-}" ]; then
       _ad_render_review_answer; answered_review=1; continue
     fi
+    # The evidence quotes a scanned file's path, and a control byte is illegal even in a TOML comment.
+    _ad_toml_text_ok "$ev" || ev="$(adb_display_value "$ev")"
     case "$tok" in
       none|ambiguous)
         printf '# %-11s = ""          # NOT INFERRED: %s\n' "$role" "$ev" ;;
@@ -1295,7 +1343,12 @@ _ad_render_gates() {  # <have_gates> <file> <why> <label\tcommand>…
     for rec in "$@"; do
       label="${rec%%"$TAB"*}"; cmd="${rec#*"$TAB"}"
       [ -z "${_AD_ANS[gate.$label]+x}" ] || continue
-      printf '# %-9s = "%s"   # DETECTED: project-gates.sh already runs this — uncomment only to pin it\n' "$label" "$cmd"
+      # A command carrying `"` or `\` cannot round-trip through this repo's TOML reader, so it is
+      # shown as evidence rather than as a line that would break when uncommented.
+      case "$cmd" in
+        *'"'*|*'\'*) printf '#   %s (DETECTED, already run by project-gates.sh): %s   — it carries a quote or a backslash; to pin it, write the line by hand\n' "$label" "$cmd" ;;
+        *)           printf '# %-9s = "%s"   # DETECTED: project-gates.sh already runs this — uncomment only to pin it\n' "$label" "$cmd" ;;
+      esac
     done
   fi
   live=0
@@ -1437,9 +1490,10 @@ _ad_ignore_axis() {  # <project-root> <agent>
 # A role resolves to an agent whose ROOT DOC is not a readable file in the repo, so that agent works
 # here without the project's conventions. Reported only; how to mirror them is #6's to decide.
 #
-# The roles are the ones a dispatch would resolve: <manifest> (the project's agents.toml, or the
-# proposal when it has none) layered over the global manifest, as role-dispatch.sh layers them —
-# without built-in defaults, since an undeclared role falls back to `primary`, counted when declared.
+# The roles are the ones DECLARED: <manifest> (the project's agents.toml, or the proposal when it has
+# none) layered over the global manifest, as role-dispatch.sh layers them. Built-in defaults are NOT
+# applied (an undeclared role falls back to `primary`, which is counted when it is declared), so a
+# role resolved only by a built-in default is outside this axis — the report says "declared".
 # `--agents` does not narrow it: that filter picks config TREES, and a role names an agent regardless.
 # A symlink resolving to a regular file is present (`AGENTS.md -> CLAUDE.md` works); a dangling link,
 # a directory, or an unreadable file is not.
@@ -1470,9 +1524,10 @@ _ad_agent_doc_axis() {  # <root> <manifest>
       _ad_emit warning "the agent-doc axis could not resolve $tok's root doc from the install manifest — ${roles_of[$tok]} were NOT checked"
       continue
     fi
-    # An agent the install manifest does not model has no root doc to look for; the manifest rung
-    # and role-dispatch already refuse an unknown token.
-    [ -n "$doc" ] || continue
+    if [ -z "$doc" ]; then
+      _ad_emit warning "${roles_of[$tok]} name $(adb_tsv_field_display "$tok"), which the install manifest does not model — the agent-doc axis cannot check it (role-dispatch refuses it too)"
+      continue
+    fi
     if [ -L "$root/$doc" ] && [ ! -e "$root/$doc" ]; then
       _ad_emit agent-doc warn "$doc" "is a DANGLING symlink — ${roles_of[$tok]} resolve to $tok, which reads $doc and finds nothing; repoint it or replace it (#6 owns how conventions are mirrored across agents)"
     elif [ -e "$root/$doc" ] && [ ! -f "$root/$doc" ]; then
@@ -1910,7 +1965,7 @@ main() {
     classify)    cmd_classify "$@" ;;
     roles-infer) cmd_roles_infer "$@" ;;
     propose)     cmd_propose "$@" ;;
-    answer)      cmd_answer "$@" ;;
+    answers)     cmd_answers "$@" ;;
     stack)       cmd_stack "$@" ;;
     hygiene)     cmd_hygiene "$@" ;;
     pin-describe) cmd_pin_describe "$@" ;;
