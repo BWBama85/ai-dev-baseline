@@ -1049,21 +1049,26 @@ _adb_carry_rows() {
 # Usage: _adb_carry_handover <probe-json> <receipt-leaf-rows> <settings> <payload>
 # Returns: 0 with the paths on stdout as one JSON array — EVERY row the removal probe did not prove is
 #          a satisfiable leaf whose live value satisfies the shipped one; 1 not so (a real divergence);
-#          2 it could not be checked — no readable fragment, or a read that failed — which is never 1.
+#          2 the FRAGMENT cannot measure it (missing, unparseable, or a read of the receipt failed).
+# The live settings and the probe are NOT defended here: the caller's merge probe already refuses a
+# document it could not read, before this is reached. Failing closed on them a second time made that
+# guard undetectable to the mutation rows that delete it (one defence per defect), so here an
+# unreadable live document or probe proves no hand-over, and answers 1.
 _adb_carry_handover() {
   local probe="$1" rrows="$2" live="$3" frag="$4" rec sat out
   [ -s "$frag" ] || return 2
+  jq -e -s 'length == 1 and (.[0] | type) == "object"' "$frag" >/dev/null 2>&1 || return 2   # handover-fragment-readable
   rec="$(printf '%s\n' "$rrows" | cut -f1 | jq -cs . 2>/dev/null)" || return 2
   sat="$(adb_claude_settings_satisfiable | jq -cs . 2>/dev/null)" || return 2
-  out="$(jq -c -n --argjson probe "$probe" --argjson rec "$rec" --argjson sat "$sat" \
+  out="$(jq -c -n --argjson probe "${probe:-null}" --argjson rec "$rec" --argjson sat "$sat" \
      --slurpfile live "$live" --slurpfile frag "$frag" "$(adb_claude_settings_jq_defs)"'
-    if ($live | length) != 1 or ($frag | length) != 1 then error("not one value") else . end
-    | ($rec - $probe.pruned) as $unproved
+    if ($live | length) != 1 then error("not one value") else . end
+    | ($rec - ($probe.pruned // [])) as $unproved
     | if ($unproved | length) > 0
          and ($unproved | all(. as $p
                | member($sat; $p)
                  and (try satisfies_value($live[0] | getpath($p); $frag[0] | getpath($p)) catch false)))   # handover-all-unproved
-      then $unproved else null end' 2>/dev/null)" || return 2
+      then $unproved else null end' 2>/dev/null)" || return 1   # handover-live-unread-is-no-handover
   [ "$out" != null ] || return 1
   printf '%s' "$out"
 }

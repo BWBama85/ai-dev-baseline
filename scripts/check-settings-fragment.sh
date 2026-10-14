@@ -1594,7 +1594,7 @@ _sub=0; _adb_claude_settings_rows_complete "$_lc/substituted" "$PAYLOAD" || _sub
 _cr="$work/carryincomplete"; rm -rf "$_cr"; mkdir -p "$_cr"; cp "$PAYLOAD" "$_cr/settings.json"
 awk -v n=0 '/^leaf\t/ && n==0 {n=1; next} {print}' "$_lc/full" > "$_cr/lost"
 _crq() { bash -c '. "$1/scripts/lib/common.sh"
-  for fn in _adb_owned_rows _adb_carry_rows; do eval "$(sed -n "/^${fn}() {/,/^}/p" "$1/install.sh")"; done
+  for fn in _adb_owned_rows _adb_carry_handover _adb_carry_rows; do eval "$(sed -n "/^${fn}() {/,/^}/p" "$1/install.sh")"; done
   _adb_carry_rows "$2" "$3" "$4"' _ "$ROOT" "$@"; }
 _crr=0; _cro="$(_crq "$_cr/lost" "$_cr/settings.json" "$PAYLOAD" 2>/dev/null)" || _crr=$?
 [ "$_crr" -eq 23 ] && [ -z "$_cro" ] && ok \

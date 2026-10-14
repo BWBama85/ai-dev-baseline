@@ -9826,8 +9826,8 @@ survive is the part a later reader needs.
              `timeout-minutes` (2026-10-12 and 2026-10-13), and this change adds rows and installer
              fixtures to that suite: 262 rows become 290, and one sequential suite run on macOS took
              172 s against `main`'s 145 s at 285 rows. Scaled onto a hosted run that was cancelled, that
-             is an ESTIMATE of 310+ minutes, not a bound, and the headroom under 360 stays unknown
-             until a hosted run completes. 360 is GitHub's maximum for a hosted-runner job, so the real fix is splitting
+             was an ESTIMATE of 310+ minutes. MEASURED since: the labelled run 38455721958 took 307
+             minutes (18,429 s) at 289 rows, about 53 minutes under 360. 360 is GitHub's maximum for a hosted-runner job, so the real fix is splitting
              the work, which is #532.
 
              **The floor stays v2.1.187.** `excludedCommands` is present by v2.1.34 in the vendor
