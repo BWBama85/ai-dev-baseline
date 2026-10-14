@@ -1551,70 +1551,113 @@ cmd_sync_default() {
 }
 
 # --- snapshot-issues -----------------------------------------------------------------------------
-# Why a gh read failed, from its status and its captured stderr (#500). gh exits 1 for EVERY
-# failure (`gh help exit-codes`; 4 for auth), so the status cannot tell a missing issue from a TLS
-# failure — only gh's own wording can. Prints one word:
+# One bounded gh read whose stdout goes to <out-fd> and whose stderr is KEPT rather than streamed
+# (#500): the failure is classified from it, and only a redacted line of it is ever printed. Sets
+# _IL_GH_RC (the bounded call's status) and _IL_GH_ERR (the first 4 KiB of its stderr).
+#
+# Through a pipe into a variable, never a file: a staged stderr file is a pathname a descendant can
+# swap before it is reopened, and disk nothing bounds. The drain keeps a 4 KiB prefix and DISCARDS
+# the rest, still reading, so a flood of diagnostics can neither fill a disk nor block gh on a full
+# pipe. The status rides behind the drained text, read from PIPESTATUS in the same subshell.
+_il_gh_read() {   # <bound-secs> <out-fd> <gh args...>
+  local ft="$1" ofd="$2" out; shift 2
+  out="$( { adb_run_bounded "$ft" 10 gh "$@" 2>&1 1>&"$ofd" | { head -c 4096; cat >/dev/null; }
+            printf '\n%s' "${PIPESTATUS[0]}"; } )"
+  _IL_GH_RC="${out##*$'\n'}"
+  case "$_IL_GH_RC" in ''|*[!0-9]*) _IL_GH_RC=1 ;; esac
+  _IL_GH_ERR="${out%$'\n'*}"
+}
+
+# Why a gh read failed, from its status and its kept stderr. The status alone cannot tell a missing
+# issue from a TLS failure — gh reports both as 1 (`gh help exit-codes`: 1 for any failure, with 2
+# for a cancel and 4 for auth beside it) — so only gh's own wording can. Prints one word:
 #   timeout      the bound fired: adb_run_bounded's 124. Checked FIRST, so a stalled read whose
 #                stderr happens to carry the not-found phrase is still reported as the stall.
-#   notfound     GitHub's own definite negative for the issue, or for the repository the read was
-#                pinned to — the only answers that say anything about repo scope.
-#   environment  everything else, an unreadable or empty capture included. The FAIL-SAFE default:
-#                wrongly saying "this is the environment" costs one retry; wrongly saying "wrong
-#                repository" ends the run and sends the operator looking in the wrong place.
-_il_fetch_fail_class() {   # <rc> <stderr-file>
+#   notfound     the FIRST non-blank line is GitHub's own definite negative for the issue, or for
+#                the repository the read was pinned to — the only answers about repo scope.
+#                Anchored to that line's start, so a transport error that merely MENTIONS the
+#                phrase further down is not read as one.
+#   environment  everything else, an empty capture included. The FAIL-SAFE default: wrongly saying
+#                "this is the environment" costs one retry; wrongly saying "wrong repository" ends
+#                the run and sends the operator looking in the wrong place.
+_il_fetch_fail_class() {   # <rc> <stderr-text>
+  local LC_ALL=C first
   [ "$1" = 124 ] && { printf 'timeout\n'; return 0; }
-  if [ -n "$2" ] && [ -f "$2" ] \
-     && head -c 65536 "$2" 2>/dev/null | grep -qF -e 'Could not resolve to an issue or pull request' \
-                                                  -e 'Could not resolve to a Repository'; then
-    printf 'notfound\n'; return 0
-  fi
-  printf 'environment\n'
+  first="$(printf '%s\n' "$2" | grep -m1 -v '^[[:space:]]*$')"
+  case "$first" in
+    'GraphQL: Could not resolve to an issue or pull request'*|'GraphQL: Could not resolve to a Repository'*)
+      printf 'notfound\n' ;;
+    *) printf 'environment\n' ;;
+  esac
 }
 
 # The first line of a gh failure, safe to print (logging-and-secrets.md: redact BEFORE printing).
-# Bounded on read (4 KiB, one line) and on output (300 bytes), control characters stripped since it
-# lands in an agent's terminal, and every credential shape gh or its transport can echo replaced:
-# GitHub token prefixes, an Authorization header, a Bearer/token scheme, userinfo in a URL, and a
-# credential-named query parameter. A closed list, not a secret scanner — which is why the line is
-# bounded too.
-_il_redact_line() {   # <file>
-  local line=""
-  [ -n "$1" ] && [ -f "$1" ] && line="$(head -c 4096 "$1" 2>/dev/null | grep -m1 -v '^[[:space:]]*$' 2>/dev/null)"
-  line="$(printf '%s' "$line" | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -E \
+# Control characters stripped, since it lands in an agent's terminal; then every credential shape gh
+# or its transport can echo is replaced — GitHub token prefixes, an Authorization header (any case),
+# a Bearer/Basic/token scheme (any case, any whitespace), userinfo in a URL, a credential-named
+# query parameter. The input is already cut at 4 KiB, so a URL whose userinfo ran past the cut has
+# no `@` left to find: a scheme followed by nothing but non-separator bytes to the end of the line is
+# redacted whole. Only THEN is the line cut to 300 bytes, at a character boundary. A closed list,
+# not a secret scanner — which is why the line is bounded too.
+_il_redact_line() {   # <stderr-text>
+  local LC_ALL=C line
+  line="$(printf '%s\n' "$1" | grep -m1 -v '^[[:space:]]*$' | tr -d '\000-\010\013-\037\177' | sed -E \
     -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/<redacted>/g' \
-    -e 's/([Aa]uthorization:).*/\1 <redacted>/' \
-    -e 's/([Bb]earer|[Tt]oken) [^ ]+/\1 <redacted>/g' \
-    -e 's#://[^/@ ]+@#://<redacted>@#g' \
-    -e 's/([?&](access_token|token|password|secret|key)=)[^&" ]+/\1<redacted>/g')"
-  line="$(printf '%s' "$line" | LC_ALL=C cut -c1-300)"
+    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=]).*/\1 <redacted>/' \
+    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
+    -e 's#://[^/@[:space:]]+@#://<redacted>@#g' \
+    -e 's#://[^/[:space:]]*$#://<redacted>#' \
+    -e 's/([?&;]([Aa][Cc][Cc][Ee][Ss][Ss]_[Tt][Oo][Kk][Ee][Nn]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Kk][Ee][Yy])=)[^&;"[:space:]]*/\1<redacted>/g')"
+  if [ "${#line}" -gt 300 ]; then
+    line="${line:0:300}"
+    # A cut inside a multi-byte character leaves a dangling lead byte and its continuations; drop
+    # every trailing non-ASCII byte, which can only cost a whole character at the cut.
+    while [ -n "$line" ] && case "${line: -1}" in [$'\x80'-$'\xff']) true ;; *) false ;; esac; do
+      line="${line%?}"
+    done
+  fi
   printf '%s\n' "${line:-(gh printed no diagnostic)}"
+}
+
+# Remove the snapshot files a failed read leaves for issue <n>. A removal that FAILED is said, not
+# swallowed: the classified code is still the story, but the leftover is named so nobody reads a
+# partial snapshot as a fetched one.
+_il_snapshot_discard() {   # <state-dir> <issue-n>
+  local f
+  for f in "$1/issue-$2.json" "$1/issue-$2.assoc"; do
+    rm -f "$f" 2>/dev/null
+    if [ -e "$f" ] || [ -L "$f" ]; then
+      printf 'implement-lib: NOTE — could not remove the partial snapshot %s; delete it before re-running\n' "$f" >&2
+    fi
+  done
 }
 
 # Report a failed issue read by its class, release the claim, and return the class's code. The
 # not-found branch keeps 20 and the repo-scope advice only when <what> is the issue fetch itself:
 # the author-association read runs AFTER `gh issue view` resolved the issue in this repository,
 # so a failure there says nothing about scope and is reported as the environment.
-_il_fetch_bail() {   # <token> <state-dir> <rc> <stderr-file> <issue-n> <issue|assoc> <bound-secs>
-  local tok="$1" dir="$2" rc="$3" errf="$4" n="$5" what="$6" ft="$7" cls label
-  cls="$(_il_fetch_fail_class "$rc" "$errf")"
+_il_fetch_bail() {   # <token> <state-dir> <rc> <stderr-text> <issue-n> <issue|assoc> <bound-secs>
+  local tok="$1" dir="$2" rc="$3" err="$4" n="$5" what="$6" ft="$7" cls label
+  cls="$(_il_fetch_fail_class "$rc" "$err")"
   [ "$what" = assoc ] && label="#$n's author association" || label="issue #$n"
   case "$cls" in
     timeout)
       _il_bail "$tok" "$dir" 40 "could not fetch $label: the read outran its ${ft}s bound" ;;
     notfound)
       if [ "$what" = issue ]; then
-        _il_bail "$tok" "$dir" 20 "could not fetch issue #$n: GitHub says it does not exist here — verify repo scope (repo-scope.md): $(_il_redact_line "$errf")"
+        _il_bail "$tok" "$dir" 20 "could not fetch issue #$n: GitHub says it does not exist here — verify repo scope (repo-scope.md): $(_il_redact_line "$err")"
       else
-        _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed after the issue itself resolved — this is the environment, not the repo: $(_il_redact_line "$errf")"
+        _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed after the issue itself resolved — this is the environment, not the repo: $(_il_redact_line "$err")"
       fi ;;
     *)
-      _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed for a reason other than not-found (rc $rc) — this is the environment, not the repo: $(_il_redact_line "$errf")" ;;
+      _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed for a reason other than not-found (rc $rc) — this is the environment, not the repo: $(_il_redact_line "$err")" ;;
   esac
 }
 
 # Step 2: prove the state dir is gitignored, snapshot each issue's body+comments AND its author's
 # repo standing, and refuse a CLOSED issue. Every failure releases the claim (--token) first, and a
-# failed read removes the snapshot it was writing, so no partial issue-<n>.json outlives the run.
+# failed read removes the snapshot it was writing (_il_snapshot_discard, which names any file it
+# could not remove). A run killed from outside mid-read is not covered: the next `admit` clears it.
 cmd_snapshot_issues() {
   local tok="" dir n st assoc
   while [ "$#" -gt 0 ]; do
@@ -1682,44 +1725,36 @@ cmd_snapshot_issues() {
       rm -f "$dir/issue-$n.json"
       _il_bail "$tok" "$dir" 20 "the snapshot for #$n was swapped during staging"; return $?
     fi
-    # gh's stderr is CAPTURED (#500), never streamed: the failure is classified from it and only a
-    # redacted first line is printed. An unusable capture classifies as the environment, never as
-    # not-found — the fail-safe default. mktemp creates the file owner-only.
-    local _ierr="" _irc=0
-    _ierr="$(mktemp "${TMPDIR:-/tmp}/adb-snapshot-err.XXXXXX" 2>/dev/null)" || _ierr=""
-    adb_run_bounded "$_ft" 10 gh issue view "$n" "${_irflag[@]}" --json number,title,body,labels,author,comments,milestone,state 1>&"$_ijfd" 2>"${_ierr:-/dev/null}" || _irc=$?
+    # gh's stderr is KEPT (#500), never streamed: the failure is classified from it and only a
+    # redacted line of it is printed (_il_gh_read carries the bound on what is kept).
+    local _irc=0
+    _il_gh_read "$_ft" "$_ijfd" issue view "$n" "${_irflag[@]}" --json number,title,body,labels,author,comments,milestone,state
+    _irc="$_IL_GH_RC"
     if [ "$_irc" -ne 0 ]; then
       _il_fd_close "$_ijfd" "$_ijrfd"
-      rm -f "$dir/issue-$n.json"
-      _il_fetch_bail "$tok" "$dir" "$_irc" "$_ierr" "$n" issue "$_ft"; _irc=$?
-      [ -n "$_ierr" ] && rm -f "$_ierr"
-      return "$_irc"
+      _il_snapshot_discard "$dir" "$n"
+      _il_fetch_bail "$tok" "$dir" "$_irc" "$_IL_GH_ERR" "$n" issue "$_ft"; return $?
     fi
-    [ -n "$_ierr" ] && : > "$_ierr"
     exec {_ijfd}>&-
     st="$(jq -r .state <&"$_ijrfd" 2>/dev/null)" || st=""
     exec {_ijrfd}<&-
     _ist+=("$st")
     if ! _il_excl_create "$dir/issue-$n.assoc" _iafd; then
-      [ -n "$_ierr" ] && rm -f "$_ierr"
       rm -f "$dir/issue-$n.json"
       _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?
     fi
     # The same capture and classification as the fetch above: a TLS failure here is the same
     # environment failure, and must not read as a generic 20.
     if [ -n "$_islug" ]; then
-      adb_run_bounded "$_ft" 10 gh api --hostname "$_ihost" "repos/$_ipath/issues/$n" --jq '.author_association' 1>&"$_iafd" 2>"${_ierr:-/dev/null}"; rc=$?
+      _il_gh_read "$_ft" "$_iafd" api --hostname "$_ihost" "repos/$_ipath/issues/$n" --jq '.author_association'
     else
-      adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' 1>&"$_iafd" 2>"${_ierr:-/dev/null}"; rc=$?
+      _il_gh_read "$_ft" "$_iafd" api "repos/{owner}/{repo}/issues/$n" --jq '.author_association'
     fi
     exec {_iafd}>&-
-    if [ "$rc" -ne 0 ]; then
-      rm -f "$dir/issue-$n.json" "$dir/issue-$n.assoc"
-      _il_fetch_bail "$tok" "$dir" "$rc" "$_ierr" "$n" assoc "$_ft"; rc=$?
-      [ -n "$_ierr" ] && rm -f "$_ierr"
-      return "$rc"
+    if [ "$_IL_GH_RC" -ne 0 ]; then
+      _il_snapshot_discard "$dir" "$n"
+      _il_fetch_bail "$tok" "$dir" "$_IL_GH_RC" "$_IL_GH_ERR" "$n" assoc "$_ft"; return $?
     fi
-    [ -n "$_ierr" ] && rm -f "$_ierr"
   done
   local _ii=0
   for n in "$@"; do

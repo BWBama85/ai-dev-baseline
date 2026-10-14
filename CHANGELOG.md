@@ -12,13 +12,14 @@ only by a published release, which is what these entries are the notes for.
 
 - **`snapshot-issues` stops blaming repo scope for a broken `gh` (#500).** Every failed issue read
   used to be `20`, "verify repo scope", so a TLS failure under the sandbox told the agent the issue
-  belonged to another repository. `gh` exits 1 for every failure, so the read is now classified
-  from its own stderr: GitHub's not-found answer keeps `20` and the repo-scope advice; a read that
+  belonged to another repository. `gh`'s exit status cannot tell those failures apart, so the read
+  is now classified from its own stderr, kept as a bounded 4 KiB prefix rather than streamed:
+  GitHub's not-found answer, as the first line, keeps `20` and the repo-scope advice; a read that
   outran its bound is **`40`**; anything else (TLS, auth, network, HTTP 5xx, an unrecognised line)
   is **`41`**, "the environment, not the repo", with `gh`'s first line printed redacted and
   bounded. The author-association read is classified the same way, and is never a repo-scope
   answer, since the issue already resolved. A failed read now also removes the partial
-  `issue-<n>.json` it was writing. `/implement-issue` step 2 and `dispatch-failures.md` say what to
+  `issue-<n>.json` it was writing, and names it if it cannot. `/implement-issue` step 2 and `dispatch-failures.md` say what to
   do with each code: retry `40`/`41` once from step 1, then report.
 
 - **The sandbox fragment takes `git` and `gh` out of the sandbox (#462, D129).** Under the shipped
