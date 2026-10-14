@@ -415,8 +415,9 @@ unwire_settings() {
   # damaged — `--remove` never re-reads the count, so the damaged rows were trusted. (PR review)
   if [ "$_crc" -eq 21 ]; then
     if adb_claude_settings_disposition "$receipt" >/dev/null 2>&1; then
-      adb_info "  WARN   $receipt has a leaf count that is malformed or does not match its rows, so it"
-      adb_info "         cannot show it records every key it owns. NOTHING was removed; the record was KEPT."
+      adb_info "  WARN   $receipt has a leaf count or a row that is malformed, or a count that does not match"
+      adb_info "         its rows, so it cannot show it records every key it owns. NOTHING was removed; the"
+      adb_info "         record was KEPT."
     else
       adb_info "  WARN   $receipt is damaged: its disposition line does not parse, so the line to"
       adb_info "         repair cannot be named. NOTHING was removed; the record was KEPT."

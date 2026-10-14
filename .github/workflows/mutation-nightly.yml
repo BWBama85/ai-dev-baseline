@@ -106,10 +106,10 @@ jobs:
     name: mutation-nightly (${{ matrix.step }})
     needs: plan
     runs-on: ubuntu-26.04
-    # Sized for the largest harness on a hosted runner, not for the median: full-suite
-    # `settings-fragment-mutation` took 160 minutes for 230 rows in `install-guard` (D101). A job
-    # that times out is a red that says nothing about the harness, the class of defect #394 is about.
-    timeout-minutes: 240
+    # Sized for the largest harness: full-suite `settings-fragment-mutation` took 307 minutes on a
+    # hosted runner at 289 rows (run 38455721958, D129), about 53 minutes under this bound. 360 is
+    # GitHub's hosted-job maximum, so further growth is met by splitting the work (#532).
+    timeout-minutes: 360
     strategy:
       # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
       # the others were about to give.

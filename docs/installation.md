@@ -196,15 +196,18 @@ Claude Code's sandbox keys — unless `--no-sandbox` is passed. Source:
 | `sandbox.enabled` | `true` | Bash commands run under OS-enforced filesystem and network isolation. |
 | `sandbox.credentials.files` | `deny` on `~/.aws`, `~/.ssh` | The vendor's default read policy **still allows** reading those; this closes it. |
 | `sandbox.credentials.envVars` | `deny` on `GITHUB_TOKEN` | Sandboxed commands inherit the parent environment, credentials included; this unsets it for them. |
-| `sandbox.network.allowedDomains` | `api.anthropic.com` and the GitHub hosts | Pre-allows the hosts this repo's own `git`/`gh` traffic reaches, so they do not prompt. |
+| `sandbox.network.allowedDomains` | `api.anthropic.com` and the GitHub hosts | Pre-allows the hosts this repo's GitHub traffic reaches from *inside* the sandbox, so they do not prompt. |
+| `sandbox.excludedCommands` | `["git *", "gh *"]` | Runs `git` and `gh` **outside** the sandbox. This is the one key that widens rather than narrows; [why `git` and `gh` run outside the sandbox](#why-git-and-gh-run-outside-the-sandbox) says why and what it costs. |
 
 The allowlist is a starting point, not a claim of completeness: it covers **`api.anthropic.com` and
 GitHub**, so a project whose remote is elsewhere, or whose build fetches a package registry, will
 still be prompted for those hosts — add them in your own settings, since array keys merge across
 every scope. And note that `github.com` is a **broad** entry: the vendor's own security notes point
 out that a wide domain can be used for exfiltration when TLS is not inspected (the built-in proxy
-does not inspect it by default). It is here because `git` and `gh` need it, not because it is
-tightly scoped.
+does not inspect it by default). It is here because GitHub traffic that stays sandboxed needs it,
+not because it is tightly scoped. Excluded `git`/`gh` calls never reach the proxy. The framework's
+own library scripts do, because they run `gh` *inside* a `bash` call that no exclusion matches
+(#531).
 
 Two keys are deliberately **not** shipped. `sandbox.filesystem.disabled` turns filesystem
 isolation *off* (that is what it does — it reads like hardening and is the opposite);
@@ -233,41 +236,90 @@ the next `baseline update` applies the settings by itself once you upgrade the C
 
 #### It applies whole, or not at all
 
-The fragment is installed **only when every key it ships is absent**. If any of them is already in
-your `settings.json` — whatever the value — nothing is written and the installer names what is in
-the way. There is no partial application: a half-applied policy reports protection it does not
+The fragment is installed **only when every key it ships is absent**, with one exception: an
+`excludedCommands` of yours that already holds every shipped entry (below). If any other key is
+already in your `settings.json`, whatever its value, nothing is written and the installer names
+what is in the way. There is no partial application: a half-applied policy reports protection it does not
 have, and `sandbox.enabled` without the credential rules (or the reverse) is exactly that.
 
-Your own keys are never in the way unless they *are* one of ours: `sandbox.excludedCommands` sits
-beside our `sandbox.enabled` and is never read, rewritten or removed.
+Your own keys are never in the way unless they *are* one of ours: `sandbox.filesystem.allowWrite`
+sits beside our `sandbox.enabled` and is never read, rewritten or removed.
+
+**`sandbox.excludedCommands` is the exception, because you may well have one already.** If yours
+is an array that holds every entry we ship (`"git *"` and `"gh *"`), in any order and beside entries
+of your own, it is **already satisfied**. The installer leaves it exactly as it is, writes the rest
+of the policy, and records that key as *yours*, so uninstall never removes it. The same holds if you
+later **extend** the array we wrote: it becomes yours, and the other keys stay ours and current. An
+`excludedCommands` that lacks either entry still refuses the lot. The old `["git", "gh"]` recipe
+lacks both, since a pattern with no wildcard matches only the bare command.
 
 A receipt at `~/.claude/.adb-settings-owned` records the keys written, the containers created for
 them, and the digest of the fragment applied:
 
 | You do this | What happens next |
 |---|---|
-| Already have any key we ship | **Nothing is written**, and the refusal names it. Remove or rename it and re-run `./install.sh` to take the policy. |
-| Edit or delete a key we wrote | The surface is yours from then on: the next install refuses rather than rewriting, and names what changed. Deleting is the opt-out, and it is not remembered as ours — so if you later re-add that value by hand, uninstall will not take it. |
+| Already have any key we ship | **Nothing is written**, and the refusal names it. Remove or rename it and re-run `./install.sh` to take the policy. The one exception is an `excludedCommands` that already holds every shipped entry, which counts as satisfied (above). For that key the refusal also names the entries to add. |
+| Had your own `excludedCommands` before this release shipped one | If it holds `"git *"` and `"gh *"`, the next update just records it as yours. If it does not, that update **refuses the whole policy and gives up ownership** of the keys it installed earlier. They stay in your file, but the installer no longer manages them, and retaking them means removing them first. **Add the two entries before you update.** |
+| Edit or delete a key we wrote | The surface is yours from then on: the next install refuses rather than rewriting, and names what changed. Deleting is the opt-out, and it is not remembered as ours — so if you later re-add that value by hand, uninstall will not take it. Adding entries of your own to `excludedCommands` is not an edit of this kind: that key becomes yours and nothing else changes. |
 | `install.sh --no-sandbox` | Nothing written, the choice recorded; `baseline update` keeps honouring it. |
 | A future version stops shipping a key | The next install **prunes** it, so no orphan is left in your file. |
 | The shipped values change (a new allowed domain) | `baseline update` notices — the receipt records the **digest** of the fragment it applied, so a changed *value* is caught, not just a changed key. |
 | Your CLI is downgraded or drops off `PATH` | Nothing new is written, and the receipt **keeps** what it already owns, so uninstall can still remove it. |
 | You already had `{"sandbox": {}}` | It survives uninstall. We delete only the containers we made, which is why they are recorded rather than inferred. |
 
-#### The one conflict to know about
+#### Why `git` and `gh` run outside the sandbox
 
-`sandbox.enabled` plus a `deny` on `~/.ssh` blocks sandboxed `git` over SSH, and a `deny` on
-`GITHUB_TOKEN` breaks `gh` wherever that variable is its token source. Unless you have set
-`allowUnsandboxedCommands` to `false`, the blocked command can be retried outside the sandbox,
-which then goes through the ordinary permission flow — a confirmation prompt in Manual mode. That
-is a stall rather than a failure, but a stall is enough to interrupt an autonomous
-`/implement-issue` run. If your remotes are SSH, either add the commands you trust:
+Inside the sandbox, the framework's own path to GitHub breaks in two independent ways:
 
-```json
-{ "sandbox": { "excludedCommands": ["git", "gh"] } }
-```
+- **On macOS, `gh` can fail TLS verification, so its request never reaches GitHub.** It is a Go
+  program, and under Seatbelt it may not reach the system trust service. It failed on every macOS
+  machine probed for #462, and the vendor says such tools *may* fail:
+  `tls: failed to verify certificate: x509: OSStatus -26276`. Inside the sandbox
+  `gh auth status` then reports **`The token in keyring is invalid`**. GitHub never saw the token,
+  let alone rejected it, so do not re-authenticate, and do not move it to plaintext storage. `git` over HTTPS with the
+  keychain credential helper can fail the same way, with `fatal: failed to store: 100001`.
+- **`git` over SSH cannot get out, and the credentials are denied besides.** The connection is
+  refused at the sandbox's own proxy (`This proxy requires authentication, and this client did not
+  offer an authentication method`). The `~/.ssh` deny would hide the key files even past that, and
+  the `GITHUB_TOKEN` scrub stops `gh` wherever that variable is its token.
 
-...or install with `--no-sandbox`. This is a known trade-off, not an oversight: see D96, and #462 carries the owner decision on whether to ship `excludedCommands` by default.
+So the fragment ships `sandbox.excludedCommands: ["git *", "gh *"]`. This is the vendor's
+documented remedy, and the owner chose it on #462 (D129). **The cost is real:** an excluded call
+runs with your full access. It has no filesystem limits and no network proxy, and the credential
+denials above do not apply to it. These are the two commands most likely to touch credentials, and
+that trade was taken knowingly.
+
+What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
+
+- **The whole call is matched, as text.** Every command in it must match, so
+  `git add -A && git commit -m x` runs outside the sandbox and `npm test && git push` does not.
+- **Some calls stay sandboxed even when they match.** That covers a `cd`, a `$(...)`, a subshell,
+  an `if`/`for`, a redirect to a file (`2>&1` is fine), a command name taken from a variable,
+  `git -C`, and a `git clone` into an absolute, `~` or `..` path.
+- **A script that runs `gh` internally does not match.** Most of the framework's own GitHub calls
+  are made exactly that way, through its library scripts, so on macOS those still fail. That half
+  is #531.
+- **Excluded is not auto-approved.** A sandboxed command can run without asking; an excluded one
+  goes through the regular permission flow. In Manual mode a `git`/`gh` command that is not
+  read-only prompts unless one of your allow rules covers it, auto mode sends it to the classifier,
+  and `bypassPermissions` runs it unless one of your ask rules matches it. A matching deny rule
+  blocks it in every mode, allow rules included. The installer ships no allow rules.
+- **Matching changed in newer CLIs.** Before v2.1.277 a compound command was taken out whole when
+  only one part matched, and before v2.1.290 a short-form `git clone` option kept the exemption, so
+  between the v2.1.187 floor and those versions the exclusion is broader than described here.
+  (v2.1.281 went the other way: before it, some calls such as `git rev-parse --git-dir` did not
+  match at all.) The floor is not raised for it, because a
+  higher floor would narrow nothing on those CLIs. Below the floor the installer writes no *new*
+  policy: a fresh install gets no sandbox at all, and an established one keeps the keys it has.
+
+`--no-sandbox` is **not** a way out of an installed sandbox. It records the opt-out so
+`baseline update` stops re-applying the policy, and it leaves the keys already in your settings in
+place. To take them out, either delete them by hand, which the next install reads as your opt-out
+and does not rewrite, or run `./uninstall.sh`. Uninstall removes only the keys this install still
+owns, so it leaves any it has already given up. It also deletes the ownership record, so a later
+`./install.sh` applies the policy again — unless a key uninstall left behind (one you edited, or one
+already given up) is still in your file, which blocks the whole policy as any key of yours does. An
+`excludedCommands` that still holds every shipped entry is the exception here too.
 
 ### Run markers are session-owned
 

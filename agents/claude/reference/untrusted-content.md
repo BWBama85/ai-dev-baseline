@@ -90,13 +90,19 @@ than none:
   read or reach. Since #248 the Claude installer *does* ship least-privilege settings —
   `sandbox.enabled`, read denials on `~/.aws` and `~/.ssh`, a `GITHUB_TOKEN` scrub and a
   network allowlist, written into `~/.claude/settings.json` — so the claim is no longer
-  "absent", but it is a long way from "enforced", and four gaps are load-bearing:
+  "absent", but it is a long way from "enforced", and these gaps are load-bearing:
 
+  - **`git` and `gh` are outside it.** Since #462 the same settings exclude `git *` and
+    `gh *`, because `gh` can fail TLS verification under the macOS sandbox and `git` over
+    SSH cannot get out of it. A call those patterns match runs with the workstation's
+    full access, the credential denials included (some shapes stay sandboxed even so:
+    a file redirect, a `cd`, a `$(...)`) — and those are the two commands most likely
+    to touch credentials.
   - **It is Claude-only and user-scoped.** `sandbox.*` is Claude Code configuration.
     A `codex exec` or `agy -p` dispatch — the cross-agent path this file exists for —
     runs with the workstation's own privileges exactly as before.
   - **It is opt-out-able and version-gated.** `install.sh --no-sandbox` declines it, and
-    a CLI below the floor gets nothing at all (by design: an inert key would report
+    a CLI below the floor gets no new policy (by design: an inert key would report
     protection it never applied). Neither state is detectable from an agent's prose.
   - **It bounds sandboxed Bash, not the agent.** In-process tools follow their permission
     rules instead, and unless `allowUnsandboxedCommands` is set to `false` a blocked command can

@@ -7792,6 +7792,9 @@ survive is the part a later reader needs.
              The fix for the conflict — `sandbox.excludedCommands` for `git` and `gh` — WIDENS what
              runs unsandboxed and was not among the keys the owner approved, so it is documented as
              an adopter's recipe and filed for an owner decision rather than invented here (#462).
+             ANSWERED by D129 (2026-10-13): the fragment now ships `excludedCommands:
+             ["git *", "gh *"]` — and the recipe above was inert as written, since a pattern with
+             no wildcard matches only the bare command.
 - baseline-issue: n/a (this repo IS the baseline; the conflict above is filed separately)
 
 ## D97 — the fragment is written to USER settings only, and the pinned model refuses it outright
@@ -7926,6 +7929,9 @@ survive is the part a later reader needs.
              A refusal is recorded as `skipped-blocked` and is retried when the PAYLOAD changes,
              not on every session — retrying each time is the `baseline update` repair loop that
              reporting pending-forever already caused once.
+             AMENDED by D129 (2026-10-13) for the keys `adb_claude_settings_satisfiable` lists — one,
+             `sandbox.excludedCommands`: a live array holding every shipped entry is SATISFIED, not
+             blocking and not diverged, and is recorded as the operator's.
 - placement: `scripts/lib/common.sh` (`adb_claude_settings_merge`, the `container` receipt rows and
              their reader) · `install.sh` (the verdict branch, `skipped-blocked`) · `bin/baseline`
              (`adb_settings_pending`) · `scripts/check-settings-fragment.sh` · `docs/installation.md`
@@ -9767,3 +9773,107 @@ survive is the part a later reader needs.
              guard be switched off by a line nobody questioned. The pin's two fact fields now come
              from one object, so they can no longer name different trees.
 - baseline-issue: n/a
+
+## D129 — #462: the fragment takes `git *` and `gh *` out of the sandbox, and an operator's own `excludedCommands` can SATISFY that key
+- date:      2026-10-13
+- category:  project-delta
+- unknown:   #462. D96 shipped `sandbox.enabled` with a `~/.ssh` deny and a `GITHUB_TOKEN` scrub,
+             recorded that this blocks the framework's own `git`/`gh` path, and reserved the fix — a
+             key that WIDENS what runs unsandboxed — for the owner. The issue's evidence comments
+             then showed the conflict was wider than its body: on every macOS machine probed, a
+             sandboxed `gh` call failed TLS verification (`x509: OSStatus -26276`), so its request
+             never reached GitHub — not an SSH-only problem, and not a credential one (`gh` reads its
+             token before the handshake: `AddAuthTokenHeader`, `api/http_client.go`, v2.101.0). The
+             vendor says such tools MAY fail; nothing here claims more than was observed. The gap analysis returned three BLOCKING questions about
+             implementing the decision as written.
+- decision:  **Owner decision 2026-09-22 (on #462): Option 1, ship `sandbox.excludedCommands` for
+             `git` and `gh`.** Three refinements were asked of the owner on 2026-10-13 and decided
+             as recommended:
+             (1) **The entries are `["git *", "gh *"]`, not the `["git", "gh"]` the decision
+             named.** The vendor matches a pattern with no wildcard EXACTLY, so `gh` excludes bare
+             `gh` and nothing else. The witness below shows the literal is inert.
+             (2) **Only direct calls are fixed here.** The vendor matches the TEXT of a call, so a
+             script that runs `gh` internally — how the framework's libraries reach GitHub — stays
+             sandboxed and, on macOS, still fails. Excluding the wrappers is a much wider decision
+             and is filed as #531 (Backlog).
+             (3) **An operator's own `excludedCommands` can SATISFY the shipped one** (the owner's
+             2026-09-23 comment on #462, extended on 2026-10-13 to the array we wrote). A live array
+             holding every shipped entry — any order, extras allowed — is neither written nor read
+             as in the way. That holds whether it was there before any install or is OUR value the
+             operator has since extended. It is then the operator's: recorded as a
+             `satisfied<TAB><path>` receipt row that authorizes nothing destructive, so uninstall
+             never removes it. Our value, untouched, stays ours. Anything short of every shipped
+             entry — `["docker *"]`, the old `["git","gh"]` recipe, a reduced copy of ours — keeps
+             D100's rule: a present unowned key blocks the lot, and a changed owned key is a
+             takeover. This AMENDS D100 for exactly the keys `adb_claude_settings_satisfiable`
+             lists (one), and that list is pinned by the suite.
+
+             **Also decided in the implementation.** Satisfaction is tested element by element with
+             `==`, never jq's `contains`, which matches strings by substring (`"git *x"` would
+             "contain" `git *`). A satisfied row is validated whole: a path not on the satisfiable
+             list, a path that is also an owned `leaf`, or one that is not JSON is DAMAGE (21),
+             never skipped, because completeness subtracts satisfied paths from what the payload
+             ships, so a stray row would excuse a missing leaf. `leaves_intact` re-asks the
+             satisfaction against the live file, so a satisfied key that loses an entry or is
+             deleted reads as diverged and the next update re-decides it. The carry paths (opt-out,
+             version skips) carry `satisfied` rows with `leaf` and `container` rows. No count header
+             is added for them: a lost satisfied row is caught by the identity check whenever the
+             digest names the payload, and otherwise strands nothing, because nothing is ever
+             removed by one.
+
+             **The nightly bound rises to 360 minutes** (owner, 2026-10-13). The nightly
+             `settings-fragment-mutation` job was already being cancelled at its 240-minute
+             `timeout-minutes` (2026-10-12 and 2026-10-13), and this change adds rows and installer
+             fixtures to that suite: 262 rows become 290, and one sequential suite run on macOS took
+             172 s against `main`'s 145 s at 285 rows. Scaled onto a hosted run that was cancelled, that
+             was an ESTIMATE of 310+ minutes. MEASURED since: the labelled run 38455721958 took 307
+             minutes (18,429 s) at 289 rows, about 53 minutes under 360. 360 is GitHub's maximum for a hosted-runner job, so the real fix is splitting
+             the work, which is #532.
+
+             **The floor stays v2.1.187.** `excludedCommands` is present by v2.1.34 in the vendor
+             CHANGELOG (re-checked 2026-10-13). Its MATCHING changed later. v2.1.277 stopped a
+             compound command being exempted whole when one part matched, and v2.1.290 stopped a
+             short-form `git clone` option keeping the exemption, so between the floor and those
+             versions the exclusion is broader than documented. v2.1.281 went the other way: before
+             it, entries failed to match `git rev-parse --git-dir`, builtin-named programs and some
+             commit messages. Raising the floor would narrow nothing for those
+             CLIs. Below the floor the installer writes no NEW policy: a fresh install gets no sandbox
+             at all, and an established one keeps the keys it already has, the exclusion included.
+             The installation guide states the range.
+
+             **Not shipped:** `sandbox.enableWeakerNetworkIsolation` (#505's closing note — it does
+             make wrapped `gh` work on this machine). The vendor documents it for MITM-proxy setups,
+             says it "reduces security by opening a potential data exfiltration path through the
+             trust service", and recommends `excludedCommands` when there is no proxy. It also does
+             nothing for SSH. It remains a candidate for #531. `permissions.allow` rules: an
+             excluded command still goes through the regular permission flow, so Manual mode still
+             prompts for a non-read-only `git`/`gh` — a new key-set decision, documented rather than
+             shipped. `SSL_CERT_FILE`: rejected by the owner as the primary fix (Go ≥ 1.27 only on
+             macOS, and it replaces the platform trust store).
+- placement: `agents/claude/settings.fragment.json` · `scripts/lib/common.sh`
+             (`adb_claude_settings_satisfiable`, the merge's `satisfies`/`$satisfied`,
+             `_adb_claude_settings_satisfied_json`, completeness, `leaves_intact`, the row writer
+             and renderer) · `install.sh` (`.satisfied` read back, recorded and reported; the carry
+             grep) · `scripts/check-settings-fragment.sh` · `docs/installation.md` ("Why `git` and
+             `gh` run outside the sandbox") · `base/practices/untrusted-content.md` · `CLAUDE.md` ·
+             `CHANGELOG.md` · `.github/workflows/mutation-nightly.yml` (`timeout-minutes`)
+- reason:    ACCEPTANCE WITNESS, run 2026-10-13 on macOS 26.6.2, Claude Code 2.1.296, `gh` 2.101.0
+             built with go1.27.1, `GITHUB_TOKEN`/`SSL_CERT_FILE`/`GODEBUG` unset, no managed
+             settings on the machine. Each run was a nested `claude -p --setting-sources project
+             --settings <file> --permission-mode bypassPermissions` in an empty directory. That
+             loads the project source, which was empty, and the `--settings` file, and excludes the
+             user and local settings files, so the maintainer's own `~/.claude/settings.json` (whose
+             `enableWeakerNetworkIsolation: true` would have masked the failure) did not apply. The
+             `--settings` file was the `~/.claude/settings.json` that THIS BRANCH'S `install.sh`
+             wrote into a scratch HOME, plus `allowUnsandboxedCommands: false`, so a failure could
+             not be retried outside the sandbox. (A first run on the fragment file alone gave the
+             same three results.) The session ran `gh api /user --jq .login` and
+             `git ls-remote git@github.com:BWBama85/ai-dev-baseline.git HEAD`:
+               installer-written `["git *","gh *"]` → `BWBama85`; the remote HEAD.
+               no `excludedCommands`      → `x509: OSStatus -26276`; SSH refused at the sandbox
+                                            proxy ("This proxy requires authentication").
+               the literal `["git","gh"]` → the same two failures.
+             So the fix is observed working on the shipped value AND failing when misconfigured, and
+             the second failure is exactly the configuration the decision first named. Linux/WSL2 is
+             untested and no coverage is claimed.
+- baseline-issue: n/a (this repo IS the baseline; #531 carries the wrapper half)

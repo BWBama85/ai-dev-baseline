@@ -264,7 +264,9 @@ adb_settings_row_count() {
   # not. `|| true` absorbed both, so an operational failure became a fabricated zero or partial count:
   # a downgrade self-heal then promised automatic re-application over a rowless receipt, or reported
   # a relinquishment that never happened, and the operator got the wrong recovery. (PR review)
-  n="$(grep -c "^leaf$(printf '\t')" "$r" 2>/dev/null)"; grc=$?
+  # LEAF AND SATISFIED ROWS BOTH COUNT (#462, D129): a hand-over turns a `leaf` row into a
+  # `satisfied` one and relinquishes nothing, so counting leaf rows alone read it as one.
+  n="$(grep -c -E "^(leaf|satisfied)$(printf '\t')" "$r" 2>/dev/null)"; grc=$?
   [ "$grc" -le 1 ] || return 20   # row-count-read-failed
   printf '%s' "$n"
 }
@@ -339,9 +341,10 @@ adb_settings_unreadable_record() {
     echo "baseline: $receipt exists but could not be READ, so it is unknown whether the sandbox" >&2
     echo "          settings are current. Fix its permissions and re-run 'baseline update'." >&2
   else
-    echo "baseline: $receipt is readable but its 'disposition' line is missing or unrecognised, so" >&2
-    echo "          it cannot be classified. No permission change will help; repair that line and" >&2
-    echo "          re-run 'baseline update'. Its 'leaf' rows still name the keys we own." >&2
+    echo "baseline: $receipt is readable but damaged: its 'disposition' line is missing or" >&2
+    echo "          unrecognised, or a row in it is malformed, repeated or contradicts another (a key" >&2
+    echo "          recorded as both ours and yours). No permission change will help; repair the" >&2
+    echo "          record and re-run 'baseline update'. Its 'leaf' rows still name the keys we own." >&2
   fi
 }
 

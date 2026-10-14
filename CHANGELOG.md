@@ -10,6 +10,21 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **The sandbox fragment takes `git` and `gh` out of the sandbox (#462, D129).** Under the shipped
+  sandbox, `gh` can fail TLS verification on macOS, so its requests never reach GitHub
+  (`x509: OSStatus -26276`, while `gh auth status` misreports `The token in keyring is invalid`), and
+  `git` over SSH is refused. The fragment now ships `sandbox.excludedCommands: ["git *", "gh *"]`.
+  The `["git", "gh"]` the issue named matches only the bare commands, and a witness shows it
+  changes nothing. The cost is stated in the installation guide: an excluded call runs with full
+  access, the credential denials included. An operator's own `excludedCommands` that already holds
+  both entries, or the array we wrote extended with more, is **satisfied** rather than a conflict:
+  it is left as it is, recorded as a `satisfied` receipt row, and never removed by uninstall. Any
+  other present value still refuses the lot (D100), and the refusal now names the entries to add.
+  **Upgrading:** if you already keep an `excludedCommands` of your own, add `"git *"` and `"gh *"` to
+  it *before* updating. Otherwise the update refuses and gives up ownership of the keys it installed
+  earlier. `--no-sandbox` is no longer documented as a way
+  out of an installed sandbox, because it is not one. Calls that run `gh` *inside* a library script
+  are not matched by the exclusion and still fail on macOS; that half is #531.
 - **No mutation harness runs per pull request (#456, D126).** Each `--mutation` harness costs
   `rows × suite`, and the per-PR input gate (#441) never held one back on the branch that needed it
   most — one editing the harness's library. `ci.yml` now carries no `--mutation` step (ten removed),
