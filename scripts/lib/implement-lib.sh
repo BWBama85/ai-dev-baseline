@@ -1650,10 +1650,12 @@ _il_redact_line() {   # <stderr-text>
   # refuses a cut character as an illegal byte sequence and truncates the line under the clip.
   # ORDER IS LOAD-BEARING: the rules that recognise a credential by its KEY run first, while the
   # key is still there to read — the quoted-string and opaque-run rules would otherwise replace a
-  # long or quoted key (`github_access_token=`, `"password":`) and leave its value behind.
+  # long or quoted key (`github_access_token=`, `"password":`) and leave its value behind. The key
+  # around the credential word is any run of bytes that is not whitespace or a separator, so
+  # punctuation and non-ASCII in a key (`"password[]":`) cannot hide it.
   line="$(printf '%s\n' "$1" | LC_ALL=C grep -m1 -v '^[[:space:]]*$' | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -E \
     -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]["'"'"']?[[:space:]]*[:=]).*/\1 <redacted>/' \
-    -e 's/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*["'"'"']?[[:space:]]*[=:]).*/\1 <redacted>/' \
+    -e 's/([^[:space:]=:]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[^[:space:]=:]*[[:space:]]*[=:]).*/\1 <redacted>/' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
     -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/<redacted>/g' \
     -e 's/"([^"\\]|\\.)*("|\\?$)/"<redacted>"/g' \

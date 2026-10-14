@@ -1001,11 +1001,26 @@ _r="$( eval "$rdfn"; _il_redact_line 'X-GitHub-Authentication-Token: sekrit15' )
 hasnt "$_r" "sekrit15" "18b …a hyphenated header-style key too"
 _r="$( eval "$rdfn"; _il_redact_line '{"password": sekrit16}' )"
 hasnt "$_r" "sekrit16" "18b …and a quoted key, before the quoted-string rule replaces it"
+_r="$( eval "$rdfn"; _il_redact_line '{"password[]": 4242}' )"
+hasnt "$_r" "4242" "18b …and a key with punctuation around the credential word"
+_r="$( eval "$rdfn"; _il_redact_line "{\"password🔑\": 4343}" )"
+hasnt "$_r" "4343" "18b …and a key with non-ASCII around the credential word"
+# Each wide rule on its own, with no credential key on the line to mask it.
+_r="$( eval "$rdfn"; _il_redact_line 'failed with ghp_sekrit17 here' )"
+hasnt "$_r" "sekrit17" "18b a GitHub token prefix is redacted on its own"
+_r="$( eval "$rdfn"; _il_redact_line 'failed with Zq8sekrit18Zq8Zq8Zq8Zq here' )"
+hasnt "$_r" "sekrit18" "18b an unprefixed opaque run is redacted on its own"
+has "$_r" "failed with" "18b …while the prose around it survives"
 _r="$( eval "$rdfn"; _il_redact_line 'password = ,sekrit13' )"
 hasnt "$_r" "sekrit13" "18b …including one that starts with punctuation"
 _r="$( eval "$rdfn"; _il_redact_line 'bad ?token="sekrit6" and password: '"'"'sekrit7'"'"'' )"
 hasnt "$_r" "sekrit6" "18b a quoted credential value is redacted"
 hasnt "$_r" "sekrit7" "18b …single-quoted too"
+# A multi-byte character ACROSS byte 300, behind a prefix no rule redacts (words under 20 bytes):
+# 299 bytes, then '€' — the cut keeps one byte of it, and the clip must drop that byte.
+_r="$( eval "$rdfn"; _il_redact_line "$(printf 'abcd %.0s' $(seq 1 59))xxxx€€" )"
+eq "$(printf '%s' "$_r" | LC_ALL=C wc -c | tr -d ' ')" "299" "18b a character across byte 300 is dropped whole, not split"
+if printf '%s' "$_r" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then ok; else bad "18b …leaving valid UTF-8"; fi
 _r="$( eval "$rdfn"; _il_redact_line "$(printf 'é%.0s' $(seq 1 200))" )"
 eq "$(printf '%s' "$_r" | LC_ALL=C wc -c | tr -d ' ')" "300" "18b a cut between complete characters keeps every one of them"
 eq "$( eval "$clsfn"; _il_fetch_fail_class 1 'GraphQL: Could not resolve to an issue or pull request because the service is down' )" "environment" "18b a message sharing only the opening words is not a not-found"
