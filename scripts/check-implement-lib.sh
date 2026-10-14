@@ -67,18 +67,28 @@ case "$1 $2" in
   "issue view")
     [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
     [ -n "${SHIM_ISSUE_SLEEP:-}" ] && sleep "$SHIM_ISSUE_SLEEP"
-    if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then echo "gh: issue not found" >&2; exit 1; fi
+    [ -n "${SHIM_ISSUE_RO_DIR:-}" ] && chmod a-w "$SHIM_ISSUE_RO_DIR"
+    [ -n "${SHIM_ISSUE_NOX_DIR:-}" ] && chmod a-x "$SHIM_ISSUE_NOX_DIR"
+    # A not-found line followed by NUL padding past the 4 KiB cut, then a different error.
+    if [ -n "${SHIM_ISSUE_NULPAD:-}" ]; then
+      { printf '%s' "${SHIM_ISSUE_STDERR:-}"; head -c "$SHIM_ISSUE_NULPAD" /dev/zero; printf 'proxy failure\n'; } >&2; exit 1
+    fi
+    # A descendant that outlives gh holding its stderr open (the drain must not wait on it).
+    [ -n "${SHIM_ISSUE_LINGER:-}" ] && { sleep "$SHIM_ISSUE_LINGER" & }
+    if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ISSUE_STDERR-gh: issue not found}" >&2; exit 1; fi
     if [ -n "${SHIM_LOCK_SWAP:-}" ] && [ -f "$SHIM_LOCK_SWAP" ]; then
       jq '.token = "tokB"' "$SHIM_LOCK_SWAP" > "$SHIM_LOCK_SWAP.t" && mv "$SHIM_LOCK_SWAP.t" "$SHIM_LOCK_SWAP"
     fi
     printf '%s\n' "${SHIM_ISSUE_JSON:-}" ;;
   "api repos/{owner}/{repo}/issues/7")
+    if [ "${SHIM_ASSOC_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ASSOC_STDERR:-gh: api failed}" >&2; exit 1; fi
     # SHIM_SNAP_SWAP: a descendant REPLACING the fetched snapshot (a new inode at the name, not
     # a rewrite of the held one) between the two gh reads.
     if [ -n "${SHIM_SNAP_SWAP:-}" ]; then rm -f "$SHIM_SNAP_SWAP"; printf '{"state":"CLOSED"}\n' > "$SHIM_SNAP_SWAP"; fi
     printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
   "api --hostname")
     [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
+    if [ "${SHIM_ASSOC_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ASSOC_STDERR:-gh: api failed}" >&2; exit 1; fi
     printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
   "repo view")
     printf '%s\n' "${SHIM_SLUG:-o/r}" ;;
@@ -829,9 +839,208 @@ jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/ga
 snap "$d" SHIM_ISSUE_JSON="$(printf '%s' "$ISSUE_JSON" | jq -c '.state = "CLOSED"')"
 eq "$SN_RC" "21" "18 a CLOSED issue refuses (21) — never silently reopened"
 if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released on that path too"; else ok; fi
+# ---- 18b. a failed read is classified from gh's own stderr, never from its status (#500) -------
+# gh's status cannot tell them apart (a TLS break and a real 404 are both 1), so all of them were
+# "verify repo scope". Only GitHub's not-found wording keeps 20; anything else is the environment (41), and an
+# unrecognised line falls there too — the fail-safe default. Each case: the claim is released and
+# no partial issue-7.json is left behind.
+GH_NOTFOUND='GraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)'
+GH_TLS='Post "https://api.github.com/graphql": tls: failed to verify certificate: x509: OSStatus -26276'
+snap_fail_clean() {   # <label>
+  if exists "$d/.claude/state/gap-analysis.lock"; then bad "$1 …and the claim was released"; else ok; fi
+  if exists "$d/.claude/state/issue-7.json"; then bad "$1 …and no issue-7.json was left behind"; else ok; fi
+  if exists "$d/.claude/state/issue-7.assoc"; then bad "$1 …and no issue-7.assoc was left behind"; else ok; fi
+}
 d="$(new_repo)"; gid "$d"; clm "$d"
-snap "$d" SHIM_ISSUE_FAIL=1
-eq "$SN_RC" "20" "18 a failed gh read is 20 (verify repo scope), not a silent pass"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND"
+eq "$SN_RC" "20" "18b GitHub's not-found answer is 20"
+has "$SN_OUT" "verify repo scope" "18b …and only it says verify repo scope"
+snap_fail_clean "18b not-found"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)"
+eq "$SN_RC" "20" "18b a repository gh cannot resolve is the repo-scope answer too (20)"
+snap_fail_clean "18b repository not-found"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS"
+eq "$SN_RC" "41" "18b a TLS failure is the environment code (41), not 20"
+has "$SN_OUT" "not the repo" "18b …named as the environment"
+hasnt "$SN_OUT" "repo scope" "18b …and never as a repo-scope problem"
+has "$SN_OUT" 'Post "<redacted>": tls: failed to verify certificate: x509: OSStatus -26276' "18b …with gh's own first line printed, its URL redacted"
+snap_fail_clean "18b TLS"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="something gh has never said before"
+eq "$SN_RC" "41" "18b an unrecognised failure falls to the environment (41) — the fail-safe default"
+hasnt "$SN_OUT" "repo scope" "18b …never to repo scope"
+snap_fail_clean "18b unrecognised"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR=""
+eq "$SN_RC" "41" "18b an empty diagnostic is the environment too (41)"
+has "$SN_OUT" "(gh printed no diagnostic)" "18b …and says there was nothing to print"
+snap_fail_clean "18b empty diagnostic"
+# The printed line is REDACTED before it is printed (logging-and-secrets.md), and bounded.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="HTTP 401: Bad credentials https://x:hunter2@api.github.com/q?access_token=sekrit1 ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA Authorization: token gho_BBBB"
+eq "$SN_RC" "41" "18b an auth failure is the environment (41)"
+for _sec in hunter2 sekrit1 ghp_AAAA gho_BBBB; do hasnt "$SN_OUT" "$_sec" "18b …and the printed line never carries $_sec"; done
+has "$SN_OUT" "HTTP 401: Bad credentials" "18b …while the diagnosis itself survives redaction"
+# A newline-free flood past the 4 KiB capture: rc 41, and the printed diagnostic — the text after
+# the message's last ': ' — is present and at most 300 bytes.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf 'tls: %020000d' 0)"
+eq "$SN_RC" "41" "18b a 20 KB diagnostic is still the environment (41)"
+_ln="$(printf '%s\n' "$SN_OUT" | grep 'not the repo' | head -1)"
+_dg="${_ln##*not the repo: }"
+if [ -n "$_ln" ] && [ "$_dg" != "$_ln" ] && [ -n "$_dg" ] && [ "$(printf '%s' "$_dg" | LC_ALL=C wc -c | tr -d ' ')" -le 300 ]; then ok
+else bad "18b the printed diagnostic is present and at most 300 bytes (got [${_dg:0:40}…])"; fi
+# The 4 KiB capture cut can land inside a character on a SHORT line; what is printed stays UTF-8.
+# The padding's newlines survive the $(…) because non-newline text follows them — a bare $(…)
+# strips only TRAILING newlines; the byte count below proves it. 4093 newlines + 'é€x': the
+# 4096-byte cut keeps 'é' and the first byte of '€'.
+_pad="$(printf '\n%.0s' $(seq 1 4093); printf 'é€x')"
+eq "$(printf '%s' "$_pad" | LC_ALL=C wc -c | tr -d ' ')" "4099" "18b the UTF-8 boundary fixture really is 4099 bytes"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$_pad"
+eq "$SN_RC" "41" "18b a diagnostic cut mid-character at 4 KiB is the environment (41)"
+has "$SN_OUT" "not the repo: é" "18b …keeping the complete character before the cut"
+hasnt "$SN_OUT" "Illegal byte sequence" "18b …and no tool ran in the caller's locale and refused the cut byte"
+if printf '%s' "$SN_OUT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then ok; else bad "18b …and what is printed is valid UTF-8"; fi
+# …and that assertion can fail: with the clip disabled on a copy, the same case prints invalid UTF-8.
+cliplib="$work/cliplib"; rm -rf "$cliplib"; cp -R "$ROOT/scripts/lib" "$cliplib"
+awk 'BEGIN{m=0} /^_il_utf8_clip\(\)/{print; print "  _IL_CLIP=\"$1\""; m=1; next} m&&/^}/{m=0} !m{print}' "$IL" > "$cliplib/implement-lib.sh"
+d="$(new_repo)"; gid "$d"; clm "$d"
+_co="$( cd "$d" && env SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$_pad" bash "$cliplib/implement-lib.sh" snapshot-issues --token tokT .claude/state 7 2>&1 )"
+if printf '%s' "$_co" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then bad "18b a disabled clip still printed valid UTF-8 — the UTF-8 check cannot fail"; else ok; fi
+# A not-found line the 4 KiB cut TRUNCATED may have continued into anything: never repo scope.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND$(printf ' %.0s' $(seq 1 4100))but actually a proxy failure"
+eq "$SN_RC" "41" "18b a not-found line cut at 4 KiB is the environment (41), never repo scope"
+# NUL padding past the cut: a command substitution drops NULs, so unless the drain keeps them
+# counted, the cut goes unmeasured and the surviving not-found line reads as complete.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" SHIM_ISSUE_NULPAD=4200
+eq "$SN_RC" "41" "18b a not-found line NUL-padded past the 4 KiB cut is the environment (41)"
+snap_fail_clean "18b NUL-padded not-found"
+# The cleanup's own failure is said even where the existence tests cannot see the file: an
+# untraversable state directory.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" SHIM_ISSUE_NOX_DIR="$d/.claude/state"
+chmod u+x "$d/.claude/state"
+eq "$SN_RC" "41" "18b a cleanup in an untraversable state dir keeps the classified code (41)"
+has "$SN_OUT" "could not remove the partial snapshot" "18b …and still names the file it could not remove"
+# A capture that FAILED is said, and never trusted as not-found (here: head itself fails).
+hfail="$work/headfail"; mkdir -p "$hfail"; printf '#!/bin/sh\nexit 1\n' > "$hfail/head"; chmod +x "$hfail/head"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" PATH="$hfail:$PATH"
+eq "$SN_RC" "41" "18b a failed stderr capture is the environment (41), never not-found"
+has "$SN_OUT" "the diagnostic capture did not complete" "18b …and says the capture failed"
+# …and the same when the DISCARDING half of the drain fails, not only the kept prefix.
+cfail="$work/catfail"; mkdir -p "$cfail"; printf '#!/bin/sh\nexit 1\n' > "$cfail/cat"; chmod +x "$cfail/cat"
+# Asked of the capture itself: a failing `cat` anywhere else on PATH would break the claim renewal
+# before the read is ever reached.
+_cap="$( . "$ROOT/scripts/lib/common.sh"; eval "$(sed -n '/^_il_gh_read()/,/^}/p' "$IL")"
+         exec 9>/dev/null
+         SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" PATH="$cfail:$PATH" _il_gh_read 5 9 issue view 7
+         printf '%s %s' "$_IL_GH_RC" "$_IL_GH_CAPOK" )"
+eq "$_cap" "1 0" "18b a failed drain (cat) marks the capture incomplete, so it can never be read as not-found"
+# The DRAIN is bounded: a descendant holding gh's stderr open must not hold the run (and its claim)
+# past the read's bound plus the drain's margin (1 + 15 s here, against a 40 s linger).
+d="$(new_repo)"; gid "$d"; clm "$d"
+_t0=$SECONDS
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" SHIM_ISSUE_LINGER=40 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1
+eq "$SN_RC" "41" "18b a lingering stderr holder still classifies (41)"
+if [ $((SECONDS - _t0)) -lt 35 ]; then ok; else bad "18b …within the drain's bound (took $((SECONDS - _t0))s)"; fi
+snap_fail_clean "18b lingering stderr holder"
+# The author-association read runs AFTER the issue resolved in this repository, so its failure is
+# never repo scope — not even when its text looks like a not-found.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ASSOC_FAIL=1 SHIM_ASSOC_STDERR="$GH_TLS"
+eq "$SN_RC" "41" "18b a TLS failure on the association read is the environment (41)"
+snap_fail_clean "18b association TLS"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ASSOC_FAIL=1 SHIM_ASSOC_STDERR="$GH_NOTFOUND"
+eq "$SN_RC" "41" "18b …and a not-found-looking association failure is still never repo scope"
+hasnt "$SN_OUT" "repo scope" "18b …said without the repo-scope advice"
+snap_fail_clean "18b association not-found"
+# A transport error that merely MENTIONS the not-found phrase further down is not a not-found.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf '%s\n%s' "$GH_TLS" "$GH_NOTFOUND")"
+eq "$SN_RC" "41" "18b a mixed diagnostic led by a transport error is the environment (41)"
+# A removal that fails is SAID, never swallowed: the classified code stands and the leftover is named.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" SHIM_ISSUE_RO_DIR="$d/.claude/state"
+chmod u+w "$d/.claude/state"
+eq "$SN_RC" "41" "18b a failed cleanup keeps the classified code (41)"
+has "$SN_OUT" "could not remove the partial snapshot" "18b …and names the file it could not remove"
+has "$SN_OUT" "left in place" "18b …and says the claim was left in place, so re-admission must wait"
+# The classifier and the redactor themselves.
+clsfn="$(sed -n '/^_il_fetch_fail_class()/,/^}/p' "$IL")"
+rdfn="$(sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_redact_line()/,/^}/p' "$IL")"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 124 "$GH_NOTFOUND" )" "timeout" "18b a stalled read whose stderr says not-found is still the timeout"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "" )" "environment" "18b an empty capture is the environment, never not-found"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "$(printf '\n  \n%s' "$GH_NOTFOUND")" )" "notfound" "18b …while leading blank lines do not hide a real not-found"
+# Header names are case-insensitive (RFC 9110 §5.1) and a scheme may be followed by any whitespace.
+_r="$( eval "$rdfn"; _il_redact_line 'AUTHORIZATION: Basic dXNlcjpzZWtyaXQy' )"
+hasnt "$_r" "dXNlcjpzZWtyaXQy" "18b an upper-case Authorization header is redacted"
+_r="$( eval "$rdfn"; _il_redact_line "$(printf 'x bearer\tsekrit3 y')" )"
+hasnt "$_r" "sekrit3" "18b a tab-separated bearer credential (wider than RFC 9110's SP, defensively) is redacted"
+_r="$( eval "$rdfn"; _il_redact_line 'GET https://h/p?client_secret=sekrit5&x=1 failed' )"
+hasnt "$_r" "sekrit5" "18b a query string is redacted whatever its parameter names"
+_r="$( eval "$rdfn"; _il_redact_line 'Post "https://h/p?x=\"sekrit8\"": tls error; a "abc\"sekrit9\"def" b' )"
+hasnt "$_r" "sekrit8" "18b a quoted value inside a quoted URL is redacted"
+hasnt "$_r" "sekrit9" "18b …and an escaped quote does not end a quoted string early"
+has "$_r" "tls error" "18b …while gh's own prose survives"
+_r="$( eval "$rdfn"; _il_redact_line 'x "unterminated sekrit10' )"
+hasnt "$_r" "sekrit10" "18b a quoted string the cut left unterminated is redacted to the end"
+_r="$( eval "$rdfn"; _il_redact_line 'auth failed: password=alpha,sekrit11;x&sekrit12 tail' )"
+hasnt "$_r" "sekrit11" "18b a credential value carrying , ; & is redacted whole"
+hasnt "$_r" "sekrit12" "18b …past every punctuation mark in it"
+# A credential is recognised by its KEY before any rule could replace the key itself.
+_r="$( eval "$rdfn"; _il_redact_line 'HTTP 401: github_access_token= sekrit14' )"
+hasnt "$_r" "sekrit14" "18b a long credential key is read before the opaque-run rule replaces it"
+_r="$( eval "$rdfn"; _il_redact_line 'X-GitHub-Authentication-Token: sekrit15' )"
+hasnt "$_r" "sekrit15" "18b …a hyphenated header-style key too"
+_r="$( eval "$rdfn"; _il_redact_line '{"password": sekrit16}' )"
+hasnt "$_r" "sekrit16" "18b …and a quoted key, before the quoted-string rule replaces it"
+_r="$( eval "$rdfn"; _il_redact_line '{"password[]": 4242}' )"
+hasnt "$_r" "4242" "18b …and a key with punctuation around the credential word"
+_r="$( eval "$rdfn"; _il_redact_line "{\"password🔑\": 4343}" )"
+hasnt "$_r" "4343" "18b …and a key with non-ASCII around the credential word"
+# Each wide rule on its own, with no credential key on the line to mask it.
+_r="$( eval "$rdfn"; _il_redact_line 'failed with ghp_sekrit17 here' )"
+hasnt "$_r" "sekrit17" "18b a GitHub token prefix is redacted on its own"
+_r="$( eval "$rdfn"; _il_redact_line 'failed with Zq8sekrit18Zq8Zq8Zq8Zq here' )"
+hasnt "$_r" "sekrit18" "18b an unprefixed opaque run is redacted on its own"
+has "$_r" "failed with" "18b …while the prose around it survives"
+_r="$( eval "$rdfn"; _il_redact_line 'password = ,sekrit13' )"
+hasnt "$_r" "sekrit13" "18b …including one that starts with punctuation"
+_r="$( eval "$rdfn"; _il_redact_line 'bad ?token="sekrit6" and password: '"'"'sekrit7'"'"'' )"
+hasnt "$_r" "sekrit6" "18b a quoted credential value is redacted"
+hasnt "$_r" "sekrit7" "18b …single-quoted too"
+# A multi-byte character ACROSS byte 300, behind a prefix no rule redacts (words under 20 bytes):
+# 299 bytes, then '€' — the cut keeps one byte of it, and the clip must drop that byte.
+_r="$( eval "$rdfn"; _il_redact_line "$(printf 'abcd %.0s' $(seq 1 59))xxxx€€" )"
+eq "$(printf '%s' "$_r" | LC_ALL=C wc -c | tr -d ' ')" "299" "18b a character across byte 300 is dropped whole, not split"
+if printf '%s' "$_r" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then ok; else bad "18b …leaving valid UTF-8"; fi
+_r="$( eval "$rdfn"; _il_redact_line "$(printf 'é%.0s' $(seq 1 200))" )"
+eq "$(printf '%s' "$_r" | LC_ALL=C wc -c | tr -d ' ')" "300" "18b a cut between complete characters keeps every one of them"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 1 'GraphQL: Could not resolve to an issue or pull request because the service is down' )" "environment" "18b a message sharing only the opening words is not a not-found"
+# Userinfo that ran past the 4 KiB cut has no '@' left; it is redacted whole, not printed.
+_r="$( eval "$rdfn"; _il_redact_line "dial https://user:$(printf 'p%.0s' $(seq 1 5000) | head -c 4080)" )"
+hasnt "$_r" "user:ppp" "18b userinfo cut before its '@' is still redacted"
+# The 300-byte cut never leaves half a character.
+_r="$( eval "$rdfn"; _il_redact_line "$(printf '%0299d' 0)€€" )"
+if printf '%s' "$_r" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then ok; else bad "18b the cut left an invalid UTF-8 tail"; fi
+# NEGATIVE, on a copy: collapse the classifier to one branch — the shape #500 fixed — and the TLS
+# case must go red. Proves the 41 assertion above is carried by the classifier and nothing else.
+mutlib="$work/mutlib"; rm -rf "$mutlib"; cp -R "$ROOT/scripts/lib" "$mutlib"
+awk 'BEGIN{m=0} /^_il_fetch_fail_class\(\)/{print; print "  printf '"'"'notfound\\n'"'"'; return 0"; m=1; next} m&&/^}/{m=0} !m{print}' \
+  "$IL" > "$mutlib/implement-lib.sh"
+if grep -q "Could not resolve to an issue" "$mutlib/implement-lib.sh"; then
+  bad "18b the collapse mutation did not apply — the negative case would assert nothing"; else ok; fi
+d="$(new_repo)"; gid "$d"; clm "$d"
+SN_OUT="$( cd "$d" && env SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" bash "$mutlib/implement-lib.sh" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
+if [ "$SN_RC" = 41 ]; then bad "18b a collapsed classifier still returned 41 for TLS — the check cannot fail"; else ok; fi
+has "$SN_OUT" "repo scope" "18b …the mutant reports TLS as repo scope, which is the defect"
 ( cd "$d" && bash "$IL" snapshot-issues .claude/state 7x ) >/dev/null 2>&1
 eq "$?" "2" "18 a non-numeric issue argument is a usage error"
 # …and a usage error must not have RENEWED the claim first: the documented release contract for
@@ -1502,7 +1711,17 @@ eq "$?" "20" "19l an unreadable clock refuses (20) — the lease cannot be valid
 d="$(new_repo)"; gid "$d"; clm "$d"
 SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ISSUE_SLEEP=5 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1 \
   bash "$IL" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
-eq "$SN_RC" "20" "19l a stalled issue fetch is killed at the bound (20), never held past the lease"
+eq "$SN_RC" "40" "19l a stalled issue fetch is killed at the bound (40), never held past the lease"
+has "$SN_OUT" "outran its 1s bound" "19l …and named as the bound, not as repo scope"
+hasnt "$SN_OUT" "repo scope" "19l …never as repo scope (#500)"
+snap_fail_clean "19l timeout"
+# …on BOTH bound implementations: the timeout binary, and the watchdog a stock Mac without
+# coreutils takes (ADB_NO_TIMEOUT_BIN=1). The two report the bound differently inside.
+d="$(new_repo)"; gid "$d"; clm "$d"
+SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ISSUE_SLEEP=5 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1 ADB_NO_TIMEOUT_BIN=1 \
+  bash "$IL" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
+eq "$SN_RC" "40" "19l …and on the watchdog path too (40)"
+snap_fail_clean "19l watchdog timeout"
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the
@@ -1901,7 +2120,7 @@ if [ -f "$d/.claude/state/survey.md" ] && [ ! -L "$d/.claude/state/survey.md" ];
 # unset, a read error (EISDIR) skips the assignment, and `[ -n "$line" ]` under the lib's set -u
 # is then a FATAL unbound-variable exit that takes the calling process with it — skipping every
 # cleanup after the call site. The witness is caller survival, not the rc alone.
-headfn="$(sed -n '/^_il_survey_head()/,/^}/p' "$IL")"
+headfn="$(sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL")"
 HD_D="$(new_repo)"
 HD_OUT="$( set -u; eval "$headfn"; _il_survey_head "$HD_D/.claude/state" >/dev/null 2>/dev/null
            printf 'SURVIVED=%s\n' "$?" )"
@@ -1988,7 +2207,7 @@ if [ -e "$d/.claude/state/survey-overflow.md" ]; then
 # The probe rides the head call itself: at that moment the public stage name must not exist (the
 # head is created under a private mktemp name and published by rename), and a plant dropped at
 # the vacated name during the head must neither receive the output nor survive as survey.md.
-pubfn="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 PB_D="$(new_repo)"
 printf 'precious repo content\n' > "$PB_D/planted-target.txt"
 awk 'BEGIN{for(i=0;i<2000;i++)print "survey line " i}' > "$PB_D/.claude/state/survey-stage.md"
@@ -2030,7 +2249,7 @@ eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt
 # The publish rename is proven against the held inode AFTER it happens: a swap of the private
 # name in the window before mv used to publish the plant as survey.md under rc 0. The swap rides
 # the rename itself, exactly where a surviving descendant would land it.
-pubfn3="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn3="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 PV_D="$(new_repo)"
 printf 'precious repo content\n' > "$PV_D/swap-target.txt"
 printf 'a modest survey\n' > "$PV_D/.claude/state/survey-stage.md"
@@ -2061,7 +2280,7 @@ if compgen -G "$PV_D/.claude/state/survey-held.w*" >/dev/null; then
 #
 # The race is made deterministic by shimming `wc`: the publisher's first post-validation tool call
 # swaps the stage for a symlink, exactly as a surviving descendant would.
-pubfn2="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn2="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 SW_D="$(new_repo)"
 printf 'precious repo content\n' > "$SW_D/swap-target.txt"
 printf 'a modest survey\n' > "$SW_D/.claude/state/survey-stage.md"

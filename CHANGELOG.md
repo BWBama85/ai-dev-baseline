@@ -10,6 +10,23 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **`snapshot-issues` stops blaming repo scope for a broken `gh` (#500).** Every failed issue read
+  used to be `20`, "verify repo scope", so a TLS failure under the sandbox told the agent the issue
+  belonged to another repository. `gh`'s exit status cannot tell those failures apart, so the read
+  is now classified from its own stderr, kept as a bounded 4 KiB prefix through a drained pipe
+  rather than streamed or staged on disk. GitHub's not-found answer — the first non-blank line,
+  matching one of `gh`'s two probed grammars whole and not cut by the 4 KiB bound — keeps `20` and
+  the repo-scope advice; a read that outran its bound is **`40`**; anything else (TLS, auth,
+  network, HTTP 5xx, an unrecognised line, a capture that did not complete) is **`41`**, "the
+  environment, not the repo". The first non-blank line of `gh`'s stderr is printed after a wide
+  redaction — every quoted string and URL is replaced whole, as are opaque runs and values after
+  credential-named keys — and cut to 300 bytes at a character boundary. The author-association
+  read is classified the same way, and is never a repo-scope answer, since the issue already
+  resolved. A failed read now also removes the partial `issue-<n>.json` it was writing, and names
+  it if it cannot; a claim the release could not drop is said rather than swallowed.
+  `/implement-issue` step 2 and `dispatch-failures.md` say what to do with each code: retry
+  `40`/`41` once from step 1, then report.
+
 - **The sandbox fragment takes `git` and `gh` out of the sandbox (#462, D129).** Under the shipped
   sandbox, `gh` can fail TLS verification on macOS, so its requests never reach GitHub
   (`x509: OSStatus -26276`, while `gh auth status` misreports `The token in keyring is invalid`), and
