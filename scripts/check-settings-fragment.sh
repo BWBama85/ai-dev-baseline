@@ -4043,9 +4043,9 @@ _src=0; adb_claude_settings_leaves_intact "$xo_home/.claude/.adb-settings-owned"
 [ "$_src" -eq 0 ] && ok || bad "after the hand-over the record must read as intact; rc $_src"
 # ...and the updater, which tells a relinquishment from a downgrade by the rows a record carries before
 # and after a self-heal, must still count FIVE: a hand-over moves a row, it gives nothing up.
-xo_rows="$(HOME="$xo_home" bash -c '. "'"$ROOT"'/scripts/lib/common.sh"
-  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "'"$ROOT"'/bin/baseline")"
-  adb_settings_row_count')"
+xo_rows="$(HOME="$xo_home" "$BASH" -c '. "$1/scripts/lib/common.sh"
+  eval "$(sed -n "/^adb_settings_row_count() {/,/^}/p" "$1/bin/baseline")"
+  adb_settings_row_count' _ "$ROOT")"
 [ "$xo_rows" = 5 ] && ok \
   || bad "after a hand-over the record still accounts for five keys — the updater read ${xo_rows:-nothing}, and fewer reports a relinquishment that never happened"
 # ...but only when that is the WHOLE divergence: an extended array beside a real edit still relinquishes.

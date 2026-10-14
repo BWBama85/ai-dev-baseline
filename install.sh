@@ -993,7 +993,13 @@ _adb_carry_rows() {
       adb_info "           so the existing one is kept and this run writes none." >&2
       return 20   # handover-rewrite-failed
     fi
-    _nleaf="$(printf '%s\n' "$_newrows" | grep -c "^leaf$(printf '\t')" || true)"
+    local _ngc
+    _nleaf="$(printf '%s\n' "$_newrows" | grep -c "^leaf$(printf '\t')")"; _ngc=$?
+    if [ "$_ngc" -gt 1 ] || [ -z "$_nleaf" ]; then
+      adb_info "  sandbox  ownership was neither proved nor given up — the rewritten record could not be" >&2
+      adb_info "           counted, so the existing one is kept and this run writes none." >&2
+      return 20   # handover-leaves-uncounted
+    fi
     local _nx
     if ! _nx="$(printf '%s' "$_xfer" | jq 'length' 2>/dev/null)" || [ -z "$_nx" ]; then
       adb_info "  sandbox  ownership was neither proved nor given up — the hand-over could not be counted," >&2
@@ -1006,8 +1012,14 @@ _adb_carry_rows() {
       adb_info "           $_nleaf leaf row(s), not $_want, so the existing one is kept and this run writes none." >&2
       return 20   # handover-count-mismatch
     fi
+    local _xnames
+    if ! _xnames="$(printf '%s' "$_xfer" | jq -r 'map(join(".")) | join(", ")' 2>/dev/null)" || [ -z "$_xnames" ]; then
+      adb_info "  sandbox  ownership was neither proved nor given up — the key being handed over could not be" >&2
+      adb_info "           named, so the existing record is kept and this run writes none." >&2
+      return 20   # handover-unnamed
+    fi
     rows="$_newrows"
-    adb_info "  sandbox  handing over to you, once this run's record is written: $(printf '%s' "$_xfer" | jq -r 'map(join(".")) | join(", ")' 2>/dev/null) — it still holds every entry the policy ships." >&2
+    adb_info "  sandbox  handing over to you, once this run's record is written: $_xnames — it still holds every entry the policy ships." >&2
   fi
   # ...AND EVERY SATISFIED ROW STILL HOLDS (#462, D129): the currency check asks the same question,
   # so a row that no longer holds is never carried — it relinquishes, as a diverged owned leaf does.
