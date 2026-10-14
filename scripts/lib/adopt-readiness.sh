@@ -750,19 +750,16 @@ cmd_tracker() {
   fi
 
   # --- unmilestoned ---
-  # THE COUNT MUST EXCLUDE THE ROADMAP ARTIFACT (#466), for the same reason `slate`'s does: the
-  # artifact is "never a backlog item" (roadmap.md step 7), so step 4b's autofix skips it by design
-  # and it stays in no milestone forever. Counting it made this rung red after the very bootstrap
-  # the `roadmap` rung asks for, with a remedy no supported action could perform. `cmd_facts` does
-  # the excluding, by the `roadmap` label that step 7 identifies the artifact by; a second
-  # roadmap-labelled issue is the `roadmap` rung's split brain, and that rung stays red on it.
+  # The count excludes the roadmap artifact: /roadmap's autofix never milestones it (step 7), so
+  # counting it leaves a rung nothing can clear (D130). `cmd_facts` excludes it by label.
+  local unm
   unm="$(_count unmilestoned)"; rc=$?
   if [ "$rc" -ne 0 ]; then
     _ar_emit unmilestoned unknown "$(_why "$rc" unmilestoned "the unmilestoned open issues were not counted")"
   elif [ "$unm" -gt 0 ]; then
     _ar_emit unmilestoned todo "$unm open issue(s) besides the roadmap artifact are in no milestone — /roadmap's step 4b autofix sweeps them to the backlog milestone, or asks for a decision when none is open (a release-blocker it warns about instead)"
   else
-    _ar_emit unmilestoned ok "no open issue is in limbo (the roadmap artifact is never milestoned, so it is not counted)"
+    _ar_emit unmilestoned ok "no open issue is in limbo (the roadmap artifact needs no milestone, so it is not counted)"
   fi
 
   # --- dispositions ---
@@ -1156,8 +1153,7 @@ cmd_facts() {
     gh api -X GET search/issues -f q="$1" --jq '.total_count' 2>/dev/null
   }
   # `is:issue`, because repos/…/issues returns pull requests too and would count them as work.
-  # `-label:roadmap`, because the artifact is never milestoned (#466; the tracker's `unmilestoned`
-  # rung says why). A fixed literal, never a configurable label spliced into the query.
+  # `-label:roadmap`, because the artifact needs no milestone (D130). A fixed literal.
   if unm="$(_ghq "repo:$repo is:issue is:open no:milestone -label:roadmap")" && [ -n "$unm" ]; then
     out="$(printf '%s' "$out" | jq --argjson n "$unm" '. + {unmilestoned: $n}')"
   fi

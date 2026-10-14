@@ -852,15 +852,12 @@ if grep -q 'milestone:"Ship "now""' "$WORK/gh-args.log"; then
   bad "facts: a quoted milestone title reached a search query unescaped"
 else ok; fi
 
-# THE ROADMAP ARTIFACT IS NEVER COUNTED AS LIMBO (#466). /roadmap's step 7 says the artifact is never
-# a backlog item and step 4b's autofix skips it, so a bootstrapped artifact sits in no milestone for
-# good — and counting it left `unmilestoned` red after the bootstrap the `roadmap` rung asks for, with
-# nothing able to clear it. The stub models the search the way GitHub answers it: the artifact is the
-# one unmilestoned issue, so the bare `no:milestone` search finds it and the excluding one does not.
-# Driven through `facts` and then `tracker`, because the count alone (the cases above) cannot see
-# which query produced it.
+# THE ROADMAP ARTIFACT IS NOT LIMBO (D130). The stub answers the search the way GitHub would when the
+# artifact is the one unmilestoned issue: the bare `no:milestone` search finds it, the excluding one
+# does not. Driven through `facts` and then `tracker`, because a count alone cannot show which query
+# produced it. Each `q=` argument is logged whole, so the query is compared exactly.
 stub_gh "$WORK/gh-artifact" '
-printf "%s\n" "$*" >> "'"$WORK"'/gh-artifact-args.log"
+for a in "$@"; do case "$a" in q=*) printf "%s\n" "$a" >> "'"$WORK"'/gh-artifact-args.log" ;; esac; done
 case "$*" in
   *"repo view"*) echo "acme/widget" ;;
   *milestones*) echo "[]" ;;
@@ -877,9 +874,8 @@ eq "$(printf '%s' "$out" | jq -r '.unmilestoned // "absent"' 2>/dev/null)" "0" \
 trk="$(printf '%s' "$out" | ar tracker 2>/dev/null)"
 has "$trk" "unmilestoned${TAB}ok" "facts->tracker: a bootstrapped, unmilestoned roadmap artifact leaves the rung ok"
 has "$trk" "roadmap${TAB}ok" "facts->tracker: the same artifact satisfies the roadmap rung"
-# The whole query, not a fragment of it: dropping the repository, issue or open-state filter while
-# keeping the exclusion would count the wrong set just as surely. `grep -F`: the string is literal.
-if grep -Fq 'q=repo:acme/widget is:issue is:open no:milestone -label:roadmap' "$WORK/gh-artifact-args.log"; then ok
+# The WHOLE query (`-x`): a dropped filter or an extra qualifier would count the wrong set.
+if grep -Fxq 'q=repo:acme/widget is:issue is:open no:milestone -label:roadmap' "$WORK/gh-artifact-args.log"; then ok
 else bad "facts: the unmilestoned search is scoped to this repo's open issues and excludes the roadmap artifact"; fi
 # Real limbo beside the artifact is still counted — the exclusion is the artifact, not the rung.
 out="$( cd "$d" && UNM_REAL=2 PATH="$WORK/gh-artifact:$PATH" ar facts 2>/dev/null )"

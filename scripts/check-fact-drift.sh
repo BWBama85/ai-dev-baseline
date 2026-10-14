@@ -1033,15 +1033,13 @@ done
 fact release-blocker-label "fixed:release-blocker" -- \
   docs/release-goal-convention.md base/workflows/roadmap.md scripts/lib/release-convention.sh
 
-# --- FACT: the roadmap artifact is never limbo (#466) -----------------------
-# Two components hold one belief about one issue, and they once held contrary ones: /roadmap's step
-# 4b autofix SKIPS the artifact because step 7 says it is never a backlog item, while /adopt's
-# `unmilestoned` rung COUNTED it — so a bootstrapped artifact left the completion contract red with a
-# remedy nothing could perform. Pin both halves at the sites that act on the belief: the autofix's
-# skip, and the readiness query's exclusion spelled as the whole query (a bare `-label:roadmap`
-# would pass on the destination gauge's unrelated search in roadmap.md). The `absent:` half catches
-# the superseded query that counted the artifact, and `--mutation` proves it can go red.
-fact roadmap-artifact-skipped-by-autofix "fixed:the artifact is never a backlog item (step 7)" -- \
+# --- FACT: the roadmap artifact is not limbo (D130) --------------------------
+# /roadmap's autofix skips the artifact and /adopt's `unmilestoned` rung must not count it; the two
+# must agree. Pinned at the operative lines — the skip's condition and its no-op body, and the whole
+# readiness query (a bare `-label:roadmap` also matches roadmap.md's unrelated gauge search).
+fact roadmap-artifact-skipped-by-autofix 'fixed:  if [ "$n" = "$ROADMAP_NUM" ]; then' -- \
+  base/workflows/roadmap.md
+fact roadmap-artifact-skip-is-a-no-op 'regex:^    : +# the artifact is never a backlog item \(step 7\)$' -- \
   base/workflows/roadmap.md
 fact roadmap-artifact-excluded-from-limbo 'fixed:is:open no:milestone -label:roadmap"' -- \
   scripts/lib/adopt-readiness.sh
