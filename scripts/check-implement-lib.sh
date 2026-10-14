@@ -893,9 +893,9 @@ _dg="${_ln##*not the repo: }"
 if [ -n "$_ln" ] && [ "$_dg" != "$_ln" ] && [ -n "$_dg" ] && [ "$(printf '%s' "$_dg" | LC_ALL=C wc -c | tr -d ' ')" -le 300 ]; then ok
 else bad "18b the printed diagnostic is present and at most 300 bytes (got [${_dg:0:40}…])"; fi
 # The 4 KiB capture cut can land inside a character on a SHORT line; what is printed stays UTF-8.
-# The padding is built with a sentinel: a bare $(…) strips trailing newlines, which once left this
-# case four bytes long and never near the cut. 4093 newlines + 'é€x': the 4096-byte cut keeps 'é'
-# and the first byte of '€'.
+# The padding's newlines survive the $(…) because non-newline text follows them — a bare $(…)
+# strips only TRAILING newlines; the byte count below proves it. 4093 newlines + 'é€x': the
+# 4096-byte cut keeps 'é' and the first byte of '€'.
 _pad="$(printf '\n%.0s' $(seq 1 4093); printf 'é€x')"
 eq "$(printf '%s' "$_pad" | LC_ALL=C wc -c | tr -d ' ')" "4099" "18b the UTF-8 boundary fixture really is 4099 bytes"
 d="$(new_repo)"; gid "$d"; clm "$d"
@@ -994,6 +994,13 @@ hasnt "$_r" "sekrit10" "18b a quoted string the cut left unterminated is redacte
 _r="$( eval "$rdfn"; _il_redact_line 'auth failed: password=alpha,sekrit11;x&sekrit12 tail' )"
 hasnt "$_r" "sekrit11" "18b a credential value carrying , ; & is redacted whole"
 hasnt "$_r" "sekrit12" "18b …past every punctuation mark in it"
+# A credential is recognised by its KEY before any rule could replace the key itself.
+_r="$( eval "$rdfn"; _il_redact_line 'HTTP 401: github_access_token= sekrit14' )"
+hasnt "$_r" "sekrit14" "18b a long credential key is read before the opaque-run rule replaces it"
+_r="$( eval "$rdfn"; _il_redact_line 'X-GitHub-Authentication-Token: sekrit15' )"
+hasnt "$_r" "sekrit15" "18b …a hyphenated header-style key too"
+_r="$( eval "$rdfn"; _il_redact_line '{"password": sekrit16}' )"
+hasnt "$_r" "sekrit16" "18b …and a quoted key, before the quoted-string rule replaces it"
 _r="$( eval "$rdfn"; _il_redact_line 'password = ,sekrit13' )"
 hasnt "$_r" "sekrit13" "18b …including one that starts with punctuation"
 _r="$( eval "$rdfn"; _il_redact_line 'bad ?token="sekrit6" and password: '"'"'sekrit7'"'"'' )"

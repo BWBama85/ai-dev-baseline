@@ -1648,14 +1648,18 @@ _il_redact_line() {   # <stderr-text>
   # LC_ALL=C on EACH tool, not only the `local` above: a function-local LC_ALL changes this shell's
   # own string handling but is not exported, so a child runs in the caller's locale — where `tr`
   # refuses a cut character as an illegal byte sequence and truncates the line under the clip.
+  # ORDER IS LOAD-BEARING: the rules that recognise a credential by its KEY run first, while the
+  # key is still there to read — the quoted-string and opaque-run rules would otherwise replace a
+  # long or quoted key (`github_access_token=`, `"password":`) and leave its value behind.
   line="$(printf '%s\n' "$1" | LC_ALL=C grep -m1 -v '^[[:space:]]*$' | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -E \
+    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]["'"'"']?[[:space:]]*[:=]).*/\1 <redacted>/' \
+    -e 's/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*["'"'"']?[[:space:]]*[=:]).*/\1 <redacted>/' \
+    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
+    -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/<redacted>/g' \
     -e 's/"([^"\\]|\\.)*("|\\?$)/"<redacted>"/g' \
     -e "s/'([^'\\\\]|\\\\.)*('|\\\\?\$)/'<redacted>'/g" \
     -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*#<redacted>#g' \
-    -e 's/[A-Za-z0-9_+/=.-]{20,}/<redacted>/g' \
-    -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=]).*/\1 <redacted>/' \
-    -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
-    -e 's/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*[[:space:]]*[=:]).*/\1 <redacted>/')"
+    -e 's/[A-Za-z0-9_+/=.-]{20,}/<redacted>/g')"
   [ "${#line}" -gt 300 ] && line="${line:0:300}"
   _il_utf8_clip "$line"; line="$_IL_CLIP"
   printf '%s\n' "${line:-(gh printed no diagnostic)}"
@@ -1688,7 +1692,7 @@ _il_fetch_bail() {   # <token> <state-dir> <issue-n> <issue|assoc> <bound-secs>
   [ "$_IL_GH_CAPOK" = 1 ] || diag="$diag (the diagnostic capture did not complete)"
   case "$cls" in
     timeout)
-      _il_bail "$tok" "$dir" 40 "could not fetch $label: the read outran its ${ft}s bound" ;;
+      _il_bail "$tok" "$dir" 40 "could not fetch $label: the read outran its ${ft}s bound: $diag" ;;
     notfound)
       if [ "$what" = issue ]; then
         _il_bail "$tok" "$dir" 20 "could not fetch issue #$n: GitHub says it does not exist here — verify repo scope (repo-scope.md): $diag"
@@ -1701,9 +1705,11 @@ _il_fetch_bail() {   # <token> <state-dir> <issue-n> <issue|assoc> <bound-secs>
 }
 
 # Step 2: prove the state dir is gitignored, snapshot each issue's body+comments AND its author's
-# repo standing, and refuse a CLOSED issue. Every failure releases the claim (--token) first, and a
-# failed read removes the snapshot it was writing (_il_snapshot_discard, which names any file it
-# could not remove). A run killed from outside mid-read is not covered: the next `admit` clears it.
+# repo standing, and refuse a CLOSED issue. A failure past argument validation releases the claim
+# (--token) through _il_bail, which says when that release fails — except a refused lease renewal,
+# which returns directly and leaves the claim to its lease (state-protocol.md). A failed read
+# removes the snapshot it was writing (_il_snapshot_discard, which names any file it could not
+# remove). A run killed from outside mid-read is not covered: the next `admit` clears it.
 cmd_snapshot_issues() {
   local tok="" dir n st assoc
   while [ "$#" -gt 0 ]; do
