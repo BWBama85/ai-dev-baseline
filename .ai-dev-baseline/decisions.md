@@ -9550,6 +9550,18 @@ survive is the part a later reader needs.
              selection, shmutant's speed lever, needs units the pool suites do not have, so it is
              not claimed here, and the per-block rows that do select move in #525.
 - baseline-issue: n/a
+- amended:   2026-10-14 (#519). The vendored copy moves to shmutant `v0.2.2` (tag commit `497ee99`,
+             SHA-256 `806ee7d3…6fef7`, matching that release's `CHECKSUMS`); "v0.2.0" above and in
+             `placement` describes the pin this decision took. The only change to `shmutant.sh`
+             between the two tags is upstream PR #40 (`3cbd9fc`), which closed three of the four
+             defects listed above, read live on 2026-10-14: BWBama85/shmutant#26 (a failed read of a
+             run's output is no longer a clean scan), #27 (a `.shmutant` with anything after the
+             marker line is refused) and #30 (`checksum` fails when its digest tool fails) are
+             CLOSED, completed. **#29 is still OPEN**: a failed metadata read still yields a
+             successful, content-only target fingerprint, so a callback's change to a target's
+             metadata can still pass unseen. Nothing this repo calls changed — `shmutant_pool`, the
+             `SHMUTANT_ROWS_*` table, the field encoder and the verdict stream are as pinned — so
+             `check_shmutant_pool` and the ported rows take no edit.
 
 ## D126 — #456: no mutation harness runs per pull request; they run nightly, by dispatch and by label
 - date:      2026-10-10

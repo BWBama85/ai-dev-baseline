@@ -10,6 +10,17 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **The vendored shmutant moves to v0.2.2 (#519).** `scripts/shmutant.sh` is the
+  [shmutant](https://github.com/BWBama85/shmutant) v0.2.2 release, copied byte for byte, and
+  `scripts/shmutant.sh.sha256` records its new digest. Its one code change since v0.2.0 is upstream
+  PR #40, and it closes three defects D125 filed there: a failed read of a run's output is no longer
+  taken as a clean result (BWBama85/shmutant#26); a workdir whose `.shmutant` marker has anything
+  after the marker line is refused (#27), which only a hand-made workdir could trip, since shmutant
+  writes exactly the marker; and `shmutant.sh checksum` fails when its digest tool fails instead of
+  printing a bad value (#30). The fourth, a failed metadata read still yielding a content-only target
+  fingerprint (#29), is still open upstream. Nothing this repo calls changed (`shmutant_pool`, the
+  `SHMUTANT_ROWS_*` table, the field encoder and the verdict stream), so `check_shmutant_pool` and
+  the ported rows take no edit.
 - **`snapshot-issues` stops blaming repo scope for a broken `gh` (#500).** Every failed issue read
   used to be `20`, "verify repo scope", so a TLS failure under the sandbox told the agent the issue
   belonged to another repository. `gh`'s exit status cannot tell those failures apart, so the read

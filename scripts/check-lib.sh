@@ -409,7 +409,7 @@ _check_hung_verdict() {
 # agree with its records. Only then does a `killed` row count as an `ok`; otherwise every row that was
 # not killed is still named, and the tally says the kills it reports are untrusted. Status 2 (a
 # harness error) is never trusted. This reads the table shmutant keeps (`SHMUTANT_ROWS_*`) and its
-# encoder; both are the pinned v0.2.0's, and check-block-rows.sh pins each.
+# encoder; both are the pinned v0.2.2's, and check-block-rows.sh pins each.
 #
 # ADB_MUTATION_ARTIFACTS=<dir> (CI sets it): the pool's workdir is `<dir>/<label>.XXXXXX/pool` instead
 # of the caller's, so shmutant itself leaves the stream and every row's `mut-<n>/output` there —
