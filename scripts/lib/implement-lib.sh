@@ -1567,8 +1567,13 @@ cmd_sync_default() {
 # Through a pipe into a variable, never a file: a staged stderr file is a pathname a descendant can
 # swap before it is reopened, and disk nothing bounds. The drain keeps a prefix and DISCARDS the
 # rest, still reading, so a flood of diagnostics can neither fill a disk nor block gh on a full
-# pipe; its own status is head's, kept past the discarding `cat`. Both statuses ride behind the
+# pipe; its status fails if head, tr or the discarding `cat` failed. Both statuses ride behind the
 # drained text, read from PIPESTATUS in the same subshell.
+#
+# NUL BYTES ARE MAPPED TO \001 INSIDE THE DRAIN, before anything reaches a shell variable: a command
+# substitution drops NULs, so a NUL-padded diagnostic would arrive SHORTER than what was read and
+# the 4 KiB cut would go unmeasured. \001 keeps every byte counted, can never complete gh's
+# not-found grammar, and is a control character the redactor strips.
 #
 # The DRAIN is bounded too, past the producer's bound plus its kill grace: a descendant of gh that
 # outlives it holding stderr keeps the pipe open, and an unbounded drain would wait on it forever
@@ -1577,7 +1582,8 @@ cmd_sync_default() {
 _il_gh_read() {   # <bound-secs> <out-fd> <gh args...>
   local LC_ALL=C ft="$1" ofd="$2" out tail; shift 2
   out="$( { adb_run_bounded "$ft" 10 gh "$@" 2>&1 1>&"$ofd" \
-              | adb_run_bounded "$((ft + 15))" 5 sh -c 'head -c 4097; r=$?; cat >/dev/null; exit $r'
+              | adb_run_bounded "$((ft + 15))" 5 bash -c 'set -o pipefail; head -c 4097 | LC_ALL=C tr "\000" "\001"; r=$?
+                                                    cat >/dev/null || { [ "$r" -ne 0 ] || r=1; }; exit "$r"'
             printf '\n%s %s' "${PIPESTATUS[0]}" "${PIPESTATUS[1]}"; } )"
   tail="${out##*$'\n'}"
   _IL_GH_ERR="${out%$'\n'*}"
@@ -1622,16 +1628,17 @@ _il_fetch_fail_class() {   # <rc> <stderr-text> [<cut> [<capture-ok>]]
 }
 
 # The first non-blank line of a gh failure, safe to print (logging-and-secrets.md: redact BEFORE
-# printing). WIDE BY STRUCTURE, not by enumerating credential spellings — three review rounds each
-# found a quoting or escaping shape the enumerated patterns missed, so the owner chose to replace
-# whole classes of text instead:
+# printing). WIDE BY STRUCTURE, not by enumerating credential spellings (D131) — whole classes of
+# text are replaced:
 #   - every QUOTED string, double or single, backslash escapes included, and one left unterminated
 #     by the 4 KiB cut runs to the end of the line;
 #   - every URL, scheme to the next whitespace — host, userinfo, path, query and fragment alike;
 #   - every opaque run of 20+ token characters (a credential with no recognisable prefix);
-#   - the rest of the line after an Authorization header name; the word after a Bearer/Basic/token
-#     scheme; the value after any key whose name holds token, secret, pass, key, auth or cred
-#     (names in any case; any whitespace, wider than RFC 9110's single SP, defensively).
+#   - the rest of the line after an Authorization header name, or after any key whose name holds
+#     token, secret, pass, key, auth or cred and a `=` or `:` — a credential may carry any
+#     punctuation, so no character inside one is treated as its end; the word after a
+#     Bearer/Basic/token scheme (names in any case; any whitespace after the scheme, wider than
+#     RFC 9110's single SP, defensively).
 # What survives is gh's own prose — `Post "<redacted>": tls: failed to verify certificate: x509:
 # OSStatus -26276` — which is the diagnosis. Control characters are stripped first, since the line
 # lands in an agent's terminal; the line is then cut to 300 bytes and a partial character at its
@@ -1648,7 +1655,7 @@ _il_redact_line() {   # <stderr-text>
     -e 's/[A-Za-z0-9_+/=.-]{20,}/<redacted>/g' \
     -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=]).*/\1 <redacted>/' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
-    -e 's/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*[[:space:]]*[=:][[:space:]]*)[^[:space:],;&]+/\1<redacted>/g')"
+    -e 's/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*[[:space:]]*[=:]).*/\1 <redacted>/')"
   [ "${#line}" -gt 300 ] && line="${line:0:300}"
   _il_utf8_clip "$line"; line="$_IL_CLIP"
   printf '%s\n' "${line:-(gh printed no diagnostic)}"
@@ -1660,8 +1667,9 @@ _il_redact_line() {   # <stderr-text>
 _il_snapshot_discard() {   # <state-dir> <issue-n>
   local f
   for f in "$1/issue-$2.json" "$1/issue-$2.assoc"; do
-    rm -f "$f" 2>/dev/null
-    if [ -e "$f" ] || [ -L "$f" ]; then
+    # rm's own status first: in a directory that cannot be traversed, the existence tests below
+    # read false for a file that is still there.
+    if ! rm -f "$f" 2>/dev/null || [ -e "$f" ] || [ -L "$f" ]; then
       printf 'implement-lib: NOTE — could not remove the partial snapshot %s; delete it before re-running\n' "$f" >&2
     fi
   done

@@ -9910,3 +9910,32 @@ survive is the part a later reader needs.
              `base/workflows/roadmap.md` (the autofix table) ·
              `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D131 — #500: `snapshot-issues` classifies a failed `gh` read, and redacts what it prints by structure
+- date:      2026-10-14
+- category:  project-delta
+- unknown:   #500. Every failed `gh issue view` was code `20`, "verify repo scope", so a TLS failure
+             under the macOS sandbox told the agent the issue belonged to another repository. `gh`'s
+             exit status cannot tell the two apart (`gh help exit-codes`: 1 for any failure). The
+             issue also asked for `gh`'s first stderr line to be printed, after redaction.
+- decision:  **Classify from `gh`'s own words, and fail toward the environment.** `20` is kept only
+             for a first non-blank line that is, whole, one of the two not-found grammars probed
+             live (gh 2.101.0), from a capture that completed and was not cut mid-line; a bound
+             that fired is `40`; everything else is `41`. A wrong `41` costs a retry, while a wrong
+             `20` ends the run and points at the wrong place.
+             **Redact by structure, not by spelling (owner decision, 2026-10-14).** The first
+             redactor enumerated credential shapes. Three consecutive review rounds each found a
+             quoting or escaping shape it missed: header casing, quoted query values, escaped
+             quotes. Offered a choice between continuing to patch, printing only a category word,
+             and replacing whole classes of text, the owner chose the third. Every quoted string,
+             URL, opaque 20+ character run, and everything after a credential-named key or an
+             Authorization header is replaced; `gh`'s prose survives, which is the diagnosis.
+             **The stderr capture is a drained pipe, never a file.** A staged file is a pathname a
+             descendant can swap, and disk nothing bounds. NULs are mapped to `\001` inside the
+             drain, because a command substitution drops them and would hide the 4 KiB cut.
+- placement: `scripts/lib/implement-lib.sh` (`_il_gh_read`, `_il_fetch_fail_class`,
+             `_il_redact_line`, `_il_utf8_clip`, `_il_snapshot_discard`, `_il_fetch_bail`) ·
+             `scripts/check-implement-lib.sh` (§18b, §19l) · `base/workflows/implement-issue.md`
+             (step 2) · `base/workflows/implement-issue/dispatch-failures.md` ·
+             `base/workflows/implement-issue/state-protocol.md` · `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

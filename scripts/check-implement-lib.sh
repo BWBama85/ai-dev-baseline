@@ -68,6 +68,11 @@ case "$1 $2" in
     [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
     [ -n "${SHIM_ISSUE_SLEEP:-}" ] && sleep "$SHIM_ISSUE_SLEEP"
     [ -n "${SHIM_ISSUE_RO_DIR:-}" ] && chmod a-w "$SHIM_ISSUE_RO_DIR"
+    [ -n "${SHIM_ISSUE_NOX_DIR:-}" ] && chmod a-x "$SHIM_ISSUE_NOX_DIR"
+    # A not-found line followed by NUL padding past the 4 KiB cut, then a different error.
+    if [ -n "${SHIM_ISSUE_NULPAD:-}" ]; then
+      { printf '%s' "${SHIM_ISSUE_STDERR:-}"; head -c "$SHIM_ISSUE_NULPAD" /dev/zero; printf 'proxy failure\n'; } >&2; exit 1
+    fi
     # A descendant that outlives gh holding its stderr open (the drain must not wait on it).
     [ -n "${SHIM_ISSUE_LINGER:-}" ] && { sleep "$SHIM_ISSUE_LINGER" & }
     if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ISSUE_STDERR-gh: issue not found}" >&2; exit 1; fi
@@ -909,12 +914,34 @@ if printf '%s' "$_co" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then bad "18b a
 d="$(new_repo)"; gid "$d"; clm "$d"
 snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND$(printf ' %.0s' $(seq 1 4100))but actually a proxy failure"
 eq "$SN_RC" "41" "18b a not-found line cut at 4 KiB is the environment (41), never repo scope"
+# NUL padding past the cut: a command substitution drops NULs, so unless the drain keeps them
+# counted, the cut goes unmeasured and the surviving not-found line reads as complete.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" SHIM_ISSUE_NULPAD=4200
+eq "$SN_RC" "41" "18b a not-found line NUL-padded past the 4 KiB cut is the environment (41)"
+snap_fail_clean "18b NUL-padded not-found"
+# The cleanup's own failure is said even where the existence tests cannot see the file: an
+# untraversable state directory.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" SHIM_ISSUE_NOX_DIR="$d/.claude/state"
+chmod u+x "$d/.claude/state"
+eq "$SN_RC" "41" "18b a cleanup in an untraversable state dir keeps the classified code (41)"
+has "$SN_OUT" "could not remove the partial snapshot" "18b …and still names the file it could not remove"
 # A capture that FAILED is said, and never trusted as not-found (here: head itself fails).
 hfail="$work/headfail"; mkdir -p "$hfail"; printf '#!/bin/sh\nexit 1\n' > "$hfail/head"; chmod +x "$hfail/head"
 d="$(new_repo)"; gid "$d"; clm "$d"
 snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" PATH="$hfail:$PATH"
 eq "$SN_RC" "41" "18b a failed stderr capture is the environment (41), never not-found"
 has "$SN_OUT" "the diagnostic capture did not complete" "18b …and says the capture failed"
+# …and the same when the DISCARDING half of the drain fails, not only the kept prefix.
+cfail="$work/catfail"; mkdir -p "$cfail"; printf '#!/bin/sh\nexit 1\n' > "$cfail/cat"; chmod +x "$cfail/cat"
+# Asked of the capture itself: a failing `cat` anywhere else on PATH would break the claim renewal
+# before the read is ever reached.
+_cap="$( . "$ROOT/scripts/lib/common.sh"; eval "$(sed -n '/^_il_gh_read()/,/^}/p' "$IL")"
+         exec 9>/dev/null
+         SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" PATH="$cfail:$PATH" _il_gh_read 5 9 issue view 7
+         printf '%s %s' "$_IL_GH_RC" "$_IL_GH_CAPOK" )"
+eq "$_cap" "1 0" "18b a failed drain (cat) marks the capture incomplete, so it can never be read as not-found"
 # The DRAIN is bounded: a descendant holding gh's stderr open must not hold the run (and its claim)
 # past the read's bound plus the drain's margin (1 + 15 s here, against a 40 s linger).
 d="$(new_repo)"; gid "$d"; clm "$d"
@@ -964,6 +991,11 @@ hasnt "$_r" "sekrit9" "18b …and an escaped quote does not end a quoted string 
 has "$_r" "tls error" "18b …while gh's own prose survives"
 _r="$( eval "$rdfn"; _il_redact_line 'x "unterminated sekrit10' )"
 hasnt "$_r" "sekrit10" "18b a quoted string the cut left unterminated is redacted to the end"
+_r="$( eval "$rdfn"; _il_redact_line 'auth failed: password=alpha,sekrit11;x&sekrit12 tail' )"
+hasnt "$_r" "sekrit11" "18b a credential value carrying , ; & is redacted whole"
+hasnt "$_r" "sekrit12" "18b …past every punctuation mark in it"
+_r="$( eval "$rdfn"; _il_redact_line 'password = ,sekrit13' )"
+hasnt "$_r" "sekrit13" "18b …including one that starts with punctuation"
 _r="$( eval "$rdfn"; _il_redact_line 'bad ?token="sekrit6" and password: '"'"'sekrit7'"'"'' )"
 hasnt "$_r" "sekrit6" "18b a quoted credential value is redacted"
 hasnt "$_r" "sekrit7" "18b …single-quoted too"
