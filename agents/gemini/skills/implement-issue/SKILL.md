@@ -178,7 +178,9 @@ bash "$HOME/.gemini/scripts/lib/implement-lib.sh" snapshot-issues --token "$RUN_
 
 Proves `.gemini/state` is gitignored first, snapshots each issue's body + comments
 (`issue-<n>.json`) and its author's repo standing (`issue-<n>.assoc`), and refuses a non-OPEN
-issue. Codes (each already released the claim): `20` — when its line says **verify repo scope**,
+issue. Codes (each released the claim, save a refused lease renewal — `13`, or a `12`/`20` that
+names the renewal or the clock — which leaves it to its lease; `state-protocol.md`): `20` — when
+its line says **verify repo scope**,
 GitHub answered not-found: stop and tell the user which repo this checkout maps to; any other `20`
 line names the local read or write that failed; `40` the read outran its bound and `41` `gh` failed
 for a reason other than not-found (TLS, auth, network, HTTP 5xx) — the **environment, not the

@@ -860,7 +860,7 @@ snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS"
 eq "$SN_RC" "41" "18b a TLS failure is the environment code (41), not 20"
 has "$SN_OUT" "not the repo" "18b …named as the environment"
 hasnt "$SN_OUT" "repo scope" "18b …and never as a repo-scope problem"
-has "$SN_OUT" "x509: OSStatus -26276" "18b …with gh's own first line printed"
+has "$SN_OUT" 'Post "<redacted>": tls: failed to verify certificate: x509: OSStatus -26276' "18b …with gh's own first line printed, its URL redacted"
 snap_fail_clean "18b TLS"
 d="$(new_repo)"; gid "$d"; clm "$d"
 snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="something gh has never said before"
@@ -888,10 +888,33 @@ _dg="${_ln##*not the repo: }"
 if [ -n "$_ln" ] && [ "$_dg" != "$_ln" ] && [ -n "$_dg" ] && [ "$(printf '%s' "$_dg" | LC_ALL=C wc -c | tr -d ' ')" -le 300 ]; then ok
 else bad "18b the printed diagnostic is present and at most 300 bytes (got [${_dg:0:40}…])"; fi
 # The 4 KiB capture cut can land inside a character on a SHORT line; what is printed stays UTF-8.
+# The padding is built with a sentinel: a bare $(…) strips trailing newlines, which once left this
+# case four bytes long and never near the cut. 4093 newlines + 'é€x': the 4096-byte cut keeps 'é'
+# and the first byte of '€'.
+_pad="$(printf '\n%.0s' $(seq 1 4093); printf 'é€x')"
+eq "$(printf '%s' "$_pad" | LC_ALL=C wc -c | tr -d ' ')" "4099" "18b the UTF-8 boundary fixture really is 4099 bytes"
 d="$(new_repo)"; gid "$d"; clm "$d"
-snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf '\n%.0s' $(seq 1 4094))€x"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$_pad"
 eq "$SN_RC" "41" "18b a diagnostic cut mid-character at 4 KiB is the environment (41)"
+has "$SN_OUT" "not the repo: é" "18b …keeping the complete character before the cut"
+hasnt "$SN_OUT" "Illegal byte sequence" "18b …and no tool ran in the caller's locale and refused the cut byte"
 if printf '%s' "$SN_OUT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then ok; else bad "18b …and what is printed is valid UTF-8"; fi
+# …and that assertion can fail: with the clip disabled on a copy, the same case prints invalid UTF-8.
+cliplib="$work/cliplib"; rm -rf "$cliplib"; cp -R "$ROOT/scripts/lib" "$cliplib"
+awk 'BEGIN{m=0} /^_il_utf8_clip\(\)/{print; print "  _IL_CLIP=\"$1\""; m=1; next} m&&/^}/{m=0} !m{print}' "$IL" > "$cliplib/implement-lib.sh"
+d="$(new_repo)"; gid "$d"; clm "$d"
+_co="$( cd "$d" && env SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$_pad" bash "$cliplib/implement-lib.sh" snapshot-issues --token tokT .claude/state 7 2>&1 )"
+if printf '%s' "$_co" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then bad "18b a disabled clip still printed valid UTF-8 — the UTF-8 check cannot fail"; else ok; fi
+# A not-found line the 4 KiB cut TRUNCATED may have continued into anything: never repo scope.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND$(printf ' %.0s' $(seq 1 4100))but actually a proxy failure"
+eq "$SN_RC" "41" "18b a not-found line cut at 4 KiB is the environment (41), never repo scope"
+# A capture that FAILED is said, and never trusted as not-found (here: head itself fails).
+hfail="$work/headfail"; mkdir -p "$hfail"; printf '#!/bin/sh\nexit 1\n' > "$hfail/head"; chmod +x "$hfail/head"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND" PATH="$hfail:$PATH"
+eq "$SN_RC" "41" "18b a failed stderr capture is the environment (41), never not-found"
+has "$SN_OUT" "the diagnostic capture did not complete" "18b …and says the capture failed"
 # The DRAIN is bounded: a descendant holding gh's stderr open must not hold the run (and its claim)
 # past the read's bound plus the drain's margin (1 + 15 s here, against a 40 s linger).
 d="$(new_repo)"; gid "$d"; clm "$d"
@@ -935,6 +958,12 @@ _r="$( eval "$rdfn"; _il_redact_line "$(printf 'x bearer\tsekrit3 y')" )"
 hasnt "$_r" "sekrit3" "18b a tab-separated bearer credential (wider than RFC 9110's SP, defensively) is redacted"
 _r="$( eval "$rdfn"; _il_redact_line 'GET https://h/p?client_secret=sekrit5&x=1 failed' )"
 hasnt "$_r" "sekrit5" "18b a query string is redacted whatever its parameter names"
+_r="$( eval "$rdfn"; _il_redact_line 'Post "https://h/p?x=\"sekrit8\"": tls error; a "abc\"sekrit9\"def" b' )"
+hasnt "$_r" "sekrit8" "18b a quoted value inside a quoted URL is redacted"
+hasnt "$_r" "sekrit9" "18b …and an escaped quote does not end a quoted string early"
+has "$_r" "tls error" "18b …while gh's own prose survives"
+_r="$( eval "$rdfn"; _il_redact_line 'x "unterminated sekrit10' )"
+hasnt "$_r" "sekrit10" "18b a quoted string the cut left unterminated is redacted to the end"
 _r="$( eval "$rdfn"; _il_redact_line 'bad ?token="sekrit6" and password: '"'"'sekrit7'"'"'' )"
 hasnt "$_r" "sekrit6" "18b a quoted credential value is redacted"
 hasnt "$_r" "sekrit7" "18b …single-quoted too"

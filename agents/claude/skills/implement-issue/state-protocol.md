@@ -93,8 +93,11 @@ line, the claim carries it: `jq -r .token .claude/state/gap-analysis.lock`.
 - **step 4**, on the paths that stop the run (a BLOCKING finding you surface; a gap-analysis
   incompleteness that survives its retry).
 - **step 2**, on a repo-scope, issue-state or failed-read stop (`snapshot-issues` does this itself
-  when passed `--token`, and prints a NOTE when the release fails). A `13` is not this run's
-  claim to release.
+  when passed `--token`, and prints a NOTE when the release fails). **Not** on a refused lease
+  renewal, which `snapshot-issues` checks before each issue: a `13` is a successor's claim and
+  not this run's to release, and a `12` or `20` naming the lease override, the clock or the
+  renewal stage leaves this run's claim in place. Fix what it names; admission then waits for the
+  lease, or — only when you are certain no run is live — delete `gap-analysis.lock`.
 
 **Do not release after the survey or gap dispatch returns.** The window the claim must cover is
 longer than the dispatch — the findings still have to be read, and the marker does not exist

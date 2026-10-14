@@ -1557,26 +1557,36 @@ cmd_sync_default() {
 
 # --- snapshot-issues -----------------------------------------------------------------------------
 # One bounded gh read whose stdout goes to <out-fd> and whose stderr is KEPT rather than streamed
-# (#500): the failure is classified from it, and only a redacted line of it is ever printed. Sets
-# _IL_GH_RC (the bounded call's status) and _IL_GH_ERR (the first 4 KiB of its stderr).
+# (#500): the failure is classified from it, and only a redacted line of it is ever printed. Sets:
+#   _IL_GH_RC     the bounded call's status
+#   _IL_GH_ERR    the first 4 KiB of its stderr
+#   _IL_GH_CUT    1 when stderr ran past those 4 KiB, so its last kept line may be incomplete
+#   _IL_GH_CAPOK  0 when the capture itself failed or was cut off by its bound — the text is then
+#                 not the whole diagnostic and is never trusted as a not-found answer
 #
 # Through a pipe into a variable, never a file: a staged stderr file is a pathname a descendant can
-# swap before it is reopened, and disk nothing bounds. The drain keeps a 4 KiB prefix and DISCARDS
-# the rest, still reading, so a flood of diagnostics can neither fill a disk nor block gh on a full
-# pipe. The status rides behind the drained text, read from PIPESTATUS in the same subshell.
+# swap before it is reopened, and disk nothing bounds. The drain keeps a prefix and DISCARDS the
+# rest, still reading, so a flood of diagnostics can neither fill a disk nor block gh on a full
+# pipe; its own status is head's, kept past the discarding `cat`. Both statuses ride behind the
+# drained text, read from PIPESTATUS in the same subshell.
 #
 # The DRAIN is bounded too, past the producer's bound plus its kill grace: a descendant of gh that
 # outlives it holding stderr keeps the pipe open, and an unbounded drain would wait on it forever
 # with the claim unreleased. Bounding it AT the producer's deadline instead would let the drain die
 # first and turn a stall into gh's SIGPIPE — misread as the environment rather than the timeout.
 _il_gh_read() {   # <bound-secs> <out-fd> <gh args...>
-  local ft="$1" ofd="$2" out; shift 2
+  local LC_ALL=C ft="$1" ofd="$2" out tail; shift 2
   out="$( { adb_run_bounded "$ft" 10 gh "$@" 2>&1 1>&"$ofd" \
-              | adb_run_bounded "$((ft + 15))" 5 sh -c 'head -c 4096; cat >/dev/null'
-            printf '\n%s' "${PIPESTATUS[0]}"; } )"
-  _IL_GH_RC="${out##*$'\n'}"
-  case "$_IL_GH_RC" in ''|*[!0-9]*) _IL_GH_RC=1 ;; esac
+              | adb_run_bounded "$((ft + 15))" 5 sh -c 'head -c 4097; r=$?; cat >/dev/null; exit $r'
+            printf '\n%s %s' "${PIPESTATUS[0]}" "${PIPESTATUS[1]}"; } )"
+  tail="${out##*$'\n'}"
   _IL_GH_ERR="${out%$'\n'*}"
+  _IL_GH_RC="${tail%% *}"
+  case "$_IL_GH_RC" in ''|*[!0-9]*) _IL_GH_RC=1 ;; esac
+  _IL_GH_CAPOK=1
+  [ "${tail#* }" = 0 ] || _IL_GH_CAPOK=0
+  _IL_GH_CUT=0
+  if [ "${#_IL_GH_ERR}" -gt 4096 ]; then _IL_GH_CUT=1; _IL_GH_ERR="${_IL_GH_ERR:0:4096}"; fi
 }
 
 # Why a gh read failed, from its status and its kept stderr. The status alone cannot tell a missing
@@ -1584,54 +1594,67 @@ _il_gh_read() {   # <bound-secs> <out-fd> <gh args...>
 # for a cancel and 4 for auth beside it) — so only gh's own wording can. Prints one word:
 #   timeout      the bound fired: adb_run_bounded's 124. Checked FIRST, so a stalled read whose
 #                stderr happens to carry the not-found phrase is still reported as the stall.
-#   notfound     the FIRST non-blank line is, WHOLE, GitHub's own definite negative for the issue
+#   notfound     the first non-blank line is, WHOLE, GitHub's own definite negative for the issue
 #                or for the repository the read was pinned to — the only answers about repo scope.
 #                Both grammars were probed (gh 2.101.0): `… with the number of N. (repository.issue)`
 #                and `… a Repository with the name 'o/r'. (repository)`. Matched whole, so a
 #                transport error that merely MENTIONS the phrase, or a new message that only
-#                shares its opening words, is not read as one.
+#                shares its opening words, is not read as one; and only from a capture that
+#                completed (<capture-ok> 1) with that line ending inside it — a line the 4 KiB cut
+#                (<cut> 1) may have truncated could have continued into anything.
 #   environment  everything else, an empty capture included. The FAIL-SAFE default: wrongly saying
 #                "this is the environment" costs one retry; wrongly saying "wrong repository" ends
 #                the run and sends the operator looking in the wrong place.
-_il_fetch_fail_class() {   # <rc> <stderr-text>
+_il_fetch_fail_class() {   # <rc> <stderr-text> [<cut> [<capture-ok>]]
   local LC_ALL=C first
   [ "$1" = 124 ] && { printf 'timeout\n'; return 0; }
-  first="$(printf '%s\n' "$2" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$')"
-  if [[ "$first" =~ ^GraphQL:\ Could\ not\ resolve\ to\ an\ issue\ or\ pull\ request\ with\ the\ number\ of\ [0-9]+\.\ \(repository\.issue\)[[:space:]]*$ ]] \
-     || [[ "$first" =~ ^GraphQL:\ Could\ not\ resolve\ to\ a\ Repository\ with\ the\ name\ \'[^\']+\'\.\ \(repository\)[[:space:]]*$ ]]; then
+  [ "${4:-1}" = 1 ] || { printf 'environment\n'; return 0; }
+  first="$(printf '%s\n' "$2" | LC_ALL=C grep -m1 -v '^[[:space:]]*$')"
+  if [ "${3:-0}" = 1 ]; then
+    case "$2" in *"$first"$'\n'*) : ;; *) printf 'environment\n'; return 0 ;; esac
+  fi
+  if [[ "$first" =~ ^GraphQL:\ Could\ not\ resolve\ to\ an\ issue\ or\ pull\ request\ with\ the\ number\ of\ [0-9]+\.\ \(repository\.issue\)$ ]] \
+     || [[ "$first" =~ ^GraphQL:\ Could\ not\ resolve\ to\ a\ Repository\ with\ the\ name\ \'[^\']+\'\.\ \(repository\)$ ]]; then
     printf 'notfound\n'
   else
     printf 'environment\n'
   fi
 }
 
-# The first line of a gh failure, safe to print (logging-and-secrets.md: redact BEFORE printing).
-# Control characters stripped, since it lands in an agent's terminal; then credential shapes are
-# replaced, erring wide rather than enumerating spellings: EVERY URL query string and fragment goes
-# (whatever its parameter names); so does userinfo in a URL; so does any value — quoted or not —
-# after a name containing token, secret, pass, key, auth or cred and a `=` or `:`; so do GitHub
-# token prefixes and a Bearer/Basic/token scheme's credential (names in any case, and whitespace of
-# any kind after the scheme — wider than RFC 9110's single SP, defensively). The input is already
-# cut at 4 KiB, so a URL whose userinfo ran past the cut has no `@` left to find: a scheme followed
-# by nothing but non-separator bytes to the end of the line is redacted whole. Only THEN is the line
-# cut to 300 bytes, and a partial character at the end — from either cut — dropped. A closed list,
-# not a secret scanner — which is why the line is bounded too.
+# The first non-blank line of a gh failure, safe to print (logging-and-secrets.md: redact BEFORE
+# printing). WIDE BY STRUCTURE, not by enumerating credential spellings — three review rounds each
+# found a quoting or escaping shape the enumerated patterns missed, so the owner chose to replace
+# whole classes of text instead:
+#   - every QUOTED string, double or single, backslash escapes included, and one left unterminated
+#     by the 4 KiB cut runs to the end of the line;
+#   - every URL, scheme to the next whitespace — host, userinfo, path, query and fragment alike;
+#   - every opaque run of 20+ token characters (a credential with no recognisable prefix);
+#   - the rest of the line after an Authorization header name; the word after a Bearer/Basic/token
+#     scheme; the value after any key whose name holds token, secret, pass, key, auth or cred
+#     (names in any case; any whitespace, wider than RFC 9110's single SP, defensively).
+# What survives is gh's own prose — `Post "<redacted>": tls: failed to verify certificate: x509:
+# OSStatus -26276` — which is the diagnosis. Control characters are stripped first, since the line
+# lands in an agent's terminal; the line is then cut to 300 bytes and a partial character at its
+# end — from either cut — dropped. A redactor, not a secret scanner: which is why it is bounded too.
 _il_redact_line() {   # <stderr-text>
   local LC_ALL=C line
-  line="$(printf '%s\n' "$1" | grep -m1 -v '^[[:space:]]*$' | tr -d '\000-\010\013-\037\177' | sed -E \
-    -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/<redacted>/g' \
+  # LC_ALL=C on EACH tool, not only the `local` above: a function-local LC_ALL changes this shell's
+  # own string handling but is not exported, so a child runs in the caller's locale — where `tr`
+  # refuses a cut character as an illegal byte sequence and truncates the line under the clip.
+  line="$(printf '%s\n' "$1" | LC_ALL=C grep -m1 -v '^[[:space:]]*$' | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -E \
+    -e 's/"([^"\\]|\\.)*("|\\?$)/"<redacted>"/g' \
+    -e "s/'([^'\\\\]|\\\\.)*('|\\\\?\$)/'<redacted>'/g" \
+    -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]*#<redacted>#g' \
+    -e 's/[A-Za-z0-9_+/=.-]{20,}/<redacted>/g' \
     -e 's/([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*[:=]).*/\1 <redacted>/' \
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
-    -e 's#://[^/@[:space:]]+@#://<redacted>@#g' \
-    -e 's#://[^/[:space:]]*$#://<redacted>#' \
-    -e 's#(://[^[:space:]"?\#]*)[?\#][^[:space:]"]*#\1?<redacted>#g' \
-    -e "s/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*[\"']?[[:space:]]*[=:][[:space:]]*)(\"[^\"]*\"?|'[^']*'?|[^&;,\"'[:space:]]*)/\\1<redacted>/g")"
+    -e 's/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*[[:space:]]*[=:][[:space:]]*)[^[:space:],;&]+/\1<redacted>/g')"
   [ "${#line}" -gt 300 ] && line="${line:0:300}"
   _il_utf8_clip "$line"; line="$_IL_CLIP"
   printf '%s\n' "${line:-(gh printed no diagnostic)}"
 }
 
-# Remove the snapshot files a failed read leaves for issue <n>. A removal that FAILED is said, not
+# Remove the snapshot files a failed step leaves for issue <n>. A removal that FAILED is said, not
 # swallowed: the classified code is still the story, but the leftover is named so nobody reads a
 # partial snapshot as a fetched one.
 _il_snapshot_discard() {   # <state-dir> <issue-n>
@@ -1647,22 +1670,25 @@ _il_snapshot_discard() {   # <state-dir> <issue-n>
 # Report a failed issue read by its class, release the claim, and return the class's code. The
 # not-found branch keeps 20 and the repo-scope advice only when <what> is the issue fetch itself:
 # the author-association read runs AFTER `gh issue view` resolved the issue in this repository,
-# so a failure there says nothing about scope and is reported as the environment.
-_il_fetch_bail() {   # <token> <state-dir> <rc> <stderr-text> <issue-n> <issue|assoc> <bound-secs>
-  local tok="$1" dir="$2" rc="$3" err="$4" n="$5" what="$6" ft="$7" cls label
-  cls="$(_il_fetch_fail_class "$rc" "$err")"
+# so a failure there says nothing about scope and is reported as the environment. Reads the
+# _IL_GH_* facts _il_gh_read left.
+_il_fetch_bail() {   # <token> <state-dir> <issue-n> <issue|assoc> <bound-secs>
+  local tok="$1" dir="$2" n="$3" what="$4" ft="$5" rc="$_IL_GH_RC" cls label diag
+  cls="$(_il_fetch_fail_class "$rc" "$_IL_GH_ERR" "$_IL_GH_CUT" "$_IL_GH_CAPOK")"
   [ "$what" = assoc ] && label="#$n's author association" || label="issue #$n"
+  diag="$(_il_redact_line "$_IL_GH_ERR")"
+  [ "$_IL_GH_CAPOK" = 1 ] || diag="$diag (the diagnostic capture did not complete)"
   case "$cls" in
     timeout)
       _il_bail "$tok" "$dir" 40 "could not fetch $label: the read outran its ${ft}s bound" ;;
     notfound)
       if [ "$what" = issue ]; then
-        _il_bail "$tok" "$dir" 20 "could not fetch issue #$n: GitHub says it does not exist here — verify repo scope (repo-scope.md): $(_il_redact_line "$err")"
+        _il_bail "$tok" "$dir" 20 "could not fetch issue #$n: GitHub says it does not exist here — verify repo scope (repo-scope.md): $diag"
       else
-        _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed after the issue itself resolved — this is the environment, not the repo: $(_il_redact_line "$err")"
+        _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed after the issue itself resolved — this is the environment, not the repo: $diag"
       fi ;;
     *)
-      _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed for a reason other than not-found (rc $rc) — this is the environment, not the repo: $(_il_redact_line "$err")" ;;
+      _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed for a reason other than not-found (rc $rc) — this is the environment, not the repo: $diag" ;;
   esac
 }
 
@@ -1734,7 +1760,7 @@ cmd_snapshot_issues() {
     # in after the fetch closed would block it until the claim lapsed under it.
     if ! { exec {_ijrfd}<"$dir/issue-$n.json"; } 2>/dev/null || [ ! "/dev/fd/$_ijfd" -ef "/dev/fd/$_ijrfd" ]; then
       _il_fd_close "$_ijfd" "$_ijrfd"
-      rm -f "$dir/issue-$n.json"
+      _il_snapshot_discard "$dir" "$n"
       _il_bail "$tok" "$dir" 20 "the snapshot for #$n was swapped during staging"; return $?
     fi
     # gh's stderr is KEPT (#500), never streamed: the failure is classified from it and only a
@@ -1745,14 +1771,14 @@ cmd_snapshot_issues() {
     if [ "$_irc" -ne 0 ]; then
       _il_fd_close "$_ijfd" "$_ijrfd"
       _il_snapshot_discard "$dir" "$n"
-      _il_fetch_bail "$tok" "$dir" "$_irc" "$_IL_GH_ERR" "$n" issue "$_ft"; return $?
+      _il_fetch_bail "$tok" "$dir" "$n" issue "$_ft"; return $?
     fi
     exec {_ijfd}>&-
     st="$(jq -r .state <&"$_ijrfd" 2>/dev/null)" || st=""
     exec {_ijrfd}<&-
     _ist+=("$st")
     if ! _il_excl_create "$dir/issue-$n.assoc" _iafd; then
-      rm -f "$dir/issue-$n.json"
+      _il_snapshot_discard "$dir" "$n"
       _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?
     fi
     # The same capture and classification as the fetch above: a TLS failure here is the same
@@ -1765,7 +1791,7 @@ cmd_snapshot_issues() {
     exec {_iafd}>&-
     if [ "$_IL_GH_RC" -ne 0 ]; then
       _il_snapshot_discard "$dir" "$n"
-      _il_fetch_bail "$tok" "$dir" "$_IL_GH_RC" "$_IL_GH_ERR" "$n" assoc "$_ft"; return $?
+      _il_fetch_bail "$tok" "$dir" "$n" assoc "$_ft"; return $?
     fi
   done
   local _ii=0
