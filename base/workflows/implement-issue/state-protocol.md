@@ -89,8 +89,8 @@ line, the claim carries it: `jq -r .token {{STATE_DIR}}/gap-analysis.lock`.
   reads as a finished run.
 - **step 4**, on the paths that stop the run (a BLOCKING finding you surface; a gap-analysis
   incompleteness that survives its retry).
-- **step 2**, on a repo-scope or issue-state stop (`snapshot-issues` does this itself when passed
-  `--token`).
+- **step 2**, on any `snapshot-issues` stop — repo scope, issue state, or a failed read
+  (`snapshot-issues` does this itself when passed `--token`).
 
 **Do not release after the survey or gap dispatch returns.** The window the claim must cover is
 longer than the dispatch — the findings still have to be read, and the marker does not exist

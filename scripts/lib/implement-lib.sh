@@ -1081,9 +1081,14 @@ cmd_release() {
 # Exit codes (beyond admit/release's own, and never overlapping them):
 #   3   dispatch-survey/dispatch-gaps: the role is unassigned (survey "" — the documented skip).
 #   18  the roles manifest is invalid where a dispatch needed it.
-#   20  a required read or write failed (gh, jq, git, the state dir, prompt assembly).
+#   20  a required read or write failed (gh, jq, git, the state dir, prompt assembly). From
+#       snapshot-issues' issue fetch it means ONLY GitHub's own not-found answer (#500), and only
+#       that message says "verify repo scope".
 #   21  snapshot-issues: an issue in the set is not OPEN.
 #   22  snapshot-issues: the state dir would not be gitignored — refusing to write untrusted text.
+#   40  snapshot-issues: an issue read outran its bound (ADB_SNAPSHOT_FETCH_TIMEOUT_SECS).
+#   41  snapshot-issues: gh failed for a reason other than not-found (TLS, auth, network, HTTP
+#       5xx, anything unrecognised) — the environment, not the repo (#500).
 #   23  open-pr: the closing keywords did not register (GitHub's link set != --closes).
 #   24  open-pr: the push failed.   25: `gh pr create` failed.   26: the run marker is unreadable.
 #   27  open-pr: the worktree is not clean — an uncommitted or untracked change would be pushed
@@ -1546,8 +1551,70 @@ cmd_sync_default() {
 }
 
 # --- snapshot-issues -----------------------------------------------------------------------------
+# Why a gh read failed, from its status and its captured stderr (#500). gh exits 1 for EVERY
+# failure (`gh help exit-codes`; 4 for auth), so the status cannot tell a missing issue from a TLS
+# failure — only gh's own wording can. Prints one word:
+#   timeout      the bound fired: adb_run_bounded's 124. Checked FIRST, so a stalled read whose
+#                stderr happens to carry the not-found phrase is still reported as the stall.
+#   notfound     GitHub's own definite negative for the issue, or for the repository the read was
+#                pinned to — the only answers that say anything about repo scope.
+#   environment  everything else, an unreadable or empty capture included. The FAIL-SAFE default:
+#                wrongly saying "this is the environment" costs one retry; wrongly saying "wrong
+#                repository" ends the run and sends the operator looking in the wrong place.
+_il_fetch_fail_class() {   # <rc> <stderr-file>
+  [ "$1" = 124 ] && { printf 'timeout\n'; return 0; }
+  if [ -n "$2" ] && [ -f "$2" ] \
+     && head -c 65536 "$2" 2>/dev/null | grep -qF -e 'Could not resolve to an issue or pull request' \
+                                                  -e 'Could not resolve to a Repository'; then
+    printf 'notfound\n'; return 0
+  fi
+  printf 'environment\n'
+}
+
+# The first line of a gh failure, safe to print (logging-and-secrets.md: redact BEFORE printing).
+# Bounded on read (4 KiB, one line) and on output (300 bytes), control characters stripped since it
+# lands in an agent's terminal, and every credential shape gh or its transport can echo replaced:
+# GitHub token prefixes, an Authorization header, a Bearer/token scheme, userinfo in a URL, and a
+# credential-named query parameter. A closed list, not a secret scanner — which is why the line is
+# bounded too.
+_il_redact_line() {   # <file>
+  local line=""
+  [ -n "$1" ] && [ -f "$1" ] && line="$(head -c 4096 "$1" 2>/dev/null | grep -m1 -v '^[[:space:]]*$' 2>/dev/null)"
+  line="$(printf '%s' "$line" | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -E \
+    -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/<redacted>/g' \
+    -e 's/([Aa]uthorization:).*/\1 <redacted>/' \
+    -e 's/([Bb]earer|[Tt]oken) [^ ]+/\1 <redacted>/g' \
+    -e 's#://[^/@ ]+@#://<redacted>@#g' \
+    -e 's/([?&](access_token|token|password|secret|key)=)[^&" ]+/\1<redacted>/g')"
+  line="$(printf '%s' "$line" | LC_ALL=C cut -c1-300)"
+  printf '%s\n' "${line:-(gh printed no diagnostic)}"
+}
+
+# Report a failed issue read by its class, release the claim, and return the class's code. The
+# not-found branch keeps 20 and the repo-scope advice only when <what> is the issue fetch itself:
+# the author-association read runs AFTER `gh issue view` resolved the issue in this repository,
+# so a failure there says nothing about scope and is reported as the environment.
+_il_fetch_bail() {   # <token> <state-dir> <rc> <stderr-file> <issue-n> <issue|assoc> <bound-secs>
+  local tok="$1" dir="$2" rc="$3" errf="$4" n="$5" what="$6" ft="$7" cls label
+  cls="$(_il_fetch_fail_class "$rc" "$errf")"
+  [ "$what" = assoc ] && label="#$n's author association" || label="issue #$n"
+  case "$cls" in
+    timeout)
+      _il_bail "$tok" "$dir" 40 "could not fetch $label: the read outran its ${ft}s bound" ;;
+    notfound)
+      if [ "$what" = issue ]; then
+        _il_bail "$tok" "$dir" 20 "could not fetch issue #$n: GitHub says it does not exist here — verify repo scope (repo-scope.md): $(_il_redact_line "$errf")"
+      else
+        _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed after the issue itself resolved — this is the environment, not the repo: $(_il_redact_line "$errf")"
+      fi ;;
+    *)
+      _il_bail "$tok" "$dir" 41 "could not fetch $label: gh failed for a reason other than not-found (rc $rc) — this is the environment, not the repo: $(_il_redact_line "$errf")" ;;
+  esac
+}
+
 # Step 2: prove the state dir is gitignored, snapshot each issue's body+comments AND its author's
-# repo standing, and refuse a CLOSED issue. Every failure releases the claim (--token) first.
+# repo standing, and refuse a CLOSED issue. Every failure releases the claim (--token) first, and a
+# failed read removes the snapshot it was writing, so no partial issue-<n>.json outlives the run.
 cmd_snapshot_issues() {
   local tok="" dir n st assoc
   while [ "$#" -gt 0 ]; do
@@ -1614,26 +1681,43 @@ cmd_snapshot_issues() {
       _il_fd_close "$_ijfd" "$_ijrfd"
       _il_bail "$tok" "$dir" 20 "the snapshot for #$n was swapped during staging"; return $?
     fi
-    if ! adb_run_bounded "$_ft" 10 gh issue view "$n" "${_irflag[@]}" --json number,title,body,labels,author,comments,milestone,state 1>&"$_ijfd"; then
+    # gh's stderr is CAPTURED (#500), never streamed: the failure is classified from it and only a
+    # redacted first line is printed. An unusable capture classifies as the environment, never as
+    # not-found — the fail-safe default. mktemp creates the file owner-only.
+    local _ierr="" _irc=0
+    _ierr="$(mktemp "${TMPDIR:-/tmp}/adb-snapshot-err.XXXXXX" 2>/dev/null)" || _ierr=""
+    adb_run_bounded "$_ft" 10 gh issue view "$n" "${_irflag[@]}" --json number,title,body,labels,author,comments,milestone,state 1>&"$_ijfd" 2>"${_ierr:-/dev/null}" || _irc=$?
+    if [ "$_irc" -ne 0 ]; then
       _il_fd_close "$_ijfd" "$_ijrfd"
-      _il_bail "$tok" "$dir" 20 "could not fetch issue #$n (not found, or the read outran its ${_ft}s bound) — verify repo scope (repo-scope.md)"; return $?
+      rm -f "$dir/issue-$n.json"
+      _il_fetch_bail "$tok" "$dir" "$_irc" "$_ierr" "$n" issue "$_ft"; _irc=$?
+      [ -n "$_ierr" ] && rm -f "$_ierr"
+      return "$_irc"
     fi
+    [ -n "$_ierr" ] && : > "$_ierr"
     exec {_ijfd}>&-
     st="$(jq -r .state <&"$_ijrfd" 2>/dev/null)" || st=""
     exec {_ijrfd}<&-
     _ist+=("$st")
-    _il_excl_create "$dir/issue-$n.assoc" _iafd \
-      || { _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?; }
-    if [ -n "$_islug" ]; then
-      adb_run_bounded "$_ft" 10 gh api --hostname "$_ihost" "repos/$_ipath/issues/$n" --jq '.author_association' 1>&"$_iafd"; rc=$?
-    else
-      adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' 1>&"$_iafd"; rc=$?
+    if ! _il_excl_create "$dir/issue-$n.assoc" _iafd; then
+      [ -n "$_ierr" ] && rm -f "$_ierr"
+      _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?
     fi
-    if [ "$rc" -ne 0 ]; then
-      exec {_iafd}>&-
-      _il_bail "$tok" "$dir" 20 "could not read #$n's author association (or the read outran its ${_ft}s bound)"; return $?
+    # The same capture and classification as the fetch above: a TLS failure here is the same
+    # environment failure, and must not read as a generic 20.
+    if [ -n "$_islug" ]; then
+      adb_run_bounded "$_ft" 10 gh api --hostname "$_ihost" "repos/$_ipath/issues/$n" --jq '.author_association' 1>&"$_iafd" 2>"${_ierr:-/dev/null}"; rc=$?
+    else
+      adb_run_bounded "$_ft" 10 gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' 1>&"$_iafd" 2>"${_ierr:-/dev/null}"; rc=$?
     fi
     exec {_iafd}>&-
+    if [ "$rc" -ne 0 ]; then
+      rm -f "$dir/issue-$n.json" "$dir/issue-$n.assoc"
+      _il_fetch_bail "$tok" "$dir" "$rc" "$_ierr" "$n" assoc "$_ft"; rc=$?
+      [ -n "$_ierr" ] && rm -f "$_ierr"
+      return "$rc"
+    fi
+    [ -n "$_ierr" ] && rm -f "$_ierr"
   done
   local _ii=0
   for n in "$@"; do

@@ -67,18 +67,20 @@ case "$1 $2" in
   "issue view")
     [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
     [ -n "${SHIM_ISSUE_SLEEP:-}" ] && sleep "$SHIM_ISSUE_SLEEP"
-    if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then echo "gh: issue not found" >&2; exit 1; fi
+    if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ISSUE_STDERR-gh: issue not found}" >&2; exit 1; fi
     if [ -n "${SHIM_LOCK_SWAP:-}" ] && [ -f "$SHIM_LOCK_SWAP" ]; then
       jq '.token = "tokB"' "$SHIM_LOCK_SWAP" > "$SHIM_LOCK_SWAP.t" && mv "$SHIM_LOCK_SWAP.t" "$SHIM_LOCK_SWAP"
     fi
     printf '%s\n' "${SHIM_ISSUE_JSON:-}" ;;
   "api repos/{owner}/{repo}/issues/7")
+    if [ "${SHIM_ASSOC_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ASSOC_STDERR:-gh: api failed}" >&2; exit 1; fi
     # SHIM_SNAP_SWAP: a descendant REPLACING the fetched snapshot (a new inode at the name, not
     # a rewrite of the held one) between the two gh reads.
     if [ -n "${SHIM_SNAP_SWAP:-}" ]; then rm -f "$SHIM_SNAP_SWAP"; printf '{"state":"CLOSED"}\n' > "$SHIM_SNAP_SWAP"; fi
     printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
   "api --hostname")
     [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
+    if [ "${SHIM_ASSOC_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ASSOC_STDERR:-gh: api failed}" >&2; exit 1; fi
     printf '%s\n' "${SHIM_ASSOC:-OWNER}" ;;
   "repo view")
     printf '%s\n' "${SHIM_SLUG:-o/r}" ;;
@@ -829,9 +831,80 @@ jq -n '{startedAt:1, expiresAt:9999999999, token:"tokT"}' > "$d/.claude/state/ga
 snap "$d" SHIM_ISSUE_JSON="$(printf '%s' "$ISSUE_JSON" | jq -c '.state = "CLOSED"')"
 eq "$SN_RC" "21" "18 a CLOSED issue refuses (21) — never silently reopened"
 if exists "$d/.claude/state/gap-analysis.lock"; then bad "18 …and the claim was released on that path too"; else ok; fi
+# ---- 18b. a failed read is classified from gh's own stderr, never from its status (#500) -------
+# gh exits 1 for EVERY failure, so a TLS break, an auth loss and a real 404 were all "verify repo
+# scope". Only GitHub's not-found wording keeps 20; anything else is the environment (41), and an
+# unrecognised line falls there too — the fail-safe default. Each case: the claim is released and
+# no partial issue-7.json is left behind.
+GH_NOTFOUND='GraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)'
+GH_TLS='Post "https://api.github.com/graphql": tls: failed to verify certificate: x509: OSStatus -26276'
+snap_fail_clean() {   # <label>
+  if exists "$d/.claude/state/gap-analysis.lock"; then bad "$1 …and the claim was released"; else ok; fi
+  if exists "$d/.claude/state/issue-7.json"; then bad "$1 …and no issue-7.json was left behind"; else ok; fi
+  if exists "$d/.claude/state/issue-7.assoc"; then bad "$1 …and no issue-7.assoc was left behind"; else ok; fi
+}
 d="$(new_repo)"; gid "$d"; clm "$d"
-snap "$d" SHIM_ISSUE_FAIL=1
-eq "$SN_RC" "20" "18 a failed gh read is 20 (verify repo scope), not a silent pass"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_NOTFOUND"
+eq "$SN_RC" "20" "18b GitHub's not-found answer is 20"
+has "$SN_OUT" "verify repo scope" "18b …and only it says verify repo scope"
+snap_fail_clean "18b not-found"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)"
+eq "$SN_RC" "20" "18b a repository gh cannot resolve is the repo-scope answer too (20)"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS"
+eq "$SN_RC" "41" "18b a TLS failure is the environment code (41), not 20"
+has "$SN_OUT" "not the repo" "18b …named as the environment"
+hasnt "$SN_OUT" "repo scope" "18b …and never as a repo-scope problem"
+has "$SN_OUT" "x509: OSStatus -26276" "18b …with gh's own first line printed"
+snap_fail_clean "18b TLS"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="something gh has never said before"
+eq "$SN_RC" "41" "18b an unrecognised failure falls to the environment (41) — the fail-safe default"
+hasnt "$SN_OUT" "repo scope" "18b …never to repo scope"
+snap_fail_clean "18b unrecognised"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR=""
+eq "$SN_RC" "41" "18b an empty diagnostic is the environment too (41)"
+has "$SN_OUT" "(gh printed no diagnostic)" "18b …and says there was nothing to print"
+# The printed line is REDACTED before it is printed (logging-and-secrets.md), and bounded.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="HTTP 401: Bad credentials https://x:hunter2@api.github.com/q?access_token=sekrit1 ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA Authorization: token gho_BBBB"
+eq "$SN_RC" "41" "18b an auth failure is the environment (41)"
+for _sec in hunter2 sekrit1 ghp_AAAA gho_BBBB; do hasnt "$SN_OUT" "$_sec" "18b …and the printed line never carries $_sec"; done
+has "$SN_OUT" "HTTP 401: Bad credentials" "18b …while the diagnosis itself survives redaction"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf 'tls: %0500d' 0)"
+_ln="$(printf '%s\n' "$SN_OUT" | grep 'not the repo' | head -1)"
+if [ "${#_ln}" -le 600 ]; then ok; else bad "18b a newline-free diagnostic is printed bounded (got ${#_ln} bytes)"; fi
+# The author-association read runs AFTER the issue resolved in this repository, so its failure is
+# never repo scope — not even when its text looks like a not-found.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ASSOC_FAIL=1 SHIM_ASSOC_STDERR="$GH_TLS"
+eq "$SN_RC" "41" "18b a TLS failure on the association read is the environment (41)"
+snap_fail_clean "18b association TLS"
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ASSOC_FAIL=1 SHIM_ASSOC_STDERR="$GH_NOTFOUND"
+eq "$SN_RC" "41" "18b …and a not-found-looking association failure is still never repo scope"
+hasnt "$SN_OUT" "repo scope" "18b …said without the repo-scope advice"
+# The classifier itself: the bound's 124 wins over any text, and an unusable capture is never
+# not-found.
+clsfn="$(sed -n '/^_il_fetch_fail_class()/,/^}/p' "$IL")"
+printf '%s\n' "$GH_NOTFOUND" > "$work/nf.err"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 124 "$work/nf.err" )" "timeout" "18b a stalled read whose stderr says not-found is still the timeout"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "$work/does-not-exist" )" "environment" "18b an unreadable capture is the environment, never not-found"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "" )" "environment" "18b …and so is no capture at all"
+# NEGATIVE, on a copy: collapse the classifier to one branch — the shape #500 fixed — and the TLS
+# case must go red. Proves the 41 assertion above is carried by the classifier and nothing else.
+mutlib="$work/mutlib"; rm -rf "$mutlib"; cp -R "$ROOT/scripts/lib" "$mutlib"
+awk 'BEGIN{m=0} /^_il_fetch_fail_class\(\)/{print; print "  printf '"'"'notfound\\n'"'"'; return 0"; m=1; next} m&&/^}/{m=0} !m{print}' \
+  "$IL" > "$mutlib/implement-lib.sh"
+if grep -q "Could not resolve to an issue" "$mutlib/implement-lib.sh"; then
+  bad "18b the collapse mutation did not apply — the negative case would assert nothing"; else ok; fi
+d="$(new_repo)"; gid "$d"; clm "$d"
+SN_OUT="$( cd "$d" && env SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" bash "$mutlib/implement-lib.sh" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
+if [ "$SN_RC" = 41 ]; then bad "18b a collapsed classifier still returned 41 for TLS — the check cannot fail"; else ok; fi
+has "$SN_OUT" "repo scope" "18b …the mutant reports TLS as repo scope, which is the defect"
 ( cd "$d" && bash "$IL" snapshot-issues .claude/state 7x ) >/dev/null 2>&1
 eq "$?" "2" "18 a non-numeric issue argument is a usage error"
 # …and a usage error must not have RENEWED the claim first: the documented release contract for
@@ -1502,7 +1575,16 @@ eq "$?" "20" "19l an unreadable clock refuses (20) — the lease cannot be valid
 d="$(new_repo)"; gid "$d"; clm "$d"
 SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ISSUE_SLEEP=5 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1 \
   bash "$IL" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
-eq "$SN_RC" "20" "19l a stalled issue fetch is killed at the bound (20), never held past the lease"
+eq "$SN_RC" "40" "19l a stalled issue fetch is killed at the bound (40), never held past the lease"
+has "$SN_OUT" "outran its 1s bound" "19l …and named as the bound, not as repo scope"
+hasnt "$SN_OUT" "repo scope" "19l …never as repo scope (#500)"
+if exists "$d/.claude/state/issue-7.json"; then bad "19l …and no partial issue-7.json is left"; else ok; fi
+# …on BOTH bound implementations: the timeout binary, and the watchdog a stock Mac without
+# coreutils takes (ADB_NO_TIMEOUT_BIN=1). The two report the bound differently inside.
+d="$(new_repo)"; gid "$d"; clm "$d"
+SN_OUT="$( cd "$d" && env SHIM_ISSUE_JSON="$ISSUE_JSON" SHIM_ISSUE_SLEEP=5 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1 ADB_NO_TIMEOUT_BIN=1 \
+  bash "$IL" snapshot-issues --token tokT .claude/state 7 2>&1 )"; SN_RC=$?
+eq "$SN_RC" "40" "19l …and on the watchdog path too (40)"
 
 # ================= 19j. the gap bound cannot outgrow ITS lease share either (#435) ==============
 # The lease floor assumes 2x2700 gap attempts; an unclamped generic override (4000) let the

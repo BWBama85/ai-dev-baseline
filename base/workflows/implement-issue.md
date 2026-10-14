@@ -176,9 +176,14 @@ the thing carrying context between blocks. An `admit` refusal is a legitimate, d
 
 Proves `{{STATE_DIR}}` is gitignored first, snapshots each issue's body + comments
 (`issue-<n>.json`) and its author's repo standing (`issue-<n>.assoc`), and refuses a non-OPEN
-issue. Codes (each already released the claim): `20` a read failed or the issue 404s — **verify
-repo scope** and stop, telling the user which repo it maps to; `21` CLOSED — stop and let the
-owner confirm rather than silently reopening shipped work; `22` not gitignored — fix, re-run.
+issue. Codes (each already released the claim): `20` — when its line says **verify repo scope**,
+GitHub answered not-found: stop and tell the user which repo this checkout maps to; any other `20`
+line names the local read or write that failed; `40` the read outran its bound and `41` `gh` failed
+for a reason other than not-found (TLS, auth, network, HTTP 5xx) — the **environment, not the
+repo**: retry once from step 1 (the claim is gone, so re-admit), then report it as a
+`gh`/network/sandbox failure with the printed line and stop, claiming nothing about repo scope
+(`dispatch-failures.md`); `21` CLOSED — stop and let the owner confirm rather than silently
+reopening shipped work; `22` not gitignored — fix, re-run.
 
 Read each snapshot: title, acceptance criteria, labels, milestone (step 12 needs it); note how
 the issues relate and whether any part already shipped.
