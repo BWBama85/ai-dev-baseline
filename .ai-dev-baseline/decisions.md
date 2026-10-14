@@ -9899,10 +9899,14 @@ survive is the part a later reader needs.
              rung's split brain, and that rung stays red on it. An adopter that parked the artifact
              in a milestone to clear the rung is unaffected.
              **Pinned in `check-fact-drift.sh`**, at the sites that act on the belief: the
-             autofix's skip condition and its no-op body in `roadmap.md`, the readiness query, and
-             (as `absent:`) the superseded query that counted the artifact.
+             autofix's skip condition in `roadmap.md`, the readiness query, and (as `absent:`) the
+             superseded query that counted the artifact. That the skip WRITES nothing is a
+             behaviour, not a token, so `check-roadmap-e2e.sh` §7a asserts it of the tracker
+             writes. A pin on the skip's `:` body was tried and dropped, because a command added
+             after it still passed.
 - placement: `scripts/lib/adopt-readiness.sh` · `scripts/check-adopt-readiness.sh` (facts→tracker
              through a stubbed search API; the mutation row `unmilestoned-counts-the-artifact`) ·
-             `scripts/check-fact-drift.sh` · `base/workflows/roadmap.md` (the autofix table) ·
+             `scripts/check-fact-drift.sh` · `scripts/check-roadmap-e2e.sh` (§7a) ·
+             `base/workflows/roadmap.md` (the autofix table) ·
              `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

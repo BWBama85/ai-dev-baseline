@@ -1035,11 +1035,10 @@ fact release-blocker-label "fixed:release-blocker" -- \
 
 # --- FACT: the roadmap artifact is not limbo (D130) --------------------------
 # /roadmap's autofix skips the artifact and /adopt's `unmilestoned` rung must not count it; the two
-# must agree. Pinned at the operative lines — the skip's condition and its no-op body, and the whole
-# readiness query (a bare `-label:roadmap` also matches roadmap.md's unrelated gauge search).
+# must agree. Pinned at the skip's condition and the whole readiness query (a bare `-label:roadmap`
+# also matches roadmap.md's unrelated gauge search). That the skip writes nothing is behavioral, and
+# check-roadmap-e2e.sh §7a asserts it of the tracker writes.
 fact roadmap-artifact-skipped-by-autofix 'fixed:  if [ "$n" = "$ROADMAP_NUM" ]; then' -- \
-  base/workflows/roadmap.md
-fact roadmap-artifact-skip-is-a-no-op 'regex:^    : +# the artifact is never a backlog item \(step 7\)$' -- \
   base/workflows/roadmap.md
 fact roadmap-artifact-excluded-from-limbo 'fixed:is:open no:milestone -label:roadmap"' -- \
   scripts/lib/adopt-readiness.sh

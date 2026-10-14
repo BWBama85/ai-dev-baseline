@@ -1233,6 +1233,10 @@ has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" "...every one o
 hasnt "$OUT" "#12" "an issue already in a milestone is untouched"
 hasnt "$OUT" "#61" "an open PR is untouched too — the issues endpoint returns PRs, and the sweep must never milestone one"
 hasnt "$OUT" "fixed: #31" "the roadmap artifact is never moved into the backlog"
+# Asked of the tracker writes, not the output: a silent edit of the artifact is the disagreement
+# /adopt's `unmilestoned` rung relies on never happening (D130).
+eq "$(grep 'issue edit 31' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 \
+  "the roadmap artifact receives no milestone write"
 eq "$(grep -c 'issue edit' "$FIX/calls" 2>/dev/null || echo 0)" 2 "exactly two tracker writes, one per repaired issue"
 
 # --- 7a-bis. #78: an unmilestoned `release-blocker` is WARNED about, never swept --------------
