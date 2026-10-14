@@ -68,6 +68,8 @@ case "$1 $2" in
     [ -n "${SHIM_ARGS_LOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGS_LOG"
     [ -n "${SHIM_ISSUE_SLEEP:-}" ] && sleep "$SHIM_ISSUE_SLEEP"
     [ -n "${SHIM_ISSUE_RO_DIR:-}" ] && chmod a-w "$SHIM_ISSUE_RO_DIR"
+    # A descendant that outlives gh holding its stderr open (the drain must not wait on it).
+    [ -n "${SHIM_ISSUE_LINGER:-}" ] && { sleep "$SHIM_ISSUE_LINGER" & }
     if [ "${SHIM_ISSUE_FAIL:-0}" = "1" ]; then printf '%s\n' "${SHIM_ISSUE_STDERR-gh: issue not found}" >&2; exit 1; fi
     if [ -n "${SHIM_LOCK_SWAP:-}" ] && [ -f "$SHIM_LOCK_SWAP" ]; then
       jq '.token = "tokB"' "$SHIM_LOCK_SWAP" > "$SHIM_LOCK_SWAP.t" && mv "$SHIM_LOCK_SWAP.t" "$SHIM_LOCK_SWAP"
@@ -876,10 +878,28 @@ snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="HTTP 401: Bad credentials https:/
 eq "$SN_RC" "41" "18b an auth failure is the environment (41)"
 for _sec in hunter2 sekrit1 ghp_AAAA gho_BBBB; do hasnt "$SN_OUT" "$_sec" "18b …and the printed line never carries $_sec"; done
 has "$SN_OUT" "HTTP 401: Bad credentials" "18b …while the diagnosis itself survives redaction"
+# A newline-free flood past the 4 KiB capture: rc 41, and the printed diagnostic — the text after
+# the message's last ': ' — is present and at most 300 bytes.
 d="$(new_repo)"; gid "$d"; clm "$d"
-snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf 'tls: %0500d' 0)"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf 'tls: %020000d' 0)"
+eq "$SN_RC" "41" "18b a 20 KB diagnostic is still the environment (41)"
 _ln="$(printf '%s\n' "$SN_OUT" | grep 'not the repo' | head -1)"
-if [ "${#_ln}" -le 600 ]; then ok; else bad "18b a newline-free diagnostic is printed bounded (got ${#_ln} bytes)"; fi
+_dg="${_ln##*not the repo: }"
+if [ -n "$_ln" ] && [ "$_dg" != "$_ln" ] && [ -n "$_dg" ] && [ "$(printf '%s' "$_dg" | LC_ALL=C wc -c | tr -d ' ')" -le 300 ]; then ok
+else bad "18b the printed diagnostic is present and at most 300 bytes (got [${_dg:0:40}…])"; fi
+# The 4 KiB capture cut can land inside a character on a SHORT line; what is printed stays UTF-8.
+d="$(new_repo)"; gid "$d"; clm "$d"
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$(printf '\n%.0s' $(seq 1 4094))€x"
+eq "$SN_RC" "41" "18b a diagnostic cut mid-character at 4 KiB is the environment (41)"
+if printf '%s' "$SN_OUT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then ok; else bad "18b …and what is printed is valid UTF-8"; fi
+# The DRAIN is bounded: a descendant holding gh's stderr open must not hold the run (and its claim)
+# past the read's bound plus the drain's margin (1 + 15 s here, against a 40 s linger).
+d="$(new_repo)"; gid "$d"; clm "$d"
+_t0=$SECONDS
+snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" SHIM_ISSUE_LINGER=40 ADB_SNAPSHOT_FETCH_TIMEOUT_SECS=1
+eq "$SN_RC" "41" "18b a lingering stderr holder still classifies (41)"
+if [ $((SECONDS - _t0)) -lt 35 ]; then ok; else bad "18b …within the drain's bound (took $((SECONDS - _t0))s)"; fi
+snap_fail_clean "18b lingering stderr holder"
 # The author-association read runs AFTER the issue resolved in this repository, so its failure is
 # never repo scope — not even when its text looks like a not-found.
 d="$(new_repo)"; gid "$d"; clm "$d"
@@ -901,9 +921,10 @@ snap "$d" SHIM_ISSUE_FAIL=1 SHIM_ISSUE_STDERR="$GH_TLS" SHIM_ISSUE_RO_DIR="$d/.c
 chmod u+w "$d/.claude/state"
 eq "$SN_RC" "41" "18b a failed cleanup keeps the classified code (41)"
 has "$SN_OUT" "could not remove the partial snapshot" "18b …and names the file it could not remove"
+has "$SN_OUT" "left in place" "18b …and says the claim was left in place, so re-admission must wait"
 # The classifier and the redactor themselves.
 clsfn="$(sed -n '/^_il_fetch_fail_class()/,/^}/p' "$IL")"
-rdfn="$(sed -n '/^_il_redact_line()/,/^}/p' "$IL")"
+rdfn="$(sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_redact_line()/,/^}/p' "$IL")"
 eq "$( eval "$clsfn"; _il_fetch_fail_class 124 "$GH_NOTFOUND" )" "timeout" "18b a stalled read whose stderr says not-found is still the timeout"
 eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "" )" "environment" "18b an empty capture is the environment, never not-found"
 eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "$(printf '\n  \n%s' "$GH_NOTFOUND")" )" "notfound" "18b …while leading blank lines do not hide a real not-found"
@@ -911,7 +932,15 @@ eq "$( eval "$clsfn"; _il_fetch_fail_class 1 "$(printf '\n  \n%s' "$GH_NOTFOUND"
 _r="$( eval "$rdfn"; _il_redact_line 'AUTHORIZATION: Basic dXNlcjpzZWtyaXQy' )"
 hasnt "$_r" "dXNlcjpzZWtyaXQy" "18b an upper-case Authorization header is redacted"
 _r="$( eval "$rdfn"; _il_redact_line "$(printf 'x bearer\tsekrit3 y')" )"
-hasnt "$_r" "sekrit3" "18b a tab-separated bearer credential is redacted"
+hasnt "$_r" "sekrit3" "18b a tab-separated bearer credential (wider than RFC 9110's SP, defensively) is redacted"
+_r="$( eval "$rdfn"; _il_redact_line 'GET https://h/p?client_secret=sekrit5&x=1 failed' )"
+hasnt "$_r" "sekrit5" "18b a query string is redacted whatever its parameter names"
+_r="$( eval "$rdfn"; _il_redact_line 'bad ?token="sekrit6" and password: '"'"'sekrit7'"'"'' )"
+hasnt "$_r" "sekrit6" "18b a quoted credential value is redacted"
+hasnt "$_r" "sekrit7" "18b …single-quoted too"
+_r="$( eval "$rdfn"; _il_redact_line "$(printf 'é%.0s' $(seq 1 200))" )"
+eq "$(printf '%s' "$_r" | LC_ALL=C wc -c | tr -d ' ')" "300" "18b a cut between complete characters keeps every one of them"
+eq "$( eval "$clsfn"; _il_fetch_fail_class 1 'GraphQL: Could not resolve to an issue or pull request because the service is down' )" "environment" "18b a message sharing only the opening words is not a not-found"
 # Userinfo that ran past the 4 KiB cut has no '@' left; it is redacted whole, not printed.
 _r="$( eval "$rdfn"; _il_redact_line "dial https://user:$(printf 'p%.0s' $(seq 1 5000) | head -c 4080)" )"
 hasnt "$_r" "user:ppp" "18b userinfo cut before its '@' is still redacted"
@@ -2008,7 +2037,7 @@ if [ -f "$d/.claude/state/survey.md" ] && [ ! -L "$d/.claude/state/survey.md" ];
 # unset, a read error (EISDIR) skips the assignment, and `[ -n "$line" ]` under the lib's set -u
 # is then a FATAL unbound-variable exit that takes the calling process with it — skipping every
 # cleanup after the call site. The witness is caller survival, not the rc alone.
-headfn="$(sed -n '/^_il_survey_head()/,/^}/p' "$IL")"
+headfn="$(sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL")"
 HD_D="$(new_repo)"
 HD_OUT="$( set -u; eval "$headfn"; _il_survey_head "$HD_D/.claude/state" >/dev/null 2>/dev/null
            printf 'SURVIVED=%s\n' "$?" )"
@@ -2095,7 +2124,7 @@ if [ -e "$d/.claude/state/survey-overflow.md" ]; then
 # The probe rides the head call itself: at that moment the public stage name must not exist (the
 # head is created under a private mktemp name and published by rename), and a plant dropped at
 # the vacated name during the head must neither receive the output nor survive as survey.md.
-pubfn="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 PB_D="$(new_repo)"
 printf 'precious repo content\n' > "$PB_D/planted-target.txt"
 awk 'BEGIN{for(i=0;i<2000;i++)print "survey line " i}' > "$PB_D/.claude/state/survey-stage.md"
@@ -2137,7 +2166,7 @@ eq "$HB_N" "16384" "25 …and an exactly-16384-byte first line does too (the -gt
 # The publish rename is proven against the held inode AFTER it happens: a swap of the private
 # name in the window before mv used to publish the plant as survey.md under rc 0. The swap rides
 # the rename itself, exactly where a surviving descendant would land it.
-pubfn3="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn3="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 PV_D="$(new_repo)"
 printf 'precious repo content\n' > "$PV_D/swap-target.txt"
 printf 'a modest survey\n' > "$PV_D/.claude/state/survey-stage.md"
@@ -2168,7 +2197,7 @@ if compgen -G "$PV_D/.claude/state/survey-held.w*" >/dev/null; then
 #
 # The race is made deterministic by shimming `wc`: the publisher's first post-validation tool call
 # swaps the stage for a symlink, exactly as a surviving descendant would.
-pubfn2="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
+pubfn2="$(sed -n '/^_il_fd_close()/,/^}/p' "$IL"; sed -n '/^_il_inode()/,/^}/p' "$IL"; sed -n '/^_il_same_inode()/,/^}/p' "$IL"; sed -n '/^_il_excl_create()/,/^}/p' "$IL"; sed -n '/^_il_utf8_clip()/,/^}/p;/^_il_survey_head()/,/^}/p' "$IL"; sed -n '/^_il_publish_survey()/,/^}/p' "$IL")"
 SW_D="$(new_repo)"
 printf 'precious repo content\n' > "$SW_D/swap-target.txt"
 printf 'a modest survey\n' > "$SW_D/.claude/state/survey-stage.md"

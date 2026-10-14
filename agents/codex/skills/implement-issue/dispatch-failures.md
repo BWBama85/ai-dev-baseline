@@ -76,8 +76,8 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `21` | `snapshot-issues` | an issue in the set is not OPEN — stop and confirm with the owner; never silently reopen shipped work |
 | `22` | `snapshot-issues` | the state dir would not be gitignored — fix `.gitignore` (or re-run `bin/agent-init`) first |
 | `20` | `snapshot-issues` | only a line that says **verify repo scope** means GitHub answered not-found for the issue or the repository — the one answer about repo scope. Any other `20` line names the local read or write that failed |
-| `40` | `snapshot-issues` | an issue read outran its bound (`ADB_SNAPSHOT_FETCH_TIMEOUT_SECS`, 600 s). Retry once from step 1 — the claim was released, so re-admit — then report the stall and stop |
-| `41` | `snapshot-issues` | `gh` failed for a reason other than not-found — TLS, auth, network, HTTP 5xx, or anything it did not recognise. **The environment, not the repo**: never conclude the issue lives elsewhere. Retry once from step 1 (re-admit); if it fails again, report it as a `gh`/network/sandbox failure, quoting the redacted line it printed, and stop. On macOS under the shipped sandbox, an `x509: OSStatus` line is the TLS failure #462 describes, which still reaches a library's own `gh` calls until #531 |
+| `40` | `snapshot-issues` | an issue read outran its bound (`ADB_SNAPSHOT_FETCH_TIMEOUT_SECS`, 600 s). Retry once from step 1 (re-admit; a NOTE says if the claim could not be released, and then admission waits for its lease), then report the stall and stop |
+| `41` | `snapshot-issues` | `gh` failed for a reason other than not-found — TLS, auth, network, HTTP 5xx, or anything it did not recognise. **The environment, not the repo**: never conclude the issue lives elsewhere. Retry once from step 1 (re-admit, as for `40`); if it fails again, report it as a `gh`/network/sandbox failure, quoting the redacted line it printed, and stop. On macOS under the shipped sandbox, an `x509: OSStatus` line is the TLS failure #462 describes, which still reaches a library's own `gh` calls until #531 |
 | `23` | `open-pr` | the closing keywords did not register: GitHub's link set ≠ `--closes`. Fix the body with `gh pr edit` NOW — after the merge the auto-close can never fire |
 | `24` / `25` | `open-pr` | the push / `gh pr create` failed |
 | `26` | `open-pr` | the run marker is unreadable, or HEAD is not on its branch |
@@ -112,7 +112,7 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
   malformed marker, a persistent `gh` failure, wrong permissions on `.codex/state`. Each refusal
   prints its recovery; act on what it printed.
 - **`snapshot-issues` 40/41** → the read stalled, or `gh` itself failed (TLS, auth, network).
-  Pre-branch stop, claim already released: retry once from step 1, then report the printed line as
+  Pre-branch stop, claim released (a NOTE says if it could not be): retry once from step 1, then report the printed line as
   an environment failure. Only a `20` that says **verify repo scope** is a statement about the
   repository.
 - **Gates fail the same way three consecutive times after fixes** → write the blocked marker and

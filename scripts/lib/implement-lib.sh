@@ -1339,11 +1339,16 @@ _il_claim_renew() {   # <state-dir> <caller-token>
 }
 
 # Release the claim on a pre-marker failure path, when the caller passed --token. Best-effort by
-# design: the failure being reported is the story; a stuck claim expires on its own lease.
+# design: the failure being reported is the story and keeps its code; a claim left behind is SAID,
+# and expires on its own lease.
 _il_bail() {   # <token> <state-dir> <exit-code> <message...>
   local tok="$1" dir="$2" rc="$3"; shift 3
   printf 'implement-lib: %s\n' "$*" >&2
-  [ -n "$tok" ] && cmd_release --token "$tok" "$dir" >/dev/null 2>&1
+  # release's own stderr is let through: a claim it LEFT IN PLACE (rc 0, with a NOTE) is as much a
+  # recovery fact as one it failed to release (non-zero), and both decide whether re-admission works.
+  if [ -n "$tok" ] && ! cmd_release --token "$tok" "$dir" >/dev/null; then
+    printf 'implement-lib: NOTE — the run claim could not be released; a re-admission is refused until its lease expires\n' >&2
+  fi
   return "$rc"
 }
 
@@ -1559,9 +1564,15 @@ cmd_sync_default() {
 # swap before it is reopened, and disk nothing bounds. The drain keeps a 4 KiB prefix and DISCARDS
 # the rest, still reading, so a flood of diagnostics can neither fill a disk nor block gh on a full
 # pipe. The status rides behind the drained text, read from PIPESTATUS in the same subshell.
+#
+# The DRAIN is bounded too, past the producer's bound plus its kill grace: a descendant of gh that
+# outlives it holding stderr keeps the pipe open, and an unbounded drain would wait on it forever
+# with the claim unreleased. Bounding it AT the producer's deadline instead would let the drain die
+# first and turn a stall into gh's SIGPIPE — misread as the environment rather than the timeout.
 _il_gh_read() {   # <bound-secs> <out-fd> <gh args...>
   local ft="$1" ofd="$2" out; shift 2
-  out="$( { adb_run_bounded "$ft" 10 gh "$@" 2>&1 1>&"$ofd" | { head -c 4096; cat >/dev/null; }
+  out="$( { adb_run_bounded "$ft" 10 gh "$@" 2>&1 1>&"$ofd" \
+              | adb_run_bounded "$((ft + 15))" 5 sh -c 'head -c 4096; cat >/dev/null'
             printf '\n%s' "${PIPESTATUS[0]}"; } )"
   _IL_GH_RC="${out##*$'\n'}"
   case "$_IL_GH_RC" in ''|*[!0-9]*) _IL_GH_RC=1 ;; esac
@@ -1573,31 +1584,37 @@ _il_gh_read() {   # <bound-secs> <out-fd> <gh args...>
 # for a cancel and 4 for auth beside it) — so only gh's own wording can. Prints one word:
 #   timeout      the bound fired: adb_run_bounded's 124. Checked FIRST, so a stalled read whose
 #                stderr happens to carry the not-found phrase is still reported as the stall.
-#   notfound     the FIRST non-blank line is GitHub's own definite negative for the issue, or for
-#                the repository the read was pinned to — the only answers about repo scope.
-#                Anchored to that line's start, so a transport error that merely MENTIONS the
-#                phrase further down is not read as one.
+#   notfound     the FIRST non-blank line is, WHOLE, GitHub's own definite negative for the issue
+#                or for the repository the read was pinned to — the only answers about repo scope.
+#                Both grammars were probed (gh 2.101.0): `… with the number of N. (repository.issue)`
+#                and `… a Repository with the name 'o/r'. (repository)`. Matched whole, so a
+#                transport error that merely MENTIONS the phrase, or a new message that only
+#                shares its opening words, is not read as one.
 #   environment  everything else, an empty capture included. The FAIL-SAFE default: wrongly saying
 #                "this is the environment" costs one retry; wrongly saying "wrong repository" ends
 #                the run and sends the operator looking in the wrong place.
 _il_fetch_fail_class() {   # <rc> <stderr-text>
   local LC_ALL=C first
   [ "$1" = 124 ] && { printf 'timeout\n'; return 0; }
-  first="$(printf '%s\n' "$2" | grep -m1 -v '^[[:space:]]*$')"
-  case "$first" in
-    'GraphQL: Could not resolve to an issue or pull request'*|'GraphQL: Could not resolve to a Repository'*)
-      printf 'notfound\n' ;;
-    *) printf 'environment\n' ;;
-  esac
+  first="$(printf '%s\n' "$2" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$')"
+  if [[ "$first" =~ ^GraphQL:\ Could\ not\ resolve\ to\ an\ issue\ or\ pull\ request\ with\ the\ number\ of\ [0-9]+\.\ \(repository\.issue\)[[:space:]]*$ ]] \
+     || [[ "$first" =~ ^GraphQL:\ Could\ not\ resolve\ to\ a\ Repository\ with\ the\ name\ \'[^\']+\'\.\ \(repository\)[[:space:]]*$ ]]; then
+    printf 'notfound\n'
+  else
+    printf 'environment\n'
+  fi
 }
 
 # The first line of a gh failure, safe to print (logging-and-secrets.md: redact BEFORE printing).
-# Control characters stripped, since it lands in an agent's terminal; then every credential shape gh
-# or its transport can echo is replaced — GitHub token prefixes, an Authorization header (any case),
-# a Bearer/Basic/token scheme (any case, any whitespace), userinfo in a URL, a credential-named
-# query parameter. The input is already cut at 4 KiB, so a URL whose userinfo ran past the cut has
-# no `@` left to find: a scheme followed by nothing but non-separator bytes to the end of the line is
-# redacted whole. Only THEN is the line cut to 300 bytes, at a character boundary. A closed list,
+# Control characters stripped, since it lands in an agent's terminal; then credential shapes are
+# replaced, erring wide rather than enumerating spellings: EVERY URL query string and fragment goes
+# (whatever its parameter names); so does userinfo in a URL; so does any value — quoted or not —
+# after a name containing token, secret, pass, key, auth or cred and a `=` or `:`; so do GitHub
+# token prefixes and a Bearer/Basic/token scheme's credential (names in any case, and whitespace of
+# any kind after the scheme — wider than RFC 9110's single SP, defensively). The input is already
+# cut at 4 KiB, so a URL whose userinfo ran past the cut has no `@` left to find: a scheme followed
+# by nothing but non-separator bytes to the end of the line is redacted whole. Only THEN is the line
+# cut to 300 bytes, and a partial character at the end — from either cut — dropped. A closed list,
 # not a secret scanner — which is why the line is bounded too.
 _il_redact_line() {   # <stderr-text>
   local LC_ALL=C line
@@ -1607,15 +1624,10 @@ _il_redact_line() {   # <stderr-text>
     -e 's/([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+/\1 <redacted>/g' \
     -e 's#://[^/@[:space:]]+@#://<redacted>@#g' \
     -e 's#://[^/[:space:]]*$#://<redacted>#' \
-    -e 's/([?&;]([Aa][Cc][Cc][Ee][Ss][Ss]_[Tt][Oo][Kk][Ee][Nn]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Kk][Ee][Yy])=)[^&;"[:space:]]*/\1<redacted>/g')"
-  if [ "${#line}" -gt 300 ]; then
-    line="${line:0:300}"
-    # A cut inside a multi-byte character leaves a dangling lead byte and its continuations; drop
-    # every trailing non-ASCII byte, which can only cost a whole character at the cut.
-    while [ -n "$line" ] && case "${line: -1}" in [$'\x80'-$'\xff']) true ;; *) false ;; esac; do
-      line="${line%?}"
-    done
-  fi
+    -e 's#(://[^[:space:]"?\#]*)[?\#][^[:space:]"]*#\1?<redacted>#g' \
+    -e "s/([A-Za-z0-9_.-]*([Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]|[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_.-]*[\"']?[[:space:]]*[=:][[:space:]]*)(\"[^\"]*\"?|'[^']*'?|[^&;,\"'[:space:]]*)/\\1<redacted>/g")"
+  [ "${#line}" -gt 300 ] && line="${line:0:300}"
+  _il_utf8_clip "$line"; line="$_IL_CLIP"
   printf '%s\n' "${line:-(gh printed no diagnostic)}"
 }
 
@@ -2392,6 +2404,30 @@ cmd_dispatch_survey() {
   return "$rc"
 }
 
+# Drop a PARTIAL UTF-8 sequence from the end of <string> — what a byte cut leaves when it lands
+# inside a character — and set _IL_CLIP to the result. Counts the trailing continuation bytes, reads
+# the byte before them, and drops the run ONLY when it is genuinely partial: a cut landing exactly
+# after a complete character keeps it. Valid input is assumed; malformed bytes pass through.
+_il_utf8_clip() {   # <string>
+  local LC_ALL=C line="$1" ch b=0 k=0 need=0
+  while [ "$k" -lt 3 ]; do
+    ch="${line: -$((k + 1)):1}"
+    [ -n "$ch" ] || break
+    printf -v b '%d' "'$ch"
+    [ "$b" -lt 0 ] && b=$((b + 256))   # printf may yield the byte signed
+    { [ "$b" -ge 128 ] && [ "$b" -lt 192 ]; } || break
+    k=$((k + 1))
+  done
+  ch="${line: -$((k + 1)):1}"
+  b=0
+  if [ -n "$ch" ]; then printf -v b '%d' "'$ch"; [ "$b" -lt 0 ] && b=$((b + 256)); fi
+  if [ "$b" -ge 240 ]; then need=3; elif [ "$b" -ge 224 ]; then need=2; elif [ "$b" -ge 192 ]; then need=1; fi
+  if [ "$b" -ge 192 ] && [ "$k" -ne "$need" ]; then
+    line="${line:0:$((${#line} - k - 1))}"
+  fi
+  _IL_CLIP="$line"
+}
+
 # Emit whole lines of <file> up to a 16 KiB total, for the gap prompt's survey copy. A FIRST line
 # that alone exceeds the bound is truncated AT A UTF-8 CHARACTER BOUNDARY rather than passed whole
 # (an `NR > 1` guard used to exempt it, so a newline-free response defeated the cap entirely) —
@@ -2402,7 +2438,7 @@ _il_survey_head() {   # <file>
   # unbound expansion in the loop condition under set -u is a fatal exit that takes the caller
   # (and every cleanup after the call site) with it. The -f refusal keeps an unopenable or
   # blocking input (a directory, a FIFO) from ever reaching the open.
-  local LC_ALL=C cap=16384 t=0 n=0 line="" ch b=0 k=0 need=0
+  local LC_ALL=C cap=16384 t=0 n=0 line=""
   [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
@@ -2411,24 +2447,7 @@ _il_survey_head() {   # <file>
     # old slice kept cap, both emitting one byte past the stated total.
     if [ "$n" -eq 1 ] && [ "${#line}" -ge "$cap" ]; then
       line="${line:0:cap-1}"
-      # Count the trailing continuation bytes, read the byte before them, and drop the run ONLY
-      # when it is a genuinely partial sequence — a cut landing exactly after a complete character
-      # keeps it. Valid input is assumed (model output); malformed bytes pass through as before.
-      while [ "$k" -lt 3 ]; do
-        ch="${line: -$((k + 1)):1}"
-        [ -n "$ch" ] || break
-        printf -v b '%d' "'$ch"
-        [ "$b" -lt 0 ] && b=$((b + 256))   # printf may yield the byte signed
-        { [ "$b" -ge 128 ] && [ "$b" -lt 192 ]; } || break
-        k=$((k + 1))
-      done
-      ch="${line: -$((k + 1)):1}"
-      b=0
-      if [ -n "$ch" ]; then printf -v b '%d' "'$ch"; [ "$b" -lt 0 ] && b=$((b + 256)); fi
-      if [ "$b" -ge 240 ]; then need=3; elif [ "$b" -ge 224 ]; then need=2; elif [ "$b" -ge 192 ]; then need=1; fi
-      if [ "$b" -ge 192 ] && [ "$k" -ne "$need" ]; then
-        line="${line:0:$((${#line} - k - 1))}"
-      fi
+      _il_utf8_clip "$line"; line="$_IL_CLIP"
       printf '%s\n' "$line" || return 1
       return 0
     fi

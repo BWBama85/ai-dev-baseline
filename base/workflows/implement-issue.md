@@ -180,7 +180,8 @@ issue. Codes (each already released the claim): `20` — when its line says **ve
 GitHub answered not-found: stop and tell the user which repo this checkout maps to; any other `20`
 line names the local read or write that failed; `40` the read outran its bound and `41` `gh` failed
 for a reason other than not-found (TLS, auth, network, HTTP 5xx) — the **environment, not the
-repo**: retry once from step 1 (the claim is gone, so re-admit), then report it as a
+repo**: retry once from step 1 (the claim was released — unless a NOTE says it could not be, and
+then re-admission waits for its lease), then report it as a
 `gh`/network/sandbox failure with the printed line and stop, claiming nothing about repo scope
 (`dispatch-failures.md`); `21` CLOSED — stop and let the owner confirm rather than silently
 reopening shipped work; `22` not gitignored — fix, re-run.
