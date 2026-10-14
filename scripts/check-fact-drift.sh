@@ -1033,6 +1033,19 @@ done
 fact release-blocker-label "fixed:release-blocker" -- \
   docs/release-goal-convention.md base/workflows/roadmap.md scripts/lib/release-convention.sh
 
+# --- FACT: the roadmap artifact is not limbo (D130) --------------------------
+# /roadmap's autofix skips the artifact and /adopt's `unmilestoned` rung must not count it; the two
+# must agree. Pinned at the skip's condition and the whole readiness query (a bare `-label:roadmap`
+# also matches roadmap.md's unrelated gauge search). That the skip writes nothing is behavioral, and
+# check-roadmap-e2e.sh §7a asserts it of the tracker writes.
+fact roadmap-artifact-skipped-by-autofix 'fixed:  if [ "$n" = "$ROADMAP_NUM" ]; then' -- \
+  base/workflows/roadmap.md
+fact roadmap-artifact-excluded-from-limbo 'fixed:is:open no:milestone -label:roadmap"' -- \
+  scripts/lib/adopt-readiness.sh
+fact roadmap-artifact-counted-as-limbo 'absent:is:open no:milestone"' \
+  'fires:  if unm="$(_ghq "repo:$repo is:issue is:open no:milestone")" && [ -n "$unm" ]; then' -- \
+  scripts/lib/adopt-readiness.sh
+
 # --- FACT: the auto-merge guard subcommand (#87) -----------------------------
 # `automerge-ok` is the contract between the library that IMPLEMENTS the guard, the workflow step
 # that CALLS it before arming auto-merge, and the doc that DOCUMENTS its exit codes. Renaming the

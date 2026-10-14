@@ -1314,7 +1314,7 @@ about intent), **reversible** (one `gh` command undoes it), and **tracker-only**
 
 | Defect | Repair | Why it is unambiguous |
 |---|---|---|
-| An open issue in **no** milestone — **except one labeled `release-blocker`** (see below) | move it to the backlog milestone | The convention's invariant is "every open issue sits in exactly one milestone, nothing in limbo", and the backlog is where *undecided* work belongs by definition. |
+| An open issue in **no** milestone — **except the roadmap artifact itself, and one labeled `release-blocker`** (see below) | move it to the backlog milestone | The convention's invariant is "every open issue sits in exactly one milestone, nothing in limbo", and the backlog is where *undecided* work belongs by definition. The artifact is not work at all (step 7), so the autofix leaves it wherever it is — and `/adopt`'s `unmilestoned` rung excludes it by the same `roadmap` label (#466), or the bootstrap would leave a rung no run could clear. |
 | The resolved artifact is **missing the `roadmap` label** | add it | The artifact was already identified by its marker; the label is how the next run finds it. |
 | The artifact is **unpinned** | pin it | Bootstrap already pins; repairing an unpinned one is the same operation. |
 | **Stale artifact content** — rows for closed issues, retired bundles, edges whose source text is gone | rewrite it | This *is* reconcile (step 4); listed so the tier table is complete, not as new behavior. |

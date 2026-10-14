@@ -259,6 +259,19 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **`/adopt`'s completion contract can go green after a roadmap bootstrap (#466).** The
+  `unmilestoned` rung counted every open issue in no milestone, the roadmap artifact included, but
+  `/roadmap` never milestones the artifact: step 7 says it is never a backlog item, and step 4b's
+  autofix skips it. So the bootstrap that the `roadmap` rung asks for left `unmilestoned` red for
+  good, and its message pointed at a sweep that would never move the issue. The readiness query
+  now excludes the artifact by its `roadmap` label (`no:milestone -label:roadmap`), as the
+  destination gauge already does. The rung's title and messages now say so, and step 4b's autofix
+  table names the exemption. A second roadmap-labelled issue is still the `roadmap` rung's
+  split brain and keeps that rung red. `check-fact-drift.sh` pins both halves of the agreement:
+  the autofix's skip, the readiness query, and the superseded query that counted the artifact.
+  **Adopters** who parked the artifact in `Backlog` to clear the rung can leave it there. The issue
+  checked that no consumer is skewed by that placement, so moving it back is optional.
+
 - **The upstream pin's `version` describes the commit it was written with (#464).** `/adopt`
   derived it with `git describe --tags --abbrev=0`, the nearest tag NAME, so a clone 13 commits past
   v3.0.0 pinned `version = "v3.0.0"` beside a `commit` that was not v3.0.0. The new

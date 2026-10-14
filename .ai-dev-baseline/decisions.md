@@ -9877,3 +9877,36 @@ survive is the part a later reader needs.
              the second failure is exactly the configuration the decision first named. Linux/WSL2 is
              untested and no coverage is claimed.
 - baseline-issue: n/a (this repo IS the baseline; #531 carries the wrapper half)
+
+## D130 — #466: /adopt's `unmilestoned` rung excludes the roadmap artifact, by its label
+- date:      2026-10-14
+- category:  project-delta
+- unknown:   #466. `adopt-readiness.sh`'s `unmilestoned` rung counted every open issue in no
+             milestone. `/roadmap` never gives its own artifact a milestone: step 7 says the artifact
+             is never a backlog item, and step 4b's autofix skips it. So after the bootstrap the
+             `roadmap` rung asks for, `unmilestoned` reported `todo` with a count of 1, the
+             artifact. Its message named a sweep that would never move the issue, and no supported
+             action could clear the rung. It was observed on `BWBama85/support-cases`, and on this
+             repo at `d5c3f9a8`: `no:milestone` found 1 issue (#31, the artifact), and the same
+             search with `-label:roadmap` found 0.
+- decision:  **Remedy A of the two the issue named**, the one its author (the owner) leaned toward:
+             the readiness query excludes the artifact (`no:milestone -label:roadmap`). Remedy B,
+             letting `/roadmap` milestone the artifact, would contradict a rule step 7 states
+             explicitly, and would need a choice of milestone the convention does not have.
+             **Excluded by label, not by number.** Step 7 identifies the artifact by the `roadmap`
+             label, and the destination gauge already filters the same way. A second
+             roadmap-labelled issue is therefore also uncounted here, but that is the `roadmap`
+             rung's split brain, and that rung stays red on it. An adopter that parked the artifact
+             in a milestone to clear the rung is unaffected.
+             **Pinned in `check-fact-drift.sh`**, at the sites that act on the belief: the
+             autofix's skip condition in `roadmap.md`, the readiness query, and (as `absent:`) the
+             superseded query that counted the artifact. That the skip WRITES nothing is a
+             behaviour, not a token, so `check-roadmap-e2e.sh` §7a asserts it of the tracker
+             writes. A pin on the skip's `:` body was tried and dropped, because a command added
+             after it still passed.
+- placement: `scripts/lib/adopt-readiness.sh` · `scripts/check-adopt-readiness.sh` (facts→tracker
+             through a stubbed search API; the mutation row `unmilestoned-counts-the-artifact`) ·
+             `scripts/check-fact-drift.sh` · `scripts/check-roadmap-e2e.sh` (§7a) ·
+             `base/workflows/roadmap.md` (the autofix table) ·
+             `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

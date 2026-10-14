@@ -852,6 +852,38 @@ if grep -q 'milestone:"Ship "now""' "$WORK/gh-args.log"; then
   bad "facts: a quoted milestone title reached a search query unescaped"
 else ok; fi
 
+# THE ROADMAP ARTIFACT IS NOT LIMBO (D130). The stub answers the search the way GitHub would when the
+# artifact is the one unmilestoned issue: the bare `no:milestone` search finds it, the excluding one
+# does not. Driven through `facts` and then `tracker`, because a count alone cannot show which query
+# produced it. Each `q=` argument is logged whole, so the query is compared exactly.
+stub_gh "$WORK/gh-artifact" '
+for a in "$@"; do case "$a" in q=*) printf "%s\n" "$a" >> "'"$WORK"'/gh-artifact-args.log" ;; esac; done
+case "$*" in
+  *"repo view"*) echo "acme/widget" ;;
+  *milestones*) echo "[]" ;;
+  *"no:milestone -label:roadmap"*) echo "${UNM_REAL:-0}" ;;
+  *"no:milestone"*) echo "$(( ${UNM_REAL:-0} + 1 ))" ;;
+  *"label:roadmap"*) echo "1" ;;
+  *) exit 5 ;;
+esac'
+d="$WORK/facts-artifact"; mkrepo "$d"
+: > "$WORK/gh-artifact-args.log"
+out="$( cd "$d" && PATH="$WORK/gh-artifact:$PATH" ar facts 2>/dev/null )"
+eq "$(printf '%s' "$out" | jq -r '.unmilestoned // "absent"' 2>/dev/null)" "0" \
+  "facts: the roadmap artifact alone is not counted as unmilestoned"
+trk="$(printf '%s' "$out" | ar tracker 2>/dev/null)"
+has "$trk" "unmilestoned${TAB}ok" "facts->tracker: a bootstrapped, unmilestoned roadmap artifact leaves the rung ok"
+has "$trk" "roadmap${TAB}ok" "facts->tracker: the same artifact satisfies the roadmap rung"
+# The WHOLE query (`-x`): a dropped filter or an extra qualifier would count the wrong set.
+if grep -Fxq 'q=repo:acme/widget is:issue is:open no:milestone -label:roadmap' "$WORK/gh-artifact-args.log"; then ok
+else bad "facts: the unmilestoned search is scoped to this repo's open issues and excludes the roadmap artifact"; fi
+# Real limbo beside the artifact is still counted — the exclusion is the artifact, not the rung.
+out="$( cd "$d" && UNM_REAL=2 PATH="$WORK/gh-artifact:$PATH" ar facts 2>/dev/null )"
+eq "$(printf '%s' "$out" | jq -r '.unmilestoned // "absent"' 2>/dev/null)" "2" \
+  "facts: ordinary unmilestoned issues beside the artifact are still counted"
+trk="$(printf '%s' "$out" | ar tracker 2>/dev/null)"
+has "$trk" "unmilestoned${TAB}todo" "facts->tracker: real limbo beside the artifact is still todo"
+
 # --- observe + facts: the reviewer history (#459), through a stubbed gh -------------------------
 # The read is GraphQL's typed review authors, because `gh pr list --json reviews` returns a bare
 # login with no type and a GitHub App's login is bare there too. So the fixture carries the shapes
@@ -1155,6 +1187,10 @@ shmutant_mut disposition-convention-filter-drops-all \
     'select($m.title != $rel and $m.title != $bak)' \
     'select(false)' \
     'tracker: an undispositioned thematic milestone is todo'
+shmutant_mut unmilestoned-counts-the-artifact \
+    'is:open no:milestone -label:roadmap")" && [ -n "$unm" ]' \
+    'is:open no:milestone")" && [ -n "$unm" ]' \
+    'facts->tracker: a bootstrapped, unmilestoned roadmap artifact leaves the rung ok'
 shmutant_mut armed-not-checked \
     'elif [ "$armed" != true ]; then' \
     'elif false; then' \
