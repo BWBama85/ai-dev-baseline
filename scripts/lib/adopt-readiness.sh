@@ -128,7 +128,7 @@ shape${TAB}agent${TAB}the repo shape resolved — git root, nesting and out-of-r
 gates${TAB}agent${TAB}gates are detected AND were executed once at this commit, or explicitly disabled
 milestones${TAB}agent${TAB}the release and backlog milestones and the blocker label exist
 slate${TAB}owner${TAB}the active release milestone is armed — it holds at least one issue
-unmilestoned${TAB}agent${TAB}no open issue is in limbo — every one sits in a milestone
+unmilestoned${TAB}agent${TAB}no open issue is in limbo — every one but the roadmap artifact sits in a milestone
 dispositions${TAB}owner${TAB}every pre-existing milestone has a recorded disposition
 roadmap${TAB}agent${TAB}exactly one roadmap artifact exists — bootstrapped or adopted, never duplicated
 settings${TAB}owner${TAB}repo settings were offered and applied with consent, in the correct order
@@ -618,7 +618,7 @@ cmd_probe() {
 #   backlog_milestone   "Backlog"
 #   blocker_label       true|false          does the release-blocker label exist
 #   slate_armed         true|false          release-counts' armed verdict for the release milestone
-#   unmilestoned        N                   open issues in no milestone
+#   unmilestoned        N                   open issues in no milestone, the roadmap artifact excluded
 #   roadmap_count       N                   open issues carrying the `roadmap` label
 #   dispositions        ["milestone:Audit Results", …]   retired question ids from ## Decisions
 #   settings            "ok"|"todo"|"unknown"|"na"  + settings_detail
@@ -750,14 +750,19 @@ cmd_tracker() {
   fi
 
   # --- unmilestoned ---
-  local unm
+  # THE COUNT MUST EXCLUDE THE ROADMAP ARTIFACT (#466), for the same reason `slate`'s does: the
+  # artifact is "never a backlog item" (roadmap.md step 7), so step 4b's autofix skips it by design
+  # and it stays in no milestone forever. Counting it made this rung red after the very bootstrap
+  # the `roadmap` rung asks for, with a remedy no supported action could perform. `cmd_facts` does
+  # the excluding, by the `roadmap` label that step 7 identifies the artifact by; a second
+  # roadmap-labelled issue is the `roadmap` rung's split brain, and that rung stays red on it.
   unm="$(_count unmilestoned)"; rc=$?
   if [ "$rc" -ne 0 ]; then
     _ar_emit unmilestoned unknown "$(_why "$rc" unmilestoned "the unmilestoned open issues were not counted")"
   elif [ "$unm" -gt 0 ]; then
-    _ar_emit unmilestoned todo "$unm open issue(s) are in no milestone — /roadmap's step 4b autofix sweeps them to the backlog"
+    _ar_emit unmilestoned todo "$unm open issue(s) besides the roadmap artifact are in no milestone — /roadmap's step 4b autofix sweeps them to the backlog milestone, or asks for a decision when none is open (a release-blocker it warns about instead)"
   else
-    _ar_emit unmilestoned ok "no open issue is in limbo"
+    _ar_emit unmilestoned ok "no open issue is in limbo (the roadmap artifact is never milestoned, so it is not counted)"
   fi
 
   # --- dispositions ---
@@ -1151,7 +1156,9 @@ cmd_facts() {
     gh api -X GET search/issues -f q="$1" --jq '.total_count' 2>/dev/null
   }
   # `is:issue`, because repos/…/issues returns pull requests too and would count them as work.
-  if unm="$(_ghq "repo:$repo is:issue is:open no:milestone")" && [ -n "$unm" ]; then
+  # `-label:roadmap`, because the artifact is never milestoned (#466; the tracker's `unmilestoned`
+  # rung says why). A fixed literal, never a configurable label spliced into the query.
+  if unm="$(_ghq "repo:$repo is:issue is:open no:milestone -label:roadmap")" && [ -n "$unm" ]; then
     out="$(printf '%s' "$out" | jq --argjson n "$unm" '. + {unmilestoned: $n}')"
   fi
   if rc_n="$(_ghq "repo:$repo is:issue is:open label:roadmap")" && [ -n "$rc_n" ]; then

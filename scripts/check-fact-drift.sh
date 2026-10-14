@@ -1033,6 +1033,22 @@ done
 fact release-blocker-label "fixed:release-blocker" -- \
   docs/release-goal-convention.md base/workflows/roadmap.md scripts/lib/release-convention.sh
 
+# --- FACT: the roadmap artifact is never limbo (#466) -----------------------
+# Two components hold one belief about one issue, and they once held contrary ones: /roadmap's step
+# 4b autofix SKIPS the artifact because step 7 says it is never a backlog item, while /adopt's
+# `unmilestoned` rung COUNTED it — so a bootstrapped artifact left the completion contract red with a
+# remedy nothing could perform. Pin both halves at the sites that act on the belief: the autofix's
+# skip, and the readiness query's exclusion spelled as the whole query (a bare `-label:roadmap`
+# would pass on the destination gauge's unrelated search in roadmap.md). The `absent:` half catches
+# the superseded query that counted the artifact, and `--mutation` proves it can go red.
+fact roadmap-artifact-skipped-by-autofix "fixed:the artifact is never a backlog item (step 7)" -- \
+  base/workflows/roadmap.md
+fact roadmap-artifact-excluded-from-limbo 'fixed:is:open no:milestone -label:roadmap"' -- \
+  scripts/lib/adopt-readiness.sh
+fact roadmap-artifact-counted-as-limbo 'absent:is:open no:milestone"' \
+  'fires:  if unm="$(_ghq "repo:$repo is:issue is:open no:milestone")" && [ -n "$unm" ]; then' -- \
+  scripts/lib/adopt-readiness.sh
+
 # --- FACT: the auto-merge guard subcommand (#87) -----------------------------
 # `automerge-ok` is the contract between the library that IMPLEMENTS the guard, the workflow step
 # that CALLS it before arming auto-merge, and the doc that DOCUMENTS its exit codes. Renaming the
