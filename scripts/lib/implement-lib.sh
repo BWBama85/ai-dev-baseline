@@ -1679,6 +1679,7 @@ cmd_snapshot_issues() {
     # in after the fetch closed would block it until the claim lapsed under it.
     if ! { exec {_ijrfd}<"$dir/issue-$n.json"; } 2>/dev/null || [ ! "/dev/fd/$_ijfd" -ef "/dev/fd/$_ijrfd" ]; then
       _il_fd_close "$_ijfd" "$_ijrfd"
+      rm -f "$dir/issue-$n.json"
       _il_bail "$tok" "$dir" 20 "the snapshot for #$n was swapped during staging"; return $?
     fi
     # gh's stderr is CAPTURED (#500), never streamed: the failure is classified from it and only a
@@ -1701,6 +1702,7 @@ cmd_snapshot_issues() {
     _ist+=("$st")
     if ! _il_excl_create "$dir/issue-$n.assoc" _iafd; then
       [ -n "$_ierr" ] && rm -f "$_ierr"
+      rm -f "$dir/issue-$n.json"
       _il_bail "$tok" "$dir" 20 "could not create $dir/issue-$n.assoc exclusively (a planted object?)"; return $?
     fi
     # The same capture and classification as the fetch above: a TLS failure here is the same
