@@ -785,4 +785,6 @@ One line per resolved review thread, newest last.
 - `toctou` `scripts/check-lib.sh:581` `da2772a` `PRRT_kwDOTfywrM6rA4Fo` PR #527 2026-10-10 — evidence copy measured with an unchecked wc, then copied unbounded: the size bound and a failed read were not enforced
 - `evidence-discarded` `scripts/check-lib.sh:456` `a84255c` `PRRT_kwDOTfywrM6rFnyp` PR #527 2026-10-10 — an unusable evidence directory only warned and fell back to the caller workdir, whose cleanup removed a failure evidence
 - `status-swallowed` `scripts/check-lib.sh:560` `a84255c` `PRRT_kwDOTfywrM6rFnyw` PR #527 2026-10-10 — a passing pool evidence directory was removed with an unchecked rm, so a leftover would read as a failed pool evidence
+- `redaction-incomplete` `scripts/lib/implement-lib.sh:1651` `7fbd7fc` `PRRT_kwDOTfywrM6sXmT2` PR #543 2026-10-14 — credential-key value redaction stopped at , ; & and printed the rest
+- `evidence-discarded` `scripts/lib/implement-lib.sh:1579` `7fbd7fc` `PRRT_kwDOTfywrM6sXmUD` PR #543 2026-10-14 — NULs dropped by command substitution hid the 4 KiB cut from the not-found check
 <!-- adb:hits:end -->
