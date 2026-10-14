@@ -757,7 +757,7 @@ cmd_tracker() {
   if [ "$rc" -ne 0 ]; then
     _ar_emit unmilestoned unknown "$(_why "$rc" unmilestoned "the unmilestoned open issues were not counted")"
   elif [ "$unm" -gt 0 ]; then
-    _ar_emit unmilestoned todo "$unm open issue(s) besides the roadmap artifact are in no milestone — /roadmap's step 4b autofix sweeps them to the backlog milestone, or asks for a decision when none is open (a release-blocker it warns about instead)"
+    _ar_emit unmilestoned todo "$unm open issue(s) besides the roadmap artifact are in no milestone — /roadmap's step 4b autofix sweeps them to the backlog milestone, or asks for a decision when none is open (in release-readiness mode, a release-blocker it warns about instead)"
   else
     _ar_emit unmilestoned ok "no open issue is in limbo (the roadmap artifact needs no milestone, so it is not counted)"
   fi
