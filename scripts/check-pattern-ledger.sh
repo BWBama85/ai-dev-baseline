@@ -1056,6 +1056,14 @@ eq "$?" 20 "a writer blocked by a stale-but-LIVE owner gives up at its own lock 
 # …and the contender wrote nothing rather than proceeding beside the live owner.
 eq "$(bash "$PL" classes --ledger "$L7i" 2>/dev/null | awk -F'\t' '$2=="livec"{print $1}')" 1 \
    "…and the blocked writer appended nothing"
+# …AND STILL WHEN `ps` CANNOT RUN (#505): inside Claude Code's macOS sandbox `/bin/ps` is denied
+# outright, and a writer that read that failure as death broke the live owner's lock.
+mkdir -p "$work/nops"; printf '#!/bin/sh\nprintf "/bin/ps: Operation not permitted\\n" >&2\nexit 126\n' > "$work/nops/ps"
+chmod +x "$work/nops/ps"
+( PATH="$work/nops:$PATH" ADB_PATTERN_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" \
+    --class livec --site s3.sh --fix abc1234 --pr 1 --thread LV3 ) >/dev/null 2>&1
+eq "$?" 20 "a writer whose ps cannot run still gives up at its lock bound rather than reclaiming (20)"
+[ -d "$L7i.lock/LIVE-TOKEN" ] && ok || bad "a live owner's lock was reclaimed because ps could not run"
 
 # A PROVABLY DEAD owner IS reclaimed, or a killed writer would wedge the ledger forever.
 printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$L7i.lock/meta"
@@ -1072,32 +1080,47 @@ eq "$?" 20 "a writer blocked by an unprovable owner gives up at its own lock bou
 [ -d "$L7j.lock/ORPHAN" ] && ok || bad "a lock with no owner metadata was reclaimed — unprovable must mean alive"
 rm -rf "$L7i.lock" "$L7j.lock"
 
-# LIVENESS IS ASKED OF `ps`, NOT `kill -0` (PR #429). `kill -0` fails for BOTH "no such process"
-# and "not yours", so a contender running as a different user in a shared checkout would reclaim a
-# LIVE lock. The reviewer verified it as `nobody` against a root-owned pid. `ps -p` answers about
-# existence regardless of ownership — pid 1 is the standing witness: alive, and not ours to signal.
-(
-  # shellcheck source=/dev/null
-  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
-  # shellcheck disable=SC2034  # read by the EVAL'd `_adb_pl_owner_gone` below (`IFS="$TAB"`),
-  # which shellcheck cannot follow through `eval`.
-  TAB="$(printf '\t')"
-  eval "$(sed -n '/^_adb_pl_owner_gone()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
-  D="$work/liveprobe.lock"; mkdir -p "$D"
-  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "1" > "$D/meta"
-  _adb_pl_owner_gone "$D" && exit 1 || exit 0
-) && ok || bad "pid 1 was judged GONE — liveness is being read from a signal permission, not from existence"
-(
-  # shellcheck source=/dev/null
-  . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
-  # shellcheck disable=SC2034  # read by the EVAL'd `_adb_pl_owner_gone` below (`IFS="$TAB"`),
-  # which shellcheck cannot follow through `eval`.
-  TAB="$(printf '\t')"
-  eval "$(sed -n '/^_adb_pl_owner_gone()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
-  D="$work/deadprobe.lock"; mkdir -p "$D"
-  printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "999999" > "$D/meta"
-  _adb_pl_owner_gone "$D" && exit 0 || exit 1
-) && ok || bad "a plainly dead pid was judged alive — a killed writer would wedge the ledger forever"
+# LIVENESS IS THE KERNEL'S REASON, NOT A PROBE'S STATUS (PR #429, #505). Two wrong answers have each
+# reclaimed a LIVE lock. A bare `kill -0` fails with EPERM for a live pid that is not ours — the
+# reviewer verified it as `nobody` against a root-owned pid, and pid 1 is the standing witness: alive,
+# and not ours to signal. Then `ps -p`, its replacement, read "ps could not run" as "no such process":
+# Claude Code's macOS sandbox denies `/bin/ps` outright (126 under bash, 127 under zsh, or `ps` itself
+# exiting 1 with `Operation not permitted`), so every live owner looked dead there. So the predicate
+# is asked with `ps` broken each of those ways, and with `kill` refused the way the sandbox refuses a
+# live process of the SAME user outside it — an EPERM no test can stage with a real pid, and the
+# only EPERM a root run sees at all, since root may signal pid 1.
+# lp_gone <pid> [<shell setup>] — exit 0 when `_adb_pl_owner_gone` judged <pid> GONE, 1 when alive.
+lp_gone() {
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1
+    # shellcheck disable=SC2034  # read by the EVAL'd `_adb_pl_owner_gone` below (`IFS="$TAB"`),
+    # which shellcheck cannot follow through `eval`.
+    TAB="$(printf '\t')"
+    eval "$(sed -n '/^_adb_pl_owner_gone()/,/^}/p' "$ROOT/scripts/lib/pattern-ledger.sh")"
+    eval "${2:-:}"
+    D="$(mktemp -d "$work/lp.XXXXXX")" || exit 2
+    printf '%s\t%s\n' "$(uname -n 2>/dev/null)" "$1" > "$D/meta"
+    _adb_pl_owner_gone "$D"
+  )
+}
+LPDEAD="$( sleep 0 & p=$!; wait "$p"; printf '%s' "$p" )"   # a pid this suite just reaped
+LPS="$work/lp-ps"
+for _lps in 126 127 1; do
+  mkdir -p "$LPS/$_lps"
+  printf '#!/bin/sh\nprintf "/bin/ps: Operation not permitted\\n" >&2\nexit %s\n' "$_lps" > "$LPS/$_lps/ps"
+  chmod +x "$LPS/$_lps/ps"
+done
+lp_gone 1 && bad "pid 1 was judged GONE — liveness is being read from a signal permission, not from existence" || ok
+lp_gone "$LPDEAD"; eq "$?" 0 "a plainly dead pid is judged gone — a killed writer would otherwise wedge the ledger forever"
+for _lps in 126 127 1; do
+  lp_gone "$$" "PATH=\"$LPS/$_lps:\$PATH\"" \
+    && bad "a live owner was judged GONE because ps could not run (status $_lps) — the sandbox's failure read as death" || ok
+done
+lp_gone "$$" 'kill() { printf "bash: kill: (%s) - Operation not permitted\n" "$2" >&2; return 1; }' \
+  && bad "a live owner was judged GONE when kill was refused with EPERM — a process outside the sandbox read as dead" || ok
+lp_gone "$$" 'kill() { return 1; }' \
+  && bad "a live owner was judged GONE on a kill failure that gave no reason — only ESRCH is proof" || ok
 
 # THE FIRST LEDGER IS PUBLISHED BY RENAME (PR #429), like every other write. A direct redirection
 # killed part-way leaves a half-written file that every retry then reads as present and refuses,
@@ -1174,6 +1197,9 @@ touch -t 200001010000 "$L7r/p.md.lock" 2>/dev/null
 bash "$PL" reclaim --ledger "$L7r/p.md" >/dev/null 2>&1
 eq "$?" 22 "reclaim leaves a LIVE owner's lock alone (22)"
 [ -d "$L7r/p.md.lock/LIVE" ] && ok || bad "reclaim removed a live owner's lock"
+( PATH="$work/nops:$PATH" bash "$PL" reclaim --ledger "$L7r/p.md" ) >/dev/null 2>&1
+eq "$?" 22 "reclaim leaves a LIVE owner's lock alone when ps cannot run (22)"
+[ -d "$L7r/p.md.lock/LIVE" ] && ok || bad "reclaim removed a live owner's lock because ps could not run"
 rm -rf "$L7r/p.md.lock"
 mkdir -p "$L7r/p.md.lock/ORPHAN"; touch -t 200001010000 "$L7r/p.md.lock" 2>/dev/null   # no meta: unprovable
 bash "$PL" reclaim --ledger "$L7r/p.md" >/dev/null 2>&1
@@ -2367,10 +2393,14 @@ if [ "$MODE" = mutation ]; then
       '      if ($1 != "- ")         { bad = 1; exit }' \
       '      if (0)                  { bad = 1; exit }' \
       'a forged record prefix is refused by'
-  check_row 'liveness-via-kill' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      '  ps -p "$pid" >/dev/null 2>&1 && return 1' \
-      '  kill -0 "$pid" 2>/dev/null && return 1' \
-      'pid 1 was judged GONE'
+  check_row 'liveness-via-ps' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  adb_pid_gone "$pid"' \
+      '  ! ps -p "$pid" >/dev/null 2>&1' \
+      'because ps could not run'
+  check_row 'pid-gone-any-failure' 'scripts/lib/common.sh' 's7c' \
+      '  case "$out" in *"No such process"*) return 0 ;; esac   # pid-gone-esrch-only' \
+      '  return 0   # pid-gone-esrch-only' \
+      'when kill was refused with EPERM'
   check_row 'repeated-patterns-table' 'scripts/lib/pattern-ledger.sh' 's6' \
       '                                intbl = (hdr == "patterns"); if (intbl && ++tbl > 1) { bad = 1; exit }' \
       '                                intbl = (hdr == "patterns");' \

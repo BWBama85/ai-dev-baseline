@@ -3176,6 +3176,18 @@ eq "$(bare_mkdir_scan "${_bm_files[@]}")" "" "no branched-on bare mkdir outside 
 printf 'lock() {\n  while ! mkdir "$d" 2>/dev/null; do sleep 1; done\n  mkdir "$e" 2>/dev/null && return 0\n  if mkdir "$f"; then :; fi\n  mkdir -p "$g" || exit 1\n}\n' > "$work/bare-mkdir.sh"
 eq "$(bare_mkdir_scan "$work/bare-mkdir.sh" | wc -l | tr -d ' ')" 3 "the bare-mkdir scan fires on while, && and if takes, and not on mkdir -p"
 
+# --- adb_pid_gone: gone only on the kernel's ESRCH, never on a probe that could not answer (#505) --
+# The sandbox shapes are staged in check-pattern-ledger's s7c, beside the lock that first broke on
+# them; these pin the primitive's own contract, root runs included (root may signal pid 1).
+pg_dead="$( sleep 0 & p=$!; wait "$p"; printf '%s' "$p" )"
+adb_pid_gone "$$";        eq "$?" 1 "pid-gone: this live shell is not gone"
+adb_pid_gone 1;           eq "$?" 1 "pid-gone: pid 1 is not gone — signalable or not"
+adb_pid_gone "$pg_dead";  eq "$?" 0 "pid-gone: a reaped child is gone"
+adb_pid_gone "";          eq "$?" 1 "pid-gone: an empty pid proves nothing"
+adb_pid_gone "12x";       eq "$?" 1 "pid-gone: a non-numeric pid proves nothing"
+( kill() { printf 'kill: (%s) - Operation not permitted\n' "$2" >&2; return 1; }; adb_pid_gone "$$" )
+eq "$?" 1 "pid-gone: an EPERM refusal is not death"
+
 # --- adb_publish_json: `--strict`, and a rename verified rather than trusted (#437) --------------
 # `stat` and `mv` are stubbed on PATH, one knob each: an unreadable mode, and a destination that
 # becomes a directory just before the rename onto it (which `mv` follows INTO, and reports as 0).

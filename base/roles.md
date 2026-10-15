@@ -171,9 +171,10 @@ it shells out to that agent's non-interactive entrypoint:
 > Because a harness may cap a *foreground* call well below it, dispatch long passes in
 > the background (see the completion contract above) — otherwise the outer cap, not this
 > bound, is what actually fires. A kill by an outer bound reports as SIGTERM (rc 143);
-> our own backstop reports as rc 124; anything else is a real agent error. Those are
-> different failures with different fixes, so `role-dispatch.sh` names which one
-> happened instead of collapsing them into "the agent failed".
+> our own backstop reports as rc 124; a CLI a sandbox refused at start-up says it could
+> not start (#505); anything else is a real agent error. Those are different failures
+> with different fixes, so `role-dispatch.sh` names which one happened instead of
+> collapsing them into "the agent failed".
 
 ## Runtime dispatch helper
 
@@ -191,8 +192,9 @@ by hand in each skill:
   documented flags and the 45-min hang backstop, returning only that agent's **clean final
   message** on stdout. For `codex` it uses `--output-last-message`, so the exploration stream
   never contaminates the captured findings. On a non-zero exit it prints one **classified**
-  diagnostic to stderr — our backstop (124) vs an outer bound's SIGTERM (143) vs a real agent
-  error — so a bound problem is never mistaken for an agent problem. A multi-agent `review` role
+  diagnostic to stderr — our backstop (124) vs an outer bound's SIGTERM (143) vs a CLI that
+  was refused at start-up (`Operation not permitted`, the mark of Claude Code's sandbox, #505)
+  vs a real agent error — so neither a bound nor the sandbox is mistaken for an agent problem. A multi-agent `review` role
   is refused on purpose: use `resolve` then a per-slot `invoke <token>` loop, so a same-agent slot
   stays in-process and each slot keeps its own retry/fallback (the completion contract above).
 

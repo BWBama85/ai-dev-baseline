@@ -727,7 +727,9 @@ adb_update_lock() {
     holder=""
   fi
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
+  # A holder is broken only once PROVEN gone: a bare `kill -0` failure is also EPERM, which a holder
+  # running as another user — or outside the sandbox this update runs in — returns while alive.
+  [ -n "$holder" ] && ! adb_pid_gone "$holder" && return 1   # update-lock-needs-proof
 
   # THE BREAK HAPPENS IN PLACE; THE DIRECTORY NEVER LEAVES ITS PATH. Renamed away, the path was
   # vacant while the breaker was still deciding, and a third process took a fresh lock there: two
@@ -4365,6 +4367,30 @@ adb_age_secs() {
   age="$((now - m))"
   [ "$age" -lt 0 ] && return 0
   printf '%s' "$age"
+}
+
+# adb_pid_gone <pid> — can we PROVE that no process <pid> exists on this host? The ONE liveness
+# proof behind every lock that breaks an abandoned holder: the update lock below and the pattern
+# ledger's write lock.
+#
+# 0 only on the kernel's own definite negative: `kill -0` refused with ESRCH, "No such process".
+# Everything else answers 1, "not proven gone": the signal could be delivered, EPERM (a live
+# process that is not ours, or one a sandbox will not let us signal), any other error, and a pid
+# that is not a number. A wrong "gone" lets two writers into the section the lock guards; a wrong
+# "alive" costs a wait that ends in the caller's own loud refusal.
+#
+# THE REASON IS READ, NOT THE STATUS. `kill -0` returns 1 for ESRCH and EPERM alike, so a lock that
+# treated any failure as death broke a live lock held by another user. `ps -p` replaced it in the
+# ledger and failed the other way: it cannot tell "no such process" from "ps could not run", and in
+# Claude Code's macOS sandbox `/bin/ps` cannot run at all (`Operation not permitted`: status 126
+# under bash, 127 under zsh) while `kill -0` still answers ESRCH and EPERM correctly (#505). `LC_ALL=C` pins strerror's wording, so a translated locale cannot hide the ESRCH.
+# Usage: adb_pid_gone <pid>
+adb_pid_gone() {
+  local LC_ALL=C out
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  out="$(kill -0 "$1" 2>&1)" && return 1
+  case "$out" in *"No such process"*) return 0 ;; esac   # pid-gone-esrch-only
+  return 1
 }
 
 # adb_mkdir_excl <dir> — create <dir> as a mutex. Returns 0 only for the ONE caller that now holds it.

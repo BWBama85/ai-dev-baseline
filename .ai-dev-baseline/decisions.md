@@ -7794,7 +7794,9 @@ survive is the part a later reader needs.
              an adopter's recipe and filed for an owner decision rather than invented here (#462).
              ANSWERED by D129 (2026-10-13): the fragment now ships `excludedCommands:
              ["git *", "gh *"]` — and the recipe above was inert as written, since a pattern with
-             no wildcard matches only the bare command.
+             no wildcard matches only the bare command. Its other half, that the same fragment keeps
+             `codex exec` and `agy -p` from starting at all, is D132 (2026-10-15): left as shipped,
+             and documented.
 - baseline-issue: n/a (this repo IS the baseline; the conflict above is filed separately)
 
 ## D97 — the fragment is written to USER settings only, and the pinned model refuses it outright
@@ -9950,4 +9952,52 @@ survive is the part a later reader needs.
              `scripts/check-implement-lib.sh` (§18b, §19l) · `base/workflows/implement-issue.md`
              (step 2) · `base/workflows/implement-issue/dispatch-failures.md` ·
              `base/workflows/implement-issue/state-protocol.md` · `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)
+
+## D132 — #505: the cross-model CLIs stay sandboxed, a start-up denial names the sandbox, and liveness is the kernel's ESRCH
+- date:      2026-10-15
+- category:  project-delta
+- unknown:   #505. Under the shipped fragment on macOS, `codex exec` and `agy -p` both exit 1 before
+             doing any work: codex cannot write `~/.codex`, and agy cannot bind a local port. The
+             classified line called that "a real agent/CLI error". Separately, the pattern ledger's
+             lock-reclaim proof asked `ps -p`, and inside the sandbox `/bin/ps` cannot run at all,
+             so "could not ask" read as "the owner is gone" and a live writer's lock was reclaimed
+             once stale. The issue's audit clause found the same class in `adb_update_lock`: a bare
+             `kill -0` reads EPERM as "no live holder", and inside the sandbox a live process of the
+             SAME user outside it is EPERM (probed 2026-10-15 against Finder's pid).
+- decision:  **Option (c): the fragment does not change (owner decision on #505, 2026-10-13).** Cross-
+             model roles need an unsandboxed session or exclusions the operator adds, and the docs
+             say so. Option (a), `excludedCommands` for `codex`/`agy`, was rejected because exclusions
+             match the text of the Bash call and the framework reaches both CLIs through
+             `implement-lib.sh` and `role-dispatch.sh`, so `"codex *"` would never match. Which
+             wrapper patterns could match is deferred to #531, which owns that question for `gh`.
+             Option (b), a writable `~/.codex`, would let any sandboxed command loosen codex's own
+             sandbox and approval policy for the next dispatch. PR #533 (D129) stays the fragment's
+             only digest change.
+             **A start-up denial is the CLI's own fatal line, ending a stream that ended early.** The
+             phrase alone proves nothing: agy logs `operation not permitted` on a run that succeeds.
+             So each CLI has an anchored signature, probed live (codex 0.162.1: `Error: … Operation
+             not permitted (os error 1)`; agy 1.2.7: `Failed to start: … operation not permitted`). It
+             counts only as the last line of a log stream that ended inside its first 4 KiB. The exit
+             status is unchanged, and 124, 143 and 137 still win. The log filter reads that window
+             itself with `read -n 1`, so it stays a live, byte-exact passthrough. It reports a match
+             by exiting 3, so no file is staged. A `tee` to a kept copy was rejected: it must reopen
+             `/dev/fd/N`, which on Linux re-opens and truncates the caller's `.err` file. The cap-
+             disabled path now runs the filter too, for a CLI that has a signature. A denial with
+             another errno (EROFS, from a read-only bind mount) is not recognised.
+             **Liveness is ESRCH, read from `kill -0`'s message.** The issue proposed a positive
+             control on `ps` instead (`ps -p $$` must succeed first). That was rejected for two
+             reasons. Inside the sandbox `ps` cannot run, so a `ps` proof fails closed but never
+             reclaims a dead writer's lock there. And a self-probe proves only that `ps` runs, not
+             that it can see another user's process (`hidepid`). The kernel's ESRCH answers whether
+             the pid exists in every one of those environments, and EPERM reads as alive. One shared
+             `adb_pid_gone` in `common.sh` serves both locks. `LC_ALL=C` pins strerror's wording;
+             that is not asserted, because neither CI image localizes strerror.
+- placement: `scripts/lib/common.sh` (`adb_pid_gone`, `adb_update_lock`) · `scripts/lib/pattern-ledger.sh`
+             (`_adb_pl_owner_gone`) · `scripts/lib/role-dispatch.sh` (`_adb_rd_cap_stream`,
+             `_adb_rd_startup_denied`, `adb_dispatch_classify_rc`) · `scripts/check-pattern-ledger.sh`
+             (s7c) · `scripts/check-role-dispatch.sh` · `scripts/check-common-lib.sh` ·
+             `scripts/check-baseline.sh` · `docs/installation.md` · `docs/roles-and-agents.md` ·
+             `base/roles.md` · `base/practices/untrusted-content.md` ·
+             `base/workflows/implement-issue/dispatch-failures.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

@@ -42,6 +42,7 @@ prevent.
 | `143` | an *outer* bound killed it first | re-dispatch in the background, or raise that outer bound — not ours |
 | `137` | external SIGKILL (OOM killer or the harness) | a memory/environment problem, not the agent; investigate before re-running |
 | `18`/`20` | the manifest, a read, a write, or prompt assembly failed | the stderr line names it; fix and re-run the subcommand |
+| other non-zero, and the line says the CLI **could not start** | the OS refused the CLI at start-up (`Operation not permitted`): codex and agy cannot start inside Claude Code's sandbox (#505) | the environment, not the agent: a retry inside the same sandbox fails identically, in seconds, and so does a review slot's cross-model stand-in — so the role's failure policy ends where it does for a real error (a review slot fails and the run blocks), but the report names the fix: dispatch from an unsandboxed session |
 | other non-zero | a real agent error | retry once, then per the role's failure policy |
 
 **Empty stdout beside a huge `.err` is not a diagnostic signal.** `codex exec` returns its result

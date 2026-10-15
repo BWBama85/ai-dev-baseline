@@ -287,6 +287,26 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **A lock whose owner could not be probed is no longer broken as if the owner were dead (#505).**
+  The pattern ledger's write lock judged its owner gone when `ps -p` failed. Inside Claude Code's
+  macOS sandbox `/bin/ps` cannot run at all, so a live writer's lock was reclaimed once it was 300 s
+  old, and two writers shared the ledger. The update lock had the same class of fault: a bare
+  `kill -0` that fails with EPERM, which a live process of another user returns, and in the sandbox
+  so does a live process of the same user outside it. Both now share one proof, `adb_pid_gone` in
+  `common.sh`. It reads the kernel's reason, and only ESRCH, "No such process", counts as gone. A
+  dead owner is still reclaimed, inside the sandbox too, where a positive control on `ps` would have
+  failed closed and never reclaimed anything.
+- **A codex or agy dispatch the sandbox refuses at start-up says so (#505).** Under the shipped
+  sandbox on macOS, `codex exec` cannot write `~/.codex` and `agy -p` cannot bind its local port, so
+  both exit 1 before doing any work. The classified line called that "a real agent/CLI error". Now,
+  when the log stream ends early on that CLI's own fatal denial line, the line says the CLI could not
+  start, names the sandbox, and says a retry inside it fails the same way. The phrase alone does not
+  trigger it, since agy logs `operation not permitted` on a run that succeeds. The exit status is
+  unchanged, and a bound that fired is still reported as the bound. The fragment itself does not
+  change (owner decision, D132): cross-model roles need an unsandboxed session, and
+  `docs/installation.md` ("Cross-model roles and the sandbox") explains why neither an exclusion nor
+  a writable `~/.codex` is shipped. `dispatch-failures.md` says a retry inside the sandbox fails the
+  same way, and that the report must name the fix.
 - **`/adopt`'s completion contract can go green after a roadmap bootstrap (#466).** The
   `unmilestoned` rung counted every open issue in no milestone, the roadmap artifact included, but
   `/roadmap` never milestones the artifact: step 7 says it is never a backlog item, and step 4b's

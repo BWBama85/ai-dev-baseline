@@ -256,8 +256,9 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 >
 > Read the **classified** failure the helper prints rather than treating any non-zero
 > as "the agent failed": rc **124** is our backstop, rc **143** (SIGTERM) is an outer
-> bound killing it first, anything else is a real agent error. Each has a different
-> fix. An incomplete invocation is retried once, then handled per the delegated-step
+> bound killing it first, a line saying the CLI **could not start** is the sandbox
+> refusing it (see [Cross-model roles and the sandbox](installation.md#cross-model-roles-and-the-sandbox)),
+> and anything else is a real agent error. Each has a different fix. An incomplete invocation is retried once, then handled per the delegated-step
 > completion contract in [`roles.md`](../base/roles.md) — which for `gap_analysis`
 > means **surfacing, never substituting another agent**.
 
@@ -270,7 +271,7 @@ workflow calls it instead of hand-writing the same lookup + CLI in each skill:
 | Command | What it does |
 |---|---|
 | `role-dispatch.sh resolve <role>` | Print the resolved agent token(s), one per line. Empty output = a legitimate skip (`gap_analysis` unset/`""`, and `survey = ""`). Validates the manifest — an unknown token or an explicit `review = []` is a hard error, never a silent fall-through. |
-| `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the 45-min hang backstop; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A non-zero exit prints one **classified** line to stderr (our backstop 124 / outer SIGTERM 143 / real agent error). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
+| `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the 45-min hang backstop; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A non-zero exit prints one **classified** line to stderr (our backstop 124 / outer SIGTERM 143 / a CLI the sandbox refused at start-up / real agent error). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
 | `role-dispatch.sh available <agent>` | Is that agent's CLI on PATH **here**? Silent — the exit code is the answer (`0` available · `1` known agent whose CLI is absent · `2` not an agent token). A third question, deliberately separate from *which agent is assigned* (`resolve`) and *did the agent fail* (an `invoke` rc): an absent CLI is a configuration fact knowable in advance, not a reviewer that broke. It answers "on PATH" and claims no more — not authenticated, not configured, not working. |
 | `role-dispatch.sh bots` | Print the configured async external-bot reviewer logins (see below). |
 
