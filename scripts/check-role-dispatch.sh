@@ -1073,6 +1073,21 @@ for _in in 'Error: failed to initialize in-process app-server client: Operation 
   eq "$_cs" "1" "a scan-window write failure is a filter failure: $_in"
 done
 
+# A BROKEN OUTPUT PIPE IS A WRITE ERROR, NOT A KILL: the dispatch's stderr goes to a reader that
+# exits early, and the agent — still writing its log — must finish and return its result.
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+i=0; while [ "$i" -lt 8000 ]; do printf 'gnoise %05d qqqqqqqqqqqqqqqqqqqqqqqq\n' "$i" >&2; i=$(( i + 1 )); done
+printf 'GEMINI-EPIPE-OK\n'
+exit 0
+EOF
+chmod +x "$BIN/agy"
+set_repo '[roles]' 'gap_analysis = "gemini"'
+( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" bash "$RD" invoke gap_analysis \
+    < <(printf 'x') > "$work/epipe.out" 2> >(head -c 100 >/dev/null) ) 2>/dev/null
+eq "$(cat "$work/epipe.out")" "GEMINI-EPIPE-OK" "a dispatch whose log reader went away still lets the agent finish and return its result"
+set_repo '[roles]' 'gap_analysis = "codex"'
+
 # A PASSTHROUGH THAT FAILS IS A FILTER FAILURE, never a clean or a denied one: the uncapped `cat` is
 # made to fail, past the window, and the filter's status must say so.
 _cs="$( "$BASH" -c '. "$1" >/dev/null 2>&1

@@ -790,8 +790,9 @@ _adb_rd_bounded() {
 # window's edge. Each byte is written on as it arrives unless it is past <max>, where it counts as
 # discarded, so the window and the diagnosis never depend on the cap. A stream that ENDED inside the
 # window, on that CLI's own fatal denial line, makes the filter exit 3; a passthrough that could not
-# write exits 1, and still drains, so the agent never takes SIGPIPE from it. `_adb_rd_bounded_capped`
-# reads both. `read -n 1` takes ONE byte per read(2) from a pipe, so the `dd` after it misses
+# write exits 1, and still drains, so the agent never takes SIGPIPE from it — which holds for a
+# broken output pipe only because the coproc runs it with SIGPIPE ignored, turning EPIPE into a
+# write error. `_adb_rd_bounded_capped` reads both. `read -n 1` takes ONE byte per read(2) from a pipe, so the `dd` after it misses
 # nothing and the counts stay exact; a NUL arrives as an empty read. A read past 128 is a timeout
 # from an inherited `TMOUT`, which reads nothing, so it is retried rather than taken for EOF.
 # Usage: _adb_rd_cap_stream <max-bytes> [<cli>]
@@ -900,7 +901,7 @@ _adb_rd_bounded_capped() {
     return $?
   fi
   local capin
-  coproc _ADB_RD_CAP { _adb_rd_cap_stream "$max" "$1" >&2; }
+  coproc _ADB_RD_CAP { trap '' PIPE; _adb_rd_cap_stream "$max" "$1" >&2; }
   capper="$_ADB_RD_CAP_PID"; capfd="${_ADB_RD_CAP[1]}"; capin="${_ADB_RD_CAP[0]}"
   exec {capin}<&-   # the filter writes to our stderr, never back to us
   if [ "$log_stdout" = 1 ]; then

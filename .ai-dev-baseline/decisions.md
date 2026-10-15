@@ -9993,7 +9993,9 @@ survive is the part a later reader needs.
              file. Holding the window back until it filled was rejected too, since it would stall
              the head the cap exists to stream. The scan's `read` retries a status past 128, the
              timeout an inherited `TMOUT` causes, instead of taking it for EOF and SIGPIPEing the
-             agent; a write the filter cannot make fails it (1), and it still drains. The
+             agent; a write the filter cannot make fails it (1), and it still drains — a broken
+             output pipe included, since the coproc ignores SIGPIPE (the last local review pass).
+             The
              cap-disabled path now runs the filter too, for a CLI that has a signature. A denial
              with another errno (EROFS, from a read-only bind mount) is not recognised.
              **The filter is a coproc, not an output process substitution (owner decision on #505,

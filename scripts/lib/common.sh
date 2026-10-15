@@ -4379,7 +4379,7 @@ adb_age_secs() {
 # process" from "ps could not run" (D132). `LC_ALL=C` pins strerror's wording.
 # Usage: adb_pid_gone <pid>
 adb_pid_gone() {
-  local LC_ALL=C out
+  local out LC_ALL=C
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
   out="$(kill -0 "$1" 2>&1)" && return 1
   # The SUFFIX the builtin writes for this pid, never the phrase anywhere: its diagnostic is
