@@ -4382,7 +4382,9 @@ adb_pid_gone() {
   local LC_ALL=C out
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
   out="$(kill -0 "$1" 2>&1)" && return 1
-  case "$out" in *"No such process"*) return 0 ;; esac   # pid-gone-esrch-only
+  # The SUFFIX the builtin writes for this pid, never the phrase anywhere: its diagnostic is
+  # prefixed with the script's own path, and a path may contain the phrase.
+  case "$out" in *"($1) - No such process") return 0 ;; esac   # pid-gone-esrch-only
   return 1
 }
 

@@ -1051,6 +1051,28 @@ printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/cedge.err
 eq "$(grep -v '^role-dispatch:' "$work/cedge.err" | wc -c | tr -d ' ')" "4096" "fixture: the denial stream is exactly the scan window"
 has "$(grep 'gap_analysis (codex) —' "$work/cedge.err")" "before it could start" "a denial ending exactly at the window's edge is still diagnosed"
 
+# AN INHERITED `TMOUT` IS NOT EOF: bash's `read` times out on it, and a pause inside the scan window
+# must not end the passthrough (and SIGPIPE the agent that writes after it).
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'first\n' >&2; sleep 2; printf 'second\n' >&2
+printf 'GEMINI-TMOUT-OK\n'
+exit 0
+EOF
+chmod +x "$BIN/agy"
+set_repo '[roles]' 'gap_analysis = "gemini"'
+out="$(printf 'x' | rd_env TMOUT=1 bash "$RD" invoke gap_analysis 2>"$work/tmout.err")"; out_rc=$?
+eq "$out_rc" "0" "an inherited TMOUT and a pause inside the scan window do not fail the dispatch"
+eq "$out" "GEMINI-TMOUT-OK" "…its result comes back"
+has "$(cat "$work/tmout.err")" "second" "…and the log after the pause is still passed through"
+set_repo '[roles]' 'gap_analysis = "codex"'
+
+# A FILTER THAT CANNOT WRITE says so (1) — inside the scan window too — and never claims a denial.
+for _in in 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)' 'ordinary log text'; do
+  _cs="$( "$BASH" -c '. "$1" >/dev/null 2>&1; printf "%s\n" "$2" | _adb_rd_cap_stream 0 codex >&- 2>/dev/null; printf %s "$?"' rd_wf "$RD" "$_in" 2>/dev/null )"
+  eq "$_cs" "1" "a scan-window write failure is a filter failure: $_in"
+done
+
 # A PASSTHROUGH THAT FAILS IS A FILTER FAILURE, never a clean or a denied one: the uncapped `cat` is
 # made to fail, past the window, and the filter's status must say so.
 _cs="$( "$BASH" -c '. "$1" >/dev/null 2>&1

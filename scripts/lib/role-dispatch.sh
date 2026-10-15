@@ -789,33 +789,43 @@ _adb_rd_bounded() {
 # time, and kept — plus one byte more, read only to learn whether the stream ended exactly at the
 # window's edge. Each byte is written on as it arrives unless it is past <max>, where it counts as
 # discarded, so the window and the diagnosis never depend on the cap. A stream that ENDED inside the
-# window, on that CLI's own fatal denial line, makes the filter exit 3; a passthrough that failed
-# exits 1. `_adb_rd_bounded_capped` reads both. `read -n 1` takes ONE byte per read(2) from a pipe,
-# so the `dd` after it misses nothing and the counts stay exact; a NUL arrives as an empty read.
+# window, on that CLI's own fatal denial line, makes the filter exit 3; a passthrough that could not
+# write exits 1, and still drains, so the agent never takes SIGPIPE from it. `_adb_rd_bounded_capped`
+# reads both. `read -n 1` takes ONE byte per read(2) from a pipe, so the `dd` after it misses
+# nothing and the counts stay exact; a NUL arrives as an empty read. A read past 128 is a timeout
+# from an inherited `TMOUT`, which reads nothing, so it is retried rather than taken for EOF.
 # Usage: _adb_rd_cap_stream <max-bytes> [<cli>]
 _adb_rd_cap_stream() {
-  local LC_ALL=C max="$1" cli="${2:-}" rest w=0 n=0 c kept="" eof=0 last over=0
+  local LC_ALL=C max="$1" cli="${2:-}" rest w=0 n=0 c kept="" eof=0 last over=0 rs wfail=0
   _adb_rd_watches "$cli" && w="$_ADB_RD_SCAN_BYTES"
   while [ "$w" -gt 0 ]; do
-    IFS= read -r -d '' -n 1 c || { eof=1; break; }
+    IFS= read -r -d '' -n 1 c; rs=$?
+    [ "$rs" -gt 128 ] && continue
+    [ "$rs" -eq 0 ] || { eof=1; break; }
     n=$((n + 1))
     if [ "$max" -gt 0 ] && [ "$n" -gt "$max" ]; then over=$((over + 1))
-    elif [ -z "$c" ]; then printf '\0'
-    else printf '%s' "$c"; fi
+    elif [ "$wfail" -eq 0 ]; then
+      if [ -z "$c" ]; then printf '\0'; else printf '%s' "$c"; fi || wfail=1
+    fi
     [ "$n" -gt "$w" ] && break   # the lookahead byte: the stream outran the window
     if [ -z "$c" ]; then kept+=$'\001'; else kept+="$c"; fi
   done
   if [ "$eof" -eq 0 ]; then
-    if [ "$max" -eq 0 ]; then
-      cat || return 1
+    if [ "$wfail" -eq 1 ]; then
+      cat >/dev/null
+    elif [ "$max" -eq 0 ]; then
+      cat || wfail=1
     else
-      [ "$n" -lt "$max" ] && dd bs=1 count="$((max - n))" 2>/dev/null
+      if [ "$n" -lt "$max" ]; then dd bs=1 count="$((max - n))" 2>/dev/null || wfail=1; fi
       rest="$(wc -c)"
       rest="${rest//[![:digit:]]/}"
       over=$((over + ${rest:-0}))
     fi
   fi
-  [ "$over" -gt 0 ] && printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$over"
+  if [ "$over" -gt 0 ] && [ "$wfail" -eq 0 ]; then
+    printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$over" || wfail=1
+  fi
+  [ "$wfail" -eq 0 ] || return 1
   [ "$eof" -eq 1 ] || return 0
   kept="${kept%"${kept##*[![:space:]]}"}"
   last="${kept##*$'\n'}"
@@ -858,10 +868,9 @@ _ADB_RD_DENIED_CLI=""   # set by `_adb_rd_bounded_capped` when the filter saw on
 # LEFT side in a subshell, and `adb_run_bounded` installs its reap trap on the CALLING shell — so
 # the trap would protect a subshell that is not the one being signalled, and an outer TERM would go
 # back to orphaning the agent. A COPROC keeps the runner in THIS shell, and forks the filter instead
-# — the cheap process rather than the one the bound exists to police. A coproc and not a process
-# substitution: on macOS bash opens an output procsub by writing to `/dev/fd/N`, which Claude Code's
-# shipped sandbox denies, so every dispatch died before its CLI ran; a coproc's pipe is pipe(2)'s
-# and opens no path (D132).
+# — the cheap process rather than the one the bound exists to police. A coproc, never an output
+# process substitution: bash on macOS opens that by writing to `/dev/fd/N`, which the shipped
+# sandbox denies; a coproc's pipe comes from pipe(2) and opens no path (D132).
 #
 # WHAT THAT DOES NOT COVER, stated rather than glossed: the filter is a SIBLING of the bounded
 # command, not a member of its process group, so the bound does not reap it and neither does

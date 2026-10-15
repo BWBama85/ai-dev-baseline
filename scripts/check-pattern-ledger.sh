@@ -2394,7 +2394,7 @@ if [ "$MODE" = mutation ]; then
       '  ! ps -p "$pid" >/dev/null 2>&1' \
       'because ps could not run'
   check_row 'pid-gone-any-failure' 'scripts/lib/common.sh' 's7c' \
-      '  case "$out" in *"No such process"*) return 0 ;; esac   # pid-gone-esrch-only' \
+      '  case "$out" in *"($1) - No such process") return 0 ;; esac   # pid-gone-esrch-only' \
       '  return 0   # pid-gone-esrch-only' \
       'when kill was refused with EPERM'
   check_row 'repeated-patterns-table' 'scripts/lib/pattern-ledger.sh' 's6' \
