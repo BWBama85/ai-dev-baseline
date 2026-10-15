@@ -324,8 +324,9 @@ already given up) is still in your file, which blocks the whole policy as any ke
 #### Cross-model roles and the sandbox
 
 The fragment leaves `codex` and `agy` **inside** the sandbox (#505, D132), and on macOS neither
-can start there. Linux and WSL2 are untested. Observed 2026-10-15 on macOS 26.6 (Darwin 25.6.0)
-with Claude Code 2.1.300, codex-cli 0.162.1 and agy 1.2.7; D132 records the full witness:
+can start there. Linux and WSL2 are untested. Observed 2026-10-15 under the shipped fragment alone,
+on macOS 26.6.2 with Claude Code 2.1.300, codex-cli 0.162.1 and agy 1.2.7 and 1.3.6; D132 records
+the full witness:
 
 - **`codex exec` exits 1** with `Error: failed to initialize in-process app-server client:
   Operation not permitted (os error 1)`. The sandbox denies its writes to `~/.codex`.
@@ -333,8 +334,9 @@ with Claude Code 2.1.300, codex-cli 0.162.1 and agy 1.2.7; D132 records the full
   permitted`. The fragment leaves `sandbox.network.allowLocalBinding` off, so agy cannot open its
   local port. Its log under `~/.gemini` is not writable either, but agy survives that.
 
-`claude -p` starts and works. But `codex` is the shipped default for both `gap_analysis` and
-`review`, so a sandboxed `/implement-issue` cannot run its gap pass or its review slot. The
+`claude -p` starts and works, through `role-dispatch.sh` too. But `codex` is the shipped default
+for both `gap_analysis` and `review`, so a sandboxed `/implement-issue` cannot run its gap pass or
+its review slot. The
 dispatch reports the cause instead of blaming the agent. Its classified line reads
 `role-dispatch: gap_analysis (codex) — INCOMPLETE: codex exited 1 before it could start — the OS
 refused it ("Operation not permitted") …`. A retry inside the same sandbox fails the same way, and

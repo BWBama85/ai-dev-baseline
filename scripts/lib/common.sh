@@ -727,7 +727,8 @@ adb_update_lock() {
     holder=""
   fi
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  # Broken only once PROVEN gone: a bare `kill -0` failure is also the EPERM a live holder returns.
+  # A RECORDED holder is broken only once PROVEN gone: a bare `kill -0` failure is also the EPERM a
+  # live holder returns. (No record, or an unparseable pid, is judged by the age above alone.)
   [ -n "$holder" ] && ! adb_pid_gone "$holder" && return 1   # update-lock-needs-proof
 
   # THE BREAK HAPPENS IN PLACE; THE DIRECTORY NEVER LEAVES ITS PATH. Renamed away, the path was

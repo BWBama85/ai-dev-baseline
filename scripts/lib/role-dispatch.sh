@@ -786,26 +786,28 @@ _adb_rd_bounded() {
 #
 # IT ALSO WATCHES FOR A START-UP DENIAL (#505, D132), for a CLI `_adb_rd_startup_denied` has a
 # signature for. The stream's first `_ADB_RD_SCAN_BYTES` are read by the shell itself, a byte at a
-# time, and kept; each is written on as it arrives unless it is past <max>, where it counts as
-# discarded. The window does not shrink with the cap, so the diagnosis never depends on it. A stream
-# that ENDED inside the window, on that CLI's own fatal denial line, makes the filter exit 3 — the
-# contract `_adb_rd_bounded_capped` reads. `read -n 1` takes ONE byte per read(2) from a pipe, so
-# the `dd` after it misses nothing and the counts stay exact; a NUL arrives as an empty read.
+# time, and kept — plus one byte more, read only to learn whether the stream ended exactly at the
+# window's edge. Each byte is written on as it arrives unless it is past <max>, where it counts as
+# discarded, so the window and the diagnosis never depend on the cap. A stream that ENDED inside the
+# window, on that CLI's own fatal denial line, makes the filter exit 3; a passthrough that failed
+# exits 1. `_adb_rd_bounded_capped` reads both. `read -n 1` takes ONE byte per read(2) from a pipe,
+# so the `dd` after it misses nothing and the counts stay exact; a NUL arrives as an empty read.
 # Usage: _adb_rd_cap_stream <max-bytes> [<cli>]
 _adb_rd_cap_stream() {
   local LC_ALL=C max="$1" cli="${2:-}" rest w=0 n=0 c kept="" eof=0 last over=0
   _adb_rd_watches "$cli" && w="$_ADB_RD_SCAN_BYTES"
-  while [ "$n" -lt "$w" ]; do
+  while [ "$w" -gt 0 ]; do
     IFS= read -r -d '' -n 1 c || { eof=1; break; }
     n=$((n + 1))
     if [ "$max" -gt 0 ] && [ "$n" -gt "$max" ]; then over=$((over + 1))
     elif [ -z "$c" ]; then printf '\0'
     else printf '%s' "$c"; fi
+    [ "$n" -gt "$w" ] && break   # the lookahead byte: the stream outran the window
     if [ -z "$c" ]; then kept+=$'\001'; else kept+="$c"; fi
   done
   if [ "$eof" -eq 0 ]; then
     if [ "$max" -eq 0 ]; then
-      cat
+      cat || return 1
     else
       [ "$n" -lt "$max" ] && dd bs=1 count="$((max - n))" 2>/dev/null
       rest="$(wc -c)"
@@ -822,7 +824,7 @@ _adb_rd_cap_stream() {
 }
 
 # How much of a dispatch log's head the filter keeps to recognise a start-up denial: room for a few
-# lines of preamble before the fatal one, and no more — a CLI that wrote past it had started.
+# lines of preamble before the fatal one. A denial after more output than this is not diagnosed.
 _ADB_RD_SCAN_BYTES=4096
 
 # _adb_rd_startup_denied <cli> <line> — is <line> <cli>'s OWN fatal error for an OS permission
@@ -833,7 +835,7 @@ _ADB_RD_SCAN_BYTES=4096
 # stream that ended inside the scan window. EPERM only; another errno (EROFS from a read-only bind
 # mount) is not recognised. The signatures, as observed (D132):
 #   codex 0.162.1  `Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)`
-#   agy 1.2.7      `Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted`
+#   agy 1.2.7/1.3.6 `Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted`
 _adb_rd_startup_denied() {
   local LC_ALL=C
   case "$1" in
@@ -855,8 +857,11 @@ _ADB_RD_DENIED_CLI=""   # set by `_adb_rd_bounded_capped` when the filter saw on
 # THE TOPOLOGY IS THE HARD PART, and a plain pipeline is the wrong one. `cmd | filter` puts the
 # LEFT side in a subshell, and `adb_run_bounded` installs its reap trap on the CALLING shell — so
 # the trap would protect a subshell that is not the one being signalled, and an outer TERM would go
-# back to orphaning the agent. A process substitution keeps the runner in THIS shell, and forks the
-# filter instead — the cheap process rather than the one the bound exists to police.
+# back to orphaning the agent. A COPROC keeps the runner in THIS shell, and forks the filter instead
+# — the cheap process rather than the one the bound exists to police. A coproc and not a process
+# substitution: on macOS bash opens an output procsub by writing to `/dev/fd/N`, which Claude Code's
+# shipped sandbox denies, so every dispatch died before its CLI ran; a coproc's pipe is pipe(2)'s
+# and opens no path (D132).
 #
 # WHAT THAT DOES NOT COVER, stated rather than glossed: the filter is a SIBLING of the bounded
 # command, not a member of its process group, so the bound does not reap it and neither does
@@ -865,10 +870,11 @@ _ADB_RD_DENIED_CLI=""   # set by `_adb_rd_bounded_capped` when the filter saw on
 # ORDERING on that path, so a caller reading the artifact immediately after an outer kill can race
 # the filter's last write. Bounded and rare, but it is not "nothing to protect".
 #
-# `exec {capfd}>` rather than a redirection on the command, because `$!` must be captured for the
-# procsub itself — and `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!`
-# before the command returns. Without that pid there is nothing to `wait` on, and the notice above
-# can be lost to a race with our own exit.
+# The filter's pid is taken from the coproc (`_ADB_RD_CAP_PID`) before the call, because
+# `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!` before the command
+# returns. Without that pid there is nothing to `wait` on, and the notice above can be lost to a
+# race with our own exit. Bash runs one coproc at a time; each dispatch reaps its own before it
+# returns, so the next can start one.
 #
 # `{capfd}>&-` ON THE CALL closes the descriptor for the CHILD side, and it is worth its own line:
 # the watchdog's ticking `sleep` is deliberately allowed to outlive its watcher (see common.sh), so
@@ -884,8 +890,10 @@ _adb_rd_bounded_capped() {
     else                           _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@"; fi
     return $?
   fi
-  exec {capfd}> >(_adb_rd_cap_stream "$max" "$1" >&2)
-  capper=$!
+  local capin
+  coproc _ADB_RD_CAP { _adb_rd_cap_stream "$max" "$1" >&2; }
+  capper="$_ADB_RD_CAP_PID"; capfd="${_ADB_RD_CAP[1]}"; capin="${_ADB_RD_CAP[0]}"
+  exec {capin}<&-   # the filter writes to our stderr, never back to us
   if [ "$log_stdout" = 1 ]; then
     _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&"$capfd" 2>&1 {capfd}>&-
   else
@@ -953,7 +961,7 @@ adb_dispatch_classify_rc() {
     143) printf 'INCOMPLETE: SIGTERM (rc 143) — an OUTER bound killed it before our %ss backstop; re-dispatch in the background, or raise THAT bound (ours is not the cap here)' "$_ADB_RD_TIMEOUT_SECS" ;;
     137) printf 'INCOMPLETE: SIGKILL (rc 137) — killed from outside this helper (OOM killer or an outer harness), not by our backstop' ;;
     *)   if [ -n "${2:-}" ]; then
-           printf 'INCOMPLETE: %s exited %s before it could start — the OS refused it ("Operation not permitted"), the mark of a sandbox around this dispatch (Claude Code'"'"'s refuses codex and agy exactly so). Not an agent error and not a bound: a retry inside the same sandbox fails the same way; dispatch from an unsandboxed session (see "Cross-model roles and the sandbox" in ai-dev-baseline'"'"'s docs/installation.md)' "$2" "$1"
+           printf 'INCOMPLETE: %s exited %s before it could start — the OS refused it ("Operation not permitted"), most likely a sandbox around this dispatch (Claude Code'"'"'s refuses codex and agy exactly so). Not an agent error and not a bound: a retry inside the same sandbox fails the same way; dispatch from an unsandboxed session (see "Cross-model roles and the sandbox" in ai-dev-baseline'"'"'s docs/installation.md)' "$2" "$1"
          else
            printf 'INCOMPLETE: agent exited %s — a real agent/CLI error, not a bound firing' "$1"
          fi ;;

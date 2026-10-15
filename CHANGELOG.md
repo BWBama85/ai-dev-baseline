@@ -292,10 +292,15 @@ only by a published release, which is what these entries are the notes for.
   macOS sandbox `/bin/ps` cannot run at all, so a live writer's lock was reclaimed once it was 300 s
   old, and two writers shared the ledger. The update lock had the same class of fault: a bare
   `kill -0` that fails with EPERM, which a live process of another user returns, and in the sandbox
-  so does a live process of the same user outside it. Both now share one proof, `adb_pid_gone` in
-  `common.sh`. It reads the kernel's reason, and only ESRCH, "No such process", counts as gone. A
+  so does a live process of the same user outside it. For a recorded owner, both now share one
+  proof, `adb_pid_gone` in `common.sh`. It reads the kernel's reason, and only ESRCH, "No such process", counts as gone. A
   dead owner is still reclaimed, inside the sandbox too, where a positive control on `ps` would have
   failed closed and never reclaimed anything.
+- **`role-dispatch.sh` runs inside the shipped sandbox at all (#505).** Its log filter was an output
+  process substitution, which bash on macOS opens by writing to `/dev/fd/N`. The shipped fragment
+  denies that write, so every dispatch, claude's included, died before its CLI ran, on `capfd:
+  unbound variable` and with no classified line. The filter is now a `coproc`, whose pipe opens no
+  path. It only ever worked where an operator had added `/dev/fd` to `allowWrite`.
 - **A codex or agy dispatch the sandbox refuses at start-up says so (#505).** Under the shipped
   sandbox on macOS, `codex exec` cannot write `~/.codex` and `agy -p` cannot bind its local port, so
   both exit 1 before doing any work. The classified line called that "a real agent/CLI error". Now,

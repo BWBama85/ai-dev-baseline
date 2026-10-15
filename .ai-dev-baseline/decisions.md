@@ -3346,7 +3346,9 @@ limit: none of them is sufficient alone.
              log would kill the dispatch. `{capfd}>&-` on the call closes the descriptor for the
              child side: the watchdog's ticking `sleep` is deliberately allowed to outlive its
              watcher, and an inherited write end held the pipe open for a whole tick — measured
-             5.0 s per dispatch, 0.05 s with the close.
+             5.0 s per dispatch, 0.05 s with the close. SUPERSEDED IN PART by D132 (2026-10-15): the
+             filter is now a `coproc`, because an output procsub writes to `/dev/fd/N`, which the
+             shipped sandbox denies; everything else here still holds.
 
              **`dd bs=1` + `wc -c`, after awk was tried and rejected.** `head` over-reads into its buffer: it loses an
              unknown number of bytes and can swallow the entire remainder, leaving the drain to
@@ -9954,7 +9956,7 @@ survive is the part a later reader needs.
              `base/workflows/implement-issue/state-protocol.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
 
-## D132 — #505: the cross-model CLIs stay sandboxed, a start-up denial names the sandbox, and liveness is the kernel's ESRCH
+## D132 — #505: the cross-model CLIs stay sandboxed, dispatch runs inside the sandbox, a start-up denial names it, and liveness is the kernel's ESRCH
 - date:      2026-10-15
 - category:  project-delta
 - unknown:   #505. Under the shipped fragment on macOS, `codex exec` and `agy -p` both exit 1 before
@@ -9992,27 +9994,29 @@ survive is the part a later reader needs.
              the head the cap exists to stream. The cap-disabled path now runs the filter too, for
              a CLI that has a signature. A denial with another errno (EROFS, from a read-only bind
              mount) is not recognised.
-             **The acceptance witness (2026-10-15, macOS 26.6 / Darwin 25.6.0, Claude Code 2.1.300,
-             codex-cli 0.162.1, agy 1.2.7, bash 5.3.20).** Effective sandbox settings were the
-             operator's own: `sandbox.enabled`, credential denials on `~/.aws`/`~/.ssh` and
-             `GITHUB_TOKEN`, no `allowWrite` for `~/.codex` or `~/.gemini`, `allowLocalBinding: true`,
-             and `excludedCommands` that did not match the call. `printf … | bash
-             scripts/lib/role-dispatch.sh invoke gap_analysis`, run in a sandboxed Bash call
-             (`SANDBOX_RUNTIME=1`), exited 1 with codex's two lines and `role-dispatch: gap_analysis
-             (codex) — INCOMPLETE: codex exited 1 before it could start — the OS refused it …`. That
-             session allowed local binding, so agy started there. Its denial was reproduced through
-             `role-dispatch.sh invoke gemini` under `sandbox-exec -p '(version 1)(allow default)(deny
-             network-bind)'`: exit 1, `Failed to start: listen tcp 127.0.0.1:0: bind: operation not
-             permitted`, and the same classified line naming agy. Unsandboxed, the same call printed
-             `OK`.
-             **Liveness is ESRCH, read from `kill -0`'s message.** The issue proposed a positive
-             control on `ps` instead (`ps -p $$` must succeed first). That was rejected for two
-             reasons. Inside the sandbox `ps` cannot run, so a `ps` proof fails closed but never
-             reclaims a dead writer's lock there. And a self-probe proves only that `ps` runs, not
-             that it can see another user's process (`hidepid`). The kernel's ESRCH answers whether
-             the pid exists in every one of those environments, and EPERM reads as alive. One shared
-             `adb_pid_gone` in `common.sh` serves both locks. `LC_ALL=C` pins strerror's wording;
-             that is not asserted, because neither CI image localizes strerror.
+             **The filter is a coproc, not an output process substitution (owner decision on #505,
+             2026-10-15).** Taking the acceptance witness under the INSTALLER-WRITTEN policy (the
+             independent review's demand) found that every `role-dispatch.sh invoke` died there before
+             its CLI ran, claude included. On macOS bash opens `exec {fd}> >(…)` by writing to
+             `/dev/fd/N`, the fragment denies that write, and `set -u` then killed the script on the
+             unset descriptor, so no classified line was printed. The earlier witness had passed only
+             because the operator's own settings add `/dev/fd` to `allowWrite`. Offered three
+             options — fix the topology here, only name the failure, or file it — the owner chose the
+             fix. A `coproc`'s pipe comes from pipe(2), so it opens no path; probed under a
+             `sandbox-exec` profile denying `/dev/fd` writes, where the procsub fails and the coproc
+             works. It was the only output process substitution in the shipped scripts.
+             **The acceptance witness (2026-10-15, macOS 26.6.2 / Darwin 25.6.0, Claude Code 2.1.300,
+             codex-cli 0.162.1, agy 1.3.6, bash 5.3.20).** A nested `claude -p --setting-sources
+             project --settings <fragment>`, with `sandbox.allowUnsandboxedCommands: false` added so
+             nothing could retry outside, so the effective policy was the shipped fragment with no
+             user settings. Its Bash calls ran sandboxed (`SANDBOX_RUNTIME=1`; `touch ~/.codex/…`
+             refused), and `role-dispatch.sh invoke` was given `Reply with exactly: OK`.
+             `invoke claude` returned `OK`, rc 0. `invoke gemini` exited 1: agy's log ended
+             `Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted`, and the line
+             read `role-dispatch: gemini — INCOMPLETE: agy exited 1 before it could start — the OS
+             refused it …`. `invoke gap_analysis` exited 1 with codex's `Error: failed to initialize
+             in-process app-server client: Operation not permitted (os error 1)` and the same line
+             naming codex. agy 1.2.7, earlier the same day, ended on the identical fatal line.
 - placement: `scripts/lib/common.sh` (`adb_pid_gone`, `adb_update_lock`) · `scripts/lib/pattern-ledger.sh`
              (`_adb_pl_owner_gone`) · `scripts/lib/role-dispatch.sh` (`_adb_rd_cap_stream`,
              `_adb_rd_startup_denied`, `adb_dispatch_classify_rc`) · `scripts/check-pattern-ledger.sh`

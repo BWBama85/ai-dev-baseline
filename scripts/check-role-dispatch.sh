@@ -894,6 +894,34 @@ if [ "$gcap" -lt 2000 ]; then ok; else bad "log_stdout=0 arm: stderr must still 
 has "$(cat "$work/gem.err")" "capped at" "log_stdout=0 arm: the cap notice is emitted too"
 set_repo '[roles]' 'gap_analysis = "codex"'
 
+# ==================== the log filter opens no path (#505, D132) ====================
+# Claude Code's shipped sandbox denies writes to `/dev/fd`, which is where bash on macOS opens an
+# OUTPUT process substitution — so a filter opened that way killed every dispatch before its CLI ran.
+# Observed through macOS's own `sandbox-exec` where it can run (not inside another sandbox), and
+# pinned structurally on every host.
+if command -v sandbox-exec >/dev/null 2>&1 && sandbox-exec -p '(version 1)(allow default)' true 2>/dev/null; then
+  cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'agy log line\n' >&2
+printf 'GEMINI-DEVFD-OK\n'
+exit 0
+EOF
+  chmod +x "$BIN/agy"
+  set_repo '[roles]' 'gap_analysis = "gemini"'
+  out="$(printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" \
+    sandbox-exec -p '(version 1)(allow default)(deny file-write* (regex #"^/dev/fd/"))' \
+    "$BASH" "$RD" invoke gap_analysis 2>"$work/devfd.err" ))"; out_rc=$?
+  eq "$out_rc" "0" "a dispatch runs where writes to /dev/fd are denied, as in the shipped sandbox"
+  eq "$out" "GEMINI-DEVFD-OK" "…its result comes back"
+  has "$(cat "$work/devfd.err")" "agy log line" "…and its log still passes through the filter"
+  set_repo '[roles]' 'gap_analysis = "codex"'
+else
+  echo "check-role-dispatch: NOTE — the /dev/fd denial was not exercised (no usable sandbox-exec here)" >&2
+fi
+if grep -vE '^[[:space:]]*#' "$RD" | grep -qE '>[[:space:]]*>\('; then
+  bad "role-dispatch.sh opens an output process substitution — bash writes to /dev/fd for it, which the shipped sandbox denies"
+else ok; fi
+
 # ==================== a start-up denial NAMES the sandbox (#505, D132) ====================
 # The stubs print what each CLI printed when Claude Code's macOS sandbox refused it at start-up.
 cat > "$BIN/codex" <<'EOF'
@@ -1008,6 +1036,28 @@ EOF
 chmod +x "$BIN/codex"
 printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/czero.err"
 has "$(grep 'gap_analysis (codex) —' "$work/czero.err")" "a real agent/CLI error" "a CLI that exited 0 is never classified as refused at start-up"
+
+# A denial stream that ends EXACTLY at the window's last byte did end inside it.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+sig='Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)'
+printf '%*s\n' "$(( 4096 - ${#sig} - 2 ))" '' | tr ' ' w
+printf '%s\n' "$sig"
+exit 1
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/cedge.err"
+eq "$(grep -v '^role-dispatch:' "$work/cedge.err" | wc -c | tr -d ' ')" "4096" "fixture: the denial stream is exactly the scan window"
+has "$(grep 'gap_analysis (codex) —' "$work/cedge.err")" "before it could start" "a denial ending exactly at the window's edge is still diagnosed"
+
+# A PASSTHROUGH THAT FAILS IS A FILTER FAILURE, never a clean or a denied one: the uncapped `cat` is
+# made to fail, past the window, and the filter's status must say so.
+_cs="$( "$BASH" -c '. "$1" >/dev/null 2>&1
+  cat() { command cat >/dev/null; return 7; }
+  { head -c 5000 /dev/zero | tr "\0" w; } | _adb_rd_cap_stream 0 codex >/dev/null 2>&1; printf %s "$?"' rd_cat "$RD" )"
+if [ -n "$_cs" ] && [ "$_cs" != 0 ] && [ "$_cs" != 3 ]; then ok
+else bad "a failed uncapped passthrough must fail the filter with its own status, not 0 or the denial's 3 (got '$_cs')"; fi
 
 # A BOUND THAT FIRED IS STILL THE BOUND: the denial changes only the generic arm.
 cat > "$BIN/codex" <<'EOF'
