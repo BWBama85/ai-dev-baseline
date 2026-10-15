@@ -124,11 +124,11 @@ than none:
     full access, the credential denials included (some shapes stay sandboxed even so:
     a file redirect, a `cd`, a `$(...)`) — and those are the two commands most likely
     to touch credentials.
-  - **It is Claude-only and user-scoped.** `sandbox.*` is Claude Code configuration,
-    and it does not constrain a `codex exec` or `agy -p` dispatch — the cross-agent path
-    this file exists for. Started from a sandboxed Bash call, neither CLI can even start
-    on macOS (#505): the sandbox denies codex its `~/.codex` writes and agy its local
-    port. So a cross-agent dispatch runs from an unsandboxed session, with the
+  - **It is Claude-only and user-scoped, and it does not cover the cross-agent path.**
+    `sandbox.*` is Claude Code configuration. A `codex exec` or `agy -p` dispatch started
+    from a sandboxed Bash call inherits the sandbox, but on macOS neither CLI can even
+    start there (#505): codex is denied its `~/.codex` writes and agy its local port. So
+    the cross-agent path this file exists for runs from an unsandboxed session, with the
     workstation's own privileges exactly as before.
   - **It is opt-out-able and version-gated.** `install.sh --no-sandbox` declines it, and
     a CLI below the floor gets no new policy (by design: an inert key would report

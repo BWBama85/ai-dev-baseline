@@ -234,10 +234,8 @@ eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "an OLD lock with a LIVE hol
 eq "$(git -C "$src" rev-parse HEAD)" "$head_live" "a live-holder lock blocks the pull"
 rm -rf "$gitdir/adb-update.lock"
 
-# …AND A HOLDER WE MAY NOT SIGNAL IS NOT A DEAD ONE (#505). A bare `kill -0` fails with EPERM for a
-# live process of another user — and, inside Claude Code's sandbox, for a live process of the SAME
-# user outside it — and that failure used to read as "no live holder". pid 1 is the real-pid witness
-# (EPERM for any non-root run, a delivered signal for root: alive either way).
+# …AND A HOLDER WE MAY NOT SIGNAL IS NOT A DEAD ONE (D132): pid 1 is EPERM for a non-root run, and
+# alive either way.
 reset_src
 advance_origin "eperm-holder-case"
 mkdir -p "$gitdir/adb-update.lock"
@@ -247,8 +245,7 @@ head_eperm="$(git -C "$src" rev-parse HEAD)"
 eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "an OLD lock whose holder we may not signal is still obeyed"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_eperm" "…and blocks the pull"
 rm -rf "$gitdir/adb-update.lock"
-# …while a holder the kernel reports gone (ESRCH) is still broken, or a killed updater with an owner
-# record would lock every later session out.
+# …while a holder the kernel reports gone (ESRCH) is still broken.
 reset_src
 advance_origin "dead-holder-case"
 mkdir -p "$gitdir/adb-update.lock"

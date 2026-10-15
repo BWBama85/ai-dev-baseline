@@ -727,8 +727,7 @@ adb_update_lock() {
     holder=""
   fi
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  # A holder is broken only once PROVEN gone: a bare `kill -0` failure is also EPERM, which a holder
-  # running as another user — or outside the sandbox this update runs in — returns while alive.
+  # Broken only once PROVEN gone: a bare `kill -0` failure is also the EPERM a live holder returns.
   [ -n "$holder" ] && ! adb_pid_gone "$holder" && return 1   # update-lock-needs-proof
 
   # THE BREAK HAPPENS IN PLACE; THE DIRECTORY NEVER LEAVES ITS PATH. Renamed away, the path was
@@ -4369,21 +4368,14 @@ adb_age_secs() {
   printf '%s' "$age"
 }
 
-# adb_pid_gone <pid> — can we PROVE that no process <pid> exists on this host? The ONE liveness
-# proof behind every lock that breaks an abandoned holder: the update lock below and the pattern
-# ledger's write lock.
+# adb_pid_gone <pid> — can we PROVE that no process <pid> exists on this host? The one liveness
+# proof for breaking an abandoned lock: the update lock below and the pattern ledger's write lock.
 #
-# 0 only on the kernel's own definite negative: `kill -0` refused with ESRCH, "No such process".
-# Everything else answers 1, "not proven gone": the signal could be delivered, EPERM (a live
-# process that is not ours, or one a sandbox will not let us signal), any other error, and a pid
-# that is not a number. A wrong "gone" lets two writers into the section the lock guards; a wrong
-# "alive" costs a wait that ends in the caller's own loud refusal.
-#
-# THE REASON IS READ, NOT THE STATUS. `kill -0` returns 1 for ESRCH and EPERM alike, so a lock that
-# treated any failure as death broke a live lock held by another user. `ps -p` replaced it in the
-# ledger and failed the other way: it cannot tell "no such process" from "ps could not run", and in
-# Claude Code's macOS sandbox `/bin/ps` cannot run at all (`Operation not permitted`: status 126
-# under bash, 127 under zsh) while `kill -0` still answers ESRCH and EPERM correctly (#505). `LC_ALL=C` pins strerror's wording, so a translated locale cannot hide the ESRCH.
+# Returns 0 only on the kernel's own definite negative, `kill -0` refused with ESRCH ("No such
+# process"), and 1 for everything else: a delivered signal, EPERM (alive but not ours to signal,
+# or outside a sandbox), any other failure, a pid that is not a number. The REASON is read, never
+# the status: `kill -0` returns 1 for ESRCH and EPERM alike, and `ps -p` cannot tell "no such
+# process" from "ps could not run" (D132). `LC_ALL=C` pins strerror's wording.
 # Usage: adb_pid_gone <pid>
 adb_pid_gone() {
   local LC_ALL=C out

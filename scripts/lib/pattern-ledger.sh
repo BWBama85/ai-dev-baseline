@@ -692,9 +692,7 @@ _adb_pl_owner_gone() {
   IFS="$TAB" read -r host pid < "$meta" 2>/dev/null || return 1
   [ -n "$host" ] && [ -n "$pid" ] || return 1
   [ "$host" = "$(uname -n 2>/dev/null)" ] || return 1
-  # The shared proof, which reads the kernel's REASON for a failed probe rather than its status: a
-  # holder running as another user (EPERM) was once reclaimed live, and so was every holder once
-  # `ps` could not run inside Claude Code's sandbox (#505). Its header carries both incidents.
+  # Only the kernel's ESRCH counts as gone; a probe that could not answer reads as alive (D132).
   adb_pid_gone "$pid"
 }
 

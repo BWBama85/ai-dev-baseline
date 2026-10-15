@@ -1056,8 +1056,7 @@ eq "$?" 20 "a writer blocked by a stale-but-LIVE owner gives up at its own lock 
 # …and the contender wrote nothing rather than proceeding beside the live owner.
 eq "$(bash "$PL" classes --ledger "$L7i" 2>/dev/null | awk -F'\t' '$2=="livec"{print $1}')" 1 \
    "…and the blocked writer appended nothing"
-# …AND STILL WHEN `ps` CANNOT RUN (#505): inside Claude Code's macOS sandbox `/bin/ps` is denied
-# outright, and a writer that read that failure as death broke the live owner's lock.
+# …and still when `ps` cannot run, as inside the macOS sandbox (D132).
 mkdir -p "$work/nops"; printf '#!/bin/sh\nprintf "/bin/ps: Operation not permitted\\n" >&2\nexit 126\n' > "$work/nops/ps"
 chmod +x "$work/nops/ps"
 ( PATH="$work/nops:$PATH" ADB_PATTERN_LOCK_WAIT_SECS=3 timeout 25 bash "$PL" record --ledger "$L7i" \
@@ -1080,15 +1079,10 @@ eq "$?" 20 "a writer blocked by an unprovable owner gives up at its own lock bou
 [ -d "$L7j.lock/ORPHAN" ] && ok || bad "a lock with no owner metadata was reclaimed — unprovable must mean alive"
 rm -rf "$L7i.lock" "$L7j.lock"
 
-# LIVENESS IS THE KERNEL'S REASON, NOT A PROBE'S STATUS (PR #429, #505). Two wrong answers have each
-# reclaimed a LIVE lock. A bare `kill -0` fails with EPERM for a live pid that is not ours — the
-# reviewer verified it as `nobody` against a root-owned pid, and pid 1 is the standing witness: alive,
-# and not ours to signal. Then `ps -p`, its replacement, read "ps could not run" as "no such process":
-# Claude Code's macOS sandbox denies `/bin/ps` outright (126 under bash, 127 under zsh, or `ps` itself
-# exiting 1 with `Operation not permitted`), so every live owner looked dead there. So the predicate
-# is asked with `ps` broken each of those ways, and with `kill` refused the way the sandbox refuses a
-# live process of the SAME user outside it — an EPERM no test can stage with a real pid, and the
-# only EPERM a root run sees at all, since root may signal pid 1.
+# LIVENESS IS THE KERNEL'S REASON, NOT A PROBE'S STATUS (D132). pid 1 is alive and, for a non-root
+# run, not ours to signal. `ps` is broken each way the macOS sandbox breaks it (126, 127, and `ps`
+# itself exiting 1), and `kill` is refused with the EPERM a sandbox gives a live same-user process
+# outside it — which no real pid can stage, and the only EPERM a root run sees.
 # lp_gone <pid> [<shell setup>] — exit 0 when `_adb_pl_owner_gone` judged <pid> GONE, 1 when alive.
 lp_gone() {
   (
@@ -1114,7 +1108,9 @@ done
 lp_gone 1 && bad "pid 1 was judged GONE — liveness is being read from a signal permission, not from existence" || ok
 lp_gone "$LPDEAD"; eq "$?" 0 "a plainly dead pid is judged gone — a killed writer would otherwise wedge the ledger forever"
 for _lps in 126 127 1; do
-  lp_gone "$$" "PATH=\"$LPS/$_lps:\$PATH\"" \
+  # shellcheck disable=SC2034  # read by the EVAL'd setup string below
+  LP_DIR="$LPS/$_lps"
+  lp_gone "$$" 'PATH="$LP_DIR:$PATH"' \
     && bad "a live owner was judged GONE because ps could not run (status $_lps) — the sandbox's failure read as death" || ok
 done
 lp_gone "$$" 'kill() { printf "bash: kill: (%s) - Operation not permitted\n" "$2" >&2; return 1; }' \

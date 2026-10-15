@@ -784,63 +784,60 @@ _adb_rd_bounded() {
 # `wc -c` is BOTH the drain and the count, so "was anything discarded" and "how much" are one read
 # and cannot disagree. A stream shorter than the cap drains to 0 and prints no notice at all.
 #
-# THE FILTER ALSO WATCHES FOR A START-UP DENIAL (#505), for a CLI that has a recognisable one (see
-# `_adb_rd_startup_denied`): the stream's first `_ADB_RD_SCAN_BYTES` are read by the shell itself,
-# a byte at a time, written on as each one arrives and kept. A whole stream that ENDED inside that
-# window and whose last line is the CLI's own fatal denial is reported by exiting 3 — the only
-# channel back from a process substitution that needs no file — and `_adb_rd_bounded_capped` turns
-# that into the classified line. Both alternatives were worse: `tee` to the kept copy must reopen
-# `/dev/fd/N`, which on Linux is a fresh open of the caller's `.err` file that truncates it, and
-# reading the window whole before passing it on would hold back the head this cap exists to stream.
-# `read -n 1` takes ONE byte per read(2) from a pipe, so the `dd` after it misses nothing and the
-# discard count stays exact; a NUL arrives as an empty read and is written back as one.
+# IT ALSO WATCHES FOR A START-UP DENIAL (#505, D132), for a CLI `_adb_rd_startup_denied` has a
+# signature for. The stream's first `_ADB_RD_SCAN_BYTES` are read by the shell itself, a byte at a
+# time, and kept; each is written on as it arrives unless it is past <max>, where it counts as
+# discarded. The window does not shrink with the cap, so the diagnosis never depends on it. A stream
+# that ENDED inside the window, on that CLI's own fatal denial line, makes the filter exit 3 — the
+# contract `_adb_rd_bounded_capped` reads. `read -n 1` takes ONE byte per read(2) from a pipe, so
+# the `dd` after it misses nothing and the counts stay exact; a NUL arrives as an empty read.
 # Usage: _adb_rd_cap_stream <max-bytes> [<cli>]
 _adb_rd_cap_stream() {
-  local LC_ALL=C max="$1" cli="${2:-}" rest w=0 n=0 c kept="" eof=0 last
-  if _adb_rd_watches "$cli"; then
-    w="$_ADB_RD_SCAN_BYTES"
-    [ "$max" -gt 0 ] && [ "$max" -lt "$w" ] && w="$max"
-  fi
+  local LC_ALL=C max="$1" cli="${2:-}" rest w=0 n=0 c kept="" eof=0 last over=0
+  _adb_rd_watches "$cli" && w="$_ADB_RD_SCAN_BYTES"
   while [ "$n" -lt "$w" ]; do
     IFS= read -r -d '' -n 1 c || { eof=1; break; }
-    if [ -z "$c" ]; then printf '\0'; kept+=$'\001'; else printf '%s' "$c"; kept+="$c"; fi
     n=$((n + 1))
+    if [ "$max" -gt 0 ] && [ "$n" -gt "$max" ]; then over=$((over + 1))
+    elif [ -z "$c" ]; then printf '\0'
+    else printf '%s' "$c"; fi
+    if [ -z "$c" ]; then kept+=$'\001'; else kept+="$c"; fi
   done
-  if [ "$eof" -eq 1 ]; then
-    kept="${kept%"${kept##*[![:space:]]}"}"
-    last="${kept##*$'\n'}"
-    _adb_rd_startup_denied "$cli" "${last%$'\r'}" && return 3
-    return 0
+  if [ "$eof" -eq 0 ]; then
+    if [ "$max" -eq 0 ]; then
+      cat
+    else
+      [ "$n" -lt "$max" ] && dd bs=1 count="$((max - n))" 2>/dev/null
+      rest="$(wc -c)"
+      rest="${rest//[![:digit:]]/}"
+      over=$((over + ${rest:-0}))
+    fi
   fi
-  if [ "$max" -eq 0 ]; then cat; return 0; fi
-  dd bs=1 count="$((max - n))" 2>/dev/null
-  rest="$(wc -c)"
-  rest="${rest//[![:digit:]]/}"
-  [ "${rest:-0}" -gt 0 ] && printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$rest"
+  [ "$over" -gt 0 ] && printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$over"
+  [ "$eof" -eq 1 ] || return 0
+  kept="${kept%"${kept##*[![:space:]]}"}"
+  last="${kept##*$'\n'}"
+  _adb_rd_startup_denied "$cli" "${last%$'\r'}" && return 3
   return 0
 }
 
-# How much of a dispatch log's head the filter keeps to recognise a start-up denial. Both observed
-# denials are one or two lines — 71 and 194 bytes — so this is room for a few lines of preamble, and
-# no more: a CLI that wrote past it got far enough to have started.
+# How much of a dispatch log's head the filter keeps to recognise a start-up denial: room for a few
+# lines of preamble before the fatal one, and no more — a CLI that wrote past it had started.
 _ADB_RD_SCAN_BYTES=4096
 
 # _adb_rd_startup_denied <cli> <line> — is <line> <cli>'s OWN fatal error for an OS permission
 # denial at start-up? 0 yes · 1 no · 2 this CLI has no known signature (so nothing is scanned).
 #
-# CLI-SPECIFIC AND ANCHORED, because "Operation not permitted" alone proves nothing: agy logs that
-# phrase on a RUN THAT SUCCEEDS (its log file under `~/.gemini` is not writable in the sandbox), and
-# an agent's own exploration can quote it. Each signature is the CLI's top-level error format, and it
-# is matched only as the LAST line of a stream that ended inside the scan window — the CLI said
-# little, and its final word was the denial. Observed under Claude Code's macOS sandbox:
+# Anchored on each CLI's top-level start-up error, because the phrase alone proves nothing: agy logs
+# `operation not permitted` on a run that succeeds. The caller matches it only as the LAST line of a
+# stream that ended inside the scan window. EPERM only; another errno (EROFS from a read-only bind
+# mount) is not recognised. The signatures, as observed (D132):
 #   codex 0.162.1  `Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)`
 #   agy 1.2.7      `Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted`
-# Both EPERM only. A sandbox that denies with another errno — a read-only bind mount reports EROFS —
-# is not recognised, and falls through to the ordinary "real agent/CLI error" line.
 _adb_rd_startup_denied() {
   local LC_ALL=C
   case "$1" in
-    codex) [[ "$2" =~ ^Error:\ .*[Oo]peration\ not\ permitted\ \(os\ error\ 1\)$ ]] ;;
+    codex) [[ "$2" =~ ^Error:\ failed\ to\ initialize\ .*[Oo]peration\ not\ permitted\ \(os\ error\ 1\)$ ]] ;;
     agy)   [[ "$2" =~ ^Failed\ to\ start:\ .*[Oo]peration\ not\ permitted$ ]] ;;
     *)     return 2 ;;
   esac
@@ -881,8 +878,7 @@ _ADB_RD_DENIED_CLI=""   # set by `_adb_rd_bounded_capped` when the filter saw on
 _adb_rd_bounded_capped() {
   local log_stdout="$1"; shift
   local rc capper capfd max="$_ADB_RD_LOG_MAX_BYTES"
-  # With the cap disabled, a CLI the filter has nothing to watch for runs unfiltered; one it can
-  # recognise a start-up denial from still goes through it, which then caps nothing.
+  # With the cap disabled, only a CLI the filter watches for a start-up denial goes through it.
   if [ "$max" -eq 0 ] && ! _adb_rd_watches "$1"; then
     if [ "$log_stdout" = 1 ]; then _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&2
     else                           _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@"; fi
@@ -932,8 +928,7 @@ _adb_rd_bounded_capped() {
       printf 'role-dispatch: WARNING — the agent exited but something it spawned still holds the log pipe open, so the log did not end after %ss; the filter was stopped and this dispatch'"'"'s log may be truncated. A background process the agent left running is the usual cause.\n' \
         "$_ADB_RD_LOG_DRAIN_SECS" >&2
     elif [ "$crc" -eq 3 ]; then
-      # The filter saw this CLI's own start-up denial end its log. Kept only when the CLI ALSO
-      # failed: a run that exited 0 started, whatever its last line said.
+      # The filter saw this CLI's start-up denial end its log; a CLI that exited 0 had started.
       [ "$rc" -ne 0 ] && _ADB_RD_DENIED_CLI="$1"
     elif [ "$crc" -ne 0 ]; then
       printf 'role-dispatch: WARNING — the log-capping filter failed (exit %s); this dispatch'"'"'s agent log is incomplete or missing, and an agent status of 141 means it took SIGPIPE from the dead filter rather than failing on its own.\n' "$crc" >&2
@@ -949,7 +944,7 @@ _adb_rd_bounded_capped() {
 # response, so name which one happened rather than making the reader infer it.
 #
 # <denied-cli>, when given, names a CLI whose log ended on its own start-up denial (#505). It changes
-# only the LAST arm: a bound that fired, or an outer kill, is still reported as what it was.
+# only the LAST arm, so a bound that fired or an outer kill is still reported as itself.
 # Usage: adb_dispatch_classify_rc <rc> [<denied-cli>]
 adb_dispatch_classify_rc() {
   case "$1" in

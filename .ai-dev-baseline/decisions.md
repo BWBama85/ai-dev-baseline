@@ -9976,15 +9976,35 @@ survive is the part a later reader needs.
              only digest change.
              **A start-up denial is the CLI's own fatal line, ending a stream that ended early.** The
              phrase alone proves nothing: agy logs `operation not permitted` on a run that succeeds.
-             So each CLI has an anchored signature, probed live (codex 0.162.1: `Error: … Operation
-             not permitted (os error 1)`; agy 1.2.7: `Failed to start: … operation not permitted`). It
-             counts only as the last line of a log stream that ended inside its first 4 KiB. The exit
-             status is unchanged, and 124, 143 and 137 still win. The log filter reads that window
-             itself with `read -n 1`, so it stays a live, byte-exact passthrough. It reports a match
-             by exiting 3, so no file is staged. A `tee` to a kept copy was rejected: it must reopen
-             `/dev/fd/N`, which on Linux re-opens and truncates the caller's `.err` file. The cap-
-             disabled path now runs the filter too, for a CLI that has a signature. A denial with
-             another errno (EROFS, from a read-only bind mount) is not recognised.
+             So each CLI has an anchored start-up signature, probed live (codex 0.162.1:
+             `Error: failed to initialize … Operation not permitted (os error 1)`; agy 1.2.7: `Failed
+             to start: … operation not permitted`). codex's is pinned to `failed to initialize`
+             because a later EPERM (`failed to write final message`) has the same top-level shape
+             and is not a start-up failure (independent review). It counts only as the last line of
+             a log stream that ended inside its first 4 KiB, and a CLI that exited 0 is never
+             classified. The exit status is unchanged, and 124, 143 and 137 still win. The log
+             filter reads that window itself with `read -n 1`, so it stays a live, byte-exact
+             passthrough. The window is fixed: bytes past a smaller cap are read for recognition
+             and counted as discarded, so the diagnosis never depends on the cap. The filter reports
+             a match by exiting 3, so no file is staged. A `tee` to a kept copy was rejected, because
+             it must reopen `/dev/fd/N`, which on Linux re-opens and truncates the caller's `.err`
+             file. Holding the window back until it filled was rejected too, since it would stall
+             the head the cap exists to stream. The cap-disabled path now runs the filter too, for
+             a CLI that has a signature. A denial with another errno (EROFS, from a read-only bind
+             mount) is not recognised.
+             **The acceptance witness (2026-10-15, macOS 26.6 / Darwin 25.6.0, Claude Code 2.1.300,
+             codex-cli 0.162.1, agy 1.2.7, bash 5.3.20).** Effective sandbox settings were the
+             operator's own: `sandbox.enabled`, credential denials on `~/.aws`/`~/.ssh` and
+             `GITHUB_TOKEN`, no `allowWrite` for `~/.codex` or `~/.gemini`, `allowLocalBinding: true`,
+             and `excludedCommands` that did not match the call. `printf … | bash
+             scripts/lib/role-dispatch.sh invoke gap_analysis`, run in a sandboxed Bash call
+             (`SANDBOX_RUNTIME=1`), exited 1 with codex's two lines and `role-dispatch: gap_analysis
+             (codex) — INCOMPLETE: codex exited 1 before it could start — the OS refused it …`. That
+             session allowed local binding, so agy started there. Its denial was reproduced through
+             `role-dispatch.sh invoke gemini` under `sandbox-exec -p '(version 1)(allow default)(deny
+             network-bind)'`: exit 1, `Failed to start: listen tcp 127.0.0.1:0: bind: operation not
+             permitted`, and the same classified line naming agy. Unsandboxed, the same call printed
+             `OK`.
              **Liveness is ESRCH, read from `kill -0`'s message.** The issue proposed a positive
              control on `ps` instead (`ps -p $$` must succeed first). That was rejected for two
              reasons. Inside the sandbox `ps` cannot run, so a `ps` proof fails closed but never

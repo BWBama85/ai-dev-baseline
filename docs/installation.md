@@ -324,8 +324,8 @@ already given up) is still in your file, which blocks the whole policy as any ke
 #### Cross-model roles and the sandbox
 
 The fragment leaves `codex` and `agy` **inside** the sandbox (#505, D132), and on macOS neither
-can start there. Linux and WSL2 are untested. Observed 2026-10-15 with codex-cli 0.162.1 and agy
-1.2.7:
+can start there. Linux and WSL2 are untested. Observed 2026-10-15 on macOS 26.6 (Darwin 25.6.0)
+with Claude Code 2.1.300, codex-cli 0.162.1 and agy 1.2.7; D132 records the full witness:
 
 - **`codex exec` exits 1** with `Error: failed to initialize in-process app-server client:
   Operation not permitted (os error 1)`. The sandbox denies its writes to `~/.codex`.
