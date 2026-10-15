@@ -9991,9 +9991,11 @@ survive is the part a later reader needs.
              a match by exiting 3, so no file is staged. A `tee` to a kept copy was rejected, because
              it must reopen `/dev/fd/N`, which on Linux re-opens and truncates the caller's `.err`
              file. Holding the window back until it filled was rejected too, since it would stall
-             the head the cap exists to stream. The cap-disabled path now runs the filter too, for
-             a CLI that has a signature. A denial with another errno (EROFS, from a read-only bind
-             mount) is not recognised.
+             the head the cap exists to stream. The scan's `read` retries a status past 128, the
+             timeout an inherited `TMOUT` causes, instead of taking it for EOF and SIGPIPEing the
+             agent; a write the filter cannot make fails it (1), and it still drains. The
+             cap-disabled path now runs the filter too, for a CLI that has a signature. A denial
+             with another errno (EROFS, from a read-only bind mount) is not recognised.
              **The filter is a coproc, not an output process substitution (owner decision on #505,
              2026-10-15).** Taking the acceptance witness under the INSTALLER-WRITTEN policy (the
              independent review's demand) found that every `role-dispatch.sh invoke` died there before
@@ -10017,6 +10019,17 @@ survive is the part a later reader needs.
              refused it …`. `invoke gap_analysis` exited 1 with codex's `Error: failed to initialize
              in-process app-server client: Operation not permitted (os error 1)` and the same line
              naming codex. agy 1.2.7, earlier the same day, ended on the identical fatal line.
+             **Liveness is ESRCH, read from `kill -0`'s message.** The issue proposed a positive
+             control on `ps` instead (`ps -p $$` must succeed first). That was rejected for two
+             reasons. Inside the sandbox `ps` cannot run, so a `ps` proof fails closed but never
+             reclaims a dead writer's lock there. And a self-probe proves only that `ps` runs, not
+             that it can see another user's process (`hidepid`). The kernel's ESRCH answers whether
+             the pid exists in every one of those environments, and EPERM reads as alive. One shared
+             `adb_pid_gone` in `common.sh` serves both locks. It matches the builtin's SUFFIX for the
+             pid it asked about, `(<pid>) - No such process`, never the phrase anywhere: the
+             diagnostic is prefixed with the path of the file that defined the function, and a path
+             can hold the phrase (independent review). `LC_ALL=C` pins strerror's wording; that is
+             not asserted, because neither CI image localizes strerror.
 - placement: `scripts/lib/common.sh` (`adb_pid_gone`, `adb_update_lock`) · `scripts/lib/pattern-ledger.sh`
              (`_adb_pl_owner_gone`) · `scripts/lib/role-dispatch.sh` (`_adb_rd_cap_stream`,
              `_adb_rd_startup_denied`, `adb_dispatch_classify_rc`) · `scripts/check-pattern-ledger.sh`
