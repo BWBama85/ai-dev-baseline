@@ -330,13 +330,16 @@ under `$TMPDIR` (`/tmp` when unset), and the closing `failing gates:` line names
 that directory. A passing gate's log is deleted as soon as the gate passes. So a
 kept directory holds only failing logs, and a run where every gate passes leaves
 nothing behind. **Nothing deletes a kept directory**: remove it once you have
-read it. The path is printed shell-quoted (`printf %q`), so a `$TMPDIR` with a
-space in it can still be pasted straight into a shell.
+read it. Retention is unbounded by design. Every failed run adds a directory,
+however large its failing gates' output was, until you remove it. The path is
+printed shell-quoted (`printf %q`), so a `$TMPDIR` with a space in it can still
+be pasted straight into a shell, and a newline in it cannot forge a line.
 
 If no private directory can be created (`mktemp -d` failed), the logs go to
 predictable names in the shared temp directory. A concurrent run can overwrite
 those, and any local account can claim the name first, so there the logs are
-deleted and the failure says `full log NOT kept`. Exit status is the gates' own
+deleted and the failure says `full log NOT kept`. On that path, output from
+before the last 4000 bytes is not recoverable. Exit status is the gates' own
 on every path: a cleanup that fails prints a `NOTE` and never fails the run.
 
 ### 3b. Shipping the repo's own gate script

@@ -10068,26 +10068,40 @@ survive is the part a later reader needs.
              `TMPDIR=/tmp/claude-501` created under `/var/folders`). The directory is owner-only:
              GNU's documentation says so (context7, coreutils `mktemp` invocation), and on macOS a
              probe read `700` under umask 022, 077 and 000.
-             **What is kept, and the bound.** A passing gate's log is deleted the moment it
-             passes, and the directory is deleted when no gate failed. So a kept directory holds
-             exactly the failing gates' logs, one directory per failed run. Nothing sweeps them.
-             The gap analysis named a sweeper's deletion and concurrency risks (deleting another
-             live run's directory in a shared namespace), and a kept log exists to be read after
-             the run. The bound is stated in the runner and in `docs/per-project-overrides.md`
-             instead.
+             **What is kept, and why retention is unbounded.** A passing gate's log is deleted
+             the moment it passes, and the directory is deleted when no gate failed. So a kept
+             directory holds exactly the failing gates' logs, one directory per failed run, and
+             nothing sweeps them. That is unbounded disk retention, said as such: neither a log's
+             size nor the number of failed runs is capped, and only the operator removes them.
+             A sweeper was declined. The gap analysis named its deletion and concurrency risks
+             (deleting another live run's directory in a shared namespace), and a kept log exists
+             to be read after the run. A size cap was declined too, because the evidence the
+             issue lost can sit anywhere in the log. The runner and
+             `docs/per-project-overrides.md` both state the retention.
              **The fallback is not evidence.** When `mktemp -d` fails, logs land at
              `adb-gate-<label>.log` in the shared temp directory, where a concurrent run can
              overwrite them and any local account can claim the name first. There every log is
              deleted after its gate, passing ones included (before, the fallback left all of them
              behind), and the failure prints `full log NOT kept` rather than advertising the path.
+             **That path is an accepted exception to the test plan's first box**: there, a marker
+             printed before the last 4000 bytes is not recoverable, and the failure line says the
+             log was not kept. Printing the whole log instead would send an unbounded stream into
+             the Stop hook's stderr, which is the model's context (independent review raised it
+             as OPTIONAL).
              **The runner claims a log only when there is one.** The redirect can fail before the
              gate runs, and a gate can delete its own log, so a failure with no file prints
              `no log file at <path>` and keeps no directory for it. **Statuses:** the run's exit
              codes stay 0/1/2. A failed `rm` prints a `NOTE` and does not change them, because a
              leftover directory is not a failing gate, and a cleanup failure that blocked the Stop
              hook would be a new way to wedge a turn. The `2>/dev/null || true` that hid those
-             failures is gone. Paths are printed with `%q`, so a `$TMPDIR` holding a space or a
-             control byte cannot split or forge a stderr line. The test plan's first box, observed
+             failures is gone. **No byte of `$TMPDIR` reaches stderr unescaped.** Every path is
+             printed through `adb_display_value` (`%q`), and the native stderr of each command that
+             touches one (the log redirect, `tail`, `rm`) is discarded while its status is still
+             tested. The independent review found the first version printed `rm`'s own
+             diagnostic, so a newline in `$TMPDIR` could forge a line. `check-gates.sh` now forces
+             all three failures under a newline-bearing `TMPDIR` and requires every line that
+             names the directory to be the runner's own. Each suppression, removed alone, turns
+             that assertion red. The test plan's first box, observed
              red against the pre-fix runner, sits beside a positive control: a passing run must
              leave nothing, and a mid-run gate must see the directory, or the absence proves
              nothing. The three suites that drive red gates (`check-gates.sh`,

@@ -702,7 +702,13 @@ adb_run_gates() {
   # It outlives the run iff a gate failed. A passing gate's log is deleted as soon as it passes,
   # so a kept directory holds exactly the failing gates' full logs, and each failure prints its
   # log's path. Nothing here deletes a kept directory — that is the operator's, once read — so
-  # the bound is one directory per FAILED run, holding failing logs only.
+  # retention is UNBOUNDED by design: every failed run adds one directory, of whatever size its
+  # failing gates printed, until someone removes it.
+  #
+  # Every path printed below goes through adb_display_value, and the native stderr of each
+  # command that touches one (the log redirect, tail, rm) is discarded while its status is still
+  # tested — so no byte of $TMPDIR reaches stderr unescaped, and a newline in it cannot forge a
+  # line. The gate's OWN output goes to its log, untouched.
   #
   # When mktemp cannot create it, logs fall back to predictable names in the shared temp dir,
   # where a concurrent run can overwrite them and any local account can pre-plant the name.
@@ -740,15 +746,15 @@ adb_run_gates() {
     # backward mid-run (NTP, a DST jump). It counts SECONDS since an arbitrary epoch, which
     # is all a difference needs.
     t0=$BASH_MONOSECONDS
-    if ( cd "$root" && sh -c "$cmd" ) >"$logf" 2>&1; then
+    if { ( cd "$root" && sh -c "$cmd" ) >"$logf" 2>&1; } 2>/dev/null; then
       printf 'adb: gate "%s": ok (%ss)\n' "$label" "$(( BASH_MONOSECONDS - t0 ))" >&2
-      rm -f "$logf" || printf 'adb: NOTE — could not delete the log of passing gate "%s": %s\n' "$label" "$(adb_display_value "$logf")" >&2
+      rm -f "$logf" 2>/dev/null || printf 'adb: NOTE — could not delete the log of passing gate "%s": %s\n' "$label" "$(adb_display_value "$logf")" >&2
     else
       elapsed=$(( BASH_MONOSECONDS - t0 ))
       # A failure is reported as having a kept log only when a log file is actually there: the
       # redirect can fail before the gate runs, and a gate can delete its own log.
       if [ -f "$logf" ]; then
-        tail -c 4000 "$logf" >&2 || printf 'adb: gate "%s": could not print its log tail\n' "$label" >&2
+        tail -c 4000 "$logf" >&2 2>/dev/null || printf 'adb: gate "%s": could not print its log tail\n' "$label" >&2
       fi
       printf '\nadb: gate "%s" failed after %ss (%s)\n' "$label" "$elapsed" "$cmd" >&2
       if [ ! -f "$logf" ]; then
@@ -757,7 +763,7 @@ adb_run_gates() {
         kept=1
         printf 'adb: gate "%s": full log kept at %s\n' "$label" "$(adb_display_value "$logf")" >&2
       else
-        rm -f "$logf" || printf 'adb: NOTE — could not delete %s\n' "$(adb_display_value "$logf")" >&2
+        rm -f "$logf" 2>/dev/null || printf 'adb: NOTE — could not delete %s\n' "$(adb_display_value "$logf")" >&2
         printf 'adb: gate "%s": full log NOT kept — no private log directory could be created (mktemp -d failed)\n' "$label" >&2
       fi
       failed="$failed$label "
@@ -768,7 +774,7 @@ EOF
   # A cleanup that fails is reported, never folded into the verdict: the run's status is the
   # gates' own, and a leftover directory is not a failing gate.
   if [ "$created" -eq 1 ] && [ "$kept" -eq 0 ]; then
-    rm -rf "$tmp" || printf 'adb: NOTE — could not delete the gate log directory %s\n' "$(adb_display_value "$tmp")" >&2
+    rm -rf "$tmp" 2>/dev/null || printf 'adb: NOTE — could not delete the gate log directory %s\n' "$(adb_display_value "$tmp")" >&2
   fi
 
   if [ -n "$failed" ]; then
