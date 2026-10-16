@@ -311,6 +311,70 @@ mid-run and silently reported as anything. Cadence is the supported answer to
 "this gate is too expensive for every turn"; elapsed reporting is the supported
 answer to "which gate is slow".
 
+#### A failing gate's full log is kept
+
+A failing gate prints the last 4000 bytes of its output, then the path of all of
+it:
+
+```
+adb: gate "test" failed after 84s (bash scripts/selfcheck.sh)
+adb: gate "test": full log kept at $TMPDIR/adb-gates.Xa81Qz/adb-gate-test.log
+```
+
+(The real line carries the absolute path that `$TMPDIR` stands for here.)
+
+The tail is there for immediate context; the file is the evidence. When a
+failing step prints early in a long run, its output survives only in the file.
+Each run writes its logs into its own owner-only directory, `adb-gates.XXXXXX`
+under `$TMPDIR` (`/tmp` when unset), and the closing `failing gates:` line names
+that directory. A passing gate's log is deleted as soon as the gate passes. So a
+kept directory holds only failing logs, and a run where every gate passes leaves
+nothing behind. The exception is a deletion that fails: it leaves the file and
+prints a `NOTE` naming it. A failing gate whose log is not found reports
+`no log found at …`. A log already reported as kept that is not found when the
+run ends is reported as `its log is no longer found at …`, and the closing line
+names the directory only while a kept log is still found in it. These lines say
+what was found, never why: a gate that changes the log directory (removes,
+locks or replaces it) is out of scope, and under one, which logs survive is not
+promised.
+
+**Nothing deletes a kept directory**: remove it once you have read it. Retention
+is unbounded by design. Every run that ends with a failing gate's log still in
+place keeps its own directory, however large that output was, until you remove
+it. The path is printed shell-quoted (`printf %q`), so a `$TMPDIR` with a space
+in it can still be pasted straight into a shell, and a newline in it cannot
+forge a line.
+
+`$TMPDIR` is used as given. If it points inside the checkout at a path that is
+not gitignored, kept logs land there as untracked files: the Stop hook counts
+them in the change set it scopes gates by, and `baseline adopt status` digests
+them into its receipt. Point `$TMPDIR` outside the checkout.
+
+A gate with no log is **not run**, and counts as failed. If no private
+directory can be created (`mktemp -d` failed, for example because `$TMPDIR`
+does not exist or is not writable), no gate runs, and each one says so:
+
+```
+adb: gate "test" failed: no private log directory could be created under …, so it was NOT run (bash scripts/selfcheck.sh)
+```
+
+There is no fallback to the shared temp directory: there, a concurrent run
+could overwrite a log and any local account could claim its name first. If the
+directory exists but a log cannot be opened in it, for example because an
+earlier gate removed the directory, that gate is not run either:
+
+```
+adb: gate "test" failed: its log could not be created at …, so it was NOT run (bash scripts/selfcheck.sh)
+```
+
+Enforcement fails closed rather than going quietly off. One limit: a full
+filesystem can allow a log to be created and then refuse the gate's output.
+The gate still runs, but its log is cut short, and the runner does not detect
+that.
+
+Exit status is the gates' own on every path. A cleanup that fails prints a
+`NOTE` and never fails the run.
+
 ### 3b. Shipping the repo's own gate script
 
 Every Stop-hook gate checks, before doing anything else, whether the repo
