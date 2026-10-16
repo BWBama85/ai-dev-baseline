@@ -3578,10 +3578,11 @@ cmd_dispatch_review() {
 #     unwritable, the PR read or the base fetch failed · 21 a sweep file already at this head cannot
 #     stand in for this round (it does not parse, or was written for other findings) and is kept ·
 #     22 the dispatch failed · 23 the findings input is refused, before any read or dispatch
-#   18, 19 and 22 are the REPLY's and the dispatch's, so a caller may retry them; 21 and 23 are files
-#   the caller owns, and a retry would refuse them again (#526). A refused reply, and a failed
-#   dispatch's non-empty reply, is KEPT and its path printed — beside the reply line and the rule it
-#   broke — on the stage name inside the `sweep-pr*-*.tsv.*` family /cleanup sweeps by PR.
+#   18, 19 and 22 are the REPLY's and the dispatch's, so a caller may retry them; 21 and 23 are
+#   files the caller owns, and a retry would refuse them again. A refused reply is KEPT and its path
+#   printed with the rule it broke (and the reply line, where one line broke it), on its stage name
+#   inside the `sweep-pr*-*.tsv.*` family /cleanup sweeps by PR. A failed dispatch keeps any partial
+#   reply that reached it; codex delivers its answer only on success, so its evidence is the `.err`.
 #
 # sweep-report <sweep-file> — validate the file whole, then print the round's one summary line.
 #   Exit 0 · 18 · 19 · 20, printing nothing unless the file validates.
@@ -3619,8 +3620,7 @@ _il_sweep_reusable() {
   case "$rc" in
     0)  ;;
     20) printf 'implement-lib: dispatch-sweep: the existing sweep %s could not be read\n' "$f" >&2; return 20 ;;
-    # 21, NOT 18: 18 is the reply's code and a caller retries it, while this file is not the reply
-    # and a retry finds it again (#526). Both kinds of existing file are reconciled the same way.
+    # 21, not 18: 18 is the reply's, and a caller retries it; this file would be found again.
     *)  printf 'implement-lib: dispatch-sweep: the existing sweep %s does not parse (rc %s) — it cannot be reused, and it is not overwritten\n' "$f" "$rc" >&2; return 21 ;;
   esac
   # field 4 of `<pr> TAB <head> TAB <classes> TAB <digest>`
@@ -3661,8 +3661,7 @@ cmd_dispatch_sweep() {
   [ -d "$dir" ] && [ ! -L "$dir" ] \
     || { printf 'implement-lib: dispatch-sweep: %s is not a directory\n' "$(adb_display_value "$dir")" >&2; return 20; }
 
-  # 23, NOT the grammar's own 18/19: those are the reply's codes, and a caller retries a reply. The
-  # findings file is the caller's, so a retry would refuse it again (#526).
+  # 23, not the grammar's 18/19: those are the reply's, and a caller retries a reply.
   classes="$(adb_sweep_findings_check "$findings")"; rc=$?
   case "$rc" in
     0)  : ;;
@@ -3775,7 +3774,8 @@ cmd_dispatch_sweep() {
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 141 ]; then
       exec {sfd}>&-; rm -f "$stage"
       printf 'sweep %s failed rc=%s (read the classified line at the tail of %s)\n' "$token" "$rc" "$errf"
-      # Whatever the agent wrote before it failed is evidence too; an empty reply is not.
+      # A partial reply that reached this file is kept; an empty one is not. Codex delivers its
+      # answer only on success, so a failed codex run leaves this empty and its stream in $errf.
       if [ -s "$reply" ]; then
         printf 'implement-lib: dispatch-sweep: the failed dispatch'"'"'s partial reply is kept for inspection at %s\n' "$reply" >&2
       else
@@ -3786,11 +3786,9 @@ cmd_dispatch_sweep() {
     local rsz
     rsz="$(LC_ALL=C wc -c < "$reply" 2>/dev/null | tr -d ' ')" || rsz=""
     case "$rsz" in ''|*[!0-9]*) exec {sfd}>&-; rm -f "$stage" "$reply"; echo "implement-lib: dispatch-sweep: could not size the reply" >&2; return 20 ;; esac
-    # A REFUSED REPLY IS KEPT AND NAMED (#526), with the line and the rule it broke. A refusal that
-    # deleted it left an exit code and nothing to read: the round that reported this could not say
-    # which field was refused, or why. It stays on its stage name, inside the `sweep-pr*-*.tsv.*`
-    # family /cleanup sweeps by PR, so it is never mistaken for a sweep. Line numbers count the
-    # file's PHYSICAL lines — the blank and fence lines skipped below included — so they point into it.
+    # A REFUSED REPLY IS KEPT AND NAMED with the rule it broke (D134), on its stage name inside the
+    # family /cleanup sweeps by PR, so it is never published. Line numbers count the file's PHYSICAL
+    # lines — the blank and fence lines skipped below included — so they point into it.
     _sweep_refuse() {   # <rc> <what was refused>
       exec {sfd}>&-; rm -f "$stage"
       printf 'implement-lib: dispatch-sweep: %s — refused whole, nothing published\n' "$2" >&2
@@ -3838,8 +3836,7 @@ cmd_dispatch_sweep() {
         none)  [ "$s" = "-" ] || { _sweep_refuse 18 "reply line $ln is a none row that names a site"; return $?; } ;;
         *)     _sweep_refuse 18 "reply line $ln has a result that is neither found nor none"; return $? ;;
       esac
-      # THE SWEEP'S TEXT RULE, NOT THE LEDGER'S (#526): evidence is written into this TSV and
-      # nowhere else, so a finding about HTML may quote `<!--` here.
+      # The sweep's text rule, not the ledger's: evidence is written into this TSV only (D134).
       why="$(adb_sweep_text_rule "$ev")" \
         || { _sweep_refuse 19 "reply line $ln: the evidence is refused ($why)"; return $?; }
       got[$c]=1
@@ -3852,16 +3849,24 @@ cmd_dispatch_sweep() {
   exec {sfd}>&-
 
   # THE REPLY IS KEPT UNTIL THE ASSEMBLED FILE VALIDATES: a duplicate row is legal line by line and
-  # refused only here, and that refusal needs the reply as much as any other.
+  # refused only here, and that refusal needs the reply as much as any other. Every row has passed
+  # the line checks by now, so what is left to break is the file's size — each row gains a prefix,
+  # so a reply under the bound can assemble past it — or one of its cross-row invariants.
   adb_sweep_file_check "$stage" "$name" >/dev/null; rc=$?
   if [ "$rc" -ne 0 ]; then
+    local ssz broke="a class and site answered twice, or a class answered both none and with a site"
+    ssz="$(LC_ALL=C wc -c < "$stage" 2>/dev/null | tr -d ' ')" || ssz=""
+    case "$ssz" in
+      ''|*[!0-9]*) broke="its size could not be read" ;;
+      *) [ "$ssz" -le 1048576 ] || broke="it is $ssz bytes, past the 1048576-byte bound its reader enforces" ;;
+    esac
     rm -f "$stage"
     if [ "$rc" -eq 20 ]; then
       [ -z "$reply" ] || rm -f "$reply"
       echo "implement-lib: dispatch-sweep: the assembled sweep file could not be read back — nothing published" >&2
       return 20
     fi
-    printf 'implement-lib: dispatch-sweep: the assembled sweep file does not validate (rc %s) — a class and site answered twice, or a class answered both none and with a site; nothing published\n' "$rc" >&2
+    printf 'implement-lib: dispatch-sweep: the assembled sweep file does not validate (rc %s): %s — nothing published\n' "$rc" "$broke" >&2
     [ -z "$reply" ] || printf 'implement-lib: dispatch-sweep: the refused reply is kept for inspection at %s\n' "$reply" >&2
     return 18
   fi
@@ -3938,7 +3943,7 @@ cmd_sweep_mark() {
   esac
   adb_ledger_ok_class "$class" && adb_ledger_ok_span "$site" \
     || { echo "implement-lib: sweep-mark: the class or site was refused" >&2; return 19; }
-  # The mark is written into the row's EVIDENCE field, so it takes the sweep's text rule (#526).
+  # The mark is written into the row's EVIDENCE field, so it takes the sweep's text rule.
   local why
   why="$(adb_sweep_text_rule "$ev")" \
     || { printf 'implement-lib: sweep-mark: the reason is refused (%s)\n' "$why" >&2; return 19; }

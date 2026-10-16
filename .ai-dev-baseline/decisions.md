@@ -10194,12 +10194,12 @@ survive is the part a later reader needs.
              Markdown built around comment regions. #475 took every sweep field rule from the
              ledger "because classes and sites land in it". That is true of classes and sites. It
              is not true of text: `record --sweep` reads a row's result and nothing else, and
-             `sweep-report` prints counts. On BWBama85/support-cases PR #88 a round's findings were
-             about a redactor's HTML handling, and the sweep returned `19` on the dispatch and on a
-             retry. Step 4a treated `19` as terminal, and the round stopped with its findings
-             unresolved. The reply was deleted on refusal, so that incident's cause cannot be
-             proven. Empty, over-long or control-bearing evidence also returns `19`. A fixture
-             against the unchanged code proved the mechanism: evidence quoting `<!-- x -->` was
+             `sweep-report` prints counts. On BWBama85/support-cases PR #88 a round whose findings
+             were about a redactor's HTML handling saw the sweep return `19` on the dispatch and on
+             a retry. Step 4a treated `19` as terminal, and the round stopped with its findings
+             unresolved. The reply was deleted on refusal, so that run's cause is not proven: empty,
+             over-long or control-bearing evidence also returns `19`. What is proven is the
+             mechanism. A fixture against the unchanged code had evidence quoting `<!-- x -->`
              refused `19`, with no line or rule named and no reply left.
 - decision:  **The sweep's text fields take the TSV's rule.** `adb_sweep_text_rule` in `common.sh` is
              one line of 1..1024 bytes with no tab, newline or control character, matched under a
@@ -10214,16 +10214,24 @@ survive is the part a later reader needs.
              Refusing one row and keeping the rest would drop a `found` sibling, and `record
              --sweep` would then certify a class whose sibling was never fixed. Whole-file refusal
              stays.
-             **A refused reply is kept and named.** Every reply refusal names the reply's physical
-             line and the rule broken, and prints the path where the reply is kept. That covers a
-             grammar line, an unknown class, a site, an echoed original site, a result, evidence, a
-             missing class, and a duplicate found only when the assembled file is validated. The
-             reply stays on its exclusively created stage name, `sweep-pr<N>-<head>.tsv.reply.<pid>`,
-             inside the family /cleanup already sweeps by PR, so it is never published and clears
-             with the run. It is deleted only once the assembled file validates. A failed dispatch
-             keeps a non-empty partial reply. The issue said other refusals in that function
-             already kept the reply for size. They did not: the size refusal also deleted it, and
-             the precedent is the native review reply's.
+             **A refused reply is kept and named.** Every reply refusal names the rule it broke and
+             prints the path where the reply is kept. Where one reply line broke it, the message
+             names the line's physical number in that file: a grammar line, an unknown class, a
+             site, an echoed original site, a result or evidence. A missing class names the class.
+             The assembled-file check, which only cross-row invariants and the size bound can still
+             fail, names which one. Each row gains a `sibling` prefix, so a reply under the 1 MiB
+             bound can assemble past it. The reply stays on its exclusively created stage name,
+             `sweep-pr<N>-<head>.tsv.reply.<pid>`, inside the family /cleanup already sweeps by PR,
+             so it is never published and clears with the run. It is deleted only once the assembled
+             file validates. A failed dispatch keeps a partial reply that reached the sweep, which
+             is what `claude` and `agy` stream on stdout. Codex delivers its answer through
+             `--output-last-message`, which `role-dispatch.sh` deletes on a failed run, so a failed
+             codex dispatch reaches the sweep empty. Its evidence is the `.err` stream, which
+             already holds its whole log. Changing `role-dispatch.sh` to surface a failed run's last
+             message was declined (a step-8 review finding): every dispatch shares that failure
+             contract, and the issue asked for refusal evidence. The issue said other refusals in
+             that function already kept the reply for size. They did not: the size refusal also
+             deleted it, and the precedent is the native review reply's.
              **Codes, so a retry list can be exact.** `18` and `19` had two sources each: the reply,
              which a re-dispatch can change, and files the caller owns, which a retry refuses again.
              A refused findings input is now `23`. An existing sweep at this head that does not
@@ -10232,20 +10240,23 @@ survive is the part a later reader needs.
              retries those three once and stops on `23`, telling the agent to fix the findings file.
              The prompt now states the evidence bound the reader enforces.
              **Proven by.** `check-implement-lib.sh` §46 publishes a summary and evidence quoting
-             both markers and stores the evidence verbatim, and `sweep-mark` accepts such a reason.
-             Each reply refusal is checked for its line and rule wording and for a kept reply that
-             holds the reply. That covers a control byte, more than 1024 bytes, a duplicate
-             (assembled-file) row, a missing class and an unknown result. A failed dispatch with an
-             empty reply leaves nothing, and one with a partial reply (a stub `claude`) keeps it.
-             The three findings-input refusals are `23`. `check-pattern-ledger.sh` §11 covers the
-             file grammar: markers validate; a control byte, 1025 bytes and 513 two-byte characters
-             under a UTF-8 locale are refused, while 1024 bytes and 512 two-byte characters pass.
-             The rule's printed names are checked, as is `record --sweep` over marker-quoting
-             evidence, with none of it reaching the ledger. Seven new mutation rows require each
-             half red on its own witness: markers refused, control allowed, bound removed,
-             characters counted, the ledger rule restored on evidence or summary, and `19` dropped
-             from the retry. `check-common-lib.sh` runs the rule over every byte 1..255 against the
-             `tr -d '[:cntrl:]'` oracle, under a UTF-8 caller and a readonly `LC_ALL`.
+             both markers, stores the evidence verbatim, and has `sweep-mark` accept such a reason.
+             For a control byte, more than 1024 bytes, an unknown result, a duplicate row, a reply
+             that assembles past the bound and a missing class, it asserts the code and the
+             message's rule, line or class. For each but the missing class it asserts that the kept
+             file holds the refused reply; for the missing class, only that a path is named. A failed
+             dispatch with an empty reply, and a codex stub that writes a partial answer and then
+             fails, leave no reply; the latter keeps its `.err`. A `claude` stub that writes a
+             partial reply and fails keeps it. The three findings-input refusals are `23`.
+             `check-pattern-ledger.sh` §11 covers the file grammar: markers validate; a control byte,
+             1025 bytes and 513 two-byte characters under a UTF-8 locale are refused, while 1024
+             bytes and 512 two-byte characters pass. It checks the rule's printed names, and that
+             `record --sweep` reads marker-quoting evidence without any of it reaching the ledger.
+             Seven new mutation rows require each half red on its own witness: markers refused,
+             control allowed, bound removed, characters counted, the ledger rule restored on
+             evidence or on the summary, and `19` dropped from the retry. `check-common-lib.sh` runs
+             the rule over every byte 1..255 under a UTF-8 caller against the `tr -d '[:cntrl:]'`
+             oracle, and refuses a 513-character multibyte value under a readonly `LC_ALL`.
 - placement: `scripts/lib/common.sh` (`adb_sweep_text_rule`, `adb_sweep_ok_text`, the sweep grammar
              header) · `scripts/lib/implement-lib.sh` (`dispatch-sweep`, `sweep-mark`) ·
              `base/workflows/resolve-pr-threads.md` step 4a · `scripts/check-implement-lib.sh` ·

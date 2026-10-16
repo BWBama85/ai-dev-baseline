@@ -7045,12 +7045,10 @@ adb_wf_jobs() { _adb_wf_read jobs "${1:-}"; }
 #   class   [a-z][a-z0-9-]{0,47}
 #   site    no tab, newline, backtick or control character; `-` is reserved for "no site"
 #   thread  [A-Za-z0-9_=-]{1,256}
-# …and the TEXT fields (a finding's summary, a row's evidence) are the sweep's OWN (#526):
-#   text    one line of 1..1024 bytes, no tab, newline or control character — `adb_sweep_text_rule`
-# The ledger's text rule also refuses `<!--` and `-->`, because `patterns.md` is Markdown built around
-# comment regions. Sweep text never lands there — `record --sweep` reads a row's result and nothing
-# else, and `sweep-report` prints counts — so borrowing that rule refused, deterministically on every
-# retry, the round whose findings were ABOUT HTML comments and whose evidence quoted them.
+# …and the TEXT fields (a finding's summary, a row's evidence) are the sweep's own, because no text
+# field lands in the ledger (`record --sweep` reads a row's result; `sweep-report` prints counts):
+#   text    one line of 1..1024 bytes, no tab, newline or control character — `adb_sweep_text_rule`;
+#           markup, `<!--` included, is stored as written (D134)
 #
 # FINDINGS INPUT — one thread finding per line, final newline required, thread ids unique:
 #   <class> TAB <site> TAB <thread> TAB <summary>
@@ -7134,11 +7132,11 @@ ADB_SWEEP_TEXT_MAX_BYTES=1024
 # nothing and return 0 for one line of 1..ADB_SWEEP_TEXT_MAX_BYTES bytes with no tab, newline or
 # control character; otherwise print the rule it breaks, for a diagnostic, and return 1.
 #
-# THE RULES ARE THE TSV'S, because a TSV is what the text is written into: a tab or newline would
-# forge a field or a row, and a control byte is a terminal escape in whatever prints the file. Markup
-# is not refused: a renderer escapes it at display (`adb_md_escape`), which is the split the storage
-# rules and the display already keep everywhere else. Matched under a function-scoped C locale, as
-# the ledger predicates are, so `[[:cntrl:]]` is the ASCII set and the length counts bytes.
+# THE RULES ARE THE TSV'S, because a TSV is what the text is written into: a tab or newline
+# would forge a field or a row, and a control byte is a terminal escape in whatever prints the
+# file. Markup is not refused; a renderer escapes it at display (`adb_md_escape`). Matched under a
+# function-scoped C locale, as the ledger predicates are, so `[[:cntrl:]]` is the ASCII set and
+# the length counts bytes.
 adb_sweep_text_rule() {
   local v="${1:-}" LC_ALL=C || { printf 'unmeasurable (the C locale cannot be scoped)'; return 1; }
   [ -n "$v" ] || { printf 'empty'; return 1; }

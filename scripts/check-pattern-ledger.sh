@@ -1656,9 +1656,8 @@ F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}maybe${T}x")"
 eq "$(swcheck "$F")" 18 "11 an unknown result is refused"
 F="$(mksweep 7 1 "sibling${T}Alpha${T}a.sh:3${T}found${T}x")"
 eq "$(swcheck "$F")" 19 "11 a class outside the ledger charset is refused as a field"
-# THE SWEEP'S TEXT RULE IS THE TSV'S, NOT THE LEDGER'S (#526). A round whose findings concern HTML
-# quotes comment markers as evidence, and the ledger's marker rule refused that reply whole on every
-# retry — while the sweep file is a TSV nothing renders. What a TSV needs refused is still refused.
+# The sweep's text rule is the TSV's, not the ledger's (D134): markup is stored as written, and what
+# a TSV cannot hold is still refused.
 swcheck_u8() { ( export LC_ALL="$U8"; . "$ROOT/scripts/lib/common.sh"; adb_sweep_file_check "$@" >/dev/null 2>&1 ); echo "$?"; }
 swrule() { ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_text_rule "$1"; printf ' rc=%s' "$?" ) 2>/dev/null; }
 F="$(mksweep 7 2 "sibling${T}alpha-class${T}a.sh:3${T}found${T}keeps <!-- x --> in the output" "sibling${T}beta-class${T}-${T}none${T}nothing else closes a --> marker")"
