@@ -10070,8 +10070,9 @@ survive is the part a later reader needs.
              probe read `700` under umask 022, 077 and 000.
              **What is kept, and why retention is unbounded.** A passing gate's log is deleted
              the moment it passes, and the directory is deleted when no gate failed. So a kept
-             directory holds exactly the failing gates' logs, one directory per failed run, and
-             nothing sweeps them. That is unbounded disk retention, said as such: neither a log's
+             directory holds only the failing gates' logs, one directory per failed run, and
+             nothing sweeps them. A deletion that fails leaves its file behind and prints a `NOTE`
+             naming it, and the exit status stays the gates' own. That is unbounded disk retention, said as such: neither a log's
              size nor the number of failed runs is capped, and only the operator removes them.
              A sweeper was declined. The gap analysis named its deletion and concurrency risks
              (deleting another live run's directory in a shared namespace), and a kept log exists
@@ -10088,20 +10089,35 @@ survive is the part a later reader needs.
              log was not kept. Printing the whole log instead would send an unbounded stream into
              the Stop hook's stderr, which is the model's context (independent review raised it
              as OPTIONAL).
-             **The runner claims a log only when there is one.** The redirect can fail before the
-             gate runs, and a gate can delete its own log, so a failure with no file prints
-             `no log file at <path>` and keeps no directory for it. **Statuses:** the run's exit
+             **The runner claims a log only when there is one, and never runs a gate it cannot
+             log.** Each log is created before its gate runs. A gate whose log cannot be created
+             is not run, and counts as failed with `its log could not be created at <path>, so it
+             was NOT run`. A gate that deletes its own log is reported as having done so, and no
+             directory is kept for it. Creating the log first is what tells those two apart: a
+             redirect failure and a self-deleting gate used to share one ambiguous message. **On
+             macOS a broken `$TMPDIR` now fails closed.** A `$TMPDIR` that does not exist, or is
+             not writable, makes every gate fail as not run, naming the path. Before, a bare
+             `mktemp -d` stepped around it into the per-user temp directory. That is the price of
+             honouring `$TMPDIR` at all, and a fixture pins it. **Statuses:** the run's exit
              codes stay 0/1/2. A failed `rm` prints a `NOTE` and does not change them, because a
              leftover directory is not a failing gate, and a cleanup failure that blocked the Stop
              hook would be a new way to wedge a turn. The `2>/dev/null || true` that hid those
-             failures is gone. **No byte of `$TMPDIR` reaches stderr unescaped.** Every path is
-             printed through `adb_display_value` (`%q`), and the native stderr of each command that
-             touches one (the log redirect, `tail`, `rm`) is discarded while its status is still
-             tested. The independent review found the first version printed `rm`'s own
+             failures is gone. **No diagnostic of the runner's carries `$TMPDIR` unescaped.** Every
+             path is printed through `adb_display_value` (`%q`), and the native stderr of each
+             command that touches one (the log's creation, `tail`, `rm`) is discarded while its
+             status is still tested. The log tail is the gate's own output, printed as written. The
+             redirect that runs the gate is deliberately unguarded: it reopens the file just
+             created, with no gate run in between, and a second guard there could never be seen
+             failing. The independent review found the first version printed `rm`'s own
              diagnostic, so a newline in `$TMPDIR` could forge a line. `check-gates.sh` now forces
-             all three failures under a newline-bearing `TMPDIR` and requires every line that
-             names the directory to be the runner's own. Each suppression, removed alone, turns
-             that assertion red. The test plan's first box, observed
+             all four failures under a newline-bearing `TMPDIR`: a read-only log directory for the
+             two `rm`s and the log's creation, and an unreadable log for `tail`. It requires every line
+             that names the directory to be the runner's own. Each of the four suppressions,
+             removed alone, turns its assertion red. (A second review pass found the first version
+             of this claim overstated: `tail` was never driven to fail.)
+             **The base is made absolute before `mktemp` sees it.** A relative `$TMPDIR` spelled
+             `-tmp` was parsed as an option, which sent the run down the fallback that keeps
+             nothing (the second review pass reproduced the lost marker). A fixture pins it. The test plan's first box, observed
              red against the pre-fix runner, sits beside a positive control: a passing run must
              leave nothing, and a mid-run gate must see the directory, or the absence proves
              nothing. The three suites that drive red gates (`check-gates.sh`,

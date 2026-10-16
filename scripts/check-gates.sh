@@ -615,7 +615,7 @@ printf 'rm -f "$TMPDIR"/adb-gates.*/adb-gate-selfdel.log\nexit 1\n' > "$d/selfde
 printf '[gates]\nselfdel = "sh ./selfdel.sh"\n' > "$d/agents.toml"
 err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
 eq "$rc" 1 "kept log (no file): the gate still fails the run"
-has "$err" 'gate "selfdel": no log file at' "kept log (no file): the failure says there is no log"
+has "$err" 'gate "selfdel": no log kept — the gate removed its own log at' "kept log (no file): the failure says the gate removed its log"
 hasnt "$err" "full log kept at" "kept log (no file): no missing log is advertised as kept"
 eq "$(kept_dirs "$kt")" "" "kept log (no file): a directory with nothing in it is not kept"
 
@@ -643,16 +643,51 @@ if cmp -s "$kd/adb-gate-noisy.log" "$work/keep-fail.expected"; then ok; else
 if [ "$(id -u)" -ne 0 ]; then
   d="$work/keep-nl"; kt="$work/nl"$'\n'"tmp"; mkdir -p "$d" "$kt"
   printf 'chmod 500 "$TMPDIR"/adb-gates.*\n' > "$d/lock.sh"
-  printf '[gates]\na_lock = "sh ./lock.sh"\nb_next = "exit 0"\n' > "$d/agents.toml"
+  printf '[gates]\na_lock = "sh ./lock.sh"\nb_next = "touch ran-next"\n' > "$d/agents.toml"
   err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
   for x in "$kt"/adb-gates.*; do [ -d "$x" ] && chmod 700 "$x"; done
   eq "$rc" 1 "escaped (newline TMPDIR): a gate whose log cannot be created fails the run"
   has "$err" 'adb: NOTE — could not delete the log of passing gate "a_lock"' "escaped (newline TMPDIR): the failed rm is reported"
-  has "$err" 'adb: gate "b_next": no log file at' "escaped (newline TMPDIR): the failed redirect is reported"
+  has "$err" 'adb: gate "b_next" failed: its log could not be created at' "escaped (newline TMPDIR): the failed log creation is reported"
+  if [ -e "$d/ran-next" ]; then bad "escaped (newline TMPDIR): a gate whose log could not be created must NOT run"; else ok; fi
   has "$err" 'adb: NOTE — could not delete the gate log directory' "escaped (newline TMPDIR): the failed cleanup is reported"
   stray="$(printf '%s\n' "$err" | grep 'adb-gates\.' | grep -v '^adb: ')"
   eq "$stray" "" "escaped (newline TMPDIR): every line naming the log directory is the runner's own"
+
+  # …and the fourth such command, `tail`: a gate that makes its own log unreadable.
+  d="$work/keep-unread"; mkdir -p "$d"
+  printf 'echo early\nchmod 000 "$TMPDIR"/adb-gates.*/adb-gate-u_unread.log\nexit 1\n' > "$d/unread.sh"
+  printf '[gates]\nu_unread = "sh ./unread.sh"\n' > "$d/agents.toml"
+  err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+  for x in "$kt"/adb-gates.*/adb-gate-u_unread.log; do [ -f "$x" ] && chmod 600 "$x"; done
+  eq "$rc" 1 "escaped (unreadable log): the failing gate fails the run"
+  has "$err" 'adb: gate "u_unread": could not print its log tail' "escaped (unreadable log): the failed tail is reported"
+  stray="$(printf '%s\n' "$err" | grep 'adb-gates\.' | grep -v '^adb: ')"
+  eq "$stray" "" "escaped (unreadable log): every line naming the log directory is the runner's own"
 fi
+
+# A $TMPDIR THAT DOES NOT EXIST fails closed: no gate can have a log, so none runs, and every one
+# counts as failed and says why — enforcement never goes quietly off with a broken temp dir.
+d="$work/keep-badtmp"; mkdir -p "$d"
+printf '[gates]\nfirst = "touch ran-first"\nsecond = "touch ran-second"\n' > "$d/agents.toml"
+err="$(export TMPDIR="$work/does-not-exist"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "broken TMPDIR: the run fails"
+has "$err" 'adb: gate "first" failed: its log could not be created at' "broken TMPDIR: the first gate says it was not run"
+has "$err" 'adb: gate "second" failed: its log could not be created at' "broken TMPDIR: so does the second"
+has "$err" 'failing gates: first second' "broken TMPDIR: both count as failed"
+if [ -e "$d/ran-first" ] || [ -e "$d/ran-second" ]; then bad "broken TMPDIR: a gate with no log must not run"; else ok; fi
+
+# A RELATIVE $TMPDIR is made absolute before mktemp sees it. One spelled `-tmp` would otherwise be
+# parsed as an option, sending the run down the fallback that keeps nothing; and the printed path
+# must not depend on the reader's working directory.
+rt="$work/reltmp"; mkdir -p "$rt/-tmp"
+d="$work/keep-fail"
+err="$(cd "$rt" && export TMPDIR=-tmp && adb_run_gates "$d" 2>&1 >/dev/null)"
+kd="$(kept_dirs "$rt/-tmp")"
+eq "$(printf '%s\n' "$kd" | grep -c .)" 1 "relative TMPDIR (-tmp): the run keeps its directory under it, not the fallback"
+hasnt "$err" "NOT kept" "relative TMPDIR (-tmp): the fallback was not taken"
+eq "$(reported_log "$err" noisy)" "$(printf '%q' "$kd/adb-gate-noisy.log")" "relative TMPDIR (-tmp): the reported path is absolute"
+if cmp -s "$kd/adb-gate-noisy.log" "$work/keep-fail.expected"; then ok; else bad "relative TMPDIR (-tmp): the kept file is whole"; fi
 
 # --- empty repo: detect nothing / exit 0 (the unknown-repo contract) ---------
 d="$work/empty"; mkdir -p "$d"
