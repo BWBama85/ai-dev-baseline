@@ -330,15 +330,20 @@ under `$TMPDIR` (`/tmp` when unset), and the closing `failing gates:` line names
 that directory. A passing gate's log is deleted as soon as the gate passes. So a
 kept directory holds only failing logs, and a run where every gate passes leaves
 nothing behind. The exception is a deletion that fails: it leaves the file and
-prints a `NOTE` naming it. If a later gate removes a log already reported as
-kept, the run says so (`its log is no longer kept`), and the closing line names
-the directory only while a kept log is still in it.
+prints a `NOTE` naming it. A failing gate whose log is not found reports
+`no log found at …`. A log already reported as kept that is not found when the
+run ends is reported as `its log is no longer found at …`, and the closing line
+names the directory only while a kept log is still found in it. These lines say
+what was found, never why: a gate that changes the log directory (removes,
+locks or replaces it) is out of scope, and under one, which logs survive is not
+promised.
 
 **Nothing deletes a kept directory**: remove it once you have read it. Retention
-is unbounded by design. Every failed run adds a directory, however large its
-failing gates' output was, until you remove it. The path is printed
-shell-quoted (`printf %q`), so a `$TMPDIR` with a space in it can still be
-pasted straight into a shell, and a newline in it cannot forge a line.
+is unbounded by design. Every run that ends with a failing gate's log still in
+place keeps its own directory, however large that output was, until you remove
+it. The path is printed shell-quoted (`printf %q`), so a `$TMPDIR` with a space
+in it can still be pasted straight into a shell, and a newline in it cannot
+forge a line.
 
 `$TMPDIR` is used as given. If it points inside the checkout at a path that is
 not gitignored, kept logs land there as untracked files: the Stop hook counts

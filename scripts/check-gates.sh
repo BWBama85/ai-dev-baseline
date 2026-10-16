@@ -626,16 +626,33 @@ eq "$rc" 0 "kept log (pass): a passing run succeeds"
 has "$(cat "$d/seen" 2>/dev/null)" "adb-gates." "kept log (pass): positive control — the run's log directory was created under TMPDIR"
 eq "$(kept_dirs "$kt")" "" "kept log (pass): a passing run leaves no log directory behind"
 
-# A gate that deletes its own log: the runner must not claim a log it does not have, and keeps
-# no directory for it.
+# A gate that deletes its own log: the runner must not claim a log it does not find, and keeps
+# no directory for it. A gate that changes the log directory is out of scope (D133), so what is
+# pinned here is that every such line reports what was found, never a cause.
 d="$work/keep-selfdelete"; kt="$work/keep-selfdelete-tmp"; mkdir -p "$d" "$kt"
 printf 'rm -f "$TMPDIR"/adb-gates.*/adb-gate-selfdel.log\nexit 1\n' > "$d/selfdel.sh"
 printf '[gates]\nselfdel = "sh ./selfdel.sh"\n' > "$d/agents.toml"
 err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
 eq "$rc" 1 "kept log (no file): the gate still fails the run"
-has "$err" 'gate "selfdel": no log kept — the gate removed its own log at' "kept log (no file): the failure says the gate removed its log"
+has "$err" 'gate "selfdel": no log found at' "kept log (no file): the failure says no log was found"
 hasnt "$err" "full log kept at" "kept log (no file): no missing log is advertised as kept"
 eq "$(kept_dirs "$kt")" "" "kept log (no file): a directory with nothing in it is not kept"
+# …and a gate that makes the directory unsearchable: its log still EXISTS, so a line naming a
+# cause ("removed") would be false. The line says only that none was found, and the cleanup, which
+# cannot enter the directory either, reports that rather than losing the file. Skipped as root.
+if [ "$(id -u)" -ne 0 ]; then
+  d="$work/keep-locked"; kt="$work/keep-locked-tmp"; mkdir -p "$d" "$kt"
+  printf 'echo evidence\nchmod 000 "$TMPDIR"/adb-gates.*\nexit 1\n' > "$d/lock.sh"
+  printf '[gates]\nlocked = "sh ./lock.sh"\n' > "$d/agents.toml"
+  err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+  for x in "$kt"/adb-gates.*; do [ -d "$x" ] && chmod 700 "$x"; done
+  eq "$rc" 1 "locked log dir: the failing gate fails the run"
+  has "$err" 'gate "locked": no log found at' "locked log dir: the line says only that no log was found"
+  hasnt "$err" "removed" "locked log dir: no line claims the log was removed"
+  has "$err" 'adb: NOTE — could not delete the gate log directory' "locked log dir: the failed cleanup is reported"
+  kd="$(kept_dirs "$kt")"
+  has "$(cat "$kd/adb-gate-locked.log" 2>/dev/null)" "evidence" "locked log dir: the log survives the misjudgment"
+fi
 
 # A temp dir whose path holds a space: the path is reported shell-quoted, and names the real file.
 d="$work/keep-fail"; kt="$work/keep space tmp"; mkdir -p "$kt"
@@ -735,7 +752,7 @@ printf 'rm -rf "$TMPDIR"/adb-gates.*\n' > "$d/wipe.sh"
 printf '[gates]\na_fail = "echo evidence; exit 1"\nb_wipe = "sh ./wipe.sh"\n' > "$d/agents.toml"
 err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
 eq "$rc" 1 "lost kept log: the failing gate still fails the run"
-has "$err" 'adb: gate "a_fail": its log is no longer kept — a later gate removed' "lost kept log: the loss is reported"
+has "$err" 'adb: gate "a_fail": its log is no longer found at' "lost kept log: the loss is reported"
 hasnt "$err" "full logs kept in" "lost kept log: the closing line claims no directory"
 eq "$(kept_dirs "$kt")" "" "lost kept log: nothing is left behind"
 # …and when only SOME are lost, the closing line still names the directory the rest are in.
@@ -745,8 +762,8 @@ printf '[gates]\na_fail = "echo a; exit 1"\nb_fail = "echo b; exit 1"\nc_rm = "s
 err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
 kd="$(kept_dirs "$kt")"
 eq "$rc" 1 "partly lost kept logs: the run fails"
-has "$err" 'adb: gate "a_fail": its log is no longer kept — a later gate removed' "partly lost kept logs: the lost one is reported"
-hasnt "$err" 'adb: gate "b_fail": its log is no longer kept' "partly lost kept logs: the surviving one is not"
+has "$err" 'adb: gate "a_fail": its log is no longer found at' "partly lost kept logs: the lost one is reported"
+hasnt "$err" 'adb: gate "b_fail": its log is no longer found' "partly lost kept logs: the surviving one is not"
 has "$err" "full logs kept in" "partly lost kept logs: the closing line still names the directory"
 if [ -f "$kd/adb-gate-b_fail.log" ] && [ ! -e "$kd/adb-gate-a_fail.log" ]; then ok; else
   bad "partly lost kept logs: the directory holds exactly the surviving log"; fi

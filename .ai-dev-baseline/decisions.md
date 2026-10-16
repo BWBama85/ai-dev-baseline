@@ -10068,25 +10068,26 @@ survive is the part a later reader needs.
              a path that is not gitignored, puts kept logs there as untracked files:
              `adopt-readiness.sh` digests them into its receipt, and the Stop hook adds them to the
              change set it scopes gates by (both read `ls-files --others --exclude-standard`).
-             Refusing such a `$TMPDIR` was declined (local review pass 3, owner decision 2026-10-16):
-             it needs a containment check of its own, with symlink and relative-path cases, and
-             this library cannot know which paths in the checkout the agent gitignores. The docs say
-             to point `$TMPDIR` outside the checkout. The template is explicit because a bare
-             `mktemp -d` on macOS behaves as `-t tmp`, which prefers `_CS_DARWIN_USER_TEMP_DIR` to
-             `$TMPDIR` (a probe on Darwin 25.6.0 with `TMPDIR=/tmp/claude-501` created under
+             Refusing such a `$TMPDIR` was declined (local review pass 3, owner decision
+             2026-10-16): it needs a containment check of its own, with symlink and relative-path
+             cases, and this library cannot know which paths in the checkout the agent gitignores.
+             The docs say to point `$TMPDIR` outside the checkout. The template is explicit
+             because a bare `mktemp -d` on macOS behaves as `-t tmp`, which prefers
+             `_CS_DARWIN_USER_TEMP_DIR` to `$TMPDIR` (a probe on Darwin 25.6.0 with `TMPDIR=/tmp/claude-501` created under
              `/var/folders`). The directory is owner-only: GNU's documentation says so (context7,
              coreutils `mktemp` invocation), and on macOS a probe read `700` under umask 022, 077
              and 000.
              **What is kept, and why retention is unbounded.** A passing gate's log is deleted the
              moment it passes, and the directory is deleted when no gate failed. So a kept
-             directory holds only the failing gates' logs, one directory per failed run, and
-             nothing sweeps them. Before the closing line, each kept log is checked again, because a
-             later gate can remove it or the whole directory. A lost log is named (`its log is no
-             longer kept`), and the closing line names the directory only while a kept log is still
-             in it (local review pass 4 found it named a directory a later gate had removed). A
-             deletion that fails leaves its file, prints a `NOTE` naming it, and leaves the exit
-             status the gates' own. That is unbounded disk retention, said as
-             such: neither a log's size nor the number of failed runs is capped, and only the
+             directory holds only the failing gates' logs, one directory per run that ends with a
+             failing gate's log still found, and nothing sweeps them. Before the closing line, each
+             kept log is checked again, because a later gate can change the directory. One no longer
+             found is named (`its log is no longer found at`), and the closing line names the
+             directory only while a kept log is still found in it (local review pass 4 found it
+             named a directory a later gate had removed). A deletion that fails leaves its file,
+             prints a `NOTE` naming it, and leaves the exit status the gates' own. That is
+             unbounded disk retention, said as such: neither a log's size nor the number of failed
+             runs is capped, and only the
              operator removes them. A sweeper was declined: the gap analysis named its deletion
              and concurrency risks (deleting another live run's directory in a shared namespace),
              and a kept log exists to be read after the run. A size cap was declined too, because
@@ -10099,8 +10100,9 @@ survive is the part a later reader needs.
              **One open per log, and a gate it cannot log is never run.** The log is opened once,
              as fd 9 of a brace group, and the gate writes through that descriptor. A gate whose
              log cannot be opened is not run, and counts as failed with `its log could not be
-             created at <path>, so it was NOT run`. A gate that deletes its own log is reported as
-             having done so, and no directory is kept for it. The first version ran the gate with
+             created at <path>, so it was NOT run`. A failing gate whose log is not found is
+             reported as `no log found at <path>`, and no directory is kept for it. The first
+             version ran the gate with
              a bare `>` and reported both cases as one ambiguous `no log file`. Its successor
              pre-created the log and then reopened it, and local review pass 2 found that broke a
              caller's `set -C`: the reopen was refused, the gate never ran, and an empty file was
@@ -10133,6 +10135,17 @@ survive is the part a later reader needs.
              so the cleanup's `rm -rf` cannot reach the shared one. The cost: a host where
              `mktemp -d` fails but a plain file write would succeed now fails its gates instead of
              running them unlogged.
+             **Out of scope: a gate that changes the run's log directory** (owner decision
+             2026-10-16). Local review passes 3 to 5 each found a further way for a gate to do it:
+             delete its own log, delete the directory, make it unsearchable. Each fix exposed the
+             next permutation, and replacing the directory with a link was the obvious one after
+             that, so the class is bounded rather than chased. The runner reports what `-f` found,
+             never why: `no log found at`, `its log is no longer found at`. A log it cannot find may
+             be gone or merely unsearchable, so a line naming a cause (`removed`) was false for a
+             gate that ran `chmod 000` on the directory (pass 5). Nothing is lost on that
+             misjudgment: a directory the runner cannot search, its cleanup's `rm -rf` cannot empty
+             either, so the cleanup fails and prints the path in a `NOTE`. Under such a gate, which
+             logs survive, and whether the closing line names the directory, is not promised.
              **Statuses.** The run's exit codes stay 0/1/2. A failed `rm` prints a `NOTE` and does
              not change them, because a leftover directory is not a failing gate, and a cleanup
              failure that blocked the Stop hook would be a new way to wedge a turn. The
@@ -10160,7 +10173,10 @@ survive is the part a later reader needs.
              group's `2>/dev/null` after the open and dropping its `|| :` under a caller's `set -e`.
              Restoring the fallback, or dropping the no-directory check, turns its fixtures red. So
              does dropping the closing re-check, under two fixtures: a later gate removes the whole
-             directory, or one of two kept logs. The
+             directory, or one of two kept logs. A gate that runs `chmod 000` on the directory pins
+             the observational wording: its log still exists, the line says only that none was
+             found, no line says `removed`, and the failed cleanup is reported. Restoring either
+             causal message turns its fixtures red. The
              three suites that drive red gates (`check-gates.sh`, `check-adopt-readiness.sh`,
              `check-precommit-gate.sh`) export a `TMPDIR` inside their own scratch directory, or
              each selfcheck run would leak kept directories. Running all eleven suites that reach

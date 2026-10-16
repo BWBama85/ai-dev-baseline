@@ -704,8 +704,13 @@ adb_run_gates() {
   # so a kept directory holds only the failing gates' full logs, and each failure prints its log's
   # path. A deletion that fails leaves its file and prints a NOTE naming it; it never changes the
   # exit status. Nothing here deletes a kept directory — that is the operator's, once read — so
-  # retention is UNBOUNDED by design: every failed run adds one directory, of whatever size its
-  # failing gates printed, until someone removes it.
+  # retention is UNBOUNDED by design: every run that ends with a failing gate's log still found
+  # keeps one directory, of whatever size its failing gates printed, until someone removes it.
+  #
+  # A GATE THAT CHANGES THIS DIRECTORY (removes, locks or replaces it) IS OUT OF SCOPE (D133). The
+  # lines below say what `-f` found, never why — a log it cannot find may be gone or merely
+  # unsearchable — so they stay true under such a gate. Nothing is lost on that misjudgment: a
+  # directory this cannot search, the cleanup's rm -rf cannot empty either, and that is reported.
   #
   # Every path printed below goes through adb_display_value, and the native stderr of each
   # command that touches one (the log's open, tail, rm) is discarded while its status is still
@@ -785,14 +790,13 @@ adb_run_gates() {
       printf 'adb: gate "%s": ok (%ss)\n' "$label" "$elapsed" >&2
       rm -f "$logf" 2>/dev/null || printf 'adb: NOTE — could not delete the log of passing gate "%s": %s\n' "$label" "$(adb_display_value "$logf")" >&2
     else
-      # A failure is reported as having a kept log only when a log file is still there: a gate can
-      # delete its own log.
+      # A failure is reported as having a kept log only when its log file is found.
       if [ -f "$logf" ]; then
         tail -c 4000 "$logf" >&2 2>/dev/null || printf 'adb: gate "%s": could not print its log tail\n' "$label" >&2
       fi
       printf '\nadb: gate "%s" failed after %ss (%s)\n' "$label" "$elapsed" "$cmd" >&2
       if [ ! -f "$logf" ]; then
-        printf 'adb: gate "%s": no log kept — the gate removed its own log at %s\n' "$label" "$(adb_display_value "$logf")" >&2
+        printf 'adb: gate "%s": no log found at %s\n' "$label" "$(adb_display_value "$logf")" >&2
       else
         keptl+=("$label")
         printf 'adb: gate "%s": full log kept at %s\n' "$label" "$(adb_display_value "$logf")" >&2
@@ -803,12 +807,12 @@ adb_run_gates() {
 $records
 EOF
   # What the summary claims is re-checked here, not trusted from when each failure was reported: a
-  # later gate can remove a kept log, or the whole directory. `kept` counts the logs still there.
+  # later gate can change the directory. `kept` counts the logs still found.
   for l in "${keptl[@]}"; do
     if [ -f "$tmp/adb-gate-$l.log" ]; then
       kept=$((kept + 1))
     else
-      printf 'adb: gate "%s": its log is no longer kept — a later gate removed %s\n' "$l" "$(adb_display_value "$tmp/adb-gate-$l.log")" >&2
+      printf 'adb: gate "%s": its log is no longer found at %s\n' "$l" "$(adb_display_value "$tmp/adb-gate-$l.log")" >&2
     fi
   done
   # A cleanup that fails is reported, never folded into the verdict: the run's status is the
