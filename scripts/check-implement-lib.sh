@@ -3246,6 +3246,10 @@ T=$'\t'
 printf 'alpha-class\tf.sh:2\tPRRT_a1\tan unquoted "} expansion\nbeta-class\tf.sh:1\tPRRT_b2\ta missing guard\n' > "$SWR/.claude/state/findings.tsv"
 SWF="$SWR/.claude/state/sweep-pr7-$SWH.tsv"
 sweep() { ( cd "$SWR" && env PATH="$swbin:$PATH" SW_HEAD="${SW_HEAD:-$SWH}" bash "$IL" dispatch-sweep "$@" ) >/dev/null 2>&1; echo "$?"; }
+# …and the same, keeping stderr in $work/sw-err.txt, for a refusal whose MESSAGE is under test.
+sweep_err() { ( cd "$SWR" && env PATH="$swbin:$PATH" SW_HEAD="${SW_HEAD:-$SWH}" bash "$IL" dispatch-sweep "$@" ) >/dev/null 2>"$work/sw-err.txt"; echo "$?"; }
+# sw_kept <phrase> — the path a refusal says it kept the reply at, relative to the fixture repo.
+sw_kept() { sed -n "s/.*$1 is kept for inspection at //p" "$work/sw-err.txt" 2>/dev/null | head -n 1; }
 
 rm -f "$SWF"
 eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}same shape"$'\n'"beta-class${T}-${T}none${T}no other site" \
@@ -3255,6 +3259,7 @@ eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_file_check "$SWF" >/dev/null
 eq "$(tail -n +2 "$SWF" 2>/dev/null | awk -F'\t' '$4 == "found"' | wc -l | tr -d ' ')" 1 "46 …carrying the sibling as found"
 has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" '"untrusted":true' "46 the reviewer findings reach the agent inside the untrusted envelope"
 has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" 'an unquoted \"} expansion' "46 …JSON-encoded, so no delimiter in them survives raw"
+has "$(cat "$work/sw-prompt.txt" 2>/dev/null)" 'ONE line of at most 1024 bytes' "46 …and the prompt states the evidence bound the reader enforces"
 hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and no reply or prompt stage outlives the dispatch"
 eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) 2>/dev/null )" \
    "sweep: 2 classes · 1 siblings found · 0 fixed · 0 deferred · 0 declined · 1 open" "46 sweep-report counts a valid sweep file"
@@ -3290,10 +3295,11 @@ chmod +x "$swbin/codex-nul"; cp "$swbin/codex" "$work/codex-saved"; cp "$swbin/c
 eq "$(sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a reply carrying a NUL is refused whole (18)"
 cp "$work/codex-saved" "$swbin/codex"
 if [ -e "$SWF" ]; then bad "46 …and published nothing"; else ok; fi
+# 23, not the grammar's 18/19: those are the reply's, and the resolver retries a reply (#526).
 printf 'alpha-class\t\tPRRT_a1\tsummary\n' > "$SWR/.claude/state/empty-field.tsv"
-eq "$(sweep --pr 7 --findings .claude/state/empty-field.tsv .claude/state codex)" 19 "46 a findings line with an empty site is refused before any read"
+eq "$(sweep --pr 7 --findings .claude/state/empty-field.tsv .claude/state codex)" 23 "46 a findings line with an empty site is refused before any read (23)"
 printf 'alpha-class\tf.sh\tPRRT_a1\tsummary\t\n' > "$SWR/.claude/state/extra-field.tsv"
-eq "$(sweep --pr 7 --findings .claude/state/extra-field.tsv .claude/state codex)" 18 "46 …and one with a trailing empty field"
+eq "$(sweep --pr 7 --findings .claude/state/extra-field.tsv .claude/state codex)" 23 "46 …and one with a trailing empty field"
 
 rm -f "$SWF"
 eq "$(SW_HEAD=ffffffffffffffffffffffffffffffffffffffff SW_REPLY="beta-class${T}-${T}none${T}x" \
@@ -3310,7 +3316,7 @@ eq "$(SW_REPLY="alpha-class${T}lib/\`x\`.sh${T}found${T}x"$'\n'"beta-class${T}-$
 eq "$(SW_FAIL=1 sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 22 "46 a failed dispatch is 22"
 if [ -e "$SWF" ]; then bad "46 …and no refused or failed sweep published a file"; else ok; fi
 printf 'alpha-class\tf.sh:2\tPRRT_a1\n' > "$SWR/.claude/state/bad-findings.tsv"
-eq "$(sweep --pr 7 --findings .claude/state/bad-findings.tsv .claude/state codex)" 18 "46 a findings input outside the grammar is refused before any read"
+eq "$(sweep --pr 7 --findings .claude/state/bad-findings.tsv .claude/state codex)" 23 "46 a findings input outside the grammar is refused before any read (23)"
 eq "$(SW_FAIL=1 sweep --skipped --pr 7 --findings .claude/state/findings.tsv .claude/state)" 0 "46 --skipped publishes without dispatching"
 eq "$(tail -n +2 "$SWF" 2>/dev/null | awk -F'\t' '$4 == "skipped"' | wc -l | tr -d ' ')" 2 "46 …one skipped row per class"
 
@@ -3319,7 +3325,7 @@ SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}same shape"$'\n'"beta-class${T}-
   sweep --pr 7 --findings .claude/state/findings.tsv .claude/state codex >/dev/null
 mark() { ( cd "$SWR" && bash "$IL" sweep-mark "$SWF" "$@" ) >/dev/null 2>&1; echo "$?"; }
 eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix 0000000)" 19 "46 sweep-mark refuses a fix commit that is not on the branch"
-eq "$(mark --class alpha-class --site lib/x.sh:9 --result declined --reason 'hides <!-- this')" 19 "46 …and a reason that could open a Markdown comment"
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result declined --reason "hides$(printf '\001')this")" 19 "46 …and a reason carrying a control byte"
 eq "$(mark --class alpha-class --site lib/x.sh:9 --result deferred)" 2 "46 …and a deferral with no issue"
 eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix "${SWH:0:7}")" 0 "46 sweep-mark moves one found sibling to fixed"
 eq "$(tail -n +2 "$SWF" | awk -F'\t' '$3 == "lib/x.sh:9" { print $4 }')" fixed "46 …and the file records it"
@@ -3327,6 +3333,70 @@ eq "$(mark --class alpha-class --site lib/x.sh:9 --result fixed --fix "${SWH:0:7
 cp "$SWF" "$work/sw-before"; printf 'junk\n' >> "$SWF"
 eq "$(mark --class beta-class --site - --result declined --reason x)" 18 "46 a sweep file that does not parse is refused by sweep-mark"
 if tail -n 1 "$SWF" | grep -qx junk; then ok; else bad "46 …and left exactly as it was"; fi
+
+# #526: SWEEP TEXT IS THE TSV'S, NOT THE LEDGER'S. A round whose findings are about HTML quotes comment
+# markers — in the summary it writes, in the evidence the agent returns, in the reason it declines
+# with — and the ledger's marker rule refused that reply whole on every retry. The sweep file is a
+# TSV that nothing renders, so markup is stored as written; what a TSV cannot hold is still refused.
+rm -f "$SWF" "$SWR"/.claude/state/sweep-pr7-*.reply.*
+printf 'alpha-class\tf.sh:2\tPRRT_a1\tthe redactor passes <!-- x --> through\nbeta-class\tf.sh:1\tPRRT_b2\ta missing guard\n' \
+  > "$SWR/.claude/state/findings-html.tsv"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}strips <p> but keeps <!-- secret -->"$'\n'"beta-class${T}-${T}none${T}nothing else closes a --> marker" \
+      sweep_err --pr 7 --findings .claude/state/findings-html.tsv .claude/state codex)" 0 \
+   "46 a summary and evidence quoting <!-- and --> are published, not refused (#526)"
+eq "$(tail -n +2 "$SWF" 2>/dev/null | awk -F'\t' '$3 == "lib/x.sh:9" { print $5 }')" 'strips <p> but keeps <!-- secret -->' \
+   "46 …with the evidence stored exactly as the agent wrote it"
+eq "$(mark --class alpha-class --site lib/x.sh:9 --result declined --reason 'it already strips <!-- -->')" 0 \
+   "46 sweep-mark accepts a reason quoting comment markers"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_file_check "$SWF" >/dev/null ); echo "$?" )" 0 "46 …and the marked file still validates"
+eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) 2>/dev/null )" \
+   "sweep: 2 classes · 1 siblings found · 0 fixed · 0 deferred · 1 declined · 0 open" "46 …and sweep-report counts it"
+
+# A REFUSAL NAMES THE REPLY LINE AND THE RULE, AND KEEPS THE REPLY — on every refusal path, the
+# assembled-file check included, because a deleted reply leaves an exit code and nothing to read.
+rm -f "$SWF"
+eq "$(SW_REPLY='```'$'\n'"alpha-class${T}lib/x.sh:9${T}found${T}bad$(printf '\001')byte"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 evidence carrying a control byte is still refused (19)"
+has "$(cat "$work/sw-err.txt")" 'reply line 2: the evidence is refused (carries a control character)' \
+    "46 …naming the reply's physical line and the rule it broke"
+kept="$(sw_kept 'the refused reply')"
+if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'lib/x.sh:9' "$SWR/$kept"; then ok; else
+  bad "46 …and keeping the refused reply at the path it prints [${kept:-none}]"; fi
+if [ -e "$SWF" ]; then bad "46 …while publishing nothing"; else ok; fi
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}$(printf 'x%.0s' $(seq 1 1025))"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 evidence over 1024 bytes is refused (19)"
+has "$(cat "$work/sw-err.txt")" 'reply line 1: the evidence is refused (longer than 1024 bytes)' "46 …and the message says so"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}a"$'\n'"alpha-class${T}lib/x.sh:9${T}found${T}b"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a class and site answered twice is refused (18)"
+has "$(cat "$work/sw-err.txt")" 'a class and site answered twice' "46 …naming what the assembled file broke"
+kept="$(sw_kept 'the refused reply')"
+if [ -n "$kept" ] && [ -f "$SWR/$kept" ]; then ok; else
+  bad "46 …and keeping the reply, which a refusal of the assembled file needs as much as any other [${kept:-none}]"; fi
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}x" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 \
+   "46 a class left unanswered is refused (18)"
+has "$(cat "$work/sw-err.txt")" 'the reply has no row for class beta-class' "46 …naming the class"
+has "$(cat "$work/sw-err.txt")" 'kept for inspection at' "46 …and keeping the reply"
+eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}maybe${T}x"$'\n'"beta-class${T}-${T}none${T}x" \
+      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 an unknown result is refused (18)"
+has "$(cat "$work/sw-err.txt")" 'reply line 1 has a result that is neither found nor none' "46 …naming the line"
+if [ -e "$SWF" ]; then bad "46 …and no refusal above published a file"; else ok; fi
+
+# A FAILED DISPATCH keeps whatever partial reply the agent wrote, and leaves nothing for an empty one.
+rm -f "$SWR"/.claude/state/sweep-pr7-*.reply.*
+eq "$(SW_FAIL=1 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 22 "46 a failed dispatch with an empty reply is 22"
+hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and an EMPTY reply is not kept: it is no evidence"
+cat > "$swbin/claude" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+printf 'alpha-class\tlib/x.sh:9\tfound\tpartial answer\n'
+exit 3
+SH
+chmod +x "$swbin/claude"
+eq "$(sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state claude)" 22 "46 a dispatch that fails after writing is 22"
+kept="$(sw_kept "the failed dispatch's partial reply")"
+if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'partial answer' "$SWR/$kept"; then ok; else
+  bad "46 …and its partial reply is kept at the path it prints [${kept:-none}]"; fi
+rm -f "$swbin/claude"
 
 # _stage_count <dir> [suffix-glob] — how many `review-prompt-stage.<suffix>` entries exist.
 # A GLOB, never `ls | grep`: an unmatched glob stays literal and `[ -e ]` filters it, while a

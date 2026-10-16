@@ -916,13 +916,15 @@ bytes_all=""
 for (( _i = 1; _i < 256; _i++ )); do printf -v _o '%03o' "$_i"; printf -v _b "\\$_o"; bytes_all+="$_b"; done
 bytes_kept=" $(printf '%s' "$bytes_all" | LC_ALL=C tr -d '[:cntrl:]' | od -An -tu1 | tr -s ' \n' '  ') "
 bytes_check() {
-  local LC_ALL="$bytes_u8" mb="é" sweep_tree i o b want text span text_bad="" span_bad=""
+  local LC_ALL="$bytes_u8" mb="é" sweep_tree i o b want text span stext text_bad="" span_bad="" stext_bad=""
   eq "${#mb}" 1 "bytes: the caller's locale reads é as ONE character (the fixture is live)"
   eq "${ adb_byte_len "$mb"; }" 2 "adb_byte_len: é is two bytes under a UTF-8 caller"
   eq "${#mb}|$LC_ALL" "1|$bytes_u8" "adb_byte_len: …and the caller's locale is restored on return"
   eq "${ adb_byte_len ""; }" 0 "adb_byte_len: the empty string is zero bytes"
   yes "$( adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 512); }"; echo $? )" "ledger text: 512 two-byte characters (1024 bytes) fit"
   no  "$( adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 513); }"; echo $? )" "ledger text: 513 two-byte characters (1026 bytes) do not"
+  yes "$( adb_sweep_ok_text "${ printf 'é%.0s' $(seq 1 512); }"; echo $? )" "sweep text: 512 two-byte characters (1024 bytes) fit"
+  no  "$( adb_sweep_ok_text "${ printf 'é%.0s' $(seq 1 513); }"; echo $? )" "sweep text: 513 two-byte characters (1026 bytes) do not"
   sweep_tree="${ printf 'a%.0s' $(seq 1 64); }"
   yes "$( adb_rule_sweep_row 2026-10-07T00:00:00Z "$sweep_tree" a-class "${ printf 'é%.0s' $(seq 1 256); }" fired >/dev/null; echo $? )" \
       "sweep row: a 256-character, 512-byte site fits"
@@ -935,12 +937,15 @@ bytes_check() {
     case "$bytes_kept" in *" $i "*) want=0 ;; *) want=1 ;; esac
     adb_ledger_ok_text "a${b}z"; text=$?
     adb_ledger_ok_span "a${b}z"; span=$?
+    adb_sweep_ok_text "a${b}z"; stext=$?
     [ "$text" -eq "$want" ] || text_bad+=" $i"
+    [ "$stext" -eq "$want" ] || stext_bad+=" $i"
     # A backtick is the span's field separator, refused whatever the control set says.
     if [ "$i" -eq 96 ]; then [ "$span" -eq 1 ] || span_bad+=" $i"; else [ "$span" -eq "$want" ] || span_bad+=" $i"; fi
   done
   eq "${text_bad:-none}" none "ledger text: refuses exactly the bytes LC_ALL=C tr -d '[:cntrl:]' deletes"
-  eq "${#mb}|$LC_ALL" "1|$bytes_u8" "ledger text/span: the caller's locale survives 510 calls in this shell"
+  eq "${stext_bad:-none}" none "sweep text: refuses exactly those bytes too — the TSV's rule, not markup's (#526)"
+  eq "${#mb}|$LC_ALL" "1|$bytes_u8" "ledger text/span and sweep text: the caller's locale survives 765 calls in this shell"
   eq "${span_bad:-none}" none "ledger span: refuses exactly those bytes, plus the backtick"
   yes "$( adb_ledger_ok_text "n${ printf '\302\205'; }l"; echo $? )" "ledger text: U+0085 is two printable bytes, as tr always kept it"
   yes "$( adb_ledger_ok_span "n${ printf '\302\205'; }l"; echo $? )" "ledger span: …and so is it here"
@@ -955,6 +960,8 @@ else
   no "$?" "adb_byte_len: a caller's readonly LC_ALL fails it, never a character count"
   ( readonly LC_ALL="$bytes_u8"; adb_ledger_ok_text "${ printf 'é%.0s' $(seq 1 513); }" ) >/dev/null 2>&1
   no "$?" "ledger text: …and 513 two-byte characters are refused there, not counted as 513"
+  ( readonly LC_ALL="$bytes_u8"; adb_sweep_ok_text "${ printf 'é%.0s' $(seq 1 513); }" ) >/dev/null 2>&1
+  no "$?" "sweep text: …and so are they by the sweep's own rule"
   ( readonly LC_ALL="$bytes_u8"
     adb_rule_sweep_row 2026-10-07T00:00:00Z "${ printf 'a%.0s' $(seq 1 64); }" a-class "${ printf 'é%.0s' $(seq 1 257); }" fired ) >/dev/null 2>&1
   no "$?" "sweep row: …and so is a 257-character, 514-byte site"

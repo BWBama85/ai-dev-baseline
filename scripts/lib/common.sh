@@ -7041,11 +7041,16 @@ adb_wf_jobs() { _adb_wf_read jobs "${1:-}"; }
 # `implement-lib.sh dispatch-sweep` and `sweep-mark`, and `pattern-ledger.sh record --sweep` — and
 # none carries a parser of its own.
 #
-# FIELD RULES ARE THE PATTERN LEDGER'S, because classes and sites land in it:
+# THE IDENTITY FIELDS ARE THE PATTERN LEDGER'S, because classes and sites land in it:
 #   class   [a-z][a-z0-9-]{0,47}
 #   site    no tab, newline, backtick or control character; `-` is reserved for "no site"
 #   thread  [A-Za-z0-9_=-]{1,256}
-#   text    one printable line, no `<!--` or `-->`, at most 1024 bytes
+# …and the TEXT fields (a finding's summary, a row's evidence) are the sweep's OWN (#526):
+#   text    one line of 1..1024 bytes, no tab, newline or control character — `adb_sweep_text_rule`
+# The ledger's text rule also refuses `<!--` and `-->`, because `patterns.md` is Markdown built around
+# comment regions. Sweep text never lands there — `record --sweep` reads a row's result and nothing
+# else, and `sweep-report` prints counts — so borrowing that rule refused, deterministically on every
+# retry, the round whose findings were ABOUT HTML comments and whose evidence quoted them.
 #
 # FINDINGS INPUT — one thread finding per line, final newline required, thread ids unique:
 #   <class> TAB <site> TAB <thread> TAB <summary>
@@ -7123,6 +7128,28 @@ adb_bytes_whole() {
 # _adb_sweep_whole <file> — the sweep readers' own bound over those rules. 1 MiB, unchanged.
 _adb_sweep_whole() { adb_bytes_whole "$1" 1048576; }
 
+ADB_SWEEP_TEXT_MAX_BYTES=1024
+
+# adb_sweep_text_rule <value> — the sweep's text rule (a findings summary, a row's evidence): print
+# nothing and return 0 for one line of 1..ADB_SWEEP_TEXT_MAX_BYTES bytes with no tab, newline or
+# control character; otherwise print the rule it breaks, for a diagnostic, and return 1.
+#
+# THE RULES ARE THE TSV'S, because a TSV is what the text is written into: a tab or newline would
+# forge a field or a row, and a control byte is a terminal escape in whatever prints the file. Markup
+# is not refused: a renderer escapes it at display (`adb_md_escape`), which is the split the storage
+# rules and the display already keep everywhere else. Matched under a function-scoped C locale, as
+# the ledger predicates are, so `[[:cntrl:]]` is the ASCII set and the length counts bytes.
+adb_sweep_text_rule() {
+  local v="${1:-}" LC_ALL=C || { printf 'unmeasurable (the C locale cannot be scoped)'; return 1; }
+  [ -n "$v" ] || { printf 'empty'; return 1; }
+  adb_tsv_field_safe "$v" || { printf 'carries a tab or newline'; return 1; }
+  case "$v" in *[[:cntrl:]]*) printf 'carries a control character'; return 1 ;; esac
+  [ "${#v}" -le "$ADB_SWEEP_TEXT_MAX_BYTES" ] \
+    || { printf 'longer than %s bytes' "$ADB_SWEEP_TEXT_MAX_BYTES"; return 1; }
+}
+
+adb_sweep_ok_text() { adb_sweep_text_rule "${1:-}" >/dev/null; }
+
 # adb_sweep_split <line> <field-count> — split on EVERY tab into the array ADB_SWEEP_F, keeping
 # empty fields; false unless the line has exactly <field-count> fields. `IFS=$'\t' read` would fold
 # consecutive tabs and drop a trailing empty field, so a malformed line could pass as well formed.
@@ -7153,7 +7180,7 @@ adb_sweep_findings_check() {
     adb_ledger_ok_class "$class" || return 19
     [ "$site" != "-" ] && adb_ledger_ok_span "$site" || return 19
     adb_ledger_ok_thread "$thread" || return 19
-    adb_ledger_ok_text "$summary" || return 19
+    adb_sweep_ok_text "$summary" || return 19
     case "$threads" in *$'\n'"$thread"$'\n'*) return 18 ;; esac
     threads="${threads}${thread}"$'\n'
     classes="${classes}${class}"$'\n'
@@ -7187,7 +7214,7 @@ adb_sweep_file_check() {
     result="${ADB_SWEEP_F[3]}"; evidence="${ADB_SWEEP_F[4]}"
     [ "$kind" = sibling ] || return 18
     adb_ledger_ok_class "$class" || return 19
-    adb_ledger_ok_text "$evidence" || return 19
+    adb_sweep_ok_text "$evidence" || return 19
     case "$result" in
       none|skipped)
         [ "$site" = "-" ] || return 18

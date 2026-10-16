@@ -10185,3 +10185,69 @@ survive is the part a later reader needs.
              `scripts/check-adopt-readiness.sh` · `scripts/check-precommit-gate.sh` ·
              `docs/per-project-overrides.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D134 — #526: sweep text takes the TSV's rule, not the ledger's, and a refused reply is kept
+- date:      2026-10-16
+- category:  project-delta
+- unknown:   #526. `dispatch-sweep` validated each reply row's evidence with `adb_ledger_ok_text`,
+             the pattern ledger's text rule, which refuses `<!--` and `-->` because `patterns.md` is
+             Markdown built around comment regions. #475 took every sweep field rule from the
+             ledger "because classes and sites land in it". That is true of classes and sites. It
+             is not true of text: `record --sweep` reads a row's result and nothing else, and
+             `sweep-report` prints counts. On BWBama85/support-cases PR #88 a round's findings were
+             about a redactor's HTML handling, and the sweep returned `19` on the dispatch and on a
+             retry. Step 4a treated `19` as terminal, and the round stopped with its findings
+             unresolved. The reply was deleted on refusal, so that incident's cause cannot be
+             proven. Empty, over-long or control-bearing evidence also returns `19`. A fixture
+             against the unchanged code proved the mechanism: evidence quoting `<!-- x -->` was
+             refused `19`, with no line or rule named and no reply left.
+- decision:  **The sweep's text fields take the TSV's rule.** `adb_sweep_text_rule` in `common.sh` is
+             one line of 1..1024 bytes with no tab, newline or control character, matched under a
+             function-scoped C locale like the ledger predicates. It prints the rule a value breaks
+             so a diagnostic can name it. It governs a finding's summary, a row's evidence and the
+             reason `sweep-mark` writes into that field. The ledger keeps its own rule for its own
+             file, and `record --summary` is unchanged. This applies the `markup-injection` rule as
+             promoted: neutralize against the artifact the field is actually written into. For the
+             sweep that artifact is a TSV, and display escaping stays the renderer's
+             (`adb_md_escape`). Two alternatives were declined. Neutralizing the markers in the
+             writer would change text the agent wrote and keep a rule that protects nothing.
+             Refusing one row and keeping the rest would drop a `found` sibling, and `record
+             --sweep` would then certify a class whose sibling was never fixed. Whole-file refusal
+             stays.
+             **A refused reply is kept and named.** Every reply refusal names the reply's physical
+             line and the rule broken, and prints the path where the reply is kept. That covers a
+             grammar line, an unknown class, a site, an echoed original site, a result, evidence, a
+             missing class, and a duplicate found only when the assembled file is validated. The
+             reply stays on its exclusively created stage name, `sweep-pr<N>-<head>.tsv.reply.<pid>`,
+             inside the family /cleanup already sweeps by PR, so it is never published and clears
+             with the run. It is deleted only once the assembled file validates. A failed dispatch
+             keeps a non-empty partial reply. The issue said other refusals in that function
+             already kept the reply for size. They did not: the size refusal also deleted it, and
+             the precedent is the native review reply's.
+             **Codes, so a retry list can be exact.** `18` and `19` had two sources each: the reply,
+             which a re-dispatch can change, and files the caller owns, which a retry refuses again.
+             A refused findings input is now `23`. An existing sweep at this head that does not
+             parse is now `21`, the code for the other existing sweep that cannot be reused. So
+             `18`, `19` and `22` mean only the reply or the dispatch. `/resolve-pr-threads` step 4a
+             retries those three once and stops on `23`, telling the agent to fix the findings file.
+             The prompt now states the evidence bound the reader enforces.
+             **Proven by.** `check-implement-lib.sh` §46 publishes a summary and evidence quoting
+             both markers and stores the evidence verbatim, and `sweep-mark` accepts such a reason.
+             Each reply refusal is checked for its line and rule wording and for a kept reply that
+             holds the reply. That covers a control byte, more than 1024 bytes, a duplicate
+             (assembled-file) row, a missing class and an unknown result. A failed dispatch with an
+             empty reply leaves nothing, and one with a partial reply (a stub `claude`) keeps it.
+             The three findings-input refusals are `23`. `check-pattern-ledger.sh` §11 covers the
+             file grammar: markers validate; a control byte, 1025 bytes and 513 two-byte characters
+             under a UTF-8 locale are refused, while 1024 bytes and 512 two-byte characters pass.
+             The rule's printed names are checked, as is `record --sweep` over marker-quoting
+             evidence, with none of it reaching the ledger. Seven new mutation rows require each
+             half red on its own witness: markers refused, control allowed, bound removed,
+             characters counted, the ledger rule restored on evidence or summary, and `19` dropped
+             from the retry. `check-common-lib.sh` runs the rule over every byte 1..255 against the
+             `tr -d '[:cntrl:]'` oracle, under a UTF-8 caller and a readonly `LC_ALL`.
+- placement: `scripts/lib/common.sh` (`adb_sweep_text_rule`, `adb_sweep_ok_text`, the sweep grammar
+             header) · `scripts/lib/implement-lib.sh` (`dispatch-sweep`, `sweep-mark`) ·
+             `base/workflows/resolve-pr-threads.md` step 4a · `scripts/check-implement-lib.sh` ·
+             `scripts/check-pattern-ledger.sh` · `scripts/check-common-lib.sh` · `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

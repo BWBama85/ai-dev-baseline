@@ -798,18 +798,28 @@ sweep_once() {
   esac
 }
 sweep_once; SWRC=$?
-# ONE retry, for a malformed reply or a failed dispatch only.
-case "$SWRC" in 18|22) sweep_once; SWRC=$? ;; esac
+# ONE retry, for the reply or the dispatch only: 18 a reply line outside the grammar, 19 a reply
+# field refused, 22 the dispatch failed. A re-dispatch can answer differently; a file you own cannot.
+case "$SWRC" in 18|19|22) sweep_once; SWRC=$? ;; esac
 case "$SWRC" in
   0)  : ;;   # published: $SWEEP_FILE
   17) : ;;   # this head was already swept (a re-run of the round): reuse $SWEEP_FILE and its marks
   16) echo "STOP: this checkout is not the open PR's head — sync it (step 1), then start the round again"; exit 1 ;;
+  23) echo "STOP: the findings file is refused — fix $FINDINGS, then run this step again"; exit 1 ;;
   *)  echo "STOP: the sibling sweep failed (rc $SWRC) — nothing was fixed, recorded or resolved this round"; exit 1 ;;
 esac
 ```
 
 Any stop leaves the threads unresolved, and step 8 restores the branch. A failed sweep never becomes a
 round without one.
+
+**A refused reply is kept, and its message says why** (#526). An 18 or 19 names the reply line and the
+rule it broke and prints the path the reply is kept at, and a 22 keeps whatever partial reply the
+agent wrote. Read that file before you report a stop. Evidence and reasons are free text: they may
+quote markup, `<!--` and `-->` included, because the sweep file is a TSV that nothing renders. What
+is refused is an empty field, a tab, a control character, or more than 1024 bytes. A `21` is a sweep
+file already at this head that cannot stand in for this round, because it does not parse or was
+written for other findings. It is kept with its marks; reconcile it or move it aside.
 
 **Fix every `found` row as well as each named site.** After the commit that fixed a sibling exists,
 mark it; a row is never marked ahead of its fix. A sibling you do not fix is dispositioned instead:

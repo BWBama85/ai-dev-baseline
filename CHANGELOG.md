@@ -287,6 +287,20 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**
+  `dispatch-sweep` checked each row's evidence with the pattern ledger's text rule, which refuses
+  `<!--` and `-->` because `patterns.md` is Markdown built around comment regions. Sweep evidence is
+  never written there. When a round's findings concerned HTML handling, the agent quoted the inputs
+  it probed, and the whole reply was refused with `19` on every retry. `/resolve-pr-threads` then
+  stopped the round with its real findings unresolved. The sweep's text fields (a finding's summary,
+  a row's evidence, a `sweep-mark` reason) now take the sweep's own rule, `adb_sweep_text_rule` in
+  `common.sh`: one line of 1 to 1024 bytes with no tab, newline or control character. Markup is
+  stored as written. A refusal now names the reply line and the rule it broke, and the reply is kept
+  at a path the message prints, on every refusal path. Before, it was deleted, so there was nothing
+  to inspect. A failed dispatch keeps its partial reply too. Codes changed: a refused findings file
+  is `23`, and an existing sweep that does not parse is `21` with the other non-reusable case, so
+  `18`, `19` and `22` are only ever about the reply or the dispatch. Step 4a retries those three once
+  and stops on `23`.
 - **A failed gate's full log is kept, and its path printed (#509, D133).** `project-gates.sh run`
   printed the last 4000 bytes of a failing gate's log, then deleted the log. When the failing step
   had printed early in a long run, its evidence was never shown and could not be recovered. On a
