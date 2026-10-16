@@ -713,18 +713,20 @@ adb_run_gates() {
   # cannot forge a line of the runner's. The log tail is the gate's OWN output, printed exactly
   # as it wrote it.
   #
-  # When mktemp cannot create it, logs fall back to predictable names in the shared temp dir,
-  # where a concurrent run can overwrite them and any local account can pre-plant the name.
-  # That is not evidence, so on that path every log is deleted after its gate and the failure
-  # says no log was kept; and the shared dir itself is NEVER rm'd (rm -rf a shared /tmp is data
-  # loss).
+  # When mktemp cannot create it, NO GATE RUNS: each one counts as failed and names the base it
+  # could not create under. There is no fallback to predictable names in the shared temp dir —
+  # there a concurrent run can overwrite a log, any local account can pre-plant the name (and a
+  # plain `>` writes through a planted link), and a pre-existing writable file let a gate run in a
+  # directory it could not create in. So $tmp is only ever mktemp's own directory, and the rm -rf
+  # below can never reach the shared dir.
   #
   # The base is made absolute BEFORE mktemp sees it: a relative $TMPDIR such as `-tmp` would
   # otherwise be parsed as an option, and the path is printed for a reader whose working directory
-  # is not ours.
-  local tmp base="${TMPDIR:-/tmp}" created=0 kept=0
+  # is not ours. $TMPDIR is used as given, so one that points inside the checkout puts kept logs
+  # there; nothing here refuses it.
+  local tmp base="${TMPDIR:-/tmp}" kept=0
   case "$base" in /*) : ;; *) base="$PWD/$base" ;; esac
-  if tmp="$(mktemp -d "$base/adb-gates.XXXXXX" 2>/dev/null)"; then created=1; else tmp="$base"; fi
+  tmp="$(mktemp -d "$base/adb-gates.XXXXXX" 2>/dev/null)" || tmp=""
   local failed="" rec state label cmd scope cadence logf t0 elapsed ran gate_rc
   while IFS= read -r rec; do
     [ -z "$rec" ] && continue
@@ -745,14 +747,20 @@ adb_run_gates() {
       printf 'adb: gate "%s": skipped (scope "%s" matched no changed file)\n' "$label" "$scope" >&2
       continue
     fi
+    if [ -z "$tmp" ]; then
+      printf '\nadb: gate "%s" failed: no private log directory could be created under %s (mktemp -d failed), so it was NOT run (%s)\n' \
+        "$label" "$(adb_display_value "$base")" "$cmd" >&2
+      failed="$failed$label "
+      continue
+    fi
     logf="$tmp/adb-gate-$label.log"
     # THE LOG IS OPENED ONCE, as fd 9 of the brace group below, and the gate writes through it. So
     # "could not write a log" and "the gate ran" are never confused, and nothing can change between
-    # an open and a reopen. A gate whose log cannot be opened is NOT run, and counts as failed:
-    # enforcement never goes quietly off because the temp dir is broken. A caller's `set -C` is
-    # honoured, not overridden: in a private directory the log never exists before this open, and
-    # on the fallback path a name that already exists is refused rather than truncated (it may be
-    # a planted link), so that gate is not run. It is the group's own redirection, never
+    # an open and a reopen. A gate whose log cannot be opened (an earlier gate removed or locked the
+    # directory, or the filesystem refused) is NOT run, and counts as failed: enforcement never
+    # goes quietly off because the temp dir is broken. A caller's `set -C` is honoured, not
+    # overridden: in the private directory the log never exists before this open, so noclobber
+    # has nothing to refuse. It is the group's own redirection, never
     # `exec`'s: bash undoes it when the group ends, and a failed one fails the group, where a
     # failed `exec` redirection exits a POSIX-mode shell — here, the caller's. The group's
     # `2>/dev/null` comes FIRST, so the open's own diagnostic is discarded with it; the gate's
@@ -785,12 +793,9 @@ adb_run_gates() {
       printf '\nadb: gate "%s" failed after %ss (%s)\n' "$label" "$elapsed" "$cmd" >&2
       if [ ! -f "$logf" ]; then
         printf 'adb: gate "%s": no log kept — the gate removed its own log at %s\n' "$label" "$(adb_display_value "$logf")" >&2
-      elif [ "$created" -eq 1 ]; then
+      else
         kept=1
         printf 'adb: gate "%s": full log kept at %s\n' "$label" "$(adb_display_value "$logf")" >&2
-      else
-        rm -f "$logf" 2>/dev/null || printf 'adb: NOTE — could not delete %s\n' "$(adb_display_value "$logf")" >&2
-        printf 'adb: gate "%s": full log NOT kept — no private log directory could be created (mktemp -d failed)\n' "$label" >&2
       fi
       failed="$failed$label "
     fi
@@ -799,7 +804,7 @@ $records
 EOF
   # A cleanup that fails is reported, never folded into the verdict: the run's status is the
   # gates' own, and a leftover directory is not a failing gate.
-  if [ "$created" -eq 1 ] && [ "$kept" -eq 0 ]; then
+  if [ -n "$tmp" ] && [ "$kept" -eq 0 ]; then
     rm -rf "$tmp" 2>/dev/null || printf 'adb: NOTE — could not delete the gate log directory %s\n' "$(adb_display_value "$tmp")" >&2
   fi
 

@@ -338,23 +338,32 @@ failing gates' output was, until you remove it. The path is printed
 shell-quoted (`printf %q`), so a `$TMPDIR` with a space in it can still be
 pasted straight into a shell, and a newline in it cannot forge a line.
 
-If no private directory can be created (`mktemp -d` failed), the logs go to
-predictable names in the shared temp directory. A concurrent run can overwrite
-those, and any local account can claim the name first, so there the logs are
-deleted and the failure says `full log NOT kept`. On that path, output from
-before the last 4000 bytes is not recoverable.
+`$TMPDIR` is used as given. If it points inside the checkout at a path that is
+not gitignored, kept logs land there as untracked files: the Stop hook counts
+them in the change set it scopes gates by, and `baseline adopt status` digests
+them into its receipt. Point `$TMPDIR` outside the checkout.
 
-A gate whose log cannot be opened at all is **not run**, and counts as failed:
+A gate with no log is **not run**, and counts as failed. If no private
+directory can be created (`mktemp -d` failed, for example because `$TMPDIR`
+does not exist or is not writable), no gate runs, and each one says so:
+
+```
+adb: gate "test" failed: no private log directory could be created under …, so it was NOT run (bash scripts/selfcheck.sh)
+```
+
+There is no fallback to the shared temp directory: there, a concurrent run
+could overwrite a log and any local account could claim its name first. If the
+directory exists but a log cannot be opened in it, for example because an
+earlier gate removed the directory, that gate is not run either:
 
 ```
 adb: gate "test" failed: its log could not be created at …, so it was NOT run (bash scripts/selfcheck.sh)
 ```
 
-That is what every gate reports when `$TMPDIR` does not exist or is not
-writable. It is also what you get when a caller's `set -C` (noclobber) finds a
-log's name already taken on the shared fallback path, since that name is
-refused rather than truncated. Enforcement fails closed rather than going
-quietly off.
+Enforcement fails closed rather than going quietly off. One limit: a full
+filesystem can allow a log to be created and then refuse the gate's output.
+The gate still runs, but its log is cut short, and the runner does not detect
+that.
 
 Exit status is the gates' own on every path. A cleanup that fails prints a
 `NOTE` and never fails the run.
