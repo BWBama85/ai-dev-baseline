@@ -516,10 +516,8 @@ recs="$(_adb_gate_records "$d" 2>/dev/null)"
 hasnt "$recs" "build" "tab: a command containing a tab is rejected"
 
 # --- a failed `mktemp -d` runs NO gate, and never touches the shared temp dir ------
-# Once a fallback resolved to a literal /tmp and the cleanup did `rm -rf /tmp`. There is no
-# fallback now (D133, local review pass 3): with no private log directory, every gate that would
-# run counts as failed, says why, and is not run — and nothing is written to or removed from the
-# shared dir.
+# There is no fallback (D133): with no private log directory, every gate that would run counts as
+# failed, says why, and is not run, and nothing is written to or removed from the shared dir.
 d="$work/mktemp-fail"; mkdir -p "$d"
 printf '[gates]\nbuild = "touch ran-build"\n' > "$d/agents.toml"
 faketmp="$work/faketmp"; mkdir -p "$faketmp"; : > "$faketmp/sentinel"
@@ -533,22 +531,21 @@ if [ -e "$d/ran-build" ]; then bad "mktemp-fail: a gate with no private log dire
 if [ -f "$faketmp/sentinel" ]; then ok; else bad "mktemp-fail: cleanup must NOT rm the shared temp dir"; fi
 eq "$(LC_ALL=C ls -A "$faketmp" | tr '\n' ' ')" "sentinel " "mktemp-fail: nothing is written to the shared temp dir"
 
-# …and the boundary local review pass 3 found: a writable file ALREADY at the old predictable name.
-# The fallback opened it, so the gate ran (and a plain `>` truncated the file, or wrote through it
-# had it been a planted link). Now the gate is not run and the file is untouched — with no
-# `set -C`, which is what the fallback needed to refuse it.
+# …and with a writable file already at the name a shared-dir log would take (D133), and no
+# `set -C`: the gate is still not run, and the file is untouched.
 d="$work/mktemp-fail-planted"; faketmp="$work/planted-faketmp"; mkdir -p "$d" "$faketmp"
 printf '[gates]\nprobe = "touch ran-probe; echo overwritten"\n' > "$d/agents.toml"
-printf 'planted\n' > "$faketmp/adb-gate-probe.log"
+printf 'planted\n' > "$faketmp/adb-gate-probe.log"; printf 'planted\n' > "$work/planted.expected"
 err="$( mktemp() { return 1; }
         TMPDIR="$faketmp"
         adb_run_gates "$d" 2>&1 >/dev/null )"; rc=$?
 eq "$rc" 1 "mktemp-fail (planted name): the run fails"
 has "$err" 'adb: gate "probe" failed: no private log directory could be created under' "mktemp-fail (planted name): the gate says why it was not run"
 if [ -e "$d/ran-probe" ]; then bad "mktemp-fail (planted name): a pre-existing log name must not let the gate run"; else ok; fi
-eq "$(cat "$faketmp/adb-gate-probe.log")" "planted" "mktemp-fail (planted name): the existing file is neither truncated nor written"
-# The same boundary for real, as the reviewer probed it: a mode-500 $TMPDIR, where mktemp -d fails
-# on its own and the planted file is still writable. Skipped as root, which writes through the mode.
+if cmp -s "$faketmp/adb-gate-probe.log" "$work/planted.expected"; then ok; else
+  bad "mktemp-fail (planted name): the existing file is byte-for-byte untouched"; fi
+# The same boundary for real: a mode-500 $TMPDIR, where mktemp -d fails on its own and the planted
+# file is still writable. Skipped as root, which writes through the mode.
 if [ "$(id -u)" -ne 0 ]; then
   ro="$work/ro-tmp"; mkdir -p "$ro"; printf 'planted\n' > "$ro/adb-gate-probe.log"; chmod 500 "$ro"
   err="$(export TMPDIR="$ro"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
@@ -556,7 +553,8 @@ if [ "$(id -u)" -ne 0 ]; then
   eq "$rc" 1 "read-only TMPDIR (planted name): the run fails"
   has "$err" 'adb: gate "probe" failed: no private log directory could be created under' "read-only TMPDIR (planted name): the gate says why it was not run"
   if [ -e "$d/ran-probe" ]; then bad "read-only TMPDIR (planted name): the gate must not run"; else ok; fi
-  eq "$(cat "$ro/adb-gate-probe.log")" "planted" "read-only TMPDIR (planted name): the existing file is untouched"
+  if cmp -s "$ro/adb-gate-probe.log" "$work/planted.expected"; then ok; else
+    bad "read-only TMPDIR (planted name): the existing file is byte-for-byte untouched"; fi
 fi
 
 # --- a failed gate's FULL log is kept, and its path reported (#509, D133) ----------
@@ -728,6 +726,30 @@ has "$err" 'failing gates: b_next c_last' "wiped log dir under set -e: every gat
 if [ -e "$d/ran-next" ] || [ -e "$d/ran-last" ]; then bad "wiped log dir: a gate whose log could not be opened must NOT run"; else ok; fi
 stray="$(printf '%s\n' "$err" | grep -v '^adb: ' | grep -v '^$')"
 eq "$stray" "" "wiped log dir: no native diagnostic of the failed open reaches stderr"
+
+# A LOG ALREADY REPORTED AS KEPT can be removed by a later gate. The summary re-checks each one: a
+# lost log is named, the closing line never claims a directory that holds none, and a directory
+# left with no kept log is removed like a passing run's.
+d="$work/keep-lost"; kt="$work/keep-lost-tmp"; mkdir -p "$d" "$kt"
+printf 'rm -rf "$TMPDIR"/adb-gates.*\n' > "$d/wipe.sh"
+printf '[gates]\na_fail = "echo evidence; exit 1"\nb_wipe = "sh ./wipe.sh"\n' > "$d/agents.toml"
+err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "lost kept log: the failing gate still fails the run"
+has "$err" 'adb: gate "a_fail": its log is no longer kept — a later gate removed' "lost kept log: the loss is reported"
+hasnt "$err" "full logs kept in" "lost kept log: the closing line claims no directory"
+eq "$(kept_dirs "$kt")" "" "lost kept log: nothing is left behind"
+# …and when only SOME are lost, the closing line still names the directory the rest are in.
+d="$work/keep-partial"; kt="$work/keep-partial-tmp"; mkdir -p "$d" "$kt"
+printf 'rm -f "$TMPDIR"/adb-gates.*/adb-gate-a_fail.log\n' > "$d/rmone.sh"
+printf '[gates]\na_fail = "echo a; exit 1"\nb_fail = "echo b; exit 1"\nc_rm = "sh ./rmone.sh"\n' > "$d/agents.toml"
+err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+kd="$(kept_dirs "$kt")"
+eq "$rc" 1 "partly lost kept logs: the run fails"
+has "$err" 'adb: gate "a_fail": its log is no longer kept — a later gate removed' "partly lost kept logs: the lost one is reported"
+hasnt "$err" 'adb: gate "b_fail": its log is no longer kept' "partly lost kept logs: the surviving one is not"
+has "$err" "full logs kept in" "partly lost kept logs: the closing line still names the directory"
+if [ -f "$kd/adb-gate-b_fail.log" ] && [ ! -e "$kd/adb-gate-a_fail.log" ]; then ok; else
+  bad "partly lost kept logs: the directory holds exactly the surviving log"; fi
 
 # A RELATIVE $TMPDIR is made absolute before mktemp sees it. One spelled `-tmp` would otherwise be
 # parsed as an option, so mktemp -d would fail and no gate would run; and the printed path must not

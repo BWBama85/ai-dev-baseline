@@ -10080,8 +10080,12 @@ survive is the part a later reader needs.
              **What is kept, and why retention is unbounded.** A passing gate's log is deleted the
              moment it passes, and the directory is deleted when no gate failed. So a kept
              directory holds only the failing gates' logs, one directory per failed run, and
-             nothing sweeps them. A deletion that fails leaves its file, prints a `NOTE` naming it,
-             and leaves the exit status the gates' own. That is unbounded disk retention, said as
+             nothing sweeps them. Before the closing line, each kept log is checked again, because a
+             later gate can remove it or the whole directory. A lost log is named (`its log is no
+             longer kept`), and the closing line names the directory only while a kept log is still
+             in it (local review pass 4 found it named a directory a later gate had removed). A
+             deletion that fails leaves its file, prints a `NOTE` naming it, and leaves the exit
+             status the gates' own. That is unbounded disk retention, said as
              such: neither a log's size nor the number of failed runs is capped, and only the
              operator removes them. A sweeper was declined: the gap analysis named its deletion
              and concurrency risks (deleting another live run's directory in a shared namespace),
@@ -10154,7 +10158,9 @@ survive is the part a later reader needs.
              `ok`. A gate that deletes the run's directory makes the next open fail inside it.
              That fixture is root-safe, unlike the read-only one, and it is what kills moving the
              group's `2>/dev/null` after the open and dropping its `|| :` under a caller's `set -e`.
-             Restoring the fallback, or dropping the no-directory check, turns its fixtures red. The
+             Restoring the fallback, or dropping the no-directory check, turns its fixtures red. So
+             does dropping the closing re-check, under two fixtures: a later gate removes the whole
+             directory, or one of two kept logs. The
              three suites that drive red gates (`check-gates.sh`, `check-adopt-readiness.sh`,
              `check-precommit-gate.sh`) export a `TMPDIR` inside their own scratch directory, or
              each selfcheck run would leak kept directories. Running all eleven suites that reach

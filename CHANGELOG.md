@@ -295,7 +295,8 @@ only by a published release, which is what these entries are the notes for.
   gate passes, and a failing gate's log is kept: the tail is still printed, followed by
   `adb: gate "<label>": full log kept at <path>`, and the closing `failing gates:` line names the
   directory. A run in which every gate passes leaves nothing behind, unless a deletion fails, which
-  prints a `NOTE` naming what was left. Nothing deletes a kept directory, so retention is unbounded
+  prints a `NOTE` naming what was left. A kept log that a later gate removes is reported as no
+  longer kept, never claimed. Nothing deletes a kept directory, so retention is unbounded
   until the operator removes it. `$TMPDIR` is used as given, so one inside the checkout puts kept
   logs there. **When `mktemp -d` fails, no gate runs**: each counts as failed and says
   `no private log directory could be created under <path>, so it was NOT run`. The old fallback

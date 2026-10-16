@@ -714,17 +714,17 @@ adb_run_gates() {
   # as it wrote it.
   #
   # When mktemp cannot create it, NO GATE RUNS: each one counts as failed and names the base it
-  # could not create under. There is no fallback to predictable names in the shared temp dir —
-  # there a concurrent run can overwrite a log, any local account can pre-plant the name (and a
-  # plain `>` writes through a planted link), and a pre-existing writable file let a gate run in a
-  # directory it could not create in. So $tmp is only ever mktemp's own directory, and the rm -rf
-  # below can never reach the shared dir.
+  # could not create under. There is no fallback to predictable names in the shared temp dir
+  # (D133): a name there can be overwritten by a concurrent run or pre-planted by any local
+  # account. So $tmp is only ever mktemp's own directory, and the rm -rf below can never reach the
+  # shared dir.
   #
   # The base is made absolute BEFORE mktemp sees it: a relative $TMPDIR such as `-tmp` would
   # otherwise be parsed as an option, and the path is printed for a reader whose working directory
   # is not ours. $TMPDIR is used as given, so one that points inside the checkout puts kept logs
   # there; nothing here refuses it.
-  local tmp base="${TMPDIR:-/tmp}" kept=0
+  local tmp base="${TMPDIR:-/tmp}" kept=0 l
+  local -a keptl=()
   case "$base" in /*) : ;; *) base="$PWD/$base" ;; esac
   tmp="$(mktemp -d "$base/adb-gates.XXXXXX" 2>/dev/null)" || tmp=""
   local failed="" rec state label cmd scope cadence logf t0 elapsed ran gate_rc
@@ -794,7 +794,7 @@ adb_run_gates() {
       if [ ! -f "$logf" ]; then
         printf 'adb: gate "%s": no log kept — the gate removed its own log at %s\n' "$label" "$(adb_display_value "$logf")" >&2
       else
-        kept=1
+        keptl+=("$label")
         printf 'adb: gate "%s": full log kept at %s\n' "$label" "$(adb_display_value "$logf")" >&2
       fi
       failed="$failed$label "
@@ -802,6 +802,15 @@ adb_run_gates() {
   done <<EOF
 $records
 EOF
+  # What the summary claims is re-checked here, not trusted from when each failure was reported: a
+  # later gate can remove a kept log, or the whole directory. `kept` counts the logs still there.
+  for l in "${keptl[@]}"; do
+    if [ -f "$tmp/adb-gate-$l.log" ]; then
+      kept=$((kept + 1))
+    else
+      printf 'adb: gate "%s": its log is no longer kept — a later gate removed %s\n' "$l" "$(adb_display_value "$tmp/adb-gate-$l.log")" >&2
+    fi
+  done
   # A cleanup that fails is reported, never folded into the verdict: the run's status is the
   # gates' own, and a leftover directory is not a failing gate.
   if [ -n "$tmp" ] && [ "$kept" -eq 0 ]; then
@@ -809,7 +818,7 @@ EOF
   fi
 
   if [ -n "$failed" ]; then
-    if [ "$kept" -eq 1 ]; then
+    if [ "$kept" -gt 0 ]; then
       printf '\nadb: failing gates: %s— full logs kept in %s\n' "$failed" "$(adb_display_value "$tmp")" >&2
     else
       printf '\nadb: failing gates: %s\n' "$failed" >&2

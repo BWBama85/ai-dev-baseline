@@ -330,7 +330,9 @@ under `$TMPDIR` (`/tmp` when unset), and the closing `failing gates:` line names
 that directory. A passing gate's log is deleted as soon as the gate passes. So a
 kept directory holds only failing logs, and a run where every gate passes leaves
 nothing behind. The exception is a deletion that fails: it leaves the file and
-prints a `NOTE` naming it.
+prints a `NOTE` naming it. If a later gate removes a log already reported as
+kept, the run says so (`its log is no longer kept`), and the closing line names
+the directory only while a kept log is still in it.
 
 **Nothing deletes a kept directory**: remove it once you have read it. Retention
 is unbounded by design. Every failed run adds a directory, however large its
