@@ -321,6 +321,44 @@ owns, so it leaves any it has already given up. It also deletes the ownership re
 already given up) is still in your file, which blocks the whole policy as any key of yours does. An
 `excludedCommands` that still holds every shipped entry is the exception here too.
 
+#### Cross-model roles and the sandbox
+
+The fragment leaves `codex` and `agy` **inside** the sandbox (#505, D132), and on macOS neither
+can start there. Linux and WSL2 are untested. Observed 2026-10-15 under the shipped fragment alone,
+on macOS 26.6.2 with Claude Code 2.1.300, codex-cli 0.162.1 and agy 1.2.7 and 1.3.6; D132 records
+the full witness:
+
+- **`codex exec` exits 1** with `Error: failed to initialize in-process app-server client:
+  Operation not permitted (os error 1)`. The sandbox denies its writes to `~/.codex`.
+- **`agy -p` exits 1** with `Failed to start: listen tcp 127.0.0.1:0: bind: operation not
+  permitted`. The fragment leaves `sandbox.network.allowLocalBinding` off, so agy cannot open its
+  local port. Its log under `~/.gemini` is not writable either, but agy survives that.
+
+`claude -p` starts and works, through `role-dispatch.sh` too. But `codex` is the shipped default
+for both `gap_analysis` and `review`, so a sandboxed `/implement-issue` cannot run its gap pass or
+its review slot. The
+dispatch reports the cause instead of blaming the agent. Its classified line reads
+`role-dispatch: gap_analysis (codex) — INCOMPLETE: codex exited 1 before it could start — the OS
+refused it ("Operation not permitted") …`. A retry inside the same sandbox fails the same way, and
+so does a review slot's cross-model stand-in.
+
+**Cross-model roles need an unsandboxed session, or exclusions you add to your own settings.**
+The fragment does neither for you, and the owner decided on #505 not to change it:
+
+- **A `"codex *"` exclusion would never match.** Exclusions match the text of the Bash call (see
+  [above](#why-git-and-gh-run-outside-the-sandbox)), and the framework never calls `codex` or
+  `agy` as that text. It reaches them through `implement-lib.sh dispatch-*` and `review-loop pass`,
+  which call `role-dispatch.sh`. An exclusion that works has to match that whole wrapper call.
+  Which wrapper patterns to recommend is the question #531 owns for `gh`, so it is decided there,
+  once, for both.
+- **A writable `~/.codex` is a privilege escalation.** `filesystem.allowWrite` on `~/.codex` and
+  `~/.gemini`, plus `network.allowLocalBinding`, would keep both CLIs sandboxed. But any sandboxed
+  command could then rewrite `~/.codex/config.toml` and loosen codex's own sandbox and approval
+  policy for the next dispatch.
+
+An exclusion you add costs what the `git`/`gh` one does: the excluded call runs with your full
+access, and the agents codex and agy host are then held only by those CLIs' own sandboxing.
+
 ### Run markers are session-owned
 
 `/implement-issue` records its in-flight run in `.claude/state/implement-issue-active.json`, and

@@ -234,6 +234,28 @@ eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "an OLD lock with a LIVE hol
 eq "$(git -C "$src" rev-parse HEAD)" "$head_live" "a live-holder lock blocks the pull"
 rm -rf "$gitdir/adb-update.lock"
 
+# …AND A HOLDER WE MAY NOT SIGNAL IS NOT A DEAD ONE (D132): pid 1 is EPERM for a non-root run, and
+# alive either way.
+reset_src
+advance_origin "eperm-holder-case"
+mkdir -p "$gitdir/adb-update.lock"
+printf '1 1577836800\n' > "$gitdir/adb-update.lock/owner"
+touch -t 202001010000 "$gitdir/adb-update.lock"
+head_eperm="$(git -C "$src" rev-parse HEAD)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "an OLD lock whose holder we may not signal is still obeyed"
+eq "$(git -C "$src" rev-parse HEAD)" "$head_eperm" "…and blocks the pull"
+rm -rf "$gitdir/adb-update.lock"
+# …while a holder the kernel reports gone (ESRCH) is still broken.
+reset_src
+advance_origin "dead-holder-case"
+mkdir -p "$gitdir/adb-update.lock"
+printf '%s 1577836800\n' "$( sleep 0 & p=$!; wait "$p"; printf '%s' "$p" )" > "$gitdir/adb-update.lock/owner"
+touch -t 202001010000 "$gitdir/adb-update.lock"
+head_dead="$(git -C "$src" rev-parse HEAD)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "an OLD lock whose recorded holder is gone is broken"
+if [ "$(git -C "$src" rev-parse HEAD)" != "$head_dead" ]; then ok; else bad "a dead-holder lock should let the update proceed"; fi
+rm -rf "$gitdir/adb-update.lock"
+
 # A FUTURE-dated lock (clock skew) must never be judged stale: a negative age would compare as
 # "not older than the bound" only by luck, and a caller reading it as a small number would break
 # a live lock. adb_age_secs reports future mtimes as unknown, and an undatable lock is obeyed.

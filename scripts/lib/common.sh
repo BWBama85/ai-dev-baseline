@@ -727,7 +727,9 @@ adb_update_lock() {
     holder=""
   fi
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
-  [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
+  # A RECORDED holder is broken only once PROVEN gone: a bare `kill -0` failure is also the EPERM a
+  # live holder returns. (No record, or an unparseable pid, is judged by the age above alone.)
+  [ -n "$holder" ] && ! adb_pid_gone "$holder" && return 1   # update-lock-needs-proof
 
   # THE BREAK HAPPENS IN PLACE; THE DIRECTORY NEVER LEAVES ITS PATH. Renamed away, the path was
   # vacant while the breaker was still deciding, and a third process took a fresh lock there: two
@@ -4365,6 +4367,25 @@ adb_age_secs() {
   age="$((now - m))"
   [ "$age" -lt 0 ] && return 0
   printf '%s' "$age"
+}
+
+# adb_pid_gone <pid> — can we PROVE that no process <pid> exists on this host? The one liveness
+# proof for breaking an abandoned lock: the update lock below and the pattern ledger's write lock.
+#
+# Returns 0 only on the kernel's own definite negative, `kill -0` refused with ESRCH ("No such
+# process"), and 1 for everything else: a delivered signal, EPERM (alive but not ours to signal,
+# or outside a sandbox), any other failure, a pid that is not a number. The REASON is read, never
+# the status: `kill -0` returns 1 for ESRCH and EPERM alike, and `ps -p` cannot tell "no such
+# process" from "ps could not run" (D132). `LC_ALL=C` pins strerror's wording.
+# Usage: adb_pid_gone <pid>
+adb_pid_gone() {
+  local out LC_ALL=C
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  out="$(kill -0 "$1" 2>&1)" && return 1
+  # The SUFFIX the builtin writes for this pid, never the phrase anywhere: its diagnostic is
+  # prefixed with the script's own path, and a path may contain the phrase.
+  case "$out" in *"($1) - No such process") return 0 ;; esac   # pid-gone-esrch-only
+  return 1
 }
 
 # adb_mkdir_excl <dir> — create <dir> as a mutex. Returns 0 only for the ONE caller that now holds it.

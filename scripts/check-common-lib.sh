@@ -3176,6 +3176,26 @@ eq "$(bare_mkdir_scan "${_bm_files[@]}")" "" "no branched-on bare mkdir outside 
 printf 'lock() {\n  while ! mkdir "$d" 2>/dev/null; do sleep 1; done\n  mkdir "$e" 2>/dev/null && return 0\n  if mkdir "$f"; then :; fi\n  mkdir -p "$g" || exit 1\n}\n' > "$work/bare-mkdir.sh"
 eq "$(bare_mkdir_scan "$work/bare-mkdir.sh" | wc -l | tr -d ' ')" 3 "the bare-mkdir scan fires on while, && and if takes, and not on mkdir -p"
 
+# --- adb_pid_gone: gone only on the kernel's ESRCH, never on a probe that could not answer (D132) --
+pg_dead="$( sleep 0 & p=$!; wait "$p"; printf '%s' "$p" )"
+adb_pid_gone "$$";        eq "$?" 1 "pid-gone: this live shell is not gone"
+adb_pid_gone 1;           eq "$?" 1 "pid-gone: pid 1 is not gone — signalable or not"
+adb_pid_gone "$pg_dead";  eq "$?" 0 "pid-gone: a reaped child is gone"
+adb_pid_gone "";          eq "$?" 1 "pid-gone: an empty pid proves nothing"
+adb_pid_gone "12x";       eq "$?" 1 "pid-gone: a non-numeric pid proves nothing"
+( kill() { printf 'kill: (%s) - Operation not permitted\n' "$2" >&2; return 1; }; adb_pid_gone "$$" )
+eq "$?" 1 "pid-gone: an EPERM refusal is not death"
+# The builtin prefixes its diagnostic with the script's own path, and a path can carry the phrase.
+( kill() { printf '/x/No such process/lib.sh: line 9: kill: (%s) - Operation not permitted\n' "$2" >&2; return 1; }; adb_pid_gone "$$" )
+eq "$?" 1 "pid-gone: 'No such process' in the diagnostic's path prefix is not ESRCH"
+# …and for real: for a function, the prefix is the path of the file that DEFINED it.
+mkdir -p "$work/No such process"; cp scripts/lib/common.sh "$work/No such process/common.sh"
+( unset -f adb_pid_gone; unset _ADB_COMMON_SH_LOADED   # past the double-source guard, or nothing reloads
+  . "$work/No such process/common.sh" >/dev/null 2>&1 || exit 2
+  declare -F adb_pid_gone >/dev/null || exit 3
+  adb_pid_gone 1 && exit 0; adb_pid_gone "$$" && exit 0; exit 1 )
+eq "$?" 1 "pid-gone: no live pid is judged gone when common.sh lives under a directory named 'No such process'"
+
 # --- adb_publish_json: `--strict`, and a rename verified rather than trusted (#437) --------------
 # `stat` and `mv` are stubbed on PATH, one knob each: an unreadable mode, and a destination that
 # becomes a directory just before the rename onto it (which `mv` follows INTO, and reports as 0).

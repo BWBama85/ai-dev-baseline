@@ -680,8 +680,9 @@ esac
 
 # _adb_pl_owner_gone <lock-dir> — can we PROVE the lock's owner is no longer running?
 #
-# True only when the lock records a host we are on and a pid that no longer exists. Everything else
-# — no metadata, an unreadable file, another host, a pid still alive — answers NO, because the cost
+# True only when the lock records a host we are on and a pid the kernel says no longer exists.
+# Everything else — no metadata, an unreadable file, another host, a pid still alive, a pid this
+# process may not signal (another user's, or one outside its sandbox) — answers NO, because the cost
 # of a wrong "yes" is two writers in the critical section and the cost of a wrong "no" is a wait
 # that ends in a loud, actionable refusal. Cross-host locks on a shared filesystem are therefore
 # never reclaimed automatically, and the diagnostic says so rather than pretending.
@@ -691,15 +692,8 @@ _adb_pl_owner_gone() {
   IFS="$TAB" read -r host pid < "$meta" 2>/dev/null || return 1
   [ -n "$host" ] && [ -n "$pid" ] || return 1
   [ "$host" = "$(uname -n 2>/dev/null)" ] || return 1
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  # `ps -p`, NOT `kill -0`. `kill -0` fails for BOTH "no such process" (ESRCH) and "not yours"
-  # (EPERM), and treating every failure as death means a contender running as another user reclaims
-  # a LIVE lock in a shared checkout — verified by the reviewer, running the predicate as `nobody`
-  # against a root-owned live pid. `ps -p` answers about existence regardless of ownership.
-  # If `ps` is unavailable at all we cannot prove anything, which reads as alive.
-  command -v ps >/dev/null 2>&1 || return 1
-  ps -p "$pid" >/dev/null 2>&1 && return 1
-  return 0
+  # Only the kernel's ESRCH counts as gone; a probe that could not answer reads as alive (D132).
+  adb_pid_gone "$pid"
 }
 
 # _adb_pl_lock <ledger> — take the ledger's write lock, or fail. Prints nothing on success.
@@ -771,7 +765,8 @@ _adb_pl_lock() {
       printf 'pattern-ledger: could not take the write lock after %ss: %s\n' "$((waited / 10))" "$dir" >&2
       printf 'pattern-ledger: another writer holds it. Nothing was written.\n' >&2
       printf 'pattern-ledger: a lock is only reclaimed when its owner is PROVEN gone (same host, pid\n' >&2
-      printf 'pattern-ledger: no longer running). A live-but-stuck writer, or one on another host, is\n' >&2
+      printf 'pattern-ledger: no longer running). A live-but-stuck writer, one on another host, or one\n' >&2
+      printf 'pattern-ledger: this process may not signal (another user, or outside its sandbox) is\n' >&2
       printf 'pattern-ledger: never reclaimed automatically — remove %s by hand once you are sure.\n' "$dir" >&2
       return 1
     fi
@@ -1385,7 +1380,7 @@ cmd_reclaim() {
       fi
       printf 'pattern-ledger: reclaimed a stale write lock (%ss old, owner gone): %s\n' "$age" "$(adb_display_value "$dir")"; did=1
     else
-      printf 'pattern-ledger: %s is HELD — its owner is alive, on another host, unrecorded, or the lock is not yet stale (%ss old). Nothing reclaimed; remove it by hand only once you are sure.\n' "$dir" "${age:-?}" >&2
+      printf 'pattern-ledger: %s is HELD — its owner is alive, on another host, unrecorded, not signalable from here (another user, or outside this sandbox), or the lock is not yet stale (%ss old). Nothing reclaimed; remove it by hand only once you are sure.\n' "$dir" "${age:-?}" >&2
       exit 22
     fi
   fi

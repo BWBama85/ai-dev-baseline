@@ -748,7 +748,7 @@ _adb_rd_bounded() {
 }
 
 # The capping filter: pass the first <max> bytes through, then DRAIN the rest and say how much was
-# dropped. Reads stdin, writes stdout.
+# dropped. Reads stdin, writes stdout. <max> 0 passes everything (the documented disable).
 #
 # IT MUST DRAIN, NOT EXIT. A filter that stops reading at the cap closes the pipe, and the next
 # write from the agent takes SIGPIPE — so capping its log would KILL the dispatch it was only
@@ -783,15 +783,80 @@ _adb_rd_bounded() {
 #
 # `wc -c` is BOTH the drain and the count, so "was anything discarded" and "how much" are one read
 # and cannot disagree. A stream shorter than the cap drains to 0 and prints no notice at all.
-# Usage: _adb_rd_cap_stream <max-bytes>
+#
+# IT ALSO WATCHES FOR A START-UP DENIAL (#505, D132), for a CLI `_adb_rd_startup_denied` has a
+# signature for. The stream's first `_ADB_RD_SCAN_BYTES` are read by the shell itself, a byte at a
+# time, and kept — plus one byte more, read only to learn whether the stream ended exactly at the
+# window's edge. Each byte is written on as it arrives unless it is past <max>, where it counts as
+# discarded, so the window and the diagnosis never depend on the cap. A stream that ENDED inside the
+# window, on that CLI's own fatal denial line, makes the filter exit 3; a passthrough that could not
+# write exits 1, and still drains, so the agent never takes SIGPIPE from it — which holds for a
+# broken output pipe only because the coproc runs it with SIGPIPE ignored, turning EPIPE into a
+# write error. `_adb_rd_bounded_capped` reads both. `read -n 1` takes ONE byte per read(2) from a pipe, so the `dd` after it misses
+# nothing and the counts stay exact; a NUL arrives as an empty read. A read past 128 is a timeout
+# from an inherited `TMOUT`, which reads nothing, so it is retried rather than taken for EOF.
+# Usage: _adb_rd_cap_stream <max-bytes> [<cli>]
 _adb_rd_cap_stream() {
-  local max="$1" rest
-  dd bs=1 count="$max" 2>/dev/null
-  rest="$(wc -c)"
-  rest="${rest//[![:digit:]]/}"
-  [ "${rest:-0}" -gt 0 ] && printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$rest"
+  local LC_ALL=C max="$1" cli="${2:-}" rest w=0 n=0 c kept="" eof=0 last over=0 rs wfail=0
+  _adb_rd_watches "$cli" && w="$_ADB_RD_SCAN_BYTES"
+  while [ "$w" -gt 0 ]; do
+    IFS= read -r -d '' -n 1 c; rs=$?
+    [ "$rs" -gt 128 ] && continue
+    [ "$rs" -eq 0 ] || { eof=1; break; }
+    n=$((n + 1))
+    if [ "$max" -gt 0 ] && [ "$n" -gt "$max" ]; then over=$((over + 1))
+    elif [ "$wfail" -eq 0 ]; then
+      if [ -z "$c" ]; then printf '\0'; else printf '%s' "$c"; fi || wfail=1
+    fi
+    [ "$n" -gt "$w" ] && break   # the lookahead byte: the stream outran the window
+    if [ -z "$c" ]; then kept+=$'\001'; else kept+="$c"; fi
+  done
+  if [ "$eof" -eq 0 ]; then
+    if [ "$wfail" -eq 1 ]; then
+      cat >/dev/null
+    elif [ "$max" -eq 0 ]; then
+      cat || wfail=1
+    else
+      if [ "$n" -lt "$max" ]; then dd bs=1 count="$((max - n))" 2>/dev/null || wfail=1; fi
+      rest="$(wc -c)"
+      rest="${rest//[![:digit:]]/}"
+      over=$((over + ${rest:-0}))
+    fi
+  fi
+  if [ "$over" -gt 0 ] && [ "$wfail" -eq 0 ]; then
+    printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$over" || wfail=1
+  fi
+  [ "$wfail" -eq 0 ] || return 1
+  [ "$eof" -eq 1 ] || return 0
+  kept="${kept%"${kept##*[![:space:]]}"}"
+  last="${kept##*$'\n'}"
+  _adb_rd_startup_denied "$cli" "${last%$'\r'}" && return 3
   return 0
 }
+
+# How much of a dispatch log's head the filter keeps to recognise a start-up denial: room for a few
+# lines of preamble before the fatal one. A denial after more output than this is not diagnosed.
+_ADB_RD_SCAN_BYTES=4096
+
+# _adb_rd_startup_denied <cli> <line> — is <line> <cli>'s OWN fatal error for an OS permission
+# denial at start-up? 0 yes · 1 no · 2 this CLI has no known signature (so nothing is scanned).
+#
+# Anchored on each CLI's top-level start-up error, because the phrase alone proves nothing: agy logs
+# `operation not permitted` on a run that succeeds. The caller matches it only as the LAST line of a
+# stream that ended inside the scan window. EPERM only; another errno (EROFS from a read-only bind
+# mount) is not recognised. The signatures, as observed (D132):
+#   codex 0.162.1  `Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)`
+#   agy 1.2.7/1.3.6 `Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted`
+_adb_rd_startup_denied() {
+  local LC_ALL=C
+  case "$1" in
+    codex) [[ "$2" =~ ^Error:\ failed\ to\ initialize\ .*[Oo]peration\ not\ permitted\ \(os\ error\ 1\)$ ]] ;;
+    agy)   [[ "$2" =~ ^Failed\ to\ start:\ .*[Oo]peration\ not\ permitted$ ]] ;;
+    *)     return 2 ;;
+  esac
+}
+_adb_rd_watches() { _adb_rd_startup_denied "$1" ""; [ "$?" -ne 2 ]; }   # does the filter scan for <cli>?
+_ADB_RD_DENIED_CLI=""   # set by `_adb_rd_bounded_capped` when the filter saw one; read by `_adb_rd_report`
 
 # Run a bounded dispatch with its LOG stream capped, and return the agent's own status.
 #
@@ -803,8 +868,10 @@ _adb_rd_cap_stream() {
 # THE TOPOLOGY IS THE HARD PART, and a plain pipeline is the wrong one. `cmd | filter` puts the
 # LEFT side in a subshell, and `adb_run_bounded` installs its reap trap on the CALLING shell — so
 # the trap would protect a subshell that is not the one being signalled, and an outer TERM would go
-# back to orphaning the agent. A process substitution keeps the runner in THIS shell, and forks the
-# filter instead — the cheap process rather than the one the bound exists to police.
+# back to orphaning the agent. A COPROC keeps the runner in THIS shell, and forks the filter instead
+# — the cheap process rather than the one the bound exists to police. A coproc, never an output
+# process substitution: bash on macOS opens that by writing to `/dev/fd/N`, which the shipped
+# sandbox denies; a coproc's pipe comes from pipe(2) and opens no path (D132).
 #
 # WHAT THAT DOES NOT COVER, stated rather than glossed: the filter is a SIBLING of the bounded
 # command, not a member of its process group, so the bound does not reap it and neither does
@@ -813,10 +880,11 @@ _adb_rd_cap_stream() {
 # ORDERING on that path, so a caller reading the artifact immediately after an outer kill can race
 # the filter's last write. Bounded and rare, but it is not "nothing to protect".
 #
-# `exec {capfd}>` rather than a redirection on the command, because `$!` must be captured for the
-# procsub itself — and `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!`
-# before the command returns. Without that pid there is nothing to `wait` on, and the notice above
-# can be lost to a race with our own exit.
+# The filter's pid is taken from the coproc (`_ADB_RD_CAP_PID`) before the call, because
+# `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!` before the command
+# returns. Without that pid there is nothing to `wait` on, and the notice above can be lost to a
+# race with our own exit. Bash runs one coproc at a time; each dispatch reaps its own before it
+# returns, so the next can start one.
 #
 # `{capfd}>&-` ON THE CALL closes the descriptor for the CHILD side, and it is worth its own line:
 # the watchdog's ticking `sleep` is deliberately allowed to outlive its watcher (see common.sh), so
@@ -826,13 +894,16 @@ _adb_rd_cap_stream() {
 _adb_rd_bounded_capped() {
   local log_stdout="$1"; shift
   local rc capper capfd max="$_ADB_RD_LOG_MAX_BYTES"
-  if [ "$max" -eq 0 ]; then
+  # With the cap disabled, only a CLI the filter watches for a start-up denial goes through it.
+  if [ "$max" -eq 0 ] && ! _adb_rd_watches "$1"; then
     if [ "$log_stdout" = 1 ]; then _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&2
     else                           _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@"; fi
     return $?
   fi
-  exec {capfd}> >(_adb_rd_cap_stream "$max" >&2)
-  capper=$!
+  local capin
+  coproc _ADB_RD_CAP { trap '' PIPE; _adb_rd_cap_stream "$max" "$1" >&2; }
+  capper="$_ADB_RD_CAP_PID"; capfd="${_ADB_RD_CAP[1]}"; capin="${_ADB_RD_CAP[0]}"
+  exec {capin}<&-   # the filter writes to our stderr, never back to us
   if [ "$log_stdout" = 1 ]; then
     _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&"$capfd" 2>&1 {capfd}>&-
   else
@@ -874,6 +945,9 @@ _adb_rd_bounded_capped() {
     if [ -f "$dflag" ]; then
       printf 'role-dispatch: WARNING — the agent exited but something it spawned still holds the log pipe open, so the log did not end after %ss; the filter was stopped and this dispatch'"'"'s log may be truncated. A background process the agent left running is the usual cause.\n' \
         "$_ADB_RD_LOG_DRAIN_SECS" >&2
+    elif [ "$crc" -eq 3 ]; then
+      # The filter saw this CLI's start-up denial end its log; a CLI that exited 0 had started.
+      [ "$rc" -ne 0 ] && _ADB_RD_DENIED_CLI="$1"
     elif [ "$crc" -ne 0 ]; then
       printf 'role-dispatch: WARNING — the log-capping filter failed (exit %s); this dispatch'"'"'s agent log is incomplete or missing, and an agent status of 141 means it took SIGPIPE from the dead filter rather than failing on its own.\n' "$crc" >&2
     fi
@@ -886,13 +960,21 @@ _adb_rd_bounded_capped() {
 # failed" is precisely what let a too-small bound masquerade as a codex problem for three runs
 # (#93): our own backstop, an OUTER bound, and a genuine agent error each warrant a different
 # response, so name which one happened rather than making the reader infer it.
+#
+# <denied-cli>, when given, names a CLI whose log ended on its own start-up denial (#505). It changes
+# only the LAST arm, so a bound that fired or an outer kill is still reported as itself.
+# Usage: adb_dispatch_classify_rc <rc> [<denied-cli>]
 adb_dispatch_classify_rc() {
   case "$1" in
     0)   printf 'completed' ;;
     124) printf 'INCOMPLETE: our %ss hang backstop fired — the work genuinely outran it; raise ADB_DISPATCH_TIMEOUT_SECS' "$_ADB_RD_TIMEOUT_SECS" ;;
     143) printf 'INCOMPLETE: SIGTERM (rc 143) — an OUTER bound killed it before our %ss backstop; re-dispatch in the background, or raise THAT bound (ours is not the cap here)' "$_ADB_RD_TIMEOUT_SECS" ;;
     137) printf 'INCOMPLETE: SIGKILL (rc 137) — killed from outside this helper (OOM killer or an outer harness), not by our backstop' ;;
-    *)   printf 'INCOMPLETE: agent exited %s — a real agent/CLI error, not a bound firing' "$1" ;;
+    *)   if [ -n "${2:-}" ]; then
+           printf 'INCOMPLETE: %s exited %s before it could start — the OS refused it ("Operation not permitted"), most likely a sandbox around this dispatch (Claude Code'"'"'s refuses codex and agy exactly so). Not an agent error and not a bound: a retry inside the same sandbox fails the same way; dispatch from an unsandboxed session (see "Cross-model roles and the sandbox" in ai-dev-baseline'"'"'s docs/installation.md)' "$2" "$1"
+         else
+           printf 'INCOMPLETE: agent exited %s — a real agent/CLI error, not a bound firing' "$1"
+         fi ;;
   esac
 }
 
@@ -1066,6 +1148,7 @@ _adb_rd_fd_size() {   # <fd>
 # (return 1) rather than a clean empty pass.
 _adb_rd_invoke_agent() {
   local token="$1" pf="$2" effort="${3:-}" repo rc last lb
+  _ADB_RD_DENIED_CLI=""   # evidence about THIS dispatch only — never a previous one's in the same shell
   case "$token" in
     # `$(<"$pf")` rather than `$(cat "$pf")` (#258): a builtin file read, no `cat` process. Both
     # strip trailing newlines identically, and the prompt is passed as one argv element either way.
@@ -1198,7 +1281,7 @@ _adb_rd_report() {
   [ "$3" -eq 0 ] && return 0
   local who="$1"
   [ "$1" = "$2" ] || who="$1 ($2)"
-  printf 'role-dispatch: %s — %s\n' "$who" "$(adb_dispatch_classify_rc "$3")" >&2
+  printf 'role-dispatch: %s — %s\n' "$who" "$(adb_dispatch_classify_rc "$3" "$_ADB_RD_DENIED_CLI")" >&2
   [ "$1" = gap_analysis ] && printf 'role-dispatch: gap_analysis does NOT fall back — surface this as a %s incompleteness; do not substitute another agent.\n' "$2" >&2
   [ "$1" = survey ] && printf 'role-dispatch: survey is an accelerator, not a gate — retry once, then continue WITHOUT it and say so (#435).\n' >&2
   return 0

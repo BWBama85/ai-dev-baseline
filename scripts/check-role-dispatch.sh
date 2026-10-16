@@ -894,6 +894,262 @@ if [ "$gcap" -lt 2000 ]; then ok; else bad "log_stdout=0 arm: stderr must still 
 has "$(cat "$work/gem.err")" "capped at" "log_stdout=0 arm: the cap notice is emitted too"
 set_repo '[roles]' 'gap_analysis = "codex"'
 
+# ==================== the log filter opens no path (#505, D132) ====================
+# Claude Code's shipped sandbox denies writes to `/dev/fd`, which is where bash on macOS opens an
+# OUTPUT process substitution — so a filter opened that way killed every dispatch before its CLI ran.
+# Observed through macOS's own `sandbox-exec` where it can run (not inside another sandbox), and
+# pinned structurally on every host.
+if command -v sandbox-exec >/dev/null 2>&1 && sandbox-exec -p '(version 1)(allow default)' true 2>/dev/null; then
+  cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'agy log line\n' >&2
+printf 'GEMINI-DEVFD-OK\n'
+exit 0
+EOF
+  chmod +x "$BIN/agy"
+  set_repo '[roles]' 'gap_analysis = "gemini"'
+  out="$(printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" \
+    sandbox-exec -p '(version 1)(allow default)(deny file-write* (regex #"^/dev/fd/"))' \
+    "$BASH" "$RD" invoke gap_analysis 2>"$work/devfd.err" ))"; out_rc=$?
+  eq "$out_rc" "0" "a dispatch runs where writes to /dev/fd are denied, as in the shipped sandbox"
+  eq "$out" "GEMINI-DEVFD-OK" "…its result comes back"
+  has "$(cat "$work/devfd.err")" "agy log line" "…and its log still passes through the filter"
+  set_repo '[roles]' 'gap_analysis = "codex"'
+else
+  echo "check-role-dispatch: NOTE — the /dev/fd denial was not exercised (no usable sandbox-exec here)" >&2
+fi
+if grep -vE '^[[:space:]]*#' "$RD" | grep -qE '>[[:space:]]*>\('; then
+  bad "role-dispatch.sh opens an output process substitution — bash writes to /dev/fd for it, which the shipped sandbox denies"
+else ok; fi
+
+# ==================== a start-up denial NAMES the sandbox (#505, D132) ====================
+# The stubs print what each CLI printed when Claude Code's macOS sandbox refused it at start-up.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'WARNING: proceeding, even though we could not create PATH aliases: Operation not permitted (os error 1)\n' >&2
+printf 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n' >&2
+exit 1
+EOF
+chmod +x "$BIN/codex"
+# The diagnosis does not depend on the cap: unbounded, disabled, and smaller than the stream.
+for _cap in 262144 0 50; do
+  out_rc=0
+  printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES="$_cap" bash "$RD" invoke gap_analysis >/dev/null 2>"$work/deny.err" || out_rc=$?
+  eq "$out_rc" "1" "start-up denial (cap $_cap): the CLI's own status is still the dispatch's"
+  has "$(grep 'gap_analysis (codex) —' "$work/deny.err")" "before it could start" "start-up denial (cap $_cap): the classified line says codex never started"
+  has "$(grep 'gap_analysis (codex) —' "$work/deny.err")" "sandbox" "start-up denial (cap $_cap): …and names the sandbox"
+  hasnt "$(cat "$work/deny.err")" "a real agent/CLI error" "start-up denial (cap $_cap): …instead of blaming the agent"
+  has "$(tail -1 "$work/deny.err")" "does NOT fall back" "start-up denial (cap $_cap): the role's policy line is still last"
+done
+has "$(cat "$work/deny.err")" "capped at 50 bytes" "start-up denial (cap 50): the bytes past the cap are still reported discarded"
+for _cap in 262144 0; do
+  printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES="$_cap" bash "$RD" invoke gap_analysis >/dev/null 2>"$work/deny.err"
+  has "$(cat "$work/deny.err")" "failed to initialize in-process app-server client" "start-up denial (cap $_cap): the CLI's own lines still reach the log"
+done
+# A cap EXACTLY the stream's length emits all of it and still diagnoses it.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n' >&2
+exit 1
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=95 bash "$RD" invoke gap_analysis >/dev/null 2>"$work/deny95.err"
+has "$(grep 'gap_analysis (codex) —' "$work/deny95.err")" "before it could start" "start-up denial (cap = stream length): still diagnosed"
+hasnt "$(cat "$work/deny95.err")" "capped at" "…and nothing was discarded"
+
+# agy's denial is on STDERR (stdout is its result), behind a log line that also says the phrase.
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'ERROR: logging before google.Init: E1015 main.go:652] Failed to redirect output for CLI: creating log file: open /h/.gemini/antigravity-cli/log/cli.log: operation not permitted\n' >&2
+printf 'Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted\n' >&2
+exit 1
+EOF
+chmod +x "$BIN/agy"
+set_repo '[roles]' 'gap_analysis = "gemini"'
+gout="$(printf 'x' | rd_env bash "$RD" invoke gap_analysis 2>"$work/gdeny.err")"; out_rc=$?
+eq "$out_rc" "1" "agy start-up denial: its status is the dispatch's"
+eq "$gout" "" "agy start-up denial: no result is invented"
+has "$(grep 'gap_analysis (gemini) —' "$work/gdeny.err")" "agy exited 1 before it could start" "agy start-up denial: the classified line names agy and the denial"
+
+# THE PHRASE ALONE IS NOT THE SIGNATURE: not on a run that succeeds, not before another fatal line,
+# not past the scan window, and not in a fatal line from after start-up.
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'ERROR: logging before google.Init: Failed to redirect output for CLI: operation not permitted\n' >&2
+printf 'GEMINI-FINAL-MESSAGE\n'
+exit 0
+EOF
+chmod +x "$BIN/agy"
+gout="$(printf 'x' | rd_env bash "$RD" invoke gap_analysis 2>"$work/gok.err")"; out_rc=$?
+eq "$out_rc" "0" "a successful agy run that logged the phrase is still a success"
+eq "$gout" "GEMINI-FINAL-MESSAGE" "…its result is intact"
+hasnt "$(cat "$work/gok.err")" "before it could start" "…and nothing is classified"
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'Failed to start: listen tcp 127.0.0.1:0: bind: operation not permitted\n' >&2
+printf 'E1015 errorreport.go:224] error getting token source: You are not logged into Antigravity.\n' >&2
+exit 1
+EOF
+chmod +x "$BIN/agy"
+printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/gother.err"
+has "$(grep 'gap_analysis (gemini) —' "$work/gother.err")" "a real agent/CLI error" "a denial line that is NOT the last word stays a real agent error"
+set_repo '[roles]' 'gap_analysis = "codex"'
+# The denial line ends exactly at the window's last byte and the stream goes on.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+sig='Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)'
+pad=$(( 4096 - ${#sig} - 2 ))
+printf '%*s\n' "$pad" '' | tr ' ' w
+printf '%s\n' "$sig"
+i=0; while [ "$i" -lt 50 ]; do printf 'exploring %05d wwwwwwwwwwwwwwwwwwwwwwwwwww\n' "$i"; i=$(( i + 1 )); done
+exit 1
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/clong.err"
+eq "$(head -c 4096 "$work/clong.err" | tail -1)" "Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)" \
+   "fixture: the denial line ends at the scan window's last byte"
+has "$(grep 'gap_analysis (codex) —' "$work/clong.err")" "a real agent/CLI error" "a CLI that wrote past the scan window had started — not a start-up denial"
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' "$CODEX_LINE" >&2
+exit 1
+EOF
+chmod +x "$BIN/codex"
+for _line in 'touch: out.txt: Operation not permitted (os error 1)' \
+             'Error: failed to write final message: Operation not permitted (os error 1)'; do
+  printf 'x' | rd_env CODEX_LINE="$_line" bash "$RD" invoke gap_analysis >/dev/null 2>"$work/ctool.err"
+  eq "$(head -1 "$work/ctool.err")" "$_line" "fixture: the stub printed its line"
+  has "$(grep 'gap_analysis (codex) —' "$work/ctool.err")" "a real agent/CLI error" "not codex's start-up denial: $_line"
+done
+
+# A CLI that exited 0 had started; codex's arm then fails it for writing no final message.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n' >&2
+exit 0
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/czero.err"
+has "$(grep 'gap_analysis (codex) —' "$work/czero.err")" "a real agent/CLI error" "a CLI that exited 0 is never classified as refused at start-up"
+
+# A denial stream that ends EXACTLY at the window's last byte did end inside it.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+sig='Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)'
+printf '%*s\n' "$(( 4096 - ${#sig} - 2 ))" '' | tr ' ' w
+printf '%s\n' "$sig"
+exit 1
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env bash "$RD" invoke gap_analysis >/dev/null 2>"$work/cedge.err"
+eq "$(grep -v '^role-dispatch:' "$work/cedge.err" | wc -c | tr -d ' ')" "4096" "fixture: the denial stream is exactly the scan window"
+has "$(grep 'gap_analysis (codex) —' "$work/cedge.err")" "before it could start" "a denial ending exactly at the window's edge is still diagnosed"
+
+# AN INHERITED `TMOUT` IS NOT EOF: bash's `read` times out on it, and a pause inside the scan window
+# must not end the passthrough (and SIGPIPE the agent that writes after it).
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf 'first\n' >&2; sleep 2; printf 'second\n' >&2
+printf 'GEMINI-TMOUT-OK\n'
+exit 0
+EOF
+chmod +x "$BIN/agy"
+set_repo '[roles]' 'gap_analysis = "gemini"'
+out="$(printf 'x' | rd_env TMOUT=1 bash "$RD" invoke gap_analysis 2>"$work/tmout.err")"; out_rc=$?
+eq "$out_rc" "0" "an inherited TMOUT and a pause inside the scan window do not fail the dispatch"
+eq "$out" "GEMINI-TMOUT-OK" "…its result comes back"
+has "$(cat "$work/tmout.err")" "second" "…and the log after the pause is still passed through"
+set_repo '[roles]' 'gap_analysis = "codex"'
+
+# A FILTER THAT CANNOT WRITE says so (1) — inside the scan window too — and never claims a denial.
+for _in in 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)' 'ordinary log text'; do
+  _cs="$( "$BASH" -c '. "$1" >/dev/null 2>&1; printf "%s\n" "$2" | _adb_rd_cap_stream 0 codex >&- 2>/dev/null; printf %s "$?"' rd_wf "$RD" "$_in" 2>/dev/null )"
+  eq "$_cs" "1" "a scan-window write failure is a filter failure: $_in"
+done
+
+# A BROKEN OUTPUT PIPE IS A WRITE ERROR, NOT A KILL: the dispatch's stderr goes to a reader that
+# exits early, and the agent — still writing its log — must finish and return its result.
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+i=0; while [ "$i" -lt 8000 ]; do printf 'gnoise %05d qqqqqqqqqqqqqqqqqqqqqqqq\n' "$i" >&2; i=$(( i + 1 )); done
+printf 'GEMINI-EPIPE-OK\n'
+exit 0
+EOF
+chmod +x "$BIN/agy"
+set_repo '[roles]' 'gap_analysis = "gemini"'
+( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" bash "$RD" invoke gap_analysis \
+    < <(printf 'x') > "$work/epipe.out" 2> >(head -c 100 >/dev/null) ) 2>/dev/null
+eq "$(cat "$work/epipe.out")" "GEMINI-EPIPE-OK" "a dispatch whose log reader went away still lets the agent finish and return its result"
+set_repo '[roles]' 'gap_analysis = "codex"'
+
+# A PASSTHROUGH THAT FAILS IS A FILTER FAILURE, never a clean or a denied one: the uncapped `cat` is
+# made to fail, past the window, and the filter's status must say so.
+_cs="$( "$BASH" -c '. "$1" >/dev/null 2>&1
+  cat() { command cat >/dev/null; return 7; }
+  { head -c 5000 /dev/zero | tr "\0" w; } | _adb_rd_cap_stream 0 codex >/dev/null 2>&1; printf %s "$?"' rd_cat "$RD" )"
+if [ -n "$_cs" ] && [ "$_cs" != 0 ] && [ "$_cs" != 3 ]; then ok
+else bad "a failed uncapped passthrough must fail the filter with its own status, not 0 or the denial's 3 (got '$_cs')"; fi
+
+# A BOUND THAT FIRED IS STILL THE BOUND: the denial changes only the generic arm.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n' >&2
+sleep 20
+EOF
+chmod +x "$BIN/codex"
+out_rc=0
+printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/cbound.err" || out_rc=$?
+eq "$out_rc" "124" "a denial line before a hang: the bound still fires"
+has "$(grep 'gap_analysis (codex) —' "$work/cbound.err")" "backstop" "…and the line blames the bound, not the sandbox"
+
+# THE EVIDENCE IS PER DISPATCH: a denial, then an ordinary failure, from one shell.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)\n' >&2
+exit 1
+EOF
+cat > "$BIN2/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'Error: model overloaded\n' >&2
+exit 1
+EOF
+chmod +x "$BIN/codex" "$BIN2/codex"
+# Here-strings, not pipes, so both dispatches share one shell's state; "$BASH", so the library runs
+# under this suite's interpreter rather than whichever `bash` PATH finds first.
+two="$( cd "$REPO" && HOME="$GHOME" "$BASH" -c '. "$1" >/dev/null 2>&1
+  PATH="$2:$PATH"; adb_dispatch_invoke codex <<< x >/dev/null 2>&1
+  PATH="$3:$PATH"; adb_dispatch_invoke codex <<< x 2>&1 >/dev/null' rd_two "$RD" "$BIN" "$BIN2" | grep 'role-dispatch: codex —' )"
+has "$two" "a real agent/CLI error" "a denial in one dispatch does not classify the next one in the same shell"
+
+# THE SCAN IS A PASSTHROUGH, byte for byte, across the window's edge (a NUL, a 0xff, a CR).
+head -c 3000 /dev/urandom > "$work/exact.bin"; printf 'mid\000dle\377\r\n' >> "$work/exact.bin"
+head -c 3000 /dev/urandom >> "$work/exact.bin"
+cat > "$BIN/codex" <<EOF
+#!/usr/bin/env bash
+last=""
+while [ "\$#" -gt 0 ]; do [ "\$1" = "--output-last-message" ] && { last="\$2"; shift; }; shift; done
+cat >/dev/null
+cat "$work/exact.bin"
+[ -n "\$last" ] && printf 'VERDICT: fine\n' > "\$last"
+exit 0
+EOF
+chmod +x "$BIN/codex"
+for _cap in 100000 0; do
+  printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES="$_cap" bash "$RD" invoke gap_analysis >/dev/null 2>"$work/exact.err"
+  if cmp -s "$work/exact.bin" "$work/exact.err"; then ok
+  else bad "the scan window altered the log stream (cap $_cap) — it must pass every byte through unchanged"; fi
+done
+
 # The knob itself: the committed default, an override, and a rejected value that says so rather
 # than silently running unbounded. Same shape as the bound/grace knobs above.
 eq "${ rd_var _ADB_RD_LOG_MAX_BYTES; }" "262144" "the no-environment default log cap is 262144 bytes (256 KiB)"
