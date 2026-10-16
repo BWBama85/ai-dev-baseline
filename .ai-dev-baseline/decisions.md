@@ -10220,22 +10220,26 @@ survive is the part a later reader needs.
              site, an echoed original site, a result or evidence. A missing class names the class.
              The assembled-file check, which only cross-row invariants and the size bound can still
              fail, names which one. Each row gains a `sibling` prefix, so a reply under the 1 MiB
-             bound can assemble past it. The reply stays on its exclusively created stage name,
-             `sweep-pr<N>-<head>.tsv.reply.<pid>`, inside the family /cleanup already sweeps by PR,
-             so it is never published and clears with the run. It is deleted only once the assembled
-             file validates. A failed dispatch keeps a partial reply that reached the sweep, which
-             is what `claude` and `agy` stream on stdout. Codex delivers its answer through
-             `--output-last-message`, which `role-dispatch.sh` deletes on a failed run, so a failed
-             codex dispatch reaches the sweep empty. Its evidence is the dispatch log, which is
-             capped: the CLI stream's first 256 KiB by default (`ADB_DISPATCH_LOG_MAX_BYTES`), then
-             the classified line, so late detail can be cut. That log was one shared
+             bound can assemble past it. The reply stays on an exclusively created name,
+             `sweep-pr<N>-<head>.tsv.reply.<random>`, inside the family /cleanup already sweeps by
+             PR, so it is never published and clears with the run. It is deleted only once the
+             assembled file validates. A failed dispatch keeps a partial reply that reached the
+             sweep, which is what `claude` and `agy` stream on stdout. Codex delivers its answer
+             through `--output-last-message`, which `role-dispatch.sh` deletes on a failed run, so a
+             failed codex dispatch reaches the sweep empty. Its evidence is the dispatch log, which
+             is capped: the CLI stream's first 256 KiB by default (`ADB_DISPATCH_LOG_MAX_BYTES`),
+             then the classified line, so late detail can be cut. That log was one shared
              `sweep-pr<N>-<head>.tsv.err`, deleted before each dispatch, so step 4a's retry of a
-             `22` destroyed the first attempt's log. It is now `.err.<pid>`, one per attempt, inside
-             the same /cleanup family (local review pass 1). Changing `role-dispatch.sh` to surface
-             a failed run's last message was declined (a step-8 review finding): every dispatch
-             shares that failure contract, and the issue asked for refusal evidence. The issue said
-             other refusals in that function already kept the reply for size. They did not: the size
-             refusal also deleted it, and the precedent is the native review reply's.
+             `22` destroyed the first attempt's log. It is now `.err.<random>`, one per attempt,
+             inside the same /cleanup family (local review pass 1). Both kept names take a 64-bit
+             `SRANDOM` suffix and are created without removing anything at the name, so a repeated
+             name is skipped rather than replaced: a pid suffix with the usual remove-then-create
+             would have deleted an earlier attempt's evidence whenever a pid repeated (local review
+             pass 2). Changing `role-dispatch.sh` to surface a failed run's last message was
+             declined (a step-8 review finding): every dispatch shares that failure contract, and
+             the issue asked for refusal evidence. The issue said other refusals in that function
+             already kept the reply for size. They did not: the size refusal also deleted it, and
+             the precedent is the native review reply's.
              **Codes, so a retry list can be exact.** `18` and `19` had two sources each: the reply,
              which a re-dispatch can change, and files the caller owns, which a retry refuses again.
              A refused findings input is now `23`. An existing sweep at this head that does not
@@ -10247,21 +10251,21 @@ survive is the part a later reader needs.
              both markers, stores the evidence verbatim, and has `sweep-mark` accept such a reason.
              For a control byte, more than 1024 bytes, an unknown result, a duplicate row, a reply
              that assembles past the bound and a missing class, it asserts the code and the
-             message's rule, line or class. For each but the missing class it asserts that the kept
-             file holds the refused reply; for the missing class, only that a path is named. A
-             failed dispatch with an empty reply, and a codex stub that writes a partial answer and
-             then fails, leave no reply, and two such failures leave two `.err` logs. A `claude`
-             stub that writes a partial reply and fails keeps it. The three findings-input refusals
-             are `23`. `check-pattern-ledger.sh` §11 covers the file grammar: markers validate; a
-             control byte, 1025 bytes and 513 two-byte characters under a UTF-8 locale are refused,
-             while 1024 bytes and 512 two-byte characters pass. It checks the rule's printed names,
-             and that `record --sweep` reads marker-quoting evidence without any of it reaching the
-             ledger. Seven new mutation rows require each half red on its own witness: markers
-             refused, control allowed, bound removed, characters counted, the ledger rule restored
-             on evidence or on the summary, and `19` dropped from the retry. `check-common-lib.sh`
-             runs the rule over every byte 1..255 under a UTF-8 caller against the `tr -d
-             '[:cntrl:]'` oracle, and refuses a 513-character multibyte value under a readonly
-             `LC_ALL`.
+             message's rule, line or class. For each it compares the kept file, byte for byte, with
+             the reply the agent returned. A failed dispatch with an empty reply, and a codex stub
+             that writes a partial answer and then fails, leave no reply, and two such failures
+             leave two `.err` logs. A reply and a log seeded by an earlier attempt survive every
+             later attempt unchanged. A `claude` stub that writes a partial reply and fails keeps
+             it. The three findings-input refusals are `23`. `check-pattern-ledger.sh` §11 covers
+             the file grammar: markers validate; a control byte, 1025 bytes and 513 two-byte
+             characters under a UTF-8 locale are refused, while 1024 bytes and 512 two-byte
+             characters pass. It checks the rule's printed names, and that `record --sweep` reads
+             marker-quoting evidence without any of it reaching the ledger. Seven new mutation rows
+             require each half red on its own witness: markers refused, control allowed, bound
+             removed, characters counted, the ledger rule restored on evidence or on the summary,
+             and `19` dropped from the retry. `check-common-lib.sh` runs the rule over every byte
+             1..255 under a UTF-8 caller against the `tr -d '[:cntrl:]'` oracle, and refuses a
+             513-character multibyte value under a readonly `LC_ALL`.
 - placement: `scripts/lib/common.sh` (`adb_sweep_text_rule`, `adb_sweep_ok_text`, the sweep grammar
              header) · `scripts/lib/implement-lib.sh` (`dispatch-sweep`, `sweep-mark`) ·
              `base/workflows/resolve-pr-threads.md` step 4a · `scripts/check-implement-lib.sh` ·

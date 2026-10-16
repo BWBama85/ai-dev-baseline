@@ -3353,28 +3353,33 @@ eq "$( ( cd "$SWR" && bash "$IL" sweep-report "$SWF" ) 2>/dev/null )" \
    "sweep: 2 classes · 1 siblings found · 0 fixed · 0 deferred · 1 declined · 0 open" "46 …and sweep-report counts it"
 
 # A refusal names the rule (and the reply line, where one line broke it) and keeps the reply — on
-# every refusal path, the assembled-file check included.
+# every refusal path, the assembled-file check included — byte for byte as the agent returned it.
+# sw_kept_is <phrase> <expected-file> <name> — the path the refusal prints holds exactly those bytes.
+sw_kept_is() {
+  local k; k="$(sw_kept "$1")"
+  if [ -n "$k" ] && [ -f "$SWR/$k" ] && cmp -s "$2" "$SWR/$k"; then ok; else bad "$3 [${k:-no path printed}]"; fi
+}
 rm -f "$SWF"
-eq "$(SW_REPLY='```'$'\n'"alpha-class${T}lib/x.sh:9${T}found${T}bad$(printf '\001')byte"$'\n'"beta-class${T}-${T}none${T}x" \
-      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 evidence carrying a control byte is still refused (19)"
+# Earlier attempts' kept files are evidence: no later attempt may remove or rewrite them.
+printf 'seeded reply\n' > "$SWR/.claude/state/sweep-pr7-$SWH.tsv.reply.seeded"
+printf 'seeded log\n' > "$SWR/.claude/state/sweep-pr7-$SWH.tsv.err.seeded"
+sw_r='```'$'\n'"alpha-class${T}lib/x.sh:9${T}found${T}bad$(printf '\001')byte"$'\n'"beta-class${T}-${T}none${T}x"
+printf '%s\n' "$sw_r" > "$work/sw-want"
+eq "$(SW_REPLY="$sw_r" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 evidence carrying a control byte is still refused (19)"
 has "$(cat "$work/sw-err.txt")" 'reply line 2: the evidence is refused (carries a control character)' \
     "46 …naming the reply's physical line and the rule it broke"
-kept="$(sw_kept 'the refused reply')"
-if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'lib/x.sh:9' "$SWR/$kept"; then ok; else
-  bad "46 …and keeping the refused reply at the path it prints [${kept:-none}]"; fi
+sw_kept_is 'the refused reply' "$work/sw-want" "46 …and keeping the refused reply, byte for byte, at the path it prints"
 if [ -e "$SWF" ]; then bad "46 …while publishing nothing"; else ok; fi
-eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}$(printf 'x%.0s' $(seq 1 1025))"$'\n'"beta-class${T}-${T}none${T}x" \
-      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 evidence over 1024 bytes is refused (19)"
+sw_r="alpha-class${T}lib/x.sh:9${T}found${T}$(printf 'x%.0s' $(seq 1 1025))"$'\n'"beta-class${T}-${T}none${T}x"
+printf '%s\n' "$sw_r" > "$work/sw-want"
+eq "$(SW_REPLY="$sw_r" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 19 "46 evidence over 1024 bytes is refused (19)"
 has "$(cat "$work/sw-err.txt")" 'reply line 1: the evidence is refused (longer than 1024 bytes)' "46 …and the message says so"
-kept="$(sw_kept 'the refused reply')"
-if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'xxxxxxxxxx' "$SWR/$kept"; then ok; else
-  bad "46 …keeping the over-long reply at the path it prints [${kept:-none}]"; fi
-eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}a"$'\n'"alpha-class${T}lib/x.sh:9${T}found${T}b"$'\n'"beta-class${T}-${T}none${T}x" \
-      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a class and site answered twice is refused (18)"
+sw_kept_is 'the refused reply' "$work/sw-want" "46 …keeping the over-long reply, byte for byte"
+sw_r="alpha-class${T}lib/x.sh:9${T}found${T}a"$'\n'"alpha-class${T}lib/x.sh:9${T}found${T}b"$'\n'"beta-class${T}-${T}none${T}x"
+printf '%s\n' "$sw_r" > "$work/sw-want"
+eq "$(SW_REPLY="$sw_r" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a class and site answered twice is refused (18)"
 has "$(cat "$work/sw-err.txt")" 'a class and site answered twice' "46 …naming what the assembled file broke"
-kept="$(sw_kept 'the refused reply')"
-if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q "found${T}b" "$SWR/$kept"; then ok; else
-  bad "46 …and keeping the reply, which a refusal of the assembled file needs as much as any other [${kept:-none}]"; fi
+sw_kept_is 'the refused reply' "$work/sw-want" "46 …and keeping the reply, which a refusal of the assembled file needs as much as any other"
 # Each row gains a prefix, so a reply under the 1 MiB bound can assemble past it: that refusal names
 # the bound, never a duplicate the reply does not have.
 sw_ev="$(printf 'x%.0s' $(seq 1 1000))"
@@ -3384,31 +3389,30 @@ if [ "$(wc -c < "$work/sw-big-reply.txt" | tr -d ' ')" -le 1048576 ]; then ok; e
 eq "$(SW_REPLY_FILE="$work/sw-big-reply.txt" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 \
    "46 a reply under the bound that assembles past it is refused (18)"
 has "$(cat "$work/sw-err.txt")" 'past the 1048576-byte bound its reader enforces' "46 …naming the bound, not a duplicate it does not have"
-kept="$(sw_kept 'the refused reply')"
-if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'lib/1012.sh' "$SWR/$kept"; then ok; else
-  bad "46 …and keeping that reply [${kept:-none}]"; fi
-eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}found${T}x" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 \
-   "46 a class left unanswered is refused (18)"
+sw_kept_is 'the refused reply' "$work/sw-big-reply.txt" "46 …and keeping that reply, byte for byte"
+sw_r="alpha-class${T}lib/x.sh:9${T}found${T}x"
+printf '%s\n' "$sw_r" > "$work/sw-want"
+eq "$(SW_REPLY="$sw_r" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 a class left unanswered is refused (18)"
 has "$(cat "$work/sw-err.txt")" 'the reply has no row for class beta-class' "46 …naming the class"
-has "$(cat "$work/sw-err.txt")" 'kept for inspection at' "46 …and keeping the reply"
-eq "$(SW_REPLY="alpha-class${T}lib/x.sh:9${T}maybe${T}x"$'\n'"beta-class${T}-${T}none${T}x" \
-      sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 an unknown result is refused (18)"
+sw_kept_is 'the refused reply' "$work/sw-want" "46 …and keeping the reply, byte for byte"
+sw_r="alpha-class${T}lib/x.sh:9${T}maybe${T}x"$'\n'"beta-class${T}-${T}none${T}x"
+printf '%s\n' "$sw_r" > "$work/sw-want"
+eq "$(SW_REPLY="$sw_r" sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 18 "46 an unknown result is refused (18)"
 has "$(cat "$work/sw-err.txt")" 'reply line 1 has a result that is neither found nor none' "46 …naming the line"
-kept="$(sw_kept 'the refused reply')"
-if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'maybe' "$SWR/$kept"; then ok; else
-  bad "46 …and keeping that reply at the path it prints [${kept:-none}]"; fi
+sw_kept_is 'the refused reply' "$work/sw-want" "46 …and keeping that reply, byte for byte"
 if [ -e "$SWF" ]; then bad "46 …and no refusal above published a file"; else ok; fi
 
 # A FAILED DISPATCH keeps a partial reply that reached the sweep, and nothing for an empty one. Codex
 # delivers its answer only on success, so a failed codex run reaches the sweep empty whatever it wrote.
-rm -f "$SWR"/.claude/state/sweep-pr7-*.reply.*
+sw_replies() { local f n=0; for f in "$SWR"/.claude/state/sweep-pr7-"$SWH".tsv.reply.*; do [ -f "$f" ] && n=$((n + 1)); done; echo "$n"; }
+sw_errs() { local f n=0; for f in "$SWR"/.claude/state/sweep-pr7-"$SWH".tsv.err.*; do [ -f "$f" ] && n=$((n + 1)); done; echo "$n"; }
+sw_p0="$(sw_replies)"
 eq "$(SW_FAIL=1 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 22 "46 a failed dispatch with an empty reply is 22"
-hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and an EMPTY reply is not kept: it is no evidence"
+eq "$(sw_replies)" "$sw_p0" "46 …and an EMPTY reply is not kept: it is no evidence"
 eq "$(SW_FAIL=2 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 22 \
    "46 a codex dispatch that wrote a partial answer and then failed is 22"
-hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and keeps no reply, because codex's answer never reaches the sweep on a failure"
+eq "$(sw_replies)" "$sw_p0" "46 …and keeps no reply, because codex's answer never reaches the sweep on a failure"
 # …so its log is the evidence, and the resolver's retry must not overwrite the first attempt's.
-sw_errs() { local f n=0; for f in "$SWR"/.claude/state/sweep-pr7-"$SWH".tsv.err.*; do [ -f "$f" ] && n=$((n + 1)); done; echo "$n"; }
 sw_e0="$(sw_errs)"
 SW_FAIL=2 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex >/dev/null
 SW_FAIL=2 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex >/dev/null
@@ -3420,11 +3424,12 @@ printf 'alpha-class\tlib/x.sh:9\tfound\tpartial answer\n'
 exit 3
 SH
 chmod +x "$swbin/claude"
+printf 'alpha-class\tlib/x.sh:9\tfound\tpartial answer\n' > "$work/sw-want"
 eq "$(sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state claude)" 22 "46 a dispatch that fails after writing is 22"
-kept="$(sw_kept "the failed dispatch's partial reply")"
-if [ -n "$kept" ] && [ -f "$SWR/$kept" ] && grep -q 'partial answer' "$SWR/$kept"; then ok; else
-  bad "46 …and its partial reply is kept at the path it prints [${kept:-none}]"; fi
+sw_kept_is "the failed dispatch's partial reply" "$work/sw-want" "46 …and its partial reply is kept, byte for byte, at the path it prints"
 rm -f "$swbin/claude"
+eq "$(cat "$SWR/.claude/state/sweep-pr7-$SWH.tsv.reply.seeded" "$SWR/.claude/state/sweep-pr7-$SWH.tsv.err.seeded" 2>/dev/null)" \
+   "seeded reply"$'\n'"seeded log" "46 an earlier attempt's kept reply and log survive every later attempt untouched"
 
 # _stage_count <dir> [suffix-glob] — how many `review-prompt-stage.<suffix>` entries exist.
 # A GLOB, never `ls | grep`: an unmatched glob stays literal and `[ -e ]` filters it, while a

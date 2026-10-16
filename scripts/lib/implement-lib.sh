@@ -1134,6 +1134,30 @@ _il_excl_create() {   # <path> <fdvar-name>
   return 0
 }
 
+# _il_excl_create_new <prefix> <fdvar-name> <pathvar-name> — the same exclusive held-descriptor
+# create, at a NEW name `<prefix>.<64-bit random hex>`, for an artifact KEPT after the run (a refused
+# reply, a dispatch log). It never removes anything: `_il_excl_create`'s rm-first would delete an
+# earlier attempt's kept file at a repeated name, so a taken name is skipped instead. Returns 1,
+# with both variables empty, after 16 taken names.
+_il_excl_create_new() {
+  local __pre="$1" __had=0 __try __cand
+  local -n __nfd="$2" __npath="$3"
+  __nfd=""; __npath=""
+  case "$-" in *C*) __had=1 ;; esac
+  set -C
+  for __try in {1..16}; do
+    printf -v __cand '%s.%08x%08x' "$__pre" "$SRANDOM" "$SRANDOM"
+    if { exec {__nfd}>"$__cand"; } 2>/dev/null; then
+      [ "$__had" -eq 1 ] || set +C
+      __npath="$__cand"
+      return 0
+    fi
+    __nfd=""
+  done
+  [ "$__had" -eq 1 ] || set +C
+  return 1
+}
+
 # Close every descriptor number given; empty arguments (a descriptor never opened) are skipped.
 _il_fd_close() {
   local n
@@ -3583,7 +3607,7 @@ cmd_dispatch_review() {
 #   printed with the rule it broke (and the reply line, where one line broke it), on its stage name
 #   inside the `sweep-pr*-*.tsv.*` family /cleanup sweeps by PR. A failed dispatch keeps any partial
 #   reply that reached it; codex delivers its answer only on success, so its evidence is the
-#   attempt's own `.err.<pid>` log, which a retry cannot overwrite.
+#   attempt's own `.err.<random>` log. Neither kept file is ever overwritten by a later attempt.
 #
 # sweep-report <sweep-file> — validate the file whole, then print the round's one summary line.
 #   Exit 0 · 18 · 19 · 20, printing nothing unless the file validates.
@@ -3714,16 +3738,14 @@ cmd_dispatch_sweep() {
       printf 'sibling\t%s\t-\tskipped\tthe review role has no usable agent, so no sibling search ran\n' "$c"
     done <<< "$classes" 1>&"$sfd"
   else
-    local prompt pfd="" rfd="" errf efd="" mb dbefore dafter line fc fs ft fsum
-    # ONE LOG PER ATTEMPT: a caller retries a failed dispatch, and a shared name lost the first
-    # attempt's log to the second — for codex, the only evidence a failure leaves.
-    prompt="$dir/$name.prompt.$$"; reply="$dir/$name.reply.$$"; errf="$dir/$name.err.$$"
+    local prompt pfd="" rfd="" errf="" efd="" mb dbefore dafter line fc fs ft fsum
+    prompt="$dir/$name.prompt.$$"
     _il_excl_create "$prompt" pfd \
       || { exec {sfd}>&-; rm -f "$stage"; echo "implement-lib: dispatch-sweep: could not create the prompt stage exclusively" >&2; return 20; }
     _sweep_abort() {
       if [ -n "$sfd" ]; then exec {sfd}>&-; fi
       if [ -n "$pfd" ]; then exec {pfd}>&-; fi
-      rm -f "$stage" "$prompt" "$reply"
+      rm -f "$stage" "$prompt" ${reply:+"$reply"}
       printf 'implement-lib: dispatch-sweep: %s\n' "$1" >&2
     }
     {
@@ -3764,8 +3786,12 @@ cmd_dispatch_sweep() {
     [ $((dafter - dbefore)) -lt 8388609 ] \
       || { _sweep_abort "the pull request diff exceeds the 8388608-byte bound"; return 20; }
     exec {pfd}>&-
-    _il_excl_create "$reply" rfd || { _sweep_abort "could not create the reply file exclusively"; return 20; }
-    rm -f "$errf"; exec {efd}>"$errf" || { exec {rfd}>&-; _sweep_abort "could not open $errf"; return 20; }
+    # The reply and the log are KEPT on failure, one of each per attempt and never overwritten: a
+    # caller retries a failed dispatch, and for codex the log is the only evidence it leaves (D134).
+    _il_excl_create_new "$dir/$name.reply" rfd reply \
+      || { _sweep_abort "could not create the reply file exclusively"; return 20; }
+    _il_excl_create_new "$dir/$name.err" efd errf \
+      || { exec {rfd}>&-; _sweep_abort "could not create the dispatch log exclusively"; return 20; }
     if [ -n "$effort" ]; then
       bash "$_IL_ROLE_DISPATCH" invoke "$token" --effort "$effort" < "$prompt" 2>&"$efd" | head -c 1048577 1>&"$rfd"
     else
