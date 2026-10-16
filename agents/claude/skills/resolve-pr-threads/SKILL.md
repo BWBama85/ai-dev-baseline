@@ -816,7 +816,8 @@ round without one.
 **A refused reply is kept, and its message says why** (#526). An 18 or 19 names the rule it broke,
 and the reply line wherever one line broke it, and prints the path the reply is kept at. A 22 keeps
 any partial reply that reached the sweep; Codex delivers its answer only on success, so for Codex
-the evidence is the `.err` file the line names. Read the kept file before you report a stop. Evidence and reasons are free text: they may
+the evidence is the attempt's `.err` log the line names (one per attempt, so the retry keeps the
+first; capped, so late detail can be cut). Read the kept file before you report a stop. Evidence and reasons are free text: they may
 quote markup, `<!--` and `-->` included, because the sweep file is a TSV that nothing renders. What
 is refused is an empty field, a tab, a control character, or more than 1024 bytes. A `21` is a sweep
 file already at this head that cannot stand in for this round, because it does not parse or was

@@ -299,7 +299,8 @@ only by a published release, which is what these entries are the notes for.
   refusal now names the rule it broke and, where one reply line broke it, that line. The reply is
   kept at a path the message prints, on every refusal path; before, it was deleted. A failed
   dispatch keeps any partial reply that reached the sweep. Codex delivers its answer only on
-  success, so for Codex the evidence is the `.err` file. Codes changed: a refused findings file is
+  success, so for Codex the evidence is the attempt's dispatch log, now one `.err.<pid>` per attempt
+  so step 4a's retry no longer overwrites the first. Codes changed: a refused findings file is
   `23`, and an existing sweep that does not parse is `21` with the other non-reusable case, so `18`,
   `19` and `22` are only ever about the reply or the dispatch. Step 4a retries those three once and
   stops on `23`.

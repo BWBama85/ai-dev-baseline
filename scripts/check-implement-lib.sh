@@ -3407,7 +3407,12 @@ hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and an EMPTY reply is not
 eq "$(SW_FAIL=2 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex)" 22 \
    "46 a codex dispatch that wrote a partial answer and then failed is 22"
 hasnt "$(ls -a "$SWR/.claude/state")" '.reply.' "46 …and keeps no reply, because codex's answer never reaches the sweep on a failure"
-if [ -f "$SWR/.claude/state/sweep-pr7-$SWH.tsv.err" ]; then ok; else bad "46 …while its .err stream, the evidence the docs name, is kept"; fi
+# …so its log is the evidence, and the resolver's retry must not overwrite the first attempt's.
+sw_errs() { local f n=0; for f in "$SWR"/.claude/state/sweep-pr7-"$SWH".tsv.err.*; do [ -f "$f" ] && n=$((n + 1)); done; echo "$n"; }
+sw_e0="$(sw_errs)"
+SW_FAIL=2 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex >/dev/null
+SW_FAIL=2 sweep_err --pr 7 --findings .claude/state/findings.tsv .claude/state codex >/dev/null
+eq "$(sw_errs)" "$((sw_e0 + 2))" "46 two failed attempts leave two .err logs: a retry never overwrites the first attempt's evidence"
 cat > "$swbin/claude" <<'SH'
 #!/usr/bin/env bash
 cat > /dev/null

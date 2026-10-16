@@ -3582,7 +3582,8 @@ cmd_dispatch_review() {
 #   files the caller owns, and a retry would refuse them again. A refused reply is KEPT and its path
 #   printed with the rule it broke (and the reply line, where one line broke it), on its stage name
 #   inside the `sweep-pr*-*.tsv.*` family /cleanup sweeps by PR. A failed dispatch keeps any partial
-#   reply that reached it; codex delivers its answer only on success, so its evidence is the `.err`.
+#   reply that reached it; codex delivers its answer only on success, so its evidence is the
+#   attempt's own `.err.<pid>` log, which a retry cannot overwrite.
 #
 # sweep-report <sweep-file> — validate the file whole, then print the round's one summary line.
 #   Exit 0 · 18 · 19 · 20, printing nothing unless the file validates.
@@ -3714,7 +3715,9 @@ cmd_dispatch_sweep() {
     done <<< "$classes" 1>&"$sfd"
   else
     local prompt pfd="" rfd="" errf efd="" mb dbefore dafter line fc fs ft fsum
-    prompt="$dir/$name.prompt.$$"; reply="$dir/$name.reply.$$"; errf="$dir/$name.err"
+    # ONE LOG PER ATTEMPT: a caller retries a failed dispatch, and a shared name lost the first
+    # attempt's log to the second — for codex, the only evidence a failure leaves.
+    prompt="$dir/$name.prompt.$$"; reply="$dir/$name.reply.$$"; errf="$dir/$name.err.$$"
     _il_excl_create "$prompt" pfd \
       || { exec {sfd}>&-; rm -f "$stage"; echo "implement-lib: dispatch-sweep: could not create the prompt stage exclusively" >&2; return 20; }
     _sweep_abort() {
