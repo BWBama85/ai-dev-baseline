@@ -10052,33 +10052,59 @@ survive is the part a later reader needs.
              437` (PR #510): a 71-step run of 84m09s reported `FAILED: common-lib
              settings-fragment-mutation`, the tail held only the second step's block, and
              `common-lib` then passed ten times. Its failure could never be attributed: the log was
-             gone, and the only route to it was another 85-minute run.
+             gone, and the only route to it was another 85-minute run. It recurred while this
+             change was gated: the installed runner, still the old copy, kept 4225 bytes of a
+             46-minute run whose one red step was not among them.
 - decision:  **Keep the log; do not parse it.** The issue offered two remedies: keep the full log
              and print its path, or print every failing step's section. The second needs a grammar
              for "a step", and only `selfcheck.sh` has one. This runner serves every adopting
              project's gates, and the issue scopes selfcheck's own logging out. The 4000-byte tail
              stays, because the Stop hook's stderr goes straight back to the model, and the tail
              is the cheap first read.
-             **Where.** One `mktemp -d "${TMPDIR:-/tmp}/adb-gates.XXXXXX"` directory per run,
-             never inside the checkout: `adopt-readiness.sh` digests untracked files into its
-             receipt, the Stop hook adds them to the change set it scopes gates by, and this
-             library cannot know the agent's state directory. The template is explicit because a
-             bare `mktemp -d` on macOS behaves as `-t tmp`, which prefers
-             `_CS_DARWIN_USER_TEMP_DIR` to `$TMPDIR` (a probe on Darwin 25.6.0 with
-             `TMPDIR=/tmp/claude-501` created under `/var/folders`). The directory is owner-only:
-             GNU's documentation says so (context7, coreutils `mktemp` invocation), and on macOS a
-             probe read `700` under umask 022, 077 and 000.
-             **What is kept, and why retention is unbounded.** A passing gate's log is deleted
-             the moment it passes, and the directory is deleted when no gate failed. So a kept
+             **Where.** One `mktemp -d "$base/adb-gates.XXXXXX"` directory per run, where `$base`
+             is `${TMPDIR:-/tmp}` made absolute first. A relative `$TMPDIR` spelled `-tmp` was
+             otherwise parsed as an option (local review pass 1). It is never inside the checkout:
+             `adopt-readiness.sh` digests untracked files into its receipt, the Stop hook adds them
+             to the change set it scopes gates by, and this library cannot know the agent's state
+             directory. The template is explicit because a bare `mktemp -d` on macOS behaves as
+             `-t tmp`, which prefers `_CS_DARWIN_USER_TEMP_DIR` to `$TMPDIR` (a probe on Darwin
+             25.6.0 with `TMPDIR=/tmp/claude-501` created under `/var/folders`). The directory is
+             owner-only: GNU's documentation says so (context7, coreutils `mktemp` invocation), and
+             on macOS a probe read `700` under umask 022, 077 and 000.
+             **What is kept, and why retention is unbounded.** A passing gate's log is deleted the
+             moment it passes, and the directory is deleted when no gate failed. So a kept
              directory holds only the failing gates' logs, one directory per failed run, and
-             nothing sweeps them. A deletion that fails leaves its file behind and prints a `NOTE`
-             naming it, and the exit status stays the gates' own. That is unbounded disk retention, said as such: neither a log's
-             size nor the number of failed runs is capped, and only the operator removes them.
-             A sweeper was declined. The gap analysis named its deletion and concurrency risks
-             (deleting another live run's directory in a shared namespace), and a kept log exists
-             to be read after the run. A size cap was declined too, because the evidence the
-             issue lost can sit anywhere in the log. The runner and
+             nothing sweeps them. A deletion that fails leaves its file, prints a `NOTE` naming it,
+             and leaves the exit status the gates' own. That is unbounded disk retention, said as
+             such: neither a log's size nor the number of failed runs is capped, and only the
+             operator removes them. A sweeper was declined: the gap analysis named its deletion
+             and concurrency risks (deleting another live run's directory in a shared namespace),
+             and a kept log exists to be read after the run. A size cap was declined too, because
+             the evidence the issue lost can sit anywhere in the log. If kept logs ever fill the
+             temp filesystem, later gates cannot open a log, so they are not run and fail naming
+             the path: loud, never enforcement quietly off. The runner and
              `docs/per-project-overrides.md` both state the retention.
+             **One open per log, and a gate it cannot log is never run.** The log is opened once,
+             as fd 9 of a brace group, and the gate writes through that descriptor. A gate whose
+             log cannot be opened is not run, and counts as failed with `its log could not be
+             created at <path>, so it was NOT run`. A gate that deletes its own log is reported as
+             having done so, and no directory is kept for it. The first version ran the gate with
+             a bare `>` and reported both cases as one ambiguous `no log file`. Its successor
+             pre-created the log and then reopened it, and local review pass 2 found that broke a
+             caller's `set -C`: the reopen was refused, the gate never ran, and an empty file was
+             advertised as its log. One open has no reopen to refuse and no window between two
+             opens. It is the group's own redirection, never `exec`'s, because a probe showed a
+             failed `exec` redirection exits a `bash --posix` shell (here, the sourcing caller),
+             while a failed group redirection only fails the group. `set -C` is honoured, not
+             overridden. In the private directory the log never exists before its open. On the
+             fallback path an existing name is refused rather than truncated (it may be a planted
+             link), so that gate is not run; `>|` was tried and rejected for exactly that reason.
+             The gate runs with fd 9 closed, and the group ends `|| :` because `ran` carries the
+             answer and a failed open must not trip a sourcing caller's `set -e`, which would cut
+             the report short at the first gate. **On macOS a broken `$TMPDIR` now fails closed**: a
+             `$TMPDIR` that does not exist, or is not writable, makes every gate fail as not run,
+             naming the path, where a bare `mktemp -d` used to step around it into the per-user
+             temp directory. That is the price of honouring `$TMPDIR` at all.
              **The fallback is not evidence.** When `mktemp -d` fails, logs land at
              `adb-gate-<label>.log` in the shared temp directory, where a concurrent run can
              overwrite them and any local account can claim the name first. There every log is
@@ -10087,43 +10113,34 @@ survive is the part a later reader needs.
              **That path is an accepted exception to the test plan's first box**: there, a marker
              printed before the last 4000 bytes is not recoverable, and the failure line says the
              log was not kept. Printing the whole log instead would send an unbounded stream into
-             the Stop hook's stderr, which is the model's context (independent review raised it
-             as OPTIONAL).
-             **The runner claims a log only when there is one, and never runs a gate it cannot
-             log.** Each log is created before its gate runs. A gate whose log cannot be created
-             is not run, and counts as failed with `its log could not be created at <path>, so it
-             was NOT run`. A gate that deletes its own log is reported as having done so, and no
-             directory is kept for it. Creating the log first is what tells those two apart: a
-             redirect failure and a self-deleting gate used to share one ambiguous message. **On
-             macOS a broken `$TMPDIR` now fails closed.** A `$TMPDIR` that does not exist, or is
-             not writable, makes every gate fail as not run, naming the path. Before, a bare
-             `mktemp -d` stepped around it into the per-user temp directory. That is the price of
-             honouring `$TMPDIR` at all, and a fixture pins it. **Statuses:** the run's exit
-             codes stay 0/1/2. A failed `rm` prints a `NOTE` and does not change them, because a
-             leftover directory is not a failing gate, and a cleanup failure that blocked the Stop
-             hook would be a new way to wedge a turn. The `2>/dev/null || true` that hid those
-             failures is gone. **No diagnostic of the runner's carries `$TMPDIR` unescaped.** Every
-             path is printed through `adb_display_value` (`%q`), and the native stderr of each
-             command that touches one (the log's creation, `tail`, `rm`) is discarded while its
-             status is still tested. The log tail is the gate's own output, printed as written. The
-             redirect that runs the gate is deliberately unguarded: it reopens the file just
-             created, with no gate run in between, and a second guard there could never be seen
-             failing. The independent review found the first version printed `rm`'s own
-             diagnostic, so a newline in `$TMPDIR` could forge a line. `check-gates.sh` now forces
-             all four failures under a newline-bearing `TMPDIR`: a read-only log directory for the
-             two `rm`s and the log's creation, and an unreadable log for `tail`. It requires every line
-             that names the directory to be the runner's own. Each of the four suppressions,
-             removed alone, turns its assertion red. (A second review pass found the first version
-             of this claim overstated: `tail` was never driven to fail.)
-             **The base is made absolute before `mktemp` sees it.** A relative `$TMPDIR` spelled
-             `-tmp` was parsed as an option, which sent the run down the fallback that keeps
-             nothing (the second review pass reproduced the lost marker). A fixture pins it. The test plan's first box, observed
-             red against the pre-fix runner, sits beside a positive control: a passing run must
-             leave nothing, and a mid-run gate must see the directory, or the absence proves
-             nothing. The three suites that drive red gates (`check-gates.sh`,
-             `check-adopt-readiness.sh`, `check-precommit-gate.sh`) export a `TMPDIR` inside their
-             own scratch directory, or each selfcheck run would leak kept directories. Running all
-             eleven suites that reach the runner under an empty `TMPDIR` left nothing there.
+             the Stop hook's stderr, which is the model's context. Every review pass raised it as
+             OPTIONAL, and it is declined each time on that ground.
+             **Statuses.** The run's exit codes stay 0/1/2. A failed `rm` prints a `NOTE` and does
+             not change them, because a leftover directory is not a failing gate, and a cleanup
+             failure that blocked the Stop hook would be a new way to wedge a turn. The
+             `2>/dev/null || true` that hid those failures is gone.
+             **No diagnostic of the runner's carries `$TMPDIR` unescaped.** Every path is printed
+             through `adb_display_value` (`%q`), and the native stderr of each command that touches
+             one (the log's open, `tail`, both `rm`s) is discarded while its status is still
+             tested. The log tail is the gate's own output, printed as written. The independent
+             review found the first version printed `rm`'s own diagnostic, so a newline in
+             `$TMPDIR` could forge a line.
+             **What the suite proves.** `check-gates.sh` covers each of these with a fixture,
+             observed red on its own defect. That includes the test plan's two boxes: the first
+             went red against the pre-fix runner, and the second went red with the passing-run
+             cleanup removed. The second has a positive control beside it: a mid-run gate must see
+             the directory, or its absence after a passing run proves nothing. A newline-bearing
+             `TMPDIR` with a read-only log directory forces the open and both `rm`s to fail, and an
+             unreadable log forces `tail` to fail; each guard removed alone turns that assertion
+             red (local review pass 1 found the first version of this claim never drove `tail`).
+             Further fixtures cover a caller's `set -C` (whose fallback fixture is what kills the
+             `>|` variant), a caller's `set -e`, fd 9 inherited by the gate, a nonexistent
+             `$TMPDIR`, a relative `-tmp`,
+             and the not-run check removed, under which a gate that never ran reports `ok`. The
+             three suites that drive red gates (`check-gates.sh`, `check-adopt-readiness.sh`,
+             `check-precommit-gate.sh`) export a `TMPDIR` inside their own scratch directory, or
+             each selfcheck run would leak kept directories. Running all eleven suites that reach
+             the runner under an empty `TMPDIR` left nothing there.
 - placement: `scripts/lib/project-gates.sh` (`adb_run_gates`) · `scripts/check-gates.sh` ·
              `scripts/check-adopt-readiness.sh` · `scripts/check-precommit-gate.sh` ·
              `docs/per-project-overrides.md` · `CHANGELOG.md`

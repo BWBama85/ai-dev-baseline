@@ -666,6 +666,35 @@ if [ "$(id -u)" -ne 0 ]; then
   eq "$stray" "" "escaped (unreadable log): every line naming the log directory is the runner's own"
 fi
 
+# A CALLER'S `set -C` (noclobber) neither stops a gate running nor its log being written: the log
+# is opened once and the gate writes through that descriptor — which the gate itself never
+# inherits.
+d="$work/keep-noclobber"; kt="$work/keep-noclobber-tmp"; mkdir -p "$d" "$kt"
+noisy_gate "$d" MARKNC 4
+printf 'if : >&9 2>/dev/null; then touch fd9-leaked; fi\n' > "$d/fd9.sh"
+printf '[gates]\na_noisy = "sh ./noisy-MARKNC.sh"\nb_fd = "sh ./fd9.sh; touch ran-b"\n' > "$d/agents.toml"
+( cd "$d" && sh ./noisy-MARKNC.sh ) > "$work/noclobber.expected" 2>&1
+err="$(set -C; export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "noclobber: the failing gate still fails the run"
+kd="$(kept_dirs "$kt")"
+if cmp -s "$kd/adb-gate-a_noisy.log" "$work/noclobber.expected"; then ok; else
+  bad "noclobber: under a caller's set -C the gate runs and its whole output is kept"; fi
+if [ -f "$d/ran-b" ]; then ok; else bad "noclobber: under a caller's set -C a passing gate still runs"; fi
+if [ -e "$d/fd9-leaked" ]; then bad "noclobber: a gate must not inherit the log's descriptor"; else ok; fi
+# …and it is HONOURED on the fallback path, where the log has a predictable name in a shared
+# directory: a name that already exists is refused, never truncated, and that gate is not run.
+d="$work/noclobber-fallback"; faketmp="$work/noclobber-faketmp"; mkdir -p "$d" "$faketmp"
+printf '[gates]\nred = "touch ran-red; exit 1"\n' > "$d/agents.toml"
+printf 'planted\n' > "$faketmp/adb-gate-red.log"
+err="$( mktemp() { return 1; }
+        set -C
+        TMPDIR="$faketmp"
+        adb_run_gates "$d" 2>&1 >/dev/null )"; rc=$?
+eq "$rc" 1 "noclobber (fallback): the run fails"
+has "$err" 'adb: gate "red" failed: its log could not be created at' "noclobber (fallback): an existing name is refused and said so"
+if [ -e "$d/ran-red" ]; then bad "noclobber (fallback): a gate whose log was refused must not run"; else ok; fi
+eq "$(cat "$faketmp/adb-gate-red.log")" "planted" "noclobber (fallback): the existing file is not truncated"
+
 # A $TMPDIR THAT DOES NOT EXIST fails closed: no gate can have a log, so none runs, and every one
 # counts as failed and says why — enforcement never goes quietly off with a broken temp dir.
 d="$work/keep-badtmp"; mkdir -p "$d"
@@ -676,6 +705,9 @@ has "$err" 'adb: gate "first" failed: its log could not be created at' "broken T
 has "$err" 'adb: gate "second" failed: its log could not be created at' "broken TMPDIR: so does the second"
 has "$err" 'failing gates: first second' "broken TMPDIR: both count as failed"
 if [ -e "$d/ran-first" ] || [ -e "$d/ran-second" ]; then bad "broken TMPDIR: a gate with no log must not run"; else ok; fi
+# …and a sourcing caller's `set -e` does not cut that report short at the first failed open.
+err="$(set -e; export TMPDIR="$work/does-not-exist"; adb_run_gates "$d" 2>&1 >/dev/null)"
+has "$err" 'failing gates: first second' "broken TMPDIR under set -e: every gate is still reported, the run is not killed"
 
 # A RELATIVE $TMPDIR is made absolute before mktemp sees it. One spelled `-tmp` would otherwise be
 # parsed as an option, sending the run down the fallback that keeps nothing; and the printed path

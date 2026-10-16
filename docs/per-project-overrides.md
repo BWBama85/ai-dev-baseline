@@ -330,11 +330,13 @@ under `$TMPDIR` (`/tmp` when unset), and the closing `failing gates:` line names
 that directory. A passing gate's log is deleted as soon as the gate passes. So a
 kept directory holds only failing logs, and a run where every gate passes leaves
 nothing behind. The exception is a deletion that fails: it leaves the file and
-prints a `NOTE` naming it. **Nothing deletes a kept directory**: remove it once you have
-read it. Retention is unbounded by design. Every failed run adds a directory,
-however large its failing gates' output was, until you remove it. The path is
-printed shell-quoted (`printf %q`), so a `$TMPDIR` with a space in it can still
-be pasted straight into a shell, and a newline in it cannot forge a line.
+prints a `NOTE` naming it.
+
+**Nothing deletes a kept directory**: remove it once you have read it. Retention
+is unbounded by design. Every failed run adds a directory, however large its
+failing gates' output was, until you remove it. The path is printed
+shell-quoted (`printf %q`), so a `$TMPDIR` with a space in it can still be
+pasted straight into a shell, and a newline in it cannot forge a line.
 
 If no private directory can be created (`mktemp -d` failed), the logs go to
 predictable names in the shared temp directory. A concurrent run can overwrite
@@ -342,15 +344,20 @@ those, and any local account can claim the name first, so there the logs are
 deleted and the failure says `full log NOT kept`. On that path, output from
 before the last 4000 bytes is not recoverable.
 
-A gate whose log cannot be created at all is **not run**, and counts as failed:
+A gate whose log cannot be opened at all is **not run**, and counts as failed:
 
 ```
 adb: gate "test" failed: its log could not be created at …, so it was NOT run (bash scripts/selfcheck.sh)
 ```
 
-That is what a `$TMPDIR` that does not exist, or is not writable, produces for
-every gate. Enforcement fails closed rather than going quietly off. Exit status is the gates' own
-on every path: a cleanup that fails prints a `NOTE` and never fails the run.
+That is what every gate reports when `$TMPDIR` does not exist or is not
+writable. It is also what you get when a caller's `set -C` (noclobber) finds a
+log's name already taken on the shared fallback path, since that name is
+refused rather than truncated. Enforcement fails closed rather than going
+quietly off.
+
+Exit status is the gates' own on every path. A cleanup that fails prints a
+`NOTE` and never fails the run.
 
 ### 3b. Shipping the repo's own gate script
 

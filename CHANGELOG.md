@@ -295,16 +295,17 @@ only by a published release, which is what these entries are the notes for.
   gate passes, and a failing gate's log is kept: the tail is still printed, followed by
   `adb: gate "<label>": full log kept at <path>`, and the closing `failing gates:` line names the
   directory. A run in which every gate passes leaves nothing behind, unless a deletion fails, which
-  prints a `NOTE` naming what was left. Nothing deletes a kept
-  directory, so retention is unbounded until the operator removes it. When `mktemp -d` fails, the
-  logs go to predictable names in the shared temp directory, so they are not kept, and the failure
-  says `full log NOT kept`. A gate whose log cannot be created is not run, and counts as failed,
-  saying so. On macOS that is now what a `$TMPDIR` that does not exist produces; a bare
-  `mktemp -d` used to step around it. A gate that deletes its own log is reported as such.
-  Every printed path is shell-quoted, and the native diagnostics of the commands that touch one
-  are discarded, so a newline in `$TMPDIR` cannot forge a stderr line. Exit codes are unchanged; a
-  cleanup that fails prints a `NOTE`. The template is explicit because a bare `mktemp -d` on macOS
-  ignores `$TMPDIR`.
+  prints a `NOTE` naming what was left. Nothing deletes a kept directory, so retention is unbounded
+  until the operator removes it. When `mktemp -d` fails, the logs go to predictable names in the
+  shared temp directory, so they are not kept, and the failure says `full log NOT kept`.
+  Each log is opened once, and the gate writes through that descriptor. A gate whose log cannot be
+  opened is not run, and counts as failed, saying so. A caller's `set -C` is honoured: on the
+  fallback path an existing name is refused, never truncated. On macOS, a `$TMPDIR` that does not
+  exist now produces exactly that for every gate, because the explicit template honours `$TMPDIR`.
+  A bare `mktemp -d` prefers the per-user Darwin temp directory and used to step around it. A gate
+  that deletes its own log is reported as such. Every printed path is shell-quoted, and the native
+  diagnostics of the commands that touch one are discarded, so a newline in `$TMPDIR` cannot forge
+  a line of the runner's. Exit codes are unchanged, and a cleanup that fails prints a `NOTE`.
 - **A lock whose owner could not be probed is no longer broken as if the owner were dead (#505).**
   The pattern ledger's write lock judged its owner gone when `ps -p` failed. Inside Claude Code's
   macOS sandbox `/bin/ps` cannot run at all, so a live writer's lock was reclaimed once it was 300 s
