@@ -41,6 +41,9 @@ ROOT="$(pwd)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+# A red gate fixture KEEPS its log directory under $TMPDIR (D133); this keeps every one in $work.
+export TMPDIR="$work/tmp"
+mkdir -p "$TMPDIR"
 
 # --- a copy of the gate with a controllable lib/ -----------------------------
 gate="$work/gate"; mkdir -p "$gate"

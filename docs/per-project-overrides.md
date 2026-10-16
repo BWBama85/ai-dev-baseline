@@ -311,6 +311,34 @@ mid-run and silently reported as anything. Cadence is the supported answer to
 "this gate is too expensive for every turn"; elapsed reporting is the supported
 answer to "which gate is slow".
 
+#### A failing gate's full log is kept
+
+A failing gate prints the last 4000 bytes of its output, then the path of all of
+it:
+
+```
+adb: gate "test" failed after 84s (bash scripts/selfcheck.sh)
+adb: gate "test": full log kept at $TMPDIR/adb-gates.Xa81Qz/adb-gate-test.log
+```
+
+(The real line carries the absolute path that `$TMPDIR` stands for here.)
+
+The tail is there for immediate context; the file is the evidence. When a
+failing step prints early in a long run, its output survives only in the file.
+Each run writes its logs into its own owner-only directory, `adb-gates.XXXXXX`
+under `$TMPDIR` (`/tmp` when unset), and the closing `failing gates:` line names
+that directory. A passing gate's log is deleted as soon as the gate passes. So a
+kept directory holds only failing logs, and a run where every gate passes leaves
+nothing behind. **Nothing deletes a kept directory**: remove it once you have
+read it. The path is printed shell-quoted (`printf %q`), so a `$TMPDIR` with a
+space in it can still be pasted straight into a shell.
+
+If no private directory can be created (`mktemp -d` failed), the logs go to
+predictable names in the shared temp directory. A concurrent run can overwrite
+those, and any local account can claim the name first, so there the logs are
+deleted and the failure says `full log NOT kept`. Exit status is the gates' own
+on every path: a cleanup that fails prints a `NOTE` and never fails the run.
+
 ### 3b. Shipping the repo's own gate script
 
 Every Stop-hook gate checks, before doing anything else, whether the repo

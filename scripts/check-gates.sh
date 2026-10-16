@@ -43,6 +43,10 @@ cd "$(dirname "$0")/.." || exit 1
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 TAB=$'\t'
+# A failing run KEEPS its log directory under $TMPDIR (D133), so this suite's TMPDIR is its own:
+# every directory a red fixture keeps lands in $work, and the trap removes it.
+export TMPDIR="$work/tmp"
+mkdir -p "$TMPDIR"
 
 # --- _adb_valid_label --------------------------------------------------------
 _adb_valid_label build;   yes $? "valid label: build"
@@ -520,6 +524,110 @@ faketmp="$work/faketmp"; mkdir -p "$faketmp"; : > "$faketmp/sentinel"
   TMPDIR="$faketmp"
   adb_run_gates "$d" >/dev/null 2>&1 )
 if [ -f "$faketmp/sentinel" ]; then ok; else bad "mktemp-fail: cleanup must NOT rm the shared temp dir"; fi
+eq "$(LC_ALL=C ls -A "$faketmp" | tr '\n' ' ')" "sentinel " "mktemp-fail: a passing gate's log is deleted, not left at a predictable name"
+
+# …and a FAILING gate on that path: its log sits at a predictable name in a shared directory, so it
+# is not kept and the failure says so, while the tail is still printed.
+d="$work/mktemp-fail-red"; mkdir -p "$d"
+printf '[gates]\nred = "echo red-output; exit 1"\n' > "$d/agents.toml"
+err="$( mktemp() { return 1; }
+        TMPDIR="$faketmp"
+        adb_run_gates "$d" 2>&1 >/dev/null )"; rc=$?
+eq "$rc" 1 "mktemp-fail: a failing gate still fails the run"
+has "$err" "red-output" "mktemp-fail: the failing gate's tail is still printed"
+has "$err" 'gate "red": full log NOT kept' "mktemp-fail: the failure says its log was not kept"
+hasnt "$err" "full log kept at" "mktemp-fail: no shared-dir path is advertised as kept evidence"
+eq "$(LC_ALL=C ls -A "$faketmp" | tr '\n' ' ')" "sentinel " "mktemp-fail: the failing gate's log is deleted too, and the shared dir survives"
+
+# --- a failed gate's FULL log is kept, and its path reported (#509, D133) ----------
+# The runner prints a 4000-byte tail, so a failure marker printed early is gone from stderr; what
+# makes it recoverable is the kept file. Each fixture runs under its OWN temp dir, so "which
+# directory did this run keep" is answered by listing it rather than by guessing a random name.
+noisy_gate() {   # <dir> <id> <rc> — writes noisy-<id>.sh: EARLY-<id>, >4000 bytes, exit <rc>
+  printf 'echo EARLY-%s\ni=0\nwhile [ $i -lt 300 ]; do echo "filler line $i xxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i+1)); done\nexit %s\n' \
+    "$2" "$3" > "$1/noisy-$2.sh"
+}
+kept_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d -name 'adb-gates.*' | LC_ALL=C sort; }   # <tmpdir>
+reported_log() { printf '%s\n' "$1" | sed -n 's/^adb: gate "'"$2"'": full log kept at //p'; }    # <stderr> <label>
+
+d="$work/keep-fail"; kt="$work/keep-fail-tmp"; mkdir -p "$d" "$kt"
+noisy_gate "$d" MARK509 3
+printf '[gates]\nnoisy = "sh ./noisy-MARK509.sh"\n' > "$d/agents.toml"
+( cd "$d" && sh ./noisy-MARK509.sh ) > "$work/keep-fail.expected" 2>&1
+err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "kept log: a failing gate still fails the run (1)"
+hasnt "$err" EARLY-MARK509 "kept log: the marker is outside the printed tail (else this fixture proves nothing)"
+kd="$(kept_dirs "$kt")"
+eq "$(printf '%s\n' "$kd" | grep -c .)" 1 "kept log: a failing run keeps exactly one log directory"
+rep="$(reported_log "$err" noisy)"
+eq "$rep" "$(printf '%q' "$kd/adb-gate-noisy.log")" "kept log: the reported path is the kept file"
+if [ -f "$rep" ] && cmp -s "$rep" "$work/keep-fail.expected"; then ok; else
+  bad "kept log: the file at the reported path holds the gate's whole output, byte for byte"; fi
+grep -q EARLY-MARK509 "$rep" 2>/dev/null; yes $? "kept log: the failure marker is recoverable from the reported path"
+eq "$(adb_file_mode "$kd")" 700 "kept log: the kept directory is owner-only"
+has "$err" "failing gates: noisy — full logs kept in $(printf '%q' "$kd")" "kept log: the summary line names the kept directory"
+
+# A second failing run keeps its own directory and leaves the first one's evidence alone.
+( export TMPDIR="$kt"; adb_run_gates "$d" >/dev/null 2>&1 )
+kd2="$(kept_dirs "$kt")"
+eq "$(printf '%s\n' "$kd2" | grep -c .)" 2 "kept log: a second failing run keeps a directory of its own"
+while IFS= read -r x; do
+  if cmp -s "$x/adb-gate-noisy.log" "$work/keep-fail.expected"; then ok; else
+    bad "kept log: every failing run's log survives the next run ($x)"; fi
+done <<EOF
+$kd2
+EOF
+
+# Failing and passing gates mixed: every gate runs, and exactly the failing gates' logs are kept.
+d="$work/keep-mixed"; kt="$work/keep-mixed-tmp"; mkdir -p "$d" "$kt"
+noisy_gate "$d" MARKA 1
+noisy_gate "$d" MARKC 2
+printf '[gates]\na_fail = "sh ./noisy-MARKA.sh"\nb_pass = "echo passing-output; touch ran-b"\nc_fail = "sh ./noisy-MARKC.sh"\n' > "$d/agents.toml"
+err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "kept log (mixed): the run fails"
+if [ -f "$d/ran-b" ]; then ok; else bad "kept log (mixed): a gate after a failure still runs"; fi
+kd="$(kept_dirs "$kt")"
+eq "$(cd "$kd" 2>/dev/null && LC_ALL=C ls -A | tr '\n' ' ')" "adb-gate-a_fail.log adb-gate-c_fail.log " \
+   "kept log (mixed): exactly the failing gates' logs are kept, never the passing gate's"
+grep -q EARLY-MARKA "$(reported_log "$err" a_fail)" 2>/dev/null; yes $? "kept log (mixed): the first failing gate's marker is recoverable"
+grep -q EARLY-MARKC "$(reported_log "$err" c_fail)" 2>/dev/null; yes $? "kept log (mixed): the second failing gate's marker is recoverable"
+has "$err" "failing gates: a_fail c_fail — full logs kept in" "kept log (mixed): the summary names both gates and the directory"
+
+# A PASSING run removes its directory. The positive control is what makes the absence mean
+# something: a gate lists $TMPDIR mid-run, proving the directory was created where we look.
+d="$work/keep-pass"; kt="$work/keep-pass-tmp"; mkdir -p "$d" "$kt"
+printf 'ls "$TMPDIR" > seen\n' > "$d/probe.sh"
+printf '[gates]\nprobe = "sh ./probe.sh"\nother = "echo noise"\n' > "$d/agents.toml"
+( export TMPDIR="$kt"; adb_run_gates "$d" >/dev/null 2>&1 ); rc=$?
+eq "$rc" 0 "kept log (pass): a passing run succeeds"
+has "$(cat "$d/seen" 2>/dev/null)" "adb-gates." "kept log (pass): positive control — the run's log directory was created under TMPDIR"
+eq "$(kept_dirs "$kt")" "" "kept log (pass): a passing run leaves no log directory behind"
+
+# A gate that deletes its own log: the runner must not claim a log it does not have, and keeps
+# no directory for it.
+d="$work/keep-selfdelete"; kt="$work/keep-selfdelete-tmp"; mkdir -p "$d" "$kt"
+printf 'rm -f "$TMPDIR"/adb-gates.*/adb-gate-selfdel.log\nexit 1\n' > "$d/selfdel.sh"
+printf '[gates]\nselfdel = "sh ./selfdel.sh"\n' > "$d/agents.toml"
+err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "kept log (no file): the gate still fails the run"
+has "$err" 'gate "selfdel": no log file at' "kept log (no file): the failure says there is no log"
+hasnt "$err" "full log kept at" "kept log (no file): no missing log is advertised as kept"
+eq "$(kept_dirs "$kt")" "" "kept log (no file): a directory with nothing in it is not kept"
+
+# A temp dir whose path holds a space: the path is reported shell-quoted, and names the real file.
+d="$work/keep-fail"; kt="$work/keep space tmp"; mkdir -p "$kt"
+err="$(export TMPDIR="$kt"; adb_run_gates "$d" 2>&1 >/dev/null)"
+kd="$(kept_dirs "$kt")"
+eq "$(reported_log "$err" noisy)" "$(printf '%q' "$kd/adb-gate-noisy.log")" "kept log (space): the reported path is the kept file, quoted"
+if cmp -s "$kd/adb-gate-noisy.log" "$work/keep-fail.expected"; then ok; else bad "kept log (space): the kept file is whole"; fi
+
+# Executed, not sourced: the standalone `run` keeps and reports exactly the same.
+kt="$work/keep-standalone-tmp"; mkdir -p "$kt"
+err="$(TMPDIR="$kt" bash scripts/lib/project-gates.sh run "$d" 2>&1 >/dev/null)"; rc=$?
+eq "$rc" 1 "kept log (standalone): run exits 1"
+rep="$(reported_log "$err" noisy)"
+if [ -n "$rep" ] && cmp -s "$rep" "$work/keep-fail.expected"; then ok; else
+  bad "kept log (standalone): the reported path holds the whole log, got [$rep]"; fi
 
 # --- empty repo: detect nothing / exit 0 (the unknown-repo contract) ---------
 d="$work/empty"; mkdir -p "$d"

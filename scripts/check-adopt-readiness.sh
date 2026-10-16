@@ -89,6 +89,9 @@ check_exit_guard "check-adopt-readiness" "rm -rf \"$WORK\""
 # depends on a fixture's own .claude/ and the tracked tree is never a candidate.
 export ADB_STATE_DIR="$WORK/state"
 mkdir -p "$ADB_STATE_DIR"
+# A red gate fixture KEEPS its log directory under $TMPDIR (D133); this keeps every one in $WORK.
+export TMPDIR="$WORK/tmp"
+mkdir -p "$TMPDIR"
 
 # =============================== THE SUITE OWNS ITS ENVIRONMENT ================================
 #

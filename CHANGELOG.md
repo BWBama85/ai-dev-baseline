@@ -287,6 +287,18 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **A failed gate's full log is kept, and its path printed (#509, D133).** `project-gates.sh run`
+  printed the last 4000 bytes of a failing gate's log, then deleted the log. When the failing step
+  had printed early in a long run, its evidence was never shown and could not be recovered. On a
+  whole-registry `selfcheck` that meant another 85-minute run. Each run now writes into its own
+  owner-only `adb-gates.XXXXXX` directory under `$TMPDIR`. A passing gate's log is deleted when the
+  gate passes, and a failing gate's log is kept: the tail is still printed, followed by
+  `adb: gate "<label>": full log kept at <path>`, and the closing `failing gates:` line names the
+  directory. A run in which every gate passes leaves nothing behind, and nothing deletes a kept
+  directory. When `mktemp -d` fails, the logs go to predictable names in the shared temp directory,
+  so they are not kept, and the failure says `full log NOT kept`. A failure with no log file to
+  point at says so rather than naming one. Exit codes are unchanged; a cleanup that fails prints a
+  `NOTE`. The template is explicit because a bare `mktemp -d` on macOS ignores `$TMPDIR`.
 - **A lock whose owner could not be probed is no longer broken as if the owner were dead (#505).**
   The pattern ledger's write lock judged its owner gone when `ps -p` failed. Inside Claude Code's
   macOS sandbox `/bin/ps` cannot run at all, so a live writer's lock was reclaimed once it was 300 s
