@@ -164,6 +164,23 @@ rows score it `hung — no verdict within Ns`, and the shmutant pool, which rece
 ceiling, and again on the `result` block's `overran` line. That warning never kills anything — the
 step keeps its own verdict — so on a slow machine raise the ceiling rather than reading it as a red.
 
+**To stop a run, use `bash scripts/selfcheck.sh --stop`** (#551), from another shell in the same
+checkout, outside any agent sandbox. `TERM` or `^C` alone is not a complete stop: a harness's nested
+pool sits in process groups of its own and does not get the signal (#547). Escalating to `KILL` by
+hand is worse: a `KILL` that lands while a vendored-shmutant shell has a tree frozen leaves that
+tree stopped forever (BWBama85/shmutant#47). `--stop` sends the runner `TERM`. The runner gives its
+workers up to `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) to finish their own cleanup before it
+KILLs. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 30) for everything to end. Then it
+names every process the run still owns, stopped ones included, KILLs their process groups, and
+checks again with a fresh listing. A process belongs to the run if it works under the run's private
+temp root (every step gets it as `TMPDIR`) or under a pool directory a harness registered with the
+run, if it shares a process group with such a process, or if it is in a worker group the runner
+recorded. A process that only works in the checkout, such as your shell, your editor or a review
+running beside the run, is named and never signalled. Exit `1` means something survived and was
+removed; `4` means the stop could not read the process table, which is never a clean result; `5`
+means no run is recorded. A cancelled run keeps its record (`.selfcheck-run`, gitignored), so
+`--stop` still sweeps what it left after the runner itself is gone.
+
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers a minority of them and was silently claiming to be the whole set
 until #335 counted it. Read it for what these checks are *for*; ask `--list` for what runs.

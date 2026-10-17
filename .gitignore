@@ -24,3 +24,7 @@
 # Logs / scratch
 *.log
 /tmp/
+# A running selfcheck's record, and its staged temp before the rename (#551). `selfcheck.sh --stop`
+# reads it; a cancelled run keeps it so the stop can sweep what that run left.
+/.selfcheck-run
+/.selfcheck-run.*

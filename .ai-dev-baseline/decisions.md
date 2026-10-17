@@ -10271,3 +10271,121 @@ survive is the part a later reader needs.
              `base/workflows/resolve-pr-threads.md` step 4a · `scripts/check-implement-lib.sh` ·
              `scripts/check-pattern-ledger.sh` · `scripts/check-common-lib.sh` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D135 — #551: `selfcheck.sh --stop` is the one stop; it signals only what the run provably owns
+- date:      2026-10-16
+- category:  project-delta
+- unknown:   #551. A running `scripts/selfcheck.sh` had no stop that was both complete and checkable.
+             `TERM` to the runner does not reach a `*-mutation` step's nested pool, which sits in
+             process groups of its own (#547). The runner's own `_cleanup` sent `KILL` to its worker
+             groups after a fixed one-second `sleep`, so a harness whose TERM cleanup took longer was
+             KILLed partway through it. A KILL that lands between a vendored-shmutant shell's STOP and
+             its KILL leaves the frozen tree stopped for good, outside every deadline
+             (BWBama85/shmutant#47). Sessions escalated by hand and checked the result against a pid
+             list taken before the stop. On 2026-10-16 that printed `still alive: 0` over 25 survivors:
+             shmutant reparents its holders at birth, and each nested pool sits in its own group, so
+             none were on a list built by walking the runner's tree by parent pid. Two such incidents
+             left 21 and 25 processes stopped for about 30 h and 10 h.
+             The issue asked for ownership by "process groups, and every process whose working
+             directory lies in its checkout or its temporary pool directories". Gap analysis (codex)
+             returned BLOCKED on three questions, and the owner answered all four put to them
+             (2026-10-16): what may be signalled, what happens to the one-second grace, what the
+             verdict means, and how the stop finds the run.
+- decision:  **One terminal mode, `--stop`, finding the run through a record.** At start the runner
+             publishes `.selfcheck-run` (gitignored) in the checkout, by rename, mode 600:
+             `adb-selfcheck-run 1`, its pid, its start epoch, the physical checkout and its private
+             temp root. A `group <pgid> <epoch>` line is appended as each worker forks, and from
+             `_cleanup` for any job forked but not yet recorded. A run that ends on its own removes
+             the record. A cancelled run keeps it, so a later `--stop` can sweep what that run left
+             even after the runner was KILLed. The stop reads the record from one bounded snapshot,
+             validated whole (`adb_bytes_whole` and then every line). It refuses an unknown key, a key
+             given twice, a malformed `group` line, another checkout, and a temp root or pool that is
+             or contains the checkout. Nothing is committed from a record that fails.
+             **Signal only what the run provably owns** (owner decision). That means a process working
+             under the run's private temp root, a process working under a pool directory a harness
+             registered, any member of those processes' groups, any member of a recorded worker group
+             while that group is provably the one forked (its leader's start matches the fork; with
+             the leader gone, a member must have started after the fork and work in the checkout or
+             the temp root), and the runner itself if it outlives the bound. A process that only
+             works in the checkout is not owned. That covers the operator's shell, their editor, this
+             agent session and a review dispatched beside the run. Such a process, started during the
+             run, is named in a NOTE and never signalled. The stopper, its ancestors and its
+             descendants are never signalled. Their groups, and groups 0 and 1, are never signalled
+             as groups, and a group is KILLed whole only when every member is owned. Declined: the
+             issue's literal reading, signalling everything in the checkout started after the run,
+             which would kill a concurrent codex review or another session's command.
+             **The temp root alone was not enough, and that was found while building it.** The plan
+             put to the owner said every pool would land under the exported `TMPDIR`. That holds on
+             Linux. On macOS, `mktemp` prefers `_CS_DARWIN_USER_TEMP_DIR` over `TMPDIR` whenever no
+             template is given (`man mktemp`; observed: `TMPDIR=$x mktemp -d` and `mktemp -d -t foo`
+             both land in the per-user temp directory, while `mktemp -d --tmpdir` and an explicit
+             template honour `TMPDIR`). Every suite's `work="$(mktemp -d)"` gives no template, so on
+             macOS, where both incidents happened, no pool is under the root. So the two pool entry
+             points, `check_shmutant_pool` and `check_mutation_rows`, call `check_register_pool` in
+             `check-lib.sh`. Under selfcheck it appends `pool <physical path>` to the record the
+             runner exported as `ADB_SELFCHECK_RECORD`, and outside selfcheck it does nothing. Every
+             survivor observed in #547 and #551 was one of those two pools'. An environment marker was
+             probed as an alternative and declined: macOS `ps -E` showed no environment for a
+             same-user `sleep` that had the variable exported. The temp root is kept anyway. It is
+             what covers every other temp directory on Linux and every templated one everywhere. A
+             harness that hand-rolls its own pool with `set -m` and does not register is still
+             covered only through its recorded worker group. The policy the owner chose is
+             unchanged. Only the mechanism grew.
+             **The grace is a bound, not a sleep** (owner decision). `_cleanup` now waits until every
+             worker group is gone, or `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) has passed, before
+             it KILLs. The stop sends the runner TERM by pid, never by group, because a runner started
+             without job control shares its caller's group. If the runner is already gone, the stop
+             sends TERM to each recorded worker group that is still alive. Then it waits up to
+             `ADB_SELFCHECK_STOP_SECS` (default 30, required to exceed the grace), re-reading the
+             record and taking a fresh inventory on every pass. Survivors are named from an inventory
+             taken after the bound and KILLed by group in one pass, so a frozen tree dies with
+             whatever froze it. A fresh inventory then confirms what is gone.
+             **The verdict** (owner decision). `0` nothing the run owns outlived the bound · `1`
+             survivors outlived it, named, and removed · `3` some could not be removed, named · `4`
+             could not inspect · `5` no run recorded · `2` usage. Exit `4` is never read as "nothing
+             left". The inventory is `ps -A -o pid=,pgid=,ppid=,stat=,etime=,command=` plus one cwd
+             listing, `find /proc … -printf '%h\t%l\n'` on Linux (stripping ` (deleted)`) or
+             `lsof -w -a -d cwd -Fpn` elsewhere. macOS lsof names a removed directory by its last path
+             (observed). Each half has one decision point: the stopper's own pid must appear in it, or
+             the listing is partial. That check also catches a `ps` that exits 0 over a truncated
+             table, and a sandbox's refused `ps` answers 4 through it. Start times are ps's elapsed
+             time read back as a date, so the identity windows allow a few seconds of rounding.
+             Survivor lines go through printable-ASCII cleaning and all start `selfcheck --stop:`, so
+             none can forge `=== name ===`, `FAIL:` or `FAILED:` for `--summarize`.
+             **Not covered, stated rather than implied.** `TERM` still does not reach nested pools.
+             That is #547, and until it lands a stop of a run with live mutation pools ends `1`, which
+             is the truth. shmutant's freeze-then-kill gap is upstream (BWBama85/shmutant#47); the
+             stop removes such a tree but cannot prevent it. Two concurrent runs in one checkout stay
+             unsupported (#250). The second run's record replaces the first's, and a stop that sees
+             its record change mid-stop answers 4. A pid reused within the identity windows is not
+             distinguishable. The stop needs an unsandboxed shell.
+             **A second run keeps its hands off the first one's record.** A run finding a record whose
+             runner has not provably exited (`adb_pid_gone`, ESRCH only) writes none of its own and
+             says so. This is not hypothetical. The turn-end gate (`.claude/scripts/precommit-gate.sh`)
+             runs a short `--only` selfcheck in a checkout where a long run may be going in the
+             background. Without this rule the short run would replace the long run's record and
+             remove it on exit, leaving the long run with nothing for `--stop` to find. A record whose
+             runner has exited is replaced, and that is said, because the run that left it did not end
+             on its own.
+             **Proven by.** `scripts/check-selfcheck.sh` §12 drives `--stop` against a stub that
+             registers a pool made outside `TMPDIR` on every platform. The stub leaves a detached
+             worker there, a STOPPED process beside a holder that works in the checkout, a worker
+             under the run's `TMPDIR`, and one more started only in its TERM trap. With the runner
+             alive and again after it was KILLed, each must be named and removed, and an unrelated
+             detached process in the checkout must be named and left alive. §12 also covers a clean
+             stop, no record, six refused records that each name a live canary that must survive,
+             `ps` and the cwd lister each failing (`4`), a second run in the checkout leaving the first
+             run's record in place, the knobs and the mode. §10.6 requires a
+             1.5 s TERM cleanup to finish inside a 4 s grace. Against `main`'s runner the suite failed
+             33 assertions, §10.6 among them. `--mutation` adds thirteen rows, one per assertion that
+             matters: the grace wait removed; each ownership rule removed alone; the temp-root rule
+             widened to the checkout; group removal emptied; the red verdict turned green; the wait's
+             inventory never refreshed; each inspection control folded to success; an unknown record
+             key accepted; a live run's record replaced. Each must fail on its own witness.
+- placement: `scripts/selfcheck.sh` (the stop block, `_rec_write`/`_rec_group`/`_rec_drop`, the
+             private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
+             knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
+             and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
+             slow-exit stub modes, `leak_sweep`, thirteen `--mutation` rows) · `.gitignore` ·
+             `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

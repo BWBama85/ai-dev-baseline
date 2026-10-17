@@ -287,6 +287,27 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **A running selfcheck has one supported stop, and it can see what it misses (#551, D135).**
+  `TERM` to `scripts/selfcheck.sh` never reached a mutation harness's nested pool (#547). The
+  runner KILLed its workers after a fixed second, so a harness could be KILLed in the middle of its
+  own cleanup, and a vendored-shmutant shell KILLed mid-freeze left its tree stopped forever.
+  Stops improvised on top of that checked a pid list taken before the stop and printed
+  `still alive: 0` over 25 survivors. **`bash scripts/selfcheck.sh --stop`** now reads the run's
+  record (the gitignored `.selfcheck-run`), sends the runner `TERM` and waits up to
+  `ADB_SELFCHECK_STOP_SECS` (default 30). The runner gives its workers' cleanup up to
+  `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) instead of one second. The stop then names every
+  process the run still owns, stopped ones and zombies included, KILLs their process groups, and
+  confirms with a fresh listing: `0` clean, `1` survivors named and removed, `3` some could not be
+  removed, `4` could not inspect (never "nothing left"), `5` no run recorded. A process is the run's
+  by where it works and which group it is in: under the run's private temp root (every step now gets
+  it as `TMPDIR`), under a pool directory a harness registered (`check_register_pool`, because
+  macOS's template-less `mktemp` ignores `TMPDIR`), in a group with such a process, or in a worker
+  group the runner recorded. A process that only works in the checkout is named and never
+  signalled. A cancelled run keeps its record, so the stop also sweeps what a KILLed runner left.
+  `check-selfcheck.sh` drives it against a stub that leaves a detached worker, a stopped process
+  beside a holder, and a process started only after the `TERM`, and adds thirteen mutation rows.
+  A second run in the same checkout, such as the turn-end gate's short one, no longer replaces a
+  live run's record.
 - **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**
   `dispatch-sweep` checked each row's evidence with the pattern ledger's text rule, which refuses
   `<!--` and `-->` because `patterns.md` is Markdown built around comment regions. Sweep evidence is

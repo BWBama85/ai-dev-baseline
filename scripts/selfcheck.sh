@@ -993,6 +993,7 @@ usage() {
   cat <<'USAGE'
 usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip a,b,...]
                                  [--list] [--summarize FILE]
+       bash scripts/selfcheck.sh --stop
 
   --serial      Run every step sequentially, in declaration order, with output streaming
                 live. Reach for this when a parallel failure is hard to attribute.
@@ -1026,6 +1027,22 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
   The overrun warning (#445): a step still running past ADB_SELFCHECK_OVERRUN_SECS (default 1800)
   is named live, once per multiple of that ceiling, and again in the result block. It is a report,
   never a kill: the step runs on and its own status is its verdict.
+
+  --stop        Stop the run recorded in this checkout (.selfcheck-run) — THE supported way to stop
+                a running selfcheck (#551). Sends TERM to the runner, waits up to
+                ADB_SELFCHECK_STOP_SECS (default 30) for it and everything it owns to finish, then
+                names every process the run owns that is still there, stopped ones included, and
+                KILLs their process groups. What the run owns: anything working under its private
+                temp root (exported to every step as TMPDIR), those processes' groups, and the
+                worker groups it recorded. A process that only works in the checkout is named and
+                never signalled. Exit: 0 stopped clean · 1 survivors, named and removed · 3 some
+                could not be removed · 4 could not inspect (e.g. inside a sandbox) · 5 no run is
+                recorded. Needs an unsandboxed shell. Still useful after the runner died: it sweeps
+                what that run left.
+
+  The grace (#551): on TERM, INT or HUP the runner waits up to ADB_SELFCHECK_STOP_GRACE_SECS
+  (default 10) for its workers' process groups to finish their own cleanup before it KILLs what is
+  left. ADB_SELFCHECK_STOP_SECS must be larger than the grace.
 USAGE
 }
 
@@ -1036,6 +1053,7 @@ USAGE
 # was the one that got the number wrong. Sourced, never copied (docs/design-principles.md).
 
 LIST=0
+STOP=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) SERIAL=1 ;;
@@ -1068,6 +1086,7 @@ while [ "$#" -gt 0 ]; do
     # the registry and exited 0 while `--nonsense --list` errored. An unknown flag is an error
     # wherever it appears.
     --list) LIST=1 ;;
+    --stop) STOP=1 ;;
     --summarize)
       [ "$#" -ge 2 ] || { echo "selfcheck: --summarize needs a file" >&2; exit 2; }
       # Keyed on the FLAG, not on a non-empty value. Without the bit, `--summarize ""` fell through
@@ -1175,6 +1194,507 @@ summarize_overran() {   # <captured-log>
   printf '\n\n'
 }
 
+# ======================================== the stop (#551) ======================================
+#
+# `--stop` is the ONE supported way to stop a running selfcheck, and this block is all of it. It
+# exists because TERM to the runner is not a complete stop, and the stops sessions improvised on top
+# of it could not see what they missed. TERM does not reach a `*-mutation` step's NESTED pool, which
+# sits in process groups of its own (#547). A KILL that lands between a vendored-shmutant shell's
+# STOP and its KILL leaves the tree it froze stopped for good, outside every deadline
+# (BWBama85/shmutant#47). And a stop checked against a pid list taken before it printed
+# `still alive: 0` over 25 survivors, because each had been started, or reparented, off that list.
+#
+# WHAT IT DOES, in order:
+#   1. reads the run's record (`.selfcheck-run`, written by the runner below) and validates it WHOLE;
+#   2. takes one inventory of the process table before signalling anything. A stop that cannot see
+#      the table says so (4) and signals nothing: "nothing left" is exactly what it could not know;
+#   3. sends TERM to the runner by pid, never by group: a runner started without job control shares
+#      its caller's group. If the runner has already gone, the TERM goes to each worker group it
+#      recorded instead, which is what its own `_cleanup` would have done, so a runner that was
+#      KILLed still has its harnesses' cleanup run;
+#   4. waits, re-reading the record and taking a FRESH inventory each time, until nothing the run
+#      owns is left or ADB_SELFCHECK_STOP_SECS (default 30) expires. That bound must exceed the
+#      runner's own grace, ADB_SELFCHECK_STOP_GRACE_SECS (default 10; see `_cleanup`), so nothing is
+#      KILLed while the runner's cleanup, or a harness's, is still inside its bound;
+#   5. names every survivor from an inventory taken AFTER the bound, stopped ones and zombies
+#      included, each with its state. It KILLs their process groups in one pass, so a frozen tree
+#      dies with whatever froze it, then takes another fresh inventory to confirm what is gone.
+#
+# WHAT THE RUN OWNS — the only processes this signals (the owner's decision on #551):
+#   * every process whose working directory lies under the run's private temp root, which the
+#     runner exports to every step as TMPDIR, or under a pool directory a harness registered with
+#     the run (`check_register_pool`, scripts/check-lib.sh). Both are needed: GNU `mktemp` honours
+#     TMPDIR, but macOS's prefers its per-user temp directory whenever no template is given
+#     (`man mktemp`), and no suite's `mktemp -d` gives one — so on macOS a pool is not under the
+#     root, and the pool says where it is instead. Every survivor observed (#547, #551) was a pool's;
+#   * every member of those processes' groups. That is what reaches a shmutant holder, whose cwd is
+#     the checkout but whose group is its pool's;
+#   * every member of a worker group the runner recorded, while that group is provably the one it
+#     forked (`_stop_rec_member`);
+#   * the runner itself, if it outlives the bound.
+# A process whose cwd is merely the CHECKOUT is NOT owned. Neither is the operator's shell, their
+# editor, this agent session, or a review dispatched beside the run. Those started during the run
+# are NAMED, as not attributed to it, and never signalled. The stopper, its ancestors and its
+# descendants are never signalled at all; their process groups, and groups 0 and 1, are never
+# signalled as groups.
+#
+# EXIT: 0 nothing the run owns outlived the bound · 1 survivors outlived it, named and removed ·
+# 2 usage · 3 survivors that could not be removed, named · 4 could not inspect (no usable `ps`, no
+# cwd listing, a sandbox denial, a record that does not validate, a runner whose identity cannot be
+# proved), never read as "nothing left" · 5 no run is recorded in this checkout.
+#
+# NEEDS AN UNSANDBOXED SHELL. Inside an agent's sandbox `ps` is refused and `kill` on a process
+# outside it is EPERM (D132); both answer 4, never 0. Rationale and measurements: D135.
+
+RUN_RECORD=".selfcheck-run"
+STOP_SETTLE_SECS=5    # how long removal is given before what is left is reported as unremovable
+
+declare -A INV_PGID=() INV_PPID=() INV_STAT=() INV_START=() INV_CMD=() INV_CWD=()
+declare -A STOP_SHIELD_PID=() STOP_SHIELD_PGID=() STOP_DESC=() REC_GROUPS=() OWNED=() OWN_GROUPS=() REC_LIVE=()
+declare -a REC_POOLS=()
+INV_ERR=""; STOP_WHY=""; STOP_SNAP=""; RUNNER_STATE=""; OWN_ALIVE=0; _ETS=""
+REC_PID=""; REC_EPOCH=""; REC_ROOT=""; REC_TMP=""
+
+# _stop_num <value> — a plain decimal above zero, no leading zero, short enough for arithmetic.
+_stop_num() { case "$1" in ''|0*|*[!0-9]*) return 1 ;; esac; [ "${#1}" -le 12 ]; }
+
+# _stop_under <path> <root> — <path> is <root> or lies inside it, on a `/` boundary.
+_stop_under() { [ "$1" = "$2" ] || [ "${1#"$2"/}" != "$1" ]; }
+
+# _stop_clean <text> — printable ASCII only, at most 300 bytes. A survivor line carries a command
+# line and a path, both arbitrary bytes, into a log `--summarize` parses: a newline in either could
+# start a line that forges `=== name ===`, `FAIL:` or `FAILED:`. Every line this block prints also
+# starts `selfcheck --stop:`, so none can open with one of those.
+_stop_clean() {
+  local LC_ALL=C s="$1"
+  s="${s//[^[:print:]]/?}"
+  printf '%s' "${s:0:300}"
+}
+
+# _stop_etime <etime> — set _ETS to ps's `[[dd-]hh:]mm:ss` in whole seconds, or fail. A global
+# rather than printed: it runs once per process per poll, and a command substitution would fork
+# once per process.
+_stop_etime() {
+  local e="$1" d=0 h=0 m s
+  _ETS=""
+  case "$e" in *:*) ;; *) return 1 ;; esac
+  case "$e" in *-*) d="${e%%-*}"; e="${e#*-}" ;; esac
+  s="${e##*:}"; e="${e%:*}"
+  case "$e" in *:*) h="${e%%:*}"; m="${e#*:}" ;; *) m="$e" ;; esac
+  case "$d" in ''|*[!0-9]*) return 1 ;; esac
+  case "$h" in ''|*[!0-9]*) return 1 ;; esac
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  case "$s" in ''|*[!0-9]*) return 1 ;; esac
+  _ETS=$(( 10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s ))
+}
+
+# _stop_cwds — fill INV_CWD (pid -> physical cwd) for every process this user may read. Linux reads
+# /proc with one `find` rather than one readlink per pid, and strips the ` (deleted)` the kernel
+# appends once a directory is removed. The runner removes its temp root on the way out, and a
+# survivor still inside it is still the run's. Elsewhere (macOS) one `lsof` lists every cwd; it
+# names a removed directory by its last path (observed, D135), so nothing needs stripping. The
+# answer is CHECKED, not trusted: this process's own cwd must be in it, or the listing is partial.
+_stop_cwds() {
+  local line p c lsof_bin=""
+  if [ -e "/proc/$$/cwd" ]; then
+    while IFS=$'\t' read -r p c; do
+      p="${p#/proc/}"
+      case "$p" in ''|*[!0-9]*) continue ;; esac
+      [ -n "$c" ] || continue
+      INV_CWD["$p"]="${c% (deleted)}"
+    done < <(find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h\t%l\n' 2>/dev/null)
+  else
+    lsof_bin="$(command -v lsof 2>/dev/null)" || lsof_bin=""
+    [ -n "$lsof_bin" ] || { [ -x /usr/sbin/lsof ] && lsof_bin=/usr/sbin/lsof; }
+    [ -n "$lsof_bin" ] || { INV_ERR="there is no /proc and no lsof to read working directories with"; return 1; }
+    while IFS= read -r line; do
+      case "$line" in
+        p*) p="${line#p}" ;;
+        n*) case "$p" in ''|*[!0-9]*) ;; *) INV_CWD["$p"]="${line#n}" ;; esac ;;
+      esac
+    done < <("$lsof_bin" -w -a -d cwd -Fpn 2>/dev/null)
+  fi
+  [ -n "${INV_CWD[$$]:-}" ] \
+    || { INV_ERR="the working-directory listing did not include this process ($$), so it is not the whole table"; return 1; }   # row-cwd-control
+}
+
+# _stop_inventory — one snapshot of the process table: pgid, ppid, state, an estimated start (now
+# minus elapsed), command and cwd per pid. 1 with INV_ERR when any part of it cannot be read. ps's
+# answer is checked the same way the cwd listing is: this process must be in it.
+_stop_inventory() {
+  local out pid pgid ppid stat etime cmd now
+  INV_PGID=(); INV_PPID=(); INV_STAT=(); INV_START=(); INV_CMD=(); INV_CWD=(); INV_ERR=""
+  now="$EPOCHSECONDS"
+  # ps's status only words the message. THE DECISION is the control below — this process must be
+  # in the table — which also catches a ps that exits 0 over a partial listing.
+  out="$(LC_ALL=C ps -A -o pid=,pgid=,ppid=,stat=,etime=,command= 2>&1)" \
+    || INV_ERR="ps could not list processes ($(_stop_clean "${out%%$'\n'*}"))"
+  while read -r pid pgid ppid stat etime cmd; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    case "$pgid" in ''|*[!0-9]*) continue ;; esac
+    case "$ppid" in ''|*[!0-9]*) continue ;; esac
+    INV_PGID["$pid"]="$pgid"; INV_PPID["$pid"]="$ppid"; INV_STAT["$pid"]="$stat"; INV_CMD["$pid"]="$cmd"
+    if _stop_etime "$etime"; then INV_START["$pid"]=$(( now - _ETS )); fi
+  done <<< "$out"
+  [ -n "${INV_PGID[$$]+x}" ] \
+    || { INV_ERR="${INV_ERR:-ps answered without this process ($$) in its listing, so it is not the whole table}"; return 1; }   # row-ps-control
+  _stop_mark_desc
+  _stop_cwds
+}
+
+# _stop_mark_desc — STOP_DESC: every process descended from this one in the current inventory. The
+# `ps`, `find` and `lsof` this stop runs are in the table it reads, working in the checkout and
+# started during the run, and must never be counted, named or signalled. Each chain is walked once.
+_stop_mark_desc() {
+  local p q n chain res
+  local -A memo=()
+  STOP_DESC=()
+  for p in "${!INV_PPID[@]}"; do
+    q="$p"; n=0; chain=""
+    while :; do
+      [ "$q" = "$$" ] && { res=1; break; }
+      [ -n "${memo[$q]+x}" ] && { res="${memo[$q]}"; break; }
+      _stop_num "$q" && [ "$q" -gt 1 ] && [ "$n" -lt 256 ] || { res=0; break; }
+      chain="$chain $q"; q="${INV_PPID[$q]:-}"; n=$(( n + 1 ))
+    done
+    for q in $chain; do memo["$q"]="$res"; done
+    [ "$res" -eq 1 ] && [ "$p" != "$$" ] && STOP_DESC["$p"]=1
+  done
+  return 0
+}
+
+# _stop_shield — from the first inventory: the stopper and every ancestor, which are never signalled,
+# and their process groups, which are never signalled AS GROUPS. A process merely sharing the
+# stopper's group is still signalled by pid when it is the run's: a runner started without job
+# control shares its caller's group, and so does a stop started from the same shell.
+_stop_shield() {
+  local p="$$" n=0
+  STOP_SHIELD_PID=(); STOP_SHIELD_PGID=([0]=1 [1]=1)
+  while _stop_num "$p" && [ "$p" -gt 1 ] && [ "$n" -lt 4096 ]; do
+    STOP_SHIELD_PID["$p"]=1
+    [ -n "${INV_PGID[$p]:-}" ] && STOP_SHIELD_PGID["${INV_PGID[$p]}"]=1
+    p="${INV_PPID[$p]:-}"; n=$(( n + 1 ))
+  done
+}
+
+_stop_shielded() { [ -n "${STOP_SHIELD_PID[$1]+x}" ] || [ -n "${STOP_DESC[$1]+x}" ]; }
+
+# _stop_in_pool <path> — <path> lies in a pool directory a harness registered with the run.
+_stop_in_pool() {
+  local d
+  for d in "${REC_POOLS[@]}"; do _stop_under "$1" "$d" && return 0; done
+  return 1
+}
+
+# _stop_rec_member <pid> <pgid> — is <pid>, in a group the runner recorded forking at REC_GROUPS[g],
+# the run's? POSIX's process-ID reuse rule keeps a group's id from being reused while the group has a
+# member, so the only
+# question is whether this group is a NEWER one with the same number. While its leader lives, the
+# leader's start answers it for the whole group. With the leader gone, a member counts only if it
+# started no earlier than the fork and works in the checkout or the temp root. "Started" is ps's
+# elapsed time read back as a date, so it carries a second or two of rounding; the windows allow it.
+_stop_rec_member() {
+  local p="$1" g="$2" fork="${REC_GROUPS[$2]}" st
+  if [ -n "${INV_PGID[$g]+x}" ] && [ "${INV_PGID[$g]}" = "$g" ]; then
+    st="${INV_START[$g]:-}"
+    [ -n "$st" ] && [ "$st" -ge $(( fork - 60 )) ] && [ "$st" -le $(( fork + 2 )) ]
+    return
+  fi
+  st="${INV_START[$p]:-}"
+  [ -n "$st" ] && [ "$st" -ge $(( fork - 2 )) ] && [ -n "${INV_CWD[$p]:-}" ] || return 1
+  _stop_under "${INV_CWD[$p]}" "$REC_ROOT" || _stop_under "${INV_CWD[$p]}" "$REC_TMP"
+}
+
+# _stop_runner — RUNNER_STATE: `live` while REC_PID is the recorded runner (present, not a zombie,
+# started when the record says), `gone` when it provably is not, `unknown` when ps cannot date it.
+_stop_runner() {
+  local p="$REC_PID" st
+  RUNNER_STATE=gone
+  [ -n "${INV_PGID[$p]+x}" ] || return 0
+  case "${INV_STAT[$p]}" in Z*) return 0 ;; esac
+  _stop_shielded "$p" && return 0
+  st="${INV_START[$p]:-}"
+  [ -n "$st" ] || { RUNNER_STATE=unknown; return 0; }
+  [ "$st" -ge $(( REC_EPOCH - 60 )) ] && [ "$st" -le $(( REC_EPOCH + 2 )) ] && RUNNER_STATE=live
+  return 0
+}
+
+# _stop_owned — OWNED (pid -> why), from the current inventory, by the rules in this block's header.
+# OWN_ALIVE counts the owned processes that are not zombies; REC_LIVE names the recorded groups that
+# still have a member.
+_stop_owned() {
+  local p g
+  OWNED=(); OWN_GROUPS=(); REC_LIVE=(); OWN_ALIVE=0
+  for p in "${!INV_PGID[@]}"; do
+    _stop_shielded "$p" && continue
+    [ -n "${INV_CWD[$p]:-}" ] || continue
+    if _stop_under "${INV_CWD[$p]}" "$REC_TMP"; then   # row-own-tmp
+      OWNED["$p"]="works in the run's temp root"
+      OWN_GROUPS["${INV_PGID[$p]}"]=1
+    elif _stop_in_pool "${INV_CWD[$p]}"; then   # row-own-pool
+      OWNED["$p"]="works in a pool directory the run registered"
+      OWN_GROUPS["${INV_PGID[$p]}"]=1
+    fi
+  done
+  for p in "${!INV_PGID[@]}"; do
+    [ -n "${OWNED[$p]+x}" ] && continue
+    _stop_shielded "$p" && continue
+    g="${INV_PGID[$p]}"
+    if [ -n "${OWN_GROUPS[$g]+x}" ]; then   # row-own-closure
+      OWNED["$p"]="in process group $g, beside a process that works where the run does"
+    elif [ -n "${REC_GROUPS[$g]+x}" ] && _stop_rec_member "$p" "$g"; then   # row-own-recorded
+      OWNED["$p"]="in worker group $g, which the run recorded forking"
+      REC_LIVE["$g"]=1
+    fi
+  done
+  for p in "${!OWNED[@]}"; do
+    case "${INV_STAT[$p]}" in Z*) ;; *) OWN_ALIVE=$(( OWN_ALIVE + 1 )) ;; esac
+  done
+  if [ "$RUNNER_STATE" = live ]; then
+    OWNED["$REC_PID"]="the run itself"; OWN_ALIVE=$(( OWN_ALIVE + 1 ))
+  fi
+  return 0
+}
+
+# _stop_read_record — the run record, from ONE bounded snapshot validated whole before any field is
+# used: 0 · 5 there is none · 4 refused, with STOP_WHY naming the rule. A key the writer never writes,
+# a key twice, an unterminated last line, or a root other than this checkout's is a refusal, never a
+# partial read: these fields decide what gets signalled, and nothing is committed to REC_* until the
+# whole record has passed. A `group` repeated with a later fork is a
+# pid the kernel reused for a later worker, so the latest fork is the one that can still be alive.
+_stop_read_record() {
+  local line k v g e d n=0 got=" " r_pid="" r_epoch="" r_root="" r_tmp=""
+  local -A r_groups=()
+  local -a r_pools=()
+  if [ ! -e "$RUN_RECORD" ] && [ ! -L "$RUN_RECORD" ]; then return 5; fi
+  if [ -L "$RUN_RECORD" ] || [ ! -f "$RUN_RECORD" ] || [ ! -O "$RUN_RECORD" ]; then
+    STOP_WHY="$RUN_RECORD is not a regular file this user owns"; return 4
+  fi
+  head -c 1048577 "$RUN_RECORD" > "$STOP_SNAP" 2>/dev/null \
+    || { STOP_WHY="$RUN_RECORD could not be read"; return 4; }
+  adb_bytes_whole "$STOP_SNAP" 1048576 \
+    || { STOP_WHY="$RUN_RECORD is not whole (empty, past 1 MiB, a NUL byte, or no final newline)"; return 4; }
+  while IFS= read -r line; do
+    n=$(( n + 1 ))
+    if [ "$n" -eq 1 ]; then
+      [ "$line" = "adb-selfcheck-run 1" ] || { STOP_WHY="$RUN_RECORD is not a version-1 run record"; return 4; }
+      continue
+    fi
+    k="${line%% *}"; v="${line#* }"
+    [ "$k" != "$line" ] || { STOP_WHY="line $n of $RUN_RECORD has no value"; return 4; }
+    case "$k" in
+      pid|epoch|root|tmp)
+        case "$got" in *" $k "*) STOP_WHY="$RUN_RECORD names its $k twice"; return 4 ;; esac
+        got="$got$k " ;;
+    esac
+    case "$k" in
+      pid)   _stop_num "$v" || { STOP_WHY="$RUN_RECORD's pid is not a number"; return 4; }; r_pid="$v" ;;
+      epoch) _stop_num "$v" || { STOP_WHY="$RUN_RECORD's epoch is not a number"; return 4; }; r_epoch="$v" ;;
+      root)  case "$v" in /?*) r_root="$v" ;; *) STOP_WHY="$RUN_RECORD's root is not an absolute path"; return 4 ;; esac ;;
+      tmp)   case "$v" in /?*) r_tmp="$v" ;; *) STOP_WHY="$RUN_RECORD's tmp is not an absolute path"; return 4 ;; esac ;;
+      group)
+        g="${v%% *}"; e="${v#* }"
+        { [ "$e" != "$v" ] && _stop_num "$g" && _stop_num "$e"; } \
+          || { STOP_WHY="line $n of $RUN_RECORD is not 'group <pgid> <epoch>'"; return 4; }
+        if [ -z "${r_groups[$g]+x}" ] || [ "$e" -gt "${r_groups[$g]}" ]; then r_groups["$g"]="$e"; fi ;;
+      pool)  case "$v" in /?*) r_pools+=("$v") ;; *) STOP_WHY="line $n of $RUN_RECORD names a pool that is not an absolute path"; return 4 ;; esac ;;
+      *) STOP_WHY="line $n of $RUN_RECORD has a key no run record carries"; return 4 ;;
+    esac
+  done < "$STOP_SNAP"
+  for k in pid epoch root tmp; do
+    case "$got" in *" $k "*) ;; *) STOP_WHY="$RUN_RECORD has no $k"; return 4 ;; esac
+  done
+  [ "$r_root" = "$STOP_ROOT" ] \
+    || { STOP_WHY="$RUN_RECORD is for $(_stop_clean "$r_root"), not this checkout"; return 4; }
+  # A temp root that IS the checkout, or holds it, would make every process in the checkout the run's.
+  if _stop_under "$r_root" "$r_tmp"; then
+    STOP_WHY="$RUN_RECORD's temp root $(_stop_clean "$r_tmp") is or contains the checkout"; return 4
+  fi
+  # …and so would a pool that holds the checkout. A pool that holds the run's temp root is not a
+  # pool either: the root existed before any step ran, and every pool is a directory made after it.
+  for d in "${r_pools[@]}"; do
+    if _stop_under "$r_root" "$d" || _stop_under "$r_tmp" "$d"; then
+      STOP_WHY="$RUN_RECORD registers a pool, $(_stop_clean "$d"), that is or contains the checkout or the run's temp root"; return 4
+    fi
+  done
+  # COMMITTED ONLY NOW, whole: a refusal above leaves the last good read in force.
+  REC_PID="$r_pid"; REC_EPOCH="$r_epoch"; REC_ROOT="$r_root"; REC_TMP="$r_tmp"; REC_GROUPS=()
+  for g in "${!r_groups[@]}"; do REC_GROUPS["$g"]="${r_groups[$g]}"; done
+  REC_POOLS=("${r_pools[@]}")
+  return 0
+}
+
+# _stop_reread <pid> <epoch> — the record again, mid-stop: the runner records a worker it forked
+# after the stop's first read, and its `_cleanup` records any it had not. The same run, or a refusal:
+# a record now naming another run means one started in this checkout while it was being stopped
+# (#250 — two runs in one checkout are not supported). A record the runner removed on a clean exit
+# leaves the last good read in force.
+_stop_reread() {
+  local rc
+  _stop_read_record; rc=$?
+  [ "$rc" -eq 5 ] && return 0
+  [ "$rc" -eq 0 ] || return 1
+  [ "$REC_PID" = "$1" ] && [ "$REC_EPOCH" = "$2" ] && return 0
+  STOP_WHY="$RUN_RECORD now names another run (pid $REC_PID) — one started in this checkout during the stop"
+  return 1
+}
+
+_stop_blind() {
+  printf 'selfcheck --stop: cannot inspect this machine'"'"'s processes: %s. Nothing further is signalled, and nothing here says the run left nothing behind. Run the stop from an unsandboxed shell.\n' "$INV_ERR"
+}
+
+# _stop_line <pid> — one survivor, by what the inventory says of it.
+_stop_line() {
+  local p="$1" st="${INV_STAT[$1]:-?}"
+  case "$st" in
+    Z*) printf 'selfcheck --stop: zombie   pid=%s pgid=%s ppid=%s state=%s — exited; it goes when pid %s reaps it (%s)\n' \
+          "$p" "${INV_PGID[$p]:-?}" "${INV_PPID[$p]:-?}" "$(_stop_clean "$st")" "${INV_PPID[$p]:-?}" "${OWNED[$p]:-}" ;;
+    *)  printf 'selfcheck --stop: survivor pid=%s pgid=%s ppid=%s state=%s%s — %s; cwd %s; %s\n' \
+          "$p" "${INV_PGID[$p]:-?}" "${INV_PPID[$p]:-?}" "$(_stop_clean "$st")" \
+          "$(case "$st" in T*|t*) printf ' (STOPPED)' ;; esac)" "${OWNED[$p]:-}" \
+          "$(_stop_clean "${INV_CWD[$p]:-?}")" "$(_stop_clean "${INV_CMD[$p]:-?}")" ;;
+  esac
+}
+
+stop_run() {
+  local rc p g dl n first_pid first_epoch members_ours
+  local -A kill_groups=()
+  STOP_ROOT="$(pwd -P)" || { printf 'selfcheck --stop: cannot resolve this checkout\n'; return 4; }
+  STOP_SNAP="$(mktemp)" || { printf 'selfcheck --stop: cannot create a scratch file\n'; return 4; }
+  trap 'rm -f "$STOP_SNAP"' EXIT
+  _stop_read_record; rc=$?
+  case "$rc" in
+    0) ;;
+    5) printf 'selfcheck --stop: no run is recorded in this checkout (%s is absent) — nothing was stopped or checked\n' "$RUN_RECORD"
+       return 5 ;;
+    *) printf 'selfcheck --stop: cannot stop — %s. Nothing was signalled.\n' "$STOP_WHY"; return 4 ;;
+  esac
+  first_pid="$REC_PID"; first_epoch="$REC_EPOCH"
+  _stop_inventory || { _stop_blind; return 4; }
+  _stop_shield
+  _stop_runner
+  case "$RUNNER_STATE" in
+    live)
+      # Its group is the caller's whenever it ran without job control: never signal it as a group.
+      STOP_SHIELD_PGID["${INV_PGID[$REC_PID]}"]=1
+      if kill -TERM "$REC_PID" 2>/dev/null; then
+        printf 'selfcheck --stop: sent TERM to the run (pid %s); waiting up to %ss for it and everything it owns to finish\n' \
+          "$REC_PID" "$STOP_SECS"
+      elif adb_pid_gone "$REC_PID"; then
+        # It ended between the inventory and the signal, so it ran its own cleanup: just wait.
+        printf 'selfcheck --stop: the run (pid %s) exited as it was being stopped; waiting up to %ss for what it owns\n' \
+          "$REC_PID" "$STOP_SECS"
+      else
+        printf 'selfcheck --stop: the run (pid %s) is alive but could not be sent TERM — nothing was signalled\n' "$REC_PID"
+        return 4
+      fi ;;
+    gone)
+      _stop_owned
+      printf 'selfcheck --stop: the run (pid %s) has already exited; sending TERM to the %s worker group(s) it recorded that are still alive, then waiting up to %ss\n' \
+        "$REC_PID" "${#REC_LIVE[@]}" "$STOP_SECS"
+      for g in "${!REC_LIVE[@]}"; do
+        [ -n "${STOP_SHIELD_PGID[$g]+x}" ] || kill -TERM -- "-$g" 2>/dev/null
+      done ;;
+    *)
+      printf 'selfcheck --stop: cannot tell whether pid %s is still the run — ps gave it no start time. Nothing was signalled.\n' "$REC_PID"
+      return 4 ;;
+  esac
+
+  # THE BOUND. Every pass re-reads the record and takes a fresh inventory: a process started, or
+  # reparented, after the TERM is on the next pass's list and no earlier one's.
+  dl=$(( BASH_MONOSECONDS + STOP_SECS ))
+  while :; do
+    _stop_reread "$first_pid" "$first_epoch" \
+      || { printf 'selfcheck --stop: cannot finish — %s\n' "$STOP_WHY"; return 4; }
+    _stop_inventory || { _stop_blind; return 4; }   # row-stop-fresh
+    _stop_runner
+    [ "$RUNNER_STATE" = unknown ] && { printf 'selfcheck --stop: lost track of the run (pid %s): ps gave it no start time\n' "$REC_PID"; return 4; }
+    _stop_owned
+    [ "$OWN_ALIVE" -eq 0 ] && break
+    [ "$BASH_MONOSECONDS" -ge "$dl" ] && break
+    sleep 0.5
+  done
+
+  # Name what is NOT the run's but works in its checkout and started during it. Never signalled.
+  for p in $(printf '%s\n' "${!INV_PGID[@]}" | sort -n); do
+    [ -n "${OWNED[$p]+x}" ] && continue
+    _stop_shielded "$p" && continue
+    case "${INV_STAT[$p]}" in Z*) continue ;; esac
+    [ -n "${INV_START[$p]:-}" ] && [ "${INV_START[$p]}" -ge $(( REC_EPOCH - 2 )) ] || continue
+    _stop_under "${INV_CWD[$p]:-}" "$REC_ROOT" || continue
+    printf 'selfcheck --stop: NOTE — pid=%s pgid=%s works in this checkout and started during the run, but nothing ties it to the run; NOT signalled: %s\n' \
+      "$p" "${INV_PGID[$p]}" "$(_stop_clean "${INV_CMD[$p]:-?}")"
+  done
+
+  if [ "$OWN_ALIVE" -eq 0 ]; then
+    for p in $(printf '%s\n' "${!OWNED[@]}" | sort -n); do _stop_line "$p"; done
+    printf 'selfcheck --stop: stopped clean — nothing the run owns outlived the %ss bound\n' "$STOP_SECS"
+    _stop_drop
+    return 0
+  fi
+
+  printf 'selfcheck --stop: %s process(es) the run owns outlived the %ss bound:\n' "$OWN_ALIVE" "$STOP_SECS"
+  for p in $(printf '%s\n' "${!OWNED[@]}" | sort -n); do _stop_line "$p"; done
+
+  # REMOVAL. A group is KILLed whole only when every member is the run's; otherwise, and for any
+  # process whose group is shielded or is the runner's, the KILL goes to its pid. KILL reaches a
+  # stopped process (a TERM would sit pending until it was continued), and every owned group goes in
+  # this one pass, so no frozen tree outlives the shell that froze it.
+  for p in "${!OWNED[@]}"; do
+    case "${INV_STAT[$p]:-}" in Z*) continue ;; esac
+    g="${INV_PGID[$p]:-}"
+    if [ -n "$g" ] && [ -z "${STOP_SHIELD_PGID[$g]+x}" ] && [ "$p" != "$REC_PID" ]; then
+      kill_groups["$g"]=1
+    else
+      kill -KILL "$p" 2>/dev/null
+    fi
+  done
+  for g in "${!kill_groups[@]}"; do
+    members_ours=1
+    for p in "${!INV_PGID[@]}"; do
+      [ "${INV_PGID[$p]}" = "$g" ] && [ -z "${OWNED[$p]+x}" ] && { members_ours=0; break; }
+    done
+    if [ "$members_ours" -eq 1 ]; then
+      kill -KILL -- "-$g" 2>/dev/null   # row-stop-remove
+    else
+      for p in "${!OWNED[@]}"; do [ "${INV_PGID[$p]}" = "$g" ] && kill -KILL "$p" 2>/dev/null; done
+    fi
+  done
+
+  # …and a FRESH inventory says whether it worked — never the list the KILLs were sent from.
+  n="$OWN_ALIVE"
+  dl=$(( BASH_MONOSECONDS + STOP_SETTLE_SECS ))
+  while :; do
+    sleep 0.2
+    _stop_inventory || { _stop_blind; return 4; }
+    _stop_runner
+    _stop_owned
+    [ "$OWN_ALIVE" -eq 0 ] && break
+    [ "$BASH_MONOSECONDS" -ge "$dl" ] && break
+  done
+  if [ "$OWN_ALIVE" -gt 0 ]; then
+    printf 'selfcheck --stop: RED — %s process(es) the run owns are still alive %ss after KILL:\n' "$OWN_ALIVE" "$STOP_SETTLE_SECS"
+    for p in $(printf '%s\n' "${!OWNED[@]}" | sort -n); do _stop_line "$p"; done
+    return 3
+  fi
+  printf 'selfcheck --stop: RED — %s process(es) the run owns outlived the %ss bound; named above, and now removed\n' "$n" "$STOP_SECS"
+  _stop_drop
+  return 1   # row-stop-red
+}
+
+# _stop_drop — remove the record once nothing it describes is left, unless it is no longer the bytes
+# last read: a record that changed belongs to whatever changed it.
+#
+# The compare and the remove are two steps, and a run started in this checkout between them would
+# lose its record. That is the two-runs-in-one-checkout case #250 leaves unsupported; it is stated
+# here rather than locked against.
+_stop_drop() {
+  cmp -s "$STOP_SNAP" "$RUN_RECORD" 2>/dev/null || return 0
+  rm -f "$RUN_RECORD" 2>/dev/null \
+    || printf 'selfcheck --stop: NOTE — could not remove %s; a later --stop will find this run again\n' "$RUN_RECORD"
+  return 0
+}
+
 # SELECTION IS VALIDATED BEFORE THE TERMINAL MODES, and the order is the fix for a real hole
 # (found in review). With the modes first, `--skip does-not-exist --list` and
 # `--skip does-not-exist --summarize f` both exited 0: the unknown name was never looked at,
@@ -1224,6 +1744,11 @@ if [ "$SKIP_GIVEN" -eq 1 ]; then
 fi
 
 
+# --stop is the third terminal mode, and like the other two it composes with neither.
+if [ "$STOP" -eq 1 ] && { [ "$LIST" -eq 1 ] || [ "$SUMMARIZE_GIVEN" -eq 1 ]; }; then
+  echo "selfcheck: --stop, --list and --summarize are terminal modes; pick one" >&2; exit 2
+fi
+
 if [ "$SUMMARIZE_GIVEN" -eq 1 ]; then
   [ "$LIST" -eq 0 ] || { echo "selfcheck: --list and --summarize are both terminal modes; pick one" >&2; exit 2; }
   [ -n "$SUMMARIZE" ] || { echo "selfcheck: --summarize needs a file, got an empty path" >&2; exit 2; }
@@ -1256,6 +1781,29 @@ if [ "$LIST" -eq 1 ]; then
   exit 0
 fi
 
+# THE GRACE AND THE STOP'S BOUND (#551), validated after --list and --summarize, which use neither,
+# and before --stop and the run, which use both. The grace is how long `_cleanup` lets the workers'
+# own cleanup run before it KILLs what is left; the bound is how long `--stop` waits for the run to
+# wind down before it names survivors. The bound must be the larger, or `--stop` would KILL into a
+# cleanup that is still inside its grace — the exact thing #551 exists to stop.
+STOP_GRACE="$(_adb_pos_int "${ADB_SELFCHECK_STOP_GRACE_SECS:-10}")" || {
+  echo "selfcheck: ADB_SELFCHECK_STOP_GRACE_SECS must be a positive integer of seconds, got '${ADB_SELFCHECK_STOP_GRACE_SECS:-}'" >&2
+  exit 2
+}
+STOP_SECS="$(_adb_pos_int "${ADB_SELFCHECK_STOP_SECS:-30}")" || {
+  echo "selfcheck: ADB_SELFCHECK_STOP_SECS must be a positive integer of seconds, got '${ADB_SELFCHECK_STOP_SECS:-}'" >&2
+  exit 2
+}
+[ "$STOP_SECS" -gt "$STOP_GRACE" ] || {
+  echo "selfcheck: ADB_SELFCHECK_STOP_SECS ($STOP_SECS) must be larger than ADB_SELFCHECK_STOP_GRACE_SECS ($STOP_GRACE)" >&2
+  exit 2
+}
+
+if [ "$STOP" -eq 1 ]; then
+  stop_run
+  exit $?
+fi
+
 [ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
 
 # THE OVERRUN CEILING (#445). `wait -n` has no timeout and the result block prints only once every
@@ -1277,6 +1825,83 @@ OVERRUN_TICK=60
 # than being skipped: a filter that quietly matches nothing runs zero checks and reports the same
 # clean verdict a full green run reports (base/practices/self-review.md).
 WORK="$(mktemp -d)" || { echo "selfcheck: FATAL — cannot create a scratch directory" >&2; exit 2; }
+
+# THE RUN'S PRIVATE TEMP ROOT (#551), exported to every step as TMPDIR, so every harness's
+# `mktemp -d` — its pool, every mutant's clone — lands under one directory whose random name is
+# unique to this run. That is what lets `--stop` say which processes are the run's by where they
+# work rather than by a pid list taken before the stop. It is PHYSICAL (`pwd -P`) because the cwd
+# listings report physical paths: macOS's /var/folders is /private/var/folders to lsof.
+#
+# Removed with WORK on the way out. A process still working in it after that is still the run's:
+# lsof names a removed directory by its last path, and the stop strips Linux's ` (deleted)`.
+# Several suites already point TMPDIR at their own `mktemp -d`; theirs now lands inside this.
+TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/adb-selfcheck.XXXXXX")" && TMPROOT="$(cd -P "$TMPROOT" && pwd -P)" \
+  || { echo "selfcheck: FATAL — cannot create the run's private temp root" >&2; rm -rf "$WORK"; exit 2; }
+export TMPDIR="$TMPROOT"
+RUN_ROOT="$(pwd -P)"
+RUN_EPOCH="$EPOCHSECONDS"
+REC_OK=0
+REC_WHY=""
+
+# _rec_write — publish the run record (#551) by rename, owner-only, so `--stop` never reads half of
+# one. Fields: the runner's pid and start, the checkout, the temp root; `group` lines follow as
+# workers fork, and `pool` lines as harnesses register theirs. A path holding a newline cannot be
+# one line, so it is refused rather than written.
+#
+# A RECORD ALREADY HERE is another run's, and it is replaced only once that run has provably exited
+# (`adb_pid_gone`: the kernel's ESRCH, never a failed read). The case that is not hypothetical is
+# the turn-end gate (`.claude/scripts/precommit-gate.sh`), which runs a short `--only` selfcheck in
+# this checkout while a long one may be running in the background: replacing the long run's record,
+# and then removing it on the way out, would leave that run with no record for `--stop` to find.
+# Two runs in one checkout stay unsupported (#250); this keeps the second from erasing the first.
+# A record whose runner HAS exited was left by a run that did not end on its own; replacing it is
+# said, because what that run left is now only findable by working directory.
+_rec_write() {
+  local t old=""
+  REC_WHY=""
+  case "$RUN_ROOT$TMPROOT" in *$'\n'*) REC_WHY="a path holds a newline"; return 1 ;; esac
+  if [ -e "$RUN_ROOT/$RUN_RECORD" ] || [ -L "$RUN_ROOT/$RUN_RECORD" ]; then
+    old="$(sed -n '2s/^pid \([1-9][0-9]*\)$/\1/p' "$RUN_ROOT/$RUN_RECORD" 2>/dev/null)"
+    if [ -n "$old" ] && [ "$old" != "$$" ] && ! adb_pid_gone "$old"; then
+      REC_WHY="another run (pid $old) is recorded in this checkout and has not provably exited, so this run is not recorded and \`--stop\` cannot find it (#250: two runs in one checkout are not supported)"
+      return 1
+    fi
+    [ -n "$old" ] && [ "$old" != "$$" ] \
+      && printf 'selfcheck: NOTE — replacing the record of an earlier run (pid %s) that did not end on its own; `--stop` before a new run is what sweeps what such a run left\n' "$old"
+  fi
+  t="$(mktemp "$RUN_ROOT/$RUN_RECORD.XXXXXX" 2>/dev/null)" || { REC_WHY="its staging file could not be created"; return 1; }
+  if printf 'adb-selfcheck-run 1\npid %s\nepoch %s\nroot %s\ntmp %s\n' "$$" "$RUN_EPOCH" "$RUN_ROOT" "$TMPROOT" > "$t" 2>/dev/null \
+     && chmod 600 "$t" 2>/dev/null && mv -f "$t" "$RUN_ROOT/$RUN_RECORD" 2>/dev/null; then
+    REC_OK=1; return 0
+  fi
+  rm -f "$t" 2>/dev/null
+  REC_WHY="it could not be written"
+  return 1
+}
+
+# _rec_group <pid> — record a worker the runner forked: under `set -m` its pid is its process group.
+# The fork's time travels with it, which is how `--stop` tells this group from a newer one that
+# later took the same number. A short `>>` append is a single write to an O_APPEND file, so lines
+# from the runner and from registering harnesses do not interleave; and what guards the reader is
+# not that, but its own rule: a record whose last byte is not a newline is refused whole, never
+# read as a shorter number.
+_rec_group() {
+  [ "$REC_OK" -eq 1 ] || return 0
+  printf 'group %s %s\n' "$1" "$EPOCHSECONDS" >> "$RUN_ROOT/$RUN_RECORD" 2>/dev/null && return 0
+  REC_OK=0
+  printf 'selfcheck: NOTE — could not append to the run record %s; `--stop` will not see workers forked from here on\n' "$RUN_RECORD"
+}
+
+# _rec_drop — remove the record on a clean exit, if it is still this run's. A CANCELLED run keeps
+# it: whatever it left behind is what a later `--stop` sweeps.
+_rec_drop() {
+  local l1 l2 l3
+  [ "$REC_OK" -eq 1 ] || [ -f "$RUN_ROOT/$RUN_RECORD" ] || return 0
+  { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; } < "$RUN_ROOT/$RUN_RECORD" 2>/dev/null || return 0
+  [ "$l1" = "adb-selfcheck-run 1" ] && [ "$l2" = "pid $$" ] && [ "$l3" = "epoch $RUN_EPOCH" ] \
+    && rm -f "$RUN_ROOT/$RUN_RECORD"
+  return 0
+}
 declare -A LIVE=()          # pid -> 1, for the signal path
 declare -a FAILED=()        # step names, in emission order
 declare -a SLOW=()          # "secs name", for the summary
@@ -1294,8 +1919,27 @@ declare -A OVER_LAST=()     # name -> the last multiple of the ceiling already r
 #
 # TERM, then grace, then KILL, matching `_adb_bounded_reap`: a bound that only sends TERM is not a
 # backstop, because anything that traps or ignores it survives.
+#
+# THE GRACE IS A BOUND, NOT A SLEEP (#551). It was a fixed `sleep 1`, so a harness whose own TERM
+# cleanup took longer than a second was KILLed in the middle of it — and a vendored-shmutant shell
+# KILLed between freezing a mutant's tree and killing it leaves that tree stopped for good
+# (BWBama85/shmutant#47). Now the KILL waits until every worker group is gone or
+# ADB_SELFCHECK_STOP_GRACE_SECS has passed, whichever is first: a pool that cleans up in 200ms costs
+# 200ms, and one that ignores TERM costs the grace. What still outlives the KILL — a nested pool in a
+# group of its own (#547) — is what `--stop` exists to find.
+_workers_remain() {
+  local p
+  for p in "${!LIVE[@]}"; do
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    [ "$p" -gt 0 ] 2>/dev/null || continue
+    kill -0 -- "-$p" 2>/dev/null && return 0
+    kill -0 "$p" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 _cleanup() {
-  local p had=0 j
+  local p had=0 j _gdl
   # `LIVE` IS NOT THE WHOLE TRUTH, and the gap between it and the truth is where a worker is lost.
   # A worker is forked by `( … ) &` and recorded by `LIVE["$pid"]=1` on the NEXT statement; a
   # cancellation landing between the two finds a running worker this loop cannot see, never
@@ -1310,6 +1954,7 @@ _cleanup() {
   # already carries, and reading a fresher source does not widen it.
   for j in $(jobs -rp 2>/dev/null); do
     case "$j" in ''|*[!0-9]*) continue ;; esac
+    [ -n "${LIVE[$j]+x}" ] || _rec_group "$j"
     LIVE["$j"]=1
   done
   for p in "${!LIVE[@]}"; do   # row-term-loop
@@ -1329,23 +1974,36 @@ _cleanup() {
     _adb_bounded_signal TERM "$p"
   done
   if [ "$had" -eq 1 ]; then
-    sleep 1
+    _gdl=$(( BASH_MONOSECONDS + STOP_GRACE ))
+    while _workers_remain && [ "$BASH_MONOSECONDS" -lt "$_gdl" ]; do sleep 0.1; done   # row-grace-wait
     for p in "${!LIVE[@]}"; do
       _adb_bounded_signal KILL "$p"      # guards the pid itself; see the TERM loop
     done
   fi
   LIVE=()
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
+  [ -n "${TMPROOT:-}" ] && rm -rf "$TMPROOT"
   return 0
 }
 # Operator cancellation is NOT an ordinary red result: it stops dispatch, terminates the live
 # workers and exits with the signal-derived status, rather than draining the pool. Without this a
 # ^C is worse than useless — bash gives an asynchronous command SIGINT-ignore when job control is
 # off, so the parent would die and leave up to $JOBS check suites running unattended.
-trap '_cleanup; exit 130' INT
-trap '_cleanup; exit 143' TERM
-trap '_cleanup; exit 129' HUP
-trap '_cleanup' EXIT
+#
+# A CANCELLED run keeps its record (#551): it is how a later `--stop` finds what the run left. Only
+# a run that ends on its own removes it.
+CANCELLED=0
+trap 'CANCELLED=1; _cleanup; exit 130' INT
+trap 'CANCELLED=1; _cleanup; exit 143' TERM
+trap 'CANCELLED=1; _cleanup; exit 129' HUP
+trap '_cleanup; [ "$CANCELLED" -eq 1 ] || _rec_drop' EXIT
+# The record's path is exported once it exists, so a harness can register its pool in it
+# (`check_register_pool`). A nested run — this suite's own fixtures — exports its own.
+if _rec_write; then
+  export ADB_SELFCHECK_RECORD="$RUN_ROOT/$RUN_RECORD"
+else
+  printf 'selfcheck: NOTE — no run record (%s): %s\n' "$RUN_RECORD" "$REC_WHY"
+fi
 
 banner() { printf '\n=== %s ===\n' "$1"; }
 
@@ -1432,6 +2090,7 @@ run_serial() {   # names...
     run_step "$name" &
     pid=$!
     LIVE["$pid"]=1
+    _rec_group "$pid"
     # The step OR the ticker, whichever ends first: a tick names the step if it is past the ceiling
     # and starts the next one. `-f` for the reason run_pool gives — job control is on here too.
     while :; do
@@ -1479,6 +2138,7 @@ run_pool() {   # names...
       pid=$!
       pid_name["$pid"]="$name"; pid_out["$pid"]="$out"; pid_t0["$pid"]="$EPOCHSECONDS"
       LIVE["$pid"]=1
+      _rec_group "$pid"
       running=$(( running + 1 )); next=$(( next + 1 ))
     done
 

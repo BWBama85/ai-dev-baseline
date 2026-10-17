@@ -367,6 +367,39 @@ _check_hung_verdict() {
     "$CHECK_ROW_SECS" > "$1"
 }
 
+# --- registering a pool with a running selfcheck (#551) ---------------------------------------
+# check_register_pool <workdir> — tell a running `selfcheck.sh` where this pool works, so that
+# `selfcheck.sh --stop` can attribute every process working there to the run.
+#
+# `--stop` signals only what the run provably owns, and one proof is WHERE a process works. The
+# runner exports a private TMPDIR, and GNU `mktemp` honours it. macOS's does not whenever no
+# template is given: it prefers its per-user temp directory (`man mktemp`), and every suite's
+# `work="$(mktemp -d)"` gives none. So on macOS a pool's directory is not under the run's root. Every
+# survivor observed (#547, #551) was a pool's, so the pools say where they are: one `pool <path>`
+# line appended to the run record the runner exported as ADB_SELFCHECK_RECORD. A short `>>` append
+# is a single write to an O_APPEND file, so it does not interleave with the runner's own lines, and
+# the stop refuses a record whose last byte is not a newline rather than read half a line.
+#
+# Outside selfcheck, or once its record is gone, this does nothing. The path is made physical
+# through its PARENT, because the pool need not exist yet and lsof reports physical paths
+# (`/private/var/...`). A registration that fails for any reason is SAID rather than swallowed —
+# the stop would otherwise miss this pool without anyone knowing — but it is not a red: the pool
+# itself is unaffected.
+check_register_pool() {
+  local d p b
+  [ -n "${ADB_SELFCHECK_RECORD:-}" ] && [ -f "$ADB_SELFCHECK_RECORD" ] || return 0
+  d="${1%/}"
+  case "$d" in /?*) ;; *) d="$PWD/$d" ;; esac
+  b="$(basename "$d")"
+  if p="$(cd -P "$(dirname "$d")" 2>/dev/null && pwd -P)" \
+     && case "$p$b" in *$'\n'*) false ;; *) true ;; esac \
+     && printf 'pool %s/%s\n' "${p%/}" "$b" >> "$ADB_SELFCHECK_RECORD" 2>/dev/null; then
+    return 0
+  fi
+  printf 'NOTE: could not register pool %s with the running selfcheck; its --stop cannot attribute this pool'"'"'s processes\n' "$d" >&2
+  return 0
+}
+
 # --- the whole-suite pool, through the vendored shmutant (#519) ----------------------------------
 # check_shmutant_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run the table the caller
 # declared with `shmutant_target` / `shmutant_mut` through `shmutant_pool`, then score every row into
@@ -466,6 +499,7 @@ check_shmutant_pool() {
   # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope
   local SHMUTANT_TIMEOUT="$CHECK_ROW_SECS" SHMUTANT_JOBS="$pool" SHMUTANT_BASELINE=0 SHMUTANT_STREAM="$wd.tsv" \
         SHMUTANT_RED_STATUS=1 SHMUTANT_RED_PREFIX='FAIL: ' SHMUTANT_COUNTS=0
+  check_register_pool "$wd"
   [ -o errexit ] && errexit=1
   set +e
   shmutant_pool "$label" "$wd" "$prep" "$run" "$cap"
@@ -875,6 +909,7 @@ check_mutation_rows() {
     bad "$label --mutation: workdir '$wd' is not empty — a previous run's counts or verdicts would be scored"; return 1
   fi
   mkdir -p "$wd"
+  check_register_pool "$wd"
 
   # 1. declarations, against the pristine tree
   if ! _check_blocks_parse "$ROOT/$suite"; then
