@@ -287,6 +287,23 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**
+  `dispatch-sweep` checked each row's evidence with the pattern ledger's text rule, which refuses
+  `<!--` and `-->` because `patterns.md` is Markdown built around comment regions. Sweep evidence is
+  never written there. Evidence quoting either marker was refused whole with `19` on every retry,
+  and `/resolve-pr-threads` stopped the round with its findings unresolved. That fits a refusal
+  reported on a round whose findings concerned HTML handling, but the reply was deleted, so the
+  cause of that run is not proven. The sweep's text fields (a finding's summary, a row's evidence, a
+  `sweep-mark` reason) now take the sweep's own rule, `adb_sweep_text_rule` in `common.sh`: one line
+  of 1 to 1024 bytes with no tab, newline or control character. Markup is stored as written. A
+  refusal now names the rule it broke and, where one reply line broke it, that line. The reply is
+  kept at a path the message prints, on every refusal path; before, it was deleted. A failed
+  dispatch keeps any partial reply that reached the sweep. Codex delivers its answer only on
+  success, so for Codex the evidence is the attempt's dispatch log, now one `.err.<random>` per attempt
+  so step 4a's retry no longer overwrites the first. Codes changed: a refused findings file is
+  `23`, and an existing sweep that does not parse is `21` with the other non-reusable case, so `18`,
+  `19` and `22` are only ever about the reply or the dispatch. Step 4a retries those three once and
+  stops on `23`.
 - **A failed gate's full log is kept, and its path printed (#509, D133).** `project-gates.sh run`
   printed the last 4000 bytes of a failing gate's log, then deleted the log. When the failing step
   had printed early in a long run, its evidence was never shown and could not be recovered. On a

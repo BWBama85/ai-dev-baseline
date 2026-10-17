@@ -10185,3 +10185,89 @@ survive is the part a later reader needs.
              `scripts/check-adopt-readiness.sh` · `scripts/check-precommit-gate.sh` ·
              `docs/per-project-overrides.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D134 — #526: sweep text takes the TSV's rule, not the ledger's, and a refused reply is kept
+- date:      2026-10-16
+- category:  project-delta
+- unknown:   #526. `dispatch-sweep` validated each reply row's evidence with `adb_ledger_ok_text`,
+             the pattern ledger's text rule, which refuses `<!--` and `-->` because `patterns.md` is
+             Markdown built around comment regions. #475 took every sweep field rule from the
+             ledger "because classes and sites land in it". That is true of classes and sites. It
+             is not true of text: `record --sweep` reads a row's result and nothing else, and
+             `sweep-report` prints counts. On BWBama85/support-cases PR #88 a round whose findings
+             were about a redactor's HTML handling saw the sweep return `19` on the dispatch and on
+             a retry. Step 4a treated `19` as terminal, and the round stopped with its findings
+             unresolved. The reply was deleted on refusal, so that run's cause is not proven: empty,
+             over-long or control-bearing evidence also returns `19`. What is proven is the
+             mechanism. A fixture against the unchanged code had evidence quoting `<!-- x -->`
+             refused `19`, with no line or rule named and no reply left.
+- decision:  **The sweep's text fields take the TSV's rule.** `adb_sweep_text_rule` in `common.sh` is
+             one line of 1..1024 bytes with no tab, newline or control character, matched under a
+             function-scoped C locale like the ledger predicates. It prints the rule a value breaks
+             so a diagnostic can name it. It governs a finding's summary, a row's evidence and the
+             reason `sweep-mark` writes into that field. The ledger keeps its own rule for its own
+             file, and `record --summary` is unchanged. This applies the `markup-injection` rule as
+             promoted: neutralize against the artifact the field is actually written into. For the
+             sweep that artifact is a TSV, and display escaping stays the renderer's
+             (`adb_md_escape`). Two alternatives were declined. Neutralizing the markers in the
+             writer would change text the agent wrote and keep a rule that protects nothing.
+             Refusing one row and keeping the rest would drop a `found` sibling, and `record
+             --sweep` would then certify a class whose sibling was never fixed. Whole-file refusal
+             stays.
+             **A refused reply is kept and named.** Every reply refusal names the rule it broke and
+             prints the path where the reply is kept. Where one reply line broke it, the message
+             names the line's physical number in that file: a grammar line, an unknown class, a
+             site, an echoed original site, a result or evidence. A missing class names the class.
+             The assembled-file check, which only cross-row invariants and the size bound can still
+             fail, names which one. Each row gains a `sibling` prefix, so a reply under the 1 MiB
+             bound can assemble past it. The reply stays on an exclusively created name,
+             `sweep-pr<N>-<head>.tsv.reply.<random>`, inside the family /cleanup already sweeps by
+             PR, so it is never published and clears with the run. It is deleted only once the
+             assembled file validates. A failed dispatch keeps a partial reply that reached the
+             sweep, which is what `claude` and `agy` stream on stdout. Codex delivers its answer
+             through `--output-last-message`, which `role-dispatch.sh` deletes on a failed run, so a
+             failed codex dispatch reaches the sweep empty. Its evidence is the dispatch log, which
+             is capped: the CLI stream's first 256 KiB by default (`ADB_DISPATCH_LOG_MAX_BYTES`),
+             then the classified line, so late detail can be cut. That log was one shared
+             `sweep-pr<N>-<head>.tsv.err`, deleted before each dispatch, so step 4a's retry of a
+             `22` destroyed the first attempt's log. It is now `.err.<random>`, one per attempt,
+             inside the same /cleanup family (local review pass 1). Both kept names take a 64-bit
+             `SRANDOM` suffix and are created without removing anything at the name, so a repeated
+             name is skipped rather than replaced: a pid suffix with the usual remove-then-create
+             would have deleted an earlier attempt's evidence whenever a pid repeated (local review
+             pass 2). Changing `role-dispatch.sh` to surface a failed run's last message was
+             declined (a step-8 review finding): every dispatch shares that failure contract, and
+             the issue asked for refusal evidence. The issue said other refusals in that function
+             already kept the reply for size. They did not: the size refusal also deleted it, and
+             the precedent is the native review reply's.
+             **Codes, so a retry list can be exact.** `18` and `19` had two sources each: the reply,
+             which a re-dispatch can change, and files the caller owns, which a retry refuses again.
+             A refused findings input is now `23`. An existing sweep at this head that does not
+             parse is now `21`, the code for the other existing sweep that cannot be reused. So
+             `18`, `19` and `22` mean only the reply or the dispatch. `/resolve-pr-threads` step 4a
+             retries those three once and stops on `23`, telling the agent to fix the findings file.
+             The prompt now states the evidence bound the reader enforces.
+             **Proven by.** `check-implement-lib.sh` §46 publishes a summary and evidence quoting
+             both markers, stores the evidence verbatim, and has `sweep-mark` accept such a reason.
+             For a control byte, more than 1024 bytes, an unknown result, a duplicate row, a reply
+             that assembles past the bound and a missing class, it asserts the code and the
+             message's rule, line or class. For each it compares the kept file, byte for byte, with
+             the reply the agent returned. A failed dispatch with an empty reply, and a codex stub
+             that writes a partial answer and then fails, leave no reply, and two such failures
+             leave two `.err` logs. A reply and a log seeded by an earlier attempt survive every
+             later attempt unchanged. A `claude` stub that writes a partial reply and fails keeps
+             it. The three findings-input refusals are `23`. `check-pattern-ledger.sh` §11 covers
+             the file grammar: markers validate; a control byte, 1025 bytes and 513 two-byte
+             characters under a UTF-8 locale are refused, while 1024 bytes and 512 two-byte
+             characters pass. It checks the rule's printed names, and that `record --sweep` reads
+             marker-quoting evidence without any of it reaching the ledger. Seven new mutation rows
+             require each half red on its own witness: markers refused, control allowed, bound
+             removed, characters counted, the ledger rule restored on evidence or on the summary,
+             and `19` dropped from the retry. `check-common-lib.sh` runs the rule over every byte
+             1..255 under a UTF-8 caller against the `tr -d '[:cntrl:]'` oracle, and refuses a
+             513-character multibyte value under a readonly `LC_ALL`.
+- placement: `scripts/lib/common.sh` (`adb_sweep_text_rule`, `adb_sweep_ok_text`, the sweep grammar
+             header) · `scripts/lib/implement-lib.sh` (`dispatch-sweep`, `sweep-mark`) ·
+             `base/workflows/resolve-pr-threads.md` step 4a · `scripts/check-implement-lib.sh` ·
+             `scripts/check-pattern-ledger.sh` · `scripts/check-common-lib.sh` · `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

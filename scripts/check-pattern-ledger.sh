@@ -1656,8 +1656,38 @@ F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}maybe${T}x")"
 eq "$(swcheck "$F")" 18 "11 an unknown result is refused"
 F="$(mksweep 7 1 "sibling${T}Alpha${T}a.sh:3${T}found${T}x")"
 eq "$(swcheck "$F")" 19 "11 a class outside the ledger charset is refused as a field"
-F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}opens <!-- a comment")"
-eq "$(swcheck "$F")" 19 "11 evidence that could open a Markdown comment is refused"
+# The sweep's text rule is the TSV's, not the ledger's (D134): markup is stored as written, and what
+# a TSV cannot hold is still refused.
+swcheck_u8() { ( export LC_ALL="$U8"; . "$ROOT/scripts/lib/common.sh"; adb_sweep_file_check "$@" >/dev/null 2>&1 ); echo "$?"; }
+swrule() { ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_text_rule "$1"; printf ' rc=%s' "$?" ) 2>/dev/null; }
+F="$(mksweep 7 2 "sibling${T}alpha-class${T}a.sh:3${T}found${T}keeps <!-- x --> in the output" "sibling${T}beta-class${T}-${T}none${T}nothing else closes a --> marker")"
+eq "$(swcheck "$F")" 0 "11 evidence quoting <!-- and --> validates — the sweep file is a TSV, never rendered"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}bad$(printf '\001')byte")"
+eq "$(swcheck "$F")" 19 "11 evidence carrying a control byte is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}$(printf 'x%.0s' $(seq 1 1025))")"
+eq "$(swcheck "$F")" 19 "11 evidence of 1025 bytes is refused"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}$(printf 'x%.0s' $(seq 1 1024))")"
+eq "$(swcheck "$F")" 0 "11 …and evidence of 1024 bytes is not"
+if [ -z "$U8" ]; then
+  bad "11 fixture: no UTF-8 locale on this host — the sweep text byte-bound check asserted NOTHING"
+else
+  MBS="$(printf 'é%.0s' $(seq 1 512))"
+  F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}$MBS")"
+  eq "$(swcheck_u8 "$F")" 0 "11 evidence of 512 two-byte characters (1024 bytes) validates under a UTF-8 locale"
+  F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}${MBS}é")"
+  eq "$(swcheck_u8 "$F")" 19 "11 evidence of 513 two-byte characters (1026 bytes) is refused — the bound counts bytes"
+fi
+eq "$(swrule 'quotes <!-- and --> as written')" " rc=0" "11 the sweep text rule passes markup and prints nothing"
+eq "$(swrule '')" "empty rc=1" "11 …and names what it refuses: an empty value"
+eq "$(swrule "a${T}b")" "carries a tab or newline rc=1" "11 …a tab"
+eq "$(swrule "a$(printf '\001')b")" "carries a control character rc=1" "11 …a control character"
+eq "$(swrule "$(printf 'x%.0s' $(seq 1 1025))")" "longer than 1024 bytes rc=1" "11 …and an over-long value"
+printf 'alpha-class\tf.sh\tT1\tthe redactor keeps <!-- x --> intact\n' > "$SW/findings-html.tsv"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_findings_check "$SW/findings-html.tsv" >/dev/null 2>&1 ); echo "$?" )" 0 \
+   "11 a findings summary quoting <!-- and --> is accepted"
+printf 'alpha-class\tf.sh\tT1\tbad\001byte\n' > "$SW/findings-ctl.tsv"
+eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_findings_check "$SW/findings-ctl.tsv" >/dev/null 2>&1 ); echo "$?" )" 19 \
+   "11 …and one carrying a control byte is refused"
 F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}x")"
 printf '%s' "$(cat "$F")" > "$F"
 eq "$(swcheck "$F")" 18 "11 a sweep file with no final newline is refused"
@@ -1673,7 +1703,7 @@ eq "$(swcheck "$F")" 19 "11 a row with empty evidence is refused as a field"
 printf 'alpha-class\tf.sh\tT1\tsummary\t\n' > "$SW/findings-extra.tsv"
 eq "$( ( . "$ROOT/scripts/lib/common.sh"; adb_sweep_findings_check "$SW/findings-extra.tsv" >/dev/null 2>&1 ); echo "$?" )" 18 \
    "11 a findings line with a trailing empty field is refused"
-F="$(mksweep 9 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}opens <!-- a comment")"
+F="$(mksweep 9 1 "sibling${T}alpha-class${T}a.sh:3${T}found${T}bad$(printf '\001')byte")"
 bash "$PL" record --ledger "$work/l11b.md" --class alpha-class --site a.sh:1 --fix abc1234 --pr 9 --thread T-sw-9 --sweep "$F" >/dev/null 2>&1
 eq "$?" 19 "11 record --sweep keeps a refused field as 19, not 18"
 
@@ -1697,13 +1727,18 @@ bash "$PL" record --ledger "$L11" --class delta-class --site a.sh:1 --fix abc123
 eq "$?" 20 "11 an unreadable sweep file records nothing (20)"
 bash "$PL" record --ledger "$L11" --class delta-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-6 >/dev/null 2>&1
 eq "$?" 0 "11 record without --sweep is unchanged"
+F="$(mksweep 7 1 "sibling${T}alpha-class${T}a.sh:3${T}declined${T}declined: it already strips <!-- x -->")"
+bash "$PL" record --ledger "$L11" --class alpha-class --site a.sh:1 --fix abc1234 --pr 7 --thread T-sw-7 --sweep "$F" >/dev/null 2>&1
+eq "$?" 0 "11 record --sweep reads a sweep file whose evidence quotes <!-- (#526)"
+if grep -q 'strips <!--' "$L11"; then bad "11 …and none of that evidence reaches the ledger"; else ok; fi
 
 # The resolver sweeps before it fixes, and records through the sweep.
 has "$RESTXT" '{{IMPLEMENT_LIB}} dispatch-sweep' "11 the resolver dispatches the sibling sweep"
 has "$RESTXT" '{{IMPLEMENT_LIB}} sweep-mark' "11 …marks each sibling it fixes or dispositions"
 has "$RESTXT" '--sweep "$SWEEP_FILE"' "11 …and records every hit through the sweep file"
 has "$RESTXT" '{{IMPLEMENT_LIB}} sweep-report "$SWEEP_FILE"' "11 …and reports the sweep in the round summary through the validating reader"
-has "$RESTXT" 'case "$SWRC" in 18|22) sweep_once; SWRC=$? ;; esac' "11 a malformed reply or failed dispatch is retried exactly once"
+has "$RESTXT" 'case "$SWRC" in 18|19|22) sweep_once; SWRC=$? ;; esac' "11 a refused reply, a refused reply field or a failed dispatch is retried exactly once"
+has "$RESTXT" '23) echo "STOP: the findings file is refused' "11 …and a refused findings file stops, never retried (#526)"
 has "$RESTXT" '| `23` | the sweep file has no row for this class |' "11 the record table says what 23 means"
 has "$RESTXT" '| `24` | a sibling of this class is still `found` |' "11 …and what 24 means"
 sw_at="$(grep -n '{{IMPLEMENT_LIB}} dispatch-sweep' "$RES" | head -n 1 | cut -d: -f1)"
@@ -2465,6 +2500,35 @@ if [ "$MODE" = mutation ]; then
       '    [ "${_sh%%$'"'"'\t'"'"'*}" = "$OPT_PR" ] || {' \
       '    true || {' \
       'record --sweep refuses a sweep file that belongs to another PR (19)'
+  # #526: the sweep's text rule is the TSV's. Each half of it is observed failing on its own witness.
+  check_row 'sweep-text-markers-refused' 'scripts/lib/common.sh' 's11' \
+      '  case "$v" in *[[:cntrl:]]*) printf' \
+      '  case "$v" in *'"'"'<!--'"'"'*|*[[:cntrl:]]*) printf' \
+      '11 evidence quoting <!-- and --> validates'
+  check_row 'sweep-text-control-allowed' 'scripts/lib/common.sh' 's11' \
+      '  case "$v" in *[[:cntrl:]]*) printf' \
+      '  case "$v" in *ZZQQ-never-appears*) printf' \
+      '11 evidence carrying a control byte is refused'
+  check_row 'sweep-text-bound-removed' 'scripts/lib/common.sh' 's11' \
+      '  [ "${#v}" -le "$ADB_SWEEP_TEXT_MAX_BYTES" ] \' \
+      '  true \' \
+      '11 evidence of 1025 bytes is refused'
+  check_row 'sweep-text-counts-characters' 'scripts/lib/common.sh' 's11' \
+      '  local v="${1:-}" LC_ALL=C' \
+      '  local v="${1:-}"' \
+      '11 evidence of 513 two-byte characters (1026 bytes) is refused'
+  check_row 'sweep-evidence-ledger-rule' 'scripts/lib/common.sh' 's11' \
+      '    adb_sweep_ok_text "$evidence" || return 19' \
+      '    adb_ledger_ok_text "$evidence" || return 19' \
+      '11 evidence quoting <!-- and --> validates'
+  check_row 'sweep-summary-ledger-rule' 'scripts/lib/common.sh' 's11' \
+      '    adb_sweep_ok_text "$summary" || return 19' \
+      '    adb_ledger_ok_text "$summary" || return 19' \
+      '11 a findings summary quoting <!-- and --> is accepted'
+  check_row 'sweep-retry-drops-19' 'base/workflows/resolve-pr-threads.md' 's11' \
+      'case "$SWRC" in 18|19|22) sweep_once' \
+      'case "$SWRC" in 18|22) sweep_once' \
+      '11 a refused reply, a refused reply field or a failed dispatch is retried exactly once'
   check_row 'rule-sweep-empty-not-11' 'scripts/lib/pattern-ledger.sh' 's12' \
       '  if [ "$n" -eq 0 ] && [ "$m" -gt 0 ]; then' \
       '  if false; then' \
