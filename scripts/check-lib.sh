@@ -372,31 +372,43 @@ _check_hung_verdict() {
 # `selfcheck.sh --stop` can attribute every process working there to the run.
 #
 # `--stop` signals only what the run provably owns, and one proof is WHERE a process works. The
-# runner exports a private TMPDIR, and GNU `mktemp` honours it. macOS's does not whenever no
-# template is given: it prefers its per-user temp directory (`man mktemp`), and every suite's
-# `work="$(mktemp -d)"` gives none. So on macOS a pool's directory is not under the run's root. Every
-# survivor observed (#547, #551) was a pool's, so the pools say where they are: one `pool <path>`
-# line appended to the run record the runner exported as ADB_SELFCHECK_RECORD. A short `>>` append
-# is a single write to an O_APPEND file, so it does not interleave with the runner's own lines, and
-# the stop refuses a record whose last byte is not a newline rather than read half a line.
+# runner exports a private TMPDIR, which GNU `mktemp` honours; macOS's does not whenever no template
+# is given — it prefers its per-user temp directory (`man mktemp`) — and every suite's
+# `work="$(mktemp -d)"` gives none. Every survivor observed (#547, #551) was a pool's, so the pools
+# say where they are: one `pool <path>` line appended to the record the runner exported as
+# ADB_SELFCHECK_RECORD.
 #
-# Outside selfcheck, or once its record is gone, this does nothing. The path is made physical
-# through its PARENT, because the pool need not exist yet and lsof reports physical paths
-# (`/private/var/...`). A registration that fails for any reason is SAID rather than swallowed —
-# the stop would otherwise miss this pool without anyone knowing — but it is not a red: the pool
-# itself is unaffected.
+# The path is checked RAW first — a control byte anywhere, a newline included, is refused before a
+# command substitution could strip it into another name — then made physical: the directory itself
+# when it exists, else its parent plus the name, since lsof reports physical paths. A registration
+# that fails for any reason leaves `<record>.incomplete`, so the stop never calls the run clean over
+# a pool it was never told about, and says so here with the path's control bytes shown as `?`. It
+# is not a red: the pool itself is unaffected. Outside selfcheck this does nothing.
 check_register_pool() {
-  local d p b
+  local LC_ALL=C d p b ok=0
   [ -n "${ADB_SELFCHECK_RECORD:-}" ] && [ -f "$ADB_SELFCHECK_RECORD" ] || return 0
   d="${1%/}"
   case "$d" in /?*) ;; *) d="$PWD/$d" ;; esac
-  b="$(basename "$d")"
-  if p="$(cd -P "$(dirname "$d")" 2>/dev/null && pwd -P)" \
-     && case "$p$b" in *$'\n'*) false ;; *) true ;; esac \
-     && printf 'pool %s/%s\n' "${p%/}" "$b" >> "$ADB_SELFCHECK_RECORD" 2>/dev/null; then
+  case "$d" in
+    *[[:cntrl:]]*) ;;
+    *)
+      if [ -d "$d" ]; then
+        p="$(cd -P "$d" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && ok=1
+      else
+        b="${d##*/}"
+        p="$(cd -P "${d%/*}/" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && p="${p%/}/$b" && ok=1
+      fi
+      if [ "$ok" -eq 1 ]; then
+        case "$p" in /?*) ;; *) ok=0 ;; esac
+        case "$p" in *[[:cntrl:]]*) ok=0 ;; esac
+      fi ;;
+  esac
+  if [ "$ok" -eq 1 ] && printf 'pool %s\n' "$p" >> "$ADB_SELFCHECK_RECORD" 2>/dev/null; then   # row-register
     return 0
   fi
-  printf 'NOTE: could not register pool %s with the running selfcheck; its --stop cannot attribute this pool'"'"'s processes\n' "$d" >&2
+  : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null
+  printf 'NOTE: could not register pool %s with the running selfcheck; its record is marked incomplete\n' \
+    "${d//[[:cntrl:]]/?}" >&2
   return 0
 }
 

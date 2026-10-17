@@ -170,16 +170,19 @@ pool sits in process groups of its own and does not get the signal (#547). Escal
 hand is worse: a `KILL` that lands while a vendored-shmutant shell has a tree frozen leaves that
 tree stopped forever (BWBama85/shmutant#47). `--stop` sends the runner `TERM`. The runner gives its
 workers up to `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) to finish their own cleanup before it
-KILLs. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 30) for everything to end. Then it
-names every process the run still owns, stopped ones included, KILLs their process groups, and
-checks again with a fresh listing. A process belongs to the run if it works under the run's private
-temp root (every step gets it as `TMPDIR`) or under a pool directory a harness registered with the
-run, if it shares a process group with such a process, or if it is in a worker group the runner
-recorded. A process that only works in the checkout, such as your shell, your editor or a review
-running beside the run, is named and never signalled. Exit `1` means something survived and was
-removed; `4` means the stop could not read the process table, which is never a clean result; `5`
-means no run is recorded. A cancelled run keeps its record (`.selfcheck-run`, gitignored), so
-`--stop` still sweeps what it left after the runner itself is gone.
+KILLs, and records that grace. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 30, and
+never less than the run's recorded grace plus 5s) for everything to end. Then it names every process
+the run still owns, stopped ones included, KILLs them, and checks again with a fresh listing. A
+process belongs to the run if it works under the run's private temp root (every step gets it as
+`TMPDIR`) or under a pool directory a harness registered with the run, if it shares a process group
+with such a process, if it is in a group the runner recorded (its workers, and on cancellation every
+group then holding one of its processes), if it descends from the runner or from any of those (a
+nested pool's worker does), or if the stop already found it to be the run's. A process that only works in the checkout, such as your shell, your editor or a
+review running beside the run, is named and never signalled. Exit `1` means something survived and
+was removed. `4` means the stop could not see the whole process table, or a worker or pool could not
+be recorded (`.selfcheck-run.incomplete`); neither is ever a clean result. `5` means no run is
+recorded. A cancelled run keeps its record (`.selfcheck-run`, gitignored), so `--stop` still sweeps
+what it left after the runner itself is gone.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
 where this walkthrough covers a minority of them and was silently claiming to be the whole set

@@ -10333,23 +10333,64 @@ survive is the part a later reader needs.
              unchanged. Only the mechanism grew.
              **The grace is a bound, not a sleep** (owner decision). `_cleanup` now waits until every
              worker group is gone, or `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) has passed, before
-             it KILLs. The stop sends the runner TERM by pid, never by group, because a runner started
-             without job control shares its caller's group. If the runner is already gone, the stop
-             sends TERM to each recorded worker group that is still alive. Then it waits up to
-             `ADB_SELFCHECK_STOP_SECS` (default 30, required to exceed the grace), re-reading the
-             record and taking a fresh inventory on every pass. Survivors are named from an inventory
-             taken after the bound and KILLed by group in one pass, so a frozen tree dies with
-             whatever froze it. A fresh inventory then confirms what is gone.
+             it KILLs, and the record carries that grace. The stop sends the runner TERM by pid, never
+             by group, because a runner started without job control shares its caller's group. If the
+             runner is already gone, the stop sends TERM to what the run owns in each recorded worker
+             group that is still alive. Then it waits up to `ADB_SELFCHECK_STOP_SECS` (default 30),
+             re-reading the record and taking a fresh inventory on every pass. The bound is raised to
+             the RUN's recorded grace plus 5s when it is shorter, because a stop started from another
+             shell has its own environment, not the run's. Survivors are named from an inventory
+             taken after the bound and KILLed in one pass, a whole group only when every member is the
+             run's, so a frozen tree dies with whatever froze it. A fresh inventory then confirms what
+             is gone. Ownership is first taken from the inventory made before any signal. Anything the
+             stop has found to be the run's stays the run's while it is the same process (same pid,
+             same start), so a holder does not drop out when the TERM makes its pool process exit.
              **The verdict** (owner decision). `0` nothing the run owns outlived the bound · `1`
              survivors outlived it, named, and removed · `3` some could not be removed, named · `4`
              could not inspect · `5` no run recorded · `2` usage. Exit `4` is never read as "nothing
              left". The inventory is `ps -A -o pid=,pgid=,ppid=,stat=,etime=,command=` plus one cwd
              listing, `find /proc … -printf '%h\t%l\n'` on Linux (stripping ` (deleted)`) or
-             `lsof -w -a -d cwd -Fpn` elsewhere. macOS lsof names a removed directory by its last path
-             (observed). Each half has one decision point: the stopper's own pid must appear in it, or
-             the listing is partial. That check also catches a `ps` that exits 0 over a truncated
-             table, and a sandbox's refused `ps` answers 4 through it. Start times are ps's elapsed
-             time read back as a date, so the identity windows allow a few seconds of rounding.
+             `lsof -w -a -d cwd -Fpn` elsewhere, each bounded by `ADB_SELFCHECK_STOP_INSPECT_SECS`
+             (default 20) through `adb_run_bounded`. The inventory is PROVED WHOLE rather than trusted.
+             `ps` must exit 0 and list the stopper. The cwd listing must name a directory for every
+             process of this user that started during the run and is still alive (`adb_pid_gone`);
+             one it cannot read is a refusal, because that process could be the run's. On Linux the
+             `find` records are NUL-terminated and split at their first tab, so no byte of a path can
+             forge a record, and ` (deleted)` is stripped only when no directory of the full name
+             exists. macOS lsof names a removed directory by its last path, and it escapes names
+             depending on the locale. Under `LC_ALL=C` it writes `\\` for a backslash, `\n` `\r`
+             `\t` `\b` `\f`, `^X` for any other control byte, and `\xNN` from 0x7f up (observed on
+             lsof 4.91: under a UTF-8 locale `é` passes through, under C it is `\xc3\xa9`). The stop
+             therefore runs lsof under `LC_ALL=C` and compares the record's paths in that same
+             encoding. A literal `^A` in a name reads the same as byte 0x01. That ambiguity is lsof's,
+             and it is stated. Start times are ps's elapsed time read back as a date, so the identity
+             windows allow a few seconds of rounding.
+             **A real run found what the fixtures had not.** The first version (`a9f0fce0`) was used
+             to stop this PR's own full gate run, which had nested pools live. It answered
+             `stopped clean` while 17 process groups survived, and named them only as unattributed.
+             They were nested pool workers: subshells of a harness, each leading its own group,
+             working in the checkout, reparented once the TERM ended their harness. That is #547's
+             shape, and that stop was the false clean #551 exists to remove. Two rules close it. The
+             stop owns every DESCENDANT of the runner or of anything it owns. It takes ownership from
+             the inventory made before any signal, while those workers are still their harness's
+             children, and keeps it after they are reparented. And a cancelled runner, before it
+             signals anything, records every process group then holding one of its descendants, or a
+             process working under its temp root or a registered pool. Each group goes in with the
+             earliest start among its members, so after a plain `^C` a later stop can still find
+             them. The runner's own group never spreads ownership: without job control it is its
+             caller's, and treating it as the run's would KILL the caller. Its id is recorded (`pgid`)
+             when `ps` can read it, and read from the table while the runner lives. Re-measured on
+             real runs of `review-loop-mutation` and `adopt-readiness-mutation`. A `--stop` mid-run
+             named and removed the 12 nested workers and ended `1`. A plain TERM to the runner left
+             6 of them orphaned, the runner recorded 15 groups, and a later `--stop` found the 6,
+             sent them TERM and saw them end inside the bound (`0`). Nothing was left either time.
+             **An incomplete record is never clean.** A worker the runner could not record, or a pool
+             `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
+             answers 4 where it would have answered 0, and notes it beside any survivors it names. A
+             pool path is checked raw for control bytes before any command substitution could strip
+             one, and a refused path is printed with those bytes as `?`, so it cannot forge a log
+             line. A worker cancelled between being marked live and being recorded is recorded by
+             `_cleanup`, which records every live worker that has no `group` line yet.
              Survivor lines go through printable-ASCII cleaning and all start `selfcheck --stop:`, so
              none can forge `=== name ===`, `FAIL:` or `FAILED:` for `--summarize`.
              **Not covered, stated rather than implied.** `TERM` still does not reach nested pools.
@@ -10358,7 +10399,9 @@ survive is the part a later reader needs.
              stop removes such a tree but cannot prevent it. Two concurrent runs in one checkout stay
              unsupported (#250). The second run's record replaces the first's, and a stop that sees
              its record change mid-stop answers 4. A pid reused within the identity windows is not
-             distinguishable. The stop needs an unsandboxed shell.
+             distinguishable. A survivor line prints the run's own command lines in full, and a process
+             merely named as unattributed is printed by its executable alone, since an argv can carry
+             a credential. The stop needs an unsandboxed shell.
              **A second run keeps its hands off the first one's record.** A run finding a record whose
              runner has not provably exited (`adb_pid_gone`, ESRCH only) writes none of its own and
              says so. This is not hypothetical. The turn-end gate (`.claude/scripts/precommit-gate.sh`)
@@ -10367,25 +10410,53 @@ survive is the part a later reader needs.
              remove it on exit, leaving the long run with nothing for `--stop` to find. A record whose
              runner has exited is replaced, and that is said, because the run that left it did not end
              on its own.
-             **Proven by.** `scripts/check-selfcheck.sh` §12 drives `--stop` against a stub that
-             registers a pool made outside `TMPDIR` on every platform. The stub leaves a detached
-             worker there, a STOPPED process beside a holder that works in the checkout, a worker
-             under the run's `TMPDIR`, and one more started only in its TERM trap. With the runner
-             alive and again after it was KILLed, each must be named and removed, and an unrelated
-             detached process in the checkout must be named and left alive. §12 also covers a clean
-             stop, no record, six refused records that each name a live canary that must survive,
-             `ps` and the cwd lister each failing (`4`), a second run in the checkout leaving the first
-             run's record in place, the knobs and the mode. §10.6 requires a
-             1.5 s TERM cleanup to finish inside a 4 s grace. Against `main`'s runner the suite failed
-             33 assertions, §10.6 among them. `--mutation` adds thirteen rows, one per assertion that
-             matters: the grace wait removed; each ownership rule removed alone; the temp-root rule
-             widened to the checkout; group removal emptied; the red verdict turned green; the wait's
-             inventory never refreshed; each inspection control folded to success; an unknown record
-             key accepted; a live run's record replaced. Each must fail on its own witness.
+             **Independent review (codex, local, round 1)** returned 15 REQUIRED findings on the
+             first version. Each is fixed above: incomplete inventories that could pass; a holder
+             losing ownership when its anchor exited; the stopper validating its own grace instead of
+             the run's; recorded groups missing their TERM, or getting it while holding processes the
+             run does not own; unbounded inspections; lsof's escaping; Linux records that were not
+             byte-safe; registration failures leaving a complete-looking record; a cancel window
+             between marking a worker live and recording it; a directory at the record's name; newline
+             stripping and log forgery in registration; a fixture that needed bash 4 for `$BASHPID`
+             while its stubs run on PATH's bash, 3.2 on a stock macOS; and failed staging dropping
+             cleanup records. The real-run finding above came after it, and is fixed the same way.
+             **Proven by.** `scripts/check-selfcheck.sh` §12 drives `--stop` against a stub, written for
+             any bash, that registers a pool made outside `TMPDIR` on every platform. The stub leaves a
+             detached worker there, a STOPPED process beside a holder that works in the checkout, a
+             second holder whose pool process the TERM kills, a worker under the run's `TMPDIR`, a nested
+             worker in a group of its own that the step's death reparents, and one more started only in
+             its TERM trap. With the runner alive and again after it was KILLed,
+             each must be named and removed, and an unrelated detached process in the checkout must be
+             named by its executable and left alive. §12.2b TERMs the runner alone, as a `^C` would, and
+             requires a later stop to reach the nested worker through the group the runner recorded.
+             §12.9 starts the runner inside a caller's group and requires the caller, and a bystander
+             in that group, to survive. The rules overlap by design, so a row that removes one must be
+             witnessed where that rule stands alone. That is §12.2, where nothing was recorded at
+             cancellation and every leak but the nested worker was reparented at birth, and §10.7 run
+             with `ps -A` refused. The first run of the 36 rows killed 29; the other seven were caught
+             only by a sibling assertion, which is what the per-rule assertions in §12.2 fix. §12 also covers a clean stop whose bound is raised
+             to the run's grace, an incomplete record answering 4, a refused registration marking the
+             record and forging no line, no record, seven refused records that each assert their own
+             reason and name a live canary that must survive, `ps` failing with a full listing, `ps`
+             omitting the stopper, a hung `ps` cut off by the inspection bound, the cwd lister failing
+             and skipping one process, a second run leaving the first run's record in place, a
+             directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
+             cleanup to finish inside a 4 s grace. §10.7 holds the window between LIVE and the record
+             open and requires the worker recorded anyway. Against `main`'s runner the first version's
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 26 rows, one per assertion
+             that matters, two of them in `check-lib.sh`: the grace wait and `_cleanup`'s recording;
+             the record's live-run, directory and unknown-key refusals; each ownership rule removed
+             alone (temp root, pool, group, memory, the first look, descent, recorded groups); the
+             cancel-time recording skipped; the runner's group allowed to spread; the temp-root
+             rule widened to the checkout; group removal emptied; the red verdict turned green; the
+             wait's inventory never refreshed; the run's grace ignored; the incomplete marker ignored;
+             each inventory proof folded (ps status, ps self, cwd coverage, the inspection bound); a
+             registration that writes nothing, and a refusal left unmarked. Each must fail on its own
+             witness.
 - placement: `scripts/selfcheck.sh` (the stop block, `_rec_write`/`_rec_group`/`_rec_drop`, the
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, thirteen `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 26 `--mutation` rows) · `.gitignore` ·
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
