@@ -10384,6 +10384,27 @@ survive is the part a later reader needs.
              named and removed the 12 nested workers and ended `1`. A plain TERM to the runner left
              6 of them orphaned, the runner recorded 15 groups, and a later `--stop` found the 6,
              sent them TERM and saw them end inside the bound (`0`). Nothing was left either time.
+             **Local review, pass 1** (codex, 15 REQUIRED) closed what was still open. An inventory is
+             refused when `ps` omits a process the stop depends on (the runner, a recorded group's
+             leader, anything it found) that the kernel says is alive: absence is never read as an
+             exit. A process missing from the cwd listing is excused only by a state a bounded `ps`
+             READ (a zombie) or by the kernel's ESRCH. Starts are dated from after `ps` returns, and
+             every identity window widens by the slowest read so far, so a delayed listing cannot
+             make one process look like another. The ownership passes repeat until nothing changes,
+             with no round cap, and a parent chain that never ends refuses the inventory. The bound is
+             at least the runner's recorded `prep` (15 s: a cancelled runner's two recording
+             inspections, 5 s each) plus its grace plus the 5 s margin, so a stop never KILLs a
+             cleanup that has not started yet. No record may hold a path with a control byte or a `^`:
+             lsof writes a control byte as `^X`, which a literal `^` followed by that character also
+             produces, and refusing them on every platform is what lets the proof run on the Ubuntu
+             nightly, which reads `/proc`. Survivors are printed by executable only. A record marked
+             incomplete is kept even after the stop removes the survivors it found. A finished stop
+             removes a KILLed runner's temp root, but only a directory named `adb-selfcheck.*` that
+             this user owns. A FIFO at the record's name is refused before anything opens it. Pool
+             registration keeps `/` as `/` and refuses it, and refuses a `^`. A registration made
+             after the record is gone marks it incomplete. A marker that cannot be written is
+             reported as exactly that. The fixture's cleanup identifies each leak by its `ps lstart`
+             as well as its pid and group.
              **An incomplete record is never clean.** A worker the runner could not record, or a pool
              `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
              answers 4 where it would have answered 0, and notes it beside any survivors it names. A
@@ -10434,16 +10455,23 @@ survive is the part a later reader needs.
              witnessed where that rule stands alone. That is §12.2, where nothing was recorded at
              cancellation and every leak but the nested worker was reparented at birth, and §10.7 run
              with `ps -A` refused. The first run of the 36 rows killed 29; the other seven were caught
-             only by a sibling assertion, which is what the per-rule assertions in §12.2 fix. §12 also covers a clean stop whose bound is raised
+             only by a sibling assertion, which is what the per-rule assertions in §12.2 fix. Pass 1 of
+             the local review added nine more, each for a defence it introduced: the omitted-process
+             check, start dating, the status recheck, the `^` refusal, the kept incomplete record, the
+             temp-root removal, the cancel-time completeness check, and registration's `/` and
+             missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
+             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` now takes about
+             2m45s locally, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
+             limit is 10 minutes. §12 also covers a clean stop whose bound is raised
              to the run's grace, an incomplete record answering 4, a refused registration marking the
              record and forging no line, no record, seven refused records that each assert their own
              reason and name a live canary that must survive, `ps` failing with a full listing, `ps`
              omitting the stopper, a hung `ps` cut off by the inspection bound, the cwd lister failing
              and skipping one process, a second run leaving the first run's record in place, a
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
-             cleanup to finish inside a 4 s grace. §10.7 holds the window between LIVE and the record
+             cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 26 rows, one per assertion
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 35 rows, one per assertion
              that matters, two of them in `check-lib.sh`: the grace wait and `_cleanup`'s recording;
              the record's live-run, directory and unknown-key refusals; each ownership rule removed
              alone (temp root, pool, group, memory, the first look, descent, recorded groups); the
@@ -10457,6 +10485,6 @@ survive is the part a later reader needs.
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 26 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 35 `--mutation` rows) · `.gitignore` ·
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

@@ -379,36 +379,50 @@ _check_hung_verdict() {
 # ADB_SELFCHECK_RECORD.
 #
 # The path is checked RAW first — a control byte anywhere, a newline included, is refused before a
-# command substitution could strip it into another name — then made physical: the directory itself
+# command substitution could strip it into another name, and so is a `^`, since lsof writes a
+# control byte as `^X` and a stop could not tell the two apart — then made physical: the directory itself
 # when it exists, else its parent plus the name, since lsof reports physical paths. A registration
 # that fails for any reason leaves `<record>.incomplete`, so the stop never calls the run clean over
 # a pool it was never told about, and says so here with the path's control bytes shown as `?`. It
-# is not a red: the pool itself is unaffected. Outside selfcheck this does nothing.
+# is not a red: the pool itself is unaffected. Outside selfcheck (no ADB_SELFCHECK_RECORD) this does
+# nothing; a record that has gone, or `/`, is a failure like any other.
 check_register_pool() {
-  local LC_ALL=C d p b ok=0
-  [ -n "${ADB_SELFCHECK_RECORD:-}" ] && [ -f "$ADB_SELFCHECK_RECORD" ] || return 0
-  d="${1%/}"
-  case "$d" in /?*) ;; *) d="$PWD/$d" ;; esac
-  case "$d" in
-    *[[:cntrl:]]*) ;;
-    *)
-      if [ -d "$d" ]; then
-        p="$(cd -P "$d" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && ok=1
-      else
-        b="${d##*/}"
-        p="$(cd -P "${d%/*}/" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && p="${p%/}/$b" && ok=1
-      fi
-      if [ "$ok" -eq 1 ]; then
-        case "$p" in /?*) ;; *) ok=0 ;; esac
-        case "$p" in *[[:cntrl:]]*) ok=0 ;; esac
-      fi ;;
-  esac
+  local LC_ALL=C d p b ok=0 why=""
+  [ -n "${ADB_SELFCHECK_RECORD:-}" ] || return 0
+  d="$1"
+  case "$d" in /) ;; */) d="${d%/}" ;; esac
+  case "$d" in /*) ;; *) d="$PWD/$d" ;; esac
+  if [ ! -f "$ADB_SELFCHECK_RECORD" ] || [ -L "$ADB_SELFCHECK_RECORD" ]; then
+    why="the run record $ADB_SELFCHECK_RECORD is gone or is not a regular file"
+  else
+    case "$d" in
+      /) why="/ is not a pool directory" ;;
+      *[[:cntrl:]]*|*'^'*) why="its path holds a control byte or a ^, which lsof's output cannot tell apart" ;;
+      *)
+        if [ -d "$d" ]; then
+          p="$(cd -P "$d" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && ok=1
+        else
+          b="${d##*/}"
+          p="$(cd -P "${d%/*}/" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && p="${p%/}/$b" && ok=1
+        fi
+        if [ "$ok" -eq 1 ]; then
+          case "$p" in /?*) ;; *) ok=0 ;; esac
+          case "$p" in *[[:cntrl:]]*|*'^'*) ok=0 ;; esac
+        fi
+        [ "$ok" -eq 1 ] || why="it could not be made physical" ;;
+    esac
+  fi
   if [ "$ok" -eq 1 ] && printf 'pool %s\n' "$p" >> "$ADB_SELFCHECK_RECORD" 2>/dev/null; then   # row-register
     return 0
   fi
-  : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null
-  printf 'NOTE: could not register pool %s with the running selfcheck; its record is marked incomplete\n' \
-    "${d//[[:cntrl:]]/?}" >&2
+  [ -n "$why" ] || why="the record could not be appended to"
+  if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then
+    printf 'NOTE: could not register pool %s with the running selfcheck (%s); its record is marked incomplete\n' \
+      "${d//[[:cntrl:]]/?}" "${why//[[:cntrl:]]/?}" >&2
+  else
+    printf 'WARN: could not register pool %s with the running selfcheck (%s), AND could not mark its record incomplete: a later --stop may call the run clean without having seen this pool\n' \
+      "${d//[[:cntrl:]]/?}" "${why//[[:cntrl:]]/?}" >&2
+  fi
   return 0
 }
 

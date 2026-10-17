@@ -171,7 +171,8 @@ hand is worse: a `KILL` that lands while a vendored-shmutant shell has a tree fr
 tree stopped forever (BWBama85/shmutant#47). `--stop` sends the runner `TERM`. The runner gives its
 workers up to `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) to finish their own cleanup before it
 KILLs, and records that grace. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 30, and
-never less than the run's recorded grace plus 5s) for everything to end. Then it names every process
+never less than the run's recorded preparation allowance plus its grace plus 5s) for everything to
+end. Then it names every process
 the run still owns, stopped ones included, KILLs them, and checks again with a fresh listing. A
 process belongs to the run if it works under the run's private temp root (every step gets it as
 `TMPDIR`) or under a pool directory a harness registered with the run, if it shares a process group
