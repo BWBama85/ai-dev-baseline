@@ -130,7 +130,9 @@ those. The rules below are specific to this repo's code.
      (default 20). A process that merely works in the checkout is named and never signalled. Exit
      `0` clean · `1` survivors, named and removed · `3` some could not be removed · `4` could not
      inspect, or the record is marked incomplete — never read as "nothing left" (inside a sandbox
-     `ps` is refused, so run it unsandboxed) · `5` no run recorded. A cancelled run keeps its record,
+     `ps` is refused, so run it unsandboxed) · `5` no run recorded · `6` nothing provably the run's
+     is left, but processes that started during it still work in the checkout (named, never
+     signalled). A cancelled run keeps its record,
      so the stop still sweeps what a KILLed runner left, and a second run in the same checkout —
      the turn-end gate's short one — never replaces a live run's record.
    - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),

@@ -78,8 +78,10 @@ unset ADB_MUTATION_RUN_ALL ADB_MUTATION_BASE
 # the moment everything has ended, so only a slow runner pays for it — and on a loaded machine a
 # runner's own exit can outlast a tight bound and read as a survivor. The cases that EXPECT
 # survivors pass a short one (STOP_SHORT), since they wait it out every time.
-export ADB_SELFCHECK_STOP_GRACE_SECS=2 ADB_SELFCHECK_STOP_SECS=20 ADB_SELFCHECK_STOP_INSPECT_SECS=20
-STOP_SHORT=10
+# The inspection bound is 12s, which also sizes a cancelled runner's own recording at a quarter of
+# it (3s each, a 9s `prep`), so the shortest bound a stop may use here is 9 + 2 + 5 = 16s.
+export ADB_SELFCHECK_STOP_GRACE_SECS=2 ADB_SELFCHECK_STOP_SECS=20 ADB_SELFCHECK_STOP_INSPECT_SECS=12
+STOP_SHORT=16
 
 work="$(mktemp -d)" || { echo "check-selfcheck: cannot create a scratch dir" >&2; exit 1; }
 
@@ -270,7 +272,10 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "record-into-dir" \
     '  if [ -L "$RUN_ROOT/$RUN_RECORD" ] || { [ -e "$RUN_ROOT/$RUN_RECORD" ] && [ ! -f "$RUN_ROOT/$RUN_RECORD" ]; }; then   # row-record-dir' \
     '  if false; then   # row-record-dir' \
-    "a directory at the record's name is refused, never published into"
+    "a FIFO at the record's name is refused without being opened, and the run goes on (rc 124 = it hung)"
+  shmutant_mut "old-record-unread-replaced" \
+    '    if ! _stop_num "$old"; then   # row-old-record' '    if false; then   # row-old-record' \
+    'an existing record that cannot be read is never replaced'
   shmutant_mut "stop-unknown-key-accepted" \
     '      *) STOP_WHY="line $n of $RUN_RECORD has a key no run record carries"; return 4 ;;' \
     '      *) ;;' \
@@ -344,16 +349,26 @@ if [ "$MODE" = mutation ]; then
   # Each way the inventory can be less than the whole table, folded into "the whole table".
   shmutant_mut "stop-ps-status-ignored" \
     '  if [ "$rc" -ne 0 ]; then   # row-ps-status' '  if false; then   # row-ps-status' \
-    'a stop whose ps fails answers 4 even when ps printed a listing'
+    'a stop whose ps fails says so, even when ps printed a listing'
   shmutant_mut "stop-ps-known-skipped" \
     '  for p in "$REC_PID" "${!REC_GROUPS[@]}" "${!OWN_EVER[@]}"; do   # row-ps-known' '  for p in; do   # row-ps-known' \
     'a stop whose ps omits a process it depends on answers 4, never reads it as gone'
   shmutant_mut "stop-start-dated-early" \
     '  now="$EPOCHSECONDS"   # row-ps-now' '  now="$t0"   # row-ps-now' \
-    'after the runner is KILLed, the stop still names a holder whose pool process exited during the stop'
+    'after the runner is KILLed, the stop sends the step it recorded a TERM, and its cleanup runs'
   shmutant_mut "stop-recheck-folded" \
     '    elif adb_pid_gone "$p"; then' '    else' \
     'a stop whose recheck of a missing directory cannot be read answers 4'
+  shmutant_mut "stop-cwd-only-ignored" \
+    '  for p in "${!INV_CWD[@]}"; do   # row-both-ways' '  for p in; do   # row-both-ways' \
+    'a stop whose ps omits a process the cwd listing shows answers 4'
+  shmutant_mut "stop-stale-group-claims" \
+    '  [ -n "$REC_MTIME" ] && [ "$st" -le $(( REC_MTIME + 60 + STOP_SKEW )) ] || return 1   # row-rec-upper' \
+    '  :   # row-rec-upper' \
+    'a recorded group whose leader is gone cannot claim a process started after the run was last heard from'
+  shmutant_mut "unattributed-called-clean" \
+    '    if [ "$UNATTRIBUTED" -gt 0 ]; then   # row-unattributed' '    if false; then   # row-unattributed' \
+    'a stop that leaves an unattributed process from the run'"'"'s checkout is never clean (exit 6)'
   shmutant_mut "stop-ps-control-folded" \
     'return 1; }   # row-ps-control' 'return 0; }   # row-ps-control' \
     'a stop whose ps lists without it answers 4, never clean'
@@ -467,6 +482,11 @@ if [ -f "$ctl/$name.beat" ]; then
   # `$name.slowexit`: a worker whose own TERM cleanup takes the seconds the file holds (1.5 when it
   # is empty) — longer than the fixed 1s the runner used to give before its KILL. `$name.cleaned`
   # exists only if that cleanup was let finish.
+  # `$name.trapspawn`: on TERM, start one more process in a group of its own, working in the
+  # checkout, and exit at once — a worker born in cleanup that nothing records (#551's exit 6).
+  if [ -f "$ctl/$name.trapspawn" ]; then
+    trap '( set -m; sleep 300 & printf "spawned %s %s %s\n" "$!" "$!" "$(ps -o lstart= -p "$!")" >> "$ctl/$name.leaked" ); exit 143' TERM
+  fi
   if [ -f "$ctl/$name.slowexit" ]; then
     se="$(cat "$ctl/$name.slowexit")"; [ -n "$se" ] || se=1.5
     trap 'sleep "$se"; : > "$ctl/$name.cleaned"; exit 143' TERM
@@ -1653,7 +1673,7 @@ has "$(LC_ALL=C tr -d '\000' < "$work/nul.out")" "nul-after" "...and output AFTE
 # refused for the wrong one would let a broken rule pass.
 #
 # The grace is 2s (set at the top). A case that expects survivors passes STOP_SHORT, so it takes
-# about 12s; one that expects a clean stop keeps the generous bound and returns as soon as it can.
+# about 18s; one that expects a clean stop keeps the generous bound and returns as soon as it can.
 # STOP_SHORT is not tighter because the after-the-TERM survivor exists only once the stub is
 # scheduled to run its trap, which on a machine at load 150 (observed, D135) is not prompt.
 FXS="$work/fx-stop"
@@ -1691,7 +1711,7 @@ leak_launch() {
   reset_ctl "$fx"
   printf '0\n' > "$ctl/gates.beat"; : > "$ctl/gates.leak"; printf '%s\n' "$work" > "$ctl/gates.poolbase"
   ADB_STUB_CTL="$ctl" bash "$fx/scripts/selfcheck.sh" --only gates --jobs 1 > "$fx/stop-run.out" 2>&1 &
-  STOP_RUNNER=$!
+  STOP_RUNNER=$!; STOP_RUNNER_LSTART="$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)"
   deadline=$(( BASH_MONOSECONDS + 60 ))
   while [ "$BASH_MONOSECONDS" -lt "$deadline" ]; do
     if [ -f "$ctl/gates.leakready" ]; then
@@ -1709,7 +1729,7 @@ plain_launch() {
   reset_ctl "$fx"
   printf '0\n' > "$fx/ctl/gates.beat"
   ADB_STUB_CTL="$fx/ctl" bash "$fx/scripts/selfcheck.sh" --only gates --jobs 1 > "$fx/stop-run.out" 2>&1 &
-  STOP_RUNNER=$!
+  STOP_RUNNER=$!; STOP_RUNNER_LSTART="$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)"
   dl=$(( BASH_MONOSECONDS + 60 ))
   until [ "$(enrolled_count "$fx/ctl")" -ge 1 ]; do
     [ "$BASH_MONOSECONDS" -lt "$dl" ] || return 1
@@ -1719,11 +1739,16 @@ plain_launch() {
 }
 
 # reap_runner — wait for STOP_RUNNER, bounded: a stop that failed to end it must not hang the suite.
+# The KILL backstop goes only to the process this suite launched — the same `ps lstart` it had when
+# it was launched — never to whatever now holds its number.
 reap_runner() {
   local deadline=$(( BASH_MONOSECONDS + 20 ))
   while kill -0 "$STOP_RUNNER" 2>/dev/null && [ "$BASH_MONOSECONDS" -lt "$deadline" ]; do sleep 0.1; done
-  kill -KILL "$STOP_RUNNER" 2>/dev/null
+  if [ -n "${STOP_RUNNER_LSTART:-}" ] && [ "$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)" = "$STOP_RUNNER_LSTART" ]; then
+    kill -KILL "$STOP_RUNNER" 2>/dev/null
+  fi
   wait "$STOP_RUNNER" 2>/dev/null
+  STOP_RUNNER_LSTART=""
   return 0
 }
 
@@ -1779,7 +1804,8 @@ if leak_launch "$FXS"; then
   if [ "$_cn" -eq 1 ] && [ "$(stub_state "$CANARY_PID" "$CANARY_PID")" = alive ]; then ok
   else bad "an unrelated process in the checkout is named and left alone (pid $CANARY_PID): $STOP_OUT"; fi
   hasnt "$STOP_OUT" "sleep 300" "a process is named by its executable, never its arguments"
-  [ ! -e "$FXS/.selfcheck-run" ] && ok || bad "12.1: a finished stop removes the run's record"
+  # The canary is named as not tied to the run, so the record is KEPT: it may still be the run's own.
+  [ -f "$FXS/.selfcheck-run" ] && ok || bad "12.1: a stop that named unattributed processes keeps the record: $STOP_OUT"
 else
   bad "12.1: the leak stub never staged its survivors — nothing about the stop was observed"
   reap_runner
@@ -1800,11 +1826,12 @@ reset_ctl "$FXS"
 # worker only by descent, and the step only by its recorded group. (In 12.1 the runner's own
 # cancellation records most of them too, so there a single rule removed changes nothing.)
 #
-# Its FIRST table read is held 3s before ps runs, as on a loaded machine: a start dated from before
-# that delay would move every process three seconds, and the anchored holder — which only the stop's
-# memory of its start ties to the run — would then fail to be recognised as the same process.
+# Its FIRST table read is held 10s before ps runs, as on a loaded machine: a start dated from before
+# that delay would move every process ten seconds, and the anchored holder — which only the stop's
+# memory of its start ties to the run — would then fail to be recognised as the same process. (3s
+# was not enough: under a full run's load every later read was itself seconds late.)
 _slowps="$work/ps-slow-once"; mkdir -p "$_slowps"
-printf '#!/bin/sh\ncase " $* " in *" -A "*) if [ -f "$ADB_TEST_SLOW_ONCE" ]; then rm -f "$ADB_TEST_SLOW_ONCE"; sleep 3; fi ;; esac\nexec "%s" "$@"\n' \
+printf '#!/bin/sh\ncase " $* " in *" -A "*) if [ -f "$ADB_TEST_SLOW_ONCE" ]; then rm -f "$ADB_TEST_SLOW_ONCE"; sleep 10; fi ;; esac\nexec "%s" "$@"\n' \
   "$(command -v ps)" > "$_slowps/ps"; chmod +x "$_slowps/ps"
 if leak_launch "$FXS"; then
   _ctl="$FXS/ctl"
@@ -1828,7 +1855,7 @@ if leak_launch "$FXS"; then
     || bad "after the runner is KILLed, the stop sends the step it recorded a TERM, and its cleanup runs: $STOP_OUT"
   eq "$(leaked_alive "$_ctl")" "" "12.2: nothing the KILLed run left survives the stop"
   [ -n "$_rt" ] && [ ! -e "$_rt" ] && ok \
-    || bad "the stop removes the temp root a KILLed runner never removed (${_rt:-no tmp in the record})"
+    || bad "the stop removes the temp root a KILLed runner never removed (${_rt:-no tmp in the record}): $STOP_OUT"
 else
   bad "12.2: the leak stub never staged its survivors"
   reap_runner
@@ -1860,6 +1887,32 @@ if leak_launch "$FXS"; then
 else
   bad "12.2b: the leak stub never staged its survivors"
   reap_runner
+fi
+reset_ctl "$FXS"
+rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
+
+# --- 12.2d a worker born in cleanup, that nothing ties to the run -------------------------------
+# The step's TERM trap starts one more process in a group of its own, working in the checkout, and
+# exits at once — after the runner's cancel-time recording, before any listing sees its parent. No
+# rule can attribute it, and the stop must not pretend it saw nothing: it names it, never signals
+# it, and answers 6 — not clean — keeping the record.
+reset_ctl "$FXS"
+printf '0\n' > "$FXS/ctl/gates.beat"; : > "$FXS/ctl/gates.trapspawn"
+ADB_STUB_CTL="$FXS/ctl" bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 > "$FXS/stop-run.out" 2>&1 &
+STOP_RUNNER=$!; STOP_RUNNER_LSTART="$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)"
+_dl=$(( BASH_MONOSECONDS + 60 ))
+until [ "$(enrolled_count "$FXS/ctl")" -ge 1 ] || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.05; done
+kill -TERM "$STOP_RUNNER" 2>/dev/null
+reap_runner
+_sp="$(awk '$1 == "spawned" { print $2 }' "$FXS/ctl/gates.leaked" 2>/dev/null)"
+if [ -n "$_sp" ]; then
+  stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS="$STOP_SHORT"
+  eq "$STOP_RC" 6 "a stop that leaves an unattributed process from the run's checkout is never clean (exit 6): $STOP_OUT"
+  has "$STOP_OUT" "NOTE — pid=$_sp " "12.2d: ...and names it"
+  [ "$(stub_state "$_sp" "$_sp")" = alive ] && ok || bad "12.2d: the unattributed process was signalled"
+  [ -f "$FXS/.selfcheck-run" ] && ok || bad "12.2d: a not-clean stop removed the record"
+else
+  bad "12.2d: the step never started its cleanup-born process — the case did not stage"
 fi
 reset_ctl "$FXS"
 rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
@@ -1905,7 +1958,7 @@ reset_ctl "$FXS"
 printf '0\n' > "$FXS/ctl/gates.beat"; printf '4\n' > "$FXS/ctl/gates.slowexit"
 ADB_SELFCHECK_STOP_GRACE_SECS=12 ADB_STUB_CTL="$FXS/ctl" bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 \
   > "$FXS/stop-run.out" 2>&1 &
-STOP_RUNNER=$!
+STOP_RUNNER=$!; STOP_RUNNER_LSTART="$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)"
 _dl=$(( BASH_MONOSECONDS + 60 ))
 until [ "$(enrolled_count "$FXS/ctl")" -ge 1 ] || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.05; done
 if [ "$(enrolled_count "$FXS/ctl")" -ge 1 ]; then
@@ -1915,7 +1968,7 @@ if [ "$(enrolled_count "$FXS/ctl")" -ge 1 ]; then
     || bad "a stop never KILLs into a cleanup still inside the run's own grace: $STOP_OUT"
   eq "$STOP_RC" 0 "12.3: a run that leaves nothing behind stops clean (exit 0): $STOP_OUT"
   has "$STOP_OUT" "stopped clean" "12.3: ...and says so"
-  has "$STOP_OUT" "the bound is 32s" "12.3: the bound is the run's prep (15s) + its grace (12s) + the margin (5s)"
+  has "$STOP_OUT" "the bound is 26s" "12.3: the bound is the run's prep (9s) + its grace (12s) + the margin (5s)"
   [ -z "$(enrolled_alive "$FXS/ctl")" ] && ok || bad "12.3: the run's step outlived a clean stop"
   [ ! -e "$FXS/.selfcheck-run" ] && ok || bad "12.3: a clean stop removes the run's record"
 else
@@ -1983,6 +2036,7 @@ _bad_rec "names another checkout" "not this checkout" "${_good/root $FXS_P/root 
 _bad_rec "registers a pool holding the checkout" "registers a pool" "$_good${_nl}pool $(dirname "$FXS_P")$_nl"
 _bad_rec "has a malformed group line" "is not 'group <pgid> <epoch>'" "$_good${_nl}group 12x 1$_nl"
 _bad_rec "has no prep" "has no prep" "${_good/prep 15$_nl/}$_nl"
+_bad_rec "has a grace no runner could write" "grace is not a number the runner could write" "${_good/grace 2/grace 9999999999}$_nl"
 _bad_rec "registers a pool whose name holds a ^" "free of control bytes and ^" "$_good${_nl}pool $work/x^Ay$_nl"
 [ "$(stub_state "$_cp" "$_cp")" = alive ] && ok || bad "12.5: a refused record signalled the process it named"
 
@@ -1998,6 +2052,12 @@ printf '#!/bin/sh\n"%s" "$@"\necho "ps: operation not permitted" >&2\nexit 1\n' 
 printf '#!/bin/sh\nexit 0\n' > "$_sb/psnoself/ps"
 printf '#!/bin/sh\nexec sleep 60\n' > "$_sb/pshang/ps"
 printf '#!/bin/sh\nexit 1\n' > "$_sb/cwdfail/lsof"; cp "$_sb/cwdfail/lsof" "$_sb/cwdfail/find"
+mkdir -p "$_sb/psdrop"
+cat > "$_sb/psdrop/ps" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" -A "*) "$_ps_real" "\$@" | awk -v d="\$ADB_TEST_DROP" '\$1 != d'; exit "\${PIPESTATUS[0]}" ;; esac
+exec "$_ps_real" "\$@"
+STUB
 # The partial listings drop ONE process — a second canary, started during the "run" — and keep the rest.
 cat > "$_sb/cwdpart/lsof" <<STUB
 #!/usr/bin/env bash
@@ -2010,7 +2070,7 @@ STUB
 chmod +x "$_sb"/*/*
 stop_sc "$FXS" PATH="$_sb/psfail:$PATH"
 eq "$STOP_RC" 4 "a stop whose ps fails answers 4 even when ps printed a listing: $STOP_OUT"
-has "$STOP_OUT" "ps could not list processes" "12.6: ...and names ps as what failed"
+has "$STOP_OUT" "ps could not list processes" "a stop whose ps fails says so, even when ps printed a listing"
 stop_sc "$FXS" PATH="$_sb/psnoself:$PATH"
 eq "$STOP_RC" 4 "a stop whose ps lists without it answers 4, never clean: $STOP_OUT"
 stop_sc "$FXS" PATH="$_sb/pshang:$PATH" ADB_SELFCHECK_STOP_INSPECT_SECS=2
@@ -2030,6 +2090,10 @@ printf '#!/bin/sh\ncase " $* " in *" stat= "*) exit 1 ;; esac\nexec "%s" "$@"\n'
 chmod +x "$_sb/statfail/ps"
 stop_sc "$FXS" PATH="$_sb/statfail:$_sb/cwdpart:$PATH" ADB_TEST_DROP="$CANARY_PID"
 eq "$STOP_RC" 4 "a stop whose recheck of a missing directory cannot be read answers 4: $STOP_OUT"
+# …and the other way round: ps drops a process that the cwd listing shows, and that was running
+# before ps ran. It could be a detached worker nothing else would surface; the listing is refused.
+stop_sc "$FXS" PATH="$_sb/psdrop:$PATH" ADB_TEST_DROP="$CANARY_PID"
+eq "$STOP_RC" 4 "a stop whose ps omits a process the cwd listing shows answers 4: $STOP_OUT"
 [ "$(stub_state "$_cp" "$_cp")" = alive ] && ok || bad "12.6: a stop that could not inspect signalled the process its record named"
 reset_ctl "$FXS"
 rm -f "$FXS/.selfcheck-run"
@@ -2078,7 +2142,7 @@ _cl="$(awk '$1 == "caller" { print $2 }' "$FXS/ctl/canary.leaked")"
 _by="$(awk '$1 == "bystander" { print $2 }' "$FXS/ctl/canary.leaked")"
 _in="$(awk '$1 == "inside" { print $2 }' "$FXS/ctl/canary.leaked")"
 if [ -n "$_cl" ] && [ -n "$_by" ] && [ -n "$_in" ]; then
-  STOP_RUNNER="$(cat "$FXS/ctl/caller.runner" 2>/dev/null)"
+  STOP_RUNNER="$(cat "$FXS/ctl/caller.runner" 2>/dev/null)"; STOP_RUNNER_LSTART=""
   stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS="$STOP_SHORT"
   survivor_named "$_in" && ok || bad "12.9: the process working under the run's temp root is still the run's (pid $_in): $STOP_OUT"
   if [ "$(stub_state "$_cl" "$_cl")" = alive ] && [ "$(stub_state "$_by" "$_cl")" = alive ]; then ok
@@ -2094,13 +2158,6 @@ rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
 # here and ps is made to drop its line: the stop must not read that as "the run has exited" — which
 # would skip its TERM, call a live run clean and remove its record — but refuse.
 if plain_launch "$FXS"; then
-  mkdir -p "$_sb/psdrop"
-  cat > "$_sb/psdrop/ps" <<STUB
-#!/usr/bin/env bash
-case " \$* " in *" -A "*) "$_ps_real" "\$@" | awk -v d="\$ADB_TEST_DROP" '\$1 != d'; exit "\${PIPESTATUS[0]}" ;; esac
-exec "$_ps_real" "\$@"
-STUB
-  chmod +x "$_sb/psdrop/ps"
   stop_sc "$FXS" PATH="$_sb/psdrop:$PATH" ADB_TEST_DROP="$STOP_RUNNER"
   eq "$STOP_RC" 4 "a stop whose ps omits a process it depends on answers 4, never reads it as gone: $STOP_OUT"
   [ -f "$FXS/.selfcheck-run" ] && ok || bad "12.10: a stop that could not trust its listing removed the run's record"
@@ -2109,6 +2166,52 @@ STUB
   eq "$STOP_RC" 0 "12.10: with a whole listing the same run then stops clean: $STOP_OUT"
 else
   bad "12.10: the plain run never enrolled"; reap_runner
+fi
+
+# --- 12.11 a stale record cannot claim a reused group ------------------------------------------
+# A record two hours old names a group whose number has since been taken by a NEW group, whose own
+# leader has already exited, leaving one member working in the checkout. With the leader gone the
+# group's continuity cannot be shown by its leader, and the member started long after the run was
+# last heard from (the record's last write, an hour ago here): it is not the run's — named, never
+# signalled, and the stop is not clean.
+reset_ctl "$FXS"
+( cd "$FXS" || exit; set -m; { sleep 300 & printf 'reused %s %s %s\n' "$!" "$BASHPID" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked"; exit 0; } & wait )
+_ru="$(awk '$1 == "reused" { print $2 }' "$FXS/ctl/canary.leaked")"
+_rg="$(awk '$1 == "reused" { print $3 }' "$FXS/ctl/canary.leaked")"
+sleep 0 & _deadp=$!; wait "$_deadp"
+_then=$(( EPOCHSECONDS - 7200 ))
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 2\nprep 15\nroot %s\ntmp %s\ngroup %s %s\n' \
+  "$_deadp" "$_then" "$FXS_P" "$work/no-such-root" "$_rg" "$_then" > "$FXS/.selfcheck-run"
+perl -e 'my $t = time - 3600; utime($t, $t, $ARGV[0]) or exit 1' "$FXS/.selfcheck-run" \
+  || bad "12.11: could not age the record (perl utime)"
+if [ -n "$_ru" ] && [ "$(stub_state "$_ru" "$_rg")" = alive ]; then
+  stop_sc "$FXS"
+  [ "$(stub_state "$_ru" "$_rg")" = alive ] && ok \
+    || bad "a recorded group whose leader is gone cannot claim a process started after the run was last heard from: $STOP_OUT"
+  eq "$STOP_RC" 6 "12.11: ...it is named as unattributed, and the stop is not clean: $STOP_OUT"
+else
+  bad "12.11: the reused group never staged"
+fi
+reset_ctl "$FXS"
+rm -f "$FXS/.selfcheck-run"
+
+# --- 12.12 Linux: a cwd whose ` (deleted)` cannot be told from its real name -----------------------
+# The kernel appends ` (deleted)` to a removed directory. If a directory really named that way also
+# exists, the two cannot be told apart, and either guess could hide a survivor: refused. macOS's lsof
+# names a removed directory by its last path, with no suffix, so there is nothing to tell apart.
+if [ -e "/proc/$$/cwd" ]; then
+  reset_ctl "$FXS"
+  _dd="$work/gone-dir"; mkdir -p "$_dd"
+  ( cd "$_dd" || exit; set -m; sleep 300 & printf 'indeleted %s %s %s\n' "$!" "$!" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked" )
+  rm -rf "$_dd"; mkdir -p "$_dd (deleted)"
+  sleep 0 & _deadp=$!; wait "$_deadp"
+  printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 2\nprep 15\nroot %s\ntmp %s\n' \
+    "$_deadp" "$EPOCHSECONDS" "$FXS_P" "$work/no-such-root" > "$FXS/.selfcheck-run"
+  stop_sc "$FXS"
+  eq "$STOP_RC" 4 "a cwd whose ' (deleted)' suffix cannot be told from a real name is refused: $STOP_OUT"
+  reset_ctl "$FXS"; rm -rf "$_dd (deleted)" "$FXS/.selfcheck-run"
+else
+  ok   # macOS: lsof reports a removed directory by its last path; no suffix to disambiguate
 fi
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------
@@ -2130,6 +2233,15 @@ yes "$RC_" "12.8: a run with a directory where its record goes still passes"
 has "$OUT" "no run record" "a directory at the record's name is refused, never published into"
 [ -z "$(ls -A "$FXS/.selfcheck-run" 2>/dev/null)" ] && ok || bad "12.8: the run published its record INTO the directory at its name"
 rm -rf "$FXS/.selfcheck-run"
+# …and an existing record that cannot be read names a run nobody can show has exited: it is never
+# replaced, and the run says so.
+printf 'adb-selfcheck-run 1\npid 12345\n' > "$FXS/.selfcheck-run"; chmod 000 "$FXS/.selfcheck-run"
+OUT="$(ADB_STUB_CTL="$FXS/ctl" bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 2>&1)"; RC_=$?
+chmod 600 "$FXS/.selfcheck-run"
+yes "$RC_" "12.8: a run beside an unreadable record still passes"
+has "$OUT" "could not be read" "an existing record that cannot be read is never replaced"
+has "$(cat "$FXS/.selfcheck-run")" "pid 12345" "12.8: ...and is still the record that was there"
+rm -f "$FXS/.selfcheck-run"
 # …and a FIFO there must not be OPENED: reading one blocks until something writes it, so the run
 # would never start. Bounded, so a regression is a red here rather than a hung suite.
 mkfifo "$FXS/.selfcheck-run"

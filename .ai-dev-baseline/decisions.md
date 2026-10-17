@@ -10345,10 +10345,12 @@ survive is the part a later reader needs.
              is gone. Ownership is first taken from the inventory made before any signal. Anything the
              stop has found to be the run's stays the run's while it is the same process (same pid,
              same start), so a holder does not drop out when the TERM makes its pool process exit.
-             **The verdict** (owner decision). `0` nothing the run owns outlived the bound · `1`
-             survivors outlived it, named, and removed · `3` some could not be removed, named · `4`
-             could not inspect · `5` no run recorded · `2` usage. Exit `4` is never read as "nothing
-             left". The inventory is `ps -A -o pid=,pgid=,ppid=,stat=,etime=,command=` plus one cwd
+             **The verdict** (owner decisions). `0` nothing the run owns outlived the bound, and nothing
+             unattributed is left in its checkout · `1` survivors outlived it, named, and removed · `3`
+             some could not be removed, named · `4` could not inspect, or the record is incomplete or
+             invalid · `5` no run recorded · `6` nothing provably the run's is left, but processes that
+             started during the run still work in its checkout, named and not signalled · `2` usage.
+             Exit `4` is never read as "nothing left". Exit `6` was added after review pass 2 (below). The inventory is `ps -A -o pid=,pgid=,ppid=,stat=,etime=,command=` plus one cwd
              listing, `find /proc … -printf '%h\t%l\n'` on Linux (stripping ` (deleted)`) or
              `lsof -w -a -d cwd -Fpn` elsewhere, each bounded by `ADB_SELFCHECK_STOP_INSPECT_SECS`
              (default 20) through `adb_run_bounded`. The inventory is PROVED WHOLE rather than trusted.
@@ -10405,6 +10407,21 @@ survive is the part a later reader needs.
              after the record is gone marks it incomplete. A marker that cannot be written is
              reported as exactly that. The fixture's cleanup identifies each leak by its `ps lstart`
              as well as its pid and group.
+             **Local review, pass 2** (codex, 8 REQUIRED; the owner chose to fix the tractable ones, to
+             mitigate the identity window, and to add exit `6`). A worker that a cleanup trap starts in
+             the checkout, after the runner recorded its groups, is tied to the run by nothing. It
+             reproduced as a survivor under exit `0`, and now yields `6`. `ps` and the cwd listing are
+             cross-checked both ways: a process the cwd listing shows, which was running before `ps`
+             ran but which `ps` omitted, refuses the inventory. A recorded group whose leader is gone
+             cannot claim a member that started after the run was last heard from, which is the
+             record's last write plus a minute. A cancelled runner's recording works to a hard deadline
+             inside its `prep`, sized as three quarters of `ADB_SELFCHECK_STOP_INSPECT_SECS` in all. An
+             existing record that cannot be read is never replaced. Linux's ` (deleted)` is refused
+             when a directory of the full name exists. Appends to the record are serialized under
+             `.selfcheck-run.lock`. The runner records its own overrun ticker, which a KILLed runner
+             leaves in a group of its own. The fixture's KILL backstop checks the runner's `lstart`.
+             The start-dating row was found surviving under a full run's load with a 3 s delay,
+             because every later `ps` was itself seconds late, so the delay is now 10 s.
              **An incomplete record is never clean.** A worker the runner could not record, or a pool
              `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
              answers 4 where it would have answered 0, and notes it beside any survivors it names. A
@@ -10418,11 +10435,14 @@ survive is the part a later reader needs.
              That is #547, and until it lands a stop of a run with live mutation pools ends `1`, which
              is the truth. shmutant's freeze-then-kill gap is upstream (BWBama85/shmutant#47); the
              stop removes such a tree but cannot prevent it. Two concurrent runs in one checkout stay
-             unsupported (#250). The second run's record replaces the first's, and a stop that sees
-             its record change mid-stop answers 4. A pid reused within the identity windows is not
-             distinguishable. A survivor line prints the run's own command lines in full, and a process
-             merely named as unattributed is printed by its executable alone, since an argv can carry
-             a credential. The stop needs an unsandboxed shell.
+             unsupported (#250). A second run does not replace a live run's record (below), and a stop
+             that sees its record change mid-stop answers 4. Every process is printed by its executable
+             alone, never its arguments, since an argv can carry a credential. The stop needs an
+             unsandboxed shell. The one window no userspace stop closes on macOS, which has no process
+             handles, is the instant between re-reading a process's identity and `kill(2)`:
+             `_stop_signal` re-verifies every target's group and start in one bounded `ps` immediately
+             before signalling, and signals a group whole only while every member it had is still
+             there, but a pid reused inside that instant cannot be told.
              **A second run keeps its hands off the first one's record.** A run finding a record whose
              runner has not provably exited (`adb_pid_gone`, ESRCH only) writes none of its own and
              says so. This is not hypothetical. The turn-end gate (`.claude/scripts/precommit-gate.sh`)
@@ -10471,8 +10491,9 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 35 rows, one per assertion
-             that matters, two of them in `check-lib.sh`: the grace wait and `_cleanup`'s recording;
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 39 rows, one per assertion
+             that matters, four of them in `check-lib.sh` (registration): the grace wait and
+             `_cleanup`'s recording;
              the record's live-run, directory and unknown-key refusals; each ownership rule removed
              alone (temp root, pool, group, memory, the first look, descent, recorded groups); the
              cancel-time recording skipped; the runner's group allowed to spread; the temp-root
@@ -10485,6 +10506,6 @@ survive is the part a later reader needs.
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 35 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 39 `--mutation` rows) · `.gitignore` ·
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

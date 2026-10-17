@@ -182,7 +182,8 @@ nested pool's worker does), or if the stop already found it to be the run's. A p
 review running beside the run, is named and never signalled. Exit `1` means something survived and
 was removed. `4` means the stop could not see the whole process table, or a worker or pool could not
 be recorded (`.selfcheck-run.incomplete`); neither is ever a clean result. `5` means no run is
-recorded. A cancelled run keeps its record (`.selfcheck-run`, gitignored), so `--stop` still sweeps
+recorded. `6` means nothing provably the run's is left, but processes that started during it still
+work in the checkout; they are named and never signalled, and the record is kept. A cancelled run keeps its record (`.selfcheck-run`, gitignored), so `--stop` still sweeps
 what it left after the runner itself is gone.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
