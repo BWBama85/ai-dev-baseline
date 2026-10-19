@@ -1448,7 +1448,8 @@ _stop_inventory() {
 }
 
 _stop_inventory_once() {
-  local pid pgid ppid uid stat etime l1 l2 l3 l4 l5 cmd t0 now rc=0 p
+  local pid pgid ppid uid stat etime l1 l2 l3 l4 l5 cmd t0 now rc=0 p e irc=0
+  local -a idp=()
   local -A cwd_before=()
   INV_PGID=(); INV_PPID=(); INV_UID=(); INV_STAT=(); INV_START=(); INV_LST=(); INV_CMD=(); INV_CWD=(); INV_ERR=""
   # THE ORDER IS THE PROOF: working directories, then processes, then working directories again. A
@@ -1504,6 +1505,29 @@ _stop_inventory_once() {
   done
   _stop_mark_desc
   _stop_cwds || return 1
+  # …and the directories must still belong to the processes `ps` described. A pid that ended and was
+  # REUSED between the two would pair the old process's group and start with the new one's directory,
+  # and ownership by directory would then claim the old process's group. So every listed start is read
+  # again after the second listing (one short, targeted, bounded read): a pid that started again
+  # makes the snapshot inconsistent, and it is taken again like any other.
+  for p in "${!INV_CWD[@]}"; do [ -n "${INV_LST[$p]:-}" ] && idp+=("$p"); done
+  if [ "${#idp[@]}" -gt 0 ]; then
+    _stop_bound || return 1
+    e="$(IFS=,; adb_run_bounded "$_SB" 1 env LC_ALL=C ps -o pid=,lstart= -p "${idp[*]}" 2>/dev/null)" || irc=$?
+    # 1 with nothing printed is every one of them gone, which is no inconsistency; anything else that
+    # is not 0 is a read that cannot vouch for the rows it printed.
+    case "$irc" in
+      0) ;;
+      1) [ -z "$e" ] || { INV_ERR="the processes' starts could not be read again (ps rc 1)"; return 1; } ;;
+      *) INV_ERR="the processes' starts could not be read again (rc $irc)"; return 1 ;;
+    esac
+    while read -r p l1 l2 l3 l4 l5; do
+      case "$p" in ''|*[!0-9]*) continue ;; esac
+      [ "$l1 $l2 $l3 $l4 $l5" = "${INV_LST[$p]:-}" ] && continue
+      INV_ERR="pid $p started again between the process listing and the working-directory listing"
+      return 2   # row-cwd-identity
+    done <<< "$e"
+  fi
   _stop_whole
 }
 
@@ -1784,13 +1808,16 @@ _stop_signal() {
 # `group` repeated with a later fork is a pid the kernel reused for a later worker, so the latest
 # fork is the one that can still be alive.
 _stop_read_record() {
-  local line k v g e d n=0 got=" " r_pid="" r_pgid="" r_epoch="" r_root="" r_tmp="" r_grace="" r_prep=""
+  local line k v g e d n=0 got=" " r_pid="" r_pgid="" r_epoch="" r_root="" r_tmp="" r_grace="" r_prep="" r_mtime
   local -A r_groups=()
   local -a r_pools=()
   if [ ! -e "$RUN_RECORD" ] && [ ! -L "$RUN_RECORD" ]; then return 5; fi
   if [ -L "$RUN_RECORD" ] || [ ! -f "$RUN_RECORD" ] || [ ! -O "$RUN_RECORD" ]; then
     STOP_WHY="$RUN_RECORD is not a regular file this user owns"; return 4
   fi
+  # The last write's time is read BEFORE the bytes: an append landing between the two then makes it
+  # older than what was read, never newer, and "last heard from" can only err narrow.
+  r_mtime="$(adb_mtime "$RUN_RECORD")"
   adb_run_bounded "$STOP_INSPECT" 1 head -c 1048577 "$RUN_RECORD" > "$STOP_DIR/record" 2>/dev/null \
     || { STOP_WHY="$RUN_RECORD could not be read (in time)"; return 4; }
   adb_bytes_whole "$STOP_DIR/record" 1048576 \
@@ -1844,7 +1871,7 @@ _stop_read_record() {
       STOP_WHY="$RUN_RECORD registers a pool, $(_stop_clean "$d"), that is or contains the checkout or the run's temp root"; return 4
     fi
   done
-  REC_MTIME="$(adb_mtime "$RUN_RECORD")"
+  REC_MTIME="$r_mtime"
   REC_PID="$r_pid"; REC_PGID="$r_pgid"; REC_EPOCH="$r_epoch"; REC_GRACE="$r_grace"; REC_PREP="$r_prep"
   REC_ROOT="$r_root"; REC_TMP="$r_tmp"
   REC_GROUPS=()
@@ -1952,10 +1979,11 @@ _stop_unattributed() {
     case "${INV_STAT[$p]}" in Z*) continue ;; esac
     [ -n "${INV_START[$p]:-}" ] && [ "${INV_START[$p]}" -ge $(( REC_EPOCH - 2 - STOP_SKEW )) ] || continue
     _stop_under "${INV_CWD[$p]:-}" "$_ENC" || continue
-    if [ "${1:-}" = print ] && [ -z "${STOP_NAMED[$p]+x}" ]; then
+    # Named once per PROCESS, pid and start together: a pid reused by another process is a new one.
+    if [ "${1:-}" = print ] && [ -z "${STOP_NAMED[$p ${INV_LST[$p]:-}]+x}" ]; then
       printf 'selfcheck --stop: NOTE — pid=%s pgid=%s works in this checkout and started during the run, but nothing ties it to the run; NOT signalled: %s\n' \
         "$p" "${INV_PGID[$p]}" "$(_stop_clean "${INV_CMD[$p]%% *}")"
-      STOP_NAMED["$p"]=1
+      STOP_NAMED["$p ${INV_LST[$p]:-}"]=1
     fi
     UNATTRIBUTED=$(( UNATTRIBUTED + 1 ))
   done
@@ -2302,7 +2330,8 @@ REC_HOLD=0; REC_SIG=""   # inside an append to the record, and the signal that a
 REC_INSPECT_SECS=$(( STOP_INSPECT / 5 )); [ "$REC_INSPECT_SECS" -ge 1 ] || REC_INSPECT_SECS=1
 REC_PREP_SECS=$(( 3 * (REC_INSPECT_SECS + 1) + 3 ))
 REC_PREP_DL=""
-declare -A REC_DONE=()   # pid -> 1 once its `group` line is written: what `_cleanup` must not skip
+declare -A REC_DONE=()   # pid -> 1 once its `group` line is written, until that pid is reaped: a
+                         # reaped number can be reused by a group that is not recorded yet
 
 # _rec_append <line> — one line onto the record through `adb_record_append` (common.sh), the ONE
 # locked writer this record has: the runner's lines and every harness's `pool` line go through it.
@@ -2763,13 +2792,13 @@ run_serial() {   # names...
         stamp_of ended "$name" >/dev/null || note_overrun "$name" "$(running_for "$name" "$t0")" live
         rc=0; continue
       fi
-      kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null
+      kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null; unset "REC_DONE[$tick]"
       # Nothing reaped: a trapped signal interrupted the wait. The traps exit; loop rather than
       # attribute a status the step did not return.
       [ -n "${got:-}" ] || { rc=0; continue; }
       break
     done
-    unset "LIVE[$pid]"
+    unset "LIVE[$pid]" "REC_DONE[$pid]"
     record "$name" "$rc" "$(( EPOCHSECONDS - t0 ))"
   done
   set +m
@@ -2817,7 +2846,7 @@ run_pool() {   # names...
     pid=""
     if wait -f -n -p pid; then rc=0; else rc=$?; fi
     if [ -n "${pid:-}" ] && [ "$pid" = "$tick" ]; then
-      tick=""
+      unset "REC_DONE[$tick]"; tick=""
       # An entry is not yet REAPED; only one with no end stamp is still RUNNING.
       for p in "${!pid_name[@]}"; do
         stamp_of ended "${pid_name[$p]}" >/dev/null || note_overrun "${pid_name[$p]}" "$(running_for "${pid_name[$p]}" "${pid_t0[$p]}")" live
@@ -2842,7 +2871,7 @@ run_pool() {   # names...
     # in `LIVE` — there is no way to fork and record atomically. It is closed in `_cleanup`
     # instead, from the shell's own job table, which bash populates at fork; see its header. That
     # window orphaned a worker on a loaded runner for as long as it went uncovered, #387.)
-    unset "LIVE[$pid]"
+    unset "LIVE[$pid]" "REC_DONE[$pid]"
     running=$(( running - 1 ))
     name="${pid_name[$pid]}"; out="${pid_out[$pid]}"
     banner "$name"
@@ -2852,7 +2881,7 @@ run_pool() {   # names...
     # Forgotten once reaped, so the ticker's walk over `pid_name` is a walk over RUNNING steps.
     unset "pid_name[$pid]" "pid_out[$pid]" "pid_t0[$pid]"
   done
-  if [ -n "$tick" ]; then kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null; fi
+  if [ -n "$tick" ]; then kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null; unset "REC_DONE[$tick]"; fi
   set +m
 }
 

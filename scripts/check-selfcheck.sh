@@ -443,6 +443,9 @@ if [ "$MODE" = mutation ]; then
     "      1) printf 'selfcheck --stop: cannot call this clean — the lock on" \
     "      11) printf 'selfcheck --stop: cannot call this clean — the lock on" \
     "a stop that cannot take its record's lock to remove it is never clean"
+  shmutant_mut "cwd-identity-unchecked" \
+    '      return 2   # row-cwd-identity' '      continue   # row-cwd-identity' \
+    'a pid that started again between the listings is never claimed by its directory'
   shmutant_mut "drop-unbounded" \
     '  adb_run_bounded "$STOP_INSPECT" 1 cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
     '  cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
@@ -2977,6 +2980,33 @@ reset_ctl "$FXS"; : > "$FXS/ctl/once"
 OUT="$(ADB_TEST_ONCE="$FXS/ctl/once" PATH="$_sb/rmdirfail:$PATH" ADB_STUB_CTL="$FXS/ctl" bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 2>&1)"
 [ ! -e "$FXS/ctl/once" ] && ok || bad "12.25: the release never ran"
 has "$OUT" "lock could not be released" "a record lock the run cannot release is reported"
+reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
+
+# --- 12.26 a directory is the run's only while it is still the process ps described ---------------
+# Ownership by directory reads the directory AFTER the process listing. A pid that ended and was
+# reused in between would pair the old process's group with the new one's directory, so every listed
+# start is read again after the second directory listing. Here that read reports the canary — which
+# works under the run's temp root — with a start one second off: it is never claimed by its directory.
+_t26="$work/t26"; mkdir -p "$_t26"
+mkdir -p "$_sb/cwdreuse"
+cat > "$_sb/cwdreuse/ps" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" -o pid=,lstart= -p "*)
+    "$_ps_real" "\$@" | awk -v r="\$ADB_TEST_REUSE" '\$1 == r { split(\$5, t, ":"); s = t[3] + 0; s = (s == 59) ? 58 : s + 1; \$5 = sprintf("%s:%s:%02d", t[1], t[2], s) } { print }'
+    exit "\${PIPESTATUS[0]}" ;;
+esac
+exec "$_ps_real" "\$@"
+STUB
+chmod +x "$_sb/cwdreuse/ps"
+reset_ctl "$FXS"
+canary_launch "$FXS" "$_t26"
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t26" && pwd -P)" "$_deadp" | synth_record "$FXS"
+stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/cwdreuse:$PATH" ADB_TEST_REUSE="$CANARY_PID"
+if [ "$(stub_state "$CANARY_PID" "$CANARY_PID")" = alive ] && [ "$STOP_RC" -eq 4 ]; then ok
+else bad "a pid that started again between the listings is never claimed by its directory (rc $STOP_RC): $STOP_OUT"; fi
 reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------

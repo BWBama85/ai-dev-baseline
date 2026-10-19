@@ -10597,6 +10597,26 @@ survive is the part a later reader needs.
                toward naming more and refusing more, never fewer. Dating from after `ps` is then a
                choice, not a defence, and the row is retired.
              - The row counts were recounted.
+             Pass 3 (5 REQUIRED) spent the round's budget, and all 5 were carried, none high. Two were
+             #561's windows. Two need a FIFO planted inside a lock or as the record. One is a process
+             started in the checkout during the final removal.
+             **PR #560, review round 3** (the codex connector, 3 threads). The owner then chose to stop
+             the loop at this round, with no further re-review requested. Fixed:
+             (a) Every listed process's start is read again after the second working-directory
+             listing (`row-cwd-identity`). A pid reused between `ps` and that listing paired the old
+             process's group with the new one's directory, and ownership by directory then claimed
+             the old group.
+             (b) `REC_DONE` forgets a pid once it is reaped, so a reused number is recorded again for
+             the group that holds it now. That includes a cancelled run's own recording, which
+             skipped it.
+             Its sweep added: the record's last-write time is read before its bytes, so "last heard
+             from" can only err narrow; and an unattributed process is named once per pid and start,
+             not per pid. Declined:
+             - A pool registration racing the final clean verdict. With nothing the run owns alive at
+               the final inventory, nothing of the run is left to start one; whatever starts one later
+               is not provably the run's, and the marker it leaves makes the next stop answer 4.
+             - A process joining a group between the membership read and the signal. A process joins
+               a group by being forked by a member, which makes it the run's.
              **CI's first run was red for a reason the machine gave.** §12.11 dated its synthetic run
              two hours back, and "started during the run" then took in a runner booted minutes
              earlier. On the ubuntu-26.04 runner, the user's own `systemd --user` manager (pid 1344) has
@@ -10680,7 +10700,7 @@ survive is the part a later reader needs.
              temp-root removal (retired with it after pass 3), the cancel-time completeness check, and registration's `/` and
              missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
              must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 358 to 437 s
-             locally on 2026-10-19, depending on load, after PR review round 2, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
+             locally on 2026-10-19, depending on load, after PR review rounds 2 and 3, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
              limit is 10 minutes. §12 also covers a clean stop whose bound is raised
              to the run's grace, an incomplete record answering 4, a refused registration marking the
              record and forging no line, no record, ten refused records that each assert their own
@@ -10690,7 +10710,7 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 72 rows, one per assertion
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 73 rows, one per assertion
              that matters, four in `check-lib.sh` (registration and its marker) and eight in
              `common.sh`: the record's writer; its lock's take-over (holder alive, holder a killed
              subshell, a symlink at its path); its deadline, between attempts and after one; a removal
@@ -10718,7 +10738,7 @@ survive is the part a later reader needs.
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 72 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 73 `--mutation` rows) · `.gitignore` ·
              · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`,
              `adb_mark_present`, and the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
