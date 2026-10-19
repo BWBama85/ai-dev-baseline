@@ -10488,6 +10488,13 @@ survive is the part a later reader needs.
              (g) `ps` elapsed times are range-checked, the record is read through a bounded `head`,
              the help text says a fifth (not a quarter) of the inspection bound, and the incident
              narrative left in comments was trimmed.
+             Re-measured after pass 4 on real runs of `review-loop-mutation` and
+             `adopt-readiness-mutation` (2026-10-18). A `--stop` mid-run named and removed 20
+             processes, 10 nested workers and their `sleep` children, and ended `1` in 46 s. A `sleep`
+             that exits between the post-bound `ps` and the second cwd listing is still named, with
+             `cwd ?`. After a plain TERM, a later `--stop` found the 10 worker groups the TERM had not
+             reached, sent them TERM, saw every one end within 2 s, and answered `0`. Nothing was left
+             in the checkout either time.
              **An incomplete record is never clean.** A worker the runner could not record, or a pool
              `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
              answers 4 where it would have answered 0, and notes it beside any survivors it names. A
