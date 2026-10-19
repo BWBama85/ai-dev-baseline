@@ -1729,6 +1729,21 @@ _stop_signal() {
     for p in "${!OWNED[@]}"; do [ "${INV_PGID[$p]:-}" = "$g" ] && cand+=("$p"); done
   done
   [ "${#cand[@]}" -gt 0 ] || return 0
+  # A group goes WHOLE only on its CURRENT membership: one more bounded read, of every process's
+  # group and state. It needs at least one member that is the run's and was just verified, and no
+  # other: a member the inventory never saw, an unverified one, or a read that failed makes it
+  # pid-by-pid — and so does a group the read shows empty, since a group nobody was verified in is a
+  # number, and a number can be reused. And never a group that may not spread ownership
+  # (`_stop_closable`): the runner's, its caller's, a shielded one. That read comes FIRST: it is of
+  # the whole table and can take the whole inspection bound, and nothing slow may stand between the
+  # identity read below and the signals it authorizes.
+  local -A live=() lstat=()
+  local lrc=0 lp lg ls
+  e="$(adb_run_bounded "$STOP_INSPECT" 1 env LC_ALL=C ps -A -o pid=,pgid=,stat= 2>/dev/null)" || lrc=$?
+  while read -r lp lg ls; do
+    case "$lp$lg" in ''|*[!0-9]*) continue ;; esac
+    live["$lp"]="$lg"; lstat["$lp"]="$ls"
+  done <<< "$e"
   # A read that did not SUCCEED authorizes nothing, whatever rows it printed before it failed. (ps
   # also fails when none of the pids exists any more, and then there is nothing to signal anyway.)
   local vrc=0
@@ -1740,25 +1755,12 @@ _stop_signal() {
     _stop_same "$pid" "$l1 $l2 $l3 $l4 $l5" || continue   # row-signal-verify
     ok["$pid"]=1
   done <<< "$e"
-  # A group goes WHOLE only on its CURRENT membership: one more bounded read, of every process's
-  # group, right before the signal. It needs at least one member that is the run's and was just
-  # verified, and no other: a member the inventory never saw, an unverified one, or a read that failed
-  # makes it pid-by-pid — and so does a group the read shows empty, since a group nobody was verified
-  # in is a number, and a number can be reused. And never a group that may not spread ownership
-  # (`_stop_closable`): the runner's, its caller's, a shielded one.
-  local -A live=()
-  local lrc=0 lp lg
-  e="$(adb_run_bounded "$STOP_INSPECT" 1 env LC_ALL=C ps -A -o pid=,pgid= 2>/dev/null)" || lrc=$?
-  while read -r lp lg; do
-    case "$lp$lg" in ''|*[!0-9]*) continue ;; esac
-    live["$lp"]="$lg"
-  done <<< "$e"
   for g in "$@"; do
     whole=0   # row-whole-needs-member
     if [ "$lrc" -eq 0 ] && _stop_closable "$g"; then   # row-signal-closable
       for p in "${!live[@]}"; do
         [ "${live[$p]}" = "$g" ] || continue
-        case "${INV_STAT[$p]:-}" in Z*) continue ;; esac
+        case "${lstat[$p]:-}" in Z*) continue ;; esac   # its state NOW: an old zombie's number may be reused
         if [ -n "${OWNED[$p]+x}" ] && [ "$p" != "$REC_PID" ] && [ -n "${ok[$p]+x}" ]; then whole=1; continue; fi
         whole=0; break   # row-signal-live
       done
@@ -1910,12 +1912,18 @@ _stop_line() {
 # Nothing the record NAMES is ever deleted — not the run's temp root either: a path read from a file
 # is not proof of what it resolves to, and a runner that was KILLed leaves its scratch directories to
 # the system's temp cleaner rather than to an `rm -rf` this stop would have to trust.
+#
+# 0 removed · 3 kept, because it changed after the stop last read it: something was recorded that
+# this stop never looked at, so its caller may not call the run clean · 4 kept, because it could not
+# be compared · 1 kept, because the removal failed (said here).
 _stop_drop() {
   local rc=0
   adb_record_remove --if _stop_unchanged "$RUN_RECORD" || rc=$?   # row-drop-locked
-  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] \
-    || printf 'selfcheck --stop: NOTE — could not remove %s; a later --stop will find this run again\n' "$RUN_RECORD"
-  return 0
+  case "$rc" in
+    0|3|4) return "$rc" ;;
+  esac
+  printf 'selfcheck --stop: NOTE — could not remove %s; a later --stop will find this run again\n' "$RUN_RECORD"
+  return 1
 }
 _stop_unchanged() { cmp -s "$STOP_DIR/record" "$1" 2>/dev/null; }
 
@@ -2056,8 +2064,15 @@ stop_run() {
       return 6
     fi
     # The verdict follows the removal: a registration that failed while it was made marks the run
-    # incomplete then, and a stop that answered first would have called it clean.
-    _stop_drop
+    # incomplete then, and one that succeeded changed the record; a stop that answered first would
+    # have called either clean.
+    _stop_drop; rc=$?
+    case "$rc" in
+      3) printf 'selfcheck --stop: cannot call this clean — %s changed after this stop last read it: something was recorded that it never looked at. The record is kept; run --stop again.\n' "$RUN_RECORD"
+         return 4 ;;   # row-clean-changed
+      4) printf 'selfcheck --stop: cannot call this clean — %s could not be compared with what this stop read, so it is kept; run --stop again.\n' "$RUN_RECORD"
+         return 4 ;;
+    esac
     if _stop_marked; then   # row-clean-after-drop
       printf 'selfcheck --stop: cannot call this clean — %s.incomplete appeared while the record was being removed: something of this run could not be recorded\n' "$RUN_RECORD"
       return 4
@@ -2109,7 +2124,9 @@ stop_run() {
   elif [ "$UNATTRIBUTED" -gt 0 ]; then
     printf 'selfcheck --stop: the record is KEPT — the processes named as not tied to the run may still be its own\n'
   else
-    _stop_drop
+    _stop_drop; rc=$?
+    [ "$rc" -eq 3 ] || [ "$rc" -eq 4 ] \
+      && printf 'selfcheck --stop: the record is KEPT — it changed, or could not be compared, after this stop last read it; what was recorded since was never checked, so run --stop again\n'
   fi
   return 1   # row-stop-red
 }
@@ -2380,8 +2397,8 @@ _rec_publish() {
   _stop_num "$own_pg" || own_pg=""
   t="$(mktemp "$RUN_ROOT/$RUN_RECORD.XXXXXX" 2>/dev/null)" || { REC_WHY="its staging file could not be created"; return 1; }
   if { printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace %s\nprep %s\nroot %s\ntmp %s\n' \
-         "$$" "$RUN_EPOCH" "$STOP_GRACE" "$REC_PREP_SECS" "$RUN_ROOT" "$TMPROOT"
-       [ -z "$own_pg" ] || printf 'pgid %s\n' "$own_pg"; } > "$t" 2>/dev/null \
+         "$$" "$RUN_EPOCH" "$STOP_GRACE" "$REC_PREP_SECS" "$RUN_ROOT" "$TMPROOT" \
+       && { [ -z "$own_pg" ] || printf 'pgid %s\n' "$own_pg"; }; } > "$t" 2>/dev/null \
      && chmod 600 "$t" 2>/dev/null \
      && mv -f "$t" "$RUN_ROOT/$RUN_RECORD" 2>/dev/null; then   # row-publish-first
     # An earlier run's incomplete marker goes only once this record has replaced that run's: removed
@@ -2434,10 +2451,15 @@ _rec_descendants() {
   local -a pools=()
   local rec="" line rrc=0
   if [ -f "$RUN_ROOT/$RUN_RECORD" ] && [ ! -L "$RUN_ROOT/$RUN_RECORD" ]; then
-    rec="$(adb_run_bounded "$REC_INSPECT_SECS" 1 head -c 1048576 "$RUN_ROOT/$RUN_RECORD" 2>/dev/null)" || rrc=$?
+    rec="$(adb_run_bounded "$REC_INSPECT_SECS" 1 head -c 1048577 "$RUN_ROOT/$RUN_RECORD" 2>/dev/null)" || rrc=$?
     # A read that failed may have stopped short of a `pool` line, and a pool missed here is a pool
-    # whose workers nothing below seeds: the record says so.
+    # whose workers nothing below seeds: the record says so. So does one past the 1 MiB the stop
+    # reads (`_stop_read_record`), whose last line would be cut into a shorter path.
     [ "$rrc" -eq 0 ] || _rec_mark_incomplete "the run record could not be read whole as the run was cancelled, so a pool it names may have been missed"   # row-pool-read
+    if [ "$(LC_ALL=C; printf '%s' "${#rec}")" -gt 1048576 ]; then   # row-pool-read-size
+      _rec_mark_incomplete "the run record is past the 1 MiB a stop reads, so its pools could not all be read as the run was cancelled"
+      rec=""
+    fi
     while IFS= read -r line; do
       case "$line" in 'pool '*) pools+=("${line#pool }") ;; esac
     done <<< "$rec"
@@ -2490,8 +2512,8 @@ _rec_drop() {
   local rc=0
   [ -f "$RUN_ROOT/$RUN_RECORD" ] && [ ! -L "$RUN_ROOT/$RUN_RECORD" ] || return 0
   _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD" || rc=$?   # row-rec-drop-locked
-  # 3 is a record that is no longer this run's, left to whoever wrote it; anything else is a removal
-  # that failed, which leaves a record nothing is running behind.
+  # 3 is a record that is no longer this run's, left to whoever wrote it; anything else (a record it
+  # could not read, a removal that failed) leaves a record nothing is running behind.
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] \
     || printf 'selfcheck: NOTE — the run record %s could not be removed on the way out; `--stop` will find it and sweep what is left\n' "$RUN_RECORD"
   return 0
@@ -2502,7 +2524,7 @@ _rec_drop() {
 _rec_ours() {
   local l1="" l2="" l3="" h
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
-  h="$(head -c 4096 "$1" 2>/dev/null)" || return 1
+  h="$(head -c 4096 "$1" 2>/dev/null)" || return 2   # unread is not "not ours"
   { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; } <<< "$h"
   [ "$l1" = "adb-selfcheck-run 1" ] && [ "$l2" = "pid $$" ] && [ "$l3" = "epoch $RUN_EPOCH" ]
 }

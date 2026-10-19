@@ -321,7 +321,8 @@ only by a published release, which is what these entries are the notes for.
   `ps lstart`, compared exactly. The record's lock is taken over only from a holder that is
   provably gone, by the update lock's own code, and a cancel that lands while the runner
   holds it waits for that append to finish. The incomplete marker is never written through a
-  symlink, and counts in any shape. It adds 63 mutation rows. On a real run with live
+  symlink, and counts in any shape. A stop whose record changed after its last look is never clean.
+  It adds 69 mutation rows. On a real run with live
   mutation pools,
   the stop named and removed the 12 nested workers `TERM` does not reach (#547). A record path may
   not hold a control byte or a `^`, which lsof's output cannot tell apart.

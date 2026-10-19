@@ -438,6 +438,10 @@ if [ "$MODE" = mutation ]; then
     '  adb_record_lock "$RUN_ROOT/$RUN_RECORD" 200 || { REC_WHY="its lock could not be had in 10s"; return 1; }   # row-write-locked' \
     '  :   # row-write-locked' \
     'a run that starts while a stop removes the last record keeps its own'
+  shmutant_mut "clean-over-changed-record" \
+    "      3) printf 'selfcheck --stop: cannot call this clean — %s changed" \
+    "      33) printf 'selfcheck --stop: cannot call this clean — %s changed" \
+    'a stop whose record changed after its last look is never clean'
   shmutant_mut "clean-over-late-marker" \
     '    if _stop_marked; then   # row-clean-after-drop' '    if false; then   # row-clean-after-drop' \
     'a stop whose record is marked incomplete while it is removed is never clean'
@@ -447,6 +451,10 @@ if [ "$MODE" = mutation ]; then
     'an incomplete marker of any shape is never read as absent'
   # Every read of the record the RUN makes keeps its status: a cancelled run's read of its pools, and
   # a starting run's read of a record already there.
+  shmutant_mut "pool-read-cut" \
+    '    if [ "$(LC_ALL=C; printf '"'"'%s'"'"' "${#rec}")" -gt 1048576 ]; then   # row-pool-read-size' \
+    '    if false; then   # row-pool-read-size' \
+    'a cancelled run whose record is past what a stop reads marks it incomplete'
   shmutant_mut "pool-read-unmarked" \
     '    [ "$rrc" -eq 0 ] || _rec_mark_incomplete "the run record could not be read whole as the run was cancelled, so a pool it names may have been missed"   # row-pool-read' \
     '    :   # row-pool-read' \
@@ -492,6 +500,20 @@ if [ "$MODE" = mutation ]; then
     '    [ -n "$dl" ] && [ -n "${BASH_MONOSECONDS:-}" ] && [ "$BASH_MONOSECONDS" -ge "$dl" ] && return 1   # record-lock-deadline' \
     '    :   # record-lock-deadline' \
     'a wait for the record lock ends at its deadline, however slow each attempt is'
+  shmutant_mut "record-lock-through-symlink" \
+    '  [ -L "$lock" ] && return 1   # break-no-symlink' '  :   # break-no-symlink' \
+    'a record lock whose path is a symlink is never taken over'
+  shmutant_mut "remove-if-error-as-no" \
+    '      return 4   # record-remove-if-error' '      return 3   # record-remove-if-error' \
+    'a stop that cannot compare its record says so, never that it changed'
+  shmutant_mut "record-lock-late-kept" \
+    '  if [ -n "$dl" ] && [ -n "${BASH_MONOSECONDS:-}" ] && [ "$BASH_MONOSECONDS" -ge "$dl" ]; then   # record-lock-late' \
+    '  if false; then   # record-lock-late' \
+    'a record lock had only after its deadline is given back, and nothing is written'
+  shmutant_mut "marker-opened" \
+    '  if ln "$t" "$1" 2>/dev/null && [ -d "$1" ]; then' \
+    '  if : > "$1" 2>/dev/null && [ -d "$1" ]; then' \
+    'an incomplete marker is never opened through a FIFO planted after its check'
   shmutant_mut "record-lock-parent-holds" \
     '  local f="$1" tries="${2:-100}" n=0 me="${BASHPID:-$$}"   # record-lock-holder' \
     '  local f="$1" tries="${2:-100}" n=0 me="$$"   # record-lock-holder' \
@@ -2146,6 +2168,22 @@ mkfifo "$_pr/rec.incomplete"
 _fi=0; adb_run_bounded 15 1 "$BASH" -c '. "$1/scripts/lib/common.sh"; . "$1/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$2" check_register_pool /' _ "$ROOT" "$_pr/rec" >/dev/null 2>&1 || _fi=$?
 [ "$_fi" -ne 124 ] && [ -p "$_pr/rec.incomplete" ] && ok || bad "12.4: a FIFO at the marker's name is refused, never opened (rc $_fi)"
 rm -f "$_pr/rec.incomplete"
+# …and one planted AFTER the check, while the marker is being made: here the `mktemp` that stages it
+# puts a FIFO at the marker's name before it returns. Linked into place, the marker fails on it; a
+# redirect would open it and block.
+_mktemp_real="$(command -v mktemp)"
+mkdir -p "$work/stubs-mktempfifo"
+cat > "$work/stubs-mktempfifo/mktemp" <<STUB
+#!/usr/bin/env bash
+t="\$("$_mktemp_real" "\$@")" || exit
+case "\${*: -1}" in *.incomplete.XXXXXX) m="\${*: -1}"; mkfifo "\${m%.XXXXXX}" ;; esac
+printf '%s\n' "\$t"
+STUB
+chmod +x "$work/stubs-mktempfifo/mktemp"
+_fi=0; PATH="$work/stubs-mktempfifo:$PATH" adb_run_bounded 15 1 "$BASH" -c '. "$1/scripts/lib/common.sh"; . "$1/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$2" check_register_pool /' _ "$ROOT" "$_pr/rec" >/dev/null 2>&1 || _fi=$?
+[ "$_fi" -ne 124 ] && [ -p "$_pr/rec.incomplete" ] && ok \
+  || bad "an incomplete marker is never opened through a FIFO planted after its check (rc $_fi)"
+rm -f "$_pr/rec.incomplete" "$_pr"/rec.incomplete.*
 # …and a registration goes through the record's ONE locked writer: while another writer holds the
 # lock, it does not slip a line in beside it — it waits, and failing that marks the record.
 rm -f "$_pr/rec.incomplete"; mkdir "$_pr/rec.lock" && : > "$_pr/rec.lock/.adb-excl"
@@ -2276,7 +2314,7 @@ fi
 mkdir -p "$_sb/pslivedrop"
 cat > "$_sb/pslivedrop/ps" <<STUB
 #!/usr/bin/env bash
-case " \$* " in *" -A -o pid=,pgid= "*) "$_ps_real" "\$@" | awk -v d=" \$ADB_TEST_DROP_LIVE " 'index(d, " " \$1 " ") == 0'; exit "\${PIPESTATUS[0]}" ;; esac
+case " \$* " in *" -A -o pid=,pgid=,stat= "*) "$_ps_real" "\$@" | awk -v d=" \$ADB_TEST_DROP_LIVE " 'index(d, " " \$1 " ") == 0'; exit "\${PIPESTATUS[0]}" ;; esac
 exec "$_ps_real" "\$@"
 STUB
 chmod +x "$_sb/pslivedrop/ps"
@@ -2440,7 +2478,7 @@ cat > "$_sb/verifyempty/ps" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
   *" -o pid=,pgid=,lstart= "*) "$_ps_real" "\$@"; exit 1 ;;
-  *" -A -o pid=,pgid= "*) "$_ps_real" "\$@" | awk -v d=" \$ADB_TEST_DROP_LIVE " 'index(d, " " \$1 " ") == 0'; exit "\${PIPESTATUS[0]}" ;;
+  *" -A -o pid=,pgid=,stat= "*) "$_ps_real" "\$@" | awk -v d=" \$ADB_TEST_DROP_LIVE " 'index(d, " " \$1 " ") == 0'; exit "\${PIPESTATUS[0]}" ;;
 esac
 exec "$_ps_real" "\$@"
 STUB
@@ -2542,6 +2580,36 @@ kept "12.16" "a pool registered while the stop removes the record is never lost"
 if [ "$(cat "$FXS/ctl/once.out" 2>/dev/null)" = failed ]; then
   eq "$STOP_RC" 4 "a stop whose record is marked incomplete while it is removed is never clean: $STOP_OUT"
 fi
+# A record that changed after the stop last read it holds something the stop never looked at, so the
+# stop is not clean and keeps it: here a line lands just before the locked comparison. And a
+# comparison that could not be made is no "unchanged" either.
+mkdir -p "$_sb/cmpchanged" "$_sb/cmperr"
+cat > "$_sb/cmpchanged/cmp" <<STUB
+#!/usr/bin/env bash
+[ -f "\$ADB_TEST_ONCE" ] && { rm -f "\$ADB_TEST_ONCE"; printf 'pool %s\n' "$_t16" >> "$FXS/.selfcheck-run"; }
+exec "$_cmp_real" "\$@"
+STUB
+cat > "$_sb/cmperr/cmp" <<STUB
+#!/usr/bin/env bash
+[ -f "\$ADB_TEST_ONCE" ] && { rm -f "\$ADB_TEST_ONCE"; exit 2; }
+exec "$_cmp_real" "\$@"
+STUB
+chmod +x "$_sb/cmpchanged/cmp" "$_sb/cmperr/cmp"
+for _ck in cmpchanged cmperr; do
+  sleep 0 & _deadp=$!; wait "$_deadp"
+  printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+    "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
+  : > "$FXS/ctl/once"
+  stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/$_ck:$PATH" ADB_TEST_ONCE="$FXS/ctl/once"
+  if [ "$_ck" = cmpchanged ]; then
+    eq "$STOP_RC" 4 "a stop whose record changed after its last look is never clean: $STOP_OUT"
+    has "$STOP_OUT" "changed after this stop last read it" "12.16: ...and says so"
+    grep -q '^pool ' "$FXS/.selfcheck-run" 2>/dev/null && ok || bad "12.16: ...and keeps the changed record"
+  else
+    eq "$STOP_RC" 4 "12.16: a stop that cannot compare its record is never clean: $STOP_OUT"
+    has "$STOP_OUT" "could not be compared" "a stop that cannot compare its record says so, never that it changed"
+  fi
+done
 rm -f "$FXS/.selfcheck-run" "$FXS/ctl/once.out"; : > "$FXS/.selfcheck-run.incomplete"
 stop_sc "$FXS"
 eq "$STOP_RC" 4 "a lone incomplete marker is never read as no run: $STOP_OUT"
@@ -2614,6 +2682,26 @@ _e17=$(( BASH_MONOSECONDS - _t17 ))
 [ "$_a17" -eq 1 ] && [ "$_e17" -le 4 ] && ok \
   || bad "a wait for the record lock ends at its deadline, however slow each attempt is (rc $_a17, ${_e17}s)"
 kill -KILL "$_h17" 2>/dev/null; wait "$_h17" 2>/dev/null
+# …and a lock path that is a SYMLINK is never taken over: following it would write a claim and an owner
+# into the directory it points at, here an old one whose recorded owner is long gone.
+mkdir -p "$_lk/elsewhere"; printf '999999 1\n' > "$_lk/elsewhere/owner"; touch -t 200001010000 "$_lk/elsewhere"
+printf 'x\n' > "$_lk/rec2"; ln -s "$_lk/elsewhere" "$_lk/rec2.lock"
+_a17=0; "$BASH" -c '. "$1"; adb_record_append "$2" via-link 20' _ "$_cl" "$_lk/rec2" || _a17=$?
+[ "$_a17" -eq 1 ] && [ "$(cat "$_lk/elsewhere/owner" 2>/dev/null)" = "999999 1" ] && [ ! -e "$_lk/elsewhere/.claim" ] && ok \
+  || bad "a record lock whose path is a symlink is never taken over (rc $_a17)"
+# …and a lock had only after the deadline, uncontended, is given back unused: here taking it reads the
+# clock through a `date` that takes 1.5s, so the attempt begins in time and ends late.
+mkdir -p "$_sb/datelate"
+cat > "$_sb/datelate/date" <<STUB
+#!/usr/bin/env bash
+sleep 1.5
+exec "$_date_real" "\$@"
+STUB
+chmod +x "$_sb/datelate/date"
+printf 'x\n' > "$_lk/rec3"
+_a17=0; PATH="$_sb/datelate:$PATH" "$BASH" -c '. "$1"; adb_record_append "$2" late 20 "$(( BASH_MONOSECONDS + 1 ))"' _ "$_cl" "$_lk/rec3" || _a17=$?
+[ "$_a17" -eq 1 ] && ! grep -qx late "$_lk/rec3" && [ ! -e "$_lk/rec3.lock" ] && ok \
+  || bad "a record lock had only after its deadline is given back, and nothing is written (rc $_a17)"
 
 # --- 12.18 a cancelled run whose record cannot be read back marks it incomplete -------------------
 # A cancelled runner reads its own record for the pools harnesses registered, and seeds every group
@@ -2622,7 +2710,7 @@ kill -KILL "$_h17" 2>/dev/null; wait "$_h17" 2>/dev/null
 mkdir -p "$_sb/headfail"
 cat > "$_sb/headfail/head" <<STUB
 #!/usr/bin/env bash
-case " \$* " in *" -c 1048576 "*) "$_head_real" "\$@"; exit 1 ;; esac
+case " \$* " in *" -c 1048577 "*) "$_head_real" "\$@"; exit 1 ;; esac
 exec "$_head_real" "\$@"
 STUB
 chmod +x "$_sb/headfail/head"
@@ -2633,6 +2721,19 @@ if PATH="$_sb/headfail:$PATH" plain_launch "$FXS"; then
     || bad "a cancelled run whose record cannot be read back marks it incomplete: $(cat "$FXS/stop-run.out" 2>/dev/null)"
   has "$(cat "$FXS/stop-run.out" 2>/dev/null)" "could not be read whole as the run was cancelled" \
     "12.18: ...and says why"
+else
+  bad "12.18: the plain run never enrolled"; reap_runner
+fi
+reset_ctl "$FXS"; rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
+# …and a record past the 1 MiB a stop reads is not read in part: its last line would be cut into a
+# shorter path, so the record is marked instead.
+if plain_launch "$FXS"; then
+  awk 'BEGIN { for (i = 0; i < 110000; i++) print "group 1 1" }' >> "$FXS/.selfcheck-run"
+  kill -TERM "$STOP_RUNNER" 2>/dev/null
+  reap_runner
+  [ -e "$FXS/.selfcheck-run.incomplete" ] && ok \
+    || bad "a cancelled run whose record is past what a stop reads marks it incomplete: $(cat "$FXS/stop-run.out" 2>/dev/null) [$(ls -la "$FXS"/.selfcheck-run* 2>&1 | tr '\n' ' ')] [$(head -c 300 "$FXS/.selfcheck-run" 2>&1 | tr '\n' '|')]"
+  has "$(cat "$FXS/stop-run.out" 2>/dev/null)" "past the 1 MiB a stop reads" "12.18: ...and says why"
 else
   bad "12.18: the plain run never enrolled"; reap_runner
 fi

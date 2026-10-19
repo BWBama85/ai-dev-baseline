@@ -716,6 +716,9 @@ adb_update_lock() {
 _adb_break_lock() {
   local lock="$1" stale="$2" age holder
   _ADB_LOCK_TOOK=""
+  # A SYMLINK AT THE LOCK'S PATH is no lock this code made, and taking it over would write a claim and
+  # an owner into whatever directory it points at — and the release would then delete them there.
+  [ -L "$lock" ] && return 1   # break-no-symlink
 
   # Held. Breaking it is only safe when the holder is genuinely gone, and AGE ALONE DOES NOT
   # SHOW THAT: a laptop suspended mid-update, or a manual run behind a slow fetch, is old and
@@ -787,7 +790,7 @@ _adb_release_lock() {
   # so they finished quietly while every later settings operation was refused until the stale
   # interval expired or the operator found the lock by hand. The absent case must stay separate or
   # this loses the idempotency the EXIT trap relies on. (PR review)
-  if [ ! -e "$lock" ]; then return 0; fi
+  if [ ! -e "$lock" ] || [ -L "$lock" ]; then return 0; fi   # a link at its path is not the lock we took
   _owner="$(cat "$lock/owner" 2>/dev/null)"; _orc=$?
   [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable
   [ "$_owner" = "$2" ] || return 0
@@ -4454,6 +4457,12 @@ adb_record_lock() {
     sleep 0.05
   done
   _ADB_RECORD_TOKEN="$_ADB_LOCK_TOOK"
+  # …and one that was had only after the deadline is given back unused: an attempt that began in time
+  # may still end late, and an uncontended one may begin late.
+  if [ -n "$dl" ] && [ -n "${BASH_MONOSECONDS:-}" ] && [ "$BASH_MONOSECONDS" -ge "$dl" ]; then   # record-lock-late
+    adb_record_unlock "$f"
+    return 1
+  fi
   return 0
 }
 adb_record_unlock() {
@@ -4498,17 +4507,22 @@ adb_record_append() {
 
 # adb_record_remove [--if <fn>] <file> [extra…] — remove a record (and any companion files named
 # after it) under its lock, so no append can slip in between and recreate it. With --if, only when
-# `<fn> <file>` succeeds, asked UNDER that lock: what the caller checked cannot change between the
+# `<fn> <file>` answers 0, asked UNDER that lock: what the caller checked cannot change between the
 # check and the removal. 0 removed (or already gone) · 1 the lock could not be had or a file could
-# not be removed — the record then stays where it is · 3 left alone, because <fn> refused it.
+# not be removed — the record then stays where it is · 3 left alone, because <fn> answered 1 (no) ·
+# 4 left alone, because <fn> could not answer (any other status): a read that failed is not a "no".
 adb_record_remove() {
-  local test="" f rc=0 x
+  local test="" f rc=0 x trc=0
   if [ "$1" = "--if" ]; then test="$2"; shift 2; fi
   f="$1"; shift
   adb_record_lock "$f" || return 1
-  if [ -n "$test" ] && ! "$test" "$f"; then   # record-remove-if
-    adb_record_unlock "$f" || return 1
-    return 3
+  if [ -n "$test" ]; then
+    "$test" "$f" || trc=$?
+    if [ "$trc" -ne 0 ]; then   # record-remove-if
+      adb_record_unlock "$f" || return 1
+      [ "$trc" -eq 1 ] && return 3
+      return 4   # record-remove-if-error
+    fi
   fi
   rm -f "$f" "$@" 2>/dev/null || rc=1
   for x in "$f" "$@"; do [ -e "$x" ] && rc=1; done
