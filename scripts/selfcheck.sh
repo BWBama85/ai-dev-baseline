@@ -2521,16 +2521,20 @@ _rec_descendants() {
   local REC_PID="$$" REC_EPOCH="$RUN_EPOCH" REC_ROOT="$RUN_ROOT" REC_TMP="$TMPROOT"
   local -A REC_GROUPS=() OWN_EVER=()
   local -a REC_POOLS=("${pools[@]}")
+  local whole=1
   if ! _stop_inventory; then   # row-cancel-whole
     _rec_mark_incomplete "the run's processes could not all be seen as it was cancelled ($INV_ERR)"
     [ -n "${INV_PGID[$$]+x}" ] || return 0
+    whole=0
   fi
   # A DESCENDANT of the runner — a nested pool's worker, which the TERM below will reparent (#547) —
   # or a process WORKING under the run's temp root or a registered pool, whose group may hold a holder
-  # reparented at birth that works in the checkout.
+  # reparented at birth that works in the checkout. Directories count only from an inventory that was
+  # whole: a refused one may pair one process's group with another's directory, while descent comes
+  # from the process listing alone.
   for pid in "${!INV_PGID[@]}"; do
     [ "$pid" != "$$" ] || continue
-    if [ -n "${STOP_DESC[$pid]+x}" ] || _stop_where "$pid"; then seeds["${INV_PGID[$pid]}"]=1; fi
+    if [ -n "${STOP_DESC[$pid]+x}" ] || { [ "$whole" -eq 1 ] && _stop_where "$pid"; }; then seeds["${INV_PGID[$pid]}"]=1; fi   # row-cancel-seeds
   done
   # Each seeded group, with the earliest start of ANY of its members, so the leader's start — the
   # identity the stop checks — always falls inside the window it allows. Never the runner's own

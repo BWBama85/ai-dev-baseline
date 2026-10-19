@@ -449,6 +449,10 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "cwd-identity-omission-trusted" \
     '      return 2   # row-cwd-omitted' '      continue   # row-cwd-identity-all' \
     'a pid the second read of starts leaves out is never claimed by its directory'
+  shmutant_mut "cancel-seeds-from-refused" \
+    '    if [ -n "${STOP_DESC[$pid]+x}" ] || { [ "$whole" -eq 1 ] && _stop_where "$pid"; }; then seeds["${INV_PGID[$pid]}"]=1; fi   # row-cancel-seeds' \
+    '    if [ -n "${STOP_DESC[$pid]+x}" ] || _stop_where "$pid"; then seeds["${INV_PGID[$pid]}"]=1; fi   # row-cancel-seeds' \
+    'a cancelled run whose inventory was refused never records a group by its directory'
   shmutant_mut "drop-unbounded" \
     '  adb_run_bounded "$STOP_INSPECT" 1 cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
     '  cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
@@ -3023,6 +3027,27 @@ chmod +x "$_sb/cwdomit/ps"
 stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/cwdomit:$PATH" ADB_TEST_REUSE="$CANARY_PID"
 if [ "$(stub_state "$CANARY_PID" "$CANARY_PID")" = alive ] && [ "$STOP_RC" -eq 4 ]; then ok
 else bad "a pid the second read of starts leaves out is never claimed by its directory (rc $STOP_RC): $STOP_OUT"; fi
+reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
+
+# --- 12.27 a cancelled run whose inventory was refused seeds no group by directory ---------------
+# A cancelled runner whose own inventory was refused still records what it can, but only by descent,
+# which the process listing alone gives: a refused snapshot may pair a pid's group with another
+# process's directory. Here the re-read of starts reports a process working in a registered pool with
+# a start one second off, so every inventory is refused, and its group must not be recorded.
+_t27="$work/t27"; mkdir -p "$_t27"; _t27p="$(cd -P "$_t27" && pwd -P)"
+( cd "$_t27" || exit; set -m; sleep 300 & printf '%s\n' "$!" > "$work/t27.pid" )
+_c27="$(cat "$work/t27.pid" 2>/dev/null)"
+if [ -n "$_c27" ] && PATH="$_sb/cwdreuse:$PATH" ADB_TEST_REUSE="$_c27" plain_launch "$FXS"; then
+  printf 'pool %s\n' "$_t27p" >> "$FXS/.selfcheck-run"
+  kill -TERM "$STOP_RUNNER" 2>/dev/null
+  reap_runner
+  if ! grep -q "^group $_c27 " "$FXS/.selfcheck-run" 2>/dev/null; then ok
+  else bad "a cancelled run whose inventory was refused never records a group by its directory: $(grep '^group' "$FXS/.selfcheck-run" | tr '\n' ' ')"; fi
+  [ -e "$FXS/.selfcheck-run.incomplete" ] && ok || bad "12.27: ...and marks its record incomplete"
+else
+  bad "12.27: the plain run never enrolled"; reap_runner
+fi
+[ -n "$_c27" ] && kill -KILL "$_c27" 2>/dev/null
 reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------

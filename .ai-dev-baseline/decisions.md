@@ -10603,7 +10603,8 @@ survive is the part a later reader needs.
              **PR #560, review round 3** (the codex connector, 3 threads). The owner then chose to stop
              the loop at this round, with no further re-review requested. Fixed:
              (a) Every listed process's start is read again after the second working-directory
-             listing (`row-cwd-identity`), and a pid that read leaves out must be gone. A pid reused between `ps` and that listing paired the old
+             listing (`row-cwd-identity`), and a pid that read leaves out must be gone. A cancelled
+             runner whose inventory was refused then seeds groups by descent only, never by directory. A pid reused between `ps` and that listing paired the old
              process's group with the new one's directory, and ownership by directory then claimed
              the old group.
              (b) `REC_DONE` forgets a pid once it is reaped, the serial runner's ticker included, so a reused number is recorded again for
@@ -10713,7 +10714,7 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 74 rows, one per assertion
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 75 rows, one per assertion
              that matters, four in `check-lib.sh` (registration and its marker) and eight in
              `common.sh`: the record's writer; its lock's take-over (holder alive, holder a killed
              subshell, a symlink at its path); its deadline, between attempts and after one; a removal
@@ -10741,7 +10742,7 @@ survive is the part a later reader needs.
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 74 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 75 `--mutation` rows) · `.gitignore` ·
              · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`,
              `adb_mark_present`, and the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
