@@ -794,4 +794,6 @@ One line per resolved review thread, newest last.
 - `stale-state-trusted` `scripts/selfcheck.sh:1593` `a6b9b2b` `PRRT_kwDOTfywrM6t7up6` PR #560 2026-10-19 — process identity was a start window widened by the slowest ps; now the exact ps lstart
 - `stale-state-trusted` `scripts/check-selfcheck.sh:2236` `a6b9b2b` `PRRT_kwDOTfywrM6t7uqA` PR #560 2026-10-19 — synthetic record sections inherited an earlier incomplete marker; synth_record clears it
 - `exit-path-asymmetry` `scripts/selfcheck.sh:1787` `a6b9b2b` `PRRT_kwDOTfywrM6t7uqG` PR #560 2026-10-19 — with no record the stop answered 5 over a lone incomplete marker; now 4
+- `status-swallowed` `scripts/selfcheck.sh:1917` `6ac3502` `PRRT_kwDOTfywrM6t_Hwc` PR #560 2026-10-19 — a record that changed under the locked comparison was treated as removed and the stop answered clean; now kept and 4
+- `partial-validation` `scripts/lib/common.sh:4451` `6ac3502` `PRRT_kwDOTfywrM6t_Hw6` PR #560 2026-10-19 — the stale-lock take-over followed a symlink at the lock path; a symlinked lock is now never taken over or released
 <!-- adb:hits:end -->
