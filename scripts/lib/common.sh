@@ -4411,25 +4411,52 @@ adb_rmdir_excl() {
   rmdir "$1" 2>/dev/null
 }
 
-# adb_record_append <file> <line> [tries] — append one line to an EXISTING file under its lock
-# (`<file>.lock`, taken with adb_mkdir_excl, tried <tries> times 50ms apart; 100 when not given).
-# The ONE writer for `selfcheck.sh`'s run record (#551): the runner and every harness registering a
-# pool append to it, pool paths may hold spaces, and two unserialized appends could splice into lines
-# that are each valid and each wrong. The file's existence is checked INSIDE the lock, so an append
-# never recreates a record its run has already removed. 0 written · 1 the lock could not be had, the
-# file is gone or not a regular file, or the write failed. Bash-3.2 parseable, like the rest of this
-# file: a counter, never BASH_MONOSECONDS.
-adb_record_append() {
-  local f="$1" line="$2" tries="${3:-100}" n=0 rc=1
+# adb_record_lock <file> [tries] / adb_record_unlock <file> — the lock every writer of
+# `selfcheck.sh`'s run record (#551) takes: `<file>.lock`, taken with adb_mkdir_excl, tried <tries>
+# times 50ms apart (100 when not given). A writer holds it for one append or one removal, so a lock
+# older than 30s is a writer that died holding it: it is reclaimed by RENAMING it to a name of this
+# caller's own and removing that, so two recoverers cannot both win and nobody deletes a lock someone
+# else has just taken. 0 held · 1 not had. Bash-3.2 parseable, like the rest of this file.
+adb_record_lock() {
+  local f="$1" tries="${2:-100}" n=0 age stale
   case "$tries" in ''|*[!0-9]*) tries=100 ;; esac
   until adb_mkdir_excl "$f.lock"; do
+    age="$(adb_age_secs "$f.lock")"
+    if [ -n "$age" ] && [ "$age" -gt 30 ]; then
+      stale="$f.lock.stale.$$.$n"
+      mv "$f.lock" "$stale" 2>/dev/null && rm -rf "$stale" 2>/dev/null
+    fi
     n=$((n + 1)); [ "$n" -lt "$tries" ] || return 1
     sleep 0.05
   done
+  return 0
+}
+adb_record_unlock() { adb_rmdir_excl "$1.lock"; }
+
+# adb_record_append <file> <line> [tries] — append one line to an EXISTING record under its lock. Its
+# existence is checked INSIDE the lock, so an append never recreates a record that was removed (a
+# removal takes the same lock, `adb_record_remove`). 0 written · 1 the lock could not be had, the
+# file is gone or not a regular file, or the write failed · 2 written, but the lock could not be
+# released — every later writer will now wait it out, which the caller must be told.
+adb_record_append() {
+  local f="$1" line="$2" rc=1
+  adb_record_lock "$f" "${3:-100}" || return 1
   if [ -f "$f" ] && [ ! -L "$f" ]; then
     printf '%s\n' "$line" >> "$f" 2>/dev/null && rc=0
   fi
-  adb_rmdir_excl "$f.lock"
+  adb_record_unlock "$f" || { [ "$rc" -eq 0 ] && rc=2; }
+  return "$rc"
+}
+
+# adb_record_remove <file> [extra…] — remove a record (and any companion files named after it) under
+# its lock, so no append can slip in between and recreate it. 0 removed (or already gone) · 1 the lock
+# could not be had or a file could not be removed — the record then stays where it is.
+adb_record_remove() {
+  local f="$1" rc=0 x; shift
+  adb_record_lock "$f" || return 1
+  rm -f "$f" "$@" 2>/dev/null || rc=1
+  for x in "$f" "$@"; do [ -e "$x" ] && rc=1; done
+  adb_record_unlock "$f" || rc=1
   return "$rc"
 }
 

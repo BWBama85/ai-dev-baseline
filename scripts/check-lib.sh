@@ -374,9 +374,8 @@ _check_hung_verdict() {
 # `--stop` signals only what the run provably owns, and one proof is WHERE a process works. The
 # runner exports a private TMPDIR, which GNU `mktemp` honours; macOS's does not whenever no template
 # is given — it prefers its per-user temp directory (`man mktemp`) — and every suite's
-# `work="$(mktemp -d)"` gives none. Every survivor observed (#547, #551) was a pool's, so the pools
-# say where they are: one `pool <path>` line appended to the record the runner exported as
-# ADB_SELFCHECK_RECORD.
+# `work="$(mktemp -d)"` gives none. So a pool says where it is: one `pool <path>` line appended to
+# the record the runner exported as ADB_SELFCHECK_RECORD.
 #
 # The path is checked RAW first — a control byte anywhere, a newline included, is refused before a
 # command substitution could strip it into another name, and so is a `^`, since lsof writes a

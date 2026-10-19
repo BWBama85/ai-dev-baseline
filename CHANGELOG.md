@@ -307,14 +307,16 @@ only by a published release, which is what these entries are the notes for.
   with such a process, in a group the runner recorded, descended from the runner or any of those,
   or already found by this stop. A cancelled runner records every group then holding one of its
   processes before it signals anything, so a later stop still finds a nested pool's workers after
-  a plain `^C`. A process that only works in the checkout is named and never signalled. Every
+  a plain `^C`, and when the runner is already gone it sends `TERM` to every group holding
+  something the run owns, so their cleanup runs before any `KILL`. A process that only works in the
+  checkout is named and never signalled. Every
   inventory must be provably whole, and each `ps`, `find` or `lsof` is bounded by
   `ADB_SELFCHECK_STOP_INSPECT_SECS` (default 20). A cancelled run keeps its record, so the stop
   also sweeps what a KILLed runner left. A second run in the same checkout, such as the turn-end
   gate's short one, no longer replaces a live run's record. `check-selfcheck.sh` drives the stop
   against a stub that leaves a detached worker, a stopped process beside a holder, a holder whose
   pool process exits during the stop, a nested worker its step's death reparents, and a process
-  started only after the `TERM`. It adds 40 mutation rows. On a real run with live mutation pools,
+  started only after the `TERM`. It adds 44 mutation rows. On a real run with live mutation pools,
   the stop named and removed the 12 nested workers `TERM` does not reach (#547). A record path may
   not hold a control byte or a `^`, which lsof's output cannot tell apart.
 - **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**
