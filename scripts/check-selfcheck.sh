@@ -12,8 +12,7 @@
 # `check-*.sh` scripts whose exit status, output volume and duration this suite controls, and the
 # real dispatcher is driven over them with `--only`. The tracked tree is never mutated — the copy
 # is (base/practices/self-review.md: negative-test against a copy, never the live tree) — and the
-# fixture's stubs stand in for real checks, so this suite costs seconds rather than re-running the
-# suite it is part of.
+# fixture's stubs stand in for real checks, so this suite never re-runs the suite it is part of.
 #
 # WHY IT CANNOT SIMPLY RUN THE REAL SUITE: this check is itself a registered step, so a fixture
 # that invoked the real registry would recurse. `--only` over stub steps is what bounds it.
@@ -100,7 +99,7 @@ leak_sweep() {
       case "$p" in ''|*[!0-9]*) continue ;; esac
       case "$pg" in ''|*[!0-9]*) continue ;; esac
       [ -n "$st" ] || continue
-      now="$(ps -o pgid=,lstart= -p "$p" 2>/dev/null)"
+      now="$(ps -o pgid=,lstart= -p "$p" 2>/dev/null)" || continue   # a read that failed identifies nothing
       [ "$(printf '%s' "$now" | awk '{ $1 = $1; print }')" = "$(printf '%s %s' "$pg" "$st" | awk '{ $1 = $1; print }')" ] || continue
       kill -CONT "$p" 2>/dev/null; kill -KILL "$p" 2>/dev/null
     done < "$f"
@@ -417,13 +416,28 @@ if [ "$MODE" = mutation ]; then
     '  adb_record_remove --if _stop_unchanged "$RUN_RECORD" "$RUN_RECORD.incomplete" || rc=$?   # row-drop-locked' \
     'a pool registered while the stop removes the record is never lost'
   shmutant_mut "incomplete-alone-ignored" \
-    '       if [ -e "$RUN_RECORD.incomplete" ] || [ -L "$RUN_RECORD.incomplete" ]; then   # row-incomplete-alone' \
+    '       if _stop_marked; then   # row-incomplete-alone' \
     '       if false; then   # row-incomplete-alone' \
     'a lone incomplete marker is never read as no run'
   shmutant_mut "rec-drop-checks-unlocked" \
-    '  adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
-    '  _rec_ours "$RUN_ROOT/$RUN_RECORD" && adb_record_remove "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
+    '  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
+    '  _rec_ours "$RUN_ROOT/$RUN_RECORD" && _rec_held adb_record_remove "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
     'a pool registered while the run removes its record on the way out is never lost'
+  shmutant_mut "rec-drop-unheld" \
+    '  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
+    '  adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
+    'a signal while the run removes its record on the way out leaves neither the record nor its lock'
+  shmutant_mut "write-unlocked" \
+    '  adb_record_lock "$RUN_ROOT/$RUN_RECORD" 200 || { REC_WHY="its lock could not be had in 10s"; return 1; }   # row-write-locked' \
+    '  :   # row-write-locked' \
+    'a run that starts while a stop removes the last record keeps its own'
+  shmutant_mut "clean-over-late-marker" \
+    '    if _stop_marked; then   # row-clean-after-drop' '    if false; then   # row-clean-after-drop' \
+    'a stop whose record is marked incomplete while it is removed is never clean'
+  shmutant_mut "marker-regular-only" \
+    '_stop_marked() { [ -e "$RUN_RECORD.incomplete" ] || [ -L "$RUN_RECORD.incomplete" ]; }   # row-marker-any-shape' \
+    '_stop_marked() { [ -f "$RUN_RECORD.incomplete" ]; }   # row-marker-any-shape' \
+    'an incomplete marker of any shape is never read as absent'
   # Every read of the record the RUN makes keeps its status: a cancelled run's read of its pools, and
   # a starting run's read of a record already there.
   shmutant_mut "pool-read-unmarked" \
@@ -449,8 +463,12 @@ if [ "$MODE" = mutation ]; then
     '  case "$d" in /) ;; */) d="${d%/}" ;; esac' '  d="${d%/}"' \
     '12.4: registering [/] is refused, and marks the record incomplete'
   shmutant_mut "register-refusal-unmarked" \
-    '  if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then' '  if false; then' \
+    '  if adb_mark_present "$ADB_SELFCHECK_RECORD.incomplete"; then' '  if false; then' \
     'a refused pool registration marks the record incomplete'
+  shmutant_mut "marker-written-through" \
+    '  if adb_mark_present "$ADB_SELFCHECK_RECORD.incomplete"; then' \
+    '  if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then' \
+    'an incomplete marker is never written through a symlink at its name'
   # …and the record's one writer, in common.sh: an append to a record that has gone must fail, never
   # recreate it — which is what makes a late registration mark the record rather than restart it.
   shmutant_target scripts/lib/common.sh
@@ -1835,7 +1853,8 @@ plain_launch() {
 reap_runner() {
   local deadline=$(( BASH_MONOSECONDS + 20 ))
   while kill -0 "$STOP_RUNNER" 2>/dev/null && [ "$BASH_MONOSECONDS" -lt "$deadline" ]; do sleep 0.1; done
-  if [ -n "${STOP_RUNNER_LSTART:-}" ] && [ "$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)" = "$STOP_RUNNER_LSTART" ]; then
+  local l
+  if [ -n "${STOP_RUNNER_LSTART:-}" ] && l="$(ps -o lstart= -p "$STOP_RUNNER" 2>/dev/null)" && [ "$l" = "$STOP_RUNNER_LSTART" ]; then
     kill -KILL "$STOP_RUNNER" 2>/dev/null
   fi
   wait "$STOP_RUNNER" 2>/dev/null
@@ -2104,6 +2123,13 @@ eq "$(grep -c '^pool ' "$_pr/rec")" 1 "12.4: neither / nor a ^ path was register
 rm -f "$_pr/gone.incomplete"
 ( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/gone" check_register_pool "$_pr/good" ) >/dev/null 2>&1
 [ -f "$_pr/gone.incomplete" ] && ok || bad "a pool registered after the run record is gone marks it incomplete, never reads as outside selfcheck"
+# …and the marker is never written THROUGH whatever holds its name: a symlink there is refused rather
+# than followed, and the file it points at keeps its contents.
+_victim="$work/victim"; printf 'keep\n' > "$_victim"
+rm -f "$_pr/rec.incomplete"; ln -s "$_victim" "$_pr/rec.incomplete"
+( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "/" ) >/dev/null 2>&1
+[ "$(cat "$_victim" 2>/dev/null)" = keep ] && ok || bad "an incomplete marker is never written through a symlink at its name"
+rm -f "$_pr/rec.incomplete"
 # …and a registration goes through the record's ONE locked writer: while another writer holds the
 # lock, it does not slip a line in beside it — it waits, and failing that marks the record.
 rm -f "$_pr/rec.incomplete"; mkdir "$_pr/rec.lock" && : > "$_pr/rec.lock/.adb-excl"
@@ -2496,14 +2522,28 @@ printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\
   "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
 : > "$FXS/ctl/once"
 stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/cmpappend:$PATH" ADB_TEST_ONCE="$FXS/ctl/once"
-eq "$STOP_RC" 0 "12.16: a stop with nothing left ends clean: $STOP_OUT"
 kept "12.16" "a pool registered while the stop removes the record is never lost"
+if [ "$(cat "$FXS/ctl/once.out" 2>/dev/null)" = failed ]; then
+  eq "$STOP_RC" 4 "a stop whose record is marked incomplete while it is removed is never clean: $STOP_OUT"
+fi
 rm -f "$FXS/.selfcheck-run" "$FXS/ctl/once.out"; : > "$FXS/.selfcheck-run.incomplete"
 stop_sc "$FXS"
 eq "$STOP_RC" 4 "a lone incomplete marker is never read as no run: $STOP_OUT"
 rm -f "$FXS/.selfcheck-run.incomplete"
 stop_sc "$FXS"
 eq "$STOP_RC" 5 "12.16: with neither the record nor its marker, there is no run: $STOP_OUT"
+# A marker is a marker in any shape: a dangling link at its name is no regular file, and no absence
+# either — beside a record that would otherwise stop clean, and with no record at all.
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
+ln -s "$work/no-such-marker" "$FXS/.selfcheck-run.incomplete"
+stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8
+eq "$STOP_RC" 4 "an incomplete marker of any shape is never read as absent: $STOP_OUT"
+rm -f "$FXS/.selfcheck-run"
+stop_sc "$FXS"
+eq "$STOP_RC" 4 "12.16: ...nor, with no record, as no run: $STOP_OUT"
+rm -f "$FXS/.selfcheck-run.incomplete"
 
 # --- 12.17 the record lock is taken over only from a holder that is gone --------------------------
 # Every writer of the record holds its lock for one append or one removal, so a lock 30s old looks
@@ -2513,21 +2553,23 @@ eq "$STOP_RC" 5 "12.16: with neither the record nor its marker, there is no run:
 # parent that outlives it.
 _lk="$work/lk17"; rm -rf "$_lk"; mkdir -p "$_lk"; printf 'x\n' > "$_lk/rec"
 _cl="$FXS/scripts/lib/common.sh"
-bash -c '. "$1"; adb_record_lock "$2" || exit 1; : > "$3"; while :; do sleep 0.1; done' _ "$_cl" "$_lk/rec" "$_lk/held" &
+"$BASH" -c '. "$1"; adb_record_lock "$2" || exit 1; : > "$3"; while :; do sleep 0.1; done' _ "$_cl" "$_lk/rec" "$_lk/held" &
 _h17=$!
 _dl=$(( BASH_MONOSECONDS + 20 ))
 until [ -e "$_lk/held" ] || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.05; done
 touch -t 200001010000 "$_lk/rec.lock"
-_a17=0; bash -c '. "$1"; adb_record_append "$2" late 20' _ "$_cl" "$_lk/rec" || _a17=$?
+_a17=0; "$BASH" -c '. "$1"; adb_record_append "$2" late 20' _ "$_cl" "$_lk/rec" || _a17=$?
 [ "$_a17" -eq 1 ] && [ "$(cat "$_lk/rec")" = x ] && ok \
   || bad "a record lock whose holder is alive is never taken over, however old it is (rc $_a17)"
 kill -KILL "$_h17" 2>/dev/null; wait "$_h17" 2>/dev/null
 touch -t 200001010000 "$_lk/rec.lock"
-_a17=0; bash -c '. "$1"; adb_record_append "$2" late 20' _ "$_cl" "$_lk/rec" || _a17=$?
+_a17=0; "$BASH" -c '. "$1"; adb_record_append "$2" late 20' _ "$_cl" "$_lk/rec" || _a17=$?
 [ "$_a17" -eq 0 ] && grep -qx late "$_lk/rec" && [ ! -e "$_lk/rec.lock" ] && ok \
   || bad "12.17: a record lock whose holder is gone is taken over, and released after (rc $_a17)"
 rm -f "$_lk/held"
-_s17="$(bash -c '. "$1"
+# Under the suite's own bash, not PATH's: BASHPID is what names the subshell, and a stock macOS
+# `bash` is 3.2, which has none.
+_s17="$("$BASH" -c '. "$1"
   ( adb_record_lock "$2" || exit 1; : > "$3"; while :; do sleep 0.1; done ) & s=$!
   d=$(( SECONDS + 20 )); until [ -e "$3" ] || [ "$SECONDS" -ge "$d" ]; do sleep 0.05; done
   kill -KILL "$s"; wait "$s" 2>/dev/null
@@ -2614,6 +2656,71 @@ eq "$RC_" 143 "12.21: the TERM cancelled the run: $(cat "$FXS/stop-run.out" 2>/d
 [ ! -e "$FXS/ctl/once" ] && ok || bad "12.21: the TERM was never sent from inside the lock"
 [ ! -e "$FXS/.selfcheck-run.incomplete" ] && [ ! -e "$FXS/.selfcheck-run.lock" ] && ok \
   || bad "a cancel that lands while the runner holds the record's lock leaves the record complete and the lock free: $(cat "$FXS/stop-run.out" 2>/dev/null)"
+reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
+
+# --- 12.22 a run that starts while a stop removes the last record keeps its own -----------------
+# A new run decides about a record already here, and publishes its own, under the lock every removal
+# takes. Here the stop's comparison starts a run in the checkout and gives it four seconds to publish
+# before the stop removes what it compared: unlocked, the new run replaces the dead run's record in
+# that window and the stop then removes the NEW record, leaving a live run nothing `--stop` can find.
+reset_ctl "$FXS"
+mkdir -p "$_sb/cmpnewrun"
+cat > "$_sb/cmpnewrun/cmp" <<STUB
+#!/usr/bin/env bash
+"$_cmp_real" "\$@"; rc=\$?
+if [ -f "\$ADB_TEST_ONCE" ]; then
+  rm -f "\$ADB_TEST_ONCE"
+  ( cd "$FXS" && ADB_STUB_CTL="$FXS/ctl" PATH="\$ADB_TEST_PATH" exec bash scripts/selfcheck.sh --only gates --jobs 1 ) > "$FXS/ctl/newrun.out" 2>&1 &
+  printf '%s\n' "\$!" > "$FXS/ctl/newrun.pid"
+  d=\$(( SECONDS + 4 ))
+  until grep -q "^pid \$!\\\$" "$FXS/.selfcheck-run" 2>/dev/null || [ "\$SECONDS" -ge "\$d" ]; do sleep 0.1; done
+fi
+exit "\$rc"
+STUB
+chmod +x "$_sb/cmpnewrun/cmp"
+printf '0\n' > "$FXS/ctl/gates.beat"
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
+: > "$FXS/ctl/once"
+stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/cmpnewrun:$PATH" ADB_TEST_PATH="$PATH" ADB_TEST_ONCE="$FXS/ctl/once"
+STOP_RUNNER="$(cat "$FXS/ctl/newrun.pid" 2>/dev/null)"; STOP_RUNNER_LSTART="$(ps -o lstart= -p "${STOP_RUNNER:-0}" 2>/dev/null)"
+_dl=$(( BASH_MONOSECONDS + 20 ))
+until grep -q "^pid ${STOP_RUNNER:-x}\$" "$FXS/.selfcheck-run" 2>/dev/null || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.1; done
+if [ -n "$STOP_RUNNER" ] && grep -q "^pid $STOP_RUNNER\$" "$FXS/.selfcheck-run" 2>/dev/null; then ok
+else bad "a run that starts while a stop removes the last record keeps its own (new run ${STOP_RUNNER:-none}): $STOP_OUT / $(cat "$FXS/ctl/newrun.out" 2>/dev/null)"; fi
+if [ -n "$STOP_RUNNER" ] && grep -q "^pid $STOP_RUNNER\$" "$FXS/.selfcheck-run" 2>/dev/null; then
+  stop_sc "$FXS"; reap_runner
+  eq "$STOP_RC" 0 "12.22: ...and a later stop finds it and stops it clean: $STOP_OUT"
+else
+  [ -n "$STOP_RUNNER" ] && { kill -TERM "$STOP_RUNNER" 2>/dev/null; reap_runner; }
+fi
+reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
+
+# --- 12.23 a signal while the run removes its record on the way out ------------------------------
+# A run that ended on its own removes its record under the lock, and a TERM that arrives then must
+# wait for the removal: handled at once, it exits holding the lock, and every later writer waits it
+# out. The read the removal makes is made to send that TERM.
+mkdir -p "$_sb/headterm"
+cat > "$_sb/headterm/head" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" -c 4096 "*)
+    if [ -f "\$ADB_TEST_ONCE" ]; then
+      rm -f "\$ADB_TEST_ONCE"
+      r="\$(sed -n 's/^pid //p' "$FXS/.selfcheck-run" 2>/dev/null)"
+      [ -n "\$r" ] && kill -TERM "\$r"
+    fi ;;
+esac
+exec "$_head_real" "\$@"
+STUB
+chmod +x "$_sb/headterm/head"
+reset_ctl "$FXS"; : > "$FXS/ctl/once"
+ADB_TEST_ONCE="$FXS/ctl/once" PATH="$_sb/headterm:$PATH" ADB_STUB_CTL="$FXS/ctl" \
+  adb_run_bounded 120 1 bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 > "$FXS/stop-run.out" 2>&1
+[ ! -e "$FXS/ctl/once" ] && ok || bad "12.23: the TERM was never sent from inside the removal"
+[ ! -e "$FXS/.selfcheck-run.lock" ] && [ ! -e "$FXS/.selfcheck-run" ] && ok \
+  || bad "a signal while the run removes its record on the way out leaves neither the record nor its lock: $(cat "$FXS/stop-run.out" 2>/dev/null)"
 reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------

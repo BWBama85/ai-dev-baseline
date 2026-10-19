@@ -320,7 +320,8 @@ only by a published release, which is what these entries are the notes for.
   started only after the `TERM`. A process is the same one only at the same pid and the same
   `ps lstart`, compared exactly. The record's lock is taken over only from a holder that is
   provably gone, by the update lock's own code, and a cancel that lands while the runner
-  holds it waits for that append to finish. It adds 55 mutation rows. On a real run with live
+  holds it waits for that append to finish. The incomplete marker is never written through a
+  symlink, and counts in any shape. It adds 60 mutation rows. On a real run with live
   mutation pools,
   the stop named and removed the 12 nested workers `TERM` does not reach (#547). A record path may
   not hold a control byte or a `^`, which lsof's output cannot tell apart.

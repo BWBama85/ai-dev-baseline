@@ -1702,6 +1702,8 @@ _stop_owned() {
       changed=1
     done
   done
+  # A zombie has already exited and waits only for its parent to reap it: it is named, and it does
+  # not keep a stop from being clean.
   for p in "${!OWNED[@]}"; do
     [ -n "${INV_LST[$p]:-}" ] && OWN_EVER["$p"]="${INV_LST[$p]}"
     case "${INV_STAT[$p]:-}" in Z*) ;; *) OWN_ALIVE=$(( OWN_ALIVE + 1 )) ;; esac
@@ -1891,8 +1893,8 @@ _stop_line() {
   case "$st" in
     Z*) printf 'selfcheck --stop: zombie   pid=%s pgid=%s ppid=%s state=%s — exited; it goes when pid %s reaps it (%s)\n' \
           "$p" "${INV_PGID[$p]:-?}" "${INV_PPID[$p]:-?}" "$(_stop_clean "$st")" "${INV_PPID[$p]:-?}" "${OWNED[$p]:-}" ;;
-    # The EXECUTABLE only, never the arguments: an argv can carry a credential, and a process being
-    # the run's does not make what it was handed safe to print.
+    # The first word of the command line only, never the arguments: an argv can carry a credential,
+    # and a process being the run's does not make what it was handed safe to print.
     *)  printf 'selfcheck --stop: survivor pid=%s pgid=%s ppid=%s state=%s%s — %s; cwd %s; %s\n' \
           "$p" "${INV_PGID[$p]:-?}" "${INV_PPID[$p]:-?}" "$(_stop_clean "$st")" "$tag" "${OWNED[$p]:-}" \
           "$(_stop_clean "${INV_CWD[$p]:-?}")" "$(_stop_clean "${INV_CMD[$p]%% *}")" ;;
@@ -1916,6 +1918,10 @@ _stop_drop() {
   return 0
 }
 _stop_unchanged() { cmp -s "$STOP_DIR/record" "$1" 2>/dev/null; }
+
+# _stop_marked — the incomplete marker is here, in ANY shape: a directory, a FIFO or a dangling link
+# at its name is not a regular file, but it is not an absent marker either.
+_stop_marked() { [ -e "$RUN_RECORD.incomplete" ] || [ -L "$RUN_RECORD.incomplete" ]; }   # row-marker-any-shape
 
 # _stop_unattributed [print] — UNATTRIBUTED: the processes of the current inventory that are not the
 # run's but work in its checkout and started during it; with `print`, each is named — by the first
@@ -1960,7 +1966,7 @@ stop_run() {
     0) ;;
     5) # …unless its incomplete marker is here: something of the last run could not be recorded, so
        # "no run" is not "nothing left" (the marker outlives a record removed after it was written).
-       if [ -e "$RUN_RECORD.incomplete" ] || [ -L "$RUN_RECORD.incomplete" ]; then   # row-incomplete-alone
+       if _stop_marked; then   # row-incomplete-alone
          printf 'selfcheck --stop: cannot call this clean — no run is recorded, but %s.incomplete is here: something of the last run could not be recorded, so nothing says it left nothing behind. Look for what it left, then remove the marker.\n' "$RUN_RECORD"
          return 4
        fi
@@ -2031,7 +2037,7 @@ stop_run() {
     [ "$BASH_MONOSECONDS" -ge "$dl" ] && break
     sleep 0.5
   done
-  [ -f "$RUN_RECORD.incomplete" ] && incomplete=1
+  _stop_marked && incomplete=1
 
   _stop_unattributed print
 
@@ -2049,8 +2055,14 @@ stop_run() {
         "$bound" "$UNATTRIBUTED"
       return 6
     fi
-    printf 'selfcheck --stop: stopped clean — nothing the run owns outlived the %ss bound\n' "$bound"
+    # The verdict follows the removal: a registration that failed while it was made marks the run
+    # incomplete then, and a stop that answered first would have called it clean.
     _stop_drop
+    if _stop_marked; then   # row-clean-after-drop
+      printf 'selfcheck --stop: cannot call this clean — %s.incomplete appeared while the record was being removed: something of this run could not be recorded\n' "$RUN_RECORD"
+      return 4
+    fi
+    printf 'selfcheck --stop: stopped clean — nothing the run owns outlived the %ss bound\n' "$bound"
     return 0
   fi
 
@@ -2088,7 +2100,7 @@ stop_run() {
   printf 'selfcheck --stop: RED — %s process(es) the run owns outlived the %ss bound; named above, and now removed\n' "$n" "$bound"
   # The disposition is decided on what is true NOW, not on what was true before the KILLs: the
   # marker may have appeared, and a process may have become unattributed, while they went out.
-  [ -f "$RUN_RECORD.incomplete" ] && incomplete=1   # row-final-refresh
+  _stop_marked && incomplete=1   # row-final-refresh
   _stop_unattributed print
   # An INCOMPLETE record outlives the stop: what it could not attribute may still be running, and
   # removing the record would turn the next stop's answer into "no run recorded".
@@ -2271,17 +2283,24 @@ declare -A REC_DONE=()   # pid -> 1 once its `group` line is written: what `_cle
 # Its lock wait is 5s, cut to what is left of a cancelled runner's `prep` (REC_PREP_DL) while one is
 # running, so recording can never eat into the grace a stop has promised its workers.
 _rec_append() {
-  local tries=100 left rc=0 sig
+  local tries=100 left rc=0
   if [ -n "${REC_PREP_DL:-}" ]; then
     left=$(( REC_PREP_DL - BASH_MONOSECONDS ))
     [ "$left" -gt 0 ] || return 1
     [ $(( left * 20 )) -lt "$tries" ] && tries=$(( left * 20 ))
   fi
-  # A cancellation landing while this holds the record's lock waits for the append to finish
-  # (`_on_signal`): handled at once, its own recording would wait on the lock this very process
-  # holds, give up, and mark the whole record incomplete — and its `exit` would leave the lock held.
+  _rec_held adb_record_append "$RUN_ROOT/$RUN_RECORD" "$1" "$tries" || rc=$?   # non-zero (2 included) is a failure here
+  return "$rc"
+}
+
+# _rec_held <command…> — run <command> as one critical section of the record's lock. A cancellation
+# landing meanwhile waits for it (`_on_signal`): handled at once, its own recording would wait on the
+# lock this very process holds, give up and mark the whole record incomplete, and its `exit` would
+# leave the lock held for every later writer.
+_rec_held() {
+  local rc=0 sig
   REC_HOLD=1
-  adb_record_append "$RUN_ROOT/$RUN_RECORD" "$1" "$tries" || rc=$?   # non-zero (2 included) is a failure here
+  "$@" || rc=$?
   REC_HOLD=0
   if [ -n "$REC_SIG" ]; then sig="$REC_SIG"; REC_SIG=""; _on_signal "$sig"; fi
   return "$rc"
@@ -2291,7 +2310,7 @@ _rec_append() {
 # marker that could not be written is a record that still looks complete, which the operator must
 # be told in so many words.
 _rec_mark_incomplete() {
-  if : > "$RUN_ROOT/$RUN_RECORD.incomplete" 2>/dev/null; then
+  if adb_mark_present "$RUN_ROOT/$RUN_RECORD.incomplete"; then
     printf 'selfcheck: NOTE — %s; the run record is marked incomplete, so `--stop` will not call this run clean\n' "$1"
   else
     printf 'selfcheck: WARN — %s, AND the run record could not be marked incomplete: a later `--stop` may call this run clean without having seen all of it\n' "$1"
@@ -2311,9 +2330,23 @@ _rec_mark_incomplete() {
 # Two runs in one checkout stay unsupported (#250); this keeps the second from erasing the first.
 # A record whose runner HAS exited was left by a run that did not end on its own; replacing it is
 # said, because what that run left is now only findable by working directory.
+#
+# The decision about a record already here and the publication that replaces it hold the record's
+# lock, the one every removal takes: a stop comparing the record it read before removing it must
+# never remove one this run has just published in between.
 _rec_write() {
-  local t old="" own_pg
   REC_WHY=""
+  _rec_held _rec_write_locked
+}
+_rec_write_locked() {
+  local rc=0
+  adb_record_lock "$RUN_ROOT/$RUN_RECORD" 200 || { REC_WHY="its lock could not be had in 10s"; return 1; }   # row-write-locked
+  _rec_publish || rc=$?
+  adb_record_unlock "$RUN_ROOT/$RUN_RECORD" || :
+  return "$rc"
+}
+_rec_publish() {
+  local t old="" own_pg
   _stop_path_ok "$RUN_ROOT" && _stop_path_ok "$TMPROOT" \
     || { REC_WHY="the checkout or the temp root holds a control byte or a ^, which no record may"; return 1; }
   # A DIRECTORY, a symlink, a FIFO — anything but a regular file — at the record's name is refused
@@ -2447,7 +2480,7 @@ _rec_descendants() {
 # it: whatever it left behind is what a later `--stop` sweeps.
 _rec_drop() {
   [ -f "$RUN_ROOT/$RUN_RECORD" ] && [ ! -L "$RUN_ROOT/$RUN_RECORD" ] || return 0
-  adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked
+  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked
   return 0
 }
 # _rec_ours <file> — <file> is still this run's record: a regular file whose first three lines name
@@ -2564,14 +2597,18 @@ _cleanup() {
 CANCELLED=0
 # _on_signal <status> — cancel the run, unless it is in the middle of an append to its record
 # (`_rec_append`), which then finishes first and hands the signal back here.
+# A run already on its way out has nothing left to cancel: its workers are gone and its scratch
+# directory may be, so a signal then only sets the status it exits with.
+RUN_EXITING=0
 _on_signal() {
   if [ "$REC_HOLD" -eq 1 ]; then REC_SIG="$1"; return 0; fi   # row-sig-deferred
+  [ "$RUN_EXITING" -eq 0 ] || exit "$1"
   CANCELLED=1; _cleanup; exit "$1"
 }
 trap '_on_signal 130' INT
 trap '_on_signal 143' TERM
 trap '_on_signal 129' HUP
-trap '_cleanup; [ "$CANCELLED" -eq 1 ] || _rec_drop' EXIT
+trap 'RUN_EXITING=1; _cleanup; [ "$CANCELLED" -eq 1 ] || _rec_drop' EXIT
 # The record's path is exported once it exists, so a harness can register its pool in it
 # (`check_register_pool`). An INHERITED path is dropped first: a run that is not recorded must not
 # have its pools land in another run's record.

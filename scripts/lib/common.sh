@@ -4458,6 +4458,18 @@ adb_record_unlock() {
   return 0
 }
 
+# adb_mark_present <path> — make <path> an existing regular file, a marker, without ever writing
+# through something else at that name: a symlink there is refused, not followed (a redirect would
+# truncate whatever it points at), and so is a FIFO, which a redirect would block on, or a directory.
+# Created with noclobber, so a symlink planted between the check and the create fails it too.
+# 0 the marker is there · 1 it is not, or something other than a regular file holds its name.
+adb_mark_present() {
+  [ -L "$1" ] && return 1
+  if [ -e "$1" ]; then [ -f "$1" ]; return; fi
+  ( set -C; : > "$1" ) 2>/dev/null && return 0
+  [ -f "$1" ] && [ ! -L "$1" ]
+}
+
 # adb_record_append <file> <line> [tries] — append one line to an EXISTING record under its lock. Its
 # existence is checked INSIDE the lock, so an append never recreates a record that was removed (a
 # removal takes the same lock, `adb_record_remove`). 0 written · 1 the lock could not be had, the

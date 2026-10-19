@@ -10533,6 +10533,24 @@ survive is the part a later reader needs.
              before this round. The owner-token lock holds a few forks longer, and §12's clean stops
              then failed four times in one run, which is how it was found. §12.21 puts the TERM
              inside the lock on purpose.
+             The round's local review (codex, pass 1, 8 REQUIRED) found more on the same seams:
+             - The incomplete marker was written by a redirect, which follows a symlink at its name
+               (truncating the target) and blocks on a FIFO. It is now made by one primitive,
+               `adb_mark_present`, that refuses both.
+             - A marker of any shape counts as present, on every path (`_stop_marked`).
+             - The clean verdict is given after the removal, so a marker written meanwhile makes it 4.
+             - A new run's decision about a record already there, and its publication, hold the
+               record's lock too (`_rec_write`). That way a stop's locked comparison can never be
+               followed by removal of a record published in between. This is the toctou sibling
+               first deferred to #250, fixed instead: it needs a stop and a new run, not two
+               concurrent runs.
+             - The run's own removal on the way out is a critical section of the lock like every
+               append (`_rec_held`). A signal while the run is already exiting only sets its status.
+             - The fixture's cleanup reads authorize nothing when `ps` fails.
+             - §12.17's subshell case runs under the suite's own bash, since a stock macOS `bash` is
+               3.2 and has no `BASHPID`.
+             Its first finding, the runner's and recorded groups' start windows, is #561's and is
+             carried.
              **CI's first run was red for a reason the machine gave.** §12.11 dated its synthetic run
              two hours back, and "started during the run" then took in a runner booted minutes
              earlier. On the ubuntu-26.04 runner, the user's own `systemd --user` manager (pid 1344) has
@@ -10613,7 +10631,7 @@ survive is the part a later reader needs.
              check, start dating, the status recheck, the `^` refusal, the kept incomplete record, the
              temp-root removal (retired with it after pass 3), the cancel-time completeness check, and registration's `/` and
              missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
-             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 298 s
+             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 317 s
              locally on 2026-10-19, after PR review round 1, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
              limit is 10 minutes. §12 also covers a clean stop whose bound is raised
              to the run's grace, an incomplete record answering 4, a refused registration marking the
@@ -10624,8 +10642,8 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 55 rows, one per assertion
-             that matters, three in `check-lib.sh` (registration) and three in `common.sh` (the record's
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 60 rows, one per assertion
+             that matters, four in `check-lib.sh` (registration and its marker) and three in `common.sh` (the record's
              writer, and its lock's take-over: holder alive, holder a killed subshell): the grace wait and
              `_cleanup`'s recording;
              the record's live-run, directory and unknown-key refusals; each ownership rule removed
@@ -10639,14 +10657,16 @@ survive is the part a later reader needs.
              verified; identity loosened to the minute; the record removed on a comparison made outside
              its lock, by the stop or by the run, or with the marker; a lone marker read as no run; a
              failed read of the pools, or of a record already there, ignored; a cancel inside the
-             record's lock handled at once; a registration that
+             record's lock, or inside the run's own removal, handled at once; a new run publishing
+             outside the lock; a clean verdict given before the removal; a marker counted only as a
+             regular file, or written through a symlink; a registration that
              writes nothing, and a refusal left unmarked. Each must fail on its own witness.
 - placement: `scripts/selfcheck.sh` (the stop block, `_rec_write`/`_rec_group`/`_rec_drop`, the
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 55 `--mutation` rows) · `.gitignore` ·
-             · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`, and
-             the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
+             slow-exit stub modes, `leak_sweep`, 60 `--mutation` rows) · `.gitignore` ·
+             · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`,
+             `adb_mark_present`, and the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

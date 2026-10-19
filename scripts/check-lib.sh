@@ -418,7 +418,7 @@ check_register_pool() {
     return 0
   fi
   [ -n "$why" ] || why="the record could not be appended to — it is gone, is not a regular file, or its lock is held"
-  if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then
+  if adb_mark_present "$ADB_SELFCHECK_RECORD.incomplete"; then
     printf 'NOTE: could not register pool %s with the running selfcheck (%s); its record is marked incomplete\n' \
       "${d//[[:cntrl:]]/?}" "${why//[[:cntrl:]]/?}" >&2
   else
