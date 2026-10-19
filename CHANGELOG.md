@@ -287,6 +287,45 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **A running selfcheck has one supported stop, and it can see what it misses (#551, D135).**
+  `TERM` to `scripts/selfcheck.sh` never reached a mutation harness's nested pool (#547). The
+  runner KILLed its workers after a fixed second, so a harness could be KILLed in the middle of
+  its own cleanup, and a vendored-shmutant shell KILLed mid-freeze left its tree stopped forever.
+  Stops improvised on top of that checked a pid list taken before the stop and printed
+  `still alive: 0` over 25 survivors. **`bash scripts/selfcheck.sh --stop`** now reads the run's
+  record (the gitignored `.selfcheck-run`), sends the runner `TERM` and waits up to
+  `ADB_SELFCHECK_STOP_SECS` (default 40, never less than the run's recorded preparation allowance
+  plus its grace plus 5s). The runner gives its workers' cleanup up to
+  `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) instead of one second. The stop then names every
+  process the run still owns, stopped ones and zombies included, KILLs them, and confirms with a
+  fresh listing: `0` clean, `1` survivors named and removed, `3` some could not be removed, `4`
+  could not inspect or the record is incomplete, its marker counting even with no record (never
+  "nothing left"), `5` no run recorded, `6`
+  nothing provably the run's is left but unattributed processes still work in the checkout. A
+  process is the run's by where it works and which group it is in: under the run's private temp
+  root (every step now gets it as `TMPDIR`), under a pool directory a harness registered
+  (`check_register_pool`, because macOS's template-less `mktemp` ignores `TMPDIR`), in a group
+  with such a process, in a group the runner recorded, descended from the runner or any of those,
+  or already found by this stop. A cancelled runner records every group then holding one of its
+  processes before it signals anything, so a later stop still finds a nested pool's workers after
+  a plain `^C`, and when the runner is already gone it sends `TERM` to every group holding
+  something the run owns, so their cleanup runs before any `KILL`. A process that only works in the
+  checkout is named and never signalled. Every
+  inventory must be provably whole, and each `ps`, `find` or `lsof` is bounded by
+  `ADB_SELFCHECK_STOP_INSPECT_SECS` (default 20). A cancelled run keeps its record, so the stop
+  also sweeps what a KILLed runner left. A second run in the same checkout, such as the turn-end
+  gate's short one, no longer replaces a live run's record. `check-selfcheck.sh` drives the stop
+  against a stub that leaves a detached worker, a stopped process beside a holder, a holder whose
+  pool process exits during the stop, a nested worker its step's death reparents, and a process
+  started only after the `TERM`. A process is the same one only at the same pid and the same
+  `ps lstart`, compared exactly. The record's lock is taken over only from a holder that is
+  provably gone, by the update lock's own code, and a cancel that lands while the runner
+  holds it waits for that append to finish. The incomplete marker is never written through a
+  symlink, and counts in any shape. A stop whose record changed after its last look is never clean.
+  It adds 75 mutation rows. On a real run with live
+  mutation pools,
+  the stop named and removed the 12 nested workers `TERM` does not reach (#547). A record path may
+  not hold a control byte or a `^`, which lsof's output cannot tell apart.
 - **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**
   `dispatch-sweep` checked each row's evidence with the pattern ledger's text rule, which refuses
   `<!--` and `-->` because `patterns.md` is Markdown built around comment regions. Sweep evidence is

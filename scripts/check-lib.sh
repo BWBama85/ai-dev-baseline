@@ -367,6 +367,67 @@ _check_hung_verdict() {
     "$CHECK_ROW_SECS" > "$1"
 }
 
+# --- registering a pool with a running selfcheck (#551) ---------------------------------------
+# check_register_pool <workdir> — tell a running `selfcheck.sh` where this pool works, so that
+# `selfcheck.sh --stop` can attribute every process working there to the run.
+#
+# `--stop` signals only what the run provably owns, and one proof is WHERE a process works. The
+# runner exports a private TMPDIR, which GNU `mktemp` honours; macOS's does not whenever no template
+# is given — it prefers its per-user temp directory (`man mktemp`) — and every suite's
+# `work="$(mktemp -d)"` gives none. So a pool says where it is: one `pool <path>` line appended to
+# the record the runner exported as ADB_SELFCHECK_RECORD.
+#
+# The path is checked RAW first — a control byte anywhere, a newline included, is refused before a
+# command substitution could strip it into another name, and so is a `^`, since lsof writes a
+# control byte as `^X` and a stop could not tell the two apart — then made physical: the directory itself
+# when it exists, else its parent plus the name, since lsof reports physical paths. A registration
+# that fails for any reason leaves `<record>.incomplete`, so the stop never calls the run clean over
+# a pool it was never told about, and says so here with the path's control bytes shown as `?`. It
+# is not a red: the pool itself is unaffected. Outside selfcheck (no ADB_SELFCHECK_RECORD) this does
+# nothing; a record that has gone, or `/`, is a failure like any other.
+check_register_pool() {
+  local LC_ALL=C d p b ok=0 why=""
+  [ -n "${ADB_SELFCHECK_RECORD:-}" ] || return 0
+  d="$1"
+  case "$d" in /) ;; */) d="${d%/}" ;; esac
+  case "$d" in /*) ;; *) d="$PWD/$d" ;; esac
+  # A record that has gone is refused by the writer itself (`adb_record_append` checks it inside the
+  # lock, so it never recreates one): ONE check, where the write happens.
+  case "$d" in
+      /) why="/ is not a pool directory" ;;
+      *[[:cntrl:]]*|*'^'*) why="its path holds a control byte or a ^, which lsof's output cannot tell apart" ;;
+      *)
+        if [ -d "$d" ]; then
+          p="$(cd -P "$d" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && ok=1
+        else
+          b="${d##*/}"
+          p="$(cd -P "${d%/*}/" 2>/dev/null && pwd -P && printf x)" && p="${p%?x}" && p="${p%/}/$b" && ok=1
+        fi
+        if [ "$ok" -eq 1 ]; then
+          case "$p" in /?*) ;; *) ok=0 ;; esac
+          case "$p" in *[[:cntrl:]]*|*'^'*) ok=0 ;; esac
+        fi
+        [ "$ok" -eq 1 ] || why="it could not be made physical" ;;
+  esac
+  # Through the record's ONE locked writer (common.sh's `adb_record_append`), which the runner uses
+  # too: unserialized, two appends could splice into lines that are each valid and each wrong.
+  if [ "$ok" -eq 1 ] && ! command -v adb_record_append >/dev/null 2>&1; then
+    ok=0; why="adb_record_append is unavailable — source scripts/lib/common.sh before check-lib.sh"
+  fi
+  if [ "$ok" -eq 1 ] && adb_record_append "$ADB_SELFCHECK_RECORD" "pool $p"; then   # row-register
+    return 0
+  fi
+  [ -n "$why" ] || why="the record could not be appended to — it is gone, is not a regular file, or its lock is held"
+  if adb_mark_present "$ADB_SELFCHECK_RECORD.incomplete"; then
+    printf 'NOTE: could not register pool %s with the running selfcheck (%s); its record is marked incomplete\n' \
+      "${d//[[:cntrl:]]/?}" "${why//[[:cntrl:]]/?}" >&2
+  else
+    printf 'WARN: could not register pool %s with the running selfcheck (%s), AND could not mark its record incomplete: a later --stop may call the run clean without having seen this pool\n' \
+      "${d//[[:cntrl:]]/?}" "${why//[[:cntrl:]]/?}" >&2
+  fi
+  return 0
+}
+
 # --- the whole-suite pool, through the vendored shmutant (#519) ----------------------------------
 # check_shmutant_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run the table the caller
 # declared with `shmutant_target` / `shmutant_mut` through `shmutant_pool`, then score every row into
@@ -466,6 +527,7 @@ check_shmutant_pool() {
   # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope
   local SHMUTANT_TIMEOUT="$CHECK_ROW_SECS" SHMUTANT_JOBS="$pool" SHMUTANT_BASELINE=0 SHMUTANT_STREAM="$wd.tsv" \
         SHMUTANT_RED_STATUS=1 SHMUTANT_RED_PREFIX='FAIL: ' SHMUTANT_COUNTS=0
+  check_register_pool "$wd"
   [ -o errexit ] && errexit=1
   set +e
   shmutant_pool "$label" "$wd" "$prep" "$run" "$cap"
@@ -875,6 +937,7 @@ check_mutation_rows() {
     bad "$label --mutation: workdir '$wd' is not empty — a previous run's counts or verdicts would be scored"; return 1
   fi
   mkdir -p "$wd"
+  check_register_pool "$wd"
 
   # 1. declarations, against the pristine tree
   if ! _check_blocks_parse "$ROOT/$suite"; then
