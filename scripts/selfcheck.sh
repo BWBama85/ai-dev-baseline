@@ -1521,12 +1521,22 @@ _stop_inventory_once() {
       1) [ -z "$e" ] || { INV_ERR="the processes' starts could not be read again (ps rc 1)"; return 1; } ;;
       *) INV_ERR="the processes' starts could not be read again (rc $irc)"; return 1 ;;
     esac
+    local -A seen=()
     while read -r p l1 l2 l3 l4 l5; do
       case "$p" in ''|*[!0-9]*) continue ;; esac
+      seen["$p"]=1
       [ "$l1 $l2 $l3 $l4 $l5" = "${INV_LST[$p]:-}" ] && continue
       INV_ERR="pid $p started again between the process listing and the working-directory listing"
       return 2   # row-cwd-identity
     done <<< "$e"
+    # A pid the read left out vouches for nothing: it is gone (the kernel's ESRCH), or the snapshot is
+    # not consistent.
+    for p in "${idp[@]}"; do
+      [ -n "${seen[$p]+x}" ] && continue
+      adb_pid_gone "$p" && continue
+      INV_ERR="pid $p was left out of the second read of starts, yet still exists"
+      return 2   # row-cwd-omitted
+    done
   fi
   _stop_whole
 }
@@ -2107,7 +2117,7 @@ stop_run() {
          return 4 ;;   # row-clean-changed
       4) printf 'selfcheck --stop: cannot call this clean — %s could not be compared with what this stop read, so it is kept; run --stop again.\n' "$RUN_RECORD"
          return 4 ;;
-      1) printf 'selfcheck --stop: cannot call this clean — the lock on %s could not be had, so it was neither compared nor removed; run --stop again.\n' "$RUN_RECORD"
+      1) printf 'selfcheck --stop: cannot call this clean — %s could not be locked, compared or removed; it may still be there, so run --stop again.\n' "$RUN_RECORD"
          return 4 ;;   # row-clean-unlocked
     esac
     if _stop_marked; then   # row-clean-after-drop
@@ -2788,6 +2798,7 @@ run_serial() {   # names...
       got=""
       if wait -f -n -p got "$pid" "$tick"; then rc=0; else rc=$?; fi
       if [ "${got:-}" = "$tick" ]; then
+        unset "REC_DONE[$tick]"
         # Only a step that has not ENDED is still running; one the ticker beat to the reap is not.
         stamp_of ended "$name" >/dev/null || note_overrun "$name" "$(running_for "$name" "$t0")" live
         rc=0; continue

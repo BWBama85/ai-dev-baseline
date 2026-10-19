@@ -440,12 +440,15 @@ if [ "$MODE" = mutation ]; then
     "      33) printf 'selfcheck --stop: cannot call this clean — %s changed" \
     'a stop whose record changed after its last look is never clean'
   shmutant_mut "clean-over-unlocked" \
-    "      1) printf 'selfcheck --stop: cannot call this clean — the lock on" \
-    "      11) printf 'selfcheck --stop: cannot call this clean — the lock on" \
+    "      1) printf 'selfcheck --stop: cannot call this clean — %s could not be locked" \
+    "      11) printf 'selfcheck --stop: cannot call this clean — %s could not be locked" \
     "a stop that cannot take its record's lock to remove it is never clean"
   shmutant_mut "cwd-identity-unchecked" \
     '      return 2   # row-cwd-identity' '      continue   # row-cwd-identity' \
     'a pid that started again between the listings is never claimed by its directory'
+  shmutant_mut "cwd-identity-omission-trusted" \
+    '      return 2   # row-cwd-omitted' '      continue   # row-cwd-identity-all' \
+    'a pid the second read of starts leaves out is never claimed by its directory'
   shmutant_mut "drop-unbounded" \
     '  adb_run_bounded "$STOP_INSPECT" 1 cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
     '  cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
@@ -3007,6 +3010,19 @@ printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\
 stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/cwdreuse:$PATH" ADB_TEST_REUSE="$CANARY_PID"
 if [ "$(stub_state "$CANARY_PID" "$CANARY_PID")" = alive ] && [ "$STOP_RC" -eq 4 ]; then ok
 else bad "a pid that started again between the listings is never claimed by its directory (rc $STOP_RC): $STOP_OUT"; fi
+# …and one that read leaves out entirely, while it still exists, vouches for nothing either.
+mkdir -p "$_sb/cwdomit"
+cat > "$_sb/cwdomit/ps" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" -o pid=,lstart= -p "*) "$_ps_real" "\$@" | awk -v r="\$ADB_TEST_REUSE" '\$1 != r'; exit "\${PIPESTATUS[0]}" ;;
+esac
+exec "$_ps_real" "\$@"
+STUB
+chmod +x "$_sb/cwdomit/ps"
+stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/cwdomit:$PATH" ADB_TEST_REUSE="$CANARY_PID"
+if [ "$(stub_state "$CANARY_PID" "$CANARY_PID")" = alive ] && [ "$STOP_RC" -eq 4 ]; then ok
+else bad "a pid the second read of starts leaves out is never claimed by its directory (rc $STOP_RC): $STOP_OUT"; fi
 reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------
