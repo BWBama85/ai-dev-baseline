@@ -2289,7 +2289,7 @@ _rec_append() {
     [ "$left" -gt 0 ] || return 1
     [ $(( left * 20 )) -lt "$tries" ] && tries=$(( left * 20 ))
   fi
-  _rec_held adb_record_append "$RUN_ROOT/$RUN_RECORD" "$1" "$tries" || rc=$?   # non-zero (2 included) is a failure here
+  _rec_held adb_record_append "$RUN_ROOT/$RUN_RECORD" "$1" "$tries" "${REC_PREP_DL:-}" || rc=$?   # non-zero (2 included) is a failure here
   return "$rc"
 }
 
@@ -2342,7 +2342,9 @@ _rec_write_locked() {
   local rc=0
   adb_record_lock "$RUN_ROOT/$RUN_RECORD" 200 || { REC_WHY="its lock could not be had in 10s"; return 1; }   # row-write-locked
   _rec_publish || rc=$?
-  adb_record_unlock "$RUN_ROOT/$RUN_RECORD" || :
+  if ! adb_record_unlock "$RUN_ROOT/$RUN_RECORD"; then   # row-write-unlock
+    printf 'selfcheck: WARN — the run record'"'"'s lock could not be released, so every later write to the record waits until this run has exited and the lock is taken over\n'
+  fi
   return "$rc"
 }
 _rec_publish() {
@@ -2380,8 +2382,14 @@ _rec_publish() {
   if { printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace %s\nprep %s\nroot %s\ntmp %s\n' \
          "$$" "$RUN_EPOCH" "$STOP_GRACE" "$REC_PREP_SECS" "$RUN_ROOT" "$TMPROOT"
        [ -z "$own_pg" ] || printf 'pgid %s\n' "$own_pg"; } > "$t" 2>/dev/null \
-     && chmod 600 "$t" 2>/dev/null && rm -f "$RUN_ROOT/$RUN_RECORD.incomplete" 2>/dev/null \
-     && mv -f "$t" "$RUN_ROOT/$RUN_RECORD" 2>/dev/null; then
+     && chmod 600 "$t" 2>/dev/null \
+     && mv -f "$t" "$RUN_ROOT/$RUN_RECORD" 2>/dev/null; then   # row-publish-first
+    # An earlier run's incomplete marker goes only once this record has replaced that run's: removed
+    # first, a publication that then failed would leave the earlier record looking complete.
+    rm -f "$RUN_ROOT/$RUN_RECORD.incomplete" 2>/dev/null
+    if [ -e "$RUN_ROOT/$RUN_RECORD.incomplete" ] || [ -L "$RUN_ROOT/$RUN_RECORD.incomplete" ]; then
+      printf 'selfcheck: NOTE — an earlier run'"'"'s %s.incomplete could not be removed, so `--stop` will not call this run clean\n' "$RUN_RECORD"
+    fi
     REC_OK=1; return 0
   fi
   rm -f "$t" 2>/dev/null
@@ -2479,8 +2487,13 @@ _rec_descendants() {
 # _rec_drop — remove the record on a clean exit, if it is still this run's. A CANCELLED run keeps
 # it: whatever it left behind is what a later `--stop` sweeps.
 _rec_drop() {
+  local rc=0
   [ -f "$RUN_ROOT/$RUN_RECORD" ] && [ ! -L "$RUN_ROOT/$RUN_RECORD" ] || return 0
-  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked
+  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD" || rc=$?   # row-rec-drop-locked
+  # 3 is a record that is no longer this run's, left to whoever wrote it; anything else is a removal
+  # that failed, which leaves a record nothing is running behind.
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] \
+    || printf 'selfcheck: NOTE — the run record %s could not be removed on the way out; `--stop` will find it and sweep what is left\n' "$RUN_RECORD"
   return 0
 }
 # _rec_ours <file> — <file> is still this run's record: a regular file whose first three lines name

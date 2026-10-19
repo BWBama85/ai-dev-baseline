@@ -420,13 +420,20 @@ if [ "$MODE" = mutation ]; then
     '       if false; then   # row-incomplete-alone' \
     'a lone incomplete marker is never read as no run'
   shmutant_mut "rec-drop-checks-unlocked" \
-    '  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
-    '  _rec_ours "$RUN_ROOT/$RUN_RECORD" && _rec_held adb_record_remove "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
+    '  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD" || rc=$?   # row-rec-drop-locked' \
+    '  { _rec_ours "$RUN_ROOT/$RUN_RECORD" && _rec_held adb_record_remove "$RUN_ROOT/$RUN_RECORD"; } || rc=$?   # row-rec-drop-locked' \
     'a pool registered while the run removes its record on the way out is never lost'
   shmutant_mut "rec-drop-unheld" \
-    '  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
-    '  adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD"   # row-rec-drop-locked' \
+    '  _rec_held adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD" || rc=$?   # row-rec-drop-locked' \
+    '  adb_record_remove --if _rec_ours "$RUN_ROOT/$RUN_RECORD" || rc=$?   # row-rec-drop-locked' \
     'a signal while the run removes its record on the way out leaves neither the record nor its lock'
+  shmutant_mut "publish-clears-marker-first" \
+    '     && mv -f "$t" "$RUN_ROOT/$RUN_RECORD" 2>/dev/null; then   # row-publish-first' \
+    '     && rm -f "$RUN_ROOT/$RUN_RECORD.incomplete" 2>/dev/null && mv -f "$t" "$RUN_ROOT/$RUN_RECORD" 2>/dev/null; then   # row-publish-first' \
+    "a publication that fails keeps the earlier run's incomplete marker"
+  shmutant_mut "unlock-failure-swallowed" \
+    '  if ! adb_record_unlock "$RUN_ROOT/$RUN_RECORD"; then   # row-write-unlock' '  if false; then   # row-write-unlock' \
+    'a record lock the run cannot release is reported'
   shmutant_mut "write-unlocked" \
     '  adb_record_lock "$RUN_ROOT/$RUN_RECORD" 200 || { REC_WHY="its lock could not be had in 10s"; return 1; }   # row-write-locked' \
     '  :   # row-write-locked' \
@@ -481,6 +488,10 @@ if [ "$MODE" = mutation ]; then
     '  [ -n "$holder" ] && ! adb_pid_gone "$holder" && return 1   # update-lock-needs-proof' \
     '  :   # update-lock-needs-proof' \
     'a record lock whose holder is alive is never taken over, however old it is'
+  shmutant_mut "record-lock-no-deadline" \
+    '    [ -n "$dl" ] && [ -n "${BASH_MONOSECONDS:-}" ] && [ "$BASH_MONOSECONDS" -ge "$dl" ] && return 1   # record-lock-deadline' \
+    '    :   # record-lock-deadline' \
+    'a wait for the record lock ends at its deadline, however slow each attempt is'
   shmutant_mut "record-lock-parent-holds" \
     '  local f="$1" tries="${2:-100}" n=0 me="${BASHPID:-$$}"   # record-lock-holder' \
     '  local f="$1" tries="${2:-100}" n=0 me="$$"   # record-lock-holder' \
@@ -2130,6 +2141,11 @@ rm -f "$_pr/rec.incomplete"; ln -s "$_victim" "$_pr/rec.incomplete"
 ( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "/" ) >/dev/null 2>&1
 [ "$(cat "$_victim" 2>/dev/null)" = keep ] && ok || bad "an incomplete marker is never written through a symlink at its name"
 rm -f "$_pr/rec.incomplete"
+# A FIFO at its name is refused without being opened, which would block until something read it.
+mkfifo "$_pr/rec.incomplete"
+_fi=0; adb_run_bounded 15 1 "$BASH" -c '. "$1/scripts/lib/common.sh"; . "$1/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$2" check_register_pool /' _ "$ROOT" "$_pr/rec" >/dev/null 2>&1 || _fi=$?
+[ "$_fi" -ne 124 ] && [ -p "$_pr/rec.incomplete" ] && ok || bad "12.4: a FIFO at the marker's name is refused, never opened (rc $_fi)"
+rm -f "$_pr/rec.incomplete"
 # …and a registration goes through the record's ONE locked writer: while another writer holds the
 # lock, it does not slip a line in beside it — it waits, and failing that marks the record.
 rm -f "$_pr/rec.incomplete"; mkdir "$_pr/rec.lock" && : > "$_pr/rec.lock/.adb-excl"
@@ -2577,6 +2593,27 @@ _s17="$("$BASH" -c '. "$1"
   adb_record_append "$2" after 20; echo "$?"' _ "$_cl" "$_lk/rec" "$_lk/held")"
 [ "$_s17" = 0 ] && grep -qx after "$_lk/rec" && ok \
   || bad "a record lock held by a subshell killed while its parent lives is taken over (rc ${_s17:-none})"
+# …and a wait for it ends at its deadline, not after its count of tries: every attempt reads the
+# lock's age, and here each read takes 0.15s, so a hundred tries would take far longer than a second.
+_date_real="$(command -v date)"
+mkdir -p "$_sb/dateslow"
+cat > "$_sb/dateslow/date" <<STUB
+#!/usr/bin/env bash
+sleep 0.15
+exec "$_date_real" "\$@"
+STUB
+chmod +x "$_sb/dateslow/date"
+rm -f "$_lk/held"
+"$BASH" -c '. "$1"; adb_record_lock "$2" || exit 1; : > "$3"; while :; do sleep 0.1; done' _ "$_cl" "$_lk/rec" "$_lk/held" &
+_h17=$!
+_dl=$(( BASH_MONOSECONDS + 20 ))
+until [ -e "$_lk/held" ] || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.05; done
+_t17="$BASH_MONOSECONDS"; _a17=0
+PATH="$_sb/dateslow:$PATH" "$BASH" -c '. "$1"; adb_record_append "$2" slow 100 "$(( BASH_MONOSECONDS + 1 ))"' _ "$_cl" "$_lk/rec" || _a17=$?
+_e17=$(( BASH_MONOSECONDS - _t17 ))
+[ "$_a17" -eq 1 ] && [ "$_e17" -le 4 ] && ok \
+  || bad "a wait for the record lock ends at its deadline, however slow each attempt is (rc $_a17, ${_e17}s)"
+kill -KILL "$_h17" 2>/dev/null; wait "$_h17" 2>/dev/null
 
 # --- 12.18 a cancelled run whose record cannot be read back marks it incomplete -------------------
 # A cancelled runner reads its own record for the pools harnesses registered, and seeds every group
@@ -2721,6 +2758,45 @@ ADB_TEST_ONCE="$FXS/ctl/once" PATH="$_sb/headterm:$PATH" ADB_STUB_CTL="$FXS/ctl"
 [ ! -e "$FXS/ctl/once" ] && ok || bad "12.23: the TERM was never sent from inside the removal"
 [ ! -e "$FXS/.selfcheck-run.lock" ] && [ ! -e "$FXS/.selfcheck-run" ] && ok \
   || bad "a signal while the run removes its record on the way out leaves neither the record nor its lock: $(cat "$FXS/stop-run.out" 2>/dev/null)"
+reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
+
+# --- 12.24 a publication that fails keeps the earlier run's incomplete marker ---------------------
+# A new run replaces a record whose runner has exited, and only once its own record is in place does
+# that run's marker go. Here the rename fails: the earlier record must still be there, and still
+# marked, or a later stop would call a run it could not account for clean.
+mkdir -p "$_sb/mvfail"
+cat > "$_sb/mvfail/mv" <<STUB
+#!/usr/bin/env bash
+case "\${*: -1}" in */.selfcheck-run) [ -f "\$ADB_TEST_ONCE" ] && { rm -f "\$ADB_TEST_ONCE"; exit 1; } ;; esac
+exec "$_mv_real" "\$@"
+STUB
+chmod +x "$_sb/mvfail/mv"
+reset_ctl "$FXS"
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$work/no-such-root" | synth_record "$FXS"
+: > "$FXS/.selfcheck-run.incomplete"; : > "$FXS/ctl/once"
+OUT="$(ADB_TEST_ONCE="$FXS/ctl/once" PATH="$_sb/mvfail:$PATH" ADB_STUB_CTL="$FXS/ctl" bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 2>&1)"
+[ ! -e "$FXS/ctl/once" ] && ok || bad "12.24: the publication's rename never ran"
+[ -e "$FXS/.selfcheck-run.incomplete" ] && grep -q "^pid $_deadp\$" "$FXS/.selfcheck-run" 2>/dev/null && ok \
+  || bad "a publication that fails keeps the earlier run's incomplete marker: $OUT"
+reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
+
+# --- 12.25 a record lock the run cannot release is reported ---------------------------------------
+# Every later write to the record waits on a lock left held, so a release that fails is said, never
+# swallowed. Here the run's first release, after it publishes its record, is made to fail.
+_rmdir_real="$(command -v rmdir)"
+mkdir -p "$_sb/rmdirfail"
+cat > "$_sb/rmdirfail/rmdir" <<STUB
+#!/usr/bin/env bash
+case "\${*: -1}" in */.selfcheck-run.lock) [ -f "\$ADB_TEST_ONCE" ] && { rm -f "\$ADB_TEST_ONCE"; exit 1; } ;; esac
+exec "$_rmdir_real" "\$@"
+STUB
+chmod +x "$_sb/rmdirfail/rmdir"
+reset_ctl "$FXS"; : > "$FXS/ctl/once"
+OUT="$(ADB_TEST_ONCE="$FXS/ctl/once" PATH="$_sb/rmdirfail:$PATH" ADB_STUB_CTL="$FXS/ctl" bash "$FXS/scripts/selfcheck.sh" --only gates --jobs 1 2>&1)"
+[ ! -e "$FXS/ctl/once" ] && ok || bad "12.25: the release never ran"
+has "$OUT" "lock could not be released" "a record lock the run cannot release is reported"
 reset_ctl "$FXS"; rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete" "$FXS/.selfcheck-run.lock"
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------

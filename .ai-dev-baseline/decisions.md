@@ -10550,7 +10550,16 @@ survive is the part a later reader needs.
              - §12.17's subshell case runs under the suite's own bash, since a stock macOS `bash` is
                3.2 and has no `BASHPID`.
              Its first finding, the runner's and recorded groups' start windows, is #561's and is
-             carried.
+             carried. Pass 2 (6 REQUIRED, two of them #561's again) found:
+             - The marker's create could still open a FIFO planted after its check. It is now made
+               beside its name and `ln`ed into place, which never opens what holds the name. That
+               race has no fixture: nothing can plant a FIFO between two builtins on cue. §12.4 pins
+               the refusal of one already there.
+             - A cancelled runner's lock wait counted tries, and each try costs more than its 50 ms
+               sleep, so it could outrun the run's `prep`. The lock now takes a deadline too.
+             - A failed publication removed the earlier run's marker before its rename. The marker
+               now goes only after the rename.
+             - A failed unlock, and a failed exit-time removal, are now said rather than swallowed.
              **CI's first run was red for a reason the machine gave.** §12.11 dated its synthetic run
              two hours back, and "started during the run" then took in a runner booted minutes
              earlier. On the ubuntu-26.04 runner, the user's own `systemd --user` manager (pid 1344) has
@@ -10631,7 +10640,7 @@ survive is the part a later reader needs.
              check, start dating, the status recheck, the `^` refusal, the kept incomplete record, the
              temp-root removal (retired with it after pass 3), the cancel-time completeness check, and registration's `/` and
              missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
-             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 317 s
+             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 335 s
              locally on 2026-10-19, after PR review round 1, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
              limit is 10 minutes. §12 also covers a clean stop whose bound is raised
              to the run's grace, an incomplete record answering 4, a refused registration marking the
@@ -10642,9 +10651,9 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 60 rows, one per assertion
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 63 rows, one per assertion
              that matters, four in `check-lib.sh` (registration and its marker) and three in `common.sh` (the record's
-             writer, and its lock's take-over: holder alive, holder a killed subshell): the grace wait and
+             writer, and its lock's take-over: holder alive, holder a killed subshell, a deadline): the grace wait and
              `_cleanup`'s recording;
              the record's live-run, directory and unknown-key refusals; each ownership rule removed
              alone (temp root, pool, group, memory, the first look, descent, recorded groups); the
@@ -10659,13 +10668,14 @@ survive is the part a later reader needs.
              failed read of the pools, or of a record already there, ignored; a cancel inside the
              record's lock, or inside the run's own removal, handled at once; a new run publishing
              outside the lock; a clean verdict given before the removal; a marker counted only as a
-             regular file, or written through a symlink; a registration that
+             regular file, written through a symlink, or removed before the publication that replaces
+             it; a failed unlock swallowed; a registration that
              writes nothing, and a refusal left unmarked. Each must fail on its own witness.
 - placement: `scripts/selfcheck.sh` (the stop block, `_rec_write`/`_rec_group`/`_rec_drop`, the
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 60 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 63 `--mutation` rows) · `.gitignore` ·
              · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`,
              `adb_mark_present`, and the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`

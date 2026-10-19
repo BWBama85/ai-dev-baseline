@@ -4433,10 +4433,12 @@ adb_rmdir_excl() {
   rmdir "$1" 2>/dev/null
 }
 
-# adb_record_lock <file> [tries] / adb_record_unlock <file> — the lock every writer of
+# adb_record_lock <file> [tries] [deadline] / adb_record_unlock <file> — the lock every writer of
 # `selfcheck.sh`'s run record (#551) takes: `<file>.lock`, a lock of the update lock's kind — an
 # owner token, taken (`_adb_take_lock`) and released (`_adb_release_lock`) by the same code — tried
-# <tries> times 50ms apart (100 when not given). A writer holds it for one append or one removal, so
+# <tries> times 50ms apart (100 when not given), and never past <deadline>, a BASH_MONOSECONDS value
+# (each attempt costs more than its sleep, so a count of tries is not a time). A writer holds it for
+# one append or one removal, so
 # after 30s it is taken over, by the update lock's own rule (`_adb_break_lock`): only once its holder
 # is provably gone. A holder that is merely slow keeps it, and the writers waiting on it fail and say
 # so. The holder is the shell that took it — BASHPID, since a subshell's `$$` is its parent's, which
@@ -4444,9 +4446,11 @@ adb_rmdir_excl() {
 _ADB_RECORD_TOKEN=""
 adb_record_lock() {
   local f="$1" tries="${2:-100}" n=0 me="${BASHPID:-$$}"   # record-lock-holder
+  local dl="${3:-}"
   case "$tries" in ''|*[!0-9]*) tries=100 ;; esac
   until _adb_take_lock "$f.lock" "$me" || _adb_break_lock "$f.lock" 30 "$me"; do
     n=$((n + 1)); [ "$n" -lt "$tries" ] || return 1
+    [ -n "$dl" ] && [ -n "${BASH_MONOSECONDS:-}" ] && [ "$BASH_MONOSECONDS" -ge "$dl" ] && return 1   # record-lock-deadline
     sleep 0.05
   done
   _ADB_RECORD_TOKEN="$_ADB_LOCK_TOOK"
@@ -4458,26 +4462,33 @@ adb_record_unlock() {
   return 0
 }
 
-# adb_mark_present <path> — make <path> an existing regular file, a marker, without ever writing
-# through something else at that name: a symlink there is refused, not followed (a redirect would
-# truncate whatever it points at), and so is a FIFO, which a redirect would block on, or a directory.
-# Created with noclobber, so a symlink planted between the check and the create fails it too.
-# 0 the marker is there · 1 it is not, or something other than a regular file holds its name.
+# adb_mark_present <path> — make <path> an existing regular file, a marker, without ever opening
+# something else at that name: a symlink there is refused, not followed (a redirect would truncate
+# whatever it points at), and so is a FIFO, which a redirect would block on, or a directory. The
+# marker is made beside its name and LINKED into place, because `ln` either creates the name or fails
+# on whatever holds it, and never opens it — a redirect, noclobber or not, opens a FIFO planted after
+# the check and blocks there. 0 the marker is there · 1 it is not, or something else holds its name.
 adb_mark_present() {
+  local t
   [ -L "$1" ] && return 1
   if [ -e "$1" ]; then [ -f "$1" ]; return; fi
-  ( set -C; : > "$1" ) 2>/dev/null && return 0
-  [ -f "$1" ] && [ ! -L "$1" ]
+  t="$(mktemp "$1.XXXXXX" 2>/dev/null)" || return 1
+  if ln "$t" "$1" 2>/dev/null && [ -d "$1" ]; then
+    rm -f "$1/${t##*/}" 2>/dev/null   # a directory appeared at the name, and ln linked INTO it
+  fi
+  rm -f "$t" 2>/dev/null
+  [ -f "$1" ] && [ ! -L "$1" ]   # mark-linked
 }
 
-# adb_record_append <file> <line> [tries] — append one line to an EXISTING record under its lock. Its
+# adb_record_append <file> <line> [tries] [deadline] — append one line to an EXISTING record under its
+# lock (taken as `adb_record_lock` takes it). Its
 # existence is checked INSIDE the lock, so an append never recreates a record that was removed (a
 # removal takes the same lock, `adb_record_remove`). 0 written · 1 the lock could not be had, the
 # file is gone or not a regular file, or the write failed · 2 written, but the lock could not be
 # released — every later writer will now wait it out, which the caller must be told.
 adb_record_append() {
   local f="$1" line="$2" rc=1
-  adb_record_lock "$f" "${3:-100}" || return 1
+  adb_record_lock "$f" "${3:-100}" "${4:-}" || return 1
   if [ -f "$f" ] && [ ! -L "$f" ]; then
     printf '%s\n' "$line" >> "$f" 2>/dev/null && rc=0
   fi
