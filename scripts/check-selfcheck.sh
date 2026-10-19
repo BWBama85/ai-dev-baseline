@@ -347,9 +347,6 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "stop-ps-status-ignored" \
     '  if [ "$rc" -ne 0 ]; then   # row-ps-status' '  if false; then   # row-ps-status' \
     'a stop whose ps fails says so, even when ps printed a listing'
-  shmutant_mut "stop-start-dated-early" \
-    '  now="$EPOCHSECONDS"   # row-ps-now' '  now="$t0"   # row-ps-now' \
-    'after the runner is KILLed, the stop sends the step it recorded a TERM, and its cleanup runs'
   shmutant_mut "stop-recheck-folded" \
     '    elif adb_pid_gone "$p"; then' '    else' \
     'a stop whose recheck of a missing directory cannot be read answers 4'
@@ -446,6 +443,10 @@ if [ "$MODE" = mutation ]; then
     "      1) printf 'selfcheck --stop: cannot call this clean — the lock on" \
     "      11) printf 'selfcheck --stop: cannot call this clean — the lock on" \
     "a stop that cannot take its record's lock to remove it is never clean"
+  shmutant_mut "drop-unbounded" \
+    '  adb_run_bounded "$STOP_INSPECT" 1 cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
+    '  cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded' \
+    'a record replaced by a FIFO is never waited on'
   shmutant_mut "drop-gone-unreadable" \
     '  [ -e "$1" ] || [ -L "$1" ] || return 0   # row-drop-gone' '  :   # row-drop-gone' \
     'a run that removes its own record as the stop removes it is still stopped clean'
@@ -2648,6 +2649,24 @@ printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\
 stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/mvgone:$PATH" ADB_TEST_ONCE="$FXS/ctl/once"
 [ ! -e "$FXS/ctl/once" ] && ok || bad "12.16: the record was never removed under the stop"
 eq "$STOP_RC" 0 "a run that removes its own record as the stop removes it is still stopped clean: $STOP_OUT"
+# …and a FIFO put where the record was is never waited on: the comparison runs under the lock, and
+# an unbounded read of a FIFO would hold it for as long as nothing wrote there.
+mkdir -p "$_sb/mvfifo"
+cat > "$_sb/mvfifo/mv" <<STUB
+#!/usr/bin/env bash
+case "\${*: -1}" in *.selfcheck-run.lock/owner) [ -f "\$ADB_TEST_ONCE" ] && { rm -f "\$ADB_TEST_ONCE" "$FXS/.selfcheck-run"; mkfifo "$FXS/.selfcheck-run"; } ;; esac
+exec "$_mv_real" "\$@"
+STUB
+chmod +x "$_sb/mvfifo/mv"
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
+: > "$FXS/ctl/once"; _ff=0
+_ffo="$(ADB_TEST_ONCE="$FXS/ctl/once" ADB_SELFCHECK_STOP_SECS=8 ADB_SELFCHECK_STOP_INSPECT_SECS=2 PATH="$_sb/mvfifo:$PATH" \
+  adb_run_bounded 30 1 bash "$FXS/scripts/selfcheck.sh" --stop 2>&1)" || _ff=$?
+[ ! -e "$FXS/ctl/once" ] && ok || bad "12.16: the record was never replaced under the stop"
+[ "$_ff" -eq 4 ] && ok || bad "a record replaced by a FIFO is never waited on (rc $_ff, 124 = it hung): $_ffo"
+rm -rf "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.lock"
 rm -f "$FXS/.selfcheck-run" "$FXS/ctl/once.out"; : > "$FXS/.selfcheck-run.incomplete"
 stop_sc "$FXS"
 eq "$STOP_RC" 4 "a lone incomplete marker is never read as no run: $STOP_OUT"

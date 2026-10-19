@@ -1363,8 +1363,8 @@ _stop_first_line() { local l=""; IFS= read -r l < "$1" 2>/dev/null; _stop_clean 
 
 # _stop_bound — set _SB to the bound for the next read: STOP_INSPECT, cut to what is left of
 # STOP_DEADLINE when one is set (a cancelled runner's `prep`); fails, with INV_ERR, when nothing is.
-# Every read goes through it, and the inventory asks again before it answers, so the allowance a
-# record promises is a deadline the recording cannot outrun.
+# Every read goes through it, and the recording checks it again before each group it writes, so the
+# allowance a record promises is a deadline the recording cannot outrun.
 _stop_bound() {
   _SB="$STOP_INSPECT"
   [ -n "${STOP_DEADLINE:-}" ] || return 0
@@ -1519,7 +1519,7 @@ _stop_whole() {
     case "${INV_STAT[$p]}" in Z*) continue ;; esac
     # The stopper's own children are skipped; the RUNNER's are exactly what its own recording is for.
     [ "${STOP_FOR_RUNNER:-0}" -eq 1 ] || { [ -n "${STOP_DESC[$p]+x}" ] && continue; }
-    [ -n "${INV_START[$p]:-}" ] && [ "${INV_START[$p]}" -lt $(( REC_EPOCH - 2 )) ] && continue
+    [ -n "${INV_START[$p]:-}" ] && [ "${INV_START[$p]}" -lt $(( REC_EPOCH - 2 - STOP_SKEW )) ] && continue
     # It may have ended between the two listings: gone (the kernel's ESRCH), or a zombie, which has
     # no directory left to read and which `kill -0` still answers for. Asked of the kernel and of a
     # bounded ps NOW, never inferred from the earlier snapshot — and a ps that cannot answer is no
@@ -1926,10 +1926,12 @@ _stop_drop() {
   return 1
 }
 # _stop_unchanged <file> — still the bytes this stop read. A record that is GONE counts as unchanged:
-# its runner removes it on a clean exit (`_rec_drop`), and there is then nothing to keep.
+# its runner removes it on a clean exit (`_rec_drop`), and there is then nothing to keep. The
+# comparison is bounded, since it runs under the lock: a FIFO put where the record was would hold
+# that lock for as long as nothing wrote to it.
 _stop_unchanged() {
   [ -e "$1" ] || [ -L "$1" ] || return 0   # row-drop-gone
-  cmp -s "$STOP_DIR/record" "$1" 2>/dev/null
+  adb_run_bounded "$STOP_INSPECT" 1 cmp -s "$STOP_DIR/record" "$1" 2>/dev/null   # row-drop-bounded
 }
 
 # _stop_marked — the incomplete marker is here, in ANY shape: a directory, a FIFO or a dangling link
@@ -1948,7 +1950,7 @@ _stop_unattributed() {
     [ -n "${OWNED[$p]+x}" ] && continue
     _stop_shielded "$p" && continue
     case "${INV_STAT[$p]}" in Z*) continue ;; esac
-    [ -n "${INV_START[$p]:-}" ] && [ "${INV_START[$p]}" -ge $(( REC_EPOCH - 2 )) ] || continue
+    [ -n "${INV_START[$p]:-}" ] && [ "${INV_START[$p]}" -ge $(( REC_EPOCH - 2 - STOP_SKEW )) ] || continue
     _stop_under "${INV_CWD[$p]:-}" "$_ENC" || continue
     if [ "${1:-}" = print ] && [ -z "${STOP_NAMED[$p]+x}" ]; then
       printf 'selfcheck --stop: NOTE — pid=%s pgid=%s works in this checkout and started during the run, but nothing ties it to the run; NOT signalled: %s\n' \

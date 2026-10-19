@@ -10588,6 +10588,15 @@ survive is the part a later reader needs.
              - A record its runner removed on a clean exit counts as unchanged, not as unreadable.
              - The citations of #250 for concurrent runs are gone.
              - The inventory's unwitnessed final deadline check is gone too (pass 4 (f)).
+             Its pass 2 (5 REQUIRED, two #561's):
+             - The removal's comparison runs under the lock, so it is now bounded. A FIFO put where
+               the record was would have held the lock for good.
+             - The start-dating row no longer failed on its witness. Identity is exact now, so the
+               only thing a start estimate still decides is whether a process started during the
+               run. That bound now allows the read's skew, as every other window does: it errs
+               toward naming more and refusing more, never fewer. Dating from after `ps` is then a
+               choice, not a defence, and the row is retired.
+             - The row counts were recounted.
              **CI's first run was red for a reason the machine gave.** §12.11 dated its synthetic run
              two hours back, and "started during the run" then took in a runner booted minutes
              earlier. On the ubuntu-26.04 runner, the user's own `systemd --user` manager (pid 1344) has
@@ -10667,7 +10676,7 @@ survive is the part a later reader needs.
              with `ps -A` refused. The first run of the 36 rows killed 29; the other seven were caught
              only by a sibling assertion, which is what the per-rule assertions in §12.2 fix. Pass 1 of
              the local review added nine more, each for a defence it introduced: the omitted-process
-             check, start dating, the status recheck, the `^` refusal, the kept incomplete record, the
+             check, start dating (retired in PR #560's second review round), the status recheck, the `^` refusal, the kept incomplete record, the
              temp-root removal (retired with it after pass 3), the cancel-time completeness check, and registration's `/` and
              missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
              must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 358 to 437 s
@@ -10681,7 +10690,7 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 69 rows, one per assertion
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 72 rows, one per assertion
              that matters, four in `check-lib.sh` (registration and its marker) and eight in
              `common.sh`: the record's writer; its lock's take-over (holder alive, holder a killed
              subshell, a symlink at its path); its deadline, between attempts and after one; a removal
@@ -10709,7 +10718,7 @@ survive is the part a later reader needs.
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 69 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 72 `--mutation` rows) · `.gitignore` ·
              · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`,
              `adb_mark_present`, and the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
