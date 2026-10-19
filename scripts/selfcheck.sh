@@ -1504,8 +1504,7 @@ _stop_inventory_once() {
   done
   _stop_mark_desc
   _stop_cwds || return 1
-  _stop_whole || return
-  _stop_bound   # the answer is given in time, or not at all
+  _stop_whole
 }
 
 # _stop_whole — the cwd listing names a directory for this process and for every process of this
@@ -1856,7 +1855,8 @@ _stop_read_record() {
 
 # _stop_reread <pid> <epoch> — the record again, mid-stop: the runner records a worker it forked
 # after the stop's first read, and a harness a pool it opened. The same run, or a refusal: a record
-# now naming another run means one started in this checkout during the stop (#250). A record the
+# now naming another run means one started in this checkout during the stop (two runs in one checkout
+# are unsupported; see the concurrency contract above). A record the
 # runner removed on a clean exit leaves the last good read in force.
 _stop_reread() {
   local rc n=0
@@ -1925,7 +1925,12 @@ _stop_drop() {
   printf 'selfcheck --stop: NOTE — could not remove %s; a later --stop will find this run again\n' "$RUN_RECORD"
   return 1
 }
-_stop_unchanged() { cmp -s "$STOP_DIR/record" "$1" 2>/dev/null; }
+# _stop_unchanged <file> — still the bytes this stop read. A record that is GONE counts as unchanged:
+# its runner removes it on a clean exit (`_rec_drop`), and there is then nothing to keep.
+_stop_unchanged() {
+  [ -e "$1" ] || [ -L "$1" ] || return 0   # row-drop-gone
+  cmp -s "$STOP_DIR/record" "$1" 2>/dev/null
+}
 
 # _stop_marked — the incomplete marker is here, in ANY shape: a directory, a FIFO or a dangling link
 # at its name is not a regular file, but it is not an absent marker either.
@@ -2072,6 +2077,8 @@ stop_run() {
          return 4 ;;   # row-clean-changed
       4) printf 'selfcheck --stop: cannot call this clean — %s could not be compared with what this stop read, so it is kept; run --stop again.\n' "$RUN_RECORD"
          return 4 ;;
+      1) printf 'selfcheck --stop: cannot call this clean — the lock on %s could not be had, so it was neither compared nor removed; run --stop again.\n' "$RUN_RECORD"
+         return 4 ;;   # row-clean-unlocked
     esac
     if _stop_marked; then   # row-clean-after-drop
       printf 'selfcheck --stop: cannot call this clean — %s.incomplete appeared while the record was being removed: something of this run could not be recorded\n' "$RUN_RECORD"
@@ -2344,7 +2351,8 @@ _rec_mark_incomplete() {
 # the turn-end gate (`.claude/scripts/precommit-gate.sh`), which runs a short `--only` selfcheck in
 # this checkout while a long one may be running in the background: replacing the long run's record,
 # and then removing it on the way out, would leave that run with no record for `--stop` to find.
-# Two runs in one checkout stay unsupported (#250); this keeps the second from erasing the first.
+# Two runs in one checkout stay unsupported (the concurrency contract above); this keeps the second
+# from erasing the first.
 # A record whose runner HAS exited was left by a run that did not end on its own; replacing it is
 # said, because what that run left is now only findable by working directory.
 #
@@ -2385,7 +2393,7 @@ _rec_publish() {
       return 1
     fi
     if [ -n "$old" ] && [ "$old" != "$$" ] && ! adb_pid_gone "$old"; then
-      REC_WHY="another run (pid $old) is recorded in this checkout and has not provably exited, so this run is not recorded and \`--stop\` cannot find it (#250: two runs in one checkout are not supported)"
+      REC_WHY="another run (pid $old) is recorded in this checkout and has not provably exited, so this run is not recorded and \`--stop\` cannot find it (two runs in one checkout are not supported)"
       return 1
     fi
     [ -n "$old" ] && [ "$old" != "$$" ] \
@@ -2449,20 +2457,20 @@ _rec_descendants() {
   local pid g WHY
   local -A seeds=() first=()
   local -a pools=()
-  local rec="" line rrc=0
+  local line rrc=0 snap="$WORK/record.cancel"
   if [ -f "$RUN_ROOT/$RUN_RECORD" ] && [ ! -L "$RUN_ROOT/$RUN_RECORD" ]; then
-    rec="$(adb_run_bounded "$REC_INSPECT_SECS" 1 head -c 1048577 "$RUN_ROOT/$RUN_RECORD" 2>/dev/null)" || rrc=$?
-    # A read that failed may have stopped short of a `pool` line, and a pool missed here is a pool
-    # whose workers nothing below seeds: the record says so. So does one past the 1 MiB the stop
-    # reads (`_stop_read_record`), whose last line would be cut into a shorter path.
-    [ "$rrc" -eq 0 ] || _rec_mark_incomplete "the run record could not be read whole as the run was cancelled, so a pool it names may have been missed"   # row-pool-read
-    if [ "$(LC_ALL=C; printf '%s' "${#rec}")" -gt 1048576 ]; then   # row-pool-read-size
-      _rec_mark_incomplete "the run record is past the 1 MiB a stop reads, so its pools could not all be read as the run was cancelled"
-      rec=""
+    adb_run_bounded "$REC_INSPECT_SECS" 1 head -c 1048577 "$RUN_ROOT/$RUN_RECORD" > "$snap" 2>/dev/null || rrc=$?
+    # The pools are read from a snapshot that is WHOLE (`adb_bytes_whole`: within the 1 MiB a stop
+    # reads, final newline, no NUL) or not at all: a read that failed, ran long or was cut mid-line
+    # may have stopped short of a `pool` line, or cut one into a shorter path — a broader directory,
+    # whose unrelated processes would then be seeded as the run's.
+    if [ "$rrc" -ne 0 ] || ! adb_bytes_whole "$snap" 1048576; then   # row-pool-read
+      _rec_mark_incomplete "the run record could not be read whole as the run was cancelled, so the pools it names were not used"
+    else   # row-pool-read-discard
+      while IFS= read -r line; do
+        case "$line" in 'pool '*) pools+=("${line#pool }") ;; esac
+      done < "$snap"
     fi
-    while IFS= read -r line; do
-      case "$line" in 'pool '*) pools+=("${line#pool }") ;; esac
-    done <<< "$rec"
   fi
   # THE STOP'S OWN INVENTORY, taken from the runner's side: the same three bounded reads and the same
   # proof that they are whole, never a weaker copy of it. The record's fields are this run's; the

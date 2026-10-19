@@ -10483,10 +10483,10 @@ survive is the part a later reader needs.
              case (§12.4).
              (e) A pid the stop depends on (the runner, a recorded group's leader, anything it found)
              that BOTH listings leave out is asked of the kernel too. §12.10 has the case.
-             (f) Every read in a cancelled runner's recording is cut to what is left of its deadline,
-             and the inventory checks the deadline once more before it answers. This has no mutation
-             row: making the deadline expire inside an inventory needs reads that each take nearly
-             their whole bound, which no fixture here stages reliably.
+             (f) Every read in a cancelled runner's recording is cut to what is left of its deadline.
+             The inventory also checked the deadline once more before answering. That check had no
+             witness, and the recording loop's per-group check already covers the time after the
+             last read, so PR #560's second review round removed it.
              (g) `ps` elapsed times are range-checked, the record is read through a bounded `head`,
              the help text says a fifth (not a quarter) of the inspection bound, and the incident
              narrative left in comments was trimmed.
@@ -10542,8 +10542,8 @@ survive is the part a later reader needs.
              - A new run's decision about a record already there, and its publication, hold the
                record's lock too (`_rec_write`). That way a stop's locked comparison can never be
                followed by removal of a record published in between. This is the toctou sibling
-               first deferred to #250, fixed instead: it needs a stop and a new run, not two
-               concurrent runs.
+               first deferred as an unsupported concurrent run, fixed instead: it needs a stop and a
+               new run, not two concurrent runs.
              - The run's own removal on the way out is a critical section of the lock like every
                append (`_rec_held`). A signal while the run is already exiting only sets its status.
              - The fixture's cleanup reads authorize nothing when `ps` fails.
@@ -10580,6 +10580,14 @@ survive is the part a later reader needs.
              - The publication checks its header write.
              - A cancelled run does not read a record past 1 MiB in part.
              - The marker's FIFO race has its fixture (above).
+             Its local review pass 1 (6 REQUIRED, one #561's):
+             - A cancelled run reads its pools from a snapshot that is whole (`adb_bytes_whole`) or
+               not at all. A failed read used to be parsed anyway, and a cut `pool` line names a
+               broader directory.
+             - A removal that could not take the lock answers 4, not clean.
+             - A record its runner removed on a clean exit counts as unchanged, not as unreadable.
+             - The citations of #250 for concurrent runs are gone.
+             - The inventory's unwitnessed final deadline check is gone too (pass 4 (f)).
              **CI's first run was red for a reason the machine gave.** §12.11 dated its synthetic run
              two hours back, and "started during the run" then took in a runner booted minutes
              earlier. On the ubuntu-26.04 runner, the user's own `systemd --user` manager (pid 1344) has
@@ -10594,9 +10602,10 @@ survive is the part a later reader needs.
                removed its temp root, and after (e) the marker it leaves still answers 4. Three reads
                whose rows are compared exactly, so a failed read can only lose rows, never forge a
                match.
-             - Deferred: a run started at the same instant as another to #250. The runner's and
-               recorded groups' start windows to #561, which the owner chose to file rather than fix
-               here. With a recorded group's leader gone, a reused group number can claim a process
+             - Deferred: a run started at the same instant as another, as the unsupported concurrent
+               run it is (later fixed anyway, below; the sweep cited #250, which is about run data on
+               fixed `/tmp` paths and tracks no concurrency). The runner's and recorded groups' start
+               windows to #561, which the owner chose to file rather than fix here. With a recorded group's leader gone, a reused group number can claim a process
                working in the checkout.
              **An incomplete record is never clean.** A worker the runner could not record, or a pool
              `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
@@ -10611,7 +10620,8 @@ survive is the part a later reader needs.
              That is #547, and until it lands a stop of a run with live mutation pools ends `1`, which
              is the truth. shmutant's freeze-then-kill gap is upstream (BWBama85/shmutant#47); the
              stop removes such a tree but cannot prevent it. Two concurrent runs in one checkout stay
-             unsupported (#250). The runner and each recorded group are still identified by a start
+             unsupported (the concurrency contract in `selfcheck.sh`'s header; no issue tracks
+             them). The runner and each recorded group are still identified by a start
              window against the record's own times, and a leaderless recorded group can claim a
              process working in the checkout (#561). On Linux a process of this user whose working
              directory the kernel will not show, started during the run, makes the stop answer 4 (CI's

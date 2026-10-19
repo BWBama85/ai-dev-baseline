@@ -442,6 +442,13 @@ if [ "$MODE" = mutation ]; then
     "      3) printf 'selfcheck --stop: cannot call this clean — %s changed" \
     "      33) printf 'selfcheck --stop: cannot call this clean — %s changed" \
     'a stop whose record changed after its last look is never clean'
+  shmutant_mut "clean-over-unlocked" \
+    "      1) printf 'selfcheck --stop: cannot call this clean — the lock on" \
+    "      11) printf 'selfcheck --stop: cannot call this clean — the lock on" \
+    "a stop that cannot take its record's lock to remove it is never clean"
+  shmutant_mut "drop-gone-unreadable" \
+    '  [ -e "$1" ] || [ -L "$1" ] || return 0   # row-drop-gone' '  :   # row-drop-gone' \
+    'a run that removes its own record as the stop removes it is still stopped clean'
   shmutant_mut "clean-over-late-marker" \
     '    if _stop_marked; then   # row-clean-after-drop' '    if false; then   # row-clean-after-drop' \
     'a stop whose record is marked incomplete while it is removed is never clean'
@@ -452,12 +459,15 @@ if [ "$MODE" = mutation ]; then
   # Every read of the record the RUN makes keeps its status: a cancelled run's read of its pools, and
   # a starting run's read of a record already there.
   shmutant_mut "pool-read-cut" \
-    '    if [ "$(LC_ALL=C; printf '"'"'%s'"'"' "${#rec}")" -gt 1048576 ]; then   # row-pool-read-size' \
-    '    if false; then   # row-pool-read-size' \
+    '    if [ "$rrc" -ne 0 ] || ! adb_bytes_whole "$snap" 1048576; then   # row-pool-read' \
+    '    if [ "$rrc" -ne 0 ]; then   # row-pool-read' \
     'a cancelled run whose record is past what a stop reads marks it incomplete'
+  shmutant_mut "pool-read-parsed" \
+    '    else   # row-pool-read-discard' '    fi; if true; then   # row-pool-read-discard' \
+    'a record read that fails is never used, so a cut pool line claims nothing'
   shmutant_mut "pool-read-unmarked" \
-    '    [ "$rrc" -eq 0 ] || _rec_mark_incomplete "the run record could not be read whole as the run was cancelled, so a pool it names may have been missed"   # row-pool-read' \
-    '    :   # row-pool-read' \
+    '    if [ "$rrc" -ne 0 ] || ! adb_bytes_whole "$snap" 1048576; then   # row-pool-read' \
+    '    if false; then   # row-pool-read' \
     'a cancelled run whose record cannot be read back marks it incomplete'
   shmutant_mut "cancel-inside-the-lock" \
     '  if [ "$REC_HOLD" -eq 1 ]; then REC_SIG="$1"; return 0; fi   # row-sig-deferred' \
@@ -2235,6 +2245,7 @@ printf '%s\n' "$_good" | synth_record "$FXS"
 _sb="$work/stop-stubs"; rm -rf "$_sb"; mkdir -p "$_sb/psfail" "$_sb/psnoself" "$_sb/pshang" "$_sb/cwdfail" "$_sb/cwdpart"
 _ps_real="$(command -v ps)"; _find_real="$(command -v find)"
 _lsof_real="$(command -v lsof || printf /usr/sbin/lsof)"
+_mv_real="$(command -v mv)"; _cmp_real="$(command -v cmp)"; _head_real="$(command -v head)"
 printf '#!/bin/sh\n"%s" "$@"\necho "ps: operation not permitted" >&2\nexit 1\n' "$_ps_real" > "$_sb/psfail/ps"
 printf '#!/bin/sh\nexit 0\n' > "$_sb/psnoself/ps"
 printf '#!/bin/sh\nexec sleep 60\n' > "$_sb/pshang/ps"
@@ -2547,7 +2558,6 @@ reset_ctl "$FXS"; rm -f "$FXS/.selfcheck-run"
 # marker left with no record still answers 4, never "no run".
 reset_ctl "$FXS"
 _t16="$work/t16"; mkdir -p "$_t16"
-_cmp_real="$(command -v cmp)"; _head_real="$(command -v head)"
 mkdir -p "$_sb/cmpappend"
 cat > "$_sb/cmpappend/cmp" <<STUB
 #!/usr/bin/env bash
@@ -2610,6 +2620,34 @@ for _ck in cmpchanged cmperr; do
     has "$STOP_OUT" "could not be compared" "a stop that cannot compare its record says so, never that it changed"
   fi
 done
+# A removal whose lock cannot be had compares nothing, so it is no clean verdict either.
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
+rm -f "$FXS/ctl/held16"
+"$BASH" -c '. "$1"; adb_record_lock "$2" || exit 1; : > "$3"; while :; do sleep 0.1; done' _ "$FXS/scripts/lib/common.sh" "$FXS/.selfcheck-run" "$FXS/ctl/held16" &
+_h16=$!
+_dl=$(( BASH_MONOSECONDS + 20 ))
+until [ -e "$FXS/ctl/held16" ] || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.05; done
+stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8
+eq "$STOP_RC" 4 "a stop that cannot take its record's lock to remove it is never clean: $STOP_OUT"
+kill -KILL "$_h16" 2>/dev/null; wait "$_h16" 2>/dev/null; rm -rf "$FXS/.selfcheck-run.lock"
+# …but a record its runner removed on a clean exit, just before the stop took the lock, is nothing to
+# keep: the stop is clean. Here the `mv` that takes the lock removes the record first.
+mkdir -p "$_sb/mvgone"
+cat > "$_sb/mvgone/mv" <<STUB
+#!/usr/bin/env bash
+case "\${*: -1}" in *.selfcheck-run.lock/owner) [ -f "\$ADB_TEST_ONCE" ] && { rm -f "\$ADB_TEST_ONCE"; rm -f "$FXS/.selfcheck-run"; } ;; esac
+exec "$_mv_real" "\$@"
+STUB
+chmod +x "$_sb/mvgone/mv"
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t16" && pwd -P)" "$_deadp" | synth_record "$FXS"
+: > "$FXS/ctl/once"
+stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/mvgone:$PATH" ADB_TEST_ONCE="$FXS/ctl/once"
+[ ! -e "$FXS/ctl/once" ] && ok || bad "12.16: the record was never removed under the stop"
+eq "$STOP_RC" 0 "a run that removes its own record as the stop removes it is still stopped clean: $STOP_OUT"
 rm -f "$FXS/.selfcheck-run" "$FXS/ctl/once.out"; : > "$FXS/.selfcheck-run.incomplete"
 stop_sc "$FXS"
 eq "$STOP_RC" 4 "a lone incomplete marker is never read as no run: $STOP_OUT"
@@ -2733,7 +2771,30 @@ if plain_launch "$FXS"; then
   reap_runner
   [ -e "$FXS/.selfcheck-run.incomplete" ] && ok \
     || bad "a cancelled run whose record is past what a stop reads marks it incomplete: $(cat "$FXS/stop-run.out" 2>/dev/null) [$(ls -la "$FXS"/.selfcheck-run* 2>&1 | tr '\n' ' ')] [$(head -c 300 "$FXS/.selfcheck-run" 2>&1 | tr '\n' '|')]"
-  has "$(cat "$FXS/stop-run.out" 2>/dev/null)" "past the 1 MiB a stop reads" "12.18: ...and says why"
+  has "$(cat "$FXS/stop-run.out" 2>/dev/null)" "could not be read whole" "12.18: ...and says why"
+else
+  bad "12.18: the plain run never enrolled"; reap_runner
+fi
+reset_ctl "$FXS"; rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
+# …and a read that fails is not USED either: here it prints the record with its `pool` line cut short,
+# into a directory where an unrelated process works, and then fails. Parsed, that cut line names the
+# broader directory, and the unrelated process's group would be recorded as the run's.
+_t18="$work/t18"; mkdir -p "$_t18/owned" "$_t18/other"; _t18p="$(cd -P "$_t18" && pwd -P)"
+mkdir -p "$_sb/headcut"
+cat > "$_sb/headcut/head" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" -c 1048577 "*) "$_head_real" "\$@" | sed 's#/owned\$##'; exit 1 ;; esac
+exec "$_head_real" "\$@"
+STUB
+chmod +x "$_sb/headcut/head"
+if PATH="$_sb/headcut:$PATH" plain_launch "$FXS"; then
+  ( cd "$_t18/other" || exit; set -m; sleep 300 & printf 'other18 %s %s %s\n' "$!" "$!" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked" )
+  _o18="$(awk '$1 == "other18" { print $2 }' "$FXS/ctl/canary.leaked")"
+  printf 'pool %s/owned\n' "$_t18p" >> "$FXS/.selfcheck-run"
+  kill -TERM "$STOP_RUNNER" 2>/dev/null
+  reap_runner
+  if [ -n "$_o18" ] && [ "$(stub_state "$_o18" "$_o18")" = alive ] && ! grep -q "^group $_o18 " "$FXS/.selfcheck-run" 2>/dev/null; then ok
+  else bad "a record read that fails is never used, so a cut pool line claims nothing (pid ${_o18:-none}): $(grep '^group' "$FXS/.selfcheck-run" 2>/dev/null | tr '\n' ' ')"; fi
 else
   bad "12.18: the plain run never enrolled"; reap_runner
 fi
@@ -2775,7 +2836,6 @@ reset_ctl "$FXS"; rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
 # gives up and marks the whole record incomplete, and its exit leaves the lock held. Here the `mv`
 # that publishes the lock's owner sends the runner its TERM, so the signal lands inside the lock
 # every time.
-_mv_real="$(command -v mv)"
 mkdir -p "$_sb/mvterm"
 cat > "$_sb/mvterm/mv" <<STUB
 #!/usr/bin/env bash
