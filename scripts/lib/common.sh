@@ -4411,6 +4411,28 @@ adb_rmdir_excl() {
   rmdir "$1" 2>/dev/null
 }
 
+# adb_record_append <file> <line> [tries] — append one line to an EXISTING file under its lock
+# (`<file>.lock`, taken with adb_mkdir_excl, tried <tries> times 50ms apart; 100 when not given).
+# The ONE writer for `selfcheck.sh`'s run record (#551): the runner and every harness registering a
+# pool append to it, pool paths may hold spaces, and two unserialized appends could splice into lines
+# that are each valid and each wrong. The file's existence is checked INSIDE the lock, so an append
+# never recreates a record its run has already removed. 0 written · 1 the lock could not be had, the
+# file is gone or not a regular file, or the write failed. Bash-3.2 parseable, like the rest of this
+# file: a counter, never BASH_MONOSECONDS.
+adb_record_append() {
+  local f="$1" line="$2" tries="${3:-100}" n=0 rc=1
+  case "$tries" in ''|*[!0-9]*) tries=100 ;; esac
+  until adb_mkdir_excl "$f.lock"; do
+    n=$((n + 1)); [ "$n" -lt "$tries" ] || return 1
+    sleep 0.05
+  done
+  if [ -f "$f" ] && [ ! -L "$f" ]; then
+    printf '%s\n' "$line" >> "$f" 2>/dev/null && rc=0
+  fi
+  adb_rmdir_excl "$f.lock"
+  return "$rc"
+}
+
 # --- untrusted third-party text (#214) ---------------------------------------
 #
 # Wrap text that came from OUTSIDE the run — an issue body, a review thread, a CI log, a vendor

@@ -392,10 +392,9 @@ check_register_pool() {
   d="$1"
   case "$d" in /) ;; */) d="${d%/}" ;; esac
   case "$d" in /*) ;; *) d="$PWD/$d" ;; esac
-  if [ ! -f "$ADB_SELFCHECK_RECORD" ] || [ -L "$ADB_SELFCHECK_RECORD" ]; then
-    why="the run record $ADB_SELFCHECK_RECORD is gone or is not a regular file"
-  else
-    case "$d" in
+  # A record that has gone is refused by the writer itself (`adb_record_append` checks it inside the
+  # lock, so it never recreates one): ONE check, where the write happens.
+  case "$d" in
       /) why="/ is not a pool directory" ;;
       *[[:cntrl:]]*|*'^'*) why="its path holds a control byte or a ^, which lsof's output cannot tell apart" ;;
       *)
@@ -410,12 +409,16 @@ check_register_pool() {
           case "$p" in *[[:cntrl:]]*|*'^'*) ok=0 ;; esac
         fi
         [ "$ok" -eq 1 ] || why="it could not be made physical" ;;
-    esac
+  esac
+  # Through the record's ONE locked writer (common.sh's `adb_record_append`), which the runner uses
+  # too: unserialized, two appends could splice into lines that are each valid and each wrong.
+  if [ "$ok" -eq 1 ] && ! command -v adb_record_append >/dev/null 2>&1; then
+    ok=0; why="adb_record_append is unavailable — source scripts/lib/common.sh before check-lib.sh"
   fi
-  if [ "$ok" -eq 1 ] && printf 'pool %s\n' "$p" >> "$ADB_SELFCHECK_RECORD" 2>/dev/null; then   # row-register
+  if [ "$ok" -eq 1 ] && adb_record_append "$ADB_SELFCHECK_RECORD" "pool $p"; then   # row-register
     return 0
   fi
-  [ -n "$why" ] || why="the record could not be appended to"
+  [ -n "$why" ] || why="the record could not be appended to — it is gone, is not a regular file, or its lock is held"
   if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then
     printf 'NOTE: could not register pool %s with the running selfcheck (%s); its record is marked incomplete\n' \
       "${d//[[:cntrl:]]/?}" "${why//[[:cntrl:]]/?}" >&2

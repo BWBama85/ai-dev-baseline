@@ -78,10 +78,11 @@ unset ADB_MUTATION_RUN_ALL ADB_MUTATION_BASE
 # the moment everything has ended, so only a slow runner pays for it — and on a loaded machine a
 # runner's own exit can outlast a tight bound and read as a survivor. The cases that EXPECT
 # survivors pass a short one (STOP_SHORT), since they wait it out every time.
-# The inspection bound is 12s, which also sizes a cancelled runner's own recording at a quarter of
-# it (3s each, a 9s `prep`), so the shortest bound a stop may use here is 9 + 2 + 5 = 16s.
+# The inspection bound is 12s, which also sizes a cancelled runner's own recording at a fifth of it
+# (2s a read: a `prep` of 3 x (2 + 1) + 3 = 12s), so the shortest bound a stop may use here is
+# 12 + 2 + 5 = 19s.
 export ADB_SELFCHECK_STOP_GRACE_SECS=2 ADB_SELFCHECK_STOP_SECS=20 ADB_SELFCHECK_STOP_INSPECT_SECS=12
-STOP_SHORT=16
+STOP_SHORT=19
 
 work="$(mktemp -d)" || { echo "check-selfcheck: cannot create a scratch dir" >&2; exit 1; }
 
@@ -334,14 +335,11 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "stop-keeps-no-incomplete" \
     '  if [ "$incomplete" -eq 1 ]; then   # row-incomplete-kept' '  if false; then   # row-incomplete-kept' \
     'an incomplete record survives a stop that found and removed survivors'
-  shmutant_mut "stop-leaves-temp-root" \
-    '      adb-selfcheck.?*) rm -rf "$REC_TMP" 2>/dev/null \' '      adb-selfcheck.?*) false \' \
-    'the stop removes the temp root a KILLed runner never removed'
   shmutant_mut "path-ambiguity-accepted" \
     '  case "$1" in *[[:cntrl:]]*|*'"'"'^'"'"'*) return 1 ;; esac   # row-path-ok' '  :   # row-path-ok' \
     '12.5: a record that registers a pool whose name holds a ^ is refused'
   shmutant_mut "cancel-gaps-unmarked" \
-    '    for pid in "${!par[@]}"; do   # row-cancel-whole' '    for pid in; do   # row-cancel-whole' \
+    '  if ! _stop_inventory; then   # row-cancel-whole' '  if false; then   # row-cancel-whole' \
     'a cancelled run whose working-directory listing skips one of its processes marks its record incomplete' 
   shmutant_mut "stop-incomplete-ignored" \
     '    if [ "$incomplete" -eq 1 ]; then   # row-incomplete' '    if false; then   # row-incomplete' \
@@ -350,9 +348,6 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "stop-ps-status-ignored" \
     '  if [ "$rc" -ne 0 ]; then   # row-ps-status' '  if false; then   # row-ps-status' \
     'a stop whose ps fails says so, even when ps printed a listing'
-  shmutant_mut "stop-ps-known-skipped" \
-    '  for p in "$REC_PID" "${!REC_GROUPS[@]}" "${!OWN_EVER[@]}"; do   # row-ps-known' '  for p in; do   # row-ps-known' \
-    'a stop whose ps omits a process it depends on answers 4, never reads it as gone'
   shmutant_mut "stop-start-dated-early" \
     '  now="$EPOCHSECONDS"   # row-ps-now' '  now="$t0"   # row-ps-now' \
     'after the runner is KILLed, the stop sends the step it recorded a TERM, and its cleanup runs'
@@ -360,7 +355,7 @@ if [ "$MODE" = mutation ]; then
     '    elif adb_pid_gone "$p"; then' '    else' \
     'a stop whose recheck of a missing directory cannot be read answers 4'
   shmutant_mut "stop-cwd-only-ignored" \
-    '  for p in "${!INV_CWD[@]}"; do   # row-both-ways' '  for p in; do   # row-both-ways' \
+    '  for p in "${!cwd_before[@]}"; do   # row-both-ways' '  for p in; do   # row-both-ways' \
     'a stop whose ps omits a process the cwd listing shows answers 4'
   shmutant_mut "stop-stale-group-claims" \
     '  [ -n "$REC_MTIME" ] && [ "$st" -le $(( REC_MTIME + 60 + STOP_SKEW )) ] || return 1   # row-rec-upper' \
@@ -369,6 +364,16 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "unattributed-called-clean" \
     '    if [ "$UNATTRIBUTED" -gt 0 ]; then   # row-unattributed' '    if false; then   # row-unattributed' \
     'a stop that leaves an unattributed process from the run'"'"'s checkout is never clean (exit 6)'
+  shmutant_mut "caller-unknown-spreads" \
+    '  [ -n "${REC_PGID:-}${STOP_RUNNER_PGID:-}" ] || return 1   # row-closable-unknown' '  :   # row-closable-unknown' \
+    'with no caller group known, no group spreads ownership to a bystander'
+  shmutant_mut "signal-on-failed-verify" \
+    '  [ "$vrc" -eq 0 ] || e=""   # row-signal-status' '  :   # row-signal-status' \
+    'a target the stop could not re-verify is never signalled'
+  shmutant_mut "signal-unverified" \
+    '    [ -n "${INV_START[$pid]:-}" ] && _stop_same_at "$pid" $(( now - _ETS )) || continue   # row-signal-verify' \
+    '    :   # row-signal-verify' \
+    'a target whose identity no longer matches is never signalled'
   shmutant_mut "stop-ps-control-folded" \
     'return 1; }   # row-ps-control' 'return 0; }   # row-ps-control' \
     'a stop whose ps lists without it answers 4, never clean'
@@ -383,18 +388,21 @@ if [ "$MODE" = mutation ]; then
   # leaves the record looking complete.
   shmutant_target scripts/check-lib.sh
   shmutant_mut "register-writes-nothing" \
-    '  if [ "$ok" -eq 1 ] && printf '"'"'pool %s\n'"'"' "$p" >> "$ADB_SELFCHECK_RECORD" 2>/dev/null; then   # row-register' \
+    '  if [ "$ok" -eq 1 ] && adb_record_append "$ADB_SELFCHECK_RECORD" "pool $p"; then   # row-register' \
     '  if true; then   # row-register' \
     'after the runner is KILLed, the stop names a detached worker in a registered pool'
   shmutant_mut "register-root-as-cwd" \
     '  case "$d" in /) ;; */) d="${d%/}" ;; esac' '  d="${d%/}"' \
     '12.4: registering [/] is refused, and marks the record incomplete'
-  shmutant_mut "register-gone-record-ignored" \
-    '  if [ ! -f "$ADB_SELFCHECK_RECORD" ] || [ -L "$ADB_SELFCHECK_RECORD" ]; then' '  if false; then' \
-    'a pool registered after the run record is gone marks it incomplete, never reads as outside selfcheck'
   shmutant_mut "register-refusal-unmarked" \
     '  if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then' '  if false; then' \
     'a refused pool registration marks the record incomplete'
+  # …and the record's one writer, in common.sh: an append to a record that has gone must fail, never
+  # recreate it — which is what makes a late registration mark the record rather than restart it.
+  shmutant_target scripts/lib/common.sh
+  shmutant_mut "record-append-recreates" \
+    '  if [ -f "$f" ] && [ ! -L "$f" ]; then' '  if true; then' \
+    'a pool registered after the run record is gone marks it incomplete, never reads as outside selfcheck'
 
   check_shmutant_pool "selfcheck-guard" "$work/pool" mut_prepare mut_run 4
   check_summary "selfcheck-guard-mutation"
@@ -499,6 +507,8 @@ if [ -f "$ctl/$name.beat" ]; then
     # holder does. Under TMPDIR: one more worker. And one started only once the TERM arrives, which
     # no list taken before the stop can hold. Each is recorded `kind pid pgid` in `$name.leaked`
     # before `$name.leakready` is written.
+    # shellcheck source=/dev/null
+    . "$(dirname "$0")/lib/common.sh"
     # shellcheck source=/dev/null
     . "$(dirname "$0")/check-lib.sh"
     lk="$ctl/$name.leaked"
@@ -1673,7 +1683,7 @@ has "$(LC_ALL=C tr -d '\000' < "$work/nul.out")" "nul-after" "...and output AFTE
 # refused for the wrong one would let a broken rule pass.
 #
 # The grace is 2s (set at the top). A case that expects survivors passes STOP_SHORT, so it takes
-# about 18s; one that expects a clean stop keeps the generous bound and returns as soon as it can.
+# about 21s; one that expects a clean stop keeps the generous bound and returns as soon as it can.
 # STOP_SHORT is not tighter because the after-the-TERM survivor exists only once the stub is
 # scheduled to run its trap, which on a machine at load 150 (observed, D135) is not prompt.
 FXS="$work/fx-stop"
@@ -1854,8 +1864,11 @@ if leak_launch "$FXS"; then
   [ -n "$(leaked_pid "$_ctl" late)" ] && ok \
     || bad "after the runner is KILLed, the stop sends the step it recorded a TERM, and its cleanup runs: $STOP_OUT"
   eq "$(leaked_alive "$_ctl")" "" "12.2: nothing the KILLed run left survives the stop"
-  [ -n "$_rt" ] && [ ! -e "$_rt" ] && ok \
-    || bad "the stop removes the temp root a KILLed runner never removed (${_rt:-no tmp in the record}): $STOP_OUT"
+  # Nothing a record names is ever deleted: a path read from a file is not proof of what it resolves
+  # to. The KILLed runner's temp root is left to the system's temp cleaner (here, to this suite).
+  [ -n "$_rt" ] && [ -d "$_rt" ] && ok \
+    || bad "the stop deletes nothing the record names, not even the run's temp root (${_rt:-no tmp in the record}): $STOP_OUT"
+  [ -z "$_rt" ] || rm -rf "$_rt"
 else
   bad "12.2: the leak stub never staged its survivors"
   reap_runner
@@ -1968,7 +1981,7 @@ if [ "$(enrolled_count "$FXS/ctl")" -ge 1 ]; then
     || bad "a stop never KILLs into a cleanup still inside the run's own grace: $STOP_OUT"
   eq "$STOP_RC" 0 "12.3: a run that leaves nothing behind stops clean (exit 0): $STOP_OUT"
   has "$STOP_OUT" "stopped clean" "12.3: ...and says so"
-  has "$STOP_OUT" "the bound is 26s" "12.3: the bound is the run's prep (9s) + its grace (12s) + the margin (5s)"
+  has "$STOP_OUT" "the bound is 29s" "12.3: the bound is the run's prep (12s) + its grace (12s) + the margin (5s)"
   [ -z "$(enrolled_alive "$FXS/ctl")" ] && ok || bad "12.3: the run's step outlived a clean stop"
   [ ! -e "$FXS/.selfcheck-run" ] && ok || bad "12.3: a clean stop removes the run's record"
 else
@@ -1989,21 +2002,28 @@ rm -f "$FXS/.selfcheck-run" "$FXS/.selfcheck-run.incomplete"
 # …and a pool that cannot be registered is what marks it: a control byte in its path is refused
 # before anything could strip it, the record is marked, and the diagnostic carries no raw control byte.
 _pr="$work/pool-reg"; mkdir -p "$_pr"; printf 'adb-selfcheck-run 1\n' > "$_pr/rec"
-_pr_out="$( ( . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_pr/bad"$'\n'"FAIL: forged" ) 2>&1)"
+_pr_out="$( ( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_pr/bad"$'\n'"FAIL: forged" ) 2>&1)"
 [ -f "$_pr/rec.incomplete" ] && ok || bad "a refused pool registration marks the record incomplete"
 case "$_pr_out" in *$'\n'"FAIL: forged"*) bad "12.4: a refused pool path forged a line into the log: $_pr_out" ;; *) ok ;; esac
-_pr_out="$( ( . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_pr/good" ) 2>&1)"
+_pr_out="$( ( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_pr/good" ) 2>&1)"
 has "$(cat "$_pr/rec")" "pool $(cd -P "$_pr" && pwd -P)/good" "12.4: a good pool path is registered, physically"
 # `/`, a `^`, and a record that has gone are each a failure that marks the record, never a no-op.
 for _bad_pool in "/" "$_pr/x^Ay"; do
   rm -f "$_pr/rec.incomplete"
-  ( . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_bad_pool" ) >/dev/null 2>&1
+  ( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_bad_pool" ) >/dev/null 2>&1
   [ -f "$_pr/rec.incomplete" ] && ok || bad "12.4: registering [$_bad_pool] is refused, and marks the record incomplete"
 done
 eq "$(grep -c '^pool ' "$_pr/rec")" 1 "12.4: neither / nor a ^ path was registered — only the good pool is"
 rm -f "$_pr/gone.incomplete"
-( . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/gone" check_register_pool "$_pr/good" ) >/dev/null 2>&1
+( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/gone" check_register_pool "$_pr/good" ) >/dev/null 2>&1
 [ -f "$_pr/gone.incomplete" ] && ok || bad "a pool registered after the run record is gone marks it incomplete, never reads as outside selfcheck"
+# …and a registration goes through the record's ONE locked writer: while another writer holds the
+# lock, it does not slip a line in beside it — it waits, and failing that marks the record.
+rm -f "$_pr/rec.incomplete"; mkdir "$_pr/rec.lock" && : > "$_pr/rec.lock/.adb-excl"
+( . "$ROOT/scripts/lib/common.sh"; . "$ROOT/scripts/check-lib.sh"; ADB_SELFCHECK_RECORD="$_pr/rec" check_register_pool "$_pr/locked" ) >/dev/null 2>&1
+if [ -f "$_pr/rec.incomplete" ] && ! grep -q '/locked$' "$_pr/rec"; then ok
+else bad "a pool registration never writes past the record's lock, and marks the record when it cannot take it"; fi
+rm -rf "$_pr/rec.lock"
 
 # --- 12.5 nothing recorded, and records that do not validate ----------------------------------
 reset_ctl "$FXS"
@@ -2213,6 +2233,61 @@ if [ -e "/proc/$$/cwd" ]; then
 else
   ok   # macOS: lsof reports a removed directory by its last path; no suffix to disambiguate
 fi
+
+# --- 12.13 no caller group known: no group spreads ownership ----------------------------------------
+# A runner that could not read its own group (a sandbox refuses ps) writes no `pgid`; once it has
+# exited, any group might be its caller's. Here a process under the run's temp root shares a group
+# with a bystander and the group's leader: the process is the run's, but neither of the others may
+# be made so by the group alone.
+reset_ctl "$FXS"
+_t13="$work/t13"; mkdir -p "$_t13"
+( cd "$FXS" || exit; set -m
+  { ( cd "$_t13" && exec sleep 300 ) & printf 'owned13 %s %s %s\n' "$!" "$BASHPID" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked"
+    sleep 300 & printf 'bystander13 %s %s %s\n' "$!" "$BASHPID" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked"
+    wait; } &
+  printf 'leader13 %s %s %s\n' "$!" "$!" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked" )
+_dl=$(( BASH_MONOSECONDS + 30 ))
+until [ "$(grep -c '' "$FXS/ctl/canary.leaked" 2>/dev/null)" -ge 3 ] || [ "$BASH_MONOSECONDS" -ge "$_dl" ]; do sleep 0.05; done
+_o13="$(awk '$1 == "owned13" { print $2 }' "$FXS/ctl/canary.leaked")"
+_b13="$(awk '$1 == "bystander13" { print $2 }' "$FXS/ctl/canary.leaked")"
+_l13="$(awk '$1 == "leader13" { print $2 }' "$FXS/ctl/canary.leaked")"
+sleep 0 & _deadp=$!; wait "$_deadp"
+printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\n' \
+  "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t13" && pwd -P)" > "$FXS/.selfcheck-run"
+if [ -n "$_o13" ] && [ -n "$_b13" ] && [ -n "$_l13" ]; then
+  stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8
+  survivor_named "$_o13" && ok || bad "12.13: the process under the run's temp root is still the run's (pid $_o13): $STOP_OUT"
+  if [ "$(stub_state "$_b13" "$_l13")" = alive ] && [ "$(stub_state "$_l13" "$_l13")" = alive ]; then ok
+  else bad "with no caller group known, no group spreads ownership to a bystander (bystander $_b13, leader $_l13): $STOP_OUT"; fi
+else
+  bad "12.13: the shared group never staged"
+fi
+reset_ctl "$FXS"; rm -f "$FXS/.selfcheck-run"
+
+# --- 12.14 a target the stop cannot re-verify is never signalled ------------------------------------
+# Every signal re-reads its targets first. When that read FAILS — even after printing rows — or shows a
+# process that is no longer the one the inventory dated, nothing is signalled: the survivor is named,
+# left alone, and the stop says it could not be removed (3).
+_t14="$work/t14"; mkdir -p "$_t14"
+mkdir -p "$_sb/verifyfail" "$_sb/verifylie"
+printf '#!/bin/sh\ncase "$*" in *pid=,pgid=,etime=*) "%s" "$@"; exit 1 ;; esac\nexec "%s" "$@"\n' \
+  "$_ps_real" "$_ps_real" > "$_sb/verifyfail/ps"
+printf '#!/bin/sh\ncase "$*" in *pid=,pgid=,etime=*) "%s" "$@" | awk '"'"'{ $3 = "99-00:00:00"; print }'"'"'; exit 0 ;; esac\nexec "%s" "$@"\n' \
+  "$_ps_real" "$_ps_real" > "$_sb/verifylie/ps"
+chmod +x "$_sb/verifyfail/ps" "$_sb/verifylie/ps"
+for _vk in verifyfail verifylie; do
+  reset_ctl "$FXS"
+  canary_launch "$FXS" "$_t14"
+  sleep 0 & _deadp=$!; wait "$_deadp"
+  printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 1\nprep 1\nroot %s\ntmp %s\npgid %s\n' \
+    "$_deadp" "$(( EPOCHSECONDS - 10 ))" "$FXS_P" "$(cd -P "$_t14" && pwd -P)" "$_deadp" > "$FXS/.selfcheck-run"
+  stop_sc "$FXS" ADB_SELFCHECK_STOP_SECS=8 PATH="$_sb/$_vk:$PATH"
+  if [ "$_vk" = verifyfail ]; then _vw="a target the stop could not re-verify is never signalled"
+  else _vw="a target whose identity no longer matches is never signalled"; fi
+  if [ "$(stub_state "$CANARY_PID" "$CANARY_PID")" = alive ] && [ "$STOP_RC" -eq 3 ]; then ok
+  else bad "$_vw (rc $STOP_RC): $STOP_OUT"; fi
+done
+reset_ctl "$FXS"; rm -f "$FXS/.selfcheck-run"
 
 # --- 12.8 the knobs, the mode, and the record's own name --------------------------------------
 _k_out="$(ADB_SELFCHECK_STOP_GRACE_SECS=soon bash "$FXS/scripts/selfcheck.sh" --stop 2>&1)"; _k_rc=$?

@@ -10336,7 +10336,8 @@ survive is the part a later reader needs.
              it KILLs, and the record carries that grace. The stop sends the runner TERM by pid, never
              by group, because a runner started without job control shares its caller's group. If the
              runner is already gone, the stop sends TERM to what the run owns in each recorded worker
-             group that is still alive. Then it waits up to `ADB_SELFCHECK_STOP_SECS` (default 30),
+             group that is still alive. Then it waits up to `ADB_SELFCHECK_STOP_SECS` (default 40;
+             30 before pass 3 resized `prep`),
              re-reading the record and taking a fresh inventory on every pass. The bound is raised to
              the RUN's recorded grace plus 5s when it is shorter, because a stop started from another
              shell has its own environment, not the run's. Survivors are named from an inventory
@@ -10400,9 +10401,9 @@ survive is the part a later reader needs.
              lsof writes a control byte as `^X`, which a literal `^` followed by that character also
              produces, and refusing them on every platform is what lets the proof run on the Ubuntu
              nightly, which reads `/proc`. Survivors are printed by executable only. A record marked
-             incomplete is kept even after the stop removes the survivors it found. A finished stop
-             removes a KILLed runner's temp root, but only a directory named `adb-selfcheck.*` that
-             this user owns. A FIFO at the record's name is refused before anything opens it. Pool
+             incomplete is kept even after the stop removes the survivors it found. (Pass 1 also had a
+             finished stop remove a KILLed runner's temp root. Pass 3 found the guard on that `rm -rf`
+             was only textual, and the deletion was dropped; see below.) A FIFO at the record's name is refused before anything opens it. Pool
              registration keeps `/` as `/` and refuses it, and refuses a `^`. A registration made
              after the record is gone marks it incomplete. A marker that cannot be written is
              reported as exactly that. The fixture's cleanup identifies each leak by its `ps lstart`
@@ -10415,13 +10416,50 @@ survive is the part a later reader needs.
              ran but which `ps` omitted, refuses the inventory. A recorded group whose leader is gone
              cannot claim a member that started after the run was last heard from, which is the
              record's last write plus a minute. A cancelled runner's recording works to a hard deadline
-             inside its `prep`, sized as three quarters of `ADB_SELFCHECK_STOP_INSPECT_SECS` in all. An
+             inside its `prep` (sized again after pass 3, below). An
              existing record that cannot be read is never replaced. Linux's ` (deleted)` is refused
              when a directory of the full name exists. Appends to the record are serialized under
              `.selfcheck-run.lock`. The runner records its own overrun ticker, which a KILLed runner
              leaves in a group of its own. The fixture's KILL backstop checks the runner's `lstart`.
              The start-dating row was found surviving under a full run's load with a 3 s delay,
              because every later `ps` was itself seconds late, so the delay is now 10 s.
+             **Local review, pass 3** (codex, 10 REQUIRED). The run carried two HIGH findings and
+             blocked, as the owner had decided. The owner then asked for every finding to be fixed,
+             and one more pass ran under the one-run override `ADB_LOCAL_REVIEW_PASSES`. Fixes:
+             (a) The stop deletes nothing a record names. The temp-root `rm -rf` was guarded only
+             textually, and a path through a symlink could resolve above the checkout. A KILLed
+             runner's scratch directories are left to the system's temp cleaner.
+             (b) The inventory runs cwd listing, then `ps`, then cwd listing again. A process the first
+             cwd listing saw must be in `ps` unless the kernel says it has gone. A process `ps` saw must
+             be in the second cwd listing unless it has gone. This replaced age arithmetic whose blind
+             second made §12.6 flake under the gate's load, and with it the secondary `ps` whose status
+             was discarded.
+             (c) A cancelled runner's recording uses the stop's own inventory, with its proof of
+             wholeness. Its reads take a fifth of `ADB_SELFCHECK_STOP_INSPECT_SECS` each, and `prep` is
+             3 × (read + 1) + 3 s, 18 s by default. One deadline covers it all: the record lock's wait,
+             and the LIVE fallback in `_cleanup`.
+             (d) Every append, the harnesses' `pool` lines included, goes through one locked writer,
+             `adb_record_append` in `common.sh`. It refuses to recreate a record that has gone.
+             (e) With neither the record's `pgid` nor a live runner's, no group spreads ownership.
+             (f) A verifier read that fails authorizes no signal, whatever it printed.
+             (g) The final disposition re-reads the marker and recomputes the unattributed processes
+             after removal.
+             (h) §12.13 and §12.14 give the caller-group rule and pre-signal verification their own
+             negative fixtures and rows.
+             (i) On a real run, a process the stop had just sent TERM was past the point where `ps`
+             lists it, while the kernel still answered for it. The completeness check read that as a
+             partial listing, and the stop gave up with 4. So an inventory that is only inconsistent
+             in that way (a process that must be listed is missing yet still exists, or a process
+             `ps` listed has no readable directory) is retaken up to four times, 0.3 s apart, before it
+             counts as partial. A listing that really is partial stays so and is refused.
+             Re-measured on real runs of `review-loop-mutation` and `adopt-readiness-mutation`. A
+             `--stop` mid-run named and removed 12 nested workers and ended `1`. A plain TERM left 6,
+             and a later `--stop` found them through the record, sent them TERM, saw them end, and
+             answered `0`. Nothing was left either time.
+             Pass 3's optional points are recorded rather than fixed:
+             - an inspection's staged output has no byte cap (process count bounds it);
+             - a process is named by the first word of its argv, which can differ from its executable;
+             - some incident narrative remains in comments.
              **An incomplete record is never clean.** A worker the runner could not record, or a pool
              `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
              answers 4 where it would have answered 0, and notes it beside any survivors it names. A
@@ -10478,7 +10516,7 @@ survive is the part a later reader needs.
              only by a sibling assertion, which is what the per-rule assertions in §12.2 fix. Pass 1 of
              the local review added nine more, each for a defence it introduced: the omitted-process
              check, start dating, the status recheck, the `^` refusal, the kept incomplete record, the
-             temp-root removal, the cancel-time completeness check, and registration's `/` and
+             temp-root removal (retired with it after pass 3), the cancel-time completeness check, and registration's `/` and
              missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
              must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` now takes about
              2m45s locally, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
@@ -10491,8 +10529,9 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 39 rows, one per assertion
-             that matters, four of them in `check-lib.sh` (registration): the grace wait and
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 40 rows, one per assertion
+             that matters, three in `check-lib.sh` (registration) and one in `common.sh` (the record's
+             writer): the grace wait and
              `_cleanup`'s recording;
              the record's live-run, directory and unknown-key refusals; each ownership rule removed
              alone (temp root, pool, group, memory, the first look, descent, recorded groups); the
@@ -10506,6 +10545,7 @@ survive is the part a later reader needs.
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 39 `--mutation` rows) · `.gitignore` ·
+             slow-exit stub modes, `leak_sweep`, 40 `--mutation` rows) · `.gitignore` ·
+             · `scripts/lib/common.sh` (`adb_record_append`)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

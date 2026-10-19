@@ -111,7 +111,7 @@ those. The rules below are specific to this repo's code.
      sent into a vendored-shmutant shell mid-freeze leaves a stopped tree that never ends
      (BWBama85/shmutant#47). `bash scripts/selfcheck.sh --stop` reads the run's record (the
      gitignored `.selfcheck-run` in the checkout), sends the runner `TERM` and waits up to
-     `ADB_SELFCHECK_STOP_SECS` (default 30, never less than the run's recorded preparation allowance
+     `ADB_SELFCHECK_STOP_SECS` (default 40, never less than the run's recorded preparation allowance
      plus its grace plus 5s).
      The runner, in turn, gives its workers' own cleanup up to `ADB_SELFCHECK_STOP_GRACE_SECS`
      (default 10) before it KILLs, where it used to wait one fixed second. The stop then names every

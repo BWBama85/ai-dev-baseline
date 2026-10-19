@@ -294,7 +294,7 @@ only by a published release, which is what these entries are the notes for.
   Stops improvised on top of that checked a pid list taken before the stop and printed
   `still alive: 0` over 25 survivors. **`bash scripts/selfcheck.sh --stop`** now reads the run's
   record (the gitignored `.selfcheck-run`), sends the runner `TERM` and waits up to
-  `ADB_SELFCHECK_STOP_SECS` (default 30, never less than the run's recorded preparation allowance
+  `ADB_SELFCHECK_STOP_SECS` (default 40, never less than the run's recorded preparation allowance
   plus its grace plus 5s). The runner gives its workers' cleanup up to
   `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) instead of one second. The stop then names every
   process the run still owns, stopped ones and zombies included, KILLs them, and confirms with a
@@ -314,7 +314,7 @@ only by a published release, which is what these entries are the notes for.
   gate's short one, no longer replaces a live run's record. `check-selfcheck.sh` drives the stop
   against a stub that leaves a detached worker, a stopped process beside a holder, a holder whose
   pool process exits during the stop, a nested worker its step's death reparents, and a process
-  started only after the `TERM`. It adds 39 mutation rows. On a real run with live mutation pools,
+  started only after the `TERM`. It adds 40 mutation rows. On a real run with live mutation pools,
   the stop named and removed the 12 nested workers `TERM` does not reach (#547). A record path may
   not hold a control byte or a `^`, which lsof's output cannot tell apart.
 - **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**

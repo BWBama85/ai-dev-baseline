@@ -170,7 +170,7 @@ pool sits in process groups of its own and does not get the signal (#547). Escal
 hand is worse: a `KILL` that lands while a vendored-shmutant shell has a tree frozen leaves that
 tree stopped forever (BWBama85/shmutant#47). `--stop` sends the runner `TERM`. The runner gives its
 workers up to `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) to finish their own cleanup before it
-KILLs, and records that grace. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 30, and
+KILLs, and records that grace. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 40, and
 never less than the run's recorded preparation allowance plus its grace plus 5s) for everything to
 end. Then it names every process
 the run still owns, stopped ones included, KILLs them, and checks again with a fresh listing. A
