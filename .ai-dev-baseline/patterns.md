@@ -796,4 +796,6 @@ One line per resolved review thread, newest last.
 - `exit-path-asymmetry` `scripts/selfcheck.sh:1787` `a6b9b2b` `PRRT_kwDOTfywrM6t7uqG` PR #560 2026-10-19 — with no record the stop answered 5 over a lone incomplete marker; now 4
 - `status-swallowed` `scripts/selfcheck.sh:1917` `6ac3502` `PRRT_kwDOTfywrM6t_Hwc` PR #560 2026-10-19 — a record that changed under the locked comparison was treated as removed and the stop answered clean; now kept and 4
 - `partial-validation` `scripts/lib/common.sh:4451` `6ac3502` `PRRT_kwDOTfywrM6t_Hw6` PR #560 2026-10-19 — the stale-lock take-over followed a symlink at the lock path; a symlinked lock is now never taken over or released
+- `stale-state-trusted` `scripts/selfcheck.sh:2501` `04dad91` `PRRT_kwDOTfywrM6uBacr` PR #560 2026-10-19 — REC_DONE kept a reaped pid, so a reused group number was never recorded again; it now forgets a pid at reap
+- `toctou` `scripts/selfcheck.sh:1506` `04dad91` `PRRT_kwDOTfywrM6uBac1` PR #560 2026-10-19 — the directory listing after ps could pair a reused pid with the old process identity; every start is now read again after it
 <!-- adb:hits:end -->
