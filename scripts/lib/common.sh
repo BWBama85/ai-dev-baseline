@@ -667,12 +667,16 @@ _adb_publish_owner() {
   return 1
 }
 
-# Create the lock and record ownership. Returns 0 only if we created it.
+# _adb_take_lock <lock> [holder-pid] — create the lock and record ownership. Returns 0 only if we
+# created it, with its token in _ADB_LOCK_TOOK; the caller keeps that token, since it is what its
+# release compares. The token names <holder-pid> (this shell's `$$` when not given).
 # EVERY WRITE OF `owner` HOLDS `$lock/.claim` — this one and the stale-lock breaker's. Between the
 # mkdir and the write, a breaker that judged the PREVIOUS lock at this path stale can reach this
 # directory; without the claim both record themselves and both proceed. (PR review)
+_ADB_LOCK_TOOK=""
 _adb_take_lock() {
   local lock="$1" token
+  _ADB_LOCK_TOOK=""
   adb_mkdir_excl "$lock" || return 1
   if ! adb_mkdir_excl "$lock/.claim"; then
     adb_rmdir_excl "$lock"   # a breaker's claim keeps the directory non-empty, so this removes only ours
@@ -682,7 +686,7 @@ _adb_take_lock() {
     adb_rmdir_excl "$lock/.claim"
     return 1
   fi
-  token="$$ $(date +%s 2>/dev/null)"
+  token="${2:-$$} $(date +%s 2>/dev/null)"
   # THE OWNER FILE IS THE LOCK, so a write that fails is an acquisition that failed; unchecked, the
   # directory was left behind with no token and refused every later run. (PR review)
   if ! _adb_publish_owner "$lock" "$token"; then
@@ -691,7 +695,7 @@ _adb_take_lock() {
     return 1
   fi
   adb_rmdir_excl "$lock/.claim"
-  _ADB_LOCK_TOKEN="$token"
+  _ADB_LOCK_TOOK="$token"
   return 0
 }
 
@@ -700,8 +704,18 @@ _adb_take_lock() {
 # being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
 # can never collide with a real one.
 adb_update_lock() {
-  local lock="$1" age holder
-  _adb_take_lock "$lock" && return 0
+  _adb_take_lock "$1" || _adb_break_lock "$1" "$_ADB_LOCK_STALE_SECS" || return 1
+  _ADB_LOCK_TOKEN="$_ADB_LOCK_TOOK"
+  return 0
+}
+
+# _adb_break_lock <lock> <stale-secs> [holder-pid] — take over <lock> from a holder that is provably
+# gone: 0 with the new token in _ADB_LOCK_TOOK, 1 when it is not provably stale or another breaker
+# got there first. The one take-over rule for every lock of this kind, the update lock's and the
+# selfcheck run record's (`adb_record_lock`).
+_adb_break_lock() {
+  local lock="$1" stale="$2" age holder
+  _ADB_LOCK_TOOK=""
 
   # Held. Breaking it is only safe when the holder is genuinely gone, and AGE ALONE DOES NOT
   # SHOW THAT: a laptop suspended mid-update, or a manual run behind a slow fetch, is old and
@@ -710,7 +724,7 @@ adb_update_lock() {
   age="$(adb_age_secs "$lock")"
   # Empty = unreadable or FUTURE-dated (clock skew). Never break a lock we cannot date.
   [ -n "$age" ] || return 1
-  [ "$age" -gt "$_ADB_LOCK_STALE_SECS" ] || return 1
+  [ "$age" -gt "$stale" ] || return 1
   # A MISSING OWNER RECORD AND AN UNREADABLE ONE ARE DIFFERENT. Unchecked, the substitution was
   # empty for both, and empty means "no live holder" — so a lock whose `owner` could not be read was
   # broken while its process was still running, admitting a second updater to the `git pull` and the
@@ -744,18 +758,28 @@ adb_update_lock() {
     adb_rmdir_excl "$lock/.claim"
     return 1   # stale-claim-mismatch
   fi
-  token="$$ $(date +%s 2>/dev/null)"
+  token="${3:-$$} $(date +%s 2>/dev/null)"
   _adb_publish_owner "$lock" "$token" || { adb_rmdir_excl "$lock/.claim"; return 1; }
   adb_rmdir_excl "$lock/.claim"
-  _ADB_LOCK_TOKEN="$token"
+  _ADB_LOCK_TOOK="$token"
   return 0
 }
 
 # Release the lock ONLY if we still own it (see _ADB_LOCK_TOKEN). Safe to call more than once,
 # which the EXIT trap relies on when a signal trap has already run.
 adb_update_unlock() {
-  local lock="$1"
   [ -n "$_ADB_LOCK_TOKEN" ] || return 0
+  _adb_release_lock "$1" "$_ADB_LOCK_TOKEN" || return 1
+  _ADB_LOCK_TOKEN=""
+  return 0
+}
+
+# _adb_release_lock <lock> <token> — remove <lock> if <token> still owns it. 0 released, already
+# gone, or no longer ours (nothing to release) · 1 the owner record could not be read, or the lock
+# could not be removed: the caller still holds it.
+_adb_release_lock() {
+  local lock="$1" _owner _orc
+  [ -n "$2" ] || return 0
   # A LOCK THAT IS GONE IS RELEASED; A LOCK WE CANNOT READ IS NOT. The owner check used to be one
   # command substitution, so an unreadable `owner` — an ACL change, a transient failure — produced
   # the empty string and compared equal to "somebody else holds it": the token was dropped, success
@@ -763,11 +787,10 @@ adb_update_unlock() {
   # so they finished quietly while every later settings operation was refused until the stale
   # interval expired or the operator found the lock by hand. The absent case must stay separate or
   # this loses the idempotency the EXIT trap relies on. (PR review)
-  if [ ! -e "$lock" ]; then _ADB_LOCK_TOKEN=""; return 0; fi
-  local _owner _orc
+  if [ ! -e "$lock" ]; then return 0; fi
   _owner="$(cat "$lock/owner" 2>/dev/null)"; _orc=$?
   [ "$_orc" -eq 0 ] || return 1   # lock-owner-unreadable
-  [ "$_owner" = "$_ADB_LOCK_TOKEN" ] || { _ADB_LOCK_TOKEN=""; return 0; }
+  [ "$_owner" = "$2" ] || return 0
   rm -f "$lock/owner" 2>/dev/null
   adb_rmdir_excl "$lock"
   # THE TOKEN IS CLEARED ONLY WHEN THE LOCK IS ACTUALLY GONE. It used to be cleared FIRST, so a
@@ -778,7 +801,6 @@ adb_update_unlock() {
   if [ -e "$lock" ]; then
     return 1
   fi
-  _ADB_LOCK_TOKEN=""
   return 0
 }
 
@@ -4412,26 +4434,29 @@ adb_rmdir_excl() {
 }
 
 # adb_record_lock <file> [tries] / adb_record_unlock <file> — the lock every writer of
-# `selfcheck.sh`'s run record (#551) takes: `<file>.lock`, taken with adb_mkdir_excl, tried <tries>
-# times 50ms apart (100 when not given). A writer holds it for one append or one removal, so a lock
-# older than 30s is a writer that died holding it: it is reclaimed by RENAMING it to a name of this
-# caller's own and removing that, so two recoverers cannot both win and nobody deletes a lock someone
-# else has just taken. 0 held · 1 not had. Bash-3.2 parseable, like the rest of this file.
+# `selfcheck.sh`'s run record (#551) takes: `<file>.lock`, a lock of the update lock's kind — an
+# owner token, taken (`_adb_take_lock`) and released (`_adb_release_lock`) by the same code — tried
+# <tries> times 50ms apart (100 when not given). A writer holds it for one append or one removal, so
+# after 30s it is taken over, by the update lock's own rule (`_adb_break_lock`): only once its holder
+# is provably gone. A holder that is merely slow keeps it, and the writers waiting on it fail and say
+# so. The holder is the shell that took it — BASHPID, since a subshell's `$$` is its parent's, which
+# outlives a subshell killed while holding it. 0 held · 1 not had.
+_ADB_RECORD_TOKEN=""
 adb_record_lock() {
-  local f="$1" tries="${2:-100}" n=0 age stale
+  local f="$1" tries="${2:-100}" n=0 me="${BASHPID:-$$}"   # record-lock-holder
   case "$tries" in ''|*[!0-9]*) tries=100 ;; esac
-  until adb_mkdir_excl "$f.lock"; do
-    age="$(adb_age_secs "$f.lock")"
-    if [ -n "$age" ] && [ "$age" -gt 30 ]; then
-      stale="$f.lock.stale.$$.$n"
-      mv "$f.lock" "$stale" 2>/dev/null && rm -rf "$stale" 2>/dev/null
-    fi
+  until _adb_take_lock "$f.lock" "$me" || _adb_break_lock "$f.lock" 30 "$me"; do
     n=$((n + 1)); [ "$n" -lt "$tries" ] || return 1
     sleep 0.05
   done
+  _ADB_RECORD_TOKEN="$_ADB_LOCK_TOOK"
   return 0
 }
-adb_record_unlock() { adb_rmdir_excl "$1.lock"; }
+adb_record_unlock() {
+  _adb_release_lock "$1.lock" "$_ADB_RECORD_TOKEN" || return 1
+  _ADB_RECORD_TOKEN=""
+  return 0
+}
 
 # adb_record_append <file> <line> [tries] — append one line to an EXISTING record under its lock. Its
 # existence is checked INSIDE the lock, so an append never recreates a record that was removed (a
@@ -4448,12 +4473,20 @@ adb_record_append() {
   return "$rc"
 }
 
-# adb_record_remove <file> [extra…] — remove a record (and any companion files named after it) under
-# its lock, so no append can slip in between and recreate it. 0 removed (or already gone) · 1 the lock
-# could not be had or a file could not be removed — the record then stays where it is.
+# adb_record_remove [--if <fn>] <file> [extra…] — remove a record (and any companion files named
+# after it) under its lock, so no append can slip in between and recreate it. With --if, only when
+# `<fn> <file>` succeeds, asked UNDER that lock: what the caller checked cannot change between the
+# check and the removal. 0 removed (or already gone) · 1 the lock could not be had or a file could
+# not be removed — the record then stays where it is · 3 left alone, because <fn> refused it.
 adb_record_remove() {
-  local f="$1" rc=0 x; shift
+  local test="" f rc=0 x
+  if [ "$1" = "--if" ]; then test="$2"; shift 2; fi
+  f="$1"; shift
   adb_record_lock "$f" || return 1
+  if [ -n "$test" ] && ! "$test" "$f"; then   # record-remove-if
+    adb_record_unlock "$f" || return 1
+    return 3
+  fi
   rm -f "$f" "$@" 2>/dev/null || rc=1
   for x in "$f" "$@"; do [ -e "$x" ] && rc=1; done
   adb_record_unlock "$f" || rc=1

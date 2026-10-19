@@ -116,7 +116,8 @@ those. The rules below are specific to this repo's code.
      The runner, in turn, gives its workers' own cleanup up to `ADB_SELFCHECK_STOP_GRACE_SECS`
      (default 10) before it KILLs, where it used to wait one fixed second. The stop then names every
      process the run still owns, stopped ones included, and KILLs them, a whole group only when
-     every member is the run's. What the run owns is decided by where a process works and which
+     every current member is the run's and at least one was just re-verified by its exact start
+     (`ps lstart`). What the run owns is decided by where a process works and which
      group it is in: the run's private temp root (exported to every step as `TMPDIR`), a pool
      directory a harness registered (`check_register_pool` in `check-lib.sh`, since macOS's
      template-less `mktemp` ignores `TMPDIR`), those processes' groups, the groups the runner
@@ -129,7 +130,8 @@ those. The rules below are specific to this repo's code.
      process started during the run), each part bounded by `ADB_SELFCHECK_STOP_INSPECT_SECS`
      (default 20). A process that merely works in the checkout is named and never signalled. Exit
      `0` clean · `1` survivors, named and removed · `3` some could not be removed · `4` could not
-     inspect, or the record is marked incomplete — never read as "nothing left" (inside a sandbox
+     inspect, or the record is marked incomplete (its `.incomplete` marker, even with no record) —
+     never read as "nothing left" (inside a sandbox
      `ps` is refused, so run it unsandboxed) · `5` no run recorded · `6` nothing provably the run's
      is left, but processes that started during it still work in the checkout (named, never
      signalled). A cancelled run keeps its record,

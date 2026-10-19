@@ -10352,7 +10352,7 @@ survive is the part a later reader needs.
              some could not be removed, named · `4` could not inspect, or the record is incomplete or
              invalid · `5` no run recorded · `6` nothing provably the run's is left, but processes that
              started during the run still work in its checkout, named and not signalled · `2` usage.
-             Exit `4` is never read as "nothing left". Exit `6` was added after review pass 2 (below). The inventory is `ps -A -o pid=,pgid=,ppid=,stat=,etime=,command=` plus one cwd
+             Exit `4` is never read as "nothing left". Exit `6` was added after review pass 2 (below). The inventory is `ps -A -o pid=,pgid=,ppid=,uid=,stat=,etime=,lstart=,command=` plus one cwd
              listing, `find /proc … -printf '%h\t%l\n'` on Linux (stripping ` (deleted)`) or
              `lsof -w -a -d cwd -Fpn` elsewhere, each bounded by `ADB_SELFCHECK_STOP_INSPECT_SECS`
              (default 20) through `adb_run_bounded`. The inventory is PROVED WHOLE rather than trusted.
@@ -10367,8 +10367,10 @@ survive is the part a later reader needs.
              lsof 4.91: under a UTF-8 locale `é` passes through, under C it is `\xc3\xa9`). The stop
              therefore runs lsof under `LC_ALL=C` and compares the record's paths in that same
              encoding. A literal `^A` in a name reads the same as byte 0x01. That ambiguity is lsof's,
-             and it is stated. Start times are ps's elapsed time read back as a date, so the identity
-             windows allow a few seconds of rounding.
+             and it is stated. A process's identity is its pid and its `ps lstart`, the absolute start
+             to the second, compared exactly (since PR #560's review). Elapsed time read back as a date
+             is still the estimate the windows against the record's own times use; those windows are
+             #561.
              **A real run found what the fixtures had not.** The first version (`a9f0fce0`) was used
              to stop this PR's own full gate run, which had nested pools live. It answered
              `stopped clean` while 17 process groups survived, and named them only as unattributed.
@@ -10495,6 +10497,60 @@ survive is the part a later reader needs.
              `cwd ?`. After a plain TERM, a later `--stop` found the 10 worker groups the TERM had not
              reached, sent them TERM, saw every one end within 2 s, and answered `0`. Nothing was left
              in the checkout either time.
+             **PR #560, review round 1** (the codex connector, 7 threads; CI's first run red). Fixed:
+             (a) The record's lock is the update lock's kind: an owner token, taken, taken over and
+             released by the same code (`_adb_take_lock`, `_adb_break_lock`, `_adb_release_lock`,
+             moved out of `adb_update_lock` whole). It was taken over by age alone, so a writer stalled
+             for 30 s under load lost it, and a recoverer renamed whatever lock was there by then, a
+             successor's included. Now a lock is taken over only once its holder is provably gone, in
+             place, under the claim. The holder is the shell that took it (`BASHPID`), because a
+             subshell's `$$` is its parent's, which outlives a subshell killed holding it.
+             (b) Identity is exact (above). The tolerance used to be 2 + 2 × the slowest `ps`, up to
+             42 s, and a pid reused inside it was taken for the remembered process. That covered the
+             pre-signal re-check, the re-check of the runner before its KILL, and the memory of what
+             the stop found.
+             (c) A group is signalled whole only when its current membership holds at least one member
+             that is the run's and was just verified. A failed re-check, with a membership read that
+             showed the group empty, used to signal a bare number.
+             (d) The stop removes the record only while it is the bytes it read, asked under the lock
+             it removes under (`adb_record_remove --if`). It never removes the incomplete marker: it
+             gets there only when there was none, and one written since must survive. The run's own
+             removal on a clean exit asks its question under the same lock.
+             (e) A marker with no record answers 4, never 5 ("no run"). A harness that registers a pool
+             after the record is gone leaves exactly that.
+             (f) A cancelled runner's read of its pools, and a starting run's read of a record already
+             there, keep their status. A failed read marks the record incomplete in the first case and
+             refuses to replace it in the second: "pid 12345" cut short is "pid 12".
+             (g) Both of the stop's loops take one fresh look the same way (`_stop_pass`), so the one
+             after the KILL also refuses a runner `ps` can no longer date.
+             (h) §12's synthetic records clear any incomplete marker an earlier section left
+             (`synth_record`), and the fixture's `stub_state` answers `unknown` rather than `dead` when
+             `ps` cannot describe a process the kernel still has.
+             (i) A cancel that lands while the runner holds the record's lock now waits for that
+             append to finish (`_on_signal`, `_rec_append`). Handled at once, the cancel's own
+             recording waited on a lock its own process held, gave up, and marked the record
+             incomplete, and its `exit` left the lock held for every later writer. That was true
+             before this round. The owner-token lock holds a few forks longer, and §12's clean stops
+             then failed four times in one run, which is how it was found. §12.21 puts the TERM
+             inside the lock on purpose.
+             **CI's first run was red for a reason the machine gave.** §12.11 dated its synthetic run
+             two hours back, and "started during the run" then took in a runner booted minutes
+             earlier. On the ubuntu-26.04 runner, the user's own `systemd --user` manager (pid 1344) has
+             a working directory this user cannot read. The stop answered 4 under the rule that such a
+             process could be the run's. That is the rule working, and it stays. §12.11's record is now
+             dated minutes back, inside the suite. On Linux, a run older than such a process cannot be
+             stopped clean. Workstation and CI runs start after the user's manager, so they do not
+             meet this.
+             The sibling sweep found 14 more sites:
+             - Fixed: (g) and (h), the cut-short read in (f), and the run's own removal in (d).
+             - Declined: the clean-exit removal ignoring the marker. That run reaped every worker and
+               removed its temp root, and after (e) the marker it leaves still answers 4. Three reads
+               whose rows are compared exactly, so a failed read can only lose rows, never forge a
+               match.
+             - Deferred: a run started at the same instant as another to #250. The runner's and
+               recorded groups' start windows to #561, which the owner chose to file rather than fix
+               here. With a recorded group's leader gone, a reused group number can claim a process
+               working in the checkout.
              **An incomplete record is never clean.** A worker the runner could not record, or a pool
              `check_register_pool` could not, leaves `.selfcheck-run.incomplete`. A stop that sees it
              answers 4 where it would have answered 0, and notes it beside any survivors it names. A
@@ -10508,7 +10564,11 @@ survive is the part a later reader needs.
              That is #547, and until it lands a stop of a run with live mutation pools ends `1`, which
              is the truth. shmutant's freeze-then-kill gap is upstream (BWBama85/shmutant#47); the
              stop removes such a tree but cannot prevent it. Two concurrent runs in one checkout stay
-             unsupported (#250). A second run does not replace a live run's record (below), and a stop
+             unsupported (#250). The runner and each recorded group are still identified by a start
+             window against the record's own times, and a leaderless recorded group can claim a
+             process working in the checkout (#561). On Linux a process of this user whose working
+             directory the kernel will not show, started during the run, makes the stop answer 4 (CI's
+             `systemd --user`, above). A second run does not replace a live run's record (below), and a stop
              that sees its record change mid-stop answers 4. Every process is printed by the first word of
              its command line alone, never its arguments, since an argument can carry a credential. The stop needs an
              unsandboxed shell. The one window no userspace stop closes on macOS, which has no process
@@ -10553,8 +10613,8 @@ survive is the part a later reader needs.
              check, start dating, the status recheck, the `^` refusal, the kept incomplete record, the
              temp-root removal (retired with it after pass 3), the cancel-time completeness check, and registration's `/` and
              missing-record cases. §12.3 became a test of protection, not of wording: a 4 s cleanup
-             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 251 s
-             locally on 2026-10-18, after pass 4, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
+             must finish under a stopper whose own bound is 2 s. `check-selfcheck.sh` took 298 s
+             locally on 2026-10-19, after PR review round 1, against 51 s before this issue. It runs in CI's `shellcheck` job, whose
              limit is 10 minutes. §12 also covers a clean stop whose bound is raised
              to the run's grace, an incomplete record answering 4, a refused registration marking the
              record and forging no line, no record, seven refused records that each assert their own
@@ -10564,9 +10624,9 @@ survive is the part a later reader needs.
              directory at the record's name, the knobs and the mode. §10.6 requires a 1.5 s TERM
              cleanup to finish inside a 6 s grace. §10.7 holds the window between LIVE and the record
              open and requires the worker recorded anyway. Against `main`'s runner the first version's
-             suite failed 33 assertions, §10.6 among them. `--mutation` adds 44 rows, one per assertion
-             that matters, three in `check-lib.sh` (registration) and one in `common.sh` (the record's
-             writer): the grace wait and
+             suite failed 33 assertions, §10.6 among them. `--mutation` adds 55 rows, one per assertion
+             that matters, three in `check-lib.sh` (registration) and three in `common.sh` (the record's
+             writer, and its lock's take-over: holder alive, holder a killed subshell): the grace wait and
              `_cleanup`'s recording;
              the record's live-run, directory and unknown-key refusals; each ownership rule removed
              alone (temp root, pool, group, memory, the first look, descent, recorded groups); the
@@ -10575,13 +10635,18 @@ survive is the part a later reader needs.
              wait's inventory never refreshed; the run's grace ignored; the incomplete marker ignored;
              each inventory proof folded (ps status, ps self, cwd coverage, the inspection bound, a pid
              both listings omit); a dead runner's TERM limited to recorded groups; a whole-group
-             signal to the caller's group, or past a member the inventory never saw; a registration
-             that writes nothing, and a refusal left unmarked. Each must fail on its own witness.
+             signal to the caller's group, past a member the inventory never saw, or with no member
+             verified; identity loosened to the minute; the record removed on a comparison made outside
+             its lock, by the stop or by the run, or with the marker; a lone marker read as no run; a
+             failed read of the pools, or of a record already there, ignored; a cancel inside the
+             record's lock handled at once; a registration that
+             writes nothing, and a refusal left unmarked. Each must fail on its own witness.
 - placement: `scripts/selfcheck.sh` (the stop block, `_rec_write`/`_rec_group`/`_rec_drop`, the
              private temp root, `_workers_remain` and the bounded grace in `_cleanup`, `--stop` and its
              knobs) · `scripts/check-lib.sh` (`check_register_pool`, called from `check_shmutant_pool`
              and `check_mutation_rows`) · `scripts/check-selfcheck.sh` (§10.6, §12, the leak and
-             slow-exit stub modes, `leak_sweep`, 44 `--mutation` rows) · `.gitignore` ·
-             · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`)
+             slow-exit stub modes, `leak_sweep`, 55 `--mutation` rows) · `.gitignore` ·
+             · `scripts/lib/common.sh` (`adb_record_lock`, `adb_record_append`, `adb_record_remove`, and
+             the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

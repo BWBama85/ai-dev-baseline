@@ -299,7 +299,8 @@ only by a published release, which is what these entries are the notes for.
   `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) instead of one second. The stop then names every
   process the run still owns, stopped ones and zombies included, KILLs them, and confirms with a
   fresh listing: `0` clean, `1` survivors named and removed, `3` some could not be removed, `4`
-  could not inspect or the record is incomplete (never "nothing left"), `5` no run recorded, `6`
+  could not inspect or the record is incomplete, its marker counting even with no record (never
+  "nothing left"), `5` no run recorded, `6`
   nothing provably the run's is left but unattributed processes still work in the checkout. A
   process is the run's by where it works and which group it is in: under the run's private temp
   root (every step now gets it as `TMPDIR`), under a pool directory a harness registered
@@ -316,7 +317,11 @@ only by a published release, which is what these entries are the notes for.
   gate's short one, no longer replaces a live run's record. `check-selfcheck.sh` drives the stop
   against a stub that leaves a detached worker, a stopped process beside a holder, a holder whose
   pool process exits during the stop, a nested worker its step's death reparents, and a process
-  started only after the `TERM`. It adds 44 mutation rows. On a real run with live mutation pools,
+  started only after the `TERM`. A process is the same one only at the same pid and the same
+  `ps lstart`, compared exactly. The record's lock is taken over only from a holder that is
+  provably gone, by the update lock's own code, and a cancel that lands while the runner
+  holds it waits for that append to finish. It adds 55 mutation rows. On a real run with live
+  mutation pools,
   the stop named and removed the 12 nested workers `TERM` does not reach (#547). A record path may
   not hold a control byte or a `^`, which lsof's output cannot tell apart.
 - **The sibling sweep stops refusing evidence that quotes an HTML comment (#526, D134).**
