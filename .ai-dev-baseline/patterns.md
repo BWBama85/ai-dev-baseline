@@ -787,4 +787,11 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `scripts/check-lib.sh:560` `a84255c` `PRRT_kwDOTfywrM6rFnyw` PR #527 2026-10-10 — a passing pool evidence directory was removed with an unchecked rm, so a leftover would read as a failed pool evidence
 - `redaction-incomplete` `scripts/lib/implement-lib.sh:1651` `7fbd7fc` `PRRT_kwDOTfywrM6sXmT2` PR #543 2026-10-14 — credential-key value redaction stopped at , ; & and printed the rest
 - `evidence-discarded` `scripts/lib/implement-lib.sh:1579` `7fbd7fc` `PRRT_kwDOTfywrM6sXmUD` PR #543 2026-10-14 — NULs dropped by command substitution hid the 4 KiB cut from the not-found check
+- `toctou` `scripts/lib/common.sh:4427` `a6b9b2b` `PRRT_kwDOTfywrM6t7upe` PR #560 2026-10-19 — stale record-lock recovery acted on the lock path by age alone; now the update lock owner-token take-over
+- `status-swallowed` `scripts/selfcheck.sh:2372` `a6b9b2b` `PRRT_kwDOTfywrM6t7upg` PR #560 2026-10-19 — cancel-time pool read discarded the bounded head status; a failed read now marks the record incomplete
+- `false-guarantee` `scripts/selfcheck.sh:1751` `a6b9b2b` `PRRT_kwDOTfywrM6t7upm` PR #560 2026-10-19 — a group was signalled whole with no verified member; now one verified member is required
+- `toctou` `scripts/selfcheck.sh:1903` `a6b9b2b` `PRRT_kwDOTfywrM6t7upy` PR #560 2026-10-19 — the stop compared the record outside the lock it removed under; now asked under it, marker never removed
+- `stale-state-trusted` `scripts/selfcheck.sh:1593` `a6b9b2b` `PRRT_kwDOTfywrM6t7up6` PR #560 2026-10-19 — process identity was a start window widened by the slowest ps; now the exact ps lstart
+- `stale-state-trusted` `scripts/check-selfcheck.sh:2236` `a6b9b2b` `PRRT_kwDOTfywrM6t7uqA` PR #560 2026-10-19 — synthetic record sections inherited an earlier incomplete marker; synth_record clears it
+- `exit-path-asymmetry` `scripts/selfcheck.sh:1787` `a6b9b2b` `PRRT_kwDOTfywrM6t7uqG` PR #560 2026-10-19 — with no record the stop answered 5 over a lone incomplete marker; now 4
 <!-- adb:hits:end -->
