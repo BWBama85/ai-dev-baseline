@@ -10747,3 +10747,12 @@ survive is the part a later reader needs.
              `adb_mark_present`, and the update lock's `_adb_take_lock`/`_adb_break_lock`/`_adb_release_lock`, which they share)
              `CLAUDE.md` · `CONTRIBUTING.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+- amended:   2026-10-19. Linux's ` (deleted)` is refused only when either reading, the removed
+             directory or one really so named, lies under the checkout, the run's temp root or a pool
+             the run registered. Those are the only directories the stop compares a working
+             directory with, so elsewhere both readings decide the same. Refused machine-wide, §12.12's
+             fixture in one copy of `check-selfcheck.sh` made the stops of the copies the mutation
+             pool ran beside it answer 4: `mutation-nightly` runs 39300712543 and 39336017057 lost
+             §12.2b to it in 7 and 6 of 85 mutants, and in the second it hid
+             `stop-keeps-no-incomplete`'s witness. §12.12 now places its directory under the temp
+             root, and checks that the same ambiguity outside all three is not refused.
