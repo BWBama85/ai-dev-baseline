@@ -2429,21 +2429,35 @@ rm -f "$FXS/.selfcheck-run"
 
 # --- 12.12 Linux: a cwd whose ` (deleted)` cannot be told from its real name -----------------------
 # The kernel appends ` (deleted)` to a removed directory. If a directory really named that way also
-# exists, the two cannot be told apart, and either guess could hide a survivor: refused. macOS's lsof
-# names a removed directory by its last path, with no suffix, so there is nothing to tell apart.
+# exists, the two cannot be told apart, and either guess could hide a survivor: refused — under the
+# checkout, the temp root or a pool, the only directories a verdict is decided by. Anywhere else
+# both readings decide the same, and refusing there let one copy of this suite, run beside others
+# in the mutation pool, make their stops answer 4. macOS's lsof names a removed directory by its
+# last path, with no suffix, so there is nothing to tell apart.
 if [ -e "/proc/$$/cwd" ]; then
   reset_ctl "$FXS"
-  _dd="$work/gone-dir"; mkdir -p "$_dd"
+  _t12="$work/t12"; _dd="$_t12/gone-dir"; mkdir -p "$_dd"
   ( cd "$_dd" || exit; set -m; sleep 300 & printf 'indeleted %s %s %s\n' "$!" "$!" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked" )
+  rm -rf "$_dd"; mkdir -p "$_dd (deleted)"
+  sleep 0 & _deadp=$!; wait "$_deadp"
+  printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 2\nprep 15\nroot %s\ntmp %s\n' \
+    "$_deadp" "$EPOCHSECONDS" "$FXS_P" "$(cd -P "$_t12" && pwd -P)" | synth_record "$FXS"
+  stop_sc "$FXS"
+  eq "$STOP_RC" 4 "a cwd under the run's temp root whose ' (deleted)' suffix cannot be told from a real name is refused: $STOP_OUT"
+  reset_ctl "$FXS"; rm -rf "$_t12" "$FXS/.selfcheck-run"
+  # The same ambiguity outside all three: nothing the stop decides turns on it, so it is not refused.
+  _dd="$work/gone-out"; mkdir -p "$_dd"
+  ( cd "$_dd" || exit; set -m; sleep 300 & printf 'outdeleted %s %s %s\n' "$!" "$!" "$(ps -o lstart= -p "$!")" >> "$FXS/ctl/canary.leaked" )
   rm -rf "$_dd"; mkdir -p "$_dd (deleted)"
   sleep 0 & _deadp=$!; wait "$_deadp"
   printf 'adb-selfcheck-run 1\npid %s\nepoch %s\ngrace 2\nprep 15\nroot %s\ntmp %s\n' \
     "$_deadp" "$EPOCHSECONDS" "$FXS_P" "$work/no-such-root" | synth_record "$FXS"
   stop_sc "$FXS"
-  eq "$STOP_RC" 4 "a cwd whose ' (deleted)' suffix cannot be told from a real name is refused: $STOP_OUT"
+  eq "$STOP_RC" 0 "an ambiguous ' (deleted)' cwd outside the checkout, the temp root and every pool is not refused: $STOP_OUT"
   reset_ctl "$FXS"; rm -rf "$_dd (deleted)" "$FXS/.selfcheck-run"
 else
   ok   # macOS: lsof reports a removed directory by its last path; no suffix to disambiguate
+  ok
 fi
 
 # --- 12.13 no caller group known: no group spreads ownership ----------------------------------------

@@ -1374,13 +1374,26 @@ _stop_bound() {
   return 0
 }
 
+# _stop_cwd_decides <path> — <path> is, or lies under, a directory some verdict is decided by: the
+# checkout, the run's temp root or a pool it registered. Those are the only directories the stop
+# compares a working directory with. An empty one holds every path, so a field left unset refuses.
+_stop_cwd_decides() {
+  local d
+  for d in "$REC_ROOT" "$REC_TMP" "${REC_POOLS[@]}"; do
+    _stop_under "$1" "$d" && return 0
+  done
+  return 1
+}
+
 # _stop_cwds — fill INV_CWD (pid -> cwd as the listing spells it), each listing bounded.
 #
 # Linux: one `find` over /proc, NUL-terminated records split at their FIRST tab, so no byte of a
 # path — a newline, a trailing tab — can forge or truncate a record. The kernel appends ` (deleted)`
 # to a removed directory; it is stripped only when no directory of that full name exists, so a real
-# directory whose name ends that way keeps it. The runner removes its temp root on the way out, and
-# a survivor still inside it is still the run's.
+# directory whose name ends that way keeps it. Where one does exist, the listing is refused only if
+# either reading lies under a directory the stop decides by (`_stop_cwd_decides`): anywhere else
+# both readings give the same answer. The runner removes its temp root on the way out, and a
+# survivor still inside it is still the run's.
 # Elsewhere (macOS): one `lsof` under LC_ALL=C, which names a removed directory by its last path.
 # Neither status is the verdict — `find` fails on any unreadable process, and both can list less
 # than they should — so completeness is proved afterwards, process by process (`_stop_inventory`).
@@ -1400,10 +1413,12 @@ _stop_cwds() {
       case "$p" in ''|*[!0-9]*) continue ;; esac
       [ -n "$c" ] || continue
       # The kernel's ` (deleted)` cannot be told from a name that really ends that way when a directory
-      # of the full name exists: refused, never guessed — either guess can hide a survivor.
+      # of the full name exists: refused, never guessed — either guess can hide a survivor. Not for a
+      # directory outside the checkout, the temp root and the pools, which hides nothing: refusing it
+      # let any process on the machine make every stop answer 4.
       case "$c" in
         *' (deleted)')
-          if [ -e "$c" ]; then   # row-deleted-ambiguous
+          if [ -e "$c" ] && { _stop_cwd_decides "$c" || _stop_cwd_decides "${c% (deleted)}"; }; then   # row-deleted-ambiguous
             INV_ERR="pid $p works in $(_stop_clean "$c"), which is either a removed directory or one really named so — it cannot be told"
             return 1
           fi
