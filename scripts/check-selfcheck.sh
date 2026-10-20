@@ -342,7 +342,7 @@ if [ "$MODE" = mutation ]; then
     'a cancelled run whose working-directory listing skips one of its processes marks its record incomplete' 
   shmutant_mut "stop-incomplete-ignored" \
     '    if [ "$incomplete" -eq 1 ]; then   # row-incomplete' '    if false; then   # row-incomplete' \
-    'a stop over an incomplete record never answers clean'
+    'a stop over an incomplete record keeps the record'
   # Each way the inventory can be less than the whole table, folded into "the whole table".
   shmutant_mut "stop-ps-status-ignored" \
     '  if [ "$rc" -ne 0 ]; then   # row-ps-status' '  if false; then   # row-ps-status' \
@@ -2155,6 +2155,9 @@ if plain_launch "$FXS"; then
   reap_runner
   eq "$STOP_RC" 4 "a stop over an incomplete record never answers clean: $STOP_OUT"
   has "$STOP_OUT" "could not be recorded" "12.4: ...and says why"
+  # The 4 alone cannot tell the refusal from the check after removal, which answers 4 in the same
+  # words once the record is gone. Only the refusal keeps the record.
+  [ -f "$FXS/.selfcheck-run" ] && ok || bad "a stop over an incomplete record keeps the record: $STOP_OUT"
 else
   bad "12.4: the plain run never enrolled"; reap_runner
 fi
