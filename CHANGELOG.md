@@ -8,6 +8,16 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-20
+
+This release closes the loop between a pull request and its reviewer. `/resolve-pr-threads` waits
+for the async reviewer by default, reads the head's CI, sweeps for siblings of every finding, and
+keeps what each resolved thread taught in a pattern ledger whose recurring classes become checklist
+rules; fixes are reviewed locally before they are pushed. The root doc now holds rules only, with
+procedures loading on demand, and mutation harnesses run on the vendored shmutant in a nightly job
+instead of on every pull request. **Upgrading:** if you keep your own sandbox `excludedCommands`,
+add `"git *"` and `"gh *"` to it before updating.
+
 ### Changed
 
 - **The vendored shmutant moves to v0.2.2 (#519).** `scripts/shmutant.sh` is the
@@ -5344,7 +5354,8 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.0.0...v2.1.0
