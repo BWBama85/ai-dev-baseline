@@ -166,7 +166,8 @@ those. The rules below are specific to this repo's code.
    The lane is asked of the runner (`--list`), never grepped out of the arrays, so a step cannot be
    reported in one lane and dispatched in the other. The full reasoning, including what is
    deliberately *not* serialized, is in `scripts/selfcheck.sh`'s "concurrency contract" header. Two
-   concurrent selfcheck runs in one checkout are still unsupported (#250).
+   concurrent selfcheck runs in one checkout are still unsupported: both would run `build.sh` over
+   the same tracked tree.
 
    **In CI no mutation harness runs per pull request** (#456, D126, superseding D91's per-PR half).
    Each costs `rows × suite`, and on a branch that edits a library the per-PR gate above never held
