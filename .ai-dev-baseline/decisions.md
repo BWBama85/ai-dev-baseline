@@ -10775,7 +10775,8 @@ survive is the part a later reader needs.
 - decision:  **One export, a witness that compares names, and two cases that show the export is the
              one used.**
              - **The export.** Right after the work directory is made, and after a failed `mktemp`
-               stops the suite (with `$work` empty, the home would have been `/home`), `HOME` and
+               stops the suite on its exit status as well as its output (with `$work` empty, the
+               home would have been `/home`), `HOME` and
                `CODEX_HOME` are exported to `$work/home` and `$work/home/.codex`. A per-call
                `HOME=`/`CODEX_HOME=` prefix still wins, so the cases that need a home of their own
                are unchanged.
@@ -10785,23 +10786,40 @@ survive is the part a later reader needs.
                because a removed old entry can hide a new one in a count. Only the pinned prefix
                counts, because a real `install.sh` writes `ai-dev-baseline-<date>` backups that are
                not this suite's.
-             - **Absent is not the same as unlistable.** A folder is confirmed absent only when its
-               nearest existing ancestor is a searchable directory. `test -e` is also false under an
-               unsearchable ancestor, so that case answers "cannot list", as do an unreadable folder,
-               a dangling link and a failed `find`. A symlinked folder is followed (`find -H`). The
-               set difference is computed in the shell: no `sort`, `sed` or `comm` whose exit status
-               a process substitution would lose.
+             - **One listing, byte for byte.** `pinned_backups` fills a caller's array from ONE
+               `find -H … -print0`, read with `mapfile -d ''`. Every byte of every name survives,
+               newlines included, and the folder is read once, so no second read can see a different
+               folder. `backup_witness` takes and returns arrays and computes the set difference in
+               the shell, so no `sort`, `sed` or `comm` exit status can be lost in a process
+               substitution.
+             - **Absent is not the same as unlistable.** A folder is confirmed absent only when the
+               nearest ancestor that exists or is a link resolves to a searchable directory.
+               `test -e` is also false under an unsearchable ancestor or a dangling or looping link,
+               so those answer "cannot list". So do an unreadable folder, a dangling link, and a
+               failed `find`, `dirname` or `mktemp`. `dirname`'s output is captured with a sentinel,
+               so a parent whose name ends in a newline is not read as its twin without one. A
+               symlinked folder is followed.
              - **The proof cases.** The `# local edit` repair's backup must appear in the suite's
                home, read by its literal path, holding the edit. An install with no per-call prefix
                must pick up a fallback name written to the suite's Codex config, again by its
                literal path, so a broken export makes the case red and can never write or delete a
                caller's config.
-- review:    the local Codex review found four required issues, all fixed. A symlinked folder was
-             listed as empty. An unsearchable ancestor read as absent. A failing `sort`, `sed` or
+- review:    the first local Codex review found four required issues, all fixed. A symlinked folder
+             was listed as empty. An unsearchable ancestor read as absent. A failing `sort`, `sed` or
              process substitution came back clean. The suite's comments retold this incident, so it
              moved here. Codex also found, as optional, that the Codex case wrote through
              `$CODEX_HOME`, which a broken export would point at a caller's own config; fixed by the
              literal path.
+             - Loop pass 1 found a dangling or looping ancestor read as absent (required). Its two
+               optional findings were a newline in a name splitting the line list, and a failed
+               `dirname` looping. All three were fixed.
+             - Loop pass 2 found two newline cases (required). A trailing newline stripped from
+               `dirname`'s output named the wrong parent. A rename between the newline check and the
+               listing hid an entry. That was the third newline finding in two passes, so the
+               line-per-entry format went in favour of the NUL-delimited single listing above, which
+               ends the class instead of patching its sites. The same pass's optional findings were a
+               newline in the folder's path and `mktemp`'s ignored exit status; both are fixed by the
+               same change.
 - rejected:  - Per-call `HOME=` on the two leaking lines. The next new case would leak the same way.
              - Pointing `pinned-install.sh`'s backups somewhere else. Under the real home is correct
                for a real install.
