@@ -45,20 +45,27 @@ trap 'rm -rf "$work"' EXIT
 # --- the operator's home is not ours (D136) ---------------------------------------------------
 # pinned_backups <dir> — print every `ai-dev-baseline-pinned-*` entry directly under <dir> (the name
 # `pinned-install.sh` gives a backup), one full path per line, in `find`'s order.
-#   0, nothing printed — <dir> is CONFIRMED absent: its nearest existing ancestor is a searchable
-#      directory, so the miss is not an unsearchable ancestor hiding it.
+#   0, nothing printed — <dir> is CONFIRMED absent: the nearest ancestor that exists or is a link
+#      is a searchable directory, so the miss is not a dangling or looping link, nor an unsearchable
+#      ancestor, hiding it.
 #   0, the list — <dir> was listed. A symlinked <dir> is followed (`find -H`).
-#   1 — <dir> cannot be listed: not a directory, a dangling link, an unsearchable ancestor, or a
-#      failed `find`. Never an empty list, which would read as "nothing was written".
+#   1 — <dir> cannot be listed: not a directory, a dangling link, an unresolvable or unsearchable
+#      ancestor, a failed `find` or `dirname`, or a matching name holding a newline, which a
+#      line-per-entry list cannot carry. Never an empty list, which would read as "nothing was written".
 pinned_backups() {
-  local dir="$1" up
+  local dir="$1" up nl
   if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
     up="$dir"
-    while up="$(dirname -- "$up")"; [ ! -e "$up" ]; do :; done
+    while :; do
+      up="$(dirname -- "$up")" && [ -n "$up" ] || return 1
+      { [ -e "$up" ] || [ -L "$up" ]; } && break
+    done
     [ -d "$up" ] && [ -x "$up" ]
     return
   fi
   [ -d "$dir" ] || return 1
+  nl="$(find -H "$dir" -mindepth 1 -maxdepth 1 -name $'ai-dev-baseline-pinned-*\n*' -print 2>/dev/null)" || return 1
+  [ -z "$nl" ] || return 1
   find -H "$dir" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-pinned-*' -print 2>/dev/null || return 1
 }
 # backup_witness <before> <dir> — the entries of <dir> that the <before> list (pinned_backups's
@@ -1370,6 +1377,18 @@ eq "$rc" 1 "witness: a new entry behind a symlinked folder turns it red"
 has "$out" "ai-dev-baseline-pinned-20260606-000000.5" "witness: … naming it"
 ln -s "$work/witness-nowhere" "$work/witness-dangling"
 pinned_backups "$work/witness-dangling" >/dev/null; eq "$?" 1 "witness: a dangling link is unlistable, never absent"
+# An ancestor that is a DANGLING or LOOPING link hides <dir>; that is unlistable, never absent.
+ln -s "$work/witness-nowhere" "$work/witness-danglingparent"
+pinned_backups "$work/witness-danglingparent/backups" >/dev/null; eq "$?" 1 "witness: a folder under a dangling-link ancestor is 1, never confirmed absent"
+ln -s "$work/witness-loop-b" "$work/witness-loop-a"; ln -s "$work/witness-loop-a" "$work/witness-loop-b"
+pinned_backups "$work/witness-loop-a/backups" >/dev/null; eq "$?" 1 "witness: a folder under a looping-link ancestor is 1, never confirmed absent"
+# A matching name holding a NEWLINE cannot be carried by a line list, so it is refused.
+wn="$work/witness-newline"; mkdir -p "$wn/ai-dev-baseline-pinned-A"$'\n'"x"
+pinned_backups "$wn" >/dev/null; eq "$?" 1 "witness: a pinned name holding a newline is 1, never listed in pieces"
+out="$(backup_witness "" "$wn")"; eq "$?" 2 "witness: … and the witness reports it as unlistable, not clean"
+# A `dirname` that FAILS ends the walk with 1, never a loop.
+out="$(dirname() { return 42; }; pinned_backups "$work/witness-missing2/backups"; echo "rc=$?")"
+eq "$out" "rc=1" "witness: a failed dirname is 1, never a loop"
 # A `find` that FAILS is an unlistable folder, never an empty list.
 ff="$work/witness-failfind"; mkdir -p "$ff"
 printf '#!/bin/sh\nexit 42\n' > "$ff/find"; chmod +x "$ff/find"
