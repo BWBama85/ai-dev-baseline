@@ -15,13 +15,15 @@ only by a published release, which is what these entries are the notes for.
   `No module named pytest` while the project's own tests passed. `mypy`, `ruff check` and
   `ruff format` were also inferred from whatever was installed. Now `test` is pytest only where the
   project shows pytest (a pytest config file or table, a `conftest.py`, or pytest as a dependency or
-  command), otherwise `python3 -m unittest discover -s tests` (or `test`) when a test file there
-  imports `unittest`, otherwise no gate. `mypy` and `ruff` gates need the tool's own config. The
+  command), otherwise unittest discovery over `tests/` (or `test/`) when it holds `test*.py`,
+  otherwise no gate. The unittest gate also fails when no test ran, so a folder of pytest-style
+  tests is never reported green. `mypy` and `ruff` gates need the tool's own config. The
   lint gate is now `ruff check --no-fix --no-fix-only .`, so a project with `fix = true` can no
   longer have its source rewritten by a gate. A repo with no classic manifest but a `Pipfile`,
   `tox.ini`, a requirements file, a pytest, mypy or ruff config file, or a `conftest.py` is now
   detected as Python too. **An adopted Python project's detected gates may change:** run
-  `project-gates.sh status` from the install the project uses to see the new set, and declare
+  `bash <lib>/project-gates.sh status`, where `<lib>` is the `scripts/lib` of the install the project
+  uses (`~/.claude/scripts/lib` for a global Claude install), to see the new set, and declare
   `[gates]` in `agents.toml` if it is not what you want. The rules are in
   `docs/per-project-overrides.md`.
 

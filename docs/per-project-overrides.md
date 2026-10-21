@@ -209,9 +209,13 @@ never from what happens to be installed on the machine (#568):
   `pytest-cov` included) as a dependency or command in `pyproject.toml`,
   `Pipfile`, `setup.py`, `setup.cfg`, `tox.ini`, a root `*requirements*.txt`
   or `requirements/*.txt`. A dependency is a requirement line, a quoted
-  string or a key that starts with the name, so a sentence that mentions
-  pytest is not one. Otherwise, when a `test*.py` directly in `tests/` (else
-  `test/`) imports `unittest`, it is `python3 -m unittest discover -s <dir>`.
+  string or a key that starts with the name, or a quoted command running
+  `-m pytest`, so a sentence that mentions pytest is not one. Otherwise,
+  when `tests/` (else `test/`) directly holds a `test*.py`, it is unittest
+  discovery over that directory (`unittest discover -s <dir>`, run through
+  a one-line `python3 -c` wrapper). The wrapper also fails when **no test
+  ran**, so a folder of pytest-style tests is never reported green; plain
+  `python -m unittest` exits 0 in that case before Python 3.12.
   Otherwise there is no `test` gate. A pytest project without pytest
   installed gets a red gate on purpose: the environment is incomplete. When
   nothing shows pytest but one of the files it would be read from cannot be

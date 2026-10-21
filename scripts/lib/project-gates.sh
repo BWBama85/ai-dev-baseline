@@ -444,17 +444,18 @@ _adb_py_toml_table() {
 # What names pytest. Case-insensitive, and `pytest` must be followed by a non-alphanumeric or the
 # line end, so `pytest-cov` and `pytest_asyncio` count and `pytestish` does not.
 #   requirements files        a requirement line that starts with it;
-#   TOML files and setup.py   a quoted string that starts with it (`"pytest>=8"`), or a key that is
-#                             it (`pytest = "^8"`), on a line that does not start with `#`;
+#   TOML files and setup.py   a quoted string that starts with it (`"pytest>=8"`) or runs it
+#                             (`"python -m pytest"`), or a key that is it (`pytest = "^8"`), on a
+#                             line that does not start with `#`;
 #   setup.cfg and tox.ini     a value or continuation line that starts with it, or `-m pytest`.
 # Prose that mentions pytest does not count, unless a quoted string starts with it.
 _ADB_PY_RE_REQ='^[[:space:]]*pytest([^A-Za-z0-9]|$)'
-_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#[:space:]].*)?["'\'']pytest([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
+_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#[:space:]].*)?["'\''](pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
 _ADB_PY_RE_INI='^([[:space:]]+|[^#;=[:space:]][^#;=]*=[[:space:]]*|[^#;]*-m[[:space:]]+)pytest([^A-Za-z0-9]|$)'
 
 # Files that only a Python project carries. Any one of them makes the repo a Python project; the
 # gates still need their own evidence below.
-_ADB_PY_MARKERS="pyproject.toml setup.py setup.cfg requirements.txt Pipfile tox.ini pytest.toml .pytest.toml pytest.ini .pytest.ini conftest.py mypy.ini .mypy.ini ruff.toml .ruff.toml"
+_ADB_PY_MARKERS="pyproject.toml setup.py setup.cfg requirements.txt Pipfile tox.ini pytest.toml .pytest.toml pytest.ini .pytest.ini conftest.py tests/conftest.py test/conftest.py mypy.ini .mypy.ini ruff.toml .ruff.toml"
 
 # _adb_py_project <root> — 0 when <root> holds a Python marker file, a root *requirements*.txt or a
 # requirements/*.txt.
@@ -502,21 +503,24 @@ _adb_py_uses_pytest() {
   return 1
 }
 
-# _adb_py_unittest_dir <root> — prints `tests`, else `test`: the first whose own test*.py files
-# (unittest's default discovery pattern; one level, never a recursive scan) import unittest.
-# The import is the evidence, because a file holding only pytest-style functions makes
-# `unittest discover` find no tests, and before Python 3.12 that exits 0.
-_adb_py_unittest_dir() {
+# _adb_py_test_dir <root> — prints `tests`, else `test`: the first that directly holds a test*.py
+# (unittest's default discovery pattern). One level only, never a recursive scan.
+_adb_py_test_dir() {
   local root="$1" dir f
   for dir in tests test; do
     for f in "$root/$dir"/test*.py; do
-      [ -f "$f" ] || continue
-      if grep -qE '^[[:space:]]*(import[[:space:]]+unittest|from[[:space:]]+unittest([.[:space:]]|$))' -- "$f" 2>/dev/null; then
-        printf '%s' "$dir"; return 0
-      fi
+      [ -f "$f" ] && { printf '%s' "$dir"; return 0; }
     done
   done
   return 1
+}
+
+# _adb_py_unittest_cmd <dir> — prints the unittest gate for <dir>. It is `unittest discover -s <dir>`
+# run through `unittest.main(exit=False)`, so the gate can also fail when NO test ran: a dir of
+# pytest-style functions gives unittest nothing to run, and before Python 3.12 that exits 0.
+# Exit 0 = tests ran and passed, 1 = a test failed or errored, or none ran (said on stderr).
+_adb_py_unittest_cmd() {
+  printf '%s' "python3 -c 'import sys, unittest; r = unittest.main(module=None, argv=[\"unittest\", \"discover\", \"-s\", \"$1\"], exit=False).result; sys.exit(0 if r.testsRun and r.wasSuccessful() else 1 if r.testsRun else \"unittest: no tests ran\")'"
 }
 
 # Python: every gate comes from what the PROJECT configures. A tool on PATH alone is not
@@ -526,14 +530,15 @@ _adb_py_unittest_dir() {
 # incomplete.
 #
 #   test       pytest evidence (_adb_py_uses_pytest) → `pytest -q`, else `python3 -m pytest -q`.
-#              No pytest evidence, and a tests/ or test/ test*.py imports unittest →
-#              `python3 -m unittest discover -s <dir>`. Pytest evidence that could not be read →
-#              no test gate: choosing unittest would be a guess.
+#              No pytest evidence, and tests/ or test/ holds a test*.py → unittest discovery over
+#              that dir (_adb_py_unittest_cmd). Pytest evidence that could not be read → no test
+#              gate: choosing unittest would be a guess.
 #   typecheck  mypy.ini, .mypy.ini, a [tool.mypy…] table in pyproject.toml or [mypy] in setup.cfg.
 #   lint/format  ruff.toml, .ruff.toml or a [tool.ruff…] table in pyproject.toml.
 #              `--no-fix --no-fix-only` override a project's `fix = true` / `fix-only = true`,
 #              under either of which a bare `ruff check` rewrites source.
-# A config file that cannot be read is named on stderr and configures nothing.
+# A file whose CONTENTS are the evidence and cannot be read is named on stderr and counts as no
+# evidence. A file whose EXISTENCE is the evidence (pytest.ini, mypy.ini, ruff.toml…) counts unread.
 _adb_eco_python() {
   local root="$1" dir rc=0
   _adb_py_project "$root" || return 1
@@ -543,8 +548,8 @@ _adb_eco_python() {
     if   _adb_have pytest;  then d_test="pytest -q"
     elif _adb_have python3; then d_test="python3 -m pytest -q"
     fi
-  elif [ "$rc" -eq 1 ] && _adb_have python3 && dir="$(_adb_py_unittest_dir "$root")"; then
-    d_test="python3 -m unittest discover -s $dir"
+  elif [ "$rc" -eq 1 ] && _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
+    d_test="$(_adb_py_unittest_cmd "$dir")"
   fi
 
   if _adb_have mypy && { [ -f "$root/mypy.ini" ] || [ -f "$root/.mypy.ini" ] \

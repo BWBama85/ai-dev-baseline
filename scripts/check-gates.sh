@@ -922,14 +922,17 @@ py_proj() {     # <name> — a fresh project dir with a pyproject.toml that says
 ut_file() {     # <path> — a test file that imports unittest
   mkdir -p "$(dirname "$1")"; printf 'import unittest\n' > "$1"
 }
-UNITTEST_TESTS="test${TAB}python3 -m unittest discover -s tests"
+ut_cmd() {      # <dir> — the unittest gate, spelled out here rather than taken from the library
+  printf "python3 -c 'import sys, unittest; r = unittest.main(module=None, argv=[\"unittest\", \"discover\", \"-s\", \"%s\"], exit=False).result; sys.exit(0 if r.testsRun and r.wasSuccessful() else 1 if r.testsRun else \"unittest: no tests ran\")'" "$1"
+}
+UNITTEST_TESTS="test${TAB}$(ut_cmd tests)"
 
-# test: unittest when a test*.py in tests/ (else test/) imports unittest and nothing shows pytest.
+# test: unittest when tests/ (else test/) holds a test*.py and nothing shows pytest.
 d="$(py_proj unittest)"; ut_file "$d/tests/test_a.py"
 eq "$(py_detect "$d" python3 pytest ruff mypy)" "$UNITTEST_TESTS" \
   "python: tests/test_a.py with no pytest evidence → unittest, and nothing inferred from PATH"
 d="$(py_proj unittest-test)"; ut_file "$d/test/test_a.py"
-eq "$(py_detect "$d" python3)" "test${TAB}python3 -m unittest discover -s test" "python: test/ → -s test"
+eq "$(py_detect "$d" python3)" "test${TAB}$(ut_cmd test)" "python: test/ → -s test"
 d="$(py_proj unittest-both)"; ut_file "$d/tests/test_a.py"; ut_file "$d/test/test_b.py"
 eq "$(py_detect "$d" python3)" "$UNITTEST_TESTS" "python: tests/ and test/ both qualify → tests/ wins"
 d="$(py_proj unittest-nested)"; mkdir -p "$d/tests/unit"; ut_file "$d/tests/unit/test_a.py"; : > "$d/tests/helpers.py"
@@ -968,6 +971,7 @@ pyproject-dep|pyproject.toml|[project.optional-dependencies]\ndev = ["pytest>=8"
 pyproject-plugin|pyproject.toml|[dependency-groups]\ntest = ["pytest-cov"]\n
 poetry-dep|pyproject.toml|[tool.poetry.group.dev.dependencies]\npytest = "^8"\n
 setup-py|setup.py|setup(tests_require=['pytest'])\n
+hatch-script|pyproject.toml|[tool.hatch.envs.test.scripts]\ntest = "python -m pytest {args}"\n
 pipfile|Pipfile|[dev-packages]\npytest = "*"\n
 req-dev|requirements-dev.txt|pytest==8.*\n
 req-dir|requirements/test.txt|  PyTest>=8\n
@@ -1003,12 +1007,10 @@ eq "$(py_detect "$d" python3 pytest)" "test${TAB}pytest -q" "python: a dependenc
 d="$(py_proj tox-commands)"; ut_file "$d/tests/test_a.py"; printf '[testenv]\ncommands = python -m pytest {posargs}\n' > "$d/tox.ini"
 eq "$(py_detect "$d" python3 pytest)" "test${TAB}pytest -q" "python: tox.ini commands running python -m pytest → pytest"
 
-# unittest needs a test file that imports it. A file of pytest-style functions makes
-# `unittest discover` run nothing, which exits 0 before Python 3.12.
+# The test file's contents are never read: a pytest-style file with no pytest evidence still gets
+# the unittest gate, which then fails because no test ran (the execution cases below).
 d="$(py_proj pytest-style)"; mkdir -p "$d/tests"; printf 'def test_a():\n    assert False\n' > "$d/tests/test_a.py"
-eq "$(py_detect "$d" python3 pytest)" "" "python: test*.py with no unittest import and no pytest evidence → no test gate"
-d="$(py_proj from-unittest)"; mkdir -p "$d/tests"; printf 'from unittest import TestCase\n' > "$d/tests/test_a.py"
-eq "$(py_detect "$d" python3)" "$UNITTEST_TESTS" "python: from unittest import … → unittest"
+eq "$(py_detect "$d" python3 pytest)" "$UNITTEST_TESTS" "python: a pytest-style test*.py with no pytest evidence → the unittest gate"
 
 # Any Python marker file makes the repo a Python project, not only the four classic manifests.
 # A test file alone does not.
@@ -1021,10 +1023,12 @@ while IFS='|' read -r name file content want; do
 done <<'EOF'
 pytest-ini|pytest.ini||pytest -q
 conftest|conftest.py||pytest -q
+conftest-tests|tests/conftest.py||pytest -q
+conftest-test|test/conftest.py||pytest -q
 pipfile|Pipfile|[dev-packages]\npytest = "*"\n|pytest -q
 req-dev|requirements-dev.txt|pytest\n|pytest -q
 tox|tox.ini|[testenv]\ndeps = pytest\n|pytest -q
-pipfile-unittest|Pipfile|[packages]\nrequests = "*"\n|python3 -m unittest discover -s tests
+pipfile-unittest|Pipfile|[packages]\nrequests = "*"\n|unittest.main(module=None
 ruff-toml|ruff.toml||ruff check --no-fix --no-fix-only .
 mypy-ini|mypy.ini||mypy .
 EOF
@@ -1134,6 +1138,14 @@ if command -v python3 >/dev/null 2>&1; then
   err="$(adb_run_gates "$d" 2>&1)"; rc=$?
   no  "$rc" "python: a failing unittest suite fails the detected gate"
   has "$err" 'failing gates: test' "python: ...and the failing gate is named"
+  # A suite unittest finds nothing in must fail too, on every Python version. Python 3.12+ would
+  # exit 5 on its own; `unittest.main(exit=False)` does not, so this fails only through the gate's
+  # own testsRun check, whatever the host python3 is.
+  d="$(py_proj run-unittest-empty)"; mkdir -p "$d/tests"
+  printf 'def test_a():\n    assert False\n' > "$d/tests/test_a.py"
+  err="$(adb_run_gates "$d" 2>&1)"; rc=$?
+  no  "$rc" "python: a test*.py unittest runs nothing from fails the detected gate"
+  has "$err" 'unittest: no tests ran' "python: ...and says no tests ran"
 else
   printf 'SKIP: python3 not installed — skipping the unittest execution case\n' >&2
 fi
