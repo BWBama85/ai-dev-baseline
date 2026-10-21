@@ -10,7 +10,7 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
-- **The pinned-install suite stops writing into your real `~/.claude/backups` (#567).** Two of
+- **The pinned-install suite stops writing into your real `~/.claude/backups` (#567, D136).** Two of
   `scripts/check-pinned-install.sh`'s repair cases backed up an edited fixture file under the real
   `$HOME` on every run, so each selfcheck added two `ai-dev-baseline-pinned-*` folders that nothing
   removed (731 on one machine). The same calls also read the real `~/.codex/config.toml`, so a
