@@ -153,8 +153,9 @@ compose:
 
 `scripts/lib/project-gates.sh` auto-detects gates for the
 common ecosystems (Node via `package.json` + lockfile → `pnpm`/`npm`/`yarn`/
-`bun`; Rust via `Cargo.toml`; Go via `go.mod`; Python via `pyproject.toml`/
-`setup.py`/`setup.cfg`/`requirements.txt`; PHP via `composer.json`). A
+`bun`; Rust via `Cargo.toml`; Go via `go.mod`; Python via `pyproject.toml`,
+`setup.py`, `setup.cfg`, a requirements file, `Pipfile`, `tox.ini`, a pytest,
+mypy or ruff config file, or `conftest.py`; PHP via `composer.json`). A
 project's `agents.toml` can override any of the four built-in labels —
 `typecheck`, `lint`, `test`, `format` — individually:
 
@@ -203,22 +204,32 @@ never from what happens to be installed on the machine (#568):
 - **`test`** is `pytest -q` (or `python3 -m pytest -q` when `pytest` is not
   on `PATH`) when the project shows pytest: a `pytest.toml`, `.pytest.toml`,
   `pytest.ini` or `.pytest.ini`; a `conftest.py` at the root, in `tests/` or
-  in `test/`; or a non-comment mention of `pytest` (a config table or a
-  dependency, plugins such as `pytest-cov` included) in `pyproject.toml`,
-  `setup.cfg`, `setup.py`, `tox.ini`, `Pipfile`, a root `*requirements*.txt`
-  or `requirements/*.txt`. Otherwise, when `tests/` (else `test/`) directly
-  holds a `test*.py`, it is `python3 -m unittest discover -s <dir>`.
+  in `test/`; a `[tool.pytest…]` table in `pyproject.toml`, `[tool:pytest]`
+  in `setup.cfg` or `[pytest]` in `tox.ini`; or `pytest` (plugins such as
+  `pytest-cov` included) as a dependency or command in `pyproject.toml`,
+  `Pipfile`, `setup.py`, `setup.cfg`, `tox.ini`, a root `*requirements*.txt`
+  or `requirements/*.txt`. A dependency is a requirement line, a quoted
+  string or a key that starts with the name, so a sentence that mentions
+  pytest is not one. Otherwise, when a `test*.py` directly in `tests/` (else
+  `test/`) imports `unittest`, it is `python3 -m unittest discover -s <dir>`.
   Otherwise there is no `test` gate. A pytest project without pytest
-  installed gets a red gate on purpose: the environment is incomplete. If
-  one of those files cannot be read, the adapter says so and emits no `test`
-  gate rather than guessing.
+  installed gets a red gate on purpose: the environment is incomplete. When
+  nothing shows pytest but one of the files it would be read from cannot be
+  read, the adapter names the file on stderr and emits no `test` gate rather
+  than guessing.
 - **`typecheck`** is `mypy .` only with `mypy.ini`, `.mypy.ini`, a
   `[tool.mypy]` table in `pyproject.toml` or `[mypy]` in `setup.cfg`.
 - **`lint`** and **`format`** are `ruff check --no-fix --no-fix-only .` and
   `ruff format --check .` only with `ruff.toml`, `.ruff.toml` or a
   `[tool.ruff]` table in `pyproject.toml`. The two `--no-fix` flags override
-  a project's `fix = true` or `fix-only = true`, either of which would make a
-  bare `ruff check` rewrite the source and exit 0.
+  a project's `fix = true` or `fix-only = true`, under either of which a
+  bare `ruff check` rewrites the source (and `fix-only` also exits 0 on the
+  violations it leaves).
+
+The detector reads those files line by line, not as TOML or INI: a table
+header must start its line (spaces and quoted parts inside the brackets are
+fine, and names are case-sensitive), and a header-shaped line inside a
+multi-line string is read as a header.
 
 A configured tool that is not on `PATH` is dropped, never emitted as a gate
 that cannot run. A Python project with nothing runnable is not claimed, so

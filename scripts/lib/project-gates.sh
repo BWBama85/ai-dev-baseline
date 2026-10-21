@@ -362,13 +362,9 @@ _adb_emit() { _adb_resolve_record "$1" "$2" "$3"; }
 # "extensible, not a fixed list", and this is what that means here: a new ecosystem is one
 # function plus one token in _ADB_ECOSYSTEMS, in the one place the order is written down.
 #
-# WHAT DID NOT CHANGE, deliberately: the semantics are still SINGLE-PRIMARY FIRST-WINS, and
-# the first four adapters carry the previous blocks' logic and every one of their command
-# strings unchanged — restructured into functions, so "verbatim" would overstate it, but no
-# ecosystem's resolved command moved in that change (Python's did later, in #568). Extensible is a statement
-# about how the NEXT ecosystem gets added, not a licence to start running every detected
-# ecosystem's gates — that is a behavioural change for every existing polyglot repo, and this
-# file's header has named it a follow-up since before #81.
+# The semantics are SINGLE-PRIMARY FIRST-WINS. Extensible is a statement about how the NEXT
+# ecosystem gets added, not a licence to run every detected ecosystem's gates: that would change
+# the gates of every existing polyglot repo, and the file header puts it out of scope.
 #
 # Each adapter takes <root> and assigns the four `d_*` variables of its CALLER. They are
 # plain `d_typecheck`/`d_lint`/`d_test`/`d_format` locals in _adb_gate_records, visible to
@@ -421,51 +417,103 @@ _adb_eco_go() {
   [ -n "$d_typecheck$d_lint$d_test$d_format" ]
 }
 
-# _adb_py_grep <file> <ERE> — 0 when <file> exists and a line matches (case-insensitive), 1 when
-# it is absent or nothing matches, 2 when it exists but cannot be read. The 2 is announced on
-# stderr here, so no caller can fold it silently into "no evidence".
+# _adb_py_grep <file> <grep-flags> <ERE> — 0 when <file> exists and a line matches, 1 when it is
+# absent or nothing matches, 2 when it exists but cannot be read. The 2 is announced on stderr
+# here, so no caller can fold it silently into "no evidence". <grep-flags> is `-qE` or `-qiE`:
+# package names are case-insensitive, TOML and INI section names are not.
 _adb_py_grep() {
-  local rc
+  local rc=0
   [ -f "$1" ] || return 1
-  grep -qiE -e "$2" -- "$1" 2>/dev/null; rc=$?
+  grep "$2" -e "$3" -- "$1" 2>/dev/null || rc=$?
   [ "$rc" -le 1 ] && return "$rc"
   printf 'project-gates: python: cannot read %s — it is not counted as evidence\n' "$1" >&2
   return 2
 }
 
-# _adb_py_uses_pytest <root> — 0 when the project shows pytest, 1 when it does not, 2 when an
-# evidence file could not be read (so the answer is unknown). Evidence is:
-#   - a file pytest reads as its config: pytest.toml, .pytest.toml, pytest.ini, .pytest.ini; or a
-#     conftest.py at the root, in tests/ or in test/;
-#   - or, in pyproject.toml, setup.cfg, setup.py, tox.ini, Pipfile, a root *requirements*.txt or
-#     requirements/*.txt: a line, with no `#` before it, naming `pytest` at a word start. One
-#     pattern covers the config tables (`[tool.pytest]`, `[tool.pytest.ini_options]`,
-#     `[tool:pytest]`, `[pytest]`) and the dependency spellings (`pytest>=8`, `"pytest-cov"`,
-#     `pytest = "*"`). A pytest plugin counts, because it requires pytest.
+# _adb_py_toml_table <name> — prints an ERE matching a `[tool.<name>]` table header, its
+# subtables (`[tool.<name>.lint]`) and array tables (`[[tool.<name>.overrides]]`), with the
+# spaces and quoted key parts TOML allows (`[ tool . ruff ]`, `["tool"."ruff"]`). Anchored at the
+# line start, so a commented-out header does not match. Not read: dotted keys with no header
+# (`tool.ruff.line-length = 100`). A header-shaped line inside a multi-line string does match.
+_adb_py_toml_table() {
+  local q="[\"']?"
+  printf '^[[:space:]]*\\[\\[?[[:space:]]*%stool%s[[:space:]]*\\.[[:space:]]*%s%s%s[[:space:]]*[].]' \
+    "$q" "$q" "$q" "$1" "$q"
+}
+
+# What names pytest. Case-insensitive, and `pytest` must be followed by a non-alphanumeric or the
+# line end, so `pytest-cov` and `pytest_asyncio` count and `pytestish` does not.
+#   requirements files        a requirement line that starts with it;
+#   TOML files and setup.py   a quoted string that starts with it (`"pytest>=8"`), or a key that is
+#                             it (`pytest = "^8"`), on a line that does not start with `#`;
+#   setup.cfg and tox.ini     a value or continuation line that starts with it, or `-m pytest`.
+# Prose that mentions pytest does not count, unless a quoted string starts with it.
+_ADB_PY_RE_REQ='^[[:space:]]*pytest([^A-Za-z0-9]|$)'
+_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#[:space:]].*)?["'\'']pytest([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
+_ADB_PY_RE_INI='^([[:space:]]+|[^#;=[:space:]][^#;=]*=[[:space:]]*|[^#;]*-m[[:space:]]+)pytest([^A-Za-z0-9]|$)'
+
+# Files that only a Python project carries. Any one of them makes the repo a Python project; the
+# gates still need their own evidence below.
+_ADB_PY_MARKERS="pyproject.toml setup.py setup.cfg requirements.txt Pipfile tox.ini pytest.toml .pytest.toml pytest.ini .pytest.ini conftest.py mypy.ini .mypy.ini ruff.toml .ruff.toml"
+
+# _adb_py_project <root> — 0 when <root> holds a Python marker file, a root *requirements*.txt or a
+# requirements/*.txt.
+_adb_py_project() {
+  local root="$1" f
+  for f in $_ADB_PY_MARKERS; do [ -f "$root/$f" ] && return 0; done
+  for f in "$root"/*requirements*.txt "$root"/requirements/*.txt; do [ -f "$f" ] && return 0; done
+  return 1
+}
+
+# _adb_py_uses_pytest <root> — 0 when the project shows pytest, 1 when it does not, 2 when it
+# does not but an evidence file could not be read, so the answer is unknown. The first positive
+# answer wins, so an unreadable file beside positive evidence changes nothing. Evidence is:
+#   - a file pytest reads as its config (pytest.toml, .pytest.toml, pytest.ini, .pytest.ini), or a
+#     conftest.py at the root, in tests/ or in test/. Existence is the evidence, read or not;
+#   - a `[tool.pytest…]` table in pyproject.toml, `[tool:pytest]` in setup.cfg, `[pytest]` in tox.ini;
+#   - pytest named, by the rules above, in pyproject.toml, Pipfile, setup.py, setup.cfg, tox.ini, a
+#     root *requirements*.txt or requirements/*.txt.
 _adb_py_uses_pytest() {
-  local root="$1" f rc unknown=0
-  local re='^([^#]*[^#A-Za-z0-9_-])?pytest'
+  local root="$1" f i unknown=0
   for f in pytest.toml .pytest.toml pytest.ini .pytest.ini conftest.py tests/conftest.py test/conftest.py; do
     [ -f "$root/$f" ] && return 0
   done
-  # An unmatched glob stays literal and fails _adb_py_grep's -f test, so it needs no guard.
-  for f in "$root/pyproject.toml" "$root/setup.cfg" "$root/setup.py" "$root/tox.ini" "$root/Pipfile" \
-           "$root"/*requirements*.txt "$root"/requirements/*.txt; do
-    _adb_py_grep "$f" "$re"; rc=$?
-    [ "$rc" -eq 0 ] && return 0
-    [ "$rc" -eq 2 ] && unknown=1
+  # file · grep flags · ERE, three fields per check. An unmatched glob stays literal and fails
+  # _adb_py_grep's -f test.
+  local checks=(
+    pyproject.toml -qE  "$(_adb_py_toml_table pytest)"
+    pyproject.toml -qiE "$_ADB_PY_RE_QUOTED"
+    Pipfile        -qiE "$_ADB_PY_RE_QUOTED"
+    setup.py       -qiE "$_ADB_PY_RE_QUOTED"
+    setup.cfg      -qE  '^[[:space:]]*\[tool:pytest\]'
+    setup.cfg      -qiE "$_ADB_PY_RE_INI"
+    tox.ini        -qE  '^[[:space:]]*\[pytest\]'
+    tox.ini        -qiE "$_ADB_PY_RE_INI"
+  )
+  for f in "$root"/*requirements*.txt "$root"/requirements/*.txt; do
+    checks+=("${f#"$root"/}" -qiE "$_ADB_PY_RE_REQ")
+  done
+  for ((i = 0; i < ${#checks[@]}; i += 3)); do
+    if _adb_py_grep "$root/${checks[i]}" "${checks[i+1]}" "${checks[i+2]}"; then return 0
+    elif [ "$?" -eq 2 ]; then unknown=1
+    fi
   done
   [ "$unknown" -eq 1 ] && return 2
   return 1
 }
 
-# _adb_py_test_dir <root> — prints `tests`, else `test`: the first that directly holds a test*.py
-# (unittest's default discovery pattern). One level only, never a recursive scan.
-_adb_py_test_dir() {
+# _adb_py_unittest_dir <root> — prints `tests`, else `test`: the first whose own test*.py files
+# (unittest's default discovery pattern; one level, never a recursive scan) import unittest.
+# The import is the evidence, because a file holding only pytest-style functions makes
+# `unittest discover` find no tests, and before Python 3.12 that exits 0.
+_adb_py_unittest_dir() {
   local root="$1" dir f
   for dir in tests test; do
     for f in "$root/$dir"/test*.py; do
-      [ -f "$f" ] && { printf '%s' "$dir"; return 0; }
+      [ -f "$f" ] || continue
+      if grep -qE '^[[:space:]]*(import[[:space:]]+unittest|from[[:space:]]+unittest([.[:space:]]|$))' -- "$f" 2>/dev/null; then
+        printf '%s' "$dir"; return 0
+      fi
     done
   done
   return 1
@@ -478,37 +526,35 @@ _adb_py_test_dir() {
 # incomplete.
 #
 #   test       pytest evidence (_adb_py_uses_pytest) → `pytest -q`, else `python3 -m pytest -q`.
-#              No pytest evidence, and tests/ or test/ holds a test*.py →
-#              `python3 -m unittest discover -s <dir>`. Python 3.12 and later exit 5 when that
-#              finds no tests, so a pytest-style suite read as unittest fails, never passes.
-#              Unreadable pytest evidence → no test gate: choosing unittest would be a guess.
+#              No pytest evidence, and a tests/ or test/ test*.py imports unittest →
+#              `python3 -m unittest discover -s <dir>`. Pytest evidence that could not be read →
+#              no test gate: choosing unittest would be a guess.
 #   typecheck  mypy.ini, .mypy.ini, a [tool.mypy…] table in pyproject.toml or [mypy] in setup.cfg.
 #   lint/format  ruff.toml, .ruff.toml or a [tool.ruff…] table in pyproject.toml.
 #              `--no-fix --no-fix-only` override a project's `fix = true` / `fix-only = true`,
-#              either of which makes a bare `ruff check` rewrite source and exit 0.
-# Section headers must start their line, so a commented-out header is not evidence.
+#              under either of which a bare `ruff check` rewrites source.
+# A config file that cannot be read is named on stderr and configures nothing.
 _adb_eco_python() {
-  local root="$1" dir rc
-  [ -f "$root/pyproject.toml" ] || [ -f "$root/setup.py" ] \
-    || [ -f "$root/setup.cfg" ] || [ -f "$root/requirements.txt" ] || return 1
+  local root="$1" dir rc=0
+  _adb_py_project "$root" || return 1
 
-  _adb_py_uses_pytest "$root"; rc=$?
+  _adb_py_uses_pytest "$root" || rc=$?
   if [ "$rc" -eq 0 ]; then
     if   _adb_have pytest;  then d_test="pytest -q"
     elif _adb_have python3; then d_test="python3 -m pytest -q"
     fi
-  elif [ "$rc" -eq 1 ] && _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
+  elif [ "$rc" -eq 1 ] && _adb_have python3 && dir="$(_adb_py_unittest_dir "$root")"; then
     d_test="python3 -m unittest discover -s $dir"
   fi
 
   if _adb_have mypy && { [ -f "$root/mypy.ini" ] || [ -f "$root/.mypy.ini" ] \
-       || _adb_py_grep "$root/pyproject.toml" '^[[:space:]]*\[+tool\.mypy[].]' \
-       || _adb_py_grep "$root/setup.cfg"      '^[[:space:]]*\[mypy\]'; }; then
+       || _adb_py_grep "$root/pyproject.toml" -qE "$(_adb_py_toml_table mypy)" \
+       || _adb_py_grep "$root/setup.cfg"      -qE '^[[:space:]]*\[mypy\]'; }; then
     d_typecheck="mypy ."
   fi
 
   if _adb_have ruff && { [ -f "$root/ruff.toml" ] || [ -f "$root/.ruff.toml" ] \
-       || _adb_py_grep "$root/pyproject.toml" '^[[:space:]]*\[+tool\.ruff[].]'; }; then
+       || _adb_py_grep "$root/pyproject.toml" -qE "$(_adb_py_toml_table ruff)"; }; then
     d_lint="ruff check --no-fix --no-fix-only ."
     d_format="ruff format --check ."
   fi
