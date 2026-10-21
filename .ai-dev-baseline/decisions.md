@@ -10756,3 +10756,76 @@ survive is the part a later reader needs.
              §12.2b to it in 7 and 6 of 85 mutants, and in the second it hid
              `stop-keeps-no-incomplete`'s witness. §12.12 now places its directory under the temp
              root, and checks that the same ambiguity outside all three is not refused.
+
+## D136 — #567: the pinned-install suite runs in a home of its own, and proves it wrote nothing to the real one
+- date:      2026-10-21
+- category:  project-delta
+- unknown:   #567. `scripts/check-pinned-install.sh` ran 117 of its `pinned-install.sh` install, status,
+             uninstall and upgrade calls (142 counting every subcommand), plus `install.sh --pinned`,
+             `uninstall.sh --pinned` and `install.sh --help`, against the operator's real `HOME`. Two of them repair a locally edited fixture file: the `# local
+             edit` case and the `# my edit` case. That repair backs the edit up under
+             `$HOME/.claude/backups/ai-dev-baseline-pinned-<UTC>.<pid>` (`pinned-install.sh`'s backup
+             path), so every run left two folders that nothing removed. On 2026-10-20 the owner's
+             machine held 731 of them, dated from #285's landing on 2026-08-18. All 731 were checked
+             and deleted by hand: 366 ended in `# local edit` and 365 in `# my edit`. The same calls
+             READ the real home too, through `${CODEX_HOME:-$HOME/.codex}/config.toml`. Run under a
+             stand-in home holding a malformed `project_doc_fallback_filenames`, `main`'s suite went
+             `307 passed, 8 failed`, all 8 of them Codex budget cases, and left 2 pinned backups in
+             the stand-in.
+- decision:  **One export, a witness that compares names, and two cases that show the export is the
+             one used.**
+             - **The export.** Right after the work directory is made, and after a failed `mktemp`
+               stops the suite on its exit status as well as its output (with `$work` empty, the
+               home would have been `/home`), `HOME` and
+               `CODEX_HOME` are exported to `$work/home` and `$work/home/.codex`. A per-call
+               `HOME=`/`CODEX_HOME=` prefix still wins, so the cases that need a home of their own
+               are unchanged.
+             - **The real-home check.** Before the export, the suite records the
+               `ai-dev-baseline-pinned-*` entries in the real `~/.claude/backups`. At the end it
+               fails, naming each one, on any entry that was not there before. It compares names,
+               because a removed old entry can hide a new one in a count. Only the pinned prefix
+               counts, because a real `install.sh` writes `ai-dev-baseline-<date>` backups that are
+               not this suite's.
+             - **One listing, byte for byte.** `pinned_backups` fills a caller's array from ONE
+               `find -H … -print0`, read with `mapfile -d ''`. Every byte of every name survives,
+               newlines included, and the folder is read once, so no second read can see a different
+               folder. `backup_witness` takes and returns arrays and computes the set difference in
+               the shell, so no `sort`, `sed` or `comm` exit status can be lost in a process
+               substitution.
+             - **Absent is not the same as unlistable.** A folder is confirmed absent only when the
+               nearest ancestor that exists or is a link resolves to a searchable directory.
+               `test -e` is also false under an unsearchable ancestor or a dangling or looping link,
+               so those answer "cannot list". So do an unreadable folder, a dangling link, and a
+               failed `find`, `dirname` or `mktemp`. `dirname`'s output is captured with a sentinel,
+               so a parent whose name ends in a newline is not read as its twin without one. A
+               symlinked folder is followed.
+             - **The proof cases.** The `# local edit` repair's backup must appear in the suite's
+               home, read by its literal path, holding the edit. An install with no per-call prefix
+               must pick up a fallback name written to the suite's Codex config, again by its
+               literal path, so a broken export makes the case red and can never write or delete a
+               caller's config.
+- review:    the first local Codex review found four required issues, all fixed. A symlinked folder
+             was listed as empty. An unsearchable ancestor read as absent. A failing `sort`, `sed` or
+             process substitution came back clean. The suite's comments retold this incident, so it
+             moved here. Codex also found, as optional, that the Codex case wrote through
+             `$CODEX_HOME`, which a broken export would point at a caller's own config; fixed by the
+             literal path.
+             - Loop pass 1 found a dangling or looping ancestor read as absent (required). Its two
+               optional findings were a newline in a name splitting the line list, and a failed
+               `dirname` looping. All three were fixed.
+             - Loop pass 2 found two newline cases (required). A trailing newline stripped from
+               `dirname`'s output named the wrong parent. A rename between the newline check and the
+               listing hid an entry. That was the third newline finding in two passes, so the
+               line-per-entry format went in favour of the NUL-delimited single listing above, which
+               ends the class instead of patching its sites. The same pass's optional findings were a
+               newline in the folder's path and `mktemp`'s ignored exit status; both are fixed by the
+               same change.
+- rejected:  - Per-call `HOME=` on the two leaking lines. The next new case would leak the same way.
+             - Pointing `pinned-install.sh`'s backups somewhere else. Under the real home is correct
+               for a real install.
+             - Resetting `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL` and `ADB_BACKUP_DIR` too. #567 scopes
+               `HOME` and `CODEX_HOME`, and the header says plainly that the others are inherited.
+- placement: `scripts/check-pinned-install.sh` (the header, the export after `mktemp -d`,
+             `pinned_backups`, `backup_witness`, the two `home:` cases, and the witness fixtures and
+             real-home check before `check_summary`); `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

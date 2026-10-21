@@ -7,6 +7,13 @@
 # operator's edits or left orphans behind. Every one of those is driven here against fixtures under
 # `mktemp -d`, and every closed rule is required to go RED on its own input.
 #
+# THE OPERATOR'S HOME IS NOT A FIXTURE (D136). `HOME` and `CODEX_HOME` are exported once, below, to a
+# home inside the work directory, so every path the installers build from them lands there. A case
+# that needs a home of its own sets one per call, which wins. Inherited `XDG_CONFIG_HOME`,
+# `GIT_CONFIG_GLOBAL` and `ADB_BACKUP_DIR` are NOT reset. What enforces it: the real-home check at
+# the end of the suite (a new `ai-dev-baseline-pinned-*` entry in the real `~/.claude/backups` is a
+# failure), and two `home:` cases that show the installers used the suite's home.
+#
 # The fixture artifact is built FROM THE WORKING TREE, so the current install.sh / pinned-install.sh
 # / library set is what gets exercised — not whatever HEAD happens to say.
 #
@@ -30,8 +37,70 @@ ROOT="$(pwd)"
 
 PI="$ROOT/scripts/lib/pinned-install.sh"
 
-work="$(mktemp -d)"
+# A FAILED mktemp must stop the suite here: with `$work` empty, the home below would be `/home`.
+work="$(mktemp -d)" && [ -n "$work" ] && [ -d "$work" ] || { echo "check-pinned-install: could not create a work directory" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
+
+# --- the operator's home is not ours (D136) ---------------------------------------------------
+# pinned_backups <dir> <array> — set <array> (a caller's array, by name) to every
+# `ai-dev-baseline-pinned-*` entry directly under <dir> (the name `pinned-install.sh` gives a
+# backup), as full paths. ONE NUL-delimited listing, so every byte of every name survives, newlines
+# included, and the folder is read once.
+#   0, <array> empty — <dir> is CONFIRMED absent: the nearest ancestor that exists or is a link is a
+#      searchable directory, so the miss is not a dangling or looping link, nor an unsearchable
+#      ancestor, hiding it.
+#   0, <array> set — <dir> was listed. A symlinked <dir> is followed (`find -H`).
+#   1 — <dir> cannot be listed: not a directory, a dangling link, an unresolvable or unsearchable
+#      ancestor, or a failed `find`, `dirname` or `mktemp`. Never an empty array, which would read as
+#      "nothing was written".
+pinned_backups() {
+  local dir="$1" up tf
+  local -n _pb_out="$2"
+  _pb_out=()
+  if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+    up="$dir"
+    while :; do
+      # dirname ends its output with one newline; the sentinel keeps any that belong to the name itself.
+      up="$(dirname -- "$up" && printf x)" || return 1
+      up="${up%x}"; up="${up%$'\n'}"
+      [ -n "$up" ] || return 1
+      { [ -e "$up" ] || [ -L "$up" ]; } && break
+    done
+    [ -d "$up" ] && [ -x "$up" ]
+    return
+  fi
+  [ -d "$dir" ] || return 1
+  tf="$(mktemp "$work/.pinned-list.XXXXXX")" || return 1
+  if ! find -H "$dir" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-pinned-*' -print0 > "$tf" 2>/dev/null \
+     || ! mapfile -d '' -t _pb_out < "$tf"; then
+    _pb_out=(); rm -f "$tf"; return 1
+  fi
+  rm -f "$tf"
+}
+# backup_witness <before> <dir> <new> — set the array named <new> to the entries of <dir> that the
+# array named <before> (a pinned_backups result) lacks. 0 when there are none, 1 when there are, 2
+# when <dir> cannot be listed. It compares NAMES byte for byte, so removing one entry cannot hide a
+# new one, and the difference is computed in the shell, where no helper's exit status can be lost.
+backup_witness() {
+  local -n _bw_before="$1" _bw_new="$3"
+  local dir="$2" e
+  local -a _bw_after=()
+  local -A _bw_seen=()
+  _bw_new=()
+  pinned_backups "$dir" _bw_after || return 2
+  for e in "${_bw_before[@]}"; do _bw_seen["$e"]=1; done
+  for e in "${_bw_after[@]}"; do [ -n "${_bw_seen["$e"]+x}" ] || _bw_new+=("$e"); done
+  [ "${#_bw_new[@]}" -eq 0 ] && return 0
+  return 1
+}
+
+# Taken BEFORE the export, which is the last moment `$HOME` still names the operator's home.
+REAL_BACKUPS="${HOME:+$HOME/.claude/backups}"
+# shellcheck disable=SC2034  # read through backup_witness's nameref
+real_before=(); real_listable=1
+if [ -n "$REAL_BACKUPS" ]; then pinned_backups "$REAL_BACKUPS" real_before || real_listable=0; fi
+export HOME="$work/home" CODEX_HOME="$work/home/.codex"
+mkdir -p "$work/home/.codex" || { echo "check-pinned-install: could not create the suite's home" >&2; exit 1; }
 
 # --- the fixture artifact ----------------------------------------------------------------------
 # A tarball shaped exactly like a published release: `ai-dev-baseline-<version>/` at the top, and a
@@ -441,7 +510,19 @@ has "$out" "altered  .claude/skills/cleanup/SKILL.md" "status: names a locally m
 # THE DOCUMENTED CODE, not just the text. An altered payload is an unverifiable one, and reporting
 # that in prose while returning 0 makes the machine answer disagree with the human one.
 eq "$rc" 20 "status: an altered payload exits 20, as the contract says"
+# THE REPAIR'S BACKUP LANDS IN THE SUITE'S HOME (D136): exactly one new entry there, holding the edit.
+# Read by its LITERAL path, so a broken export makes this case red on its own.
+# shellcheck disable=SC2034  # read through backup_witness's nameref
+home_before=(); home_new=()
+pinned_backups "$work/home/.claude/backups" home_before || bad "home: the suite's own backups folder could not be listed"
 bash "$PI" install --project "$P" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+backup_witness home_before "$work/home/.claude/backups" home_new; rc=$?
+eq "$rc" 1 "home: the repair's backup lands in the suite's own home, not the operator's"
+if [ "$rc" -eq 1 ] && [ "${#home_new[@]}" -eq 1 ]; then
+  has "$(cat "${home_new[0]}/.claude/skills/cleanup/SKILL.md" 2>/dev/null)" "# local edit" "home: … and it holds the edit it preserved"
+else
+  bad "home: expected exactly one new backup in the suite's home, got ${#home_new[@]}: $(printf '%q ' "${home_new[@]}")"
+fi
 
 mv "$P/.claude/adb/lib/ci-health.sh" "$work/parked.sh"
 bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?
@@ -1013,6 +1094,16 @@ printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$cxhome/config.toml"
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PCG/svc/GUIDE.md"
 out="$(CODEX_HOME="$cxhome" bash "$PI" install --project "$PCG" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback): a configured fallback doc is measured"
+# AN UNPREFIXED CALL READS THE SUITE'S OWN CODEX_HOME (D136). The config is written to the suite's
+# home BY ITS LITERAL PATH, never through `$CODEX_HOME`: a broken export must make this case red, and
+# must never write, or delete, a caller's own config.
+PSH="$(new_project codexsuitehome)"
+mkdir -p "$PSH/svc"
+printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$work/home/.codex/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PSH/svc/GUIDE.md"
+out="$(bash "$PI" install --project "$PSH" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+rm -f "$work/home/.codex/config.toml"
+has "$out" "the AGENTS.md chain down to svc/ is" "home: an unprefixed install reads the fallback names in the suite's own CODEX_HOME"
 # A `]` inside a quoted name is part of the name, not the end of the array.
 PCQ="$(new_project codexbracketname)"
 cxhome2="$work/codexhome2"; mkdir -p "$cxhome2" "$PCQ/svc"
@@ -1263,5 +1354,108 @@ file_isnt "$globalhome/.claude/adb" "global: an ordinary install writes nothing 
 out="$(HOME="$globalhome" bash "$ROOT/uninstall.sh" --agent claude --agent codex 2>&1)"; rc=$?
 yes "$rc" "global: an ordinary uninstall.sh run still succeeds"
 [ -L "$globalhome/.claude/CLAUDE.md" ] && bad "global: uninstall left the root doc linked" || ok
+
+# ================================ the operator's home (D136) ====================================
+
+# THE WITNESS, DRIVEN RED ON FIXTURES — the only place it can be, since the suite never writes the
+# real home. Every answer it gives is exercised.
+wl_list=(); w_before=(); w_new=()
+wb="$work/witness-backups"
+pinned_backups "$wb" wl_list; eq "$?/${#wl_list[@]}" "0/0" "witness: a folder that does not exist under a searchable parent lists nothing, and is not an error"
+pinned_backups "$work/witness-missing/a/b/backups" wl_list; eq "$?/${#wl_list[@]}" "0/0" "witness: … nor is one whose missing ancestors stop at a searchable directory"
+backup_witness w_before "$wb" w_new; eq "$?" 0 "witness: an absent folder that stays absent is clean"
+mkdir -p "$wb/ai-dev-baseline-pinned-20260101-000000.1" "$wb/ai-dev-baseline-20260101-000000"
+pinned_backups "$wb" w_before; eq "$?/${#w_before[@]}" "0/1" "witness: an existing folder lists its one pinned entry, and nothing else"
+backup_witness w_before "$wb" w_new; eq "$?" 0 "witness: an unchanged folder is clean"
+mkdir -p "$wb/ai-dev-baseline-20260202-000000"
+backup_witness w_before "$wb" w_new; eq "$?" 0 "witness: a backup without -pinned- in its name is not this suite's"
+mkdir -p "$wb/ai-dev-baseline-pinned-20260303-000000.2"
+backup_witness w_before "$wb" w_new; rc=$?
+eq "$rc/${#w_new[@]}" "1/1" "witness: a new pinned backup turns it red"
+has "${w_new[*]}" "ai-dev-baseline-pinned-20260303-000000.2" "witness: … naming the new entry"
+# One entry removed and another added leaves the COUNT unchanged; the names still differ.
+rm -rf "$wb/ai-dev-baseline-pinned-20260101-000000.1" "$wb/ai-dev-baseline-pinned-20260303-000000.2"
+mkdir -p "$wb/ai-dev-baseline-pinned-20260404-000000.3"
+backup_witness w_before "$wb" w_new; rc=$?
+eq "$rc" 1 "witness: one entry removed and another added is still a new entry — names, not a count"
+has "${w_new[*]}" "ai-dev-baseline-pinned-20260404-000000.3" "witness: … and it is the one named"
+# NAMES ARE COMPARED BYTE FOR BYTE, newlines included: renaming an entry to the same name plus a
+# trailing newline is a new entry, and a newline in the folder's own path survives the listing.
+wn="$work/witness-newline"; mkdir -p "$wn/ai-dev-baseline-pinned-A"
+pinned_backups "$wn" w_before
+mv "$wn/ai-dev-baseline-pinned-A" "$wn/ai-dev-baseline-pinned-A"$'\n'
+backup_witness w_before "$wn" w_new; rc=$?
+eq "$rc/${#w_new[@]}" "1/1" "witness: a name that differs only by a trailing newline is a new entry"
+eq "${w_new[0]:-}" "$wn/ai-dev-baseline-pinned-A"$'\n' "witness: … kept byte for byte"
+wnp="$work/witness-nl"$'\n'"parent/backups"; mkdir -p "$wnp/ai-dev-baseline-pinned-B"
+pinned_backups "$wnp" wl_list; eq "$?/${#wl_list[@]}" "0/1" "witness: a newline in the folder's path is one entry, not two lines"
+eq "${wl_list[0]:-}" "$wnp/ai-dev-baseline-pinned-B" "witness: … with its full path intact"
+# A SYMLINKED backups folder is followed, as the real one may be.
+wt="$work/witness-target"; wsl="$work/witness-link"
+mkdir -p "$wt/ai-dev-baseline-pinned-20260505-000000.4"; ln -s "$wt" "$wsl"
+pinned_backups "$wsl" w_before; eq "$?/${#w_before[@]}" "0/1" "witness: a symlinked folder is listed through its link"
+mkdir -p "$wt/ai-dev-baseline-pinned-20260606-000000.5"
+backup_witness w_before "$wsl" w_new; rc=$?
+eq "$rc" 1 "witness: a new entry behind a symlinked folder turns it red"
+has "${w_new[*]}" "ai-dev-baseline-pinned-20260606-000000.5" "witness: … naming it"
+ln -s "$work/witness-nowhere" "$work/witness-dangling"
+pinned_backups "$work/witness-dangling" wl_list; eq "$?" 1 "witness: a dangling link is unlistable, never absent"
+# An ancestor that is a DANGLING or LOOPING link hides <dir>; that is unlistable, never absent.
+ln -s "$work/witness-nowhere" "$work/witness-danglingparent"
+pinned_backups "$work/witness-danglingparent/backups" wl_list; eq "$?" 1 "witness: a folder under a dangling-link ancestor is 1, never confirmed absent"
+ln -s "$work/witness-loop-b" "$work/witness-loop-a"; ln -s "$work/witness-loop-a" "$work/witness-loop-b"
+pinned_backups "$work/witness-loop-a/backups" wl_list; eq "$?" 1 "witness: a folder under a looping-link ancestor is 1, never confirmed absent"
+# A `dirname` that FAILS ends the walk with 1, never a loop.
+out="$(dirname() { return 42; }; pinned_backups "$work/witness-missing2/backups" wl_list; echo "rc=$?")"
+eq "$out" "rc=1" "witness: a failed dirname is 1, never a loop"
+# A `find` that FAILS is an unlistable folder, never an empty list.
+ff="$work/witness-failfind"; mkdir -p "$ff"
+printf '#!/bin/sh\nexit 42\n' > "$ff/find"; chmod +x "$ff/find"
+PATH="$ff:$PATH" pinned_backups "$wb" wl_list; eq "$?/${#wl_list[@]}" "1/0" "witness: a failed find is 1, never a list"
+PATH="$ff:$PATH" backup_witness w_before "$wb" w_new; eq "$?" 2 "witness: … and the witness reports it as unlistable, not clean"
+# Unreadable folders, and folders under an unsearchable ancestor, are unlistable — never absent.
+# Root reads through mode 000, so these are skipped there, and say so.
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$wb"
+  pinned_backups "$wb" wl_list; rc=$?
+  backup_witness w_before "$wb" w_new; rc2=$?
+  chmod 755 "$wb"
+  eq "$rc" 1 "witness: a folder that cannot be read is 1, never an empty list"
+  eq "$rc2" 2 "witness: … and the witness reports it as unlistable, not clean"
+  wp="$work/witness-parent"; mkdir -p "$wp/backups/ai-dev-baseline-pinned-20260707-000000.6"
+  pinned_backups "$wp/backups" w_before
+  chmod 000 "$wp"
+  pinned_backups "$wp/backups" wl_list; rc=$?
+  backup_witness w_before "$wp/backups" w_new; rc2=$?
+  chmod 755 "$wp"
+  eq "$rc" 1 "witness: a folder under an unsearchable parent is 1, never confirmed absent"
+  eq "$rc2" 2 "witness: … and the witness reports it as unlistable, not clean"
+  # An unsearchable parent whose name ends in a newline, beside a searchable twin without it: the
+  # walk must test the parent it was given, not the twin a stripped newline would name.
+  wq="$work/witness-twin"; mkdir -p "$wq/parent" "$wq/parent"$'\n'"/backups/ai-dev-baseline-pinned-C"
+  chmod 000 "$wq/parent"$'\n'
+  pinned_backups "$wq/parent"$'\n'"/backups" wl_list; rc=$?
+  chmod 755 "$wq/parent"$'\n'
+  eq "$rc" 1 "witness: an unsearchable parent named with a trailing newline is not mistaken for its twin"
+else
+  printf 'SKIP: witness(unreadable, unsearchable parent) — running as root, which reads through mode 000\n'
+fi
+
+# THE REAL CHECK: no new pinned backup appeared in the operator's real backups folder while the suite
+# ran. A backup's name does not say who wrote it, so a new one is reported as OBSERVED: a real pinned
+# install, or a copy of this suite from before D136, running at the same time would also make one.
+if [ -z "$REAL_BACKUPS" ]; then
+  printf 'SKIP: home(real) — HOME was unset when the suite started, so there is no real home to protect\n'
+elif [ "$real_listable" -eq 0 ]; then
+  bad "home: the real $REAL_BACKUPS could not be listed when the suite started, so it cannot prove it wrote nothing there"
+else
+  real_new=()
+  backup_witness real_before "$REAL_BACKUPS" real_new; rc=$?
+  case "$rc" in
+    0) ok ;;
+    1) bad "home: a new pinned backup appeared in the real $REAL_BACKUPS while the suite ran (this suite writes none; a concurrent pinned install would also explain it): $(printf '%q ' "${real_new[@]}")" ;;
+    *) bad "home: the real $REAL_BACKUPS could not be listed at the end of the suite" ;;
+  esac
+fi
 
 check_summary check-pinned-install
