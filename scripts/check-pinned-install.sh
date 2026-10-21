@@ -1441,9 +1441,9 @@ else
   printf 'SKIP: witness(unreadable, unsearchable parent) — running as root, which reads through mode 000\n'
 fi
 
-# THE REAL CHECK: nothing this suite ran added a pinned backup to the operator's real backups folder.
-# Another copy of this suite running at the same time in the same home would trip it too; the names
-# it prints say whose they are.
+# THE REAL CHECK: no new pinned backup appeared in the operator's real backups folder while the suite
+# ran. A backup's name does not say who wrote it, so a new one is reported as OBSERVED: a real pinned
+# install, or a copy of this suite from before D136, running at the same time would also make one.
 if [ -z "$REAL_BACKUPS" ]; then
   printf 'SKIP: home(real) — HOME was unset when the suite started, so there is no real home to protect\n'
 elif [ "$real_listable" -eq 0 ]; then
@@ -1453,7 +1453,7 @@ else
   backup_witness real_before "$REAL_BACKUPS" real_new; rc=$?
   case "$rc" in
     0) ok ;;
-    1) bad "home: the suite wrote into the real $REAL_BACKUPS: $(printf '%q ' "${real_new[@]}")" ;;
+    1) bad "home: a new pinned backup appeared in the real $REAL_BACKUPS while the suite ran (this suite writes none; a concurrent pinned install would also explain it): $(printf '%q ' "${real_new[@]}")" ;;
     *) bad "home: the real $REAL_BACKUPS could not be listed at the end of the suite" ;;
   esac
 fi
