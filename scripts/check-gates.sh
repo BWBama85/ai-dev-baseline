@@ -914,6 +914,12 @@ py_detect() {   # <dir> [tool...] — detect with ONLY these tools on "PATH"
     _adb_have() { case "$_py_tools" in *" $1 "*) return 0 ;; esac; return 1; }
     adb_detect_gates "$d" )
 }
+py_entry() {    # <detect|status|run> <dir> [tool...] — one entry point, same faked tools
+  local fn="adb_$1_gates" d="$2"; shift 2
+  ( _py_tools=" $* "
+    _adb_have() { case "$_py_tools" in *" $1 "*) return 0 ;; esac; return 1; }
+    "$fn" "$d" )
+}
 py_proj() {     # <name> — a fresh project dir with a pyproject.toml that says nothing about tools
   local d="$work/py-$1"; mkdir -p "$d"
   printf '[project]\nname = "a"\nversion = "0.1"\n' > "$d/pyproject.toml"
@@ -923,7 +929,7 @@ ut_file() {     # <path> — a test file that imports unittest
   mkdir -p "$(dirname "$1")"; printf 'import unittest\n' > "$1"
 }
 ut_cmd() {      # <dir> — the unittest gate, spelled out here rather than taken from the library
-  printf "python3 -c 'import sys, unittest; r = unittest.main(module=None, argv=[\"unittest\", \"discover\", \"-s\", \"%s\"], exit=False).result; sys.exit(0 if r.testsRun and r.wasSuccessful() else 1 if r.testsRun else \"unittest: no tests ran\")'" "$1"
+  printf "python3 -c 'import sys, unittest; r = unittest.main(module=None, argv=[\"unittest\", \"discover\", \"-s\", \"%s\"], exit=False).result; sys.exit(\"unittest: no tests ran\" if not (r.testsRun or r.skipped) else 0 if r.wasSuccessful() else 1)'" "$1"
 }
 UNITTEST_TESTS="test${TAB}$(ut_cmd tests)"
 
@@ -972,6 +978,7 @@ pyproject-plugin|pyproject.toml|[dependency-groups]\ntest = ["pytest-cov"]\n
 poetry-dep|pyproject.toml|[tool.poetry.group.dev.dependencies]\npytest = "^8"\n
 setup-py|setup.py|setup(tests_require=['pytest'])\n
 hatch-script|pyproject.toml|[tool.hatch.envs.test.scripts]\ntest = "python -m pytest {args}"\n
+spaced-dep|pyproject.toml|[dependency-groups]\ntest = [" pytest>=8"]\n
 pipfile|Pipfile|[dev-packages]\npytest = "*"\n
 req-dev|requirements-dev.txt|pytest==8.*\n
 req-dir|requirements/test.txt|  PyTest>=8\n
@@ -998,6 +1005,7 @@ toml-prose|pyproject.toml|description = "Migrated away from pytest"\n
 toml-longer-key|Pipfile|[packages]\npytestish = "*"\n
 ini-prose|setup.cfg|[metadata]\ndescription = Migrated away from pytest\n
 ini-comment|tox.ini|[testenv]\n# commands = pytest\n
+toml-inline-comment|pyproject.toml|license = "MIT" # was "pytest"\n
 EOF
 
 # Pytest named after a `#` that is inside a string, not a comment, still counts.
@@ -1035,26 +1043,32 @@ EOF
 d="$work/py-tests-only"; ut_file "$d/tests/test_a.py"
 eq "$(py_detect "$d" python3 pytest)" "" "python: tests/test_a.py with no Python marker file → not a Python project"
 
-# An evidence file that cannot be read makes the runner unknown: say so, and guess nothing. Any
-# positive evidence still decides, and a config file's existence is evidence unread.
+# A file whose contents would decide a gate, and cannot be read, stops detection loudly: every entry
+# point returns 2, so the turn-end gate blocks instead of running a set nobody chose. Positive
+# evidence elsewhere still decides, and a config file's existence is evidence unread.
 d="$(py_proj unreadable)"; ut_file "$d/tests/test_a.py"; chmod 000 "$d/pyproject.toml"
 if [ -r "$d/pyproject.toml" ]; then
   printf 'SKIP: chmod 000 does not stop this user reading — skipping the unreadable-evidence cases\n' >&2
 else
-  err="$(py_detect "$d" python3 pytest 2>&1 >/dev/null)"; out="$(py_detect "$d" python3 pytest 2>/dev/null)"
-  eq  "$out" "" "python: unreadable pyproject.toml → no test gate, never unittest by default"
-  has "$err" "python: cannot read $d/pyproject.toml" "python: the unreadable evidence file is named on stderr"
+  for entry in detect status run; do
+    err="$(py_entry "$entry" "$d" python3 pytest 2>&1 >/dev/null)"; rc=$?
+    eq  "$rc" 2 "python: unreadable pyproject.toml → $entry refuses (2), never a unittest guess"
+    has "$err" "python: cannot read $d/pyproject.toml" "python: $entry names the unreadable file"
+    has "$err" "FATAL — python: a file that decides which gates run could not be read" "python: $entry says why it stopped"
+  done
   printf 'pytest\n' > "$d/requirements.txt"
   eq "$(py_detect "$d" python3 pytest 2>/dev/null)" "test${TAB}pytest -q" \
     "python: unreadable pyproject.toml beside a requirements.txt naming pytest → pytest"
+  py_detect "$d" python3 pytest ruff >/dev/null 2>&1; rc=$?
+  eq "$rc" 2 "python: ...but with ruff installed, whether ruff is configured is unknown → refuses"
   d="$(py_proj unreadable-ini)"; ut_file "$d/tests/test_a.py"; : > "$d/pytest.ini"; chmod 000 "$d/pytest.ini"
   eq "$(py_detect "$d" python3 pytest 2>/dev/null)" "test${TAB}pytest -q" "python: an unreadable pytest.ini still shows pytest"
   chmod 644 "$d/pytest.ini"
-  d="$(py_proj unreadable-ruff)"; printf '[tool.ruff]\n' >> "$d/pyproject.toml"; chmod 000 "$d/pyproject.toml"
-  err="$(py_detect "$d" ruff 2>&1 >/dev/null)"
-  eq  "$(py_detect "$d" ruff 2>/dev/null)" "" "python: an unreadable pyproject.toml configures no ruff gate"
-  has "$err" "python: cannot read $d/pyproject.toml" "python: ...and says which file it could not read"
-  chmod 644 "$d/pyproject.toml"
+  # pytest.ini settles the test runner before setup.cfg is read, so only mypy's check reads it.
+  d="$(py_proj unreadable-setup-cfg)"; : > "$d/pytest.ini"; printf '[mypy]\n' > "$d/setup.cfg"; chmod 000 "$d/setup.cfg"
+  py_detect "$d" mypy >/dev/null 2>&1; rc=$?
+  eq "$rc" 2 "python: an unreadable setup.cfg leaves mypy's config unknown → refuses"
+  chmod 644 "$d/setup.cfg"
   d="$work/py-unreadable"
 fi
 chmod 644 "$d/pyproject.toml"
@@ -1146,6 +1160,10 @@ if command -v python3 >/dev/null 2>&1; then
   err="$(adb_run_gates "$d" 2>&1)"; rc=$?
   no  "$rc" "python: a test*.py unittest runs nothing from fails the detected gate"
   has "$err" 'unittest: no tests ran' "python: ...and says no tests ran"
+  # ...but a suite whose tests are all skipped passed, as unittest itself says.
+  d="$(py_proj run-unittest-skipped)"; mkdir -p "$d/tests"
+  printf 'import unittest\nclass T(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n        raise unittest.SkipTest("no backend")\n    def test_a(self):\n        pass\n' > "$d/tests/test_a.py"
+  adb_run_gates "$d" >/dev/null 2>&1; yes $? "python: a suite skipped in setUpClass passes the detected gate"
 else
   printf 'SKIP: python3 not installed — skipping the unittest execution case\n' >&2
 fi

@@ -374,7 +374,8 @@ _adb_emit() { _adb_resolve_record "$1" "$2" "$3"; }
 # in both halves.
 #
 # An adapter returns 0 when it CLAIMED the repo (it found at least one command) and 1 when it
-# did not, so the caller's loop can stop at the first claim without re-testing emptiness.
+# did not, so the caller's loop can stop at the first claim without re-testing emptiness. It
+# returns 2 when it cannot decide — it has said why on stderr — and detection stops with 2.
 _ADB_ECOSYSTEMS="node rust go python php"
 
 _adb_eco_node() {
@@ -444,13 +445,14 @@ _adb_py_toml_table() {
 # What names pytest. Case-insensitive, and `pytest` must be followed by a non-alphanumeric or the
 # line end, so `pytest-cov` and `pytest_asyncio` count and `pytestish` does not.
 #   requirements files        a requirement line that starts with it;
-#   TOML files and setup.py   a quoted string that starts with it (`"pytest>=8"`) or runs it
-#                             (`"python -m pytest"`), or a key that is it (`pytest = "^8"`), on a
-#                             line that does not start with `#`;
+#   TOML files and setup.py   a quoted string that starts with it (`"pytest>=8"`, `" pytest"`) or
+#                             runs it (`"python -m pytest"`), or a key that is it (`pytest = "^8"`),
+#                             before any `#` that is outside a string;
 #   setup.cfg and tox.ini     a value or continuation line that starts with it, or `-m pytest`.
-# Prose that mentions pytest does not count, unless a quoted string starts with it.
+# Prose that mentions pytest does not count, unless a quoted string starts with it: a
+# `description = "pytest …"` is read as a dependency.
 _ADB_PY_RE_REQ='^[[:space:]]*pytest([^A-Za-z0-9]|$)'
-_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#[:space:]].*)?["'\''](pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
+_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#"'\'']|"[^"]*"|'\''[^'\'']*'\'')*["'\''][[:space:]]*(pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
 _ADB_PY_RE_INI='^([[:space:]]+|[^#;=[:space:]][^#;=]*=[[:space:]]*|[^#;]*-m[[:space:]]+)pytest([^A-Za-z0-9]|$)'
 
 # Files that only a Python project carries. Any one of them makes the repo a Python project; the
@@ -463,6 +465,26 @@ _adb_py_project() {
   local root="$1" f
   for f in $_ADB_PY_MARKERS; do [ -f "$root/$f" ] && return 0; done
   for f in "$root"/*requirements*.txt "$root"/requirements/*.txt; do [ -f "$f" ] && return 0; done
+  return 1
+}
+
+# _adb_py_tool_configured <root> mypy|ruff — 0 when the project configures the tool, 1 when it does
+# not, 2 when it does not but a config file could not be read.
+_adb_py_tool_configured() {
+  local root="$1" tool="$2" rc unknown=0
+  case "$tool" in
+    mypy) [ -f "$root/mypy.ini" ] || [ -f "$root/.mypy.ini" ] ;;
+    ruff) [ -f "$root/ruff.toml" ] || [ -f "$root/.ruff.toml" ] ;;
+  esac && return 0
+  rc=0; _adb_py_grep "$root/pyproject.toml" -qE "$(_adb_py_toml_table "$tool")" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 2 ] && unknown=1
+  if [ "$tool" = mypy ]; then
+    rc=0; _adb_py_grep "$root/setup.cfg" -qE '^[[:space:]]*\[mypy\]' || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 2 ] && unknown=1
+  fi
+  [ "$unknown" -eq 1 ] && return 2
   return 1
 }
 
@@ -518,9 +540,10 @@ _adb_py_test_dir() {
 # _adb_py_unittest_cmd <dir> — prints the unittest gate for <dir>. It is `unittest discover -s <dir>`
 # run through `unittest.main(exit=False)`, so the gate can also fail when NO test ran: a dir of
 # pytest-style functions gives unittest nothing to run, and before Python 3.12 that exits 0.
-# Exit 0 = tests ran and passed, 1 = a test failed or errored, or none ran (said on stderr).
+# Exit 0 = tests ran (or were skipped) and passed, 1 = a test failed or errored, or nothing ran or
+# was skipped (said on stderr) — the rule Python 3.12's own exit 5 uses.
 _adb_py_unittest_cmd() {
-  printf '%s' "python3 -c 'import sys, unittest; r = unittest.main(module=None, argv=[\"unittest\", \"discover\", \"-s\", \"$1\"], exit=False).result; sys.exit(0 if r.testsRun and r.wasSuccessful() else 1 if r.testsRun else \"unittest: no tests ran\")'"
+  printf '%s' "python3 -c 'import sys, unittest; r = unittest.main(module=None, argv=[\"unittest\", \"discover\", \"-s\", \"$1\"], exit=False).result; sys.exit(\"unittest: no tests ran\" if not (r.testsRun or r.skipped) else 0 if r.wasSuccessful() else 1)'"
 }
 
 # Python: every gate comes from what the PROJECT configures. A tool on PATH alone is not
@@ -531,16 +554,16 @@ _adb_py_unittest_cmd() {
 #
 #   test       pytest evidence (_adb_py_uses_pytest) → `pytest -q`, else `python3 -m pytest -q`.
 #              No pytest evidence, and tests/ or test/ holds a test*.py → unittest discovery over
-#              that dir (_adb_py_unittest_cmd). Pytest evidence that could not be read → no test
-#              gate: choosing unittest would be a guess.
+#              that dir (_adb_py_unittest_cmd).
 #   typecheck  mypy.ini, .mypy.ini, a [tool.mypy…] table in pyproject.toml or [mypy] in setup.cfg.
 #   lint/format  ruff.toml, .ruff.toml or a [tool.ruff…] table in pyproject.toml.
 #              `--no-fix --no-fix-only` override a project's `fix = true` / `fix-only = true`,
 #              under either of which a bare `ruff check` rewrites source.
-# A file whose CONTENTS are the evidence and cannot be read is named on stderr and counts as no
-# evidence. A file whose EXISTENCE is the evidence (pytest.ini, mypy.ini, ruff.toml…) counts unread.
+# A file whose EXISTENCE is the evidence (pytest.ini, mypy.ini, ruff.toml…) counts unread. When a
+# file whose CONTENTS would decide a gate cannot be read and nothing else decided it, the adapter
+# returns 2: detection stops and says so, because guessing would pick or drop a gate unseen.
 _adb_eco_python() {
-  local root="$1" dir rc=0
+  local root="$1" dir rc=0 unknown=0
   _adb_py_project "$root" || return 1
 
   _adb_py_uses_pytest "$root" || rc=$?
@@ -548,20 +571,26 @@ _adb_eco_python() {
     if   _adb_have pytest;  then d_test="pytest -q"
     elif _adb_have python3; then d_test="python3 -m pytest -q"
     fi
-  elif [ "$rc" -eq 1 ] && _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
+  elif [ "$rc" -eq 2 ]; then
+    unknown=1
+  elif _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
     d_test="$(_adb_py_unittest_cmd "$dir")"
   fi
 
-  if _adb_have mypy && { [ -f "$root/mypy.ini" ] || [ -f "$root/.mypy.ini" ] \
-       || _adb_py_grep "$root/pyproject.toml" -qE "$(_adb_py_toml_table mypy)" \
-       || _adb_py_grep "$root/setup.cfg"      -qE '^[[:space:]]*\[mypy\]'; }; then
-    d_typecheck="mypy ."
+  if _adb_have mypy; then
+    rc=0; _adb_py_tool_configured "$root" mypy || rc=$?
+    [ "$rc" -eq 0 ] && d_typecheck="mypy ."
+    [ "$rc" -eq 2 ] && unknown=1
+  fi
+  if _adb_have ruff; then
+    rc=0; _adb_py_tool_configured "$root" ruff || rc=$?
+    [ "$rc" -eq 0 ] && { d_lint="ruff check --no-fix --no-fix-only ."; d_format="ruff format --check ."; }
+    [ "$rc" -eq 2 ] && unknown=1
   fi
 
-  if _adb_have ruff && { [ -f "$root/ruff.toml" ] || [ -f "$root/.ruff.toml" ] \
-       || _adb_py_grep "$root/pyproject.toml" -qE "$(_adb_py_toml_table ruff)"; }; then
-    d_lint="ruff check --no-fix --no-fix-only ."
-    d_format="ruff format --check ."
+  if [ "$unknown" -eq 1 ]; then
+    printf 'project-gates: FATAL — python: a file that decides which gates run could not be read (named above); refusing to detect gates rather than guess\n' >&2
+    return 2
   fi
   [ -n "$d_typecheck$d_lint$d_test$d_format" ]
 }
@@ -676,7 +705,7 @@ _adb_gate_records() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local toml="$root/agents.toml"
   _adb_manifest_readable "$root" || return 2
-  local d_typecheck="" d_lint="" d_test="" d_format="" key eco
+  local d_typecheck="" d_lint="" d_test="" d_format="" key eco rc
 
   # --- single-primary-ecosystem detection: first ecosystem that yields a command wins.
   # The adapters assign the four `d_*` locals above; the FIRST to claim the repo stops the
@@ -684,7 +713,9 @@ _adb_gate_records() {
   # it returns 1 with the four still empty — so a repo carrying an empty `go.mod` and a real
   # `pyproject.toml` still reaches python, exactly as the inline chain did.
   for eco in $_ADB_ECOSYSTEMS; do
-    if "_adb_eco_$eco" "$root"; then break; fi
+    rc=0; "_adb_eco_$eco" "$root" || rc=$?
+    [ "$rc" -eq 0 ] && break
+    [ "$rc" -eq 2 ] && return 2
     # An adapter that declined may still have set a variable before failing its final test
     # (rust assigns before checking clippy). Reset, so a later adapter's record can never
     # inherit a stray command from an ecosystem that did not claim the repo.
@@ -764,11 +795,12 @@ adb_detect_gates() {
   # BEFORE THE PIPE: a status returned inside `_adb_gate_records | while …` is the loop's, not
   # the records', so the guard has to run where its answer can be returned.
   _adb_manifest_readable "$root" || return 2
+  local recs; recs="$(_adb_gate_records "$root")" || return 2
   # Split exactly, even though only state/label/cmd are used here — see _adb_rec_split. A
   # reader that "happens to work because the fields it needs are the non-empty leading ones"
   # is the bug one field-append away. The two-column stdout contract is unchanged;
   # selfcheck.sh's gate-detector step pins it exactly.
-  _adb_gate_records "$root" | while IFS= read -r rec; do
+  printf '%s\n' "$recs" | while IFS= read -r rec; do
     [ -z "$rec" ] && continue
     _adb_rec_split "$rec" state label cmd scope cadence
     [ "$state" = run ] || continue
@@ -779,11 +811,12 @@ adb_detect_gates() {
 # Human-readable per-gate state: run / N/A / disabled, with commands and scopes.
 adb_status_gates() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-  local out
+  local out recs
   _adb_manifest_readable "$root" || return 2
+  recs="$(_adb_gate_records "$root")" || return 2
   # A non-default cadence is shown, because "why did that gate not run at turn-end?" is
   # otherwise unanswerable from `status` — the surface an operator reaches for first.
-  out="$(_adb_gate_records "$root" | awk -F"$_ADB_TAB" '
+  out="$(printf '%s\n' "$recs" | awk -F"$_ADB_TAB" '
     { state=$1; label=$2; cmd=$3; scope=$4; cadence=$5
       if      (state=="run")      printf "%-12s run       %s%s%s\n", label, cmd, (scope!="" ? "   [scope: " scope "]" : ""), ((cadence!="" && cadence!="always") ? "   [cadence: " cadence "]" : "")
       else if (state=="na")       printf "%-12s N/A       (declared not-applicable)\n", label
@@ -826,7 +859,7 @@ adb_run_gates() {
        return 2 ;;
   esac
   _adb_manifest_readable "$root" || return 2
-  local records; records="$(_adb_gate_records "$root")"
+  local records; records="$(_adb_gate_records "$root")" || return 2
   [ -z "$records" ] && return 0
 
   # THE LOG DIRECTORY (D133). One per run, private: `mktemp -d` creates it owner-only on GNU and

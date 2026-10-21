@@ -210,17 +210,17 @@ never from what happens to be installed on the machine (#568):
   `Pipfile`, `setup.py`, `setup.cfg`, `tox.ini`, a root `*requirements*.txt`
   or `requirements/*.txt`. A dependency is a requirement line, a quoted
   string or a key that starts with the name, or a quoted command running
-  `-m pytest`, so a sentence that mentions pytest is not one. Otherwise,
+  `-m pytest`. A sentence that mentions pytest is not one, unless a quoted
+  string starts with it: `description = "pytest …"` counts. Otherwise,
   when `tests/` (else `test/`) directly holds a `test*.py`, it is unittest
   discovery over that directory (`unittest discover -s <dir>`, run through
-  a one-line `python3 -c` wrapper). The wrapper also fails when **no test
-  ran**, so a folder of pytest-style tests is never reported green; plain
-  `python -m unittest` exits 0 in that case before Python 3.12.
-  Otherwise there is no `test` gate. A pytest project without pytest
-  installed gets a red gate on purpose: the environment is incomplete. When
-  nothing shows pytest but one of the files it would be read from cannot be
-  read, the adapter names the file on stderr and emits no `test` gate rather
-  than guessing.
+  a one-line `python3 -c` wrapper). The wrapper also fails when unittest
+  finds **nothing to run or skip**, so a folder of only pytest-style tests is
+  never reported green; plain `python -m unittest` exits 0 in that case
+  before Python 3.12. A folder mixing the two styles runs only its unittest
+  tests: declare `[gates]` for that project. Otherwise there is no `test`
+  gate. A pytest project without pytest installed gets a red gate on
+  purpose: the environment is incomplete.
 - **`typecheck`** is `mypy .` only with `mypy.ini`, `.mypy.ini`, a
   `[tool.mypy]` table in `pyproject.toml` or `[mypy]` in `setup.cfg`.
 - **`lint`** and **`format`** are `ruff check --no-fix --no-fix-only .` and
@@ -232,8 +232,13 @@ never from what happens to be installed on the machine (#568):
 
 The detector reads those files line by line, not as TOML or INI: a table
 header must start its line (spaces and quoted parts inside the brackets are
-fine, and names are case-sensitive), and a header-shaped line inside a
-multi-line string is read as a header.
+fine, and names are case-sensitive), a header-shaped line inside a
+multi-line string is read as a header, and a table defined only by dotted
+keys (`tool.ruff.line-length = 100`, with no `[tool.ruff]` header) is not
+seen. If a file whose contents would decide a gate cannot be read, and
+nothing else decided it, detection stops with an error naming the file:
+`detect`, `status` and `run` exit 2, so the turn-end gate blocks rather than
+run a set of gates nobody chose.
 
 A configured tool that is not on `PATH` is dropped, never emitted as a gate
 that cannot run. A Python project with nothing runnable is not claimed, so
