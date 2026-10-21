@@ -10,6 +10,18 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **Python gate detection reads the project, not the machine (#568).** A Python project that tests
+  with `unittest` used to get a `test` gate of `python3 -m pytest -q`, which failed with
+  `No module named pytest` while the project's own tests passed. `mypy`, `ruff check` and
+  `ruff format` were also inferred from whatever was installed. Now `test` is pytest only where the
+  project shows pytest (its config files, a `conftest.py`, or a pytest dependency), otherwise
+  `python3 -m unittest discover -s tests` (or `test`) when that directory holds `test*.py`, otherwise
+  no gate. `mypy` and `ruff` gates need the tool's own config. The lint gate is now
+  `ruff check --no-fix --no-fix-only .`, so a project with `fix = true` can no longer have its
+  source rewritten by a gate. **An adopted Python project's detected gates may change:** run
+  `bash ~/.claude/scripts/lib/project-gates.sh status` to see the new set, and declare `[gates]` in
+  `agents.toml` if it is not what you want. The rules are in `docs/per-project-overrides.md`.
+
 - **The pinned-install suite stops writing into your real `~/.claude/backups` (#567, D136).** Two of
   `scripts/check-pinned-install.sh`'s repair cases backed up an edited fixture file under the real
   `$HOME` on every run, so each selfcheck added two `ai-dev-baseline-pinned-*` folders that nothing

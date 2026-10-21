@@ -902,6 +902,178 @@ out="$(adb_detect_gates "$d")"
 has   "$out" "phpunit --group=fast" "php: an agents.toml override beats detection"
 hasnt "$out" "lint"                 "php: a \"\" override disables the axis"
 
+# --- Python (#568) ------------------------------------------------------------
+# Every gate must come from what the project configures, never from what the machine has
+# installed: a unittest project used to get `python3 -m pytest -q`, red with "No module named
+# pytest" while its own tests passed.
+#
+# py_detect fakes the installed tools by redefining `_adb_have`, so a ruff or pytest on the
+# host can never decide a case. Stubs prepended to PATH could not hide a real one.
+py_detect() {   # <dir> [tool...] — detect with ONLY these tools on "PATH"
+  local d="$1"; shift
+  ( _py_tools=" $* "
+    _adb_have() { case "$_py_tools" in *" $1 "*) return 0 ;; esac; return 1; }
+    adb_detect_gates "$d" )
+}
+py_proj() {     # <name> — a fresh project dir with a pyproject.toml that says nothing about tools
+  local d="$work/py-$1"; mkdir -p "$d"
+  printf '[project]\nname = "a"\nversion = "0.1"\n' > "$d/pyproject.toml"
+  printf '%s' "$d"
+}
+UNITTEST_TESTS="test${TAB}python3 -m unittest discover -s tests"
+
+# test: unittest when tests/ (else test/) holds test*.py and nothing shows pytest.
+d="$(py_proj unittest)"; mkdir -p "$d/tests"; : > "$d/tests/test_a.py"
+eq "$(py_detect "$d" python3 pytest ruff mypy)" "$UNITTEST_TESTS" \
+  "python: tests/test_a.py with no pytest evidence → unittest, and nothing inferred from PATH"
+d="$(py_proj unittest-test)"; mkdir -p "$d/test"; : > "$d/test/test_a.py"
+eq "$(py_detect "$d" python3)" "test${TAB}python3 -m unittest discover -s test" "python: test/ → -s test"
+d="$(py_proj unittest-both)"; mkdir -p "$d/tests" "$d/test"; : > "$d/tests/test_a.py"; : > "$d/test/test_b.py"
+eq "$(py_detect "$d" python3)" "$UNITTEST_TESTS" "python: tests/ and test/ both qualify → tests/ wins"
+d="$(py_proj unittest-nested)"; mkdir -p "$d/tests/unit"; : > "$d/tests/unit/test_a.py"; : > "$d/tests/helpers.py"
+eq "$(py_detect "$d" python3)" "" "python: only a nested or non-test*.py file → no test gate (one level, no recursive scan)"
+d="$(py_proj unittest-nopy)"; mkdir -p "$d/tests"; : > "$d/tests/test_a.py"
+eq "$(py_detect "$d")" "" "python: unittest shape with no python3 → no gate, and the adapter declines"
+d="$(py_proj nothing)"
+eq "$(py_detect "$d" python3 pytest)" "" "python: no tests dir and no pytest evidence → no test line"
+
+# test: pytest wherever the project shows it — `pytest -q` on PATH, else `python3 -m pytest -q`.
+d="$(py_proj pytest-ini-options)"; printf '[tool.pytest.ini_options]\naddopts = "-q"\n' >> "$d/pyproject.toml"
+eq "$(py_detect "$d" python3 pytest)" "test${TAB}pytest -q" "python: [tool.pytest.ini_options] with pytest on PATH → pytest -q"
+eq "$(py_detect "$d" python3)" "test${TAB}python3 -m pytest -q" \
+  "python: a pytest project with no pytest on PATH still gets a pytest gate (a red one means the environment is incomplete)"
+eq "$(py_detect "$d")" "" "python: pytest evidence but neither pytest nor python3 → nothing runnable, adapter declines"
+mkdir -p "$d/tests"; : > "$d/tests/test_a.py"
+eq "$(py_detect "$d" python3 pytest)" "test${TAB}pytest -q" "python: pytest evidence beats a unittest-shaped tests/"
+
+# Each evidence source alone is enough. (name|file|content; an empty content creates the file.)
+while IFS='|' read -r name file content; do
+  [ -n "$name" ] || continue
+  d="$(py_proj "ev-$name")"; mkdir -p "$d/tests" "$(dirname "$d/$file")"; : > "$d/tests/test_a.py"
+  if [ -n "$content" ]; then printf '%b' "$content" >> "$d/$file"; else : > "$d/$file"; fi
+  eq "$(py_detect "$d" python3 pytest)" "test${TAB}pytest -q" "python: pytest evidence ($name) → pytest"
+done <<'EOF'
+tool-pytest|pyproject.toml|[tool.pytest]\nminversion = "9.0"\n
+pytest-ini|pytest.ini|
+dot-pytest-ini|.pytest.ini|
+pytest-toml|pytest.toml|
+conftest-root|conftest.py|
+conftest-tests|tests/conftest.py|
+conftest-test|test/conftest.py|
+setup-cfg|setup.cfg|[tool:pytest]\naddopts = -q\n
+tox-ini|tox.ini|[pytest]\naddopts = -q\n
+pyproject-dep|pyproject.toml|[project.optional-dependencies]\ndev = ["pytest>=8"]\n
+pyproject-plugin|pyproject.toml|[dependency-groups]\ntest = ["pytest-cov"]\n
+poetry-dep|pyproject.toml|[tool.poetry.group.dev.dependencies]\npytest = "^8"\n
+setup-py|setup.py|setup(tests_require=['pytest'])\n
+pipfile|Pipfile|[dev-packages]\npytest = "*"\n
+req-dev|requirements-dev.txt|pytest==8.*\n
+req-dir|requirements/test.txt|  PyTest>=8\n
+EOF
+
+# requirements.txt alone is a Python project, and its contents decide the runner.
+d="$work/py-req-pytest"; mkdir -p "$d/tests"; printf 'requests\npytest==8.*\n' > "$d/requirements.txt"; : > "$d/tests/test_a.py"
+eq "$(py_detect "$d" python3 pytest)" "test${TAB}pytest -q" "python: requirements.txt naming pytest → pytest"
+d="$work/py-req-plain"; mkdir -p "$d/tests"; printf 'requests\n' > "$d/requirements.txt"; : > "$d/tests/test_a.py"
+eq "$(py_detect "$d" python3 pytest)" "$UNITTEST_TESTS" "python: requirements.txt without pytest + tests/test_a.py → unittest"
+
+# Mentions that are NOT evidence: a comment, or pytest inside another name.
+while IFS='|' read -r name file content; do
+  [ -n "$name" ] || continue
+  d="$(py_proj "nev-$name")"; mkdir -p "$d/tests"; : > "$d/tests/test_a.py"
+  printf '%b' "$content" >> "$d/$file"
+  eq "$(py_detect "$d" python3 pytest)" "$UNITTEST_TESTS" "python: not pytest evidence ($name) → unittest"
+done <<'EOF'
+comment|requirements.txt|requests\n# pytest is not used here\n
+commented-header|pyproject.toml|# [tool.pytest.ini_options]\n
+inside-name|requirements.txt|my-pytest-helpers\nnotpytest\n
+EOF
+
+# An evidence file that cannot be read makes the runner unknown: say so, and guess nothing.
+d="$(py_proj unreadable)"; mkdir -p "$d/tests"; : > "$d/tests/test_a.py"; chmod 000 "$d/pyproject.toml"
+if [ -r "$d/pyproject.toml" ]; then
+  printf 'SKIP: chmod 000 does not stop this user reading — skipping the unreadable-evidence case\n' >&2
+else
+  err="$(py_detect "$d" python3 pytest 2>&1 >/dev/null)"; out="$(py_detect "$d" python3 pytest 2>/dev/null)"
+  eq  "$out" "" "python: unreadable pyproject.toml → no test gate, never unittest by default"
+  has "$err" "python: cannot read $d/pyproject.toml" "python: the unreadable evidence file is named on stderr"
+fi
+chmod 644 "$d/pyproject.toml"
+
+# typecheck, lint, format: only where the project configures the tool, and only when it is on PATH.
+RUFF_LINT="lint${TAB}ruff check --no-fix --no-fix-only ."
+RUFF_FMT="format${TAB}ruff format --check ."
+d="$(py_proj tools-unconfigured)"
+eq "$(py_detect "$d" python3 ruff mypy)" "" "python: ruff and mypy on PATH with no config → no lint, format or typecheck"
+while IFS='|' read -r name file content; do
+  [ -n "$name" ] || continue
+  d="$(py_proj "ruff-$name")"
+  if [ -n "$content" ]; then printf '%b' "$content" >> "$d/$file"; else : > "$d/$file"; fi
+  out="$(py_detect "$d" ruff)"
+  has "$out" "$RUFF_LINT" "python: ruff config ($name) → ruff check, with fixing forced off"
+  has "$out" "$RUFF_FMT"  "python: ruff config ($name) → ruff format --check"
+done <<'EOF'
+tool-ruff|pyproject.toml|[tool.ruff]\nline-length = 100\n
+lint-subtable-only|pyproject.toml|[tool.ruff.lint]\nselect = ["F"]\n
+ruff-toml|ruff.toml|
+dot-ruff-toml|.ruff.toml|
+EOF
+d="$(py_proj ruff-uninstalled)"; printf '[tool.ruff]\n' >> "$d/pyproject.toml"
+eq "$(py_detect "$d" python3 mypy)" "" "python: [tool.ruff] with no ruff on PATH → no ruff line"
+d="$(py_proj ruff-commented)"; printf '# [tool.ruff]\n' >> "$d/pyproject.toml"
+eq "$(py_detect "$d" ruff)" "" "python: a commented-out [tool.ruff] header is not configuration"
+d="$(py_proj ruff-lookalike)"; printf '[tool.ruffle]\n' >> "$d/pyproject.toml"
+eq "$(py_detect "$d" ruff)" "" "python: [tool.ruffle] is not [tool.ruff]"
+while IFS='|' read -r name file content; do
+  [ -n "$name" ] || continue
+  d="$(py_proj "mypy-$name")"
+  if [ -n "$content" ]; then printf '%b' "$content" >> "$d/$file"; else : > "$d/$file"; fi
+  eq "$(py_detect "$d" mypy)" "typecheck${TAB}mypy ." "python: mypy config ($name) → mypy ."
+done <<'EOF'
+mypy-ini|mypy.ini|
+dot-mypy-ini|.mypy.ini|
+tool-mypy|pyproject.toml|[tool.mypy]\nstrict = true\n
+overrides-only|pyproject.toml|[[tool.mypy.overrides]]\nmodule = "a.*"\n
+setup-cfg|setup.cfg|[mypy]\nstrict = True\n
+EOF
+d="$(py_proj mypy-uninstalled)"; : > "$d/mypy.ini"
+eq "$(py_detect "$d" python3 ruff)" "" "python: mypy.ini with no mypy on PATH → no typecheck line"
+d="$(py_proj mypy-module-only)"; printf '[mypy-a.*]\nstrict = True\n' > "$d/setup.cfg"
+eq "$(py_detect "$d" mypy)" "" "python: a setup.cfg with only [mypy-<module>] sections is not mypy config"
+
+# The [gates] override still wins over every inference, and "" still disables.
+d="$(py_proj override)"; mkdir -p "$d/tests"; : > "$d/tests/test_a.py"; printf '[tool.ruff]\n' >> "$d/pyproject.toml"
+printf '[gates]\ntest = "make test"\nlint = ""\n' > "$d/agents.toml"
+out="$(py_detect "$d" python3 ruff)"
+has   "$out" "test${TAB}make test" "python: [gates] test overrides the detected runner"
+hasnt "$out" "unittest"            "python: ...and the detected runner is gone"
+hasnt "$out" "ruff check"          "python: a \"\" override disables the detected lint gate"
+has   "$out" "$RUFF_FMT"           "python: ...and leaves the axes it does not name detected"
+
+# Python declines when it finds nothing runnable, so a later ecosystem gets its turn; when it
+# does find something it keeps its place ahead of PHP.
+d="$work/py-php-fallthrough"; mkdir -p "$d"; printf 'requests\n' > "$d/requirements.txt"
+printf '{"name":"a/b"}\n' > "$d/composer.json"; php_stub "$d/vendor/bin" phpunit
+eq "$(py_detect "$d" python3)" "test${TAB}vendor/bin/phpunit" "python: nothing runnable → declines, and PHP detects the repo"
+mkdir -p "$d/tests"; : > "$d/tests/test_a.py"
+eq "$(py_detect "$d" python3)" "$UNITTEST_TESTS" "python: a runnable Python gate keeps Python ahead of PHP"
+
+# The chosen unittest command really runs the suite and reports its result. Uses the host's
+# python3, because only a real interpreter can show that; SKIP where there is none.
+if command -v python3 >/dev/null 2>&1; then
+  d="$(py_proj run-unittest)"; mkdir -p "$d/tests"
+  printf 'import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(1, 1)\n' > "$d/tests/test_a.py"
+  adb_run_gates "$d" >/dev/null 2>&1; yes $? "python: a passing unittest suite passes the detected gate"
+  # A new directory, not an edit: a same-size rewrite in the same second reuses the stale .pyc.
+  d="$(py_proj run-unittest-red)"; mkdir -p "$d/tests"
+  printf 'import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(1, 2)\n' > "$d/tests/test_a.py"
+  err="$(adb_run_gates "$d" 2>&1)"; rc=$?
+  no  "$rc" "python: a failing unittest suite fails the detected gate"
+  has "$err" 'failing gates: test' "python: ...and the failing gate is named"
+else
+  printf 'SKIP: python3 not installed — skipping the unittest execution case\n' >&2
+fi
+
 # --- the adapter-registry contract itself (#81) -------------------------------
 # AN ADAPTER THAT DECLINES MUST LEAVE NOTHING BEHIND. The five shipped adapters each happen to
 # assign only on a path that also claims, so this invariant is unreachable through any real

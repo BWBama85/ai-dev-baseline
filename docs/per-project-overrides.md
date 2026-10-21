@@ -197,6 +197,34 @@ PHPStan or Psalm, `test` to PHPUnit, `lint` to PHP_CodeSniffer, and `format`
 to `php-cs-fixer --dry-run` — never an in-place fixer, because a gate that
 rewrites the tree is a mutation wearing a verification's clothes.
 
+The Python adapter takes every gate from what the **project** configures,
+never from what happens to be installed on the machine (#568):
+
+- **`test`** is `pytest -q` (or `python3 -m pytest -q` when `pytest` is not
+  on `PATH`) when the project shows pytest: a `pytest.toml`, `.pytest.toml`,
+  `pytest.ini` or `.pytest.ini`; a `conftest.py` at the root, in `tests/` or
+  in `test/`; or a non-comment mention of `pytest` (a config table or a
+  dependency, plugins such as `pytest-cov` included) in `pyproject.toml`,
+  `setup.cfg`, `setup.py`, `tox.ini`, `Pipfile`, a root `*requirements*.txt`
+  or `requirements/*.txt`. Otherwise, when `tests/` (else `test/`) directly
+  holds a `test*.py`, it is `python3 -m unittest discover -s <dir>`.
+  Otherwise there is no `test` gate. A pytest project without pytest
+  installed gets a red gate on purpose: the environment is incomplete. If
+  one of those files cannot be read, the adapter says so and emits no `test`
+  gate rather than guessing.
+- **`typecheck`** is `mypy .` only with `mypy.ini`, `.mypy.ini`, a
+  `[tool.mypy]` table in `pyproject.toml` or `[mypy]` in `setup.cfg`.
+- **`lint`** and **`format`** are `ruff check --no-fix --no-fix-only .` and
+  `ruff format --check .` only with `ruff.toml`, `.ruff.toml` or a
+  `[tool.ruff]` table in `pyproject.toml`. The two `--no-fix` flags override
+  a project's `fix = true` or `fix-only = true`, either of which would make a
+  bare `ruff check` rewrite the source and exit 0.
+
+A configured tool that is not on `PATH` is dropped, never emitted as a gate
+that cannot run. A Python project with nothing runnable is not claimed, so
+a later ecosystem (PHP) can still detect the repo. If your project tests
+some other way (`make test`, `tox`, `nox`), declare it in `[gates]`.
+
 #### Gates are an open set (`build`, `guards`, …)
 
 `[gates]` is not limited to the built-in four. **Any key you add becomes a
