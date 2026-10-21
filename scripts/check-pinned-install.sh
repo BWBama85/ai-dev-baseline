@@ -59,7 +59,7 @@ pinned_backups() {
     return
   fi
   [ -d "$dir" ] || return 1
-  find -H "$dir" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-pinned-*' -print 2>/dev/null
+  find -H "$dir" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-pinned-*' -print 2>/dev/null || return 1
 }
 # backup_witness <before> <dir> — the entries of <dir> that the <before> list (pinned_backups's
 # output) lacks. 0 when there are none. 1 when there are, printing each. 2 when <dir> cannot be
