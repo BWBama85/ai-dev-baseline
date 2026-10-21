@@ -8,7 +8,10 @@
 # `mktemp -d`, and every closed rule is required to go RED on its own input.
 #
 # THE OPERATOR'S HOME IS NOT A FIXTURE (#567). `HOME` and `CODEX_HOME` are exported once, below, to a
-# home inside the work directory, so no call can write the real home or read it. Before that,
+# home inside the work directory, so every path the installers build from them lands there: the
+# backups `pinned-install.sh` writes, the Codex config it reads, and git's `~/.gitconfig`. Other
+# inherited variables that can point into the real home (`XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL`,
+# `ADB_BACKUP_DIR`) are NOT reset; the real-home check below sees only the pinned backups. Before that,
 # about a hundred calls ran against the real one: two repairs left a backup in the real
 # `~/.claude/backups` on every run (731 of them on one machine), and a real `~/.codex/config.toml`
 # changed what every Codex install reported. A case that needs a home of its own still sets one
@@ -68,7 +71,8 @@ pinned_backups() {
 backup_witness() {
   local before="$1" dir="$2" after new
   after="$(pinned_backups "$dir")" || { printf 'cannot list %s\n' "$dir"; return 2; }
-  new="$(LC_ALL=C comm -13 <(printf '%s\n' "$before" | sed '/^$/d') <(printf '%s\n' "$after" | sed '/^$/d'))"
+  new="$(LC_ALL=C comm -13 <(printf '%s\n' "$before" | sed '/^$/d') <(printf '%s\n' "$after" | sed '/^$/d'))" \
+    || { printf 'cannot compare the listings of %s\n' "$dir"; return 2; }
   [ -z "$new" ] && return 0
   printf '%s\n' "$new"
   return 1
@@ -493,7 +497,7 @@ eq "$rc" 20 "status: an altered payload exits 20, as the contract says"
 # above, this call put a copy of the edited file into the operator's real `~/.claude/backups` on
 # every run. A new entry appearing HERE, holding the edit, proves that the exported HOME is the one
 # the installer used.
-home_before="$(pinned_backups "$HOME/.claude/backups")"
+home_before="$(pinned_backups "$HOME/.claude/backups")" || bad "home: the suite's own backups folder could not be listed"
 bash "$PI" install --project "$P" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
 home_new="$(backup_witness "$home_before" "$HOME/.claude/backups")"; rc=$?
 eq "$rc" 1 "home: the repair's backup lands in the suite's own home, not the operator's"
