@@ -375,7 +375,10 @@ _adb_emit() { _adb_resolve_record "$1" "$2" "$3"; }
 #
 # An adapter returns 0 when it CLAIMED the repo (it found at least one command) and 1 when it
 # did not, so the caller's loop can stop at the first claim without re-testing emptiness. It
-# returns 2 when it cannot decide — it has said why on stderr — and detection stops with 2.
+# returns 2 when it could not decide some axes, having named them in the caller's `d_unknown`
+# (space-separated) and said why on stderr. Detection then stops with 2, unless agents.toml
+# declares every one of those axes — then the guess was never needed, and the 2 is read as a 0
+# or a 1 by whether the adapter found any command.
 _ADB_ECOSYSTEMS="node rust go python php"
 
 _adb_eco_node() {
@@ -433,13 +436,13 @@ _adb_py_grep() {
 
 # _adb_py_toml_table <name> — prints an ERE matching a `[tool.<name>]` table header, its
 # subtables (`[tool.<name>.lint]`) and array tables (`[[tool.<name>.overrides]]`), with the
-# spaces and quoted key parts TOML allows (`[ tool . ruff ]`, `["tool"."ruff"]`). Anchored at the
+# spaces and quoted key parts TOML allows (`[ tool . ruff ]`, `["tool"."ruff"]`), each part quoted
+# whole (`["tool.ruff"]` is one key, not this table). Escaped key parts are not read. Anchored at the
 # line start, so a commented-out header does not match. Not read: dotted keys with no header
 # (`tool.ruff.line-length = 100`). A header-shaped line inside a multi-line string does match.
 _adb_py_toml_table() {
-  local q="[\"']?"
-  printf '^[[:space:]]*\\[\\[?[[:space:]]*%stool%s[[:space:]]*\\.[[:space:]]*%s%s%s[[:space:]]*[].]' \
-    "$q" "$q" "$q" "$1" "$q"
+  printf '^[[:space:]]*\\[\\[?[[:space:]]*(tool|"tool"|\x27tool\x27)[[:space:]]*\\.[[:space:]]*(%s|"%s"|\x27%s\x27)[[:space:]]*[].]' \
+    "$1" "$1" "$1"
 }
 
 # What names pytest. Case-insensitive, and `pytest` must be followed by a non-alphanumeric or the
@@ -452,7 +455,7 @@ _adb_py_toml_table() {
 # Prose that mentions pytest does not count, unless a quoted string starts with it: a
 # `description = "pytest …"` is read as a dependency.
 _ADB_PY_RE_REQ='^[[:space:]]*pytest([^A-Za-z0-9]|$)'
-_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#"'\'']|"[^"]*"|'\''[^'\'']*'\'')*["'\''][[:space:]]*(pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
+_ADB_PY_RE_QUOTED='^[[:space:]]*(([^#"'\'']|"([^"\\]|\\.)*"|'\''[^'\'']*'\'')*["'\''][[:space:]]*(pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
 _ADB_PY_RE_INI='^([[:space:]]+|[^#;=[:space:]][^#;=]*=[[:space:]]*|[^#;]*-m[[:space:]]+)pytest([^A-Za-z0-9]|$)'
 
 # Files that only a Python project carries. Any one of them makes the repo a Python project; the
@@ -561,9 +564,9 @@ _adb_py_unittest_cmd() {
 #              under either of which a bare `ruff check` rewrites source.
 # A file whose EXISTENCE is the evidence (pytest.ini, mypy.ini, ruff.toml…) counts unread. When a
 # file whose CONTENTS would decide a gate cannot be read and nothing else decided it, the adapter
-# returns 2: detection stops and says so, because guessing would pick or drop a gate unseen.
+# names that axis in `d_unknown` and returns 2 (see the registry contract).
 _adb_eco_python() {
-  local root="$1" dir rc=0 unknown=0
+  local root="$1" dir rc=0
   _adb_py_project "$root" || return 1
 
   _adb_py_uses_pytest "$root" || rc=$?
@@ -572,7 +575,7 @@ _adb_eco_python() {
     elif _adb_have python3; then d_test="python3 -m pytest -q"
     fi
   elif [ "$rc" -eq 2 ]; then
-    unknown=1
+    d_unknown="$d_unknown test"
   elif _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
     d_test="$(_adb_py_unittest_cmd "$dir")"
   fi
@@ -580,18 +583,15 @@ _adb_eco_python() {
   if _adb_have mypy; then
     rc=0; _adb_py_tool_configured "$root" mypy || rc=$?
     [ "$rc" -eq 0 ] && d_typecheck="mypy ."
-    [ "$rc" -eq 2 ] && unknown=1
+    [ "$rc" -eq 2 ] && d_unknown="$d_unknown typecheck"
   fi
   if _adb_have ruff; then
     rc=0; _adb_py_tool_configured "$root" ruff || rc=$?
     [ "$rc" -eq 0 ] && { d_lint="ruff check --no-fix --no-fix-only ."; d_format="ruff format --check ."; }
-    [ "$rc" -eq 2 ] && unknown=1
+    [ "$rc" -eq 2 ] && d_unknown="$d_unknown lint format"
   fi
 
-  if [ "$unknown" -eq 1 ]; then
-    printf 'project-gates: FATAL — python: a file that decides which gates run could not be read (named above); refusing to detect gates rather than guess\n' >&2
-    return 2
-  fi
+  [ -z "$d_unknown" ] || return 2
   [ -n "$d_typecheck$d_lint$d_test$d_format" ]
 }
 
@@ -701,11 +701,21 @@ _adb_manifest_readable() {
   return 2
 }
 
+# _adb_axis_declared <root> <axis> — 0 when agents.toml decides <axis> itself: a [gates] key (a
+# command, or "" to disable) or [gates.state] = "na". _adb_resolve_record applies the same two.
+_adb_axis_declared() {
+  local toml="$1/agents.toml" raw
+  adb_toml_get "$toml" gates "$2" >/dev/null 2>&1 && return 0
+  raw="$(adb_toml_get "$toml" gates.state "$2" 2>/dev/null)" || return 1
+  case "$(adb_toml_unquote "$raw")" in [Nn][Aa]|[Nn]/[Aa]) return 0 ;; esac
+  return 1
+}
+
 _adb_gate_records() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local toml="$root/agents.toml"
   _adb_manifest_readable "$root" || return 2
-  local d_typecheck="" d_lint="" d_test="" d_format="" key eco rc
+  local d_typecheck="" d_lint="" d_test="" d_format="" d_unknown="" key eco rc axis
 
   # --- single-primary-ecosystem detection: first ecosystem that yields a command wins.
   # The adapters assign the four `d_*` locals above; the FIRST to claim the repo stops the
@@ -714,12 +724,20 @@ _adb_gate_records() {
   # `pyproject.toml` still reaches python, exactly as the inline chain did.
   for eco in $_ADB_ECOSYSTEMS; do
     rc=0; "_adb_eco_$eco" "$root" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      for axis in $d_unknown; do
+        _adb_axis_declared "$root" "$axis" && continue
+        printf 'project-gates: FATAL — %s: the %s gate depends on a file that could not be read (named above); refusing to guess it. Fix the file, or declare the gate in agents.toml [gates]\n' "$eco" "$axis" >&2
+        return 2
+      done
+      d_unknown=""
+      rc=1; [ -n "$d_typecheck$d_lint$d_test$d_format" ] && rc=0
+    fi
     [ "$rc" -eq 0 ] && break
-    [ "$rc" -eq 2 ] && return 2
     # An adapter that declined may still have set a variable before failing its final test
     # (rust assigns before checking clippy). Reset, so a later adapter's record can never
     # inherit a stray command from an ecosystem that did not claim the repo.
-    d_typecheck=""; d_lint=""; d_test=""; d_format=""
+    d_typecheck=""; d_lint=""; d_test=""; d_format=""; d_unknown=""
   done
 
   # Built-in axes — emit once each so an agents.toml override always wins (and can add a

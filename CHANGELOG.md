@@ -19,7 +19,7 @@ only by a published release, which is what these entries are the notes for.
   otherwise no gate. The unittest gate also fails when unittest finds nothing to run or skip, so a
   folder of only pytest-style tests is never reported green. `mypy` and `ruff` gates need the tool's
   own config. A file that would decide a gate but cannot be read now stops detection with an error
-  (exit 2) instead of a guess. The
+  (exit 2) instead of a guess, unless `agents.toml` declares that gate. The
   lint gate is now `ruff check --no-fix --no-fix-only .`, so a project with `fix = true` can no
   longer have its source rewritten by a gate. A repo with no classic manifest but a `Pipfile`,
   `tox.ini`, a requirements file, a pytest, mypy or ruff config file, or a `conftest.py` is now

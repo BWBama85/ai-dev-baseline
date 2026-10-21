@@ -979,6 +979,7 @@ poetry-dep|pyproject.toml|[tool.poetry.group.dev.dependencies]\npytest = "^8"\n
 setup-py|setup.py|setup(tests_require=['pytest'])\n
 hatch-script|pyproject.toml|[tool.hatch.envs.test.scripts]\ntest = "python -m pytest {args}"\n
 spaced-dep|pyproject.toml|[dependency-groups]\ntest = [" pytest>=8"]\n
+escaped-quote|setup.py|setup(description="A \\"#\\" string", tests_require=["pytest"])\n
 pipfile|Pipfile|[dev-packages]\npytest = "*"\n
 req-dev|requirements-dev.txt|pytest==8.*\n
 req-dir|requirements/test.txt|  PyTest>=8\n
@@ -1054,13 +1055,24 @@ else
     err="$(py_entry "$entry" "$d" python3 pytest 2>&1 >/dev/null)"; rc=$?
     eq  "$rc" 2 "python: unreadable pyproject.toml → $entry refuses (2), never a unittest guess"
     has "$err" "python: cannot read $d/pyproject.toml" "python: $entry names the unreadable file"
-    has "$err" "FATAL — python: a file that decides which gates run could not be read" "python: $entry says why it stopped"
+    has "$err" "FATAL — python: the test gate depends on a file that could not be read" "python: $entry says which gate it could not decide"
   done
   printf 'pytest\n' > "$d/requirements.txt"
   eq "$(py_detect "$d" python3 pytest 2>/dev/null)" "test${TAB}pytest -q" \
     "python: unreadable pyproject.toml beside a requirements.txt naming pytest → pytest"
   py_detect "$d" python3 pytest ruff >/dev/null 2>&1; rc=$?
   eq "$rc" 2 "python: ...but with ruff installed, whether ruff is configured is unknown → refuses"
+  # ...unless agents.toml decides every axis the unreadable file would have: then nothing is guessed.
+  printf '[gates]\ntest = "make test"\n' > "$d/agents.toml"; rm -f "$d/requirements.txt"
+  out="$(py_detect "$d" python3 pytest 2>/dev/null)"; rc=$?
+  eq "$rc" 0 "python: unreadable pyproject.toml, but [gates] declares test → detection proceeds"
+  eq "$out" "test${TAB}make test" "python: ...and the declared test gate wins"
+  py_detect "$d" python3 pytest ruff >/dev/null 2>&1; rc=$?
+  eq "$rc" 2 "python: ...but ruff installed leaves lint and format undecided → refuses"
+  printf '[gates]\ntest = "make test"\nlint = ""\n[gates.state]\nformat = "na"\n' > "$d/agents.toml"
+  py_detect "$d" python3 pytest ruff >/dev/null 2>&1; rc=$?
+  eq "$rc" 0 "python: ...and once lint (\"\") and format (na) are declared too, it proceeds"
+  rm -f "$d/agents.toml"
   d="$(py_proj unreadable-ini)"; ut_file "$d/tests/test_a.py"; : > "$d/pytest.ini"; chmod 000 "$d/pytest.ini"
   eq "$(py_detect "$d" python3 pytest 2>/dev/null)" "test${TAB}pytest -q" "python: an unreadable pytest.ini still shows pytest"
   chmod 644 "$d/pytest.ini"
@@ -1101,6 +1113,8 @@ d="$(py_proj ruff-spaced)"; printf '[ tool . ruff ]\n' >> "$d/pyproject.toml"
 has "$(py_detect "$d" ruff)" "$RUFF_LINT" "python: [ tool . ruff ] (spaces TOML allows) is ruff config"
 d="$(py_proj ruff-quoted)"; printf '["tool"."ruff"]\n' >> "$d/pyproject.toml"
 has "$(py_detect "$d" ruff)" "$RUFF_LINT" "python: [\"tool\".\"ruff\"] (quoted keys) is ruff config"
+d="$(py_proj ruff-one-key)"; printf '["tool.ruff"]\n' >> "$d/pyproject.toml"
+eq "$(py_detect "$d" ruff)" "" "python: [\"tool.ruff\"] is one key named tool.ruff, not ruff config"
 d="$(py_proj ruff-case)"; printf '[tool.RUFF]\n' >> "$d/pyproject.toml"
 eq "$(py_detect "$d" ruff)" "" "python: [tool.RUFF] is a different TOML table, not ruff config"
 while IFS='|' read -r name file content; do

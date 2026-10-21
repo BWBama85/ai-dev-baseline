@@ -208,10 +208,13 @@ never from what happens to be installed on the machine (#568):
   in `setup.cfg` or `[pytest]` in `tox.ini`; or `pytest` (plugins such as
   `pytest-cov` included) as a dependency or command in `pyproject.toml`,
   `Pipfile`, `setup.py`, `setup.cfg`, `tox.ini`, a root `*requirements*.txt`
-  or `requirements/*.txt`. A dependency is a requirement line, a quoted
-  string or a key that starts with the name, or a quoted command running
-  `-m pytest`. A sentence that mentions pytest is not one, unless a quoted
-  string starts with it: `description = "pytest …"` counts. Otherwise,
+  or `requirements/*.txt`. What counts: in a requirements file, a line
+  that starts with the name; in a TOML file or `setup.py`, a quoted string
+  that starts with it or contains `-m pytest`, or a key that is it; in
+  `setup.cfg` or `tox.ini`, a value or continuation line that starts with
+  it, or `-m pytest`. The field is not checked, so prose in one of those
+  shapes counts too: `description = "pytest …"`, or
+  `description = "do not run python -m pytest"`. Otherwise,
   when `tests/` (else `test/`) directly holds a `test*.py`, it is unittest
   discovery over that directory (`unittest discover -s <dir>`, run through
   a one-line `python3 -c` wrapper). The wrapper also fails when unittest
@@ -236,9 +239,11 @@ fine, and names are case-sensitive), a header-shaped line inside a
 multi-line string is read as a header, and a table defined only by dotted
 keys (`tool.ruff.line-length = 100`, with no `[tool.ruff]` header) is not
 seen. If a file whose contents would decide a gate cannot be read, and
-nothing else decided it, detection stops with an error naming the file:
-`detect`, `status` and `run` exit 2, so the turn-end gate blocks rather than
-run a set of gates nobody chose.
+nothing else decided it, detection stops with an error naming the file and
+the gate: `detect`, `status` and `run` exit 2, so the turn-end gate blocks
+rather than run a set of gates nobody chose. A gate `agents.toml` declares
+(a command, `""`, or `[gates.state]` `na`) needs no guess, so it never
+causes that error.
 
 A configured tool that is not on `PATH` is dropped, never emitted as a gate
 that cannot run. A Python project with nothing runnable is not claimed, so
