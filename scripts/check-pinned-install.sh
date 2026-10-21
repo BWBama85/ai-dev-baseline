@@ -7,6 +7,17 @@
 # operator's edits or left orphans behind. Every one of those is driven here against fixtures under
 # `mktemp -d`, and every closed rule is required to go RED on its own input.
 #
+# THE OPERATOR'S HOME IS NOT A FIXTURE (#567). `HOME` and `CODEX_HOME` are exported once, below, to a
+# home inside the work directory, so no call can write the real home or read it. Before that,
+# about a hundred calls ran against the real one: two repairs left a backup in the real
+# `~/.claude/backups` on every run (731 of them on one machine), and a real `~/.codex/config.toml`
+# changed what every Codex install reported. A case that needs a home of its own still sets one
+# per call, and that wins. What enforces the isolation:
+# - the backups witness at the end of the suite, which fails naming every new
+#   `ai-dev-baseline-pinned-*` entry in the real backups folder;
+# - two cases that prove the calls used the suite's home: the repair's backup lands there, and an
+#   install picks up a fallback name configured in the suite's own `CODEX_HOME`.
+#
 # The fixture artifact is built FROM THE WORKING TREE, so the current install.sh / pinned-install.sh
 # / library set is what gets exercised — not whatever HEAD happens to say.
 #
@@ -31,7 +42,44 @@ ROOT="$(pwd)"
 PI="$ROOT/scripts/lib/pinned-install.sh"
 
 work="$(mktemp -d)"
+# A FAILED mktemp must stop the suite here: with `$work` empty, the home below would be `/home`.
+[ -n "$work" ] && [ -d "$work" ] || { echo "check-pinned-install: could not create a work directory" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
+
+# --- the operator's home is not ours (#567) ----------------------------------------------------
+# pinned_backups <dir> — every `ai-dev-baseline-pinned-*` entry directly under <dir> (the name
+# `pinned-install.sh` gives each backup), as sorted full paths, one per line. A <dir> that does not
+# exist answers 0 with nothing, which is CI's real home. A <dir> that exists but cannot be listed
+# answers 1, never an empty list, because an empty list would read as "nothing was written".
+# `find` exits non-zero on a missing path AND on an unreadable one, so the missing case is tested
+# first, by name.
+pinned_backups() {
+  local dir="$1" out
+  [ -e "$dir" ] || return 0
+  [ -d "$dir" ] || return 1
+  out="$(find "$dir" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-pinned-*' -print 2>/dev/null)" || return 1
+  [ -z "$out" ] || printf '%s\n' "$out" | LC_ALL=C sort
+  return 0
+}
+# backup_witness <before> <dir> — 0 when <dir> holds no entry that the <before> list lacks. 1 when
+# it does, printing each new one. 2 when <dir> cannot be listed. It compares NAMES, not a count, so
+# deleting an old entry cannot hide a new one, and a backup with any other name (a real install's
+# `ai-dev-baseline-<date>`) is not this suite's.
+backup_witness() {
+  local before="$1" dir="$2" after new
+  after="$(pinned_backups "$dir")" || { printf 'cannot list %s\n' "$dir"; return 2; }
+  new="$(LC_ALL=C comm -13 <(printf '%s\n' "$before" | sed '/^$/d') <(printf '%s\n' "$after" | sed '/^$/d'))"
+  [ -z "$new" ] && return 0
+  printf '%s\n' "$new"
+  return 1
+}
+
+# Taken BEFORE the export, which is the last moment `$HOME` still names the operator's home.
+REAL_BACKUPS="${HOME:+$HOME/.claude/backups}"
+real_before=""; real_listable=1
+if [ -n "$REAL_BACKUPS" ]; then real_before="$(pinned_backups "$REAL_BACKUPS")" || real_listable=0; fi
+export HOME="$work/home" CODEX_HOME="$work/home/.codex"
+mkdir -p "$CODEX_HOME" || { echo "check-pinned-install: could not create the suite's home" >&2; exit 1; }
 
 # --- the fixture artifact ----------------------------------------------------------------------
 # A tarball shaped exactly like a published release: `ai-dev-baseline-<version>/` at the top, and a
@@ -441,7 +489,19 @@ has "$out" "altered  .claude/skills/cleanup/SKILL.md" "status: names a locally m
 # THE DOCUMENTED CODE, not just the text. An altered payload is an unverifiable one, and reporting
 # that in prose while returning 0 makes the machine answer disagree with the human one.
 eq "$rc" 20 "status: an altered payload exits 20, as the contract says"
+# THE REPAIR BACKS THE EDIT UP, AND THE BACKUP LANDS IN THE SUITE'S HOME (#567). Before the export
+# above, this call put a copy of the edited file into the operator's real `~/.claude/backups` on
+# every run. A new entry appearing HERE, holding the edit, proves that the exported HOME is the one
+# the installer used.
+home_before="$(pinned_backups "$HOME/.claude/backups")"
 bash "$PI" install --project "$P" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+home_new="$(backup_witness "$home_before" "$HOME/.claude/backups")"; rc=$?
+eq "$rc" 1 "home: the repair's backup lands in the suite's own home, not the operator's"
+if [ "$rc" -eq 1 ] && [ "$(printf '%s\n' "$home_new" | wc -l | tr -d ' ')" -eq 1 ]; then
+  has "$(cat "$home_new/.claude/skills/cleanup/SKILL.md" 2>/dev/null)" "# local edit" "home: … and it holds the edit it preserved"
+else
+  bad "home: expected exactly one new backup in the suite's home, got: ${home_new:-none}"
+fi
 
 mv "$P/.claude/adb/lib/ci-health.sh" "$work/parked.sh"
 bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?
@@ -1013,6 +1073,17 @@ printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$cxhome/config.toml"
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PCG/svc/GUIDE.md"
 out="$(CODEX_HOME="$cxhome" bash "$PI" install --project "$PCG" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
 has "$out" "the AGENTS.md chain down to svc/ is" "budget(fallback): a configured fallback doc is measured"
+# …AND AN UNPREFIXED CALL READS THE SUITE'S OWN CODEX_HOME (#567). The same configuration, written
+# into the exported CODEX_HOME rather than passed per call, must reach the installer. Before the
+# export, this read went to the operator's real `~/.codex/config.toml`, so a malformed one there
+# turned every Codex install in this suite into "could not list or read".
+PSH="$(new_project codexsuitehome)"
+mkdir -p "$PSH/svc"
+printf 'project_doc_fallback_filenames = ["GUIDE.md"]\n' > "$CODEX_HOME/config.toml"
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Guide prose Codex loads in this directory under a configured fallback name." }' > "$PSH/svc/GUIDE.md"
+out="$(bash "$PI" install --project "$PSH" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"
+rm -f "$CODEX_HOME/config.toml"
+has "$out" "the AGENTS.md chain down to svc/ is" "home: an unprefixed install reads the fallback names in the suite's own CODEX_HOME"
 # A `]` inside a quoted name is part of the name, not the end of the array.
 PCQ="$(new_project codexbracketname)"
 cxhome2="$work/codexhome2"; mkdir -p "$cxhome2" "$PCQ/svc"
@@ -1263,5 +1334,57 @@ file_isnt "$globalhome/.claude/adb" "global: an ordinary install writes nothing 
 out="$(HOME="$globalhome" bash "$ROOT/uninstall.sh" --agent claude --agent codex 2>&1)"; rc=$?
 yes "$rc" "global: an ordinary uninstall.sh run still succeeds"
 [ -L "$globalhome/.claude/CLAUDE.md" ] && bad "global: uninstall left the root doc linked" || ok
+
+# ================================ the operator's home (#567) ====================================
+
+# THE WITNESS, DRIVEN RED ON FIXTURES. It can only be shown failing against a stand-in, because the
+# point is that this suite never writes the real home. Every answer it can give is exercised here.
+wb="$work/witness-backups"
+eq "$(pinned_backups "$wb"; echo "rc=$?")" "rc=0" "witness: a backups folder that does not exist lists nothing, and is not an error"
+backup_witness "" "$wb" >/dev/null; eq "$?" 0 "witness: … and an absent folder that stays absent is clean"
+mkdir -p "$wb/ai-dev-baseline-pinned-20260101-000000.1" "$wb/ai-dev-baseline-20260101-000000"
+wb_before="$(pinned_backups "$wb")"
+backup_witness "$wb_before" "$wb" >/dev/null; eq "$?" 0 "witness: an unchanged folder is clean"
+mkdir -p "$wb/ai-dev-baseline-20260202-000000"
+backup_witness "$wb_before" "$wb" >/dev/null; eq "$?" 0 "witness: a real install's backup (no -pinned- in its name) is not this suite's"
+mkdir -p "$wb/ai-dev-baseline-pinned-20260303-000000.2"
+out="$(backup_witness "$wb_before" "$wb")"; rc=$?
+eq "$rc" 1 "witness: a new pinned backup turns it red"
+has "$out" "ai-dev-baseline-pinned-20260303-000000.2" "witness: … naming the new entry"
+# Deleting an old entry while adding a new one leaves the COUNT unchanged; the names still differ.
+rm -rf "$wb/ai-dev-baseline-pinned-20260101-000000.1" "$wb/ai-dev-baseline-pinned-20260303-000000.2"
+mkdir -p "$wb/ai-dev-baseline-pinned-20260404-000000.3"
+out="$(backup_witness "$wb_before" "$wb")"; rc=$?
+eq "$rc" 1 "witness: one entry removed and another added is still a new entry — names, not a count"
+has "$out" "ai-dev-baseline-pinned-20260404-000000.3" "witness: … and it is the one named"
+# An unreadable folder is its own answer, never an empty (clean) list. Root reads through mode 000,
+# so the case is skipped there and says so.
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$wb"
+  pinned_backups "$wb" >/dev/null; eq "$?" 1 "witness: a folder that cannot be listed is 1, never an empty list"
+  out="$(backup_witness "$wb_before" "$wb")"; rc=$?
+  chmod 755 "$wb"
+  eq "$rc" 2 "witness: … and the witness reports it as unreadable, not clean"
+  has "$out" "cannot list" "witness: … and says so"
+else
+  printf 'SKIP: witness(unreadable) — running as root, which lists a mode-000 folder anyway\n'
+fi
+
+# THE REAL CHECK. Nothing this suite ran may have added a pinned backup to the operator's real
+# backups folder. A concurrent run of an OLDER copy of this suite (on another branch) would trip it
+# too; running two suites at once in one machine's home is not supported, and the names printed say
+# which run's they are.
+if [ -z "$REAL_BACKUPS" ]; then
+  printf 'SKIP: home(real) — HOME was unset when the suite started, so there is no real home to protect\n'
+elif [ "$real_listable" -eq 0 ]; then
+  bad "home: the real $REAL_BACKUPS could not be listed when the suite started, so it cannot prove it wrote nothing there"
+else
+  out="$(backup_witness "$real_before" "$REAL_BACKUPS")"; rc=$?
+  case "$rc" in
+    0) ok ;;
+    1) bad "home: the suite wrote into the real $REAL_BACKUPS: $(printf '%s' "$out" | tr '\n' ' ')" ;;
+    *) bad "home: the real $REAL_BACKUPS could not be listed at the end of the suite: $out" ;;
+  esac
+fi
 
 check_summary check-pinned-install

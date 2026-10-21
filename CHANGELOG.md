@@ -8,6 +8,19 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pinned-install suite stops writing into your real `~/.claude/backups` (#567).** Two of
+  `scripts/check-pinned-install.sh`'s repair cases backed up an edited fixture file under the real
+  `$HOME` on every run, so each selfcheck added two `ai-dev-baseline-pinned-*` folders that nothing
+  removed (731 on one machine). The same calls also read the real `~/.codex/config.toml`, so a
+  malformed one there changed the suite's verdict. The suite now exports `HOME` and `CODEX_HOME`
+  into its own work directory. It fails, naming each one, if a new pinned backup appears in the real
+  backups folder. To clear the folders it already left: each one holds only
+  `.claude/skills/cleanup/SKILL.md`, ending in `# local edit` or `# my edit`. A real pinned install
+  writes backups under the same name, holding a project's own files, so check before deleting if you
+  have ever run one.
+
 ## [3.1.0] - 2026-10-20
 
 This release closes the loop between a pull request and its reviewer. `/resolve-pr-threads` waits
