@@ -450,24 +450,39 @@ _adb_py_toml_table() {
 #   requirements files        a requirement line that starts with it;
 #   TOML files and setup.py   a quoted string that starts with it (`"pytest>=8"`, `" pytest"`) or
 #                             runs it (`"python -m pytest"`), or a key that is it (`pytest = "^8"`),
-#                             before any `#` that is outside a string;
+#                             before any `#` that is outside a string. In setup.py a backslash
+#                             escapes inside either quote; a TOML literal ('…') string has no escapes;
 #   setup.cfg and tox.ini     a value or continuation line that starts with it, or `-m pytest`.
 # Prose that mentions pytest does not count, unless a quoted string starts with it: a
 # `description = "pytest …"` is read as a dependency.
 _ADB_PY_RE_REQ='^[[:space:]]*pytest([^A-Za-z0-9]|$)'
 _ADB_PY_RE_QUOTED='^[[:space:]]*(([^#"'\'']|"([^"\\]|\\.)*"|'\''[^'\'']*'\'')*["'\''][[:space:]]*(pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$)|["'\'']?pytest([-_.][A-Za-z0-9_.-]*)?["'\'']?[[:space:]]*=)'
+_ADB_PY_RE_PYSRC='^[[:space:]]*(([^#"'\'']|"([^"\\]|\\.)*"|'\''([^'\''\\]|\\.)*'\'')*["'\''][[:space:]]*(pytest|[^"'\'']*-m[[:space:]]+pytest)([^A-Za-z0-9]|$))'
 _ADB_PY_RE_INI='^([[:space:]]+|[^#;=[:space:]][^#;=]*=[[:space:]]*|[^#;]*-m[[:space:]]+)pytest([^A-Za-z0-9]|$)'
 
 # Files that only a Python project carries. Any one of them makes the repo a Python project; the
 # gates still need their own evidence below.
 _ADB_PY_MARKERS="pyproject.toml setup.py setup.cfg requirements.txt Pipfile tox.ini pytest.toml .pytest.toml pytest.ini .pytest.ini conftest.py tests/conftest.py test/conftest.py mypy.ini .mypy.ini ruff.toml .ruff.toml"
 
+# _adb_py_dir_unsearchable <root> <dir> — 0, naming it on stderr, when <root>/<dir> is a directory
+# whose entries cannot be listed: a glob inside it stays literal and would read as "nothing here".
+_adb_py_dir_unsearchable() {
+  [ -d "$1/$2" ] || return 1
+  [ -r "$1/$2" ] && [ -x "$1/$2" ] && return 1
+  printf 'project-gates: python: cannot search %s — it is not counted as evidence\n' "$1/$2" >&2
+  return 0
+}
+
 # _adb_py_project <root> — 0 when <root> holds a Python marker file, a root *requirements*.txt or a
-# requirements/*.txt.
+# requirements/*.txt, or a requirements/ that cannot be searched (its gates then cannot be decided,
+# which the adapter must say rather than decline).
 _adb_py_project() {
   local root="$1" f
   for f in $_ADB_PY_MARKERS; do [ -f "$root/$f" ] && return 0; done
   for f in "$root"/*requirements*.txt "$root"/requirements/*.txt; do [ -f "$f" ] && return 0; done
+  if [ -d "$root/requirements" ] && ! { [ -r "$root/requirements" ] && [ -x "$root/requirements" ]; }; then
+    return 0
+  fi
   return 1
 }
 
@@ -504,13 +519,16 @@ _adb_py_uses_pytest() {
   for f in pytest.toml .pytest.toml pytest.ini .pytest.ini conftest.py tests/conftest.py test/conftest.py; do
     [ -f "$root/$f" ] && return 0
   done
+  # The directories evidence is read from: one that cannot be searched may hide a conftest.py or a
+  # requirements file, so the answer is unknown unless something else shows pytest.
+  for f in requirements tests test; do _adb_py_dir_unsearchable "$root" "$f" && unknown=1; done
   # file · grep flags · ERE, three fields per check. An unmatched glob stays literal and fails
   # _adb_py_grep's -f test.
   local checks=(
     pyproject.toml -qE  "$(_adb_py_toml_table pytest)"
     pyproject.toml -qiE "$_ADB_PY_RE_QUOTED"
     Pipfile        -qiE "$_ADB_PY_RE_QUOTED"
-    setup.py       -qiE "$_ADB_PY_RE_QUOTED"
+    setup.py       -qiE "$_ADB_PY_RE_PYSRC"
     setup.cfg      -qE  '^[[:space:]]*\[tool:pytest\]'
     setup.cfg      -qiE "$_ADB_PY_RE_INI"
     tox.ini        -qE  '^[[:space:]]*\[pytest\]'
@@ -529,7 +547,8 @@ _adb_py_uses_pytest() {
 }
 
 # _adb_py_test_dir <root> — prints `tests`, else `test`: the first that directly holds a test*.py
-# (unittest's default discovery pattern). One level only, never a recursive scan.
+# (unittest's default discovery pattern). One level only, never a recursive scan. Called only after
+# _adb_py_uses_pytest returned 1, which it does only when both directories can be searched.
 _adb_py_test_dir() {
   local root="$1" dir f
   for dir in tests test; do
@@ -569,15 +588,18 @@ _adb_eco_python() {
   local root="$1" dir rc=0
   _adb_py_project "$root" || return 1
 
-  _adb_py_uses_pytest "$root" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    if   _adb_have pytest;  then d_test="pytest -q"
-    elif _adb_have python3; then d_test="python3 -m pytest -q"
+  # No runner, no test gate whatever the evidence says — so the evidence is not read.
+  if _adb_have pytest || _adb_have python3; then
+    _adb_py_uses_pytest "$root" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if   _adb_have pytest;  then d_test="pytest -q"
+      else                         d_test="python3 -m pytest -q"
+      fi
+    elif [ "$rc" -eq 2 ]; then
+      d_unknown="$d_unknown test"
+    elif _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
+      d_test="$(_adb_py_unittest_cmd "$dir")"
     fi
-  elif [ "$rc" -eq 2 ]; then
-    d_unknown="$d_unknown test"
-  elif _adb_have python3 && dir="$(_adb_py_test_dir "$root")"; then
-    d_test="$(_adb_py_unittest_cmd "$dir")"
   fi
 
   if _adb_have mypy; then

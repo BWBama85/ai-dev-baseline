@@ -980,6 +980,8 @@ setup-py|setup.py|setup(tests_require=['pytest'])\n
 hatch-script|pyproject.toml|[tool.hatch.envs.test.scripts]\ntest = "python -m pytest {args}"\n
 spaced-dep|pyproject.toml|[dependency-groups]\ntest = [" pytest>=8"]\n
 escaped-quote|setup.py|setup(description="A \\"#\\" string", tests_require=["pytest"])\n
+escaped-single|setup.py|setup(description='Don\\'t # here', tests_require=['pytest'])\n
+toml-literal-backslash|pyproject.toml|[dependency-groups]\ndev = ['C:\\', "pytest"]\n
 pipfile|Pipfile|[dev-packages]\npytest = "*"\n
 req-dev|requirements-dev.txt|pytest==8.*\n
 req-dir|requirements/test.txt|  PyTest>=8\n
@@ -1081,6 +1083,32 @@ else
   py_detect "$d" mypy >/dev/null 2>&1; rc=$?
   eq "$rc" 2 "python: an unreadable setup.cfg leaves mypy's config unknown → refuses"
   chmod 644 "$d/setup.cfg"
+  # No Python runner means no Python test gate, so unreadable evidence decides nothing and the
+  # adapter declines, letting a later ecosystem claim the repo.
+  d="$(py_proj unreadable-norunner)"; printf '{"name":"a/b"}\n' > "$d/composer.json"; php_stub "$d/vendor/bin" phpunit
+  chmod 000 "$d/pyproject.toml"
+  out="$(py_detect "$d" 2>/dev/null)"; rc=$?
+  eq "$rc" 0 "python: unreadable evidence with no python3 or pytest → the adapter declines, no refusal"
+  eq "$out" "test${TAB}vendor/bin/phpunit" "python: ...and PHP detects the repo"
+  chmod 644 "$d/pyproject.toml"
+  # An evidence DIRECTORY that cannot be searched is unknown, like an unreadable file.
+  d="$(py_proj unsearchable-req)"; ut_file "$d/tests/test_a.py"; mkdir -p "$d/requirements"
+  printf 'pytest\n' > "$d/requirements/test.txt"; chmod 000 "$d/requirements"
+  err="$(py_detect "$d" python3 pytest 2>&1 >/dev/null)"; py_detect "$d" python3 pytest >/dev/null 2>&1; rc=$?
+  eq  "$rc" 2 "python: an unsearchable requirements/ leaves the runner unknown → refuses, never unittest"
+  has "$err" "python: cannot search $d/requirements" "python: ...and names the directory"
+  chmod 755 "$d/requirements"
+  d="$work/py-unsearchable-req-only"; mkdir -p "$d/requirements"; printf 'pytest\n' > "$d/requirements/test.txt"
+  chmod 000 "$d/requirements"
+  py_detect "$d" python3 pytest >/dev/null 2>&1; rc=$?
+  eq "$rc" 2 "python: an unsearchable requirements/ as the only marker is still a Python project → refuses"
+  chmod 755 "$d/requirements"
+  d="$(py_proj unsearchable-tests)"; ut_file "$d/tests/test_a.py"; chmod 000 "$d/tests"
+  py_detect "$d" python3 >/dev/null 2>&1; rc=$?
+  eq "$rc" 2 "python: an unsearchable tests/ leaves the test gate unknown → refuses, never silently none"
+  printf '[gates]\ntest = "make test"\n' > "$d/agents.toml"
+  eq "$(py_detect "$d" python3 2>/dev/null)" "test${TAB}make test" "python: ...unless agents.toml declares the test gate"
+  chmod 755 "$d/tests"
   d="$work/py-unreadable"
 fi
 chmod 644 "$d/pyproject.toml"

@@ -238,15 +238,17 @@ header must start its line (spaces and quoted parts inside the brackets are
 fine, and names are case-sensitive), a header-shaped line inside a
 multi-line string is read as a header, and a table defined only by dotted
 keys (`tool.ruff.line-length = 100`, with no `[tool.ruff]` header) is not
-seen. If a file whose contents would decide a gate cannot be read, and
-nothing else decided it, detection stops with an error naming the file and
-the gate: `detect`, `status` and `run` exit 2, so the turn-end gate blocks
+seen. If a file whose contents would decide a gate cannot be read, or a
+directory evidence is read from (`requirements/`, `tests/`, `test/`) cannot
+be searched, and nothing else decided it, detection stops with an error
+naming the file and the gate: `detect`, `status` and `run` exit 2, so the turn-end gate blocks
 rather than run a set of gates nobody chose. A gate `agents.toml` declares
 (a command, `""`, or `[gates.state]` `na`) needs no guess, so it never
 causes that error.
 
 A configured tool that is not on `PATH` is dropped, never emitted as a gate
-that cannot run. A Python project with nothing runnable is not claimed, so
+that cannot run, and with neither `pytest` nor `python3` on `PATH` no test
+evidence is read at all. A Python project with nothing runnable is not claimed, so
 a later ecosystem (PHP) can still detect the repo. If your project tests
 some other way (`make test`, `tox`, `nox`), declare it in `[gates]`.
 
