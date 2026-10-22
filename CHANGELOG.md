@@ -8,6 +8,16 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-10-22
+
+This is a patch release of fixes. `/cleanup` loads again in hosts with a strict YAML loader such
+as T3 Code, and every skill header is now checked whole when it is built. Python projects get gates
+from their own configuration rather than from the tools installed on the machine, so a `unittest`
+project no longer gets a failing pytest gate. `install.sh` no longer refuses a clean clone over an
+untracked file, and the pinned-install suite stops writing into your real `~/.claude/backups`.
+**Upgrading:** an adopted Python project's detected gates may change; check them with
+`project-gates.sh status`.
+
 ### Fixed
 
 - **`/cleanup` loads in hosts with a strict YAML loader again (#572).** Its `argument-hint` started
@@ -5404,7 +5414,8 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.1.0...v2.2.0
