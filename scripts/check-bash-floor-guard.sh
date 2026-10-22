@@ -1996,7 +1996,8 @@ eq "$CLRC" "1" "crlf: an EXTENSIONLESS entry point is caught too — a *.sh-only
 has "$CLOUT" "agent-init" "crlf: the extensionless file is named"
 
 # A GIT WORK TREE is listed from its index: tracked files are scanned, untracked entries are not and
-# cannot fail the scan, and a tracked path that cannot be looked at is never reported clean.
+# cannot fail the scan, and a tracked file inside a directory that cannot be entered is never reported
+# clean.
 g="$work/crlf-git"; mkdir -p "$g/scripts"
 git -C "$g" init -q 2>/dev/null
 printf '#!/usr/bin/env bash\necho ok\n' > "$g/scripts/tracked.sh"
