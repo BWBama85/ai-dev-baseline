@@ -5748,8 +5748,9 @@ adb_require_bash_advisory() {
 # install DESTINATION is fine either way, because `$HOME` under WSL is the Linux home.
 
 # adb_crlf_scan <dir> — print every shell file under <dir> carrying CRLF line endings, one per
-# line: every TRACKED one when <dir> is in a git work tree, every one otherwise. Returns 0 when the
-# tree is clean, 1 when it is not, 2 when it could not look.
+# line: every TRACKED one when <dir> is the top level of a git work tree, every one otherwise. Returns
+# 0 when the tree is clean, 1 when it is not or a file in it could not be verified, 2 when it could
+# not look.
 #
 # A clone made by WINDOWS git with core.autocrlf=true and then executed from WSL gives every
 # script `\r` line endings, and the failure is the famously unhelpful `bash: $'\r': command not
