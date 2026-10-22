@@ -5781,9 +5781,11 @@ adb_crlf_scan() {
   # mid-walk (another process's lock directory, an editor's swap file), and failing closed then
   # refuses a clean clone. The index lists exactly the files Windows git would have converted, so an
   # untracked entry can no longer fail the listing; each tracked file is still read separately
-  # below. Untracked files are not scanned. Any other directory is walked.
+  # below. Untracked files are not scanned. Only the TOP LEVEL of a work tree is listed this way: a
+  # directory nested in another repository (an unpacked release, a vendored payload) may hold files
+  # that repository does not track, so it is walked like any other.
   if command -v git >/dev/null 2>&1 \
-     && [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+     && [ "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$dir" 2>/dev/null && pwd -P)" ]; then
     git -C "$dir" ls-files -z > "$listfile" 2>/dev/null || {
       rm -f "$listfile"
       printf 'adb_crlf_scan: could not list the tracked files of %s — refusing to report it clean\n' "$dir" >&2

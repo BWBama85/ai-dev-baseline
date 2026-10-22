@@ -2036,6 +2036,13 @@ else
   has "$CLOUT" "sealed/a.sh (unreadable — not verified)" "crlf (git): and it is named as not verified"
 fi
 chmod 755 "$g/sealed"; git -C "$g" rm -q --cached sealed/a.sh; rm -rf "$g/sealed"
+# A directory NESTED in another repository is walked, never listed from that repository's index:
+# a release unpacked inside a checkout tracks nothing there, and listing would report it clean.
+mkdir -p "$g/unpacked/bin"; printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$g/unpacked/bin/agent-init"
+crlf_scan "$g/unpacked"
+eq "$CLRC" "1" "crlf (git): an untracked tree nested inside another repo is walked, and its CRLF caught"
+has "$CLOUT" "agent-init" "crlf (git): and the file is named"
+rm -rf "$g/unpacked"
 printf 'not an index' > "$g/.git/index"
 crlf_scan "$g"
 eq "$CLRC" "2" "crlf (git): an index that cannot be listed is a refusal, never a clean tree"
