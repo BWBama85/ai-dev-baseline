@@ -2023,6 +2023,20 @@ has "$CLOUT" "$g/scripts/tracked.sh" "crlf (git): and named by its full path"
 rm -f "$g/scripts/tracked.sh"
 crlf_scan "$g"
 eq "$CLRC" "0" "crlf (git): a tracked file deleted from the work tree has nothing to scan"
+mkdir -p "$g/gone/deeper"; printf '#!/usr/bin/env bash\n' > "$g/gone/deeper/x.sh"
+git -C "$g" add gone/deeper/x.sh; rm -rf "$g/gone"
+crlf_scan "$g"
+eq "$CLRC" "0" "crlf (git): a tracked DIRECTORY deleted from the work tree has nothing to scan"
+mkdir -p "$g/sealed"; printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$g/sealed/a.sh"
+git -C "$g" add sealed/a.sh; chmod 000 "$g/sealed"
+if [ -r "$g/sealed" ]; then
+  printf 'SKIP: chmod 000 does not stop this user reading — skipping the unreadable-tracked-dir case\n' >&2
+else
+  crlf_scan "$g"
+  eq "$CLRC" "1" "crlf (git): a TRACKED script in a directory that cannot be entered is never reported clean"
+  has "$CLOUT" "sealed/a.sh (unreadable — not verified)" "crlf (git): and it is named as not verified"
+fi
+chmod 755 "$g/sealed"; git -C "$g" rm -q --cached sealed/a.sh; rm -rf "$g/sealed"
 printf 'not an index' > "$g/.git/index"
 crlf_scan "$g"
 eq "$CLRC" "2" "crlf (git): an index that cannot be listed is a refusal, never a clean tree"

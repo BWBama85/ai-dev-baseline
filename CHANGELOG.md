@@ -10,7 +10,7 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
-- **`install.sh` no longer refuses a clean clone when a file vanishes mid-scan.** Its CRLF preflight
+- **`install.sh` no longer refuses a clean clone because of an untracked file.** Its CRLF preflight
   walked the whole clone with `find` and, failing closed, refused to install if any entry vanished or
   could not be read during the walk. Selfcheck's own run-record lock is created and removed inside the
   checkout as each step starts, so CI's `install-dry-run` failed intermittently (seen on PR #570). In a

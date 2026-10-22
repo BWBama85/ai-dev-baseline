@@ -5759,7 +5759,7 @@ adb_require_bash_advisory() {
 # ending in CR. A `\r` ESCAPE in source (`printf '\r'`) is two characters, not a CR byte, so it
 # does not false-positive — verified against this repo's own `printf '\r'` sites.
 adb_crlf_scan() {
-  local dir="${1:-.}" cr found=0 listfile="" prefix=""
+  local dir="${1:-.}" cr found=0 listfile="" prefix="" p
   [ -d "$dir" ] || { printf 'adb_crlf_scan: not a directory: %s\n' "$dir" >&2; return 2; }
   cr="$(printf '\r')"
   # FAIL CLOSED ON A FAILED WALK. A preflight whose `find` errored and whose output was discarded
@@ -5805,8 +5805,16 @@ adb_crlf_scan() {
   #     Independent review reproduced it.
   while IFS= read -r -d '' f; do
     f="$prefix$f"
-    # A tracked path with no regular file behind it (deleted locally, a submodule) has nothing to run.
-    [ -f "$f" ] || continue
+    if [ ! -f "$f" ]; then
+      # Not a regular file: a submodule or a directory link has nothing to run, and neither has a
+      # tracked file deleted from the work tree. Deleted is proved by the nearest directory that
+      # exists being searchable; when it is not, the path could not be looked at at all.
+      [ -e "$f" ] && continue
+      p="${f%/*}"
+      while [ -n "$p" ] && [ "$p" != "${dir%/}" ] && [ ! -d "$p" ]; do p="${p%/*}"; done
+      [ -n "$p" ] && [ -x "$p" ] && continue
+      printf '%s (unreadable — not verified)\n' "$f"; found=1; continue
+    fi
     case "$f" in
       *.sh) ;;
       *) head -n 1 "$f" 2>/dev/null | grep -q '^#!.*\(bash\|sh\)' || continue ;;
