@@ -5748,7 +5748,9 @@ adb_require_bash_advisory() {
 # install DESTINATION is fine either way, because `$HOME` under WSL is the Linux home.
 
 # adb_crlf_scan <dir> — print every shell file under <dir> carrying CRLF line endings, one per
-# line. Returns 0 when the tree is clean, 1 when it is not, 2 when it could not look.
+# line: every TRACKED one when <dir> is the top level of a git work tree, every one otherwise. Returns
+# 0 when the tree is clean, 1 when it is not or a file in it could not be verified, 2 when it could
+# not look.
 #
 # A clone made by WINDOWS git with core.autocrlf=true and then executed from WSL gives every
 # script `\r` line endings, and the failure is the famously unhelpful `bash: $'\r': command not
@@ -5758,7 +5760,7 @@ adb_require_bash_advisory() {
 # ending in CR. A `\r` ESCAPE in source (`printf '\r'`) is two characters, not a CR byte, so it
 # does not false-positive — verified against this repo's own `printf '\r'` sites.
 adb_crlf_scan() {
-  local dir="${1:-.}" cr found=0 listfile=""
+  local dir="${1:-.}" cr found=0 listfile="" prefix="" p
   [ -d "$dir" ] || { printf 'adb_crlf_scan: not a directory: %s\n' "$dir" >&2; return 2; }
   cr="$(printf '\r')"
   # FAIL CLOSED ON A FAILED WALK. A preflight whose `find` errored and whose output was discarded
@@ -5776,11 +5778,28 @@ adb_crlf_scan() {
     printf 'adb_crlf_scan: could not create a work file — refusing to report %s clean\n' "$dir" >&2
     return 2
   }
-  find "$dir" -name .git -prune -o -type f -print0 > "$listfile" 2>/dev/null || {
-    rm -f "$listfile"
-    printf 'adb_crlf_scan: could not walk %s — refusing to report it clean\n' "$dir" >&2
-    return 2
-  }
+  # A GIT WORK TREE IS LISTED FROM ITS INDEX, NOT WALKED. A walk fails on any entry that vanishes
+  # mid-walk (another process's lock directory, an editor's swap file), and failing closed then
+  # refuses a clean clone. The index lists exactly the files Windows git would have converted, so an
+  # untracked entry can no longer fail the listing; each tracked file is still read separately
+  # below. Untracked files are not scanned. Only the TOP LEVEL of a work tree is listed this way: a
+  # directory nested in another repository (an unpacked release, a vendored payload) may hold files
+  # that repository does not track, so it is walked like any other.
+  if command -v git >/dev/null 2>&1 \
+     && [ "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$dir" 2>/dev/null && pwd -P)" ]; then
+    git -C "$dir" ls-files -z > "$listfile" 2>/dev/null || {
+      rm -f "$listfile"
+      printf 'adb_crlf_scan: could not list the tracked files of %s — refusing to report it clean\n' "$dir" >&2
+      return 2
+    }
+    prefix="$dir/"
+  else
+    find "$dir" -name .git -prune -o -type f -print0 > "$listfile" 2>/dev/null || {
+      rm -f "$listfile"
+      printf 'adb_crlf_scan: could not walk %s — refusing to report it clean\n' "$dir" >&2
+      return 2
+    }
+  fi
   # TWO WAYS IN, because either alone has a blind spot:
   #   - a shell SHEBANG catches the extensionless commands (`bin/agent-init`, `bin/baseline`),
   #     which a `*.sh` rule silently exempts — and they are the two files a user runs first;
@@ -5789,6 +5808,17 @@ adb_crlf_scan() {
   #     declared a tree clean while the one file every entry point loads was CRLF-corrupt.
   #     Independent review reproduced it.
   while IFS= read -r -d '' f; do
+    f="$prefix$f"
+    if [ ! -f "$f" ]; then
+      # Not a regular file: a submodule or a directory link has nothing to run, and neither has a
+      # tracked file deleted from the work tree. Deleted is proved by the nearest directory that
+      # exists being searchable; when it is not, the path could not be looked at at all.
+      [ -e "$f" ] && continue
+      p="${f%/*}"
+      while [ -n "$p" ] && [ "$p" != "${dir%/}" ] && [ ! -d "$p" ]; do p="${p%/*}"; done
+      [ -n "$p" ] && [ -x "$p" ] && continue
+      printf '%s (unreadable — not verified)\n' "$f"; found=1; continue
+    fi
     case "$f" in
       *.sh) ;;
       *) head -n 1 "$f" 2>/dev/null | grep -q '^#!.*\(bash\|sh\)' || continue ;;

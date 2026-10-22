@@ -1995,6 +1995,60 @@ crlf_scan "$d"
 eq "$CLRC" "1" "crlf: an EXTENSIONLESS entry point is caught too — a *.sh-only scan would miss bin/"
 has "$CLOUT" "agent-init" "crlf: the extensionless file is named"
 
+# A GIT WORK TREE is listed from its index: tracked files are scanned, untracked entries are not and
+# cannot fail the scan, and a tracked file inside a directory that cannot be entered is never reported
+# clean.
+g="$work/crlf-git"; mkdir -p "$g/scripts"
+git -C "$g" init -q 2>/dev/null
+printf '#!/usr/bin/env bash\necho ok\n' > "$g/scripts/tracked.sh"
+git -C "$g" add scripts/tracked.sh
+crlf_scan "$g"
+eq "$CLRC" "0" "crlf (git): a clean tracked tree passes"
+mkdir -p "$g/locked"; chmod 000 "$g/locked"
+if [ -r "$g/locked" ]; then
+  printf 'SKIP: chmod 000 does not stop this user reading — skipping the unreadable-untracked-dir case\n' >&2
+else
+  crlf_scan "$g"
+  eq "$CLRC" "0" "crlf (git): an untracked directory the walk cannot enter does not fail the scan"
+  hasnt "$CLOUT" "could not" "crlf (git): and nothing is reported as unscannable"
+fi
+chmod 755 "$g/locked"
+printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$g/scripts/untracked.sh"
+crlf_scan "$g"
+eq "$CLRC" "0" "crlf (git): an UNTRACKED CRLF script is not scanned"
+printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$g/scripts/tracked.sh"
+crlf_scan "$g"
+eq "$CLRC" "1" "crlf (git): a TRACKED CRLF script is caught"
+has "$CLOUT" "$g/scripts/tracked.sh" "crlf (git): and named by its full path"
+rm -f "$g/scripts/tracked.sh"
+crlf_scan "$g"
+eq "$CLRC" "0" "crlf (git): a tracked file deleted from the work tree has nothing to scan"
+mkdir -p "$g/gone/deeper"; printf '#!/usr/bin/env bash\n' > "$g/gone/deeper/x.sh"
+git -C "$g" add gone/deeper/x.sh; rm -rf "$g/gone"
+crlf_scan "$g"
+eq "$CLRC" "0" "crlf (git): a tracked DIRECTORY deleted from the work tree has nothing to scan"
+mkdir -p "$g/sealed"; printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$g/sealed/a.sh"
+git -C "$g" add sealed/a.sh; chmod 000 "$g/sealed"
+if [ -r "$g/sealed" ]; then
+  printf 'SKIP: chmod 000 does not stop this user reading — skipping the unreadable-tracked-dir case\n' >&2
+else
+  crlf_scan "$g"
+  eq "$CLRC" "1" "crlf (git): a TRACKED script in a directory that cannot be entered is never reported clean"
+  has "$CLOUT" "sealed/a.sh (unreadable — not verified)" "crlf (git): and it is named as not verified"
+fi
+chmod 755 "$g/sealed"; git -C "$g" rm -q --cached sealed/a.sh; rm -rf "$g/sealed"
+# A directory NESTED in another repository is walked, never listed from that repository's index:
+# a release unpacked inside a checkout tracks nothing there, and listing would report it clean.
+mkdir -p "$g/unpacked/bin"; printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$g/unpacked/bin/agent-init"
+crlf_scan "$g/unpacked"
+eq "$CLRC" "1" "crlf (git): an untracked tree nested inside another repo is walked, and its CRLF caught"
+has "$CLOUT" "agent-init" "crlf (git): and the file is named"
+rm -rf "$g/unpacked"
+printf 'not an index' > "$g/.git/index"
+crlf_scan "$g"
+eq "$CLRC" "2" "crlf (git): an index that cannot be listed is a refusal, never a clean tree"
+has "$CLOUT" "could not list the tracked files" "crlf (git): and it says why"
+
 # END TO END, against the REAL installer, because the pieces passing individually is not the claim
 # being made — the claim is that a CRLF clone cannot be installed. A throwaway tree COPY with one
 # corrupted file, per base/practices/self-review.md: the live tree is never touched, and the file

@@ -153,8 +153,9 @@ compose:
 
 `scripts/lib/project-gates.sh` auto-detects gates for the
 common ecosystems (Node via `package.json` + lockfile → `pnpm`/`npm`/`yarn`/
-`bun`; Rust via `Cargo.toml`; Go via `go.mod`; Python via `pyproject.toml`/
-`setup.py`/`setup.cfg`/`requirements.txt`; PHP via `composer.json`). A
+`bun`; Rust via `Cargo.toml`; Go via `go.mod`; Python via `pyproject.toml`,
+`setup.py`, `setup.cfg`, a requirements file, `Pipfile`, `tox.ini`, a pytest,
+mypy or ruff config file, or `conftest.py`; PHP via `composer.json`). A
 project's `agents.toml` can override any of the four built-in labels —
 `typecheck`, `lint`, `test`, `format` — individually:
 
@@ -196,6 +197,60 @@ The PHP adapter prefers a **declared `composer.json` script** (`test`,
 PHPStan or Psalm, `test` to PHPUnit, `lint` to PHP_CodeSniffer, and `format`
 to `php-cs-fixer --dry-run` — never an in-place fixer, because a gate that
 rewrites the tree is a mutation wearing a verification's clothes.
+
+The Python adapter takes every gate from what the **project** configures,
+never from what happens to be installed on the machine (#568):
+
+- **`test`** is `pytest -q` (or `python3 -m pytest -q` when `pytest` is not
+  on `PATH`) when the project shows pytest: a `pytest.toml`, `.pytest.toml`,
+  `pytest.ini` or `.pytest.ini`; a `conftest.py` at the root, in `tests/` or
+  in `test/`; a `[tool.pytest…]` table in `pyproject.toml`, `[tool:pytest]`
+  in `setup.cfg` or `[pytest]` in `tox.ini`; or `pytest` (plugins such as
+  `pytest-cov` included) as a dependency or command in `pyproject.toml`,
+  `Pipfile`, `setup.py`, `setup.cfg`, `tox.ini`, a root `*requirements*.txt`
+  or `requirements/*.txt`. What counts: in a requirements file, a line
+  that starts with the name; in a TOML file or `setup.py`, a quoted string
+  that starts with it or contains `-m pytest`, or a key that is it; in
+  `setup.cfg` or `tox.ini`, a value or continuation line that starts with
+  it, or `-m pytest`. The field is not checked, so prose in one of those
+  shapes counts too: `description = "pytest …"`, or
+  `description = "do not run python -m pytest"`. Otherwise,
+  when `tests/` (else `test/`) directly holds a `test*.py`, it is unittest
+  discovery over that directory (`unittest discover -s <dir>`, run through
+  a one-line `python3 -c` wrapper). The wrapper also fails when unittest
+  finds **nothing to run or skip**, so a folder of only pytest-style tests is
+  never reported green; plain `python -m unittest` exits 0 in that case
+  before Python 3.12. A folder mixing the two styles runs only its unittest
+  tests: declare `[gates]` for that project. Otherwise there is no `test`
+  gate. A pytest project without pytest installed gets a red gate on
+  purpose: the environment is incomplete.
+- **`typecheck`** is `mypy .` only with `mypy.ini`, `.mypy.ini`, a
+  `[tool.mypy]` table in `pyproject.toml` or `[mypy]` in `setup.cfg`.
+- **`lint`** and **`format`** are `ruff check --no-fix --no-fix-only .` and
+  `ruff format --check .` only with `ruff.toml`, `.ruff.toml` or a
+  `[tool.ruff]` table in `pyproject.toml`. The two `--no-fix` flags override
+  a project's `fix = true` or `fix-only = true`, under either of which a
+  bare `ruff check` rewrites the source (and `fix-only` also exits 0 on the
+  violations it leaves).
+
+The detector reads those files line by line, not as TOML or INI: a table
+header must start its line (spaces and quoted parts inside the brackets are
+fine, and names are case-sensitive), a header-shaped line inside a
+multi-line string is read as a header, and a table defined only by dotted
+keys (`tool.ruff.line-length = 100`, with no `[tool.ruff]` header) is not
+seen. If a file whose contents would decide a gate cannot be read, or a
+directory evidence is read from (`requirements/`, `tests/`, `test/`) cannot
+be searched, and nothing else decided it, detection stops with an error
+naming the file and the gate: `detect`, `status` and `run` exit 2, so the turn-end gate blocks
+rather than run a set of gates nobody chose. A gate `agents.toml` declares
+(a command, `""`, or `[gates.state]` `na`) needs no guess, so it never
+causes that error.
+
+A configured tool that is not on `PATH` is dropped, never emitted as a gate
+that cannot run, and with neither `pytest` nor `python3` on `PATH` no test
+evidence is read at all. A Python project with nothing runnable is not claimed, so
+a later ecosystem (PHP) can still detect the repo. If your project tests
+some other way (`make test`, `tox`, `nox`), declare it in `[gates]`.
 
 #### Gates are an open set (`build`, `guards`, …)
 

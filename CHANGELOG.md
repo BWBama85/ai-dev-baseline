@@ -10,6 +10,32 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **`install.sh` no longer refuses a clean clone because of an untracked file.** Its CRLF preflight
+  walked the whole clone with `find` and, failing closed, refused to install if any entry vanished or
+  could not be read during the walk. Selfcheck's own run-record lock is created and removed inside the
+  checkout as each step starts, so CI's `install-dry-run` failed intermittently (seen on PR #570). In a
+  git clone the preflight now lists the tracked files from the index, so an untracked entry can no
+  longer make it fail.
+  Untracked shell files are no longer scanned. A directory outside git is still walked.
+- **Python gate detection reads the project, not the machine (#568).** A Python project that tests
+  with `unittest` used to get a `test` gate of `python3 -m pytest -q`, which failed with
+  `No module named pytest` while the project's own tests passed. `mypy`, `ruff check` and
+  `ruff format` were also inferred from whatever was installed. Now `test` is pytest only where the
+  project shows pytest (a pytest config file or table, a `conftest.py`, or pytest as a dependency or
+  command), otherwise unittest discovery over `tests/` (or `test/`) when it holds `test*.py`,
+  otherwise no gate. The unittest gate also fails when unittest finds nothing to run or skip, so a
+  folder of only pytest-style tests is never reported green. `mypy` and `ruff` gates need the tool's
+  own config. A file that would decide a gate but cannot be read now stops detection with an error
+  (exit 2) instead of a guess, unless `agents.toml` declares that gate. The
+  lint gate is now `ruff check --no-fix --no-fix-only .`, so a project with `fix = true` can no
+  longer have its source rewritten by a gate. A repo with no classic manifest but a `Pipfile`,
+  `tox.ini`, a requirements file, a pytest, mypy or ruff config file, or a `conftest.py` is now
+  detected as Python too. **An adopted Python project's detected gates may change:** run
+  `bash <lib>/project-gates.sh status`, where `<lib>` is the `scripts/lib` of the install the project
+  uses (`~/.claude/scripts/lib` for a global Claude install), to see the new set, and declare
+  `[gates]` in `agents.toml` if it is not what you want. The rules are in
+  `docs/per-project-overrides.md`.
+
 - **The pinned-install suite stops writing into your real `~/.claude/backups` (#567, D136).** Two of
   `scripts/check-pinned-install.sh`'s repair cases backed up an edited fixture file under the real
   `$HOME` on every run, so each selfcheck added two `ai-dev-baseline-pinned-*` folders that nothing
