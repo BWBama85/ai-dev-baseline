@@ -1,4 +1,4 @@
-# ai-dev-baseline — THE skill-description rule (#436), one home for its two readers.
+# ai-dev-baseline — THE skill frontmatter rule (#436, #572), one home for its two readers.
 #
 # Usage: LC_ALL=C tr '\000' '\001' < <file> | LC_ALL=C awk -f scripts/skill-description.awk
 #   scripts/build.sh runs it on each base/workflows/<name>.md before rendering; scripts/render-size.sh
@@ -28,12 +28,17 @@
 #     Before any key it is a mapping of its own; after `key: value` it continues that value, across
 #     blank lines — either way YAML reads a value this line-by-line reading would not. An indented
 #     comment is dropped by YAML, so it is allowed anywhere.
+#   - every other key's INLINE value parses as one scalar (#572; a strict loader that cannot parse a
+#     header drops the whole skill). Quoted, it closes where it ends, past an optional comment, and
+#     a double-quoted one holds no backslash (no escape to get wrong). Unquoted, it does not start
+#     with a YAML indicator — `[ ] { } , & * ! | > % @` or a backtick, or `-`, `?`, `:` followed by
+#     a space or nothing — and holds no `: ` and no trailing `:` before its comment. A `|`/`>` that
+#     is a valid block-scalar header opens a block instead, and is not a value.
 # What sits INSIDE another key's block is not parsed — past the two lexical rules every line obeys
 # (no tab in its leading whitespace, no control byte) — so a malformed block can still make the
-# whole frontmatter unreadable to a strict loader, and that is that key's reader's business, as is
-# every other property of the other keys. The tab rule holds inside a block scalar too: a tab right
-# after the indentation is content to PyYAML and an error to libyaml, and where loaders disagree
-# the rule refuses. The description itself:
+# whole frontmatter unreadable to a strict loader, and that is that key's reader's business. The
+# tab rule holds inside a block scalar too: a tab right after the indentation is content to PyYAML
+# and an error to libyaml, and where loaders disagree the rule refuses. The description itself:
 #   - one `description:` key in a frontmatter that opens on line 1 and closes with `---`, and a
 #     space after the key;
 #   - printable ASCII only (no control byte, CR, tab or non-ASCII), starting with a letter;
@@ -47,6 +52,10 @@ BEGIN {
   ctl = "["
   for (i = 1; i < 32; i++) if (i != 9) ctl = ctl sprintf("%c", i)
   ctl = ctl sprintf("%c", 127) "]"
+  # YAML's c-indicator set, less `#` (after the space a value needs, it opens a comment) and the
+  # three that may start a plain scalar when no space follows (`-`, `?`, `:`). Checked by index(),
+  # never a bracket expression: awks disagree about `]`, `\` and a backtick inside one.
+  indicators = "[]{},&*!|>%@" sprintf("%c", 96)
 }
 { sub(/\r$/, "") }
 done { next }
@@ -79,6 +88,22 @@ $0 == "---" { closed = 1; done = 1; next }
   key = $0; sub(/:.*/, "", key)
   if (key in keys) { r = "the key " key " given twice"; done = 1; next }
   keys[key] = 1; haskey = 1; block = ($0 ~ /^[A-Za-z][A-Za-z0-9_-]*:([ ]*|[ ]+#.*|[ ]+[|>]([1-9][-+]?|[-+][1-9]?)?([ ]+#.*)?[ ]*)$/)
+  if (block || key == "description") next
+  iv = $0; sub(/^[A-Za-z][A-Za-z0-9_-]*:[ \t]*/, "", iv); sub(/[ \t]+$/, "", iv)
+  c = substr(iv, 1, 1); c2 = substr(iv, 2, 1)
+  if (c == "\"") {
+    if (iv !~ /^"[^"\\]*"([ \t]+#.*)?$/) { r = "the " key " value is a double-quoted string that does not close at its end, or holds a backslash"; done = 1 }
+    next
+  }
+  if (c == "'") {
+    if (iv !~ /^'([^']|'')*'([ \t]+#.*)?$/) { r = "the " key " value is a single-quoted string that does not close at its end"; done = 1 }
+    next
+  }
+  if ((c != "" && index(indicators, c)) || (index("-?:", c) && (c2 == "" || c2 == " " || c2 == "\t"))) {
+    r = "the " key " value starts with the YAML indicator " c " (quote the value)"; done = 1; next
+  }
+  pv = iv; sub(/[ \t]#.*/, "", pv)
+  if (pv ~ /:([ \t]|$)/) { r = "the " key " value holds a colon YAML reads as a mapping (quote the value)"; done = 1; next }
 }
 END {
   if (r == "" && NR == 0) r = "no frontmatter"

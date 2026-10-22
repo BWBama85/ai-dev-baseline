@@ -66,8 +66,8 @@
 # — the rule build.sh applies to every source — admits only plain text every YAML loader reads as
 # itself. That is the descriptions' share of the listing, not the whole of it (each agent adds
 # names and paths around them). It is always the current tree's; --since reports growth in the
-# SKILL.md rows' deltas. A render that fails the rule is UNDESCRIBED: a broken render, never zero
-# words.
+# SKILL.md rows' deltas. A render that fails the rule — its description, or since #572 any other
+# key's inline value — is UNDESCRIBED: a broken render, never zero words.
 #
 # The expected artifact set is DERIVED from base/workflows/, base/practices/ and the agent table
 # below, never globbed from agents/ — a glob reports what exists, so a skill that failed to render

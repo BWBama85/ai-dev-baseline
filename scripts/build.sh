@@ -737,19 +737,20 @@ render_agent_skill() {
     echo "build.sh: base/workflows/$name.md carries a per-agent block marker inside its frontmatter (line $fmmarker) — markers are body-only (see base/workflows/README.md)." >&2
     exit 3
   fi
-  # `description:` is checked by THE description rule, scripts/skill-description.awk, which
-  # scripts/render-size.sh also runs on every render (#436): one line of plain text every YAML loader
-  # reads as itself. The Codex/Gemini synth render captures ONLY that line, and a value a loader
-  # cannot parse drops the skill on Codex and strips its fields on Claude, so it is refused here, at
-  # the source, before anything is written.
+  # The frontmatter is checked by THE skill frontmatter rule, scripts/skill-description.awk, which
+  # scripts/render-size.sh also runs on every render (#436, #572): `description:` must be one line of
+  # plain text every YAML loader reads as itself, and every other key's inline value must be one a
+  # strict loader can parse. The Codex/Gemini synth render captures ONLY the description line, and a
+  # header a loader cannot parse drops the skill (Codex, T3 Code) or strips its fields (Claude), so it
+  # is refused here, at the source, before anything is written.
   descout="$(LC_ALL=C tr '\000' '\001' < "$src" | LC_ALL=C awk -f "$root/scripts/skill-description.awk")" || descout=""
   case "$descout" in
     ok$'\t'*) : ;;
     bad$'\t'*)
-      echo "build.sh: base/workflows/$name.md has a 'description:' that is not one line of plain text (${descout#bad$'\t'}) — see scripts/skill-description.awk for the admitted shape (the Codex/Gemini render captures only that line)." >&2
+      echo "build.sh: base/workflows/$name.md has a frontmatter the skill rule refuses (${descout#bad$'\t'}) — see scripts/skill-description.awk for the admitted shape (the Codex/Gemini render captures only the description line, and a header a strict YAML loader cannot parse drops the skill)." >&2
       exit 3 ;;
     *)
-      echo "build.sh: could not run the description rule (scripts/skill-description.awk) on base/workflows/$name.md" >&2
+      echo "build.sh: could not run the skill frontmatter rule (scripts/skill-description.awk) on base/workflows/$name.md" >&2
       exit 3 ;;
   esac
 

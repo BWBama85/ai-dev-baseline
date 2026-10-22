@@ -4,7 +4,7 @@
 # Edits here are overwritten on the next build.
 name: cleanup
 description: Use after a merge to delete merged branches (squash merges included) and finished run state. Argument local, remote or all; protected branches are kept.
-argument-hint: [local | remote | all] [verbose]  (default: local)
+argument-hint: "[local | remote | all] [verbose]  (default: local)"
 allowed-tools: Bash, Read
 user-invocable: true
 ---

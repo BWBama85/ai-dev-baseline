@@ -261,7 +261,7 @@ desc_fm() {
     return
   fi
   no "$rc" "plain-text ($1): fails the build"
-  has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
+  has "$(cat "$d/build.log" 2>/dev/null)" "has a frontmatter the skill rule refuses ($3)" "plain-text ($1): …naming the rule"
   if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
 }
 # desc_raw <label> <whole frontmatter, printf %b> <reason, or empty> — desc_fm with no name: line
@@ -272,7 +272,7 @@ desc_raw() {
   render_fixture "$d" fixture "$src"; rc=$?
   if [ -z "$3" ]; then yes "$rc" "plain-text ($1): builds"; return; fi
   no "$rc" "plain-text ($1): fails the build"
-  has "$(cat "$d/build.log" 2>/dev/null)" "not one line of plain text ($3)" "plain-text ($1): …naming the rule"
+  has "$(cat "$d/build.log" 2>/dev/null)" "has a frontmatter the skill rule refuses ($3)" "plain-text ($1): …naming the rule"
   if [ -f "$d/agents/codex/skills/fixture/SKILL.md" ]; then bad "plain-text ($1): a skill was written"; else ok; fi
 }
 # desc_neg <label> <value> <reason> — the same, for a frontmatter whose description is <value>.
@@ -327,7 +327,7 @@ desc_fm block-commented 'description: Fine\nmeta: # a note\n  sub: x\nuser-invoc
 desc_fm block-header-comment 'description: Fine\nnotes: | # explanation\n  text\nuser-invocable: true' ''
 desc_fm block-folded-comment 'description: Fine\nnotes: >- # explanation\n  text\nuser-invocable: true' ''
 desc_fm block-indicators 'description: Fine\nnotes: |2-\n  text\nmore: >+1\n  text\nuser-invocable: true' ''
-desc_fm block-bad-indicator 'description: Fine\nnotes: |0\n  text\nuser-invocable: true' 'a multi-line continuation'
+desc_fm block-bad-indicator 'description: Fine\nnotes: |0\n  text\nuser-invocable: true' 'the notes value starts with the YAML indicator | (quote the value)'
 # Indentation is spaces. A tab in leading whitespace makes a strict loader reject the whole
 # frontmatter, whether the line is a comment, blank, or content under a block key.
 desc_fm tab-comment 'description: Fine\n\t# a tab-indented comment\nuser-invocable: true' 'a tab in indentation'
@@ -344,6 +344,40 @@ desc_fm tab-mid-line 'description: Fine\nargument-hint: a\tb\nuser-invocable: tr
 # indentation is content to PyYAML and an error to libyaml, so the rule refuses it.
 desc_fm tab-in-scalar-text 'description: Fine\nnotes: |\n  legal\tcontent\nuser-invocable: true' ''
 desc_fm tab-after-scalar-indent 'description: Fine\nnotes: |\n  \tcontent\nuser-invocable: true' 'a tab in indentation'
+
+# --- 3b'': every OTHER key's inline value must be one a strict loader parses (#572) ------------
+# The superseded cleanup header, verbatim: an unquoted `[` opens a flow sequence, the text after its
+# `]` is a parse error, and a strict loader (T3 Code) drops the whole skill. Quoted, it builds.
+hint_neg() { desc_fm "$1" "description: Fine\nargument-hint: $2\nuser-invocable: true" "$3"; }
+hint_neg cleanup-real '[local | remote | all] [verbose]  (default: local)' 'the argument-hint value starts with the YAML indicator [ (quote the value)'
+hint_neg cleanup-quoted '"[local | remote | all] [verbose]  (default: local)"' ''
+# Every indicator that cannot start a plain scalar, and the three that cannot when a space follows.
+for ind in '[' ']' '{' '}' ',' '&' '*' '!' '|' '>' '%' '@' '`'; do
+  hint_neg "indicator-$(printf '%s' "$ind" | od -An -tx1 | tr -d ' ')" "${ind}x y" "the argument-hint value starts with the YAML indicator $ind (quote the value)"
+done
+hint_neg dash-space '- item' 'the argument-hint value starts with the YAML indicator - (quote the value)'
+hint_neg dash-alone '-' 'the argument-hint value starts with the YAML indicator - (quote the value)'
+hint_neg question-space '? key' 'the argument-hint value starts with the YAML indicator ? (quote the value)'
+hint_neg colon-space ': value' 'the argument-hint value starts with the YAML indicator : (quote the value)'
+desc_fm effort-alias 'description: Fine\neffort: *high\nuser-invocable: true' 'the effort value starts with the YAML indicator * (quote the value)'
+# …and what a plain scalar MAY be: a non-indicator start, `-`/`?`/`:` with no space after, and any
+# indicator past the first character.
+hint_neg angle '<issue-number> [more] [hints]' ''
+hint_neg dash-flag '--once [n]' ''
+hint_neg question-word '?maybe' ''
+hint_neg mid-value 'a [b] {c} *d &e !f |g >h %i @j `k` ,l' ''
+hint_neg colon-inside 'a:b <c>' ''
+# A plain value with `: ` in it is a mapping where none is allowed — but a colon in a comment is not.
+hint_neg colon-mapping '<n> mode: fast' 'the argument-hint value holds a colon YAML reads as a mapping (quote the value)'
+hint_neg colon-end '<n> ends:' 'the argument-hint value holds a colon YAML reads as a mapping (quote the value)'
+desc_fm colon-in-comment 'description: Fine\neffort: high # note: why\nuser-invocable: true' ''
+# A quoted value must close where it ends; a double-quoted one carries no escape at all.
+hint_neg dq-unclosed '"[a] b' 'the argument-hint value is a double-quoted string that does not close at its end, or holds a backslash'
+hint_neg dq-trailing '"[a]" b' 'the argument-hint value is a double-quoted string that does not close at its end, or holds a backslash'
+hint_neg dq-backslash '"a\\b"' 'the argument-hint value is a double-quoted string that does not close at its end, or holds a backslash'
+hint_neg dq-comment '"[a] b" # why' ''
+hint_neg sq-unclosed "'[a] b" 'the argument-hint value is a single-quoted string that does not close at its end'
+hint_neg sq-doubled "'[it''s]'" ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

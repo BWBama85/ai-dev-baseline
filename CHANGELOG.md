@@ -10,6 +10,14 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **`/cleanup` loads in hosts with a strict YAML loader again (#572).** Its `argument-hint` started
+  with an unquoted `[`, which YAML reads as a flow sequence. The text after it made the whole header
+  invalid, so T3 Code dropped the skill from its slash menu. Claude Code's more lenient loader still
+  ran it. The value is now quoted. The skill frontmatter rule (`scripts/skill-description.awk`, run
+  by `build.sh` on every source and by `render-size.sh` on every render) now checks every key's
+  inline value, not just `description`. It refuses an unquoted value that starts with a YAML
+  indicator, a plain value holding `: `, and a quoted value that does not close where it ends.
+  What sits inside a key's block is still not parsed.
 - **`install.sh` no longer refuses a clean clone because of an untracked file.** Its CRLF preflight
   walked the whole clone with `find` and, failing closed, refused to install if any entry vanished or
   could not be read during the walk. Selfcheck's own run-record lock is created and removed inside the

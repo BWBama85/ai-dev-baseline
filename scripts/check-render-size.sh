@@ -224,6 +224,10 @@ undesc_case orphan "an indented line with no key above it" '---\n  description: 
 undesc_case name-continued "a multi-line continuation" '---\nname: beta\n  other\ndescription: one\n---\n\nbody\n'
 undesc_case tab-comment "a tab in indentation" '---\nname: beta\ndescription: one\n\t# a comment\n---\n\nbody\n'
 undesc_case vt-comment "a control byte" '---\nname: beta\ndescription: one\n\x0b# a comment\n---\n\nbody\n'
+# A RENDER whose other key a strict loader cannot parse is refused as well (#572), so a header broken
+# after the build — or rendered by a renderer that stopped checking — still fails the report.
+undesc_case hint-flow "the argument-hint value starts with the YAML indicator [ (quote the value)" '---\nname: beta\ndescription: one\nargument-hint: [local | remote] [verbose]  (default: local)\n---\n\nbody\n'
+undesc_case hint-unclosed "the argument-hint value is a double-quoted string that does not close at its end, or holds a backslash" '---\nname: beta\ndescription: one\nargument-hint: "[local] b\n---\n\nbody\n'
 # Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
 fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"
 rm -f "$fx/scripts/skill-description.awk"
