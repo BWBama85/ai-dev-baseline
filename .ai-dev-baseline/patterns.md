@@ -798,4 +798,7 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/common.sh:4451` `6ac3502` `PRRT_kwDOTfywrM6t_Hw6` PR #560 2026-10-19 — the stale-lock take-over followed a symlink at the lock path; a symlinked lock is now never taken over or released
 - `stale-state-trusted` `scripts/selfcheck.sh:2501` `04dad91` `PRRT_kwDOTfywrM6uBacr` PR #560 2026-10-19 — REC_DONE kept a reaped pid, so a reused group number was never recorded again; it now forgets a pid at reap
 - `toctou` `scripts/selfcheck.sh:1506` `04dad91` `PRRT_kwDOTfywrM6uBac1` PR #560 2026-10-19 — the directory listing after ps could pair a reused pid with the old process identity; every start is now read again after it
+- `precondition-ordering` `scripts/lib/project-gates.sh:572` `c1753db` `PRRT_kwDOTfywrM6vDDro` PR #570 2026-10-22 — pytest evidence was read before checking a Python runner exists, so unreadable evidence refused where the adapter should decline
+- `partial-validation` `scripts/lib/project-gates.sh:458` `c1753db` `PRRT_kwDOTfywrM6vDDrr` PR #570 2026-10-22 — the quoted-string rule ignored Python escapes in single-quoted strings, hiding a later pytest dependency in setup.py
+- `status-swallowed` `scripts/lib/project-gates.sh:520` `c1753db` `PRRT_kwDOTfywrM6vDDrs` PR #570 2026-10-22 — an unsearchable evidence directory left its glob literal, read as absent evidence instead of unknown
 <!-- adb:hits:end -->
