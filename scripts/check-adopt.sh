@@ -591,8 +591,10 @@ TEMPLATE="$ROOT/templates/agents.toml"
 mapfile -t tsections < <(sed -n 's/^#\{0,1\}[[:space:]]*\[\([^][[:space:]][^][]*\)\][[:space:]]*\(#.*\)\{0,1\}$/\1/p' "$TEMPLATE" | awk '!seen[$0]++')
 if [ "${#tsections[@]}" -ge 8 ]; then ok
 else bad "propose: the template section list could not be derived (got ${#tsections[@]}: ${tsections[*]})"; fi
+# Here-strings, not `printf … |`: under pipefail, `grep -q` exits on its first match and the writer
+# can die of SIGPIPE (141) before it finishes, which reads as "not found".
 for s in "${tsections[@]}"; do
-  if printf '%s\n' "$prop" | grep -Fq -e "[$s]" && printf '%s\n' "$prop" | grep -Eq "^(# )?\[$(printf '%s' "$s" | sed 's/[][\.*^$()+?{}|]/\\&/g')\]"; then ok
+  if grep -Fq -e "[$s]" <<< "$prop" && grep -Eq "^(# )?\[$(printf '%s' "$s" | sed 's/[][\.*^$()+?{}|]/\\&/g')\]" <<< "$prop"; then ok
   else bad "propose: renders the template section [$s] (live or commented with its reason)"; fi
 done
 # `[updates]` is GLOBAL ONLY — a project copy is ignored — so it must never be proposed live.

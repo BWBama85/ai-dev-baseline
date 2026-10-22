@@ -48,9 +48,17 @@ bounded by each CLI).
   given twice; an indented line sits only under a key that opens a block (`key:` or `key: |`) and
   is indented with spaces; and no line carries a control byte — a quoted or tab-separated key, or
   an indented line anywhere else, may give one agent a different `description` or `name` than
-  another. The rule reads the description's value and the frontmatter's structure only: another
-  key's value, or what sits inside its block, is that key's business, and a malformed one can
-  still stop a strict loader. The rule has one home, `scripts/skill-description.awk`;
+  another. The rest of the header is held to shapes the rule can check whole, because a strict
+  loader that cannot parse a header drops the skill (#572). Every other key's **inline value** is
+  one scalar: unquoted, it may not start with a YAML indicator (`[ ] { } , & * ! | > % @ :` or a
+  backtick, or `-`, `?` followed by a space) and may not hold `: ` or end in `:` outside a
+  trailing comment; quoted, it closes where it ends, and a double-quoted one holds no backslash.
+  So write a hint that starts with `[` quoted — `argument-hint: "[path] [--apply]"`. A **block**
+  is either a block scalar (`key: |`), whose lines all sit at or past its indentation, or, under a
+  bare `key:`, a list of such values, one `- item` per line at one indentation — a nested mapping
+  is refused. No key is a YAML keyword (`true`, `Yes`, `null`…) or longer than 1024 characters,
+  and no line carries invalid UTF-8, a C1 control, U+2028/U+2029 or U+FFFE/U+FFFF. The
+  rule has one home, `scripts/skill-description.awk`;
   `scripts/build.sh` rejects a source that fails it, loud, for every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
   at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.
 - **Optional (Claude-specific) keys, passed through verbatim:** `argument-hint`,
