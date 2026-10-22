@@ -628,7 +628,8 @@ Two things to get right:
    - **CRLF.** A clone made by *Windows* git with `core.autocrlf=true` and then
      run from WSL gives every script `\r` line endings, and the symptom is the
      unhelpful `bash: $'\r': command not found` — on every entry point at once.
-     `install.sh` preflights for this and fails with the remedy, and
+     `install.sh` preflights the clone's tracked shell files for this and fails
+     with the remedy, and
      `.gitattributes` pins `*.sh` (and the extensionless `bin/` commands) to LF
      so a fresh clone cannot acquire it. A checkout that is *already* fully
      corrupted cannot run the preflight at all — `./install.sh` dies on its own
