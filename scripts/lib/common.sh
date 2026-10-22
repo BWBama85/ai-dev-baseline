@@ -5779,8 +5779,9 @@ adb_crlf_scan() {
   }
   # A GIT WORK TREE IS LISTED FROM ITS INDEX, NOT WALKED. A walk fails on any entry that vanishes
   # mid-walk (another process's lock directory, an editor's swap file), and failing closed then
-  # refuses a clean clone. The index lists exactly the files Windows git would have converted, and
-  # nothing on disk can race it. Untracked files are not scanned. Any other directory is walked.
+  # refuses a clean clone. The index lists exactly the files Windows git would have converted, so an
+  # untracked entry can no longer fail the listing; each tracked file is still read separately
+  # below. Untracked files are not scanned. Any other directory is walked.
   if command -v git >/dev/null 2>&1 \
      && [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
     git -C "$dir" ls-files -z > "$listfile" 2>/dev/null || {

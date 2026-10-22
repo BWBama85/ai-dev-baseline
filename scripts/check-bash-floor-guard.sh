@@ -1995,9 +1995,8 @@ crlf_scan "$d"
 eq "$CLRC" "1" "crlf: an EXTENSIONLESS entry point is caught too — a *.sh-only scan would miss bin/"
 has "$CLOUT" "agent-init" "crlf: the extensionless file is named"
 
-# A GIT WORK TREE is listed from its index, not walked: a walk fails on an entry that vanishes or
-# cannot be read mid-walk (selfcheck's run-record lock, created and removed in the checkout as each
-# step starts), and failing closed then refused a clean clone.
+# A GIT WORK TREE is listed from its index: tracked files are scanned, untracked entries are not and
+# cannot fail the scan, and a tracked path that cannot be looked at is never reported clean.
 g="$work/crlf-git"; mkdir -p "$g/scripts"
 git -C "$g" init -q 2>/dev/null
 printf '#!/usr/bin/env bash\necho ok\n' > "$g/scripts/tracked.sh"

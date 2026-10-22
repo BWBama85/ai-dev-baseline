@@ -14,7 +14,8 @@ only by a published release, which is what these entries are the notes for.
   walked the whole clone with `find` and, failing closed, refused to install if any entry vanished or
   could not be read during the walk. Selfcheck's own run-record lock is created and removed inside the
   checkout as each step starts, so CI's `install-dry-run` failed intermittently (seen on PR #570). In a
-  git clone the preflight now lists the tracked files from the index, which nothing on disk can race.
+  git clone the preflight now lists the tracked files from the index, so an untracked entry can no
+  longer make it fail.
   Untracked shell files are no longer scanned. A directory outside git is still walked.
 - **Python gate detection reads the project, not the machine (#568).** A Python project that tests
   with `unittest` used to get a `test` gate of `python3 -m pytest -q`, which failed with
