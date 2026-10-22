@@ -18,8 +18,9 @@ only by a published release, which is what these entries are the notes for.
   header, not just `description`, and admits only shapes it can check. It refuses an unquoted value
   that starts with a YAML indicator, a plain value holding `: `, and a quoted value that does not
   close where it ends. A block scalar's lines must sit at or past its indentation. Under a bare
-  `key:` only a list of such values is admitted, so a nested mapping is refused. No header line may
-  carry invalid UTF-8, a C1 control or U+FFFE/U+FFFF.
+  `key:` only a list of such values is admitted, so a nested mapping is refused. A key may not be a
+  YAML keyword such as `true` or run past 1024 characters, and no header line may carry invalid
+  UTF-8, a C1 control, U+2028/U+2029 or U+FFFE/U+FFFF.
 - **`install.sh` no longer refuses a clean clone because of an untracked file.** Its CRLF preflight
   walked the whole clone with `find` and, failing closed, refused to install if any entry vanished or
   could not be read during the walk. Selfcheck's own run-record lock is created and removed inside the

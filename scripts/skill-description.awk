@@ -16,7 +16,9 @@
 # skill). It judges the description and the frontmatter structure that decides WHICH line is the
 # description, and what a key's value is:
 #   - every top-level line is blank, a comment, or a plain `key:` (letters, digits, `_`, `-`), and
-#     no key is given twice. A quoted, escaped, tagged, anchored, `? ` or tab-separated key is
+#     no key is given twice, or is a YAML keyword (`true`, `Yes`, `null`… — two of them can resolve to
+#     one key), or runs past YAML's 1024-character implicit-key limit. A quoted, escaped, tagged,
+#     anchored, `? ` or tab-separated key is
 #     refused rather than parsed, since YAML may read it as a second spelling of `description` — or
 #     of `name` — that Claude would see and the Codex/Gemini capture would not;
 #   - an indented line belongs only under a key with no inline value (`key:`, `key: # note`, or a
@@ -42,9 +44,10 @@
 #     or `-`, `?` followed by a space or nothing — and holds no `: ` and no trailing `:` before its
 #     comment. A `|`/`>` that is a valid block-scalar header opens a block instead, and is not a value;
 #   - no frontmatter line, block content included, carries invalid UTF-8 (a lone or truncated
-#     sequence, an overlong form, a surrogate, past U+10FFFF), a C1 control or U+FFFE/U+FFFF. YAML
-#     forbids all of them but NEL (U+0085), which YAML 1.2 allows and YAML 1.1 reads as a line
-#     break, so the rule refuses it too.
+#     sequence, an overlong form, a surrogate, past U+10FFFF), a C1 control, U+2028/U+2029 or
+#     U+FFFE/U+FFFF. YAML forbids invalid UTF-8, the C1 controls but NEL (U+0085), and the two
+#     noncharacters; NEL, U+2028 and U+2029 are line breaks to YAML 1.1 (PyYAML, libyaml) and not
+#     to YAML 1.2, so the rule refuses them too.
 # The tab rule holds inside a block scalar too: a tab right after the indentation is content to
 # PyYAML and an error to libyaml, and where loaders disagree the rule refuses. The description itself:
 #   - one `description:` key in a frontmatter that opens on line 1 and closes with `---`, and a
@@ -62,20 +65,21 @@ BEGIN {
   ctl = ctl sprintf("%c", 127) "]"
   # YAML's c-indicator set, less `#` (after the space a value needs, it opens a comment) and the
   # two that may start a plain scalar when no space follows (`-`, `?`). YAML 1.2 lets `:` do so too;
-  # libyaml refuses it, and where loaders disagree the rule refuses. Checked by index(), never a
-  # bracket expression: awks disagree about `]`, `\` and a backtick inside one.
+  # libyaml 0.2.1 (macOS's system Ruby) refuses it where 0.2.5 accepts it, and where loaders disagree
+  # the rule refuses. Checked by index(), never a bracket expression: awks disagree about `]`, `\`
+  # and a backtick inside one.
   indicators = "[]{},&*!|>%@:" sprintf("%c", 96)
   # The bytes the rule refuses on any frontmatter line (#572): what remains of a line once every
   # well-formed UTF-8 sequence is deleted must be ASCII, so a lone or truncated sequence, an overlong
-  # form and an encoded surrogate are refused; and of what is well-formed, a C1 control and
-  # U+FFFE/U+FFFF.
+  # form and an encoded surrogate are refused; and of what is well-formed, a C1 control,
+  # U+2028/U+2029 and U+FFFE/U+FFFF.
   # Classes are byte LISTS built by value, never ranges, whose meaning past 127 differs between awks.
   cont = bytes(128, 191)
   utf8 = bytes(194, 223) cont "|" sprintf("%c", 224) bytes(160, 191) cont "|" bytes(225, 236) cont cont \
     "|" sprintf("%c", 237) bytes(128, 159) cont "|" bytes(238, 239) cont cont "|" sprintf("%c", 240) bytes(144, 191) cont cont \
     "|" bytes(241, 243) cont cont cont "|" sprintf("%c", 244) bytes(128, 143) cont cont
   high = bytes(128, 255)
-  forbidden = sprintf("%c", 194) bytes(128, 159) "|" sprintf("%c%c", 239, 191) bytes(190, 191)
+  forbidden = sprintf("%c", 194) bytes(128, 159) "|" sprintf("%c%c", 226, 128) bytes(168, 169) "|" sprintf("%c%c", 239, 191) bytes(190, 191)
 }
 function bytes(lo, hi,   s, i) { s = "["; for (i = lo; i <= hi; i++) s = s sprintf("%c", i); return s "]" }
 function indent(line,   m) { m = line; sub(/[^ ].*$/, "", m); return length(m) }
@@ -104,7 +108,7 @@ $0 == "---" { closed = 1; done = 1; next }
 !/^description:/ && $0 ~ ctl { r = "a control byte"; done = 1; next }
 !/^description:/ && $0 ~ high {
   u = $0; gsub(utf8, "", u)
-  if (u ~ high || $0 ~ forbidden) { r = "a byte the rule refuses (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)"; done = 1; next }
+  if (u ~ high || $0 ~ forbidden) { r = "a byte the rule refuses (invalid UTF-8, a C1 control, U+2028/U+2029, or U+FFFE/U+FFFF)"; done = 1; next }
 }
 # A blank line is nothing, save before a block scalar's first content line, which must not have
 # more spaces than that line has (YAML refuses it).
@@ -155,6 +159,8 @@ $0 == "---" { closed = 1; done = 1; next }
   if ($0 !~ /^[A-Za-z][A-Za-z0-9_-]*:( |$)/) { r = "a top-level line that is not a plain key"; done = 1; next }
   key = $0; sub(/:.*/, "", key)
   if (key in keys) { r = "the key " key " given twice"; done = 1; next }
+  if (tolower(key) ~ /^(null|true|false|yes|no|on|off|y|n)$/) { r = "the key " key " reads as a YAML keyword, not a name"; done = 1; next }
+  if (length(key) > 1024) { r = "a key longer than YAML's 1024-character implicit-key limit"; done = 1; next }
   keys[key] = 1; haskey = 1; block = ($0 ~ /^[A-Za-z][A-Za-z0-9_-]*:([ ]*|[ ]+#.*|[ ]+[|>]([1-9][-+]?|[-+][1-9]?)?([ ]+#.*)?[ ]*)$/)
   bkind = ""; bind = 0; lead = 0; sind = 0
   if (block) {

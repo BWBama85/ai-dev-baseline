@@ -56,7 +56,8 @@ bounded by each CLI).
   So write a hint that starts with `[` quoted — `argument-hint: "[path] [--apply]"`. A **block**
   is either a block scalar (`key: |`), whose lines all sit at or past its indentation, or, under a
   bare `key:`, a list of such values, one `- item` per line at one indentation — a nested mapping
-  is refused. No line carries invalid UTF-8, a C1 control or U+FFFE/U+FFFF. The
+  is refused. No key is a YAML keyword (`true`, `Yes`, `null`…) or longer than 1024 characters,
+  and no line carries invalid UTF-8, a C1 control, U+2028/U+2029 or U+FFFE/U+FFFF. The
   rule has one home, `scripts/skill-description.awk`;
   `scripts/build.sh` rejects a source that fails it, loud, for every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
   at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.
