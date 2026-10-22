@@ -48,13 +48,15 @@ bounded by each CLI).
   given twice; an indented line sits only under a key that opens a block (`key:` or `key: |`) and
   is indented with spaces; and no line carries a control byte — a quoted or tab-separated key, or
   an indented line anywhere else, may give one agent a different `description` or `name` than
-  another. Every other key's **inline value** must be one a strict loader parses (#572): an
-  unquoted value may not start with a YAML indicator (`[ ] { } , & * ! | > % @` or a backtick,
-  or `-`, `?`, `:` followed by a space), and may not hold `: ` or end in `:` outside a trailing
-  comment; a quoted value closes where it ends, and a double-quoted one holds no backslash. So
-  write a hint that starts with `[` quoted — `argument-hint: "[path] [--apply]"`. No line carries
-  a byte YAML forbids (invalid UTF-8, a C1 control, U+FFFE/U+FFFF). Otherwise what sits inside a
-  key's block is not parsed, and a malformed one can still stop a strict loader. The
+  another. The rest of the header is held to shapes the rule can check whole, because a strict
+  loader that cannot parse a header drops the skill (#572). Every other key's **inline value** is
+  one scalar: unquoted, it may not start with a YAML indicator (`[ ] { } , & * ! | > % @ :` or a
+  backtick, or `-`, `?` followed by a space) and may not hold `: ` or end in `:` outside a
+  trailing comment; quoted, it closes where it ends, and a double-quoted one holds no backslash.
+  So write a hint that starts with `[` quoted — `argument-hint: "[path] [--apply]"`. A **block**
+  is either a block scalar (`key: |`), whose lines all sit at or past its indentation, or, under a
+  bare `key:`, a list of such values, one `- item` per line at one indentation — a nested mapping
+  is refused. No line carries invalid UTF-8, a C1 control or U+FFFE/U+FFFF. The
   rule has one home, `scripts/skill-description.awk`;
   `scripts/build.sh` rejects a source that fails it, loud, for every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
   at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.

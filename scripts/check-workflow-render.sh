@@ -323,7 +323,7 @@ desc_fm name-continued '  other\ndescription: Fine\nuser-invocable: true' 'a mul
 desc_fm value-continued 'description: Fine\nuser-invocable: true\n  extra' 'a multi-line continuation'
 desc_fm block-list 'description: Fine\nallowed-tools:\n  - Bash\n  - Read\nuser-invocable: true' ''
 desc_fm block-scalar 'description: Fine\nnotes: |\n  line one\n  line two\nuser-invocable: true' ''
-desc_fm block-commented 'description: Fine\nmeta: # a note\n  sub: x\nuser-invocable: true' ''
+desc_fm block-commented 'description: Fine\nmeta: # a note\n  - x\nuser-invocable: true' ''
 desc_fm block-header-comment 'description: Fine\nnotes: | # explanation\n  text\nuser-invocable: true' ''
 desc_fm block-folded-comment 'description: Fine\nnotes: >- # explanation\n  text\nuser-invocable: true' ''
 desc_fm block-indicators 'description: Fine\nnotes: |2-\n  text\nmore: >+1\n  text\nuser-invocable: true' ''
@@ -378,10 +378,10 @@ hint_neg dq-backslash '"a\\b"' 'the argument-hint value is a double-quoted strin
 hint_neg dq-comment '"[a] b" # why' ''
 hint_neg sq-unclosed "'[a] b" 'the argument-hint value is a single-quoted string that does not close at its end'
 hint_neg sq-doubled "'[it''s]'" ''
-# The bytes YAML forbids anywhere in a stream are refused on every frontmatter line, block content
-# included: invalid UTF-8 in each of its shapes, a C1 control (NEL too — YAML 1.1 reads it as a line
-# break) and the two noncharacters. Well-formed UTF-8 outside them is text, from two bytes to four.
-byte_reason='a byte YAML does not allow (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)'
+# Invalid UTF-8 in each of its shapes, a C1 control (NEL too: YAML 1.2 allows it, YAML 1.1 reads it
+# as a line break) and the two noncharacters are refused on every frontmatter line, block content
+# included. Well-formed UTF-8 outside them is text, from two bytes to four.
+byte_reason='a byte the rule refuses (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)'
 hint_neg byte-c1 'a \xc2\x80 b' "$byte_reason"
 hint_neg byte-nel 'a \xc2\x85 b' "$byte_reason"
 hint_neg byte-fffe 'a \xef\xbf\xbe' "$byte_reason"
@@ -393,6 +393,29 @@ hint_neg byte-overlong 'a \xc0\xaf' "$byte_reason"
 hint_neg byte-past-unicode 'a \xf4\x90\x80\x80' "$byte_reason"
 desc_fm byte-in-block 'description: Fine\nnotes: |\n  a \xc2\x80 b\nuser-invocable: true' "$byte_reason"
 hint_neg utf8-text '<n> [more\xe2\x80\xa6] caf\xc3\xa9 \xf0\x9f\x98\x80 \xef\xbf\xbd' ''
+# YAML 1.2 lets a plain scalar start with `:` when no space follows; libyaml refuses it, so the rule
+# does too.
+hint_neg colon-word ':x' 'the argument-hint value starts with the YAML indicator : (quote the value)'
+# A BLOCK is checked whole: a block scalar's lines sit at or past its indentation, and under a bare
+# key the one shape admitted is a list of values at one indentation, each judged as an inline value.
+blk() { desc_fm "$1" "description: Fine\n$2\nuser-invocable: true" "$3"; }
+blk scalar-under-indented 'notes: |\n    four\n  two' 'a block scalar line indented less than its block'
+blk scalar-indicator-short 'notes: |4\n  two' 'a block scalar line indented less than its block'
+blk scalar-indicator-ok 'notes: |2\n  two\n   three' ''
+blk scalar-leading-blank 'notes: |\n      \n  text' 'a block scalar whose leading blank line is indented past its first line'
+blk scalar-comment-ends 'notes: |\n  text\n# a comment\n  more' 'a multi-line continuation'
+blk scalar-hash-content 'notes: |\n  # content, not a comment\n  text: [with indicators' ''
+blk scalar-blank-inside 'notes: >-\n  one\n\n  two' ''
+blk nested-mapping 'meta:\n  x: [broken' 'nested content under meta that is not a list of values'
+blk nested-mapping-plain 'meta:\n  sub: x' 'nested content under meta that is not a list of values'
+blk list-continued 'allowed-tools:\n  - Bash\n    more' 'nested content under allowed-tools that is not a list of values'
+blk list-nested 'allowed-tools:\n  - Bash\n    - Read' 'the allowed-tools list items at different indentation'
+blk list-empty 'allowed-tools:\n  - Bash\n  -' 'an empty allowed-tools list item'
+blk list-empty-comment 'allowed-tools:\n  - # nothing' 'an empty allowed-tools list item'
+blk list-flow-item 'allowed-tools:\n  - [Bash' 'a list item under allowed-tools starts with the YAML indicator [ (quote the value)'
+blk list-mapping-item 'allowed-tools:\n  - a: b' 'a list item under allowed-tools holds a colon YAML reads as a mapping (quote the value)'
+blk list-unclosed-item "allowed-tools:\n  - 'Bash" 'a list item under allowed-tools is a single-quoted string that does not close at its end'
+blk list-ok 'allowed-tools: # the tools\n  - Bash\n\n  # a comment\n  - "Read" # why\n  - -x' ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.
