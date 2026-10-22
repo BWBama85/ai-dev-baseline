@@ -378,6 +378,21 @@ hint_neg dq-backslash '"a\\b"' 'the argument-hint value is a double-quoted strin
 hint_neg dq-comment '"[a] b" # why' ''
 hint_neg sq-unclosed "'[a] b" 'the argument-hint value is a single-quoted string that does not close at its end'
 hint_neg sq-doubled "'[it''s]'" ''
+# The bytes YAML forbids anywhere in a stream are refused on every frontmatter line, block content
+# included: invalid UTF-8 in each of its shapes, a C1 control (NEL too — YAML 1.1 reads it as a line
+# break) and the two noncharacters. Well-formed UTF-8 outside them is text, from two bytes to four.
+byte_reason='a byte YAML does not allow (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)'
+hint_neg byte-c1 'a \xc2\x80 b' "$byte_reason"
+hint_neg byte-nel 'a \xc2\x85 b' "$byte_reason"
+hint_neg byte-fffe 'a \xef\xbf\xbe' "$byte_reason"
+hint_neg byte-ffff 'a \xef\xbf\xbf' "$byte_reason"
+hint_neg byte-lone 'a \x80 b' "$byte_reason"
+hint_neg byte-truncated 'a \xc3' "$byte_reason"
+hint_neg byte-surrogate 'a \xed\xa0\x80' "$byte_reason"
+hint_neg byte-overlong 'a \xc0\xaf' "$byte_reason"
+hint_neg byte-past-unicode 'a \xf4\x90\x80\x80' "$byte_reason"
+desc_fm byte-in-block 'description: Fine\nnotes: |\n  a \xc2\x80 b\nuser-invocable: true' "$byte_reason"
+hint_neg utf8-text '<n> [more\xe2\x80\xa6] caf\xc3\xa9 \xf0\x9f\x98\x80 \xef\xbf\xbd' ''
 
 # ONE HOME: the rule is scripts/skill-description.awk, and build.sh READS it rather than restating
 # it. Remove the mapping rule from a fixture's copy and build.sh must admit what it refused above.

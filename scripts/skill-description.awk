@@ -33,7 +33,10 @@
 #     a double-quoted one holds no backslash (no escape to get wrong). Unquoted, it does not start
 #     with a YAML indicator — `[ ] { } , & * ! | > % @` or a backtick, or `-`, `?`, `:` followed by
 #     a space or nothing — and holds no `: ` and no trailing `:` before its comment. A `|`/`>` that
-#     is a valid block-scalar header opens a block instead, and is not a value.
+#     is a valid block-scalar header opens a block instead, and is not a value;
+#   - no line, block content included, carries a byte YAML forbids anywhere in a stream: invalid
+#     UTF-8 (a lone or truncated sequence, an overlong form, a surrogate, past U+10FFFF), a C1
+#     control (NEL too, which YAML 1.1 reads as a line break) or U+FFFE/U+FFFF.
 # What sits INSIDE another key's block is not parsed — past the two lexical rules every line obeys
 # (no tab in its leading whitespace, no control byte) — so a malformed block can still make the
 # whole frontmatter unreadable to a strict loader, and that is that key's reader's business. The
@@ -56,13 +59,28 @@ BEGIN {
   # three that may start a plain scalar when no space follows (`-`, `?`, `:`). Checked by index(),
   # never a bracket expression: awks disagree about `]`, `\` and a backtick inside one.
   indicators = "[]{},&*!|>%@" sprintf("%c", 96)
+  # The bytes YAML forbids anywhere in a stream (#572): what remains of a line once every well-formed
+  # UTF-8 sequence is deleted must be ASCII, so a lone or truncated sequence, an overlong form and an
+  # encoded surrogate are refused; and of what is well-formed, a C1 control and U+FFFE/U+FFFF.
+  # Classes are byte LISTS built by value, never ranges, whose meaning past 127 differs between awks.
+  cont = bytes(128, 191)
+  utf8 = bytes(194, 223) cont "|" sprintf("%c", 224) bytes(160, 191) cont "|" bytes(225, 236) cont cont \
+    "|" sprintf("%c", 237) bytes(128, 159) cont "|" bytes(238, 239) cont cont "|" sprintf("%c", 240) bytes(144, 191) cont cont \
+    "|" bytes(241, 243) cont cont cont "|" sprintf("%c", 244) bytes(128, 143) cont cont
+  high = bytes(128, 255)
+  forbidden = sprintf("%c", 194) bytes(128, 159) "|" sprintf("%c%c", 239, 191) bytes(190, 191)
 }
+function bytes(lo, hi,   s, i) { s = "["; for (i = lo; i <= hi; i++) s = s sprintf("%c", i); return s "]" }
 { sub(/\r$/, "") }
 done { next }
 NR == 1 { if ($0 != "---") { r = "no frontmatter"; done = 1 }; next }
 $0 == "---" { closed = 1; done = 1; next }
 /^[ ]*\t/ { r = "a tab in indentation"; done = 1; next }
 !/^description:/ && $0 ~ ctl { r = "a control byte"; done = 1; next }
+!/^description:/ && $0 ~ high {
+  u = $0; gsub(utf8, "", u)
+  if (u ~ high || $0 ~ forbidden) { r = "a byte YAML does not allow (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)"; done = 1; next }
+}
 /^[[:space:]]*$/ { next }
 /^[[:space:]]*#/ { next }
 /^[[:space:]]/ {

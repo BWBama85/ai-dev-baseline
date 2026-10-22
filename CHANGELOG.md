@@ -16,8 +16,9 @@ only by a published release, which is what these entries are the notes for.
   ran it. The value is now quoted. The skill frontmatter rule (`scripts/skill-description.awk`, run
   by `build.sh` on every source and by `render-size.sh` on every render) now checks every key's
   inline value, not just `description`. It refuses an unquoted value that starts with a YAML
-  indicator, a plain value holding `: `, and a quoted value that does not close where it ends.
-  What sits inside a key's block is still not parsed.
+  indicator, a plain value holding `: `, a quoted value that does not close where it ends, and,
+  on any header line, a byte YAML forbids (invalid UTF-8, a C1 control, U+FFFE/U+FFFF). Beyond
+  that, what sits inside a key's block is still not parsed.
 - **`install.sh` no longer refuses a clean clone because of an untracked file.** Its CRLF preflight
   walked the whole clone with `find` and, failing closed, refused to install if any entry vanished or
   could not be read during the walk. Selfcheck's own run-record lock is created and removed inside the

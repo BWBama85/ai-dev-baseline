@@ -227,6 +227,8 @@ undesc_case vt-comment "a control byte" '---\nname: beta\ndescription: one\n\x0b
 # A RENDER whose other key a strict loader cannot parse is refused as well (#572), so a header broken
 # after the build — or rendered by a renderer that stopped checking — still fails the report.
 undesc_case hint-flow "the argument-hint value starts with the YAML indicator [ (quote the value)" '---\nname: beta\ndescription: one\nargument-hint: [local | remote] [verbose]  (default: local)\n---\n\nbody\n'
+undesc_case hint-c1 "a byte YAML does not allow (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)" '---\nname: beta\ndescription: one\nargument-hint: a \xc2\x80 b\n---\n\nbody\n'
+undesc_case hint-lone-byte "a byte YAML does not allow (invalid UTF-8, a C1 control, or U+FFFE/U+FFFF)" '---\nname: beta\ndescription: one\nargument-hint: a \x80 b\n---\n\nbody\n'
 undesc_case hint-unclosed "the argument-hint value is a double-quoted string that does not close at its end, or holds a backslash" '---\nname: beta\ndescription: one\nargument-hint: "[local] b\n---\n\nbody\n'
 # Without the rule file there is no rule: that is a FATAL, never a report of every skill as unreadable.
 fx="$(mk_fixture no-rule)" || bad "fixture: could not build the no-rule tree"

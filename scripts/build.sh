@@ -717,7 +717,9 @@ render_agent_skill() {
     echo "build.sh: base/workflows/$name.md must start with a --- frontmatter delimiter" >&2
     exit 3
   fi
-  fmname="$(awk '
+  # Both frontmatter reads below run in the C locale, so a byte that is not UTF-8 reaches the
+  # frontmatter rule further down — which names it — instead of killing a multibyte awk here.
+  fmname="$(LC_ALL=C awk '
     NR==1 { next }
     $0 == "---" { exit }
     /^name:[[:space:]]/ { sub(/^name:[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit }
@@ -732,7 +734,7 @@ render_agent_skill() {
   # well-formed one could delete a frontmatter key or the closing `---` for one agent and not
   # another. Rejecting is what makes the source contract's "body-only" a fact instead of a wish,
   # and it belongs in this function because this is the renderer that knows where frontmatter ends.
-  fmmarker="$(awk 'NR==1 { next } $0 == "---" { exit } /<!-- adb:/ { print NR; exit }' "$src")"
+  fmmarker="$(LC_ALL=C awk 'NR==1 { next } $0 == "---" { exit } /<!-- adb:/ { print NR; exit }' "$src")"
   if [ -n "$fmmarker" ]; then
     echo "build.sh: base/workflows/$name.md carries a per-agent block marker inside its frontmatter (line $fmmarker) — markers are body-only (see base/workflows/README.md)." >&2
     exit 3
