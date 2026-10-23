@@ -178,16 +178,6 @@ adb_installed_agents() {
   return "$rc"
 }
 
-# True iff <agent> is in the installed set for <src> — the question every per-agent gate asks, so
-# a Claude install that lost its root doc keeps its recorded opt-outs through the repair.
-# Usage: adb_agent_ours <agent> <src>
-adb_agent_ours() {
-  case "$(adb_agent_install_state "$1" "$2" "$HOME")" in
-    installed|root-doc-missing) return 0 ;;
-  esac
-  return 1
-}
-
 # One stderr NOTE per agent whose root-doc path holds something other than our link while its
 # other links point into <src>. Names the CLASS of the occupant, never its target or content.
 # Nothing is changed: the path is the operator's until they run install.sh or uninstall.sh.

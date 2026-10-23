@@ -5042,6 +5042,18 @@ EOF
   printf 'absent\n'
 }
 
+# True iff <agent> counts as installed from <src>: `installed` or `root-doc-missing`. The question
+# every per-agent gate in bin/baseline asks, so a Claude install that lost its root doc keeps its
+# recorded opt-outs through the repair. Here rather than in bin/baseline because those gates are
+# also exercised extracted, with only this library loaded.
+# Usage: adb_agent_ours <agent> <src> [home]
+adb_agent_ours() {
+  case "$(adb_agent_install_state "$1" "$2" "${3:-$HOME}")" in
+    installed|root-doc-missing) return 0 ;;
+  esac
+  return 1
+}
+
 # <agent>'s root-doc destination under [home], from the same manifest row the predicate reads.
 # An unknown agent (an empty manifest) prints nothing and returns 0; a manifest that refuses, or
 # names no root doc, returns 1.  Usage: adb_agent_root_doc <agent> <src> [home]
