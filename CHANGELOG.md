@@ -8,6 +8,25 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agent whose root doc went missing is repaired, not forgotten (#539).** `baseline update`
+  decided which agents were installed by asking only whether `~/.<agent>/<root doc>` was a link into
+  the clone. Once that one link was gone, the agent dropped out of the update entirely: none of its
+  other links were checked, the self-heal skipped it, and a single-agent install read as no install
+  at all, so the update exited `3` and both automatic currency checks stayed silent. Claude sessions
+  then ran the baseline's skills and hooks without its rules. An agent now counts as installed while
+  any of its links points into the clone. A missing root doc is re-linked by the same repair as any
+  other missing link, with one `baseline: re-linked …` line per root doc, and the clone is found
+  through `~/.<agent>/scripts/lib` when no root doc names it. A root-doc path that holds something
+  else (your own file, a directory, a link outside the clone) is never touched by an update: it gets
+  a `NOTE` naming what kind of thing is there, and the exit code is unchanged. A repair keeps a
+  recorded `--no-sandbox` and a hook entry removed by hand, and `uninstall.sh` still treats a legacy
+  settings record as its own. `baseline adopt status`'s `harness` rung now checks each agent's whole
+  install manifest, so a user's own `CLAUDE.md` no longer passes as the baseline's, and a healthy
+  install's symlinked skill directories no longer fail it. `pinned-install.sh status` reports a
+  global install by asking the same discovery rule.
+
 ## [3.1.1] - 2026-10-22
 
 This is a patch release of fixes. `/cleanup` loads again in hosts with a strict YAML loader such

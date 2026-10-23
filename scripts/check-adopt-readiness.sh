@@ -122,15 +122,26 @@ mkdir -p "$TMPDIR"
 # whose subject IS an absent or partial install override HOME explicitly, and say so.
 export HOME="$WORK/home"
 SUITE_INSTALL="$WORK/suite-install"
-mkdir -p "$HOME/.claude/skills/adopt" "$HOME/.claude/scripts/lib" \
-         "$SUITE_INSTALL/agents/claude"
-: > "$SUITE_INSTALL/install.sh"
-: > "$SUITE_INSTALL/agents/claude/CLAUDE.md"
-# `adb_install_source` resolves the source by reading this SYMLINK and walking two levels up, so
-# the link is what makes the install discoverable — not the directory's contents.
-ln -sf "$SUITE_INSTALL/agents/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
-: > "$HOME/.claude/skills/adopt/SKILL.md"
-: > "$HOME/.claude/scripts/lib/common.sh"
+# mkinstall <src> <home> <agent>… — a synthetic install SHAPED LIKE install.sh's: every row of each
+# agent's manifest (adb_agent_manifest, the installer's own enumeration) is a symlink into <src>,
+# skill directories and scripts/lib included, with any source the skeleton lacks created empty.
+# Real directories at those paths were the old fixtures' shape, and they hid that the harness rung
+# failed every real install (#539).
+mkinstall() {
+  local src="$1" home="$2" a s d; shift 2
+  mkdir -p "$src/scripts/lib" "$home"; : > "$src/install.sh"; : > "$src/scripts/lib/common.sh"
+  for a in "$@"; do
+    mkdir -p "$src/agents/$a/skills/adopt"; : > "$src/agents/$a/skills/adopt/SKILL.md"
+    while IFS="$TAB" read -r s d; do
+      [ -n "$s" ] && [ -n "$d" ] || continue
+      [ -e "$s" ] || { mkdir -p "$(dirname "$s")"; : > "$s"; }
+      mkdir -p "$(dirname "$d")"; ln -sfn "$s" "$d"
+    done <<EOF
+$(adb_agent_manifest "$a" "$src" "$home")
+EOF
+  done
+}
+mkinstall "$SUITE_INSTALL" "$HOME" claude
 
 # PATH: a directory holding symlinks to exactly the tools this suite and the libraries under test
 # need, and nothing else. Anything absent from this list is absent from every fixture — which is
@@ -460,52 +471,67 @@ ar receipt run "$d" >/dev/null 2>&1
 eq "$(cat "$canary")" "untouched" "receipt: a pre-planted temp symlink is not written through"
 rm -f "$ADB_STATE_DIR/.adopt-receipt.tmp"
 
-# THE HARNESS RUNG CHECKS WHAT A RUN NEEDS, not that a directory exists. `$HOME/.<agent>` exists
-# the moment anything writes state into it, so testing only that reported an agent with no
-# install as fully harnessed. The contract's words are "skills resolve, root doc present".
-#
-# THE FIXTURE MUST RESOLVE AN INSTALL FIRST, and the first version of this did not — it pointed
-# HOME at an empty tree, so `adb_install_source` failed and the rung reported "no baseline
-# install" on BOTH sides of the mutation. The assertion could not distinguish anything: a
-# can't-fail guard, caught by the mutation harness refusing to accept it as a witness. So the
-# fixture builds a real install source, wires ONE agent completely, and leaves the second missing
-# only its root doc — which is exactly the difference the rung must see.
-fakeinstall="$WORK/fakeinstall"
-mkdir -p "$fakeinstall/agents/claude" "$fakeinstall/agents/codex"
-: > "$fakeinstall/install.sh"
-: > "$fakeinstall/agents/claude/CLAUDE.md"
-: > "$fakeinstall/agents/codex/AGENTS.md"
-fakehome="$WORK/fakehome"
-mkdir -p "$fakehome/.claude/skills/adopt" "$fakehome/.claude/scripts/lib" \
-         "$fakehome/.codex/skills/adopt"  "$fakehome/.codex/scripts/lib"
-# ARTIFACTS, not empty directories — a half-removed install leaves the directories behind, and a
-# directory test would certify a harness that cannot resolve a skill or source a library.
-: > "$fakehome/.claude/skills/adopt/SKILL.md"; : > "$fakehome/.claude/scripts/lib/common.sh"
-: > "$fakehome/.codex/skills/adopt/SKILL.md";  : > "$fakehome/.codex/scripts/lib/common.sh"
-ln -sf "$fakeinstall/agents/claude/CLAUDE.md" "$fakehome/.claude/CLAUDE.md"
+# THE HARNESS RUNG CHECKS WHAT A RUN NEEDS, not that a directory exists: every manifest destination
+# of each requested agent is our link into the source AND resolves (#539). The fixture resolves an
+# install first — an empty HOME reports "no baseline install" on both sides of any mutation.
+fakeinstall="$WORK/fakeinstall"; fakehome="$WORK/fakehome"
+mkinstall "$fakeinstall" "$fakehome" claude codex
 d="$WORK/p-harness"; mkrepo "$d"
-# claude alone is complete -> ok.
-out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+# A healthy install whose skill directories are SYMLINKS, as install.sh makes them -> ok.
+out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
 has "$out" "harness${TAB}ok" "probe: a completely installed agent makes the harness rung ok"
-# codex has its directories but NO root doc -> todo, naming what is absent.
+# codex loses ONLY its root doc -> todo, naming what is absent.
+mv "$fakehome/.codex/AGENTS.md" "$WORK/saved-agents-md"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
 case "$out" in
   *"harness${TAB}ok"*) bad "probe: an agent home with no root doc is todo, not ok" ;;
   *) ok ;;
 esac
 has "$out" "codex(root-doc)" "probe: the harness rung names WHICH artifact is missing"
-# An EMPTY skills tree and an EMPTY scripts/lib are what a partial or half-removed install leaves
-# behind; a directory test certified exactly that as a working harness.
-emptyhome="$WORK/emptyhome"; mkdir -p "$emptyhome/.claude/skills" "$emptyhome/.claude/scripts/lib"
-ln -sf "$fakeinstall/agents/claude/CLAUDE.md" "$emptyhome/.claude/CLAUDE.md"
-# EVERYTHING ELSE PRESENT, so the empty skills tree is the ONLY difference from the good fixture —
-# otherwise the rung fails for a second reason and this assertion cannot observe the first.
-: > "$emptyhome/.claude/scripts/lib/common.sh"
-out="$( HOME="$emptyhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "run 'baseline update'" "probe: a missing root doc names baseline update as the repair"
+# A user's OWN file at the root doc is not the baseline's root doc, however present it is.
+printf 'my rules\n' > "$fakehome/.codex/AGENTS.md"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
+has "$out" "harness${TAB}todo" "probe: a user's own file at the root doc is todo, not ok"
+has "$out" "codex(root-doc: not the baseline's — a regular file)" "probe: ...naming it as not the baseline's"
+has "$out" "./install.sh --agent <agent>' restores a root doc" "probe: ...and naming install.sh, which baseline update never runs over it"
+rm -f "$fakehome/.codex/AGENTS.md"; mv "$WORK/saved-agents-md" "$fakehome/.codex/AGENTS.md"
+# A real directory where a skill link belongs is not ours, even with a SKILL.md in it.
+mv "$fakehome/.claude/skills/adopt" "$WORK/saved-skill-link"
+mkdir "$fakehome/.claude/skills/adopt"; : > "$fakehome/.claude/skills/adopt/SKILL.md"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(~/.claude/skills/adopt)" "probe: a real directory at a skill path is not our link"
+rm -rf "$fakehome/.claude/skills/adopt"
+# Our link into the source that no longer resolves is not in place either.
+ln -s "$fakeinstall/agents/claude/skills/gone" "$fakehome/.claude/skills/adopt"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(~/.claude/skills/adopt)" "probe: a DANGLING link into the source is not in place"
+rm -f "$fakehome/.claude/skills/adopt"; mv "$WORK/saved-skill-link" "$fakehome/.claude/skills/adopt"
+# A link that resolves to an EMPTY skill directory reaches no SKILL.md.
+mv "$fakeinstall/agents/claude/skills/adopt/SKILL.md" "$WORK/saved-skill-md"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
 case "$out" in
   *"harness${TAB}ok"*) bad "probe: EMPTY skills/scripts dirs must not satisfy the harness rung" ;;
   *) ok ;;
 esac
+mv "$WORK/saved-skill-md" "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
+# A hook a MIXED hook set defers is absent by design (#444), and the rung agrees with the updater.
+cp "$ROOT/agents/claude/settings.hooks.json" "$WORK/hooks.json"
+printf '{"hooks":%s}\n' "$(sed "s@__ADB_HOME__@$fakehome@g" "$WORK/hooks.json")" \
+  | jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | (endswith("/precommit-gate.sh") or endswith("/session-context.sh")) | not))) | map(select(.hooks | length > 0))))' \
+  > "$fakehome/.claude/settings.json"
+grep -vx 'session-context.sh' <<EOF > "$(adb_claude_hooks_receipt "$fakehome")"
+$(adb_claude_hook_scripts)
+EOF
+mv "$fakehome/.claude/scripts/session-context.sh" "$WORK/saved-hook"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "harness${TAB}ok" "probe: a hook the mixed hook set defers is not reported missing"
+mv "$WORK/saved-hook" "$fakehome/.claude/scripts/session-context.sh"
+rm -f "$fakehome/.claude/settings.json" "$(adb_claude_hooks_receipt "$fakehome")"
+# An agent with no link into the source at all names the installer, not the updater.
+out="$( HOME="$fakehome" ar probe "$d" --agents claude,gemini 2>/dev/null )"
+has "$out" "gemini(not installed)" "probe: an agent with no links into the source is not installed"
+has "$out" "installs an agent that is not installed" "probe: ...and the remedy names install.sh for it"
 
 # AN UNSUPPORTED VALUE IS A TYPO, NOT A CHOICE. `[gates.state] test = "todo"` is ignored by the
 # detector, but counting bare KEYS made it read as a deliberate N/A — so a typo disabled
@@ -1117,10 +1143,10 @@ else bad "bin/baseline: the 'adopt' dispatch must precede the wrong-clone guard"
 # shmutant, with the pool a plain command in that block rather than the right side of `&&`, where
 # bash would ignore errexit inside every callback (shmutant's docs/integrating.md §4).
 if [ "$MUTATE" -eq 1 ]; then
-# <dir> — build the tree copy ONCE; shmutant clones it for every row. `base` too: the suite reads
+# <dir> — build the tree copy ONCE; shmutant clones it for every row. `base` and `agents` too: the suite reads agents/claude/settings.hooks.json and
 # base/workflows/adopt.md.
 _ar_mut_prepare() {
-  check_copy_subtrees "$ROOT" "$1" scripts base bin >/dev/null 2>&1
+  check_copy_subtrees "$ROOT" "$1" scripts base bin agents >/dev/null 2>&1
 }
 # <root> — run the suite recursively. ADB_STATE_DIR keeps the child's receipt inside its own clone.
 # NOT `--mutation`, or the child would recurse.
@@ -1230,10 +1256,26 @@ shmutant_mut agent-token-validated-only-when-installed \
     'die "probe: invalid agent token' \
     ': "probe: invalid agent token' \
     'probe: rejects a traversal token even with NO install present'
-shmutant_mut harness-checks-only-the-directory \
-    '      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"' \
-    '      :' \
+shmutant_mut harness-ignores-a-missing-root-doc \
+    '    root-doc-missing) out=" $a(root-doc)" ;;' \
+    '    root-doc-missing) : ;;' \
     'probe: an agent home with no root doc is todo, not ok'
+shmutant_mut harness-accepts-a-foreign-root-doc \
+    '    root-doc-foreign)' \
+    '    root-doc-foreign) ;; NEVERMATCHES)' \
+    "probe: a user's own file at the root doc is todo, not ok"
+shmutant_mut harness-drops-the-ownership-test \
+    '    if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
+    '    if [ ! -e "$dest" ]; then' \
+    'probe: a real directory at a skill path is not our link'
+shmutant_mut harness-drops-the-resolve-test \
+    '    if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
+    '    if ! adb_link_into "$dest" "$src"; then' \
+    'probe: a DANGLING link into the source is not in place'
+shmutant_mut harness-reports-deferred-hooks \
+    '    adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue' \
+    '    :' \
+    'probe: a hook the mixed hook set defers is not reported missing'
 shmutant_mut blocker-label-coerced \
     'printf '"'"'%s'"'"' "$json" | jq -e --arg k "$k" --arg t "$t" '"'"'.[$k]|type == $t'"'"' >/dev/null 2>&1 || return 2' \
     ':' \
@@ -1267,8 +1309,8 @@ shmutant_mut probe-does-not-resolve-the-root \
     '  :' \
     'probe: running from a SUBDIRECTORY still reads the project root'
 shmutant_mut skills-dir-presence-is-enough \
-    '  [ -n "$(find "$1" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null)" ]' \
-    '  :' \
+    '        "$src/agents/$a/skills/"*) [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
+    '        "$src/agents/$a/skills/"*) : ;;' \
     'probe: EMPTY skills/scripts dirs must not satisfy the harness rung'
 shmutant_mut primary-presence-is-enough \
     '  tok="$( cd "$root" 2>/dev/null && bash "$_AR_LIB_DIR/role-dispatch.sh" resolve primary 2>/dev/null )" || return 1' \

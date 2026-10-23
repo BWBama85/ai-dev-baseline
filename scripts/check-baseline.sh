@@ -7,8 +7,9 @@
 # against a real clone backed by a LOCAL bare "origin" (file://, no network). Each case
 # asserts both the status word `--check` prints and its documented exit code.
 #
-# `--check` mutates nothing, so these tests never run the installer — a stub install.sh
-# in the fixture satisfies bin/baseline's install-source detection without side effects.
+# Most cases use a stub install.sh that only logs its argv, so they assert what the update
+# DECIDES. The #539 rows at the end install a copy of this tree with the REAL install.sh into
+# scratch homes, because what they assert is that a link was actually re-made.
 #
 # Usage: bash scripts/check-baseline.sh   (exit 0 = all pass, 1 = a failure)
 
@@ -583,5 +584,173 @@ run_update "$src/bin/baseline" "$fh" >/dev/null 2>&1
 if [ -L "$fh/.claude/CLAUDE.md" ]; then ok; else bad "prune must never remove a (dangling) root-doc link"; fi
 rm -f "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"   # restore canonical link
+
+# --- the opt-outs reach a repair of a MISSING root doc (#539) ----------------------------------
+# Every Claude gate asks whether Claude is ours, and a missing root doc must still answer yes, or the
+# repair re-runs install.sh without the flags that keep a recorded opt-out. This stub logs argv only,
+# so the repair itself fails verify (exit 1) — what is asserted is the decision.
+reset_src; : > "$work/install.log"; hook_settings partial
+rm -f "$fh/.claude/CLAUDE.md"
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
+has "$(cat "$work/install.log")" "--agent claude" "root doc missing → claude stays in the self-heal set"
+has "$(cat "$work/install.log")" "--no-hooks" "root doc missing → the per-hook opt-out is still preserved (--no-hooks)"
+has "$(cat "$work/install.log")" "--optout-if-recorded" "root doc missing → a recorded --no-sandbox is still honoured (--optout-if-recorded)"
+ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
+rm -f "$fh/.claude/settings.json"
+
+# The manifest refusing must refuse the update by name, not drop the agent (#539, #324).
+out="$(HOME="$nlfh" "$src/bin/baseline" update 2>&1)"
+has "$out" "cannot enumerate the intended install destinations" "an unenumerable manifest refuses the update by name"
+
+# =============== #539: a missing or occupied root doc, against the REAL installer ===============
+# The stub above cannot re-link anything, and re-linking is the claim. These rows install a clone of
+# THIS tree with the real install.sh into scratch homes. A stub `claude` first on PATH pins the CLI
+# version the sandbox fragment asks about, so the host's CLI decides nothing; CODEX_HOME is pinned
+# per call so no Codex config outside the scratch home is read or written.
+rseed="$work/rseed"
+check_copy_subtrees "$ROOT" "$rseed" agents scripts templates bin \
+  && cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$rseed/" \
+  || { bad "fixture: could not copy the tree for the real-installer rows"; check_summary "baseline"; exit 1; }
+rorigin="$work/rorigin.git"
+check_make_repo_pair "$rseed" "$rorigin" || { bad "fixture: real-installer repo pair init failed"; check_summary "baseline"; exit 1; }
+git -C "$rseed" symbolic-ref HEAD refs/heads/main
+check_git "$rseed" add -A
+check_git "$rseed" commit -q -m seed
+git -C "$rseed" push -q -u origin main
+git -C "$rorigin" symbolic-ref HEAD refs/heads/main
+rsrc="$work/rsrc"; git clone -q "$rorigin" "$rsrc"
+rbin="$work/rbin"; mkdir -p "$rbin"
+printf '#!/bin/sh\necho "9.9.9 (Claude Code)"\n' > "$rbin/claude"; chmod +x "$rbin/claude"
+
+# rhome <name> <install.sh args…> — RH = a fresh scratch home holding a real install from rsrc.
+rhome() {
+  local name="$1"; shift
+  RH="$work/rh-$name"; mkdir -p "$RH"
+  if ( cd "$rsrc" && env HOME="$RH" CODEX_HOME="$RH/.codex" PATH="$rbin:$PATH" ./install.sh "$@" ) \
+       > "$work/rh-$name.log" 2>&1; then ok
+  else bad "fixture: install.sh $* into $name failed — $(tail -n 3 "$work/rh-$name.log" | tr '\n' ' ')"; fi
+}
+# renv <home> <command…> — run a command as the scratch home sees the world.
+renv() { local h="$1"; shift; env HOME="$h" CODEX_HOME="$h/.codex" PATH="$rbin:$PATH" XDG_CACHE_HOME="$h/.cache" "$@"; }
+# rupdate <home> — RRC = exit status, RERR = stderr of `baseline update` (stdout dropped).
+rupdate() {
+  renv "$1" "$rsrc/bin/baseline" update >/dev/null 2>"$work/rupdate.err"; RRC=$?
+  RERR="$(cat "$work/rupdate.err")"
+}
+# resolves <path> — our link into rsrc, and it resolves.
+resolves() { adb_link_into "$1" "$rsrc" && [ -e "$1" ]; }
+backups() { find "$1/.claude/backups" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-*' 2>/dev/null | wc -l | tr -d ' '; }
+
+# Two agents, Claude's root doc and one skill gone: the repair restores both and says so.
+rhome cc --agent claude --agent codex; h="$RH"
+rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
+eq "$(renv "$h" "$rsrc/bin/baseline" update --check 2>/dev/null)" "current" "root doc missing → --check stays a clone-currency question"
+[ ! -e "$h/.claude/CLAUDE.md" ] && [ ! -L "$h/.claude/CLAUDE.md" ] && ok || bad "root doc missing → --check must repair nothing"
+rupdate "$h"
+eq "$RRC" "6" "claude+codex, root doc + skill missing → update repairs (exit 6)"
+resolves "$h/.claude/CLAUDE.md" && ok || bad "claude+codex → the root doc is re-linked"
+resolves "$h/.claude/skills/cleanup" && ok || bad "claude+codex → the missing skill is re-linked"
+has "$RERR" "re-linked ~/.claude/CLAUDE.md — it was missing while claude's other links still point into $rsrc." "claude+codex → the re-link is audited on stderr"
+rupdate "$h"
+eq "$RRC" "0" "claude+codex → the next update is nothing to do"
+hasnt "$RERR" "re-linked" "claude+codex → ...and audits no re-link it did not make"
+
+# The automatic callers reach the same repair.
+rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
+out="$(renv "$h" env ADB_SESSION_UPDATE=auto ADB_SESSION_UPDATE_INTERVAL_SECS=0 bash "$h/.claude/scripts/lib/currency-lib.sh" check --trigger startup 2>/dev/null)"
+eq "${out%%[[:space:]]*}" "repaired" "root doc missing → the startup currency check records repaired"
+resolves "$h/.claude/CLAUDE.md" && ok || bad "startup currency check → the root doc is re-linked"
+rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
+out="$(printf '{"source":"startup","cwd":"/"}' | renv "$h" env ADB_SESSION_UPDATE=auto ADB_SESSION_UPDATE_INTERVAL_SECS=0 bash "$h/.claude/scripts/session-currency.sh" 2>/dev/null)"
+has "$out" "repaired the installed links" "root doc missing → the SessionStart hook reports the repair"
+has "$out" '"reloadSkills":true' "root doc missing → ...and asks for a skill reload"
+resolves "$h/.claude/CLAUDE.md" && ok || bad "SessionStart hook → the root doc is re-linked"
+
+# One agent only: the root doc was the only root-doc link, so discovery falls back to scripts/lib.
+for agent in claude codex; do
+  rhome "only-$agent" --agent "$agent"; h="$RH"
+  doc="$(adb_agent_root_doc "$agent" "$rsrc" "$h")" || bad "$agent only → no root-doc row in the manifest"
+  rm -f "$doc"
+  eq "$(adb_install_source "$h")" "$rsrc" "$agent only, root doc missing → adb_install_source still names the clone"
+  eq "$(renv "$h" bash "$rsrc/scripts/lib/adopt-lib.sh" baseline 2>/dev/null)" "$rsrc" "$agent only, root doc missing → /adopt still locates the baseline"
+  rupdate "$h"
+  eq "$RRC" "6" "$agent only, root doc missing → update repairs (exit 6)"
+  resolves "$doc" && ok || bad "$agent only → the root doc is re-linked"
+  rm -f "$doc"
+  out="$(renv "$h" bash "$h/.$agent/scripts/lib/currency-lib.sh" check --trigger cleanup 2>/dev/null)"
+  eq "${out%%[[:space:]]*}" "repaired" "$agent only, root doc missing → the /cleanup currency check records repaired"
+done
+
+# All three agents: Gemini's root doc is re-linked under ~/.gemini/.
+rhome all --agent claude --agent codex --agent gemini; h="$RH"
+rm -f "$h/.gemini/GEMINI.md"
+rupdate "$h"
+eq "$RRC" "6" "three agents, GEMINI.md missing → update repairs (exit 6)"
+resolves "$h/.gemini/GEMINI.md" && ok || bad "three agents → GEMINI.md is re-linked"
+
+# The opt-outs survive the repair, with the real installer: a hook entry removed by hand and a
+# recorded --no-sandbox are still in force after the root doc comes back.
+rhome opt --agent claude --no-sandbox; h="$RH"
+jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | endswith("/precommit-gate.sh") | not))) | map(select(.hooks | length > 0))))' \
+  "$h/.claude/settings.json" > "$work/opt.json" && mv "$work/opt.json" "$h/.claude/settings.json"
+eq "$(adb_claude_hooks_state "$h/.claude/settings.json" "$h")" "partial" "fixture: one hook entry removed by hand"
+rm -f "$h/.claude/CLAUDE.md"
+rupdate "$h"
+resolves "$h/.claude/CLAUDE.md" && ok || bad "opt-outs → the root doc is re-linked"
+eq "$(adb_claude_hooks_state "$h/.claude/settings.json" "$h")" "partial" "opt-outs → the removed hook entry stays removed"
+eq "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$h")" 2>/dev/null)" "skipped-optout" "opt-outs → --no-sandbox stays recorded"
+jq -e '.sandbox == null' "$h/.claude/settings.json" >/dev/null && ok || bad "opt-outs → no sandbox key was written"
+
+# An OCCUPIED root doc is never displaced by an update: a regular file, then a link into a path
+# that is not a clone. Each is reported by class, and the exit code is what it would be anyway.
+rhome rf --agent claude --agent codex; h="$RH"
+rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
+printf 'my own rules\n' > "$h/.claude/CLAUDE.md"; cp "$h/.claude/CLAUDE.md" "$work/rf-copy"
+b0="$(backups "$h")"
+rupdate "$h"
+eq "$RRC" "0" "a regular file at the root doc → the exit code is unchanged (0)"
+cmp -s "$h/.claude/CLAUDE.md" "$work/rf-copy" && [ ! -L "$h/.claude/CLAUDE.md" ] && ok || bad "a regular file at the root doc → left byte-identical"
+eq "$(backups "$h")" "$b0" "a regular file at the root doc → no backup directory is created"
+has "$RERR" "NOTE — ~/.claude/CLAUDE.md is not the baseline's root doc (a regular file)" "a regular file at the root doc → the NOTE names its class"
+hasnt "$RERR" "re-linked" "a regular file at the root doc → nothing is re-linked"
+
+rhome fl --agent claude --agent codex; h="$RH"
+rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
+mkdir -p "$work/not-a-clone"; ln -s "$work/not-a-clone/CLAUDE.md" "$h/.claude/CLAUDE.md"
+rupdate "$h"
+eq "$RRC" "0" "a link outside the clone at the root doc → the exit code is unchanged (0)"
+eq "$(readlink "$h/.claude/CLAUDE.md")" "$work/not-a-clone/CLAUDE.md" "a link outside the clone → left pointing where it pointed"
+has "$RERR" "(a link outside $rsrc)" "a link outside the clone → the NOTE names its class"
+hasnt "$RERR" "not-a-clone" "a link outside the clone → the NOTE never prints the link's target"
+
+# The owner's Gemini shape: a regular GEMINI.md and no Gemini links at all is `absent` — untouched
+# and silent.
+rhome gs --agent claude; h="$RH"
+mkdir -p "$h/.gemini"; printf 'mine\n' > "$h/.gemini/GEMINI.md"
+rupdate "$h"
+eq "$RRC" "0" "an unrelated regular GEMINI.md, no Gemini links → nothing to do"
+eq "$(cat "$h/.gemini/GEMINI.md")" "mine" "an unrelated regular GEMINI.md → untouched"
+hasnt "$RERR" "GEMINI.md" "an unrelated regular GEMINI.md → not mentioned"
+
+# A LEGACY receipt (no `source` row) whose root doc is missing is still ours to uninstall.
+rhome lr --agent claude; h="$RH"
+grep -v '^source' "$(adb_claude_settings_receipt "$h")" > "$work/lr.rcpt" && cat "$work/lr.rcpt" > "$(adb_claude_settings_receipt "$h")"
+rm -f "$h/.claude/CLAUDE.md"
+out="$(cd "$rsrc" && renv "$h" ./uninstall.sh --agent claude 2>&1)"
+hasnt "$out" "installed from another clone" "legacy receipt, root doc missing → uninstall does not call it another clone's"
+[ ! -e "$(adb_claude_settings_receipt "$h")" ] && ok || bad "legacy receipt, root doc missing → the receipt is removed"
+jq -e '.sandbox == null' "$h/.claude/settings.json" >/dev/null && ok || bad "legacy receipt, root doc missing → the sandbox keys are removed"
+
+# LAST, because it moves origin: a pulled commit that adds a skill links it AND re-links the root
+# doc on the behind path.
+rhome zz --agent claude --agent codex; h="$RH"
+rm -f "$h/.claude/CLAUDE.md"
+rc2="$work/rc2"; git clone -q "$rorigin" "$rc2"
+mkdir -p "$rc2/agents/claude/skills/zz-new"; printf 'zz\n' > "$rc2/agents/claude/skills/zz-new/SKILL.md"
+check_git "$rc2" add -A; check_git "$rc2" commit -q -m zz-new; git -C "$rc2" push -q origin main
+rupdate "$h"
+eq "$RRC" "0" "behind, root doc missing → update completes (exit 0)"
+resolves "$h/.claude/skills/zz-new" && ok || bad "behind → the newly shipped skill is linked"
+resolves "$h/.claude/CLAUDE.md" && ok || bad "behind → the root doc is re-linked"
 
 check_summary "baseline"

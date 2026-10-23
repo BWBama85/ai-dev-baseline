@@ -712,6 +712,27 @@ cause of lost work:
 - It exits **`6`** on a successful **same-HEAD repair**: the clone was already current, but a
   broken installed link was restored. Distinct from `0` ("nothing to do") because the installed
   surface changed while `HEAD` did not — a caller watching only `HEAD` cannot tell them apart.
+- **What "installed" means for an agent** (#539): any of its install links (root doc, skills,
+  hook scripts, `scripts/lib`) still points into the clone. The clone itself is found from a
+  root-doc link first and, when none names one, from an agent's `~/.<agent>/scripts/lib` link.
+  An install that has lost both of those is not found; run `./install.sh` again. What sits at
+  the agent's **root-doc** path then decides what an update does:
+  - **our link** — nothing special;
+  - **nothing at all** — that is damage, not a choice: the update re-links it with the other
+    missing links and prints `baseline: re-linked ~/.claude/CLAUDE.md — …` (exit `6` when the
+    clone was current);
+  - **something else** (your own file, a directory, a link outside the clone) — never touched
+    by an update. It prints a `NOTE` naming what kind of thing is there, without changing the
+    exit code, and that agent's other links are left as they are. `./install.sh --agent <agent>`
+    puts the baseline's root doc back (moving yours under `~/.claude/backups/`), and
+    `./uninstall.sh --agent <agent>` removes the rest. Those two are the ways to opt out of the
+    root doc; deleting it is not, because the next update re-links it.
+
+  One residue is stated rather than engineered away: an editor that creates the root doc in the
+  instant between the update reading the path as empty and re-linking it would have that file
+  moved under `~/.claude/backups/` — displaced, never deleted. When two root docs name two
+  different clones, the first one wins exactly as before, and running the update from the other
+  clone is refused as the wrong clone.
 
 `baseline update --check` prints one status word and changes nothing in the working tree;
 its exit code is the stable contract the SessionStart hook consumes:

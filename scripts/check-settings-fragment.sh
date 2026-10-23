@@ -5078,8 +5078,8 @@ if [ "$MUTATION" -eq 1 ]; then
     '    BEHIND_ROWS_BEFORE="$(adb_settings_row_count)"' \
     'every caller of the row count must fail loud'
   check_row 'the currency check gives up for want of jq before the jq-free questions' 'bin/baseline' 'round-45-legacy-duplicate-paths-whatever' \
-    '  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
-    '  command -v jq >/dev/null 2>&1 || return 1; adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1' \
+    '  adb_agent_ours claude "$src" || return 1' \
+    '  command -v jq >/dev/null 2>&1 || return 1; adb_agent_ours claude "$src" || return 1' \
     'without jq, the currency check must still refuse a receipt whose disposition cannot be read'
   check_row 'the post-heal classification trusts the pre-heal snapshot' 'bin/baseline' 'round-46-one-generation-per-run-a-dangli' \
     '  [ "$(adb_settings_receipt_sig)" = "${2:-none}" ] && { printf '"'"'0'"'"'; return 0; }' \

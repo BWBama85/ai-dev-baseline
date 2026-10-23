@@ -493,6 +493,17 @@ out="$(bash "$PI" status --project "$P" 2>&1)"; rc=$?
 has "$out" "mode:    pinned" "status: reports the mode"
 has "$out" "payload: intact" "status: reports an untouched payload as intact"
 
+# THE COEXISTENCE NOTE ASKS adb_install_source (#539): a Claude-only global install that lost its
+# root doc is still active through its scripts/lib link, and a symlink naming no clone is not one.
+gh539="$work/gh539"; gs539="$work/gs539"
+mkdir -p "$gs539/agents" "$gs539/scripts/lib" "$gh539/.claude/scripts"; : > "$gs539/install.sh"
+ln -s "$gs539/scripts/lib" "$gh539/.claude/scripts/lib"
+out="$(HOME="$gh539" bash "$PI" status --project "$P" --offline 2>&1)"
+has "$out" "a GLOBAL symlink install is also active" "status: a global install with no root doc is still reported as active"
+rm -f "$gh539/.claude/scripts/lib"; ln -s "$work/nowhere/CLAUDE.md" "$gh539/.claude/CLAUDE.md"
+out="$(HOME="$gh539" bash "$PI" status --project "$P" --offline 2>&1)"
+hasnt "$out" "a GLOBAL symlink install is also active" "status: a root-doc symlink naming no clone is not a global install"
+
 # A PIN THAT CANNOT BE READ NEVER DEFAULTS (PR #429). `adb_toml_get` returns 3 for a NUL byte, and
 # the pin readers discarded it — so `source = "private/fork"` with a NUL appended read as no
 # source, and `status`/`upgrade` consulted the public default in its place.

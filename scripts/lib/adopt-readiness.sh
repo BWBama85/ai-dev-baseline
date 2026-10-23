@@ -182,11 +182,45 @@ _ar_primary_ok() {
   [ "$(printf '%s\n' "$tok" | grep -c .)" -eq 1 ]
 }
 
-# Does <dir> contain at least one installed skill (a `*/SKILL.md`)? A directory that merely
-# EXISTS proves nothing — an interrupted or partly-removed install leaves it empty.
-_ar_any_skill() {
-  [ -d "$1" ] || return 1
-  [ -n "$(find "$1" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null)" ]
+# What of <agent>'s install from <src> is not in place, as ` <agent>(<what>)` words on stdout —
+# nothing when the whole manifest is. Every destination must be our link into <src> AND resolve
+# (#539), and the payload a run reaches through it must be there: each skill's SKILL.md and
+# scripts/lib/common.sh. A hook a MIXED hook set defers is absent by design (#444) and is skipped
+# exactly as `baseline update`'s verifier skips it. Returns 1 when the manifest cannot be read.
+# Usage: _ar_agent_gaps <agent> <src>
+_ar_agent_gaps() {
+  local a="$1" src="$2" manifest st doc tab line from dest deferred="" out=""
+  manifest="$(adb_agent_manifest "$a" "$src" "$HOME")" || return 1
+  if [ -z "$manifest" ]; then printf ' %s(unknown-agent)' "$a"; return 0; fi
+  st="$(adb_agent_install_state "$a" "$src" "$HOME")" || return 1
+  case "$st" in
+    absent) printf ' %s(not installed)' "$a"; return 0 ;;
+    root-doc-missing) out=" $a(root-doc)" ;;
+    root-doc-foreign)
+      doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
+      out=" $a(root-doc: not the baseline's — $(adb_occupant_class "$doc" "$src"))" ;;
+  esac
+  [ "$a" = claude ] && deferred="$(adb_claude_hooks_deferred "$HOME/.claude/settings.json" "$src" "$HOME")"
+  doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
+  tab="$(printf '\t')"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    from="${line%%"$tab"*}"; dest="${line#*"$tab"}"
+    [ "$dest" = "$doc" ] && continue   # judged above
+    adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue
+    if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then
+      out="$out $a(${dest/#$HOME/\~})"
+    elif [ "$from" = "$src/scripts/lib" ] && [ ! -e "$dest/common.sh" ]; then
+      out="$out $a(${dest/#$HOME/\~}/common.sh)"
+    else
+      case "$from" in
+        "$src/agents/$a/skills/"*) [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;
+      esac
+    fi
+  done <<EOF
+$manifest
+EOF
+  printf '%s' "$out"
 }
 
 # --- emit one rung record ------------------------------------------------------------------------
@@ -414,22 +448,17 @@ cmd_probe() {
   # `shipped` uses the same reader). An absent install is not an unknown: it is a definite,
   # actionable no — run install.sh.
   #
-  # IT CHECKS THE THREE THINGS A RUN ACTUALLY NEEDS, not just that a directory exists. The first
-  # version tested `[ -d "$HOME/.<agent>" ]` under a comment claiming it checked "the skills
-  # directory" — a directory that exists the moment anything writes state into it, so an agent
-  # with no install at all passed. The contract's words are "skills resolve, root doc present":
-  #
-  #   * the ROOT DOC, which is what carries the practices into the agent's context;
-  #   * the SKILLS TREE, which is what a `/adopt` or `/implement-issue` invocation resolves through;
-  #   * `scripts/lib`, because every workflow step shells into it and a partial install that
-  #     linked the docs but not the libraries fails at the first fenced block rather than at setup.
+  # IT CHECKS THE AGENT'S WHOLE MANIFEST (#539, `_ar_agent_gaps`): every destination must be our
+  # link into the source and resolve. Asking whether a path merely EXISTS passed a user's own
+  # CLAUDE.md as the root doc — which does not carry the practices — and asking `find` for a
+  # SKILL.md without `-L` failed every real install, whose skill directories are symlinks.
   # ARGUMENT VALIDATION IS UNCONDITIONAL, and it was not. This loop used to live INSIDE the
   # `if adb_install_source` branch below, so on any machine with no baseline install — which is
   # every CI runner, and every first run on a new workstation — an invalid or traversal `--agents`
   # token was never rejected at all. Input validation that only runs when an unrelated lookup
   # succeeds is validation that is off exactly where the input is least trusted. CI caught it;
   # the local suite could not, because the developer's machine always has an install.
-  local src a missing="" doc
+  local src a notin="" gaps unread="" remedy
   for a in ${agents//,/ }; do
     case "$a" in
       ''|*[!a-z0-9-]*|-*) die "probe: invalid agent token '$a'" ;;
@@ -438,26 +467,22 @@ cmd_probe() {
 
   if src="$(adb_install_source)"; then
     for a in ${agents//,/ }; do
-      case "$a" in
-        claude) doc=CLAUDE.md ;; codex) doc=AGENTS.md ;; gemini) doc=GEMINI.md ;;
-        # An agent this library does not model is not a failure — it is a fact it cannot check.
-        # Saying so beats inventing a filename and reporting its absence as the agent's problem.
-        *) missing="$missing $a(unknown-agent)"; continue ;;
-      esac
-      # FILES, NOT DIRECTORIES. A partial or half-removed install leaves `skills/` and
-      # `scripts/lib/` present and EMPTY, and a directory test then certifies a harness that
-      # cannot resolve a single skill or source a single library. Probe for an artifact that must
-      # exist inside each: any `*/SKILL.md`, and `common.sh` — the library every workflow's first
-      # fenced block sources.
-      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"
-      _ar_any_skill "$HOME/.$a/skills" || _ar_any_skill "$HOME/.$a/config/skills" \
-        || missing="$missing $a(skills)"
-      [ -e "$HOME/.$a/scripts/lib/common.sh" ] || missing="$missing $a(scripts/lib/common.sh)"
+      gaps="$(_ar_agent_gaps "$a" "$src")" || { unread="$unread $a"; continue; }
+      notin="$notin$gaps"
     done
-    if [ -n "$missing" ]; then
-      _ar_emit harness todo "installed from $src, but these are absent:${missing} — re-run install.sh"
+    if [ -n "$unread" ]; then
+      _ar_emit harness unknown "the install manifest from $src could not be enumerated for:${unread} — see 'baseline update'"
+    elif [ -n "$notin" ]; then
+      # `baseline update` re-links what an installed agent lost; it never installs an agent and
+      # never displaces an occupied root doc, so those two name the installer.
+      remedy="run 'baseline update'"
+      case "$notin" in *"(not installed)"*)
+        remedy="$remedy; './install.sh --agent <agent>' installs an agent that is not installed" ;; esac
+      case "$notin" in *"not the baseline's"*)
+        remedy="$remedy; './install.sh --agent <agent>' restores a root doc that is not the baseline's (your file is moved under ~/.claude/backups/)" ;; esac
+      _ar_emit harness todo "installed from $src, but these are not in place:${notin} — $remedy"
     else
-      _ar_emit harness ok "installed from $src; root doc, skills and scripts/lib resolve for: ${agents}"
+      _ar_emit harness ok "installed from $src; every manifest link resolves for: ${agents}"
     fi
   else
     _ar_emit harness todo "no baseline install found for any agent — run install.sh before adopting"

@@ -10829,3 +10829,50 @@ survive is the part a later reader needs.
              `pinned_backups`, `backup_witness`, the two `home:` cases, and the witness fixtures and
              real-home check before `check_summary`); `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D137 — #539: an absent root doc is damage and is re-linked; an occupied root-doc path is never displaced by an update
+- date:      2026-10-23
+- category:  project-delta
+- unknown:   #539. `bin/baseline` counted an agent as installed only while its root doc was a link
+             into the clone, so losing that one link took the agent out of every update: no
+             verification, no self-heal, and for a single-agent install no install found at all. The
+             owner's machine was in that state, with Claude's root doc gone and its other 16 links
+             in place. Nothing on disk tells a deliberate `rm ~/.claude/CLAUDE.md` from an accidental
+             loss, so the update needed a rule for each of the two states it can see.
+- decision:  **Absence means damage, occupancy means hands off** (owner decisions 2026-10-23, the
+             issue's open questions 1 and 2).
+             - One predicate, `adb_agent_install_state` in `scripts/lib/common.sh`, computed from
+               `adb_agent_manifest` alone, answers `installed`, `root-doc-missing`,
+               `root-doc-foreign` or `absent`, and fails closed when the manifest refuses.
+               `bin/baseline`, `uninstall.sh` and the `harness` rung read it; nothing re-derives it.
+             - `root-doc-missing` is in the installed set, and every per-agent gate (settings
+               pending, partial-hook report, `--optout-if-recorded`, `--no-hooks`) asks the same
+               predicate, so the repair keeps every recorded opt-out.
+             - `root-doc-foreign` is out of the set and gets one stderr NOTE naming the occupant's
+               class, never its target or content, with the exit code unchanged. `adb_link` would move
+               a file or delete a foreign link without a record, which is acceptable for a deliberate
+               `./install.sh` and not for an update the SessionStart hook starts unattended.
+             - `adb_install_source` falls back to an agent's `scripts/lib` link only when no root doc
+               identifies a clone, so every answer it gave before is unchanged.
+             - The opt-outs from the root doc are uninstalling the agent, or putting your own file at
+               the path. Both are visible on disk.
+- reason:    The root doc is the install's core payload: skills and hooks without it run the loop
+             without its rules. Hooks have a documented per-entry opt-out; the root doc has none, so
+             its absence is not a choice any documented path produces.
+- rejected:  - A receipt that records the root doc as installed, so its absence reads as a choice (the
+               hooks precedent, `adb_claude_hooks_missing_deliberate`). It would preserve exactly the
+               state the owner's machine was in and did not choose.
+             - Changing discovery precedence so the clone most links point into wins over a root doc
+               naming another valid clone (owner decision 2026-10-23). That case is the existing
+               two-clone ambiguity; the update keeps refusing it as the wrong clone.
+             - A failing exit for `root-doc-foreign`, which `auto` mode would report at every session.
+- known-gap: An editor that creates the root doc between the update reading the path as empty and
+             `adb_link` creating the link has that file moved under `~/.claude/backups/` — displaced,
+             not lost. Neither the update lock nor the settings lock excludes an editor.
+- placement: `scripts/lib/common.sh` (`adb_agent_install_state`, `adb_agent_root_doc`,
+             `adb_occupant_class`, `adb_install_source`'s fallback); `bin/baseline`;
+             `uninstall.sh`; `scripts/lib/adopt-readiness.sh` (`_ar_agent_gaps`);
+             `scripts/lib/pinned-install.sh` (the coexistence note); `docs/installation.md`;
+             `CHANGELOG.md`; tests in `scripts/check-baseline.sh`, `scripts/check-common-lib.sh`,
+             `scripts/check-adopt-readiness.sh`, `scripts/check-pinned-install.sh`
+- baseline-issue: n/a (this repo IS the baseline)
