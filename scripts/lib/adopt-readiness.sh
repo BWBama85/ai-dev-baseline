@@ -207,6 +207,7 @@ _ar_agent_gaps() {
     [ -n "$line" ] || continue
     from="${line%%"$tab"*}"; dest="${line#*"$tab"}"
     [ "$dest" = "$doc" ] && continue   # judged above
+    case "$from" in "$src/agents/$a/skills/"*) skills=$((skills + 1)) ;; esac
     adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue
     if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then
       out="$out $a(${dest/#$HOME/\~})"
@@ -215,7 +216,6 @@ _ar_agent_gaps() {
     else
       case "$from" in
         "$src/agents/$a/skills/"*)
-          skills=$((skills + 1))
           [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;
       esac
     fi

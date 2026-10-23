@@ -511,6 +511,7 @@ rm -rf "$fakehome/.claude/skills/adopt"
 ln -s "$fakeinstall/agents/claude/skills/gone" "$fakehome/.claude/skills/adopt"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "claude(~/.claude/skills/adopt)" "probe: a DANGLING link into the source is not in place"
+hasnt "$out" "ships none" "probe: a broken skill LINK is not reported as a clone that ships no skills"
 rm -f "$fakehome/.claude/skills/adopt"; mv "$WORK/saved-skill-link" "$fakehome/.claude/skills/adopt"
 # A link that resolves to an EMPTY skill directory reaches no SKILL.md.
 mv "$fakeinstall/agents/claude/skills/adopt/SKILL.md" "$WORK/saved-skill-md"
@@ -1277,7 +1278,7 @@ shmutant_mut harness-ignores-a-missing-root-doc \
     '    root-doc-missing) : ;;' \
     'probe: an agent home with no root doc is todo, not ok'
 shmutant_mut harness-accepts-a-dangling-root-doc \
-    '    installed) [ -e "$doc" ] || out=" $a(root-doc: does not resolve)" ;;' \
+    '    installed) [ -f "$doc" ] && [ -r "$doc" ] || out=" $a(root-doc: does not resolve)" ;;' \
     '    installed) : ;;' \
     'probe: a DANGLING root-doc link is todo, not ok'
 shmutant_mut harness-accepts-a-foreign-root-doc \
