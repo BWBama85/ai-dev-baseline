@@ -10854,6 +10854,10 @@ survive is the part a later reader needs.
                `./install.sh` and not for an update the SessionStart hook starts unattended.
              - `adb_install_source` falls back to an agent's `scripts/lib` link only when no root doc
                identifies a clone, so every answer it gave before is unchanged.
+             - Only an agent whose root doc is our link has its dead links pruned. A
+               `root-doc-missing` agent's dead links can be its only evidence of being installed, so
+               it is pruned on the run after its repair; a `root-doc-foreign` agent is never pruned.
+             - Discovery also accepts the legacy `agents/<agent>/scripts/lib` compatibility link.
              - The opt-outs from the root doc are uninstalling the agent, or putting your own file at
                the path. Both are visible on disk.
 - reason:    The root doc is the install's core payload: skills and hooks without it run the loop
@@ -10866,6 +10870,13 @@ survive is the part a later reader needs.
                naming another valid clone (owner decision 2026-10-23). That case is the existing
                two-clone ambiguity; the update keeps refusing it as the wrong clone.
              - A failing exit for `root-doc-foreign`, which `auto` mode would report at every session.
+             - Snapshotting the installed set before pruning and repairing from it. An `uninstall.sh`
+               finishing between the snapshot and the repair would be reinstalled; not pruning the
+               agent removes the need for any snapshot.
+- review:    the independent review found a dangling root doc passing the harness rung, the legacy
+             `scripts/lib` link missed by discovery, pruning erasing a damaged agent's last links,
+             and restore advice promising a backup for a symlink; all fixed. Local pass 1 found the
+             snapshot race and the pruning of a foreign agent's links, both fixed by the prune rule.
 - known-gap: An editor that creates the root doc between the update reading the path as empty and
              `adb_link` creating the link has that file moved under `~/.claude/backups/` — displaced,
              not lost. Neither the update lock nor the settings lock excludes an editor.

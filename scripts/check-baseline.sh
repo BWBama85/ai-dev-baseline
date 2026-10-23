@@ -639,7 +639,14 @@ rupdate() {
 }
 # resolves <path> — our link into rsrc, and it resolves.
 resolves() { adb_link_into "$1" "$rsrc" && [ -e "$1" ]; }
-backups() { find "$1/.claude/backups" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-*' 2>/dev/null | wc -l | tr -d ' '; }
+# backups <home> — how many ai-dev-baseline-* backup directories it holds; `unreadable` when the
+# folder exists but cannot be listed, so a failed listing never reads as "none were made".
+backups() {
+  local d="$1/.claude/backups" out
+  [ -e "$d" ] || { printf '0'; return 0; }
+  out="$(find "$d" -mindepth 1 -maxdepth 1 -name 'ai-dev-baseline-*')" || { printf 'unreadable'; return 0; }
+  printf '%s\n' "$out" | grep -c . || true
+}
 
 # Two agents, Claude's root doc and one skill gone: the repair restores both and says so.
 rhome cc --agent claude --agent codex; h="$RH"
@@ -706,6 +713,7 @@ jq -e '.sandbox == null' "$h/.claude/settings.json" >/dev/null && ok || bad "opt
 rhome rf --agent claude --agent codex; h="$RH"
 rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
 printf 'my own rules\n' > "$h/.claude/CLAUDE.md"; cp "$h/.claude/CLAUDE.md" "$work/rf-copy"
+ln -s "$rsrc/agents/claude/skills/ghost" "$h/.claude/skills/ghost"   # an owned link that dangles
 b0="$(backups "$h")"
 rupdate "$h"
 eq "$RRC" "0" "a regular file at the root doc → the exit code is unchanged (0)"
@@ -714,6 +722,8 @@ eq "$(backups "$h")" "$b0" "a regular file at the root doc → no backup directo
 has "$RERR" "NOTE — ~/.claude/CLAUDE.md is not the baseline's root doc (a regular file)" "a regular file at the root doc → the NOTE names its class"
 has "$RERR" "restores it (what is there now is moved under ~/.claude/backups/)" "a regular file at the root doc → the NOTE says the installer would back it up"
 hasnt "$RERR" "re-linked" "a regular file at the root doc → nothing is re-linked"
+[ -L "$h/.claude/skills/ghost" ] && ok || bad "a regular file at the root doc → that agent's dead links are not pruned either"
+case "$b0" in ''|*[!0-9]*) bad "fixture: the backup folder could not be listed ($b0), so the no-backup assertion proves nothing" ;; *) ok ;; esac
 
 rhome fl --agent claude --agent codex; h="$RH"
 rm -f "$h/.claude/CLAUDE.md" "$h/.claude/skills/cleanup"
@@ -751,7 +761,7 @@ done <<EOF
 $(adb_agent_manifest codex "$rsrc" "$h")
 EOF
 rupdate "$h"
-eq "$RRC" "6" "codex links all dangling + root doc missing → still repaired after the prune (exit 6)"
+eq "$RRC" "6" "codex links all dangling + root doc missing → codex is repaired, not pruned away (exit 6)"
 resolves "$h/.codex/AGENTS.md" && ok || bad "pruned codex → its root doc is re-linked"
 resolves "$h/.codex/scripts/lib" && ok || bad "pruned codex → its scripts/lib is re-linked"
 

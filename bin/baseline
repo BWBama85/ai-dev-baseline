@@ -172,36 +172,17 @@ fi
 adb_installed_agents() {
   local src="$1" a st rc=0
   for a in claude codex gemini; do
-    st="$(adb_agent_effective_state "$a" "$src")" || { rc=1; continue; }
+    st="$(adb_agent_install_state "$a" "$src" "$HOME")" || { rc=1; continue; }
     case "$st" in installed|root-doc-missing) printf '%s\n' "$a" ;; esac
   done
   return "$rc"
-}
-
-# The installed set as it stood BEFORE this run pruned anything, one agent per line. Set under the
-# update lock just before adb_prune_orphans: pruning removes dangling links into the clone, and
-# when those were an agent's last links besides a missing root doc, the agent would read `absent`
-# afterwards and the repair would skip it.
-ADB_AGENTS_BEFORE_PRUNE=""
-
-# adb_agent_install_state, read against that snapshot: an agent the snapshot holds that now reads
-# `absent` is `root-doc-missing` while its root-doc path is empty, `root-doc-foreign` otherwise.
-# Usage: adb_agent_effective_state <agent> <src>
-adb_agent_effective_state() {
-  local st doc
-  st="$(adb_agent_install_state "$1" "$2" "$HOME")" || return 1
-  if [ "$st" = absent ] && printf '%s\n' "$ADB_AGENTS_BEFORE_PRUNE" | grep -qxF -- "$1"; then
-    doc="$(adb_agent_root_doc "$1" "$2" "$HOME")" || return 1
-    if [ -e "$doc" ] || [ -L "$doc" ]; then st=root-doc-foreign; else st=root-doc-missing; fi
-  fi
-  printf '%s\n' "$st"
 }
 
 # True iff <agent> is in the installed set for <src> — the question every per-agent gate asks, so
 # a Claude install that lost its root doc keeps its recorded opt-outs through the repair.
 # Usage: adb_agent_ours <agent> <src>
 adb_agent_ours() {
-  case "$(adb_agent_effective_state "$1" "$2")" in
+  case "$(adb_agent_install_state "$1" "$2" "$HOME")" in
     installed|root-doc-missing) return 0 ;;
   esac
   return 1
@@ -214,7 +195,7 @@ adb_agent_ours() {
 adb_report_foreign_root_docs() {
   local src="$1" a doc cls kept
   for a in claude codex gemini; do
-    [ "$(adb_agent_effective_state "$a" "$src" 2>/dev/null)" = root-doc-foreign ] || continue
+    [ "$(adb_agent_install_state "$a" "$src" "$HOME" 2>/dev/null)" = root-doc-foreign ] || continue
     doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || continue
     cls="$(adb_occupant_class "$doc" "$src")"
     # adb_link moves a file or directory under the backup directory, but REPLACES a symlink with no
@@ -223,8 +204,8 @@ adb_report_foreign_root_docs() {
       "a link outside "*) kept="the link is replaced, and where it pointed is not kept" ;;
       *)                  kept="what is there now is moved under ~/.claude/backups/" ;;
     esac
-    printf "baseline: NOTE — %s is not the baseline's root doc (%s), yet %s's other links point into %s; its rules load only if that file includes them. Left untouched: './install.sh --agent %s' restores it (%s), './uninstall.sh --agent %s' removes the rest.\n" \
-      "${doc/#$HOME/\~}" "$cls" "$a" "$src" "$a" "$kept" "$a" >&2
+    printf "baseline: NOTE — %s is not the baseline's root doc (%s), yet %s's other links point into %s; its rules load only if that file includes them. Left untouched: '%s/install.sh --agent %s' restores it (%s), '%s/uninstall.sh --agent %s' removes its other links.\n" \
+      "${doc/#$HOME/\~}" "$cls" "$a" "$src" "$src" "$a" "$kept" "$src" "$a" >&2
   done
   return 0
 }
@@ -645,11 +626,24 @@ EOF
 # trusting the enumeration): a link is removed ONLY when it is a symlink, does NOT resolve, and
 # its target is lexically inside <src>. A resolving link, a real file, or a link pointing
 # elsewhere is never touched. Best-effort (always returns 0) — the subsequent adb_verify_links
-# is the real gate. Usage: adb_prune_orphans <src>
+# is the real gate.
+#
+# ONLY AN AGENT WHOSE ROOT DOC IS OUR LINK IS PRUNED (#539). For a `root-doc-missing` agent its
+# dangling links may be the only evidence it is installed at all — pruning them first would turn
+# it `absent` and the repair would skip it; it is pruned on the run after its repair. A
+# `root-doc-foreign` agent is left exactly as it is. A state that cannot be read prunes nothing.
+# Usage: adb_prune_orphans <src>
 adb_prune_orphans() {
-  local src="$1" p
+  local src="$1" p a prunable=""
+  for a in claude codex gemini; do
+    [ "$(adb_agent_install_state "$a" "$src" "$HOME" 2>/dev/null)" = installed ] && prunable="$prunable $a "
+  done
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    case "$p" in
+      "$HOME"/.claude/*) a=claude ;; "$HOME"/.codex/*) a=codex ;; "$HOME"/.gemini/*) a=gemini ;; *) continue ;;
+    esac
+    case "$prunable" in *" $a "*) ;; *) continue ;; esac
     [ -e "$p" ] && continue          # still resolves → legitimately installed, keep
     # Re-check ownership (symlink + target inside src) at the moment of removal, not trusting the
     # enumeration — adb_link_into re-reads the link, so this is TOCTOU-safe against a delete.
@@ -673,7 +667,7 @@ adb_self_heal() {
     [ -n "$a" ] || continue
     args+=(--agent "$a")
     # A root doc this run is about to re-link, so the audit line below can report what changed.
-    if [ "$(adb_agent_effective_state "$a" "$SRC")" = root-doc-missing ]; then
+    if [ "$(adb_agent_install_state "$a" "$SRC" "$HOME")" = root-doc-missing ]; then
       _adb_dest="$(adb_agent_root_doc "$a" "$SRC" "$HOME")" && _adb_relink+=("$a" "$_adb_dest")
     fi
   done <<EOF
@@ -935,8 +929,6 @@ case "$STATUS" in
   current)
     echo "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
     adb_report_foreign_root_docs "$SRC"
-    # A refused enumeration leaves the snapshot empty; adb_verify_links then fails closed on it.
-    ADB_AGENTS_BEFORE_PRUNE="$(adb_installed_agents "$SRC" 2>/dev/null)" || ADB_AGENTS_BEFORE_PRUNE=""
     # Prune renamed-away orphans first (a prior manual `git pull` may have left one), THEN verify
     # the manifest — so a leftover from a rename doesn't force a needless "broken" repair (#48).
     adb_prune_orphans "$SRC"
@@ -1043,7 +1035,6 @@ case "$STATUS" in
     # a rename left dangling that the installer would otherwise never clean up.
     echo "baseline: pulled to origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
     adb_report_foreign_root_docs "$SRC"
-    ADB_AGENTS_BEFORE_PRUNE="$(adb_installed_agents "$SRC" 2>/dev/null)" || ADB_AGENTS_BEFORE_PRUNE=""
     adb_prune_orphans "$SRC"
     # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that
     # changes the fragment is exactly how this path acquires pending settings in the first place.

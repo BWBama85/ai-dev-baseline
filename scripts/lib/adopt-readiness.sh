@@ -475,9 +475,9 @@ cmd_probe() {
       # never displaces an occupied root doc, so those two name the installer.
       remedy="run 'baseline update'"
       case "$notin" in *"(not installed)"*)
-        remedy="$remedy; './install.sh --agent <agent>' installs an agent that is not installed" ;; esac
+        remedy="$remedy; '$src/install.sh --agent <agent>' installs an agent that is not installed" ;; esac
       case "$notin" in *"not the baseline's"*)
-        remedy="$remedy; './install.sh --agent <agent>' restores a root doc that is not the baseline's (a file or directory there is moved under ~/.claude/backups/; a link there is replaced without keeping its target)" ;; esac
+        remedy="$remedy; '$src/install.sh --agent <agent>' restores a root doc that is not the baseline's (a file or directory there is moved under ~/.claude/backups/; a link there is replaced without keeping its target)" ;; esac
       _ar_emit harness todo "installed from $src, but these are not in place:${notin} — $remedy"
     else
       _ar_emit harness ok "installed from $src; every manifest link resolves for: ${agents}"

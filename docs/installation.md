@@ -720,14 +720,18 @@ cause of lost work:
   - **our link** — nothing special;
   - **nothing at all** — that is damage, not a choice: the update re-links it with the other
     missing links and prints `baseline: re-linked ~/.claude/CLAUDE.md — …` (exit `6` when the
-    clone was current);
+    clone was current). Its dead links are pruned on the update after that, not before the
+    repair, because they may be all that shows it is installed;
   - **something else** (your own file, a directory, a link outside the clone) — never touched
     by an update. It prints a `NOTE` naming what kind of thing is there, without changing the
     exit code, and that agent's other links are left as they are. `./install.sh --agent <agent>`
     puts the baseline's root doc back — a file or directory there is moved under
     `~/.claude/backups/`, but a symlink there is replaced without keeping where it pointed — and
-    `./uninstall.sh --agent <agent>` removes the rest. Those two are the ways to opt out of the
-    root doc; deleting it is not, because the next update re-links it.
+    `./uninstall.sh --agent <agent>` removes its other links. An update never prunes that
+    agent's dead links.
+
+  To opt out of the root doc, uninstall the agent or put your own file at its path. Deleting it
+  is not an opt-out: the next update re-links it.
 
   One residue is stated rather than engineered away: an editor that creates the root doc in the
   instant between the update reading the path as empty and re-linking it would have that file

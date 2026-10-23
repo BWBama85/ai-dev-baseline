@@ -499,7 +499,7 @@ printf 'my rules\n' > "$fakehome/.codex/AGENTS.md"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
 has "$out" "harness${TAB}todo" "probe: a user's own file at the root doc is todo, not ok"
 has "$out" "codex(root-doc: not the baseline's — a regular file)" "probe: ...naming it as not the baseline's"
-has "$out" "./install.sh --agent <agent>' restores a root doc" "probe: ...and naming install.sh, which baseline update never runs over it"
+has "$out" "'$fakeinstall/install.sh --agent <agent>' restores a root doc" "probe: ...and naming the clone's install.sh, which baseline update never runs over it"
 rm -f "$fakehome/.codex/AGENTS.md"; mv "$WORK/saved-agents-md" "$fakehome/.codex/AGENTS.md"
 # A real directory where a skill link belongs is not ours, even with a SKILL.md in it.
 mv "$fakehome/.claude/skills/adopt" "$WORK/saved-skill-link"
