@@ -231,19 +231,12 @@ _ad_agents_from_baseline() {
 
 # _ad_agent_rootdoc <agent> — print the root-doc basename that agent reads (CLAUDE.md, AGENTS.md, …),
 # or nothing for an agent the install manifest does not model. Returns 1 when the manifest itself
-# could not be enumerated. Read from `adb_agent_manifest` (the row whose destination sits directly
-# in the agent's home, as `shipped` classifies it); the sentinel roots are never resolved on disk.
+# could not be enumerated. Delegates to `adb_agent_root_doc`, the one rule for which manifest row is
+# the root doc; the sentinel roots are never resolved on disk.
 _ad_agent_rootdoc() {
-  local a="$1" src dest rel manifest
-  manifest="$(adb_agent_manifest "$a" /ADB_ROOTDOC_REPO /ADB_ROOTDOC_HOME)" || return 1
-  while IFS="$TAB" read -r src dest; do
-    rel="${dest#/ADB_ROOTDOC_HOME/."$a"/}"
-    [ "$rel" != "$dest" ] || continue
-    case "$rel" in
-      */*) continue ;;
-      *.md) printf '%s\n' "$rel"; return 0 ;;
-    esac
-  done <<< "$manifest"
+  local doc
+  doc="$(adb_agent_root_doc "$1" /ADB_ROOTDOC_REPO /ADB_ROOTDOC_HOME)" || return 1
+  [ -z "$doc" ] || printf '%s\n' "${doc##*/}"
   return 0
 }
 

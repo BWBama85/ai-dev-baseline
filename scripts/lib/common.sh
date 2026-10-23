@@ -5039,10 +5039,12 @@ EOF
 }
 
 # <agent>'s root-doc destination under [home], from the same manifest row the predicate reads.
-# Returns 1 when the manifest refuses or names none.  Usage: adb_agent_root_doc <agent> <src> [home]
+# An unknown agent (an empty manifest) prints nothing and returns 0; a manifest that refuses, or
+# names no root doc, returns 1.  Usage: adb_agent_root_doc <agent> <src> [home]
 adb_agent_root_doc() {
   local manifest doc
   manifest="$(adb_agent_manifest "$1" "$2" "${3:-$HOME}")" || return 1
+  [ -n "$manifest" ] || return 0
   doc="$(printf '%s\n' "$manifest" | _adb_manifest_root_doc "$1" "$2")"
   [ -n "$doc" ] || return 1
   printf '%s\n' "$doc"

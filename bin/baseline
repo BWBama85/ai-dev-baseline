@@ -204,8 +204,9 @@ adb_report_foreign_root_docs() {
       "a link outside "*) kept="the link is replaced, and where it pointed is not kept" ;;
       *)                  kept="what is there now is moved under ~/.claude/backups/" ;;
     esac
-    printf "baseline: NOTE — %s is not the baseline's root doc (%s), yet %s's other links point into %s; its rules load only if that file includes them. Left untouched: '%s/install.sh --agent %s' restores it (%s), '%s/uninstall.sh --agent %s' removes its other links.\n" \
-      "${doc/#$HOME/\~}" "$cls" "$a" "$src" "$src" "$a" "$kept" "$src" "$a" >&2
+    # The commands are printed shell-quoted (%q) so a clone path with a space can be pasted as is.
+    printf "baseline: NOTE — %s is not the baseline's root doc (%s), yet %s's other links point into %s; its rules load only if that file includes them. Left untouched: \`%q --agent %s\` restores it (%s); \`%q --agent %s\` removes its other links.\n" \
+      "${doc/#$HOME/\~}" "$cls" "$a" "$src" "$src/install.sh" "$a" "$kept" "$src/uninstall.sh" "$a" >&2
   done
   return 0
 }

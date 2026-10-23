@@ -499,7 +499,7 @@ printf 'my rules\n' > "$fakehome/.codex/AGENTS.md"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
 has "$out" "harness${TAB}todo" "probe: a user's own file at the root doc is todo, not ok"
 has "$out" "codex(root-doc: not the baseline's — a regular file)" "probe: ...naming it as not the baseline's"
-has "$out" "'$fakeinstall/install.sh --agent <agent>' restores a root doc" "probe: ...and naming the clone's install.sh, which baseline update never runs over it"
+has "$out" "$(printf '%q' "$fakeinstall/install.sh") --agent <agent> restores a root doc" "probe: ...and naming the clone's install.sh, which baseline update never runs over it"
 rm -f "$fakehome/.codex/AGENTS.md"; mv "$WORK/saved-agents-md" "$fakehome/.codex/AGENTS.md"
 # A real directory where a skill link belongs is not ours, even with a SKILL.md in it.
 mv "$fakehome/.claude/skills/adopt" "$WORK/saved-skill-link"
@@ -520,6 +520,17 @@ case "$out" in
   *) ok ;;
 esac
 mv "$WORK/saved-skill-md" "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
+# A DIRECTORY named SKILL.md exists, and no skill loads from it.
+mv "$fakeinstall/agents/claude/skills/adopt/SKILL.md" "$WORK/saved-skill-md"
+mkdir "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(~/.claude/skills/adopt/SKILL.md)" "probe: a DIRECTORY named SKILL.md is not a skill"
+rmdir "$fakeinstall/agents/claude/skills/adopt/SKILL.md"; mv "$WORK/saved-skill-md" "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
+# A clone that ships no skills has none in its manifest, so no row could fail on their absence.
+mv "$fakeinstall/agents/claude/skills/adopt" "$WORK/saved-skill-src"; rm -f "$fakehome/.claude/skills/adopt"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(skills: the clone ships none)" "probe: an install with NO skills at all is todo, not ok"
+mv "$WORK/saved-skill-src" "$fakeinstall/agents/claude/skills/adopt"; ln -s "$fakeinstall/agents/claude/skills/adopt" "$fakehome/.claude/skills/adopt"
 # A hook a MIXED hook set defers is absent by design (#444), and the rung agrees with the updater.
 cp "$ROOT/agents/claude/settings.hooks.json" "$WORK/hooks.json"
 printf '{"hooks":%s}\n' "$(sed "s@__ADB_HOME__@$fakehome@g" "$WORK/hooks.json")" \
@@ -1318,9 +1329,17 @@ shmutant_mut probe-does-not-resolve-the-root \
     '  :' \
     'probe: running from a SUBDIRECTORY still reads the project root'
 shmutant_mut skills-dir-presence-is-enough \
-    '        "$src/agents/$a/skills/"*) [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
-    '        "$src/agents/$a/skills/"*) : ;;' \
+    '          [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
+    '          : ;;' \
     'probe: EMPTY skills/scripts dirs must not satisfy the harness rung'
+shmutant_mut skill-md-existence-is-enough \
+    '          [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
+    '          [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
+    'probe: a DIRECTORY named SKILL.md is not a skill'
+shmutant_mut no-skills-is-enough \
+    '  [ "$skills" -gt 0 ] || out="$out $a(skills: the clone ships none)"' \
+    '  :' \
+    'probe: an install with NO skills at all is todo, not ok'
 shmutant_mut primary-presence-is-enough \
     '  tok="$( cd "$root" 2>/dev/null && bash "$_AR_LIB_DIR/role-dispatch.sh" resolve primary 2>/dev/null )" || return 1' \
     '  tok=claude' \

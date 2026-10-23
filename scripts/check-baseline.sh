@@ -749,9 +749,9 @@ rm -f "$h/.claude/CLAUDE.md"; ln -s "$oclone/agents/claude/CLAUDE.md" "$h/.claud
 rupdate "$h"
 eq "$RRC" "4" "claude's root doc in another valid clone is found first → refused as the wrong clone (exit 4)"
 
-# Pruning must not erase the evidence that an agent is installed: codex has lost its root doc and
-# every other codex link now dangles into the clone, which the pruner removes. The set is read
-# before the prune, so codex is still repaired.
+# A damaged agent is not pruned: codex has lost its root doc and every other codex link dangles
+# into the clone. Those dangling links are all that show codex is installed, so the update must
+# repair codex rather than prune it into `absent`.
 rhome pr --agent claude --agent codex; h="$RH"
 rm -f "$h/.codex/AGENTS.md"
 while IFS="$(printf '\t')" read -r _s _d; do

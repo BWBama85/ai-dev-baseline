@@ -10870,16 +10870,22 @@ survive is the part a later reader needs.
                naming another valid clone (owner decision 2026-10-23). That case is the existing
                two-clone ambiguity; the update keeps refusing it as the wrong clone.
              - A failing exit for `root-doc-foreign`, which `auto` mode would report at every session.
-             - Snapshotting the installed set before pruning and repairing from it. An `uninstall.sh`
-               finishing between the snapshot and the repair would be reinstalled; not pruning the
-               agent removes the need for any snapshot.
+             - Snapshotting the installed set before pruning and repairing from it. It held the
+               agent set across the prune, so an `uninstall.sh` finishing inside that wider window
+               would be reinstalled; not pruning a damaged agent needs no snapshot.
 - review:    the independent review found a dangling root doc passing the harness rung, the legacy
              `scripts/lib` link missed by discovery, pruning erasing a damaged agent's last links,
              and restore advice promising a backup for a symlink; all fixed. Local pass 1 found the
-             snapshot race and the pruning of a foreign agent's links, both fixed by the prune rule.
-- known-gap: An editor that creates the root doc between the update reading the path as empty and
-             `adb_link` creating the link has that file moved under `~/.claude/backups/` — displaced,
-             not lost. Neither the update lock nor the settings lock excludes an editor.
+             snapshot's wider window and the pruning of a foreign agent's links; the prune rule
+             replaced the snapshot. Local pass 2 found an install with no skills, and a directory
+             named SKILL.md, passing the harness rung; both fixed.
+- known-gap: - An editor that creates the root doc between the update reading the path as empty
+               and `adb_link` creating the link has that file moved under `~/.claude/backups/` —
+               displaced, not lost. Neither the update lock nor the settings lock excludes an editor.
+             - `uninstall.sh` does not take the update lock, so an uninstall that finishes after the
+               self-heal chose its agents and before `install.sh` runs is reinstalled. That window
+               predates #539 (the agent set was chosen the same way before it) and is not widened by
+               it; closing it means serializing uninstall with update.
 - placement: `scripts/lib/common.sh` (`adb_agent_install_state`, `adb_agent_root_doc`,
              `adb_occupant_class`, `adb_install_source`'s fallback); `bin/baseline`;
              `uninstall.sh`; `scripts/lib/adopt-readiness.sh` (`_ar_agent_gaps`);

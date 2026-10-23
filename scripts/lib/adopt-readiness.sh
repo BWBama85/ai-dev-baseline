@@ -184,20 +184,20 @@ _ar_primary_ok() {
 
 # What of <agent>'s install from <src> is not in place, as ` <agent>(<what>)` words on stdout —
 # nothing when the whole manifest is. Every destination must be our link into <src> AND resolve
-# (#539), and the payload a run reaches through it must be there: each skill's SKILL.md and
-# scripts/lib/common.sh. A hook a MIXED hook set defers is absent by design (#444) and is skipped
+# (#539), and the payload a run reads through it must be a readable file: the root doc, each
+# skill's SKILL.md and scripts/lib/common.sh — with at least one skill. A hook a MIXED hook set defers is absent by design (#444) and is skipped
 # exactly as `baseline update`'s verifier skips it. Returns 1 when the manifest cannot be read.
 # Usage: _ar_agent_gaps <agent> <src>
 _ar_agent_gaps() {
-  local a="$1" src="$2" manifest st doc tab line from dest deferred="" out=""
+  local a="$1" src="$2" manifest st doc tab line from dest deferred="" out="" skills=0
   manifest="$(adb_agent_manifest "$a" "$src" "$HOME")" || return 1
   if [ -z "$manifest" ]; then printf ' %s(unknown-agent)' "$a"; return 0; fi
   st="$(adb_agent_install_state "$a" "$src" "$HOME")" || return 1
   doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
   case "$st" in
     absent) printf ' %s(not installed)' "$a"; return 0 ;;
-    # The predicate calls a DANGLING root-doc link ours; a run still needs it to resolve.
-    installed) [ -e "$doc" ] || out=" $a(root-doc: does not resolve)" ;;
+    # The predicate calls a DANGLING root-doc link ours; a run still needs a readable file there.
+    installed) [ -f "$doc" ] && [ -r "$doc" ] || out=" $a(root-doc: does not resolve)" ;;
     root-doc-missing) out=" $a(root-doc)" ;;
     root-doc-foreign) out=" $a(root-doc: not the baseline's — $(adb_occupant_class "$doc" "$src"))" ;;
   esac
@@ -210,16 +210,20 @@ _ar_agent_gaps() {
     adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue
     if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then
       out="$out $a(${dest/#$HOME/\~})"
-    elif [ "$from" = "$src/scripts/lib" ] && [ ! -e "$dest/common.sh" ]; then
+    elif [ "$from" = "$src/scripts/lib" ] && ! { [ -f "$dest/common.sh" ] && [ -r "$dest/common.sh" ]; }; then
       out="$out $a(${dest/#$HOME/\~}/common.sh)"
     else
       case "$from" in
-        "$src/agents/$a/skills/"*) [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;
+        "$src/agents/$a/skills/"*)
+          skills=$((skills + 1))
+          [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;
       esac
     fi
   done <<EOF
 $manifest
 EOF
+  # The manifest lists only the skills the clone holds, so a clone with none would pass the loop.
+  [ "$skills" -gt 0 ] || out="$out $a(skills: the clone ships none)"
   printf '%s' "$out"
 }
 
@@ -475,9 +479,9 @@ cmd_probe() {
       # never displaces an occupied root doc, so those two name the installer.
       remedy="run 'baseline update'"
       case "$notin" in *"(not installed)"*)
-        remedy="$remedy; '$src/install.sh --agent <agent>' installs an agent that is not installed" ;; esac
+        remedy="$remedy; $(printf '%q' "$src/install.sh") --agent <agent> installs an agent that is not installed" ;; esac
       case "$notin" in *"not the baseline's"*)
-        remedy="$remedy; '$src/install.sh --agent <agent>' restores a root doc that is not the baseline's (a file or directory there is moved under ~/.claude/backups/; a link there is replaced without keeping its target)" ;; esac
+        remedy="$remedy; $(printf '%q' "$src/install.sh") --agent <agent> restores a root doc that is not the baseline's (a file or directory there is moved under ~/.claude/backups/; a link there is replaced without keeping its target)" ;; esac
       _ar_emit harness todo "installed from $src, but these are not in place:${notin} — $remedy"
     else
       _ar_emit harness ok "installed from $src; every manifest link resolves for: ${agents}"
