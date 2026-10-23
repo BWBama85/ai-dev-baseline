@@ -1219,6 +1219,15 @@ ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
 ln -s "$osrc/agents/claude/CLAUDE.md" "$fhome/.claude/CLAUDE.md"
 eq "$(adb_install_source "$fhome")" "$osrc" "install source: a root doc that identifies a clone wins over the fallback"
 rm -f "$fhome/.claude/CLAUDE.md"
+# A clone whose NAME ends in a newline is refused, never shortened to a sibling's name: every
+# caller captures the answer with `$(…)`, which strips it.
+nlc="$work/nlclone"; mkdir -p "$nlc/agents" "$nlc"$'\n'"/agents" "$nlc"$'\n'"/scripts/lib"
+: > "$nlc/install.sh"; : > "$nlc"$'\n'"/install.sh"
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$nlc"$'\n'"/scripts/lib" "$fhome/.claude/scripts/lib"
+out="$(adb_install_source "$fhome")"; rc=$?
+no "$rc" "install source: a clone whose name ends in a newline is refused"
+eq "$out" "" "install source: ...and never answered with its sibling's name"
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
 # A target ending in a newline is not the clone it would read as without one.
 rm -f "$fhome/.claude/scripts/lib"; ln -s "$fsrc/scripts/lib"$'\n' "$fhome/.claude/scripts/lib"
 adb_install_source "$fhome" >/dev/null 2>&1; no "$?" "install source: a scripts/lib target ending in a newline is not ours"
@@ -3643,6 +3652,11 @@ if [ "${1:-}" = "--mutation" ]; then
     "install state: an unenumerable manifest exits non-zero" \
     '' \
     '/^adb_agent_install_state() {$/,/^}$/s/"\$home")" || return 1$/"$home")" || { printf '"'"'absent\\n'"'"'; return 0; }/'
+  # The resolved clone root is no longer refused for a newline, so `$(…)` names its sibling.
+  mutate install-source-newline-root-accepted \
+    "install source: a clone whose name ends in a newline is refused" \
+    '' \
+    's/^  adb_tsv_field_safe "\$dir" || return 1$/  :/'
   # Discovery loses its scripts/lib fallback: a single-agent install without its root doc is lost.
   mutate install-source-no-fallback \
     "install source: falls back to an agent's scripts/lib link" \

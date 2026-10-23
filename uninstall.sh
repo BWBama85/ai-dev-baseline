@@ -94,14 +94,10 @@ uninstall_claude() {
 _uninstall_claude_locked() {
   local rc=0 manifest ours_settings=0
   adb_info "claude"
-  # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the root-doc link the
-  # answer depends on — a check inside `unwire_settings` would run after that removal and could
-  # never pass. Two clones can each install globally: the second overwrites the first's links and
-  # its receipt, and running the FIRST clone's uninstaller must then leave the second's settings
-  # alone. The link half of that is already true (`adb_unlink_if_ours` refuses a link into another
-  # clone); the settings half read the receipt as proof of ownership and removed keys this clone
-  # no longer owns. Same predicate `bin/baseline` uses to decide an agent is ours (#539): a root doc
-  # that is merely MISSING, with Claude's other links still into this clone, is ours too. (PR review)
+  # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the links the answer
+  # depends on. A second clone's global install owns its own settings, so this clone's uninstaller
+  # removes settings only for an install that is ours — by the predicate `bin/baseline` uses
+  # (D137): a root doc that is MISSING, with Claude's other links still into this clone, is ours.
   # A PREDICATE THAT CANNOT ANSWER IS NOT "ANOTHER CLONE'S": its manifest could not be enumerated,
   # and reading that as "not ours" would leave a legacy record's settings behind under a false
   # reason. Nothing has been removed yet, so stop here.

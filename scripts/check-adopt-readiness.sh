@@ -133,6 +133,7 @@ mkinstall() {
     while IFS="$TAB" read -r s d; do
       [ -n "$s" ] && [ -n "$d" ] || continue
       [ -e "$s" ] || { mkdir -p "$(dirname "$s")"; : > "$s"; }
+      case "$s" in */agents/*/scripts/*) chmod +x "$s" ;; esac   # a hook is executed
       mkdir -p "$(dirname "$d")"; ln -sfn "$s" "$d"
     done <<EOF
 $(adb_agent_manifest "$a" "$src" "$home")
@@ -538,6 +539,20 @@ mv "$fakeinstall/agents/claude/scripts/session-context.sh" "$WORK/saved-hook-src
 out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "claude(~/.claude/scripts/session-context.sh: missing in the clone)" "probe: a hook script missing IN THE CLONE is named as the clone's"
 mv "$WORK/saved-hook-src" "$fakeinstall/agents/claude/scripts/session-context.sh"
+# A hook script is executed, so a non-executable file or a directory in its place is not one.
+chmod -x "$fakeinstall/agents/claude/scripts/session-context.sh"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(~/.claude/scripts/session-context.sh: not an executable file in the clone)" "probe: a NON-EXECUTABLE hook script is todo, not ok"
+chmod +x "$fakeinstall/agents/claude/scripts/session-context.sh"
+mv "$fakeinstall/agents/claude/scripts/session-context.sh" "$WORK/saved-hook-src"; mkdir "$fakeinstall/agents/claude/scripts/session-context.sh"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(~/.claude/scripts/session-context.sh: not an executable file in the clone)" "probe: a DIRECTORY in a hook script's place is todo, not ok"
+rmdir "$fakeinstall/agents/claude/scripts/session-context.sh"; mv "$WORK/saved-hook-src" "$fakeinstall/agents/claude/scripts/session-context.sh"
+# Both the root-doc link AND the clone's own root doc gone: re-linking cannot bring it back.
+mv "$fakehome/.claude/CLAUDE.md" "$WORK/saved-claude-link"; mv "$fakeinstall/agents/claude/CLAUDE.md" "$WORK/saved-claude-src"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(root-doc: missing in the clone)" "probe: a root doc missing from BOTH the home and the clone names the clone"
+mv "$WORK/saved-claude-src" "$fakeinstall/agents/claude/CLAUDE.md"; mv "$WORK/saved-claude-link" "$fakehome/.claude/CLAUDE.md"
 # A hook a MIXED hook set defers is absent by design (#444), and the rung agrees with the updater.
 cp "$ROOT/agents/claude/settings.hooks.json" "$WORK/hooks.json"
 hooks_tpl="$(cat "$WORK/hooks.json")"
@@ -1293,6 +1308,14 @@ shmutant_mut harness-blames-the-link-for-the-clone \
     '    if [ ! -e "$from" ]; then' \
     '    if false; then' \
     'probe: a hook script missing IN THE CLONE is named as the clone'"'"'s'
+shmutant_mut hook-script-existence-is-enough \
+    '          _ar_readable "$dest" && [ -x "$dest" ] || out="$out $a(${dest/#$HOME/\~}: not an executable file in the clone)" ;;' \
+    '          [ -e "$dest" ] || out="$out $a(${dest/#$HOME/\~}: not an executable file in the clone)" ;;' \
+    'probe: a NON-EXECUTABLE hook script is todo, not ok'
+shmutant_mut missing-root-doc-blames-the-link \
+    '  elif [ "$st" = root-doc-missing ] && [ -n "$docfrom" ] && ! _ar_readable "$docfrom"; then' \
+    '  elif false; then' \
+    'probe: a root doc missing from BOTH the home and the clone names the clone'
 shmutant_mut harness-accepts-a-foreign-root-doc \
     '    root-doc-foreign)' \
     '    root-doc-foreign) ;; NEVERMATCHES)' \

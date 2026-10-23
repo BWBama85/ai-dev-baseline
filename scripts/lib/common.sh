@@ -4960,8 +4960,12 @@ _adb_install_root_of() {
   dir="$(dirname "$target")"
   case "$up" in 3) dir="$dir/../../.." ;; 2) dir="$dir/../.." ;; 1) dir="$dir/.." ;; esac
   # Logical `pwd` keeps the answer the same flavor as the recorded link targets, so prefix-matching
-  # them stays stable; callers that compare clones use `-ef`.
-  dir="$(cd "$dir" 2>/dev/null && pwd)" || return 1
+  # them stays stable; callers that compare clones use `-ef`. SENTINEL CAPTURE again, and a root
+  # holding a newline or tab is refused: every caller captures this answer with `$(…)`, which would
+  # strip a trailing newline and name a different directory.
+  dir="$(cd "$dir" 2>/dev/null && pwd && printf x)" || return 1
+  dir="${dir%x}"; dir="${dir%?}"
+  adb_tsv_field_safe "$dir" || return 1
   [ -f "$dir/install.sh" ] && [ -d "$dir/agents" ] || return 1
   printf '%s\n' "$dir"
 }

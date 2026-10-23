@@ -219,18 +219,24 @@ _ar_agent_gaps() {
       case "$from" in
         "$src/agents/$a/skills/"*)
           _ar_readable "$dest/SKILL.md" || out="$out $a(${dest/#$HOME/\~}/SKILL.md: missing or unreadable in the clone)" ;;
+        # A hook script is executed by its settings entry, so it must be an executable file.
+        "$src/agents/$a/scripts/"*)
+          _ar_readable "$dest" && [ -x "$dest" ] || out="$out $a(${dest/#$HOME/\~}: not an executable file in the clone)" ;;
       esac
     fi
   done <<EOF
 $manifest
 EOF
-  # The predicate calls a DANGLING root-doc link ours; a run still needs a readable file there.
+  # The predicate calls a DANGLING root-doc link ours; a run still needs a readable file there. A
+  # root doc the CLONE has lost is named as the clone's whatever the link's state.
   if [ "$st" = installed ] && ! _ar_readable "$doc"; then
     if [ -n "$docfrom" ] && ! _ar_readable "$docfrom"; then
       out=" $a(root-doc: missing or unreadable in the clone)$out"
     else
       out=" $a(root-doc: does not resolve)$out"
     fi
+  elif [ "$st" = root-doc-missing ] && [ -n "$docfrom" ] && ! _ar_readable "$docfrom"; then
+    out="${out/ $a(root-doc)/ $a(root-doc: missing in the clone)}"
   fi
   # The manifest lists only the skills the clone holds, so a clone with none would pass the loop.
   [ "$skills" -gt 0 ] || out="$out $a(skills: the clone ships none)"

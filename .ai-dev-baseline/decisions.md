@@ -10878,7 +10878,10 @@ survive is the part a later reader needs.
              and restore advice promising a backup for a symlink; all fixed. Local pass 1 found the
              snapshot's wider window and the pruning of a foreign agent's links; the prune rule
              replaced the snapshot. Local pass 2 found an install with no skills, and a directory
-             named SKILL.md, passing the harness rung; both fixed.
+             named SKILL.md, passing the harness rung; both fixed. Passes 3 to 5 (4 and 5 by owner
+             decision, past the 3-pass budget) found a stale mutation literal, a remedy that could
+             not fix a file the clone itself lost, a hook script that was not executable passing
+             the rung, and a clone name ending in a newline read as its sibling; all fixed.
 - known-gap: - An editor that creates the root doc between the update reading the path as empty
                and `adb_link` creating the link has that file moved under `~/.claude/backups/` —
                displaced, not lost. Neither the update lock nor the settings lock excludes an editor.
