@@ -189,43 +189,56 @@ _ar_primary_ok() {
 # exactly as `baseline update`'s verifier skips it. Returns 1 when the manifest cannot be read.
 # Usage: _ar_agent_gaps <agent> <src>
 _ar_agent_gaps() {
-  local a="$1" src="$2" manifest st doc tab line from dest deferred="" out="" skills=0
+  local a="$1" src="$2" manifest st doc docfrom="" tab line from dest deferred="" out="" skills=0
   manifest="$(adb_agent_manifest "$a" "$src" "$HOME")" || return 1
   if [ -z "$manifest" ]; then printf ' %s(unknown-agent)' "$a"; return 0; fi
   st="$(adb_agent_install_state "$a" "$src" "$HOME")" || return 1
   doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
   case "$st" in
     absent) printf ' %s(not installed)' "$a"; return 0 ;;
-    # The predicate calls a DANGLING root-doc link ours; a run still needs a readable file there.
-    installed) [ -f "$doc" ] && [ -r "$doc" ] || out=" $a(root-doc: does not resolve)" ;;
     root-doc-missing) out=" $a(root-doc)" ;;
     root-doc-foreign) out=" $a(root-doc: not the baseline's — $(adb_occupant_class "$doc" "$src"))" ;;
   esac
   [ "$a" = claude ] && deferred="$(adb_claude_hooks_deferred "$HOME/.claude/settings.json" "$src" "$HOME")"
   tab="$(printf '\t')"
+  # A gap the CLONE causes — its own file missing or unreadable — says `in the clone`: re-linking
+  # cannot repair it, and the remedy must say so.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     from="${line%%"$tab"*}"; dest="${line#*"$tab"}"
-    [ "$dest" = "$doc" ] && continue   # judged above
+    if [ "$dest" = "$doc" ]; then docfrom="$from"; continue; fi
     case "$from" in "$src/agents/$a/skills/"*) skills=$((skills + 1)) ;; esac
     adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue
-    if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then
+    if [ ! -e "$from" ]; then
+      out="$out $a(${dest/#$HOME/\~}: missing in the clone)"
+    elif ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then
       out="$out $a(${dest/#$HOME/\~})"
-    elif [ "$from" = "$src/scripts/lib" ] && ! { [ -f "$dest/common.sh" ] && [ -r "$dest/common.sh" ]; }; then
-      out="$out $a(${dest/#$HOME/\~}/common.sh)"
+    elif [ "$from" = "$src/scripts/lib" ] && ! _ar_readable "$dest/common.sh"; then
+      out="$out $a(${dest/#$HOME/\~}/common.sh: missing or unreadable in the clone)"
     else
       case "$from" in
         "$src/agents/$a/skills/"*)
-          [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;
+          _ar_readable "$dest/SKILL.md" || out="$out $a(${dest/#$HOME/\~}/SKILL.md: missing or unreadable in the clone)" ;;
       esac
     fi
   done <<EOF
 $manifest
 EOF
+  # The predicate calls a DANGLING root-doc link ours; a run still needs a readable file there.
+  if [ "$st" = installed ] && ! _ar_readable "$doc"; then
+    if [ -n "$docfrom" ] && ! _ar_readable "$docfrom"; then
+      out=" $a(root-doc: missing or unreadable in the clone)$out"
+    else
+      out=" $a(root-doc: does not resolve)$out"
+    fi
+  fi
   # The manifest lists only the skills the clone holds, so a clone with none would pass the loop.
   [ "$skills" -gt 0 ] || out="$out $a(skills: the clone ships none)"
   printf '%s' "$out"
 }
+
+# True iff <path> is a file this process can read — what a consumer of the payload needs.
+_ar_readable() { [ -f "$1" ] && [ -r "$1" ]; }
 
 # --- emit one rung record ------------------------------------------------------------------------
 # `<rung>TAB<status>TAB<detail>`. A detail is free text for a human and is never parsed; it is
@@ -478,6 +491,8 @@ cmd_probe() {
       # `baseline update` re-links what an installed agent lost; it never installs an agent and
       # never displaces an occupied root doc, so those two name the installer.
       remedy="run 'baseline update'"
+      case "$notin" in *"in the clone)"*|*"the clone ships none)"*)
+        remedy="$remedy; restore what is missing or unreadable in the clone itself — git -C $(printf '%q' "$src") status names it — because 'baseline update' re-links but never repairs the clone's own files" ;; esac
       case "$notin" in *"(not installed)"*)
         remedy="$remedy; $(printf '%q' "$src/install.sh") --agent <agent> installs an agent that is not installed" ;; esac
       case "$notin" in *"not the baseline's"*)

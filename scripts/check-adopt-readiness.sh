@@ -491,7 +491,8 @@ has "$out" "run 'baseline update'" "probe: a missing root doc names baseline upd
 mv "$WORK/saved-agents-md" "$fakehome/.codex/AGENTS.md"
 mv "$fakeinstall/agents/codex/AGENTS.md" "$WORK/saved-agents-src"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
-has "$out" "codex(root-doc: does not resolve)" "probe: a DANGLING root-doc link is todo, not ok"
+has "$out" "codex(root-doc: missing or unreadable in the clone)" "probe: a DANGLING root-doc link is todo, not ok"
+has "$out" "never repairs the clone's own files" "probe: ...and a file missing in the clone names the clone as the repair"
 mv "$WORK/saved-agents-src" "$fakeinstall/agents/codex/AGENTS.md"
 mv "$fakehome/.codex/AGENTS.md" "$WORK/saved-agents-md"
 # A user's OWN file at the root doc is not the baseline's root doc, however present it is.
@@ -525,16 +526,23 @@ mv "$WORK/saved-skill-md" "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
 mv "$fakeinstall/agents/claude/skills/adopt/SKILL.md" "$WORK/saved-skill-md"
 mkdir "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
-has "$out" "claude(~/.claude/skills/adopt/SKILL.md)" "probe: a DIRECTORY named SKILL.md is not a skill"
+has "$out" "claude(~/.claude/skills/adopt/SKILL.md: missing or unreadable in the clone)" "probe: a DIRECTORY named SKILL.md is not a skill"
 rmdir "$fakeinstall/agents/claude/skills/adopt/SKILL.md"; mv "$WORK/saved-skill-md" "$fakeinstall/agents/claude/skills/adopt/SKILL.md"
 # A clone that ships no skills has none in its manifest, so no row could fail on their absence.
 mv "$fakeinstall/agents/claude/skills/adopt" "$WORK/saved-skill-src"; rm -f "$fakehome/.claude/skills/adopt"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "claude(skills: the clone ships none)" "probe: an install with NO skills at all is todo, not ok"
 mv "$WORK/saved-skill-src" "$fakeinstall/agents/claude/skills/adopt"; ln -s "$fakeinstall/agents/claude/skills/adopt" "$fakehome/.claude/skills/adopt"
+# A file the CLONE lost is named as the clone's, because re-linking cannot bring it back.
+mv "$fakeinstall/agents/claude/scripts/session-context.sh" "$WORK/saved-hook-src"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "claude(~/.claude/scripts/session-context.sh: missing in the clone)" "probe: a hook script missing IN THE CLONE is named as the clone's"
+mv "$WORK/saved-hook-src" "$fakeinstall/agents/claude/scripts/session-context.sh"
 # A hook a MIXED hook set defers is absent by design (#444), and the rung agrees with the updater.
 cp "$ROOT/agents/claude/settings.hooks.json" "$WORK/hooks.json"
-printf '{"hooks":%s}\n' "$(sed "s@__ADB_HOME__@$fakehome@g" "$WORK/hooks.json")" \
+hooks_tpl="$(cat "$WORK/hooks.json")"
+# Quoted replacement: bash 5.2+ reads an unquoted `&` there as the match (patsub_replacement).
+printf '{"hooks":%s}\n' "${hooks_tpl//__ADB_HOME__/"$fakehome"}" \
   | jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | (endswith("/precommit-gate.sh") or endswith("/session-context.sh")) | not))) | map(select(.hooks | length > 0))))' \
   > "$fakehome/.claude/settings.json"
 grep -vx 'session-context.sh' <<EOF > "$(adb_claude_hooks_receipt "$fakehome")"
@@ -1278,20 +1286,24 @@ shmutant_mut harness-ignores-a-missing-root-doc \
     '    root-doc-missing) : ;;' \
     'probe: an agent home with no root doc is todo, not ok'
 shmutant_mut harness-accepts-a-dangling-root-doc \
-    '    installed) [ -f "$doc" ] && [ -r "$doc" ] || out=" $a(root-doc: does not resolve)" ;;' \
-    '    installed) : ;;' \
+    '  if [ "$st" = installed ] && ! _ar_readable "$doc"; then' \
+    '  if false; then' \
     'probe: a DANGLING root-doc link is todo, not ok'
+shmutant_mut harness-blames-the-link-for-the-clone \
+    '    if [ ! -e "$from" ]; then' \
+    '    if false; then' \
+    'probe: a hook script missing IN THE CLONE is named as the clone'"'"'s'
 shmutant_mut harness-accepts-a-foreign-root-doc \
     '    root-doc-foreign)' \
     '    root-doc-foreign) ;; NEVERMATCHES)' \
     "probe: a user's own file at the root doc is todo, not ok"
 shmutant_mut harness-drops-the-ownership-test \
-    '    if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
-    '    if [ ! -e "$dest" ]; then' \
+    '    elif ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
+    '    elif [ ! -e "$dest" ]; then' \
     'probe: a real directory at a skill path is not our link'
 shmutant_mut harness-drops-the-resolve-test \
-    '    if ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
-    '    if ! adb_link_into "$dest" "$src"; then' \
+    '    elif ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
+    '    elif ! adb_link_into "$dest" "$src"; then' \
     'probe: a DANGLING link into the source is not in place'
 shmutant_mut harness-reports-deferred-hooks \
     '    adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue' \
@@ -1330,12 +1342,12 @@ shmutant_mut probe-does-not-resolve-the-root \
     '  :' \
     'probe: running from a SUBDIRECTORY still reads the project root'
 shmutant_mut skills-dir-presence-is-enough \
-    '          [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
+    '          _ar_readable "$dest/SKILL.md" || out="$out $a(${dest/#$HOME/\~}/SKILL.md: missing or unreadable in the clone)" ;;' \
     '          : ;;' \
     'probe: EMPTY skills/scripts dirs must not satisfy the harness rung'
 shmutant_mut skill-md-existence-is-enough \
-    '          [ -f "$dest/SKILL.md" ] && [ -r "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
-    '          [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md)" ;;' \
+    '          _ar_readable "$dest/SKILL.md" || out="$out $a(${dest/#$HOME/\~}/SKILL.md: missing or unreadable in the clone)" ;;' \
+    '          [ -e "$dest/SKILL.md" ] || out="$out $a(${dest/#$HOME/\~}/SKILL.md: missing or unreadable in the clone)" ;;' \
     'probe: a DIRECTORY named SKILL.md is not a skill'
 shmutant_mut no-skills-is-enough \
     '  [ "$skills" -gt 0 ] || out="$out $a(skills: the clone ships none)"' \
