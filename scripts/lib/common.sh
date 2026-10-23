@@ -4945,8 +4945,9 @@ adb_pool_size() {
 adb_link_into() { [ -L "$1" ] && case "$(readlink "$1")" in "$2"/*) return 0 ;; esac; return 1; }
 
 # The clone a link of the global install points into, on stdout: <link>'s absolute target, walked
-# <up> directories above its parent (agents/<agent>/<DOC> → 2, scripts/lib → 1), accepted only
-# when that directory holds install.sh and agents/. Returns 1 for anything else.
+# <up> directories above its parent (agents/<agent>/<DOC> → 2, scripts/lib → 1,
+# agents/<agent>/scripts/lib → 3), accepted only when that directory holds install.sh and agents/.
+# Returns 1 for anything else.
 # Usage: _adb_install_root_of <link> <up> [required-target-suffix]
 _adb_install_root_of() {
   local link="$1" up="$2" suffix="${3:-}" target dir
@@ -4957,7 +4958,7 @@ _adb_install_root_of() {
   case "$target" in /*) ;; *) return 1 ;; esac   # install.sh records absolute targets
   if [ -n "$suffix" ]; then case "$target" in *"$suffix") ;; *) return 1 ;; esac; fi
   dir="$(dirname "$target")"
-  case "$up" in 2) dir="$dir/../.." ;; 1) dir="$dir/.." ;; esac
+  case "$up" in 3) dir="$dir/../../.." ;; 2) dir="$dir/../.." ;; 1) dir="$dir/.." ;; esac
   # Logical `pwd` keeps the answer the same flavor as the recorded link targets, so prefix-matching
   # them stays stable; callers that compare clones use `-ef`.
   dir="$(cd "$dir" 2>/dev/null && pwd)" || return 1
@@ -4978,12 +4979,15 @@ _adb_install_root_of() {
 # Shared (not private to bin/baseline) because the SessionStart currency hook must resolve the
 # SAME clone by the SAME rule. Usage: adb_install_source [home]   (home defaults to $HOME)
 adb_install_source() {
-  local home="${1:-$HOME}" link
+  local home="${1:-$HOME}" link a
   for link in "$home/.claude/CLAUDE.md" "$home/.codex/AGENTS.md" "$home/.gemini/GEMINI.md"; do
     _adb_install_root_of "$link" 2 && return 0
   done
-  for link in "$home/.claude/scripts/lib" "$home/.codex/scripts/lib" "$home/.gemini/scripts/lib"; do
+  for a in claude codex gemini; do
+    link="$home/.$a/scripts/lib"
     _adb_install_root_of "$link" 1 /scripts/lib && return 0
+    # An install made before the library moved points at the agent-tree compatibility link.
+    _adb_install_root_of "$link" 3 "/agents/$a/scripts/lib" && return 0
   done
   return 1
 }

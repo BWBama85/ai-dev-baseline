@@ -724,7 +724,8 @@ cause of lost work:
   - **something else** (your own file, a directory, a link outside the clone) — never touched
     by an update. It prints a `NOTE` naming what kind of thing is there, without changing the
     exit code, and that agent's other links are left as they are. `./install.sh --agent <agent>`
-    puts the baseline's root doc back (moving yours under `~/.claude/backups/`), and
+    puts the baseline's root doc back — a file or directory there is moved under
+    `~/.claude/backups/`, but a symlink there is replaced without keeping where it pointed — and
     `./uninstall.sh --agent <agent>` removes the rest. Those two are the ways to opt out of the
     root doc; deleting it is not, because the next update re-links it.
 

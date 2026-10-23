@@ -712,6 +712,7 @@ eq "$RRC" "0" "a regular file at the root doc → the exit code is unchanged (0)
 cmp -s "$h/.claude/CLAUDE.md" "$work/rf-copy" && [ ! -L "$h/.claude/CLAUDE.md" ] && ok || bad "a regular file at the root doc → left byte-identical"
 eq "$(backups "$h")" "$b0" "a regular file at the root doc → no backup directory is created"
 has "$RERR" "NOTE — ~/.claude/CLAUDE.md is not the baseline's root doc (a regular file)" "a regular file at the root doc → the NOTE names its class"
+has "$RERR" "restores it (what is there now is moved under ~/.claude/backups/)" "a regular file at the root doc → the NOTE says the installer would back it up"
 hasnt "$RERR" "re-linked" "a regular file at the root doc → nothing is re-linked"
 
 rhome fl --agent claude --agent codex; h="$RH"
@@ -722,6 +723,37 @@ eq "$RRC" "0" "a link outside the clone at the root doc → the exit code is unc
 eq "$(readlink "$h/.claude/CLAUDE.md")" "$work/not-a-clone/CLAUDE.md" "a link outside the clone → left pointing where it pointed"
 has "$RERR" "(a link outside $rsrc)" "a link outside the clone → the NOTE names its class"
 hasnt "$RERR" "not-a-clone" "a link outside the clone → the NOTE never prints the link's target"
+has "$RERR" "the link is replaced, and where it pointed is not kept" "a link outside the clone → the NOTE promises no backup the installer does not make"
+
+# A root doc linked into ANOTHER VALID clone. When an earlier root doc names this clone, discovery
+# keeps it and the other agent is reported, not re-installed. When the foreign one is found first,
+# the update refuses as the wrong clone, exactly as before (owner decision, D137).
+oclone="$work/other-clone"; mkdir -p "$oclone/agents/claude" "$oclone/agents/codex"; : > "$oclone/install.sh"
+rhome oc --agent claude --agent codex; h="$RH"
+rm -f "$h/.codex/AGENTS.md"; ln -s "$oclone/agents/codex/AGENTS.md" "$h/.codex/AGENTS.md"
+rupdate "$h"
+eq "$RRC" "0" "codex's root doc in another clone, claude's ours → the update runs for this clone (exit 0)"
+has "$RERR" "NOTE — ~/.codex/AGENTS.md is not the baseline's root doc (a link outside $rsrc)" "...and reports codex's root doc by class"
+eq "$(readlink "$h/.codex/AGENTS.md")" "$oclone/agents/codex/AGENTS.md" "...and leaves it pointing at the other clone"
+rm -f "$h/.claude/CLAUDE.md"; ln -s "$oclone/agents/claude/CLAUDE.md" "$h/.claude/CLAUDE.md"
+rupdate "$h"
+eq "$RRC" "4" "claude's root doc in another valid clone is found first → refused as the wrong clone (exit 4)"
+
+# Pruning must not erase the evidence that an agent is installed: codex has lost its root doc and
+# every other codex link now dangles into the clone, which the pruner removes. The set is read
+# before the prune, so codex is still repaired.
+rhome pr --agent claude --agent codex; h="$RH"
+rm -f "$h/.codex/AGENTS.md"
+while IFS="$(printf '\t')" read -r _s _d; do
+  [ "$_d" = "$h/.codex/AGENTS.md" ] && continue
+  rm -rf "$_d"; ln -s "$rsrc/gone-${_d##*/}" "$_d"
+done <<EOF
+$(adb_agent_manifest codex "$rsrc" "$h")
+EOF
+rupdate "$h"
+eq "$RRC" "6" "codex links all dangling + root doc missing → still repaired after the prune (exit 6)"
+resolves "$h/.codex/AGENTS.md" && ok || bad "pruned codex → its root doc is re-linked"
+resolves "$h/.codex/scripts/lib" && ok || bad "pruned codex → its scripts/lib is re-linked"
 
 # The owner's Gemini shape: a regular GEMINI.md and no Gemini links at all is `absent` — untouched
 # and silent.

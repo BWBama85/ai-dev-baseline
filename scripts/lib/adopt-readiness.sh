@@ -193,15 +193,15 @@ _ar_agent_gaps() {
   manifest="$(adb_agent_manifest "$a" "$src" "$HOME")" || return 1
   if [ -z "$manifest" ]; then printf ' %s(unknown-agent)' "$a"; return 0; fi
   st="$(adb_agent_install_state "$a" "$src" "$HOME")" || return 1
+  doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
   case "$st" in
     absent) printf ' %s(not installed)' "$a"; return 0 ;;
+    # The predicate calls a DANGLING root-doc link ours; a run still needs it to resolve.
+    installed) [ -e "$doc" ] || out=" $a(root-doc: does not resolve)" ;;
     root-doc-missing) out=" $a(root-doc)" ;;
-    root-doc-foreign)
-      doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
-      out=" $a(root-doc: not the baseline's — $(adb_occupant_class "$doc" "$src"))" ;;
+    root-doc-foreign) out=" $a(root-doc: not the baseline's — $(adb_occupant_class "$doc" "$src"))" ;;
   esac
   [ "$a" = claude ] && deferred="$(adb_claude_hooks_deferred "$HOME/.claude/settings.json" "$src" "$HOME")"
-  doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || return 1
   tab="$(printf '\t')"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -448,10 +448,8 @@ cmd_probe() {
   # `shipped` uses the same reader). An absent install is not an unknown: it is a definite,
   # actionable no — run install.sh.
   #
-  # IT CHECKS THE AGENT'S WHOLE MANIFEST (#539, `_ar_agent_gaps`): every destination must be our
-  # link into the source and resolve. Asking whether a path merely EXISTS passed a user's own
-  # CLAUDE.md as the root doc — which does not carry the practices — and asking `find` for a
-  # SKILL.md without `-L` failed every real install, whose skill directories are symlinks.
+  # IT CHECKS THE AGENT'S WHOLE MANIFEST (`_ar_agent_gaps`, D137): every destination must be our
+  # link into the source and resolve. A path that merely exists proves nothing about whose it is.
   # ARGUMENT VALIDATION IS UNCONDITIONAL, and it was not. This loop used to live INSIDE the
   # `if adb_install_source` branch below, so on any machine with no baseline install — which is
   # every CI runner, and every first run on a new workstation — an invalid or traversal `--agents`
@@ -479,7 +477,7 @@ cmd_probe() {
       case "$notin" in *"(not installed)"*)
         remedy="$remedy; './install.sh --agent <agent>' installs an agent that is not installed" ;; esac
       case "$notin" in *"not the baseline's"*)
-        remedy="$remedy; './install.sh --agent <agent>' restores a root doc that is not the baseline's (your file is moved under ~/.claude/backups/)" ;; esac
+        remedy="$remedy; './install.sh --agent <agent>' restores a root doc that is not the baseline's (a file or directory there is moved under ~/.claude/backups/; a link there is replaced without keeping its target)" ;; esac
       _ar_emit harness todo "installed from $src, but these are not in place:${notin} — $remedy"
     else
       _ar_emit harness ok "installed from $src; every manifest link resolves for: ${agents}"

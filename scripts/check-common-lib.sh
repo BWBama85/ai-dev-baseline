@@ -1208,6 +1208,11 @@ eq "$(adb_install_source "$fhome")" "$fsrc" "install source: ...for Gemini alone
 rm -f "$fhome/.gemini/scripts/lib"; ln -s "$fsrc/scripts" "$fhome/.claude/scripts/lib"
 adb_install_source "$fhome" >/dev/null 2>&1; no "$?" "install source: a scripts/lib link that does not name <clone>/scripts/lib is not ours"
 rm -f "$fhome/.claude/scripts/lib"
+# An install made before the library moved still points at the agent-tree compatibility link.
+mkdir -p "$fsrc/agents/claude/scripts"; ln -s ../../../scripts/lib "$fsrc/agents/claude/scripts/lib"
+ln -s "$fsrc/agents/claude/scripts/lib" "$fhome/.claude/scripts/lib"
+eq "$(adb_install_source "$fhome")" "$fsrc" "install source: ...through the legacy agents/<agent>/scripts/lib link too"
+rm -f "$fhome/.claude/scripts/lib"
 # Root docs keep precedence over the fallback, so every answer they gave before is unchanged.
 osrc="$work/osrc"; mkdir -p "$osrc/agents/claude"; printf '#!/usr/bin/env bash\n' > "$osrc/install.sh"
 ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
@@ -3642,7 +3647,7 @@ if [ "${1:-}" = "--mutation" ]; then
   mutate install-source-no-fallback \
     "install source: falls back to an agent's scripts/lib link" \
     '_adb_install_root_of "$link" 1 /scripts/lib && return 0' \
-    's/^    _adb_install_root_of "\$link" 1 \/scripts\/lib && return 0$/    :/'
+    's/^    _adb_install_root_of "\$link" 1 \/scripts\/lib && return 0$/    :/; s/^    _adb_install_root_of "\$link" 3 "\/agents\/\$a\/scripts\/lib" && return 0$/    :/'
 
   # --- run them, bounded ------------------------------------------------------------------------
   # `adb_pool_size` is the one home for the width (scripts/lib/common.sh): min(cpu, 8), so it

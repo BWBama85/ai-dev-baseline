@@ -125,8 +125,6 @@ SUITE_INSTALL="$WORK/suite-install"
 # mkinstall <src> <home> <agent>… — a synthetic install SHAPED LIKE install.sh's: every row of each
 # agent's manifest (adb_agent_manifest, the installer's own enumeration) is a symlink into <src>,
 # skill directories and scripts/lib included, with any source the skeleton lacks created empty.
-# Real directories at those paths were the old fixtures' shape, and they hid that the harness rung
-# failed every real install (#539).
 mkinstall() {
   local src="$1" home="$2" a s d; shift 2
   mkdir -p "$src/scripts/lib" "$home"; : > "$src/install.sh"; : > "$src/scripts/lib/common.sh"
@@ -489,6 +487,13 @@ case "$out" in
 esac
 has "$out" "codex(root-doc)" "probe: the harness rung names WHICH artifact is missing"
 has "$out" "run 'baseline update'" "probe: a missing root doc names baseline update as the repair"
+# Our root-doc link whose target is gone is ours, but nothing loads through it.
+mv "$WORK/saved-agents-md" "$fakehome/.codex/AGENTS.md"
+mv "$fakeinstall/agents/codex/AGENTS.md" "$WORK/saved-agents-src"
+out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
+has "$out" "codex(root-doc: does not resolve)" "probe: a DANGLING root-doc link is todo, not ok"
+mv "$WORK/saved-agents-src" "$fakeinstall/agents/codex/AGENTS.md"
+mv "$fakehome/.codex/AGENTS.md" "$WORK/saved-agents-md"
 # A user's OWN file at the root doc is not the baseline's root doc, however present it is.
 printf 'my rules\n' > "$fakehome/.codex/AGENTS.md"
 out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
@@ -1260,6 +1265,10 @@ shmutant_mut harness-ignores-a-missing-root-doc \
     '    root-doc-missing) out=" $a(root-doc)" ;;' \
     '    root-doc-missing) : ;;' \
     'probe: an agent home with no root doc is todo, not ok'
+shmutant_mut harness-accepts-a-dangling-root-doc \
+    '    installed) [ -e "$doc" ] || out=" $a(root-doc: does not resolve)" ;;' \
+    '    installed) : ;;' \
+    'probe: a DANGLING root-doc link is todo, not ok'
 shmutant_mut harness-accepts-a-foreign-root-doc \
     '    root-doc-foreign)' \
     '    root-doc-foreign) ;; NEVERMATCHES)' \
