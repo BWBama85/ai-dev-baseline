@@ -1745,9 +1745,7 @@ if mutate_line "$FXHOLD2/scripts/selfcheck.sh" \
 fi
 
 # --- 10.6 the grace lets a worker's own cleanup finish (#551) --------------------------------
-# The runner used to give its workers a fixed 1s between TERM and KILL, so a harness whose own TERM
-# cleanup took longer was KILLed in the middle of it — which is how a vendored-shmutant shell is KILLed
-# between freezing a tree and killing it, leaving that tree stopped for good (BWBama85/shmutant#47).
+# A worker's own TERM cleanup must finish inside the grace, never be KILLed partway through (D135).
 # Each worker here takes 1.5s to clean up and marks the end of it. A 6s grace must let all four
 # finish — and costs only those 1.5s, since the KILL waits for the groups to be gone, not for the
 # grace; KILLing at 1s, or not waiting at all, leaves the marks missing.

@@ -9566,6 +9566,16 @@ survive is the part a later reader needs.
              metadata can still pass unseen. Nothing this repo calls changed — `shmutant_pool`, the
              `SHMUTANT_ROWS_*` table, the field encoder and the verdict stream are as pinned — so
              `check_shmutant_pool` and the ported rows take no edit.
+- amended:   2026-10-24. The vendored copy moves to shmutant `v0.3.0` (tag commit `20a2683`,
+             SHA-256 `adeea0dc…1afe50`, matching that release's `CHECKSUMS`). Read live on
+             2026-10-24: BWBama85/shmutant#29 (above), #45 and #47 are CLOSED, completed — #29 and
+             #47 by upstream PR #50, #45 by #56. The changed code is shmutant's own kill, freeze and
+             target-fingerprint internals; the one visible change is the `unsettled` verdict's
+             detail text, which now also covers a run that could not be frozen first, and nothing
+             here matches that text. Nothing this repo calls changed, so `check_shmutant_pool` and
+             the ported rows take no edit. Upstream `main` already carries two further freeze-guard
+             fixes past the tag (#66, #67); they are not vendored, because this repo pins releases
+             only, and arrive with the next one.
 
 ## D126 — #456: no mutation harness runs per pull request; they run nightly, by dispatch and by label
 - date:      2026-10-10
@@ -10756,6 +10766,11 @@ survive is the part a later reader needs.
              §12.2b to it in 7 and 6 of 85 mutants, and in the second it hid
              `stop-keeps-no-incomplete`'s witness. §12.12 now places its directory under the temp
              root, and checks that the same ambiguity outside all three is not refused.
+- amended:   2026-10-24. "shmutant's freeze-then-kill gap is upstream (BWBama85/shmutant#47)"
+             above is closed by the v0.3.0 pin (D125's 2026-10-24 amendment): a freezing shell
+             KILLed before its own KILL no longer leaves the tree stopped. The stop is unchanged and
+             still sweeps stopped processes the run owns; `CLAUDE.md`, `CONTRIBUTING.md` and the
+             grace's comment in `selfcheck.sh` no longer cite #47 as a reason for it.
 
 ## D136 — #567: the pinned-install suite runs in a home of its own, and proves it wrote nothing to the real one
 - date:      2026-10-21

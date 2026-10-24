@@ -586,9 +586,10 @@ shm() {   # <name> <rows> [ENV=val...] — sets $out and $rc
   # The stream lands beside the workdir, and shmutant requires that directory to exist already.
   mkdir -p "$work/shm-$nm"
   # `-u ADB_MUTATION_ARTIFACTS`: selfcheck-macos exports it to the whole suite, and a fixture that
-  # inherited it would run its pool somewhere other than the path it asserts on. A case that wants
-  # the evidence directory passes it explicitly, after this.
-  out="$(env -u ADB_MUTATION_ARTIFACTS ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
+  # inherited it would run its pool somewhere other than the path it asserts on. `-u
+  # ADB_MUTATION_ROW_TIMEOUT_SECS`: an operator's raised row deadline would replace the default the
+  # cases below assert. A case that wants either passes it explicitly, after this.
+  out="$(env -u ADB_MUTATION_ARTIFACTS -u ADB_MUTATION_ROW_TIMEOUT_SECS ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
            ADB_T_WD="$work/shm-$nm/pool" ADB_T_PREP_LOG="$work/prep-$nm.log" ADB_T_SEEN="$work/seen-$nm" \
            "$@" "$BASH" "$work/shm-driver.sh" 2>&1)"; rc=$?
 }
