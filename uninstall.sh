@@ -94,15 +94,20 @@ uninstall_claude() {
 _uninstall_claude_locked() {
   local rc=0 manifest ours_settings=0
   adb_info "claude"
-  # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the root-doc link the
-  # answer depends on — a check inside `unwire_settings` would run after that removal and could
-  # never pass. Two clones can each install globally: the second overwrites the first's links and
-  # its receipt, and running the FIRST clone's uninstaller must then leave the second's settings
-  # alone. The link half of that is already true (`adb_unlink_if_ours` refuses a link into another
-  # clone); the settings half read the receipt as proof of ownership and removed keys this clone
-  # no longer owns. Same predicate `bin/baseline` uses to decide a root doc "is not ours to
-  # re-wire". (PR review)
-  adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO" && ours_settings=1
+  # WHOSE INSTALL IS THIS? Asked HERE, before `adb_unlink_manifest` removes the links the answer
+  # depends on. A second clone's global install owns its own settings, so this clone's uninstaller
+  # removes settings only for an install that is ours — by the predicate `bin/baseline` uses
+  # (D137): a root doc that is MISSING, with Claude's other links still into this clone, is ours.
+  # A PREDICATE THAT CANNOT ANSWER IS NOT "ANOTHER CLONE'S": its manifest could not be enumerated,
+  # and reading that as "not ours" would leave a legacy record's settings behind under a false
+  # reason. Nothing has been removed yet, so stop here.
+  local _st
+  if ! _st="$(adb_agent_install_state claude "$REPO" "$HOME")"; then
+    adb_info "  ERROR  cannot tell whether ~/.claude is installed from this clone: its install manifest"
+    adb_info "         could not be enumerated (see above). NOTHING was unlinked."
+    return 1   # ownership-unanswerable
+  fi
+  case "$_st" in installed|root-doc-missing) ours_settings=1 ;; esac
   # A LEGACY RECEIPT'S ONLY PROOF IS THE LINK, AND THE LINK IS ABOUT TO GO. `adb_unlink_manifest`
   # runs before `unwire_settings`, so a receipt with no `source` row whose cleanup then fails in a
   # retryable way (no jq, a momentarily invalid settings.json) is left with no durable provenance at

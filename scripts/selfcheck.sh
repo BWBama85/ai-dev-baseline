@@ -722,7 +722,7 @@ add adopt-readiness     bash scripts/check-adopt-readiness.sh
 # count that grepped a display string, and a jq filter whose failure was swallowed into "every
 # milestone is dispositioned").
 add adopt-readiness-mutation bash scripts/check-adopt-readiness.sh --mutation
-inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/adopt-lib.sh scripts/lib/project-gates.sh scripts/lib/role-dispatch.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh base/workflows/adopt.md bin/baseline
+inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/adopt-lib.sh scripts/lib/project-gates.sh scripts/lib/role-dispatch.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh base/workflows/adopt.md bin/baseline agents/claude/settings.hooks.json
 
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness

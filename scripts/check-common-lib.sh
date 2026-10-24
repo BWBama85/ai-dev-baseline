@@ -1193,6 +1193,75 @@ adb_link_into "$ihome/.claude/CLAUDE.md" "$work/elsewhere"; no "$?" "link_into: 
 printf 'real\n' > "$ihome/.claude/realfile"
 adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file is never ours"
 
+# --- adb_install_source's scripts/lib fallback + adb_agent_install_state (#539) -------------------
+# A single-agent install that lost its root doc still has its `scripts/lib` link; discovery must
+# find the clone through it, and only when no root doc identifies one.
+fsrc="$work/fsrc"; mkdir -p "$fsrc/agents/claude/skills/demo" "$fsrc/agents/codex/skills" "$fsrc/agents/gemini/skills" "$fsrc/scripts/lib"
+printf '#!/usr/bin/env bash\n' > "$fsrc/install.sh"
+printf 'doc\n' > "$fsrc/agents/claude/CLAUDE.md"; printf 'doc\n' > "$fsrc/agents/codex/AGENTS.md"; printf 'doc\n' > "$fsrc/agents/gemini/GEMINI.md"
+printf 'skill\n' > "$fsrc/agents/claude/skills/demo/SKILL.md"
+fhome="$work/fhome"; mkdir -p "$fhome/.claude/skills" "$fhome/.claude/scripts" "$fhome/.gemini/scripts"
+ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
+eq "$(adb_install_source "$fhome")" "$fsrc" "install source: falls back to an agent's scripts/lib link"
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$fsrc/scripts/lib" "$fhome/.gemini/scripts/lib"
+eq "$(adb_install_source "$fhome")" "$fsrc" "install source: ...for Gemini alone too"
+rm -f "$fhome/.gemini/scripts/lib"; ln -s "$fsrc/scripts" "$fhome/.claude/scripts/lib"
+adb_install_source "$fhome" >/dev/null 2>&1; no "$?" "install source: a scripts/lib link that does not name <clone>/scripts/lib is not ours"
+rm -f "$fhome/.claude/scripts/lib"
+# An install made before the library moved still points at the agent-tree compatibility link.
+mkdir -p "$fsrc/agents/claude/scripts"; ln -s ../../../scripts/lib "$fsrc/agents/claude/scripts/lib"
+ln -s "$fsrc/agents/claude/scripts/lib" "$fhome/.claude/scripts/lib"
+eq "$(adb_install_source "$fhome")" "$fsrc" "install source: ...through the legacy agents/<agent>/scripts/lib link too"
+rm -f "$fhome/.claude/scripts/lib"
+# Root docs keep precedence over the fallback, so every answer they gave before is unchanged.
+osrc="$work/osrc"; mkdir -p "$osrc/agents/claude"; printf '#!/usr/bin/env bash\n' > "$osrc/install.sh"
+ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
+ln -s "$osrc/agents/claude/CLAUDE.md" "$fhome/.claude/CLAUDE.md"
+eq "$(adb_install_source "$fhome")" "$osrc" "install source: a root doc that identifies a clone wins over the fallback"
+rm -f "$fhome/.claude/CLAUDE.md"
+# A clone whose NAME ends in a newline is refused, never shortened to a sibling's name: every
+# caller captures the answer with `$(…)`, which strips it.
+nlc="$work/nlclone"; mkdir -p "$nlc/agents" "$nlc"$'\n'"/agents" "$nlc"$'\n'"/scripts/lib"
+: > "$nlc/install.sh"; : > "$nlc"$'\n'"/install.sh"
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$nlc"$'\n'"/scripts/lib" "$fhome/.claude/scripts/lib"
+out="$(adb_install_source "$fhome")"; rc=$?
+no "$rc" "install source: a clone whose name ends in a newline is refused"
+eq "$out" "" "install source: ...and never answered with its sibling's name"
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
+# A target ending in a newline is not the clone it would read as without one.
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$fsrc/scripts/lib"$'\n' "$fhome/.claude/scripts/lib"
+adb_install_source "$fhome" >/dev/null 2>&1; no "$?" "install source: a scripts/lib target ending in a newline is not ours"
+rm -f "$fhome/.claude/scripts/lib"; ln -s "$fsrc/scripts/lib" "$fhome/.claude/scripts/lib"
+
+# The four states, all computed from the manifest.
+_ist() { adb_agent_install_state "$1" "$fsrc" "$fhome"; }
+eq "$(_ist claude)" "root-doc-missing" "install state: nothing at the root doc, scripts/lib ours → root-doc-missing"
+ln -s "$fsrc/agents/claude/CLAUDE.md" "$fhome/.claude/CLAUDE.md"
+eq "$(_ist claude)" "installed" "install state: the root doc is our link → installed"
+rm -f "$fhome/.claude/CLAUDE.md"; ln -s "$fsrc/agents/claude/CLAUDE-gone.md" "$fhome/.claude/CLAUDE.md"
+eq "$(_ist claude)" "installed" "install state: a DANGLING root doc into the clone is still installed"
+rm -f "$fhome/.claude/CLAUDE.md"; printf 'mine\n' > "$fhome/.claude/CLAUDE.md"
+eq "$(_ist claude)" "root-doc-foreign" "install state: a regular file at the root doc → root-doc-foreign"
+eq "$(adb_occupant_class "$fhome/.claude/CLAUDE.md" "$fsrc")" "a regular file" "occupant class: a regular file"
+rm -f "$fhome/.claude/CLAUDE.md"; mkdir "$fhome/.claude/CLAUDE.md"
+eq "$(_ist claude)" "root-doc-foreign" "install state: a directory at the root doc → root-doc-foreign"
+eq "$(adb_occupant_class "$fhome/.claude/CLAUDE.md" "$fsrc")" "a directory" "occupant class: a directory"
+rmdir "$fhome/.claude/CLAUDE.md"; ln -s "$work/elsewhere-gone/CLAUDE.md" "$fhome/.claude/CLAUDE.md"
+eq "$(_ist claude)" "root-doc-foreign" "install state: a dangling link outside the clone → root-doc-foreign"
+eq "$(adb_occupant_class "$fhome/.claude/CLAUDE.md" "$fsrc")" "a link outside $fsrc" "occupant class: a link outside the clone, target not named"
+rm -f "$fhome/.claude/CLAUDE.md"
+eq "$(_ist codex)" "absent" "install state: no codex link into the clone → absent"
+mkdir -p "$fhome/.codex"; printf 'mine\n' > "$fhome/.codex/AGENTS.md"
+eq "$(_ist codex)" "absent" "install state: an unrelated file at the root doc with no links into the clone → absent"
+rm -f "$fhome/.codex/AGENTS.md"
+eq "$(_ist no-such-agent)" "absent" "install state: an unknown agent token → absent"
+eq "$(adb_agent_root_doc gemini "$fsrc" "$fhome")" "$fhome/.gemini/GEMINI.md" "agent root doc: read from the manifest row whose source is the root doc"
+# Fail closed: an unrepresentable home makes the manifest refuse, and the predicate refuses with it.
+nlh="$work/fhome"$'\n'"x"; mkdir -p "$nlh/.claude"
+out="$(adb_agent_install_state claude "$fsrc" "$nlh" 2>/dev/null)"; rc=$?
+no "$rc" "install state: an unenumerable manifest exits non-zero"
+eq "$out" "" "install state: ...and prints nothing (never absent)"
+
 # --- adb_claude_hook_scripts / adb_claude_hook_regex (#36) -------------------
 # One enumeration feeds the manifest AND both settings filters. If they drift, a hook is either
 # linked-but-never-wired or wired-but-never-removed on uninstall.
@@ -3565,6 +3634,34 @@ if [ "${1:-}" = "--mutation" ]; then
     "watchdog: a child's own 124 is not a fired bound" \
     '' \
     '/^  _ADB_BOUNDED_FIRED=0$/d'
+
+  # --- which agents are installed, and what is at the root doc (#539) ---------------------------
+  # The predicate reverts to the root-doc test alone: no other manifest link is consulted, so a
+  # missing root doc reads as `absent` again — the defect itself.
+  mutate install-state-root-doc-only \
+    "install state: nothing at the root doc, scripts/lib ours → root-doc-missing" \
+    '[ "$dest" = "$doc" ] && continue' \
+    's/^    \[ "\$dest" = "\$doc" \] && continue$/    continue/'
+  # An occupied root doc is read as an empty one, so the update would hand it to install.sh to move.
+  mutate install-state-foreign-folded-into-missing \
+    "install state: a regular file at the root doc → root-doc-foreign" \
+    "printf 'root-doc-foreign" \
+    "s/printf 'root-doc-foreign\\\\n'; else/printf 'root-doc-missing\\\\n'; else/"
+  # A refused manifest falls back to `absent`, dropping the agent unseen.
+  mutate install-state-refusal-reads-absent \
+    "install state: an unenumerable manifest exits non-zero" \
+    '' \
+    '/^adb_agent_install_state() {$/,/^}$/s/"\$home")" || return 1$/"$home")" || { printf '"'"'absent\\n'"'"'; return 0; }/'
+  # The resolved clone root is no longer refused for a newline, so `$(…)` names its sibling.
+  mutate install-source-newline-root-accepted \
+    "install source: a clone whose name ends in a newline is refused" \
+    '' \
+    's/^  adb_tsv_field_safe "\$dir" || return 1$/  :/'
+  # Discovery loses its scripts/lib fallback: a single-agent install without its root doc is lost.
+  mutate install-source-no-fallback \
+    "install source: falls back to an agent's scripts/lib link" \
+    '_adb_install_root_of "$link" 1 /scripts/lib && return 0' \
+    's/^    _adb_install_root_of "\$link" 1 \/scripts\/lib && return 0$/    :/; s/^    _adb_install_root_of "\$link" 3 "\/agents\/\$a\/scripts\/lib" && return 0$/    :/'
 
   # --- run them, bounded ------------------------------------------------------------------------
   # `adb_pool_size` is the one home for the width (scripts/lib/common.sh): min(cpu, 8), so it

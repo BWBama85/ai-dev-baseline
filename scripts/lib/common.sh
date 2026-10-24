@@ -527,6 +527,17 @@ $(adb_claude_hooks_missing "$settings" "$home")
 EOF
 }
 
+# True iff <dest> is a hook script the MIXED hook set defers on purpose (#444): nothing at the path,
+# directly under <home>/.claude/scripts, and named in <deferred> (adb_claude_hooks_deferred's
+# output). A real file or a foreign link there is still a collision, never deferred. The one test
+# `baseline update`'s verifier and the adopt-readiness `harness` rung both apply.
+# Usage: adb_claude_hook_dest_deferred <dest> <deferred> <home>
+adb_claude_hook_dest_deferred() {
+  [ -n "$2" ] && [ ! -e "$1" ] && [ ! -L "$1" ] \
+    && [ "$(dirname "$1")" = "$3/.claude/scripts" ] \
+    && printf '%s\n' "$2" | grep -qxF -- "$(basename "$1")"
+}
+
 adb_claude_hook_regex() {
   local home="$1" s alt="" esc
   while IFS= read -r s; do
@@ -4933,33 +4944,136 @@ adb_pool_size() {
 # Usage: adb_link_into <path> <src>
 adb_link_into() { [ -L "$1" ] && case "$(readlink "$1")" in "$2"/*) return 0 ;; esac; return 1; }
 
-# Print the repo root the global install points INTO ("the install-source"), resolved from
-# whichever agent root-doc symlink exists (install.sh links each with an absolute target).
-# The link's TARGET need not currently resolve — a dangling root doc (the very path that
-# moved, or a failed prior repair) still identifies the clone, and repairing it is the whole
-# point; the clone is validated by install.sh + agents/ existing, not by the doc file existing.
-# Prints nothing and returns 1 when no installed symlink is found.
+# The clone a link of the global install points into, on stdout: <link>'s absolute target, walked
+# <up> directories above its parent (agents/<agent>/<DOC> → 2, scripts/lib → 1,
+# agents/<agent>/scripts/lib → 3), accepted only when that directory holds install.sh and agents/.
+# Returns 1 for anything else.
+# Usage: _adb_install_root_of <link> <up> [required-target-suffix]
+_adb_install_root_of() {
+  local link="$1" up="$2" suffix="${3:-}" target dir
+  [ -L "$link" ] || return 1
+  # SENTINEL CAPTURE: `$(…)` strips a trailing newline, so a link to `<clone>/…<NL>` resolved to a
+  # different, shorter path than the one it names.
+  target="$(readlink -n "$link" 2>/dev/null; printf x)"; target="${target%x}"
+  case "$target" in /*) ;; *) return 1 ;; esac   # install.sh records absolute targets
+  if [ -n "$suffix" ]; then case "$target" in *"$suffix") ;; *) return 1 ;; esac; fi
+  dir="$(dirname "$target")"
+  case "$up" in 3) dir="$dir/../../.." ;; 2) dir="$dir/../.." ;; 1) dir="$dir/.." ;; esac
+  # Logical `pwd` keeps the answer the same flavor as the recorded link targets, so prefix-matching
+  # them stays stable; callers that compare clones use `-ef`. SENTINEL CAPTURE again, and a root
+  # holding a newline or tab is refused: every caller captures this answer with `$(…)`, which would
+  # strip a trailing newline and name a different directory.
+  dir="$(cd "$dir" 2>/dev/null && pwd && printf x)" || return 1
+  dir="${dir%x}"; dir="${dir%?}"
+  adb_tsv_field_safe "$dir" || return 1
+  [ -f "$dir/install.sh" ] && [ -d "$dir/agents" ] || return 1
+  printf '%s\n' "$dir"
+}
+
+# Print the repo root the global install points INTO ("the install-source"). Root-doc links are
+# asked first, in a fixed order, and the first that identifies a clone wins. Only when none does is
+# each agent's `scripts/lib` link asked (#539): an agent whose root doc is missing still has that
+# link, and without it a single-agent install that lost its root doc read as no install at all.
+# Every answer the root docs give is unchanged by the fallback.
+# A link's TARGET need not resolve — a dangling root doc still identifies the clone, and repairing
+# it is the point. An install that has lost both its root doc and its `scripts/lib` link is not
+# found; its surviving links are re-made by `./install.sh`.
+# Prints nothing and returns 1 when nothing identifies a clone.
 #
 # Shared (not private to bin/baseline) because the SessionStart currency hook must resolve the
-# SAME clone by the SAME rule — a second implementation is exactly the drift this library exists
-# to prevent. Usage: adb_install_source [home]   (home defaults to $HOME)
+# SAME clone by the SAME rule. Usage: adb_install_source [home]   (home defaults to $HOME)
 adb_install_source() {
-  local home="${1:-$HOME}" link target root
+  local home="${1:-$HOME}" link a
   for link in "$home/.claude/CLAUDE.md" "$home/.codex/AGENTS.md" "$home/.gemini/GEMINI.md"; do
-    [ -L "$link" ] || continue
-    # SENTINEL CAPTURE: `$(…)` strips a trailing newline, so a link to `<clone>/…<NL>` resolved to a
-    # different, shorter path than the one it names.
-    target="$(readlink -n "$link" 2>/dev/null; printf x)"; target="${target%x}"
-    case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
-    # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this the
-    # same flavor as the recorded symlink targets so prefix-matching them stays stable; callers
-    # that compare clones use `-ef` (same-inode), so no physical canonicalization is needed.
-    root="$(cd "$(dirname "$target")/../.." 2>/dev/null && pwd)" || continue
-    if [ -f "$root/install.sh" ] && [ -d "$root/agents" ]; then
-      printf '%s\n' "$root"; return 0
-    fi
+    _adb_install_root_of "$link" 2 && return 0
+  done
+  for a in claude codex gemini; do
+    link="$home/.$a/scripts/lib"
+    _adb_install_root_of "$link" 1 /scripts/lib && return 0
+    # An install made before the library moved points at the agent-tree compatibility link.
+    _adb_install_root_of "$link" 3 "/agents/$a/scripts/lib" && return 0
   done
   return 1
+}
+
+# The root-doc destination in a manifest read from stdin: the row whose SOURCE is
+# <repo>/agents/<agent>/{CLAUDE,AGENTS,GEMINI}.md — by source path, never by row order.
+# Prints nothing when no row is one.  Usage: _adb_manifest_root_doc <agent> <repo> < <manifest>
+_adb_manifest_root_doc() {
+  local agent="$1" repo="$2" tab line
+  tab="$(printf '\t')"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "${line%%"$tab"*}" in
+      "$repo/agents/$agent/CLAUDE.md"|"$repo/agents/$agent/AGENTS.md"|"$repo/agents/$agent/GEMINI.md")
+        printf '%s\n' "${line#*"$tab"}"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# Is <agent> installed from <src>, and what is at its root-doc path? One word on stdout (#539):
+#   installed         the root doc is our link into <src> (dangling counts);
+#   root-doc-missing  nothing is at the root-doc path, and another manifest destination is ours;
+#   root-doc-foreign  something else is there (a file, a directory, a link outside <src>), and
+#                     another manifest destination is ours;
+#   absent            no manifest destination is ours, whatever is at the root-doc path.
+# Computed from adb_agent_manifest alone. Returns 1 and prints nothing when the manifest refuses
+# (#324) or names no root doc — never `absent`, which would drop an installed agent unseen.
+# An unknown token has an empty manifest and is `absent`.
+# Usage: adb_agent_install_state <agent> <src> [home]
+adb_agent_install_state() {
+  local agent="$1" src="$2" home="${3:-$HOME}" manifest doc tab line dest
+  manifest="$(adb_agent_manifest "$agent" "$src" "$home")" || return 1
+  [ -n "$manifest" ] || { printf 'absent\n'; return 0; }
+  doc="$(printf '%s\n' "$manifest" | _adb_manifest_root_doc "$agent" "$src")"
+  [ -n "$doc" ] || return 1
+  if adb_link_into "$doc" "$src"; then printf 'installed\n'; return 0; fi
+  tab="$(printf '\t')"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    dest="${line#*"$tab"}"
+    [ "$dest" = "$doc" ] && continue
+    adb_link_into "$dest" "$src" || continue
+    if [ -e "$doc" ] || [ -L "$doc" ]; then printf 'root-doc-foreign\n'; else printf 'root-doc-missing\n'; fi
+    return 0
+  done <<EOF
+$manifest
+EOF
+  printf 'absent\n'
+}
+
+# True iff <agent> counts as installed from <src>: `installed` or `root-doc-missing`. The question
+# every per-agent gate in bin/baseline asks, so a Claude install that lost its root doc keeps its
+# recorded opt-outs through the repair. Here rather than in bin/baseline because those gates are
+# also exercised extracted, with only this library loaded.
+# Usage: adb_agent_ours <agent> <src> [home]
+adb_agent_ours() {
+  case "$(adb_agent_install_state "$1" "$2" "${3:-$HOME}")" in
+    installed|root-doc-missing) return 0 ;;
+  esac
+  return 1
+}
+
+# <agent>'s root-doc destination under [home], from the same manifest row the predicate reads.
+# An unknown agent (an empty manifest) prints nothing and returns 0; a manifest that refuses, or
+# names no root doc, returns 1.  Usage: adb_agent_root_doc <agent> <src> [home]
+adb_agent_root_doc() {
+  local manifest doc
+  manifest="$(adb_agent_manifest "$1" "$2" "${3:-$HOME}")" || return 1
+  [ -n "$manifest" ] || return 0
+  doc="$(printf '%s\n' "$manifest" | _adb_manifest_root_doc "$1" "$2")"
+  [ -n "$doc" ] || return 1
+  printf '%s\n' "$doc"
+}
+
+# The CLASS of what occupies <path>, for a message — never a link target or file content, which
+# are operator-chosen text.  Usage: adb_occupant_class <path> <src>
+adb_occupant_class() {
+  if [ -L "$1" ]; then printf 'a link outside %s\n' "$2"
+  elif [ -d "$1" ]; then printf 'a directory\n'
+  elif [ -f "$1" ]; then printf 'a regular file\n'
+  else printf 'something other than a file or a link\n'
+  fi
 }
 
 # --- minimal TOML reader -----------------------------------------------------

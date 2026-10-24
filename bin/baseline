@@ -161,16 +161,43 @@ fi
 # currency hook resolves the SAME clone by the SAME rule, and two implementations of that
 # rule would be exactly the drift this library exists to prevent.
 
-# Print one installed agent token per line — ONLY agents whose root-doc symlink points
-# INTO <src>. An update must re-install exactly this set (never install.sh's bare default)
-# and must never touch a root-doc symlink that points at an UNRELATED install (which
-# install.sh would otherwise back up and replace with the baseline's).
+# Print one installed agent token per line: each agent adb_agent_install_state calls `installed`
+# or `root-doc-missing` for <src>. An update re-installs exactly this set (never install.sh's bare
+# default). An EMPTY root-doc path is damage the self-heal re-links; a root-doc path holding
+# anything else (`root-doc-foreign`) keeps its agent OUT of the set, because install.sh would back
+# up or replace it and an unattended update never displaces an occupied path (#539).
+# Returns 1 when any agent's manifest cannot be enumerated, never dropping that agent, so callers
+# must capture it rather than read it through a heredoc.
 # Usage: adb_installed_agents <src>
 adb_installed_agents() {
-  local src="$1"
-  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" && printf 'claude\n'
-  adb_link_into "$HOME/.codex/AGENTS.md"  "$src" && printf 'codex\n'
-  adb_link_into "$HOME/.gemini/GEMINI.md" "$src" && printf 'gemini\n'
+  local src="$1" a st rc=0
+  for a in claude codex gemini; do
+    st="$(adb_agent_install_state "$a" "$src" "$HOME")" || { rc=1; continue; }
+    case "$st" in installed|root-doc-missing) printf '%s\n' "$a" ;; esac
+  done
+  return "$rc"
+}
+
+# One stderr NOTE per agent whose root-doc path holds something other than our link while its
+# other links point into <src>. Names the CLASS of the occupant, never its target or content.
+# Nothing is changed: the path is the operator's until they run install.sh or uninstall.sh.
+# Usage: adb_report_foreign_root_docs <src>
+adb_report_foreign_root_docs() {
+  local src="$1" a doc cls kept
+  for a in claude codex gemini; do
+    [ "$(adb_agent_install_state "$a" "$src" "$HOME" 2>/dev/null)" = root-doc-foreign ] || continue
+    doc="$(adb_agent_root_doc "$a" "$src" "$HOME")" || continue
+    cls="$(adb_occupant_class "$doc" "$src")"
+    # adb_link moves a file or directory under the backup directory, but REPLACES a symlink with no
+    # record of its target — the advice must not promise a backup the installer does not make.
+    case "$cls" in
+      "a link outside "*) kept="the link is replaced, and where it pointed is not kept" ;;
+      *)                  kept="what is there now is moved under ~/.claude/backups/" ;;
+    esac
+    # The commands are printed shell-quoted (%q) so a clone path with a space can be pasted as is.
+    printf "baseline: NOTE — %s is not the baseline's root doc (%s), yet %s's other links point into %s; its rules load only if that file includes them. Left untouched: \`%q --agent %s\` restores it (%s); \`%q --agent %s\` removes its other links.\n" \
+      "${doc/#$HOME/\~}" "$cls" "$a" "$src" "$src/install.sh" "$a" "$kept" "$src/uninstall.sh" "$a" >&2
+  done
   return 0
 }
 
@@ -350,7 +377,7 @@ adb_settings_unreadable_record() {
 
 adb_settings_pending() {
   local src="$1" version receipt payload have want
-  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 1
+  adb_agent_ours claude "$src" || return 1
   payload="$(adb_claude_settings_payload "$src")"
   [ -s "$payload" ] || return 1
   receipt="$(adb_claude_settings_receipt "$HOME")"
@@ -468,7 +495,7 @@ adb_settings_pending() {
 # Usage: adb_report_partial_hooks <src>      (prints nothing unless the set is partial)
 adb_report_partial_hooks() {
   local src="$1" settings="$HOME/.claude/settings.json"
-  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 0
+  adb_agent_ours claude "$src" || return 0
   [ "$(adb_claude_hooks_state "$settings")" = partial ] || return 0
   # TWO SHAPES OF PARTIAL (PR #443 review). A hook whose script link exists but whose entry is
   # gone was REMOVED by the operator; a hook with neither was SHIPPED after the last install and
@@ -494,12 +521,11 @@ adb_report_partial_hooks() {
 # with no current manifest entry) is visible to the pruner.
 #
 # Agent ROOT-DOC links (CLAUDE.md / AGENTS.md / GEMINI.md) are DELIBERATELY excluded: they live
-# at fixed paths that never get renamed away, `bin/baseline` resolves the install source from a
-# (possibly dangling) root-doc link, and `adb_installed_agents` detects an installed agent by it.
-# A dangling root doc is therefore a genuine breakage to SURFACE (adb_link's guard fails the
-# self-heal loudly), never an orphan to silently prune — pruning one would erase the very link
-# detection depends on. NOT recursive: a user link deeper under ~/.claude is never in scope. A
-# glob that matches nothing stays literal and is filtered by `-L`, so no `nullglob` is needed.
+# at fixed paths that never get renamed away, and `adb_install_source` resolves the install source
+# from a (possibly dangling) root-doc link first. A dangling root doc is a genuine breakage to
+# SURFACE (adb_link's guard fails the self-heal loudly), never an orphan to silently prune. NOT
+# recursive: a user link deeper under ~/.claude is never in scope. A glob that matches nothing
+# stays literal and is filtered by `-L`, so no `nullglob` is needed.
 # Usage: adb_scan_links <src>
 adb_scan_links() {
   local src="$1" p
@@ -517,7 +543,10 @@ adb_scan_links() {
 # one producer they can't drift: a path added/moved to the manifest is both linked AND verified,
 # and a missing intended link (not just a dangling one) is caught. Usage: adb_manifest_dests <src>
 adb_manifest_dests() {
-  local src="$1" agent manifest rc=0
+  local src="$1" agent manifest agents rc=0
+  # CAPTURED, like the manifest below: an agent whose install state cannot be read must fail the
+  # verify, not vanish from it.
+  agents="$(adb_installed_agents "$src")" || rc=1
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
     # CAPTURED, NOT PIPED (#324, D64). `adb_agent_manifest … | cut -f2` reports CUT's status, so a
@@ -530,7 +559,7 @@ adb_manifest_dests() {
     # every reader here already skips.
     printf '%s\n' "$manifest" | cut -f2
   done <<EOF
-$(adb_installed_agents "$src")
+$agents
 EOF
   return "$rc"
 }
@@ -566,9 +595,7 @@ adb_verify_links() {
   deferred="$(adb_claude_hooks_deferred "$HOME/.claude/settings.json" "$src")"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    if [ -n "$deferred" ] && [ ! -e "$p" ] && [ ! -L "$p" ] \
-       && [ "$(dirname "$p")" = "$HOME/.claude/scripts" ] \
-       && printf '%s\n' "$deferred" | grep -qxF -- "$(basename "$p")"; then
+    if adb_claude_hook_dest_deferred "$p" "$deferred" "$HOME"; then
       printf 'baseline: deferred (mixed hook set, not wired until #444 or ./install.sh): %s\n' "$p" >&2
       continue
     fi
@@ -590,11 +617,24 @@ EOF
 # trusting the enumeration): a link is removed ONLY when it is a symlink, does NOT resolve, and
 # its target is lexically inside <src>. A resolving link, a real file, or a link pointing
 # elsewhere is never touched. Best-effort (always returns 0) — the subsequent adb_verify_links
-# is the real gate. Usage: adb_prune_orphans <src>
+# is the real gate.
+#
+# ONLY AN AGENT WHOSE ROOT DOC IS OUR LINK IS PRUNED (#539). For a `root-doc-missing` agent its
+# dangling links may be the only evidence it is installed at all — pruning them first would turn
+# it `absent` and the repair would skip it; it is pruned on the run after its repair. A
+# `root-doc-foreign` agent is left exactly as it is. A state that cannot be read prunes nothing.
+# Usage: adb_prune_orphans <src>
 adb_prune_orphans() {
-  local src="$1" p
+  local src="$1" p a prunable=""
+  for a in claude codex gemini; do
+    [ "$(adb_agent_install_state "$a" "$src" "$HOME" 2>/dev/null)" = installed ] && prunable="$prunable $a "
+  done
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    case "$p" in
+      "$HOME"/.claude/*) a=claude ;; "$HOME"/.codex/*) a=codex ;; "$HOME"/.gemini/*) a=gemini ;; *) continue ;;
+    esac
+    case "$prunable" in *" $a "*) ;; *) continue ;; esac
     [ -e "$p" ] && continue          # still resolves → legitimately installed, keep
     # Re-check ownership (symlink + target inside src) at the moment of removal, not trusting the
     # enumeration — adb_link_into re-reads the link, so this is TOCTOU-safe against a delete.
@@ -608,20 +648,31 @@ EOF
 # Re-run the idempotent installer for the ALREADY-installed agent set, preserving the
 # hook preference. Never widens the install (no bare-default claude, no surprise hooks).
 adb_self_heal() {
-  local a s _adb_deliberate _adb_dest _adb_prior i
-  local -a args=() _adb_fresh_hooks=() _adb_fresh_prior=()
+  local a s _adb_deliberate _adb_dest _adb_prior i agents
+  local -a args=() _adb_fresh_hooks=() _adb_fresh_prior=() _adb_relink=()
+  agents="$(adb_installed_agents "$SRC")" || {
+    printf 'baseline: cannot enumerate the installed agents for %s — refusing to self-heal (see above)\n' "$SRC" >&2
+    return 1
+  }
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     args+=(--agent "$a")
+    # A root doc this run is about to re-link, so the audit line below can report what changed.
+    if [ "$(adb_agent_install_state "$a" "$SRC" "$HOME")" = root-doc-missing ]; then
+      _adb_dest="$(adb_agent_root_doc "$a" "$SRC" "$HOME")" && _adb_relink+=("$a" "$_adb_dest")
+    fi
   done <<EOF
-$(adb_installed_agents "$SRC")
+$agents
 EOF
   if [ "${#args[@]}" -eq 0 ]; then
-    echo "baseline: no installed agents detected — nothing to self-heal." >&2
-    return 1
+    # Reachable only through the `scripts/lib` fallback with every agent's root doc occupied: each
+    # was reported above, and none is ours to re-install.
+    echo "baseline: no agent to self-heal — every agent's root-doc path holds something that is not ours (see the NOTE above)." >&2
+    return 0
   fi
-  # Preserve a prior hook opt-out: only when Claude is installed FROM THIS src (a root doc pointing
-  # elsewhere is not ours to re-wire). THREE states, not two (#242) — but `none` and `partial` take
+  # Preserve a prior hook opt-out: only when Claude is installed FROM THIS src (adb_agent_ours — a
+  # missing root doc still counts, so the repair keeps every recorded opt-out; an occupied one does
+  # not, and is not ours to re-wire). THREE states, not two (#242) — but `none` and `partial` take
   # the SAME action and differ only in what they SAY.
   #
   # Both suppress wiring, because removing a hook's entry is the documented way to disable it
@@ -636,10 +687,10 @@ EOF
   # acquires that lock: a direct `install.sh --no-sandbox` landing in between recorded the choice and
   # this self-heal applied the fragment straight over it. The flag says "honour a recorded opt-out", and
   # the installer re-reads the disposition once it holds the lock. (PR review)
-  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
+  if adb_agent_ours claude "$SRC"; then
     args+=(--optout-if-recorded)   # optout-revalidated-by-child
   fi
-  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
+  if adb_agent_ours claude "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
       none)
         # `none` is the honoured opt-out only when the operator REMOVED the entries — their
@@ -693,6 +744,15 @@ EOF
   local irc=0
   ( cd "$SRC" && ./install.sh "${args[@]}" ) || irc=$?
   [ "$irc" -eq 0 ] || echo "baseline: install.sh exited non-zero — inspect its output above (path move? see issue #35)." >&2
+  # ONE AUDIT LINE PER ROOT DOC THAT IS NOW OURS AND RESOLVES — asked of the filesystem after the
+  # installer, never inferred from its status.
+  for (( i = 0; i < ${#_adb_relink[@]}; i += 2 )); do
+    _adb_dest="${_adb_relink[$((i + 1))]}"
+    if adb_link_into "$_adb_dest" "$SRC" && [ -e "$_adb_dest" ]; then
+      printf "baseline: re-linked %s — it was missing while %s's other links still point into %s.\n" \
+        "${_adb_dest/#$HOME/\~}" "${_adb_relink[$i]}" "$SRC" >&2
+    fi
+  done
   if [ "${#_adb_fresh_hooks[@]}" -gt 0 ]; then
     for (( i = 0; i < ${#_adb_fresh_hooks[@]}; i++ )); do
       _adb_dest="$HOME/.claude/scripts/${_adb_fresh_hooks[$i]}"
@@ -751,7 +811,7 @@ fi
 # --- resolve the install-source clone ----------------------------------------
 
 if ! SRC="$(adb_install_source)"; then
-  echo "baseline: no installed baseline detected — no ~/.<agent> root-doc symlink points into a clone." >&2
+  echo "baseline: no installed baseline detected — no ~/.<agent> root-doc or ~/.<agent>/scripts/lib symlink points into a clone." >&2
   echo "          Nothing to keep current. Run install.sh from your baseline clone first." >&2
   exit 3
 fi
@@ -859,6 +919,7 @@ STATUS="$(adb_clone_status "$SRC" "$DEFAULT")"
 case "$STATUS" in
   current)
     echo "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
+    adb_report_foreign_root_docs "$SRC"
     # Prune renamed-away orphans first (a prior manual `git pull` may have left one), THEN verify
     # the manifest — so a leftover from a rename doesn't force a needless "broken" repair (#48).
     adb_prune_orphans "$SRC"
@@ -964,6 +1025,7 @@ case "$STATUS" in
     # linked." The installer is idempotent (unchanged links are a no-op); prune removes the links
     # a rename left dangling that the installer would otherwise never clean up.
     echo "baseline: pulled to origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
+    adb_report_foreign_root_docs "$SRC"
     adb_prune_orphans "$SRC"
     # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that
     # changes the fragment is exactly how this path acquires pending settings in the first place.

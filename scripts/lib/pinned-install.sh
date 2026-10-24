@@ -1730,7 +1730,7 @@ EOF
 
   # Coexistence is REPORTED, not arbitrated: the harness already resolves the project's copy ahead
   # of the global one, and saying which one wins is more useful than pretending to choose.
-  if [ -L "$HOME/.claude/CLAUDE.md" ] || [ -L "$HOME/.codex/AGENTS.md" ]; then
+  if adb_install_source "$HOME" >/dev/null 2>&1; then
     _pi_say "note:    a GLOBAL symlink install is also active on this machine."
     _pi_say "         This project's vendored skills shadow it (docs/per-project-overrides.md, Override 2)."
   fi
