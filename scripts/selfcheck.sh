@@ -2614,11 +2614,9 @@ declare -A OVER_LAST=()     # name -> the last multiple of the ceiling already r
 # TERM, then grace, then KILL, matching `_adb_bounded_reap`: a bound that only sends TERM is not a
 # backstop, because anything that traps or ignores it survives.
 #
-# THE GRACE IS A BOUND, NOT A SLEEP (#551). It was a fixed `sleep 1`, so a harness whose own TERM
-# cleanup took longer than a second was KILLed in the middle of it — and a vendored-shmutant shell
-# KILLed between freezing a mutant's tree and killing it leaves that tree stopped for good
-# (BWBama85/shmutant#47). Now the KILL waits until every worker group is gone or
-# ADB_SELFCHECK_STOP_GRACE_SECS has passed, whichever is first: a pool that cleans up in 200ms costs
+# THE GRACE IS A BOUND, NOT A SLEEP (#551, D135), so a harness's own TERM cleanup is not KILLed
+# partway through: the KILL waits until every worker group is gone or
+# ADB_SELFCHECK_STOP_GRACE_SECS has passed, whichever is first. A pool that cleans up in 200ms costs
 # 200ms, and one that ignores TERM costs the grace. What still outlives the KILL — a nested pool in a
 # group of its own (#547) — is what `--stop` exists to find.
 _workers_remain() {
