@@ -8,6 +8,21 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Changed
+
+- **The vendored shmutant moves to v0.3.0.** `scripts/shmutant.sh` is the
+  [shmutant](https://github.com/BWBama85/shmutant) v0.3.0 release, copied byte for byte, and
+  `scripts/shmutant.sh.sha256` records its new digest. It closes three defects upstream. Before it,
+  a `KILL` that reached a shmutant shell between freezing a mutant's process tree and killing it left
+  that tree stopped for good (BWBama85/shmutant#47); every freeze is now guarded, and a guard that
+  cannot start scores the run `unsettled` instead of stopping anything. A target whose metadata could
+  not be read no longer yields a content-only fingerprint that hides a change to it (#29): any failed
+  stage of that read now fails it. And its own suite no longer removes a unit's directory by
+  path alone (#45). Nothing this repo calls changed (`shmutant_pool`, the `SHMUTANT_ROWS_*` table,
+  the field encoder and the verdict stream), so `check_shmutant_pool` and the ported rows take no
+  edit. `CLAUDE.md` and `CONTRIBUTING.md` no longer cite the frozen-tree defect as a reason to stop a
+  selfcheck with `--stop`; the nested pools that `TERM` does not reach (#547) remain the reason.
+
 ### Fixed
 
 - **An agent whose root doc went missing is repaired, not forgotten (#539).** `baseline update`

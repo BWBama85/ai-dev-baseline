@@ -166,9 +166,8 @@ step keeps its own verdict — so on a slow machine raise the ceiling rather tha
 
 **To stop a run, use `bash scripts/selfcheck.sh --stop`** (#551), from another shell in the same
 checkout, outside any agent sandbox. `TERM` or `^C` alone is not a complete stop: a harness's nested
-pool sits in process groups of its own and does not get the signal (#547). Escalating to `KILL` by
-hand is worse: a `KILL` that lands while a vendored-shmutant shell has a tree frozen leaves that
-tree stopped forever (BWBama85/shmutant#47). `--stop` sends the runner `TERM`. The runner gives its
+pool sits in process groups of its own and does not get the signal (#547), and a `KILL` sent to
+the runner by hand leaves those pools running just the same. `--stop` sends the runner `TERM`. The runner gives its
 workers up to `ADB_SELFCHECK_STOP_GRACE_SECS` (default 10) to finish their own cleanup before it
 KILLs, and records that grace. The stop waits up to `ADB_SELFCHECK_STOP_SECS` (default 40, and
 never less than the run's recorded preparation allowance plus its grace plus 5s) for everything to
