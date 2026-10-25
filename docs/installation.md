@@ -45,6 +45,7 @@ cd ~/Code/ai-dev-baseline
 ./install.sh                       # installs the 'claude' agent + wires gates
 ./install.sh --agent claude --agent codex
 ./install.sh --agent claude --no-hooks
+./install.sh --agent claude --skip-hook precommit-gate.sh
 ./install.sh --agent claude --no-sandbox
 ```
 
@@ -54,6 +55,7 @@ Options:
 |---|---|
 | `--agent <claude\|codex\|gemini>` | Repeatable. Which agent(s) to install. Default: `claude`. |
 | `--no-hooks` | Skip wiring the global Stop-hook gates into `~/.claude/settings.json`. |
+| `--skip-hook <name>` | Repeatable. Wire every shipped hook **except** `<name>` (its exact script name, e.g. `precommit-gate.sh`), removing its entry if it was wired. Recorded, so `baseline update` keeps honouring it. An unknown name exits 2 before anything changes; `--no-hooks` wins over it. |
 | `--no-sandbox` | Skip the [least-privilege sandbox settings](#least-privilege-sandbox-settings). Recorded, so `baseline update` keeps honouring it. |
 | `-h`, `--help` | Print the usage header. |
 
@@ -167,23 +169,23 @@ real `$HOME`) into `~/.claude/settings.json`:
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
 | `SessionStart` (matcher `compact\|resume`) | `session-context.sh` | Reads an in-flight `/implement-issue` run's state back into context after compaction or resume — see [A run survives compaction](#a-run-survives-compaction). |
 
-Removing a hook's entry from `~/.claude/settings.json` is the per-hook opt-out, and `baseline
-update` preserves it: a hook whose script link is installed but whose entry is gone is left alone
-(the set is reported as PARTIAL). A hook shipped **after** your last install has neither an entry
+Removing a hook's entry from `~/.claude/settings.json` — or installing with `--skip-hook <name>` —
+is the per-hook opt-out, and `baseline update` preserves it: a hook whose script link is installed
+but whose entry is gone is left alone (the set is reported as PARTIAL), while every other hook,
+a newly shipped one included, is still wired. The repair runs `install.sh --optout-if-recorded`,
+which reads the removed hooks under the settings lock and skips exactly those. A hook shipped **after** your last install has neither an entry
 nor a script link, and that is not a choice anybody made — the next `baseline update` links and
 wires it (`adb_claude_hooks_missing_deliberate` is what tells the two apart, reading the **wiring
 receipt** `~/.claude/.adb-hooks-wired` that a successful `install.sh` writes and `uninstall.sh`
-removes: an entry the receipt says was wired and is now gone was removed by you; a link the
-receipt never saw wired was an install interrupted between the link and the entry, and is
-repaired. An install that predates the receipt has none until its next successful wiring, and
+removes: an entry the receipt says was wired — or skipped by name — and is now absent was your
+choice; a link the receipt never saw was an install interrupted between the link and the entry,
+and is repaired. An install that predates the receipt has none until its next successful wiring, and
 until then the link alone is read as the choice — which holds because
 an install whose hook wiring **fails** takes back the links it added — restoring whatever each one
-displaced — so an interrupted install never leaves the opt-out's shape behind). **Unless the set
-also carries a deliberate opt-out:** `install.sh --no-hooks` is all-or-nothing, so a mixed set —
-one entry you removed plus one hook that just shipped — keeps the opt-out and leaves the new hook
-**unlinked** as well as unwired (a linked-but-unwired hook would read as a second opt-out on the
-next update), restoring anything the install displaced at that path; the update says so every run, and `./install.sh` wires the full set (which re-adds
-the one you removed). The per-hook form that resolves this is #444.
+displaced — so an interrupted install never leaves the opt-out's shape behind). Removing **every**
+entry is different: that set is indistinguishable from an `install.sh --no-hooks` install, so
+`baseline update` keeps it unwired — a newly shipped hook included — and never widens it. A plain
+`./install.sh` wires the full set, re-adding any hook you removed.
 
 ### Least-privilege sandbox settings
 

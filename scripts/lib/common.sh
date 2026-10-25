@@ -435,10 +435,11 @@ _adb_claude_hook_present() {
   fi
 }
 
-# The wiring RECEIPT: the hooks a SUCCESSFUL wire_hooks last wrote, one name per line. install.sh
+# The wiring RECEIPT: the hooks a SUCCESSFUL wire_hooks last decided — wired, or skipped by name
+# (`install.sh --skip-hook`, or a per-hook opt-out it preserved) — one name per line. install.sh
 # writes it after the settings rename lands; uninstall.sh removes it. It is what turns "our link,
-# no entry" into a known state: listed here, the entry was wired once and is gone now — the
-# operator removed it; not listed, it was never wired — an installer killed between the link and
+# no entry" into a known state: listed here, the entry was wired once or skipped on purpose and is
+# absent now — the operator's choice; not listed, it was never wired — an installer killed between the link and
 # the entry, or one that skipped wiring — and the next self-heal wires it. An install that predates
 # the receipt has none, and the link inference stands for it until its first successful wiring
 # (docs/installation.md says so).
@@ -487,8 +488,8 @@ EOF
 # install has the opt-out's exact shape otherwise (PR #443 review). OWNERSHIP, not existence (`adb_link_into`, the
 # same test every install-scoped scan uses): an unrelated file or a foreign symlink sitting at the
 # pathname is a collision the repair will back up, not a choice the operator made about our hook.
-# `bin/baseline` asks this before it reads `partial` as an opt-out: a newly shipped hook must be
-# wired by the next self-heal, not preserved as a choice nobody made (PR #443 review).
+# `install.sh --optout-if-recorded` skips exactly these, under the settings lock and before it
+# links anything, and `bin/baseline` asks it to tell `none`'s opt-out from a never-wired install.
 # Usage: adb_claude_hooks_missing_deliberate <settings.json> <src> [home]
 adb_claude_hooks_missing_deliberate() {
   local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt
@@ -505,37 +506,6 @@ adb_claude_hooks_missing_deliberate() {
   done <<EOF
 $(adb_claude_hooks_missing "$settings" "$home")
 EOF
-}
-
-# The shipped hooks a MIXED set defers, one per line: hooks with no settings entry AND no owned
-# script link, reported ONLY while some other hook was removed by hand (adb_claude_hooks_missing_
-# deliberate). That is the state bin/baseline leaves on purpose — `--no-hooks` preserves the
-# opt-out and is all-or-nothing (#444), so the new hook is left unlinked rather than linked into
-# the opt-out's own shape — and a verifier that then reported the absent link BROKEN would repair
-# it every run and fail every time. Without a deliberate removal the set is not mixed and nothing
-# is deferred: a missing link is then a broken install, exactly as before.
-# Usage: adb_claude_hooks_deferred <settings.json> <src> [home]
-adb_claude_hooks_deferred() {
-  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s
-  [ -n "$(adb_claude_hooks_missing_deliberate "$settings" "$src" "$home")" ] || return 0
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    adb_link_into "$home/.claude/scripts/$s" "$src" && continue
-    printf '%s\n' "$s"
-  done <<EOF
-$(adb_claude_hooks_missing "$settings" "$home")
-EOF
-}
-
-# True iff <dest> is a hook script the MIXED hook set defers on purpose (#444): nothing at the path,
-# directly under <home>/.claude/scripts, and named in <deferred> (adb_claude_hooks_deferred's
-# output). A real file or a foreign link there is still a collision, never deferred. The one test
-# `baseline update`'s verifier and the adopt-readiness `harness` rung both apply.
-# Usage: adb_claude_hook_dest_deferred <dest> <deferred> <home>
-adb_claude_hook_dest_deferred() {
-  [ -n "$2" ] && [ ! -e "$1" ] && [ ! -L "$1" ] \
-    && [ "$(dirname "$1")" = "$3/.claude/scripts" ] \
-    && printf '%s\n' "$2" | grep -qxF -- "$(basename "$1")"
 }
 
 adb_claude_hook_regex() {

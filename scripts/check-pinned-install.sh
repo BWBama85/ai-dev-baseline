@@ -9,8 +9,8 @@
 #
 # THE OPERATOR'S HOME IS NOT A FIXTURE (D136). `HOME` and `CODEX_HOME` are exported once, below, to a
 # home inside the work directory, so every path the installers build from them lands there. A case
-# that needs a home of its own sets one per call, which wins. Inherited `XDG_CONFIG_HOME`,
-# `GIT_CONFIG_GLOBAL` and `ADB_BACKUP_DIR` are NOT reset. What enforces it: the real-home check at
+# that needs a home of its own sets one per call, which wins. Inherited `XDG_CONFIG_HOME` and
+# `GIT_CONFIG_GLOBAL` are NOT reset. What enforces it: the real-home check at
 # the end of the suite (a new `ai-dev-baseline-pinned-*` entry in the real `~/.claude/backups` is a
 # failure), and two `home:` cases that show the installers used the suite's home.
 #

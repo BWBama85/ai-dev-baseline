@@ -491,8 +491,8 @@ if [ "$tmo" -gt 0 ] && [ "$tmo" -le 120 ]; then ok; else bad "SessionStart timeo
 INSTALLER_OUT=""; INSTALLER_RC=0
 # <label> is first so every call site reads the same way and `installer_clean` can forward "$@";
 # this half only needs the last two.
-run_installer() {   # run_installer <label> <home> <script> — capture both streams AND the status
-  INSTALLER_OUT="$(HOME="$2" bash "$3" --agent claude 2>&1)"; INSTALLER_RC=$?
+run_installer() {   # run_installer <label> <home> <script> [installer args…] — capture both streams AND the status
+  INSTALLER_OUT="$(HOME="$2" bash "$3" --agent claude "${@:4}" 2>&1)"; INSTALLER_RC=$?
 }
 
 # installer_clean <label> <home> <script> — run it and require BOTH rc 0 and no WARN.
@@ -661,5 +661,82 @@ eq "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command == "/custom/session-currenc
       "$uh/.claude/settings.json")" "1" "uninstall keeps a same-named user hook under OUR event"
 eq "$(jq '[.hooks[]?[]?.hooks[]? | select(.command | test("\\.claude/scripts/session-currency\\.sh$"))] | length' \
       "$uh/.claude/settings.json")" "0" "uninstall still removes our own entry"
+
+# --- `--skip-hook`: wiring a NAMED SUBSET (#444) --------------------------------------------------
+# The Stop template holds three hooks in ONE group, so a skip must filter handlers inside a group,
+# not drop groups. Asserted with adb_claude_hook_wired (event, matcher and handler type), never a
+# path grep, and against a user's own Stop hook that must survive every shape below.
+wired_set() {   # wired_set <home> — the shipped hooks wired in <home>, space-separated, sorted
+  local s
+  for s in $(adb_claude_hook_scripts); do
+    adb_claude_hook_wired "$1/.claude/settings.json" "$s" "$1" && printf '%s\n' "$s"
+  done | sort | tr '\n' ' '
+}
+all_but() {   # all_but <name>… — every shipped hook except those named, in wired_set's shape
+  adb_claude_hook_scripts | grep -vxF "$(printf '%s\n' "$@")" | sort | tr '\n' ' '
+}
+sh_home="$work/skiphome"; mkdir -p "$sh_home/.claude"
+jq -n '{hooks:{Stop:[{hooks:[{type:"command",command:"/usr/local/bin/my-stop-hook.sh"}]}]}}' > "$sh_home/.claude/settings.json"
+installer_clean "install with --skip-hook precommit-gate.sh" "$sh_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+eq "$(wired_set "$sh_home")" "$(all_but precommit-gate.sh)" "--skip-hook wires every shipped hook but the named one"
+has "$INSTALLER_OUT" "skipped (not wired, entry removed if it was): precommit-gate.sh" "--skip-hook → the install names what it skipped"
+eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' "$sh_home/.claude/settings.json")" "1" \
+  "--skip-hook keeps a user's own Stop hook"
+# THE RECEIPT STILL LISTS THE SKIPPED HOOK: without it, the next self-heal would read the owned
+# link with no entry as an interrupted install and wire it, undoing the skip.
+eq "$(sort "$(adb_claude_hooks_receipt "$sh_home")" | tr '\n' ' ')" "$(adb_claude_hook_scripts | sort | tr '\n' ' ')" \
+  "--skip-hook → the receipt still names every shipped hook"
+eq "$(adb_claude_hooks_missing_deliberate "$sh_home/.claude/settings.json" "$ROOT" "$sh_home" | tr -d '\n')" "precommit-gate.sh" \
+  "--skip-hook → the skipped hook reads as a recorded opt-out"
+# A skip of a hook that IS wired removes its entry; the previously skipped one comes back.
+installer_clean "re-install skipping a different, wired hook" "$sh_home" "$ROOT/install.sh" --skip-hook session-context.sh
+eq "$(wired_set "$sh_home")" "$(all_but session-context.sh)" "--skip-hook on a wired hook removes its entry and wires the rest"
+# Every hook skipped: each event is still visited, so none of ours is left behind.
+skip_all=()
+while IFS= read -r s; do skip_all+=(--skip-hook "$s"); done < <(adb_claude_hook_scripts)
+installer_clean "install skipping every shipped hook" "$sh_home" "$ROOT/install.sh" "${skip_all[@]}"
+eq "$(wired_set "$sh_home")" "" "--skip-hook naming every hook leaves none of ours wired"
+eq "$(jq '[.hooks[][].hooks[] | select(.command | test("/\\.claude/scripts/"))] | length' "$sh_home/.claude/settings.json")" "0" \
+  "--skip-hook naming every hook → no entry of ours under any event"
+eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' "$sh_home/.claude/settings.json")" "1" \
+  "--skip-hook naming every hook still keeps the user's Stop hook"
+# --no-hooks wins, in either order.
+installer_clean "install restoring the full set" "$sh_home" "$ROOT/install.sh"
+cp "$sh_home/.claude/settings.json" "$work/skip-before.json"
+installer_clean "--no-hooks before --skip-hook" "$sh_home" "$ROOT/install.sh" --no-hooks --skip-hook precommit-gate.sh
+cmp -s "$work/skip-before.json" "$sh_home/.claude/settings.json" && ok || bad "--no-hooks --skip-hook must not touch the hook entries"
+installer_clean "--skip-hook before --no-hooks" "$sh_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh --no-hooks
+eq "$(wired_set "$sh_home")" "$(all_but)" "--skip-hook --no-hooks → --no-hooks wins, nothing is rewired"
+
+# A NAME THAT IS NOT A SHIPPED HOOK is refused before anything is linked or written: exit 2, the
+# settings byte-identical, no link created. So is a missing name, and a basename without `.sh`.
+bad_home="$work/skipbad"; mkdir -p "$bad_home/.claude"; printf '{"hooks":{}}\n' > "$bad_home/.claude/settings.json"
+cp "$bad_home/.claude/settings.json" "$work/skipbad-before.json"
+for bad_arg in "nope.sh" "precommit-gate" "/custom/precommit-gate.sh" ""; do
+  run_installer "unknown --skip-hook" "$bad_home" "$ROOT/install.sh" --skip-hook "$bad_arg"
+  eq "$INSTALLER_RC" "2" "--skip-hook '$bad_arg' → exit 2"
+  has "$INSTALLER_OUT" "--skip-hook needs one of:" "--skip-hook '$bad_arg' → ...naming the valid names"
+done
+run_installer "--skip-hook with no name" "$bad_home" "$ROOT/install.sh" --skip-hook
+eq "$INSTALLER_RC" "2" "--skip-hook with no name → exit 2"
+cmp -s "$work/skipbad-before.json" "$bad_home/.claude/settings.json" && ok || bad "a refused --skip-hook must leave settings.json byte-identical"
+if [ -e "$bad_home/.claude/CLAUDE.md" ] || [ -L "$bad_home/.claude/CLAUDE.md" ] || [ -e "$bad_home/.claude/scripts" ]; then
+  bad "a refused --skip-hook must link nothing"
+else ok; fi
+
+# --optout-if-recorded READS THE OPT-OUTS ITSELF, under the lock and before linking: an entry
+# removed by hand stays removed, and a hook shipped since the last install (no entry, no link, no
+# receipt line) is wired. That is the mixed set bin/baseline's self-heal hands it.
+mx_home="$work/mixedhome"; mkdir -p "$mx_home/.claude"
+installer_clean "install the full set" "$mx_home" "$ROOT/install.sh"
+jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | (endswith("/precommit-gate.sh") or endswith("/session-context.sh")) | not))) | map(select(.hooks | length > 0))))' \
+  "$mx_home/.claude/settings.json" > "$work/mx.json" && mv "$work/mx.json" "$mx_home/.claude/settings.json"
+rm -f "$mx_home/.claude/scripts/session-context.sh"
+grep -vxF session-context.sh "$(adb_claude_hooks_receipt "$mx_home")" > "$work/mx-receipt" && mv "$work/mx-receipt" "$(adb_claude_hooks_receipt "$mx_home")"
+installer_clean "--optout-if-recorded over a mixed set" "$mx_home" "$ROOT/install.sh" --optout-if-recorded
+eq "$(wired_set "$mx_home")" "$(all_but precommit-gate.sh)" "--optout-if-recorded → the new hook is wired and the removed one stays removed"
+# ...and without the flag, running the installer by hand wires the full set.
+installer_clean "plain install over a partial set" "$mx_home" "$ROOT/install.sh"
+eq "$(wired_set "$mx_home")" "$(all_but)" "a plain install restores the full set"
 
 check_summary "session-currency"

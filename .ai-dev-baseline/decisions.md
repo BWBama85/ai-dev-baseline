@@ -10911,3 +10911,52 @@ survive is the part a later reader needs.
              `CHANGELOG.md`; tests in `scripts/check-baseline.sh`, `scripts/check-common-lib.sh`,
              `scripts/check-adopt-readiness.sh`, `scripts/check-pinned-install.sh`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D138 — #444: hooks are wired per hook; the installer reads the per-hook opt-outs under the settings lock
+- date:      2026-10-25
+- category:  project-delta
+- unknown:   #444. `install.sh` wired the Claude hook set all or nothing, so `baseline update` could
+             keep a hand-removed hook entry (the documented per-hook opt-out) only by passing
+             `--no-hooks`, and every hook shipped later then went unwired. PR #443's stopgap left
+             such a hook unlinked and taught the verifier and the `harness` rung to tolerate the
+             gap; the only remedy, `./install.sh`, re-added the hook the operator had removed.
+- decision:  - `install.sh --skip-hook <name>`, repeatable, exact names from
+               `adb_claude_hook_scripts` and validated before anything is linked (exit 2). It wires
+               the rest and removes a named hook's entry if it is wired. It filters handlers inside a
+               group, because the Stop group holds three hooks. `--no-hooks` wins over it.
+             - `--optout-if-recorded` also means "skip every hook entry removed by hand". The
+               installer computes `adb_claude_hooks_missing_deliberate` itself, under the settings
+               lock and before linking, so a hook this run links for the first time never reads as
+               removed. `bin/baseline`'s self-heal passes no hook names and no `--no-hooks` for a
+               `partial` set.
+             - `none` (every entry removed) keeps `--no-hooks`. It cannot be told from an
+               `install.sh --no-hooks` install, and a self-heal never widens an install.
+             - The receipt still lists every shipped hook. A skipped hook counts as decided, which
+               is what keeps it an opt-out on the next update.
+             - The stopgap is removed: `adb_claude_hooks_deferred`, `adb_claude_hook_dest_deferred`,
+               the verifier's tolerance, the self-heal's unlink-and-restore, and the
+               `ADB_BACKUP_DIR` override that existed only for it. An install it left behind reads
+               as a broken link and is repaired.
+- reason:    The opt-out is a fact about one hook, so the installer has to be able to act on one
+             hook. Reading it under the lock follows the `--no-sandbox` precedent (D98's
+             re-validation in the child). Names computed by the caller can be stale by the time the
+             installer holds the lock, and `--skip-hook` actively removes an entry, where
+             `--no-hooks` only declined to write.
+- rejected:  - `bin/baseline` passing `--skip-hook <name>` for each removal, the issue's example
+               form. That is a second home for the opt-out decision, read outside the lock.
+             - Per-hook skips for `none` as well (gap analysis). That would wire a newly shipped
+               hook into an install made with `--no-hooks`.
+             - A receipt holding only the hooks actually wired. The next update would then read a
+               skipped hook as never landed and wire it.
+- known-gap: - A `partial` repair now rewrites every baseline group it keeps, so an operator's edit
+               to a remaining hook (a timeout, say) is reset, as it already was on a fully wired
+               install.
+             - On the `current` path, a hook that is linked but unwired and missing from the receipt
+               (an install killed between the link and the entry) is reported but not repaired until
+               the next self-heal. That gap predates #444, which leaves it unchanged.
+- placement: `install.sh` (option parsing, `_install_claude_locked`, `wire_hooks`); `bin/baseline`
+             (`adb_self_heal`, `adb_report_partial_hooks`, `adb_verify_links`);
+             `scripts/lib/common.sh`; `scripts/lib/adopt-readiness.sh`; `docs/installation.md`;
+             `CHANGELOG.md`; tests in `scripts/check-session-currency.sh`,
+             `scripts/check-baseline.sh`, `scripts/check-adopt-readiness.sh`
+- baseline-issue: n/a (this repo IS the baseline)

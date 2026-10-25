@@ -25,6 +25,21 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **Removing one hook no longer blocks every hook shipped after it (#444).** `install.sh` wired the
+  Claude hook set all or nothing, so once you had removed one hook's entry by hand (the documented
+  per-hook opt-out), `baseline update` could keep that choice only by passing `--no-hooks`. A hook
+  shipped later was then never wired, and the only remedy, `./install.sh`, re-added the hook you had
+  removed. `install.sh` now takes `--skip-hook <name>`, which is repeatable: it wires every shipped
+  hook except the named ones and removes their entries if they are wired. An unknown name exits 2
+  before anything changes. The update's repair no longer passes `--no-hooks` for a partial set.
+  Under `--optout-if-recorded`, the installer reads the hand-removed hooks under the settings lock
+  and skips exactly those. A partial set therefore keeps its opt-outs and gains the new hook. A set
+  with every entry removed is unchanged: it still reads as `--no-hooks` and is never widened. The
+  stopgap that left a newly shipped hook unlinked in a mixed set is gone. That covers its verifier
+  tolerance, `adb_claude_hooks_deferred` and `adb_claude_hook_dest_deferred`. An install that
+  stopgap left behind is repaired by the next `baseline update`. The wiring receipt still lists
+  every shipped hook, and now also counts a hook skipped by name as decided. That is what lets the
+  next update read the hook's absence as your choice.
 - **An agent whose root doc went missing is repaired, not forgotten (#539).** `baseline update`
   decided which agents were installed by asking only whether `~/.<agent>/<root doc>` was a link into
   the clone. Once that one link was gone, the agent dropped out of the update entirely: none of its

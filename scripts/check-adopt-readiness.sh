@@ -553,21 +553,6 @@ mv "$fakehome/.claude/CLAUDE.md" "$WORK/saved-claude-link"; mv "$fakeinstall/age
 out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "claude(root-doc: missing in the clone)" "probe: a root doc missing from BOTH the home and the clone names the clone"
 mv "$WORK/saved-claude-src" "$fakeinstall/agents/claude/CLAUDE.md"; mv "$WORK/saved-claude-link" "$fakehome/.claude/CLAUDE.md"
-# A hook a MIXED hook set defers is absent by design (#444), and the rung agrees with the updater.
-cp "$ROOT/agents/claude/settings.hooks.json" "$WORK/hooks.json"
-hooks_tpl="$(cat "$WORK/hooks.json")"
-# Quoted replacement: bash 5.2+ reads an unquoted `&` there as the match (patsub_replacement).
-printf '{"hooks":%s}\n' "${hooks_tpl//__ADB_HOME__/"$fakehome"}" \
-  | jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | (endswith("/precommit-gate.sh") or endswith("/session-context.sh")) | not))) | map(select(.hooks | length > 0))))' \
-  > "$fakehome/.claude/settings.json"
-grep -vx 'session-context.sh' <<EOF > "$(adb_claude_hooks_receipt "$fakehome")"
-$(adb_claude_hook_scripts)
-EOF
-mv "$fakehome/.claude/scripts/session-context.sh" "$WORK/saved-hook"
-out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
-has "$out" "harness${TAB}ok" "probe: a hook the mixed hook set defers is not reported missing"
-mv "$WORK/saved-hook" "$fakehome/.claude/scripts/session-context.sh"
-rm -f "$fakehome/.claude/settings.json" "$(adb_claude_hooks_receipt "$fakehome")"
 # An agent with no link into the source at all names the installer, not the updater.
 out="$( HOME="$fakehome" ar probe "$d" --agents claude,gemini 2>/dev/null )"
 has "$out" "gemini(not installed)" "probe: an agent with no links into the source is not installed"
@@ -1183,7 +1168,7 @@ else bad "bin/baseline: the 'adopt' dispatch must precede the wrong-clone guard"
 # shmutant, with the pool a plain command in that block rather than the right side of `&&`, where
 # bash would ignore errexit inside every callback (shmutant's docs/integrating.md §4).
 if [ "$MUTATE" -eq 1 ]; then
-# <dir> — build the tree copy ONCE; shmutant clones it for every row. `base` and `agents` too: the suite reads agents/claude/settings.hooks.json and
+# <dir> — build the tree copy ONCE; shmutant clones it for every row. `base` too: the suite reads
 # base/workflows/adopt.md.
 _ar_mut_prepare() {
   check_copy_subtrees "$ROOT" "$1" scripts base bin agents >/dev/null 2>&1
@@ -1328,10 +1313,6 @@ shmutant_mut harness-drops-the-resolve-test \
     '    elif ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then' \
     '    elif ! adb_link_into "$dest" "$src"; then' \
     'probe: a DANGLING link into the source is not in place'
-shmutant_mut harness-reports-deferred-hooks \
-    '    adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue' \
-    '    :' \
-    'probe: a hook the mixed hook set defers is not reported missing'
 shmutant_mut blocker-label-coerced \
     'printf '"'"'%s'"'"' "$json" | jq -e --arg k "$k" --arg t "$t" '"'"'.[$k]|type == $t'"'"' >/dev/null 2>&1 || return 2' \
     ':' \
