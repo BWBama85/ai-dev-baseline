@@ -208,7 +208,7 @@ adb_displaced_restore() {
   if [ -e "$backup_dir$dest" ] || [ -L "$backup_dir$dest" ]; then
     mv "$backup_dir$dest" "$dest" || return 1
   elif [ -n "$prior" ]; then
-    ln -s "$prior" "$dest" || return 1
+    ln -s -- "$prior" "$dest" || return 1   # `--`: a target may begin with `-`
   fi
   return 0
 }
@@ -446,20 +446,21 @@ _adb_claude_hook_present() {
 # Usage: adb_claude_hooks_receipt [home]
 adb_claude_hooks_receipt() { printf '%s/.claude/.adb-hooks-wired' "${1:-${HOME:-/root}}"; }
 
-# _adb_claude_hooks_receipt_records <content> — 0 when every line of a receipt's content is one
-# hook name (`[a-z0-9]`, then `[a-z0-9.-]`, ending `.sh`), 1 otherwise; an empty line is a damaged
-# record. Matched under a function-scoped C locale, so the ranges are ASCII whatever the caller's.
+# _adb_claude_hooks_receipt_records <file> — 0 when every line of a newline-terminated receipt is
+# one hook name (`[a-z0-9]`, then `[a-z0-9.-]`, ending `.sh`), 1 otherwise or when it cannot be
+# read; an empty line, a trailing one included, is a damaged record. Read from the FILE, never from
+# a `$(…)` capture, which strips trailing newlines and so hides trailing empty records. Matched
+# under a function-scoped C locale, so the ranges are ASCII whatever the caller's.
 _adb_claude_hooks_receipt_records() {
   local line LC_ALL=C || return 1
+  [ -r "$1" ] || return 1
   while IFS= read -r line; do
     case "$line" in
       [!a-z0-9]*|*[!a-z0-9.-]*|'') return 1 ;;
       *.sh) : ;;
       *) return 1 ;;
     esac
-  done <<EOF
-$1
-EOF
+  done < "$1"
 }
 
 # Usage: adb_claude_hooks_state <settings.json> [home]      (home defaults to $HOME)
@@ -519,7 +520,7 @@ adb_claude_hooks_missing_deliberate() {
     have_receipt=1
     adb_bytes_whole "$receipt" 65536 || return 2
     recorded="$(head -c 65536 "$receipt")" || return 2
-    _adb_claude_hooks_receipt_records "$recorded" || return 2
+    _adb_claude_hooks_receipt_records "$receipt" || return 2
   fi
   while IFS= read -r s; do
     [ -n "$s" ] || continue

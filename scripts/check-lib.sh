@@ -1209,6 +1209,8 @@ check_mirror_without() {
   IFS=: read -r -a pdirs <<< "$PATH"
   for pd in "${pdirs[@]}"; do
     [ -d "$pd" ] || continue
+    # A relative PATH entry would make a relative link, resolved against the MIRROR instead.
+    case "$pd" in /*) ;; *) pd="$(cd "$pd" 2>/dev/null && pwd)" || continue ;; esac
     for exe in "$pd"/*; do
       base="${exe##*/}"
       [ "$base" = "$drop" ] && continue

@@ -1396,7 +1396,8 @@ rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 # ...and as WHOLE RECORDS (#583): a damaged name, an empty receipt, an unterminated last record and
 # a blank line are each refused, rather than read as a receipt that omits the hook.
 for bad_rcpt in 'precommit-\0gate.sh\n' 'Precommit-gate.sh\n' 'precommit-gate.sh \n' 'precommit-gate.sh\r\n' \
-                'precommit-gate.shx\n' '' 'precommit-gate.sh' 'precommit-gate.sh\n\nsession-context.sh\n' '.sh\n'; do
+                'precommit-gate.shx\n' '' 'precommit-gate.sh' 'precommit-gate.sh\n\nsession-context.sh\n' '.sh\n' \
+                'precommit-gate.sh\n\n' '\nprecommit-gate.sh\n'; do
   # shellcheck disable=SC2059   # the escapes ARE the fixture
   printf "$bad_rcpt" > "$(adb_claude_hooks_receipt "$hs_home")"
   adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
@@ -1411,6 +1412,14 @@ ln -s "$hs_home/receipt-target" "$(adb_claude_hooks_receipt "$hs_home")"
 adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
 eq "$?" "2" "hooks-deliberate: a SYMLINK at the receipt path is status 2"
 rm -f "$(adb_claude_hooks_receipt "$hs_home")" "$hs_home/receipt-target"
+
+# --- adb_displaced_restore: a recorded link target that begins with `-` (#444 review) -------------
+# Without `--`, `ln -s "-n" <dest>` reads the target as an option, and the restore makes no link at
+# <dest> while reporting success.
+dr_dir="$work/displaced"; mkdir -p "$dr_dir/backup"
+adb_displaced_restore "$dr_dir/hook.sh" "$dr_dir/backup" "-n"; eq "$?" "0" "displaced-restore: a '-'-leading target restores"
+eq "$(readlink -n "$dr_dir/hook.sh" 2>/dev/null)" "-n" "displaced-restore: ...as a link to exactly that target"
+rm -rf "$dr_dir"
 rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"

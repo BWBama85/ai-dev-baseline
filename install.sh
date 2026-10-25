@@ -1516,7 +1516,8 @@ wire_hooks() {
     rm -f "$receipt.adb.$$.tmp"
     if [ "$existed" -eq 0 ] && rm -f "$settings"; then
       adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json, which did not exist before the hook wiring, removed again)"
-    elif [ -n "$prior_link" ] && rm -f "$settings" && ln -s "$prior_link" "$settings"; then
+    elif [ -n "$prior_link" ] && rm -f "$settings" && ln -s -- "$prior_link" "$settings" \
+       && [ "$(readlink -n "$settings" && printf x)" = "${prior_link}x" ]; then
       adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as the symlink it was before the hook wiring)"
     elif [ "$existed" -eq 1 ] && [ -z "$prior_link" ] && cp "$BACKUP_DIR$settings" "$settings.adb.$$.restore" 2>/dev/null \
        && adb_publish_json "$settings.adb.$$.restore" "$settings" --allow-empty; then
@@ -1528,7 +1529,13 @@ wire_hooks() {
     return 1   # still deferred: the caller resumes once it has taken back this run's links
   fi
   adb_settings_lock_resume_signals
-  adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
+  if [ -z "$skipped" ]; then
+    adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
+  elif [ "$(printf '%s\n' "$skipped" | grep -c .)" -ge "$(adb_claude_hook_scripts | grep -c .)" ]; then
+    adb_info "  hooks  none of the shipped hooks wired — every one skipped (~/.claude/settings.json backed up)"
+  else
+    adb_info "  hooks  wired the other shipped hooks into ~/.claude/settings.json (backed up)"
+  fi
   [ -z "$skipped" ] || adb_info "  hooks  skipped (not wired, entry removed if it was): $(printf '%s' "$skipped" | tr '\n' ' ')"
 }
 

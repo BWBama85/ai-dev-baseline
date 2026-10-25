@@ -696,6 +696,8 @@ skip_all=()
 while IFS= read -r s; do skip_all+=(--skip-hook "$s"); done < <(adb_claude_hook_scripts)
 installer_clean "install skipping every shipped hook" "$sh_home" "$ROOT/install.sh" "${skip_all[@]}"
 eq "$(wired_set "$sh_home")" "" "--skip-hook naming every hook leaves none of ours wired"
+hasnt "$INSTALLER_OUT" "wired global Stop gates" "--skip-hook naming every hook → ...and never reports the hooks as wired"
+has "$INSTALLER_OUT" "none of the shipped hooks wired" "--skip-hook naming every hook → ...it says none were"
 eq "$(jq '[.hooks[][].hooks[] | select(.command | test("/\\.claude/scripts/"))] | length' "$sh_home/.claude/settings.json")" "0" \
   "--skip-hook naming every hook → no entry of ours under any event"
 eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' "$sh_home/.claude/settings.json")" "1" \
@@ -825,6 +827,14 @@ run_installer "unwritable receipt over a symlinked settings.json" "$sl_home" "$R
 no "$INSTALLER_RC" "unwritable receipt, symlinked settings.json → the install fails"
 eq "$(readlink -n "$sl_home/.claude/settings.json" 2>/dev/null)" "$sl_home/real-settings.json" "...and settings.json is the same symlink again"
 cmp -s "$work/sl-target-before" "$sl_home/real-settings.json" && ok || bad "...and its target was never written"
+# ...and a target that BEGINS WITH `-` is restored as that target, never read by `ln` as an option.
+dl_home="$work/dashlink"; mkdir -p "$dl_home/.claude"
+printf '{"model":"opus"}\n' > "$dl_home/.claude/-n"
+ln -s -- "-n" "$dl_home/.claude/settings.json"
+mkdir "$(adb_claude_hooks_receipt "$dl_home")"
+run_installer "unwritable receipt over a settings.json linked to '-n'" "$dl_home" "$ROOT/install.sh" --no-sandbox
+no "$INSTALLER_RC" "unwritable receipt, settings.json -> '-n' → the install fails"
+eq "$(readlink -n "$dl_home/.claude/settings.json" 2>/dev/null)" "-n" "...and settings.json is the link to '-n' again"
 # A LINK TARGET THAT CANNOT BE READ IS REFUSED BEFORE ANYTHING IS PUBLISHED (#583): a masked
 # readlink left the target empty, and a later rollback put a regular file where the link was. A
 # `readlink` shim fails only for settings.json, so every other link this run makes still resolves.
