@@ -1439,12 +1439,11 @@ wire_hooks() {
   local -a jqsrc=("$settings")
   docst="$(adb_settings_doc_state "$settings")"
   case "$docst" in
-    inaccessible|dangling)
-      adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — hooks NOT wired"
-      return 1 ;;
-    absent) jqsrc=(-n) ;;
-    empty)  jqsrc=(-n); existed=1 ;;
-    *)      existed=1 ;;
+    absent)  jqsrc=(-n) ;;
+    empty)   jqsrc=(-n); existed=1 ;;
+    present) existed=1 ;;
+    *)       adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — hooks NOT wired"
+             return 1 ;;
   esac
   # THE PRE-IMAGE, which a failed receipt write puts back, so no backup means no wiring: the file's
   # bytes, and for a symlink its exact target too, since the publish replaces the link and leaves
