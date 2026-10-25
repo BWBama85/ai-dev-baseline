@@ -502,7 +502,12 @@ adb_report_partial_hooks() {
   # has simply not arrived yet. Only the first is an opt-out to preserve.
   local missing deliberate pending
   missing="$(adb_claude_hooks_missing "$settings")"
-  deliberate="$(adb_claude_hooks_missing_deliberate "$settings" "$src")"
+  deliberate="$(adb_claude_hooks_missing_deliberate "$settings" "$src")" || {
+    printf 'baseline: NOTE — the hook set is PARTIAL (not wired: %s) and the wiring receipt %s cannot be read,\n' \
+      "$(printf '%s\n' "$missing" | tr '\n' ' ')" "$(adb_claude_hooks_receipt "$HOME")" >&2
+    printf 'baseline:        so a removed entry cannot be told from one that never landed; a repair refuses rather than guess.\n' >&2
+    return 0
+  }
   if [ -z "$deliberate" ]; then
     printf 'baseline: NOTE — newly shipped hook(s) not yet wired: %s\n' "$(printf '%s\n' "$missing" | tr '\n' ' ')" >&2
     printf 'baseline:        No entry was removed by hand, so the next self-heal wires them.\n' >&2
@@ -643,7 +648,7 @@ EOF
 # Re-run the idempotent installer for the ALREADY-installed agent set, preserving the
 # hook preference. Never widens the install (no bare-default claude, no surprise hooks).
 adb_self_heal() {
-  local a _adb_dest i agents
+  local a _adb_dest _adb_d i agents
   local -a args=() _adb_relink=()
   agents="$(adb_installed_agents "$SRC")" || {
     printf 'baseline: cannot enumerate the installed agents for %s — refusing to self-heal (see above)\n' "$SRC" >&2
@@ -692,7 +697,10 @@ EOF
         # script links are still ours. No entries AND no owned links is an install that never
         # wired at all (a first install without jq takes its fresh links back), and `--no-hooks`
         # here kept it unwired through every self-heal after jq arrived. (PR #443 review)
-        [ -z "$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$SRC")" ] || args+=(--no-hooks) ;;
+        # An unreadable receipt keeps --no-hooks too: a self-heal never widens an install it cannot read.
+        if ! _adb_d="$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$SRC")" || [ -n "$_adb_d" ]; then
+          args+=(--no-hooks)
+        fi ;;
       partial) adb_report_partial_hooks "$SRC" ;;
       *) : ;;   # wired — nothing to preserve, nothing to say
     esac

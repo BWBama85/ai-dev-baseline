@@ -740,4 +740,38 @@ eq "$(wired_set "$mx_home")" "$(all_but precommit-gate.sh)" "--optout-if-recorde
 installer_clean "plain install over a partial set" "$mx_home" "$ROOT/install.sh"
 eq "$(wired_set "$mx_home")" "$(all_but)" "a plain install restores the full set"
 
+# AN UNREADABLE RECEIPT STOPS --optout-if-recorded BEFORE ANYTHING CHANGES (#444 review): read as
+# "lists nothing", it made the removed entry look never-wired and the install re-wired it. A
+# directory stands in for it, which no user can read as a file, root included.
+ur_home="$work/unreadreceipt"; mkdir -p "$ur_home/.claude"
+installer_clean "install the full set (unreadable receipt)" "$ur_home" "$ROOT/install.sh"
+jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | endswith("/precommit-gate.sh") | not))) | map(select(.hooks | length > 0))))' \
+  "$ur_home/.claude/settings.json" > "$work/ur.json" && mv "$work/ur.json" "$ur_home/.claude/settings.json"
+rm -f "$(adb_claude_hooks_receipt "$ur_home")"; mkdir "$(adb_claude_hooks_receipt "$ur_home")"
+cp "$ur_home/.claude/settings.json" "$work/ur-before.json"
+run_installer "--optout-if-recorded over an unreadable receipt" "$ur_home" "$ROOT/install.sh" --optout-if-recorded
+no "$INSTALLER_RC" "--optout-if-recorded over an unreadable receipt → the install fails"
+has "$INSTALLER_OUT" "could not read the wiring receipt" "...and says the receipt is why"
+cmp -s "$work/ur-before.json" "$ur_home/.claude/settings.json" && ok || bad "an unreadable receipt must leave settings.json byte-identical (the removed hook was re-wired)"
+rmdir "$(adb_claude_hooks_receipt "$ur_home")"
+
+# A RECEIPT THAT CANNOT BE WRITTEN FAILS THE WIRING AND PUTS THE SETTINGS BACK (#444 review): the
+# entries without their receipt would record a skip nowhere, and the next self-heal would wire the
+# skipped hook. A directory at the receipt path is the fault — publication refuses it. Then the
+# recovery: with the path clear, the same command lands both.
+rw_home="$work/unwritablereceipt"; mkdir -p "$rw_home/.claude"
+installer_clean "install the full set (unwritable receipt)" "$rw_home" "$ROOT/install.sh"
+rm -f "$(adb_claude_hooks_receipt "$rw_home")"; mkdir "$(adb_claude_hooks_receipt "$rw_home")"
+cp "$rw_home/.claude/settings.json" "$work/rw-before.json"
+run_installer "--skip-hook with an unwritable receipt" "$rw_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+no "$INSTALLER_RC" "--skip-hook with an unwritable receipt → the install fails"
+has "$INSTALLER_OUT" "put back as it was" "...and says the settings were put back"
+hasnt "$INSTALLER_OUT" "hooks  wired" "...and never reports the hooks as wired"
+cmp -s "$work/rw-before.json" "$rw_home/.claude/settings.json" && ok || bad "an unwritable receipt must leave settings.json as it was before the install"
+rmdir "$(adb_claude_hooks_receipt "$rw_home")"
+installer_clean "--skip-hook once the receipt path is clear" "$rw_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+eq "$(wired_set "$rw_home")" "$(all_but precommit-gate.sh)" "recovery → the skip lands"
+eq "$(adb_claude_hooks_missing_deliberate "$rw_home/.claude/settings.json" "$ROOT" "$rw_home" | tr -d '\n')" "precommit-gate.sh" \
+  "recovery → ...with its receipt, so it reads as the operator's opt-out"
+
 check_summary "session-currency"

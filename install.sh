@@ -1276,7 +1276,12 @@ _install_claude_locked() {
   # set, so a newly shipped hook is wired while the removed ones stay removed.
   if [ "$WIRE_HOOKS" -eq 1 ] && [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ]; then
     local _optouts
-    _optouts="$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$REPO" "$HOME")"
+    _optouts="$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$REPO" "$HOME")" || {
+      adb_info "  ERROR  could not read the wiring receipt $(adb_claude_hooks_receipt "$HOME") — nothing was changed."
+      adb_info "         A hook entry you removed by hand cannot be told from one that never landed without it."
+      adb_info "         Make it readable, or remove it (each removed entry is then read from its script link alone)."
+      return 1
+    }
     [ -z "$_optouts" ] || SKIP_HOOKS="$SKIP_HOOKS$_optouts"$'\n'
   fi
   # The install surface (root doc, every skill, the runtime scripts, and the shared
@@ -1418,8 +1423,11 @@ wire_hooks() {
   # bin/baseline's adb_hooks_wired then sees no precommit-gate.sh, concludes the user chose
   # --no-hooks, and passes --no-hooks to every future self-heal, so the gates never come back.
   [ -s "$settings" ] || echo '{}' > "$settings"
-  mkdir -p "$BACKUP_DIR$(dirname "$settings")"
-  cp "$settings" "$BACKUP_DIR$settings"
+  # The pre-image is what a failed receipt write puts back, so no backup means no wiring.
+  if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" || ! cp "$settings" "$BACKUP_DIR$settings"; then
+    adb_info "  WARN   could not back up ~/.claude/settings.json under $BACKUP_DIR — hooks NOT wired"
+    return 1
+  fi
   # A per-process temp name in the same directory: two installs (or two SessionStart-triggered
   # self-heals) racing on one fixed path could `mv` each other's half-written file into place.
   tmp="$settings.adb.$$.tmp"
@@ -1462,17 +1470,27 @@ wire_hooks() {
     adb_settings_lock_resume_signals
     return 1
   fi
-  adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
-  [ -z "$skipped" ] || adb_info "  hooks  skipped (not wired, entry removed if it was): $(printf '%s' "$skipped" | tr '\n' ' ')"
   # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed
-  # entry from one that never landed (adb_claude_hooks_receipt). Written by rename, like the
-  # settings; a receipt that cannot be written is said, and the wiring above still stands.
+  # entry from one that never landed (adb_claude_hooks_receipt), and the only record that a
+  # SKIPPED hook was decided. Published like the settings. If it cannot be written the wiring
+  # fails and the settings go back to their pre-image, so entries and receipt land together or
+  # not at all: entries without it re-wire a skipped hook on the next self-heal.
   local receipt; receipt="$(adb_claude_hooks_receipt "$HOME")"
-  if adb_claude_hook_scripts > "$receipt.adb.$$.tmp" 2>/dev/null && mv "$receipt.adb.$$.tmp" "$receipt" 2>/dev/null; then :; else
+  if ! { adb_claude_hook_scripts > "$receipt.adb.$$.tmp" 2>/dev/null && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; }; then
     rm -f "$receipt.adb.$$.tmp"
-    adb_info "  WARN   could not write the wiring receipt $receipt — a hook entry you later remove will be re-wired by the next self-heal until it exists"
+    if cp "$BACKUP_DIR$settings" "$settings.adb.$$.restore" 2>/dev/null \
+       && adb_publish_json "$settings.adb.$$.restore" "$settings" --allow-empty; then
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as it was)"
+    else
+      rm -f "$settings.adb.$$.restore"
+      adb_info "  WARN   could not write the wiring receipt $receipt, nor put ~/.claude/settings.json back — restore it from $BACKUP_DIR$settings"
+    fi
+    adb_settings_lock_resume_signals
+    return 1
   fi
   adb_settings_lock_resume_signals
+  adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
+  [ -z "$skipped" ] || adb_info "  hooks  skipped (not wired, entry removed if it was): $(printf '%s' "$skipped" | tr '\n' ' ')"
 }
 
 run_adapter() {

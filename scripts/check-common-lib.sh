@@ -1368,6 +1368,18 @@ printf 'precommit-gate.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
   "hooks-deliberate: with a receipt that lists it, the removed entry IS an opt-out"
 rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+# A RECEIPT THAT EXISTS AND CANNOT BE READ is status 2 with nothing printed (#444 review): read as
+# "lists nothing" it made every removed entry look never-wired, and the installer re-wired them.
+mkdir "$(adb_claude_hooks_receipt "$hs_home")"
+out="$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home")"; rc=$?
+eq "$rc" "2" "hooks-deliberate: a receipt that cannot be read (a directory) is status 2, not an empty list"
+eq "$out" "" "hooks-deliberate: ...and names nothing"
+rmdir "$(adb_claude_hooks_receipt "$hs_home")"
+if [ "$(id -u)" -ne 0 ]; then
+  printf 'precommit-gate.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"; chmod 000 "$(adb_claude_hooks_receipt "$hs_home")"
+  adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null; eq "$?" "2" "hooks-deliberate: a receipt with no read permission is status 2"
+  chmod 600 "$(adb_claude_hooks_receipt "$hs_home")"; rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+fi
 eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"
 rm -f "$hs_home/.claude/scripts/precommit-gate.sh"

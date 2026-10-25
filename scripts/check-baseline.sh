@@ -374,6 +374,23 @@ hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks none + no owned links →
 for s in $(adb_claude_hook_scripts); do mv "$work/saved-hooks/$s" "$fh/.claude/scripts/$s"; done
 rm -f "$fh/.claude/settings.json"
 
+# AN UNREADABLE RECEIPT NEVER WIDENS THE INSTALL (#444 review). `none` keeps --no-hooks, since the
+# opt-out cannot be told from a never-wired install without it; `partial` says why a repair will
+# refuse rather than guess (install.sh aborts on it — check-session-currency.sh). A directory stands
+# in for the unreadable receipt. `none` is driven through the behind path, where the self-heal runs.
+reset_src; advance_origin "unreadable-receipt"; : > "$work/install.log"; hook_settings none
+rm -f "$(adb_claude_hooks_receipt "$fh")"; mkdir "$(adb_claude_hooks_receipt "$fh")"
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
+has "$(cat "$work/install.log")" "--no-hooks" "hooks none + unreadable receipt → the opt-out is kept (--no-hooks)"
+rmdir "$(adb_claude_hooks_receipt "$fh")"
+reset_src; hook_settings partial
+rm -f "$(adb_claude_hooks_receipt "$fh")"; mkdir "$(adb_claude_hooks_receipt "$fh")"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$out" "cannot be read" "hooks partial + unreadable receipt → the run says the receipt cannot be read"
+hasnt "$out" "newly shipped hook(s) not yet wired" "hooks partial + unreadable receipt → ...and never calls the removed hook newly shipped"
+rmdir "$(adb_claude_hooks_receipt "$fh")"
+rm -f "$fh/.claude/settings.json"
+
 # AN INSTALLER KILLED BETWEEN THE LINK AND THE ENTRY leaves an owned link with no entry — the
 # opt-out's shape — and only the receipt can say it was never wired (PR #443 review): the receipt
 # does not list session-context.sh, its link exists, its entry does not → repaired, not preserved.
