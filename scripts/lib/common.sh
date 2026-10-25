@@ -446,6 +446,22 @@ _adb_claude_hook_present() {
 # Usage: adb_claude_hooks_receipt [home]
 adb_claude_hooks_receipt() { printf '%s/.claude/.adb-hooks-wired' "${1:-${HOME:-/root}}"; }
 
+# _adb_claude_hooks_receipt_records <content> — 0 when every line of a receipt's content is one
+# hook name (`[a-z0-9]`, then `[a-z0-9.-]`, ending `.sh`), 1 otherwise; an empty line is a damaged
+# record. Matched under a function-scoped C locale, so the ranges are ASCII whatever the caller's.
+_adb_claude_hooks_receipt_records() {
+  local line LC_ALL=C || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      [!a-z0-9]*|*[!a-z0-9.-]*|'') return 1 ;;
+      *.sh) : ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$1
+EOF
+}
+
 # Usage: adb_claude_hooks_state <settings.json> [home]      (home defaults to $HOME)
 adb_claude_hooks_state() {
   local settings="$1" home="${2:-${HOME:-/root}}" s present=0 absent=0
@@ -491,30 +507,20 @@ EOF
 # `install.sh --optout-if-recorded` skips exactly these, under the settings lock and before it
 # links anything, and `bin/baseline` asks it to tell `none`'s opt-out from a never-wired install.
 # Returns 0 with the list (possibly empty); 2, printing nothing, when something is at the receipt
-# path that is not a readable regular file of at most 64 KiB holding only hook names and newlines
-# (a real one is a few lines) — an
-# unreadable receipt is not one that omits every hook, and reading it as one re-wires exactly the
-# hooks the operator removed. Regular files only, so a FIFO there cannot block the read.
+# path that is not a whole receipt: a regular, non-link, readable file of 1..64 KiB with no NUL and
+# a final newline (adb_bytes_whole), every line of it a hook name ending in `.sh`. An unreadable or
+# damaged receipt is not one that omits every hook, and reading it as one re-wires exactly the hooks
+# the operator removed. A name that is not shipped any more is a valid record, and simply unused.
 # Usage: adb_claude_hooks_missing_deliberate <settings.json> <src> [home]
 adb_claude_hooks_missing_deliberate() {
-  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt recorded="" have_receipt=0 size
+  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt recorded="" have_receipt=0
   receipt="$(adb_claude_hooks_receipt "$home")"
-  case "$(adb_settings_doc_state "$receipt")" in
-    absent) ;;
-    present|empty)
-      have_receipt=1
-      size="$(wc -c < "$receipt" 2>/dev/null)" || return 2
-      size="$(printf '%s' "$size" | tr -d ' ')"
-      case "$size" in ''|*[!0-9]*) return 2 ;; esac
-      [ "$size" -le 65536 ] || return 2
-      # ITS BYTES, NOT ITS CAPTURE: `$(…)` drops a NUL, which would turn `precommit-\0gate.sh`
-      # into a name the receipt never held. Hook names, newlines, nothing else.
-      size="$(head -c 65536 "$receipt" 2>/dev/null | LC_ALL=C tr -d 'a-z0-9._\n-' | wc -c)"
-      size="$(printf '%s' "$size" | tr -d ' ')"
-      [ "$size" = 0 ] || return 2
-      recorded="$(head -c 65536 "$receipt" 2>/dev/null)" || return 2 ;;
-    *) return 2 ;;
-  esac
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    have_receipt=1
+    adb_bytes_whole "$receipt" 65536 || return 2
+    recorded="$(head -c 65536 "$receipt")" || return 2
+    _adb_claude_hooks_receipt_records "$recorded" || return 2
+  fi
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     adb_link_into "$home/.claude/scripts/$s" "$src" || continue
@@ -878,8 +884,10 @@ _adb_arm_lock_traps() {
 # Deferring rather than ignoring: the signal is honoured the moment the pair is complete, so a
 # Ctrl-C still works, it just lands on a boundary the file system can survive. `_ADB_SIGNAL_PENDING`
 # carries the status the handler would have exited with. (PR review)
-# NESTS: it never clears `_ADB_SIGNAL_PENDING` (the resume does, once it has read it), so a signal
-# an outer deferral already holds is still honoured when an inner transaction defers again.
+# A SECOND DEFERRAL KEEPS A HELD SIGNAL: this never clears `_ADB_SIGNAL_PENDING` (the resume does,
+# once it has read it), so a signal an outer deferral holds is still honoured when an inner
+# transaction defers again. It does not count depth: the first resume re-arms the immediate
+# handlers, so an inner transaction may resume only when the outer one has nothing left to protect.
 # Globals: _ADB_SIGNAL_PENDING (written)
 adb_settings_lock_defer_signals() {
   trap '_ADB_SIGNAL_PENDING=143' TERM

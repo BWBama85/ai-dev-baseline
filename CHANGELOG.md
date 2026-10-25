@@ -42,9 +42,11 @@ only by a published release, which is what these entries are the notes for.
   next update read the hook's absence as your choice. So the hook entries and the receipt now land
   together or not at all. Under `--optout-if-recorded`, which is how `baseline update` runs the
   installer, a receipt that cannot be read stops the install before it links or writes anything.
-  "Cannot be read" covers an unreadable file, anything other than a regular file, a file over
-  64 KiB, and one holding anything but hook names. A receipt that cannot be written fails the hook
-  wiring and puts `settings.json` back exactly as it was before the wiring, a symlink included. The
+  "Cannot be read" covers an unreadable file, anything other than a regular file (a symlink
+  included), an empty file, a file over 64 KiB, and anything but newline-terminated hook names. A
+  receipt that cannot be written fails the hook wiring and puts `settings.json` back exactly as it
+  was before the wiring, a symlink included. If that rollback itself fails, the install says so and
+  names the backup to restore from. The
   sandbox settings, a separate surface written afterwards, are still applied. A signal that
   arrives during the wiring is honoured only after this run's new hook links are wired or taken
   back. A `--skip-hook` that cannot be recorded because jq is missing fails the install. The hook

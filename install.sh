@@ -1318,7 +1318,8 @@ _install_claude_locked() {
   local s dest prior
   # ONE DEFERRAL FROM HERE THROUGH THE TAKE-BACK BELOW: a signal honoured anywhere between creating
   # this run's hook links and either wiring them or taking them back leaves owned links with no
-  # entries — the per-hook opt-out's exact shape. wire_hooks defers again inside; that nests.
+  # entries — the per-hook opt-out's exact shape. wire_hooks defers again inside, which keeps a
+  # signal held here, and resumes only after it succeeded, when there is nothing left to take back.
   adb_settings_lock_defer_signals   # transaction: this run's hook links + their wiring or take-back
   while IFS= read -r s; do
     [ -n "$s" ] || continue
@@ -1448,7 +1449,16 @@ wire_hooks() {
   # THE PRE-IMAGE, which a failed receipt write puts back, so no backup means no wiring: the file's
   # bytes, and for a symlink its exact target too, since the publish replaces the link and leaves
   # the target alone. A file that did not exist is removed again; its backup is a `{}`, as before.
-  if [ -L "$settings" ]; then prior_link="$(readlink -n "$settings"; printf x)"; prior_link="${prior_link%x}"; fi
+  # CHECKED, like adb_settings_doc_state's capture: a `; printf x` sentinel succeeds when readlink
+  # fails, and an empty target would then roll back to a regular file in the link's place.
+  if [ -L "$settings" ]; then
+    prior_link="$(readlink -n "$settings" && printf x)" || prior_link=""
+    prior_link="${prior_link%x}"
+    if [ -z "$prior_link" ]; then
+      adb_info "  WARN   could not read where ~/.claude/settings.json links to — hooks NOT wired"
+      return 1
+    fi
+  fi
   if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" \
      || { [ "$existed" -eq 1 ] && ! cp "$settings" "$BACKUP_DIR$settings"; } \
      || { [ "$existed" -eq 0 ] && ! printf '{}\n' > "$BACKUP_DIR$settings"; }; then

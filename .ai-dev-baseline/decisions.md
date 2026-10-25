@@ -10964,6 +10964,12 @@ survive is the part a later reader needs.
              nests, so it keeps a signal an outer deferral holds. The pre-image is the file's own
              bytes and its link target. An empty or absent file is substituted, never written in
              place, which follows `wire_settings`. A file that does not resolve is refused.
+             Local pass 3 found three more, carried and filed as #583. The receipt was validated
+             per byte, not per record; the validator pipeline's status was unchecked; and a failed
+             `readlink` was masked. The owner folded #583 back in when the resolver's CI-fix round
+             (a mutation-row literal this PR had duplicated) re-raised them. The reader is now
+             `adb_bytes_whole` plus a record rule (every line a hook name ending `.sh`), and the
+             link target is captured checked.
 - known-gap: - A `partial` repair now rewrites every baseline group it keeps, so an operator's edit
                to a remaining hook (a timeout, say) is reset, as it already was on a fully wired
                install.

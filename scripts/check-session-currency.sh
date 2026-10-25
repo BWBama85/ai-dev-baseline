@@ -825,6 +825,19 @@ run_installer "unwritable receipt over a symlinked settings.json" "$sl_home" "$R
 no "$INSTALLER_RC" "unwritable receipt, symlinked settings.json → the install fails"
 eq "$(readlink -n "$sl_home/.claude/settings.json" 2>/dev/null)" "$sl_home/real-settings.json" "...and settings.json is the same symlink again"
 cmp -s "$work/sl-target-before" "$sl_home/real-settings.json" && ok || bad "...and its target was never written"
+# A LINK TARGET THAT CANNOT BE READ IS REFUSED BEFORE ANYTHING IS PUBLISHED (#583): a masked
+# readlink left the target empty, and a later rollback put a regular file where the link was. A
+# `readlink` shim fails only for settings.json, so every other link this run makes still resolves.
+rl_bin="$work/rlbin"; mkdir -p "$rl_bin"
+printf '#!/bin/sh\ncase "$*" in *settings.json*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v readlink)" > "$rl_bin/readlink"; chmod +x "$rl_bin/readlink"
+rl_home="$work/rlhome"; mkdir -p "$rl_home/.claude"
+printf '{"model":"opus"}\n' > "$rl_home/real-settings.json"; cp "$rl_home/real-settings.json" "$work/rl-target-before"
+ln -s "$rl_home/real-settings.json" "$rl_home/.claude/settings.json"
+rl_out="$(HOME="$rl_home" PATH="$rl_bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-sandbox 2>&1)"; rl_rc=$?
+no "$rl_rc" "an unreadable settings.json link target → the hook wiring refuses"
+has "$rl_out" "could not read where ~/.claude/settings.json links to" "...and says why"
+[ -L "$rl_home/.claude/settings.json" ] && cmp -s "$work/rl-target-before" "$rl_home/real-settings.json" && ok \
+  || bad "...and leaves the link and its target exactly as they were"
 # A DANGLING settings.json is refused, never written through (the sandbox surface's rule, too).
 dg_home="$work/danglingsettings"; mkdir -p "$dg_home/.claude"; ln -s "$dg_home/nowhere.json" "$dg_home/.claude/settings.json"
 run_installer "a dangling settings.json" "$dg_home" "$ROOT/install.sh" --no-sandbox

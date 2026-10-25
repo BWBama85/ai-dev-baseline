@@ -1393,15 +1393,24 @@ eq "$?" "2" "hooks-deliberate: a receipt over 64 KiB is status 2, not read whole
 rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 # ...and IS JUDGED ON ITS BYTES (#444 review): `$(…)` drops a NUL, so `precommit-\0gate.sh` read as
 # a name the receipt never held. Hook names and newlines only.
-for bad_rcpt in 'precommit-\0gate.sh\n' 'Precommit-gate.sh\n' 'precommit-gate.sh \n' 'precommit-gate.sh\r\n'; do
+# ...and as WHOLE RECORDS (#583): a damaged name, an empty receipt, an unterminated last record and
+# a blank line are each refused, rather than read as a receipt that omits the hook.
+for bad_rcpt in 'precommit-\0gate.sh\n' 'Precommit-gate.sh\n' 'precommit-gate.sh \n' 'precommit-gate.sh\r\n' \
+                'precommit-gate.shx\n' '' 'precommit-gate.sh' 'precommit-gate.sh\n\nsession-context.sh\n' '.sh\n'; do
   # shellcheck disable=SC2059   # the escapes ARE the fixture
   printf "$bad_rcpt" > "$(adb_claude_hooks_receipt "$hs_home")"
   adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
-  eq "$?" "2" "hooks-deliberate: a receipt holding a byte outside the hook-name grammar ($bad_rcpt) is status 2"
+  eq "$?" "2" "hooks-deliberate: a receipt outside the record grammar ($bad_rcpt) is status 2"
 done
 printf 'precommit-gate.sh\nsession-context.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
   "hooks-deliberate: ...while a well-formed receipt still reads"
+# A receipt is a regular file install.sh publishes; a symlink at its path is not one.
+mv "$(adb_claude_hooks_receipt "$hs_home")" "$hs_home/receipt-target"
+ln -s "$hs_home/receipt-target" "$(adb_claude_hooks_receipt "$hs_home")"
+adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
+eq "$?" "2" "hooks-deliberate: a SYMLINK at the receipt path is status 2"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")" "$hs_home/receipt-target"
 rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"
