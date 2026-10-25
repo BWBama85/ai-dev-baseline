@@ -500,16 +500,21 @@ adb_report_partial_hooks() {
   # TWO SHAPES OF PARTIAL (PR #443 review). A hook whose script link exists but whose entry is
   # gone was REMOVED by the operator; a hook with neither was SHIPPED after the last install and
   # has simply not arrived yet. Only the first is an opt-out to preserve.
-  if [ -z "$(adb_claude_hooks_missing_deliberate "$settings" "$src")" ]; then
-    printf 'baseline: NOTE — newly shipped hook(s) not yet wired: %s\n' \
-      "$(adb_claude_hooks_missing "$settings" | tr '\n' ' ')" >&2
+  local missing deliberate pending
+  missing="$(adb_claude_hooks_missing "$settings")"
+  deliberate="$(adb_claude_hooks_missing_deliberate "$settings" "$src")"
+  if [ -z "$deliberate" ]; then
+    printf 'baseline: NOTE — newly shipped hook(s) not yet wired: %s\n' "$(printf '%s\n' "$missing" | tr '\n' ' ')" >&2
     printf 'baseline:        No entry was removed by hand, so the next self-heal wires them.\n' >&2
     return 0
   fi
-  printf 'baseline: NOTE — the hook set is PARTIAL; not wired: %s\n' \
-    "$(adb_claude_hooks_missing "$settings" | tr '\n' ' ')" >&2
-  printf 'baseline:        Treating that as a deliberate per-hook opt-out and leaving it alone.\n' >&2
-  printf 'baseline:        Only the removed hook(s) are skipped; a newly shipped hook is still wired. Run ./install.sh to restore the full set.\n' >&2
+  # A MIXED SET names each kind apart: only the removed hooks are an opt-out.
+  pending="$(printf '%s\n' "$missing" | grep -vxF "$deliberate")"
+  printf 'baseline: NOTE — the hook set is PARTIAL; not wired: %s\n' "$(printf '%s\n' "$missing" | tr '\n' ' ')" >&2
+  printf 'baseline:        Removed by hand, kept as your per-hook opt-out: %s\n' "$(printf '%s\n' "$deliberate" | tr '\n' ' ')" >&2
+  [ -z "$pending" ] \
+    || printf 'baseline:        Not removed by hand, so the next self-heal wires them: %s\n' "$(printf '%s\n' "$pending" | tr '\n' ' ')" >&2
+  printf 'baseline:        An update skips only the removed hook(s) and wires every other one, a newly shipped one included. Run ./install.sh to restore the full set.\n' >&2
   return 0
 }
 

@@ -712,10 +712,11 @@ eq "$(wired_set "$sh_home")" "$(all_but)" "--skip-hook --no-hooks → --no-hooks
 # settings byte-identical, no link created. So is a missing name, and a basename without `.sh`.
 bad_home="$work/skipbad"; mkdir -p "$bad_home/.claude"; printf '{"hooks":{}}\n' > "$bad_home/.claude/settings.json"
 cp "$bad_home/.claude/settings.json" "$work/skipbad-before.json"
-for bad_arg in "nope.sh" "precommit-gate" "/custom/precommit-gate.sh" ""; do
+for bad_arg in "nope.sh" "precommit-gate" "/custom/precommit-gate.sh" "" $'nope\nprecommit-gate.sh' $'precommit-gate.sh\nsession-context.sh'; do
+  shown="${bad_arg//$'\n'/\\n}"   # one physical line per label, for the CI digest
   run_installer "unknown --skip-hook" "$bad_home" "$ROOT/install.sh" --skip-hook "$bad_arg"
-  eq "$INSTALLER_RC" "2" "--skip-hook '$bad_arg' → exit 2"
-  has "$INSTALLER_OUT" "--skip-hook needs one of:" "--skip-hook '$bad_arg' → ...naming the valid names"
+  eq "$INSTALLER_RC" "2" "--skip-hook '$shown' → exit 2"
+  has "$INSTALLER_OUT" "--skip-hook needs one of:" "--skip-hook '$shown' → ...naming the valid names"
 done
 run_installer "--skip-hook with no name" "$bad_home" "$ROOT/install.sh" --skip-hook
 eq "$INSTALLER_RC" "2" "--skip-hook with no name → exit 2"

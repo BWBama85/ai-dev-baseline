@@ -400,7 +400,7 @@ reset_src; hook_settings partial
 out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
 has "$out" "PARTIAL" "hooks partial → the run says so out loud"
 has "$out" "precommit-gate.sh" "hooks partial → the run names the hook that is not wired"
-has "$out" "a newly shipped hook is still wired" "hooks partial → the run says the opt-out costs no other hook"
+has "$out" "wires every other one, a newly shipped one included" "hooks partial → the run says the opt-out costs no other hook"
 hasnt "$out" "newly shipped hook is not wired" "hooks partial → ...and no longer states a residue that is gone (#444)"
 rm -f "$fh/.claude/settings.json"
 
@@ -431,7 +431,8 @@ out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
 eq "$rc" 0 "hooks mixed (behind) → the update completes (exit 0)"
 has "$(cat "$work/install.log")" "--optout-if-recorded" "hooks mixed → the repair asks install.sh to honour the recorded opt-outs"
 hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks mixed → ...and does not pass --no-hooks, which would suppress the new hook too"
-has "$out" "a newly shipped hook is still wired" "hooks mixed → the run says the new hook arrives"
+has "$out" "kept as your per-hook opt-out: precommit-gate.sh "$'\n' "hooks mixed → only the hook removed by hand is named as the opt-out"
+has "$out" "Not removed by hand, so the next self-heal wires them: session-context.sh" "hooks mixed → ...and the new hook is named as one the update wires"
 hasnt "$out" "left UNLINKED" "hooks mixed → the new hook is not left unlinked"
 rm -f "$fh/.claude/settings.json"
 

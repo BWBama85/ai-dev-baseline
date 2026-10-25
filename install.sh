@@ -133,7 +133,15 @@ while [ $# -gt 0 ]; do
     --agent) AGENTS+=("$2"); shift 2 ;;
     --no-hooks) WIRE_HOOKS=0; shift ;;
     --skip-hook)
-      if [ $# -lt 2 ] || ! adb_claude_hook_scripts | grep -qxF -- "$2"; then
+      # String equality per shipped name, never `grep -xF "$2"`: grep reads a newline inside the
+      # pattern as two patterns, so `$'nope\nprecommit-gate.sh'` would be accepted.
+      _adb_known=0
+      if [ $# -ge 2 ]; then
+        while IFS= read -r _adb_h; do [ "$_adb_h" = "$2" ] && _adb_known=1; done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+      fi
+      if [ "$_adb_known" -eq 0 ]; then
         echo "--skip-hook needs one of: $(adb_claude_hook_scripts | tr '\n' ' ')(got: ${2-nothing})" >&2
         exit 2
       fi
