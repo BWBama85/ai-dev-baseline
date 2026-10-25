@@ -770,6 +770,50 @@ hasnt "$INSTALLER_OUT" "hooks  wired" "...and never reports the hooks as wired"
 cmp -s "$work/rw-before.json" "$rw_home/.claude/settings.json" && ok || bad "an unwritable receipt must leave settings.json as it was before the install"
 rmdir "$(adb_claude_hooks_receipt "$rw_home")"
 installer_clean "--skip-hook once the receipt path is clear" "$rw_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+# THE PRE-IMAGE IS BYTE-EXACT: an EMPTY settings.json goes back empty, not as the `{}` the wiring
+# normalized it to, and one that did not exist is removed again. `--no-sandbox` so the sandbox
+# surface, which runs after the hooks, writes nothing of its own.
+for pre in empty absent; do
+  pi_home="$work/preimage-$pre"; mkdir -p "$pi_home/.claude"
+  [ "$pre" = empty ] && : > "$pi_home/.claude/settings.json"
+  mkdir "$(adb_claude_hooks_receipt "$pi_home")"
+  run_installer "unwritable receipt over a(n) $pre settings.json" "$pi_home" "$ROOT/install.sh" --no-sandbox
+  no "$INSTALLER_RC" "unwritable receipt, $pre settings.json → the install fails"
+  if [ "$pre" = empty ]; then
+    [ -f "$pi_home/.claude/settings.json" ] && [ ! -s "$pi_home/.claude/settings.json" ] && ok \
+      || bad "unwritable receipt → an EMPTY settings.json must be put back empty, not as {}"
+  else
+    [ ! -e "$pi_home/.claude/settings.json" ] && ok || bad "unwritable receipt → a settings.json that did not exist must be removed again"
+  fi
+done
+
+# A SIGNAL DURING THE FAILED WIRING IS HONOURED ONLY AFTER THIS RUN'S LINKS ARE TAKEN BACK (#444
+# review): honoured first, it left fresh hook links with no entries — the per-hook opt-out's shape.
+# A `cp` shim sends TERM to the installer at the exact moment it copies the settings pre-image
+# back, which is inside the failure path; the run must still exit 143, and with no hook link left.
+sig_bin="$work/sigbin"; mkdir -p "$sig_bin"
+printf '#!/bin/sh\ncase "$*" in *.restore*) kill -TERM "$PPID" ;; esac\nexec %s "$@"\n' "$(command -v cp)" > "$sig_bin/cp"; chmod +x "$sig_bin/cp"
+sg_home="$work/sighome"; mkdir -p "$sg_home/.claude"; printf '{}\n' > "$sg_home/.claude/settings.json"
+mkdir "$(adb_claude_hooks_receipt "$sg_home")"
+sg_out="$(HOME="$sg_home" PATH="$sig_bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-sandbox 2>&1)"; sg_rc=$?
+eq "$sg_rc" "143" "TERM inside a failed wiring → the install still exits 143"
+has "$sg_out" "taken back" "TERM inside a failed wiring → ...after taking back this run's hook links"
+sg_left=""
+while IFS= read -r s; do
+  if [ -e "$sg_home/.claude/scripts/$s" ] || [ -L "$sg_home/.claude/scripts/$s" ]; then sg_left="$sg_left $s"; fi
+done < <(adb_claude_hook_scripts)
+eq "$sg_left" "" "TERM inside a failed wiring → no hook link of this run is left behind"
+
+# AN EXPLICIT SKIP THAT CANNOT BE RECORDED FAILS THE INSTALL (#444 review). Without jq nothing is
+# wired and no receipt is written, so once jq arrives the next self-heal would read the skipped hook
+# as never landed and wire it. The no-jq PATH mirrors every other command.
+nj_bin="$work/nojq"; check_mirror_without jq "$nj_bin"
+nj_home="$work/nojqhome"; mkdir -p "$nj_home/.claude"
+nj_out="$(HOME="$nj_home" PATH="$nj_bin" "$BASH" "$ROOT/install.sh" --agent claude --no-sandbox --skip-hook precommit-gate.sh 2>&1)"; nj_rc=$?
+no "$nj_rc" "--skip-hook without jq → the install fails"
+has "$nj_out" "--skip-hook could not be recorded without jq" "...and says why"
+nj_out="$(HOME="$nj_home" PATH="$nj_bin" "$BASH" "$ROOT/install.sh" --agent claude --no-sandbox 2>&1)"; nj_rc=$?
+eq "$nj_rc" "0" "no jq and no --skip-hook → still the tolerated degradation (exit 0)"
 eq "$(wired_set "$rw_home")" "$(all_but precommit-gate.sh)" "recovery → the skip lands"
 eq "$(adb_claude_hooks_missing_deliberate "$rw_home/.claude/settings.json" "$ROOT" "$rw_home" | tr -d '\n')" "precommit-gate.sh" \
   "recovery → ...with its receipt, so it reads as the operator's opt-out"

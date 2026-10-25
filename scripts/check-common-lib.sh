@@ -1380,6 +1380,17 @@ if [ "$(id -u)" -ne 0 ]; then
   adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null; eq "$?" "2" "hooks-deliberate: a receipt with no read permission is status 2"
   chmod 600 "$(adb_claude_hooks_receipt "$hs_home")"; rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 fi
+# ...and NEVER BLOCKS OR READS UNBOUNDED (#444 review): a FIFO there with no writer hung the read
+# while the installer held the settings lock, and a huge file was read whole. Bounded here, so a
+# regression is a red row rather than a hung suite (124 is the bound firing).
+mkfifo "$(adb_claude_hooks_receipt "$hs_home")"
+adb_run_bounded 10 1 "$BASH" -c '. "$1"; adb_claude_hooks_missing_deliberate "$2" "$3" "$4"' _ "$PWD/scripts/lib/common.sh" "$hs_part" "$hs_src" "$hs_home" >/dev/null
+eq "$?" "2" "hooks-deliberate: a FIFO at the receipt path is status 2, never a blocked read"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+{ printf 'precommit-gate.sh\n'; head -c 65536 /dev/zero | tr '\0' 'x'; } > "$(adb_claude_hooks_receipt "$hs_home")"
+adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
+eq "$?" "2" "hooks-deliberate: a receipt over 64 KiB is status 2, not read whole"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"
 rm -f "$hs_home/.claude/scripts/precommit-gate.sh"

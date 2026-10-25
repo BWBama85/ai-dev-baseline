@@ -115,34 +115,8 @@ write_gh_shim
 PATH="$shimbin:$PATH"
 export PATH
 # --- PATHs with exactly ONE tool missing -------------------------------------------------------
-# Shadowing a tool with a stub cannot express absence: `command -v jq` would still succeed, which is
-# the very test `admit` performs. And a hand-rolled minimal PATH is worse — it removes `dirname`
-# too, so the library's own resolution fails and the case reports a broken install instead of the
-# behaviour under test (observed: rc 1, not 12). So mirror EVERY reachable command as a symlink and
-# omit exactly one. The suite's own interpreter is passed explicitly, because `bash` resolved from a
-# reduced PATH on macOS is the 3.2 build and the floor gate would fire instead of the case.
-mirror_without() {   # <tool> <dest-dir>
-  local drop="$1" dest="$2" pd exe base
-  local -a pdirs=()
-  mkdir -p "$dest"
-  IFS=: read -r -a pdirs <<< "$PATH"
-  for pd in "${pdirs[@]}"; do
-    [ -d "$pd" ] || continue
-    for exe in "$pd"/*; do
-      base="${exe##*/}"
-      [ "$base" = "$drop" ] && continue
-      [ -x "$exe" ] || continue
-      [ -e "$dest/$base" ] || ln -s "$exe" "$dest/$base" 2>/dev/null
-    done
-  done
-  # A mirror that dropped the wrong thing, or nothing, makes its case vacuous — so say so here
-  # rather than letting the case pass for the wrong reason.
-  if [ -e "$dest/$drop" ] || ! [ -x "$dest/git" ]; then
-    bad "0 the no-$drop PATH mirror is broken ($drop present, or git missing) — that case would assert nothing"
-  fi
-}
-nojq="$work/nojq"; mirror_without jq "$nojq"
-nogh="$work/nogh"; mirror_without gh "$nogh"
+nojq="$work/nojq"; check_mirror_without jq "$nojq"
+nogh="$work/nogh"; check_mirror_without gh "$nogh"
 
 # --- fixtures -----------------------------------------------------------------------------------
 # new_repo — a throwaway repo with one commit and an empty state dir. Prints its path, and NOTHING

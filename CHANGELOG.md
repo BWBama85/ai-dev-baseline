@@ -39,7 +39,11 @@ only by a published release, which is what these entries are the notes for.
   tolerance, `adb_claude_hooks_deferred` and `adb_claude_hook_dest_deferred`. An install that
   stopgap left behind is repaired by the next `baseline update`. The wiring receipt still lists
   every shipped hook, and now also counts a hook skipped by name as decided. That is what lets the
-  next update read the hook's absence as your choice.
+  next update read the hook's absence as your choice. So the entries and the receipt now land
+  together or not at all. A receipt that cannot be read stops the install before it changes
+  anything; this covers a FIFO or a file over 64 KiB at that path. A receipt that cannot be
+  written fails the wiring and restores `settings.json` byte for byte. A `--skip-hook` that cannot
+  be recorded because jq is missing fails the install.
 - **An agent whose root doc went missing is repaired, not forgotten (#539).** `baseline update`
   decided which agents were installed by asking only whether `~/.<agent>/<root doc>` was a link into
   the clone. Once that one link was gone, the agent dropped out of the update entirely: none of its

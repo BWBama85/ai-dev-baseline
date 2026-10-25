@@ -55,7 +55,7 @@ Options:
 |---|---|
 | `--agent <claude\|codex\|gemini>` | Repeatable. Which agent(s) to install. Default: `claude`. |
 | `--no-hooks` | Skip wiring the global Stop-hook gates into `~/.claude/settings.json`. |
-| `--skip-hook <name>` | Repeatable. Wire every shipped hook **except** `<name>` (its exact script name, e.g. `precommit-gate.sh`), removing its entry if it was wired. Recorded, so `baseline update` keeps honouring it. An unknown name exits 2 before anything changes; `--no-hooks` wins over it. |
+| `--skip-hook <name>` | Repeatable. Wire every shipped hook **except** `<name>` (its exact script name, e.g. `precommit-gate.sh`), removing its entry if it was wired. Recorded, so `baseline update` keeps honouring it — which needs `jq`: without it the install fails rather than leave the skip unrecorded. An unknown name exits 2 before anything changes; `--no-hooks` wins over it. |
 | `--no-sandbox` | Skip the [least-privilege sandbox settings](#least-privilege-sandbox-settings). Recorded, so `baseline update` keeps honouring it. |
 | `-h`, `--help` | Print the usage header. |
 

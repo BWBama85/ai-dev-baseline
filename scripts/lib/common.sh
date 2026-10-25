@@ -490,17 +490,25 @@ EOF
 # pathname is a collision the repair will back up, not a choice the operator made about our hook.
 # `install.sh --optout-if-recorded` skips exactly these, under the settings lock and before it
 # links anything, and `bin/baseline` asks it to tell `none`'s opt-out from a never-wired install.
-# Returns 0 with the list (possibly empty); 2, printing nothing, when a receipt exists and cannot be
-# read — an unreadable receipt is not one that omits every hook, and reading it as one re-wires
-# exactly the hooks the operator removed.
+# Returns 0 with the list (possibly empty); 2, printing nothing, when something is at the receipt
+# path that is not a readable regular file of at most 64 KiB (a real one is a few lines) — an
+# unreadable receipt is not one that omits every hook, and reading it as one re-wires exactly the
+# hooks the operator removed. Regular files only, so a FIFO there cannot block the read.
 # Usage: adb_claude_hooks_missing_deliberate <settings.json> <src> [home]
 adb_claude_hooks_missing_deliberate() {
-  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt recorded="" have_receipt=0
+  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt recorded="" have_receipt=0 size
   receipt="$(adb_claude_hooks_receipt "$home")"
-  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-    have_receipt=1
-    recorded="$(cat "$receipt" 2>/dev/null)" || return 2
-  fi
+  case "$(adb_settings_doc_state "$receipt")" in
+    absent) ;;
+    present|empty)
+      have_receipt=1
+      size="$(wc -c < "$receipt" 2>/dev/null)" || return 2
+      size="$(printf '%s' "$size" | tr -d ' ')"
+      case "$size" in ''|*[!0-9]*) return 2 ;; esac
+      [ "$size" -le 65536 ] || return 2
+      recorded="$(head -c 65536 "$receipt" 2>/dev/null)" || return 2 ;;
+    *) return 2 ;;
+  esac
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     adb_link_into "$home/.claude/scripts/$s" "$src" || continue
