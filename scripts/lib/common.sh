@@ -491,7 +491,8 @@ EOF
 # `install.sh --optout-if-recorded` skips exactly these, under the settings lock and before it
 # links anything, and `bin/baseline` asks it to tell `none`'s opt-out from a never-wired install.
 # Returns 0 with the list (possibly empty); 2, printing nothing, when something is at the receipt
-# path that is not a readable regular file of at most 64 KiB (a real one is a few lines) — an
+# path that is not a readable regular file of at most 64 KiB holding only hook names and newlines
+# (a real one is a few lines) — an
 # unreadable receipt is not one that omits every hook, and reading it as one re-wires exactly the
 # hooks the operator removed. Regular files only, so a FIFO there cannot block the read.
 # Usage: adb_claude_hooks_missing_deliberate <settings.json> <src> [home]
@@ -506,6 +507,11 @@ adb_claude_hooks_missing_deliberate() {
       size="$(printf '%s' "$size" | tr -d ' ')"
       case "$size" in ''|*[!0-9]*) return 2 ;; esac
       [ "$size" -le 65536 ] || return 2
+      # ITS BYTES, NOT ITS CAPTURE: `$(…)` drops a NUL, which would turn `precommit-\0gate.sh`
+      # into a name the receipt never held. Hook names, newlines, nothing else.
+      size="$(head -c 65536 "$receipt" 2>/dev/null | LC_ALL=C tr -d 'a-z0-9._\n-' | wc -c)"
+      size="$(printf '%s' "$size" | tr -d ' ')"
+      [ "$size" = 0 ] || return 2
       recorded="$(head -c 65536 "$receipt" 2>/dev/null)" || return 2 ;;
     *) return 2 ;;
   esac
@@ -872,9 +878,10 @@ _adb_arm_lock_traps() {
 # Deferring rather than ignoring: the signal is honoured the moment the pair is complete, so a
 # Ctrl-C still works, it just lands on a boundary the file system can survive. `_ADB_SIGNAL_PENDING`
 # carries the status the handler would have exited with. (PR review)
+# NESTS: it never clears `_ADB_SIGNAL_PENDING` (the resume does, once it has read it), so a signal
+# an outer deferral already holds is still honoured when an inner transaction defers again.
 # Globals: _ADB_SIGNAL_PENDING (written)
 adb_settings_lock_defer_signals() {
-  _ADB_SIGNAL_PENDING=""
   trap '_ADB_SIGNAL_PENDING=143' TERM
   trap '_ADB_SIGNAL_PENDING=130' INT
   trap '_ADB_SIGNAL_PENDING=129' HUP

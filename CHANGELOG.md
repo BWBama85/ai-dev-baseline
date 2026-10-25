@@ -39,11 +39,18 @@ only by a published release, which is what these entries are the notes for.
   tolerance, `adb_claude_hooks_deferred` and `adb_claude_hook_dest_deferred`. An install that
   stopgap left behind is repaired by the next `baseline update`. The wiring receipt still lists
   every shipped hook, and now also counts a hook skipped by name as decided. That is what lets the
-  next update read the hook's absence as your choice. So the entries and the receipt now land
-  together or not at all. A receipt that cannot be read stops the install before it changes
-  anything; this covers a FIFO or a file over 64 KiB at that path. A receipt that cannot be
-  written fails the wiring and restores `settings.json` byte for byte. A `--skip-hook` that cannot
-  be recorded because jq is missing fails the install.
+  next update read the hook's absence as your choice. So the hook entries and the receipt now land
+  together or not at all. Under `--optout-if-recorded`, which is how `baseline update` runs the
+  installer, a receipt that cannot be read stops the install before it links or writes anything.
+  "Cannot be read" covers an unreadable file, anything other than a regular file, a file over
+  64 KiB, and one holding anything but hook names. A receipt that cannot be written fails the hook
+  wiring and puts `settings.json` back exactly as it was before the wiring, a symlink included. The
+  sandbox settings, a separate surface written afterwards, are still applied. A signal that
+  arrives during the wiring is honoured only after this run's new hook links are wired or taken
+  back. A `--skip-hook` that cannot be recorded because jq is missing fails the install. The hook
+  wiring also no longer writes `{}` into an empty `settings.json` in place, which followed a
+  symlink out of `~/.claude`. It now refuses a `settings.json` that does not resolve to a readable
+  file, as the sandbox surface already did.
 - **An agent whose root doc went missing is repaired, not forgotten (#539).** `baseline update`
   decided which agents were installed by asking only whether `~/.<agent>/<root doc>` was a link into
   the clone. Once that one link was gone, the agent dropped out of the update entirely: none of its

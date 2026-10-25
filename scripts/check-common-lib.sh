@@ -1391,6 +1391,18 @@ rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
 eq "$?" "2" "hooks-deliberate: a receipt over 64 KiB is status 2, not read whole"
 rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+# ...and IS JUDGED ON ITS BYTES (#444 review): `$(…)` drops a NUL, so `precommit-\0gate.sh` read as
+# a name the receipt never held. Hook names and newlines only.
+for bad_rcpt in 'precommit-\0gate.sh\n' 'Precommit-gate.sh\n' 'precommit-gate.sh \n' 'precommit-gate.sh\r\n'; do
+  # shellcheck disable=SC2059   # the escapes ARE the fixture
+  printf "$bad_rcpt" > "$(adb_claude_hooks_receipt "$hs_home")"
+  adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
+  eq "$?" "2" "hooks-deliberate: a receipt holding a byte outside the hook-name grammar ($bad_rcpt) is status 2"
+done
+printf 'precommit-gate.sh\nsession-context.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
+  "hooks-deliberate: ...while a well-formed receipt still reads"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"
 rm -f "$hs_home/.claude/scripts/precommit-gate.sh"

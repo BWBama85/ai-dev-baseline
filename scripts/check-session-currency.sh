@@ -804,6 +804,34 @@ while IFS= read -r s; do
 done < <(adb_claude_hook_scripts)
 eq "$sg_left" "" "TERM inside a failed wiring → no hook link of this run is left behind"
 
+# ...AND ONE THAT ARRIVES BEFORE ANYTHING IS PUBLISHED — while jq builds the entries, with this
+# run's hook links already made — is held until the wiring completes: an exit there left every
+# fresh link with no entry and no receipt. A `jq` shim sends TERM on the wiring filter's own call.
+sig2_bin="$work/sigbin2"; mkdir -p "$sig2_bin"
+printf '#!/bin/sh\ncase "$*" in *"--argjson groups"*) kill -TERM "$PPID" ;; esac\nexec %s "$@"\n' "$(command -v jq)" > "$sig2_bin/jq"; chmod +x "$sig2_bin/jq"
+sg2_home="$work/sighome2"; mkdir -p "$sg2_home/.claude"; printf '{}\n' > "$sg2_home/.claude/settings.json"
+HOME="$sg2_home" PATH="$sig2_bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-sandbox >/dev/null 2>&1; sg2_rc=$?
+eq "$sg2_rc" "143" "TERM while jq builds the entries → the install still exits 143"
+eq "$(wired_set "$sg2_home")" "$(all_but)" "TERM while jq builds the entries → ...once every fresh link is wired, never leaving one without its entry"
+[ -f "$(adb_claude_hooks_receipt "$sg2_home")" ] && ok || bad "TERM while jq builds the entries → ...and with the receipt written"
+
+# A SYMLINKED settings.json GOES BACK AS THE SAME SYMLINK (#444 review): the publish replaces the
+# link, not its target, so the rollback recreates the link — exact target, target bytes untouched.
+sl_home="$work/symsettings"; mkdir -p "$sl_home/.claude"
+printf '{"model":"opus"}\n' > "$sl_home/real-settings.json"; cp "$sl_home/real-settings.json" "$work/sl-target-before"
+ln -s "$sl_home/real-settings.json" "$sl_home/.claude/settings.json"
+mkdir "$(adb_claude_hooks_receipt "$sl_home")"
+run_installer "unwritable receipt over a symlinked settings.json" "$sl_home" "$ROOT/install.sh" --no-sandbox
+no "$INSTALLER_RC" "unwritable receipt, symlinked settings.json → the install fails"
+eq "$(readlink -n "$sl_home/.claude/settings.json" 2>/dev/null)" "$sl_home/real-settings.json" "...and settings.json is the same symlink again"
+cmp -s "$work/sl-target-before" "$sl_home/real-settings.json" && ok || bad "...and its target was never written"
+# A DANGLING settings.json is refused, never written through (the sandbox surface's rule, too).
+dg_home="$work/danglingsettings"; mkdir -p "$dg_home/.claude"; ln -s "$dg_home/nowhere.json" "$dg_home/.claude/settings.json"
+run_installer "a dangling settings.json" "$dg_home" "$ROOT/install.sh" --no-sandbox
+no "$INSTALLER_RC" "a dangling settings.json → the hook wiring refuses"
+has "$INSTALLER_OUT" "does not resolve to a readable file — hooks NOT wired" "...and says why"
+[ ! -e "$dg_home/nowhere.json" ] && [ -L "$dg_home/.claude/settings.json" ] && ok || bad "...and neither creates the link's target nor replaces the link"
+
 # AN EXPLICIT SKIP THAT CANNOT BE RECORDED FAILS THE INSTALL (#444 review). Without jq nothing is
 # wired and no receipt is written, so once jq arrives the next self-heal would read the skipped hook
 # as never landed and wire it. The no-jq PATH mirrors every other command.

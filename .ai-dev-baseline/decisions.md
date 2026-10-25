@@ -10948,9 +10948,27 @@ survive is the part a later reader needs.
                hook into an install made with `--no-hooks`.
              - A receipt holding only the hooks actually wired. The next update would then read a
                skipped hook as never landed and wire it.
+- review:    The independent review found two defects. A receipt that could not be read was taken
+             as one listing nothing, so the removed hooks were re-wired. A receipt that could not
+             be written only warned, which left a skip recorded nowhere. Both are fixed: the reader
+             returns 2 and the installer aborts before it links anything; a receipt write failure
+             fails the wiring and puts `settings.json` back. Local pass 1 found four more: a FIFO
+             at the receipt path blocking the read, a signal skipping the take-back of fresh
+             links, an explicit skip lost without jq, and an empty `settings.json` rolled back as
+             `{}`. Local pass 2 found three more defects and one wording problem. A signal during
+             the jq filter, before any deferral, left the fresh links. A symlinked `settings.json`
+             came back from the rollback as a regular file. NUL bytes were dropped from the
+             receipt. The CHANGELOG overstated what is guaranteed. All are fixed (owner decision
+             2026-10-25 after pass 2: fix all, take the third pass). One deferral now spans the
+             hook links through their wiring or take-back. `adb_settings_lock_defer_signals`
+             nests, so it keeps a signal an outer deferral holds. The pre-image is the file's own
+             bytes and its link target. An empty or absent file is substituted, never written in
+             place, which follows `wire_settings`. A file that does not resolve is refused.
 - known-gap: - A `partial` repair now rewrites every baseline group it keeps, so an operator's edit
                to a remaining hook (a timeout, say) is reset, as it already was on a fully wired
                install.
+             - A failed hook wiring still lets the sandbox surface write afterwards; the two
+               surfaces are independent by design (#248), so "put back" covers the hook wiring.
              - On the `current` path, a hook that is linked but unwired and missing from the receipt
                (an install killed between the link and the entry) is reported but not repaired until
                the next self-heal. That gap predates #444, which leaves it unchanged.

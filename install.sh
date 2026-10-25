@@ -127,9 +127,6 @@ OPTOUT_IF_RECORDED=0
 # is linked or written.
 SKIP_HOOKS=""
 SKIP_EXPLICIT=0   # 1 once `--skip-hook` is given: that choice must be recorded or the install fails
-# 1 while wire_hooks has returned a failure from inside its signal deferral; the caller resumes
-# only after it has taken back this run's links.
-_ADB_HOOKS_DEFERRED=0
 AGENTS=()
 
 while [ $# -gt 0 ]; do
@@ -1319,6 +1316,10 @@ _install_claude_locked() {
   # which `$(…)` alone would strip and a line-structured record could not carry.
   local -a fresh_name=() fresh_prior=()
   local s dest prior
+  # ONE DEFERRAL FROM HERE THROUGH THE TAKE-BACK BELOW: a signal honoured anywhere between creating
+  # this run's hook links and either wiring them or taking them back leaves owned links with no
+  # entries — the per-hook opt-out's exact shape. wire_hooks defers again inside; that nests.
+  adb_settings_lock_defer_signals   # transaction: this run's hook links + their wiring or take-back
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     dest="$HOME/.claude/scripts/$s"
@@ -1341,14 +1342,7 @@ EOF
   # gates sat silently unwired. (A missing jq deliberately returns 0; see wire_hooks.)
   if [ "$WIRE_HOOKS" -eq 1 ]; then
     local wrc=0 i
-    _ADB_HOOKS_DEFERRED=0
     wire_hooks || wrc=$?
-    # THE TAKE-BACK RUNS UNDER THE DEFERRAL TOO: a signal honoured between a failed wiring and
-    # this rollback would leave this run's fresh links, the per-hook opt-out's exact shape.
-    # wire_hooks still holds it when it failed inside its transaction; otherwise it starts here.
-    if [ "$wrc" -ne 0 ] && [ "$_ADB_HOOKS_DEFERRED" -eq 0 ]; then
-      adb_settings_lock_defer_signals   # transaction: failed wiring + take-back of this run's links
-    fi
     # NOT WIRED — failed (rc 1, the install fails too) or SKIPPED for want of jq (rc 3, a documented
     # degradation that does not fail the install). Either way the links this run added would be an
     # owned link with no entry, the per-hook opt-out's exact shape, so both take them back.
@@ -1374,11 +1368,11 @@ EOF
         adb_info "  WARN   --skip-hook could not be recorded without jq — install jq and re-run"
         rc=1
       fi
-      adb_settings_lock_resume_signals
     fi
   else
     adb_info "  (gates not wired — --no-hooks)"
   fi
+  adb_settings_lock_resume_signals
 
   # THE SECOND SETTINGS SURFACE (#248), and deliberately AFTER the hook wiring, not folded into
   # it: wire_hooks copies the PRISTINE settings.json into $BACKUP_DIR, and wire_settings must see
@@ -1435,23 +1429,30 @@ wire_hooks() {
   groups="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json")" || {
     adb_info "  WARN   could not read agents/claude/settings.hooks.json — hooks NOT wired"; return 1; }
   re="$(adb_claude_hook_regex "$HOME")"
-  # `-s`, not `-f`: an EMPTY settings.json is not valid JSON, but `jq` reads empty input as an
-  # empty stream — it exits 0 and prints NOTHING, so the guard below would not fire and the `mv`
-  # would install a 0-byte file while reporting success. That failure is self-entrenching:
-  # bin/baseline's adb_hooks_wired then sees no precommit-gate.sh, concludes the user chose
-  # --no-hooks, and passes --no-hooks to every future self-heal, so the gates never come back.
-  # The pre-image is what a failed receipt write puts back, so no backup means no wiring. Taken
-  # BEFORE an empty file is normalized to {}, so "put back as it was" is byte-exact; a file that
-  # did not exist is removed again instead.
-  local existed=0
-  if [ -e "$settings" ] || [ -L "$settings" ]; then existed=1; fi
+  # AN EMPTY OR ABSENT settings.json IS SUBSTITUTED, NEVER CREATED IN PLACE — the rule
+  # wire_settings follows, for its reason: writing `{}` follows a symlink out of ~/.claude. jq reads
+  # `-n` instead (the filter builds the same document from null), and the destination is touched
+  # once, by the publish. A document this run cannot see is refused, never assumed empty.
+  # (An empty file is not valid JSON, and jq reads it as an empty stream: exit 0, no output — so
+  # read directly it would publish a 0-byte settings.json, which the `-s` guard below also refuses.)
+  local docst existed=0 prior_link=""
+  local -a jqsrc=("$settings")
+  docst="$(adb_settings_doc_state "$settings")"
+  case "$docst" in
+    inaccessible|dangling)
+      adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — hooks NOT wired"
+      return 1 ;;
+    absent) jqsrc=(-n) ;;
+    empty)  jqsrc=(-n); existed=1 ;;
+    *)      existed=1 ;;
+  esac
+  # THE PRE-IMAGE, which a failed receipt write puts back, so no backup means no wiring: the file's
+  # bytes, and for a symlink its exact target too, since the publish replaces the link and leaves
+  # the target alone. A file that did not exist is removed again; its backup is a `{}`, as before.
+  if [ -L "$settings" ]; then prior_link="$(readlink -n "$settings"; printf x)"; prior_link="${prior_link%x}"; fi
   if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" \
-     || { [ "$existed" -eq 1 ] && ! cp "$settings" "$BACKUP_DIR$settings"; }; then
-    adb_info "  WARN   could not back up ~/.claude/settings.json under $BACKUP_DIR — hooks NOT wired"
-    return 1
-  fi
-  [ -s "$settings" ] || echo '{}' > "$settings"
-  if [ "$existed" -eq 0 ] && ! cp "$settings" "$BACKUP_DIR$settings"; then
+     || { [ "$existed" -eq 1 ] && ! cp "$settings" "$BACKUP_DIR$settings"; } \
+     || { [ "$existed" -eq 0 ] && ! printf '{}\n' > "$BACKUP_DIR$settings"; }; then
     adb_info "  WARN   could not back up ~/.claude/settings.json under $BACKUP_DIR — hooks NOT wired"
     return 1
   fi
@@ -1471,12 +1472,12 @@ wire_hooks() {
                 + $ours) as $kept
             | if ($kept | length) == 0 and (.hooks | has($e.key) | not) then .
               else .hooks[$e.key] = $kept end)
-      ' "$settings" > "$tmp"; then
+      ' "${jqsrc[@]}" > "$tmp"; then
     rm -f "$tmp"
     adb_info "  WARN   ~/.claude/settings.json is not valid JSON — hooks NOT wired (restore from the backup)"
     return 1
   fi
-  # Belt to the -s brace above: never replace the real file with an empty one, whatever the
+  # Belt to the substitution above: never replace the real file with an empty one, whatever the
   # reason (a full disk truncates the write just as effectively as an empty input does).
   if [ ! -s "$tmp" ]; then
     rm -f "$tmp"
@@ -1494,8 +1495,7 @@ wire_hooks() {
   adb_settings_lock_defer_signals   # transaction: hook entries + wiring receipt
   if ! adb_publish_json "$tmp" "$settings"; then
     adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"
-    _ADB_HOOKS_DEFERRED=1   # the caller resumes once it has taken back this run's links
-    return 1
+    return 1   # still deferred: the caller resumes once it has taken back this run's links
   fi
   # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed
   # entry from one that never landed (adb_claude_hooks_receipt), and the only record that a
@@ -1506,16 +1506,17 @@ wire_hooks() {
   if ! { adb_claude_hook_scripts > "$receipt.adb.$$.tmp" 2>/dev/null && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; }; then
     rm -f "$receipt.adb.$$.tmp"
     if [ "$existed" -eq 0 ] && rm -f "$settings"; then
-      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json, which did not exist, removed again)"
-    elif [ "$existed" -eq 1 ] && cp "$BACKUP_DIR$settings" "$settings.adb.$$.restore" 2>/dev/null \
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json, which did not exist before the hook wiring, removed again)"
+    elif [ -n "$prior_link" ] && rm -f "$settings" && ln -s "$prior_link" "$settings"; then
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as the symlink it was before the hook wiring)"
+    elif [ "$existed" -eq 1 ] && [ -z "$prior_link" ] && cp "$BACKUP_DIR$settings" "$settings.adb.$$.restore" 2>/dev/null \
        && adb_publish_json "$settings.adb.$$.restore" "$settings" --allow-empty; then
-      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as it was)"
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as it was before the hook wiring)"
     else
       rm -f "$settings.adb.$$.restore"
       adb_info "  WARN   could not write the wiring receipt $receipt, nor put ~/.claude/settings.json back — restore it from $BACKUP_DIR$settings"
     fi
-    _ADB_HOOKS_DEFERRED=1   # the caller resumes once it has taken back this run's links
-    return 1
+    return 1   # still deferred: the caller resumes once it has taken back this run's links
   fi
   adb_settings_lock_resume_signals
   adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"

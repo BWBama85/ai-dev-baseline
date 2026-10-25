@@ -682,11 +682,9 @@ EOF
   # The settings opt-out is EXPLICIT, not inferred (D98): `--no-sandbox` recorded a disposition,
   # and re-passing the flag is what keeps honouring it. Absence of the keys is deliberately NOT
   # the signal — four different causes produce it, and only this one is a choice.
-  # ASKED BY THE CHILD, UNDER THE SETTINGS LOCK. Read here it is already stale by the time the installer
-  # acquires that lock: a direct `install.sh --no-sandbox` landing in between recorded the choice and
-  # this self-heal applied the fragment straight over it. The flag says "honour a recorded opt-out", and
-  # the installer re-reads the disposition once it holds the lock. (PR review) The per-hook opt-outs are
-  # read there for the same reason: `--skip-hook` names computed here could be stale by then.
+  # ASKED BY THE CHILD, UNDER THE SETTINGS LOCK: read here, an opt-out can be stale by the time the
+  # installer holds the lock. `--optout-if-recorded` has the installer re-read the recorded
+  # `--no-sandbox` and the per-hook opt-outs there (D98, D138).
   if adb_agent_ours claude "$SRC"; then
     args+=(--optout-if-recorded)   # optout-revalidated-by-child
   fi
