@@ -772,6 +772,12 @@ HOME="$wd_home" bash "$wd_repo/uninstall.sh" --agent claude >"$work/wd-un.log" 2
 [ ! -e "$wd_home/.claude/.adb-settings-owned" ] && ok || bad "uninstall after a withdrawal must remove the refusal receipt"
 [ "$(jq -c . "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
   || bad "uninstall after a withdrawal must leave the operator's keys exactly as they are; got $(jq -c . "$wd_home/.claude/settings.json")"
+# The automatic update discards the installer's output, so its refusal line is the only place the
+# withdrawal can be told. Both refusal reports must say the keys may have been removed.
+awk '/^    7\)/{f=1} f && /were REMOVED/{print "ok"; exit} f && /^      ;;/{exit}' "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
+  || bad "the automatic update's refusal line must say the earlier protections were REMOVED"
+awk '/^adb_settings_refused_now\(\)/{f=1} f && /were REMOVED/{print "ok"; exit} f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "baseline's refusal message must say the earlier protections were REMOVED"
 fi
 
 if check_block the-created-container-cleanup-is-guarded the-merge-s-verdicts-under-the-all-or-no; then

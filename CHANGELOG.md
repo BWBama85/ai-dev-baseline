@@ -13,8 +13,8 @@ only by a published release, which is what these entries are the notes for.
 - **The shell practice names both shells' behaviour (#577).** It said an unquoted variable "will
   word-split or glob-expand", which is true in bash and false in zsh, the shell an agent's tool
   usually runs on macOS. The rules now say what each shell does, and a new rule says never to rely
-  on word splitting or on an unmatched glob passing through (zsh keeps a non-empty `$list` as one
-  word and aborts on `no matches found`). The glob rule names zsh's `*(N)` guard. `docs/philosophy.md`
+  on word splitting or on an unmatched glob passing through (zsh keeps a non-empty scalar `$list` as
+  one word and aborts on `no matches found`). The glob rule names zsh's `*(N)` guard. `docs/philosophy.md`
   matches, and `check-fact-drift.sh` refuses the old universal wording. Making Claude Code's Bash
   tool run bash 5.3 (`CLAUDE_CODE_SHELL`) is not part of this change (D140); #577 stays open
   for it.

@@ -329,8 +329,10 @@ adb_settings_refused_now() {
   esac
   [ "$_rd" = skipped-blocked ] || return 1
   echo "baseline: the least-privilege sandbox settings were NOT applied — you already own one of" >&2
-  echo "          the keys they ship, so the whole policy was refused (#248). Run ./install.sh in" >&2
-  echo "          $SRC to see which, then remove or rename those keys and re-run it." >&2
+  echo "          the keys they ship, so the whole policy was refused (#248). If an earlier install" >&2
+  echo "          had applied it and you had edited none of its keys, they were REMOVED (D139): the" >&2
+  echo "          protections are off. Run ./install.sh in $SRC to see what is in the way," >&2
+  echo "          then remove or rename those keys and re-run it." >&2
   return 0
 }
 

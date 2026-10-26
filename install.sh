@@ -679,7 +679,10 @@ _adb_wire_settings_locked() {
     # receipt to invalidate, so it returns 0 and this branch used to report success having recorded
     # nothing: `adb_settings_pending` then retries the refusal forever and a self-heal calls it a
     # repair. The refusal not reaching disk is a failure of this branch either way. (PR review)
-    _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written" || true
+    # THE DOCUMENT MAY ALREADY HAVE CHANGED: a retirement or a withdrawal was published above.
+    local _blk_holds="the refusal stands and nothing was written"
+    [ "$_blk_changed" -eq 1 ] && _blk_holds="the refusal stands, and ${gone:-an empty object we created} WAS removed from settings.json"
+    _adb_invalidate_stale_receipt "$receipt" "$_blk_holds" || true
     adb_info "  WARN   the refusal was NOT recorded, so \`baseline update\` will keep retrying it and"
     adb_info "         reporting a repair that applied nothing. Re-run once $receipt is writable."
     adb_settings_lock_resume_signals
