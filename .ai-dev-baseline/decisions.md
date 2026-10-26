@@ -11057,9 +11057,17 @@ survive is the part a later reader needs.
              a splice into the file Codex actually reads.
 - decision:  REFUSE (implementer, 2026-10-26, within the options the issue gives). `install` and
              `upgrade` exit `10` before fetching or writing anything when the agent set includes
-             Codex and `[ -f AGENTS.override.md ]` holds at the project root, and name the file.
-             `_pi_check_surfaces` reports an override added after the install as `shadowed`
-             (`status` 20), and the update notice says the merged surfaces are incomplete.
+             Codex and a root `AGENTS.override.md` is a regular file once links are followed
+             (`_pi_codex_override` prints `shadowed`), and name the file. A SYMLINK to the root
+             `AGENTS.md` is not refused, because Codex reads the region through it; a hard link is,
+             because the splice publishes by rename and leaves it holding the old bytes. A link that
+             does not resolve for any reason but a missing name under a searchable directory (a
+             loop, an unreadable or non-directory component) is refused too (`unresolvable`): Codex
+             fails the whole lookup and loads no project docs. `_pi_check_surfaces` reports an
+             override added after the install as `shadowed` or `broken` (`status` 20), and the
+             update notice says the merged surfaces are incomplete. The independent review of this
+             change found the loop and the symlink-to-`AGENTS.md` cases; the first draft used a bare
+             `[ -f ]`.
 - reason:    Codex calls the override its LOCAL file (`LOCAL_AGENTS_MD_FILENAME`), and a pinned
              payload is committed with the project. Splicing into the override would move the
              managed region between two files depending on whether the override exists. Every exit
@@ -11072,11 +11080,13 @@ survive is the part a later reader needs.
              candidate (`AGENTS.override.md`, `AGENTS.md`, then the fallbacks) whose metadata, with
              links followed, `is_file`, before reading it. `read_agents_md` then drops empty text
              without going back to `AGENTS.md`. So an empty override shadows too and a dangling
-             link does not, which is exactly `[ -f ]`. Skipping empty files with a fallback is the
-             global `~/.codex` loader's behaviour (`codex-home/src/instructions`), not project docs'.
+             link does not, while a metadata error other than not-found (a loop, permission denied,
+             not-a-directory) returns `Err` from the whole lookup. Skipping empty files with a
+             fallback is the global `~/.codex` loader's behaviour (`codex-home/src/instructions`),
+             not project docs'.
 - rejected:  Splice into the override (the region moves, see above). Install anyway and only warn
              (does not meet the issue's acceptance: the practices still never load).
-- placement: `scripts/lib/pinned-install.sh` (`_pi_codex_shadowed`, `cmd_install`,
+- placement: `scripts/lib/pinned-install.sh` (`_pi_codex_override`, `cmd_install`,
              `_pi_check_surfaces`, `cmd_notice`) · `scripts/check-pinned-install.sh` (case 9b) ·
              `docs/installation.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)

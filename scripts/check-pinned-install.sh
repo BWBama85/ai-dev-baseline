@@ -780,6 +780,28 @@ PSD="$(new_project shadowdangling)"
 ln -s missing.md "$PSD/AGENTS.override.md"
 bash "$PI" install --project "$PSD" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
 yes "$rc" "shadow: a dangling override link shadows nothing, so the install proceeds"
+# A link that fails for any other reason fails Codex's whole doc lookup, so nothing loads.
+PSP="$(new_project shadowloop)"
+ln -s AGENTS.override.md "$PSP/AGENTS.override.md"
+before="$(tree_digest "$PSP")"
+out="$(bash "$PI" install --project "$PSP" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: an override link that loops refuses"
+has "$out" "does not resolve" "shadow: … and says the link is the problem"
+eq "$(tree_digest "$PSP")" "$before" "shadow: … writing nothing"
+# A link to the root AGENTS.md is read through to the region itself; a HARD link is not, because the
+# splice publishes by rename and leaves the override holding the old bytes.
+PSA="$(new_project shadowself)"
+printf '# Ours\n' > "$PSA/AGENTS.md"
+ln -s AGENTS.md "$PSA/AGENTS.override.md"
+bash "$PI" install --project "$PSA" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+yes "$rc" "shadow: an override symlinked to the root AGENTS.md is not refused"
+out="$(bash "$PI" status --project "$PSA" --offline 2>&1)"; rc=$?
+eq "$rc" 0 "shadow: … and status reports it intact, since Codex reads the region through it"
+PSH="$(new_project shadowhard)"
+printf '# Ours\n' > "$PSH/AGENTS.md"
+ln "$PSH/AGENTS.md" "$PSH/AGENTS.override.md"
+bash "$PI" install --project "$PSH" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+eq "$rc" 10 "shadow: an override hard-linked to AGENTS.md refuses"
 # The override is Codex's alone: a Claude-only install has no region for it to hide.
 PSC="$(new_project shadowclaude)"
 : > "$PSC/AGENTS.override.md"
@@ -793,7 +815,7 @@ printf 'local notes\n' > "$PSL/AGENTS.override.md"
 out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
 eq "$rc" 20 "shadow: status reports a region an override now shadows as NOT intact"
 has "$out" "shadowed AGENTS.md managed region" "shadow: … naming the state"
-has "$out" "Codex loads none of the practices" "shadow: … and what it costs"
+has "$out" "is read instead" "shadow: … and why"
 out="$(bash "$PI" notice --project "$PSL" 2>&1)"
 has "$out" "merged surfaces incomplete" "shadow: the update notice says the surfaces failed, not only '0 missing'"
 before="$(tree_digest "$PSL")"
@@ -805,6 +827,11 @@ eq "$(tree_digest "$PSL")" "$before" "shadow: … and neither changed anything"
 mv "$PSL/AGENTS.override.md" "$work/override.parked"
 bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
 eq "$rc" 0 "shadow: taking the override away restores an intact install"
+ln -s AGENTS.override.md "$PSL/AGENTS.override.md"
+out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "shadow: status reports a looping override link as NOT intact"
+has "$out" "does not resolve" "shadow: … naming the link"
+rm -f "$PSL/AGENTS.override.md"
 mv "$work/override.parked" "$PSL/AGENTS.override.md"
 cp "$PSL/AGENTS.override.md" "$work/override.before"
 bash "$PI" uninstall --project "$PSL" >/dev/null 2>&1; rc=$?

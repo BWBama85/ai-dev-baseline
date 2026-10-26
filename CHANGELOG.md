@@ -38,8 +38,11 @@ only by a published release, which is what these entries are the notes for.
   beside one was never loaded, and `status` still reported the install intact. Now
   `install` and `upgrade` refuse with `10` before writing anything when the agent set includes Codex
   and a root `AGENTS.override.md` exists (an empty one, or a link to one, included) and name the
-  file. `status` reports an override added later as `shadowed` with `20`, and the `baseline update`
-  notice says the merged surfaces are incomplete instead of reporting only "0 missing" (D141).
+  file. A symlink to the root `AGENTS.md` is allowed, since Codex reads the region through it; a
+  link that loops or cannot be followed is refused, since Codex then loads no project docs.
+  `status` reports an override added later as `shadowed` (or `broken`, for such a link) with `20`,
+  and the `baseline update` notice says the merged surfaces are incomplete instead of reporting
+  only "0 missing" (D141).
 
 - **A refusal no longer strands the sandbox keys an earlier install wrote (#483).** When an update
   started shipping a key you already had, the installer refused the whole policy, as designed, but
